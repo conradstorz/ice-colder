@@ -8,7 +8,7 @@ logger.add("vmc.log", rotation="00:00")
 
 def main():
     logger.info("Starting Vending Machine Controller")
-    vmc = VMC()
+    vmc = VMC(config_file='config.json')
     try:
         asyncio.run(vmc.run())
     except KeyboardInterrupt:
