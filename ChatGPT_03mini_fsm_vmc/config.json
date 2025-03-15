@@ -1,0 +1,13 @@
+{
+    "products": [
+      {"name": "Soda", "price": 1.25},
+      {"name": "Chips", "price": 1.00},
+      {"name": "Candy", "price": 0.75},
+      {"name": "Water", "price": 1.00}
+    ],
+    "owner_contact": {
+      "email": "owner@example.com",
+      "sms": "+15555555555"
+    }
+  }
+  
