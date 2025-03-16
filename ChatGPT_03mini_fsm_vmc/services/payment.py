@@ -4,10 +4,11 @@ from loguru import logger
 
 class PaymentService:
     def process_payment(self, amount):
-        logger.info("Processing payment of ${:.2f} via Payment Service.", amount)
+        logger.info(f"Processing payment of ${amount:.2f} via Payment Service.")
         success = random.choice([True, False])
         if success:
-            logger.debug("Payment of ${:.2f} processed successfully.", amount)
+            logger.debug(f"Payment of ${amount:.2f} processed successfully.")
         else:
-            logger.error("Payment of ${:.2f} failed.", amount)
+            logger.error(f"Payment of ${amount:.2f} failed.")
         return success
+

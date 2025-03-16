@@ -12,5 +12,5 @@ class ButtonPanel:
         logger.info("ButtonPanel: Waiting for button press (simulated delay: 3 minutes)...")
         await asyncio.sleep(180)  # 3 minutes delay; adjust for faster testing if needed
         pressed_button = random.choice(self.buttons)
-        logger.info("ButtonPanel: Simulated button press: Button {}", pressed_button)
+        logger.info(f"ButtonPanel: Simulated button press: Button {pressed_button}")
         return pressed_button

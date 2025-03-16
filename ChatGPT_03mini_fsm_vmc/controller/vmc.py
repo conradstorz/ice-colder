@@ -34,20 +34,20 @@ class VMC:
         self.payment_service = PaymentService()
 
     def log_start_payment(self):
-        logger.info("Transitioning from idle to accepting_payment for product: {}", self.selected_product)
+        logger.info(f"Transitioning from idle to accepting_payment for product: {self.selected_product}")
 
     def log_dispense(self):
-        logger.info("Transitioning from accepting_payment to dispensing for product: {}", self.selected_product)
+        logger.info(f"Transitioning from accepting_payment to dispensing for product: {self.selected_product}")
 
     def log_reset(self):
         logger.info("Resetting to idle state. Clearing selected product.")
         self.selected_product = None
 
     def log_error(self):
-        logger.error("Error encountered during operation for product: {}. Transitioning to error state.", self.selected_product)
+        logger.error(f"Error encountered during operation for product: {self.selected_product}. Transitioning to error state.")
 
     async def run(self):
-        logger.info("VMC running. Initial state: {}", self.state)
+        logger.info(f"VMC running. Initial state: {self.state}")
         while True:
             if self.state == 'idle':
                 logger.debug("State idle: Waiting for button press (simulated).")
@@ -55,16 +55,14 @@ class VMC:
                 pressed_button = await self.button_panel.wait_for_press()
                 if pressed_button < len(self.products):
                     self.selected_product = self.products[pressed_button]
-                    logger.info("Product selected: {} at price ${:.2f}",
-                                self.selected_product.get("name"),
-                                self.selected_product.get("price"))
+                    logger.info(f"Product selected: {self.selected_product.get('name')} at price ${self.selected_product.get('price'):.2f}")
                     self.start_payment()
                 else:
                     logger.error("Invalid button pressed. Remaining in idle.")
                     continue
 
             elif self.state == 'accepting_payment':
-                logger.debug("State accepting_payment: Initiating payment for product: {}", self.selected_product.get("name"))
+                logger.debug(f"State accepting_payment: Initiating payment for product: {self.selected_product.get('name')}")
                 # Simulate payment process using product price
                 price = self.selected_product.get("price", 0)
                 payment_result = self.payment_service.process_payment(price)
@@ -75,15 +73,13 @@ class VMC:
                 await asyncio.sleep(2)
 
             elif self.state == 'dispensing':
-                logger.info("State dispensing: Dispensing product: {}", self.selected_product.get("name"))
+                logger.info(f"State dispensing: Dispensing product: {self.selected_product.get('name')}")
                 # Simulate dispensing operation
                 await asyncio.sleep(2)
                 self.reset()
 
             elif self.state == 'error':
-                logger.warning("State error: Handling error for product: {}. Notifying owner: {}",
-                               self.selected_product.get("name") if self.selected_product else "None",
-                               self.owner_contact)
+                logger.warning(f"State error: Handling error for product: {self.selected_product.get('name') if self.selected_product else 'None'}. Notifying owner: {self.owner_contact}")
                 # Here, implement error handling and notification (email/SMS) as needed
                 await asyncio.sleep(2)
                 self.reset()

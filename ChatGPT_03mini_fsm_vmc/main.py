@@ -7,12 +7,12 @@ from controller.vmc import VMC
 logger.add("vmc.log", rotation="00:00")
 
 def main():
-    logger.info("Starting Vending Machine Controller")
+    logger.info(f"Starting Vending Machine Controller")
     vmc = VMC(config_file='config.json')
     try:
         asyncio.run(vmc.run())
     except KeyboardInterrupt:
-        logger.info("Shutting down VMC due to keyboard interrupt.")
+        logger.info(f"Shutting down VMC due to keyboard interrupt.")
 
 if __name__ == '__main__':
     main()
