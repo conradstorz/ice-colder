@@ -16,21 +16,22 @@ class VMC:
         # Load configuration from file
         with open(config_file, 'r') as f:
             self.config = json.load(f)
-        
+
         self.products = self.config.get("products", [])
         self.owner_contact = self.config.get("owner_contact", {})
         self.selected_product = None
-        
+
         # Initialize the FSM
         self.machine = Machine(model=self, states=VMC.states, initial='idle')
         self.machine.add_transition(trigger='start_payment', source='idle', dest='accepting_payment', before='log_start_payment')
         self.machine.add_transition(trigger='dispense_product', source='accepting_payment', dest='dispensing', before='log_dispense')
         self.machine.add_transition(trigger='reset', source=['dispensing', 'error'], dest='idle', before='log_reset')
         self.machine.add_transition(trigger='error_occurred', source='*', dest='error', before='log_error')
-        
+
         # Create instances of hardware and service mocks
         self.coin_handler = CoinHandler()
-        self.button_panel = ButtonPanel()
+        # The number of buttons is now determined by the number of products in the config file
+        self.button_panel = ButtonPanel(num_buttons=len(self.products))
         self.payment_service = PaymentService()
 
     def log_start_payment(self):
@@ -51,7 +52,7 @@ class VMC:
         while True:
             if self.state == 'idle':
                 logger.debug("State idle: Waiting for button press (simulated).")
-                # Wait for a simulated button press (demon function)
+                # Wait for a simulated button press from the button panel.
                 pressed_button = await self.button_panel.wait_for_press()
                 if pressed_button < len(self.products):
                     self.selected_product = self.products[pressed_button]
@@ -80,6 +81,6 @@ class VMC:
 
             elif self.state == 'error':
                 logger.warning(f"State error: Handling error for product: {self.selected_product.get('name') if self.selected_product else 'None'}. Notifying owner: {self.owner_contact}")
-                # Here, implement error handling and notification (email/SMS) as needed
+                # Implement error handling and notification (email/SMS) as needed
                 await asyncio.sleep(2)
                 self.reset()
