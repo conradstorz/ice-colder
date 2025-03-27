@@ -6,6 +6,7 @@ from loguru import logger
 
 from hardware.coin_handler import CoinHandler
 from hardware.button_panel import ButtonPanel
+from hardware.mdb_interface import MDBInterface
 from services.payment import PaymentService
 
 class VMC:
@@ -33,6 +34,8 @@ class VMC:
         # The number of buttons is now determined by the number of products in the config file
         self.button_panel = ButtonPanel(num_buttons=len(self.products))
         self.payment_service = PaymentService()
+        # Create an instance of the MDB interface
+        self.mdb_interface = MDBInterface()
 
     def log_start_payment(self):
         logger.info(f"Transitioning from idle to accepting_payment for product: {self.selected_product}")
@@ -46,6 +49,23 @@ class VMC:
 
     def log_error(self):
         logger.error(f"Error encountered during operation for product: {self.selected_product}. Transitioning to error state.")
+
+    async def start_mdb_monitoring(self):
+            """
+            Start the asynchronous loop to monitor the MDB bus.
+            The message_handler callback should route messages to appropriate FSM actions.
+            """
+            await self.mdb_interface.read_messages(self.handle_mdb_message)
+
+    def handle_mdb_message(self, message):
+        """
+        Handle incoming messages from the MDB bus.
+        Depending on the message, you might trigger FSM transitions or update internal state.
+        This is a stub for where you'd decode the MDB protocol and act accordingly.
+        """
+        logger.info(f"VMC received MDB message: {message}")
+        # Example: If message indicates coin accepted, you might log it or update the credit escrow.
+        # You could also call self.start_payment() or similar methods based on the message content.
 
     async def run(self):
         logger.info(f"VMC running. Initial state: {self.state}")

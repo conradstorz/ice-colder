@@ -9,8 +9,9 @@ class ButtonPanel:
         self.buttons = list(range(num_buttons))
 
     async def wait_for_press(self):
-        logger.info(f"ButtonPanel: Waiting for button press (simulated delay: 3 minutes)...")
-        await asyncio.sleep(180)  # 3 minutes delay; adjust for testing if needed
+        delay = random.uniform(0.001, .01)
+        logger.info(f"ButtonPanel: Waiting for button press (simulated delay: {delay:.2f} seconds)...")
+        await asyncio.sleep(delay)
         pressed_button = random.choice(self.buttons)
         logger.info(f"ButtonPanel: Simulated button press: Button {pressed_button}")
         return pressed_button
