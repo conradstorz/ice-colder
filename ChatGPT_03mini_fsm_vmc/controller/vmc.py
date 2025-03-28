@@ -6,6 +6,9 @@ from services.payment import PaymentService
 from hardware.coin_handler import CoinHandler
 from hardware.mdb_interface import MDBInterface
 
+# Global variable for state change log prefix
+STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
+
 class VMC:
     # Define FSM states
     states = ['idle', 'accepting_payment', 'dispensing', 'error']
@@ -54,24 +57,24 @@ class VMC:
         if self.message_callback:
             self.message_callback(message)
 
-    # --- FSM Callback Methods ---
+    # --- FSM Callback Methods with Enhanced Logging ---
     def on_start_payment(self):
-        logger.info(f"Transitioning from idle to accepting_payment for product: {self.selected_product}")
+        logger.info(f"{STATE_CHANGE_PREFIX} Transitioning from idle to accepting_payment for product: {self.selected_product}")
         self._refresh_ui()
 
     def on_dispense_product(self):
-        logger.info(f"Transitioning from accepting_payment to dispensing for product: {self.selected_product}")
+        logger.info(f"{STATE_CHANGE_PREFIX} Transitioning from accepting_payment to dispensing for product: {self.selected_product}")
         self._refresh_ui()
 
     def on_reset(self):
-        logger.info("Resetting to idle state. Clearing selected product.")
+        logger.info(f"{STATE_CHANGE_PREFIX} Resetting to idle state. Clearing selected product. Previous selection: {self.selected_product}")
         self.selected_product = None
         self.last_insufficient_message = ""
         self._refresh_ui()
         self._display_message("")
 
     def on_error(self):
-        logger.error(f"Error encountered for product: {self.selected_product}")
+        logger.error(f"{STATE_CHANGE_PREFIX} Error encountered for product: {self.selected_product}. Transitioning to error state.")
         self._refresh_ui()
 
     # --- Business Logic Methods ---
@@ -121,7 +124,7 @@ class VMC:
 
         price = self.selected_product.get("price", 0)
         if self.credit_escrow >= price:
-            logger.info(f"Escrow sufficient (${self.credit_escrow:.2f} >= ${price:.2f}). Processing payment.")
+            logger.info(f"{STATE_CHANGE_PREFIX} Escrow sufficient (${self.credit_escrow:.2f} >= ${price:.2f}). Processing payment.")
             self.credit_escrow -= price
             self.dispense_product()
             self._refresh_ui()
@@ -140,7 +143,7 @@ class VMC:
         """Finalize dispensing and reset state."""
         if self.state != 'dispensing':
             return
-        logger.info(f"Finished dispensing: {self.selected_product.get('name')}")
+        logger.info(f"{STATE_CHANGE_PREFIX} Finished dispensing: {self.selected_product.get('name')}")
         self.reset_state()
         self._refresh_ui()
 
