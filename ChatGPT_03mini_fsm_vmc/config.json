@@ -1,10 +1,10 @@
 {
-    "products": [
-      {"name": "Soda", "price": 1.25},
-      {"name": "Chips", "price": 1.00},
-      {"name": "Candy", "price": 0.75},
-      {"name": "Water", "price": 1.00}
-    ],
+  "products": [
+    { "name": "Soda", "price": 1.25, "track_inventory": true, "inventory_count": 10 },
+    { "name": "Chips", "price": 1.00, "track_inventory": true, "inventory_count": 5 },
+    { "name": "Candy", "price": 0.75, "track_inventory": false },
+    { "name": "Water", "price": 1.00, "track_inventory": false }
+  ],
     "owner_contact": {
       "email": "owner@example.com",
       "sms": "+15555555555"
