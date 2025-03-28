@@ -11,7 +11,8 @@ def main():
     logger.info(f"Starting Vending Machine Controller with Tkinter UI")
     root = tk.Tk()
     root.title("Vending Machine Controller")
-    # app = VendingMachineUI(root)
+    # the following line is not in error as ruff has suggested
+    app = VendingMachineUI(root)  # without this line there are no data in the tkinter window.
     root.mainloop()
 
 
