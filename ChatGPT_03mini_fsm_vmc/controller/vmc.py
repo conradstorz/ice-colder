@@ -4,8 +4,6 @@ from transitions import Machine
 from loguru import logger
 from services.payment import PaymentService
 from hardware.coin_handler import CoinHandler
-
-# Import the MDB interface (ensure that hardware/mdb_interface.py is in your project)
 from hardware.mdb_interface import MDBInterface
 
 class VMC:
@@ -13,108 +11,143 @@ class VMC:
     states = ['idle', 'accepting_payment', 'dispensing', 'error']
 
     def __init__(self, config_file='config.json'):
-        # Load configuration from file
+        # Load configuration
         with open(config_file, 'r') as f:
             self.config = json.load(f)
-
         self.products = self.config.get("products", [])
         self.owner_contact = self.config.get("owner_contact", {})
+
+        # Initialize business data
         self.selected_product = None
-        self.update_callback = None  # Callback for UI updates
+        self.credit_escrow = 0.0
+        self.last_insufficient_message = ""
 
-        # Initialize the FSM
+        # Callbacks for UI updates
+        self.update_callback = None  # Expected signature: (state, selected_product, credit_escrow)
+        self.message_callback = None  # Expected signature: (message)
+
+        # Setup FSM transitions using transitions library
         self.machine = Machine(model=self, states=VMC.states, initial='idle')
-        self.machine.add_transition(trigger='start_payment', source='idle', dest='accepting_payment', before='log_start_payment')
-        self.machine.add_transition(trigger='dispense_product', source='accepting_payment', dest='dispensing', before='log_dispense')
-        self.machine.add_transition(trigger='reset', source=['dispensing', 'error'], dest='idle', before='log_reset')
-        self.machine.add_transition(trigger='error_occurred', source='*', dest='error', before='log_error')
+        self.machine.add_transition(trigger='start_payment', source='idle', dest='accepting_payment', before='on_start_payment')
+        self.machine.add_transition(trigger='dispense_product', source='accepting_payment', dest='dispensing', before='on_dispense_product')
+        self.machine.add_transition(trigger='reset_state', source=['dispensing', 'error'], dest='idle', before='on_reset')
+        self.machine.add_transition(trigger='error_occurred', source='*', dest='error', before='on_error')
 
-        # Create instances of hardware/service mocks
-        self.coin_handler = CoinHandler()  # Currently available for future expansion
+        # Initialize hardware and services
+        self.coin_handler = CoinHandler()         # Placeholder for future expansion
         self.payment_service = PaymentService()
-        # Instantiate the MDB interface for near real-time monitoring
         self.mdb_interface = MDBInterface()
 
+    # --- Callback Setters ---
     def set_update_callback(self, callback):
-        """Set a callback to update the UI with the current state and selected product."""
         self.update_callback = callback
 
-    def _update_ui(self):
+    def set_message_callback(self, callback):
+        self.message_callback = callback
+
+    # --- UI Helper Methods ---
+    def _refresh_ui(self):
         if self.update_callback:
-            self.update_callback(self.state, self.selected_product)
+            self.update_callback(self.state, self.selected_product, self.credit_escrow)
 
-    def log_start_payment(self):
+    def _display_message(self, message):
+        if self.message_callback:
+            self.message_callback(message)
+
+    # --- FSM Callback Methods ---
+    def on_start_payment(self):
         logger.info(f"Transitioning from idle to accepting_payment for product: {self.selected_product}")
-        self._update_ui()
+        self._refresh_ui()
 
-    def log_dispense(self):
+    def on_dispense_product(self):
         logger.info(f"Transitioning from accepting_payment to dispensing for product: {self.selected_product}")
-        self._update_ui()
+        self._refresh_ui()
 
-    def log_reset(self):
+    def on_reset(self):
         logger.info("Resetting to idle state. Clearing selected product.")
         self.selected_product = None
-        self._update_ui()
+        self.last_insufficient_message = ""
+        self._refresh_ui()
+        self._display_message("")
 
-    def log_error(self):
-        logger.error(f"Error encountered during operation for product: {self.selected_product}. Transitioning to error state.")
-        self._update_ui()
+    def on_error(self):
+        logger.error(f"Error encountered for product: {self.selected_product}")
+        self._refresh_ui()
+
+    # --- Business Logic Methods ---
+    def deposit_funds(self, amount):
+        """Deposit funds into the escrow."""
+        self.credit_escrow += amount
+        logger.info(f"Deposited ${amount:.2f}. New escrow: ${self.credit_escrow:.2f}")
+        self._refresh_ui()
 
     def select_product(self, product_index, tk_root):
         """
-        Triggered by the UI when a product button is pressed.
-        Schedules the payment processing using tk_root.after().
+        Called by the UI when a product button is pressed.
+        Works in both 'idle' and 'accepting_payment' states.
         """
-        if self.state != 'idle':
-            logger.warning("Machine is not in idle state; cannot select product.")
+        if self.state not in ['idle', 'accepting_payment']:
+            logger.warning("Cannot change selection; machine not ready.")
             return
         if product_index >= len(self.products):
             logger.error("Invalid product index selected.")
             return
 
         self.selected_product = self.products[product_index]
-        logger.info(f"Product selected: {self.selected_product.get('name')} at price ${self.selected_product.get('price'):.2f}")
-        self.start_payment()
-        self._update_ui()
+        logger.info(f"Selected product: {self.selected_product.get('name')} at ${self.selected_product.get('price'):.2f}")
 
-        # Schedule payment processing after 1 second
-        tk_root.after(1000, lambda: self.process_payment(tk_root))
+        if self.state == 'idle':
+            self.start_payment()
+            tk_root.after(1000, lambda: self._process_payment(tk_root))
+        else:
+            self._update_selection_message()
+        self._refresh_ui()
 
-    def process_payment(self, tk_root):
+    def _update_selection_message(self):
+        """Update message when product selection changes in accepting_payment state."""
+        price = self.selected_product.get("price", 0)
+        if self.credit_escrow < price:
+            required = price - self.credit_escrow
+            message = f"Changed selection to {self.selected_product.get('name')}. Insert additional ${required:.2f}."
+        else:
+            message = f"Changed selection to {self.selected_product.get('name')}. Sufficient funds available."
+        self._display_message(message)
+        self.last_insufficient_message = message
+
+    def _process_payment(self, tk_root):
+        """Process payment by checking funds and scheduling next steps."""
         if self.state != 'accepting_payment':
             return
-        price = self.selected_product.get("price", 0)
-        payment_result = self.payment_service.process_payment(price)
-        if payment_result:
-            self.dispense_product()
-            self._update_ui()
-            # Schedule dispensing to finish after 1 second
-            tk_root.after(1000, lambda: self.finish_dispensing(tk_root))
-        else:
-            self.error_occurred()
-            self._update_ui()
-            # Schedule a reset after 1 second in case of error
-            tk_root.after(1000, lambda: self.reset())
 
-    def finish_dispensing(self, tk_root):
+        price = self.selected_product.get("price", 0)
+        if self.credit_escrow >= price:
+            logger.info(f"Escrow sufficient (${self.credit_escrow:.2f} >= ${price:.2f}). Processing payment.")
+            self.credit_escrow -= price
+            self.dispense_product()
+            self._refresh_ui()
+            tk_root.after(1000, lambda: self._finish_dispensing(tk_root))
+            self.last_insufficient_message = ""
+        else:
+            required = price - self.credit_escrow
+            message = f"Insufficient funds. Please insert an additional ${required:.2f}."
+            if message != self.last_insufficient_message:
+                logger.error(message)
+                self._display_message(message)
+                self.last_insufficient_message = message
+            tk_root.after(5000, lambda: self._process_payment(tk_root))
+
+    def _finish_dispensing(self, tk_root):
+        """Finalize dispensing and reset state."""
         if self.state != 'dispensing':
             return
-        logger.info(f"Dispensing product: {self.selected_product.get('name')}")
-        self.reset()
-        self._update_ui()
+        logger.info(f"Finished dispensing: {self.selected_product.get('name')}")
+        self.reset_state()
+        self._refresh_ui()
 
     async def start_mdb_monitoring(self):
-        """
-        Start the asynchronous loop to monitor the MDB bus.
-        The message_handler callback routes messages to appropriate FSM actions.
-        """
+        """Start asynchronous monitoring of the MDB bus."""
         await self.mdb_interface.read_messages(self.handle_mdb_message)
 
     def handle_mdb_message(self, message):
-        """
-        Handle incoming messages from the MDB bus.
-        Depending on the message, you might trigger FSM transitions or update internal state.
-        This is a stub for where you'd decode the MDB protocol and act accordingly.
-        """
-        logger.info(f"VMC received MDB message: {message}")
-        # Here you can parse the message and, for example, update coin escrow or trigger a transition.
+        """Stub: Handle incoming MDB messages."""
+        logger.info(f"Received MDB message: {message}")
