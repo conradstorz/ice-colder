@@ -3,6 +3,7 @@ import random
 import datetime
 from config_handler import ConfigHandler
 
+
 class IceVendingMachine:
     def __init__(self, config_file="config.txt"):
         self.config = ConfigHandler(config_file).get_config()
@@ -37,12 +38,16 @@ class IceVendingMachine:
         print(f"3. Purified Water (${self.water_price:.2f})")
         print("4. Exit")
         print(f"Payment Methods: {', '.join(self.payment_methods)}")
-        print(f"Current Credit: Hard Cash ${self.hard_cash_credit:.2f}, Virtual ${self.virtual_credit:.2f}")
+        print(
+            f"Current Credit: Hard Cash ${self.hard_cash_credit:.2f}, Virtual ${self.virtual_credit:.2f}"
+        )
 
     def accept_payment(self, price):
         while True:
             try:
-                payment_method = input(f"Payment method ({', '.join(self.payment_methods)}): ").lower()
+                payment_method = input(
+                    f"Payment method ({', '.join(self.payment_methods)}): "
+                ).lower()
                 payment = float(input("Insert payment: $"))
                 if payment_method == "cash":
                     self.hard_cash_credit += payment
@@ -60,7 +65,9 @@ class IceVendingMachine:
         return True
 
     def dispense_ice(self, ice_type):
-        price = self.regular_ice_price if ice_type == "regular" else self.premium_ice_price
+        price = (
+            self.regular_ice_price if ice_type == "regular" else self.premium_ice_price
+        )
         if self.hard_cash_credit + self.virtual_credit >= price:
             try:
                 if self.ice_available:
@@ -74,11 +81,13 @@ class IceVendingMachine:
                         print("WARNING: Low ice detected. Automatic refill initiated.")
                         self.refill_ice()
                     print("Enjoy your ice!")
-                    self.sales_data.append({
-                        "time": datetime.datetime.now(),
-                        "item": f"{ice_type} ice",
-                        "price": price
-                    })
+                    self.sales_data.append(
+                        {
+                            "time": datetime.datetime.now(),
+                            "item": f"{ice_type} ice",
+                            "price": price,
+                        }
+                    )
                     self.ice_dispensed += 1
                     self.process_payment(price)
                     self.reset_credit()
@@ -101,11 +110,13 @@ class IceVendingMachine:
                 if random.random() < 0.1:
                     raise Exception("Water valve malfunction!")
                 print("Enjoy your water!")
-                self.sales_data.append({
-                    "time": datetime.datetime.now(),
-                    "item": "Purified water",
-                    "price": self.water_price
-                })
+                self.sales_data.append(
+                    {
+                        "time": datetime.datetime.now(),
+                        "item": "Purified water",
+                        "price": self.water_price,
+                    }
+                )
                 self.process_payment(self.water_price)
                 self.reset_credit()
                 self.machine_state = "idle"
@@ -155,7 +166,9 @@ class IceVendingMachine:
 
     def check_timeout(self):
         if self.machine_state == "processing" and self.last_interaction_time:
-            time_elapsed = (datetime.datetime.now() - self.last_interaction_time).total_seconds()
+            time_elapsed = (
+                datetime.datetime.now() - self.last_interaction_time
+            ).total_seconds()
             if time_elapsed > self.timeout_duration:
                 print("Transaction timed out. Returning payment.")
                 self.refund_balance()
@@ -164,7 +177,9 @@ class IceVendingMachine:
     def get_status_report(self):
         print("--- Machine Status ---")
         print(f"State: {self.machine_state}")
-        print(f"Balance: Hard Cash ${self.hard_cash_credit:.2f}, Virtual ${self.virtual_credit:.2f}")
+        print(
+            f"Balance: Hard Cash ${self.hard_cash_credit:.2f}, Virtual ${self.virtual_credit:.2f}"
+        )
         print(f"Ice Available: {self.ice_available}")
         print(f"Ice Dispensed: {self.ice_dispensed}")
         print("--- Sales Data ---")
@@ -172,6 +187,7 @@ class IceVendingMachine:
             print(f"{sale['time']}: {sale['item']} - ${sale['price']:.2f}")
         print(f"Hard Cash Total: ${self.hard_cash_total:.2f}")
         print(f"Virtual Total: ${self.virtual_total:.2f}")
+
 
 def run(self):
     while True:

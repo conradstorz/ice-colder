@@ -2,6 +2,7 @@
 import random
 from loguru import logger
 
+
 class PaymentService:
     def process_payment(self, amount):
         logger.info(f"Processing payment of ${amount:.2f} via Payment Service.")
@@ -11,4 +12,3 @@ class PaymentService:
         else:
             logger.error(f"Payment of ${amount:.2f} failed.")
         return success
-

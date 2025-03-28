@@ -3,6 +3,7 @@ import asyncio
 import qrcode
 from loguru import logger
 
+
 class BaseGateway:
     def __init__(self, config):
         self.config = config
@@ -20,7 +21,9 @@ class BaseGateway:
         """
         Create a dummy payment URL for the gateway.
         """
-        return f"https://{self.__class__.__name__.lower()}.example.com/pay?amount={amount}"
+        return (
+            f"https://{self.__class__.__name__.lower()}.example.com/pay?amount={amount}"
+        )
 
     def generate_qr_code(self, payment_url: str):
         """
@@ -32,14 +35,18 @@ class BaseGateway:
         img = qr.make_image(fill_color="black", back_color="white")
         return img
 
+
 class StripeGateway(BaseGateway):
     pass
+
 
 class PayPalGateway(BaseGateway):
     pass
 
+
 class SquareGateway(BaseGateway):
     pass
+
 
 class PaymentGatewayManager:
     def __init__(self, config: dict = None):
@@ -51,7 +58,7 @@ class PaymentGatewayManager:
         self.gateways = {
             "stripe": StripeGateway(self.config.get("stripe")),
             "paypal": PayPalGateway(self.config.get("paypal")),
-            "square": SquareGateway(self.config.get("square"))
+            "square": SquareGateway(self.config.get("square")),
         }
 
     async def monitor_accounts(self):
@@ -69,13 +76,16 @@ class PaymentGatewayManager:
         Generate a QR code image for a payment request using the specified gateway.
         """
         if gateway_name not in self.gateways:
-            logger.error(f"PaymentGatewayManager: Gateway '{gateway_name}' is not supported.")
+            logger.error(
+                f"PaymentGatewayManager: Gateway '{gateway_name}' is not supported."
+            )
             return None
         gateway = self.gateways[gateway_name]
         payment_url = gateway.generate_payment_url(amount)
         logger.info(f"PaymentGatewayManager: Generating QR code for URL: {payment_url}")
         img = gateway.generate_qr_code(payment_url)
         return img
+
 
 # Example usage (this code would typically be called from your FSM or UI code):
 if __name__ == "__main__":

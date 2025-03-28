@@ -6,6 +6,7 @@ import datetime
 import random
 from loguru import logger
 
+
 class CameraMonitor:
     def __init__(self, camera_index: int = 0, output_dir: str = "customer_images"):
         self.camera_index = camera_index
@@ -13,7 +14,9 @@ class CameraMonitor:
         self.output_dir = output_dir
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
-        logger.info(f"CameraMonitor: Initialized with camera index {camera_index}, output directory: {output_dir}")
+        logger.info(
+            f"CameraMonitor: Initialized with camera index {camera_index}, output directory: {output_dir}"
+        )
 
     async def monitor_customers(self):
         """
@@ -25,7 +28,9 @@ class CameraMonitor:
         while True:
             # Simulate a customer approach with a random delay
             delay = random.uniform(3, 10)
-            logger.debug(f"CameraMonitor: Waiting {delay:.2f} seconds before capturing an image.")
+            logger.debug(
+                f"CameraMonitor: Waiting {delay:.2f} seconds before capturing an image."
+            )
             await asyncio.sleep(delay)
 
             ret, frame = self.cap.read()

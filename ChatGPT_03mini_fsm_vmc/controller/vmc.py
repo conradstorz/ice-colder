@@ -9,13 +9,14 @@ from hardware.mdb_interface import MDBInterface
 # Global variable for state change log prefix
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
 
+
 class VMC:
     # Define FSM states
-    states = ['idle', 'accepting_payment', 'dispensing', 'error']
+    states = ["idle", "accepting_payment", "dispensing", "error"]
 
-    def __init__(self, config_file='config.json'):
+    def __init__(self, config_file="config.json"):
         # Load configuration
-        with open(config_file, 'r') as f:
+        with open(config_file, "r") as f:
             self.config = json.load(f)
         self.products = self.config.get("products", [])
         self.owner_contact = self.config.get("owner_contact", {})
@@ -26,18 +27,37 @@ class VMC:
         self.last_insufficient_message = ""
 
         # Callbacks for UI updates
-        self.update_callback = None  # Expected signature: (state, selected_product, credit_escrow)
+        self.update_callback = (
+            None  # Expected signature: (state, selected_product, credit_escrow)
+        )
         self.message_callback = None  # Expected signature: (message)
 
         # Setup FSM transitions using transitions library
-        self.machine = Machine(model=self, states=VMC.states, initial='idle')
-        self.machine.add_transition(trigger='start_payment', source='idle', dest='accepting_payment', before='on_start_payment')
-        self.machine.add_transition(trigger='dispense_product', source='accepting_payment', dest='dispensing', before='on_dispense_product')
-        self.machine.add_transition(trigger='reset_state', source=['dispensing', 'error'], dest='idle', before='on_reset')
-        self.machine.add_transition(trigger='error_occurred', source='*', dest='error', before='on_error')
+        self.machine = Machine(model=self, states=VMC.states, initial="idle")
+        self.machine.add_transition(
+            trigger="start_payment",
+            source="idle",
+            dest="accepting_payment",
+            before="on_start_payment",
+        )
+        self.machine.add_transition(
+            trigger="dispense_product",
+            source="accepting_payment",
+            dest="dispensing",
+            before="on_dispense_product",
+        )
+        self.machine.add_transition(
+            trigger="reset_state",
+            source=["dispensing", "error"],
+            dest="idle",
+            before="on_reset",
+        )
+        self.machine.add_transition(
+            trigger="error_occurred", source="*", dest="error", before="on_error"
+        )
 
         # Initialize hardware and services
-        self.coin_handler = CoinHandler()         # Placeholder for future expansion
+        self.coin_handler = CoinHandler()  # Placeholder for future expansion
         self.payment_service = PaymentService()
         self.mdb_interface = MDBInterface()
 
@@ -59,22 +79,30 @@ class VMC:
 
     # --- FSM Callback Methods with Enhanced Logging ---
     def on_start_payment(self):
-        logger.info(f"{STATE_CHANGE_PREFIX} Transitioning from idle to accepting_payment for product: {self.selected_product}")
+        logger.info(
+            f"{STATE_CHANGE_PREFIX} Transitioning from idle to accepting_payment for product: {self.selected_product}"
+        )
         self._refresh_ui()
 
     def on_dispense_product(self):
-        logger.info(f"{STATE_CHANGE_PREFIX} Transitioning from accepting_payment to dispensing for product: {self.selected_product}")
+        logger.info(
+            f"{STATE_CHANGE_PREFIX} Transitioning from accepting_payment to dispensing for product: {self.selected_product}"
+        )
         self._refresh_ui()
 
     def on_reset(self):
-        logger.info(f"{STATE_CHANGE_PREFIX} Resetting to idle state. Clearing selected product. Previous selection: {self.selected_product}")
+        logger.info(
+            f"{STATE_CHANGE_PREFIX} Resetting to idle state. Clearing selected product. Previous selection: {self.selected_product}"
+        )
         self.selected_product = None
         self.last_insufficient_message = ""
         self._refresh_ui()
         self._display_message("")
 
     def on_error(self):
-        logger.error(f"{STATE_CHANGE_PREFIX} Error encountered for product: {self.selected_product}. Transitioning to error state.")
+        logger.error(
+            f"{STATE_CHANGE_PREFIX} Error encountered for product: {self.selected_product}. Transitioning to error state."
+        )
         self._refresh_ui()
 
     # --- Business Logic Methods ---
@@ -89,7 +117,7 @@ class VMC:
         Called by the UI when a product button is pressed.
         Works in both 'idle' and 'accepting_payment' states.
         """
-        if self.state not in ['idle', 'accepting_payment']:
+        if self.state not in ["idle", "accepting_payment"]:
             logger.warning("Cannot change selection; machine not ready.")
             return
         if product_index >= len(self.products):
@@ -97,9 +125,11 @@ class VMC:
             return
 
         self.selected_product = self.products[product_index]
-        logger.info(f"Selected product: {self.selected_product.get('name')} at ${self.selected_product.get('price'):.2f}")
+        logger.info(
+            f"Selected product: {self.selected_product.get('name')} at ${self.selected_product.get('price'):.2f}"
+        )
 
-        if self.state == 'idle':
+        if self.state == "idle":
             self.start_payment()
             tk_root.after(1000, lambda: self._process_payment(tk_root))
         else:
@@ -119,12 +149,14 @@ class VMC:
 
     def _process_payment(self, tk_root):
         """Process payment by checking funds and scheduling next steps."""
-        if self.state != 'accepting_payment':
+        if self.state != "accepting_payment":
             return
 
         price = self.selected_product.get("price", 0)
         if self.credit_escrow >= price:
-            logger.info(f"{STATE_CHANGE_PREFIX} Escrow sufficient (${self.credit_escrow:.2f} >= ${price:.2f}). Processing payment.")
+            logger.info(
+                f"{STATE_CHANGE_PREFIX} Escrow sufficient (${self.credit_escrow:.2f} >= ${price:.2f}). Processing payment."
+            )
             self.credit_escrow -= price
             self.dispense_product()
             self._refresh_ui()
@@ -132,7 +164,9 @@ class VMC:
             self.last_insufficient_message = ""
         else:
             required = price - self.credit_escrow
-            message = f"Insufficient funds. Please insert an additional ${required:.2f}."
+            message = (
+                f"Insufficient funds. Please insert an additional ${required:.2f}."
+            )
             if message != self.last_insufficient_message:
                 logger.error(message)
                 self._display_message(message)
@@ -141,9 +175,11 @@ class VMC:
 
     def _finish_dispensing(self, tk_root):
         """Finalize dispensing and reset state."""
-        if self.state != 'dispensing':
+        if self.state != "dispensing":
             return
-        logger.info(f"{STATE_CHANGE_PREFIX} Finished dispensing: {self.selected_product.get('name')}")
+        logger.info(
+            f"{STATE_CHANGE_PREFIX} Finished dispensing: {self.selected_product.get('name')}"
+        )
         self.reset_state()
         self._refresh_ui()
 
