@@ -6,7 +6,9 @@ try:
     from serial import Serial
 except ImportError as e:
     logger.error(
-        "Failed to import 'Serial' from pyserial. Ensure pyserial is installed and no local file is named 'serial.py'. Original source of this error was fixed by deleting venv and recreating."
+        "Failed to import 'Serial' from pyserial. Ensure pyserial is installed and "
+        "no local file is named 'serial.py'. Original source of this error was fixed "
+        "by deleting venv and recreating."
     )
     raise
 
