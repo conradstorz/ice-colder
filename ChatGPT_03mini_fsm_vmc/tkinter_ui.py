@@ -12,9 +12,30 @@ class VendingMachineUI:
         self.vmc.set_update_callback(self.update_status)
         # Set the VMC message callback to update the message area
         self.vmc.set_message_callback(self.update_message)
-        self.create_widgets()
+        self.create_widgets(config_file)
 
-    def create_widgets(self):
+    def create_widgets(self, config_file):
+        # Load configuration to retrieve machine info and product details
+        with open(config_file, "r") as f:
+            config = json.load(f)
+        products = config.get("products", [])
+        owner_contact = config.get("owner_contact", {})
+        machine_id = config.get("machine_id", "N/A")
+        location = config.get("location", {})
+        location_str = (
+            f"{location.get('address', 'Unknown')}\n"
+            f"Type: {location.get('type', 'Unknown')}, Area: {location.get('placement_area', 'Unknown')}\n"
+            f"Traffic Level: {location.get('traffic_level', 'Unknown')}"
+        )
+
+        # Create a frame for Machine Information at the very top
+        self.machine_info_frame = tk.Frame(self.root)
+        self.machine_info_frame.pack(pady=5)
+        self.machine_id_label = tk.Label(self.machine_info_frame, text=f"Machine ID: {machine_id}", font=("Helvetica", 12, "bold"))
+        self.machine_id_label.pack()
+        self.location_label = tk.Label(self.machine_info_frame, text=f"Location:\n{location_str}", font=("Helvetica", 10))
+        self.location_label.pack()
+
         # Create a label at the top to display the "Money In" escrow balance
         self.escrow_label = tk.Label(self.root, text="Money In: $0.00", font=("Helvetica", 14, "bold"))
         self.escrow_label.pack(pady=5)
@@ -22,12 +43,6 @@ class VendingMachineUI:
         # Create a frame to display configuration info (products and owner contact)
         self.info_frame = tk.Frame(self.root)
         self.info_frame.pack(pady=10)
-
-        # Load configuration to display product info and owner contact
-        with open("config.json", "r") as f:
-            config = json.load(f)
-        products = config.get("products", [])
-        owner_contact = config.get("owner_contact", {})
 
         # Display products info
         self.products_label = tk.Label(self.info_frame, text="Products:")
@@ -40,7 +55,8 @@ class VendingMachineUI:
             else:
                 inventory_text = "(Unlimited)"
             self.product_list.insert(
-                tk.END, f"{i}: {product.get('name')} - ${product.get('price'):.2f} {inventory_text}"
+                tk.END,
+                f"{i}: {product.get('name')} - ${product.get('price'):.2f} {inventory_text}",
             )
         self.product_list.pack()
 
@@ -65,34 +81,25 @@ class VendingMachineUI:
             btn.pack(side=tk.LEFT, padx=5)
             self.buttons.append(btn)
 
-        # Create a frame for payment simulation buttons
+        # Create a frame for simulating payment (coins and paper bills)
         self.payment_frame = tk.Frame(self.root)
         self.payment_frame.pack(pady=10)
-        payment_label = tk.Label(self.payment_frame, text="Insert Payment:")
-        payment_label.pack(side=tk.LEFT, padx=5)
-        # Define coins and bills for simulation
-        self.payment_options = [
-            (0.05, "$0.05"),
-            (0.10, "$0.10"),
-            (0.25, "$0.25"),
-            (0.50, "$0.50"),
-            (1.00, "$1"),
-            (5.00, "$5"),
-            (10.00, "$10"),
-            (20.00, "$20"),
-        ]
-        for amount, label_text in self.payment_options:
+
+        self.payment_label = tk.Label(self.payment_frame, text="Simulate Payment:")
+        self.payment_label.pack(side=tk.LEFT, padx=5)
+
+        # Denominations for coins and bills up to $20
+        self.denominations = [0.05, 0.10, 0.25, 0.50, 1, 5, 10, 20]
+        for amount in self.denominations:
             btn = tk.Button(
                 self.payment_frame,
-                text=label_text,
+                text=f"${amount:.2f}",
                 command=lambda amt=amount: self.simulate_payment(amt),
             )
             btn.pack(side=tk.LEFT, padx=3)
 
         # Create a label for displaying FSM state and selected product on separate lines
-        self.state_label = tk.Label(
-            self.root, text="Current State: idle\nSelected Product: None", justify="left", font=("Helvetica", 12)
-        )
+        self.state_label = tk.Label(self.root, text="Current State: idle\nSelected Product: None", justify="left", font=("Helvetica", 12))
         self.state_label.pack(pady=10)
 
         # Create a Text widget for messages so that each message appears on its own line
@@ -106,7 +113,7 @@ class VendingMachineUI:
         self.vmc.select_product(index, self.root)
 
     def simulate_payment(self, amount):
-        # Simulate inserting a coin or bill by depositing funds into the escrow.
+        # Called when a coin or bill button is pressed; simulate depositing funds.
         self.vmc.deposit_funds(amount)
 
     def update_status(self, state, selected_product, credit_escrow):
