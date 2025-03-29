@@ -19,6 +19,14 @@ class VMC:
             self.config = json.load(f)
         self.products = self.config.get("products", [])
         self.owner_contact = self.config.get("owner_contact", {})
+        self.machine_id = self.config.get("machine_id", "")
+        self.location = self.config.get("location", {})
+        self.physical_details = self.config.get("physical_details", {})
+        self.operational_parameters = self.config.get("operational_parameters", {})
+        self.purchase_details = self.config.get("purchase_details", {})
+        self.ownership_details = self.config.get("ownership_details", {})
+        self.maintenance_details = self.config.get("maintenance_details", {})
+        self.inventory_details = self.config.get("inventory_details", {})
 
         # Initialize business data
         self.selected_product = None
