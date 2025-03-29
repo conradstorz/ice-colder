@@ -5,9 +5,115 @@
     { "name": "Candy", "price": 0.75, "track_inventory": false },
     { "name": "Water", "price": 1.00, "track_inventory": false }
   ],
-    "owner_contact": {
-      "email": "owner@example.com",
-      "sms": "+15555555555"
+  "owner_contact": {
+    "email": "owner@example.com",
+    "sms": "+15555555555"
+  },
+  "machine_id": "VM12345",
+  "location": {
+    "address": "123 Main Street, City, State, ZIP",
+    "type": "Office Building",
+    "placement_area": "Lobby",
+    "traffic_level": "High"
+  },
+  "physical_details": {
+    "dimensions": {
+      "height_in_inches": 72,
+      "width_in_inches": 39,
+      "depth_in_inches": 33
+    },
+    "weight_in_pounds": 760,
+    "capacity": {
+      "total_items": 360,
+      "unique_selections": 45
+    },
+    "type": "Combo Machine",
+    "features": [
+      "Refrigeration",
+      "Touchscreen Display",
+      "Cashless Payment System"
+    ],
+    "power_requirements": {
+      "voltage": 120,
+      "current_in_amps": 15,
+      "surge_protector_installed": true
+    },
+    "security_features": [
+      "Anti-theft Lock",
+      "Built-in Camera"
+    ]
+  },
+  "operational_parameters": {
+    "restocking_frequency_in_days": 7,
+    "maintenance_frequency_in_days": 30,
+    "payment_methods_supported": [
+      "Cash",
+      "Credit Card",
+      "Mobile Payment (e.g., Apple Pay, Google Pay)"
+    ],
+    "temperature_control_range_in_fahrenheit": {
+      "min_temp": 34,
+      "max_temp": 40
     }
+  },
+  "purchase_details": {
+    "purchase_date": "2025-01-15",
+    "supplier_name": "Royal Vendors Inc.",
+    "purchase_price_in_usd": 4500,
+    "warranty_period_in_years": 5,
+    "contract_details": {
+      "payment_schedule": ["2025-01-15", "2025-07-15"],
+      "return_policy_terms": ["30-day return window"]
+    }
+  },
+  "ownership_details": {
+    "owner_name": "John Doe Vending LLC",
+    "contact_info": {
+      "phone_number": "+1-555-123-4567",
+      "email_address": "support@johndoevending.com"
+    },
+    "revenue_tracking_enabled": true,
+    "revenue_data_last_updated_on": null
+  },
+  "maintenance_details": {
+    "last_cleaning_date": null,
+    "last_restocking_date": null,
+    "last_mechanical_inspection_date": null,
+    "maintenance_provider_name": null
+  },
+  "inventory_details": {
+    "products_available_count_by_type": {
+      "snacks_count": 150,
+      "drinks_count": 210
+    },
+    "top_selling_items_last_week_by_name_and_quantity_sold": [
+      {
+        "product_name": "Soda A",
+        "quantity_sold": 20
+      },
+      {
+        "product_name": "Chips A",
+        "quantity_sold": 15
+      },
+      {
+        "product_name": "Candy A",
+        "quantity_sold": 10
+      },
+      {
+        "product_name": "Water A",
+        "quantity_sold": 5
+      }
+    ],
+    "restock_alert_thresholds": {
+      "Soda": 5,
+      "Chips": 2,
+      "Candy": 0,
+      "Water": 0
+    },
+    "restock_alert_enabled": true,
+    "restock_alert_contact_method": [
+      "email",
+      "sms"
+    ]
   }
-  
+}
