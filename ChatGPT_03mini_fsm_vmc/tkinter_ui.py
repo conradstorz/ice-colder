@@ -10,10 +10,16 @@ class VendingMachineUI:
         self.vmc = VMC(config_file=config_file)
         # Set the VMC update callback to update the UI status label
         self.vmc.set_update_callback(self.update_status)
+        # Set the VMC message callback to update the message area
+        self.vmc.set_message_callback(self.update_message)
         self.create_widgets()
 
     def create_widgets(self):
-        # Create a frame to display configuration info
+        # Create a label at the top to display the "Money In" escrow balance
+        self.escrow_label = tk.Label(self.root, text="Money In: $0.00", font=("Helvetica", 14, "bold"))
+        self.escrow_label.pack(pady=5)
+
+        # Create a frame to display configuration info (products and owner contact)
         self.info_frame = tk.Frame(self.root)
         self.info_frame.pack(pady=10)
 
@@ -29,8 +35,12 @@ class VendingMachineUI:
 
         self.product_list = tk.Listbox(self.info_frame, width=50)
         for i, product in enumerate(products):
+            if product.get("track_inventory", False):
+                inventory_text = f"({product.get('inventory_count', 0)} available)"
+            else:
+                inventory_text = "(Unlimited)"
             self.product_list.insert(
-                tk.END, f"{i}: {product.get('name')} - ${product.get('price'):.2f}"
+                tk.END, f"{i}: {product.get('name')} - ${product.get('price'):.2f} {inventory_text}"
             )
         self.product_list.pack()
 
@@ -55,19 +65,68 @@ class VendingMachineUI:
             btn.pack(side=tk.LEFT, padx=5)
             self.buttons.append(btn)
 
-        # Label for FSM state
-        self.state_label = tk.Label(self.root, text="Current State: idle")
+        # Create a frame for payment simulation buttons
+        self.payment_frame = tk.Frame(self.root)
+        self.payment_frame.pack(pady=10)
+        payment_label = tk.Label(self.payment_frame, text="Insert Payment:")
+        payment_label.pack(side=tk.LEFT, padx=5)
+        # Define coins and bills for simulation
+        self.payment_options = [
+            (0.05, "$0.05"),
+            (0.10, "$0.10"),
+            (0.25, "$0.25"),
+            (0.50, "$0.50"),
+            (1.00, "$1"),
+            (5.00, "$5"),
+            (10.00, "$10"),
+            (20.00, "$20"),
+        ]
+        for amount, label_text in self.payment_options:
+            btn = tk.Button(
+                self.payment_frame,
+                text=label_text,
+                command=lambda amt=amount: self.simulate_payment(amt),
+            )
+            btn.pack(side=tk.LEFT, padx=3)
+
+        # Create a label for displaying FSM state and selected product on separate lines
+        self.state_label = tk.Label(
+            self.root, text="Current State: idle\nSelected Product: None", justify="left", font=("Helvetica", 12)
+        )
         self.state_label.pack(pady=10)
+
+        # Create a Text widget for messages so that each message appears on its own line
+        self.message_text = tk.Text(self.root, height=4, width=60, wrap="word")
+        self.message_text.pack(pady=10)
+        # Disable editing by the user
+        self.message_text.config(state="disabled")
 
     def product_pressed(self, index):
         # When a product button is pressed, call the VMC's select_product method.
         self.vmc.select_product(index, self.root)
 
-    def update_status(self, state, selected_product):
+    def simulate_payment(self, amount):
+        # Simulate inserting a coin or bill by depositing funds into the escrow.
+        self.vmc.deposit_funds(amount)
+
+    def update_status(self, state, selected_product, credit_escrow):
+        # Update the "Money In" label with the escrow balance
+        self.escrow_label.config(text=f"Money In: ${credit_escrow:.2f}")
+        # Update the state label with current FSM state and selected product (on separate lines)
         product_name = selected_product.get("name") if selected_product else "None"
         self.state_label.config(
-            text=f"Current State: {state}. Selected Product: {product_name}"
+            text=f"Current State: {state}\nSelected Product: {product_name}"
         )
+
+    def update_message(self, message):
+        # Enable the text widget to update its content
+        self.message_text.config(state="normal")
+        # Clear previous messages
+        self.message_text.delete("1.0", tk.END)
+        # Insert the new message (each new message on its own line if needed)
+        self.message_text.insert(tk.END, message)
+        # Disable editing again
+        self.message_text.config(state="disabled")
 
 
 if __name__ == "__main__":
@@ -75,3 +134,22 @@ if __name__ == "__main__":
     root.title("Vending Machine Controller")
     app = VendingMachineUI(root)
     root.mainloop()
+
+# This code is a simple GUI for a vending machine monitor using Tkinter.
+# It displays product information, owner contact details, and allows users to select products.
+# The GUI updates the current state of the vending machine and the selected product.
+# The VMC class handles the vending machine logic and state management.
+# The GUI is initialized with a configuration file that contains product and owner information.
+# The product buttons are dynamically created based on the configuration file.
+# The GUI also includes a label to display the current state of the vending machine and the selected product.
+# The update_status method updates the label with the current state and selected product information.
+# The product_pressed method is called when a product button is pressed, which triggers the VMC's select_product method.
+# The GUI is run in the main loop, allowing for user interaction.
+# The code is designed to be modular and can be easily extended or modified for additional functionality.
+# The use of JSON for configuration allows for easy updates to product information without modifying the code.
+# The GUI is responsive and provides feedback to the user based on the vending machine's state.
+# The code is structured to separate the GUI logic from the vending machine controller logic, promoting clean code practices.
+# The use of the loguru library for logging is a good practice for debugging and monitoring the application.
+# The code is well-organized and follows Python's PEP 8 style guide for readability.
+# Overall, this code provides a solid foundation for a vending machine monitor with a user-friendly interface.
+# It can be further enhanced with additional features such as error handling, user authentication, and more advanced state management.
