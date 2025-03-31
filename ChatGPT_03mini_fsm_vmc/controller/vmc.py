@@ -89,10 +89,10 @@ class VMC:
         self.message_callback = callback
 
     # --- Unified Message Routine ---
-    def send_customer_message(self, message, tk_root=None, duration=9000):
+    def send_customer_message(self, message, tk_root=None, duration=5000):
         """
         Send a message to the customer via the UI.
-        All messages should go through this method to allow for centralized control of timing.
+        All messages should go through this method for centralized timing.
         If tk_root is provided, the message will be cleared after 'duration' milliseconds.
         """
         self._display_message(message)
@@ -108,29 +108,38 @@ class VMC:
         if self.message_callback:
             self.message_callback(message)
 
-    # --- FSM Callback Methods with Enhanced Logging ---
+    # --- FSM Callback Methods with Enhanced Logging and Messaging ---
     def on_start_interaction(self):
         logger.info(f"{STATE_CHANGE_PREFIX} Transitioning from idle to interacting_with_user for product: {self.selected_product}")
         self._refresh_ui()
+        # Inform the customer that interaction has started
+        self.send_customer_message("Interaction started. Please insert funds or select a product.")
 
     def on_dispense_product(self):
         logger.info(f"{STATE_CHANGE_PREFIX} Transitioning from interacting_with_user to dispensing for product: {self.selected_product}")
         self._refresh_ui()
+        self.send_customer_message("Processing your payment and dispensing your product...")
 
     def on_complete_transaction(self):
         logger.info(f"{STATE_CHANGE_PREFIX} Completing transaction. Remaining escrow: ${self.credit_escrow:.2f}")
         self._refresh_ui()
+        # Inform the customer that the transaction is complete
+        if self.credit_escrow > 0:
+            self.send_customer_message("Transaction complete. You have remaining credit. Please select another product if desired.")
+        else:
+            self.send_customer_message("Transaction complete. Thank you for your purchase!")
 
     def on_reset(self):
         logger.info(f"{STATE_CHANGE_PREFIX} Resetting to idle state. Clearing selected product. Previous selection: {self.selected_product}")
         self.selected_product = None
         self.last_insufficient_message = ""
         self._refresh_ui()
-        # self.send_customer_message("", duration=0)  # No need to clear the display it happens automatically
+        # No need to clear the display message here; it is handled by send_customer_message
 
     def on_error(self):
         logger.error(f"{STATE_CHANGE_PREFIX} Error encountered for product: {self.selected_product}. Transitioning to error state.")
         self._refresh_ui()
+        self.send_customer_message("An error has occurred. Please contact support.")
 
     # --- Business Logic Methods ---
     def deposit_funds(self, amount, payment_method="Simulated Payment"):
@@ -139,6 +148,7 @@ class VMC:
         self.last_payment_method = payment_method
         logger.info(f"Deposited ${amount:.2f} via {payment_method}. New escrow: ${self.credit_escrow:.2f}")
         self._refresh_ui()
+        self.send_customer_message(f"${amount:.2f} deposited. Current balance: ${self.credit_escrow:.2f}.")
 
     def request_refund(self, tk_root=None):
         """Process a refund for any unused credit in the escrow."""
@@ -200,6 +210,7 @@ class VMC:
         price = self.selected_product.get("price", 0)
         if self.credit_escrow >= price:
             logger.info(f"{STATE_CHANGE_PREFIX} Escrow sufficient (${self.credit_escrow:.2f} >= ${price:.2f}). Processing payment.")
+            self.send_customer_message("Sufficient funds received. Processing your payment...", tk_root)
             self.credit_escrow -= price
             self.dispense_product()
             self._refresh_ui()
@@ -219,6 +230,7 @@ class VMC:
         if self.state != "dispensing":
             return
         logger.info(f"{STATE_CHANGE_PREFIX} Finished dispensing: {self.selected_product.get('name')}")
+        self.send_customer_message("Product dispensed. Enjoy your purchase!", tk_root)
         # If product inventory is tracked, decrement the count
         if self.selected_product.get("track_inventory", False):
             self.selected_product["inventory_count"] -= 1
