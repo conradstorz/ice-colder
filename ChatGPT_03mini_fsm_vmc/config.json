@@ -75,6 +75,13 @@
     "revenue_tracking_enabled": true,
     "revenue_data_last_updated_on": null
   },
+  "repair_service_details": {
+    "name": "Foo Bar Baz LLC",
+    "contact_info": {
+      "phone_number": "+1-555-123-8978",
+      "email_address": "support@ifixu.com"
+    }
+  },
   "maintenance_details": {
     "last_cleaning_date": null,
     "last_restocking_date": null,
