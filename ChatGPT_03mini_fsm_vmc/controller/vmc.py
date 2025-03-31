@@ -14,11 +14,11 @@ class VMC:
     states = ["idle", "interacting_with_user", "dispensing", "error"]
 
     def __init__(self, config_file="config.json"):
-        logger.debug("Initializing VMC with configuration file: %s", config_file)
+        logger.debug(f"Initializing VMC with configuration file: {config_file}")
         # Load configuration
         with open(config_file, "r") as f:
             self.config = json.load(f)
-        logger.debug("Configuration loaded: %s", self.config)
+        logger.debug(f"Configuration loaded: {self.config}")
         self.products = self.config.get("products", [])
         self.owner_contact = self.config.get("owner_contact", {})
 
@@ -27,7 +27,7 @@ class VMC:
         self.credit_escrow = 0.0
         self.last_insufficient_message = ""
         self.last_payment_method = "Simulated Payment"  # Default payment method
-        logger.debug("Initial business data set: selected_product=%s, credit_escrow=%.2f", self.selected_product, self.credit_escrow)
+        logger.debug(f"Initial business data: selected_product={self.selected_product}, credit_escrow={self.credit_escrow:.2f}")
 
         # Callbacks for UI updates
         self.update_callback = None  # Expected signature: (state, selected_product, credit_escrow)
@@ -76,7 +76,7 @@ class VMC:
         logger.debug("FSM transitions set up successfully.")
 
         # Initialize hardware and services
-        self.coin_handler = CoinHandler()         # Placeholder for future expansion
+        self.coin_handler = CoinHandler()  # Placeholder for future expansion
         self.payment_service = PaymentService()
         self.mdb_interface = MDBInterface()
         logger.debug("Hardware and services initialized.")
@@ -84,7 +84,7 @@ class VMC:
     # --- Condition Methods ---
     def has_credit(self):
         """Return True if there is remaining credit in the escrow."""
-        logger.debug("Checking credit: %.2f", self.credit_escrow)
+        logger.debug(f"Checking credit: {self.credit_escrow:.2f}")
         return self.credit_escrow > 0
 
     # --- Callback Setters ---
@@ -102,7 +102,7 @@ class VMC:
         Send a message to the customer via the UI.
         All messages go through this method to allow centralized control.
         """
-        logger.debug("Sending customer message: '%s'", message)
+        logger.debug(f"Sending customer message: '{message}'")
         self._display_message(message)
         if tk_root is not None:
             tk_root.after(duration, lambda: self._display_message(""))
@@ -110,13 +110,12 @@ class VMC:
     # --- UI Helper Methods ---
     def _refresh_ui(self):
         if self.update_callback:
-            logger.debug("Refreshing UI with state=%s, selected_product=%s, credit_escrow=%.2f",
-                         self.state, self.selected_product, self.credit_escrow)
+            logger.debug(f"Refreshing UI with state={self.state}, selected_product={self.selected_product}, credit_escrow={self.credit_escrow:.2f}")
             self.update_callback(self.state, self.selected_product, self.credit_escrow)
 
     def _display_message(self, message):
         if self.message_callback:
-            logger.debug("Displaying message: '%s'", message)
+            logger.debug(f"Displaying message: '{message}'")
             self.message_callback(message)
 
     # --- FSM Callback Methods with Enhanced Logging and Messaging ---
@@ -143,7 +142,7 @@ class VMC:
         self.selected_product = None
         self.last_insufficient_message = ""
         self._refresh_ui()
-        # No explicit call to clear message; handled by send_customer_message timing
+        # No explicit clearing of message; handled by send_customer_message timing
 
     def on_error(self):
         logger.error(f"{STATE_CHANGE_PREFIX} Error encountered for product: {self.selected_product}. Transitioning to error state.")
@@ -152,8 +151,7 @@ class VMC:
 
     # --- Business Logic Methods ---
     def deposit_funds(self, amount, payment_method="Simulated Payment"):
-        """Deposit funds into the escrow and record the payment method."""
-        logger.debug("Depositing funds: amount=%.2f, method=%s", amount, payment_method)
+        logger.debug(f"Depositing funds: amount={amount:.2f}, method={payment_method}")
         self.credit_escrow += amount
         self.last_payment_method = payment_method
         logger.info(f"Deposited ${amount:.2f} via {payment_method}. New escrow: ${self.credit_escrow:.2f}")
@@ -161,8 +159,7 @@ class VMC:
         self.send_customer_message(f"${amount:.2f} deposited. Current balance: ${self.credit_escrow:.2f}.")
 
     def request_refund(self, tk_root=None):
-        """Process a refund for any unused credit in the escrow."""
-        logger.debug("Requesting refund with current credit: %.2f", self.credit_escrow)
+        logger.debug(f"Requesting refund with current credit: {self.credit_escrow:.2f}")
         if self.credit_escrow > 0:
             refund_amount = self.credit_escrow
             self.credit_escrow = 0.0
@@ -173,11 +170,7 @@ class VMC:
             self.send_customer_message("No funds to refund.", tk_root)
 
     def select_product(self, product_index, tk_root):
-        """
-        Called by the UI when a product button is pressed.
-        Works in both 'idle' and 'interacting_with_user' states.
-        """
-        logger.debug("Selecting product with index: %d", product_index)
+        logger.debug(f"Selecting product with index: {product_index}")
         if self.state not in ["idle", "interacting_with_user"]:
             logger.warning("Cannot change selection; machine not ready.")
             return
@@ -188,7 +181,6 @@ class VMC:
         self.selected_product = self.products[product_index]
         logger.info(f"Selected product: {self.selected_product.get('name')} at ${self.selected_product.get('price'):.2f}")
 
-        # Check if the product is tracked and sold out
         if self.selected_product.get("track_inventory", False):
             if self.selected_product.get("inventory_count", 0) <= 0:
                 logger.error(f"{self.selected_product.get('name')} is sold out.")
@@ -204,20 +196,18 @@ class VMC:
         self._refresh_ui()
 
     def _update_selection_message(self, tk_root):
-        """Update message when product selection changes in interacting_with_user state."""
         price = self.selected_product.get("price", 0)
         if self.credit_escrow < price:
             required = price - self.credit_escrow
             message = f"Changed selection to {self.selected_product.get('name')}. Insert additional ${required:.2f}."
         else:
             message = f"Changed selection to {self.selected_product.get('name')}. Sufficient funds available."
-        logger.debug("Updated selection message: %s", message)
+        logger.debug(f"Updated selection message: {message}")
         self.send_customer_message(message, tk_root)
         self.last_insufficient_message = message
 
     def _process_payment(self, tk_root):
-        """Process payment by checking funds and scheduling next steps."""
-        logger.debug("Processing payment for product: %s", self.selected_product)
+        logger.debug(f"Processing payment for product: {self.selected_product}")
         if self.state != "interacting_with_user":
             logger.debug("State is not interacting_with_user; aborting payment process.")
             return
@@ -227,7 +217,7 @@ class VMC:
             logger.info(f"{STATE_CHANGE_PREFIX} Escrow sufficient (${self.credit_escrow:.2f} >= ${price:.2f}). Processing payment.")
             self.send_customer_message("Sufficient funds received. Processing your payment...", tk_root)
             self.credit_escrow -= price
-            logger.debug("Deducted price from escrow. New escrow: %.2f", self.credit_escrow)
+            logger.debug(f"Deducted price from escrow. New escrow: {self.credit_escrow:.2f}")
             self.dispense_product()
             self._refresh_ui()
             tk_root.after(1000, lambda: self._finish_dispensing(tk_root))
@@ -242,26 +232,21 @@ class VMC:
             tk_root.after(5000, lambda: self._process_payment(tk_root))
 
     def _finish_dispensing(self, tk_root):
-        """Finalize dispensing and transition state based on remaining credit."""
-        logger.debug("Finishing dispensing process for product: %s", self.selected_product)
+        logger.debug(f"Finishing dispensing process for product: {self.selected_product}")
         if self.state != "dispensing":
             logger.debug("State is not dispensing; cannot finish dispensing.")
             return
         logger.info(f"{STATE_CHANGE_PREFIX} Finished dispensing: {self.selected_product.get('name')}")
         self.send_customer_message("Product dispensed. Enjoy your purchase!", tk_root)
-        # If product inventory is tracked, decrement the count
         if self.selected_product.get("track_inventory", False):
             self.selected_product["inventory_count"] -= 1
             logger.info(f"Inventory for {self.selected_product.get('name')} updated: {self.selected_product['inventory_count']} remaining.")
-        # Complete the transaction: if unused credit remains, transition to interacting_with_user; otherwise, reset to idle.
         self.complete_transaction()
         self._refresh_ui()
 
     async def start_mdb_monitoring(self):
-        """Start asynchronous monitoring of the MDB bus."""
         logger.debug("Starting MDB monitoring.")
         await self.mdb_interface.read_messages(self.handle_mdb_message)
 
     def handle_mdb_message(self, message):
-        """Stub: Handle incoming MDB messages."""
         logger.info(f"Received MDB message: {message}")
