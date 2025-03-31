@@ -34,7 +34,7 @@ class VMC:
         self.message_callback = None  # Expected signature: (message)
 
         # Setup FSM transitions using transitions library
-        self.machine = Machine(model=self, states=VMC.states, initial="idle")
+        self.machine = Machine(model=self, states=VMC.states, initial=VMC.states[0])
         self.machine.add_transition(
             trigger="start_interaction",
             source="idle",
