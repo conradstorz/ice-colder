@@ -14,9 +14,11 @@ class VMC:
     states = ["idle", "interacting_with_user", "dispensing", "error"]
 
     def __init__(self, config_file="config.json"):
+        logger.debug("Initializing VMC with configuration file: %s", config_file)
         # Load configuration
         with open(config_file, "r") as f:
             self.config = json.load(f)
+        logger.debug("Configuration loaded: %s", self.config)
         self.products = self.config.get("products", [])
         self.owner_contact = self.config.get("owner_contact", {})
 
@@ -25,6 +27,7 @@ class VMC:
         self.credit_escrow = 0.0
         self.last_insufficient_message = ""
         self.last_payment_method = "Simulated Payment"  # Default payment method
+        logger.debug("Initial business data set: selected_product=%s, credit_escrow=%.2f", self.selected_product, self.credit_escrow)
 
         # Callbacks for UI updates
         self.update_callback = None  # Expected signature: (state, selected_product, credit_escrow)
@@ -70,31 +73,36 @@ class VMC:
             dest="idle",
             before="on_reset",
         )
+        logger.debug("FSM transitions set up successfully.")
 
         # Initialize hardware and services
         self.coin_handler = CoinHandler()         # Placeholder for future expansion
         self.payment_service = PaymentService()
         self.mdb_interface = MDBInterface()
+        logger.debug("Hardware and services initialized.")
 
     # --- Condition Methods ---
     def has_credit(self):
         """Return True if there is remaining credit in the escrow."""
+        logger.debug("Checking credit: %.2f", self.credit_escrow)
         return self.credit_escrow > 0
 
     # --- Callback Setters ---
     def set_update_callback(self, callback):
         self.update_callback = callback
+        logger.debug("Update callback set.")
 
     def set_message_callback(self, callback):
         self.message_callback = callback
+        logger.debug("Message callback set.")
 
     # --- Unified Message Routine ---
     def send_customer_message(self, message, tk_root=None, duration=5000):
         """
         Send a message to the customer via the UI.
-        All messages should go through this method for centralized timing.
-        If tk_root is provided, the message will be cleared after 'duration' milliseconds.
+        All messages go through this method to allow centralized control.
         """
+        logger.debug("Sending customer message: '%s'", message)
         self._display_message(message)
         if tk_root is not None:
             tk_root.after(duration, lambda: self._display_message(""))
@@ -102,17 +110,19 @@ class VMC:
     # --- UI Helper Methods ---
     def _refresh_ui(self):
         if self.update_callback:
+            logger.debug("Refreshing UI with state=%s, selected_product=%s, credit_escrow=%.2f",
+                         self.state, self.selected_product, self.credit_escrow)
             self.update_callback(self.state, self.selected_product, self.credit_escrow)
 
     def _display_message(self, message):
         if self.message_callback:
+            logger.debug("Displaying message: '%s'", message)
             self.message_callback(message)
 
     # --- FSM Callback Methods with Enhanced Logging and Messaging ---
     def on_start_interaction(self):
         logger.info(f"{STATE_CHANGE_PREFIX} Transitioning from idle to interacting_with_user for product: {self.selected_product}")
         self._refresh_ui()
-        # Inform the customer that interaction has started
         self.send_customer_message("Interaction started. Please insert funds or select a product.")
 
     def on_dispense_product(self):
@@ -123,7 +133,6 @@ class VMC:
     def on_complete_transaction(self):
         logger.info(f"{STATE_CHANGE_PREFIX} Completing transaction. Remaining escrow: ${self.credit_escrow:.2f}")
         self._refresh_ui()
-        # Inform the customer that the transaction is complete
         if self.credit_escrow > 0:
             self.send_customer_message("Transaction complete. You have remaining credit. Please select another product if desired.")
         else:
@@ -134,7 +143,7 @@ class VMC:
         self.selected_product = None
         self.last_insufficient_message = ""
         self._refresh_ui()
-        # No need to clear the display message here; it is handled by send_customer_message
+        # No explicit call to clear message; handled by send_customer_message timing
 
     def on_error(self):
         logger.error(f"{STATE_CHANGE_PREFIX} Error encountered for product: {self.selected_product}. Transitioning to error state.")
@@ -144,6 +153,7 @@ class VMC:
     # --- Business Logic Methods ---
     def deposit_funds(self, amount, payment_method="Simulated Payment"):
         """Deposit funds into the escrow and record the payment method."""
+        logger.debug("Depositing funds: amount=%.2f, method=%s", amount, payment_method)
         self.credit_escrow += amount
         self.last_payment_method = payment_method
         logger.info(f"Deposited ${amount:.2f} via {payment_method}. New escrow: ${self.credit_escrow:.2f}")
@@ -152,6 +162,7 @@ class VMC:
 
     def request_refund(self, tk_root=None):
         """Process a refund for any unused credit in the escrow."""
+        logger.debug("Requesting refund with current credit: %.2f", self.credit_escrow)
         if self.credit_escrow > 0:
             refund_amount = self.credit_escrow
             self.credit_escrow = 0.0
@@ -166,6 +177,7 @@ class VMC:
         Called by the UI when a product button is pressed.
         Works in both 'idle' and 'interacting_with_user' states.
         """
+        logger.debug("Selecting product with index: %d", product_index)
         if self.state not in ["idle", "interacting_with_user"]:
             logger.warning("Cannot change selection; machine not ready.")
             return
@@ -199,12 +211,15 @@ class VMC:
             message = f"Changed selection to {self.selected_product.get('name')}. Insert additional ${required:.2f}."
         else:
             message = f"Changed selection to {self.selected_product.get('name')}. Sufficient funds available."
+        logger.debug("Updated selection message: %s", message)
         self.send_customer_message(message, tk_root)
         self.last_insufficient_message = message
 
     def _process_payment(self, tk_root):
         """Process payment by checking funds and scheduling next steps."""
+        logger.debug("Processing payment for product: %s", self.selected_product)
         if self.state != "interacting_with_user":
+            logger.debug("State is not interacting_with_user; aborting payment process.")
             return
 
         price = self.selected_product.get("price", 0)
@@ -212,6 +227,7 @@ class VMC:
             logger.info(f"{STATE_CHANGE_PREFIX} Escrow sufficient (${self.credit_escrow:.2f} >= ${price:.2f}). Processing payment.")
             self.send_customer_message("Sufficient funds received. Processing your payment...", tk_root)
             self.credit_escrow -= price
+            logger.debug("Deducted price from escrow. New escrow: %.2f", self.credit_escrow)
             self.dispense_product()
             self._refresh_ui()
             tk_root.after(1000, lambda: self._finish_dispensing(tk_root))
@@ -227,7 +243,9 @@ class VMC:
 
     def _finish_dispensing(self, tk_root):
         """Finalize dispensing and transition state based on remaining credit."""
+        logger.debug("Finishing dispensing process for product: %s", self.selected_product)
         if self.state != "dispensing":
+            logger.debug("State is not dispensing; cannot finish dispensing.")
             return
         logger.info(f"{STATE_CHANGE_PREFIX} Finished dispensing: {self.selected_product.get('name')}")
         self.send_customer_message("Product dispensed. Enjoy your purchase!", tk_root)
@@ -241,6 +259,7 @@ class VMC:
 
     async def start_mdb_monitoring(self):
         """Start asynchronous monitoring of the MDB bus."""
+        logger.debug("Starting MDB monitoring.")
         await self.mdb_interface.read_messages(self.handle_mdb_message)
 
     def handle_mdb_message(self, message):
