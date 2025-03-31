@@ -1,8 +1,7 @@
 # tkinter_ui.py
 import tkinter as tk
 import json
-from controller.vmc import VMC
-
+from controller.vmc import VMC  # Import the VMC class from the controller module
 
 class VendingMachineUI:
     def __init__(self, root, config_file="config.json"):
