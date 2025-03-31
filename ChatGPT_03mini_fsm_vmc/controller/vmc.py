@@ -88,6 +88,17 @@ class VMC:
     def set_message_callback(self, callback):
         self.message_callback = callback
 
+    # --- Unified Message Routine ---
+    def send_customer_message(self, message, tk_root=None, duration=9000):
+        """
+        Send a message to the customer via the UI.
+        All messages should go through this method to allow for centralized control of timing.
+        If tk_root is provided, the message will be cleared after 'duration' milliseconds.
+        """
+        self._display_message(message)
+        if tk_root is not None:
+            tk_root.after(duration, lambda: self._display_message(""))
+
     # --- UI Helper Methods ---
     def _refresh_ui(self):
         if self.update_callback:
@@ -115,7 +126,7 @@ class VMC:
         self.selected_product = None
         self.last_insufficient_message = ""
         self._refresh_ui()
-        self._display_message("")
+        # self.send_customer_message("", duration=0)  # No need to clear the display it happens automatically
 
     def on_error(self):
         logger.error(f"{STATE_CHANGE_PREFIX} Error encountered for product: {self.selected_product}. Transitioning to error state.")
@@ -129,16 +140,16 @@ class VMC:
         logger.info(f"Deposited ${amount:.2f} via {payment_method}. New escrow: ${self.credit_escrow:.2f}")
         self._refresh_ui()
 
-    def request_refund(self):
+    def request_refund(self, tk_root=None):
         """Process a refund for any unused credit in the escrow."""
         if self.credit_escrow > 0:
             refund_amount = self.credit_escrow
             self.credit_escrow = 0.0
             logger.info(f"Refund of ${refund_amount:.2f} issued via {self.last_payment_method}.")
-            self._display_message(f"Refund of ${refund_amount:.2f} issued via {self.last_payment_method}.")
+            self.send_customer_message(f"Refund of ${refund_amount:.2f} issued via {self.last_payment_method}.", tk_root)
             self._refresh_ui()
         else:
-            self._display_message("No funds to refund.")
+            self.send_customer_message("No funds to refund.", tk_root)
 
     def select_product(self, product_index, tk_root):
         """
@@ -159,20 +170,18 @@ class VMC:
         if self.selected_product.get("track_inventory", False):
             if self.selected_product.get("inventory_count", 0) <= 0:
                 logger.error(f"{self.selected_product.get('name')} is sold out.")
-                self._display_message(f"{self.selected_product.get('name')} is sold out. Please select another product.")
+                self.send_customer_message(f"{self.selected_product.get('name')} is sold out. Please select another product.", tk_root)
                 return
 
-        # If machine is idle, transition to interacting_with_user and schedule payment processing
         if self.state == "idle":
             self.start_interaction()
             tk_root.after(1000, lambda: self._process_payment(tk_root))
-        # If already in interacting_with_user, update selection message and schedule processing
         elif self.state == "interacting_with_user":
-            self._update_selection_message()
+            self._update_selection_message(tk_root)
             tk_root.after(1000, lambda: self._process_payment(tk_root))
         self._refresh_ui()
 
-    def _update_selection_message(self):
+    def _update_selection_message(self, tk_root):
         """Update message when product selection changes in interacting_with_user state."""
         price = self.selected_product.get("price", 0)
         if self.credit_escrow < price:
@@ -180,7 +189,7 @@ class VMC:
             message = f"Changed selection to {self.selected_product.get('name')}. Insert additional ${required:.2f}."
         else:
             message = f"Changed selection to {self.selected_product.get('name')}. Sufficient funds available."
-        self._display_message(message)
+        self.send_customer_message(message, tk_root)
         self.last_insufficient_message = message
 
     def _process_payment(self, tk_root):
@@ -201,7 +210,7 @@ class VMC:
             message = f"Insufficient funds. Please insert an additional ${required:.2f}."
             if message != self.last_insufficient_message:
                 logger.error(message)
-                self._display_message(message)
+                self.send_customer_message(message, tk_root)
                 self.last_insufficient_message = message
             tk_root.after(5000, lambda: self._process_payment(tk_root))
 
