@@ -1,6 +1,7 @@
 # tkinter_ui.py
 import tkinter as tk
 import json
+from tkinter import ttk  # Import ttk for Notebook widget
 from controller.vmc import VMC  # Import the VMC class from the controller module
 
 class VendingMachineUI:
@@ -14,7 +15,7 @@ class VendingMachineUI:
         self.create_widgets(config_file)
 
     def create_widgets(self, config_file):
-        # Load configuration to retrieve machine and owner info, and product details
+        # Load configuration to retrieve machine, owner, repair service, and product details
         with open(config_file, "r") as f:
             config = json.load(f)
         products = config.get("products", [])
@@ -35,9 +36,26 @@ class VendingMachineUI:
             f"Type: {location.get('type', 'Unknown')}, Area: {location.get('placement_area', 'Unknown')}\n"
             f"Traffic Level: {location.get('traffic_level', 'Unknown')}"
         )
+        # Get repair service details from config
+        repair_details = config.get("repair_service_details", {})
+        repair_info = (
+            f"Repair Service: {repair_details.get('name', 'N/A')}\n"
+            f"Phone: {repair_details.get('contact_info', {}).get('phone_number', 'N/A')}\n"
+            f"Email: {repair_details.get('contact_info', {}).get('email_address', 'N/A')}"
+        )
 
-        # Create a top-level frame for machine info and owner info, placed side by side
-        self.top_info_frame = tk.Frame(self.root)
+        # Create a Notebook widget for tabs
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(expand=True, fill='both')
+
+        # ---------------------------
+        # Tab 1: Info Tab (Machine & Owner Info)
+        # ---------------------------
+        self.info_tab = tk.Frame(self.notebook)
+        self.notebook.add(self.info_tab, text="Info")
+
+        # Create a top-level frame for machine info and owner info, placed side by side in the Info tab
+        self.top_info_frame = tk.Frame(self.info_tab)
         self.top_info_frame.pack(pady=5)
 
         # Create a frame for Machine Information on the left
@@ -54,19 +72,18 @@ class VendingMachineUI:
         self.owner_info_label = tk.Label(self.owner_info_frame, text=owner_info, font=("Helvetica", 10))
         self.owner_info_label.pack()
 
-        # Create a label at the top to display the "Money In" escrow balance
-        self.escrow_label = tk.Label(self.root, text="Money In: $0.00", font=("Helvetica", 14, "bold"))
-        self.escrow_label.pack(pady=5)
+        # ---------------------------
+        # Tab 2: Products Tab (Product List & Details)
+        # ---------------------------
+        self.products_tab = tk.Frame(self.notebook)
+        self.notebook.add(self.products_tab, text="Products")
 
-        # Create a frame to display configuration info (products and owner contact details)
-        self.info_frame = tk.Frame(self.root)
-        self.info_frame.pack(pady=10)
-
-        # Display products info
-        self.products_label = tk.Label(self.info_frame, text="Products:")
+        # Create a frame to display product info
+        self.prod_info_frame = tk.Frame(self.products_tab)
+        self.prod_info_frame.pack(pady=10)
+        self.products_label = tk.Label(self.prod_info_frame, text="Products:")
         self.products_label.pack()
-
-        self.product_list = tk.Listbox(self.info_frame, width=50)
+        self.product_list = tk.Listbox(self.prod_info_frame, width=50)
         for i, product in enumerate(products):
             if product.get("track_inventory", False):
                 inventory_text = f"({product.get('inventory_count', 0)} available)"
@@ -78,10 +95,19 @@ class VendingMachineUI:
             )
         self.product_list.pack()
 
-        # Create a frame for product buttons
-        self.button_frame = tk.Frame(self.root)
-        self.button_frame.pack(pady=10)
+        # ---------------------------
+        # Tab 3: Control Tab (Payment Simulation, Refund, FSM State, Messages)
+        # ---------------------------
+        self.control_tab = tk.Frame(self.notebook)
+        self.notebook.add(self.control_tab, text="Control")
 
+        # Create a label at the top to display the "Money In" escrow balance
+        self.escrow_label = tk.Label(self.control_tab, text="Money In: $0.00", font=("Helvetica", 14, "bold"))
+        self.escrow_label.pack(pady=5)
+
+        # Create a frame for product buttons (for selecting products)
+        self.button_frame = tk.Frame(self.control_tab)
+        self.button_frame.pack(pady=10)
         self.buttons = []
         for i, product in enumerate(products):
             btn = tk.Button(
@@ -93,12 +119,10 @@ class VendingMachineUI:
             self.buttons.append(btn)
 
         # Create a frame for simulating payment (coins and paper bills) and refund button
-        self.payment_frame = tk.Frame(self.root)
+        self.payment_frame = tk.Frame(self.control_tab)
         self.payment_frame.pack(pady=10)
-
         self.payment_label = tk.Label(self.payment_frame, text="Simulate Payment:")
         self.payment_label.pack(side=tk.LEFT, padx=5)
-
         # Denominations for coins and bills up to $20
         self.denominations = [0.05, 0.10, 0.25, 0.50, 1, 5, 10, 20]
         for amount in self.denominations:
@@ -108,20 +132,27 @@ class VendingMachineUI:
                 command=lambda amt=amount: self.simulate_payment(amt),
             )
             btn.pack(side=tk.LEFT, padx=3)
-
         # Add a new button for requesting a refund of unused credit
         self.refund_button = tk.Button(self.payment_frame, text="Request Refund", command=self.request_refund)
         self.refund_button.pack(side=tk.LEFT, padx=5)
 
         # Create a label for displaying FSM state and selected product on separate lines
-        self.state_label = tk.Label(self.root, text="Current State: idle\nSelected Product: None", justify="left", font=("Helvetica", 12))
+        self.state_label = tk.Label(self.control_tab, text="Current State: idle\nSelected Product: None", justify="left", font=("Helvetica", 12))
         self.state_label.pack(pady=10)
 
         # Create a Text widget for messages so that each message appears on its own line
-        self.message_text = tk.Text(self.root, height=4, width=60, wrap="word")
+        self.message_text = tk.Text(self.control_tab, height=4, width=60, wrap="word")
         self.message_text.pack(pady=10)
         # Disable editing by the user
         self.message_text.config(state="disabled")
+
+        # ---------------------------
+        # Tab 4: Repair Tab (Repair Service Info)
+        # ---------------------------
+        self.repair_tab = tk.Frame(self.notebook)
+        self.notebook.add(self.repair_tab, text="Repair Service")
+        self.repair_info_label = tk.Label(self.repair_tab, text=repair_info, font=("Helvetica", 10))
+        self.repair_info_label.pack(padx=10, pady=10)
 
     def product_pressed(self, index):
         # When a product button is pressed, call the VMC's select_product method.
