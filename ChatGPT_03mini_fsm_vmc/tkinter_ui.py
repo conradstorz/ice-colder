@@ -81,7 +81,7 @@ class VendingMachineUI:
             btn.pack(side=tk.LEFT, padx=5)
             self.buttons.append(btn)
 
-        # Create a frame for simulating payment (coins and paper bills)
+        # Create a frame for simulating payment (coins and paper bills) and refund button
         self.payment_frame = tk.Frame(self.root)
         self.payment_frame.pack(pady=10)
 
@@ -97,6 +97,10 @@ class VendingMachineUI:
                 command=lambda amt=amount: self.simulate_payment(amt),
             )
             btn.pack(side=tk.LEFT, padx=3)
+
+        # Add a new button for requesting a refund of unused credit
+        self.refund_button = tk.Button(self.payment_frame, text="Request Refund", command=self.request_refund)
+        self.refund_button.pack(side=tk.LEFT, padx=5)
 
         # Create a label for displaying FSM state and selected product on separate lines
         self.state_label = tk.Label(self.root, text="Current State: idle\nSelected Product: None", justify="left", font=("Helvetica", 12))
@@ -114,7 +118,12 @@ class VendingMachineUI:
 
     def simulate_payment(self, amount):
         # Called when a coin or bill button is pressed; simulate depositing funds.
-        self.vmc.deposit_funds(amount)
+        # Here we assume the payment method is "Simulated Payment"
+        self.vmc.deposit_funds(amount, "Simulated Payment")
+
+    def request_refund(self):
+        # Called when the "Request Refund" button is pressed.
+        self.vmc.request_refund()
 
     def update_status(self, state, selected_product, credit_escrow):
         # Update the "Money In" label with the escrow balance

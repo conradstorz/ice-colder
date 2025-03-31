@@ -19,19 +19,12 @@ class VMC:
             self.config = json.load(f)
         self.products = self.config.get("products", [])
         self.owner_contact = self.config.get("owner_contact", {})
-        self.machine_id = self.config.get("machine_id", "")
-        self.location = self.config.get("location", {})
-        self.physical_details = self.config.get("physical_details", {})
-        self.operational_parameters = self.config.get("operational_parameters", {})
-        self.purchase_details = self.config.get("purchase_details", {})
-        self.ownership_details = self.config.get("ownership_details", {})
-        self.maintenance_details = self.config.get("maintenance_details", {})
-        self.inventory_details = self.config.get("inventory_details", {})
 
         # Initialize business data
         self.selected_product = None
         self.credit_escrow = 0.0
         self.last_insufficient_message = ""
+        self.last_payment_method = "Simulated Payment"  # Default payment method
 
         # Callbacks for UI updates
         self.update_callback = None  # Expected signature: (state, selected_product, credit_escrow)
@@ -129,11 +122,23 @@ class VMC:
         self._refresh_ui()
 
     # --- Business Logic Methods ---
-    def deposit_funds(self, amount):
-        """Deposit funds into the escrow."""
+    def deposit_funds(self, amount, payment_method="Simulated Payment"):
+        """Deposit funds into the escrow and record the payment method."""
         self.credit_escrow += amount
-        logger.info(f"Deposited ${amount:.2f}. New escrow: ${self.credit_escrow:.2f}")
+        self.last_payment_method = payment_method
+        logger.info(f"Deposited ${amount:.2f} via {payment_method}. New escrow: ${self.credit_escrow:.2f}")
         self._refresh_ui()
+
+    def request_refund(self):
+        """Process a refund for any unused credit in the escrow."""
+        if self.credit_escrow > 0:
+            refund_amount = self.credit_escrow
+            self.credit_escrow = 0.0
+            logger.info(f"Refund of ${refund_amount:.2f} issued via {self.last_payment_method}.")
+            self._display_message(f"Refund of ${refund_amount:.2f} issued via {self.last_payment_method}.")
+            self._refresh_ui()
+        else:
+            self._display_message("No funds to refund.")
 
     def select_product(self, product_index, tk_root):
         """
