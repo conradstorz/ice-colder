@@ -15,11 +15,20 @@ class VendingMachineUI:
         self.create_widgets(config_file)
 
     def create_widgets(self, config_file):
-        # Load configuration to retrieve machine info and product details
+        # Load configuration to retrieve machine and owner info, and product details
         with open(config_file, "r") as f:
             config = json.load(f)
         products = config.get("products", [])
-        owner_contact = config.get("owner_contact", {})
+        # Get owner info from ownership_details if available, otherwise use owner_contact
+        ownership_details = config.get("ownership_details", {})
+        if ownership_details:
+            owner_info = (f"Owner: {ownership_details.get('owner_name', 'N/A')}\n"
+                          f"Phone: {ownership_details.get('contact_info', {}).get('phone_number', 'N/A')}\n"
+                          f"Email: {ownership_details.get('contact_info', {}).get('email_address', 'N/A')}")
+        else:
+            owner_contact = config.get("owner_contact", {})
+            owner_info = (f"Owner Email: {owner_contact.get('email', 'N/A')}\n"
+                          f"Owner SMS: {owner_contact.get('sms', 'N/A')}")
         machine_id = config.get("machine_id", "N/A")
         location = config.get("location", {})
         location_str = (
@@ -28,19 +37,29 @@ class VendingMachineUI:
             f"Traffic Level: {location.get('traffic_level', 'Unknown')}"
         )
 
-        # Create a frame for Machine Information at the very top
-        self.machine_info_frame = tk.Frame(self.root)
-        self.machine_info_frame.pack(pady=5)
+        # Create a top-level frame for machine info and owner info, placed side by side
+        self.top_info_frame = tk.Frame(self.root)
+        self.top_info_frame.pack(pady=5)
+
+        # Create a frame for Machine Information on the left
+        self.machine_info_frame = tk.Frame(self.top_info_frame)
+        self.machine_info_frame.pack(side=tk.LEFT, padx=10)
         self.machine_id_label = tk.Label(self.machine_info_frame, text=f"Machine ID: {machine_id}", font=("Helvetica", 12, "bold"))
         self.machine_id_label.pack()
         self.location_label = tk.Label(self.machine_info_frame, text=f"Location:\n{location_str}", font=("Helvetica", 10))
         self.location_label.pack()
 
+        # Create a frame for Owner Information on the right
+        self.owner_info_frame = tk.Frame(self.top_info_frame)
+        self.owner_info_frame.pack(side=tk.LEFT, padx=10)
+        self.owner_info_label = tk.Label(self.owner_info_frame, text=owner_info, font=("Helvetica", 10))
+        self.owner_info_label.pack()
+
         # Create a label at the top to display the "Money In" escrow balance
         self.escrow_label = tk.Label(self.root, text="Money In: $0.00", font=("Helvetica", 14, "bold"))
         self.escrow_label.pack(pady=5)
 
-        # Create a frame to display configuration info (products and owner contact)
+        # Create a frame to display configuration info (products and owner contact details)
         self.info_frame = tk.Frame(self.root)
         self.info_frame.pack(pady=10)
 
@@ -60,10 +79,10 @@ class VendingMachineUI:
             )
         self.product_list.pack()
 
-        # Display owner contact info
+        # Display owner contact info (redundant info, but preserved as per original design)
         self.owner_label = tk.Label(
             self.info_frame,
-            text=f"Owner Contact: Email: {owner_contact.get('email', '')}, SMS: {owner_contact.get('sms', '')}",
+            text=f"Owner Contact: Email: {config.get('owner_contact', {}).get('email', 'N/A')}, SMS: {config.get('owner_contact', {}).get('sms', 'N/A')}",
         )
         self.owner_label.pack()
 
@@ -118,12 +137,11 @@ class VendingMachineUI:
 
     def simulate_payment(self, amount):
         # Called when a coin or bill button is pressed; simulate depositing funds.
-        # Here we assume the payment method is "Simulated Payment"
         self.vmc.deposit_funds(amount, "Simulated Payment")
 
     def request_refund(self):
         # Called when the "Request Refund" button is pressed.
-        self.vmc.request_refund()
+        self.vmc.request_refund(self.root)
 
     def update_status(self, state, selected_product, credit_escrow):
         # Update the "Money In" label with the escrow balance
