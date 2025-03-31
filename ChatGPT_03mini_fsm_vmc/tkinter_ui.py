@@ -79,13 +79,6 @@ class VendingMachineUI:
             )
         self.product_list.pack()
 
-        # Display owner contact info (redundant info, but preserved as per original design)
-        self.owner_label = tk.Label(
-            self.info_frame,
-            text=f"Owner Contact: Email: {config.get('owner_contact', {}).get('email', 'N/A')}, SMS: {config.get('owner_contact', {}).get('sms', 'N/A')}",
-        )
-        self.owner_label.pack()
-
         # Create a frame for product buttons
         self.button_frame = tk.Frame(self.root)
         self.button_frame.pack(pady=10)
