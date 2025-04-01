@@ -15,7 +15,12 @@ class VendingMachineUI:
         self.create_widgets(config_file)
 
     def create_widgets(self, config_file):
-        # Load configuration to retrieve machine, owner, repair service, and product details
+        # Set Notebook style to enlarge tabs (approximately 3x larger)
+        style = ttk.Style()
+        # Increase the padding and font size for tabs
+        style.configure("TNotebook.Tab", padding=(20, 10), font=("Helvetica", 16))
+        
+        # Load configuration to retrieve machine and owner info, and product details
         with open(config_file, "r") as f:
             config = json.load(f)
         products = config.get("products", [])
