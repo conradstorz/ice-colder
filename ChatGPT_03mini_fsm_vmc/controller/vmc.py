@@ -33,7 +33,7 @@ class VMC:
         self.update_callback = None  # Expected signature: (state, selected_product, credit_escrow)
         self.message_callback = None  # Expected signature: (message)
 
-        # Setup FSM transitions using transitions library
+        # Setup FSM transitions using transitions library, initial state is the first state in VMC.states (i.e. "idle")
         self.machine = Machine(model=self, states=VMC.states, initial=VMC.states[0])
         self.machine.add_transition(
             trigger="start_interaction",
@@ -100,7 +100,8 @@ class VMC:
     def send_customer_message(self, message, tk_root=None, duration=5000):
         """
         Send a message to the customer via the UI.
-        All messages go through this method to allow centralized control.
+        All messages go through this method to allow centralized control of timing.
+        If tk_root is provided, the message will be cleared after 'duration' milliseconds.
         """
         logger.debug(f"Sending customer message: '{message}'")
         self._display_message(message)
@@ -142,7 +143,7 @@ class VMC:
         self.selected_product = None
         self.last_insufficient_message = ""
         self._refresh_ui()
-        # No explicit clearing of message; handled by send_customer_message timing
+        # Message clearing is handled automatically by send_customer_message timing
 
     def on_error(self):
         logger.error(f"{STATE_CHANGE_PREFIX} Error encountered for product: {self.selected_product}. Transitioning to error state.")
