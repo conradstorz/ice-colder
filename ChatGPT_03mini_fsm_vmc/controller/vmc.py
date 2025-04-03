@@ -2,7 +2,7 @@
 import json
 from transitions import Machine
 from loguru import logger
-from services.payment import PaymentService
+from services.payment_gateway_manager import PaymentGatewayManager
 from hardware.coin_handler import CoinHandler
 from hardware.mdb_interface import MDBInterface
 
@@ -33,7 +33,7 @@ class VMC:
         self.update_callback = None  # Expected signature: (state, selected_product, credit_escrow)
         self.message_callback = None  # Expected signature: (message)
 
-        # Setup FSM transitions using transitions library, initial state is the first state in VMC.states (i.e. "idle")
+        # Setup FSM transitions using transitions library, initial state set using VMC.states[0]
         self.machine = Machine(model=self, states=VMC.states, initial=VMC.states[0])
         self.machine.add_transition(
             trigger="start_interaction",
@@ -75,9 +75,12 @@ class VMC:
         )
         logger.debug("FSM transitions set up successfully.")
 
+        # Remove old PaymentService dependency and initialize PaymentGatewayManager for virtual payments
+        self.payment_gateway_manager = PaymentGatewayManager(config=self.config.get("virtual_payment_config", {}))
+        self.virtual_payment_index = 0  # Track which virtual payment option to present next
+
         # Initialize hardware and services
         self.coin_handler = CoinHandler()  # Placeholder for future expansion
-        self.payment_service = PaymentService()
         self.mdb_interface = MDBInterface()
         logger.debug("Hardware and services initialized.")
 
@@ -143,7 +146,7 @@ class VMC:
         self.selected_product = None
         self.last_insufficient_message = ""
         self._refresh_ui()
-        # Message clearing is handled automatically by send_customer_message timing
+        # Message clearing is handled by send_customer_message timing
 
     def on_error(self):
         logger.error(f"{STATE_CHANGE_PREFIX} Error encountered for product: {self.selected_product}. Transitioning to error state.")
@@ -170,6 +173,26 @@ class VMC:
         else:
             self.send_customer_message("No funds to refund.", tk_root)
 
+    def initiate_virtual_payment(self, amount, tk_root):
+        """
+        Initiates a virtual payment by generating a payment URL and corresponding QR code (stub)
+        for the current virtual payment option. Cycles to the next option for future requests.
+        """
+        gateways = list(self.payment_gateway_manager.gateways.keys())
+        if not gateways:
+            logger.error("No virtual payment gateways configured.")
+            self.send_customer_message("Virtual payment is currently unavailable.", tk_root)
+            return
+
+        current_gateway = gateways[self.virtual_payment_index]
+        logger.info(f"Initiating virtual payment via {current_gateway} for amount ${amount:.2f}")
+        payment_url = self.payment_gateway_manager.gateways[current_gateway].generate_payment_url(amount)
+        logger.debug(f"Generated payment URL: {payment_url}")
+        # For now, we log and send a customer message; later, the QR code image can be displayed in the UI.
+        self.send_customer_message(f"Virtual Payment Option ({current_gateway}): Scan the QR code at {payment_url}", tk_root)
+        self.virtual_payment_index = (self.virtual_payment_index + 1) % len(gateways)
+        logger.debug(f"Cycled to virtual payment index: {self.virtual_payment_index}")
+
     def select_product(self, product_index, tk_root):
         logger.debug(f"Selecting product with index: {product_index}")
         if self.state not in ["idle", "interacting_with_user"]:
@@ -192,7 +215,8 @@ class VMC:
             self.start_interaction()
             tk_root.after(1000, lambda: self._process_payment(tk_root))
         elif self.state == "interacting_with_user":
-            self._update_selection_message(tk_root)
+            # Initiate virtual payment cycling when the product is re-selected
+            self.initiate_virtual_payment(self.selected_product.get("price", 0), tk_root)
             tk_root.after(1000, lambda: self._process_payment(tk_root))
         self._refresh_ui()
 
@@ -215,7 +239,7 @@ class VMC:
 
         price = self.selected_product.get("price", 0)
         if self.credit_escrow >= price:
-            logger.info(f"{STATE_CHANGE_PREFIX} Escrow sufficient (${self.credit_escrow:.2f} >= ${price:.2f}). Processing payment.")
+            logger.info(f"{STATE_CHANGE_PREFIX} Escrow sufficient ({self.credit_escrow:.2f} >= {price:.2f}). Processing payment.")
             self.send_customer_message("Sufficient funds received. Processing your payment...", tk_root)
             self.credit_escrow -= price
             logger.debug(f"Deducted price from escrow. New escrow: {self.credit_escrow:.2f}")
