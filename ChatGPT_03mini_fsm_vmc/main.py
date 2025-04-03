@@ -6,10 +6,10 @@ from tkinter_ui import VendingMachineUI
 
 # Remove any default logging handlers
 logger.remove()
-# Add a new logfile with a timestamp in the filename; rotate at midnight.
-logger.add("vmc_{time:YYYY-MM-DD_HH-mm-ss}.log", rotation="00:00")
-# Add console logging for INFO and ERROR messages
-logger.add(sys.stdout, level="INFO")
+# Add a new logfile in JSON format with a timestamp in the filename; rotate at midnight.
+logger.add("vmc_{time:YYYY-MM-DD_HH-mm-ss}.json", serialize=True, rotation="00:00")
+# Also log to console in JSON format for INFO and above
+logger.add(sys.stdout, level="INFO", serialize=True)
 
 def main():
     logger.info("Starting Vending Machine Controller with Tkinter UI")
