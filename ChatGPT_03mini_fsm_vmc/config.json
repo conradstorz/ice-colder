@@ -22,6 +22,10 @@
       "width_in_inches": 39,
       "depth_in_inches": 33
     },
+    "user_display": {
+      "horizontal_pixels": 800,
+      "vertical_pixels": 600
+    },
     "weight_in_pounds": 760,
     "capacity": {
       "total_items": 360,
