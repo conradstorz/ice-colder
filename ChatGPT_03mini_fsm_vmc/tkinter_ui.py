@@ -3,6 +3,7 @@ import tkinter as tk
 import json
 from tkinter import ttk  # Import ttk for Notebook widget
 from controller.vmc import VMC  # Import the VMC class from the controller module
+from PIL import Image, ImageTk  # Import Pillow for image handling
 
 class VendingMachineUI:
     def __init__(self, root, config_file="config.json"):
@@ -12,6 +13,8 @@ class VendingMachineUI:
         self.vmc.set_update_callback(self.update_status)
         # Set the VMC message callback to update the message area
         self.vmc.set_message_callback(self.update_message)
+        # Set the VMC QR code callback to update the QR code display area
+        self.vmc.set_qrcode_callback(self.update_qrcode)
         self.create_widgets(config_file)
 
     def create_widgets(self, config_file):
@@ -101,7 +104,7 @@ class VendingMachineUI:
         self.product_list.pack()
 
         # ---------------------------
-        # Tab 3: Control Tab (Payment Simulation, Refund, FSM State, Messages)
+        # Tab 3: Control Tab (Payment Simulation, Refund, FSM State, Messages, QR Code Display)
         # ---------------------------
         self.control_tab = tk.Frame(self.notebook)
         self.notebook.add(self.control_tab, text="Control")
@@ -150,6 +153,10 @@ class VendingMachineUI:
         self.message_text.pack(pady=10)
         # Disable editing by the user
         self.message_text.config(state="disabled")
+        
+        # Create a label for displaying the QR Code on the Control tab
+        self.qrcode_label = tk.Label(self.control_tab)
+        self.qrcode_label.pack(pady=10)
 
         # ---------------------------
         # Tab 4: Repair Tab (Repair Service Info)
@@ -189,7 +196,13 @@ class VendingMachineUI:
         self.message_text.insert(tk.END, message)
         # Disable editing again
         self.message_text.config(state="disabled")
-
+        
+    def update_qrcode(self, pil_image):
+        # Convert the PIL image to a Tkinter PhotoImage and update the QR code label
+        self.qr_photo = ImageTk.PhotoImage(pil_image)
+        self.qrcode_label.config(image=self.qr_photo)
+        # Keep a reference to the image to prevent it from being garbage collected
+        self.qrcode_label.image = self.qr_photo
 
 if __name__ == "__main__":
     root = tk.Tk()
