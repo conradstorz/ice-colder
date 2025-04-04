@@ -32,8 +32,9 @@ class VMC:
         # Callbacks for UI updates
         self.update_callback = None  # Expected signature: (state, selected_product, credit_escrow)
         self.message_callback = None  # Expected signature: (message)
+        self.qrcode_callback = None   # Expected signature: (pil_image)
 
-        # Setup FSM transitions using transitions library, initial state set using VMC.states[0]
+        # Setup FSM transitions using transitions library, initial state is VMC.states[0] ("idle")
         self.machine = Machine(model=self, states=VMC.states, initial=VMC.states[0])
         self.machine.add_transition(
             trigger="start_interaction",
@@ -75,14 +76,19 @@ class VMC:
         )
         logger.debug("FSM transitions set up successfully.")
 
-        # Remove old PaymentService dependency and initialize PaymentGatewayManager for virtual payments
+        # Initialize PaymentGatewayManager for virtual payments
         self.payment_gateway_manager = PaymentGatewayManager(config=self.config.get("virtual_payment_config", {}))
         self.virtual_payment_index = 0  # Track which virtual payment option to present next
 
-        # Initialize hardware and services
+        # Remove old PaymentService dependency and initialize other hardware/services
         self.coin_handler = CoinHandler()  # Placeholder for future expansion
         self.mdb_interface = MDBInterface()
         logger.debug("Hardware and services initialized.")
+
+    # --- New Callback Setter for QR Code Display ---
+    def set_qrcode_callback(self, callback):
+        self.qrcode_callback = callback
+        logger.debug("QR code callback set.")
 
     # --- Condition Methods ---
     def has_credit(self):
@@ -90,7 +96,7 @@ class VMC:
         logger.debug(f"Checking credit: {self.credit_escrow:.2f}")
         return self.credit_escrow > 0
 
-    # --- Callback Setters ---
+    # --- Callback Setters for UI ---
     def set_update_callback(self, callback):
         self.update_callback = callback
         logger.debug("Update callback set.")
@@ -146,7 +152,7 @@ class VMC:
         self.selected_product = None
         self.last_insufficient_message = ""
         self._refresh_ui()
-        # Message clearing is handled by send_customer_message timing
+        # Message clearing is handled automatically by send_customer_message timing
 
     def on_error(self):
         logger.error(f"{STATE_CHANGE_PREFIX} Error encountered for product: {self.selected_product}. Transitioning to error state.")
@@ -175,12 +181,12 @@ class VMC:
 
     def initiate_virtual_payment(self, amount, tk_root):
         """
-        Initiates a virtual payment by generating a payment URL and corresponding QR code (stub)
-        for the current virtual payment option. Cycles to the next option for future requests.
+        Initiates a virtual payment by generating a payment URL and corresponding QR code (dummy).
+        Cycles through available virtual payment gateways and logs the process.
         """
         gateways = list(self.payment_gateway_manager.gateways.keys())
         if not gateways:
-            logger.error("No virtual payment gateways configured.")
+            logger.error(f"No virtual payment gateways configured.")
             self.send_customer_message("Virtual payment is currently unavailable.", tk_root)
             return
 
@@ -188,8 +194,15 @@ class VMC:
         logger.info(f"Initiating virtual payment via {current_gateway} for amount ${amount:.2f}")
         payment_url = self.payment_gateway_manager.gateways[current_gateway].generate_payment_url(amount)
         logger.debug(f"Generated payment URL: {payment_url}")
-        # For now, we log and send a customer message; later, the QR code image can be displayed in the UI.
-        self.send_customer_message(f"Virtual Payment Option ({current_gateway}): Scan the QR code at {payment_url}", tk_root)
+
+        # Generate QR code image using PaymentGatewayManager
+        qr_image = self.payment_gateway_manager.generate_qr_code(current_gateway, amount)
+        if self.qrcode_callback:
+            logger.debug("Updating UI with generated QR code image.")
+            self.qrcode_callback(qr_image)
+        else:
+            logger.debug("No QR code callback set; QR code image not displayed.")
+        self.send_customer_message(f"Virtual Payment Option ({current_gateway}): Scan the QR code above.", tk_root)
         self.virtual_payment_index = (self.virtual_payment_index + 1) % len(gateways)
         logger.debug(f"Cycled to virtual payment index: {self.virtual_payment_index}")
 
@@ -215,7 +228,7 @@ class VMC:
             self.start_interaction()
             tk_root.after(1000, lambda: self._process_payment(tk_root))
         elif self.state == "interacting_with_user":
-            # Initiate virtual payment cycling when the product is re-selected
+            # Initiate virtual payment cycling when a product is re-selected
             self.initiate_virtual_payment(self.selected_product.get("price", 0), tk_root)
             tk_root.after(1000, lambda: self._process_payment(tk_root))
         self._refresh_ui()
