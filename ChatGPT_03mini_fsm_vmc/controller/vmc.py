@@ -78,7 +78,9 @@ class VMC:
 
         # Initialize PaymentGatewayManager for virtual payments
         self.payment_gateway_manager = PaymentGatewayManager(config=self.config.get("virtual_payment_config", {}))
+        logger.debug(f"PaymentGatewayManager initialized with config: {self.config.get('virtual_payment_config', {})}")
         self.virtual_payment_index = 0  # Track which virtual payment option to present next
+        logger.debug(f"Initial virtual payment index: {self.virtual_payment_index}")
 
         # Remove old PaymentService dependency and initialize other hardware/services
         self.coin_handler = CoinHandler()  # Placeholder for future expansion
@@ -185,6 +187,7 @@ class VMC:
         Cycles through available virtual payment gateways and logs the process.
         """
         gateways = list(self.payment_gateway_manager.gateways.keys())
+        logger.debug(f"Available virtual payment gateways: {gateways}")
         if not gateways:
             logger.error(f"No virtual payment gateways configured.")
             self.send_customer_message("Virtual payment is currently unavailable.", tk_root)
@@ -198,7 +201,7 @@ class VMC:
         # Generate QR code image using PaymentGatewayManager
         qr_image = self.payment_gateway_manager.generate_qr_code(current_gateway, amount)
         if self.qrcode_callback:
-            logger.debug("Updating UI with generated QR code image.")
+            logger.debug("QR code callback is set; updating UI with generated QR code image.")
             self.qrcode_callback(qr_image)
         else:
             logger.debug("No QR code callback set; QR code image not displayed.")
