@@ -1,16 +1,6 @@
 {
-  "products": [
-    { "name": "Soda", "price": 1.25, "track_inventory": true, "inventory_count": 10 },
-    { "name": "Chips", "price": 1.00, "track_inventory": true, "inventory_count": 5 },
-    { "name": "Candy", "price": 0.75, "track_inventory": false },
-    { "name": "Water", "price": 1.00, "track_inventory": false }
-  ],
   "machine_owner_contact": {
-    "name": "John Doe",
-    "phone_number": "+1-555-123-4567",
-    "address": "123 Main St, City, State, ZIP",
-    "email": "owner@example.com",
-    "sms": "+15555555555"
+
   },
   "location_owner_contact": {
     "name": "John Doe",
@@ -19,14 +9,39 @@
     "email": "owner@example.com",
     "sms": "+15555555555"
   },  
-  "machine_id": "VM12345",
-  "location": {
-    "address": "123 Main Street, City, State, ZIP",
-    "type": "Office Building",
-    "placement_area": "Lobby",
-    "traffic_level": "High"
-  },
   "physical_details": {
+    "machine_id": "VMC-123456",
+    "serial_number": "SN-123456789",
+    "manufacturer": "Royal Vendors Inc.",
+    "model": "RV-5000",
+    "year_of_manufacture": 2025,
+    "color": "Black",
+    "material": "Stainless Steel",
+    "condition": "New",
+    "last_service_date": null,
+    "last_service_mileage": null,
+    "last_service_notes": null,
+    "last_service_provider": null,
+    "last_service_cost": null,
+    "last_service_type": null,
+    "last_service_parts_replaced": null,
+    "last_service_parts_cost": null,
+    "last_service_labor_cost": null,
+    "last_service_total_cost": null,
+    "last_service_warranty": null,
+    "last_service_warranty_expiration": null,
+    "location": {
+      "address": "123 Main Street, City, State, ZIP",
+      "type": "Office Building",
+      "placement_area": "Lobby",
+      "traffic_level": "High"
+    },    
+    "products": [
+      { "name": "Soda", "price": 1.25, "track_inventory": true, "inventory_count": 10 },
+      { "name": "Chips", "price": 1.00, "track_inventory": true, "inventory_count": 5 },
+      { "name": "Candy", "price": 0.75, "track_inventory": false },
+      { "name": "Water", "price": 1.00, "track_inventory": false }
+    ],    
     "dimensions": {
       "height_in_inches": 72,
       "width_in_inches": 39,
@@ -81,11 +96,11 @@
     }
   },
   "ownership_details": {
-    "owner_name": "John Doe Vending LLC",
-    "contact_info": {
-      "phone_number": "+1-555-123-4567",
-      "email_address": "support@johndoevending.com"
-    },
+    "name": "John Doe",
+    "phone_number": "+1-555-123-4567",
+    "address": "123 Main St, City, State, ZIP",
+    "email": "owner@example.com",
+    "sms": "+15555555555",
     "revenue_tracking_enabled": true,
     "revenue_data_last_updated_on": null
   },
