@@ -1,108 +1,112 @@
 # virtual_payment_fsm.py
 import asyncio
-import random
 from loguru import logger
 
 class VirtualPaymentFSM:
     """
-    VirtualPaymentFSM is a nested FSM for handling virtual payment interactions.
-    It concurrently reaches out to all virtual payment providers (via PaymentGatewayManager),
-    gathers the payment URLs (and QR codes), and displays them to the customer.
-    The first provider to acknowledge a successful transaction terminates the remaining sessions.
+    FSM for managing virtual payment options asynchronously.
+    This FSM continuously polls virtual payment providers and communicates with the primary VMC.
     """
-
-    def __init__(self, payment_manager, amount):
+    def __init__(self, payment_gateways, callback=None, poll_interval=1.0):
         """
-        Initialize the VirtualPaymentFSM.
-        
-        :param payment_manager: An instance of PaymentGatewayManager containing the available providers.
-        :param amount: The amount to be charged.
+        :param payment_gateways: A dict of virtual payment gateway instances.
+                                 Each provider must implement:
+                                     - generate_payment_url(amount)
+                                     - check_payment_status() which returns "success", "pending", or "timeout"
+        :param callback: Callback function for communicating events to the primary VMC.
+                         Expected signature: callback(event_type: str, data: dict)
+        :param poll_interval: Interval in seconds to poll for updates.
         """
-        self.payment_manager = payment_manager
-        self.amount = amount
-        self.providers = list(payment_manager.gateways.keys())
-        self.selected_provider = None
+        self.payment_gateways = payment_gateways
+        self.callback = callback
+        self.poll_interval = poll_interval
+        self.virtual_payment_tasks = []
+        self.active = False
 
-    async def process_provider(self, provider):
+    def register_callback(self, callback):
+        self.callback = callback
+        logger.debug("VirtualPaymentFSM: Callback registered.")
+
+    def notify(self, event_type, data):
+        logger.info(f"VirtualPaymentFSM: Notifying event '{event_type}' with data: {data}")
+        if self.callback:
+            self.callback(event_type, data)
+
+    async def _poll_gateway(self, gateway_name, amount):
         """
-        Simulate processing a payment request with a specific provider.
-        
-        In a real-world scenario, this method would contact the provider's API,
-        generate a URL, display a QR code, and await confirmation of payment.
-        For this stub, we simulate a random delay and random success/failure.
-        
-        :param provider: The provider key (e.g., "stripe", "paypal", etc.).
-        :return: The provider if the payment is confirmed.
-        :raises Exception: If the payment confirmation fails.
+        Poll a single virtual payment gateway for a payment status update.
+        This simulates asynchronous checking; in a real scenario, you might use an async HTTP client.
         """
-        logger.info(f"VirtualPaymentFSM: Initiating payment request with {provider} for ${self.amount:.2f}")
-        # Simulate network/API delay (e.g., between 2 and 10 seconds)
-        delay = random.uniform(2, 10)
-        await asyncio.sleep(delay)
-        # Simulate success/failure (for example purposes, 50% chance)
-        success = random.choice([True, False])
-        if success:
-            logger.info(f"VirtualPaymentFSM: Payment confirmed by {provider} after {delay:.2f} seconds")
-            return provider
-        else:
-            logger.info(f"VirtualPaymentFSM: Payment NOT confirmed by {provider} after {delay:.2f} seconds")
-            raise Exception(f"{provider} did not confirm payment")
+        provider = self.payment_gateways[gateway_name]
+        # Request the payment URL
+        self.notify("payment_request", {"gateway": gateway_name, "status": "requested"})
+        payment_url = provider.generate_payment_url(amount)
+        self.notify("payment_url", {"gateway": gateway_name, "url": payment_url})
 
-    async def run(self):
+        try:
+            # Poll the provider for up to 10 iterations
+            for i in range(10):
+                await asyncio.sleep(self.poll_interval)
+                status = provider.check_payment_status()  # Expected to return "success", "pending", or "timeout"
+                if status == "success":
+                    self.notify("payment_success", {"gateway": gateway_name, "url": payment_url})
+                    return gateway_name
+                elif status == "timeout":
+                    self.notify("payment_timeout", {"gateway": gateway_name})
+                    return None
+                else:
+                    self.notify("payment_pending", {"gateway": gateway_name})
+            # If no success after polling iterations, treat as a timeout
+            self.notify("payment_timeout", {"gateway": gateway_name})
+            return None
+        except asyncio.CancelledError:
+            logger.info(f"VirtualPaymentFSM: Polling cancelled for gateway: {gateway_name}")
+            self.notify("payment_cancelled", {"gateway": gateway_name})
+            raise
+
+    async def start_virtual_payment(self, amount):
         """
-        Run the virtual payment process concurrently for all providers.
-        
-        This method spawns tasks for each provider and waits until the first one completes successfully.
-        It then cancels all pending tasks.
-        
-        :return: A tuple (status, selected_provider) where status is "completed" or "error"
+        Initiates asynchronous virtual payment requests for all providers.
+        As soon as one provider reports success, all pending tasks are cancelled.
+        :param amount: The payment amount.
+        :return: The name of the successful provider (if any) or None.
         """
-        if not self.providers:
-            logger.error("VirtualPaymentFSM: No virtual payment providers configured.")
-            return "error", None
+        self.active = True
+        logger.info("VirtualPaymentFSM: Starting virtual payment process.")
+        tasks = []
+        for gateway in self.payment_gateways:
+            task = asyncio.create_task(self._poll_gateway(gateway, amount))
+            tasks.append(task)
+            self.virtual_payment_tasks.append(task)
 
-        logger.debug(f"VirtualPaymentFSM: Available virtual payment gateways: {self.providers}")
+        # Wait until one task completes successfully or all tasks complete.
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
 
-        # Create tasks for each provider
-        tasks = {asyncio.create_task(self.process_provider(provider)): provider for provider in self.providers}
-        done, pending = await asyncio.wait(tasks.keys(), return_when=asyncio.FIRST_COMPLETED)
-
+        successful_gateway = None
         for task in done:
-            try:
-                self.selected_provider = task.result()
-                logger.info(f"VirtualPaymentFSM: Selected provider {self.selected_provider} confirmed payment.")
-                break  # We have our successful provider
-            except Exception as e:
-                logger.error(f"VirtualPaymentFSM: Provider {tasks[task]} error: {e}")
+            result = task.result()
+            if result is not None:
+                successful_gateway = result
+                break
 
-        # Cancel any pending tasks
+        # Cancel any remaining tasks.
         for task in pending:
-            provider = tasks[task]
             task.cancel()
-            logger.debug(f"VirtualPaymentFSM: Cancelled pending payment request for {provider}")
-
-        if self.selected_provider:
-            return "completed", self.selected_provider
+        self.active = False
+        if successful_gateway:
+            self.notify("virtual_payment_complete", {"successful_gateway": successful_gateway})
         else:
-            return "error", None
+            self.notify("virtual_payment_failure", {})
+        # Clear the task list
+        self.virtual_payment_tasks = []
+        return successful_gateway
 
-# Example usage:
-# In your VMC, you might call:
-#
-# async def run_virtual_payment_process(self, tk_root):
-#     logger.debug("Main FSM: Starting virtual payment process.")
-#     payment_fsm = VirtualPaymentFSM(self.payment_gateway_manager, self.selected_product.get("price", 0))
-#     status, provider = await payment_fsm.run()
-#     if status == "completed":
-#         logger.info(f"Main FSM: Virtual payment successful via {provider}.")
-#         self.send_customer_message(f"Payment completed via {provider}.", tk_root)
-#         # Here you would load the payment amount into the machine escrow, etc.
-#     else:
-#         logger.error("Main FSM: Virtual payment failed.")
-#         self.send_customer_message("Virtual payment failed. Please try again or use cash.", tk_root)
-#
-# And then in your VMC._process_payment(), you would call:
-#
-#     asyncio.create_task(self.run_virtual_payment_process(tk_root))
-#
-# This design separates the virtual payment logic from the main FSM while allowing asynchronous handling.
+    def cancel_virtual_payment(self):
+        """
+        Cancels any ongoing virtual payment tasks.
+        """
+        logger.info("VirtualPaymentFSM: Cancelling virtual payment tasks.")
+        for task in self.virtual_payment_tasks:
+            task.cancel()
+        self.virtual_payment_tasks = []
+        self.notify("virtual_payment_cancelled", {})
