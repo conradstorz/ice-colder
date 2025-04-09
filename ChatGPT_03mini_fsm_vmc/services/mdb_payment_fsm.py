@@ -1,30 +1,37 @@
 # mdb_payment_fsm.py
-from payment_device_fsm import PaymentDeviceFSM
+import asyncio
 from loguru import logger
+from async_payment_fsm import AsyncPaymentFSM
 
-class MDBPaymentFSM(PaymentDeviceFSM):
+class MDBPaymentFSM(AsyncPaymentFSM):
     """
-    FSM for handling MDB interface payment devices.
-    This FSM manages interactions with devices that adhere to the MDB standard.
+    Asynchronous FSM for handling MDB interface payment devices.
+    This FSM handles physical payment devices (coins, cash, credit card readers)
+    via the MDB standard.
     """
     def __init__(self, callback=None):
-        super().__init__("MDB", callback=callback)
+        super().__init__("MDBPaymentFSM", callback=callback)
         self.current_credit = 0.0
 
-    def start_transaction(self):
+    async def start_transaction(self):
         logger.info("MDBPaymentFSM: Starting MDB transaction.")
         self.current_credit = 0.0
         self.notify("transaction_started", {"device": "MDB"})
+        # Simulate a short asynchronous initialization
+        await asyncio.sleep(0.1)
 
-    def cancel_transaction(self):
+    async def cancel_transaction(self):
         logger.info("MDBPaymentFSM: Cancelling MDB transaction.")
+        # Implement cancellation logic here.
         self.notify("transaction_cancelled", {"device": "MDB"})
+        await asyncio.sleep(0.1)
 
-    def get_current_credit(self) -> float:
-        logger.debug(f"MDBPaymentFSM: Current credit is {self.current_credit:.2f}")
-        return self.current_credit
+    async def get_status(self) -> dict:
+        status = {"current_credit": self.current_credit}
+        logger.debug(f"MDBPaymentFSM: Returning status: {status}")
+        return status
 
-    def dispense_change(self):
+    async def dispense_change(self):
         if self.current_credit > 0:
             logger.info(f"MDBPaymentFSM: Dispensing change: ${self.current_credit:.2f}")
             change = self.current_credit
@@ -32,3 +39,4 @@ class MDBPaymentFSM(PaymentDeviceFSM):
             self.notify("change_dispensed", {"device": "MDB", "amount": change})
         else:
             logger.debug("MDBPaymentFSM: No change to dispense.")
+        await asyncio.sleep(0.1)
