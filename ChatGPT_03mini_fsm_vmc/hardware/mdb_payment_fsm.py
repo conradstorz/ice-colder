@@ -1,5 +1,5 @@
 # mdb_payment_fsm.py
-from payment_device_fsm import PaymentDeviceFSM
+from payment_device_baseclass_fsm import PaymentDeviceFSM
 from loguru import logger
 
 class MDBPaymentFSM(PaymentDeviceFSM):
