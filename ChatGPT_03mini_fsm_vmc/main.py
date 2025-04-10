@@ -1,5 +1,29 @@
 # main.py
-import os
+"""config file layout notes:
+machine:
+    Details:
+        Name:
+        Products:
+        Physical Specs:
+        Virtual Payment Providers:
+        Maintenance Records:
+        etc...
+    Owner:
+        Name:
+        Contact:
+        etc...
+    Loation:
+        Address:
+        Description
+        Contact:
+        GPS:
+        etc...
+    Repair Service:
+        Name:
+        Contact:
+        etc...
+"""
+        import os
 import sys
 import tkinter as tk
 from loguru import logger
