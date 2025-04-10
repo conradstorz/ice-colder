@@ -1,8 +1,8 @@
 # mdb_payment_fsm.py
 import asyncio
-from payment_device_baseclass_fsm import PaymentDeviceFSM
+from controller.payment_device_baseclass_fsm import PaymentDeviceFSM
 from loguru import logger
-from async_payment_fsm import AsyncPaymentFSM
+from services.async_payment_fsm import AsyncPaymentFSM
 
 class MDBPaymentFSM(AsyncPaymentFSM):
     """

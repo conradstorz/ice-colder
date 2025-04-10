@@ -9,8 +9,8 @@ Both FSMs report their events via a common callback so that the primary VMC can 
 
 import asyncio
 from loguru import logger
-from mdb_payment_fsm import MDBPaymentFSM
-from virtual_payment_fsm import VirtualPaymentFSM
+from hardware.mdb_payment_fsm import MDBPaymentFSM
+from services.virtual_payment_fsm import VirtualPaymentFSM
 
 # -----------------------------------------------------------------------------
 # Integration Callback Function

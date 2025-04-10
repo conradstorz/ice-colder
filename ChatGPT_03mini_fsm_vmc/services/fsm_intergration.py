@@ -1,7 +1,7 @@
 # fsm_integration.py
 import asyncio
 from loguru import logger
-from mdb_payment_fsm import MDBPaymentFSM
+from hardware.mdb_payment_fsm import MDBPaymentFSM
 from virtual_payment_fsm import VirtualPaymentFSM
 
 def vmc_callback(event_type: str, data: dict):
