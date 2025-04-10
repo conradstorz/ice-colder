@@ -1,4 +1,4 @@
-# fsm_integration.py
+# fsm_integration.py (excerpt)
 import asyncio
 from loguru import logger
 from hardware.mdb_payment_fsm import MDBPaymentFSM
@@ -10,7 +10,7 @@ def vmc_callback(event_type: str, data: dict):
     In production, this would update VMC state, trigger UI updates, etc.
     """
     logger.info(f"VMC received event: {event_type} | data: {data}")
-    # TODO: Integrate with primary VMC logic.
+    # TODO: Handle events from FSMs accordingly.
     pass
 
 class FSMIntegration:
@@ -54,3 +54,14 @@ class FSMIntegration:
             await self.virtual_payment_fsm.cancel_transaction()
         else:
             logger.warning("FSMIntegration: Virtual payment FSM is not initialized.")
+
+    async def refund_physical_payment(self, amount: float):
+        logger.info(f"FSMIntegration: Refunding physical payment: ${amount:.2f}")
+        return await self.mdb_fsm.refund(amount)
+
+    async def refund_virtual_payment(self, amount: float):
+        if not self.virtual_payment_fsm:
+            logger.error("FSMIntegration: Virtual payment FSM is not initialized.")
+            return None
+        logger.info(f"FSMIntegration: Refunding virtual payment: ${amount:.2f}")
+        return await self.virtual_payment_fsm.refund(amount)

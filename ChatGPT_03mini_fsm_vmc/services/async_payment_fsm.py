@@ -7,7 +7,7 @@ class AsyncPaymentFSM(ABC):
     """
     Abstract base class for asynchronous payment FSMs.
     Provides a common interface for both physical (MDB-based)
-    and virtual payment systems.
+    and virtual payment systems, including support for refunds.
     """
     def __init__(self, name: str, callback=None):
         self.name = name
@@ -41,4 +41,12 @@ class AsyncPaymentFSM(ABC):
     @abstractmethod
     async def dispense_change(self):
         """Dispense any required change asynchronously."""
+        pass
+
+    @abstractmethod
+    async def refund(self, amount: float):
+        """
+        Process a refund (partial or complete) asynchronously.
+        This should return the refunded amount or raise an error if the refund cannot be processed.
+        """
         pass

@@ -1,14 +1,12 @@
 # mdb_payment_fsm.py
 import asyncio
-from controller.payment_device_baseclass_fsm import PaymentDeviceFSM
 from loguru import logger
 from services.async_payment_fsm import AsyncPaymentFSM
 
 class MDBPaymentFSM(AsyncPaymentFSM):
     """
     Asynchronous FSM for handling MDB interface payment devices.
-    This FSM handles physical payment devices (coins, cash, credit card readers)
-    via the MDB standard.
+    Handles physical payment devices (cash, coin, credit card readers) via the MDB standard.
     """
     def __init__(self, callback=None):
         super().__init__("MDBPaymentFSM", callback=callback)
@@ -41,3 +39,19 @@ class MDBPaymentFSM(AsyncPaymentFSM):
         else:
             logger.debug("MDBPaymentFSM: No change to dispense.")
         await asyncio.sleep(0.1)
+
+    async def refund(self, amount: float):
+        """
+        Refund part or all of the payment.
+        In this simulation, the refund amount is deducted from the current_credit.
+        """
+        if amount <= 0:
+            logger.error("MDBPaymentFSM: Refund amount must be positive.")
+            raise ValueError("Refund amount must be positive.")
+        if amount > self.current_credit:
+            amount = self.current_credit  # Refund whatever is available
+        self.current_credit -= amount
+        logger.info(f"MDBPaymentFSM: Refunding ${amount:.2f}. Remaining credit: ${self.current_credit:.2f}")
+        self.notify("refund_processed", {"device": "MDB", "refund_amount": amount})
+        await asyncio.sleep(0.1)
+        return amount

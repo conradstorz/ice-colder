@@ -6,12 +6,11 @@ from async_payment_fsm import AsyncPaymentFSM
 class VirtualPaymentFSM(AsyncPaymentFSM):
     """
     Asynchronous FSM for managing virtual payment options.
-    The FSM polls virtual payment providers asynchronously and reports
-    events (e.g., payment success, timeout) back via the callback.
-
+    Polls virtual payment providers asynchronously and reports events (including refunds) via the callback.
     Each provider in payment_gateways must implement:
       - generate_payment_url(amount)
       - check_payment_status() returning "success", "pending", or "timeout"
+      - process_refund(amount) for processing refunds (this could be simulated)
     """
     def __init__(self, payment_gateways, callback=None, poll_interval=1.0):
         super().__init__("VirtualPaymentFSM", callback=callback)
@@ -20,6 +19,8 @@ class VirtualPaymentFSM(AsyncPaymentFSM):
         self.virtual_payment_tasks = []
         self.active = False
         self.status = {"state": "idle"}
+        # Store the successful gateway once a payment is completed
+        self.successful_gateway = None
 
     async def start_transaction(self, amount: float):
         """
@@ -36,25 +37,25 @@ class VirtualPaymentFSM(AsyncPaymentFSM):
             self.virtual_payment_tasks.append(task)
 
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        successful_gateway = None
+        self.successful_gateway = None
         for task in done:
             result = task.result()
             if result is not None:
-                successful_gateway = result
+                self.successful_gateway = result
                 break
 
         # Cancel any pending tasks
         for task in pending:
             task.cancel()
         self.active = False
-        if successful_gateway:
+        if self.successful_gateway:
             self.status["state"] = "success"
-            self.notify("payment_success", {"gateway": successful_gateway})
+            self.notify("payment_success", {"gateway": self.successful_gateway})
         else:
             self.status["state"] = "failure"
             self.notify("payment_failure", {})
         self.virtual_payment_tasks = []
-        return successful_gateway
+        return self.successful_gateway
 
     async def cancel_transaction(self):
         """
@@ -67,7 +68,9 @@ class VirtualPaymentFSM(AsyncPaymentFSM):
             self.virtual_payment_tasks = []
             self.status["state"] = "cancelled"
             self.notify("payment_cancelled", {})
-            await asyncio.sleep(0)  # yield control
+            await asyncio.sleep(0)
+        else:
+            logger.debug("VirtualPaymentFSM: No active virtual payment tasks to cancel.")
 
     async def get_status(self) -> dict:
         logger.debug(f"VirtualPaymentFSM: Current status: {self.status}")
@@ -78,10 +81,23 @@ class VirtualPaymentFSM(AsyncPaymentFSM):
         logger.debug("VirtualPaymentFSM: No change dispensing required for virtual payments.")
         await asyncio.sleep(0)
 
+    async def refund(self, amount: float):
+        """
+        Process a refund via the virtual payment system.
+        In a real implementation, this would call the provider's refund API.
+        Here we simulate a refund if a successful gateway has been used.
+        """
+        if self.successful_gateway is None:
+            logger.error("VirtualPaymentFSM: Cannot process refund because no payment was completed.")
+            self.notify("refund_failed", {"reason": "No completed payment"})
+            return None
+        # Simulate asynchronous refund processing.
+        await asyncio.sleep(self.poll_interval)
+        logger.info(f"VirtualPaymentFSM: Refunding ${amount:.2f} via {self.successful_gateway}.")
+        self.notify("refund_processed", {"gateway": self.successful_gateway, "refund_amount": amount})
+        return amount
+
     async def _poll_gateway(self, gateway_name, amount):
-        """
-        Polls a single virtual payment gateway for a status update.
-        """
         provider = self.payment_gateways[gateway_name]
         self.notify("payment_request", {"gateway": gateway_name, "status": "requested"})
         payment_url = provider.generate_payment_url(amount)
