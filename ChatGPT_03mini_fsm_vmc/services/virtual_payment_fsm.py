@@ -1,53 +1,95 @@
 # virtual_payment_fsm.py
 import asyncio
 from loguru import logger
+from async_payment_fsm import AsyncPaymentFSM
 
-class VirtualPaymentFSM:
+class VirtualPaymentFSM(AsyncPaymentFSM):
     """
-    FSM for managing virtual payment options asynchronously.
-    This FSM continuously polls virtual payment providers and communicates with the primary VMC.
+    Asynchronous FSM for managing virtual payment options.
+    The FSM polls virtual payment providers asynchronously and reports
+    events (e.g., payment success, timeout) back via the callback.
+
+    Each provider in payment_gateways must implement:
+      - generate_payment_url(amount)
+      - check_payment_status() returning "success", "pending", or "timeout"
     """
     def __init__(self, payment_gateways, callback=None, poll_interval=1.0):
-        """
-        :param payment_gateways: A dict of virtual payment gateway instances.
-                                 Each provider must implement:
-                                     - generate_payment_url(amount)
-                                     - check_payment_status() which returns "success", "pending", or "timeout"
-        :param callback: Callback function for communicating events to the primary VMC.
-                         Expected signature: callback(event_type: str, data: dict)
-        :param poll_interval: Interval in seconds to poll for updates.
-        """
+        super().__init__("VirtualPaymentFSM", callback=callback)
         self.payment_gateways = payment_gateways
-        self.callback = callback
         self.poll_interval = poll_interval
         self.virtual_payment_tasks = []
         self.active = False
+        self.status = {"state": "idle"}
 
-    def register_callback(self, callback):
-        self.callback = callback
-        logger.debug("VirtualPaymentFSM: Callback registered.")
+    async def start_transaction(self, amount: float):
+        """
+        Initiates asynchronous virtual payment transactions across all providers.
+        Returns the name of the successful provider, or None if failure.
+        """
+        self.active = True
+        self.status["state"] = "processing"
+        logger.info(f"VirtualPaymentFSM: Starting virtual payment for amount: ${amount:.2f}")
+        tasks = []
+        for gateway in self.payment_gateways:
+            task = asyncio.create_task(self._poll_gateway(gateway, amount))
+            tasks.append(task)
+            self.virtual_payment_tasks.append(task)
 
-    def notify(self, event_type, data):
-        logger.info(f"VirtualPaymentFSM: Notifying event '{event_type}' with data: {data}")
-        if self.callback:
-            self.callback(event_type, data)
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        successful_gateway = None
+        for task in done:
+            result = task.result()
+            if result is not None:
+                successful_gateway = result
+                break
+
+        # Cancel any pending tasks
+        for task in pending:
+            task.cancel()
+        self.active = False
+        if successful_gateway:
+            self.status["state"] = "success"
+            self.notify("payment_success", {"gateway": successful_gateway})
+        else:
+            self.status["state"] = "failure"
+            self.notify("payment_failure", {})
+        self.virtual_payment_tasks = []
+        return successful_gateway
+
+    async def cancel_transaction(self):
+        """
+        Cancels any ongoing virtual payment transactions.
+        """
+        if self.virtual_payment_tasks:
+            logger.info("VirtualPaymentFSM: Cancelling virtual payment tasks.")
+            for task in self.virtual_payment_tasks:
+                task.cancel()
+            self.virtual_payment_tasks = []
+            self.status["state"] = "cancelled"
+            self.notify("payment_cancelled", {})
+            await asyncio.sleep(0)  # yield control
+
+    async def get_status(self) -> dict:
+        logger.debug(f"VirtualPaymentFSM: Current status: {self.status}")
+        return self.status
+
+    async def dispense_change(self):
+        # For virtual payments, dispensing change is not applicable.
+        logger.debug("VirtualPaymentFSM: No change dispensing required for virtual payments.")
+        await asyncio.sleep(0)
 
     async def _poll_gateway(self, gateway_name, amount):
         """
-        Poll a single virtual payment gateway for a payment status update.
-        This simulates asynchronous checking; in a real scenario, you might use an async HTTP client.
+        Polls a single virtual payment gateway for a status update.
         """
         provider = self.payment_gateways[gateway_name]
-        # Request the payment URL
         self.notify("payment_request", {"gateway": gateway_name, "status": "requested"})
         payment_url = provider.generate_payment_url(amount)
         self.notify("payment_url", {"gateway": gateway_name, "url": payment_url})
-
         try:
-            # Poll the provider for up to 10 iterations
             for i in range(10):
                 await asyncio.sleep(self.poll_interval)
-                status = provider.check_payment_status()  # Expected to return "success", "pending", or "timeout"
+                status = provider.check_payment_status()  # returns "success", "pending", or "timeout"
                 if status == "success":
                     self.notify("payment_success", {"gateway": gateway_name, "url": payment_url})
                     return gateway_name
@@ -56,57 +98,9 @@ class VirtualPaymentFSM:
                     return None
                 else:
                     self.notify("payment_pending", {"gateway": gateway_name})
-            # If no success after polling iterations, treat as a timeout
             self.notify("payment_timeout", {"gateway": gateway_name})
             return None
         except asyncio.CancelledError:
             logger.info(f"VirtualPaymentFSM: Polling cancelled for gateway: {gateway_name}")
             self.notify("payment_cancelled", {"gateway": gateway_name})
             raise
-
-    async def start_virtual_payment(self, amount):
-        """
-        Initiates asynchronous virtual payment requests for all providers.
-        As soon as one provider reports success, all pending tasks are cancelled.
-        :param amount: The payment amount.
-        :return: The name of the successful provider (if any) or None.
-        """
-        self.active = True
-        logger.info("VirtualPaymentFSM: Starting virtual payment process.")
-        tasks = []
-        for gateway in self.payment_gateways:
-            task = asyncio.create_task(self._poll_gateway(gateway, amount))
-            tasks.append(task)
-            self.virtual_payment_tasks.append(task)
-
-        # Wait until one task completes successfully or all tasks complete.
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-
-        successful_gateway = None
-        for task in done:
-            result = task.result()
-            if result is not None:
-                successful_gateway = result
-                break
-
-        # Cancel any remaining tasks.
-        for task in pending:
-            task.cancel()
-        self.active = False
-        if successful_gateway:
-            self.notify("virtual_payment_complete", {"successful_gateway": successful_gateway})
-        else:
-            self.notify("virtual_payment_failure", {})
-        # Clear the task list
-        self.virtual_payment_tasks = []
-        return successful_gateway
-
-    def cancel_virtual_payment(self):
-        """
-        Cancels any ongoing virtual payment tasks.
-        """
-        logger.info("VirtualPaymentFSM: Cancelling virtual payment tasks.")
-        for task in self.virtual_payment_tasks:
-            task.cancel()
-        self.virtual_payment_tasks = []
-        self.notify("virtual_payment_cancelled", {})
