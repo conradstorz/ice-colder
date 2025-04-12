@@ -70,14 +70,9 @@ if __name__ == "__main__":
 
     # reload the config to verify the change
     updated_config = load_config("config.json")
-    print(json.dumps(updated_config.model_dump(), indent=2))
 
-    # compare the original and updated config
-    print("Original config:", json.dumps(config.model_dump(), indent=2))
-    print("Updated config:", json.dumps(updated_config.model_dump(), indent=2))
-    # Check if the original and updated configs are the same
     if config == updated_config:
-        print("The original and updated configs are the same.")
+        print("The updated and re-loaded configs are the same.")
     else:
         print("The original and updated configs are different.")
 

@@ -2,7 +2,7 @@
   "products": [
     {
       "name": "Soda",
-      "price": 1.25,
+      "price": 2.5,
       "track_inventory": true,
       "inventory_count": 10
     },
