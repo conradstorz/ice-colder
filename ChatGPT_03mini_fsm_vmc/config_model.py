@@ -10,15 +10,7 @@ class OwnerContact(BaseModel):
 
 class PhysicalDetails(BaseModel):
     machine_id: str
-    serial_number: str
-    manufacturer: str
-    model: str
-    year_of_manufacture: int
     products: List[Dict[str, Any]]
-    dimensions: Dict[str, int]
-    user_interactive_display: Dict[str, int]
-    weight_in_pounds: int
-    power_requirements: Dict[str, Any]
 
 class ConfigModel(BaseModel):
     machine_owner_contact: OwnerContact
@@ -26,3 +18,27 @@ class ConfigModel(BaseModel):
     physical_location: OwnerContact
     physical_details: PhysicalDetails
 
+"""config file layout notes:
+machine:
+    Details:
+        Name:
+        Products:
+        Physical Specs:
+        Virtual Payment Providers:
+        Maintenance Records:
+        etc...
+    Owner:
+        Name:
+        Contact:
+        etc...
+    Loation:
+        Address:
+        Description
+        Contact:
+        GPS:
+        etc...
+    Repair Service:
+        Name:
+        Contact:
+        etc...
+"""
