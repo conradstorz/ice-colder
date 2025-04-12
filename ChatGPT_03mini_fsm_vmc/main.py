@@ -1,29 +1,6 @@
 # main.py
-"""config file layout notes:
-machine:
-    Details:
-        Name:
-        Products:
-        Physical Specs:
-        Virtual Payment Providers:
-        Maintenance Records:
-        etc...
-    Owner:
-        Name:
-        Contact:
-        etc...
-    Loation:
-        Address:
-        Description
-        Contact:
-        GPS:
-        etc...
-    Repair Service:
-        Name:
-        Contact:
-        etc...
-"""
-        import os
+
+import os
 import sys
 import tkinter as tk
 from loguru import logger
@@ -37,7 +14,7 @@ os.makedirs("LOGS", exist_ok=True)
 logger.remove()
 # Add a new logfile in the LOGS subdirectory with a timestamp in the filename,
 # serialized as JSON; rotate at midnight, retain logs for 3 days, and compress old logs.
-logger.add("LOGS/vmc_{time:YYYY-MM-DD_HH-mm-ss}.log", serialize=True, rotation="00:00", retention="3 days", compression="zip")
+logger.add("LOGS/vmc_{time:YYYY-MM-DD_HH-mm-ss}.log.json", serialize=True, rotation="00:00", retention="3 days", compression="zip")
 # Add console logging for INFO and ERROR messages (plain text, with custom format)
 logger.add(sys.stdout, level="INFO", serialize=False, format="{message}\n{level}: {time:YYYY-MM-DD HH:mm:ss}\n")
 
