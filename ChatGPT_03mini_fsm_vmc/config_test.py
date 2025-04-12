@@ -40,17 +40,44 @@ class ConfigModel(BaseModel):
     physical_details: PhysicalDetails
     repair_service_details: RepairServiceDetails
 
+"""Example config file access and update:
+"""
+
+def load_config(filepath: str = "config.json") -> ConfigModel:
+    with open(filepath, "r") as f:
+        config_data = json.load(f)
+    return ConfigModel(**config_data)
+
+def save_config(config: ConfigModel, filepath: str = "config.json"):
+    with open(filepath, "w") as f:
+        json.dump(config.model_dump(), f, indent=2)
+
+
 if __name__ == "__main__":
     import json
 
-    with open("config.json", "r") as f:
-        config_data = json.load(f)
+    config = load_config("config.json")
 
-    try:
-        config = ConfigModel(**config_data)
-        print("Configuration loaded successfully:")
-        # Use json.dumps() to pretty-print the output from model_dump()
-        print(json.dumps(config.model_dump(), indent=2))
-    except Exception as e:
-        print("Failed to load configuration:")
-        print(e)
+    # Use json.dumps() to pretty-print the output from model_dump()
+    print(json.dumps(config.model_dump(), indent=2))
+
+    # Example of updating a product's price
+    config.products[0].price = 2.50
+    # Save the updated config back to the file
+    save_config(config, "config.json")
+    # Print the updated config to verify the change
+    print(json.dumps(config.model_dump(), indent=2))
+
+    # reload the config to verify the change
+    updated_config = load_config("config.json")
+    print(json.dumps(updated_config.model_dump(), indent=2))
+
+    # compare the original and updated config
+    print("Original config:", json.dumps(config.model_dump(), indent=2))
+    print("Updated config:", json.dumps(updated_config.model_dump(), indent=2))
+    # Check if the original and updated configs are the same
+    if config == updated_config:
+        print("The original and updated configs are the same.")
+    else:
+        print("The original and updated configs are different.")
+

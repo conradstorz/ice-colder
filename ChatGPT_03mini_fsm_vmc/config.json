@@ -1,17 +1,37 @@
 {
   "products": [
-    { "name": "Soda", "price": 1.25, "track_inventory": true, "inventory_count": 10 },
-    { "name": "Chips", "price": 1.00, "track_inventory": true, "inventory_count": 5 },
-    { "name": "Candy", "price": 0.75, "track_inventory": false },
-    { "name": "Water", "price": 1.00, "track_inventory": false }
-  ],    
+    {
+      "name": "Soda",
+      "price": 1.25,
+      "track_inventory": true,
+      "inventory_count": 10
+    },
+    {
+      "name": "Chips",
+      "price": 1.0,
+      "track_inventory": true,
+      "inventory_count": 5
+    },
+    {
+      "name": "Candy",
+      "price": 0.75,
+      "track_inventory": false,
+      "inventory_count": null
+    },
+    {
+      "name": "Water",
+      "price": 1.0,
+      "track_inventory": false,
+      "inventory_count": null
+    }
+  ],
   "location_owner_contact": {
     "name": "John Doe",
     "phone_number": "+1-555-123-4567",
     "address": "123 Main St, City, State, ZIP",
     "email": "owner@example.com",
     "sms": "+15555555555"
-  },  
+  },
   "physical_details": {
     "machine_id": "VMC-123456",
     "serial_number": "SN-123456789",
@@ -26,4 +46,3 @@
     }
   }
 }
-
