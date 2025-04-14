@@ -91,6 +91,7 @@ def migrate_config(config: ConfigModel, filepath: str = "config.json") -> Config
         # Update the version and (if needed) other fields.
         config.config_version = default_config.config_version
         # Additional migration logic can be added here.
+        # TODO check for changes to certain defaults like names of items for sale and update json file.
         save_config(config, filepath)
     else:
         logger.debug("No migration needed; version is up-to-date.")
