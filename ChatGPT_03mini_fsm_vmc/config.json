@@ -1,9 +1,9 @@
 {
-  "config_version": "2025.04.10.01",
+  "config_version": "2025.04.14.02",
   "products": [
     {
       "name": "Soda",
-      "price": 83.86,
+      "price": 8.69,
       "track_inventory": true,
       "inventory_count": 10
     },
@@ -27,6 +27,15 @@
     }
   ],
   "location_owner_contact": {
+    "contact_info": {
+      "name": "John Doe",
+      "phone_number": "+1-555-123-4567",
+      "address": "123 Main St, City, State, ZIP",
+      "email": "owner@example.com",
+      "sms": "+15555555555"
+    }
+  },
+  "machine_owner_contact": {
     "contact_info": {
       "name": "John Doe",
       "phone_number": "+1-555-123-4567",
