@@ -62,9 +62,15 @@ if __name__ == "__main__":
     print(json.dumps(config.model_dump(), indent=2))
 
     # Example of updating a product's price
-    config.products[0].price = 2.50
+    # Randomly choose a product to update
+    import random
+
+    # or use a random price between .01 and 100.00
+    config.products[0].price = round(random.uniform(0.01, 100.00), 2) 
+
     # Save the updated config back to the file
     save_config(config, "config.json")
+    
     # Print the updated config to verify the change
     print(json.dumps(config.model_dump(), indent=2))
 
