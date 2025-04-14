@@ -1,11 +1,17 @@
 from typing import List, Optional
 from pydantic import BaseModel, model_validator
+import json
+import os
+import random
 
+# Define the Product model with defaults.
 class Product(BaseModel):
-    name: str
-    price: float
-    track_inventory: bool
-    inventory_count: Optional[int] = None
+    name: str = "Unnamed Product"
+    price: float = 0.0
+    track_inventory: bool = False
+    # Default inventory_count provided; if tracking is on and inventory_count is missing,
+    # the validator will raise an error.
+    inventory_count: Optional[int] = 0
 
     @model_validator(mode="after")
     def validate_inventory_count(cls, product: "Product") -> "Product":
@@ -13,72 +19,80 @@ class Product(BaseModel):
             raise ValueError("inventory_count must be provided when track_inventory is True")
         return product
 
+# Define the LocationOwnerContact model with sensible defaults.
 class LocationOwnerContact(BaseModel):
-    name: str
-    phone_number: str
-    address: str
-    email: str
-    sms: str
+    name: str = "John Doe"
+    phone_number: str = "+1-555-123-4567"
+    address: str = "123 Main St, City, State, ZIP"
+    email: str = "owner@example.com"
+    sms: str = "+15555555555"
 
+# Define PhysicalDetails with a new field, for example, firmware_version.
 class PhysicalDetails(BaseModel):
-    machine_id: str
-    serial_number: str
-    manufacturer: str
-    model: str
+    machine_id: str = "VMC-123456"
+    serial_number: str = "SN-123456789"
+    manufacturer: str = "Royal Vendors Inc."
+    model: str = "RV-5000"
+    firmware_version: str = "1.0.0"  # Example default firmware version
 
+# Define the contact info for the repair service.
 class RepairServiceContactInfo(BaseModel):
-    phone_number: str
-    email_address: str
+    phone_number: str = "+1-555-123-8978"
+    email_address: str = "support@ifixu.com"
 
+# Define the repair service details with defaults.
 class RepairServiceDetails(BaseModel):
-    name: str
-    contact_info: RepairServiceContactInfo
+    name: str = "Foo Bar Baz LLC"
+    contact_info: RepairServiceContactInfo = RepairServiceContactInfo()
 
+# Define the top-level ConfigModel with versioning and default values.
 class ConfigModel(BaseModel):
-    products: List[Product]
-    location_owner_contact: LocationOwnerContact
-    physical_details: PhysicalDetails
-    repair_service_details: RepairServiceDetails
-
-"""Example config file access and update:
-"""
+    # Version in the format yyyy.mm.dd.xx (update as needed)
+    config_version: str = "2025.04.10.01"
+    products: List[Product] = [
+        Product(name="Soda", price=1.25, track_inventory=True, inventory_count=10),
+        Product(name="Chips", price=1.00, track_inventory=True, inventory_count=5),
+        Product(name="Candy", price=0.75, track_inventory=False, inventory_count=0),
+        Product(name="Water", price=1.00, track_inventory=False, inventory_count=0)
+    ]
+    location_owner_contact: LocationOwnerContact = LocationOwnerContact()
+    physical_details: PhysicalDetails = PhysicalDetails()
+    repair_service_details: RepairServiceDetails = RepairServiceDetails()
 
 def load_config(filepath: str = "config.json") -> ConfigModel:
+    # If the configuration file doesn't exist, create one with default values.
+    if not os.path.exists(filepath):
+        config = ConfigModel()
+        save_config(config, filepath)
+        return config
+
+    # Otherwise, load the config file.
     with open(filepath, "r") as f:
         config_data = json.load(f)
+    # Pydantic will use default values for any missing keys.
     return ConfigModel(**config_data)
 
 def save_config(config: ConfigModel, filepath: str = "config.json"):
     with open(filepath, "w") as f:
         json.dump(config.model_dump(), f, indent=2)
 
-
 if __name__ == "__main__":
-    import json
-
+    # Load the configuration from file (or create defaults if missing)
     config = load_config("config.json")
-
-    # Use json.dumps() to pretty-print the output from model_dump()
+    print("Loaded configuration:")
     print(json.dumps(config.model_dump(), indent=2))
 
-    # Example of updating a product's price
-    # Randomly choose a product to update
-    import random
-
-    # or use a random price between .01 and 100.00
-    config.products[0].price = round(random.uniform(0.01, 100.00), 2) 
-
-    # Save the updated config back to the file
-    save_config(config, "config.json")
+    # Example: randomly update the price of the first product.
+    config.products[0].price = round(random.uniform(0.01, 100.00), 2)
     
-    # Print the updated config to verify the change
+    # Save the updated configuration back to disk.
+    save_config(config, "config.json")
+    print("Updated configuration:")
     print(json.dumps(config.model_dump(), indent=2))
 
-    # reload the config to verify the change
+    # Reload the configuration to verify that changes persisted.
     updated_config = load_config("config.json")
-
     if config == updated_config:
         print("The updated and re-loaded configs are the same.")
     else:
         print("The original and updated configs are different.")
-

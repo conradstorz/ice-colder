@@ -1,8 +1,9 @@
 {
+  "config_version": "2025.04.10.01",
   "products": [
     {
       "name": "Soda",
-      "price": 49.95,
+      "price": 38.37,
       "track_inventory": true,
       "inventory_count": 10
     },
@@ -36,7 +37,8 @@
     "machine_id": "VMC-123456",
     "serial_number": "SN-123456789",
     "manufacturer": "Royal Vendors Inc.",
-    "model": "RV-5000"
+    "model": "RV-5000",
+    "firmware_version": "1.0.0"
   },
   "repair_service_details": {
     "name": "Foo Bar Baz LLC",
