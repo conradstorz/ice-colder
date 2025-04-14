@@ -20,12 +20,18 @@ class Product(BaseModel):
         return product
 
 # Define the LocationOwnerContact model with sensible defaults.
-class LocationOwnerContact(BaseModel):
+class Contact(BaseModel):
     name: str = "John Doe"
     phone_number: str = "+1-555-123-4567"
     address: str = "123 Main St, City, State, ZIP"
     email: str = "owner@example.com"
     sms: str = "+15555555555"
+
+class LocationOwnerContact(BaseModel):
+    contact_info: Contact = Contact()
+
+class MachineOwnerContact(BaseModel):
+    contact_info: Contact = Contact()    
 
 # Define PhysicalDetails with a new field, for example, firmware_version.
 class PhysicalDetails(BaseModel):
@@ -48,7 +54,7 @@ class RepairServiceDetails(BaseModel):
 # Define the top-level ConfigModel with versioning and default values.
 class ConfigModel(BaseModel):
     # Version in the format yyyy.mm.dd.xx (update as needed)
-    config_version: str = "2025.04.10.01"
+    config_version: str = "2025.04.14.01"
     products: List[Product] = [
         Product(name="Soda", price=1.25, track_inventory=True, inventory_count=10),
         Product(name="Chips", price=1.00, track_inventory=True, inventory_count=5),
@@ -58,6 +64,24 @@ class ConfigModel(BaseModel):
     location_owner_contact: LocationOwnerContact = LocationOwnerContact()
     physical_details: PhysicalDetails = PhysicalDetails()
     repair_service_details: RepairServiceDetails = RepairServiceDetails()
+
+def migrate_config(config: ConfigModel, filepath: str = "config.json") -> ConfigModel:
+    """
+    Compare the loaded configuration version with the current default.
+    If they differ, update the version and any other fields if necessary,
+    then save the updated configuration back to the file.
+    """
+    default_config = ConfigModel()  # Create a default instance for comparison.
+    if config.config_version != default_config.config_version:
+        print(
+            f"Migrating config from version {config.config_version} "
+            f"to {default_config.config_version}"
+        )
+        # Update the version and (if needed) other fields.
+        config.config_version = default_config.config_version
+        # Additional migration logic can go here.
+        save_config(config, filepath)
+    return config
 
 def load_config(filepath: str = "config.json") -> ConfigModel:
     # If the configuration file doesn't exist, create one with default values.
@@ -69,8 +93,10 @@ def load_config(filepath: str = "config.json") -> ConfigModel:
     # Otherwise, load the config file.
     with open(filepath, "r") as f:
         config_data = json.load(f)
-    # Pydantic will use default values for any missing keys.
-    return ConfigModel(**config_data)
+    config = ConfigModel(**config_data)
+    # Migrate the config if its version is outdated.
+    config = migrate_config(config, filepath)
+    return config
 
 def save_config(config: ConfigModel, filepath: str = "config.json"):
     with open(filepath, "w") as f:

@@ -3,7 +3,7 @@
   "products": [
     {
       "name": "Soda",
-      "price": 38.37,
+      "price": 83.86,
       "track_inventory": true,
       "inventory_count": 10
     },
@@ -27,11 +27,13 @@
     }
   ],
   "location_owner_contact": {
-    "name": "John Doe",
-    "phone_number": "+1-555-123-4567",
-    "address": "123 Main St, City, State, ZIP",
-    "email": "owner@example.com",
-    "sms": "+15555555555"
+    "contact_info": {
+      "name": "John Doe",
+      "phone_number": "+1-555-123-4567",
+      "address": "123 Main St, City, State, ZIP",
+      "email": "owner@example.com",
+      "sms": "+15555555555"
+    }
   },
   "physical_details": {
     "machine_id": "VMC-123456",
