@@ -1,55 +1,59 @@
 # tkinter_ui.py
 import tkinter as tk
-import json
+import json  # retained for backward compatibility and comment preservation
 from tkinter import ttk  # Import ttk for Notebook widget
 from controller.vmc import VMC  # Import the VMC class from the controller module
 from PIL import Image, ImageTk  # Import Pillow for image handling
+from config_model import ConfigModel  # Import Pydantic model for configuration
 
 class VendingMachineUI:
-    def __init__(self, root, config_file="config.json"):
+    def __init__(self, root, config_model: ConfigModel):
         self.root = root
-        self.vmc = VMC(config_file=config_file)
+        # Initialize VMC with pre-loaded Pydantic ConfigModel
+        self.vmc = VMC(config=config_model)
+        self.config_model = config_model
         # Set the VMC update callback to update the UI status label
         self.vmc.set_update_callback(self.update_status)
         # Set the VMC message callback to update the message area
         self.vmc.set_message_callback(self.update_message)
         # Set the VMC QR code callback to update the QR code display area
         self.vmc.set_qrcode_callback(self.update_qrcode)
-        self.create_widgets(config_file)
+        self.create_widgets()
 
-    def create_widgets(self, config_file):
+    def create_widgets(self):
         # Set Notebook style to enlarge tabs (approximately 3x larger)
         style = ttk.Style()
         # Increase the padding and font size for tabs
         style.configure("TNotebook.Tab", padding=(20, 10), font=("Helvetica", 16))
         
-        # Load configuration to retrieve machine and owner info, and product details
-        with open(config_file, "r") as f:
-            config = json.load(f)
-        products = config.get("products", [])
-        # Get owner info from ownership_details if available, otherwise use owner_contact
-        ownership_details = config.get("ownership_details", {})
-        if ownership_details:
-            owner_info = (f"Owner: {ownership_details.get('owner_name', 'N/A')}\n"
-                          f"Phone: {ownership_details.get('contact_info', {}).get('phone_number', 'N/A')}\n"
-                          f"Email: {ownership_details.get('contact_info', {}).get('email_address', 'N/A')}")
-        else:
-            owner_contact = config.get("owner_contact", {})
-            owner_info = (f"Owner Email: {owner_contact.get('email', 'N/A')}\n"
-                          f"Owner SMS: {owner_contact.get('sms', 'N/A')}")
-        machine_id = config.get("machine_id", "N/A")
-        location = config.get("location", {})
-        location_str = (
-            f"{location.get('address', 'Unknown')}\n"
-            f"Type: {location.get('type', 'Unknown')}, Area: {location.get('placement_area', 'Unknown')}\n"
-            f"Traffic Level: {location.get('traffic_level', 'Unknown')}"
+        # Load data from Pydantic ConfigModel
+        products = self.config_model.physical_details.products
+        # Machine owner contact information
+        machine_owner = self.config_model.machine_owner_contact
+        owner_info = (
+            f"Owner: {machine_owner.name}\n"
+            f"Phone: {machine_owner.phone_number}\n"
+            f"Email: {machine_owner.email}"
         )
-        # Get repair service details from config
-        repair_details = config.get("repair_service_details", {})
+        # Location owner contact information
+        loc_owner = self.config_model.location_owner_contact
+        location_info = (
+            f"Location Contact: {loc_owner.name}\n"
+            f"Phone: {loc_owner.phone_number}\n"
+            f"Email: {loc_owner.email}"
+        )
+        # Physical location details stored in 'notes'
+        phys_loc = self.config_model.physical_location
+        machine_id = self.config_model.physical_details.machine_id
+        location_str = (
+            f"Address: {phys_loc.address}\n"
+            f"Notes: {phys_loc.notes}"
+        )
+        # Repair service details (not in ConfigModel, placeholders)
         repair_info = (
-            f"Repair Service: {repair_details.get('name', 'N/A')}\n"
-            f"Phone: {repair_details.get('contact_info', {}).get('phone_number', 'N/A')}\n"
-            f"Email: {repair_details.get('contact_info', {}).get('email_address', 'N/A')}"
+            "Repair Service: N/A\n"
+            "Phone: N/A\n"
+            "Email: N/A"
         )
 
         # Create a Notebook widget for tabs
@@ -62,22 +66,34 @@ class VendingMachineUI:
         self.info_tab = tk.Frame(self.notebook)
         self.notebook.add(self.info_tab, text="Info")
 
-        # Create a top-level frame for machine info and owner info, placed side by side in the Info tab
+        # Create a top-level frame for machine info and owner info, placed side by side
         self.top_info_frame = tk.Frame(self.info_tab)
         self.top_info_frame.pack(pady=5)
 
         # Create a frame for Machine Information on the left
         self.machine_info_frame = tk.Frame(self.top_info_frame)
         self.machine_info_frame.pack(side=tk.LEFT, padx=10)
-        self.machine_id_label = tk.Label(self.machine_info_frame, text=f"Machine ID: {machine_id}", font=("Helvetica", 12, "bold"))
+        self.machine_id_label = tk.Label(
+            self.machine_info_frame,
+            text=f"Machine ID: {machine_id}",
+            font=("Helvetica", 12, "bold")
+        )
         self.machine_id_label.pack()
-        self.location_label = tk.Label(self.machine_info_frame, text=f"Location:\n{location_str}", font=("Helvetica", 10))
+        self.location_label = tk.Label(
+            self.machine_info_frame,
+            text=f"{location_str}",
+            font=("Helvetica", 10)
+        )
         self.location_label.pack()
 
         # Create a frame for Owner Information on the right
         self.owner_info_frame = tk.Frame(self.top_info_frame)
         self.owner_info_frame.pack(side=tk.LEFT, padx=10)
-        self.owner_info_label = tk.Label(self.owner_info_frame, text=owner_info, font=("Helvetica", 10))
+        self.owner_info_label = tk.Label(
+            self.owner_info_frame,
+            text=owner_info,
+            font=("Helvetica", 10)
+        )
         self.owner_info_label.pack()
 
         # ---------------------------
@@ -110,7 +126,11 @@ class VendingMachineUI:
         self.notebook.add(self.control_tab, text="Control")
 
         # Create a label at the top to display the "Money In" escrow balance
-        self.escrow_label = tk.Label(self.control_tab, text="Money In: $0.00", font=("Helvetica", 14, "bold"))
+        self.escrow_label = tk.Label(
+            self.control_tab,
+            text="Money In: $0.00",
+            font=("Helvetica", 14, "bold")
+        )
         self.escrow_label.pack(pady=5)
 
         # Create a frame for product buttons (for selecting products)
@@ -141,15 +161,29 @@ class VendingMachineUI:
             )
             btn.pack(side=tk.LEFT, padx=3)
         # Add a new button for requesting a refund of unused credit
-        self.refund_button = tk.Button(self.payment_frame, text="Request Refund", command=self.request_refund)
+        self.refund_button = tk.Button(
+            self.payment_frame,
+            text="Request Refund",
+            command=self.request_refund
+        )
         self.refund_button.pack(side=tk.LEFT, padx=5)
 
         # Create a label for displaying FSM state and selected product on separate lines
-        self.state_label = tk.Label(self.control_tab, text="Current State: idle\nSelected Product: None", justify="left", font=("Helvetica", 12))
+        self.state_label = tk.Label(
+            self.control_tab,
+            text="Current State: idle\nSelected Product: None",
+            justify="left",
+            font=("Helvetica", 12)
+        )
         self.state_label.pack(pady=10)
 
         # Create a Text widget for messages so that each message appears on its own line
-        self.message_text = tk.Text(self.control_tab, height=4, width=60, wrap="word")
+        self.message_text = tk.Text(
+            self.control_tab,
+            height=4,
+            width=60,
+            wrap="word"
+        )
         self.message_text.pack(pady=10)
         # Disable editing by the user
         self.message_text.config(state="disabled")
@@ -163,7 +197,11 @@ class VendingMachineUI:
         # ---------------------------
         self.repair_tab = tk.Frame(self.notebook)
         self.notebook.add(self.repair_tab, text="Repair Service")
-        self.repair_info_label = tk.Label(self.repair_tab, text=repair_info, font=("Helvetica", 10))
+        self.repair_info_label = tk.Label(
+            self.repair_tab,
+            text=repair_info,
+            font=("Helvetica", 10)
+        )
         self.repair_info_label.pack(padx=10, pady=10)
 
     def product_pressed(self, index):
@@ -207,7 +245,8 @@ class VendingMachineUI:
 if __name__ == "__main__":
     root = tk.Tk()
     root.title("Vending Machine Controller")
-    app = VendingMachineUI(root)
+    # Load Pydantic config externally in main.py and pass it here if desired
+    app = VendingMachineUI(root, config_model=ConfigModel.model_validate_json(open("config.json").read()))
     root.mainloop()
 
 # This code is a simple GUI for a vending machine monitor using Tkinter.
