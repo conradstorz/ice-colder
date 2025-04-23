@@ -1,61 +1,39 @@
 {
-  "config_version": "2025.04.14.02",
-  "products": [
-    {
-      "name": "Soda",
-      "price": 8.69,
-      "track_inventory": true,
-      "inventory_count": 10
-    },
-    {
-      "name": "Chips",
-      "price": 1.0,
-      "track_inventory": true,
-      "inventory_count": 5
-    },
-    {
-      "name": "Candy",
-      "price": 0.75,
-      "track_inventory": false,
-      "inventory_count": null
-    },
-    {
-      "name": "Water",
-      "price": 1.0,
-      "track_inventory": false,
-      "inventory_count": null
-    }
-  ],
-  "location_owner_contact": {
-    "contact_info": {
+    "machine_owner_contact": {
       "name": "John Doe",
-      "phone_number": "+1-555-123-4567",
-      "address": "123 Main St, City, State, ZIP",
-      "email": "owner@example.com",
-      "sms": "+15555555555"
-    }
-  },
-  "machine_owner_contact": {
-    "contact_info": {
-      "name": "John Doe",
-      "phone_number": "+1-555-123-4567",
-      "address": "123 Main St, City, State, ZIP",
-      "email": "owner@example.com",
-      "sms": "+15555555555"
-    }
-  },
-  "physical_details": {
-    "machine_id": "VMC-123456",
-    "serial_number": "SN-123456789",
-    "manufacturer": "Royal Vendors Inc.",
-    "model": "RV-5000",
-    "firmware_version": "1.0.0"
-  },
-  "repair_service_details": {
-    "name": "Foo Bar Baz LLC",
-    "contact_info": {
-      "phone_number": "+1-555-123-8978",
-      "email_address": "support@ifixu.com"
+      "phone_number": "555-123-4567",
+      "address": "123 Main St, Anytown, USA",
+      "email": "j.doe@example.com",
+      "notes": "Primary owner of this machine."
+    },
+    "location_owner_contact": {
+      "name": "Jane Smith",
+      "phone_number": "555-987-6543",
+      "address": "456 Elm St, Otherville, USA",
+      "email": "j.smith@example.com",
+      "notes": "On-site contact for location issues."
+    },
+    "physical_location": {
+      "name": "Mall Kiosk #12",
+      "phone_number": "555-222-3333",
+      "address": "789 Oak Ave, Shopville, USA",
+      "email": "kiosk12@shopvillemall.com",
+      "notes": "GPS: 40.1234, -74.5678"
+    },
+    "physical_details": {
+      "machine_id": "VM-2025-04-23-01",
+      "products": [
+        {
+          "id": "A1",
+          "name": "Bottled Water",
+          "price": 1.25
+        },
+        {
+          "id": "B2",
+          "name": "Bagged Ice",
+          "price": 0.99
+        }
+      ]
     }
   }
-}
+  
