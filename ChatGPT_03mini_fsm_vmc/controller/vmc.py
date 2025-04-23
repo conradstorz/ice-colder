@@ -1,5 +1,4 @@
 # controller/vmc.py
-import json  # retained original import though no longer used directly
 from transitions import Machine
 from loguru import logger
 from services.payment_gateway_manager import PaymentGatewayManager
