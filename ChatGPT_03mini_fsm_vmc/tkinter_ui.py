@@ -1,6 +1,5 @@
 # tkinter_ui.py
 import tkinter as tk
-import json  # retained for backward compatibility and comment preservation
 from tkinter import ttk  # Import ttk for Notebook widget
 from controller.vmc import VMC  # Import the VMC class from the controller module
 from PIL import Image, ImageTk  # Import Pillow for image handling
