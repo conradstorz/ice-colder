@@ -62,7 +62,7 @@ def main():
         root.title("Vending Machine Controller")
 
         logger.debug("Instantiating VendingMachineUI with configuration model")
-        app = VendingMachineUI(root, config=config_model)
+        app = VendingMachineUI(root, config_model=config_model)
     except Exception:
         logger.exception("Failed to initialize UI")
         sys.exit(1)
