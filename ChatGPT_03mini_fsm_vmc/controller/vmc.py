@@ -8,31 +8,32 @@ from hardware.mdb_interface import MDBInterface
 
 # Global variable for state change log prefix
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
-
 class VMC:
     # Define FSM states: idle, interacting_with_user, dispensing, error
     states = ["idle", "interacting_with_user", "dispensing", "error"]
 
-    def __init__(self, config_file="config.json"):
-        logger.debug(f"Initializing VMC with configuration file: {config_file}")
-        # Load configuration
-        with open(config_file, "r") as f:
-            self.config = json.load(f)
+    def __init__(self, config: ConfigModel):
+        logger.debug(f"Initializing VMC with pre-loaded ConfigModel: {config}")
+        # Store Pydantic configuration model and raw dict
+        self.config_model = config
+        self.config = config.model_dump()
         logger.debug(f"Configuration loaded: {self.config}")
-        self.products = self.config.get("products", [])
-        self.owner_contact = self.config.get("owner_contact", {})
 
-        # Initialize business data
+        # Extract business data from config_model
+        self.products = self.config_model.physical_details.products
+        self.owner_contact = self.config_model.machine_owner_contact
+
+        # Initialize business state
         self.selected_product = None
         self.credit_escrow = 0.0
         self.last_insufficient_message = ""
-        self.last_payment_method = "Simulated Payment"  # Default payment method
+        self.last_payment_method = "Simulated Payment"
         logger.debug(f"Initial business data: selected_product={self.selected_product}, credit_escrow={self.credit_escrow:.2f}")
 
         # Callbacks for UI updates
-        self.update_callback = None  # Expected signature: (state, selected_product, credit_escrow)
-        self.message_callback = None  # Expected signature: (message)
-        self.qrcode_callback = None   # Expected signature: (pil_image)
+        self.update_callback = None  # signature: (state, selected_product, credit_escrow)
+        self.message_callback = None  # signature: (message)
+        self.qrcode_callback = None   # signature: (pil_image)
 
         # Setup FSM transitions using transitions library, initial state is VMC.states[0] ("idle")
         self.machine = Machine(model=self, states=VMC.states, initial=VMC.states[0])
@@ -76,10 +77,11 @@ class VMC:
         )
         logger.debug("FSM transitions set up successfully.")
 
-        # Initialize PaymentGatewayManager for virtual payments
-        self.payment_gateway_manager = PaymentGatewayManager(config=self.config.get("virtual_payment_config", {}))
-        logger.debug(f"PaymentGatewayManager initialized with config: {self.config.get('virtual_payment_config', {})}")
-        self.virtual_payment_index = 0  # Track which virtual payment option to present next
+        # Initialize PaymentGatewayManager using extra config
+        vpay_cfg = self.config.get("virtual_payment_config", {})
+        self.payment_gateway_manager = PaymentGatewayManager(config=vpay_cfg)
+        logger.debug(f"PaymentGatewayManager initialized with config: {vpay_cfg}")
+        self.virtual_payment_index = 0
         logger.debug(f"Initial virtual payment index: {self.virtual_payment_index}")
 
         # Remove old PaymentService dependency and initialize other hardware/services
