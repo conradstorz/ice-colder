@@ -2,7 +2,6 @@
 from transitions import Machine
 from loguru import logger
 from services.payment_gateway_manager import PaymentGatewayManager
-from hardware.coin_handler import CoinHandler
 from hardware.mdb_interface import MDBInterface
 from config_model import ConfigModel  # Import the Pydantic model
 
@@ -88,8 +87,7 @@ class VMC:
         self.virtual_payment_index = 0
         logger.debug(f"Initial virtual payment index: {self.virtual_payment_index}")
 
-        # Remove old PaymentService dependency and initialize other hardware/services
-        self.coin_handler = CoinHandler()  # Placeholder for future expansion
+        # initialize other hardware/services
         self.mdb_interface = MDBInterface()
         logger.debug("Hardware and services initialized.")
 
