@@ -29,12 +29,21 @@ class DisplayDevice(ABC):
 class TkinterWindowDisplay(DisplayDevice):
     """
     A simple Tkinter window that simulates a display device for text.
+    Supports positioning relative to an optional parent window.
     """
-    def __init__(self, width=400, height=100):
-        # Create a standalone window
-        self.root = tk.Toplevel()
+    def __init__(self, parent_window=None, width=400, height=100, x_offset=50, y_offset=50):
+        # Create a standalone or child window
+        if parent_window:
+            self.root = tk.Toplevel(master=parent_window)
+            # Position window relative to parent to avoid overlap
+            parent_window.update_idletasks()
+            px = parent_window.winfo_x()
+            py = parent_window.winfo_y()
+            self.root.geometry(f"{width}x{height}+{px + x_offset}+{py + y_offset}")
+        else:
+            self.root = tk.Toplevel()
+            self.root.geometry(f"{width}x{height}")
         self.root.title("Display Manager")
-        self.root.geometry(f"{width}x{height}")
         # Label for showing text; supports multiline
         self.label = tk.Label(self.root, text="", font=("Helvetica", 14), justify="left")
         self.label.pack(expand=True, fill="both")

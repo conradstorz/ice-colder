@@ -23,9 +23,11 @@ class VendingMachineUI:
 
         # Set the VMC QR code callback to update the QR code display area
         self.vmc.set_qrcode_callback(self.update_qrcode)
-        
+
         # Set the VMC message manager to use TkinterWindowDisplay for displaying messages
-        self.display_manager = MessageManager(TkinterWindowDisplay())
+        #self.display_manager = MessageManager(TkinterWindowDisplay())
+        self.display_manager = MessageManager(TkinterWindowDisplay(parent_window=self.root, x_offset=450, y_offset=0))
+
         self.create_widgets()
 
     def create_widgets(self):
