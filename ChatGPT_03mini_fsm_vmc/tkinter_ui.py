@@ -4,19 +4,28 @@ from tkinter import ttk  # Import ttk for Notebook widget
 from controller.vmc import VMC  # Import the VMC class from the controller module
 from PIL import Image, ImageTk  # Import Pillow for image handling
 from config_model import ConfigModel  # Import Pydantic model for configuration
+from controller.message_manager import MessageManager, TkinterWindowDisplay
 
 class VendingMachineUI:
     def __init__(self, root, config_model: ConfigModel):
         self.root = root
+
         # Initialize VMC with pre-loaded Pydantic ConfigModel
         self.vmc = VMC(config=config_model)
         self.config_model = config_model
+
         # Set the VMC update callback to update the UI status label
         self.vmc.set_update_callback(self.update_status)
+
         # Set the VMC message callback to update the message area
-        self.vmc.set_message_callback(self.update_message)
+        #self.vmc.set_message_callback(self.update_message)
+        self.vmc.set_message_callback(lambda msg: self.display_manager.post(msg, duration_ms=5000))
+
         # Set the VMC QR code callback to update the QR code display area
         self.vmc.set_qrcode_callback(self.update_qrcode)
+        
+        # Set the VMC message manager to use TkinterWindowDisplay for displaying messages
+        self.display_manager = MessageManager(TkinterWindowDisplay())
         self.create_widgets()
 
     def create_widgets(self):
