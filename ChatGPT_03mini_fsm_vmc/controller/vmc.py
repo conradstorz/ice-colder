@@ -8,6 +8,59 @@ from config_model import ConfigModel  # Import the Pydantic model
 # Global variable for state change log prefix
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
 
+#: FSM transition table.
+#: **Note**: ordering matters when multiple transitions share the same trigger name.
+#: For example, when you call `complete_transaction` from the "dispensing" state:
+#: 1. The first dict (with `conditions="has_credit"`) is evaluated—if `has_credit()` is True,
+#:    you go to `"interacting_with_user"`.
+#: 2. Otherwise, the second dict (with `unless="has_credit"`) fires, taking you back to `"idle"`.
+TRANSITIONS = [
+    # User starts interacting → go from idle to interacting_with_user
+    {
+        "trigger": "start_interaction",
+        "source": "idle",
+        "dest": "interacting_with_user",
+        "before": "on_start_interaction",
+    },
+    # Dispense button pressed → enter dispensing state
+    {
+        "trigger": "dispense_product",
+        "source": "interacting_with_user",
+        "dest": "dispensing",
+        "before": "on_dispense_product",
+    },
+    # Complete transaction branch #1: if there's still credit, return to interacting_with_user
+    {
+        "trigger": "complete_transaction",
+        "source": "dispensing",
+        "dest": "interacting_with_user",
+        "conditions": "has_credit",
+        "before": "on_complete_transaction",
+    },
+    # Complete transaction branch #2: if no credit remains, go back to idle
+    {
+        "trigger": "complete_transaction",
+        "source": "dispensing",
+        "dest": "idle",
+        "unless": "has_credit",
+        "before": "on_complete_transaction",
+    },
+    # Any error moves state machine to error
+    {
+        "trigger": "error_occurred",
+        "source": "*",
+        "dest": "error",
+        "before": "on_error",
+    },
+    # After handling error, reset back to idle
+    {
+        "trigger": "reset_state",
+        "source": ["error"],
+        "dest": "idle",
+        "before": "on_reset",
+    },
+]
+
 class VMC:
     # Define FSM states: idle, interacting_with_user, dispensing, error
     states = ["idle", "interacting_with_user", "dispensing", "error"]
@@ -38,46 +91,17 @@ class VMC:
         self.message_callback = None  # Expected signature: (message)
         self.qrcode_callback = None   # Expected signature: (pil_image)
 
-        # Setup FSM transitions using transitions library, initial state is VMC.states[0] ("idle")
+        # Data-driven FSM setup: using TRANSITIONS list.
+        # Note: ordering matters when multiple transitions share the same trigger name.
         self.machine = Machine(model=self, states=VMC.states, initial=VMC.states[0])
-        self.machine.add_transition(
-            trigger="start_interaction",
-            source="idle",
-            dest="interacting_with_user",
-            before="on_start_interaction",
-        )
-        self.machine.add_transition(
-            trigger="dispense_product",
-            source="interacting_with_user",
-            dest="dispensing",
-            before="on_dispense_product",
-        )
-        self.machine.add_transition(
-            trigger="complete_transaction",
-            source="dispensing",
-            dest="interacting_with_user",
-            conditions="has_credit",
-            before="on_complete_transaction",
-        )
-        self.machine.add_transition(
-            trigger="complete_transaction",
-            source="dispensing",
-            dest="idle",
-            unless="has_credit",
-            before="on_complete_transaction",
-        )
-        self.machine.add_transition(
-            trigger="error_occurred",
-            source="*",
-            dest="error",
-            before="on_error",
-        )
-        self.machine.add_transition(
-            trigger="reset_state",
-            source=["error"],
-            dest="idle",
-            before="on_reset",
-        )
+
+        # Add all transitions from the TRANSITIONS table.
+        for t in TRANSITIONS:
+            logger.debug(
+                f"Adding transition: {t['trigger']} {t['source']} -> {t['dest']} "
+                f"{('(cond)') if 'conditions' in t else ''}"
+            )
+            self.machine.add_transition(**t)
         logger.debug("FSM transitions set up successfully.")
 
         # Initialize PaymentGatewayManager using a config key if defined
@@ -138,12 +162,12 @@ class VMC:
 
     # --- FSM Callback Methods with Enhanced Logging and Messaging ---
     def on_start_interaction(self):
-        logger.info(f"{STATE_CHANGE_PREFIX} Transitioning from idle to interacting_with_user for product: {self.selected_product}")
+        logger.info(f"{STATE_CHANGE_PREFIX} Transitioning to interacting_with_user for product: {self.selected_product}")
         self._refresh_ui()
         self.send_customer_message("Interaction started. Please insert funds or select a product.")
 
     def on_dispense_product(self):
-        logger.info(f"{STATE_CHANGE_PREFIX} Transitioning from interacting_with_user to dispensing for product: {self.selected_product}")
+        logger.info(f"{STATE_CHANGE_PREFIX} Transitioning to dispensing for product: {self.selected_product}")
         self._refresh_ui()
         self.send_customer_message("Processing your payment and dispensing your product...")
 
@@ -156,7 +180,7 @@ class VMC:
             self.send_customer_message("Transaction complete. Thank you for your purchase!")
 
     def on_reset(self):
-        logger.info(f"{STATE_CHANGE_PREFIX} Resetting to idle state. Clearing selected product. Previous selection: {self.selected_product}")
+        logger.info(f"{STATE_CHANGE_PREFIX} Resetting to idle state. Previous selection: {self.selected_product}")
         self.selected_product = None
         self.last_insufficient_message = ""
         self._refresh_ui()
@@ -238,7 +262,7 @@ class VMC:
             tk_root.after(1000, lambda: self._process_payment(tk_root))
         elif self.state == "interacting_with_user":
             # Initiate virtual payment cycling when a product is re-selected
-            self.initiate_virtual_payment(self.selected_product.get("price", 0), tk_root)
+            self.initiate_virtual_payment(self.selected_product.get('price', 0), tk_root)
             tk_root.after(1000, lambda: self._process_payment(tk_root))
         self._refresh_ui()
 
