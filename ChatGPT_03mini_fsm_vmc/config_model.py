@@ -48,7 +48,7 @@ class Channel(str, Enum):
 class Person(BaseModel):
     name: str
     email: EmailStr
-    phone: Optional[str] = None
+    phone: PhoneStr
     address: Optional[str] = None
     notes: Optional[str] = None
     # …any other fields you want to add
@@ -123,13 +123,25 @@ class PeopleConfig(BaseModel):
     # …any other roles you want to add
 
 # 6) Your physical‐machine metadata
+class ProductConfig(BaseModel):
+    sku: str
+    price: float
+    name: Optional[str]  = None
+    description: Optional[str] = None
+    image_url: Optional[str] = None # e.g. “https://example.com/image.jpg”  
+    inventory_count: int = default=0 # e.g. 0 for out of stock, 10 for 10 items in stock, -1 for unlimited
+    # …any other product-specific fields you want to add
+         
 class PhysicalDetails(BaseModel):
     common_name: str  # e.g. “Vending Machine 1” or “Snack Machine” or “Coffee Machine”
     serial_number: str
     location: str  # e.g. “Lobby, Building A” or “Floor 2, Room 201” or “Warehouse 3”
     model: Optional[str]
     people: PeopleConfig  # e.g. {"machine_owner": Person, "location_owner": Person, ...}
-    products: List[Dict]  # e.g. [{"sku": "12345", "price": 1.25}, {"sku": "67890", "price": 2.50}]
+    products: List[ProductConfig] = Field(
+        default_factory=list,
+        description="List of products available in the machine"
+    )
 
     # --- convenience properties ---
     @property
@@ -151,7 +163,7 @@ class PhysicalDetails(BaseModel):
     def service_technicians(self) -> List[Person]:
         return self.people.service_technicians
     @property
-    def products(self) -> List[Dict]:
+    def products_list(self) -> List[Dict]:
         return self.products
 
     @model_validator(mode="after")      
@@ -171,29 +183,29 @@ class StripeConfig(BaseModel):
     )
 
 class PayPalConfig(BaseModel):
-    client_id: str
+    client_id: SecretStr
     client_secret: SecretStr
     sandbox: bool = True
 
 # add more as needed, e.g. Square, Venmo, etc.
 
 # 8) Define MDB devices on the bus
-class MDB_Device(BaseModel):
+class MDBDevice(BaseModel):
     exists: bool = False
     serial_number: Optional[str] = None
     buss_address: int
     device_type: str    # e.g. “bill_validator”, “coin_acceptor”
     settings: Dict[str, str] = {}
 
-class MDB_Devices_Config(BaseModel):
+class MDBDevicesConfig(BaseModel):
     polling_interval: int = 0.5  # seconds between bus polls
-    devices: List[MDB_Device]
+    devices: List[MDBDevice]
 
 # 9) A single PaymentConfig that holds all of them
 class PaymentConfig(BaseModel):
     stripe: Optional[StripeConfig] = None
     paypal: Optional[PayPalConfig] = None
-    mdb: MDB_Devices_Config
+    mdb: Optional[MDBDevicesConfig] = None
 
 # a) Top-level model now includes communication
 class ConfigModel(BaseModel):
@@ -246,7 +258,10 @@ class ConfigModel(BaseModel):
                 return channel, gw
         return None, None
 
-
+class GatewayAdapter(Protocol):
+    def send(self, to: str, body: str, **kwargs) -> None: ...
+    def start_receiving(self, callback: Callable[[str, str], None]) -> None: ...
+    
 """
 How this helps
 Separation of concerns
