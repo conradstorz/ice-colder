@@ -1,4 +1,5 @@
-""" new proposed layout for config_model.py
+"""
+ new proposed layout for config_model.py
 # This file defines the configuration model for the vending machine controller.
 # It uses Pydantic for data validation and provides a structured way to manage
 # machine configuration, including physical details, payment methods, and       
@@ -31,7 +32,7 @@
 # config_model.py
 
 from enum import Enum
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Protocol, Callable
 from pydantic import BaseModel, EmailStr, SecretStr, Field, model_validator
 from pydantic.networks import PhoneStr
 from loguru import logger
@@ -48,13 +49,9 @@ class Channel(str, Enum):
 class Person(BaseModel):
     name: str
     email: EmailStr
-    phone: PhoneStr
+    phone: Optional[PhoneStr] = None
     address: Optional[str] = None
     notes: Optional[str] = None
-    # …any other fields you want to add
-    # List of channels to try when contacting this person
-    # This is a list of channels in order of preference
-    # e.g. [Channel.email, Channel.sms]
     preferred_comm: List[Channel] = Field(
         default_factory=list,
         description="Ordered list of channels to try when contacting this person"
@@ -96,8 +93,8 @@ class SnapchatGatewayConfig(BaseModel):
 
 # 4) Bundle them under one CommunicationConfig
 class CommunicationConfig(BaseModel):
-    email: Optional[EmailGatewayConfig]    = None
-    sms:   Optional[SMSGatewayConfig]      = None
+    email: Optional[EmailGatewayConfig] = None
+    sms: Optional[SMSGatewayConfig] = None
     snapchat: Optional[SnapchatGatewayConfig] = None
     # …add more as you integrate them
     # e.g. push notifications, webhooks, etc.
@@ -122,8 +119,8 @@ class PeopleConfig(BaseModel):
     # or cfg.physical.people.service_technicians[0].preferred_comm
     # …any other roles you want to add
 
-# 6) Your physical‐machine metadata
-class ProductConfig(BaseModel):
+# 6) Define a first-class Product model
+class Product(BaseModel):
     sku: str
     price: float
     name: Optional[str]  = None
@@ -131,49 +128,54 @@ class ProductConfig(BaseModel):
     image_url: Optional[str] = None # e.g. “https://example.com/image.jpg”  
     inventory_count: int = default=0 # e.g. 0 for out of stock, 10 for 10 items in stock, -1 for unlimited
     # …any other product-specific fields you want to add
-         
+
+# Your physical machine model     
 class PhysicalDetails(BaseModel):
     common_name: str  # e.g. “Vending Machine 1” or “Snack Machine” or “Coffee Machine”
     serial_number: str
     location: str  # e.g. “Lobby, Building A” or “Floor 2, Room 201” or “Warehouse 3”
     model: Optional[str]
-    people: PeopleConfig  # e.g. {"machine_owner": Person, "location_owner": Person, ...}
-    products: List[ProductConfig] = Field(
-        default_factory=list,
-        description="List of products available in the machine"
-    )
+    people: PeopleConfig  # e.g. {"machine_owner": Person, …}
+    product_list: List[Product] = Field(..., alias="products")
 
     # --- convenience properties ---
     @property
     def machine_id(self) -> str:
         return self.serial_number
-    @property           
+
+    @property
     def machine_location(self) -> str:
-        return self.location        
+        return self.location
+
     @property
     def machine_model(self) -> Optional[str]:
         return self.model
+
     @property
     def machine_owner(self) -> Person:
         return self.people.machine_owner
+
     @property
-    def location_owner(self) -> Person:     
+    def location_owner(self) -> Person:
         return self.people.location_owner
+
     @property
     def service_technicians(self) -> List[Person]:
         return self.people.service_technicians
-    @property
-    def products_list(self) -> List[Dict]:
-        return self.products
 
-    @model_validator(mode="after")      
+    @property
+    def products(self) -> List[Product]:
+        return self.product_list
+
+    @model_validator(mode="after")
     def log_physical_details(cls, values):
-        # Log when PhysicalDetails model is successfully created
-        product_count = len(values.products) if values.products is not None else 0
-        logger.debug(f"{cls.__name__} loaded: serial_number={values.serial_number}, location={values.location}, products count={product_count}")
+        # Log when a PhysicalDetails model is successfully created
+        # This is a good place to check if the serial number is unique
+        count = len(values.product_list) if values.product_list else 0
+        logger.debug(f"{cls.__name__} loaded: serial_number={values.serial_number}, location={values.location}, products count={count}")
         return values
 
-# 7) Payment Gateway‐specific configs
+# 8) Payment Gateway‐specific configs
 class StripeConfig(BaseModel):
     api_key: SecretStr
     webhook_secret: SecretStr
@@ -194,20 +196,25 @@ class MDBDevice(BaseModel):
     exists: bool = False
     serial_number: Optional[str] = None
     buss_address: int
-    device_type: str    # e.g. “bill_validator”, “coin_acceptor”
+    device_type: str    # e.g. "bill_validator", "coin_acceptor"
     settings: Dict[str, str] = {}
 
 class MDBDevicesConfig(BaseModel):
-    polling_interval: int = 0.5  # seconds between bus polls
+    polling_interval: float = 0.5  # seconds between bus polls
     devices: List[MDBDevice]
 
-# 9) A single PaymentConfig that holds all of them
+# 10) A single PaymentConfig that holds all of them
 class PaymentConfig(BaseModel):
     stripe: Optional[StripeConfig] = None
     paypal: Optional[PayPalConfig] = None
     mdb: Optional[MDBDevicesConfig] = None
 
-# a) Top-level model now includes communication
+# 11) Define a uniform adapter interface
+class GatewayAdapter(Protocol):
+    def send(self, to: str, body: str, **kwargs) -> None: ...
+    def start_receiving(self, callback: Callable[[str, str], None]) -> None: ...
+
+# 12) Top-level model now includes communication
 class ConfigModel(BaseModel):
     physical: PhysicalDetails
     payment: PaymentConfig
@@ -215,7 +222,7 @@ class ConfigModel(BaseModel):
 
     # --- convenience properties ---
     @property
-    def products(self) -> List[Dict[str, Any]]:
+    def products(self) -> List[Product]:
         return self.physical.products
 
     @property
@@ -239,9 +246,9 @@ class ConfigModel(BaseModel):
         return self.payment.paypal
 
     @property
-    def mdb_devices(self) -> List[MDB_Device]:
-        return self.payment.mdb.devices
-        
+    def mdb_devices(self) -> Optional[List[MDBDevice]]:
+        return self.payment.mdb.devices if self.payment.mdb else None
+
     @property
     def comm(self) -> CommunicationConfig:
         """Access all gateway configs in one place."""
@@ -258,10 +265,7 @@ class ConfigModel(BaseModel):
                 return channel, gw
         return None, None
 
-class GatewayAdapter(Protocol):
-    def send(self, to: str, body: str, **kwargs) -> None: ...
-    def start_receiving(self, callback: Callable[[str, str], None]) -> None: ...
-    
+
 """
 How this helps
 Separation of concerns
