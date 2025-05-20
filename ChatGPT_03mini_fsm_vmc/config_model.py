@@ -27,19 +27,88 @@
 # The model also includes logging functionality to track when models are
 # successfully created or loaded, providing better visibility into the
 # configuration process and helping with debugging and maintenance.
+"""
+# config_model.py
+
+from enum import Enum
+from typing import List, Optional, Dict, Any
+from pydantic import BaseModel, EmailStr, SecretStr, Field, model_validator
+from pydantic.networks import PhoneStr
+from loguru import logger
 
 
-from typing import List, Optional, Dict
-from pydantic import BaseModel, EmailStr, SecretStr, Field
+# 1) First, an enum of supported communication channels
+class Channel(str, Enum):
+    email    = "email"
+    sms      = "sms"
+    snapchat = "snapchat"
+    # …add more as you integrate them
 
-# 1) A generic person record
+# 2) A generic person record including preferred comms
 class Person(BaseModel):
     name: str
     email: EmailStr
     phone: Optional[str] = None
-    # you could add an enum role, but we'll group by field below
+    address: Optional[str] = None
+    notes: Optional[str] = None
+    # …any other fields you want to add
+    # List of channels to try when contacting this person
+    # This is a list of channels in order of preference
+    # e.g. [Channel.email, Channel.sms]
+    preferred_comm: List[Channel] = Field(
+        default_factory=list,
+        description="Ordered list of channels to try when contacting this person"
+    )
 
-# 2) Bundle all of your “people” roles in one place
+    @model_validator(mode="after")
+    def log_owner_contact(cls, values):
+        # Log when a Person model is successfully created
+        logger.debug(f"{cls.__name__} loaded: name={values.name}, email={values.email}")
+        # You can also log other fields if needed
+        if values.phone:
+            logger.debug(f"Phone: {values.phone}")
+        return values
+
+# 3) Gateway-specific communications configs
+class EmailGatewayConfig(BaseModel):
+    provider: str = "smtp"
+    # e.g. "smtp.example.com" or "smtp.gmail.com"
+    # or "smtp.sendgrid.net" or "smtp.mailgun.org"
+    smtp_server: str
+    port: int = 587
+    username: SecretStr
+    password: SecretStr
+    default_from: EmailStr
+
+class SMSGatewayConfig(BaseModel):
+    # e.g. Twilio, Nexmo, etc.
+    # This is a simplified example; real-world usage may require more fields
+    # like API keys, sender numbers, etc.
+    provider: str = "twilio"    
+    account_sid: SecretStr
+    auth_token: SecretStr
+    from_number: PhoneStr
+
+class SnapchatGatewayConfig(BaseModel):
+    client_id: SecretStr
+    client_secret: SecretStr
+    # …any other Snapchat API settings…
+
+# 4) Bundle them under one CommunicationConfig
+class CommunicationConfig(BaseModel):
+    email: Optional[EmailGatewayConfig]    = None
+    sms:   Optional[SMSGatewayConfig]      = None
+    snapchat: Optional[SnapchatGatewayConfig] = None
+    # …add more as you integrate them
+    # e.g. push notifications, webhooks, etc.
+
+    def get_gateway(self, channel: Channel) -> Optional[BaseModel]:
+        """
+        Return the config for the given channel, or None if not configured.
+        """
+        return getattr(self, channel.value, None)
+
+# 5) Bundle all of your “people” roles in one place
 class PeopleConfig(BaseModel):
     machine_owner: Person
     location_owner: Person
@@ -48,16 +117,51 @@ class PeopleConfig(BaseModel):
         description="One or more techs who can service the machine"
     )
     # if you later need “backup_owner” or “QA_inspector” you can add them here
+    # and they’ll automatically be available in the top-level model
+    # e.g. cfg.physical.people.backup_owner
+    # or cfg.physical.people.service_technicians[0].preferred_comm
+    # …any other roles you want to add
 
-# 3) Your physical‐machine metadata
+# 6) Your physical‐machine metadata
 class PhysicalDetails(BaseModel):
+    common_name: str  # e.g. “Vending Machine 1” or “Snack Machine” or “Coffee Machine”
     serial_number: str
-    location: str  # e.g. “Lobby, Building A”
+    location: str  # e.g. “Lobby, Building A” or “Floor 2, Room 201” or “Warehouse 3”
     model: Optional[str]
-    people: PeopleConfig
-    products: List[Dict]  # e.g. [{"sku": "...", "price": 1.25}, ...]
+    people: PeopleConfig  # e.g. {"machine_owner": Person, "location_owner": Person, ...}
+    products: List[Dict]  # e.g. [{"sku": "12345", "price": 1.25}, {"sku": "67890", "price": 2.50}]
 
-# 4) Gateway‐specific configs
+    # --- convenience properties ---
+    @property
+    def machine_id(self) -> str:
+        return self.serial_number
+    @property           
+    def machine_location(self) -> str:
+        return self.location        
+    @property
+    def machine_model(self) -> Optional[str]:
+        return self.model
+    @property
+    def machine_owner(self) -> Person:
+        return self.people.machine_owner
+    @property
+    def location_owner(self) -> Person:     
+        return self.people.location_owner
+    @property
+    def service_technicians(self) -> List[Person]:
+        return self.people.service_technicians
+    @property
+    def products(self) -> List[Dict]:
+        return self.products
+
+    @model_validator(mode="after")      
+    def log_physical_details(cls, values):
+        # Log when PhysicalDetails model is successfully created
+        product_count = len(values.products) if values.products is not None else 0
+        logger.debug(f"{cls.__name__} loaded: serial_number={values.serial_number}, location={values.location}, products count={product_count}")
+        return values
+
+# 7) Payment Gateway‐specific configs
 class StripeConfig(BaseModel):
     api_key: SecretStr
     webhook_secret: SecretStr
@@ -71,30 +175,35 @@ class PayPalConfig(BaseModel):
     client_secret: SecretStr
     sandbox: bool = True
 
-# 5) MDB devices on the bus
-class MDBDevice(BaseModel):
-    address: int
+# add more as needed, e.g. Square, Venmo, etc.
+
+# 8) Define MDB devices on the bus
+class MDB_Device(BaseModel):
+    exists: bool = False
+    serial_number: Optional[str] = None
+    buss_address: int
     device_type: str    # e.g. “bill_validator”, “coin_acceptor”
     settings: Dict[str, str] = {}
 
-class MDBConfig(BaseModel):
-    polling_interval: int = 5  # seconds between bus polls
-    devices: List[MDBDevice]
+class MDB_Devices_Config(BaseModel):
+    polling_interval: int = 0.5  # seconds between bus polls
+    devices: List[MDB_Device]
 
-# 6) A single PaymentConfig that holds all of them
+# 9) A single PaymentConfig that holds all of them
 class PaymentConfig(BaseModel):
     stripe: Optional[StripeConfig] = None
     paypal: Optional[PayPalConfig] = None
-    mdb: MDBConfig
+    mdb: MDB_Devices_Config
 
-# 7) Your top‐level model
+# a) Top-level model now includes communication
 class ConfigModel(BaseModel):
     physical: PhysicalDetails
     payment: PaymentConfig
+    communication: CommunicationConfig
 
     # --- convenience properties ---
     @property
-    def products(self) -> List[Dict]:
+    def products(self) -> List[Dict[str, Any]]:
         return self.physical.products
 
     @property
@@ -118,10 +227,27 @@ class ConfigModel(BaseModel):
         return self.payment.paypal
 
     @property
-    def mdb_devices(self) -> List[MDBDevice]:
+    def mdb_devices(self) -> List[MDB_Device]:
         return self.payment.mdb.devices
+        
+    @property
+    def comm(self) -> CommunicationConfig:
+        """Access all gateway configs in one place."""
+        return self.communication
+
+    def get_preferred_gateway_for(self, person: Person):
+        """
+        Walk the person’s `preferred_comm` list in order,
+        returning the first configured gateway and its channel.
+        """
+        for channel in person.preferred_comm:
+            gw = self.comm.get_gateway(channel)
+            if gw is not None:
+                return channel, gw
+        return None, None
 
 
+"""
 How this helps
 Separation of concerns
 
@@ -148,72 +274,27 @@ Add extra fields (e.g. phone, backup_contact) to Person—every role gets them a
 Tweak MDBConfig.polling_interval or StripeConfig.max_retry_delay only in one spot.
 
 With this layout, your VMC code simply holds on to a ConfigModel and calls the high-level properties you need—no more .model_dump() or nested dict fiddling.
+
+Define a uniform gateway interface (e.g. send(to, body, **kwargs) and start_receiving(callback))
+
+Implement one adapter class per channel using the patterns above
+
+Wire them into your CommunicationConfig so cfg.comm.email returns your SMTP/SES client, cfg.comm.slack your Slack client, etc.
+
+With that in place, adding support for any new channel is as simple as:
+
+Adding its config model
+
+Writing a tiny adapter class
+
+Exposing it in your façade
+
+Your VMC logic then just does:
+
+channel, gateway = cfg.get_preferred_gateway_for(person)
+gateway.send(person_contact, message_body)
+—no messy protocol details scattered throughout your code.
+
+
 """
 
-
-from pydantic import BaseModel, Field, model_validator
-from typing import List, Dict, Any
-from loguru import logger
-
-class OwnerContact(BaseModel):
-    name: str
-    phone_number: str
-    address: str
-    email: str
-    notes: str
-
-    @model_validator(mode="after")
-    def log_owner_contact(cls, values):
-        # Log when an OwnerContact model is successfully created
-        logger.debug(f"{cls.__name__} loaded: name={values.name}, email={values.email}")
-        return values
-
-class PhysicalDetails(BaseModel):
-    machine_id: str
-    products: List[Dict[str, Any]]
-
-    @model_validator(mode="after")
-    def log_physical_details(cls, values):
-        # Log when PhysicalDetails model is successfully created
-        product_count = len(values.products) if values.products is not None else 0
-        logger.debug(f"{cls.__name__} loaded: machine_id={values.machine_id}, products count={product_count}")
-        return values
-
-class ConfigModel(BaseModel):
-    machine_owner_contact: OwnerContact
-    location_owner_contact: OwnerContact
-    physical_location: OwnerContact
-    physical_details: PhysicalDetails
-
-    @model_validator(mode="after")
-    def log_config_summary(cls, values):
-        # Log a summary when the full configuration model is loaded
-        pd = values.physical_details
-        product_count = len(pd.products) if pd.products is not None else 0
-        logger.info(f"{cls.__name__} loaded: machine_id={pd.machine_id}, products_count={product_count}")
-        return values
-
-"""config file layout notes:
-machine:
-    Details:
-        Name:
-        Products:
-        Physical Specs:
-        Virtual Payment Providers:
-        Maintenance Records:
-        etc...
-    Owner:
-        Name:
-        Contact:
-        etc...
-    Loation:
-        Address:
-        Description
-        Contact:
-        GPS:
-        etc...
-    Repair Service:
-        Name:
-        Contact:
-        etc...
-"""
