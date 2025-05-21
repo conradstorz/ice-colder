@@ -1,34 +1,57 @@
+# This file is part of the Vending Machine Controller project.
 """
  new proposed layout for config_model.py
-# This file defines the configuration model for the vending machine controller.
-# It uses Pydantic for data validation and provides a structured way to manage
-# machine configuration, including physical details, payment methods, and       
-# owner contacts.
-# The model is designed to be extensible and maintainable, allowing for easy
-# updates and additions to the configuration as needed.
-# The model includes:
-# - Person: A generic person record with name, email, and phone.
-# - PeopleConfig: A bundle of roles for machine owner, location owner, and service technicians.
-# - PhysicalDetails: Metadata for the physical machine, including serial number, location, and products.
-# - StripeConfig: Configuration for Stripe payment gateway.
-# - PayPalConfig: Configuration for PayPal payment gateway.
-# - MDBDevice: Configuration for MDB devices on the bus.
-# - MDBConfig: Configuration for the MDB bus, including polling interval and devices.
-# - PaymentConfig: A single configuration that holds all payment methods.
-# - ConfigModel: The top-level model that combines all configurations.
-# The model also includes convenience properties for easy access to various
-# configuration details, such as products, machine owner, and payment methods.
-# The model uses Pydantic's BaseModel for data validation and provides
-# type hints for better code readability and maintainability.
-# The model is designed to be used in a vending machine controller application,
-# where it can be loaded from a configuration file (e.g., YAML or JSON) and
-# used to initialize the machine's settings and behavior.
-# The model is extensible, allowing for easy addition of new fields or
-# configurations as needed in the future.
-# The model also includes logging functionality to track when models are
-# successfully created or loaded, providing better visibility into the
-# configuration process and helping with debugging and maintenance.
+
+How this helps
+Separation of concerns
+
+Everyone (Person) is defined once, then wired into PeopleConfig.
+
+Gateways each get their own clear namespace (stripe, paypal, mdb).
+
+One place to change
+If you add a new role (backup_owner) or a new gateway (square), you only touch the models and the handful of flat properties you care about.
+
+Type safety & IDE autocompletion
+Anywhere in your code that you previously wrote
+
+cfg["physical_details"]["people"]["machine_owner"]["email"]
+you can now do
+
+cfg.machine_owner.email
+with full type checks and docs.
+
+Extensible
+
+Add extra fields (e.g. phone, backup_contact) to Person, then every role gets them automatically.
+
+Tweak MDBConfig.polling_interval or StripeConfig.max_retry_delay only in one spot.
+
+With this layout, your VMC code simply holds on to a ConfigModel and calls the high-level properties you need—no more .model_dump() or nested dict fiddling.
+
+Define a uniform gateway interface (e.g. send(to, body, **kwargs) and start_receiving(callback))
+
+Implement one adapter class per channel using the patterns above
+
+Wire them into your CommunicationConfig so cfg.comm.email returns your SMTP/SES client, cfg.comm.slack your Slack client, etc.
+
+With that in place, adding support for any new channel is as simple as:
+
+Adding its config model
+
+Writing a tiny adapter class
+
+Exposing it in your façade
+
+Your VMC logic then just does:
+
+channel_name, gateway_handle = cfg.get_preferred_gateway_for(person)
+gateway_handle.send(person_contact, message_body)
+—no messy protocol details scattered throughout your code.
+
+
 """
+
 # config_model.py
 
 from enum import Enum
@@ -265,55 +288,4 @@ class ConfigModel(BaseModel):
                 return channel, gw
         return None, None
 
-
-"""
-How this helps
-Separation of concerns
-
-Everyone (Person) is defined once, then wired into PeopleConfig.
-
-Gateways each get their own clear namespace (stripe, paypal, mdb).
-
-One place to change
-If you add a new role (backup_owner) or a new gateway (square), you only touch the models and the handful of flat properties you care about.
-
-Type safety & IDE autocompletion
-Anywhere in your code that you previously wrote
-
-cfg["physical_details"]["people"]["machine_owner"]["email"]
-you can now do
-
-cfg.machine_owner.email
-with full type checks and docs.
-
-Extensible
-
-Add extra fields (e.g. phone, backup_contact) to Person—every role gets them automatically.
-
-Tweak MDBConfig.polling_interval or StripeConfig.max_retry_delay only in one spot.
-
-With this layout, your VMC code simply holds on to a ConfigModel and calls the high-level properties you need—no more .model_dump() or nested dict fiddling.
-
-Define a uniform gateway interface (e.g. send(to, body, **kwargs) and start_receiving(callback))
-
-Implement one adapter class per channel using the patterns above
-
-Wire them into your CommunicationConfig so cfg.comm.email returns your SMTP/SES client, cfg.comm.slack your Slack client, etc.
-
-With that in place, adding support for any new channel is as simple as:
-
-Adding its config model
-
-Writing a tiny adapter class
-
-Exposing it in your façade
-
-Your VMC logic then just does:
-
-channel, gateway = cfg.get_preferred_gateway_for(person)
-gateway.send(person_contact, message_body)
-—no messy protocol details scattered throughout your code.
-
-
-"""
 
