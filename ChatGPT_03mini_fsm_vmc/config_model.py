@@ -63,13 +63,19 @@ from loguru import logger
 
 # 1) First, an enum of supported communication channels
 class Channel(str, Enum):
-    email    = "email"
-    sms      = "sms"
+    """
+    Supported communication channels
+    """
+    email = "email"
+    sms = "sms"
     snapchat = "snapchat"
-    # …add more as you integrate them
+    # …add more channels as needed
 
-# 2) A generic person record including preferred comms
+
 class Person(BaseModel):
+    """
+    Generic person record with contact details and preferred communication channels
+    """
     name: str
     email: EmailStr
     phone: Optional[PhoneStr] = None
@@ -91,45 +97,57 @@ class Person(BaseModel):
 
 # 3) Gateway-specific communications configs
 class EmailGatewayConfig(BaseModel):
+    """
+    Configuration for SMTP-based email gateway
+    """
     provider: str = "smtp"
-    # e.g. "smtp.example.com" or "smtp.gmail.com"
-    # or "smtp.sendgrid.net" or "smtp.mailgun.org"
     smtp_server: str
     port: int = 587
     username: SecretStr
     password: SecretStr
     default_from: EmailStr
 
+
 class SMSGatewayConfig(BaseModel):
-    # e.g. Twilio, Nexmo, etc.
-    # This is a simplified example; real-world usage may require more fields
-    # like API keys, sender numbers, etc.
-    provider: str = "twilio"    
+    """
+    Configuration for SMS gateway (e.g., Twilio)
+    """
+    provider: str = "twilio"
     account_sid: SecretStr
     auth_token: SecretStr
     from_number: PhoneStr
 
+
 class SnapchatGatewayConfig(BaseModel):
+    """
+    Configuration for Snapchat messaging gateway
+    """
     client_id: SecretStr
     client_secret: SecretStr
-    # …any other Snapchat API settings…
+    # …additional Snapchat API settings…
+
 
 # 4) Bundle them under one CommunicationConfig
 class CommunicationConfig(BaseModel):
+    """
+    Bundle of configured communication gateways
+    """
     email: Optional[EmailGatewayConfig] = None
     sms: Optional[SMSGatewayConfig] = None
     snapchat: Optional[SnapchatGatewayConfig] = None
-    # …add more as you integrate them
-    # e.g. push notifications, webhooks, etc.
+    # …add more channels here as integrated
 
     def get_gateway(self, channel: Channel) -> Optional[BaseModel]:
         """
-        Return the config for the given channel, or None if not configured.
+        Return the config model for a given channel, or None if not configured
         """
         return getattr(self, channel.value, None)
 
 # 5) Bundle all of your “people” roles in one place
 class PeopleConfig(BaseModel):
+    """
+    Roles and their associated Person records
+    """
     machine_owner: Person
     location_owner: Person
     service_technicians: List[Person] = Field(
@@ -144,21 +162,29 @@ class PeopleConfig(BaseModel):
 
 # 6) Define a first-class Product model
 class Product(BaseModel):
+    """
+    Product definition for vending
+    """
     sku: str
     price: float
-    name: Optional[str]  = None
+    name: Optional[str] = None
     description: Optional[str] = None
-    image_url: Optional[str] = None # e.g. “https://example.com/image.jpg”  
-    inventory_count: int = default=0 # e.g. 0 for out of stock, 10 for 10 items in stock, -1 for unlimited
-    # …any other product-specific fields you want to add
+    image_url: Optional[str] = None
+    inventory_count: int = Field(
+        default=0,
+        description="0=out of stock, -1=unlimited"
+    )
 
-# Your physical machine model     
+# Define the physical machine model
 class PhysicalDetails(BaseModel):
+    """
+    Metadata for the physical vending machine
+    """
     common_name: str  # e.g. “Vending Machine 1” or “Snack Machine” or “Coffee Machine”
     serial_number: str
     location: str  # e.g. “Lobby, Building A” or “Floor 2, Room 201” or “Warehouse 3”
     model: Optional[str]
-    people: PeopleConfig  # e.g. {"machine_owner": Person, …}
+    people: PeopleConfig
     product_list: List[Product] = Field(..., alias="products")
 
     # --- convenience properties ---
@@ -192,14 +218,21 @@ class PhysicalDetails(BaseModel):
 
     @model_validator(mode="after")
     def log_physical_details(cls, values):
-        # Log when a PhysicalDetails model is successfully created
-        # This is a good place to check if the serial number is unique
+        """
+        Log when PhysicalDetails is loaded
+        """
         count = len(values.product_list) if values.product_list else 0
-        logger.debug(f"{cls.__name__} loaded: serial_number={values.serial_number}, location={values.location}, products count={count}")
+        logger.debug(
+            f"{cls.__name__} loaded: serial={values.serial_number}, "
+            f"location={values.location}, products={count}"
+        )
         return values
 
 # 8) Payment Gateway‐specific configs
 class StripeConfig(BaseModel):
+    """
+    Configuration for Stripe payment gateway
+    """
     api_key: SecretStr
     webhook_secret: SecretStr
     max_retry_delay: int = Field(
@@ -207,38 +240,59 @@ class StripeConfig(BaseModel):
         description="Seconds to wait before retrying a failed Stripe call"
     )
 
+
 class PayPalConfig(BaseModel):
+    """
+    Configuration for PayPal payment gateway
+    """
     client_id: SecretStr
     client_secret: SecretStr
     sandbox: bool = True
 
-# add more as needed, e.g. Square, Venmo, etc.
 
-# 8) Define MDB devices on the bus
 class MDBDevice(BaseModel):
+    """
+    Definition of a single MDB bus device
+    """
     exists: bool = False
     serial_number: Optional[str] = None
     buss_address: int
-    device_type: str    # e.g. "bill_validator", "coin_acceptor"
-    settings: Dict[str, str] = {}
+    device_type: str  # e.g. "bill_validator", "coin_acceptor"
+    settings: Dict[str, Any] = Field(default_factory=dict) # Device-specific settings 
+
 
 class MDBDevicesConfig(BaseModel):
-    polling_interval: float = 0.5  # seconds between bus polls
+    """
+    MDB bus polling and device list
+    """
+    polling_interval: float = Field(
+        0.5,
+        description="Seconds between bus polls"
+    )
     devices: List[MDBDevice]
 
 # 10) A single PaymentConfig that holds all of them
 class PaymentConfig(BaseModel):
+    """
+    Combined payment gateway configurations
+    """
     stripe: Optional[StripeConfig] = None
     paypal: Optional[PayPalConfig] = None
     mdb: Optional[MDBDevicesConfig] = None
 
 # 11) Define a uniform adapter interface
 class GatewayAdapter(Protocol):
+    """
+    Uniform gateway interface
+    """
     def send(self, to: str, body: str, **kwargs) -> None: ...
     def start_receiving(self, callback: Callable[[str, str], None]) -> None: ...
 
 # 12) Top-level model now includes communication
 class ConfigModel(BaseModel):
+    """
+    Top-level configuration model for the VMC
+    """
     physical: PhysicalDetails
     payment: PaymentConfig
     communication: CommunicationConfig
@@ -274,18 +328,17 @@ class ConfigModel(BaseModel):
 
     @property
     def comm(self) -> CommunicationConfig:
-        """Access all gateway configs in one place."""
+        """Access all communication gateway configs in one place."""
         return self.communication
 
-    def get_preferred_gateway_for(self, person: Person):
+    def get_preferred_gateway_for(
+        self, person: Person
+    ) -> Optional[tuple[Channel, BaseModel]]:
         """
-        Walk the person’s `preferred_comm` list in order,
-        returning the first configured gateway and its channel.
+        Return first configured gateway for a person in their preference order
         """
         for channel in person.preferred_comm:
-            gw = self.comm.get_gateway(channel)
-            if gw is not None:
-                return channel, gw
+            gateway = self.comm.get_gateway(channel)
+            if gateway:
+                return channel, gateway
         return None, None
-
-
