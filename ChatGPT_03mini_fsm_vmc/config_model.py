@@ -95,7 +95,7 @@ class Person(BaseModel):
             logger.debug(f"Phone: {values.phone}")
         return values
 
-# 3) Gateway-specific communications configs
+# 2) Gateway-specific communications configs
 class EmailGatewayConfig(BaseModel):
     """
     Configuration for SMTP-based email gateway
@@ -127,7 +127,7 @@ class SnapchatGatewayConfig(BaseModel):
     # …additional Snapchat API settings…
 
 
-# 4) Bundle them under one CommunicationConfig
+# 3) Bundle them under one CommunicationConfig
 class CommunicationConfig(BaseModel):
     """
     Bundle of configured communication gateways
@@ -143,7 +143,7 @@ class CommunicationConfig(BaseModel):
         """
         return getattr(self, channel.value, None)
 
-# 5) Bundle all of your “people” roles in one place
+# 4) Bundle all of your “people” roles in one place
 class PeopleConfig(BaseModel):
     """
     Roles and their associated Person records
@@ -160,7 +160,7 @@ class PeopleConfig(BaseModel):
     # or cfg.physical.people.service_technicians[0].preferred_comm
     # …any other roles you want to add
 
-# 6) Define a first-class Product model
+# 5) Define a first-class Product model
 class Product(BaseModel):
     """
     Product definition for vending
@@ -228,7 +228,7 @@ class PhysicalDetails(BaseModel):
         )
         return values
 
-# 8) Payment Gateway‐specific configs
+# 6) Payment Gateway‐specific configs
 class StripeConfig(BaseModel):
     """
     Configuration for Stripe payment gateway
@@ -271,7 +271,7 @@ class MDBDevicesConfig(BaseModel):
     )
     devices: List[MDBDevice]
 
-# 10) A single PaymentConfig that holds all of them
+# 7) A single PaymentConfig that holds all of them
 class PaymentConfig(BaseModel):
     """
     Combined payment gateway configurations
@@ -280,7 +280,7 @@ class PaymentConfig(BaseModel):
     paypal: Optional[PayPalConfig] = None
     mdb: Optional[MDBDevicesConfig] = None
 
-# 11) Define a uniform adapter interface
+# 8) Define a uniform adapter interface
 class GatewayAdapter(Protocol):
     """
     Uniform gateway interface
@@ -288,7 +288,7 @@ class GatewayAdapter(Protocol):
     def send(self, to: str, body: str, **kwargs) -> None: ...
     def start_receiving(self, callback: Callable[[str, str], None]) -> None: ...
 
-# 12) Top-level model now includes communication
+# 9) Top-level model now includes communication
 class ConfigModel(BaseModel):
     """
     Top-level configuration model for the VMC
