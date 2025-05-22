@@ -1,5 +1,6 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
+from loguru import logger
 from pathlib import Path
 from typing import List, Type, TypeVar, Optional
 from pydantic import BaseModel, Field
@@ -8,17 +9,18 @@ from pydantic import BaseModel, Field
 E = TypeVar('E', bound='EventBase')
 
 class EventBase(BaseModel):
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     type: str
 
-    def dict(self, **kwargs):
-        # Ensure timestamp is serialized to ISO format
-        d = super().dict(**kwargs)
-        d['timestamp'] = self.timestamp.isoformat()
-        return d
+    # Centralize ISO-format JSON encoding for all datetime fields
+    model_config = {
+        "json_encoders": {
+            datetime: lambda dt: dt.isoformat()
+        }
+    }
 
 class TransactionEvent(EventBase):
-    type: str = Field(default='transaction', const=True)
+    type: str = Field(default='transaction')
     channel: str
     sku: str
     amount: float
@@ -26,7 +28,7 @@ class TransactionEvent(EventBase):
     fsm_state_after: Optional[str]
 
 class SnapshotEvent(EventBase):
-    type: str = Field(default='snapshot', const=True)
+    type: str = Field(default='snapshot')
     # embed full state snapshot as JSON string (or dict)
     state: dict
 
@@ -46,7 +48,8 @@ class EventStore:
         Append a single event as a JSON line to the log file.
         """
         with self.log_path.open('a', encoding='utf-8') as f:
-            f.write(json.dumps(event.dict()) + '\n')
+            # Use Pydantic’s built-in JSON serializer
+            f.write(event.model_dump_json() + "\n")
         self._events_since_snapshot += 1
 
     def replay_events(self, event_type: Type[E]) -> List[E]:
@@ -60,7 +63,8 @@ class EventStore:
                     payload = json.loads(line)
                     if payload.get('type') == event_type.__fields__['type'].default:
                         events.append(event_type.parse_obj(payload))
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as err:
+                    logger.warning(f"Skipping malformed event line: {err}")
                     continue
         return events
 
@@ -80,7 +84,8 @@ class EventStore:
         """
         snapshot = SnapshotEvent(state=state)
         with self.snapshot_path.open('w', encoding='utf-8') as f:
-            f.write(snapshot.json(indent=2))
+            # Consistently use Pydantic’s JSON dumper
+            f.write(snapshot.model_dump_json(indent=2))
         # Clear the log
         self.log_path.write_text('')
         self._events_since_snapshot = 0
