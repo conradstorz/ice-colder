@@ -9,8 +9,15 @@ that update internal state without any direct hardware or UI interaction.
 from transitions import Machine
 from loguru import logger
 
+from ChatGPT_03mini_fsm_vmc.event_store import TransactionEvent
+from ChatGPT_03mini_fsm_vmc.state_model import MachineState
+from ChatGPT_03mini_fsm_vmc import event_store
+
 # Prefix for any logged state changes, to make them easily searchable in logs
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
+
+# Reference to the event store for snapshot and event operations
+store = event_store
 
 #: FSM transition table.
 #: **Note**: ordering matters when multiple transitions share the same trigger name.
@@ -137,7 +144,7 @@ class VMC:
             fsm_state_after=self.new_state
         )
         store.append_event(evt)
-        store.checkpoint(vmc_state.dict())
+        store.checkpoint(self.__dict__)
         logger.info(f"{STATE_CHANGE_PREFIX} Completing transaction; remaining credit={self.credit_escrow:.2f}")
 
     def on_error(self):
