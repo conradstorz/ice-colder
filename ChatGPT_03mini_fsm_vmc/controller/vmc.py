@@ -66,16 +66,16 @@ class VMC:
     states = ["idle", "interacting_with_user", "dispensing", "error"]
 
     def __init__(self, config: ConfigModel):
-        logger.debug(f"Initializing VMC with pre-loaded ConfigModel: {config}")
+        logger.debug("Initializing VMC with pre-loaded ConfigModel")
 
-        # Store Pydantic configuration model and raw dict
+        # Store Pydantic configuration model
         self.config_model = config
-        self.config = self.config_model.model_dump()
-        logger.debug(f"Configuration loaded: {self.config}")
+        # If you need to inspect the full config, use:
+        logger.debug(self.config_model.model_dump_json(exclude_none=True, indent=2))
 
         # Extract business data from config_model
-        self.products = self.config_model.physical_details.products
-        self.owner_contact = self.config_model.machine_owner_contact
+        self.products = self.config_model.products  # Adjusted to match actual ConfigModel structure
+        self.owner_contact = self.config_model.machine_owner
 
         # Initialize business state
         self.selected_product = None
@@ -93,7 +93,7 @@ class VMC:
 
         # Data-driven FSM setup: using TRANSITIONS list.
         # Note: ordering matters when multiple transitions share the same trigger name.
-        self.machine = Machine(model=self, states=VMC.states, initial=VMC.states[0])
+        self.machine = Machine(model=self, states=VMC.states, initial=VMC.states[0], auto_transitions=False)
 
         # Add all transitions from the TRANSITIONS table.
         for t in TRANSITIONS:
@@ -104,10 +104,9 @@ class VMC:
             self.machine.add_transition(**t)
         logger.debug("FSM transitions set up successfully.")
 
-        # Initialize PaymentGatewayManager using a config key if defined
-        vpay_cfg = getattr(self.config_model, "virtual_payment_config", {})
-        self.payment_gateway_manager = PaymentGatewayManager(config=vpay_cfg)
-        logger.debug(f"PaymentGatewayManager initialized with config: {vpay_cfg}")
+        # Initialize PaymentGatewayManager with the structured payment config
+        self.payment_gateway_manager = PaymentGatewayManager(config=self.config_model.payment.model_dump())
+        logger.debug("PaymentGatewayManager initialized with payment config")
         self.virtual_payment_index = 0
         logger.debug(f"Initial virtual payment index: {self.virtual_payment_index}")
 
@@ -151,9 +150,9 @@ class VMC:
     def _refresh_ui(self):
         if self.update_callback:
             logger.debug(
-                f"Refreshing UI with state={self.state}, selected_product={self.selected_product}, credit_escrow={self.credit_escrow:.2f}"
+                f"Refreshing UI with state={self.machine.state}, selected_product={self.selected_product}, credit_escrow={self.credit_escrow:.2f}"
             )
-            self.update_callback(self.state, self.selected_product, self.credit_escrow)
+            self.update_callback(self.machine.state, self.selected_product, self.credit_escrow)
 
     def _display_message(self, message):
         if self.message_callback:
@@ -241,7 +240,7 @@ class VMC:
 
     def select_product(self, product_index, tk_root):
         logger.debug(f"Selecting product with index: {product_index}")
-        if self.state not in ["idle", "interacting_with_user"]:
+        if self.machine.state not in ["idle", "interacting_with_user"]:
             logger.warning("Cannot change selection; machine not ready.")
             return
         if product_index >= len(self.products):
@@ -257,39 +256,43 @@ class VMC:
                 self.send_customer_message(f"{self.selected_product.get('name')} is sold out. Please select another product.", tk_root)
                 return
 
-        if self.state == "idle":
-            self.start_interaction()
+        if self.machine.state == "idle":
+            # Call the trigger method using the Machine's trigger method
+            self.machine.trigger('start_interaction')
             tk_root.after(1000, lambda: self._process_payment(tk_root))
-        elif self.state == "interacting_with_user":
+        elif self.machine.state == "interacting_with_user":
             # Initiate virtual payment cycling when a product is re-selected
             self.initiate_virtual_payment(self.selected_product.get('price', 0), tk_root)
             tk_root.after(1000, lambda: self._process_payment(tk_root))
         self._refresh_ui()
 
     def _update_selection_message(self, tk_root):
-        price = self.selected_product.get("price", 0)
-        if self.credit_escrow < price:
-            required = price - self.credit_escrow
-            message = f"Changed selection to {self.selected_product.get('name')}. Insert additional ${required:.2f}."
+        price = self.selected_product.get("price", 0) if self.selected_product else 0
+        if self.selected_product:
+            if self.credit_escrow < price:
+                required = price - self.credit_escrow
+                message = f"Changed selection to {self.selected_product.get('name')}. Insert additional ${required:.2f}."
+            else:
+                message = f"Changed selection to {self.selected_product.get('name')}. Sufficient funds available."
         else:
-            message = f"Changed selection to {self.selected_product.get('name')}. Sufficient funds available."
+            message = "No product selected."
         logger.debug(f"Updated selection message: {message}")
         self.send_customer_message(message, tk_root)
         self.last_insufficient_message = message
 
     def _process_payment(self, tk_root):
         logger.debug(f"Processing payment for product: {self.selected_product}")
-        if self.state != "interacting_with_user":
+        if self.machine.state != "interacting_with_user":
             logger.debug("State is not interacting_with_user; aborting payment process.")
             return
 
-        price = self.selected_product.get("price", 0)
+        price = self.selected_product.get("price", 0) if self.selected_product else 0
         if self.credit_escrow >= price:
             logger.info(f"{STATE_CHANGE_PREFIX} Escrow sufficient ({self.credit_escrow:.2f} >= {price:.2f}). Processing payment.")
             self.send_customer_message("Sufficient funds received. Processing your payment...", tk_root)
             self.credit_escrow -= price
             logger.debug(f"Deducted price from escrow. New escrow: {self.credit_escrow:.2f}")
-            self.dispense_product()
+            self.machine.trigger('dispense_product')
             self._refresh_ui()
             tk_root.after(1000, lambda: self._finish_dispensing(tk_root))
             self.last_insufficient_message = ""
@@ -304,15 +307,16 @@ class VMC:
 
     def _finish_dispensing(self, tk_root):
         logger.debug(f"Finishing dispensing process for product: {self.selected_product}")
-        if self.state != "dispensing":
+        if self.machine.state != "dispensing":
             logger.debug("State is not dispensing; cannot finish dispensing.")
             return
-        logger.info(f"{STATE_CHANGE_PREFIX} Finished dispensing: {self.selected_product.get('name')}")
+        product_name = self.selected_product.get('name') if self.selected_product else "Unknown"
+        logger.info(f"{STATE_CHANGE_PREFIX} Finished dispensing: {product_name}")
         self.send_customer_message("Product dispensed. Enjoy your purchase!", tk_root)
-        if self.selected_product.get("track_inventory", False):
+        if self.selected_product and self.selected_product.get("track_inventory", False):
             self.selected_product["inventory_count"] -= 1
             logger.info(f"Inventory for {self.selected_product.get('name')} updated: {self.selected_product['inventory_count']} remaining.")
-        self.complete_transaction()
+        self.machine.trigger('complete_transaction')
         self._refresh_ui()
 
     async def start_mdb_monitoring(self):
