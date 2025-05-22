@@ -91,6 +91,14 @@ class VMC:
         self.credit_escrow = 0.0     # Funds inserted but not yet spent
         self.last_payment_method = None  # Last method used for deposit or refund
 
+        # recover previous state from event store  TODO: make this code work
+        snapshot = store.load_latest_snapshot()
+        state = MachineState(**snapshot.state) if snapshot else MachineState(fsm_state="startup")
+        # then replay:
+        tx_events = store.replay_events(TransactionEvent)
+        for tx in tx_events:
+            state.record_transaction(tx.channel, tx.sku, tx.amount, tx.timestamp)
+
         # Create the state machine and register transitions
         self.machine = Machine(
             model=self,
@@ -121,6 +129,15 @@ class VMC:
 
     def on_complete_transaction(self):
         """Callback before returning to 'interacting_with_user' or 'idle'."""
+        evt = TransactionEvent(
+            channel=self.channel.value,
+            sku=self.sku,
+            amount=self.amount,
+            fsm_state_before=self.old_state,
+            fsm_state_after=self.new_state
+        )
+        store.append_event(evt)
+        store.checkpoint(vmc_state.dict())
         logger.info(f"{STATE_CHANGE_PREFIX} Completing transaction; remaining credit={self.credit_escrow:.2f}")
 
     def on_error(self):
