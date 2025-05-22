@@ -1,5 +1,6 @@
-from datetime import datetime
-from typing import Dict, Optional
+from datetime import datetime, timezone
+from loguru import logger
+from typing import Dict, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 from config_model import Channel
 import json
@@ -34,17 +35,19 @@ class ChannelState(BaseModel):
         # Ensure last_transaction is timezone-aware or None
         ts = values.last_transaction
         if ts and ts.tzinfo is None:
-            values.last_transaction = ts.replace(tzinfo=datetime.utcnow().tzinfo)
+            values.last_transaction = ts.replace(tzinfo=timezone.utc)
         return values
 
 
 class MachineState(BaseModel):
-    fsm_state: str
+    # Restrict FSM state to known values
+    fsm_state: Literal["idle", "interacting_with_user", "dispensing", "error"]
     credit_escrow: float = 0.0
     current_sku: Optional[str] = None
     channel_states: Dict[Channel, ChannelState] = Field(default_factory=dict)
     product_states: Dict[str, ProductState] = Field(default_factory=dict)
-    last_updated: datetime = Field(default_factory=datetime.utcnow)
+    # Use a timezone-aware default
+    last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     def record_transaction(
         self,
@@ -84,7 +87,7 @@ class MachineState(BaseModel):
         """
         Serialize state to JSON file with atomic replace.
         """
-        data = self.model_dump_json(indent=2, sort_keys=True)
+        data = self.model_dump_json(indent=2)
         atomic_write(path, data)
 
     @classmethod
@@ -93,5 +96,11 @@ class MachineState(BaseModel):
         Load state from JSON file; if missing, return a default-initialized state.
         """
         if not os.path.exists(path):
-            return cls(fsm_state="startup")
-        return cls.model_validate_json(open(path).read())
+            return cls(fsm_state="idle")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read()
+            return cls.model_validate_json(text)
+        except Exception as e:
+            logger.error(f"Failed to load state [{path}]: {e}")
+            return cls(fsm_state="idle")
