@@ -56,9 +56,10 @@ gateway_handle.send(person_contact, message_body)
 
 from enum import Enum
 from typing import List, Optional, Dict, Any, Protocol, Callable
-from pydantic import BaseModel, EmailStr, SecretStr, Field, model_validator
+from pydantic import BaseModel, EmailStr, SecretStr, Field, model_validator, BaseSettings
 from pydantic.networks import PhoneStr
 from loguru import logger
+from datetime import datetime
 
 
 # 1) First, an enum of supported communication channels
@@ -296,6 +297,16 @@ class ConfigModel(BaseModel):
     physical: PhysicalDetails
     payment: PaymentConfig
     communication: CommunicationConfig
+    # Allow loading from .env files via Pydantic BaseSettings
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+    # Centralize JSON serialization of datetimes:
+    model_config = {
+        "json_encoders": {
+            datetime: lambda dt: dt.isoformat()
+        }
+    }
 
     # --- convenience properties ---
     @property
@@ -341,4 +352,4 @@ class ConfigModel(BaseModel):
             gateway = self.comm.get_gateway(channel)
             if gateway:
                 return channel, gateway
-        return None, None
+        return None
