@@ -3,7 +3,7 @@ import sys
 import tkinter as tk
 from loguru import logger
 from config_model import ConfigModel
-from tkinter_ui import VendingMachineUI
+from hardware.tkinter_ui import VendingMachineUI
 
 # Create the LOGS subdirectory if it doesn't exist
 os.makedirs("LOGS", exist_ok=True)
@@ -28,7 +28,7 @@ logger.add(
 )
 
 def main():
-    logger.info("Starting Vending Machine Controller with Tkinter UI")
+    logger.info("Starting Vending Machine Controller")
 
     # Load configuration file
     try:
