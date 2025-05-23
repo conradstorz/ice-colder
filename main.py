@@ -2,7 +2,6 @@ import os
 import sys
 import tkinter as tk
 from loguru import logger
-from config_model import ConfigModel
 from hardware.tkinter_ui import VendingMachineUI
 
 # Create the LOGS subdirectory if it doesn't exist
@@ -41,18 +40,6 @@ def main():
         sys.exit(1)
     except Exception:
         logger.exception("Error reading configuration file")
-        sys.exit(1)
-
-    # Validate configuration JSON
-    try:
-        logger.debug("Validating configuration JSON with Pydantic model")
-        config_model = ConfigModel.model_validate_json(config_json)
-        logger.info(
-            "Configuration validated successfully: version={} ",
-            getattr(config_model, "version", "N/A")
-        )
-    except Exception:
-        logger.exception("Configuration validation failed")
         sys.exit(1)
 
     # Initialize Tkinter UI
