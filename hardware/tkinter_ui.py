@@ -3,16 +3,11 @@ import tkinter as tk
 from tkinter import ttk  # Import ttk for Notebook widget
 from controller.vmc import VMC  # Import the VMC class from the controller module
 from PIL import Image, ImageTk  # Import Pillow for image handling
-from config_model import ConfigModel  # Import Pydantic model for configuration
 from controller.message_manager import MessageManager, TkinterWindowDisplay
 
 class VendingMachineUI:
-    def __init__(self, root, config_model: ConfigModel):
+    def __init__(self, root):
         self.root = root
-
-        # Initialize VMC with pre-loaded Pydantic ConfigModel
-        self.vmc = VMC(config=config_model)
-        self.config_model = config_model
 
         # Set the VMC update callback to update the UI status label
         self.vmc.set_update_callback(self.update_status)
@@ -256,7 +251,7 @@ if __name__ == "__main__":
     root = tk.Tk()
     root.title("Vending Machine Controller")
     # Load Pydantic config externally in main.py and pass it here if desired
-    app = VendingMachineUI(root, config_model=ConfigModel.model_validate_json(open("config.json").read()))
+    app = VendingMachineUI(root)
     root.mainloop()
 
 # This code is a simple GUI for a vending machine monitor using Tkinter.
