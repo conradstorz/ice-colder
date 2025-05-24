@@ -34,39 +34,44 @@ logger.add(
 def main():
     logger.info("Starting Vending Machine Controller")
 
-    # Load and validate configuration using Pydantic ConfigModel
+    # Read raw JSON from config file
     try:
         logger.debug("Reading raw JSON from 'config.json'")
         with open("config.json", encoding="utf-8") as f:
-            raw_json = f.read()
-        orig_data = json.loads(raw_json)
+            orig_data = json.load(f)
+    except FileNotFoundError:
+        logger.error("Configuration file 'config.json' not found")
+        sys.exit(1)
+    except Exception:
+        logger.exception("Error reading 'config.json'")
+        sys.exit(1)
 
-        logger.debug("Parsing and validating configuration via Pydantic model")
-        config_model = ConfigModel.model_validate_json(raw_json)
+    # Build a default config dict from Pydantic model_construct
+    default_dict = ConfigModel.model_construct().model_dump()
+
+    # Merge user data on top of defaults
+    merged_data = _deep_merge(default_dict, orig_data)
+
+    # Backup and write defaults if any missing keys were added
+    if _defaults_applied(orig_data, merged_data):
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        backup_path = f"config.json.bak_{timestamp}"
+        shutil.copy("config.json", backup_path)
+        logger.info(f"Backed up original config to {backup_path}")
+        with open("config.json", "w", encoding="utf-8") as fw:
+            json.dump(merged_data, fw, indent=4)
+        logger.info("Inserted default values into 'config.json'")
+
+    # Validate merged config
+    try:
+        logger.debug("Validating merged configuration via Pydantic model")
+        config_model = ConfigModel.model_validate(merged_data)
         version = getattr(config_model, "version", None)
         logger.info(
             "Configuration loaded successfully%s",
             f": version={version}" if version else ""
         )
-
-        # Determine if defaults were applied by comparing source and model
-        model_data = config_model.model_dump()
-        if _defaults_applied(orig_data, model_data):
-            # Backup original file
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            backup_path = f"config.json.bak_{timestamp}"
-            shutil.copy("config.json", backup_path)
-            logger.info(f"Backed up original config to {backup_path}")
-            # Write updated config with defaults
-            with open("config.json", "w", encoding="utf-8") as fw:
-                fw.write(config_model.model_dump_json(indent=4))
-            logger.info("Inserted default values into 'config.json'")
-
-    except FileNotFoundError:
-        logger.error("Configuration file 'config.json' not found")
-        sys.exit(1)
     except ValidationError as ve:
-        # Pydantic validation errors
         logger.error("Configuration validation failed with the following errors:")
         for err in ve.errors():
             loc = " -> ".join(str(l) for l in err.get('loc', []))
@@ -74,7 +79,7 @@ def main():
             logger.error(f"  • {loc}: {msg}")
         sys.exit(1)
     except Exception:
-        logger.exception("Unexpected error loading or validating configuration")
+        logger.exception("Unexpected error validating configuration")
         sys.exit(1)
 
     # Initialize Tkinter UI
@@ -84,7 +89,6 @@ def main():
         root.title("Vending Machine Controller")
         logger.debug("Instantiating VendingMachineUI with configuration model")
         app = VendingMachineUI(root, config_model=config_model)
-
     except Exception:
         logger.exception("Failed to initialize Tkinter UI")
         sys.exit(1)
@@ -99,19 +103,39 @@ def main():
         logger.info("Tkinter main loop has exited")
 
 
-def _defaults_applied(source: dict, model_data: dict) -> bool:
+def _deep_merge(default: dict, source: dict) -> dict:
     """
-    Recursively compare source and model_data to detect missing keys where defaults were inserted.
-    Returns True if model_data contains keys not present in source.
+    Recursively merge source dict on top of default dict.
     """
-    for key, value in model_data.items():
-        if key not in source:
+    merged = {}
+    # Merge defaults and source
+    for key, val in default.items():
+        if key in source:
+            if isinstance(val, dict) and isinstance(source[key], dict):
+                merged[key] = _deep_merge(val, source[key])
+            else:
+                merged[key] = source[key]
+        else:
+            merged[key] = val
+    # Include any extra keys from source
+    for key, val in source.items():
+        if key not in merged:
+            merged[key] = val
+    return merged
+
+
+def _defaults_applied(orig: dict, merged: dict) -> bool:
+    """
+    Detect if merged contains keys not in orig (i.e., defaults applied).
+    """
+    for key in merged:
+        if key not in orig:
             return True
-        src_val = source[key]
-        if isinstance(value, dict) and isinstance(src_val, dict):
-            if _defaults_applied(src_val, value):
+        if isinstance(merged[key], dict) and isinstance(orig.get(key), dict):
+            if _defaults_applied(orig[key], merged[key]):
                 return True
     return False
+
 
 if __name__ == "__main__":
     main()
