@@ -76,119 +76,70 @@ class Channel(str, Enum):
 
 class Person(BaseModel):
     """
-    Generic person record with contact details and preferred communication channels
+    Generic person record with contact details and preferred channels
     """
-    name: str
-    email: EmailStr
-    phone: Optional[PhoneNumber] = None
-    address: Optional[str] = None
-    notes: Optional[str] = None
+    name: str = Field("Your Name", description="Full name of the person")
+    email: EmailStr = Field("user@example.com", description="Email address")
+    phone: Optional[str] = Field("123-456-7890", description="Phone number")
+    address: Optional[str] = Field("123 Main St", description="Postal address")
+    notes: Optional[str] = Field("Notes about person", description="Optional notes")
     preferred_comm: List[Channel] = Field(
-        default_factory=list,
-        description="Ordered list of channels to try when contacting this person"
+        default_factory=lambda: [Channel.email],
+        description="Preferred communication channels"
     )
 
-    @model_validator(mode="after")
-    def log_owner_contact(cls, values):
-        # Log when a Person model is successfully created
-        logger.debug(f"{cls.__name__} loaded: name={values.name}, email={values.email}")
-        # You can also log other fields if needed
-        if values.phone:
-            logger.debug(f"Phone: {values.phone}")
-        return values
 
-# 2) Gateway-specific communications configs
-class EmailGatewayConfig(BaseModel):
-    """
-    Configuration for SMTP-based email gateway
-    """
-    provider: str = "smtp"
-    smtp_server: str
-    port: int = 587
-    username: SecretStr
-    password: SecretStr
-    default_from: EmailStr
-
-
-class SMSGatewayConfig(BaseModel):
-    """
-    Configuration for SMS gateway (e.g., Twilio)
-    """
-    provider: str = "twilio"
-    account_sid: SecretStr
-    auth_token: SecretStr
-    from_number: PhoneNumber
-
-
-class SnapchatGatewayConfig(BaseModel):
-    """
-    Configuration for Snapchat messaging gateway
-    """
-    client_id: SecretStr
-    client_secret: SecretStr
-    # …additional Snapchat API settings…
-
-
-# 3) Bundle them under one CommunicationConfig
-class CommunicationConfig(BaseModel):
-    """
-    Bundle of configured communication gateways
-    """
-    email: Optional[EmailGatewayConfig] = None
-    sms: Optional[SMSGatewayConfig] = None
-    snapchat: Optional[SnapchatGatewayConfig] = None
-    # …add more channels here as integrated
-
-    @logger.catch()
-    def get_gateway(self, channel: Channel) -> Optional[BaseModel]:
-        """
-        Return the config model for a given channel, or None if not configured
-        """
-        return getattr(self, channel.value, None)
-
-# 4) Bundle all of your “people” roles in one place
 class PeopleConfig(BaseModel):
-    """
-    Roles and their associated Person records
-    """
-    machine_owner: Person
-    location_owner: Person
+    machine_owner: Person = Field(
+        default_factory=Person,
+        description="Primary machine owner contact"
+    )
+    location_owner: Person = Field(
+        default_factory=Person,
+        description="Primary location contact"
+    )
     service_technicians: List[Person] = Field(
         default_factory=list,
-        description="One or more techs who can service the machine"
+        description="List of service technicians"
     )
-    # if you later need “backup_owner” or “QA_inspector” you can add them here
-    # and they’ll automatically be available in the top-level model
-    # e.g. cfg.physical.people.backup_owner
-    # or cfg.physical.people.service_technicians[0].preferred_comm
-    # …any other roles you want to add
 
-# 5) Define a first-class Product model
+
+class Location(BaseModel):
+    address: str = Field("123 Main St", description="Physical address")
+    notes: Optional[str] = Field("Location notes", description="Additional location info")
+
+
 class Product(BaseModel):
-    """
-    Product definition for vending
-    """
-    sku: str
-    price: float
-    name: Optional[str] = None
-    description: Optional[str] = None
-    image_url: Optional[str] = None
-    inventory_count: int = Field(
-        default=0,
-        description="0=out of stock, -1=unlimited"
-    )
+    sku: str = Field("SAMPLE-SKU", description="Product SKU / identifier")
+    name: str = Field("Sample Product", description="Product name")
+    description: Optional[str] = Field("A sample product", description="Product description")
+    image_url: Optional[HttpUrl] = Field(None, description="URL to product image")
+    price: float = Field(1.00, description="Price in USD")
+    track_inventory: bool = Field(False, description="Whether to track inventory")
+    inventory_count: int = Field(0, description="Initial inventory count")
 
-# Define the physical machine model
+
 class PhysicalDetails(BaseModel):
-    """
-    Metadata for the physical vending machine
-    """
-    common_name: str  # e.g. “Vending Machine 1” or “Snack Machine” or “Coffee Machine”
-    serial_number: str
-    location: str  # e.g. “Lobby, Building A” or “Floor 2, Room 201” or “Warehouse 3”
-    model: Optional[str]
-    people: PeopleConfig
-    product_list: List[Product] = Field(..., alias="products")
+    common_name: str = Field(
+        "YOUR_MACHINE_NAME",
+        description="Friendly machine name; edit before use"
+    )
+    serial_number: str = Field(
+        "0000-0000",
+        description="Hardware serial number"
+    )
+    location: Location = Field(
+        default_factory=Location,
+        description="Machine physical location"
+    )
+    people: PeopleConfig = Field(
+        default_factory=PeopleConfig,
+        description="Contact roles"
+    )
+    products: List[Product] = Field(
+        default_factory=lambda: [Product()],
+        description="List of products available"
+    )
 
     # --- convenience properties ---
     @property
@@ -231,37 +182,49 @@ class PhysicalDetails(BaseModel):
         )
         return values
 
-# 6) Payment Gateway‐specific configs
 class StripeConfig(BaseModel):
-    """
-    Configuration for Stripe payment gateway
-    """
-    api_key: SecretStr
-    webhook_secret: SecretStr
-    max_retry_delay: int = Field(
-        10,
-        description="Seconds to wait before retrying a failed Stripe call"
+    api_key: SecretStr = Field(
+        default=SecretStr("sk_test_xxx"),
+        description="Stripe API key (dummy value)"
+    )
+    webhook_secret: SecretStr = Field(
+        default=SecretStr("whsec_xxx"),
+        description="Stripe webhook secret"
     )
 
 
 class PayPalConfig(BaseModel):
-    """
-    Configuration for PayPal payment gateway
-    """
-    client_id: SecretStr
-    client_secret: SecretStr
-    sandbox: bool = True
+    client_id: SecretStr = Field(
+        default=SecretStr("paypal_client_id"),
+        description="PayPal client ID"
+    )
+    client_secret: SecretStr = Field(
+        default=SecretStr("paypal_client_secret"),
+        description="PayPal client secret"
+    )
+    sandbox: bool = Field(
+        True,
+        description="Use PayPal sandbox mode"
+    )
 
 
 class MDBDevice(BaseModel):
-    """
-    Definition of a single MDB bus device
-    """
-    exists: bool = False
-    serial_number: Optional[str] = None
-    buss_address: int
-    device_type: str  # e.g. "bill_validator", "coin_acceptor"
-    settings: Dict[str, Any] = Field(default_factory=dict) # Device-specific settings 
+    name: str = Field(
+        "Card Reader",
+        description="MDB device name"
+    )
+    exists: bool = Field(
+        False,
+        description="Flag indicating device presence"
+    )
+    serial_number: Optional[str] = Field(
+        "00000000",
+        description="Device serial number"
+    )
+    settings: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Device-specific settings"
+    )
 
 
 class MDBDevicesConfig(BaseModel):
@@ -270,38 +233,103 @@ class MDBDevicesConfig(BaseModel):
     """
     polling_interval: float = Field(
         0.5,
-        description="Seconds between bus polls"
+        description="Polling interval in seconds"
     )
-    devices: List[MDBDevice]
+    devices: List[MDBDevice] = Field(
+        default_factory=list,
+        description="List of MDB devices on the bus"
+    )
 
-# 7) A single PaymentConfig that holds all of them
+
 class PaymentConfig(BaseModel):
-    """
-    Combined payment gateway configurations
-    """
-    stripe: Optional[StripeConfig] = None
-    paypal: Optional[PayPalConfig] = None
-    mdb: Optional[MDBDevicesConfig] = None
+    stripe: StripeConfig = Field(
+        default_factory=StripeConfig,
+        description="Stripe payment gateway configuration"
+    )
+    paypal: Optional[PayPalConfig] = Field(
+        default_factory=PayPalConfig,
+        description="PayPal payment gateway configuration"
+    )
+    mdb: MDBDevicesConfig = Field(
+        default_factory=MDBDevicesConfig,
+        description="MDB bus configuration"
+    )
 
-# 8) Define a uniform adapter interface
-class GatewayAdapter(Protocol):
-    """
-    Uniform gateway interface
-    """
-    @logger.catch()
-    def send(self, to: str, body: str, **kwargs) -> None: ...
 
-    @logger.catch()
-    def start_receiving(self, callback: Callable[[str, str], None]) -> None: ...
+class EmailGatewayConfig(BaseModel):
+    smtp_server: str = Field(
+        "smtp.example.com",
+        description="SMTP server address"
+    )
+    smtp_port: int = Field(
+        587,
+        description="SMTP port"
+    )
+    username: str = Field(
+        "user@example.com",
+        description="SMTP username"
+    )
+    password: SecretStr = Field(
+        default=SecretStr("password"),
+        description="SMTP password"
+    )
+    default_from: str = Field(
+        "user@example.com",
+        description="Default From address"
+    )
 
-# 9) Top-level model now includes communication
+
+class SMSGatewayConfig(BaseModel):
+    account_sid: SecretStr = Field(
+        default=SecretStr("ACxxxxxxxxxxxxxxxxxxx"),
+        description="Twilio account SID"
+    )
+    auth_token: SecretStr = Field(
+        default=SecretStr("your_auth_token"),
+        description="Twilio auth token"
+    )
+    from_number: str = Field(
+        "+1234567890",
+        description="Default SMS From number"
+    )
+
+
+class CommunicationConfig(BaseModel):
+    email_gateway: EmailGatewayConfig = Field(
+        default_factory=EmailGatewayConfig,
+        description="Email gateway configuration"
+    )
+    sms_gateway: SMSGatewayConfig = Field(
+        default_factory=SMSGatewayConfig,
+        description="SMS gateway configuration"
+    )
+    snapchat_gateway: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Snapchat gateway (optional)"
+    )
+
+
 class ConfigModel(BaseModel):
     """
-    Top-level configuration model for the VMC
+    Top-level configuration for the Vending Machine Controller
     """
-    physical: PhysicalDetails
-    payment: PaymentConfig
-    communication: CommunicationConfig
+    version: str = Field(
+        "1.0.0",
+        description="Configuration schema version"
+    )
+    physical: PhysicalDetails = Field(
+        default_factory=PhysicalDetails,
+        description="Physical machine details"
+    )
+    payment: PaymentConfig = Field(
+        default_factory=PaymentConfig,
+        description="Payment gateway configurations"
+    )
+    communication: CommunicationConfig = Field(
+        default_factory=CommunicationConfig,
+        description="Communication channels configuration"
+    )
+
     # Allow loading from .env files via Pydantic BaseSettings
     class Config:
         env_file = ".env"
@@ -335,7 +363,6 @@ class ConfigModel(BaseModel):
     @property
     def mdb_devices(self) -> Optional[List[MDBDevice]]:
         return self.payment.mdb.devices if self.payment.mdb else None
-
     @property
     def comm(self) -> CommunicationConfig:
         """Access all communication gateway configs in one place."""
@@ -343,12 +370,15 @@ class ConfigModel(BaseModel):
 
     def get_preferred_gateway_for(
         self, person: Person
-    ) -> Optional[tuple[Channel, BaseModel]]:
+    ) -> Optional[Tuple[Channel, Any]]:
         """
-        Return first configured gateway for a person in their preference order
+        Return first configured gateway for a person in their preference order.
         """
         for channel in person.preferred_comm:
-            gateway = self.comm.get_gateway(channel)
-            if gateway:
-                return channel, gateway
+            if channel == Channel.email and self.communication.email_gateway:
+                return channel, self.communication.email_gateway
+            if channel == Channel.sms and self.communication.sms_gateway:
+                return channel, self.communication.sms_gateway
+            if channel == Channel.snapchat and self.communication.snapchat_gateway:
+                return channel, self.communication.snapchat_gateway
         return None
