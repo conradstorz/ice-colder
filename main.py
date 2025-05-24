@@ -6,6 +6,8 @@ from config.config_model import ConfigModel
 from hardware.tkinter_ui import VendingMachineUI
 import json  # For loading configuration
 from pydantic import ValidationError  # Handle Pydantic validation errors
+import shutil
+import time
 
 # Create the LOGS subdirectory if it doesn't exist
 os.makedirs("LOGS", exist_ok=True)
@@ -37,6 +39,7 @@ def main():
         logger.debug("Reading raw JSON from 'config.json'")
         with open("config.json", encoding="utf-8") as f:
             raw_json = f.read()
+        orig_data = json.loads(raw_json)
 
         logger.debug("Parsing and validating configuration via Pydantic model")
         config_model = ConfigModel.model_validate_json(raw_json)
@@ -45,6 +48,19 @@ def main():
             "Configuration loaded successfully%s",
             f": version={version}" if version else ""
         )
+
+        # Determine if defaults were applied by comparing source and model
+        model_data = config_model.model_dump()
+        if _defaults_applied(orig_data, model_data):
+            # Backup original file
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            backup_path = f"config.json.bak_{timestamp}"
+            shutil.copy("config.json", backup_path)
+            logger.info(f"Backed up original config to {backup_path}")
+            # Write updated config with defaults
+            with open("config.json", "w", encoding="utf-8") as fw:
+                fw.write(config_model.model_dump_json(indent=4))
+            logger.info("Inserted default values into 'config.json'")
 
     except FileNotFoundError:
         logger.error("Configuration file 'config.json' not found")
@@ -81,6 +97,21 @@ def main():
         logger.exception("Error during Tkinter main loop")
     finally:
         logger.info("Tkinter main loop has exited")
+
+
+def _defaults_applied(source: dict, model_data: dict) -> bool:
+    """
+    Recursively compare source and model_data to detect missing keys where defaults were inserted.
+    Returns True if model_data contains keys not present in source.
+    """
+    for key, value in model_data.items():
+        if key not in source:
+            return True
+        src_val = source[key]
+        if isinstance(value, dict) and isinstance(src_val, dict):
+            if _defaults_applied(src_val, value):
+                return True
+    return False
 
 if __name__ == "__main__":
     main()
