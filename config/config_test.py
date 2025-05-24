@@ -68,6 +68,8 @@ class ConfigModel(BaseModel):
     physical_details: PhysicalDetails = PhysicalDetails()
     repair_service_details: RepairServiceDetails = RepairServiceDetails()
 
+
+@logger.catch()
 def save_config(config: ConfigModel, filepath: str = "config.json"):
     try:
         with open(filepath, "w") as f:
@@ -76,6 +78,7 @@ def save_config(config: ConfigModel, filepath: str = "config.json"):
     except Exception as e:
         logger.exception(f"Failed to save configuration: {e}")
 
+@logger.catch()
 def migrate_config(config: ConfigModel, filepath: str = "config.json") -> ConfigModel:
     """
     Compare the loaded configuration version with the current default.
@@ -97,6 +100,7 @@ def migrate_config(config: ConfigModel, filepath: str = "config.json") -> Config
         logger.debug("No migration needed; version is up-to-date.")
     return config
 
+@logger.catch()
 def load_config(filepath: str = "config.json") -> ConfigModel:
     # If the configuration file doesn't exist, create one with default values.
     if not os.path.exists(filepath):

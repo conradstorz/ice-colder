@@ -7,6 +7,7 @@ import json
 import os
 
 
+@logger.catch()
 def atomic_write(path: str, data: str) -> None:
     """
     Write data to a temp file and atomically replace the target path to avoid corruption.

@@ -31,14 +31,17 @@ core_vmc.payment_gateway_manager = PaymentGatewayManager(
 core_vmc.mdb_interface = MDBInterface()
 
 # Define UI callbacks to connect with real display or GUI toolkit
+@logger.catch()
 def update_ui(state, selected, escrow):
     # Refresh graphical display: highlight state, show selected product and balance
     pass  # Replace with actual UI update logic
 
+@logger.catch()
 def display_message(msg):
     # Show text message on screen or terminal
     pass  # Replace with actual message display
 
+@logger.catch()
 def display_qr(image):
     # Render QR code image for user scanning
     pass  # Replace with actual image display

@@ -1,6 +1,7 @@
 import os
 import sys
 import tkinter as tk
+from pathlib import Path
 from loguru import logger
 from hardware.tkinter_ui import VendingMachineUI
 
@@ -26,17 +27,19 @@ logger.add(
     format="{message}\n{level}: {time:YYYY-MM-DD HH:mm:ss}\n"
 )
 
+@logger.catch()
 def main():
     logger.info("Starting Vending Machine Controller")
 
     # Load configuration file
+    json_config_path = (Path("config") / "config.json").resolve(strict=False)
     try:
-        logger.debug("Attempting to open configuration file 'config.json'")
-        with open("config.json", "r", encoding="utf8") as f:
+        logger.debug(f"Attempting to open configuration file '{str(json_config_path)}'")
+        with open(json_config_path, "r", encoding="utf8") as f:
             config_json = f.read()
-        logger.debug("Configuration file read successfully ({} bytes)", len(config_json))
+        logger.debug(f"Configuration file read successfully ({len(config_json)} bytes)")
     except FileNotFoundError:
-        logger.error("Configuration file 'config.json' not found")
+        logger.error(f"Configuration file '{str(json_config_path)}' not found")
         sys.exit(1)
     except Exception:
         logger.exception("Error reading configuration file")

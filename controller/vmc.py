@@ -3,7 +3,7 @@ from transitions import Machine
 from loguru import logger
 from services.payment_gateway_manager import PaymentGatewayManager
 from hardware.mdb_interface import MDBInterface
-from config_model import ConfigModel  # Import the Pydantic model
+from config.config_model import ConfigModel  # Import the Pydantic model
 
 # Global variable for state change log prefix
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
@@ -65,6 +65,7 @@ class VMC:
     # Define FSM states: idle, interacting_with_user, dispensing, error
     states = ["idle", "interacting_with_user", "dispensing", "error"]
 
+    @logger.catch()
     def __init__(self, config: ConfigModel):
         logger.debug("Initializing VMC with pre-loaded ConfigModel")
 
@@ -115,26 +116,31 @@ class VMC:
         logger.debug("Hardware and services initialized.")
 
     # --- New Callback Setter for QR Code Display ---
+    @logger.catch()
     def set_qrcode_callback(self, callback):
         self.qrcode_callback = callback
         logger.debug("QR code callback set.")
 
     # --- Condition Methods ---
+    @logger.catch()
     def has_credit(self):
         """Return True if there is remaining credit in the escrow."""
         logger.debug(f"Checking credit: {self.credit_escrow:.2f}")
         return self.credit_escrow > 0
 
     # --- Callback Setters for UI ---
+    @logger.catch()
     def set_update_callback(self, callback):
         self.update_callback = callback
         logger.debug("Update callback set.")
 
+    @logger.catch()
     def set_message_callback(self, callback):
         self.message_callback = callback
         logger.debug("Message callback set.")
 
     # --- Unified Message Routine ---
+    @logger.catch()
     def send_customer_message(self, message, tk_root=None, duration=5000):
         """
         Send a message to the customer via the UI.
@@ -147,6 +153,7 @@ class VMC:
             tk_root.after(duration, lambda: self._display_message(""))
 
     # --- UI Helper Methods ---
+    @logger.catch()
     def _refresh_ui(self):
         if self.update_callback:
             logger.debug(
@@ -154,22 +161,26 @@ class VMC:
             )
             self.update_callback(self.machine.state, self.selected_product, self.credit_escrow)
 
+    @logger.catch()
     def _display_message(self, message):
         if self.message_callback:
             logger.debug(f"Displaying message: '{message}'")
             self.message_callback(message)
 
     # --- FSM Callback Methods with Enhanced Logging and Messaging ---
+    @logger.catch()
     def on_start_interaction(self):
         logger.info(f"{STATE_CHANGE_PREFIX} Transitioning to interacting_with_user for product: {self.selected_product}")
         self._refresh_ui()
         self.send_customer_message("Interaction started. Please insert funds or select a product.")
 
+    @logger.catch()
     def on_dispense_product(self):
         logger.info(f"{STATE_CHANGE_PREFIX} Transitioning to dispensing for product: {self.selected_product}")
         self._refresh_ui()
         self.send_customer_message("Processing your payment and dispensing your product...")
 
+    @logger.catch()
     def on_complete_transaction(self):
         logger.info(f"{STATE_CHANGE_PREFIX} Completing transaction. Remaining escrow: ${self.credit_escrow:.2f}")
         self._refresh_ui()
@@ -178,6 +189,7 @@ class VMC:
         else:
             self.send_customer_message("Transaction complete. Thank you for your purchase!")
 
+    @logger.catch()
     def on_reset(self):
         logger.info(f"{STATE_CHANGE_PREFIX} Resetting to idle state. Previous selection: {self.selected_product}")
         self.selected_product = None
@@ -185,12 +197,14 @@ class VMC:
         self._refresh_ui()
         # Message clearing is handled automatically by send_customer_message timing
 
+    @logger.catch()
     def on_error(self):
         logger.error(f"{STATE_CHANGE_PREFIX} Error encountered for product: {self.selected_product}. Transitioning to error state.")
         self._refresh_ui()
         self.send_customer_message("An error has occurred. Please contact support.")
 
     # --- Business Logic Methods ---
+    @logger.catch()
     def deposit_funds(self, amount, payment_method="Simulated Payment"):
         logger.debug(f"Depositing funds: amount={amount:.2f}, method={payment_method}")
         self.credit_escrow += amount
@@ -199,6 +213,7 @@ class VMC:
         self._refresh_ui()
         self.send_customer_message(f"${amount:.2f} deposited. Current balance: ${self.credit_escrow:.2f}.")
 
+    @logger.catch()
     def request_refund(self, tk_root=None):
         logger.debug(f"Requesting refund with current credit: {self.credit_escrow:.2f}")
         if self.credit_escrow > 0:
@@ -210,6 +225,7 @@ class VMC:
         else:
             self.send_customer_message("No funds to refund.", tk_root)
 
+    @logger.catch()
     def initiate_virtual_payment(self, amount, tk_root):
         """
         Initiates a virtual payment by generating a payment URL and corresponding QR code (dummy).
@@ -238,6 +254,7 @@ class VMC:
         self.virtual_payment_index = (self.virtual_payment_index + 1) % len(gateways)
         logger.debug(f"Cycled to virtual payment index: {self.virtual_payment_index}")
 
+    @logger.catch()
     def select_product(self, product_index, tk_root):
         logger.debug(f"Selecting product with index: {product_index}")
         if self.machine.state not in ["idle", "interacting_with_user"]:
@@ -266,6 +283,8 @@ class VMC:
             tk_root.after(1000, lambda: self._process_payment(tk_root))
         self._refresh_ui()
 
+        # Update the selection message
+    @logger.catch()
     def _update_selection_message(self, tk_root):
         price = self.selected_product.get("price", 0) if self.selected_product else 0
         if self.selected_product:
@@ -280,6 +299,7 @@ class VMC:
         self.send_customer_message(message, tk_root)
         self.last_insufficient_message = message
 
+    @logger.catch()
     def _process_payment(self, tk_root):
         logger.debug(f"Processing payment for product: {self.selected_product}")
         if self.machine.state != "interacting_with_user":
@@ -305,6 +325,7 @@ class VMC:
                 self.last_insufficient_message = message
             tk_root.after(5000, lambda: self._process_payment(tk_root))
 
+    @logger.catch()
     def _finish_dispensing(self, tk_root):
         logger.debug(f"Finishing dispensing process for product: {self.selected_product}")
         if self.machine.state != "dispensing":
@@ -323,5 +344,6 @@ class VMC:
         logger.debug("Starting MDB monitoring.")
         await self.mdb_interface.read_messages(self.handle_mdb_message)
 
+    @logger.catch()
     def handle_mdb_message(self, message):
         logger.info(f"Received MDB message: {message}")

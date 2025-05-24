@@ -56,8 +56,9 @@ gateway_handle.send(person_contact, message_body)
 
 from enum import Enum
 from typing import List, Optional, Dict, Any, Protocol, Callable
-from pydantic import BaseModel, EmailStr, SecretStr, Field, model_validator, BaseSettings
-from pydantic.networks import PhoneStr
+from pydantic import BaseModel, EmailStr, SecretStr, Field, model_validator
+from pydantic_settings import BaseSettings
+from pydantic_extra_types.phone_numbers import PhoneNumber
 from loguru import logger
 from datetime import datetime
 
@@ -79,7 +80,7 @@ class Person(BaseModel):
     """
     name: str
     email: EmailStr
-    phone: Optional[PhoneStr] = None
+    phone: Optional[PhoneNumber] = None
     address: Optional[str] = None
     notes: Optional[str] = None
     preferred_comm: List[Channel] = Field(
@@ -116,7 +117,7 @@ class SMSGatewayConfig(BaseModel):
     provider: str = "twilio"
     account_sid: SecretStr
     auth_token: SecretStr
-    from_number: PhoneStr
+    from_number: PhoneNumber
 
 
 class SnapchatGatewayConfig(BaseModel):
@@ -138,6 +139,7 @@ class CommunicationConfig(BaseModel):
     snapchat: Optional[SnapchatGatewayConfig] = None
     # …add more channels here as integrated
 
+    @logger.catch()
     def get_gateway(self, channel: Channel) -> Optional[BaseModel]:
         """
         Return the config model for a given channel, or None if not configured
@@ -286,7 +288,10 @@ class GatewayAdapter(Protocol):
     """
     Uniform gateway interface
     """
+    @logger.catch()
     def send(self, to: str, body: str, **kwargs) -> None: ...
+
+    @logger.catch()
     def start_receiving(self, callback: Callable[[str, str], None]) -> None: ...
 
 # 9) Top-level model now includes communication
@@ -301,12 +306,6 @@ class ConfigModel(BaseModel):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
-    # Centralize JSON serialization of datetimes:
-    model_config = {
-        "json_encoders": {
-            datetime: lambda dt: dt.isoformat()
-        }
-    }
 
     # --- convenience properties ---
     @property
