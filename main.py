@@ -4,6 +4,8 @@ import tkinter as tk
 from loguru import logger
 from config.config_model import ConfigModel
 from hardware.tkinter_ui import VendingMachineUI
+import json  # For loading configuration
+from pydantic import ValidationError  # Handle Pydantic validation errors
 
 # Create the LOGS subdirectory if it doesn't exist
 os.makedirs("LOGS", exist_ok=True)
@@ -32,22 +34,31 @@ def main():
 
     # Load and validate configuration using Pydantic ConfigModel
     try:
-        logger.debug("Loading configuration from 'config.json' via Pydantic model")
-        # Read raw JSON text
+        logger.debug("Reading raw JSON from 'config.json'")
         with open("config.json", encoding="utf-8") as f:
             raw_json = f.read()
-        # Validate and parse
+
+        logger.debug("Parsing and validating configuration via Pydantic model")
         config_model = ConfigModel.model_validate_json(raw_json)
         version = getattr(config_model, "version", None)
         logger.info(
-            "Configuration loaded and validated successfully%s",
+            "Configuration loaded successfully%s",
             f": version={version}" if version else ""
         )
+
     except FileNotFoundError:
         logger.error("Configuration file 'config.json' not found")
         sys.exit(1)
+    except ValidationError as ve:
+        # Pydantic validation errors
+        logger.error("Configuration validation failed with the following errors:")
+        for err in ve.errors():
+            loc = " -> ".join(str(l) for l in err.get('loc', []))
+            msg = err.get('msg', '')
+            logger.error(f"  • {loc}: {msg}")
+        sys.exit(1)
     except Exception:
-        logger.exception("Failed to load or validate configuration file")
+        logger.exception("Unexpected error loading or validating configuration")
         sys.exit(1)
 
     # Initialize Tkinter UI
@@ -57,6 +68,7 @@ def main():
         root.title("Vending Machine Controller")
         logger.debug("Instantiating VendingMachineUI with configuration model")
         app = VendingMachineUI(root, config_model=config_model)
+
     except Exception:
         logger.exception("Failed to initialize Tkinter UI")
         sys.exit(1)
