@@ -10,8 +10,7 @@ os.makedirs("LOGS", exist_ok=True)
 
 # Remove any default logging handlers
 logger.remove()
-# Add a new logfile in the LOGS subdirectory with a timestamp in the filename,
-# serialized as JSON; rotate at midnight, retain logs for 3 days, and compress old logs.
+# JSON log file with rotation and retention settings
 logger.add(
     "LOGS/vmc_{time:YYYY-MM-DD_HH-mm-ss}.log.json",
     serialize=True,
@@ -34,9 +33,11 @@ def main():
     # Load and validate configuration using Pydantic ConfigModel
     try:
         logger.debug("Loading configuration from 'config.json' via Pydantic model")
-        config_model = ConfigModel.model_validate_file(
-            "config.json"
-        )
+        # Read raw JSON text
+        with open("config.json", encoding="utf-8") as f:
+            raw_json = f.read()
+        # Validate and parse
+        config_model = ConfigModel.model_validate_json(raw_json)
         version = getattr(config_model, "version", None)
         logger.info(
             "Configuration loaded and validated successfully%s",
