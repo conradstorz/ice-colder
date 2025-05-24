@@ -35,49 +35,13 @@ def main():
     logger.info("Starting Vending Machine Controller")
 
     # Ensure config.json exists; if not, generate a skeleton for user
-    if not os.path.exists("config.json"):
-        logger.warning("Configuration file 'config.json' not found. Generating skeleton with default values.")
-        # Generate base skeleton from Pydantic model defaults
-        # model_construct() creates a ConfigModel instance with any default / default_factory values defined in the model
-        default_config = ConfigModel.model_construct().model_dump()
-        default_config = ConfigModel.model_construct().model_dump()
-        # Insert obvious dummy values for required fields
-        # For example machine identification
-        default_config.setdefault("physical", {})
-        phys = default_config["physical"]
-        phys.setdefault("common_name", "YOUR_MACHINE_NAME")
-        phys.setdefault("serial_number", "0000-0000")
-        phys.setdefault("location", {"address": "123 Main St", "notes": "Your address"})
-        # People config
-        default_config.setdefault("communication", {}).setdefault("email_gateway", {}).update({
-            "smtp_server": "smtp.example.com",
-            "smtp_port": 587,
-            "username": "user@example.com",
-            "password": "password"
-        })
-        default_config.setdefault("communication", {}).setdefault("sms_gateway", {}).update({
-            "account_sid": "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-            "auth_token": "your_auth_token",
-            "from_number": "+1234567890"
-        })
-        default_config.setdefault("payment", {})
-        default_config["payment"].setdefault("stripe", {}).update({
-            "api_key": "sk_test_xxx",
-            "webhook_secret": "whsec_xxx"
-        })
-        # Minimal products list
-        phys.setdefault("products", [{
-            "name": "Sample Product",
-            "price": 1.00,
-            "track_inventory": False
-        }])
-
-        # Write skeleton file
-        with open("config.json", "w", encoding="utf-8") as fw:
-            json.dump(default_config, fw, indent=4)
-        logger.info("Skeleton 'config.json' created. Please update it with your actual settings and re-run the program.")
-        sys.exit(0)
-
+if not os.path.exists("config.json"):
+    skeleton = ConfigModel.model_construct().model_dump()
+    with open("config.json","w") as f:
+        json.dump(skeleton, f, indent=4)
+    print("Created skeleton config.json—please edit and rerun.")
+    sys.exit(0)
+    
     # Load user config
     try:
         logger.debug("Reading raw JSON from 'config.json'")
