@@ -61,7 +61,7 @@ TRANSITIONS = [
     },
 ]
 
-class VMC:
+class VMC: 
     # Define FSM states: idle, interacting_with_user, dispensing, error
     states = ["idle", "interacting_with_user", "dispensing", "error"]
 

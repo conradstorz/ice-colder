@@ -1,8 +1,8 @@
 import os
 import sys
 import tkinter as tk
-from pathlib import Path
 from loguru import logger
+from config.config_model import ConfigModel
 from hardware.tkinter_ui import VendingMachineUI
 
 # Create the LOGS subdirectory if it doesn't exist
@@ -31,41 +31,43 @@ logger.add(
 def main():
     logger.info("Starting Vending Machine Controller")
 
-    # Load configuration file
-    json_config_path = (Path("config") / "config.json").resolve(strict=False)
+    # Load and validate configuration using Pydantic ConfigModel
     try:
-        logger.debug(f"Attempting to open configuration file '{str(json_config_path)}'")
-        with open(json_config_path, "r", encoding="utf8") as f:
-            config_json = f.read()
-        logger.debug(f"Configuration file read successfully ({len(config_json)} bytes)")
+        logger.debug("Loading configuration from 'config.json' via Pydantic model")
+        config_model = ConfigModel.model_validate_file(
+            "config.json"
+        )
+        version = getattr(config_model, "version", None)
+        logger.info(
+            "Configuration loaded and validated successfully%s",
+            f": version={version}" if version else ""
+        )
     except FileNotFoundError:
-        logger.error(f"Configuration file '{str(json_config_path)}' not found")
+        logger.error("Configuration file 'config.json' not found")
         sys.exit(1)
     except Exception:
-        logger.exception("Error reading configuration file")
+        logger.exception("Failed to load or validate configuration file")
         sys.exit(1)
 
     # Initialize Tkinter UI
     try:
-        logger.debug("Initializing Tkinter root window")
+        logger.debug("Initializing Tkinter root window and UI")
         root = tk.Tk()
         root.title("Vending Machine Controller")
-
         logger.debug("Instantiating VendingMachineUI with configuration model")
-        app = VendingMachineUI(root)
+        app = VendingMachineUI(root, config_model=config_model)
     except Exception:
-        logger.exception("Failed to initialize UI")
+        logger.exception("Failed to initialize Tkinter UI")
         sys.exit(1)
 
-    # Start main event loop
+    # Enter main loop
     try:
         logger.info("Entering Tkinter main loop")
         root.mainloop()
     except Exception:
-        logger.exception("Error in Tkinter main loop")
+        logger.exception("Error during Tkinter main loop")
     finally:
         logger.info("Tkinter main loop has exited")
-
 
 if __name__ == "__main__":
     main()
