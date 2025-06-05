@@ -1,0 +1,6 @@
+services:
+  icecolder:
+    image: icecolder
+    build:
+      context: .
+      dockerfile: ./Dockerfile
