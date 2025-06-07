@@ -1,1 +1,47 @@
-{"config_version": 1, "products": [{"name": "Widget", "price": 2.2, "color": "red", "weight": 10}]}
+{
+    "version": "1.0.0",
+    "physical": {
+        "common_name": "YOUR_MACHINE_NAME",
+        "serial_number": "0000-0000",
+        "location": {
+            "address": "123 Main St",
+            "notes": "Location notes"
+        },
+        "people": {
+            "machine_owner": {
+                "name": "Your Name",
+                "email": "user@example.com",
+                "phone": "123-456-7890",
+                "address": "123 Main St",
+                "notes": "Notes about person",
+                "preferred_comm": [
+                    "email"
+                ]
+            },
+            "location_owner": {
+                "name": "Your Name",
+                "email": "user@example.com",
+                "phone": "123-456-7890",
+                "address": "123 Main St",
+                "notes": "Notes about person",
+                "preferred_comm": [
+                    "email"
+                ]
+            },
+            "service_technicians": []
+        },
+        "products": [
+            {
+                "sku": "SAMPLE-SKU",
+                "name": "Sample Product",
+                "description": "A sample product",
+                "image_url": "https://example.com/image.jpg",
+                "price": 1.0,
+                "track_inventory": false,
+                "inventory_count": 0
+            }
+        ]
+    },
+    "payment": {
+        "stripe": {
+            "api_key": 

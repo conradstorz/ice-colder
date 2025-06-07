@@ -35,24 +35,9 @@ Implement one adapter class per channel using the patterns above
 
 Wire them into your CommunicationConfig so cfg.comm.email returns your SMTP/SES client, cfg.comm.slack your Slack client, etc.
 
-With that in place, adding support for any new channel is as simple as:
-
-Adding its config model
-
-Writing a tiny adapter class
-
-Exposing it in your façade
-
-Your VMC logic then just does:
-
-channel_name, gateway_handle = cfg.get_preferred_gateway_for(person)
-gateway_handle.send(person_contact, message_body)
-—no messy protocol details scattered throughout your code.
-
+class ConfigModel(BaseModel): holds high-level fields for version, physical, payment, communication
 
 """
-
-# config_model.py
 
 from enum import Enum
 from typing import List, Optional, Dict, Any, Protocol, Callable
@@ -150,12 +135,8 @@ class PhysicalDetails(BaseModel):
         return self.serial_number
 
     @property
-    def machine_location(self) -> str:
+    def machine_location(self) -> Location:
         return self.location
-
-    @property
-    def machine_model(self) -> Optional[str]:
-        return self.model
 
     @property
     def machine_owner(self) -> Person:
@@ -169,21 +150,18 @@ class PhysicalDetails(BaseModel):
     def service_technicians(self) -> List[Person]:
         return self.people.service_technicians
 
-    @property
-    def products(self) -> List[Product]:
-        return self.product_list
-
     @model_validator(mode="after")
-    def log_physical_details(cls, values):
+    def log_physical_details(cls, model):
         """
         Log when PhysicalDetails is loaded
         """
-        count = len(values.product_list) if values.product_list else 0
+        count = len(model.products) if model.products else 0
         logger.debug(
-            f"{cls.__name__} loaded: serial={values.serial_number}, "
-            f"location={values.location}, products={count}"
+            f"{cls.__name__} loaded: serial={model.serial_number}, "
+            f"location={model.location}, products={count}"
         )
-        return values
+        return model
+
 
 class StripeConfig(BaseModel):
     api_key: SecretStr = Field(
@@ -333,7 +311,6 @@ class ConfigModel(BaseModel):
         description="Communication channels configuration"
     )
 
-    # Allow loading from .env files via Pydantic BaseSettings
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
@@ -356,7 +333,7 @@ class ConfigModel(BaseModel):
         return self.physical.people.service_technicians
 
     @property
-    def stripe(self) -> Optional[StripeConfig]:
+    def stripe(self) -> StripeConfig:
         return self.payment.stripe
 
     @property
@@ -364,8 +341,9 @@ class ConfigModel(BaseModel):
         return self.payment.paypal
 
     @property
-    def mdb_devices(self) -> Optional[List[MDBDevice]]:
-        return self.payment.mdb.devices if self.payment.mdb else None
+    def mdb_devices(self) -> List[MDBDevice]:
+        return self.payment.mdb.devices
+
     @property
     def comm(self) -> CommunicationConfig:
         """Access all communication gateway configs in one place."""
