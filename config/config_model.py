@@ -113,7 +113,10 @@ class Product(BaseModel):
     sku: str = Field("SAMPLE-SKU", description="Product SKU / identifier")
     name: str = Field("Sample Product", description="Product name")
     description: Optional[str] = Field("A sample product", description="Product description")
-    image_url: Optional[HttpUrl] = Field(None, description="URL to product image")
+    image_url: Optional[str] = Field(
+        "https://example.com/image.jpg",
+        description="URL to product image"
+    )
     price: float = Field(1.00, description="Price in USD")
     track_inventory: bool = Field(False, description="Whether to track inventory")
     inventory_count: int = Field(0, description="Initial inventory count")
@@ -370,7 +373,7 @@ class ConfigModel(BaseModel):
 
     def get_preferred_gateway_for(
         self, person: Person
-    ) -> Optional[Tuple[Channel, Any]]:
+    ) -> Optional[tuple[Channel, Any]]:
         """
         Return first configured gateway for a person in their preference order.
         """
