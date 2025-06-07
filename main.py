@@ -35,12 +35,12 @@ def main():
     logger.info("Starting Vending Machine Controller")
 
     # Ensure config.json exists; if not, generate a skeleton for user
-if not os.path.exists("config.json"):
-    skeleton = ConfigModel.model_construct().model_dump()
-    with open("config.json","w") as f:
-        json.dump(skeleton, f, indent=4)
-    print("Created skeleton config.json—please edit and rerun.")
-    sys.exit(0)
+    if not os.path.exists("config.json"):
+        skeleton = ConfigModel.model_construct().model_dump()
+        with open("config.json","w") as f:
+            json.dump(skeleton, f, indent=4)
+        print("Created skeleton config.json—please edit and rerun.")
+        sys.exit(0)
     
     # Load user config
     try:
@@ -52,7 +52,15 @@ if not os.path.exists("config.json"):
 
     # Build a default config dict from Pydantic model_construct
     default_dict = ConfigModel.model_construct().model_dump()
+    logger.debug("Constructed default configuration from Pydantic model")
+    logger.debug("Default configuration: %s", default_dict)
     merged_data = _deep_merge(default_dict, orig_data)
+    logger.debug("Merged user configuration with defaults")
+    logger.debug("Merged configuration: %s", merged_data)
+    # Ensure merged_data is a valid JSON object
+    if not isinstance(merged_data, dict):
+        logger.error("Merged configuration is not a valid JSON object")
+        sys.exit(1)
 
     # Backup and write defaults if any missing keys were added
     if _defaults_applied(orig_data, merged_data):
