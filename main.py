@@ -100,7 +100,15 @@ def main():
 
     # Build a default config dict from Pydantic model_construct
     default_dict = ConfigModel.model_construct().model_dump()
+    logger.debug("Constructed default configuration from Pydantic model")
+    logger.debug("Default configuration: %s", default_dict)
     merged_data = _deep_merge(default_dict, orig_data)
+    logger.debug("Merged user configuration with defaults")
+    logger.debug("Merged configuration: %s", merged_data)
+    # Ensure merged_data is a valid JSON object
+    if not isinstance(merged_data, dict):
+        logger.error("Merged configuration is not a valid JSON object")
+        sys.exit(1)
 
     # Backup and write defaults if any missing keys were added
     if _defaults_applied(orig_data, merged_data):
