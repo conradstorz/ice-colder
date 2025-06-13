@@ -1,5 +1,6 @@
 import os
 import sys
+from time import sleep
 from loguru import logger
 from config.config_model import ConfigModel
 # from hardware.tkinter_ui import VendingMachineUI  # removed in favor of local webserver dashboard
@@ -171,7 +172,8 @@ def main():
 
     logger.debug("Instantiating VendingMachineUI with configuration model")
     # TODO launch the vending machine FSM or main loop here
-
+    while True:
+        sleep(100)
     """
     # Initialize Tkinter UI
     try:
