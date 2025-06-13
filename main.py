@@ -34,8 +34,8 @@ def setup_logging():
     logger.remove()
     # JSON log file with rotation and retention settings
     logger.add(
-        "LOGS/vmc_{time:YYYY-MM-DD_HH-mm-ss}.log.json",
-        serialize=True,
+        "LOGS/vmc_{time:YYYY-MM-DD_HH-mm-ss}.log",
+        serialize=False,
         rotation="00:00",
         retention="3 days",
         compression="zip"
