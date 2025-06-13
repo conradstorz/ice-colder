@@ -25,9 +25,13 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
     async def dashboard(request: Request):
         return templates.TemplateResponse("dashboard.html", {"request": request})
 
-    @router.get("/status")
-    async def status():
-        return JSONResponse(get_mock_status())
+    @router.get("/status", response_class=HTMLResponse)
+    async def status_fragment(request: Request):
+        status = get_mock_status()  # Replace this with your real FSM status later
+        return templates.TemplateResponse("partials/status_fragment.html", {
+            "request": request,
+            "status": status
+        })
 
     @router.post("/action/{command}")
     async def control_action(command: str):

@@ -1,0 +1,15 @@
+<div class="bg-gray-800 p-4 rounded">
+  <p><strong>State:</strong> {{ status['state'] }}</p>
+  <p><strong>Uptime:</strong> {{ status['uptime'] }} seconds</p>
+  <p><strong>Errors:</strong> 
+    {% if status['errors'] %}
+      <ul class="list-disc list-inside">
+        {% for err in status['errors'] %}
+          <li>{{ err }}</li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      None
+    {% endif %}
+  </p>
+</div>
