@@ -95,7 +95,7 @@ class Location(BaseModel):
 
 
 class Product(BaseModel):
-    sku: str = Field("SAMPLE-SKU", description="Product SKU / identifier")
+    sku: str = Field("SAMPLE-SKU", description="Machine Selection Code / Product SKU")
     name: str = Field("Sample Product", description="Product name")
     description: Optional[str] = Field("A sample product", description="Product description")
     image_url: Optional[str] = Field(
