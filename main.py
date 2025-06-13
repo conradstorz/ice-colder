@@ -37,8 +37,11 @@ def main():
     # Ensure config.json exists; if not, generate a skeleton for user
     if not os.path.exists("config.json"):
         skeleton = ConfigModel.model_construct().model_dump()
-        with open("config.json","w") as f:
-            json.dump(skeleton, f, indent=4)
+        json_text = skeleton.model_dump_json(indent=4)
+        with open("config.json", "w", encoding="utf-8") as fw:
+            fw.write(json_text)        
+        logger.info("Created skeleton 'config.json' with default values")
+        logger.info("Please edit 'config.json' with your configuration settings")
         print("Created skeleton config.json—please edit and rerun.")
         sys.exit(0)
     
@@ -64,12 +67,16 @@ def main():
 
     # Backup and write defaults if any missing keys were added
     if _defaults_applied(orig_data, merged_data):
+        logger.info("Default values applied to configuration, backing up original")
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         backup_path = f"config.json.bak_{timestamp}"
         shutil.copy("config.json", backup_path)
         logger.info(f"Backed up original config to {backup_path}")
+
+        json_text = merged_data.model_dump_json(indent=4)
         with open("config.json", "w", encoding="utf-8") as fw:
-            json.dump(merged_data, fw, indent=4)
+            fw.write(json_text)
+            logger.debug("Wrote merged configuration to 'config.json'") 
         logger.info("Inserted default values into 'config.json'")
 
     # Validate merged config
