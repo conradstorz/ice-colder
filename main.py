@@ -1,9 +1,8 @@
 import os
 import sys
-# import tkinter as tk  # removed in favor of local webserver dashboard
 from loguru import logger
 from config.config_model import ConfigModel
-from hardware.tkinter_ui import VendingMachineUI
+# from hardware.tkinter_ui import VendingMachineUI  # removed in favor of local webserver dashboard
 import json  # For loading configuration
 from pydantic import ValidationError  # Handle Pydantic validation errors
 import shutil
@@ -23,27 +22,30 @@ def start_web_interface():
     # When the server stops, the line below will execute
     logger.info("Web interface has exited")
 
+def setup_logging():
+    """
+    Set up logging configuration for the application.
+    """
+    # Create the LOGS subdirectory if it doesn't exist
+    os.makedirs("LOGS", exist_ok=True)
 
-# Create the LOGS subdirectory if it doesn't exist
-os.makedirs("LOGS", exist_ok=True)
-
-# Remove any default logging handlers
-logger.remove()
-# JSON log file with rotation and retention settings
-logger.add(
-    "LOGS/vmc_{time:YYYY-MM-DD_HH-mm-ss}.log.json",
-    serialize=True,
-    rotation="00:00",
-    retention="3 days",
-    compression="zip"
-)
-# Add console logging for INFO and ERROR messages (plain text, with custom format)
-logger.add(
-    sys.stdout,
-    level="INFO",
-    serialize=False,
-    format="{message}\n{level}: {time:YYYY-MM-DD HH:mm:ss}\n"
-)
+    # Remove any default logging handlers
+    logger.remove()
+    # JSON log file with rotation and retention settings
+    logger.add(
+        "LOGS/vmc_{time:YYYY-MM-DD_HH-mm-ss}.log.json",
+        serialize=True,
+        rotation="00:00",
+        retention="3 days",
+        compression="zip"
+    )
+    # Add console logging for INFO and ERROR messages (plain text, with custom format)
+    logger.add(
+        sys.stdout,
+        level="INFO",
+        serialize=False,
+        format="{message}\n{level}: {time:YYYY-MM-DD HH:mm:ss}\n"
+    )
 
 
 def _deep_merge(default: dict, source: dict) -> dict:
@@ -81,10 +83,16 @@ def _defaults_applied(orig: dict, merged: dict) -> bool:
 
 @logger.catch()
 def main():
+    # configure logging
+    setup_logging()
+
     logger.info("Starting Vending Machine Controller")
 
+    # load configuration
+    logger.debug("Checking for 'config.json' in current directory")
     # Ensure config.json exists; if not, generate a skeleton for user
     if not os.path.exists("config.json"):
+        logger.warning("'config.json' not found, creating skeleton with default values")
         skeleton = ConfigModel.model_construct().model_dump()
         json_text = skeleton.model_dump_json(indent=4)
         with open("config.json", "w", encoding="utf-8") as fw:
@@ -113,6 +121,7 @@ def main():
     if not isinstance(merged_data, dict):
         logger.error("Merged configuration is not a valid JSON object")
         sys.exit(1)
+    logger.debug("Merged configuration is valid.")
 
     # Backup and write defaults if any missing keys were added
     if _defaults_applied(orig_data, merged_data):
@@ -126,7 +135,6 @@ def main():
         with open("config.json", "w", encoding="utf-8") as fw:
             fw.write(json_text)
             logger.debug("Wrote merged configuration to 'config.json'") 
-        logger.info("Inserted default values into 'config.json'")
 
     # Validate merged config
     try:
@@ -148,12 +156,13 @@ def main():
         logger.exception("Unexpected error validating configuration")
         sys.exit(1)
 
-    # Start the web interface in a separate thread
+    # Start the web interface in a separate thread to avoid blocking the main thread
+    logger.info("Starting web interface in a separate thread")
     Thread(target=start_web_interface, daemon=True).start()
     # Then start your FSM/main loop below
- 
+
     logger.debug("Instantiating VendingMachineUI with configuration model")
-    app = VendingMachineUI(root, config_model=config_model)
+    # TODO launch the vending machine FSM or main loop here
 
     """
     # Initialize Tkinter UI
