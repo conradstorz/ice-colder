@@ -1,6 +1,6 @@
 import os
 import sys
-import tkinter as tk
+# import tkinter as tk  # removed in favor of local webserver dashboard
 from loguru import logger
 from config.config_model import ConfigModel
 from hardware.tkinter_ui import VendingMachineUI
@@ -8,6 +8,20 @@ import json  # For loading configuration
 from pydantic import ValidationError  # Handle Pydantic validation errors
 import shutil
 import time
+# local webserver dashboard will be run in a separate thread
+from threading import Thread
+import uvicorn
+from web_interface.server import app
+
+def start_web_interface():
+    logger.info("Starting web interface on http://localhost:8000")
+    # Run the FastAPI app with Uvicorn
+    # Note: This will block the thread, so it should be run in a separate thread
+    # If you want to run it in the main thread, remove the Thread wrapper
+    # and call uvicorn.run directly.
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    logger.info("Web interface has started successfully")
+
 
 # Create the LOGS subdirectory if it doesn't exist
 os.makedirs("LOGS", exist_ok=True)
@@ -29,6 +43,40 @@ logger.add(
     serialize=False,
     format="{message}\n{level}: {time:YYYY-MM-DD HH:mm:ss}\n"
 )
+
+
+def _deep_merge(default: dict, source: dict) -> dict:
+    """
+    Recursively merge source dict on top of default dict.
+    """
+    merged = {}
+    # Merge defaults and source
+    for key, val in default.items():
+        if key in source:
+            if isinstance(val, dict) and isinstance(source[key], dict):
+                merged[key] = _deep_merge(val, source[key])
+            else:
+                merged[key] = source[key]
+        else:
+            merged[key] = val
+    # Include any extra keys from source
+    for key, val in source.items():
+        if key not in merged:
+            merged[key] = val
+    return merged
+
+
+def _defaults_applied(orig: dict, merged: dict) -> bool:
+    """
+    Detect if merged contains keys not in orig (i.e., defaults applied).
+    """
+    for key in merged:
+        if key not in orig:
+            return True
+        if isinstance(merged[key], dict) and isinstance(orig.get(key), dict):
+            if _defaults_applied(orig[key], merged[key]):
+                return True
+    return False
 
 @logger.catch()
 def main():
@@ -99,6 +147,14 @@ def main():
         logger.exception("Unexpected error validating configuration")
         sys.exit(1)
 
+    # Start the web interface in a separate thread
+    Thread(target=start_web_interface, daemon=True).start()
+    # Then start your FSM/main loop below
+ 
+    logger.debug("Instantiating VendingMachineUI with configuration model")
+    app = VendingMachineUI(root, config_model=config_model)
+
+    """
     # Initialize Tkinter UI
     try:
         logger.debug("Initializing Tkinter root window and UI")
@@ -118,40 +174,8 @@ def main():
         logger.exception("Error during Tkinter main loop")
     finally:
         logger.info("Tkinter main loop has exited")
-
-
-def _deep_merge(default: dict, source: dict) -> dict:
     """
-    Recursively merge source dict on top of default dict.
-    """
-    merged = {}
-    # Merge defaults and source
-    for key, val in default.items():
-        if key in source:
-            if isinstance(val, dict) and isinstance(source[key], dict):
-                merged[key] = _deep_merge(val, source[key])
-            else:
-                merged[key] = source[key]
-        else:
-            merged[key] = val
-    # Include any extra keys from source
-    for key, val in source.items():
-        if key not in merged:
-            merged[key] = val
-    return merged
 
-
-def _defaults_applied(orig: dict, merged: dict) -> bool:
-    """
-    Detect if merged contains keys not in orig (i.e., defaults applied).
-    """
-    for key in merged:
-        if key not in orig:
-            return True
-        if isinstance(merged[key], dict) and isinstance(orig.get(key), dict):
-            if _defaults_applied(orig[key], merged[key]):
-                return True
-    return False
 
 if __name__ == "__main__":
     main()
