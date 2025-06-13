@@ -7,6 +7,8 @@
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@3.4.1/dist/tailwind.min.css" rel="stylesheet">
 </head>
 <body class="bg-gray-900 text-white font-sans">
+    <div id="feedback" class="text-green-400 mt-4 font-semibold"></div>
+
     <div class="max-w-3xl mx-auto p-6">
         <h1 class="text-3xl font-bold mb-6">🛠 Vending Machine Admin Panel</h1>
 
@@ -19,9 +21,30 @@
         </div>
 
         <div class="mt-6 space-x-2">
-            <button hx-post="/action/restart" class="bg-blue-500 px-4 py-2 rounded">Restart</button>
-            <button hx-post="/action/reset" class="bg-yellow-500 px-4 py-2 rounded">Reset</button>
-            <button hx-post="/action/shutdown" class="bg-red-600 px-4 py-2 rounded">Shutdown</button>
+            <button 
+            hx-post="/action/restart" 
+            hx-target="#feedback"
+            hx-swap="innerHTML"
+            class="bg-blue-500 px-4 py-2 rounded">
+            Restart
+            </button>      
+            
+            <button 
+            hx-post="/action/reset" 
+            hx-target="#feedback"
+            hx-swap="innerHTML"
+            class="bg-yellow-500 px-4 py-2 rounded">
+            Reset
+            </button>
+
+            <button 
+            hx-post="/action/shutdown" 
+            hx-target="#feedback"
+            hx-swap="innerHTML"
+            class="bg-red-600 px-4 py-2 rounded">
+            Shutdown
+            </button>            
+
         </div>
     </div>
 </body>

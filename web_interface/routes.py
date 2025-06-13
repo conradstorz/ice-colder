@@ -7,6 +7,10 @@ from fastapi import FastAPI
 from typing import Dict
 import random
 
+from services.fsm_control import perform_command
+
+
+
 status_data = {
     "state": "IDLE",
     "uptime": 0,
@@ -35,7 +39,8 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
 
     @router.post("/action/{command}")
     async def control_action(command: str):
-        # TODO: integrate with FSM control interface
-        return JSONResponse({"result": f"Executed {command}"})
-
+        result = perform_command(command)
+        return HTMLResponse(f"<p>{result}</p>")
+    
+ 
     app.include_router(router)
