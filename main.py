@@ -91,10 +91,18 @@ def main():
     # load configuration
     logger.debug("Checking for 'config.json' in current directory")
     # Ensure config.json exists; if not, generate a skeleton for user
+    def _json_encoder(o):
+        from pydantic import SecretStr
+        if isinstance(o, SecretStr):
+            # expose the actual secret (or o.get_secret_value())—
+            # or return "********" if you want to keep it masked
+            return o.get_secret_value()
+        # for any other unknown types, let it error
+        raise TypeError(f"Type {o.__class__.__name__} not serializable")
     if not os.path.exists("config.json"):
         logger.warning("'config.json' not found, creating skeleton with default values")
-        skeleton = ConfigModel.model_construct().model_dump()
-        json_text = skeleton.model_dump_json(indent=4)
+        skeleton_dict = ConfigModel.model_construct().model_dump()
+        json_text = json.dumps(skeleton_dict, default=_json_encoder, indent=4)
         with open("config.json", "w", encoding="utf-8") as fw:
             fw.write(json_text)        
         logger.info("Created skeleton 'config.json' with default values")
@@ -107,16 +115,16 @@ def main():
         logger.debug("Reading raw JSON from 'config.json'")
         orig_data = json.load(open("config.json", encoding="utf-8"))
     except Exception as e:
-        logger.exception("Error reading 'config.json': %s", e)
+        logger.exception(f"Error reading 'config.json': {e}")
         sys.exit(1)
 
     # Build a default config dict from Pydantic model_construct
     default_dict = ConfigModel.model_construct().model_dump()
     logger.debug("Constructed default configuration from Pydantic model")
-    logger.debug("Default configuration: %s", default_dict)
+    logger.debug(f"Default configuration: {default_dict}")
     merged_data = _deep_merge(default_dict, orig_data)
     logger.debug("Merged user configuration with defaults")
-    logger.debug("Merged configuration: %s", merged_data)
+    logger.debug(f"Merged configuration: {merged_data}")
     # Ensure merged_data is a valid JSON object
     if not isinstance(merged_data, dict):
         logger.error("Merged configuration is not a valid JSON object")
@@ -142,7 +150,7 @@ def main():
         config_model = ConfigModel.model_validate(merged_data)
         version = getattr(config_model, "version", None)
         logger.info(
-            "Configuration loaded successfully%s",
+            "Configuration loaded successfully",
             f": version={version}" if version else ""
         )
     except ValidationError as ve:
