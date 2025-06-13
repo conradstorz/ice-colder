@@ -46,6 +46,15 @@
             </button>            
 
         </div>
+
+        <h2 class="text-xl font-semibold mt-8 mb-2">📄 Recent Logs</h2>
+        <div id="log-box"
+            hx-get="/logs"
+            hx-trigger="every 5s"
+            hx-swap="innerHTML">
+        <div>Loading logs...</div>
+        </div>
+
     </div>
 </body>
 </html>

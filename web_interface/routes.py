@@ -9,6 +9,31 @@ import random
 
 from services.fsm_control import perform_command
 
+from pathlib import Path
+from fastapi.responses import HTMLResponse
+
+LOG_PATH = Path("logs/vmc.log")
+
+def tail(file_path: Path, lines: int = 50) -> list[str]:
+    if not file_path.exists():
+        return ["[Log file not found]"]
+    
+    with file_path.open("rb") as f:
+        f.seek(0, 2)
+        end = f.tell()
+        buffer = bytearray()
+        count = 0
+
+        for pos in range(end - 1, -1, -1):
+            f.seek(pos)
+            char = f.read(1)
+            if char == b'\n':
+                count += 1
+                if count >= lines:
+                    break
+            buffer.extend(char)
+        result = buffer[::-1].decode("utf-8", errors="replace")
+        return result.strip().splitlines()
 
 
 status_data = {
@@ -42,5 +67,12 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         result = perform_command(command)
         return HTMLResponse(f"<p>{result}</p>")
     
+    @router.get("/logs", response_class=HTMLResponse)
+    async def view_logs(request: Request):
+        lines = tail(LOG_PATH, lines=10)
+        return templates.TemplateResponse("partials/logs_fragment.html", {
+            "request": request,
+            "logs": lines
+        })
  
     app.include_router(router)

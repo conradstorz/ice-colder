@@ -32,20 +32,21 @@ def setup_logging():
 
     # Remove any default logging handlers
     logger.remove()
-    # JSON log file with rotation and retention settings
+    # log file with rotation and retention settings
     logger.add(
-        "LOGS/vmc_{time:YYYY-MM-DD_HH-mm-ss}.log",
+        "LOGS/vmc.log",
         serialize=False,
         rotation="00:00",
-        retention="3 days",
-        compression="zip"
+        retention="300 days",
+        compression="zip",
+        format="{message};{level} {time:YYYY-MM-DD HH:mm:ss}"
     )
     # Add console logging for INFO and ERROR messages (plain text, with custom format)
     logger.add(
         sys.stdout,
         level="INFO",
         serialize=False,
-        format="{message}\n{level}: {time:YYYY-MM-DD HH:mm:ss}\n"
+        format="{message}\n{level}: {time:YYYY-MM-DD HH:mm:ss}"
     )
 
 
