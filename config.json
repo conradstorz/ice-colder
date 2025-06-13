@@ -44,4 +44,32 @@
     },
     "payment": {
         "stripe": {
-            "api_key": 
+            "api_key": "sk_test_xxx",
+            "webhook_secret": "whsec_xxx"
+        },
+        "paypal": {
+            "client_id": "paypal_client_id",
+            "client_secret": "paypal_client_secret",
+            "sandbox": true
+        },
+        "mdb": {
+            "polling_interval": 0.5,
+            "devices": []
+        }
+    },
+    "communication": {
+        "email_gateway": {
+            "smtp_server": "smtp.example.com",
+            "smtp_port": 587,
+            "username": "user@example.com",
+            "password": "password",
+            "default_from": "user@example.com"
+        },
+        "sms_gateway": {
+            "account_sid": "ACxxxxxxxxxxxxxxxxxxx",
+            "auth_token": "your_auth_token",
+            "from_number": "+1234567890"
+        },
+        "snapchat_gateway": null
+    }
+}
