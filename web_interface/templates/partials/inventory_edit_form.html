@@ -1,0 +1,30 @@
+<form 
+  hx-post="/inventory/update/{{ product.sku }}" 
+  hx-target="#inventory-box" 
+  hx-swap="innerHTML"
+  class="bg-white text-black p-4 rounded shadow space-y-2">
+
+  <div>
+    <label>SKU:</label>
+    <input type="text" value="{{ product.sku }}" disabled class="bg-gray-200 p-1 rounded w-full">
+  </div>
+
+  <div>
+    <label>Name:</label>
+    <input type="text" name="name" value="{{ product.name }}" class="p-1 border rounded w-full">
+  </div>
+
+  <div>
+    <label>Price (USD):</label>
+    <input type="number" name="price" value="{{ product.price }}" step="0.01" class="p-1 border rounded w-full">
+  </div>
+
+  <div>
+    <label>Inventory Count:</label>
+    <input type="number" name="inventory_count" value="{{ product.inventory_count }}" class="p-1 border rounded w-full">
+  </div>
+
+  <div class="pt-2">
+    <button type="submit" class="bg-green-600 text-white px-4 py-2 rounded">Save</button>
+  </div>
+</form>

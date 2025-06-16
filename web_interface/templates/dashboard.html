@@ -10,6 +10,8 @@
     <div id="feedback" class="text-green-400 mt-4 font-semibold"></div>
 
     <div class="max-w-3xl mx-auto p-6">
+
+
         <h1 class="text-3xl font-bold mb-6">🛠 Vending Machine Admin Panel</h1>
 
         <div id="status-panel" 
@@ -47,13 +49,24 @@
 
         </div>
 
-        <h2 class="text-xl font-semibold mt-8 mb-2">📄 Recent Logs</h2>
+
+        <h2 class="text-xl font-semibold mt-8 mb-2">📦 Inventory</h2>
+        <div id="inventory-box" 
+            hx-get="/inventory" 
+            hx-trigger="load" 
+            hx-swap="innerHTML">
+        Loading inventory...
+        </div>
+
+
+        <h3 class="text-xl font-semibold mt-8 mb-2">📄 Recent Logs</h2>
         <div id="log-box"
             hx-get="/logs"
             hx-trigger="every 5s"
             hx-swap="innerHTML">
         <div>Loading logs...</div>
         </div>
+
 
     </div>
 </body>
