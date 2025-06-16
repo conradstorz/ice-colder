@@ -83,13 +83,11 @@ def _defaults_applied(orig: dict, merged: dict) -> bool:
                 return True
     return False
 
-@logger.catch()
-def main():
-    # configure logging
-    setup_logging()
-
-    logger.info("Starting Vending Machine Controller")
-
+def load_config() -> ConfigModel:
+    """
+    Load the configuration from a JSON file, applying defaults.
+    """
+    logger.info("Loading configuration from 'config.json'")
     # load configuration
     logger.debug("Checking for 'config.json' in current directory")
     # Ensure config.json exists; if not, generate a skeleton for user
@@ -165,11 +163,31 @@ def main():
     except Exception:
         logger.exception("Unexpected error validating configuration")
         sys.exit(1)
+    return config_model
+
+
+@logger.catch()
+def main():
+    # configure logging
+    setup_logging()
+
+    logger.info("Starting Vending Machine Controller")
+
+    # Load configuration
+    config = load_config()
+    logger.debug("Configuration loaded successfully")   
+    logger.debug(f"Configuration model: {config}")
 
     # Start the web interface in a separate thread to avoid blocking the main thread
     logger.info("Starting web interface in a separate thread")
     Thread(target=start_web_interface, daemon=True).start()
     # Then start your FSM/main loop below
+
+    # load the config model into the routes.py module
+    from web_interface import routes
+    logger.debug("Importing routes module from web_interface")
+    logger.debug("Setting configuration object in web interface routes")
+    routes.set_config_object(config)
 
     logger.debug("Instantiating VendingMachineUI with configuration model")
     # TODO launch the vending machine FSM or main loop here
