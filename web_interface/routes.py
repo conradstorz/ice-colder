@@ -59,10 +59,12 @@ status_data = {
     "errors": [],
 }
 
+
 def get_mock_status() -> Dict:
     status_data["uptime"] += 1
     status_data["state"] = random.choice(["IDLE", "READY", "VENDING", "ERROR"])
     return status_data
+
 
 def attach_routes(app: FastAPI, templates: Jinja2Templates):
     router = APIRouter()
@@ -112,6 +114,12 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             "details": config.physical
         })
 
+    @router.get("/config/inventory", response_class=HTMLResponse)
+    async def inventory_panel(request: Request):
+        return templates.TemplateResponse("partials/inventory_table.html", {
+            "request": request,
+            "products": config.products
+        })
 
     @router.get("/config/contacts", response_class=HTMLResponse)
     async def contact_info(request: Request):
@@ -119,6 +127,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             "request": request,
             "people": config.physical.people
         })
+
 
 
     @router.get("/config/payments", response_class=HTMLResponse)
@@ -163,14 +172,6 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         })
 
 
-    @router.get("/inventory", response_class=HTMLResponse)
-    async def inventory_view(request: Request):
-        return templates.TemplateResponse("partials/inventory_table.html", {
-            "request": request,
-            "products": config.products
-        })
-
-
     @router.get("/inventory/edit/{sku}", response_class=HTMLResponse)
     async def edit_inventory_item(request: Request, sku: str):
         product = next((p for p in config.products if p.sku == sku), None)
@@ -179,27 +180,6 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             "product": product
         })
 
-
-    @router.post("/inventory/update/{sku}", response_class=HTMLResponse)
-    async def update_inventory_item(
-        request: Request,
-        sku: str,
-        name: str = Form(...),
-        price: float = Form(...),
-        inventory_count: int = Form(...)
-    ):
-        for p in config.products:
-            if p.sku == sku:
-                p.name = name
-                p.price = price
-                p.inventory_count = inventory_count
-                break
-
-        return templates.TemplateResponse("partials/inventory_table.html", {
-            "request": request,
-            "products": config.products
-        })
-    
 
     @router.get("/inventory/new", response_class=HTMLResponse)
     async def new_product_form(request: Request):

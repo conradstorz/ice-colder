@@ -1,80 +1,74 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Vending Machine Admin</title>
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
-    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@3.4.1/dist/tailwind.min.css" rel="stylesheet">
+  <meta charset="UTF-8">
+  <title>Vending Machine Admin</title>
+  <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@3.4.1/dist/tailwind.min.css" rel="stylesheet">
 </head>
 <body class="bg-gray-900 text-white font-sans">
-    <div id="feedback" class="text-green-400 mt-4 font-semibold"></div>
+  <div id="feedback" class="text-green-400 mt-4 font-semibold"></div>
 
-    <div class="max-w-3xl mx-auto p-6">
+  <div class="max-w-3xl mx-auto p-6">
+    <h1 class="text-3xl font-bold mb-6">🛠 Vending Machine Admin Panel</h1>
 
-
-        <h1 class="text-3xl font-bold mb-6">🛠 Vending Machine Admin Panel</h1>
-
-        <div id="status-panel" 
-             hx-get="/status" 
-             hx-trigger="every 1s" 
-             hx-swap="innerHTML">
-            <!-- Live status will be loaded here -->
-            <div>Loading status...</div>
-        </div>
-
-        <div class="mt-6 space-x-2">
-            <button 
-            hx-post="/action/restart" 
-            hx-target="#feedback"
-            hx-swap="innerHTML"
-            class="bg-blue-500 px-4 py-2 rounded">
-            Restart
-            </button>      
-            
-            <button 
-            hx-post="/action/reset" 
-            hx-target="#feedback"
-            hx-swap="innerHTML"
-            class="bg-yellow-500 px-4 py-2 rounded">
-            Reset
-            </button>
-
-            <button 
-            hx-post="/action/shutdown" 
-            hx-target="#feedback"
-            hx-swap="innerHTML"
-            class="bg-red-600 px-4 py-2 rounded">
-            Shutdown
-            </button>            
-
-        </div>
-
-        <button 
-        hx-get="/config/machine" 
-        hx-target="#inventory-box" 
-        hx-swap="innerHTML"
-        class="bg-slate-700 text-white px-3 py-1 rounded mb-4">
-        🛠 View Machine Info
-        </button>
-
-        <h2 class="text-xl font-semibold mt-8 mb-2">📦 Inventory</h2>
-        <div id="inventory-box" 
-            hx-get="/inventory" 
-            hx-trigger="load" 
-            hx-swap="innerHTML">
-        Loading inventory...
-        </div>
-
-
-        <h3 class="text-xl font-semibold mt-8 mb-2">📄 Recent Logs</h2>
-        <div id="log-box"
-            hx-get="/logs"
-            hx-trigger="every 5s"
-            hx-swap="innerHTML">
-        <div>Loading logs...</div>
-        </div>
-
-
+    <!-- Live VMC status -->
+    <div id="status-panel" hx-get="/status" hx-trigger="every 1s" hx-swap="innerHTML">
+      <div>Loading status...</div>
     </div>
+
+    <!-- VMC Control Buttons -->
+    <div class="mt-6 space-x-2">
+      <button hx-post="/action/restart"  hx-target="#feedback" hx-swap="innerHTML" class="bg-blue-500 px-4 py-2 rounded">Restart</button>
+      <button hx-post="/action/reset"    hx-target="#feedback" hx-swap="innerHTML" class="bg-yellow-500 px-4 py-2 rounded">Reset</button>
+      <button hx-post="/action/shutdown" hx-target="#feedback" hx-swap="innerHTML" class="bg-red-600 px-4 py-2 rounded">Shutdown</button>
+    </div>
+
+    <!-- Toggle Section Buttons -->
+    <div class="space-x-2 my-6">
+      <button id="btn-inventory" class="bg-blue-600 text-white px-3 py-1 rounded">📦 Inventory</button>
+      <button id="btn-machine"   class="bg-gray-600 text-white px-3 py-1 rounded">🛠 Machine Info</button>
+      <button id="btn-contacts"  class="bg-gray-600 text-white px-3 py-1 rounded">👥 Contacts</button>
+    </div>
+
+    <!-- Section Injection Container -->
+    <div id="dynamic-sections"></div>
+
+    <!-- Live Logs -->
+    <h3 class="text-xl font-semibold mt-8 mb-2">📄 Recent Logs</h3>
+    <div id="log-box"
+        hx-get="/logs"
+        hx-trigger="every 5s"
+        hx-swap="innerHTML">
+      <div>Loading logs...</div>
+    </div>
+  </div>
+
+<script>
+  console.log("Script loaded");
+
+  function toggleSection(section) {
+    console.log("Toggle", section);
+    const id = "section-" + section;
+    const existing = document.getElementById(id);
+    if (existing) {
+      existing.remove();  // Toggle off
+      return;
+    }
+    const wrapper = document.createElement("div");
+    wrapper.id = id;
+    wrapper.setAttribute("hx-get", `/config/${section}`);
+    wrapper.setAttribute("hx-swap", "outerHTML");
+    document.getElementById("dynamic-sections").appendChild(wrapper);
+    htmx.process(wrapper);
+  }
+
+  document.addEventListener("DOMContentLoaded", () => {
+    document.getElementById("btn-inventory")?.addEventListener("click", () => toggleSection("inventory"));
+    document.getElementById("btn-machine")?.addEventListener("click", () => toggleSection("machine"));
+    document.getElementById("btn-contacts")?.addEventListener("click", () => toggleSection("contacts"));
+  });
+</script>
+
 </body>
 </html>

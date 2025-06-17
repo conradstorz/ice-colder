@@ -1,14 +1,14 @@
-<div class="bg-white text-black p-4 rounded shadow">
+<div id="section-contacts" class="bg-white text-black p-4 rounded shadow">
   <h2 class="text-xl font-bold mb-4">👥 Contact Information</h2>
 
-  <div class="mb-4">
+  <div class="mb-6">
     <h3 class="text-lg font-semibold">Machine Owner</h3>
-    <p><strong>Name:</strong> {{ people.owner.name }}</p>
-    <p><strong>Email:</strong> {{ people.owner.email or "—" }}</p>
-    <p><strong>Phone:</strong> {{ people.owner.phone or "—" }}</p>
+    <p><strong>Name:</strong> {{ people.machine_owner.name }}</p>
+    <p><strong>Email:</strong> {{ people.machine_owner.email or "—" }}</p>
+    <p><strong>Phone:</strong> {{ people.machine_owner.phone or "—" }}</p>
   </div>
 
-  <div class="mb-4">
+  <div class="mb-6">
     <h3 class="text-lg font-semibold">Location Owner</h3>
     <p><strong>Name:</strong> {{ people.location_owner.name }}</p>
     <p><strong>Email:</strong> {{ people.location_owner.email or "—" }}</p>
@@ -18,7 +18,7 @@
   <div>
     <h3 class="text-lg font-semibold">Service Technicians</h3>
     {% if people.service_techs %}
-      <ul class="list-disc pl-5">
+      <ul class="list-disc pl-5 space-y-2">
         {% for tech in people.service_techs %}
           <li>
             <strong>{{ tech.name }}</strong><br>

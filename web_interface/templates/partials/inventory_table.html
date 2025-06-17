@@ -1,47 +1,49 @@
-<div class="mb-4">
-  <button 
-    hx-get="/inventory/new" 
-    hx-target="#inventory-box" 
-    hx-swap="innerHTML"
-    class="bg-green-600 text-white px-3 py-1 rounded">
-    ➕ Add New Product
-  </button>
-</div>
+<div id="section-inventory" class="bg-white text-black p-4 rounded shadow">
+  <div class="mb-4">
+    <button 
+      hx-get="/inventory/new" 
+      hx-target="#section-inventory" 
+      hx-swap="innerHTML"
+      class="bg-green-600 text-white px-3 py-1 rounded">
+      ➕ Add New Product
+    </button>
+  </div>
 
-<table class="w-full table-auto bg-white text-black rounded">
-  <thead>
-    <tr class="bg-gray-200">
-      <th class="p-2 text-left">SKU</th>
-      <th class="p-2 text-left">Name</th>
-      <th class="p-2 text-left">Price</th>
-      <th class="p-2 text-left">Inventory</th>
-      <th class="p-2 text-left">Actions</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for product in products %}
-    <tr>
-      <td class="p-2 font-mono">{{ product.sku }}</td>
-      <td class="p-2">{{ product.name }}</td>
-      <td class="p-2">${{ '%.2f' | format(product.price) }}</td>
-      <td class="p-2">{{ product.inventory_count }}</td>
-      <td class="p-2 space-x-2">
-        <button 
-          hx-get="/inventory/edit/{{ product.sku }}" 
-          hx-target="#inventory-box" 
-          hx-swap="innerHTML"
-          class="bg-blue-500 px-2 py-1 rounded text-white">
-          Edit
-        </button>
-        <button 
-          hx-get="/inventory/copy/{{ product.sku }}" 
-          hx-target="#inventory-box" 
-          hx-swap="innerHTML"
-          class="bg-purple-600 px-2 py-1 rounded text-white">
-          Copy
-        </button>
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+  <table class="w-full table-auto bg-white text-black rounded">
+    <thead>
+      <tr class="bg-gray-200">
+        <th class="p-2 text-left">SKU</th>
+        <th class="p-2 text-left">Name</th>
+        <th class="p-2 text-left">Price</th>
+        <th class="p-2 text-left">Inventory</th>
+        <th class="p-2 text-left">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for product in products %}
+      <tr>
+        <td class="p-2 font-mono">{{ product.sku }}</td>
+        <td class="p-2">{{ product.name }}</td>
+        <td class="p-2">${{ '%.2f' | format(product.price) }}</td>
+        <td class="p-2">{{ product.inventory_count }}</td>
+        <td class="p-2 space-x-2">
+          <button 
+            hx-get="/inventory/edit/{{ product.sku }}" 
+            hx-target="#section-inventory" 
+            hx-swap="innerHTML"
+            class="bg-blue-500 px-2 py-1 rounded text-white">
+            Edit
+          </button>
+          <button 
+            hx-get="/inventory/copy/{{ product.sku }}" 
+            hx-target="#section-inventory" 
+            hx-swap="innerHTML"
+            class="bg-purple-600 px-2 py-1 rounded text-white">
+            Copy
+          </button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
