@@ -23,6 +23,12 @@ def set_config_object(cfg: ConfigModel):
     global config
     config = cfg
 
+vmc_instance = None
+
+def set_vmc_instance(vmc):
+    global vmc_instance
+    vmc_instance = vmc
+
 LOG_PATH = Path("logs/vmc.log")
 
 def tail(file_path: Path, lines: int = 50) -> list[str]:
@@ -99,12 +105,46 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         return templates.TemplateResponse("dashboard.html", {"request": request})
 
 
+    @router.get("/config/machine", response_class=HTMLResponse)
+    async def machine_info(request: Request):
+        return templates.TemplateResponse("partials/machine_info.html", {
+            "request": request,
+            "details": config.physical
+        })
+
+
+    @router.get("/config/contacts", response_class=HTMLResponse)
+    async def contact_info(request: Request):
+        return templates.TemplateResponse("partials/contacts.html", {
+            "request": request,
+            "people": config.physical.people
+        })
+
+
+    @router.get("/config/payments", response_class=HTMLResponse)
+    async def payment_config(request: Request):
+        return templates.TemplateResponse("partials/payments.html", {
+            "request": request,
+            "payment": config.payment
+        })
+
+
+    @router.get("/config/comms", response_class=HTMLResponse)
+    async def comms_config(request: Request):
+        return templates.TemplateResponse("partials/comms.html", {
+            "request": request,
+            "comm": config.communication
+        })
+
+
     @router.get("/status", response_class=HTMLResponse)
     async def status_fragment(request: Request):
-        status = get_mock_status()  # Replace this with your real FSM status later
+        if not vmc_instance:
+            return HTMLResponse("<div>🚨 VMC not initialized</div>")
+
         return templates.TemplateResponse("partials/status_fragment.html", {
             "request": request,
-            "status": status
+            "status": vmc_instance.get_status()
         })
 
 

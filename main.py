@@ -1,3 +1,5 @@
+from controller.vmc import VMC  # Import the VMC class from the controller module
+
 import os
 import sys
 from time import sleep
@@ -8,10 +10,11 @@ import json  # For loading configuration
 from pydantic import ValidationError  # Handle Pydantic validation errors
 import shutil
 import time
-# local webserver dashboard will be run in a separate thread
-from threading import Thread
+
+from threading import Thread  # local webserver dashboard will be run in a separate thread
 import uvicorn
 from web_interface.server import app
+from web_interface import routes
 
 def start_web_interface():
     logger.info("Starting web interface on http://localhost:8000")
@@ -174,9 +177,9 @@ def main():
     logger.info("Starting Vending Machine Controller")
 
     # Load configuration
-    config = load_config()
+    live_config = load_config()
     logger.debug("Configuration loaded successfully")   
-    logger.debug(f"Configuration model: {config}")
+    logger.debug(f"Configuration model: {live_config}")
 
     # Start the web interface in a separate thread to avoid blocking the main thread
     logger.info("Starting web interface in a separate thread")
@@ -184,13 +187,17 @@ def main():
     # Then start your FSM/main loop below
 
     # load the config model into the routes.py module
-    from web_interface import routes
     logger.debug("Importing routes module from web_interface")
     logger.debug("Setting configuration object in web interface routes")
-    routes.set_config_object(config)
+    routes.set_config_object(live_config)
 
     logger.debug("Instantiating VendingMachineUI with configuration model")
     # TODO launch the vending machine FSM or main loop here
+
+    vmc = VMC(config=live_config)
+    routes.set_vmc_instance(vmc)
+    
+    
     while True:
         sleep(100)
     """
