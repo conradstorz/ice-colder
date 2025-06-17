@@ -115,6 +115,14 @@ class VMC:
         self.mdb_interface = MDBInterface()
         logger.debug("Hardware and services initialized.")
 
+    def get_status(self) -> dict:
+        return {
+            "state": self.state,
+            "selected_product": self.selected_product.get("name") if self.selected_product else None,
+            "credit_escrow": self.credit_escrow,
+            "last_payment_method": self.last_payment_method,
+        }
+
     # --- New Callback Setter for QR Code Display ---
     @logger.catch()
     def set_qrcode_callback(self, callback):

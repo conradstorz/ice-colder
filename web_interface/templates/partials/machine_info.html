@@ -1,0 +1,28 @@
+<div class="bg-white text-black p-4 rounded shadow">
+  <h2 class="text-xl font-bold mb-4">📍 Machine Information</h2>
+
+  <div class="mb-2">
+    <strong>Common Name:</strong>
+    <span class="font-mono">{{ details.common_name }}</span>
+  </div>
+
+  <div class="mb-2">
+    <strong>Serial Number:</strong>
+    <span class="font-mono">{{ details.serial_number }}</span>
+  </div>
+
+  <div class="mb-2">
+    <strong>Location Address:</strong>
+    <span>{{ details.location.address }}</span>
+  </div>
+
+  <div class="mb-2">
+    <strong>Location Notes:</strong>
+    <span>{{ details.location.notes or "—" }}</span>
+  </div>
+
+  <div class="mt-4">
+    <strong>Product Count:</strong>
+    <span>{{ details.product_count }} products configured</span>
+  </div>
+</div>

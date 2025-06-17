@@ -1,15 +1,6 @@
 <div class="bg-gray-800 p-4 rounded">
-  <p><strong>State:</strong> {{ status['state'] }}</p>
-  <p><strong>Uptime:</strong> {{ status['uptime'] }} seconds</p>
-  <p><strong>Errors:</strong> 
-    {% if status['errors'] %}
-      <ul class="list-disc list-inside">
-        {% for err in status['errors'] %}
-          <li>{{ err }}</li>
-        {% endfor %}
-      </ul>
-    {% else %}
-      None
-    {% endif %}
-  </p>
+  <p><strong>Machine State:</strong> {{ status['state'] }}</p>
+  <p><strong>Last Customer Selection:</strong> {{ status['selected_product'] or 'None' }}</p>
+  <p><strong>Customer Escrow:</strong> ${{ '%.2f' | format(status['credit_escrow']) }}</p>
+  <p><strong>Most Recent Payment Method:</strong> {{ status['last_payment_method'] }}</p>
 </div>

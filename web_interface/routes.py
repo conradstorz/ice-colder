@@ -2,8 +2,11 @@ from pathlib import Path
 from typing import Dict
 import random
 
+from uuid import uuid4
+from services.config_store import add_product
+
 from fastapi.responses import HTMLResponse
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi import FastAPI
@@ -12,13 +15,19 @@ from services.config_store import update_product
 
 from services.fsm_control import perform_command
 
-from config.config_model import ConfigModel
+from config.config_model import ConfigModel, Product
 
 config: ConfigModel = None
 
 def set_config_object(cfg: ConfigModel):
     global config
     config = cfg
+
+vmc_instance = None
+
+def set_vmc_instance(vmc):
+    global vmc_instance
+    vmc_instance = vmc
 
 LOG_PATH = Path("logs/vmc.log")
 
@@ -44,22 +53,6 @@ def tail(file_path: Path, lines: int = 50) -> list[str]:
         return result.strip().splitlines()
 
 
-@router.post("/inventory/update/{sku}", response_class=HTMLResponse)
-async def update_inventory_item(
-    request: Request,
-    sku: str,
-    name: str = Form(...),
-    price: float = Form(...),
-    inventory_count: int = Form(...)
-):
-    update_product(config, sku, name, price, inventory_count)
-
-    return templates.TemplateResponse("partials/inventory_table.html", {
-        "request": request,
-        "products": config.products
-    })
-
-
 status_data = {
     "state": "IDLE",
     "uptime": 0,
@@ -75,17 +68,83 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
     router = APIRouter()
 
 
+    @router.post("/inventory/add", response_class=HTMLResponse)
+    async def add_new_product(
+        request: Request,
+        sku: str = Form(...),
+        name: str = Form(...),
+        price: float = Form(...),
+        inventory_count: int = Form(...)
+    ):
+        success = add_product(config, sku, name, price, inventory_count)
+
+        return templates.TemplateResponse("partials/inventory_table.html", {
+            "request": request,
+            "products": config.products
+        })
+    
+    
+    @router.post("/inventory/update/{sku}", response_class=HTMLResponse)
+    async def update_inventory_item(
+        request: Request,
+        sku: str,
+        name: str = Form(...),
+        price: float = Form(...),
+        inventory_count: int = Form(...)
+    ):
+        update_product(config, sku, name, price, inventory_count)
+
+        return templates.TemplateResponse("partials/inventory_table.html", {
+            "request": request,
+            "products": config.products
+        })
+
+
     @router.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request):
         return templates.TemplateResponse("dashboard.html", {"request": request})
 
 
+    @router.get("/config/machine", response_class=HTMLResponse)
+    async def machine_info(request: Request):
+        return templates.TemplateResponse("partials/machine_info.html", {
+            "request": request,
+            "details": config.physical
+        })
+
+
+    @router.get("/config/contacts", response_class=HTMLResponse)
+    async def contact_info(request: Request):
+        return templates.TemplateResponse("partials/contacts.html", {
+            "request": request,
+            "people": config.physical.people
+        })
+
+
+    @router.get("/config/payments", response_class=HTMLResponse)
+    async def payment_config(request: Request):
+        return templates.TemplateResponse("partials/payments.html", {
+            "request": request,
+            "payment": config.payment
+        })
+
+
+    @router.get("/config/comms", response_class=HTMLResponse)
+    async def comms_config(request: Request):
+        return templates.TemplateResponse("partials/comms.html", {
+            "request": request,
+            "comm": config.communication
+        })
+
+
     @router.get("/status", response_class=HTMLResponse)
     async def status_fragment(request: Request):
-        status = get_mock_status()  # Replace this with your real FSM status later
+        if not vmc_instance:
+            return HTMLResponse("<div>🚨 VMC not initialized</div>")
+
         return templates.TemplateResponse("partials/status_fragment.html", {
             "request": request,
-            "status": status
+            "status": vmc_instance.get_status()
         })
 
 
@@ -120,7 +179,6 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             "product": product
         })
 
-    from fastapi import Form
 
     @router.post("/inventory/update/{sku}", response_class=HTMLResponse)
     async def update_inventory_item(
@@ -141,5 +199,39 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             "request": request,
             "products": config.products
         })
+    
+
+    @router.get("/inventory/new", response_class=HTMLResponse)
+    async def new_product_form(request: Request):
+        # Blank form, random temporary SKU
+        random_sku = f"SKU-{uuid4().hex[:6].upper()}"
+        product = Product(sku=random_sku, name="", price=0.0, inventory_count=0)
+        return templates.TemplateResponse("partials/inventory_add_form.html", {
+            "request": request,
+            "product": product,
+            "mode": "new"
+        })
+
+
+    @router.get("/inventory/copy/{sku}", response_class=HTMLResponse)
+    async def copy_product_form(request: Request, sku: str):
+        base = next((p for p in config.products if p.sku == sku), None)
+        if base:
+            new_sku = f"SKU-{uuid4().hex[:6].upper()}"
+            copied = Product(
+                sku=new_sku,
+                name=f"{base.name} Copy",
+                price=base.price,
+                inventory_count=base.inventory_count,
+                description=base.description,
+                image_url=base.image_url,
+                track_inventory=base.track_inventory,
+            )
+            return templates.TemplateResponse("partials/inventory_add_form.html", {
+                "request": request,
+                "product": copied,
+                "mode": "copy"
+            })
+
 
     app.include_router(router)
