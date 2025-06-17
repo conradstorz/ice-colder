@@ -3,7 +3,7 @@ from typing import Dict
 import random
 
 from fastapi.responses import HTMLResponse
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi import FastAPI
@@ -44,22 +44,6 @@ def tail(file_path: Path, lines: int = 50) -> list[str]:
         return result.strip().splitlines()
 
 
-@router.post("/inventory/update/{sku}", response_class=HTMLResponse)
-async def update_inventory_item(
-    request: Request,
-    sku: str,
-    name: str = Form(...),
-    price: float = Form(...),
-    inventory_count: int = Form(...)
-):
-    update_product(config, sku, name, price, inventory_count)
-
-    return templates.TemplateResponse("partials/inventory_table.html", {
-        "request": request,
-        "products": config.products
-    })
-
-
 status_data = {
     "state": "IDLE",
     "uptime": 0,
@@ -74,6 +58,20 @@ def get_mock_status() -> Dict:
 def attach_routes(app: FastAPI, templates: Jinja2Templates):
     router = APIRouter()
 
+    @router.post("/inventory/update/{sku}", response_class=HTMLResponse)
+    async def update_inventory_item(
+        request: Request,
+        sku: str,
+        name: str = Form(...),
+        price: float = Form(...),
+        inventory_count: int = Form(...)
+    ):
+        update_product(config, sku, name, price, inventory_count)
+
+        return templates.TemplateResponse("partials/inventory_table.html", {
+            "request": request,
+            "products": config.products
+        })
 
     @router.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request):
@@ -119,8 +117,6 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             "request": request,
             "product": product
         })
-
-    from fastapi import Form
 
     @router.post("/inventory/update/{sku}", response_class=HTMLResponse)
     async def update_inventory_item(
