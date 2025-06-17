@@ -2,6 +2,9 @@ from pathlib import Path
 from typing import Dict
 import random
 
+from uuid import uuid4
+from services.config_store import add_product
+
 from fastapi.responses import HTMLResponse
 from fastapi import APIRouter, Request, Form
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -12,7 +15,7 @@ from services.config_store import update_product
 
 from services.fsm_control import perform_command
 
-from config.config_model import ConfigModel
+from config.config_model import ConfigModel, Product
 
 config: ConfigModel = None
 
@@ -58,6 +61,23 @@ def get_mock_status() -> Dict:
 def attach_routes(app: FastAPI, templates: Jinja2Templates):
     router = APIRouter()
 
+
+    @router.post("/inventory/add", response_class=HTMLResponse)
+    async def add_new_product(
+        request: Request,
+        sku: str = Form(...),
+        name: str = Form(...),
+        price: float = Form(...),
+        inventory_count: int = Form(...)
+    ):
+        success = add_product(config, sku, name, price, inventory_count)
+
+        return templates.TemplateResponse("partials/inventory_table.html", {
+            "request": request,
+            "products": config.products
+        })
+    
+    
     @router.post("/inventory/update/{sku}", response_class=HTMLResponse)
     async def update_inventory_item(
         request: Request,
@@ -72,6 +92,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             "request": request,
             "products": config.products
         })
+
 
     @router.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request):
@@ -118,6 +139,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             "product": product
         })
 
+
     @router.post("/inventory/update/{sku}", response_class=HTMLResponse)
     async def update_inventory_item(
         request: Request,
@@ -137,5 +159,39 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             "request": request,
             "products": config.products
         })
+    
+
+    @router.get("/inventory/new", response_class=HTMLResponse)
+    async def new_product_form(request: Request):
+        # Blank form, random temporary SKU
+        random_sku = f"SKU-{uuid4().hex[:6].upper()}"
+        product = Product(sku=random_sku, name="", price=0.0, inventory_count=0)
+        return templates.TemplateResponse("partials/inventory_add_form.html", {
+            "request": request,
+            "product": product,
+            "mode": "new"
+        })
+
+
+    @router.get("/inventory/copy/{sku}", response_class=HTMLResponse)
+    async def copy_product_form(request: Request, sku: str):
+        base = next((p for p in config.products if p.sku == sku), None)
+        if base:
+            new_sku = f"SKU-{uuid4().hex[:6].upper()}"
+            copied = Product(
+                sku=new_sku,
+                name=f"{base.name} Copy",
+                price=base.price,
+                inventory_count=base.inventory_count,
+                description=base.description,
+                image_url=base.image_url,
+                track_inventory=base.track_inventory,
+            )
+            return templates.TemplateResponse("partials/inventory_add_form.html", {
+                "request": request,
+                "product": copied,
+                "mode": "copy"
+            })
+
 
     app.include_router(router)

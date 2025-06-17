@@ -19,7 +19,7 @@ def start_web_interface():
     # Note: This will block the thread, so it should be run in a separate thread
     # If you want to run it in the main thread, remove the Thread wrapper
     # and call uvicorn.run directly.
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")  # this is the blocking command
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="debug")  # this is the blocking command
     # When the server stops, the line below will execute
     logger.info("Web interface has exited")
 

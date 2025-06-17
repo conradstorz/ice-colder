@@ -36,7 +36,25 @@
         "name": "Sample Product",
         "description": "A sample product",
         "image_url": "https://example.com/image.jpg",
-        "price": 41.0,
+        "price": 12.5,
+        "track_inventory": false,
+        "inventory_count": 0
+      },
+      {
+        "sku": "SKU-FCB828",
+        "name": "new prod",
+        "description": "A sample product",
+        "image_url": "https://example.com/image.jpg",
+        "price": 1.12,
+        "track_inventory": false,
+        "inventory_count": 9
+      },
+      {
+        "sku": "SKU-046BA8",
+        "name": "Sample Product Copy",
+        "description": "A sample product",
+        "image_url": "https://example.com/image.jpg",
+        "price": 12.5,
         "track_inventory": false,
         "inventory_count": 0
       }

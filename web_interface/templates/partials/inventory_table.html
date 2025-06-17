@@ -1,3 +1,13 @@
+<div class="mb-4">
+  <button 
+    hx-get="/inventory/new" 
+    hx-target="#inventory-box" 
+    hx-swap="innerHTML"
+    class="bg-green-600 text-white px-3 py-1 rounded">
+    ➕ Add New Product
+  </button>
+</div>
+
 <table class="w-full table-auto bg-white text-black rounded">
   <thead>
     <tr class="bg-gray-200">
@@ -15,13 +25,20 @@
       <td class="p-2">{{ product.name }}</td>
       <td class="p-2">${{ '%.2f' | format(product.price) }}</td>
       <td class="p-2">{{ product.inventory_count }}</td>
-      <td class="p-2">
+      <td class="p-2 space-x-2">
         <button 
           hx-get="/inventory/edit/{{ product.sku }}" 
           hx-target="#inventory-box" 
           hx-swap="innerHTML"
           class="bg-blue-500 px-2 py-1 rounded text-white">
           Edit
+        </button>
+        <button 
+          hx-get="/inventory/copy/{{ product.sku }}" 
+          hx-target="#inventory-box" 
+          hx-swap="innerHTML"
+          class="bg-purple-600 px-2 py-1 rounded text-white">
+          Copy
         </button>
       </td>
     </tr>
