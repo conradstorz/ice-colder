@@ -49,20 +49,30 @@
 
         </div>
 
-        <button 
-        hx-get="/config/machine" 
-        hx-target="#inventory-box" 
-        hx-swap="innerHTML"
-        class="bg-slate-700 text-white px-3 py-1 rounded mb-4">
-        🛠 View Machine Info
-        </button>
+        <div class="flex gap-2 mb-4">
+            <button 
+                hx-get="/config/machine" 
+                hx-target="#inventory-box" 
+                hx-swap="innerHTML"
+                class="bg-slate-700 text-white px-3 py-1 rounded">
+                🛠 View Machine Info
+            </button>
 
-        <h2 class="text-xl font-semibold mt-8 mb-2">📦 Inventory</h2>
+            <button 
+                hx-get="/inventory" 
+                hx-target="#inventory-box" 
+                hx-swap="innerHTML"
+                class="bg-green-700 text-white px-3 py-1 rounded">
+                📦 View Product Inventory
+            </button>
+        </div>
+
+        
         <div id="inventory-box" 
             hx-get="/inventory" 
             hx-trigger="load" 
             hx-swap="innerHTML">
-        Loading inventory...
+            Loading...
         </div>
 
 
