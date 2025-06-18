@@ -1,25 +1,34 @@
-# For more information, please refer to https://aka.ms/vscode-docker-python
-FROM python:3-slim
+FROM python:3.11-slim
 
-EXPOSE 7632
-
-# Keeps Python from generating .pyc files in the container
+# Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1
-
-# Turns off buffering for easier container logging
 ENV PYTHONUNBUFFERED=1
 
-# Install pip requirements
-COPY requirements.txt .
-RUN python -m pip install -r requirements.txt
-
+# Set working directory
 WORKDIR /app
-COPY . /app
 
-# Creates a non-root user with an explicit UID and adds permission to access the /app folder
-# For more info, please refer to https://aka.ms/vscode-docker-python-configure-containers
-RUN adduser -u 5678 --disabled-password --gecos "" appuser && chown -R appuser /app
-USER appuser
+# Install system dependencies and uv
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates build-essential pipx \
+    && pipx ensurepath \
+    && pipx install uv \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# During debugging, this entry point will be overridden. For more information, please refer to https://aka.ms/vscode-docker-python-debug
-CMD ["gunicorn", "--bind", "0.0.0.0:7632", "-k", "uvicorn.workers.UvicornWorker", "main:app"]
+# Add uv to PATH for this and subsequent steps
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Copy project files (including pyproject.toml and uv.lock)
+COPY . .
+
+# Install project dependencies using uv
+RUN uv sync --frozen
+
+# Verify uvicorn installation
+RUN find / -name uvicorn
+RUN /root/.local/bin/uvicorn --version || true
+
+# Expose the port FastAPI will run on
+EXPOSE 8000
+
+# Start the FastAPI server
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
