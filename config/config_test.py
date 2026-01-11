@@ -9,6 +9,7 @@ from pydantic import BaseModel, ValidationError, model_validator
 # Setup Loguru: log debug messages to a file with rotation and also print to console.
 logger.add("config_debug.log", level="DEBUG", rotation="1 MB")
 
+
 # Define the Product model with defaults.
 class Product(BaseModel):
     name: str = "Unnamed Product"
@@ -23,6 +24,7 @@ class Product(BaseModel):
         logger.debug(f"Validated Product: {product.name}")
         return product
 
+
 # Define the Contact model used by both location and machine owner contacts.
 class Contact(BaseModel):
     name: str = "John Doe"
@@ -31,11 +33,14 @@ class Contact(BaseModel):
     email: str = "owner@example.com"
     sms: str = "+15555555555"
 
+
 class LocationOwnerContact(BaseModel):
     contact_info: Contact = Contact()
 
+
 class MachineOwnerContact(BaseModel):
     contact_info: Contact = Contact()
+
 
 # Define PhysicalDetails with a firmware_version as an example of an extra field.
 class PhysicalDetails(BaseModel):
@@ -45,14 +50,17 @@ class PhysicalDetails(BaseModel):
     model: str = "RV-5000"
     firmware_version: str = "1.0.0"  # Default firmware version
 
+
 # Define the repair service contact info.
 class RepairServiceContactInfo(BaseModel):
     phone_number: str = "+1-555-123-8978"
     email_address: str = "support@ifixu.com"
 
+
 class RepairServiceDetails(BaseModel):
     name: str = "Foo Bar Baz LLC"
     contact_info: RepairServiceContactInfo = RepairServiceContactInfo()
+
 
 # Define the top-level ConfigModel with versioning and default values.
 class ConfigModel(BaseModel):
@@ -62,7 +70,7 @@ class ConfigModel(BaseModel):
         Product(name="Soda", price=1.25, track_inventory=True, inventory_count=10),
         Product(name="Chips", price=1.00, track_inventory=True, inventory_count=5),
         Product(name="Ice", price=0.75, track_inventory=False, inventory_count=0),
-        Product(name="Water", price=1.00, track_inventory=False, inventory_count=0)
+        Product(name="Water", price=1.00, track_inventory=False, inventory_count=0),
     ]
     location_owner_contact: LocationOwnerContact = LocationOwnerContact()
     machine_owner_contact: MachineOwnerContact = MachineOwnerContact()
@@ -79,6 +87,7 @@ def save_config(config: ConfigModel, filepath: str = "config.json"):
     except Exception as e:
         logger.exception(f"Failed to save configuration: {e}")
 
+
 @logger.catch()
 def migrate_config(config: ConfigModel, filepath: str = "config.json") -> ConfigModel:
     """
@@ -88,10 +97,7 @@ def migrate_config(config: ConfigModel, filepath: str = "config.json") -> Config
     """
     default_config = ConfigModel()  # Create a default instance for comparison.
     if config.config_version != default_config.config_version:
-        logger.info(
-            f"Migrating config from version {config.config_version} "
-            f"to {default_config.config_version}."
-        )
+        logger.info(f"Migrating config from version {config.config_version} to {default_config.config_version}.")
         # Update the version and (if needed) other fields.
         config.config_version = default_config.config_version
         # Additional migration logic can be added here.
@@ -100,6 +106,7 @@ def migrate_config(config: ConfigModel, filepath: str = "config.json") -> Config
     else:
         logger.debug("No migration needed; version is up-to-date.")
     return config
+
 
 @logger.catch()
 def load_config(filepath: str = "config.json") -> ConfigModel:
@@ -127,6 +134,7 @@ def load_config(filepath: str = "config.json") -> ConfigModel:
     except Exception as e:
         logger.exception(f"Unexpected error while loading configuration: {e}")
         raise
+
 
 if __name__ == "__main__":
     try:

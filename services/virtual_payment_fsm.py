@@ -14,6 +14,7 @@ class VirtualPaymentFSM(AsyncPaymentFSM):
       - check_payment_status() returning "success", "pending", or "timeout"
       - process_refund(amount) for processing refunds (this could be simulated)
     """
+
     def __init__(self, payment_gateways, callback=None, poll_interval=1.0):
         super().__init__("VirtualPaymentFSM", callback=callback)
         self.payment_gateways = payment_gateways

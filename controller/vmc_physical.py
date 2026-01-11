@@ -21,6 +21,7 @@ from services.payment_gateway_manager import PaymentGatewayManager
 # The following assumes `config_model` is already created and validated
 # (this is example code - config_model would need to be passed in or loaded)
 
+
 def setup_physical_vmc(config_model):
     """
     Example function showing how to set up the VMC with physical hardware.
@@ -36,9 +37,7 @@ def setup_physical_vmc(config_model):
 
     # Attach physical services
     # Payment gateway manager handles virtual payment URL creation and QR code generation
-    core_vmc.payment_gateway_manager = PaymentGatewayManager(
-        config=config_model.payment.model_dump()
-    )
+    core_vmc.payment_gateway_manager = PaymentGatewayManager(config=config_model.payment.model_dump())
 
     # MDB hardware interface for coin/payment bus communication
     core_vmc.mdb_interface = MDBInterface()
@@ -66,9 +65,11 @@ def setup_physical_vmc(config_model):
 
     # Start MDB monitoring loop (asynchronous)
     import asyncio
+
     asyncio.create_task(core_vmc.start_mdb_monitoring())
 
     return core_vmc
+
 
 # The rest of the application would handle GUI event loop, user inputs,
 # and periodically call core_vmc.deposit_funds, select_product, etc.,

@@ -44,6 +44,7 @@ class DispenseFSM:
             logger.error(f"DispenseFSM: Error during dispensing process: {e}")
             return "error"
 
+
 # Example usage within VMC (main controller) in vmc.py:
 #
 # async def run_dispense_process(self, tk_root):

@@ -16,9 +16,7 @@ class VendingMachineUI:
         self.config_model = config_model
 
         # Initialize the message manager before setting callbacks
-        self.display_manager = MessageManager(
-            TkinterWindowDisplay(parent_window=self.root, x_offset=450, y_offset=0)
-        )
+        self.display_manager = MessageManager(TkinterWindowDisplay(parent_window=self.root, x_offset=450, y_offset=0))
 
         # Initialize VMC with pre-loaded Pydantic ConfigModel
         self.vmc = VMC(config=self.config_model)
@@ -27,9 +25,7 @@ class VendingMachineUI:
         self.vmc.set_update_callback(self.update_status)
 
         # Set the VMC message callback to show messages via the display manager
-        self.vmc.set_message_callback(
-            partial(self.display_manager.post, duration_ms=5000)
-        )
+        self.vmc.set_message_callback(partial(self.display_manager.post, duration_ms=5000))
 
         # Set the VMC QR code callback to update the QR code display area
         self.vmc.set_qrcode_callback(self.update_qrcode)
@@ -47,11 +43,7 @@ class VendingMachineUI:
 
         # Machine owner contact information
         machine_owner = self.config_model.people.machine_owner
-        owner_info = (
-            f"Owner: {machine_owner.name}\n"
-            f"Phone: {machine_owner.phone_number}\n"
-            f"Email: {machine_owner.email}"
-        )
+        owner_info = f"Owner: {machine_owner.name}\nPhone: {machine_owner.phone_number}\nEmail: {machine_owner.email}"
 
         # Location owner contact information (available if needed)
         # loc_owner = self.config_model.people.location_owner
@@ -59,21 +51,14 @@ class VendingMachineUI:
         # Physical location details
         phys_loc = phys_details.location
         machine_id = phys_details.machine_id
-        location_str = (
-            f"Address: {phys_loc.address}\n"
-            f"Notes: {phys_loc.notes}"
-        )
+        location_str = f"Address: {phys_loc.address}\nNotes: {phys_loc.notes}"
 
         # Repair service details (not in ConfigModel, placeholders)
-        repair_info = (
-            "Repair Service: N/A\n"
-            "Phone: N/A\n"
-            "Email: N/A"
-        )
+        repair_info = "Repair Service: N/A\nPhone: N/A\nEmail: N/A"
 
         # Create a Notebook widget for tabs
         self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(expand=True, fill='both')
+        self.notebook.pack(expand=True, fill="both")
 
         # ---------------------------
         # Tab 1: Info Tab (Machine & Owner Info)
@@ -88,26 +73,16 @@ class VendingMachineUI:
         self.machine_info_frame = tk.Frame(self.top_info_frame)
         self.machine_info_frame.pack(side=tk.LEFT, padx=10)
         self.machine_id_label = tk.Label(
-            self.machine_info_frame,
-            text=f"Machine ID: {machine_id}",
-            font=("Helvetica", 12, "bold")
+            self.machine_info_frame, text=f"Machine ID: {machine_id}", font=("Helvetica", 12, "bold")
         )
         self.machine_id_label.pack()
-        self.location_label = tk.Label(
-            self.machine_info_frame,
-            text=location_str,
-            font=("Helvetica", 10)
-        )
+        self.location_label = tk.Label(self.machine_info_frame, text=location_str, font=("Helvetica", 10))
         self.location_label.pack()
 
         # Owner Information
         self.owner_info_frame = tk.Frame(self.top_info_frame)
         self.owner_info_frame.pack(side=tk.LEFT, padx=10)
-        self.owner_info_label = tk.Label(
-            self.owner_info_frame,
-            text=owner_info,
-            font=("Helvetica", 10)
-        )
+        self.owner_info_label = tk.Label(self.owner_info_frame, text=owner_info, font=("Helvetica", 10))
         self.owner_info_label.pack()
 
         # ---------------------------
@@ -123,8 +98,8 @@ class VendingMachineUI:
 
         self.product_list = tk.Listbox(self.prod_info_frame, width=50)
         for i, product in enumerate(products):
-            track_inv = getattr(product, 'track_inventory', False)
-            inv_count = getattr(product, 'inventory_count', 0)
+            track_inv = getattr(product, "track_inventory", False)
+            inv_count = getattr(product, "inventory_count", 0)
             name = product.name
             price = product.price
             inventory_text = f"({inv_count} available)" if track_inv else "(Unlimited)"
@@ -140,11 +115,7 @@ class VendingMachineUI:
         self.control_tab = tk.Frame(self.notebook)
         self.notebook.add(self.control_tab, text="Control")
 
-        self.escrow_label = tk.Label(
-            self.control_tab,
-            text="Money In: $0.00",
-            font=("Helvetica", 14, "bold")
-        )
+        self.escrow_label = tk.Label(self.control_tab, text="Money In: $0.00", font=("Helvetica", 14, "bold"))
         self.escrow_label.pack(pady=5)
 
         # Product buttons
@@ -175,29 +146,17 @@ class VendingMachineUI:
             )
             btn.pack(side=tk.LEFT, padx=3)
 
-        self.refund_button = tk.Button(
-            self.payment_frame,
-            text="Request Refund",
-            command=self.request_refund
-        )
+        self.refund_button = tk.Button(self.payment_frame, text="Request Refund", command=self.request_refund)
         self.refund_button.pack(side=tk.LEFT, padx=5)
 
         # FSM state and selected product
         self.state_label = tk.Label(
-            self.control_tab,
-            text="Current State: idle\nSelected Product: None",
-            justify="left",
-            font=("Helvetica", 12)
+            self.control_tab, text="Current State: idle\nSelected Product: None", justify="left", font=("Helvetica", 12)
         )
         self.state_label.pack(pady=10)
 
         # Message display
-        self.message_text = tk.Text(
-            self.control_tab,
-            height=4,
-            width=60,
-            wrap="word"
-        )
+        self.message_text = tk.Text(self.control_tab, height=4, width=60, wrap="word")
         self.message_text.pack(pady=10)
         self.message_text.config(state="disabled")
 
@@ -210,11 +169,7 @@ class VendingMachineUI:
         # ---------------------------
         self.repair_tab = tk.Frame(self.notebook)
         self.notebook.add(self.repair_tab, text="Repair Service")
-        self.repair_info_label = tk.Label(
-            self.repair_tab,
-            text=repair_info,
-            font=("Helvetica", 10)
-        )
+        self.repair_info_label = tk.Label(self.repair_tab, text=repair_info, font=("Helvetica", 10))
         self.repair_info_label.pack(padx=10, pady=10)
 
     def product_pressed(self, index):
@@ -234,9 +189,7 @@ class VendingMachineUI:
         self.escrow_label.config(text=f"Money In: ${credit_escrow:.2f}")
         # Update the state label with current FSM state and selected product
         product_name = selected_product.name if selected_product else "None"
-        self.state_label.config(
-            text=f"Current State: {state}\nSelected Product: {product_name}"
-        )
+        self.state_label.config(text=f"Current State: {state}\nSelected Product: {product_name}")
 
     def update_message(self, message):
         # Enable, clear, write, and disable the text widget
@@ -250,6 +203,7 @@ class VendingMachineUI:
         self.qr_photo = ImageTk.PhotoImage(pil_image)
         self.qrcode_label.config(image=self.qr_photo)
         self.qrcode_label.image = self.qr_photo
+
 
 if __name__ == "__main__":
     root = tk.Tk()

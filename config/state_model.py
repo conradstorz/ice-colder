@@ -51,11 +51,7 @@ class MachineState(BaseModel):
     last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     def record_transaction(
-        self,
-        channel: Channel,
-        sku: str,
-        amount: float,
-        timestamp: Optional[datetime] = None
+        self, channel: Channel, sku: str, amount: float, timestamp: Optional[datetime] = None
     ) -> None:
         """
         Update channel and product stats for a completed vend.

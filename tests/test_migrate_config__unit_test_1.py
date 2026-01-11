@@ -50,13 +50,11 @@ def codeflash_wrap(
         exception = e
     gc.enable()
     iteration = os.environ["CODEFLASH_TEST_ITERATION"]
-    with Path(
-        "C:/Users/Conrad/AppData/Local/Temp/codeflash_e6g7_r_a", f"test_return_values_{iteration}.bin"
-    ).open("ab") as f:
+    with Path("C:/Users/Conrad/AppData/Local/Temp/codeflash_e6g7_r_a", f"test_return_values_{iteration}.bin").open(
+        "ab"
+    ) as f:
         pickled_values = (
-            pickle.dumps((args, kwargs, exception))
-            if exception
-            else pickle.dumps((args, kwargs, return_value))
+            pickle.dumps((args, kwargs, exception)) if exception else pickle.dumps((args, kwargs, return_value))
         )
         _test_name = f"{test_module_name}:{(test_class_name + '.' if test_class_name else '')}{test_name}:{function_name}:{line_id}".encode(
             "ascii"
@@ -83,9 +81,7 @@ class ProductModel:
 @dataclass
 class ConfigModel:
     config_version: int = 1
-    products: List[ProductModel] = field(
-        default_factory=lambda: [ProductModel(name="Widget", price=9.99)]
-    )
+    products: List[ProductModel] = field(default_factory=lambda: [ProductModel(name="Widget", price=9.99)])
 
     def model_dump(self):
         return {
@@ -117,9 +113,7 @@ def test_no_migration_needed(tmp_path):
     file = tmp_path / "config.json"
     save_config(cfg, str(file))
     loaded_cfg = load_config(str(file))
-    _call__bound__arguments = inspect.signature(migrate_config).bind(
-        loaded_cfg, str(file)
-    )
+    _call__bound__arguments = inspect.signature(migrate_config).bind(loaded_cfg, str(file))
     _call__bound__arguments.apply_defaults()
     codeflash_return_value = codeflash_wrap(
         migrate_config,
@@ -141,15 +135,11 @@ def test_migration_updates_version(tmp_path):
     codeflash_loop_index = int(os.environ["CODEFLASH_LOOP_INDEX"])
     "Test config with old version is migrated to new version and file updated."
     old_version = 0
-    cfg = ConfigModel(
-        config_version=old_version, products=[ProductModel("Widget", 9.99)]
-    )
+    cfg = ConfigModel(config_version=old_version, products=[ProductModel("Widget", 9.99)])
     file = tmp_path / "config.json"
     save_config(cfg, str(file))
     loaded_cfg = load_config(str(file))
-    _call__bound__arguments = inspect.signature(migrate_config).bind(
-        loaded_cfg, str(file)
-    )
+    _call__bound__arguments = inspect.signature(migrate_config).bind(loaded_cfg, str(file))
     _call__bound__arguments.apply_defaults()
     codeflash_return_value = codeflash_wrap(
         migrate_config,
@@ -174,9 +164,7 @@ def test_migration_preserves_other_fields(tmp_path):
     file = tmp_path / "config.json"
     save_config(cfg, str(file))
     loaded_cfg = load_config(str(file))
-    _call__bound__arguments = inspect.signature(migrate_config).bind(
-        loaded_cfg, str(file)
-    )
+    _call__bound__arguments = inspect.signature(migrate_config).bind(loaded_cfg, str(file))
     _call__bound__arguments.apply_defaults()
     codeflash_return_value = codeflash_wrap(
         migrate_config,
@@ -199,9 +187,7 @@ def test_empty_products_list(tmp_path):
     file = tmp_path / "config.json"
     save_config(cfg, str(file))
     loaded_cfg = load_config(str(file))
-    _call__bound__arguments = inspect.signature(migrate_config).bind(
-        loaded_cfg, str(file)
-    )
+    _call__bound__arguments = inspect.signature(migrate_config).bind(loaded_cfg, str(file))
     _call__bound__arguments.apply_defaults()
     codeflash_return_value = codeflash_wrap(
         migrate_config,
@@ -224,9 +210,7 @@ def test_missing_products_key(tmp_path):
     with open(file, "w") as f:
         json.dump({"config_version": 0}, f)
     loaded_cfg = load_config(str(file))
-    _call__bound__arguments = inspect.signature(migrate_config).bind(
-        loaded_cfg, str(file)
-    )
+    _call__bound__arguments = inspect.signature(migrate_config).bind(loaded_cfg, str(file))
     _call__bound__arguments.apply_defaults()
     codeflash_return_value = codeflash_wrap(
         migrate_config,
@@ -249,9 +233,7 @@ def test_negative_config_version(tmp_path):
     file = tmp_path / "config.json"
     save_config(cfg, str(file))
     loaded_cfg = load_config(str(file))
-    _call__bound__arguments = inspect.signature(migrate_config).bind(
-        loaded_cfg, str(file)
-    )
+    _call__bound__arguments = inspect.signature(migrate_config).bind(loaded_cfg, str(file))
     _call__bound__arguments.apply_defaults()
     codeflash_return_value = codeflash_wrap(
         migrate_config,
@@ -274,9 +256,7 @@ def test_large_config_version(tmp_path):
     file = tmp_path / "config.json"
     save_config(cfg, str(file))
     loaded_cfg = load_config(str(file))
-    _call__bound__arguments = inspect.signature(migrate_config).bind(
-        loaded_cfg, str(file)
-    )
+    _call__bound__arguments = inspect.signature(migrate_config).bind(loaded_cfg, str(file))
     _call__bound__arguments.apply_defaults()
     codeflash_return_value = codeflash_wrap(
         migrate_config,
@@ -310,9 +290,7 @@ def test_config_file_permissions(tmp_path):
     save_config(cfg, str(file))
     os.chmod(file, 292)
     loaded_cfg = load_config(str(file))
-    _call__bound__arguments = inspect.signature(migrate_config).bind(
-        loaded_cfg, str(file)
-    )
+    _call__bound__arguments = inspect.signature(migrate_config).bind(loaded_cfg, str(file))
     _call__bound__arguments.apply_defaults()
     codeflash_return_value = codeflash_wrap(
         migrate_config,
@@ -329,9 +307,7 @@ def test_config_file_permissions(tmp_path):
     loaded_cfg.config_version = -1
     os.chmod(file, 292)
     try:
-        _call__bound__arguments = inspect.signature(migrate_config).bind(
-            loaded_cfg, str(file)
-        )
+        _call__bound__arguments = inspect.signature(migrate_config).bind(loaded_cfg, str(file))
         _call__bound__arguments.apply_defaults()
         codeflash_return_value = codeflash_wrap(
             migrate_config,
@@ -356,9 +332,7 @@ def test_large_number_of_products(tmp_path):
     file = tmp_path / "config.json"
     save_config(cfg, str(file))
     loaded_cfg = load_config(str(file))
-    _call__bound__arguments = inspect.signature(migrate_config).bind(
-        loaded_cfg, str(file)
-    )
+    _call__bound__arguments = inspect.signature(migrate_config).bind(loaded_cfg, str(file))
     _call__bound__arguments.apply_defaults()
     codeflash_return_value = codeflash_wrap(
         migrate_config,
@@ -383,9 +357,7 @@ def test_multiple_migrations(tmp_path):
     file = tmp_path / "config.json"
     save_config(cfg, str(file))
     loaded_cfg = load_config(str(file))
-    _call__bound__arguments = inspect.signature(migrate_config).bind(
-        loaded_cfg, str(file)
-    )
+    _call__bound__arguments = inspect.signature(migrate_config).bind(loaded_cfg, str(file))
     _call__bound__arguments.apply_defaults()
     codeflash_return_value = codeflash_wrap(
         migrate_config,
@@ -399,9 +371,7 @@ def test_multiple_migrations(tmp_path):
     )
     codeflash_output = codeflash_return_value
     migrated1 = codeflash_output
-    _call__bound__arguments = inspect.signature(migrate_config).bind(
-        migrated1, str(file)
-    )
+    _call__bound__arguments = inspect.signature(migrate_config).bind(migrated1, str(file))
     _call__bound__arguments.apply_defaults()
     codeflash_return_value = codeflash_wrap(
         migrate_config,
@@ -425,9 +395,7 @@ def test_concurrent_migrations(tmp_path):
     save_config(cfg, str(file))
     loaded_cfg1 = load_config(str(file))
     loaded_cfg2 = load_config(str(file))
-    _call__bound__arguments = inspect.signature(migrate_config).bind(
-        loaded_cfg1, str(file)
-    )
+    _call__bound__arguments = inspect.signature(migrate_config).bind(loaded_cfg1, str(file))
     _call__bound__arguments.apply_defaults()
     codeflash_return_value = codeflash_wrap(
         migrate_config,
@@ -441,9 +409,7 @@ def test_concurrent_migrations(tmp_path):
     )
     codeflash_output = codeflash_return_value
     migrated1 = codeflash_output
-    _call__bound__arguments = inspect.signature(migrate_config).bind(
-        loaded_cfg2, str(file)
-    )
+    _call__bound__arguments = inspect.signature(migrate_config).bind(loaded_cfg2, str(file))
     _call__bound__arguments.apply_defaults()
     codeflash_return_value = codeflash_wrap(
         migrate_config,
@@ -467,9 +433,7 @@ def test_large_config_file_size(tmp_path):
     file = tmp_path / "config.json"
     save_config(cfg, str(file))
     loaded_cfg = load_config(str(file))
-    _call__bound__arguments = inspect.signature(migrate_config).bind(
-        loaded_cfg, str(file)
-    )
+    _call__bound__arguments = inspect.signature(migrate_config).bind(loaded_cfg, str(file))
     _call__bound__arguments.apply_defaults()
     codeflash_return_value = codeflash_wrap(
         migrate_config,

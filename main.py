@@ -27,6 +27,7 @@ def start_web_interface():
     # When the server stops, the line below will execute
     logger.info("Web interface has exited")
 
+
 def setup_logging():
     """
     Set up logging configuration for the application.
@@ -43,15 +44,10 @@ def setup_logging():
         rotation="00:00",
         retention="300 days",
         compression="zip",
-        format="{message};{level} {time:YYYY-MM-DD HH:mm:ss}"
+        format="{message};{level} {time:YYYY-MM-DD HH:mm:ss}",
     )
     # Add console logging for INFO and ERROR messages (plain text, with custom format)
-    logger.add(
-        sys.stdout,
-        level="INFO",
-        serialize=False,
-        format="{message}\n{level}: {time:YYYY-MM-DD HH:mm:ss}"
-    )
+    logger.add(sys.stdout, level="INFO", serialize=False, format="{message}\n{level}: {time:YYYY-MM-DD HH:mm:ss}")
 
 
 def _deep_merge(default: dict, source: dict) -> dict:
@@ -87,6 +83,7 @@ def _defaults_applied(orig: dict, merged: dict) -> bool:
                 return True
     return False
 
+
 def load_config() -> ConfigModel:
     """
     Load the configuration from a JSON file, applying defaults.
@@ -94,15 +91,18 @@ def load_config() -> ConfigModel:
     logger.info("Loading configuration from 'config.json'")
     # load configuration
     logger.debug("Checking for 'config.json' in current directory")
+
     # Ensure config.json exists; if not, generate a skeleton for user
     def _json_encoder(o):
         from pydantic import SecretStr
+
         if isinstance(o, SecretStr):
             # expose the actual secret (or o.get_secret_value())—
             # or return "********" if you want to keep it masked
             return o.get_secret_value()
         # for any other unknown types, let it error
         raise TypeError(f"Type {o.__class__.__name__} not serializable")
+
     if not os.path.exists("config.json"):
         logger.warning("'config.json' not found, creating skeleton with default values")
         skeleton_dict = ConfigModel.model_construct().model_dump()
@@ -153,15 +153,12 @@ def load_config() -> ConfigModel:
         logger.debug("Validating merged configuration via Pydantic model")
         config_model = ConfigModel.model_validate(merged_data)
         version = getattr(config_model, "version", None)
-        logger.info(
-            "Configuration loaded successfully",
-            f": version={version}" if version else ""
-        )
+        logger.info("Configuration loaded successfully", f": version={version}" if version else "")
     except ValidationError as ve:
         logger.error("Configuration validation failed with the following errors:")
         for err in ve.errors():
-            loc = " -> ".join(str(loc_part) for loc_part in err.get('loc', []))
-            msg = err.get('msg', '')
+            loc = " -> ".join(str(loc_part) for loc_part in err.get("loc", []))
+            msg = err.get("msg", "")
             logger.error(f"  • {loc}: {msg}")
         sys.exit(1)
     except Exception:
@@ -197,7 +194,6 @@ def main():
 
     vmc = VMC(config=live_config)
     routes.set_vmc_instance(vmc)
-
 
     while True:
         sleep(100)

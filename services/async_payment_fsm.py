@@ -10,6 +10,7 @@ class AsyncPaymentFSM(ABC):
     Provides a common interface for both physical (MDB-based)
     and virtual payment systems, including support for refunds.
     """
+
     def __init__(self, name: str, callback=None):
         self.name = name
         self.callback = callback

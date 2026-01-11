@@ -49,13 +49,11 @@ def codeflash_wrap(
         exception = e
     gc.enable()
     iteration = os.environ["CODEFLASH_TEST_ITERATION"]
-    with Path(
-        "C:/Users/Conrad/AppData/Local/Temp/codeflash_e6g7_r_a", f"test_return_values_{iteration}.bin"
-    ).open("ab") as f:
+    with Path("C:/Users/Conrad/AppData/Local/Temp/codeflash_e6g7_r_a", f"test_return_values_{iteration}.bin").open(
+        "ab"
+    ) as f:
         pickled_values = (
-            pickle.dumps((args, kwargs, exception))
-            if exception
-            else pickle.dumps((args, kwargs, return_value))
+            pickle.dumps((args, kwargs, exception)) if exception else pickle.dumps((args, kwargs, return_value))
         )
         _test_name = f"{test_module_name}:{(test_class_name + '.' if test_class_name else '')}{test_name}:{function_name}:{line_id}".encode(
             "ascii"
@@ -82,9 +80,7 @@ class ProductModel:
 @dataclass
 class ConfigModel:
     config_version: int = 1
-    products: List[ProductModel] = field(
-        default_factory=lambda: [ProductModel(name="Widget", price=9.99)]
-    )
+    products: List[ProductModel] = field(default_factory=lambda: [ProductModel(name="Widget", price=9.99)])
 
     def model_dump(self):
         return {
@@ -107,9 +103,7 @@ def test_no_migration_needed(tmp_path):
     file = tmp_path / "config.json"
     save_config(cfg, str(file))
     loaded_cfg = ConfigModel(config_version=1, products=[ProductModel("Gadget", 19.99)])
-    _call__bound__arguments = inspect.signature(migrate_config).bind(
-        loaded_cfg, str(file)
-    )
+    _call__bound__arguments = inspect.signature(migrate_config).bind(loaded_cfg, str(file))
     _call__bound__arguments.apply_defaults()
     codeflash_return_value = codeflash_wrap(
         migrate_config,
@@ -131,9 +125,7 @@ def test_migration_performs_version_update(tmp_path):
     codeflash_loop_index = int(os.environ["CODEFLASH_LOOP_INDEX"])
     "Test that migrate_config updates config_version when needed and saves to file."
     old_version = 0
-    cfg = ConfigModel(
-        config_version=old_version, products=[ProductModel("Widget", 9.99)]
-    )
+    cfg = ConfigModel(config_version=old_version, products=[ProductModel("Widget", 9.99)])
     file = tmp_path / "config.json"
     save_config(cfg, str(file))
     _call__bound__arguments = inspect.signature(migrate_config).bind(cfg, str(file))
@@ -340,11 +332,7 @@ def test_migration_with_none_fields(tmp_path):
     def patched_model_dump():
         return {
             "config_version": cfg.config_version,
-            "products": (
-                []
-                if cfg.products is None
-                else [{"name": p.name, "price": p.price} for p in cfg.products]
-            ),
+            "products": ([] if cfg.products is None else [{"name": p.name, "price": p.price} for p in cfg.products]),
         }
 
     cfg.model_dump = patched_model_dump

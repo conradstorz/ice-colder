@@ -11,6 +11,7 @@ class MDBPaymentFSM(AsyncPaymentFSM):
     Asynchronous FSM for handling MDB interface payment devices.
     Handles physical payment devices (cash, coin, credit card readers) via the MDB standard.
     """
+
     def __init__(self, callback=None):
         super().__init__("MDBPaymentFSM", callback=callback)
         self.current_credit = 0.0

@@ -58,9 +58,7 @@ class ProductModel:
 @dataclass
 class ConfigModel:
     config_version: int = 1
-    products: List[ProductModel] = field(
-        default_factory=lambda: [ProductModel(name="Widget", price=9.99)]
-    )
+    products: List[ProductModel] = field(default_factory=lambda: [ProductModel(name="Widget", price=9.99)])
 
     def model_dump(self):
         return {
@@ -104,9 +102,7 @@ def test_migration_performs_version_update(tmp_path):
     codeflash_loop_index = int(os.environ["CODEFLASH_LOOP_INDEX"])
     "Test that migrate_config updates config_version when needed and saves to file."
     old_version = 0
-    cfg = ConfigModel(
-        config_version=old_version, products=[ProductModel("Widget", 9.99)]
-    )
+    cfg = ConfigModel(config_version=old_version, products=[ProductModel("Widget", 9.99)])
     file = tmp_path / "config.json"
     save_config(cfg, str(file))
     codeflash_return_value = codeflash_wrap(
@@ -305,11 +301,7 @@ def test_migration_with_none_fields(tmp_path):
     def patched_model_dump():
         return {
             "config_version": cfg.config_version,
-            "products": (
-                []
-                if cfg.products is None
-                else [{"name": p.name, "price": p.price} for p in cfg.products]
-            ),
+            "products": ([] if cfg.products is None else [{"name": p.name, "price": p.price} for p in cfg.products]),
         }
 
     cfg.model_dump = patched_model_dump

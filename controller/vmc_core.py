@@ -6,6 +6,7 @@ Pure finite state machine (FSM) definition for the Vending Machine Controller (V
 This module contains only the state definitions, transition table, and simple callbacks
 that update internal state without any direct hardware or UI interaction.
 """
+
 from ChatGPT_03mini_fsm_vmc import event_store
 from ChatGPT_03mini_fsm_vmc.event_store import TransactionEvent
 from ChatGPT_03mini_fsm_vmc.state_model import MachineState
@@ -71,12 +72,14 @@ TRANSITIONS = [
     },
 ]
 
+
 class VMC:
     """
     Vending Machine Controller core class.
     Maintains only the business logic state and transitions.
     Does NOT perform any hardware access or user interface updates.
     """
+
     # Define the four possible states of the FSM.
     states = ["idle", "interacting_with_user", "dispensing", "error"]
 
@@ -94,7 +97,7 @@ class VMC:
 
         # Initialize runtime state variables
         self.selected_product = None  # Currently chosen product dict
-        self.credit_escrow = 0.0     # Funds inserted but not yet spent
+        self.credit_escrow = 0.0  # Funds inserted but not yet spent
         self.last_payment_method = None  # Last method used for deposit or refund
 
         # recover previous state from event store  TODO: make this code work
@@ -140,7 +143,7 @@ class VMC:
             sku=self.sku,
             amount=self.amount,
             fsm_state_before=self.old_state,
-            fsm_state_after=self.new_state
+            fsm_state_after=self.new_state,
         )
         store.append_event(evt)
         store.checkpoint(self.__dict__)
@@ -211,4 +214,3 @@ class VMC:
         needed = price - self.credit_escrow
         logger.warning(f"Insufficient funds; need additional {needed:.2f}")
         return False, needed
-
