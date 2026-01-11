@@ -4,7 +4,7 @@ from loguru import logger
 
 try:
     from serial import Serial
-except ImportError as e:
+except ImportError:
     logger.error(
         "Failed to import 'Serial' from pyserial. Ensure pyserial is installed and "
         "no local file is named 'serial.py'. Original source of this error was fixed "

@@ -1,5 +1,4 @@
 # fsm_integration.py (excerpt)
-import asyncio
 from loguru import logger
 from hardware.mdb_payment_fsm import MDBPaymentFSM
 from virtual_payment_fsm import VirtualPaymentFSM

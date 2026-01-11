@@ -29,7 +29,7 @@ def set_vmc_instance(vmc):
     global vmc_instance
     vmc_instance = vmc
 
-LOG_PATH = Path("logs/vmc.log")
+LOG_PATH = Path("LOGS/vmc.log")
 
 def tail(file_path: Path, lines: int = 50) -> list[str]:
     if not file_path.exists():

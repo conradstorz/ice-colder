@@ -159,7 +159,7 @@ def load_config() -> ConfigModel:
     except ValidationError as ve:
         logger.error("Configuration validation failed with the following errors:")
         for err in ve.errors():
-            loc = " -> ".join(str(l) for l in err.get('loc', []))
+            loc = " -> ".join(str(loc_part) for loc_part in err.get('loc', []))
             msg = err.get('msg', '')
             logger.error(f"  • {loc}: {msg}")
         sys.exit(1)

@@ -3,9 +3,8 @@ import tkinter as tk
 from tkinter import ttk  # Import ttk for Notebook widget
 from functools import partial  # For binding callbacks with parameters
 from controller.vmc import VMC  # Import the VMC class from the controller module
-from PIL import Image, ImageTk  # Import Pillow for image handling
+from PIL import ImageTk  # Import Pillow for image handling
 from controller.message_manager import MessageManager, TkinterWindowDisplay
-from PIL import Image, ImageTk  # Import Pillow for image handling
 from config.config_model import ConfigModel  # Import Pydantic model for configuration
 
 class VendingMachineUI:
@@ -51,13 +50,8 @@ class VendingMachineUI:
             f"Email: {machine_owner.email}"
         )
 
-        # Location owner contact information
-        loc_owner = self.config_model.people.location_owner
-        location_info = (
-            f"Location Contact: {loc_owner.name}\n"
-            f"Phone: {loc_owner.phone_number}\n"
-            f"Email: {loc_owner.email}"
-        )
+        # Location owner contact information (available if needed)
+        # loc_owner = self.config_model.people.location_owner
 
         # Physical location details
         phys_loc = phys_details.location

@@ -1,7 +1,7 @@
 [project]
 name = "ice-colder"
 version = "0.1.0"
-description = "Add your description here"
+description = "A comprehensive vending machine controller project"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -24,7 +24,7 @@ dependencies = [
 module-root = "."
 tests-root = "tests"
 test-framework = "pytest"
-benchmarks-root = "tests\\benchmarks"
+benchmarks-root = "tests/benchmarks"
 ignore-paths = []
 disable-telemetry = false
 formatter-cmds = ["ruff check --exit-zero --fix $file", "ruff format $file"]

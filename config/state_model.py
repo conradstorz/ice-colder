@@ -3,7 +3,6 @@ from loguru import logger
 from typing import Dict, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 from config_model import Channel
-import json
 import os
 
 

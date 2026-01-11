@@ -39,6 +39,9 @@ pip-delete-this-directory.txt
 # program logs
 LOGS/
 
+# Config backup files
+config.json.bak_*
+
 # Unit test / coverage reports
 htmlcov/
 .tox/
