@@ -1,6 +1,7 @@
 # hardware/button_panel.py
-import random
 import asyncio
+import random
+
 from loguru import logger
 
 

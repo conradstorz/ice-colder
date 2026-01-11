@@ -1,8 +1,9 @@
 import json
 from datetime import datetime, timezone
-from loguru import logger
 from pathlib import Path
-from typing import List, Type, TypeVar, Optional
+from typing import List, Optional, Type, TypeVar
+
+from loguru import logger
 from pydantic import BaseModel, Field
 
 # Generic type for events

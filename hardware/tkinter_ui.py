@@ -1,11 +1,14 @@
 # tkinter_ui.py
 import tkinter as tk
-from tkinter import ttk  # Import ttk for Notebook widget
 from functools import partial  # For binding callbacks with parameters
-from controller.vmc import VMC  # Import the VMC class from the controller module
+from tkinter import ttk  # Import ttk for Notebook widget
+
 from PIL import ImageTk  # Import Pillow for image handling
-from controller.message_manager import MessageManager, TkinterWindowDisplay
+
 from config.config_model import ConfigModel  # Import Pydantic model for configuration
+from controller.message_manager import MessageManager, TkinterWindowDisplay
+from controller.vmc import VMC  # Import the VMC class from the controller module
+
 
 class VendingMachineUI:
     def __init__(self, root, config_model: ConfigModel):
@@ -256,5 +259,5 @@ if __name__ == "__main__":
         config_data = f.read()
     config = ConfigModel.model_validate_json(config_data)
     app = VendingMachineUI(root, config_model=config)
-    root.mainloop()  
+    root.mainloop()
 # End of fixed tkinter UI module

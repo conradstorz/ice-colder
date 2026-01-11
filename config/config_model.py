@@ -40,9 +40,10 @@ class ConfigModel(BaseModel): holds high-level fields for version, physical, pay
 """
 
 from enum import Enum
-from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, EmailStr, SecretStr, Field, model_validator
+from typing import Any, Dict, List, Optional
+
 from loguru import logger
+from pydantic import BaseModel, EmailStr, Field, SecretStr, model_validator
 
 
 # 1) First, an enum of supported communication channels

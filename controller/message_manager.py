@@ -2,6 +2,7 @@ import tkinter as tk
 from abc import ABC, abstractmethod
 from collections import deque
 
+
 class DisplayDevice(ABC):
     """
     Abstract interface for all display devices.

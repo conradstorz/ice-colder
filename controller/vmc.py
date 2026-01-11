@@ -1,9 +1,10 @@
 # controller/vmc.py
-from transitions import Machine
 from loguru import logger
-from services.payment_gateway_manager import PaymentGatewayManager
-from hardware.mdb_interface import MDBInterface
+from transitions import Machine
+
 from config.config_model import ConfigModel  # Import the Pydantic model
+from hardware.mdb_interface import MDBInterface
+from services.payment_gateway_manager import PaymentGatewayManager
 
 # Global variable for state change log prefix
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
@@ -61,7 +62,7 @@ TRANSITIONS = [
     },
 ]
 
-class VMC: 
+class VMC:
     # Define FSM states: idle, interacting_with_user, dispensing, error
     states = ["idle", "interacting_with_user", "dispensing", "error"]
 

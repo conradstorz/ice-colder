@@ -1,6 +1,8 @@
 # payment_device_fsm.py
 from abc import ABC, abstractmethod
+
 from loguru import logger
+
 
 class PaymentDeviceFSM(ABC):
     """

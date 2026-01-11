@@ -1,0 +1,25 @@
+# Ruff configuration for ice-colder project
+
+# Set line length to 120 characters
+line-length = 120
+
+[lint]
+# Enable specific rule sets
+select = ["E", "F", "W", "I", "N"]
+
+# Ignore specific rules
+ignore = [
+    "E501",  # Line too long - let formatter handle it
+    "N805",  # First argument should be self - false positive for Pydantic validators
+]
+
+[lint.per-file-ignores]
+# Ignore unused variables and naming conventions in CodeFlash-generated test files
+"tests/test_migrate_config__*.py" = ["F841", "N806"]
+
+[format]
+# Use double quotes for strings
+quote-style = "double"
+
+# Indentation
+indent-style = "space"

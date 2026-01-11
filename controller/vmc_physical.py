@@ -10,10 +10,11 @@ user interface callbacks, and any external services (e.g., payment gateways, MDB
 # Note: This file contains example code and is not currently imported or used.
 # It serves as a template for physical hardware integration.
 
-from vmc_core import VMC
 from loguru import logger
-from services.payment_gateway_manager import PaymentGatewayManager
+from vmc_core import VMC
+
 from hardware.mdb_interface import MDBInterface
+from services.payment_gateway_manager import PaymentGatewayManager
 
 # Example setup: instantiate core FSM with real product/config data
 # Load Pydantic ConfigModel elsewhere and extract necessary fields
@@ -23,15 +24,7 @@ from hardware.mdb_interface import MDBInterface
 def setup_physical_vmc(config_model):
     """
     Example function showing how to set up the VMC with physical hardware.
-    
-    Args:
-        config_model: A validated ConfigModel instance
-    """
 
-def setup_physical_vmc(config_model):
-    """
-    Example function showing how to set up the VMC with physical hardware.
-    
     Args:
         config_model: A validated ConfigModel instance
     """
@@ -74,7 +67,7 @@ def setup_physical_vmc(config_model):
     # Start MDB monitoring loop (asynchronous)
     import asyncio
     asyncio.create_task(core_vmc.start_mdb_monitoring())
-    
+
     return core_vmc
 
 # The rest of the application would handle GUI event loop, user inputs,

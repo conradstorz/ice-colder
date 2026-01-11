@@ -1,6 +1,7 @@
 # fsm_control.py
 from loguru import logger
 
+
 def perform_command(command: str) -> str:
     logger.info(f"[Admin] Received command: {command}")
 

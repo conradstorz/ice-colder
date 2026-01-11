@@ -1,21 +1,15 @@
+import random
 from pathlib import Path
 from typing import Dict
-import random
-
 from uuid import uuid4
-from services.config_store import add_product
 
+from fastapi import APIRouter, FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
-from fastapi import APIRouter, Request, Form
-from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
-from fastapi import FastAPI
-
-from services.config_store import update_product
-
-from services.fsm_control import perform_command
 
 from config.config_model import ConfigModel, Product
+from services.config_store import add_product, update_product
+from services.fsm_control import perform_command
 
 config: ConfigModel = None
 
@@ -34,7 +28,7 @@ LOG_PATH = Path("LOGS/vmc.log")
 def tail(file_path: Path, lines: int = 50) -> list[str]:
     if not file_path.exists():
         return ["[Log file not found]"]
-    
+
     with file_path.open("rb") as f:
         f.seek(0, 2)
         end = f.tell()
@@ -78,14 +72,14 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         price: float = Form(...),
         inventory_count: int = Form(...)
     ):
-        success = add_product(config, sku, name, price, inventory_count)
+        add_product(config, sku, name, price, inventory_count)
 
         return templates.TemplateResponse("partials/inventory_table.html", {
             "request": request,
             "products": config.products
         })
-    
-    
+
+
     @router.post("/inventory/update/{sku}", response_class=HTMLResponse)
     async def update_inventory_item(
         request: Request,
@@ -161,7 +155,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
     async def control_action(command: str):
         result = perform_command(command)
         return HTMLResponse(f"<p>{result}</p>")
-    
+
 
     @router.get("/logs", response_class=HTMLResponse)
     async def view_logs(request: Request):

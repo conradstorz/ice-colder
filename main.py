@@ -1,20 +1,21 @@
-from controller.vmc import VMC  # Import the VMC class from the controller module
-
-import os
-import sys
-from time import sleep
-from loguru import logger
-from config.config_model import ConfigModel
 # from hardware.tkinter_ui import VendingMachineUI  # removed in favor of local webserver dashboard
 import json  # For loading configuration
-from pydantic import ValidationError  # Handle Pydantic validation errors
+import os
 import shutil
+import sys
 import time
-
 from threading import Thread  # local webserver dashboard will be run in a separate thread
+from time import sleep
+
 import uvicorn
-from web_interface.server import app
+from loguru import logger
+from pydantic import ValidationError  # Handle Pydantic validation errors
+
+from config.config_model import ConfigModel
+from controller.vmc import VMC  # Import the VMC class from the controller module
 from web_interface import routes
+from web_interface.server import app
+
 
 def start_web_interface():
     logger.info("Starting web interface on http://localhost:8000")
@@ -107,12 +108,12 @@ def load_config() -> ConfigModel:
         skeleton_dict = ConfigModel.model_construct().model_dump()
         json_text = json.dumps(skeleton_dict, default=_json_encoder, indent=4)
         with open("config.json", "w", encoding="utf-8") as fw:
-            fw.write(json_text)        
+            fw.write(json_text)
         logger.info("Created skeleton 'config.json' with default values")
         logger.info("Please edit 'config.json' with your configuration settings")
         print("Created skeleton config.json—please edit and rerun.")
         sys.exit(0)
-    
+
     # Load user config
     try:
         logger.debug("Reading raw JSON from 'config.json'")
@@ -145,7 +146,7 @@ def load_config() -> ConfigModel:
         json_text = merged_data.model_dump_json(indent=4)
         with open("config.json", "w", encoding="utf-8") as fw:
             fw.write(json_text)
-            logger.debug("Wrote merged configuration to 'config.json'") 
+            logger.debug("Wrote merged configuration to 'config.json'")
 
     # Validate merged config
     try:
@@ -178,7 +179,7 @@ def main():
 
     # Load configuration
     live_config = load_config()
-    logger.debug("Configuration loaded successfully")   
+    logger.debug("Configuration loaded successfully")
     logger.debug(f"Configuration model: {live_config}")
 
     # Start the web interface in a separate thread to avoid blocking the main thread
@@ -196,8 +197,8 @@ def main():
 
     vmc = VMC(config=live_config)
     routes.set_vmc_instance(vmc)
-    
-    
+
+
     while True:
         sleep(100)
     """

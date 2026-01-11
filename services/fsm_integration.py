@@ -1,7 +1,9 @@
 # fsm_integration.py (excerpt)
 from loguru import logger
-from hardware.mdb_payment_fsm import MDBPaymentFSM
 from virtual_payment_fsm import VirtualPaymentFSM
+
+from hardware.mdb_payment_fsm import MDBPaymentFSM
+
 
 def vmc_callback(event_type: str, data: dict):
     """

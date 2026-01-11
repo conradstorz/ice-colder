@@ -1,7 +1,9 @@
 # dispensing_fsm.py
 import asyncio
-from transitions import Machine
+
 from loguru import logger
+from transitions import Machine
+
 
 class DispenseFSM:
     # Define states for the dispensing process
@@ -16,7 +18,7 @@ class DispenseFSM:
         self.machine.add_transition(trigger="complete_dispense", source="verifying", dest="completed")
         # Any failure at any state will lead to "error"
         self.machine.add_transition(trigger="fail", source="*", dest="error")
-    
+
     async def run(self):
         try:
             logger.info("DispenseFSM: Starting dispensing process.")

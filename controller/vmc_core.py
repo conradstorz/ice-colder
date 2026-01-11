@@ -6,12 +6,11 @@ Pure finite state machine (FSM) definition for the Vending Machine Controller (V
 This module contains only the state definitions, transition table, and simple callbacks
 that update internal state without any direct hardware or UI interaction.
 """
-from transitions import Machine
-from loguru import logger
-
+from ChatGPT_03mini_fsm_vmc import event_store
 from ChatGPT_03mini_fsm_vmc.event_store import TransactionEvent
 from ChatGPT_03mini_fsm_vmc.state_model import MachineState
-from ChatGPT_03mini_fsm_vmc import event_store
+from loguru import logger
+from transitions import Machine
 
 # Prefix for any logged state changes, to make them easily searchable in logs
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"

@@ -1,5 +1,6 @@
 # services/payment_gateway_manager.py
 import asyncio
+
 import qrcode
 from loguru import logger
 
@@ -90,6 +91,7 @@ class PaymentGatewayManager:
 # Example usage (this code would typically be called from your FSM or UI code):
 if __name__ == "__main__":
     import io
+
     from PIL import Image
 
     async def main():

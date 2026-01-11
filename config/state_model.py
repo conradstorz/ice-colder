@@ -1,9 +1,10 @@
-from datetime import datetime, timezone
-from loguru import logger
-from typing import Dict, Literal, Optional
-from pydantic import BaseModel, Field, model_validator
-from config_model import Channel
 import os
+from datetime import datetime, timezone
+from typing import Dict, Literal, Optional
+
+from config_model import Channel
+from loguru import logger
+from pydantic import BaseModel, Field, model_validator
 
 
 @logger.catch()
