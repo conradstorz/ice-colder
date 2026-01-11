@@ -76,6 +76,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         price: float = Form(...),
         inventory_count: int = Form(...),
     ):
+        # Add product (success/failure is logged by add_product function)
         add_product(config, sku, name, price, inventory_count)
 
         return templates.TemplateResponse(
@@ -86,6 +87,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
     async def update_inventory_item(
         request: Request, sku: str, name: str = Form(...), price: float = Form(...), inventory_count: int = Form(...)
     ):
+        # Update product (success/failure is logged by update_product function)
         update_product(config, sku, name, price, inventory_count)
 
         return templates.TemplateResponse(
