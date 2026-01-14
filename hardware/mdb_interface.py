@@ -1,10 +1,11 @@
 # hardware/mdb_interface.py
 import asyncio
+
 from loguru import logger
 
 try:
     from serial import Serial
-except ImportError as e:
+except ImportError:
     logger.error(
         "Failed to import 'Serial' from pyserial. Ensure pyserial is installed and "
         "no local file is named 'serial.py'. Original source of this error was fixed "
@@ -19,9 +20,7 @@ class MDBInterface:
         self.baudrate = baudrate
         try:
             self.serial_conn = Serial(port, baudrate, timeout=1)
-            logger.info(
-                f"MDBInterface: Connected to MDB bus on {port} at {baudrate} baud."
-            )
+            logger.info(f"MDBInterface: Connected to MDB bus on {port} at {baudrate} baud.")
         except Exception as e:
             logger.error(f"MDBInterface: Failed to open serial port {port}: {e}")
             self.serial_conn = None

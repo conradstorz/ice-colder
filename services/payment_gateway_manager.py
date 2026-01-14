@@ -1,5 +1,6 @@
 # services/payment_gateway_manager.py
 import asyncio
+
 import qrcode
 from loguru import logger
 
@@ -21,9 +22,7 @@ class BaseGateway:
         """
         Create a dummy payment URL for the gateway.
         """
-        return (
-            f"https://{self.__class__.__name__.lower()}.example.com/pay?amount={amount}"
-        )
+        return f"https://{self.__class__.__name__.lower()}.example.com/pay?amount={amount}"
 
     def generate_qr_code(self, payment_url: str):
         """
@@ -76,9 +75,7 @@ class PaymentGatewayManager:
         Generate a QR code image for a payment request using the specified gateway.
         """
         if gateway_name not in self.gateways:
-            logger.error(
-                f"PaymentGatewayManager: Gateway '{gateway_name}' is not supported."
-            )
+            logger.error(f"PaymentGatewayManager: Gateway '{gateway_name}' is not supported.")
             return None
         gateway = self.gateways[gateway_name]
         payment_url = gateway.generate_payment_url(amount)
@@ -90,6 +87,7 @@ class PaymentGatewayManager:
 # Example usage (this code would typically be called from your FSM or UI code):
 if __name__ == "__main__":
     import io
+
     from PIL import Image
 
     async def main():

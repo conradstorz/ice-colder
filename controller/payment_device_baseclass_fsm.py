@@ -1,12 +1,15 @@
 # payment_device_fsm.py
 from abc import ABC, abstractmethod
+
 from loguru import logger
+
 
 class PaymentDeviceFSM(ABC):
     """
     Abstract base class for Payment Device FSMs.
     This class defines the common interface and behavior for FSMs managing physical payment devices.
     """
+
     def __init__(self, device_name, callback=None):
         self.device_name = device_name
         self.callback = callback  # Expected to be a function with signature: callback(event_type: str, data: dict)

@@ -1,5 +1,6 @@
 # hardware/ice_maker.py
 import asyncio
+
 from loguru import logger
 
 
@@ -22,9 +23,7 @@ class IceMakerInterface:
                 await asyncio.sleep(1)
                 # Stub: Simulate reading data from the ice maker.
                 # In a real implementation, you would read from the communication channel here.
-                logger.debug(
-                    "IceMakerInterface: Checking for ice maker status update..."
-                )
+                logger.debug("IceMakerInterface: Checking for ice maker status update...")
                 # Process any received data here.
                 # For example:
                 # data = await self.read_from_channel()

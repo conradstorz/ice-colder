@@ -4,13 +4,13 @@ import gc
 import json
 import logging
 import os
-import tempfile
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional
 
 import pytest
-from config.config_test import migrate_config
+
+from config.config_test import migrate_config, save_config
 
 
 def codeflash_wrap(
@@ -60,9 +60,7 @@ class ProductModel:
 @dataclass
 class ConfigModel:
     config_version: int = 1
-    products: List[ProductModel] = field(
-        default_factory=lambda: [ProductModel(name="Widget", price=9.99)]
-    )
+    products: List[ProductModel] = field(default_factory=lambda: [ProductModel(name="Widget", price=9.99)])
 
     def model_dump(self):
         return {
@@ -115,9 +113,7 @@ def test_migration_updates_version(tmp_path):
     codeflash_loop_index = int(os.environ["CODEFLASH_LOOP_INDEX"])
     "Test config with old version is migrated to new version and file updated."
     old_version = 0
-    cfg = ConfigModel(
-        config_version=old_version, products=[ProductModel("Widget", 9.99)]
-    )
+    cfg = ConfigModel(config_version=old_version, products=[ProductModel("Widget", 9.99)])
     file = tmp_path / "config.json"
     save_config(cfg, str(file))
     loaded_cfg = load_config(str(file))

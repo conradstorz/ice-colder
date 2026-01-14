@@ -40,12 +40,10 @@ class ConfigModel(BaseModel): holds high-level fields for version, physical, pay
 """
 
 from enum import Enum
-from typing import List, Optional, Dict, Any, Protocol, Callable
-from pydantic import BaseModel, EmailStr, SecretStr, Field, model_validator
-from pydantic_settings import BaseSettings
-from pydantic_extra_types.phone_numbers import PhoneNumber
+from typing import Any, Dict, List, Optional
+
 from loguru import logger
-from datetime import datetime
+from pydantic import BaseModel, EmailStr, Field, SecretStr, model_validator
 
 
 # 1) First, an enum of supported communication channels
@@ -53,6 +51,7 @@ class Channel(str, Enum):
     """
     Supported communication channels
     """
+
     email = "email"
     sms = "sms"
     snapchat = "snapchat"
@@ -63,30 +62,21 @@ class Person(BaseModel):
     """
     Generic person record with contact details and preferred channels
     """
+
     name: str = Field("Your Name", description="Full name of the person")
     email: EmailStr = Field("user@example.com", description="Email address")
     phone: Optional[str] = Field("123-456-7890", description="Phone number")
     address: Optional[str] = Field("123 Main St", description="Postal address")
     notes: Optional[str] = Field("Notes about person", description="Optional notes")
     preferred_comm: List[Channel] = Field(
-        default_factory=lambda: [Channel.email],
-        description="Preferred communication channels"
+        default_factory=lambda: [Channel.email], description="Preferred communication channels"
     )
 
 
 class PeopleConfig(BaseModel):
-    machine_owner: Person = Field(
-        default_factory=Person,
-        description="Primary machine owner contact"
-    )
-    location_owner: Person = Field(
-        default_factory=Person,
-        description="Primary location contact"
-    )
-    service_technicians: List[Person] = Field(
-        default_factory=list,
-        description="List of service technicians"
-    )
+    machine_owner: Person = Field(default_factory=Person, description="Primary machine owner contact")
+    location_owner: Person = Field(default_factory=Person, description="Primary location contact")
+    service_technicians: List[Person] = Field(default_factory=list, description="List of service technicians")
 
 
 class Location(BaseModel):
@@ -98,36 +88,18 @@ class Product(BaseModel):
     sku: str = Field("SAMPLE-SKU", description="Machine Selection Code / Product SKU")
     name: str = Field("Sample Product", description="Product name")
     description: Optional[str] = Field("A sample product", description="Product description")
-    image_url: Optional[str] = Field(
-        "https://example.com/image.jpg",
-        description="URL to product image"
-    )
+    image_url: Optional[str] = Field("https://example.com/image.jpg", description="URL to product image")
     price: float = Field(1.00, description="Price in USD")
     track_inventory: bool = Field(False, description="Whether to track inventory")
     inventory_count: int = Field(0, description="Initial inventory count")
 
 
 class PhysicalDetails(BaseModel):
-    common_name: str = Field(
-        "YOUR_MACHINE_NAME",
-        description="Friendly machine name; edit before use"
-    )
-    serial_number: str = Field(
-        "0000-0000",
-        description="Hardware serial number"
-    )
-    location: Location = Field(
-        default_factory=Location,
-        description="Machine physical location"
-    )
-    people: PeopleConfig = Field(
-        default_factory=PeopleConfig,
-        description="Contact roles"
-    )
-    products: List[Product] = Field(
-        default_factory=lambda: [Product()],
-        description="List of products available"
-    )
+    common_name: str = Field("YOUR_MACHINE_NAME", description="Friendly machine name; edit before use")
+    serial_number: str = Field("0000-0000", description="Hardware serial number")
+    location: Location = Field(default_factory=Location, description="Machine physical location")
+    people: PeopleConfig = Field(default_factory=PeopleConfig, description="Contact roles")
+    products: List[Product] = Field(default_factory=lambda: [Product()], description="List of products available")
 
     # --- convenience properties ---
     @property
@@ -157,158 +129,78 @@ class PhysicalDetails(BaseModel):
         """
         count = len(model.products) if model.products else 0
         logger.debug(
-            f"{cls.__name__} loaded: serial={model.serial_number}, "
-            f"location={model.location}, products={count}"
+            f"{cls.__name__} loaded: serial={model.serial_number}, location={model.location}, products={count}"
         )
         return model
 
 
 class StripeConfig(BaseModel):
-    api_key: SecretStr = Field(
-        default=SecretStr("sk_test_xxx"),
-        description="Stripe API key (dummy value)"
-    )
-    webhook_secret: SecretStr = Field(
-        default=SecretStr("whsec_xxx"),
-        description="Stripe webhook secret"
-    )
+    api_key: SecretStr = Field(default=SecretStr("sk_test_xxx"), description="Stripe API key (dummy value)")
+    webhook_secret: SecretStr = Field(default=SecretStr("whsec_xxx"), description="Stripe webhook secret")
 
 
 class PayPalConfig(BaseModel):
-    client_id: SecretStr = Field(
-        default=SecretStr("paypal_client_id"),
-        description="PayPal client ID"
-    )
-    client_secret: SecretStr = Field(
-        default=SecretStr("paypal_client_secret"),
-        description="PayPal client secret"
-    )
-    sandbox: bool = Field(
-        True,
-        description="Use PayPal sandbox mode"
-    )
+    client_id: SecretStr = Field(default=SecretStr("paypal_client_id"), description="PayPal client ID")
+    client_secret: SecretStr = Field(default=SecretStr("paypal_client_secret"), description="PayPal client secret")
+    sandbox: bool = Field(True, description="Use PayPal sandbox mode")
 
 
 class MDBDevice(BaseModel):
-    name: str = Field(
-        "Card Reader",
-        description="MDB device name"
-    )
-    exists: bool = Field(
-        False,
-        description="Flag indicating device presence"
-    )
-    serial_number: Optional[str] = Field(
-        "00000000",
-        description="Device serial number"
-    )
-    settings: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Device-specific settings"
-    )
+    name: str = Field("Card Reader", description="MDB device name")
+    exists: bool = Field(False, description="Flag indicating device presence")
+    serial_number: Optional[str] = Field("00000000", description="Device serial number")
+    settings: Dict[str, Any] = Field(default_factory=dict, description="Device-specific settings")
 
 
 class MDBDevicesConfig(BaseModel):
     """
     MDB bus polling and device list
     """
-    polling_interval: float = Field(
-        0.5,
-        description="Polling interval in seconds"
-    )
-    devices: List[MDBDevice] = Field(
-        default_factory=list,
-        description="List of MDB devices on the bus"
-    )
+
+    polling_interval: float = Field(0.5, description="Polling interval in seconds")
+    devices: List[MDBDevice] = Field(default_factory=list, description="List of MDB devices on the bus")
 
 
 class PaymentConfig(BaseModel):
-    stripe: StripeConfig = Field(
-        default_factory=StripeConfig,
-        description="Stripe payment gateway configuration"
-    )
+    stripe: StripeConfig = Field(default_factory=StripeConfig, description="Stripe payment gateway configuration")
     paypal: Optional[PayPalConfig] = Field(
-        default_factory=PayPalConfig,
-        description="PayPal payment gateway configuration"
+        default_factory=PayPalConfig, description="PayPal payment gateway configuration"
     )
-    mdb: MDBDevicesConfig = Field(
-        default_factory=MDBDevicesConfig,
-        description="MDB bus configuration"
-    )
+    mdb: MDBDevicesConfig = Field(default_factory=MDBDevicesConfig, description="MDB bus configuration")
 
 
 class EmailGatewayConfig(BaseModel):
-    smtp_server: str = Field(
-        "smtp.example.com",
-        description="SMTP server address"
-    )
-    smtp_port: int = Field(
-        587,
-        description="SMTP port"
-    )
-    username: str = Field(
-        "user@example.com",
-        description="SMTP username"
-    )
-    password: SecretStr = Field(
-        default=SecretStr("password"),
-        description="SMTP password"
-    )
-    default_from: str = Field(
-        "user@example.com",
-        description="Default From address"
-    )
+    smtp_server: str = Field("smtp.example.com", description="SMTP server address")
+    smtp_port: int = Field(587, description="SMTP port")
+    username: str = Field("user@example.com", description="SMTP username")
+    password: SecretStr = Field(default=SecretStr("password"), description="SMTP password")
+    default_from: str = Field("user@example.com", description="Default From address")
 
 
 class SMSGatewayConfig(BaseModel):
-    account_sid: SecretStr = Field(
-        default=SecretStr("ACxxxxxxxxxxxxxxxxxxx"),
-        description="Twilio account SID"
-    )
-    auth_token: SecretStr = Field(
-        default=SecretStr("your_auth_token"),
-        description="Twilio auth token"
-    )
-    from_number: str = Field(
-        "+1234567890",
-        description="Default SMS From number"
-    )
+    account_sid: SecretStr = Field(default=SecretStr("ACxxxxxxxxxxxxxxxxxxx"), description="Twilio account SID")
+    auth_token: SecretStr = Field(default=SecretStr("your_auth_token"), description="Twilio auth token")
+    from_number: str = Field("+1234567890", description="Default SMS From number")
 
 
 class CommunicationConfig(BaseModel):
     email_gateway: EmailGatewayConfig = Field(
-        default_factory=EmailGatewayConfig,
-        description="Email gateway configuration"
+        default_factory=EmailGatewayConfig, description="Email gateway configuration"
     )
-    sms_gateway: SMSGatewayConfig = Field(
-        default_factory=SMSGatewayConfig,
-        description="SMS gateway configuration"
-    )
-    snapchat_gateway: Optional[Dict[str, Any]] = Field(
-        None,
-        description="Snapchat gateway (optional)"
-    )
+    sms_gateway: SMSGatewayConfig = Field(default_factory=SMSGatewayConfig, description="SMS gateway configuration")
+    snapchat_gateway: Optional[Dict[str, Any]] = Field(None, description="Snapchat gateway (optional)")
 
 
 class ConfigModel(BaseModel):
     """
     Top-level configuration for the Vending Machine Controller
     """
-    version: str = Field(
-        "1.0.0",
-        description="Configuration schema version"
-    )
-    physical: PhysicalDetails = Field(
-        default_factory=PhysicalDetails,
-        description="Physical machine details"
-    )
-    payment: PaymentConfig = Field(
-        default_factory=PaymentConfig,
-        description="Payment gateway configurations"
-    )
+
+    version: str = Field("1.0.0", description="Configuration schema version")
+    physical: PhysicalDetails = Field(default_factory=PhysicalDetails, description="Physical machine details")
+    payment: PaymentConfig = Field(default_factory=PaymentConfig, description="Payment gateway configurations")
     communication: CommunicationConfig = Field(
-        default_factory=CommunicationConfig,
-        description="Communication channels configuration"
+        default_factory=CommunicationConfig, description="Communication channels configuration"
     )
 
     class Config:
@@ -349,9 +241,7 @@ class ConfigModel(BaseModel):
         """Access all communication gateway configs in one place."""
         return self.communication
 
-    def get_preferred_gateway_for(
-        self, person: Person
-    ) -> Optional[tuple[Channel, Any]]:
+    def get_preferred_gateway_for(self, person: Person) -> Optional[tuple[Channel, Any]]:
         """
         Return first configured gateway for a person in their preference order.
         """

@@ -1,6 +1,7 @@
 # hardware/button_panel.py
-import random
 import asyncio
+import random
+
 from loguru import logger
 
 
@@ -11,9 +12,7 @@ class ButtonPanel:
 
     async def wait_for_press(self):
         delay = random.uniform(0.001, 0.01)
-        logger.info(
-            f"ButtonPanel: Waiting for button press (simulated delay: {delay:.2f} seconds)..."
-        )
+        logger.info(f"ButtonPanel: Waiting for button press (simulated delay: {delay:.2f} seconds)...")
         await asyncio.sleep(delay)
         pressed_button = random.choice(self.buttons)
         logger.info(f"ButtonPanel: Simulated button press: Button {pressed_button}")

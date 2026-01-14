@@ -1,10 +1,10 @@
-from datetime import datetime, timezone
-from loguru import logger
-from typing import Dict, Literal, Optional
-from pydantic import BaseModel, Field, model_validator
-from config_model import Channel
-import json
 import os
+from datetime import datetime, timezone
+from typing import Dict, Literal, Optional
+
+from config_model import Channel
+from loguru import logger
+from pydantic import BaseModel, Field, model_validator
 
 
 @logger.catch()
@@ -51,11 +51,7 @@ class MachineState(BaseModel):
     last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     def record_transaction(
-        self,
-        channel: Channel,
-        sku: str,
-        amount: float,
-        timestamp: Optional[datetime] = None
+        self, channel: Channel, sku: str, amount: float, timestamp: Optional[datetime] = None
     ) -> None:
         """
         Update channel and product stats for a completed vend.

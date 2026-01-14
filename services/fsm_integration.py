@@ -1,8 +1,9 @@
 # fsm_integration.py (excerpt)
-import asyncio
 from loguru import logger
-from hardware.mdb_payment_fsm import MDBPaymentFSM
 from virtual_payment_fsm import VirtualPaymentFSM
+
+from hardware.mdb_payment_fsm import MDBPaymentFSM
+
 
 def vmc_callback(event_type: str, data: dict):
     """
@@ -13,10 +14,12 @@ def vmc_callback(event_type: str, data: dict):
     # TODO: Handle events from FSMs accordingly.
     pass
 
+
 class FSMIntegration:
     """
     Integrates the asynchronous MDB-based FSM and Virtual Payment FSM with the VMC.
     """
+
     def __init__(self, payment_gateways=None, event_callback=vmc_callback):
         if payment_gateways is None:
             payment_gateways = {}
@@ -30,8 +33,9 @@ class FSMIntegration:
         self.payment_gateways = payment_gateways
         if self.payment_gateways:
             self.virtual_payment_fsm = VirtualPaymentFSM(self.payment_gateways, callback=self.event_callback)
-            logger.debug("FSMIntegration: Initialized VirtualPaymentFSM with providers: "
-                         f"{list(self.payment_gateways.keys())}.")
+            logger.debug(
+                f"FSMIntegration: Initialized VirtualPaymentFSM with providers: {list(self.payment_gateways.keys())}."
+            )
         else:
             self.virtual_payment_fsm = None
             logger.warning("FSMIntegration: No virtual payment providers configured.")
