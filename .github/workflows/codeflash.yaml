@@ -34,5 +34,7 @@ jobs:
           enable-cache: true
       - name: 📦 Install Dependencies
         run: uv sync --all-extras
+      - name: Ensure benchmarks directory exists
+        run: mkdir -p tests/benchmarks
       - name: ⚡️Codeflash Optimization
         run: uv run codeflash --benchmark
