@@ -1,0 +1,13 @@
+name: mosquitto_broker
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: ice-colder-mqtt
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/config/mosquitto-prod.conf:/mosquitto/config/mosquitto.conf
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+    restart: unless-stopped

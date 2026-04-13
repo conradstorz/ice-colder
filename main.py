@@ -234,7 +234,11 @@ async def main():
 
     # Run the web server, MQTT client, and health monitor concurrently
     logger.info(f"Entering main event loop with web server, MQTT client, and health monitor")
-    await asyncio.gather(server.serve(), mqtt.run(), health.run())
+    try:
+        await asyncio.gather(server.serve(), mqtt.run(), health.run())
+    finally:
+        vmc.cancel_pending_tasks()
+        logger.info("Shutdown: cancelled pending VMC tasks")
 
 
 if __name__ == "__main__":

@@ -3,3 +3,6 @@ mosquitto/data/*
 mosquitto/log/*
 !mosquitto/data/.gitkeep
 !mosquitto/log/.gitkeep
+
+# Mosquitto credentials (generated per-deployment)
+mosquitto/config/passwd

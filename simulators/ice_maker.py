@@ -64,8 +64,8 @@ class IceMakerSimulator(ESP32Simulator):
     COMPRESSOR_OFF_TIME = 300.0  # 5 minutes
 
     ICE_DROP_INTERVAL = 900.0  # simulate an ice drop every ~15 minutes
-    TEMP_LOW = -20.0   # out-of-bounds threshold low
-    TEMP_HIGH = 85.0   # out-of-bounds threshold high
+    TEMP_LOW = -20.0   # out-of-bounds threshold low (matches HealthMonitor temp_min)
+    TEMP_HIGH = 80.0   # out-of-bounds threshold high (matches HealthMonitor temp_max)
 
     def __init__(self, **kwargs):
         super().__init__(subsystem_name="ice_maker", **kwargs)

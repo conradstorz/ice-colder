@@ -22,7 +22,8 @@ class ESP32Simulator(ABC):
     Abstract base for all ESP32 simulators.
 
     Subclass and implement run_simulation(client) with the device-specific
-    behavior. The base class handles MQTT connect, heartbeat, and reconnect.
+    behavior. The base class handles MQTT connect, heartbeat, reconnect,
+    and single-reader message dispatch.
     """
 
     HEARTBEAT_INTERVAL = 10.0  # seconds
@@ -39,6 +40,7 @@ class ESP32Simulator(ABC):
         self.port = port
         self.machine_id = machine_id
         self._start_time = time.monotonic()
+        self._subscriptions: list[tuple[str, asyncio.Queue]] = []
 
     @property
     def topic_prefix(self) -> str:
@@ -70,6 +72,44 @@ class ESP32Simulator(ABC):
         await client.publish(full_topic, data)
         logger.debug(f"[{self.subsystem_name}] published to {full_topic}")
 
+    async def subscribe(self, client: aiomqtt.Client, topic: str) -> asyncio.Queue:
+        """Subscribe to a topic and return a Queue that receives (topic, payload) tuples.
+
+        Uses a single message reader in the base class so multiple subscriptions
+        don't fight over ``client.messages``.
+        """
+        await client.subscribe(topic)
+        queue: asyncio.Queue = asyncio.Queue()
+        self._subscriptions.append((topic, queue))
+        logger.debug(f"[{self.subsystem_name}] Subscribed to {topic}")
+        return queue
+
+    async def _message_dispatcher(self, client: aiomqtt.Client):
+        """Single reader for ``client.messages``; routes to subscription queues."""
+        async for message in client.messages:
+            topic_str = str(message.topic)
+            try:
+                payload = json.loads(message.payload)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            for pattern, queue in self._subscriptions:
+                if self._topic_matches(pattern, topic_str):
+                    await queue.put((topic_str, payload))
+
+    @staticmethod
+    def _topic_matches(pattern: str, topic: str) -> bool:
+        """Simple MQTT topic matching with + and # wildcards."""
+        pat_parts = pattern.split("/")
+        top_parts = topic.split("/")
+        for i, pat in enumerate(pat_parts):
+            if pat == "#":
+                return True
+            if i >= len(top_parts):
+                return False
+            if pat != "+" and pat != top_parts[i]:
+                return False
+        return len(pat_parts) == len(top_parts)
+
     @abstractmethod
     async def run_simulation(self, client: aiomqtt.Client) -> None:
         """Subclass implements device-specific simulation here."""
@@ -86,9 +126,11 @@ class ESP32Simulator(ABC):
                     logger.info(
                         f"[{self.subsystem_name}] Connected to {self.broker}:{self.port}"
                     )
+                    self._subscriptions.clear()
                     async with asyncio.TaskGroup() as tg:
                         tg.create_task(self._heartbeat_loop(client))
                         tg.create_task(self.run_simulation(client))
+                        tg.create_task(self._message_dispatcher(client))
             except aiomqtt.MqttError as e:
                 logger.error(f"[{self.subsystem_name}] MQTT error: {e}")
             except Exception as e:

@@ -68,8 +68,8 @@ class HealthMonitor:
         self,
         check_interval: float = 30.0,
         subsystem_timeout: float = 120.0,
-        temp_min: float = -30.0,
-        temp_max: float = 50.0,
+        temp_min: float = -20.0,
+        temp_max: float = 80.0,
     ):
         self._check_interval = check_interval
         self._subsystem_timeout = subsystem_timeout

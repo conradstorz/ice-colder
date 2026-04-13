@@ -11,14 +11,11 @@ from services.display_controller import DisplayController
 
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
 
-# Bound logger that routes to the transaction log sink
-txn_log = logger.bind(transaction=True)
-
-# Bound logger that routes to the ice maker log sink
-ice_log = logger.bind(ice_maker=True)
-
-# Bound logger that routes to the vending machine log sink
-vend_log = logger.bind(vending=True)
+# Bound loggers — initialized lazily so sinks are installed before first use.
+# Module-level references are set by VMC.__init__() (after setup_logging() in main.py).
+txn_log = logger
+ice_log = logger
+vend_log = logger
 
 #: FSM transition table.
 #: Ordering matters when multiple transitions share the same trigger name.
@@ -68,6 +65,10 @@ class VMC:
 
     @logger.catch()
     def __init__(self, config: ConfigModel):
+        global txn_log, ice_log, vend_log
+        txn_log = logger.bind(transaction=True)
+        ice_log = logger.bind(ice_maker=True)
+        vend_log = logger.bind(vending=True)
         logger.debug("Initializing VMC with pre-loaded ConfigModel")
 
         self.config_model = config
@@ -110,6 +111,16 @@ class VMC:
         """Attach VMC to the running asyncio event loop. Must be called before scheduling."""
         self._loop = loop
         logger.debug("VMC attached to asyncio event loop.")
+
+    def cancel_pending_tasks(self):
+        """Cancel all pending scheduled tasks. Call during shutdown."""
+        for task in self._pending_tasks:
+            if not task.done():
+                task.cancel()
+        self._pending_tasks.clear()
+        self._cancel_dispense_timeout()
+        self._cancel_session_timeout()
+        logger.debug("VMC: all pending tasks cancelled.")
 
     def set_mqtt_client(self, client):
         """Attach an MQTTClient instance for publishing status and receiving events."""
@@ -309,10 +320,14 @@ class VMC:
                 self._mqtt_client.publish("cmd/dispense", DispenseCommand(slot=slot))
             )
 
+    def _post_dispense_dest(self) -> str:
+        """Return the FSM destination after dispensing: continue if credit remains, else idle."""
+        return "interacting_with_user" if self.credit_escrow > 0 else "idle"
+
     @logger.catch()
     def on_complete_transaction(self):
         logger.info(f"{STATE_CHANGE_PREFIX} Completing transaction. Remaining escrow: ${self.credit_escrow:.2f}")
-        dest = "interacting_with_user" if self.credit_escrow > 0 else "idle"
+        dest = self._post_dispense_dest()
         self._publish_status()
         self._update_display(dest)
         self._refresh_ui()

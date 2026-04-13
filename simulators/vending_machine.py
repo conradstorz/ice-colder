@@ -9,7 +9,6 @@ dispense sequence (ice fill or water meter).
 Run: uv run python -m simulators.vending_machine [--broker HOST] [--port PORT] [--machine-id ID]
 """
 import asyncio
-import json
 import random
 
 import aiomqtt
@@ -76,19 +75,16 @@ class VendingMachineSimulator(ESP32Simulator):
         logger.info(f"[vending] Slot {slot}: water dispense complete")
 
     async def _listen_for_commands(self, client: aiomqtt.Client):
-        """Subscribe to dispense commands and put them on the queue."""
+        """Read dispense commands from the subscription queue."""
         topic = f"{self.topic_prefix}/cmd/dispense"
-        await client.subscribe(topic)
-        logger.info(f"[vending] Subscribed to {topic}")
-        async for message in client.messages:
-            try:
-                data = json.loads(message.payload)
-                slot = data.get("slot")
-                if slot is not None:
-                    logger.info(f"[vending] Received dispense command for slot {slot}")
-                    await self._dispense_command.put(slot)
-            except (json.JSONDecodeError, TypeError):
-                pass
+        cmd_queue = await self.subscribe(client, topic)
+        logger.info(f"[vending] Listening for dispense commands on {topic}")
+        while True:
+            _topic, data = await cmd_queue.get()
+            slot = data.get("slot")
+            if slot is not None:
+                logger.info(f"[vending] Received dispense command for slot {slot}")
+                await self._dispense_command.put(slot)
 
     async def _customer_loop(self, client: aiomqtt.Client):
         """Simulate customers pressing buttons and waiting for dispense."""

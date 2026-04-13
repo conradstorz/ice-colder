@@ -9,7 +9,6 @@ customer interaction is detected.
 Run: uv run python -m simulators.mdb_gateway [--broker HOST] [--port PORT] [--machine-id ID]
 """
 import asyncio
-import json
 import random
 
 import aiomqtt
@@ -77,16 +76,13 @@ class MDBGatewaySimulator(ESP32Simulator):
             await asyncio.sleep(self.DEVICE_STATUS_INTERVAL)
 
     async def _watch_vmc_status(self, client: aiomqtt.Client):
-        """Subscribe to VMC status and forward state changes to the payment loop."""
+        """Read VMC status from the subscription queue and forward to the payment loop."""
         topic = f"{self.topic_prefix}/status"
-        await client.subscribe(topic)
-        logger.info(f"[mdb] Subscribed to {topic}")
-        async for message in client.messages:
-            try:
-                data = json.loads(message.payload)
-                await self._vmc_status.put(data)
-            except (json.JSONDecodeError, TypeError):
-                pass
+        status_queue = await self.subscribe(client, topic)
+        logger.info(f"[mdb] Listening for VMC status on {topic}")
+        while True:
+            _topic, data = await status_queue.get()
+            await self._vmc_status.put(data)
 
     async def _payment_loop(self, client: aiomqtt.Client):
         """React to VMC state changes by inserting payments."""
