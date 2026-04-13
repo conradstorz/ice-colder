@@ -7,6 +7,7 @@ from services.payment_gateway_manager import PaymentGatewayManager
 from services.mqtt_messages import VMCStatus, PaymentEvent, ButtonPress
 from hardware.mdb_interface import MDBInterface
 from config.config_model import ConfigModel
+from services.health_monitor import HealthMonitor
 
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
 
@@ -78,6 +79,7 @@ class VMC:
         self._pending_tasks: list[asyncio.Task] = []
         self._loop: asyncio.AbstractEventLoop | None = None
         self._mqtt_client = None  # Set via set_mqtt_client()
+        self._health_monitor: HealthMonitor | None = None  # Set via set_health_monitor()
         self._start_time = time.monotonic()
 
         self.machine = Machine(model=self, states=VMC.states, initial=VMC.states[0], auto_transitions=False)
@@ -108,6 +110,11 @@ class VMC:
         client.register("heartbeat/+", self._handle_mqtt_heartbeat)
         logger.debug("VMC registered MQTT handlers.")
 
+    def set_health_monitor(self, monitor: HealthMonitor):
+        """Attach a HealthMonitor so MQTT events feed into health tracking."""
+        self._health_monitor = monitor
+        logger.debug("VMC attached health monitor.")
+
     def _publish_status(self):
         """Publish current VMC status to MQTT (fire-and-forget)."""
         if self._mqtt_client is None or self._loop is None:
@@ -119,6 +126,8 @@ class VMC:
             uptime_seconds=int(time.monotonic() - self._start_time),
         )
         self._loop.create_task(self._mqtt_client.publish("status", status))
+        if self._health_monitor:
+            self._health_monitor.update_vmc_state(self.state)
 
     # --- MQTT inbound handlers ---
 
@@ -145,12 +154,20 @@ class VMC:
             self.error_occurred()
 
     async def _handle_mqtt_sensor(self, topic: str, data: dict):
-        """Handle temperature/sensor reading from ESP32. Logged for now."""
+        """Handle temperature/sensor reading from ESP32."""
         logger.debug(f"MQTT sensor [{topic}]: {data}")
+        if self._health_monitor:
+            location = data.get("location", topic.split("/")[-1] if "/" in topic else topic)
+            value = data.get("value")
+            if value is not None:
+                self._health_monitor.record_temperature(location, float(value))
 
     async def _handle_mqtt_heartbeat(self, topic: str, data: dict):
-        """Handle heartbeat from ESP32 subsystem. Logged for now."""
+        """Handle heartbeat from ESP32 subsystem."""
         logger.debug(f"MQTT heartbeat [{topic}]: {data}")
+        if self._health_monitor:
+            subsystem = data.get("subsystem", topic.split("/")[-1] if "/" in topic else topic)
+            self._health_monitor.record_heartbeat(subsystem, data)
 
     def _schedule(self, delay_seconds, callback):
         """Schedule a synchronous callback to run after delay_seconds on the event loop."""

@@ -1,5 +1,7 @@
 from controller.vmc import VMC
 from services.mqtt_client import MQTTClient
+from services.health_monitor import HealthMonitor
+from services.notifier import Notifier
 
 import asyncio
 import os
@@ -172,9 +174,16 @@ async def main():
     vmc.attach_to_loop(asyncio.get_running_loop())
     routes.set_vmc_instance(vmc)
 
+    # Create health monitor and notifier
+    health = HealthMonitor()
+    notifier = Notifier(config=live_config)
+    health.set_alert_callback(notifier.send)
+    routes.set_health_monitor(health)
+
     # Create MQTT client and wire it to the VMC
     mqtt = MQTTClient(config=live_config.mqtt, machine_id=live_config.machine_id)
     vmc.set_mqtt_client(mqtt)
+    vmc.set_health_monitor(health)
     logger.info(f"MQTT client configured for broker {live_config.mqtt.broker_host}:{live_config.mqtt.broker_port}")
 
     # Start uvicorn as an asyncio task (non-blocking)
@@ -182,8 +191,8 @@ async def main():
     server = uvicorn.Server(uvicorn_config)
     logger.info("Starting web interface on http://0.0.0.0:8000")
 
-    # Run the web server and MQTT client concurrently
-    await asyncio.gather(server.serve(), mqtt.run())
+    # Run the web server, MQTT client, and health monitor concurrently
+    await asyncio.gather(server.serve(), mqtt.run(), health.run())
 
 
 if __name__ == "__main__":

@@ -16,10 +16,15 @@ def set_config_object(cfg: ConfigModel):
     config = cfg
 
 vmc_instance = None
+health_monitor = None
 
 def set_vmc_instance(vmc):
     global vmc_instance
     vmc_instance = vmc
+
+def set_health_monitor(monitor):
+    global health_monitor
+    health_monitor = monitor
 
 LOG_PATH = Path("logs/vmc.log")
 
@@ -126,6 +131,15 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             "logs": lines
         })
 
+
+    @router.get("/health", response_class=HTMLResponse)
+    async def health_summary(request: Request):
+        if not health_monitor:
+            return HTMLResponse("<div>Health monitor not initialized</div>")
+        return templates.TemplateResponse("partials/health_fragment.html", {
+            "request": request,
+            "health": health_monitor.get_summary(),
+        })
 
     @router.get("/inventory", response_class=HTMLResponse)
     async def inventory_view(request: Request):

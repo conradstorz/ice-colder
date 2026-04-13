@@ -58,12 +58,20 @@
                 🛠 View Machine Info
             </button>
 
-            <button 
-                hx-get="/inventory" 
-                hx-target="#inventory-box" 
+            <button
+                hx-get="/inventory"
+                hx-target="#inventory-box"
                 hx-swap="innerHTML"
                 class="bg-green-700 text-white px-3 py-1 rounded">
                 📦 View Product Inventory
+            </button>
+
+            <button
+                hx-get="/health"
+                hx-target="#inventory-box"
+                hx-swap="innerHTML"
+                class="bg-purple-700 text-white px-3 py-1 rounded">
+                💓 System Health
             </button>
         </div>
 

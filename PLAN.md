@@ -105,11 +105,12 @@ Add MQTT as the communication backbone.
 
 Make the machine report its own health.
 
-- [ ] Create health monitor task — periodic checks of all subsystems
-- [ ] Define health check interface: each subsystem reports last-seen timestamp
-- [ ] Implement owner notification via email gateway (already configured in config model)
-- [ ] Alert on: MQTT disconnect, ESP32 gone silent, temperature out of range, error state
-- [ ] Add health summary to web dashboard
+- [x] Create health monitor task — periodic checks of all subsystems
+- [x] Define health check interface: each subsystem reports last-seen timestamp
+- [x] Implement owner notification via email gateway (already configured in config model)
+- [x] Alert on: MQTT disconnect, ESP32 gone silent, temperature out of range, error state
+- [x] Add health summary to web dashboard
+- [x] Write tests for health monitor and notifier (20 tests)
 
 ### Phase 4: Cleanup Legacy Hardware Modules
 
