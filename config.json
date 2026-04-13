@@ -1,12 +1,12 @@
 {
   "version": "1.0.0",
-  "machine_id": "vmc-0000",
+  "machine_id": "vmc-0001",
   "physical": {
-    "common_name": "YOUR_MACHINE_NAME",
-    "serial_number": "0000-0000",
+    "common_name": "Cold as ICE VMC",
+    "serial_number": "0000-0001",
     "location": {
       "address": "123 Main St",
-      "notes": "Location notes"
+      "notes": "placeholder Location notes"
     },
     "people": {
       "machine_owner": {
@@ -14,7 +14,7 @@
         "email": "user@example.com",
         "phone": "123-456-7890",
         "address": "123 Main St",
-        "notes": "Notes about person",
+        "notes": "placeholder Notes about machine owner",
         "preferred_comm": [
           "email"
         ]
@@ -24,7 +24,7 @@
         "email": "user@example.com",
         "phone": "123-456-7890",
         "address": "123 Main St",
-        "notes": "Notes about person",
+        "notes": "placeholder Notes about location owner person",
         "preferred_comm": [
           "email"
         ]
@@ -33,22 +33,31 @@
     },
     "products": [
       {
-        "sku": "SAMPLE-SKU",
-        "name": "Sample Product",
-        "description": "A sample product",
+        "sku": "Ten Pounds Ice",
+        "name": "Bagged Ice",
+        "description": "Freshly loaded bag fo ice",
         "image_url": "https://example.com/image.jpg",
-        "price": 1.0,
+        "price": 3.00,
         "track_inventory": false,
         "inventory_count": 0
       },
       {
-        "sku": "TEST-001",
-        "name": "Test Ice",
-        "description": "A sample product",
+        "sku": "One Gallon Water",
+        "name": "Small Water",
+        "description": "Filtered and Purified drinking water",
         "image_url": "https://example.com/image.jpg",
-        "price": 2.5,
+        "price": 0.50,
         "track_inventory": false,
-        "inventory_count": 10
+        "inventory_count": 0
+      },
+      {
+        "sku": "Five Gallons Water",
+        "name": "Large Water",
+        "description": "Filtered and Purified drinking water",
+        "image_url": "https://example.com/image.jpg",
+        "price": 2.00,
+        "track_inventory": false,
+        "inventory_count": 0
       }
     ]
   },
