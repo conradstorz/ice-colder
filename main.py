@@ -135,7 +135,8 @@ def load_config() -> ConfigModel:
     # Load user config
     try:
         logger.debug("Reading raw JSON from 'config.json'")
-        orig_data = json.load(open("config.json", encoding="utf-8"))
+        with open("config.json", encoding="utf-8") as f:
+            orig_data = json.load(f)
     except Exception as e:
         logger.exception(f"Error reading 'config.json': {e}")
         sys.exit(1)
@@ -213,6 +214,7 @@ async def main():
 
     # Create MQTT client and wire it to the VMC
     mqtt = MQTTClient(config=live_config.mqtt, machine_id=live_config.machine_id)
+    mqtt.set_connection_callback(health.update_mqtt_status)
     vmc.set_mqtt_client(mqtt)
     vmc.set_health_monitor(health)
     logger.info(f"MQTT client created and linked to VMC and health monitor")

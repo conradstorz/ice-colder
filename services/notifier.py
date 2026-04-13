@@ -39,7 +39,7 @@ class Notifier:
         Runs blocking I/O (SMTP) in a thread executor to stay async.
         """
         # Rate-limit per source
-        now = asyncio.get_event_loop().time()
+        now = asyncio.get_running_loop().time()
         last = self._last_sent.get(alert.source, 0.0)
         if now - last < self._cooldown_seconds:
             logger.debug(f"Notifier: Suppressing alert from {alert.source} (cooldown)")
@@ -83,7 +83,7 @@ class Notifier:
         msg["To"] = self._owner.email
         msg.set_content(body)
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             await loop.run_in_executor(None, self._smtp_send, email_config, msg)
             logger.info(f"Notifier: Email sent to {self._owner.email}")

@@ -20,6 +20,9 @@ from config.config_model import MQTTConfig
 # Type alias for message handler coroutines
 MessageHandler = Callable[[str, dict], Awaitable[None]]
 
+# Type alias for connection-status callback
+ConnectionCallback = Callable[[bool], None]
+
 
 class MQTTClient:
     """
@@ -38,10 +41,15 @@ class MQTTClient:
         self._handlers: list[tuple[str, MessageHandler]] = []
         self._client: Optional[aiomqtt.Client] = None
         self._connected = False
+        self._connection_callback: Optional[ConnectionCallback] = None
 
     @property
     def connected(self) -> bool:
         return self._connected
+
+    def set_connection_callback(self, callback: ConnectionCallback):
+        """Register a callback invoked with True/False on connect/disconnect."""
+        self._connection_callback = callback
 
     @property
     def topic_prefix(self) -> str:
@@ -89,9 +97,13 @@ class MQTTClient:
                 await self._connect_and_listen()
             except aiomqtt.MqttError as e:
                 self._connected = False
+                if self._connection_callback:
+                    self._connection_callback(False)
                 logger.error(f"MQTT: Connection lost: {e}")
             except Exception as e:
                 self._connected = False
+                if self._connection_callback:
+                    self._connection_callback(False)
                 logger.error(f"MQTT: Unexpected error: {e}")
 
             logger.info(f"MQTT: Reconnecting in {self._config.reconnect_interval}s...")
@@ -113,6 +125,8 @@ class MQTTClient:
         ) as client:
             self._client = client
             self._connected = True
+            if self._connection_callback:
+                self._connection_callback(True)
             logger.info(f"MQTT: Connected to {self._config.broker_host}:{self._config.broker_port}")
 
             # Subscribe to all registered topic patterns
@@ -128,6 +142,8 @@ class MQTTClient:
         # If we exit the context manager, we disconnected
         self._client = None
         self._connected = False
+        if self._connection_callback:
+            self._connection_callback(False)
 
     async def _dispatch(self, message: aiomqtt.Message):
         """Route an incoming message to matching handlers."""

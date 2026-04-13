@@ -86,11 +86,14 @@ class VMC:
         self.qrcode_callback = None
 
         self._pending_tasks: list[asyncio.Task] = []
+        self._dispense_timeout_task: asyncio.Task | None = None
+        self._session_timeout_task: asyncio.Task | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._mqtt_client = None  # Set via set_mqtt_client()
         self._health_monitor: HealthMonitor | None = None  # Set via set_health_monitor()
         self._display_controller: DisplayController | None = None  # Set via set_display_controller()
         self._start_time = time.monotonic()
+        self._session_timeout_seconds = 180.0  # 3 minutes
 
         self.machine = Machine(model=self, states=VMC.states, initial=VMC.states[0], auto_transitions=False)
 
@@ -182,10 +185,15 @@ class VMC:
             vend_log.info(f"DISPENSE COMPLETE: slot {slot}, product '{product_name}'")
             self._finish_dispensing()
         elif state in ("jammed", "error"):
+            self._cancel_dispense_timeout()
             product_name = self.selected_product.name if self.selected_product else "Unknown"
             txn_log.error(f"DISPENSE FAILED: slot {slot}, product '{product_name}', reason: {state}")
             vend_log.error(f"DISPENSE FAILED: slot {slot}, product '{product_name}', reason: {state}")
             logger.error(f"Dispenser error: {state}")
+            # Refund the customer — the price was already deducted from escrow
+            price = self.selected_product.price if self.selected_product else 0
+            self.credit_escrow += price
+            txn_log.info(f"REFUND (dispense failure): ${price:.2f} returned to escrow")
             self.error_occurred()
         else:
             # Intermediate hardware states: motor_active, fill_complete, solenoid_open, etc.
@@ -218,11 +226,11 @@ class VMC:
             detail = f" ({event.detail})" if event.detail else ""
             ice_log.info(f"{event.event.upper()}{detail}")
 
-    def _schedule(self, delay_seconds, callback):
+    def _schedule(self, delay_seconds, callback) -> asyncio.Task | None:
         """Schedule a synchronous callback to run after delay_seconds on the event loop."""
         if self._loop is None or self._loop.is_closed():
             logger.warning("No event loop attached; cannot schedule callback.")
-            return
+            return None
 
         async def _delayed():
             await asyncio.sleep(delay_seconds)
@@ -232,6 +240,7 @@ class VMC:
         self._pending_tasks.append(task)
         # Clean up finished tasks
         self._pending_tasks = [t for t in self._pending_tasks if not t.done()]
+        return task
 
     def get_status(self) -> dict:
         return {
@@ -278,6 +287,7 @@ class VMC:
     @logger.catch()
     def on_start_interaction(self):
         logger.info(f"{STATE_CHANGE_PREFIX} Transitioning to interacting_with_user for product: {self.selected_product}")
+        self._reset_session_timeout()
         self._publish_status()
         self._update_display("interacting_with_user")
         self._refresh_ui()
@@ -286,6 +296,7 @@ class VMC:
     @logger.catch()
     def on_dispense_product(self):
         logger.info(f"{STATE_CHANGE_PREFIX} Transitioning to dispensing for product: {self.selected_product}")
+        self._cancel_session_timeout()
         self._publish_status()
         self._update_display("dispensing")
         self._refresh_ui()
@@ -322,10 +333,16 @@ class VMC:
     @logger.catch()
     def on_error(self):
         logger.error(f"{STATE_CHANGE_PREFIX} Error encountered for product: {self.selected_product}. Transitioning to error state.")
+        # Refund any remaining credit in escrow
+        if self.credit_escrow > 0:
+            refund = self.credit_escrow
+            self.credit_escrow = 0.0
+            txn_log.info(f"REFUND (error state): ${refund:.2f} via {self.last_payment_method}")
+            logger.info(f"Refunded ${refund:.2f} due to error state transition.")
         self._publish_status()
         self._update_display("error")
         self._refresh_ui()
-        self.send_customer_message("An error has occurred. Please contact support.")
+        self.send_customer_message("An error has occurred. Your payment has been refunded. Please contact support.")
 
     # --- Business Logic Methods ---
     @logger.catch()
@@ -334,6 +351,8 @@ class VMC:
         self.credit_escrow += amount
         self.last_payment_method = payment_method
         logger.info(f"Deposited ${amount:.2f} via {payment_method}. New escrow: ${self.credit_escrow:.2f}")
+        if self.state == "interacting_with_user":
+            self._reset_session_timeout()
         self._publish_status()
         self._refresh_ui()
         self.send_customer_message(f"${amount:.2f} deposited. Current balance: ${self.credit_escrow:.2f}.")
@@ -381,8 +400,8 @@ class VMC:
         if self.state not in ["idle", "interacting_with_user"]:
             logger.warning("Cannot change selection; machine not ready.")
             return
-        if product_index >= len(self.products):
-            logger.error("Invalid product index selected.")
+        if not (0 <= product_index < len(self.products)):
+            logger.error(f"Invalid product index: {product_index}")
             return
 
         self.selected_product = self.products[product_index]
@@ -438,7 +457,7 @@ class VMC:
             self._refresh_ui()
             # Dispenser hardware will send "complete" via MQTT → _handle_mqtt_dispenser
             # Schedule a timeout fallback in case the hardware never responds
-            self._schedule(60.0, self._finish_dispensing)
+            self._dispense_timeout_task = self._schedule(60.0, self._finish_dispensing)
             self.last_insufficient_message = ""
         else:
             required = price - self.credit_escrow
@@ -450,9 +469,46 @@ class VMC:
                 self.last_insufficient_message = message
             self._schedule(5.0, self._process_payment)
 
+    def _reset_session_timeout(self):
+        """Reset (or start) the customer session inactivity timer."""
+        if self._session_timeout_task and not self._session_timeout_task.done():
+            self._session_timeout_task.cancel()
+        self._session_timeout_task = self._schedule(
+            self._session_timeout_seconds, self._expire_session
+        )
+
+    def _cancel_session_timeout(self):
+        """Cancel the session timeout (e.g., when dispensing starts)."""
+        if self._session_timeout_task and not self._session_timeout_task.done():
+            self._session_timeout_task.cancel()
+        self._session_timeout_task = None
+
+    @logger.catch()
+    def _expire_session(self):
+        """Called when the customer session times out due to inactivity."""
+        if self.state != "interacting_with_user":
+            return
+        logger.info("Customer session timed out due to inactivity.")
+        txn_log.info(f"SESSION TIMEOUT: refunding ${self.credit_escrow:.2f}")
+        self.request_refund()
+        self.selected_product = None
+        self.last_insufficient_message = ""
+        # Manually transition back to idle (reset_state only works from error)
+        self.machine.set_state("idle")
+        self._publish_status()
+        self._update_display("idle")
+        self._refresh_ui()
+
+    def _cancel_dispense_timeout(self):
+        """Cancel the dispense fallback timeout if it is still pending."""
+        if self._dispense_timeout_task and not self._dispense_timeout_task.done():
+            self._dispense_timeout_task.cancel()
+        self._dispense_timeout_task = None
+
     @logger.catch()
     def _finish_dispensing(self):
         logger.debug(f"Finishing dispensing process for product: {self.selected_product}")
+        self._cancel_dispense_timeout()
         if self.state != "dispensing":
             logger.debug("State is not dispensing; cannot finish dispensing.")
             return

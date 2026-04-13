@@ -84,8 +84,8 @@ def _make_config() -> ConfigModel:
 
 async def _wait_for_state(vmc: VMC, target_state: str, timeout: float = 10.0):
     """Poll VMC state until it reaches target_state or timeout."""
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
         if vmc.state == target_state:
             return
         await asyncio.sleep(0.05)
@@ -113,7 +113,7 @@ class TestFullTransactionLoop:
             await sim_client.subscribe(f"{prefix}/cmd/dispense")
 
             # Start the VMC MQTT client in background
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             vmc.attach_to_loop(loop)
             vmc.set_mqtt_client(mqtt_client)
             vmc.set_health_monitor(health)
@@ -189,7 +189,7 @@ class TestFullTransactionLoop:
             hostname="localhost", port=1883, identifier="e2e-sim-overpay"
         ) as sim_client:
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             vmc.attach_to_loop(loop)
             vmc.set_mqtt_client(mqtt_client)
 
@@ -247,7 +247,7 @@ class TestFullTransactionLoop:
             hostname="localhost", port=1883, identifier="e2e-sim-underpay"
         ) as sim_client:
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             vmc.attach_to_loop(loop)
             vmc.set_mqtt_client(mqtt_client)
 
@@ -314,7 +314,7 @@ class TestFullTransactionLoop:
             hostname="localhost", port=1883, identifier="e2e-sim-error"
         ) as sim_client:
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             vmc.attach_to_loop(loop)
             vmc.set_mqtt_client(mqtt_client)
 
@@ -369,7 +369,7 @@ class TestSensorAndHeartbeatRouting:
             hostname="localhost", port=1883, identifier="e2e-sim-sensor"
         ) as sim_client:
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             vmc.attach_to_loop(loop)
             vmc.set_mqtt_client(mqtt_client)
             vmc.set_health_monitor(health)
@@ -412,7 +412,7 @@ class TestSensorAndHeartbeatRouting:
             hostname="localhost", port=1883, identifier="e2e-sim-hb"
         ) as sim_client:
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             vmc.attach_to_loop(loop)
             vmc.set_mqtt_client(mqtt_client)
             vmc.set_health_monitor(health)
