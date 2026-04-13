@@ -1,8 +1,0 @@
-services:
-  icecolder:
-    image: icecolder
-    build:
-      context: .
-      dockerfile: ./Dockerfile
-    ports:
-      - 7632:7632

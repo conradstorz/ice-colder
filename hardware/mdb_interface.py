@@ -1,67 +1,47 @@
 # hardware/mdb_interface.py
-import asyncio
+"""
+MDB interface stub.
+
+Real MDB communication now lives on an ESP32 microcontroller and reaches
+the RPi via MQTT (see services/mqtt_client.py and controller/vmc.py MQTT
+handlers). This file is kept as a placeholder for the MDB protocol
+constants and message parsing that may be useful when implementing the
+ESP32 firmware or for testing.
+"""
 from loguru import logger
 
-try:
-    from serial import Serial
-except ImportError as e:
-    logger.error(
-        "Failed to import 'Serial' from pyserial. Ensure pyserial is installed and "
-        "no local file is named 'serial.py'. Original source of this error was fixed "
-        "by deleting venv and recreating."
-    )
-    raise
+
+# MDB address constants (for reference / ESP32 firmware)
+MDB_ADDR_VMC = 0x00
+MDB_ADDR_CHANGER = 0x08
+MDB_ADDR_CASHLESS_1 = 0x10
+MDB_ADDR_CASHLESS_2 = 0x60
+
+# Common MDB commands
+MDB_CMD_RESET = 0x00
+MDB_CMD_SETUP = 0x01
+MDB_CMD_POLL = 0x03
+MDB_CMD_VEND = 0x04
+MDB_CMD_READER = 0x05
 
 
-class MDBInterface:
-    def __init__(self, port="/dev/ttyAMA0", baudrate=9600):
-        self.port = port
-        self.baudrate = baudrate
-        try:
-            self.serial_conn = Serial(port, baudrate, timeout=1)
-            logger.info(
-                f"MDBInterface: Connected to MDB bus on {port} at {baudrate} baud."
-            )
-        except Exception as e:
-            logger.error(f"MDBInterface: Failed to open serial port {port}: {e}")
-            self.serial_conn = None
+def parse_mdb_message(raw_data: bytes) -> dict:
+    """
+    Parse raw MDB bus bytes into a structured dict.
 
-    async def read_messages(self, message_handler):
-        """
-        Continuously read messages from the MDB bus and pass them to the message_handler callback.
-        """
-        if not self.serial_conn:
-            logger.error("MDBInterface: Serial connection not established.")
-            return
+    This is a reference implementation — the actual parsing runs on the
+    ESP32 and arrives here as a structured MQTT payload.
+    """
+    if not raw_data:
+        return {"error": "empty"}
 
-        while True:
-            try:
-                if self.serial_conn.in_waiting > 0:
-                    raw_data = self.serial_conn.read(self.serial_conn.in_waiting)
-                    message = self.parse_message(raw_data)
-                    logger.debug(f"MDBInterface: Received message: {message}")
-                    message_handler(message)
-                await asyncio.sleep(0.1)
-            except Exception as e:
-                logger.error(f"MDBInterface: Error reading from serial: {e}")
-                await asyncio.sleep(1)
+    address = raw_data[0] & 0xF8
+    command = raw_data[0] & 0x07
+    data = raw_data[1:] if len(raw_data) > 1 else b""
 
-    def send_command(self, command_bytes):
-        """
-        Send a command to the MDB bus.
-        """
-        if not self.serial_conn:
-            logger.error("MDBInterface: Serial connection not established.")
-            return
-        try:
-            self.serial_conn.write(command_bytes)
-            logger.info(f"MDBInterface: Sent command: {command_bytes}")
-        except Exception as e:
-            logger.error(f"MDBInterface: Failed to send command: {e}")
-
-    def parse_message(self, raw_data):
-        """
-        Parse raw data from the MDB bus into a structured message.
-        This is a stub function and should be expanded according to the MDB protocol.
-        """
-        return raw_data
+    return {
+        "address": address,
+        "command": command,
+        "data": data.hex(),
+        "raw_length": len(raw_data),
+    }

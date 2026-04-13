@@ -1,21 +1,13 @@
 from pathlib import Path
-from typing import Dict
-import random
-
 from uuid import uuid4
-from services.config_store import add_product
 
+from fastapi import APIRouter, FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
-from fastapi import APIRouter, Request, Form
-from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
-from fastapi import FastAPI
-
-from services.config_store import update_product
-
-from services.fsm_control import perform_command
 
 from config.config_model import ConfigModel, Product
+from services.config_store import add_product, update_product
+from services.fsm_control import perform_command
 
 config: ConfigModel = None
 
@@ -24,10 +16,15 @@ def set_config_object(cfg: ConfigModel):
     config = cfg
 
 vmc_instance = None
+health_monitor = None
 
 def set_vmc_instance(vmc):
     global vmc_instance
     vmc_instance = vmc
+
+def set_health_monitor(monitor):
+    global health_monitor
+    health_monitor = monitor
 
 LOG_PATH = Path("logs/vmc.log")
 
@@ -52,20 +49,6 @@ def tail(file_path: Path, lines: int = 50) -> list[str]:
         result = buffer[::-1].decode("utf-8", errors="replace")
         return result.strip().splitlines()
 
-
-status_data = {
-    "state": "IDLE",
-    "uptime": 0,
-    "errors": [],
-}
-
-
-def get_mock_status() -> Dict:
-    status_data["uptime"] += 1
-    status_data["state"] = random.choice(["IDLE", "READY", "VENDING", "ERROR"])
-    return status_data
-
-
 def attach_routes(app: FastAPI, templates: Jinja2Templates):
     router = APIRouter()
 
@@ -86,22 +69,6 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         })
     
     
-    @router.post("/inventory/update/{sku}", response_class=HTMLResponse)
-    async def update_inventory_item(
-        request: Request,
-        sku: str,
-        name: str = Form(...),
-        price: float = Form(...),
-        inventory_count: int = Form(...)
-    ):
-        update_product(config, sku, name, price, inventory_count)
-
-        return templates.TemplateResponse("partials/inventory_table.html", {
-            "request": request,
-            "products": config.products
-        })
-
-
     @router.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request):
         return templates.TemplateResponse("dashboard.html", {"request": request})
@@ -114,12 +81,6 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             "details": config.physical
         })
 
-    @router.get("/config/inventory", response_class=HTMLResponse)
-    async def inventory_panel(request: Request):
-        return templates.TemplateResponse("partials/inventory_table.html", {
-            "request": request,
-            "products": config.products
-        })
 
     @router.get("/config/contacts", response_class=HTMLResponse)
     async def contact_info(request: Request):
@@ -127,7 +88,6 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             "request": request,
             "people": config.physical.people
         })
-
 
 
     @router.get("/config/payments", response_class=HTMLResponse)
@@ -172,6 +132,23 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         })
 
 
+    @router.get("/health", response_class=HTMLResponse)
+    async def health_summary(request: Request):
+        if not health_monitor:
+            return HTMLResponse("<div>Health monitor not initialized</div>")
+        return templates.TemplateResponse("partials/health_fragment.html", {
+            "request": request,
+            "health": health_monitor.get_summary(),
+        })
+
+    @router.get("/inventory", response_class=HTMLResponse)
+    async def inventory_view(request: Request):
+        return templates.TemplateResponse("partials/inventory_table.html", {
+            "request": request,
+            "products": config.products
+        })
+
+
     @router.get("/inventory/edit/{sku}", response_class=HTMLResponse)
     async def edit_inventory_item(request: Request, sku: str):
         product = next((p for p in config.products if p.sku == sku), None)
@@ -180,6 +157,22 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             "product": product
         })
 
+
+    @router.post("/inventory/update/{sku}", response_class=HTMLResponse)
+    async def update_inventory_item(
+        request: Request,
+        sku: str,
+        name: str = Form(...),
+        price: float = Form(...),
+        inventory_count: int = Form(...)
+    ):
+        update_product(config, sku, name, price, inventory_count)
+
+        return templates.TemplateResponse("partials/inventory_table.html", {
+            "request": request,
+            "products": config.products
+        })
+    
 
     @router.get("/inventory/new", response_class=HTMLResponse)
     async def new_product_form(request: Request):

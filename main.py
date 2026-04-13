@@ -1,30 +1,22 @@
-from controller.vmc import VMC  # Import the VMC class from the controller module
+from controller.vmc import VMC
+from services.mqtt_client import MQTTClient
+from services.health_monitor import HealthMonitor
+from services.notifier import Notifier
+from services.display_controller import DisplayController
 
+import asyncio
 import os
 import sys
-from time import sleep
 from loguru import logger
 from config.config_model import ConfigModel
-# from hardware.tkinter_ui import VendingMachineUI  # removed in favor of local webserver dashboard
-import json  # For loading configuration
-from pydantic import ValidationError  # Handle Pydantic validation errors
+import json
+from pydantic import ValidationError
 import shutil
 import time
 
-from threading import Thread  # local webserver dashboard will be run in a separate thread
 import uvicorn
 from web_interface.server import app
 from web_interface import routes
-
-def start_web_interface():
-    logger.info("Starting web interface on http://localhost:8000")
-    # Run the FastAPI app with Uvicorn
-    # Note: This will block the thread, so it should be run in a separate thread
-    # If you want to run it in the main thread, remove the Thread wrapper
-    # and call uvicorn.run directly.
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="debug")  # this is the blocking command
-    # When the server stops, the line below will execute
-    logger.info("Web interface has exited")
 
 def setup_logging():
     """
@@ -142,7 +134,7 @@ def load_config() -> ConfigModel:
         shutil.copy("config.json", backup_path)
         logger.info(f"Backed up original config to {backup_path}")
 
-        json_text = merged_data.model_dump_json(indent=4)
+        json_text = json.dumps(merged_data, default=_json_encoder, indent=4)
         with open("config.json", "w", encoding="utf-8") as fw:
             fw.write(json_text)
             logger.debug("Wrote merged configuration to 'config.json'") 
@@ -159,7 +151,7 @@ def load_config() -> ConfigModel:
     except ValidationError as ve:
         logger.error("Configuration validation failed with the following errors:")
         for err in ve.errors():
-            loc = " -> ".join(str(l) for l in err.get('loc', []))
+            loc = " -> ".join(str(l) for l in err.get('loc', []))  # noqa: E741
             msg = err.get('msg', '')
             logger.error(f"  • {loc}: {msg}")
         sys.exit(1)
@@ -170,58 +162,54 @@ def load_config() -> ConfigModel:
 
 
 @logger.catch()
-def main():
-    # configure logging
+async def main():
     setup_logging()
-
     logger.info("Starting Vending Machine Controller")
 
-    # Load configuration
     live_config = load_config()
-    logger.debug("Configuration loaded successfully")   
     logger.debug(f"Configuration model: {live_config}")
+    logger.info(f"Loaded configuration with version: {getattr(live_config, 'version', 'N/A')}")
 
-    # Start the web interface in a separate thread to avoid blocking the main thread
-    logger.info("Starting web interface in a separate thread")
-    Thread(target=start_web_interface, daemon=True).start()
-    # Then start your FSM/main loop below
-
-    # load the config model into the routes.py module
-    logger.debug("Importing routes module from web_interface")
-    logger.debug("Setting configuration object in web interface routes")
+    # Wire up configuration and VMC for the web routes
     routes.set_config_object(live_config)
-
-    logger.debug("Instantiating VendingMachineUI with configuration model")
-    # TODO launch the vending machine FSM or main loop here
-
     vmc = VMC(config=live_config)
+    vmc.attach_to_loop(asyncio.get_running_loop())
     routes.set_vmc_instance(vmc)
-    
-    
-    while True:
-        sleep(100)
-    """
-    # Initialize Tkinter UI
-    try:
-        logger.debug("Initializing Tkinter root window and UI")
-        root = tk.Tk()
-        root.title("Vending Machine Controller")
-        logger.debug("Instantiating VendingMachineUI with configuration model")
-        app = VendingMachineUI(root, config_model=config_model)
-    except Exception:
-        logger.exception("Failed to initialize Tkinter UI")
-        sys.exit(1)
+    logger.info(f"VMC instance created and attached to event loop")
 
-    # Enter main loop
-    try:
-        logger.info("Entering Tkinter main loop")
-        root.mainloop()
-    except Exception:
-        logger.exception("Error during Tkinter main loop")
-    finally:
-        logger.info("Tkinter main loop has exited")
-    """
+    # Create health monitor and notifier
+    health = HealthMonitor()
+    notifier = Notifier(config=live_config)
+    health.set_alert_callback(notifier.send)
+    routes.set_health_monitor(health)
+    logger.info(f"Health monitor and notifier set up and linked")
+
+    # Create MQTT client and wire it to the VMC
+    mqtt = MQTTClient(config=live_config.mqtt, machine_id=live_config.machine_id)
+    vmc.set_mqtt_client(mqtt)
+    vmc.set_health_monitor(health)
+    logger.info(f"MQTT client created and linked to VMC and health monitor")
+
+    # Create display controller and wire to MQTT + VMC
+    display = DisplayController()
+    display.set_mqtt(mqtt, asyncio.get_running_loop())
+    vmc.set_display_controller(display)
+    logger.info(f"Display controller created and linked to MQTT client and VMC")
+
+    logger.info(f"MQTT client configured for broker {live_config.mqtt.broker_host}:{live_config.mqtt.broker_port}")
+
+    # Start uvicorn as an asyncio task (non-blocking)
+    uvicorn_config = uvicorn.Config(app, host="0.0.0.0", port=26123, log_level="info")
+    server = uvicorn.Server(uvicorn_config)
+    logger.info("Starting web interface on http://0.0.0.0:26123")
+
+    # Run the web server, MQTT client, and health monitor concurrently
+    logger.info(f"Entering main event loop with web server, MQTT client, and health monitor")
+    await asyncio.gather(server.serve(), mqtt.run(), health.run())
 
 
 if __name__ == "__main__":
-    main()
+    logger.info(f"Starting main application")
+    asyncio.run(main())
+    logger.info(f"Main application has exited")
+    

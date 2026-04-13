@@ -38,7 +38,7 @@
         "image_url": "https://example.com/image.jpg",
         "price": 12.5,
         "track_inventory": false,
-        "inventory_count": 0
+        "inventory_count": 99
       },
       {
         "sku": "SKU-FCB828",
@@ -55,6 +55,15 @@
         "description": "A sample product",
         "image_url": "https://example.com/image.jpg",
         "price": 12.5,
+        "track_inventory": false,
+        "inventory_count": 0
+      },
+      {
+        "sku": "SKU-63FC28",
+        "name": "test2",
+        "description": "A sample product",
+        "image_url": "https://example.com/image.jpg",
+        "price": 0.0,
         "track_inventory": false,
         "inventory_count": 0
       }
