@@ -1,21 +1,13 @@
 from pathlib import Path
-from typing import Dict
-import random
-
 from uuid import uuid4
-from services.config_store import add_product
 
+from fastapi import APIRouter, FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
-from fastapi import APIRouter, Request, Form
-from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
-from fastapi import FastAPI
-
-from services.config_store import update_product
-
-from services.fsm_control import perform_command
 
 from config.config_model import ConfigModel, Product
+from services.config_store import add_product, update_product
+from services.fsm_control import perform_command
 
 config: ConfigModel = None
 
@@ -52,18 +44,6 @@ def tail(file_path: Path, lines: int = 50) -> list[str]:
         result = buffer[::-1].decode("utf-8", errors="replace")
         return result.strip().splitlines()
 
-
-status_data = {
-    "state": "IDLE",
-    "uptime": 0,
-    "errors": [],
-}
-
-def get_mock_status() -> Dict:
-    status_data["uptime"] += 1
-    status_data["state"] = random.choice(["IDLE", "READY", "VENDING", "ERROR"])
-    return status_data
-
 def attach_routes(app: FastAPI, templates: Jinja2Templates):
     router = APIRouter()
 
@@ -84,22 +64,6 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         })
     
     
-    @router.post("/inventory/update/{sku}", response_class=HTMLResponse)
-    async def update_inventory_item(
-        request: Request,
-        sku: str,
-        name: str = Form(...),
-        price: float = Form(...),
-        inventory_count: int = Form(...)
-    ):
-        update_product(config, sku, name, price, inventory_count)
-
-        return templates.TemplateResponse("partials/inventory_table.html", {
-            "request": request,
-            "products": config.products
-        })
-
-
     @router.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request):
         return templates.TemplateResponse("dashboard.html", {"request": request})
@@ -188,12 +152,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         price: float = Form(...),
         inventory_count: int = Form(...)
     ):
-        for p in config.products:
-            if p.sku == sku:
-                p.name = name
-                p.price = price
-                p.inventory_count = inventory_count
-                break
+        update_product(config, sku, name, price, inventory_count)
 
         return templates.TemplateResponse("partials/inventory_table.html", {
             "request": request,

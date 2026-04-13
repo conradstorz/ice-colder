@@ -1,30 +1,18 @@
-from controller.vmc import VMC  # Import the VMC class from the controller module
+from controller.vmc import VMC
 
+import asyncio
 import os
 import sys
-from time import sleep
 from loguru import logger
 from config.config_model import ConfigModel
-# from hardware.tkinter_ui import VendingMachineUI  # removed in favor of local webserver dashboard
-import json  # For loading configuration
-from pydantic import ValidationError  # Handle Pydantic validation errors
+import json
+from pydantic import ValidationError
 import shutil
 import time
 
-from threading import Thread  # local webserver dashboard will be run in a separate thread
 import uvicorn
 from web_interface.server import app
 from web_interface import routes
-
-def start_web_interface():
-    logger.info("Starting web interface on http://localhost:8000")
-    # Run the FastAPI app with Uvicorn
-    # Note: This will block the thread, so it should be run in a separate thread
-    # If you want to run it in the main thread, remove the Thread wrapper
-    # and call uvicorn.run directly.
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="debug")  # this is the blocking command
-    # When the server stops, the line below will execute
-    logger.info("Web interface has exited")
 
 def setup_logging():
     """
@@ -142,7 +130,7 @@ def load_config() -> ConfigModel:
         shutil.copy("config.json", backup_path)
         logger.info(f"Backed up original config to {backup_path}")
 
-        json_text = merged_data.model_dump_json(indent=4)
+        json_text = json.dumps(merged_data, default=_json_encoder, indent=4)
         with open("config.json", "w", encoding="utf-8") as fw:
             fw.write(json_text)
             logger.debug("Wrote merged configuration to 'config.json'") 
@@ -170,58 +158,28 @@ def load_config() -> ConfigModel:
 
 
 @logger.catch()
-def main():
-    # configure logging
+async def main():
     setup_logging()
-
     logger.info("Starting Vending Machine Controller")
 
-    # Load configuration
     live_config = load_config()
-    logger.debug("Configuration loaded successfully")   
     logger.debug(f"Configuration model: {live_config}")
 
-    # Start the web interface in a separate thread to avoid blocking the main thread
-    logger.info("Starting web interface in a separate thread")
-    Thread(target=start_web_interface, daemon=True).start()
-    # Then start your FSM/main loop below
-
-    # load the config model into the routes.py module
-    logger.debug("Importing routes module from web_interface")
-    logger.debug("Setting configuration object in web interface routes")
+    # Wire up configuration and VMC for the web routes
     routes.set_config_object(live_config)
-
-    logger.debug("Instantiating VendingMachineUI with configuration model")
-    # TODO launch the vending machine FSM or main loop here
-
     vmc = VMC(config=live_config)
+    vmc.attach_to_loop(asyncio.get_running_loop())
     routes.set_vmc_instance(vmc)
-    
-    
-    while True:
-        sleep(100)
-    """
-    # Initialize Tkinter UI
-    try:
-        logger.debug("Initializing Tkinter root window and UI")
-        root = tk.Tk()
-        root.title("Vending Machine Controller")
-        logger.debug("Instantiating VendingMachineUI with configuration model")
-        app = VendingMachineUI(root, config_model=config_model)
-    except Exception:
-        logger.exception("Failed to initialize Tkinter UI")
-        sys.exit(1)
 
-    # Enter main loop
-    try:
-        logger.info("Entering Tkinter main loop")
-        root.mainloop()
-    except Exception:
-        logger.exception("Error during Tkinter main loop")
-    finally:
-        logger.info("Tkinter main loop has exited")
-    """
+    # Start uvicorn as an asyncio task (non-blocking)
+    uvicorn_config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
+    server = uvicorn.Server(uvicorn_config)
+    logger.info("Starting web interface on http://0.0.0.0:8000")
+
+    # Run the web server — this is the main long-running task.
+    # Future phases will add more tasks here (MQTT client, health monitor, etc.)
+    await server.serve()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

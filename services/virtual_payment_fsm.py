@@ -1,7 +1,7 @@
 # virtual_payment_fsm.py
 import asyncio
 from loguru import logger
-from async_payment_fsm import AsyncPaymentFSM
+from services.async_payment_fsm import AsyncPaymentFSM
 
 class VirtualPaymentFSM(AsyncPaymentFSM):
     """
