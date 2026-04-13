@@ -64,6 +64,13 @@ class SubsystemHeartbeat(BaseModel):
     timestamp: datetime = Field(default_factory=_utc_now)
 
 
+class IceMakerEvent(BaseModel):
+    """Operational event from the ice maker ESP32."""
+    event: str = Field(..., description="Event type: power_on, power_off, ice_dropped, needs_cleaning, failed_cycle, temp_out_of_bounds")
+    detail: Optional[str] = Field(None, description="Additional detail (e.g., sensor name, cycle count)")
+    timestamp: datetime = Field(default_factory=_utc_now)
+
+
 # ──────────────────────────────────────────────
 # RPi → ESP32: Outbound commands
 # ──────────────────────────────────────────────

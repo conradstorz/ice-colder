@@ -213,7 +213,7 @@ class TestVMCMQTTWiring:
         vmc = _make_vmc()
         mock_client = MagicMock()
         vmc.set_mqtt_client(mock_client)
-        assert mock_client.register.call_count == 5
+        assert mock_client.register.call_count == 6
 
     def test_publish_status_without_client_does_nothing(self):
         vmc = _make_vmc()

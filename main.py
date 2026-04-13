@@ -43,6 +43,33 @@ def setup_logging():
         serialize=False,
         format="{message}\n{level}: {time:YYYY-MM-DD HH:mm:ss}"
     )
+    # Transaction log — customer interactions only (button, payment, dispense, refund)
+    logger.add(
+        "LOGS/transactions.log",
+        filter=lambda record: record["extra"].get("transaction", False),
+        rotation="00:00",
+        retention="300 days",
+        compression="zip",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {message}",
+    )
+    # Ice maker log — power cycles, ice drops, and out-of-spec behavior
+    logger.add(
+        "LOGS/ice_maker.log",
+        filter=lambda record: record["extra"].get("ice_maker", False),
+        rotation="00:00",
+        retention="300 days",
+        compression="zip",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {message}",
+    )
+    # Vending machine log — button presses, dispense sequences, hardware events
+    logger.add(
+        "LOGS/vending.log",
+        filter=lambda record: record["extra"].get("vending", False),
+        rotation="00:00",
+        retention="300 days",
+        compression="zip",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {message}",
+    )
 
 
 def _deep_merge(default: dict, source: dict) -> dict:

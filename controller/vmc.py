@@ -4,12 +4,21 @@ import time
 from transitions import Machine
 from loguru import logger
 from services.payment_gateway_manager import PaymentGatewayManager
-from services.mqtt_messages import VMCStatus, PaymentEvent, ButtonPress, DispenseCommand
+from services.mqtt_messages import VMCStatus, PaymentEvent, ButtonPress, DispenseCommand, IceMakerEvent
 from config.config_model import ConfigModel
 from services.health_monitor import HealthMonitor
 from services.display_controller import DisplayController
 
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
+
+# Bound logger that routes to the transaction log sink
+txn_log = logger.bind(transaction=True)
+
+# Bound logger that routes to the ice maker log sink
+ice_log = logger.bind(ice_maker=True)
+
+# Bound logger that routes to the vending machine log sink
+vend_log = logger.bind(vending=True)
 
 #: FSM transition table.
 #: Ordering matters when multiple transitions share the same trigger name.
@@ -108,6 +117,7 @@ class VMC:
         client.register("hardware/dispenser", self._handle_mqtt_dispenser)
         client.register("sensors/temp/+", self._handle_mqtt_sensor)
         client.register("heartbeat/+", self._handle_mqtt_heartbeat)
+        client.register("ice_maker/event", self._handle_mqtt_ice_maker_event)
         logger.debug("VMC registered MQTT handlers.")
 
     def set_health_monitor(self, monitor: HealthMonitor):
@@ -150,23 +160,36 @@ class VMC:
         """Handle payment credit from MDB ESP32."""
         event = PaymentEvent.model_validate(data)
         logger.info(f"MQTT payment received: ${event.amount:.2f} via {event.method}")
+        txn_log.info(f"PAYMENT RECEIVED: ${event.amount:.2f} via {event.method}")
         self.deposit_funds(event.amount, payment_method=event.method)
 
     async def _handle_mqtt_button(self, topic: str, data: dict):
         """Handle button press from ESP32."""
         press = ButtonPress.model_validate(data)
         logger.info(f"MQTT button press: button {press.button}")
+        txn_log.info(f"BUTTON PRESS: button {press.button}")
+        vend_log.info(f"BUTTON PRESS: button {press.button}")
         self.select_product(press.button)
 
     async def _handle_mqtt_dispenser(self, topic: str, data: dict):
         """Handle dispenser status from ESP32."""
         logger.info(f"MQTT dispenser event: {data}")
         state = data.get("state", "")
+        slot = data.get("slot", "?")
         if state == "complete" and self.state == "dispensing":
+            product_name = self.selected_product.name if self.selected_product else "Unknown"
+            txn_log.info(f"DISPENSE SUCCESS: slot {slot}, product '{product_name}'")
+            vend_log.info(f"DISPENSE COMPLETE: slot {slot}, product '{product_name}'")
             self._finish_dispensing()
         elif state in ("jammed", "error"):
+            product_name = self.selected_product.name if self.selected_product else "Unknown"
+            txn_log.error(f"DISPENSE FAILED: slot {slot}, product '{product_name}', reason: {state}")
+            vend_log.error(f"DISPENSE FAILED: slot {slot}, product '{product_name}', reason: {state}")
             logger.error(f"Dispenser error: {state}")
             self.error_occurred()
+        else:
+            # Intermediate hardware states: motor_active, fill_complete, solenoid_open, etc.
+            vend_log.info(f"DISPENSER: slot {slot}, state: {state}")
 
     async def _handle_mqtt_sensor(self, topic: str, data: dict):
         """Handle temperature/sensor reading from ESP32."""
@@ -183,6 +206,17 @@ class VMC:
         if self._health_monitor:
             subsystem = data.get("subsystem", topic.split("/")[-1] if "/" in topic else topic)
             self._health_monitor.record_heartbeat(subsystem, data)
+
+    # Events logged to the ice maker log: power cycles, ice drops, out-of-spec
+    _ICE_LOG_EVENTS = {"power_on", "power_off", "ice_dropped", "needs_cleaning", "failed_cycle", "temp_out_of_bounds"}
+
+    async def _handle_mqtt_ice_maker_event(self, topic: str, data: dict):
+        """Handle operational events from the ice maker ESP32."""
+        event = IceMakerEvent.model_validate(data)
+        logger.info(f"MQTT ice maker event: {event.event} — {event.detail or ''}")
+        if event.event in self._ICE_LOG_EVENTS:
+            detail = f" ({event.detail})" if event.detail else ""
+            ice_log.info(f"{event.event.upper()}{detail}")
 
     def _schedule(self, delay_seconds, callback):
         """Schedule a synchronous callback to run after delay_seconds on the event loop."""
@@ -259,6 +293,7 @@ class VMC:
         # Tell the vending ESP32 which slot to dispense
         if self._mqtt_client and self._loop and self.selected_product:
             slot = self.products.index(self.selected_product)
+            vend_log.info(f"DISPENSE CMD: slot {slot}, product '{self.selected_product.name}'")
             self._loop.create_task(
                 self._mqtt_client.publish("cmd/dispense", DispenseCommand(slot=slot))
             )
@@ -310,6 +345,7 @@ class VMC:
             refund_amount = self.credit_escrow
             self.credit_escrow = 0.0
             logger.info(f"Refund of ${refund_amount:.2f} issued via {self.last_payment_method}.")
+            txn_log.info(f"REFUND ISSUED: ${refund_amount:.2f} via {self.last_payment_method}")
             self.send_customer_message(f"Refund of ${refund_amount:.2f} issued via {self.last_payment_method}.")
             self._refresh_ui()
         else:
@@ -351,10 +387,13 @@ class VMC:
 
         self.selected_product = self.products[product_index]
         logger.info(f"Selected product: {self.selected_product.name} at ${self.selected_product.price:.2f}")
+        txn_log.info(f"PRODUCT SELECTED: '{self.selected_product.name}' (${self.selected_product.price:.2f}), button {product_index}")
+        vend_log.info(f"PRODUCT SELECTED: '{self.selected_product.name}' (${self.selected_product.price:.2f}), button {product_index}")
 
         if self.selected_product.track_inventory:
             if self.selected_product.inventory_count <= 0:
                 logger.error(f"{self.selected_product.name} is sold out.")
+                txn_log.info(f"SOLD OUT: '{self.selected_product.name}', customer rejected")
                 self.send_customer_message(f"{self.selected_product.name} is sold out. Please select another product.")
                 return
 
@@ -391,6 +430,7 @@ class VMC:
         price = self.selected_product.price if self.selected_product else 0
         if self.credit_escrow >= price:
             logger.info(f"{STATE_CHANGE_PREFIX} Escrow sufficient ({self.credit_escrow:.2f} >= {price:.2f}). Processing payment.")
+            txn_log.info(f"PAYMENT SUFFICIENT: ${self.credit_escrow:.2f} >= ${price:.2f} for '{self.selected_product.name}', charging ${price:.2f}")
             self.send_customer_message("Sufficient funds received. Processing your payment...")
             self.credit_escrow -= price
             logger.debug(f"Deducted price from escrow. New escrow: {self.credit_escrow:.2f}")
@@ -405,6 +445,7 @@ class VMC:
             message = f"Insufficient funds. Please insert an additional ${required:.2f}."
             if message != self.last_insufficient_message:
                 logger.error(message)
+                txn_log.info(f"PAYMENT INSUFFICIENT: ${self.credit_escrow:.2f} < ${price:.2f} for '{self.selected_product.name}', need ${required:.2f} more")
                 self.send_customer_message(message)
                 self.last_insufficient_message = message
             self._schedule(5.0, self._process_payment)

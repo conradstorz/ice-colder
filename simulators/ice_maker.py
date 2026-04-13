@@ -14,7 +14,7 @@ import aiomqtt
 from loguru import logger
 
 from simulators.base import ESP32Simulator
-from services.mqtt_messages import SensorReading
+from services.mqtt_messages import SensorReading, IceMakerEvent
 
 
 # Sensor definitions: name, target when compressor on, target when off, rate constant, noise amplitude
@@ -63,11 +63,17 @@ class IceMakerSimulator(ESP32Simulator):
     COMPRESSOR_ON_TIME = 600.0   # 10 minutes
     COMPRESSOR_OFF_TIME = 300.0  # 5 minutes
 
+    ICE_DROP_INTERVAL = 900.0  # simulate an ice drop every ~15 minutes
+    TEMP_LOW = -20.0   # out-of-bounds threshold low
+    TEMP_HIGH = 85.0   # out-of-bounds threshold high
+
     def __init__(self, **kwargs):
         super().__init__(subsystem_name="ice_maker", **kwargs)
         self.sensors = [ThermalSensor(**s) for s in SENSOR_DEFS]
         self.compressor_on = False
         self._cycle_elapsed = 0.0
+        self._ice_drop_elapsed = 0.0
+        self._pending_events: list[IceMakerEvent] = []
 
     def tick(self, dt: float):
         """Advance the simulation by dt seconds."""
@@ -76,15 +82,31 @@ class IceMakerSimulator(ESP32Simulator):
         if self._cycle_elapsed >= cycle_time:
             self.compressor_on = not self.compressor_on
             self._cycle_elapsed = 0.0
-            state = "ON" if self.compressor_on else "OFF"
-            logger.info(f"[ice_maker] Compressor {state}")
+            event_type = "power_on" if self.compressor_on else "power_off"
+            self._pending_events.append(IceMakerEvent(event=event_type))
+            logger.info(f"[ice_maker] Compressor {'ON' if self.compressor_on else 'OFF'}")
 
         for sensor in self.sensors:
             sensor.update(self.compressor_on, dt)
 
+        # Check for out-of-bounds temperatures
+        for sensor in self.sensors:
+            if sensor.value < self.TEMP_LOW or sensor.value > self.TEMP_HIGH:
+                self._pending_events.append(
+                    IceMakerEvent(event="temp_out_of_bounds", detail=f"{sensor.name}={sensor.value:.1f}C")
+                )
+
+        # Simulate periodic ice drops
+        self._ice_drop_elapsed += dt
+        if self._ice_drop_elapsed >= self.ICE_DROP_INTERVAL:
+            self._ice_drop_elapsed = 0.0
+            self._pending_events.append(IceMakerEvent(event="ice_dropped"))
+            logger.info("[ice_maker] Ice dropped")
+
     async def run_simulation(self, client: aiomqtt.Client):
-        """Publish temperature readings every PUBLISH_INTERVAL seconds."""
+        """Publish temperature readings and operational events."""
         logger.info("[ice_maker] Starting temperature monitoring simulation")
+        await self.publish(client, "ice_maker/event", IceMakerEvent(event="power_on", detail="simulator started"))
         while True:
             self.tick(self.PUBLISH_INTERVAL)
             for sensor in self.sensors:
@@ -93,6 +115,10 @@ class IceMakerSimulator(ESP32Simulator):
                     value=round(sensor.value, 2),
                 )
                 await self.publish(client, f"sensors/temp/{sensor.name}", reading)
+            # Publish any pending operational events
+            for event in self._pending_events:
+                await self.publish(client, "ice_maker/event", event)
+            self._pending_events.clear()
             await asyncio.sleep(self.PUBLISH_INTERVAL)
 
 
