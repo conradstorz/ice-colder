@@ -40,12 +40,9 @@ class ConfigModel(BaseModel): holds high-level fields for version, physical, pay
 """
 
 from enum import Enum
-from typing import List, Optional, Dict, Any, Protocol, Callable
-from pydantic import BaseModel, EmailStr, SecretStr, Field, model_validator
-from pydantic_settings import BaseSettings
-from pydantic_extra_types.phone_numbers import PhoneNumber
+from typing import List, Optional, Dict, Any
+from pydantic import BaseModel, ConfigDict, EmailStr, SecretStr, Field
 from loguru import logger
-from datetime import datetime
 
 
 # 1) First, an enum of supported communication channels
@@ -104,7 +101,7 @@ class Product(BaseModel):
     )
     price: float = Field(1.00, description="Price in USD")
     track_inventory: bool = Field(False, description="Whether to track inventory")
-    inventory_count: int = Field(0, description="Initial inventory count")
+    inventory_count: int = Field(0, description="Starting inventory count (seeds inventory.json on first run)")
 
 
 class PhysicalDetails(BaseModel):
@@ -150,17 +147,6 @@ class PhysicalDetails(BaseModel):
     def service_technicians(self) -> List[Person]:
         return self.people.service_technicians
 
-    @model_validator(mode="after")
-    def log_physical_details(cls, model):
-        """
-        Log when PhysicalDetails is loaded
-        """
-        count = len(model.products) if model.products else 0
-        logger.debug(
-            f"{cls.__name__} loaded: serial={model.serial_number}, "
-            f"location={model.location}, products={count}"
-        )
-        return model
 
 
 class StripeConfig(BaseModel):
@@ -330,9 +316,7 @@ class ConfigModel(BaseModel):
         description="MQTT broker connection configuration"
     )
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    model_config = ConfigDict(extra="ignore")
 
     # --- convenience properties ---
     @property

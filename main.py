@@ -3,18 +3,18 @@ from services.mqtt_client import MQTTClient
 from services.health_monitor import HealthMonitor
 from services.notifier import Notifier
 from services.display_controller import DisplayController
+from services.inventory_manager import InventoryManager
 
 import asyncio
+import json
 import os
 import sys
+
 from loguru import logger
-from config.config_model import ConfigModel
-import json
 from pydantic import ValidationError
-import shutil
-import time
 
 import uvicorn
+from config.config_model import ConfigModel
 from web_interface.server import app
 from web_interface import routes
 
@@ -72,120 +72,48 @@ def setup_logging():
     )
 
 
-def _deep_merge(default: dict, source: dict) -> dict:
-    """
-    Recursively merge source dict on top of default dict.
-    """
-    merged = {}
-    # Merge defaults and source
-    for key, val in default.items():
-        if key in source:
-            if isinstance(val, dict) and isinstance(source[key], dict):
-                merged[key] = _deep_merge(val, source[key])
-            else:
-                merged[key] = source[key]
-        else:
-            merged[key] = val
-    # Include any extra keys from source
-    for key, val in source.items():
-        if key not in merged:
-            merged[key] = val
-    return merged
+def _generate_skeleton():
+    """Write a skeleton config.json with masked secrets and exit."""
+    skeleton = ConfigModel()
+    # Serialize with secrets masked so they aren't written in plain text
+    json_text = skeleton.model_dump_json(indent=4)
+    with open("config.json", "w", encoding="utf-8") as fw:
+        fw.write(json_text)
+    logger.info("Created skeleton 'config.json' with default values")
+    print("Created skeleton config.json — please edit and rerun.")
+    sys.exit(0)
 
-
-def _defaults_applied(orig: dict, merged: dict) -> bool:
-    """
-    Detect if merged contains keys not in orig (i.e., defaults applied).
-    """
-    for key in merged:
-        if key not in orig:
-            return True
-        if isinstance(merged[key], dict) and isinstance(orig.get(key), dict):
-            if _defaults_applied(orig[key], merged[key]):
-                return True
-    return False
 
 def load_config() -> ConfigModel:
     """
-    Load the configuration from a JSON file, applying defaults.
+    Load configuration from config.json.
+
+    Pydantic fills in defaults for any missing fields — no manual merge needed.
+    The user's file is never overwritten.
     """
     logger.info("Loading configuration from 'config.json'")
-    # load configuration
-    logger.debug("Checking for 'config.json' in current directory")
-    # Ensure config.json exists; if not, generate a skeleton for user
-    def _json_encoder(o):
-        from pydantic import SecretStr
-        if isinstance(o, SecretStr):
-            # expose the actual secret (or o.get_secret_value())—
-            # or return "********" if you want to keep it masked
-            return o.get_secret_value()
-        # for any other unknown types, let it error
-        raise TypeError(f"Type {o.__class__.__name__} not serializable")
+
     if not os.path.exists("config.json"):
-        logger.warning("'config.json' not found, creating skeleton with default values")
-        skeleton_dict = ConfigModel.model_construct().model_dump()
-        json_text = json.dumps(skeleton_dict, default=_json_encoder, indent=4)
-        with open("config.json", "w", encoding="utf-8") as fw:
-            fw.write(json_text)        
-        logger.info("Created skeleton 'config.json' with default values")
-        logger.info("Please edit 'config.json' with your configuration settings")
-        print("Created skeleton config.json—please edit and rerun.")
-        sys.exit(0)
-    
-    # Load user config
+        logger.warning("'config.json' not found, creating skeleton")
+        _generate_skeleton()
+
     try:
-        logger.debug("Reading raw JSON from 'config.json'")
         with open("config.json", encoding="utf-8") as f:
-            orig_data = json.load(f)
+            raw = json.load(f)
     except Exception as e:
         logger.exception(f"Error reading 'config.json': {e}")
         sys.exit(1)
 
-    # Build a default config dict from Pydantic model_construct
-    default_dict = ConfigModel.model_construct().model_dump()
-    logger.debug("Constructed default configuration from Pydantic model")
-    logger.debug(f"Default configuration: {default_dict}")
-    merged_data = _deep_merge(default_dict, orig_data)
-    logger.debug("Merged user configuration with defaults")
-    logger.debug(f"Merged configuration: {merged_data}")
-    # Ensure merged_data is a valid JSON object
-    if not isinstance(merged_data, dict):
-        logger.error("Merged configuration is not a valid JSON object")
-        sys.exit(1)
-    logger.debug("Merged configuration is valid.")
-
-    # Backup and write defaults if any missing keys were added
-    if _defaults_applied(orig_data, merged_data):
-        logger.info("Default values applied to configuration, backing up original")
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        backup_path = f"config.json.bak_{timestamp}"
-        shutil.copy("config.json", backup_path)
-        logger.info(f"Backed up original config to {backup_path}")
-
-        json_text = json.dumps(merged_data, default=_json_encoder, indent=4)
-        with open("config.json", "w", encoding="utf-8") as fw:
-            fw.write(json_text)
-            logger.debug("Wrote merged configuration to 'config.json'") 
-
-    # Validate merged config
     try:
-        logger.debug("Validating merged configuration via Pydantic model")
-        config_model = ConfigModel.model_validate(merged_data)
-        version = getattr(config_model, "version", None)
-        logger.info(
-            "Configuration loaded successfully",
-            f": version={version}" if version else ""
-        )
+        config_model = ConfigModel.model_validate(raw)
+        logger.info(f"Configuration loaded successfully: version={config_model.version}")
     except ValidationError as ve:
-        logger.error("Configuration validation failed with the following errors:")
+        logger.error("Configuration validation failed:")
         for err in ve.errors():
-            loc = " -> ".join(str(l) for l in err.get('loc', []))  # noqa: E741
-            msg = err.get('msg', '')
-            logger.error(f"  • {loc}: {msg}")
+            loc = " -> ".join(str(l) for l in err.get("loc", []))  # noqa: E741
+            logger.error(f"  {loc}: {err.get('msg', '')}")
         sys.exit(1)
-    except Exception:
-        logger.exception("Unexpected error validating configuration")
-        sys.exit(1)
+
     return config_model
 
 
@@ -198,9 +126,11 @@ async def main():
     logger.debug(f"Configuration model: {live_config}")
     logger.info(f"Loaded configuration with version: {getattr(live_config, 'version', 'N/A')}")
 
-    # Wire up configuration and VMC for the web routes
+    # Wire up configuration, inventory, and VMC for the web routes
     routes.set_config_object(live_config)
+    inventory = InventoryManager(live_config.products)
     vmc = VMC(config=live_config)
+    vmc.set_inventory_manager(inventory)
     vmc.attach_to_loop(asyncio.get_running_loop())
     routes.set_vmc_instance(vmc)
     logger.info(f"VMC instance created and attached to event loop")

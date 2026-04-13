@@ -54,7 +54,6 @@ class TestInventoryEndpoints:
             "sku": "TEST-001",
             "name": "Test Ice",
             "price": "2.50",
-            "inventory_count": "10",
         })
         assert resp.status_code == 200
         assert "Test Ice" in resp.text

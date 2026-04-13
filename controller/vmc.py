@@ -8,6 +8,7 @@ from services.mqtt_messages import VMCStatus, PaymentEvent, ButtonPress, Dispens
 from config.config_model import ConfigModel
 from services.health_monitor import HealthMonitor
 from services.display_controller import DisplayController
+from services.inventory_manager import InventoryManager
 
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
 
@@ -93,6 +94,7 @@ class VMC:
         self._mqtt_client = None  # Set via set_mqtt_client()
         self._health_monitor: HealthMonitor | None = None  # Set via set_health_monitor()
         self._display_controller: DisplayController | None = None  # Set via set_display_controller()
+        self._inventory: InventoryManager | None = None  # Set via set_inventory_manager()
         self._start_time = time.monotonic()
         self._session_timeout_seconds = 180.0  # 3 minutes
 
@@ -143,6 +145,11 @@ class VMC:
         """Attach a DisplayController so FSM state changes update the customer display."""
         self._display_controller = controller
         logger.debug("VMC attached display controller.")
+
+    def set_inventory_manager(self, inventory: InventoryManager):
+        """Attach an InventoryManager for persistent stock tracking."""
+        self._inventory = inventory
+        logger.debug("VMC attached inventory manager.")
 
     def _update_display(self, target_state: str | None = None):
         """Update the customer-facing display based on the target FSM state.
@@ -424,12 +431,11 @@ class VMC:
         txn_log.info(f"PRODUCT SELECTED: '{self.selected_product.name}' (${self.selected_product.price:.2f}), button {product_index}")
         vend_log.info(f"PRODUCT SELECTED: '{self.selected_product.name}' (${self.selected_product.price:.2f}), button {product_index}")
 
-        if self.selected_product.track_inventory:
-            if self.selected_product.inventory_count <= 0:
-                logger.error(f"{self.selected_product.name} is sold out.")
-                txn_log.info(f"SOLD OUT: '{self.selected_product.name}', customer rejected")
-                self.send_customer_message(f"{self.selected_product.name} is sold out. Please select another product.")
-                return
+        if self._inventory and not self._inventory.is_available(self.selected_product.sku):
+            logger.error(f"{self.selected_product.name} is sold out.")
+            txn_log.info(f"SOLD OUT: '{self.selected_product.name}', customer rejected")
+            self.send_customer_message(f"{self.selected_product.name} is sold out. Please select another product.")
+            return
 
         if self.state == "idle":
             self.start_interaction()
@@ -530,9 +536,11 @@ class VMC:
         product_name = self.selected_product.name if self.selected_product else "Unknown"
         logger.info(f"{STATE_CHANGE_PREFIX} Finished dispensing: {product_name}")
         self.send_customer_message("Product dispensed. Enjoy your purchase!")
-        if self.selected_product and self.selected_product.track_inventory:
-            self.selected_product.inventory_count -= 1
-            logger.info(f"Inventory for {self.selected_product.name} updated: {self.selected_product.inventory_count} remaining.")
+        if self._inventory and self.selected_product:
+            sku = self.selected_product.sku
+            if self._inventory.is_tracked(sku):
+                self._inventory.decrement(sku)
+                logger.info(f"Inventory for {self.selected_product.name} updated: {self._inventory.get_count(sku)} remaining.")
         self.complete_transaction()
         self._refresh_ui()
 

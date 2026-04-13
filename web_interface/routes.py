@@ -59,9 +59,8 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         sku: str = Form(...),
         name: str = Form(...),
         price: float = Form(...),
-        inventory_count: int = Form(...)
     ):
-        success = add_product(config, sku, name, price, inventory_count)
+        success = add_product(config, sku, name, price)
 
         return templates.TemplateResponse("partials/inventory_table.html", {
             "request": request,
@@ -164,9 +163,8 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         sku: str,
         name: str = Form(...),
         price: float = Form(...),
-        inventory_count: int = Form(...)
     ):
-        update_product(config, sku, name, price, inventory_count)
+        update_product(config, sku, name, price)
 
         return templates.TemplateResponse("partials/inventory_table.html", {
             "request": request,
