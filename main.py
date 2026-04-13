@@ -168,39 +168,48 @@ async def main():
 
     live_config = load_config()
     logger.debug(f"Configuration model: {live_config}")
+    logger.info(f"Loaded configuration with version: {getattr(live_config, 'version', 'N/A')}")
 
     # Wire up configuration and VMC for the web routes
     routes.set_config_object(live_config)
     vmc = VMC(config=live_config)
     vmc.attach_to_loop(asyncio.get_running_loop())
     routes.set_vmc_instance(vmc)
+    logger.info(f"VMC instance created and attached to event loop")
 
     # Create health monitor and notifier
     health = HealthMonitor()
     notifier = Notifier(config=live_config)
     health.set_alert_callback(notifier.send)
     routes.set_health_monitor(health)
+    logger.info(f"Health monitor and notifier set up and linked")
 
     # Create MQTT client and wire it to the VMC
     mqtt = MQTTClient(config=live_config.mqtt, machine_id=live_config.machine_id)
     vmc.set_mqtt_client(mqtt)
     vmc.set_health_monitor(health)
+    logger.info(f"MQTT client created and linked to VMC and health monitor")
 
     # Create display controller and wire to MQTT + VMC
     display = DisplayController()
     display.set_mqtt(mqtt, asyncio.get_running_loop())
     vmc.set_display_controller(display)
+    logger.info(f"Display controller created and linked to MQTT client and VMC")
 
     logger.info(f"MQTT client configured for broker {live_config.mqtt.broker_host}:{live_config.mqtt.broker_port}")
 
     # Start uvicorn as an asyncio task (non-blocking)
-    uvicorn_config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
+    uvicorn_config = uvicorn.Config(app, host="0.0.0.0", port=26123, log_level="info")
     server = uvicorn.Server(uvicorn_config)
-    logger.info("Starting web interface on http://0.0.0.0:8000")
+    logger.info("Starting web interface on http://0.0.0.0:26123")
 
     # Run the web server, MQTT client, and health monitor concurrently
+    logger.info(f"Entering main event loop with web server, MQTT client, and health monitor")
     await asyncio.gather(server.serve(), mqtt.run(), health.run())
 
 
 if __name__ == "__main__":
+    logger.info(f"Starting main application")
     asyncio.run(main())
+    logger.info(f"Main application has exited")
+    
