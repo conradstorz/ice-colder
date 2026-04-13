@@ -1,27 +1,22 @@
 """Tests for web_interface routes using FastAPI TestClient."""
 import pytest
-from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 from config.config_model import ConfigModel
+from controller.vmc import VMC
+from web_interface.server import app
+from web_interface import routes
 
 
 @pytest.fixture
 def client():
-    """Create a TestClient with a real ConfigModel and mocked VMC."""
+    """Create a TestClient with a real ConfigModel and VMC."""
     cfg = ConfigModel()
+    vmc = VMC(config=cfg)
+    routes.set_config_object(cfg)
+    routes.set_vmc_instance(vmc)
 
-    with patch("controller.vmc.MDBInterface") as mock_mdb:
-        mock_mdb.return_value = MagicMock()
-        from controller.vmc import VMC
-        from web_interface.server import app
-        from web_interface import routes
-
-        routes.set_config_object(cfg)
-        vmc = VMC(config=cfg)
-        routes.set_vmc_instance(vmc)
-
-        with TestClient(app) as c:
-            yield c
+    with TestClient(app) as c:
+        yield c
 
         for t in vmc._pending_tasks:
             t.cancel()

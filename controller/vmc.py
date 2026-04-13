@@ -5,7 +5,6 @@ from transitions import Machine
 from loguru import logger
 from services.payment_gateway_manager import PaymentGatewayManager
 from services.mqtt_messages import VMCStatus, PaymentEvent, ButtonPress
-from hardware.mdb_interface import MDBInterface
 from config.config_model import ConfigModel
 from services.health_monitor import HealthMonitor
 
@@ -91,8 +90,7 @@ class VMC:
         self.payment_gateway_manager = PaymentGatewayManager(config=self.config_model.payment.model_dump())
         self.virtual_payment_index = 0
 
-        self.mdb_interface = MDBInterface()
-        logger.debug("Hardware and services initialized.")
+        logger.debug("VMC initialization complete.")
 
     def attach_to_loop(self, loop: asyncio.AbstractEventLoop):
         """Attach VMC to the running asyncio event loop. Must be called before scheduling."""
@@ -395,10 +393,3 @@ class VMC:
         self.complete_transaction()
         self._refresh_ui()
 
-    async def start_mdb_monitoring(self):
-        logger.debug("Starting MDB monitoring.")
-        await self.mdb_interface.read_messages(self.handle_mdb_message)
-
-    @logger.catch()
-    def handle_mdb_message(self, message):
-        logger.info(f"Received MDB message: {message}")

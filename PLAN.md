@@ -116,12 +116,14 @@ Make the machine report its own health.
 
 Remove code that assumes direct hardware access from the RPi.
 
-- [ ] Remove or gut `hardware/mdb_interface.py` (replaced by MQTT handler)
-- [ ] Remove or gut `hardware/ice_maker.py` (replaced by MQTT handler)
-- [ ] Remove `hardware/button_panel.py` (simulated — real buttons are on ESP32)
-- [ ] Remove `hardware/camera_monitor.py` (uses OpenCV directly — not the target architecture)
-- [ ] Evaluate what stays in `hardware/` vs moves to a new `mqtt_handlers/` package
-- [ ] Delete `hardware/tkinter_ui.py` (obsolete proof-of-concept)
+- [x] Remove or gut `hardware/mdb_interface.py` (replaced with MDB protocol reference stub)
+- [x] Remove `hardware/ice_maker.py` (replaced by MQTT sensor handlers)
+- [x] Remove `hardware/button_panel.py` (simulated — real buttons are on ESP32)
+- [x] Remove `hardware/camera_monitor.py` (used OpenCV directly — not the target architecture)
+- [x] Delete `hardware/tkinter_ui.py` (obsolete proof-of-concept)
+- [x] Remove `pyserial` dependency (MDB serial now lives on ESP32)
+- [x] Remove MDBInterface import/usage from VMC; update test fixtures
+- [x] Keep `hardware/dispensing_fsm.py` and `hardware/mdb_payment_fsm.py` (model payment/dispense flows)
 
 ### Phase 5: Video Display & Customer UI
 

@@ -1,21 +1,19 @@
 """Tests for controller/vmc.py — VMC finite state machine transitions."""
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 from config.config_model import ConfigModel
+from controller.vmc import VMC
 
 
 @pytest.fixture
 def vmc():
-    """Create a VMC instance with mocked hardware (no event loop attached)."""
-    with patch("controller.vmc.MDBInterface") as mock_mdb:
-        mock_mdb.return_value = MagicMock()
-        from controller.vmc import VMC
-        cfg = ConfigModel()
-        v = VMC(config=cfg)
-        yield v
-        # Cancel any pending async tasks
-        for t in v._pending_tasks:
-            t.cancel()
+    """Create a VMC instance (no event loop attached)."""
+    cfg = ConfigModel()
+    v = VMC(config=cfg)
+    yield v
+    # Cancel any pending async tasks
+    for t in v._pending_tasks:
+        t.cancel()
 
 
 class TestInitialState:
