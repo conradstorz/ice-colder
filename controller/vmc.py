@@ -4,7 +4,7 @@ import time
 from transitions import Machine
 from loguru import logger
 from services.payment_gateway_manager import PaymentGatewayManager
-from services.mqtt_messages import VMCStatus, PaymentEvent, ButtonPress
+from services.mqtt_messages import VMCStatus, PaymentEvent, ButtonPress, DispenseCommand
 from config.config_model import ConfigModel
 from services.health_monitor import HealthMonitor
 from services.display_controller import DisplayController
@@ -256,6 +256,12 @@ class VMC:
         self._update_display("dispensing")
         self._refresh_ui()
         self.send_customer_message("Processing your payment and dispensing your product...")
+        # Tell the vending ESP32 which slot to dispense
+        if self._mqtt_client and self._loop and self.selected_product:
+            slot = self.products.index(self.selected_product)
+            self._loop.create_task(
+                self._mqtt_client.publish("cmd/dispense", DispenseCommand(slot=slot))
+            )
 
     @logger.catch()
     def on_complete_transaction(self):
@@ -390,7 +396,9 @@ class VMC:
             logger.debug(f"Deducted price from escrow. New escrow: {self.credit_escrow:.2f}")
             self.dispense_product()
             self._refresh_ui()
-            self._schedule(1.0, self._finish_dispensing)
+            # Dispenser hardware will send "complete" via MQTT → _handle_mqtt_dispenser
+            # Schedule a timeout fallback in case the hardware never responds
+            self._schedule(60.0, self._finish_dispensing)
             self.last_insufficient_message = ""
         else:
             required = price - self.credit_escrow
