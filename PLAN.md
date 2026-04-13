@@ -136,6 +136,17 @@ Control the customer-facing screen.
 - [x] Wire display controller into main.py and VMC
 - [x] Write tests for display controller (16 tests, 108 total passing)
 
+### Phase 6: ESP32 Simulators
+
+Mock ESP32 processes for end-to-end testing without hardware.
+
+- [x] Create ESP32Simulator base class (MQTT connect, heartbeat, CLI args, reconnect)
+- [x] Create ice maker simulator (9 thermal sensors, compressor cycling)
+- [x] Create vending machine simulator (button presses, ice/water dispense sequences)
+- [x] Create MDB gateway simulator (reactive payment insertion, device status)
+- [x] Add __main__.py entry points for each simulator
+- [x] Write tests for all simulators (22 new tests, 136 total passing)
+
 ## Design Principles
 
 1. **If it can fail, it will.** Every external connection (MQTT, serial, network) must handle disconnection and reconnection gracefully.
