@@ -1,8 +1,10 @@
 # controller/vmc.py
 import asyncio
+import time
 from transitions import Machine
 from loguru import logger
 from services.payment_gateway_manager import PaymentGatewayManager
+from services.mqtt_messages import VMCStatus, PaymentEvent, ButtonPress
 from hardware.mdb_interface import MDBInterface
 from config.config_model import ConfigModel
 
@@ -75,6 +77,8 @@ class VMC:
 
         self._pending_tasks: list[asyncio.Task] = []
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._mqtt_client = None  # Set via set_mqtt_client()
+        self._start_time = time.monotonic()
 
         self.machine = Machine(model=self, states=VMC.states, initial=VMC.states[0], auto_transitions=False)
 
@@ -92,6 +96,61 @@ class VMC:
         """Attach VMC to the running asyncio event loop. Must be called before scheduling."""
         self._loop = loop
         logger.debug("VMC attached to asyncio event loop.")
+
+    def set_mqtt_client(self, client):
+        """Attach an MQTTClient instance for publishing status and receiving events."""
+        self._mqtt_client = client
+        # Register handlers for inbound ESP32 messages
+        client.register("payment/credit", self._handle_mqtt_payment)
+        client.register("hardware/buttons", self._handle_mqtt_button)
+        client.register("hardware/dispenser", self._handle_mqtt_dispenser)
+        client.register("sensors/temp/+", self._handle_mqtt_sensor)
+        client.register("heartbeat/+", self._handle_mqtt_heartbeat)
+        logger.debug("VMC registered MQTT handlers.")
+
+    def _publish_status(self):
+        """Publish current VMC status to MQTT (fire-and-forget)."""
+        if self._mqtt_client is None or self._loop is None:
+            return
+        status = VMCStatus(
+            state=self.state,
+            credit_escrow=self.credit_escrow,
+            selected_product=self.selected_product.name if self.selected_product else None,
+            uptime_seconds=int(time.monotonic() - self._start_time),
+        )
+        self._loop.create_task(self._mqtt_client.publish("status", status))
+
+    # --- MQTT inbound handlers ---
+
+    async def _handle_mqtt_payment(self, topic: str, data: dict):
+        """Handle payment credit from MDB ESP32."""
+        event = PaymentEvent.model_validate(data)
+        logger.info(f"MQTT payment received: ${event.amount:.2f} via {event.method}")
+        self.deposit_funds(event.amount, payment_method=event.method)
+
+    async def _handle_mqtt_button(self, topic: str, data: dict):
+        """Handle button press from ESP32."""
+        press = ButtonPress.model_validate(data)
+        logger.info(f"MQTT button press: button {press.button}")
+        self.select_product(press.button)
+
+    async def _handle_mqtt_dispenser(self, topic: str, data: dict):
+        """Handle dispenser status from ESP32."""
+        logger.info(f"MQTT dispenser event: {data}")
+        state = data.get("state", "")
+        if state == "complete" and self.state == "dispensing":
+            self._finish_dispensing()
+        elif state in ("jammed", "error"):
+            logger.error(f"Dispenser error: {state}")
+            self.error_occurred()
+
+    async def _handle_mqtt_sensor(self, topic: str, data: dict):
+        """Handle temperature/sensor reading from ESP32. Logged for now."""
+        logger.debug(f"MQTT sensor [{topic}]: {data}")
+
+    async def _handle_mqtt_heartbeat(self, topic: str, data: dict):
+        """Handle heartbeat from ESP32 subsystem. Logged for now."""
+        logger.debug(f"MQTT heartbeat [{topic}]: {data}")
 
     def _schedule(self, delay_seconds, callback):
         """Schedule a synchronous callback to run after delay_seconds on the event loop."""
@@ -153,18 +212,21 @@ class VMC:
     @logger.catch()
     def on_start_interaction(self):
         logger.info(f"{STATE_CHANGE_PREFIX} Transitioning to interacting_with_user for product: {self.selected_product}")
+        self._publish_status()
         self._refresh_ui()
         self.send_customer_message("Interaction started. Please insert funds or select a product.")
 
     @logger.catch()
     def on_dispense_product(self):
         logger.info(f"{STATE_CHANGE_PREFIX} Transitioning to dispensing for product: {self.selected_product}")
+        self._publish_status()
         self._refresh_ui()
         self.send_customer_message("Processing your payment and dispensing your product...")
 
     @logger.catch()
     def on_complete_transaction(self):
         logger.info(f"{STATE_CHANGE_PREFIX} Completing transaction. Remaining escrow: ${self.credit_escrow:.2f}")
+        self._publish_status()
         self._refresh_ui()
         if self.credit_escrow > 0:
             self.send_customer_message("Transaction complete. You have remaining credit. Please select another product if desired.")
@@ -176,11 +238,13 @@ class VMC:
         logger.info(f"{STATE_CHANGE_PREFIX} Resetting to idle state. Previous selection: {self.selected_product}")
         self.selected_product = None
         self.last_insufficient_message = ""
+        self._publish_status()
         self._refresh_ui()
 
     @logger.catch()
     def on_error(self):
         logger.error(f"{STATE_CHANGE_PREFIX} Error encountered for product: {self.selected_product}. Transitioning to error state.")
+        self._publish_status()
         self._refresh_ui()
         self.send_customer_message("An error has occurred. Please contact support.")
 
@@ -191,6 +255,7 @@ class VMC:
         self.credit_escrow += amount
         self.last_payment_method = payment_method
         logger.info(f"Deposited ${amount:.2f} via {payment_method}. New escrow: ${self.credit_escrow:.2f}")
+        self._publish_status()
         self._refresh_ui()
         self.send_customer_message(f"${amount:.2f} deposited. Current balance: ${self.credit_escrow:.2f}.")
 

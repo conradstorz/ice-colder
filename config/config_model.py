@@ -290,6 +290,17 @@ class CommunicationConfig(BaseModel):
     )
 
 
+class MQTTConfig(BaseModel):
+    """MQTT broker connection settings."""
+    broker_host: str = Field("localhost", description="MQTT broker hostname or IP")
+    broker_port: int = Field(1883, description="MQTT broker port")
+    username: Optional[str] = Field(None, description="MQTT username (optional)")
+    password: Optional[SecretStr] = Field(None, description="MQTT password (optional)")
+    client_id: str = Field("ice-colder-vmc", description="MQTT client identifier")
+    keepalive: int = Field(60, description="MQTT keepalive interval in seconds")
+    reconnect_interval: float = Field(5.0, description="Seconds to wait before reconnecting")
+
+
 class ConfigModel(BaseModel):
     """
     Top-level configuration for the Vending Machine Controller
@@ -297,6 +308,10 @@ class ConfigModel(BaseModel):
     version: str = Field(
         "1.0.0",
         description="Configuration schema version"
+    )
+    machine_id: str = Field(
+        "vmc-0000",
+        description="Unique machine identifier, used as MQTT topic prefix"
     )
     physical: PhysicalDetails = Field(
         default_factory=PhysicalDetails,
@@ -309,6 +324,10 @@ class ConfigModel(BaseModel):
     communication: CommunicationConfig = Field(
         default_factory=CommunicationConfig,
         description="Communication channels configuration"
+    )
+    mqtt: MQTTConfig = Field(
+        default_factory=MQTTConfig,
+        description="MQTT broker connection configuration"
     )
 
     class Config:

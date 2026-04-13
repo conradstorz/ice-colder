@@ -1,4 +1,5 @@
 from controller.vmc import VMC
+from services.mqtt_client import MQTTClient
 
 import asyncio
 import os
@@ -171,14 +172,18 @@ async def main():
     vmc.attach_to_loop(asyncio.get_running_loop())
     routes.set_vmc_instance(vmc)
 
+    # Create MQTT client and wire it to the VMC
+    mqtt = MQTTClient(config=live_config.mqtt, machine_id=live_config.machine_id)
+    vmc.set_mqtt_client(mqtt)
+    logger.info(f"MQTT client configured for broker {live_config.mqtt.broker_host}:{live_config.mqtt.broker_port}")
+
     # Start uvicorn as an asyncio task (non-blocking)
     uvicorn_config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
     server = uvicorn.Server(uvicorn_config)
     logger.info("Starting web interface on http://0.0.0.0:8000")
 
-    # Run the web server — this is the main long-running task.
-    # Future phases will add more tasks here (MQTT client, health monitor, etc.)
-    await server.serve()
+    # Run the web server and MQTT client concurrently
+    await asyncio.gather(server.serve(), mqtt.run())
 
 
 if __name__ == "__main__":

@@ -89,12 +89,16 @@ Convert the app from synchronous + threading to asyncio.
 
 Add MQTT as the communication backbone.
 
-- [ ] Add `aiomqtt` (async MQTT client) to dependencies
-- [ ] Create MQTT client service that connects to broker and manages subscriptions
-- [ ] Define message schemas for each topic (Pydantic models)
+- [x] Add `aiomqtt` (async MQTT client) to dependencies
+- [x] Create MQTT client service that connects to broker and manages subscriptions
+- [x] Define message schemas for each topic (Pydantic models)
+- [x] Add `MQTTConfig` and `machine_id` to `ConfigModel`
+- [x] Wire MQTT client into `main.py` (runs alongside uvicorn via `asyncio.gather`)
+- [x] Register VMC MQTT handlers for payment, buttons, dispenser, sensors, heartbeat
+- [x] Publish VMC status to `vmc/{id}/status` on every state change
+- [x] Write tests for MQTT schemas, topic matching, dispatch, and VMC wiring (32 tests)
 - [ ] Replace `hardware/mdb_interface.py` with an MQTT topic handler
 - [ ] Replace `hardware/ice_maker.py` with an MQTT topic handler
-- [ ] Publish VMC status to `vmc/{id}/status` on every state change
 - [ ] Add MQTT connection status to health monitoring
 
 ### Phase 3: Health Monitoring & Owner Alerts
