@@ -8,6 +8,7 @@ and automatic reconnection. Subclasses implement run_simulation().
 import argparse
 import asyncio
 import json
+import sys
 import time
 from abc import ABC, abstractmethod
 
@@ -104,3 +105,12 @@ class ESP32Simulator(ABC):
         parser.add_argument("--port", type=int, default=1883, help="MQTT broker port")
         parser.add_argument("--machine-id", default="vmc-0000", help="Machine ID")
         return parser.parse_args(argv)
+
+    @staticmethod
+    def entry_point(simulator_class, **kwargs):
+        """Standard entry point: parse args, set Windows event loop policy, and run."""
+        if sys.platform == "win32":
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        args = ESP32Simulator.parse_args()
+        sim = simulator_class(broker=args.broker, port=args.port, machine_id=args.machine_id, **kwargs)
+        asyncio.run(sim.run())

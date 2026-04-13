@@ -167,6 +167,4 @@ class MDBGatewaySimulator(ESP32Simulator):
 
 
 if __name__ == "__main__":
-    args = ESP32Simulator.parse_args()
-    sim = MDBGatewaySimulator(broker=args.broker, port=args.port, machine_id=args.machine_id)
-    asyncio.run(sim.run())
+    ESP32Simulator.entry_point(MDBGatewaySimulator)

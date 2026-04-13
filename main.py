@@ -209,6 +209,9 @@ async def main():
 
 
 if __name__ == "__main__":
+    # Windows requires SelectorEventLoop for aiomqtt (paho-mqtt socket callbacks)
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     logger.info(f"Starting main application")
     asyncio.run(main())
     logger.info(f"Main application has exited")
