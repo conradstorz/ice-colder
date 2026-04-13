@@ -1,5 +1,6 @@
 {
   "version": "1.0.0",
+  "machine_id": "vmc-0000",
   "physical": {
     "common_name": "YOUR_MACHINE_NAME",
     "serial_number": "0000-0000",
@@ -36,36 +37,18 @@
         "name": "Sample Product",
         "description": "A sample product",
         "image_url": "https://example.com/image.jpg",
-        "price": 12.5,
-        "track_inventory": false,
-        "inventory_count": 99
-      },
-      {
-        "sku": "SKU-FCB828",
-        "name": "new prod",
-        "description": "A sample product",
-        "image_url": "https://example.com/image.jpg",
-        "price": 1.12,
-        "track_inventory": false,
-        "inventory_count": 9
-      },
-      {
-        "sku": "SKU-046BA8",
-        "name": "Sample Product Copy",
-        "description": "A sample product",
-        "image_url": "https://example.com/image.jpg",
-        "price": 12.5,
+        "price": 1.0,
         "track_inventory": false,
         "inventory_count": 0
       },
       {
-        "sku": "SKU-63FC28",
-        "name": "test2",
+        "sku": "TEST-001",
+        "name": "Test Ice",
         "description": "A sample product",
         "image_url": "https://example.com/image.jpg",
-        "price": 0.0,
+        "price": 2.5,
         "track_inventory": false,
-        "inventory_count": 0
+        "inventory_count": 10
       }
     ]
   },
@@ -98,5 +81,14 @@
       "from_number": "+1234567890"
     },
     "snapchat_gateway": null
+  },
+  "mqtt": {
+    "broker_host": "localhost",
+    "broker_port": 1883,
+    "username": null,
+    "password": null,
+    "client_id": "ice-colder-vmc",
+    "keepalive": 60,
+    "reconnect_interval": 5.0
   }
 }
