@@ -129,9 +129,12 @@ Remove code that assumes direct hardware access from the RPi.
 
 Control the customer-facing screen.
 
-- [ ] Design video/display controller service
-- [ ] Implement advertising mode (idle) and transaction mode (during sale)
-- [ ] Accept display commands from FSM state changes
+- [x] Design video/display controller service
+- [x] Implement advertising mode (idle) and transaction mode (during sale)
+- [x] Accept display commands from FSM state changes
+- [x] Publish DisplayCommand to MQTT on every mode change (cmd/display topic)
+- [x] Wire display controller into main.py and VMC
+- [x] Write tests for display controller (16 tests, 108 total passing)
 
 ## Design Principles
 

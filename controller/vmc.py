@@ -7,6 +7,7 @@ from services.payment_gateway_manager import PaymentGatewayManager
 from services.mqtt_messages import VMCStatus, PaymentEvent, ButtonPress
 from config.config_model import ConfigModel
 from services.health_monitor import HealthMonitor
+from services.display_controller import DisplayController
 
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
 
@@ -79,6 +80,7 @@ class VMC:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._mqtt_client = None  # Set via set_mqtt_client()
         self._health_monitor: HealthMonitor | None = None  # Set via set_health_monitor()
+        self._display_controller: DisplayController | None = None  # Set via set_display_controller()
         self._start_time = time.monotonic()
 
         self.machine = Machine(model=self, states=VMC.states, initial=VMC.states[0], auto_transitions=False)
@@ -112,6 +114,21 @@ class VMC:
         """Attach a HealthMonitor so MQTT events feed into health tracking."""
         self._health_monitor = monitor
         logger.debug("VMC attached health monitor.")
+
+    def set_display_controller(self, controller: DisplayController):
+        """Attach a DisplayController so FSM state changes update the customer display."""
+        self._display_controller = controller
+        logger.debug("VMC attached display controller.")
+
+    def _update_display(self, target_state: str | None = None):
+        """Update the customer-facing display based on the target FSM state.
+
+        Pass *target_state* explicitly from ``before`` callbacks (the
+        ``transitions`` library runs ``before`` hooks while ``self.state``
+        still holds the *source* state).
+        """
+        if self._display_controller:
+            self._display_controller.update_for_state(target_state or self.state)
 
     def _publish_status(self):
         """Publish current VMC status to MQTT (fire-and-forget)."""
@@ -228,6 +245,7 @@ class VMC:
     def on_start_interaction(self):
         logger.info(f"{STATE_CHANGE_PREFIX} Transitioning to interacting_with_user for product: {self.selected_product}")
         self._publish_status()
+        self._update_display("interacting_with_user")
         self._refresh_ui()
         self.send_customer_message("Interaction started. Please insert funds or select a product.")
 
@@ -235,13 +253,16 @@ class VMC:
     def on_dispense_product(self):
         logger.info(f"{STATE_CHANGE_PREFIX} Transitioning to dispensing for product: {self.selected_product}")
         self._publish_status()
+        self._update_display("dispensing")
         self._refresh_ui()
         self.send_customer_message("Processing your payment and dispensing your product...")
 
     @logger.catch()
     def on_complete_transaction(self):
         logger.info(f"{STATE_CHANGE_PREFIX} Completing transaction. Remaining escrow: ${self.credit_escrow:.2f}")
+        dest = "interacting_with_user" if self.credit_escrow > 0 else "idle"
         self._publish_status()
+        self._update_display(dest)
         self._refresh_ui()
         if self.credit_escrow > 0:
             self.send_customer_message("Transaction complete. You have remaining credit. Please select another product if desired.")
@@ -254,12 +275,14 @@ class VMC:
         self.selected_product = None
         self.last_insufficient_message = ""
         self._publish_status()
+        self._update_display("idle")
         self._refresh_ui()
 
     @logger.catch()
     def on_error(self):
         logger.error(f"{STATE_CHANGE_PREFIX} Error encountered for product: {self.selected_product}. Transitioning to error state.")
         self._publish_status()
+        self._update_display("error")
         self._refresh_ui()
         self.send_customer_message("An error has occurred. Please contact support.")
 

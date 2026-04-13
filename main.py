@@ -2,6 +2,7 @@ from controller.vmc import VMC
 from services.mqtt_client import MQTTClient
 from services.health_monitor import HealthMonitor
 from services.notifier import Notifier
+from services.display_controller import DisplayController
 
 import asyncio
 import os
@@ -184,6 +185,12 @@ async def main():
     mqtt = MQTTClient(config=live_config.mqtt, machine_id=live_config.machine_id)
     vmc.set_mqtt_client(mqtt)
     vmc.set_health_monitor(health)
+
+    # Create display controller and wire to MQTT + VMC
+    display = DisplayController()
+    display.set_mqtt(mqtt, asyncio.get_running_loop())
+    vmc.set_display_controller(display)
+
     logger.info(f"MQTT client configured for broker {live_config.mqtt.broker_host}:{live_config.mqtt.broker_port}")
 
     # Start uvicorn as an asyncio task (non-blocking)
