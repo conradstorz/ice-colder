@@ -1,12 +1,12 @@
 {
   "version": "1.0.0",
-  "machine_id": "vmc-0001",
+  "machine_id": "vmc-0000",
   "physical": {
-    "common_name": "Cold as ICE VMC",
-    "serial_number": "0000-0001",
+    "common_name": "YOUR_MACHINE_NAME",
+    "serial_number": "0000-0000",
     "location": {
       "address": "123 Main St",
-      "notes": "placeholder Location notes"
+      "notes": "Location notes"
     },
     "people": {
       "machine_owner": {
@@ -14,7 +14,7 @@
         "email": "user@example.com",
         "phone": "123-456-7890",
         "address": "123 Main St",
-        "notes": "placeholder Notes about machine owner",
+        "notes": "Notes about person",
         "preferred_comm": [
           "email"
         ]
@@ -24,7 +24,7 @@
         "email": "user@example.com",
         "phone": "123-456-7890",
         "address": "123 Main St",
-        "notes": "placeholder Notes about location owner person",
+        "notes": "Notes about person",
         "preferred_comm": [
           "email"
         ]
@@ -33,27 +33,27 @@
     },
     "products": [
       {
-        "sku": "Ten Pounds Ice",
+        "sku": "SAMPLE-ICE",
         "name": "Bagged Ice",
-        "description": "Freshly loaded bag fo ice",
+        "description": "10 lb bag of ice",
         "image_url": "https://example.com/image.jpg",
         "price": 3.00,
         "track_inventory": false,
         "inventory_count": 0
       },
       {
-        "sku": "One Gallon Water",
+        "sku": "SAMPLE-WATER-SM",
         "name": "Small Water",
-        "description": "Filtered and Purified drinking water",
+        "description": "1 gallon filtered water",
         "image_url": "https://example.com/image.jpg",
         "price": 0.50,
         "track_inventory": false,
         "inventory_count": 0
       },
       {
-        "sku": "Five Gallons Water",
+        "sku": "SAMPLE-WATER-LG",
         "name": "Large Water",
-        "description": "Filtered and Purified drinking water",
+        "description": "5 gallon filtered water",
         "image_url": "https://example.com/image.jpg",
         "price": 2.00,
         "track_inventory": false,
@@ -63,12 +63,12 @@
   },
   "payment": {
     "stripe": {
-      "api_key": "**********",
-      "webhook_secret": "**********"
+      "api_key": "sk_test_REPLACE_ME",
+      "webhook_secret": "whsec_REPLACE_ME"
     },
     "paypal": {
-      "client_id": "**********",
-      "client_secret": "**********",
+      "client_id": "REPLACE_ME",
+      "client_secret": "REPLACE_ME",
       "sandbox": true
     },
     "mdb": {
@@ -81,12 +81,12 @@
       "smtp_server": "smtp.example.com",
       "smtp_port": 587,
       "username": "user@example.com",
-      "password": "**********",
+      "password": "REPLACE_ME",
       "default_from": "user@example.com"
     },
     "sms_gateway": {
-      "account_sid": "**********",
-      "auth_token": "**********",
+      "account_sid": "REPLACE_ME",
+      "auth_token": "REPLACE_ME",
       "from_number": "+1234567890"
     },
     "snapchat_gateway": null
