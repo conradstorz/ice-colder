@@ -75,6 +75,46 @@ class IceMakerSimulator(ESP32Simulator):
         self._ice_drop_elapsed = 0.0
         self._pending_events: list[IceMakerEvent] = []
 
+    def ha_discovery_entities(self) -> list[dict]:
+        """Return HA discovery definitions for ice maker sensors."""
+        entities = []
+        # 9 temperature sensors — one per thermal sensor
+        for sensor in self.sensors:
+            entities.append({
+                "component": "sensor",
+                "object_id": f"{sensor.name}_temp",
+                "name": f"Ice Maker {sensor.name.replace('_', ' ').title()} Temperature",
+                "state_topic_suffix": f"sensors/temp/{sensor.name}",
+                "value_template": "{{ value_json.value }}",
+                "device_class": "temperature",
+                "unit_of_measurement": "\u00b0C",
+                "state_class": "measurement",
+                "expire_after": 30,
+            })
+        # Compressor binary sensor
+        entities.append({
+            "component": "binary_sensor",
+            "object_id": "compressor",
+            "name": "Ice Maker Compressor",
+            "state_topic_suffix": "ice_maker/event",
+            "value_template": "{{ 'ON' if value_json.event == 'power_on' else 'OFF' }}",
+            "device_class": "running",
+            "payload_on": "ON",
+            "payload_off": "OFF",
+        })
+        # Uptime sensor from heartbeat
+        entities.append({
+            "component": "sensor",
+            "object_id": "uptime",
+            "name": "Ice Maker Uptime",
+            "state_topic_suffix": "heartbeat/ice_maker",
+            "value_template": "{{ value_json.uptime_seconds }}",
+            "device_class": "duration",
+            "unit_of_measurement": "s",
+            "state_class": "total_increasing",
+        })
+        return entities
+
     def tick(self, dt: float):
         """Advance the simulation by dt seconds."""
         self._cycle_elapsed += dt
