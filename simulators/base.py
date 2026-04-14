@@ -115,6 +115,54 @@ class ESP32Simulator(ABC):
                 return False
         return len(pat_parts) == len(top_parts)
 
+    def ha_discovery_entities(self) -> list[dict]:
+        """Override in subclasses to return HA discovery entity definitions.
+
+        Each dict should have keys: component, object_id, name, state_topic_suffix,
+        value_template. Optional: device_class, unit_of_measurement, state_class,
+        payload_on, payload_off, expire_after.
+        """
+        return []
+
+    def _build_ha_device(self) -> dict:
+        """Build the HA device block shared by all entities from this simulator."""
+        subsystem_display = self.subsystem_name.replace("_", " ").title()
+        machine_name = self.config.physical.common_name
+        return {
+            "identifiers": [f"{self.machine_id}_{self.subsystem_name}"],
+            "name": f"{machine_name} {subsystem_display}",
+            "manufacturer": "ice-colder",
+            "model": f"ESP32 {self.subsystem_name} simulator",
+            "via_device": self.machine_id,
+        }
+
+    async def _publish_ha_discovery(self, client: aiomqtt.Client):
+        """Publish HA MQTT auto-discovery config for all entities."""
+        entities = self.ha_discovery_entities()
+        if not entities:
+            return
+        device = self._build_ha_device()
+        node_id = f"{self.machine_id}_{self.subsystem_name}"
+        for entity in entities:
+            component = entity["component"]
+            object_id = entity["object_id"]
+            topic = f"homeassistant/{component}/{node_id}/{object_id}/config"
+            payload = {
+                "name": entity["name"],
+                "unique_id": f"{node_id}_{object_id}",
+                "state_topic": f"{self.topic_prefix}/{entity['state_topic_suffix']}",
+                "value_template": entity["value_template"],
+                "device": device,
+            }
+            for optional_key in (
+                "device_class", "unit_of_measurement", "state_class",
+                "payload_on", "payload_off", "expire_after",
+            ):
+                if optional_key in entity:
+                    payload[optional_key] = entity[optional_key]
+            await client.publish(topic, json.dumps(payload), retain=True)
+            logger.debug(f"[{self.subsystem_name}] HA discovery: {topic}")
+
     @abstractmethod
     async def run_simulation(self, client: aiomqtt.Client) -> None:
         """Subclass implements device-specific simulation here."""
@@ -132,6 +180,7 @@ class ESP32Simulator(ABC):
                         f"[{self.subsystem_name}] Connected to {self.broker}:{self.port}"
                     )
                     self._subscriptions.clear()
+                    await self._publish_ha_discovery(client)
                     async with asyncio.TaskGroup() as tg:
                         tg.create_task(self._heartbeat_loop(client))
                         tg.create_task(self.run_simulation(client))
