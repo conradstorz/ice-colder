@@ -145,3 +145,19 @@ class TestHADiscovery:
         entities = sim.ha_discovery_entities()
         ids = [e["object_id"] for e in entities]
         assert len(ids) == len(set(ids))
+
+    @pytest.mark.asyncio
+    async def test_discovery_publishes_all_entities(self):
+        """Smoke test: the base class publishes all 11 ice maker entities."""
+        from unittest.mock import AsyncMock
+        sim = IceMakerSimulator(machine_id="vmc-test")
+        client = AsyncMock()
+        await sim._publish_ha_discovery(client)
+        assert client.publish.call_count == 11
+        topics = [call.args[0] for call in client.publish.call_args_list]
+        # All should be under homeassistant/
+        assert all(t.startswith("homeassistant/") for t in topics)
+        # All should contain the machine_id
+        assert all("vmc-test_ice_maker" in t for t in topics)
+        # All should be retained
+        assert all(call.kwargs.get("retain") is True for call in client.publish.call_args_list)
