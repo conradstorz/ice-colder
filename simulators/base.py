@@ -90,7 +90,12 @@ class ESP32Simulator(ABC):
         return queue
 
     async def _message_dispatcher(self, client: aiomqtt.Client):
-        """Single reader for ``client.messages``; routes to subscription queues."""
+        """Single reader for ``client.messages``; routes to subscription queues.
+
+        Subscribes to a keepalive topic so aiomqtt's message loop stays active
+        even when the simulator has no application-level subscriptions.
+        """
+        await client.subscribe(f"{self.topic_prefix}/noop")
         async for message in client.messages:
             topic_str = str(message.topic)
             try:
@@ -189,6 +194,9 @@ class ESP32Simulator(ABC):
                 logger.error(f"[{self.subsystem_name}] MQTT error: {e}")
             except Exception as e:
                 logger.error(f"[{self.subsystem_name}] Unexpected error: {e}")
+                if hasattr(e, 'exceptions'):
+                    for sub_exc in e.exceptions:
+                        logger.error(f"[{self.subsystem_name}]   Sub-exception: {sub_exc!r}")
 
             logger.info(f"[{self.subsystem_name}] Reconnecting in 5s...")
             await asyncio.sleep(5)
