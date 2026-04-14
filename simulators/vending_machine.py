@@ -18,8 +18,14 @@ from simulators.base import ESP32Simulator
 from services.mqtt_messages import ButtonPress, DispenserStatus
 
 
-# Slot-to-product-type mapping
-SLOT_TYPES = {0: "ice", 1: "ice", 2: "water"}
+# Keywords that identify a product as water (case-insensitive check on name/sku)
+_WATER_KEYWORDS = {"water", "gallon"}
+
+
+def _classify_product(name: str, sku: str) -> str:
+    """Classify a product as 'ice' or 'water' based on its name/sku."""
+    lower = f"{name} {sku}".lower()
+    return "water" if any(kw in lower for kw in _WATER_KEYWORDS) else "ice"
 
 
 class VendingMachineSimulator(ESP32Simulator):
@@ -31,11 +37,16 @@ class VendingMachineSimulator(ESP32Simulator):
 
     def __init__(self, **kwargs):
         super().__init__(subsystem_name="vending", **kwargs)
-        self.num_buttons = 3
+        products = self.config.products
+        self.num_buttons = len(products)
+        self._slot_types = {
+            i: _classify_product(p.name, p.sku) for i, p in enumerate(products)
+        }
         self._dispense_command: asyncio.Queue = asyncio.Queue()
+        logger.info(f"[vending] {self.num_buttons} products: {self._slot_types}")
 
     def slot_type(self, slot: int) -> str:
-        return SLOT_TYPES.get(slot, "ice")
+        return self._slot_types.get(slot, "ice")
 
     def _pick_button(self) -> int:
         return random.randint(0, self.num_buttons - 1)

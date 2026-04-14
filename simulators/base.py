@@ -11,10 +11,13 @@ import json
 import sys
 import time
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 import aiomqtt
 from loguru import logger
 from pydantic import BaseModel
+
+from config.config_model import ConfigModel
 
 
 class ESP32Simulator(ABC):
@@ -33,12 +36,14 @@ class ESP32Simulator(ABC):
         subsystem_name: str,
         broker: str = "localhost",
         port: int = 1883,
-        machine_id: str = "vmc-0000",
+        machine_id: str | None = None,
+        config: ConfigModel | None = None,
     ):
         self.subsystem_name = subsystem_name
         self.broker = broker
         self.port = port
-        self.machine_id = machine_id
+        self.config = config or ConfigModel()
+        self.machine_id = machine_id or self.config.machine_id
         self._start_time = time.monotonic()
         self._subscriptions: list[tuple[str, asyncio.Queue]] = []
 
@@ -140,19 +145,39 @@ class ESP32Simulator(ABC):
             await asyncio.sleep(5)
 
     @staticmethod
+    def load_config(path: str = "config.json") -> ConfigModel:
+        """Load ConfigModel from JSON file, falling back to defaults."""
+        config_path = Path(path)
+        if config_path.exists():
+            raw = json.loads(config_path.read_text(encoding="utf-8"))
+            config = ConfigModel.model_validate(raw)
+            logger.info(f"Simulator loaded config from {path}: machine_id={config.machine_id}")
+            return config
+        logger.warning(f"{path} not found, using default config")
+        return ConfigModel()
+
+    @staticmethod
     def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         """Parse CLI arguments common to all simulators."""
         parser = argparse.ArgumentParser(description="ESP32 Simulator")
-        parser.add_argument("--broker", default="localhost", help="MQTT broker host")
-        parser.add_argument("--port", type=int, default=1883, help="MQTT broker port")
-        parser.add_argument("--machine-id", default="vmc-0000", help="Machine ID")
+        parser.add_argument("--config", default="config.json", help="Path to config.json")
+        parser.add_argument("--broker", default=None, help="MQTT broker host (overrides config)")
+        parser.add_argument("--port", type=int, default=None, help="MQTT broker port (overrides config)")
+        parser.add_argument("--machine-id", default=None, help="Machine ID (overrides config)")
         return parser.parse_args(argv)
 
     @staticmethod
     def entry_point(simulator_class, **kwargs):
-        """Standard entry point: parse args, set Windows event loop policy, and run."""
+        """Standard entry point: parse args, load config, set Windows event loop policy, and run."""
         if sys.platform == "win32":
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         args = ESP32Simulator.parse_args()
-        sim = simulator_class(broker=args.broker, port=args.port, machine_id=args.machine_id, **kwargs)
+        config = ESP32Simulator.load_config(args.config)
+        sim = simulator_class(
+            broker=args.broker or config.mqtt.broker_host,
+            port=args.port or config.mqtt.broker_port,
+            machine_id=args.machine_id,
+            config=config,
+            **kwargs,
+        )
         asyncio.run(sim.run())

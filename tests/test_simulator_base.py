@@ -50,9 +50,10 @@ class TestHeartbeat:
 class TestCLIParsing:
     def test_parse_defaults(self):
         args = ESP32Simulator.parse_args([])
-        assert args.broker == "localhost"
-        assert args.port == 1883
-        assert args.machine_id == "vmc-0000"
+        assert args.config == "config.json"
+        assert args.broker is None  # falls back to config
+        assert args.port is None
+        assert args.machine_id is None
 
     def test_parse_custom(self):
         args = ESP32Simulator.parse_args(["--broker", "10.0.0.1", "--port", "1884", "--machine-id", "vmc-0042"])

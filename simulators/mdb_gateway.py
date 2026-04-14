@@ -62,6 +62,8 @@ class MDBGatewaySimulator(ESP32Simulator):
             {"name": "bill_validator", "state": "ready"},
             {"name": "card_reader", "state": "ready"},
         ]
+        # Build a lookup of product name -> price from config
+        self._product_prices = {p.name: p.price for p in self.config.products}
         self._vmc_status: asyncio.Queue = asyncio.Queue()
 
     async def _publish_device_status(self, client: aiomqtt.Client):
@@ -98,7 +100,8 @@ class MDBGatewaySimulator(ESP32Simulator):
             if not selected:
                 continue
 
-            logger.info(f"[mdb] Customer interaction detected, product: {selected}")
+            price = self._product_prices.get(selected, 3.00)
+            logger.info(f"[mdb] Customer interaction detected, product: {selected} (${price:.2f})")
 
             # Simulate customer reaching for wallet
             await asyncio.sleep(random.uniform(2.0, 5.0))
@@ -107,7 +110,7 @@ class MDBGatewaySimulator(ESP32Simulator):
             logger.info(f"[mdb] Payment method: {method}")
 
             if method in ("card", "nfc"):
-                await self._do_card_payment(client, method)
+                await self._do_card_payment(client, method, price=price)
             else:
                 await self._do_cash_payment(client, method)
 
@@ -142,11 +145,9 @@ class MDBGatewaySimulator(ESP32Simulator):
 
         logger.info("[mdb] Max cash attempts reached")
 
-    async def _do_card_payment(self, client: aiomqtt.Client, method: str):
+    async def _do_card_payment(self, client: aiomqtt.Client, method: str, price: float = 3.00):
         """Insert a card/NFC payment — single transaction."""
-        # Use a reasonable default price estimate since we can't see the exact price
-        # The VMC will handle insufficient funds
-        amount = self.strategy.card_amount(3.00)
+        amount = self.strategy.card_amount(price)
         await self.publish(
             client, "payment/credit",
             PaymentEvent(amount=amount, method=method),
