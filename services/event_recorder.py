@@ -76,17 +76,17 @@ class EventRecorder:
         logger.debug(f"EventRecorder: {event_type} value={value}")
 
     def _compute_window(self, start_ts: float, end_ts: float) -> dict:
-        """Compute aggregates for events in [start_ts, end_ts]."""
+        """Compute aggregates for events in [start_ts, end_ts)."""
         with sqlite3.connect(self._db_path) as conn:
             def count(etype):
                 return conn.execute(
-                    "SELECT COUNT(*) FROM events WHERE event_type=? AND timestamp>=? AND timestamp<=?",
+                    "SELECT COUNT(*) FROM events WHERE event_type=? AND timestamp>=? AND timestamp<?",
                     (etype, start_ts, end_ts),
                 ).fetchone()[0]
 
             def total(etype):
                 return conn.execute(
-                    "SELECT COALESCE(SUM(value), 0.0) FROM events WHERE event_type=? AND timestamp>=? AND timestamp<=?",
+                    "SELECT COALESCE(SUM(value), 0.0) FROM events WHERE event_type=? AND timestamp>=? AND timestamp<?",
                     (etype, start_ts, end_ts),
                 ).fetchone()[0]
 
@@ -109,7 +109,9 @@ class EventRecorder:
     def get_summary(self, period_hours: int) -> dict:
         """Return aggregate metrics for the last period_hours."""
         now = time.time()
-        return self._compute_window(now - period_hours * 3600, now)
+        # Add 1 ms so events inserted at exactly `now` are included by the
+        # half-open interval [start, end) used in _compute_window.
+        return self._compute_window(now - period_hours * 3600, now + 0.001)
 
     def register_handlers(self, mqtt_client):
         pass  # implemented in Task 2
