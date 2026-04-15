@@ -1,0 +1,101 @@
+{# web_interface/templates/partials/activity_fragment.html #}
+<div class="bg-gray-800 p-4 rounded space-y-3">
+  <h3 class="text-lg font-semibold">Machine Activity</h3>
+
+  <div class="grid grid-cols-3 gap-4 text-sm">
+
+    {% for hours, label in [(24, "Last 24 Hours"), (168, "Last 7 Days"), (720, "Last 30 Days")] %}
+    {% set s = summaries[hours] %}
+    {% set a = averages[hours] %}
+    <div class="bg-gray-700 p-3 rounded space-y-2">
+      <div class="font-semibold text-gray-300 border-b border-gray-600 pb-1">{{ label }}</div>
+
+      <div class="flex justify-between">
+        <span class="text-gray-400">Uptime</span>
+        <span>
+          {{ s.uptime_pct }}%
+          {% if a.uptime_pct is not none %}
+            <span class="text-gray-500 text-xs">avg {{ a.uptime_pct }}%</span>
+          {% else %}
+            <span class="text-gray-600 text-xs">avg —</span>
+          {% endif %}
+        </span>
+      </div>
+
+      <div class="flex justify-between">
+        <span class="text-gray-400">Money In</span>
+        <span>
+          ${{ "%.2f"|format(s.money_in) }}
+          {% if a.money_in is not none %}
+            <span class="text-gray-500 text-xs">avg ${{ "%.2f"|format(a.money_in) }}</span>
+          {% else %}
+            <span class="text-gray-600 text-xs">avg —</span>
+          {% endif %}
+        </span>
+      </div>
+
+      <div class="flex justify-between">
+        <span class="text-gray-400">Products Out</span>
+        <span>
+          {{ s.products_out }}
+          {% if a.products_out is not none %}
+            <span class="text-gray-500 text-xs">avg {{ a.products_out }}</span>
+          {% else %}
+            <span class="text-gray-600 text-xs">avg —</span>
+          {% endif %}
+        </span>
+      </div>
+
+      <div class="flex justify-between">
+        <span class="text-gray-400">Ice Cycles</span>
+        <span>
+          {{ s.ice_cycles }}
+          {% if a.ice_cycles is not none %}
+            <span class="text-gray-500 text-xs">avg {{ a.ice_cycles }}</span>
+          {% else %}
+            <span class="text-gray-600 text-xs">avg —</span>
+          {% endif %}
+        </span>
+      </div>
+
+      <div class="flex justify-between">
+        <span class="text-gray-400">Errors</span>
+        <span class="{{ 'text-red-400' if s.errors > 0 else '' }}">
+          {{ s.errors }}
+          {% if a.errors is not none %}
+            <span class="text-gray-500 text-xs">avg {{ a.errors }}</span>
+          {% else %}
+            <span class="text-gray-600 text-xs">avg —</span>
+          {% endif %}
+        </span>
+      </div>
+
+      <div class="flex justify-between">
+        <span class="text-gray-400">Service Door</span>
+        <span>
+          {{ s.service_door_opens }}
+          {% if a.service_door_opens is not none %}
+            <span class="text-gray-500 text-xs">avg {{ a.service_door_opens }}</span>
+          {% else %}
+            <span class="text-gray-600 text-xs">avg —</span>
+          {% endif %}
+        </span>
+      </div>
+
+      <div class="flex justify-between">
+        <span class="text-gray-400">Temp Issues</span>
+        <span class="{{ 'text-yellow-400' if s.temp_exceedances > 0 else '' }}">
+          {{ s.temp_exceedances }}
+          {% if a.temp_exceedances is not none %}
+            <span class="text-gray-500 text-xs">avg {{ a.temp_exceedances }}</span>
+          {% else %}
+            <span class="text-gray-600 text-xs">avg —</span>
+          {% endif %}
+        </span>
+      </div>
+
+    </div>
+    {% endfor %}
+
+  </div>
+</div>

@@ -22,6 +22,14 @@
             <div>Loading status...</div>
         </div>
 
+        <div id="activity-panel"
+             class="mt-4"
+             hx-get="/activity"
+             hx-trigger="load, every 60s"
+             hx-swap="innerHTML">
+            <div class="bg-gray-800 p-4 rounded text-gray-500 text-sm">Loading activity...</div>
+        </div>
+
         <div class="mt-6 space-x-2">
             <button 
             hx-post="/action/restart" 
