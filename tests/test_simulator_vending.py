@@ -99,3 +99,20 @@ class TestButtonSelection:
         buttons = {sim._pick_button() for _ in range(100)}
         assert buttons.issubset({0, 1, 2})
         assert len(buttons) > 1  # should hit at least 2 of 3
+
+
+class TestHADiscovery:
+    def test_returns_1_entity(self):
+        sim = _make_sim()
+        entities = sim.ha_discovery_entities()
+        assert len(entities) == 1
+
+    def test_uptime_sensor(self):
+        sim = _make_sim()
+        entities = sim.ha_discovery_entities()
+        uptime = entities[0]
+        assert uptime["component"] == "sensor"
+        assert uptime["object_id"] == "uptime"
+        assert uptime["name"] == "Vending Machine Uptime"
+        assert uptime["device_class"] == "duration"
+        assert uptime["state_topic_suffix"] == "heartbeat/vending"

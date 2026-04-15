@@ -45,6 +45,21 @@ class VendingMachineSimulator(ESP32Simulator):
         self._dispense_command: asyncio.Queue = asyncio.Queue()
         logger.info(f"[vending] {self.num_buttons} products: {self._slot_types}")
 
+    def ha_discovery_entities(self) -> list[dict]:
+        """Return HA discovery definitions for vending machine."""
+        return [
+            {
+                "component": "sensor",
+                "object_id": "uptime",
+                "name": "Vending Machine Uptime",
+                "state_topic_suffix": "heartbeat/vending",
+                "value_template": "{{ value_json.uptime_seconds }}",
+                "device_class": "duration",
+                "unit_of_measurement": "s",
+                "state_class": "total_increasing",
+            },
+        ]
+
     def slot_type(self, slot: int) -> str:
         return self._slot_types.get(slot, "ice")
 

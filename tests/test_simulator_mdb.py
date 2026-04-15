@@ -41,3 +41,42 @@ class TestPaymentStrategy:
         # At least some should differ from 3.00
         unique = set(round(a, 2) for a in amounts)
         assert len(unique) > 1
+
+
+class TestHADiscovery:
+    def test_returns_4_entities(self):
+        sim = MDBGatewaySimulator()
+        entities = sim.ha_discovery_entities()
+        assert len(entities) == 4
+
+    def test_three_device_binary_sensors(self):
+        sim = MDBGatewaySimulator()
+        entities = sim.ha_discovery_entities()
+        binary = [e for e in entities if e["component"] == "binary_sensor"]
+        assert len(binary) == 3
+        names = {e["object_id"] for e in binary}
+        assert names == {"coin_acceptor", "bill_validator", "card_reader"}
+
+    def test_device_sensor_fields(self):
+        sim = MDBGatewaySimulator()
+        entities = sim.ha_discovery_entities()
+        coin = next(e for e in entities if e["object_id"] == "coin_acceptor")
+        assert coin["name"] == "MDB Coin Acceptor"
+        assert coin["device_class"] == "running"
+        assert coin["state_topic_suffix"] == "payment/status"
+        assert coin["payload_on"] == "ON"
+
+    def test_uptime_sensor(self):
+        sim = MDBGatewaySimulator()
+        entities = sim.ha_discovery_entities()
+        uptime = next(e for e in entities if e["object_id"] == "uptime")
+        assert uptime["component"] == "sensor"
+        assert uptime["name"] == "MDB Gateway Uptime"
+        assert uptime["device_class"] == "duration"
+        assert uptime["state_topic_suffix"] == "heartbeat/mdb"
+
+    def test_all_object_ids_unique(self):
+        sim = MDBGatewaySimulator()
+        entities = sim.ha_discovery_entities()
+        ids = [e["object_id"] for e in entities]
+        assert len(ids) == len(set(ids))

@@ -66,6 +66,34 @@ class MDBGatewaySimulator(ESP32Simulator):
         self._product_prices = {p.name: p.price for p in self.config.products}
         self._vmc_status: asyncio.Queue = asyncio.Queue()
 
+    def ha_discovery_entities(self) -> list[dict]:
+        """Return HA discovery definitions for MDB payment devices."""
+        entities = []
+        for device in self.devices:
+            name = device["name"]
+            display_name = name.replace("_", " ").title()
+            entities.append({
+                "component": "binary_sensor",
+                "object_id": name,
+                "name": f"MDB {display_name}",
+                "state_topic_suffix": "payment/status",
+                "value_template": f"{{% if value_json.device == '{name}' %}}{{% if value_json.state == 'ready' %}}ON{{% else %}}OFF{{% endif %}}{{% endif %}}",
+                "device_class": "running",
+                "payload_on": "ON",
+                "payload_off": "OFF",
+            })
+        entities.append({
+            "component": "sensor",
+            "object_id": "uptime",
+            "name": "MDB Gateway Uptime",
+            "state_topic_suffix": "heartbeat/mdb",
+            "value_template": "{{ value_json.uptime_seconds }}",
+            "device_class": "duration",
+            "unit_of_measurement": "s",
+            "state_class": "total_increasing",
+        })
+        return entities
+
     async def _publish_device_status(self, client: aiomqtt.Client):
         """Periodically publish device readiness status."""
         while True:
