@@ -126,3 +126,14 @@ class TestCallbacks:
         vmc.set_message_callback(cb)
         vmc.deposit_funds(1.00)
         cb.assert_called()
+
+
+class TestEventRecorder:
+    def test_error_transition_calls_recorder(self):
+        from unittest.mock import MagicMock
+        config = ConfigModel()
+        vmc = VMC(config=config)
+        recorder = MagicMock()
+        vmc.set_event_recorder(recorder)
+        vmc.error_occurred()
+        recorder.record.assert_called_once_with("error", value=1.0)

@@ -95,6 +95,7 @@ class VMC:
         self._health_monitor: HealthMonitor | None = None  # Set via set_health_monitor()
         self._display_controller: DisplayController | None = None  # Set via set_display_controller()
         self._inventory: InventoryManager | None = None  # Set via set_inventory_manager()
+        self._event_recorder = None  # Set via set_event_recorder()
         self._start_time = time.monotonic()
         self._session_timeout_seconds = 180.0  # 3 minutes
 
@@ -150,6 +151,11 @@ class VMC:
         """Attach an InventoryManager for persistent stock tracking."""
         self._inventory = inventory
         logger.debug("VMC attached inventory manager.")
+
+    def set_event_recorder(self, recorder):
+        """Attach an EventRecorder so FSM error events are persisted."""
+        self._event_recorder = recorder
+        logger.debug("VMC attached event recorder.")
 
     def _update_display(self, target_state: str | None = None):
         """Update the customer-facing display based on the target FSM state.
@@ -355,6 +361,8 @@ class VMC:
     @logger.catch()
     def on_error(self):
         logger.error(f"{STATE_CHANGE_PREFIX} Error encountered for product: {self.selected_product}. Transitioning to error state.")
+        if self._event_recorder:
+            self._event_recorder.record("error", value=1.0)
         # Refund any remaining credit in escrow
         if self.credit_escrow > 0:
             refund = self.credit_escrow
