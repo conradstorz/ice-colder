@@ -1,0 +1,82 @@
+name: ice-colder
+
+services:
+  vmc:
+    build: .
+    container_name: ice-colder-vmc
+    ports:
+      - "26123:26123"
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./LOGS:/app/LOGS
+      - ./data:/app/data
+    environment:
+      - MQTT_BROKER_HOST=mosquitto
+    networks:
+      - broker
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    restart: unless-stopped
+
+  sim-ice-maker:
+    build: .
+    container_name: ice-colder-sim-ice-maker
+    command: ["uv", "run", "python", "-m", "simulators.ice_maker", "--broker", "mosquitto"]
+    volumes:
+      - ./config.json:/app/config.json:ro
+    networks:
+      - broker
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    restart: unless-stopped
+
+  sim-mdb:
+    build: .
+    container_name: ice-colder-sim-mdb
+    command: ["uv", "run", "python", "-m", "simulators.mdb_gateway", "--broker", "mosquitto"]
+    volumes:
+      - ./config.json:/app/config.json:ro
+    networks:
+      - broker
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    restart: unless-stopped
+
+  sim-vending:
+    build: .
+    container_name: ice-colder-sim-vending
+    command: ["uv", "run", "python", "-m", "simulators.vending_machine", "--broker", "mosquitto"]
+    volumes:
+      - ./config.json:/app/config.json:ro
+    networks:
+      - broker
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    restart: unless-stopped
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: ice-colder-mqtt
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./docker/mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./docker/mosquitto/data:/mosquitto/data
+      - ./docker/mosquitto/log:/mosquitto/log
+    restart: unless-stopped
+    networks:
+      - broker
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -t '$$SYS/broker/uptime' -C 1 -W 3"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+networks:
+  broker:
+    driver: bridge

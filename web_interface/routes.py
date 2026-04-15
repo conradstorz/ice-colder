@@ -26,6 +26,12 @@ def set_health_monitor(monitor):
     global health_monitor
     health_monitor = monitor
 
+event_recorder = None
+
+def set_event_recorder(recorder):
+    global event_recorder
+    event_recorder = recorder
+
 LOG_PATH = Path("logs/vmc.log")
 
 def tail(file_path: Path, lines: int = 50) -> list[str]:
@@ -138,6 +144,28 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         return templates.TemplateResponse("partials/health_fragment.html", {
             "request": request,
             "health": health_monitor.get_summary(),
+        })
+
+    @router.get("/activity", response_class=HTMLResponse)
+    async def activity_fragment(request: Request):
+        if not event_recorder:
+            return HTMLResponse(
+                '<div class="bg-gray-800 p-4 rounded text-gray-500">Activity data not available yet.</div>'
+            )
+        summaries = {
+            24: event_recorder.get_summary(24),
+            168: event_recorder.get_summary(168),
+            720: event_recorder.get_summary(720),
+        }
+        averages = {
+            24: event_recorder.get_historical_average(24),
+            168: event_recorder.get_historical_average(168),
+            720: event_recorder.get_historical_average(720),
+        }
+        return templates.TemplateResponse("partials/activity_fragment.html", {
+            "request": request,
+            "summaries": summaries,
+            "averages": averages,
         })
 
     @router.get("/inventory", response_class=HTMLResponse)

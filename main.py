@@ -4,6 +4,7 @@ from services.health_monitor import HealthMonitor
 from services.notifier import Notifier
 from services.display_controller import DisplayController
 from services.inventory_manager import InventoryManager
+from services.event_recorder import EventRecorder
 
 import asyncio
 import json
@@ -143,11 +144,23 @@ async def main():
     logger.info(f"Health monitor and notifier set up and linked")
 
     # Create MQTT client and wire it to the VMC
+    # Allow environment variable to override broker host (for Docker networking)
+    broker_override = os.environ.get("MQTT_BROKER_HOST")
+    if broker_override:
+        live_config.mqtt.broker_host = broker_override
+        logger.info(f"MQTT broker host overridden by env: {broker_override}")
     mqtt = MQTTClient(config=live_config.mqtt, machine_id=live_config.machine_id)
     mqtt.set_connection_callback(health.update_mqtt_status)
     vmc.set_mqtt_client(mqtt)
     vmc.set_health_monitor(health)
     logger.info(f"MQTT client created and linked to VMC and health monitor")
+
+    # Create event recorder and wire to MQTT, VMC, and routes
+    recorder = EventRecorder(db_path="data/events.db")
+    recorder.register_handlers(mqtt)
+    vmc.set_event_recorder(recorder)
+    routes.set_event_recorder(recorder)
+    logger.info("Event recorder wired up")
 
     # Create display controller and wire to MQTT + VMC
     display = DisplayController()

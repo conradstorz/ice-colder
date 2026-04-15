@@ -101,3 +101,13 @@ class TestLogsEndpoint:
     def test_logs_returns_html(self, client):
         resp = client.get("/logs")
         assert resp.status_code == 200
+
+
+class TestActivityEndpoint:
+    def test_activity_returns_200(self, client):
+        response = client.get("/activity")
+        assert response.status_code == 200
+
+    def test_activity_without_recorder_returns_fallback(self, client):
+        response = client.get("/activity")
+        assert response.status_code == 200
