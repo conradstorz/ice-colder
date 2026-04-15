@@ -57,6 +57,13 @@ class DispenserStatus(BaseModel):
     timestamp: datetime = Field(default_factory=_utc_now)
 
 
+class HardwareIO(BaseModel):
+    """Binary state of a hardware device (motor, solenoid, sensor, relay)."""
+    device: str = Field(..., description="Device identifier (e.g., 'auger_motor', 'bag_full_sensor')")
+    state: bool = Field(..., description="True = active/on/detected, False = inactive/off/clear")
+    timestamp: datetime = Field(default_factory=_utc_now)
+
+
 class SubsystemHeartbeat(BaseModel):
     """Periodic heartbeat from any ESP32 subsystem."""
     subsystem: str = Field(..., description="Subsystem identifier")
