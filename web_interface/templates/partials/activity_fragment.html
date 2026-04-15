@@ -13,9 +13,9 @@
       <div class="flex justify-between">
         <span class="text-gray-400">Uptime</span>
         <span>
-          {{ s.uptime_pct }}%
+          {{ "%.1f"|format(s.uptime_pct) }}%
           {% if a.uptime_pct is not none %}
-            <span class="text-gray-500 text-xs">avg {{ a.uptime_pct }}%</span>
+            <span class="text-gray-500 text-xs">avg {{ "%.1f"|format(a.uptime_pct) }}%</span>
           {% else %}
             <span class="text-gray-600 text-xs">avg —</span>
           {% endif %}

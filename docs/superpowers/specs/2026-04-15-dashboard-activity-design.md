@@ -117,7 +117,7 @@ The activity panel is inserted between the existing status panel and the action 
 `events.db` bind-mounted in `docker-compose.yml`:
 ```yaml
 volumes:
-  - ./events.db:/app/events.db
+  - ./data:/app/data
 ```
 
 The file is created automatically by `EventRecorder` on first run if it doesn't exist.
