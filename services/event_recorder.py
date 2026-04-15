@@ -15,6 +15,7 @@ from loguru import logger
 
 from services.mqtt_messages import (
     DispenserStatus, HardwareIO, IceMakerEvent, PaymentEvent, SensorReading,
+    SubsystemHeartbeat,
 )
 
 # Must match simulators/base.py HEARTBEAT_INTERVAL
@@ -148,8 +149,8 @@ class EventRecorder:
                         metadata={"location": reading.location})
 
     async def _on_heartbeat(self, topic: str, data: dict):
-        uptime = float(data.get("uptime_seconds", 0))
-        self.record("heartbeat", value=uptime)
+        hb = SubsystemHeartbeat.model_validate(data)
+        self.record("heartbeat", value=float(hb.uptime_seconds))
 
     def get_historical_average(self, period_hours: int) -> dict:
         return {k: None for k in SUMMARY_KEYS}  # implemented in Task 3
