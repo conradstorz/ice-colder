@@ -153,4 +153,28 @@ class EventRecorder:
         self.record("heartbeat", value=float(hb.uptime_seconds))
 
     def get_historical_average(self, period_hours: int) -> dict:
-        return {k: None for k in SUMMARY_KEYS}  # implemented in Task 3
+        """
+        Return per-period averages over prior complete periods (up to 30).
+        Only includes periods where at least one heartbeat was recorded
+        (machine was running). Returns all-None if fewer than 2 such periods exist.
+        """
+        period_secs = period_hours * 3600
+        now = time.time()
+        window_start = now - period_secs
+
+        active_windows = []
+        for i in range(1, 31):
+            end = window_start - (i - 1) * period_secs
+            start = end - period_secs
+            w = self._compute_window(start, end)
+            if w["uptime_pct"] > 0:
+                active_windows.append(w)
+
+        if len(active_windows) < 2:
+            return {k: None for k in SUMMARY_KEYS}
+
+        avg = {}
+        for key in SUMMARY_KEYS:
+            values = [w[key] for w in active_windows if w[key] is not None]
+            avg[key] = round(sum(values) / len(values), 2) if values else None
+        return avg

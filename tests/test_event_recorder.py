@@ -192,3 +192,93 @@ class TestRegisterHandlers:
             {"subsystem": "vending", "uptime_seconds": 300, "timestamp": "2026-01-01T00:00:00+00:00"},
         )
         assert recorder.get_summary(24)["uptime_pct"] > 0
+
+
+class TestGetHistoricalAverage:
+    def test_returns_none_with_no_data(self, recorder):
+        avg = recorder.get_historical_average(24)
+        assert avg["money_in"] is None
+        assert avg["products_out"] is None
+
+    def test_returns_none_with_only_one_prior_period(self, tmp_path):
+        db = str(tmp_path / "events.db")
+        rec = EventRecorder(db_path=db)
+        # Insert data in one prior 24h period only (25-49h ago)
+        ts = time.time() - 36 * 3600
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+            ("heartbeat", ts, 1),
+        )
+        conn.execute(
+            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+            ("payment", ts, 5.00),
+        )
+        conn.commit()
+        conn.close()
+        avg = rec.get_historical_average(24)
+        assert avg["money_in"] is None
+
+    def test_averages_two_prior_periods(self, tmp_path):
+        db = str(tmp_path / "events.db")
+        rec = EventRecorder(db_path=db)
+        now = time.time()
+        period = 24 * 3600
+        conn = sqlite3.connect(db)
+        # Period 1: 25-49h ago → $10 + heartbeat
+        conn.execute(
+            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+            ("payment", now - 1.5 * period, 10.00),
+        )
+        conn.execute(
+            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+            ("heartbeat", now - 1.5 * period, 1),
+        )
+        # Period 2: 49-73h ago → $6 + heartbeat
+        conn.execute(
+            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+            ("payment", now - 2.5 * period, 6.00),
+        )
+        conn.execute(
+            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+            ("heartbeat", now - 2.5 * period, 1),
+        )
+        conn.commit()
+        conn.close()
+        avg = rec.get_historical_average(24)
+        assert avg["money_in"] == pytest.approx(8.0)  # (10 + 6) / 2
+
+    def test_inactive_periods_excluded(self, tmp_path):
+        """Periods with no heartbeat (machine off) don't skew the average."""
+        db = str(tmp_path / "events.db")
+        rec = EventRecorder(db_path=db)
+        now = time.time()
+        period = 24 * 3600
+        conn = sqlite3.connect(db)
+        # Period 1 active: $10 + heartbeat
+        conn.execute(
+            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+            ("payment", now - 1.5 * period, 10.00),
+        )
+        conn.execute(
+            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+            ("heartbeat", now - 1.5 * period, 1),
+        )
+        # Period 2 active: $8 + heartbeat
+        conn.execute(
+            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+            ("payment", now - 2.5 * period, 8.00),
+        )
+        conn.execute(
+            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+            ("heartbeat", now - 2.5 * period, 1),
+        )
+        # Period 3 inactive: $20 payment but NO heartbeat — machine was off, exclude
+        conn.execute(
+            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+            ("payment", now - 3.5 * period, 20.00),
+        )
+        conn.commit()
+        conn.close()
+        avg = rec.get_historical_average(24)
+        assert avg["money_in"] == pytest.approx(9.0)  # (10 + 8) / 2, not (10+8+20)/3
