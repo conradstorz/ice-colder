@@ -94,7 +94,7 @@ class EventRecorder:
             period_secs = end_ts - start_ts
             uptime_pct = min(
                 100.0,
-                round(heartbeat_count * _HEARTBEAT_INTERVAL / period_secs * 100, 1),
+                heartbeat_count * _HEARTBEAT_INTERVAL / period_secs * 100,
             )
             return {
                 "money_in": round(total("payment"), 2),
@@ -114,7 +114,42 @@ class EventRecorder:
         return self._compute_window(now - period_hours * 3600, now + 0.001)
 
     def register_handlers(self, mqtt_client):
-        pass  # implemented in Task 2
+        """Register MQTT handlers. Multiple callers can register for the same topic."""
+        mqtt_client.register("payment/credit", self._on_payment)
+        mqtt_client.register("hardware/dispenser", self._on_dispenser)
+        mqtt_client.register("ice_maker/event", self._on_ice_maker_event)
+        mqtt_client.register("hardware/io/service_door", self._on_service_door)
+        mqtt_client.register("sensors/temp/+", self._on_sensor)
+        mqtt_client.register("heartbeat/+", self._on_heartbeat)
+
+    async def _on_payment(self, topic: str, data: dict):
+        event = PaymentEvent.model_validate(data)
+        self.record("payment", value=event.amount)
+
+    async def _on_dispenser(self, topic: str, data: dict):
+        status = DispenserStatus.model_validate(data)
+        if status.state == "complete":
+            self.record("dispense", value=float(status.slot))
+
+    async def _on_ice_maker_event(self, topic: str, data: dict):
+        event = IceMakerEvent.model_validate(data)
+        if event.event == "ice_dropped":
+            self.record("ice_cycle", value=1.0)
+
+    async def _on_service_door(self, topic: str, data: dict):
+        hw = HardwareIO.model_validate(data)
+        if hw.state:
+            self.record("service_door", value=1.0)
+
+    async def _on_sensor(self, topic: str, data: dict):
+        reading = SensorReading.model_validate(data)
+        if not (self._temp_min <= reading.value <= self._temp_max):
+            self.record("temp_exceedance", value=reading.value,
+                        metadata={"location": reading.location})
+
+    async def _on_heartbeat(self, topic: str, data: dict):
+        uptime = float(data.get("uptime_seconds", 0))
+        self.record("heartbeat", value=uptime)
 
     def get_historical_average(self, period_hours: int) -> dict:
         return {k: None for k in SUMMARY_KEYS}  # implemented in Task 3
