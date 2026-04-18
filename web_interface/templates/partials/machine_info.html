@@ -1,28 +1,27 @@
-<div id="section-machine" class="bg-white text-black p-4 rounded shadow">
-  <h2 class="text-xl font-bold mb-4">🛠 Machine Information</h2>
+{# web_interface/templates/partials/machine_info.html #}
+<div class="space-y-4">
+  <h2 class="text-base font-semibold text-gray-900">Machine Information</h2>
 
-  <div class="mb-4">
-    <strong>Common Name:</strong>
-    <span class="font-mono">{{ details.common_name }}</span>
-  </div>
-
-  <div class="mb-4">
-    <strong>Serial Number:</strong>
-    <span class="font-mono">{{ details.serial_number }}</span>
-  </div>
-
-  <div class="mb-4">
-    <strong>Location Address:</strong>
-    <span>{{ details.location.address }}</span>
-  </div>
-
-  <div class="mb-4">
-    <strong>Location Notes:</strong>
-    <span>{{ details.location.notes or "—" }}</span>
-  </div>
-
-  <div class="mb-4">
-    <strong>Product Count:</strong>
-    <span>{{ details.product_count }} products configured</span>
-  </div>
+  <dl class="space-y-3 text-sm">
+    <div class="flex justify-between">
+      <dt class="text-gray-500">Common Name</dt>
+      <dd class="font-mono text-gray-900">{{ details.common_name }}</dd>
+    </div>
+    <div class="flex justify-between border-t border-gray-100 pt-3">
+      <dt class="text-gray-500">Serial Number</dt>
+      <dd class="font-mono text-gray-900">{{ details.serial_number }}</dd>
+    </div>
+    <div class="flex justify-between border-t border-gray-100 pt-3">
+      <dt class="text-gray-500">Location Address</dt>
+      <dd class="text-gray-900 text-right max-w-xs">{{ details.location.address }}</dd>
+    </div>
+    <div class="flex justify-between border-t border-gray-100 pt-3">
+      <dt class="text-gray-500">Location Notes</dt>
+      <dd class="text-gray-900 text-right max-w-xs">{{ details.location.notes or "—" }}</dd>
+    </div>
+    <div class="flex justify-between border-t border-gray-100 pt-3">
+      <dt class="text-gray-500">Products Configured</dt>
+      <dd class="text-gray-900">{{ details.product_count }}</dd>
+    </div>
+  </dl>
 </div>
