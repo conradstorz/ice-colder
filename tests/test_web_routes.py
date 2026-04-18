@@ -111,3 +111,81 @@ class TestActivityEndpoint:
     def test_activity_without_recorder_returns_fallback(self, client):
         response = client.get("/activity")
         assert response.status_code == 200
+
+
+class TestKpiEndpoint:
+    def test_kpi_returns_200(self, client):
+        response = client.get("/kpi")
+        assert response.status_code == 200
+
+    def test_kpi_without_recorder_returns_placeholder(self, client):
+        # No event_recorder set on the fixture — should return placeholder cards
+        response = client.get("/kpi")
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+
+    def test_kpi_with_recorder(self, client, tmp_path):
+        from services.event_recorder import EventRecorder
+        from web_interface import routes as r
+        recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
+        r.set_event_recorder(recorder)
+        try:
+            response = client.get("/kpi")
+            assert response.status_code == 200
+            # "no history yet" only appears in the recorder-present branch (average sub-line);
+            # the placeholder skeleton uses "no data" instead.
+            assert "no history yet" in response.text
+        finally:
+            r.set_event_recorder(None)
+
+
+class TestActivityPeriodParam:
+    def test_activity_default_period(self, client):
+        response = client.get("/activity")
+        assert response.status_code == 200
+
+    def test_activity_period_168(self, client):
+        response = client.get("/activity?period=168")
+        assert response.status_code == 200
+
+    def test_activity_period_720(self, client):
+        response = client.get("/activity?period=720")
+        assert response.status_code == 200
+
+    def test_activity_invalid_period_falls_back_to_24(self, client):
+        # Invalid period values should fall back to 24 without error
+        response = client.get("/activity?period=99")
+        assert response.status_code == 200
+
+
+class TestStatusHealthSignal:
+    def test_status_is_healthy_without_recorder_or_monitor(self, client):
+        # When neither event_recorder nor health_monitor is set, no issues → healthy
+        response = client.get("/status")
+        assert response.status_code == 200
+        assert "All Systems OK" in response.text
+
+    def test_status_with_recorder_no_errors(self, client, tmp_path):
+        from services.event_recorder import EventRecorder
+        from web_interface import routes as r
+        recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
+        r.set_event_recorder(recorder)
+        try:
+            response = client.get("/status")
+            assert response.status_code == 200
+            assert "All Systems OK" in response.text
+        finally:
+            r.set_event_recorder(None)
+
+    def test_status_with_recorder_has_errors(self, client, tmp_path):
+        from services.event_recorder import EventRecorder
+        from web_interface import routes as r
+        recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
+        recorder.record("error")
+        r.set_event_recorder(recorder)
+        try:
+            response = client.get("/status")
+            assert response.status_code == 200
+            assert "Issues Detected" in response.text
+        finally:
+            r.set_event_recorder(None)

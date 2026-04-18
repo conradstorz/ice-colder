@@ -1,7 +1,7 @@
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, FastAPI, Form, Request
+from fastapi import APIRouter, FastAPI, Form, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
@@ -114,11 +114,33 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
     @router.get("/status", response_class=HTMLResponse)
     async def status_fragment(request: Request):
         if not vmc_instance:
-            return HTMLResponse("<div>🚨 VMC not initialized</div>")
+            return HTMLResponse(
+                '<div class="bg-red-50 rounded-xl border border-red-200 shadow-sm p-5">'
+                '<p class="text-red-600 font-semibold">VMC not initialized</p></div>'
+            )
+
+        status = vmc_instance.get_status()
+        issues: list[str] = []
+
+        if event_recorder:
+            errors_24h = event_recorder.get_summary(24)["errors"]
+            if errors_24h > 0:
+                issues.append(f"{errors_24h} error{'s' if errors_24h != 1 else ''} in last 24h")
+
+        if health_monitor:
+            health = health_monitor.get_summary()
+            stale = [name for name, sub in health["subsystems"].items() if sub["stale"]]
+            if stale:
+                issues.append(f"Stale subsystems: {', '.join(stale)}")
+            out_of_range = [loc for loc, temp in health["temperatures"].items() if not temp["in_range"]]
+            if out_of_range:
+                issues.append(f"Temp issues: {', '.join(out_of_range)}")
 
         return templates.TemplateResponse("partials/status_fragment.html", {
             "request": request,
-            "status": vmc_instance.get_status()
+            "status": status,
+            "is_healthy": len(issues) == 0,
+            "issues": issues,
         })
 
 
@@ -147,25 +169,31 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         })
 
     @router.get("/activity", response_class=HTMLResponse)
-    async def activity_fragment(request: Request):
+    async def activity_fragment(request: Request, period: int = Query(default=24)):
         if not event_recorder:
             return HTMLResponse(
-                '<div class="bg-gray-800 p-4 rounded text-gray-500">Activity data not available yet.</div>'
+                '<div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5">'
+                '<p class="text-gray-400 text-sm">Activity data not available yet.</p></div>'
             )
-        summaries = {
-            24: event_recorder.get_summary(24),
-            168: event_recorder.get_summary(168),
-            720: event_recorder.get_summary(720),
-        }
-        averages = {
-            24: event_recorder.get_historical_average(24),
-            168: event_recorder.get_historical_average(168),
-            720: event_recorder.get_historical_average(720),
-        }
+        if period not in (24, 168, 720):
+            period = 24
+        summary = event_recorder.get_summary(period)
+        average = event_recorder.get_historical_average(period)
         return templates.TemplateResponse("partials/activity_fragment.html", {
             "request": request,
-            "summaries": summaries,
-            "averages": averages,
+            "period": period,
+            "summary": summary,
+            "average": average,
+        })
+
+    @router.get("/kpi", response_class=HTMLResponse)
+    async def kpi_fragment(request: Request):
+        summary = event_recorder.get_summary(24) if event_recorder else None
+        average = event_recorder.get_historical_average(24) if event_recorder else None
+        return templates.TemplateResponse("partials/kpi_fragment.html", {
+            "request": request,
+            "summary": summary,
+            "average": average,
         })
 
     @router.get("/inventory", response_class=HTMLResponse)

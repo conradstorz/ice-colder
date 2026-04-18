@@ -1,6 +1,64 @@
-<div class="bg-gray-800 p-4 rounded">
-  <p><strong>Machine State:</strong> {{ status['state'] }}</p>
-  <p><strong>Last Customer Selection:</strong> {{ status['selected_product'] or 'None' }}</p>
-  <p><strong>Customer Escrow:</strong> ${{ '%.2f' | format(status['credit_escrow']) }}</p>
-  <p><strong>Most Recent Payment Method:</strong> {{ status['last_payment_method'] }}</p>
+{# web_interface/templates/partials/status_fragment.html #}
+{% if is_healthy %}
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+  <div class="flex">
+    <div class="w-1 bg-green-500 flex-shrink-0"></div>
+    <div class="flex items-start justify-between flex-1 p-5">
+      <div>
+        <div class="flex items-center gap-2">
+          <span class="w-2.5 h-2.5 rounded-full bg-green-500 flex-shrink-0"></span>
+          <span class="text-base font-semibold text-green-700">All Systems OK</span>
+        </div>
+        <p class="text-sm text-gray-400 mt-1">Machine is operating normally</p>
+      </div>
+      <div class="flex gap-8 text-sm text-right ml-8">
+        <div>
+          <div class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">State</div>
+          <div class="font-medium text-gray-900">{{ status.state }}</div>
+        </div>
+        <div>
+          <div class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">Escrow</div>
+          <div class="font-medium text-gray-900">${{ "%.2f"|format(status.credit_escrow) }}</div>
+        </div>
+        <div>
+          <div class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">Last Payment</div>
+          <div class="font-medium text-gray-900">{{ status.last_payment_method or "—" }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
+{% else %}
+<div class="bg-red-50 rounded-xl border border-red-200 shadow-sm overflow-hidden">
+  <div class="flex">
+    <div class="w-1 bg-red-500 flex-shrink-0"></div>
+    <div class="flex items-start justify-between flex-1 p-5">
+      <div>
+        <div class="flex items-center gap-2">
+          <span class="w-2.5 h-2.5 rounded-full bg-red-500 flex-shrink-0"></span>
+          <span class="text-base font-semibold text-red-700">Issues Detected</span>
+        </div>
+        <ul class="mt-2 space-y-0.5">
+          {% for issue in issues %}
+          <li class="text-sm text-red-600">{{ issue }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      <div class="flex gap-8 text-sm text-right ml-8">
+        <div>
+          <div class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">State</div>
+          <div class="font-medium text-gray-900">{{ status.state }}</div>
+        </div>
+        <div>
+          <div class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">Escrow</div>
+          <div class="font-medium text-gray-900">${{ "%.2f"|format(status.credit_escrow) }}</div>
+        </div>
+        <div>
+          <div class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">Last Payment</div>
+          <div class="font-medium text-gray-900">{{ status.last_payment_method or "—" }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}

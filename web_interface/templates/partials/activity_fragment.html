@@ -1,101 +1,127 @@
 {# web_interface/templates/partials/activity_fragment.html #}
-<div class="bg-gray-800 p-4 rounded space-y-3">
-  <h3 class="text-lg font-semibold">Machine Activity</h3>
+{# Full card including tab row — tab buttons target #activity-panel for server-side active state #}
+{% set period_labels = {24: "24 Hours", 168: "7 Days", 720: "30 Days"} %}
+{% set s = summary %}
+{% set a = average %}
 
-  <div class="grid grid-cols-3 gap-4 text-sm">
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
 
-    {% for hours, label in [(24, "Last 24 Hours"), (168, "Last 7 Days"), (720, "Last 30 Days")] %}
-    {% set s = summaries[hours] %}
-    {% set a = averages[hours] %}
-    <div class="bg-gray-700 p-3 rounded space-y-2">
-      <div class="font-semibold text-gray-300 border-b border-gray-600 pb-1">{{ label }}</div>
-
-      <div class="flex justify-between">
-        <span class="text-gray-400">Uptime</span>
-        <span>
-          {{ "%.1f"|format(s.uptime_pct) }}%
-          {% if a.uptime_pct is not none %}
-            <span class="text-gray-500 text-xs">avg {{ "%.1f"|format(a.uptime_pct) }}%</span>
-          {% else %}
-            <span class="text-gray-600 text-xs">avg —</span>
-          {% endif %}
-        </span>
-      </div>
-
-      <div class="flex justify-between">
-        <span class="text-gray-400">Money In</span>
-        <span>
-          ${{ "%.2f"|format(s.money_in) }}
-          {% if a.money_in is not none %}
-            <span class="text-gray-500 text-xs">avg ${{ "%.2f"|format(a.money_in) }}</span>
-          {% else %}
-            <span class="text-gray-600 text-xs">avg —</span>
-          {% endif %}
-        </span>
-      </div>
-
-      <div class="flex justify-between">
-        <span class="text-gray-400">Products Out</span>
-        <span>
-          {{ s.products_out }}
-          {% if a.products_out is not none %}
-            <span class="text-gray-500 text-xs">avg {{ a.products_out }}</span>
-          {% else %}
-            <span class="text-gray-600 text-xs">avg —</span>
-          {% endif %}
-        </span>
-      </div>
-
-      <div class="flex justify-between">
-        <span class="text-gray-400">Ice Cycles</span>
-        <span>
-          {{ s.ice_cycles }}
-          {% if a.ice_cycles is not none %}
-            <span class="text-gray-500 text-xs">avg {{ a.ice_cycles }}</span>
-          {% else %}
-            <span class="text-gray-600 text-xs">avg —</span>
-          {% endif %}
-        </span>
-      </div>
-
-      <div class="flex justify-between">
-        <span class="text-gray-400">Errors</span>
-        <span class="{{ 'text-red-400' if s.errors > 0 else '' }}">
-          {{ s.errors }}
-          {% if a.errors is not none %}
-            <span class="text-gray-500 text-xs">avg {{ a.errors }}</span>
-          {% else %}
-            <span class="text-gray-600 text-xs">avg —</span>
-          {% endif %}
-        </span>
-      </div>
-
-      <div class="flex justify-between">
-        <span class="text-gray-400">Service Door</span>
-        <span>
-          {{ s.service_door_opens }}
-          {% if a.service_door_opens is not none %}
-            <span class="text-gray-500 text-xs">avg {{ a.service_door_opens }}</span>
-          {% else %}
-            <span class="text-gray-600 text-xs">avg —</span>
-          {% endif %}
-        </span>
-      </div>
-
-      <div class="flex justify-between">
-        <span class="text-gray-400">Temp Issues</span>
-        <span class="{{ 'text-yellow-400' if s.temp_exceedances > 0 else '' }}">
-          {{ s.temp_exceedances }}
-          {% if a.temp_exceedances is not none %}
-            <span class="text-gray-500 text-xs">avg {{ a.temp_exceedances }}</span>
-          {% else %}
-            <span class="text-gray-600 text-xs">avg —</span>
-          {% endif %}
-        </span>
-      </div>
-
-    </div>
+  {# Tab row #}
+  <div class="flex border-b border-gray-200 px-1 pt-1">
+    {% for p, label in [(24, "24 Hours"), (168, "7 Days"), (720, "30 Days")] %}
+    <button
+      hx-get="/activity?period={{ p }}"
+      hx-target="#activity-panel"
+      hx-swap="innerHTML"
+      class="px-4 py-2.5 text-sm font-medium -mb-px transition-colors
+             {% if p == period %}border-b-2 border-blue-600 text-blue-600
+             {% else %}text-gray-500 hover:text-gray-700 border-b-2 border-transparent hover:border-gray-300{% endif %}">
+      {{ label }}
+    </button>
     {% endfor %}
-
   </div>
+
+  {# Data table #}
+  <table class="w-full text-sm">
+    <tbody class="divide-y divide-gray-100">
+
+      {# Uptime #}
+      <tr>
+        <td class="px-5 py-3 text-gray-500">Uptime</td>
+        <td class="px-5 py-3 text-right">
+          <span class="font-medium {{ 'text-amber-600' if s.uptime_pct < 90 else 'text-gray-900' }}">
+            {{ "%.1f"|format(s.uptime_pct) }}%
+          </span>
+          {% if a.uptime_pct is not none %}
+            <span class="ml-2 text-xs text-gray-400">avg {{ "%.1f"|format(a.uptime_pct) }}%</span>
+          {% else %}
+            <span class="ml-2 text-xs text-gray-300">avg —</span>
+          {% endif %}
+        </td>
+      </tr>
+
+      {# Money In #}
+      <tr>
+        <td class="px-5 py-3 text-gray-500">Money In</td>
+        <td class="px-5 py-3 text-right">
+          <span class="font-medium text-gray-900">${{ "%.2f"|format(s.money_in) }}</span>
+          {% if a.money_in is not none %}
+            <span class="ml-2 text-xs text-gray-400">avg ${{ "%.2f"|format(a.money_in) }}</span>
+          {% else %}
+            <span class="ml-2 text-xs text-gray-300">avg —</span>
+          {% endif %}
+        </td>
+      </tr>
+
+      {# Products Out #}
+      <tr>
+        <td class="px-5 py-3 text-gray-500">Products Out</td>
+        <td class="px-5 py-3 text-right">
+          <span class="font-medium text-gray-900">{{ s.products_out }}</span>
+          {% if a.products_out is not none %}
+            <span class="ml-2 text-xs text-gray-400">avg {{ a.products_out }}</span>
+          {% else %}
+            <span class="ml-2 text-xs text-gray-300">avg —</span>
+          {% endif %}
+        </td>
+      </tr>
+
+      {# Ice Cycles #}
+      <tr>
+        <td class="px-5 py-3 text-gray-500">Ice Cycles</td>
+        <td class="px-5 py-3 text-right">
+          <span class="font-medium text-gray-900">{{ s.ice_cycles }}</span>
+          {% if a.ice_cycles is not none %}
+            <span class="ml-2 text-xs text-gray-400">avg {{ a.ice_cycles }}</span>
+          {% else %}
+            <span class="ml-2 text-xs text-gray-300">avg —</span>
+          {% endif %}
+        </td>
+      </tr>
+
+      {# Errors #}
+      <tr class="{{ 'bg-red-50' if s.errors > 0 else '' }}">
+        <td class="px-5 py-3 text-gray-500">Errors</td>
+        <td class="px-5 py-3 text-right">
+          <span class="font-medium {{ 'text-red-600' if s.errors > 0 else 'text-gray-900' }}">
+            {{ s.errors }}
+          </span>
+          {% if a.errors is not none %}
+            <span class="ml-2 text-xs text-gray-400">avg {{ a.errors }}</span>
+          {% else %}
+            <span class="ml-2 text-xs text-gray-300">avg —</span>
+          {% endif %}
+        </td>
+      </tr>
+
+      {# Service Door #}
+      <tr>
+        <td class="px-5 py-3 text-gray-500">Service Door Opens</td>
+        <td class="px-5 py-3 text-right">
+          <span class="font-medium text-gray-900">{{ s.service_door_opens }}</span>
+          {% if a.service_door_opens is not none %}
+            <span class="ml-2 text-xs text-gray-400">avg {{ a.service_door_opens }}</span>
+          {% else %}
+            <span class="ml-2 text-xs text-gray-300">avg —</span>
+          {% endif %}
+        </td>
+      </tr>
+
+      {# Temp Issues #}
+      <tr class="{{ 'bg-amber-50' if s.temp_exceedances > 0 else '' }}">
+        <td class="px-5 py-3 text-gray-500">Temp Issues</td>
+        <td class="px-5 py-3 text-right">
+          <span class="font-medium {{ 'text-amber-600' if s.temp_exceedances > 0 else 'text-gray-900' }}">
+            {{ s.temp_exceedances }}
+          </span>
+          {% if a.temp_exceedances is not none %}
+            <span class="ml-2 text-xs text-gray-400">avg {{ a.temp_exceedances }}</span>
+          {% else %}
+            <span class="ml-2 text-xs text-gray-300">avg —</span>
+          {% endif %}
+        </td>
+      </tr>
+
+    </tbody>
+  </table>
 </div>

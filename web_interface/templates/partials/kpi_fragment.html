@@ -1,0 +1,95 @@
+{# web_interface/templates/partials/kpi_fragment.html #}
+{# Returns 4 sibling divs — parent #kpi-panel provides the grid wrapper #}
+
+{% if summary is none %}
+  {# No recorder: show 4 muted placeholder cards #}
+  {% for label in ["Money In (24h)", "Products Out (24h)", "Errors (24h)", "Uptime (24h)"] %}
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+    <div class="text-xs text-gray-400 uppercase tracking-wide mb-1">{{ label }}</div>
+    <div class="text-3xl font-bold text-gray-200">—</div>
+    <div class="text-xs text-gray-300 mt-1">no data</div>
+  </div>
+  {% endfor %}
+{% else %}
+
+{# Money In #}
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+  <div class="flex items-start justify-between">
+    <div class="text-xs text-gray-400 uppercase tracking-wide">Money In (24h)</div>
+    <svg class="w-4 h-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+    </svg>
+  </div>
+  <div class="text-3xl font-bold text-gray-900 mt-2">${{ "%.2f"|format(summary.money_in) }}</div>
+  <div class="text-xs text-gray-400 mt-1">
+    {% if average and average.money_in is not none %}
+      avg ${{ "%.2f"|format(average.money_in) }}
+    {% else %}
+      <span class="text-gray-300">no history yet</span>
+    {% endif %}
+  </div>
+</div>
+
+{# Products Out #}
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+  <div class="flex items-start justify-between">
+    <div class="text-xs text-gray-400 uppercase tracking-wide">Products Out (24h)</div>
+    <svg class="w-4 h-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+    </svg>
+  </div>
+  <div class="text-3xl font-bold text-gray-900 mt-2">{{ summary.products_out }}</div>
+  <div class="text-xs text-gray-400 mt-1">
+    {% if average and average.products_out is not none %}
+      avg {{ average.products_out }}
+    {% else %}
+      <span class="text-gray-300">no history yet</span>
+    {% endif %}
+  </div>
+</div>
+
+{# Errors #}
+{% set has_errors = summary.errors > 0 %}
+<div class="{{ 'bg-red-50 border-red-200' if has_errors else 'bg-white border-gray-200' }} rounded-xl border shadow-sm p-5">
+  <div class="flex items-start justify-between">
+    <div class="text-xs text-gray-400 uppercase tracking-wide">Errors (24h)</div>
+    <svg class="w-4 h-4 {{ 'text-red-400' if has_errors else 'text-gray-300' }}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+    </svg>
+  </div>
+  <div class="text-3xl font-bold {{ 'text-red-600' if has_errors else 'text-gray-900' }} mt-2">{{ summary.errors }}</div>
+  <div class="text-xs text-gray-400 mt-1">
+    {% if average and average.errors is not none %}
+      avg {{ average.errors }}
+    {% else %}
+      <span class="text-gray-300">no history yet</span>
+    {% endif %}
+  </div>
+</div>
+
+{# Uptime #}
+{% set low_uptime = summary.uptime_pct < 90 %}
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+  <div class="flex items-start justify-between">
+    <div class="text-xs text-gray-400 uppercase tracking-wide">Uptime (24h)</div>
+    <svg class="w-4 h-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+    </svg>
+  </div>
+  <div class="text-3xl font-bold {{ 'text-amber-600' if low_uptime else 'text-gray-900' }} mt-2">
+    {{ "%.1f"|format(summary.uptime_pct) }}%
+  </div>
+  <div class="text-xs text-gray-400 mt-1">
+    {% if average and average.uptime_pct is not none %}
+      avg {{ "%.1f"|format(average.uptime_pct) }}%
+    {% else %}
+      <span class="text-gray-300">no history yet</span>
+    {% endif %}
+  </div>
+</div>
+
+{% endif %}
