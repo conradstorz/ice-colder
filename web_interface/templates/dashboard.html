@@ -6,101 +6,120 @@
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@3.4.1/dist/tailwind.min.css" rel="stylesheet">
 </head>
-<body class="bg-gray-900 text-white font-sans">
-    <div id="feedback" class="text-green-400 mt-4 font-semibold"></div>
+<body class="bg-slate-50 text-gray-900 font-sans min-h-screen">
+<div class="max-w-5xl mx-auto px-6 py-8 space-y-4">
 
-    <div class="max-w-3xl mx-auto p-6">
+    <!-- Header -->
+    <div class="flex items-center justify-between">
+        <h1 class="text-xl font-semibold text-gray-900">Vending Machine Admin</h1>
+        <span class="text-xs text-gray-400">Dashboard</span>
+    </div>
 
-
-        <h1 class="text-3xl font-bold mb-6">🛠 Vending Machine Admin Panel</h1>
-
-        <div id="status-panel" 
-             hx-get="/status" 
-             hx-trigger="every 1s" 
-             hx-swap="innerHTML">
-            <!-- Live status will be loaded here -->
-            <div>Loading status...</div>
+    <!-- Hero Status (1s refresh) -->
+    <div id="status-panel"
+         hx-get="/status"
+         hx-trigger="load, every 1s"
+         hx-swap="innerHTML">
+        <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+            <div class="flex">
+                <div class="w-1 bg-gray-200 flex-shrink-0"></div>
+                <div class="p-5 text-gray-400 text-sm">Loading status...</div>
+            </div>
         </div>
+    </div>
 
-        <div id="activity-panel"
-             class="mt-4"
-             hx-get="/activity"
-             hx-trigger="load, every 60s"
-             hx-swap="innerHTML">
-            <div class="bg-gray-800 p-4 rounded text-gray-500 text-sm">Loading activity...</div>
+    <!-- KPI Stat Row (60s refresh) — grid lives here, cards are injected -->
+    <div id="kpi-panel"
+         class="grid grid-cols-4 gap-4"
+         hx-get="/kpi"
+         hx-trigger="load, every 60s"
+         hx-swap="innerHTML">
+        <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 h-28 animate-pulse"></div>
+        <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 h-28 animate-pulse"></div>
+        <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 h-28 animate-pulse"></div>
+        <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 h-28 animate-pulse"></div>
+    </div>
+
+    <!-- Activity Panel (60s refresh, full-card swap) -->
+    <div id="activity-panel"
+         hx-get="/activity?period=24"
+         hx-trigger="load, every 60s"
+         hx-swap="innerHTML">
+        <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 text-gray-400 text-sm">
+            Loading activity...
         </div>
+    </div>
 
-        <div class="mt-6 space-x-2">
-            <button 
-            hx-post="/action/restart" 
-            hx-target="#feedback"
-            hx-swap="innerHTML"
-            class="bg-blue-500 px-4 py-2 rounded">
-            Restart
-            </button>      
-            
-            <button 
-            hx-post="/action/reset" 
-            hx-target="#feedback"
-            hx-swap="innerHTML"
-            class="bg-yellow-500 px-4 py-2 rounded">
-            Reset
-            </button>
-
-            <button 
-            hx-post="/action/shutdown" 
-            hx-target="#feedback"
-            hx-swap="innerHTML"
-            class="bg-red-600 px-4 py-2 rounded">
-            Shutdown
-            </button>            
-
-        </div>
-
-        <div class="flex gap-2 mb-4">
-            <button 
-                hx-get="/config/machine" 
-                hx-target="#inventory-box" 
+    <!-- Content Panel — static chrome, dynamic body -->
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        <div class="flex border-b border-gray-200 px-1 pt-1">
+            <button
+                hx-get="/logs"
+                hx-target="#content-body"
                 hx-swap="innerHTML"
-                class="bg-slate-700 text-white px-3 py-1 rounded">
-                🛠 View Machine Info
+                class="px-4 py-2.5 text-sm font-medium text-gray-500 hover:text-gray-700 border-b-2 border-transparent hover:border-gray-300 -mb-px transition-colors">
+                Logs
             </button>
-
             <button
                 hx-get="/inventory"
-                hx-target="#inventory-box"
+                hx-target="#content-body"
                 hx-swap="innerHTML"
-                class="bg-green-700 text-white px-3 py-1 rounded">
-                📦 View Product Inventory
+                class="px-4 py-2.5 text-sm font-medium text-gray-500 hover:text-gray-700 border-b-2 border-transparent hover:border-gray-300 -mb-px transition-colors">
+                Inventory
             </button>
-
             <button
                 hx-get="/health"
-                hx-target="#inventory-box"
+                hx-target="#content-body"
                 hx-swap="innerHTML"
-                class="bg-purple-700 text-white px-3 py-1 rounded">
-                💓 System Health
+                class="px-4 py-2.5 text-sm font-medium text-gray-500 hover:text-gray-700 border-b-2 border-transparent hover:border-gray-300 -mb-px transition-colors">
+                System Health
+            </button>
+            <button
+                hx-get="/config/machine"
+                hx-target="#content-body"
+                hx-swap="innerHTML"
+                class="px-4 py-2.5 text-sm font-medium text-gray-500 hover:text-gray-700 border-b-2 border-transparent hover:border-gray-300 -mb-px transition-colors">
+                Machine Info
             </button>
         </div>
-
-        
-        <div id="inventory-box" 
-            hx-get="/inventory" 
-            hx-trigger="load" 
-            hx-swap="innerHTML">
-            Loading...
+        <div id="content-body"
+             class="p-5"
+             hx-get="/logs"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+            <div class="text-gray-400 text-sm">Loading...</div>
         </div>
-
-
-        <h3 class="text-xl font-semibold mt-8 mb-2">📄 Recent Logs</h2>
-        <div id="log-box"
-            hx-get="/logs"
-            hx-trigger="every 5s"
-            hx-swap="innerHTML">
-        <div>Loading logs...</div>
-        </div>
-
-
     </div>
+
+    <!-- Controls Bar -->
+    <div class="flex items-center justify-between pt-2 pb-4 border-t border-gray-200">
+        <span class="text-xs text-gray-400 uppercase tracking-wider font-medium">Machine Controls</span>
+        <div class="flex items-center gap-3">
+            <span id="feedback" class="text-sm text-gray-600"></span>
+            <button
+                hx-post="/action/restart"
+                hx-target="#feedback"
+                hx-swap="innerHTML"
+                class="border border-blue-200 text-blue-600 hover:bg-blue-50 px-4 py-1.5 rounded-lg text-sm font-medium transition-colors">
+                Restart
+            </button>
+            <button
+                hx-post="/action/reset"
+                hx-target="#feedback"
+                hx-swap="innerHTML"
+                class="border border-amber-200 text-amber-600 hover:bg-amber-50 px-4 py-1.5 rounded-lg text-sm font-medium transition-colors">
+                Reset
+            </button>
+            <button
+                hx-post="/action/shutdown"
+                hx-target="#feedback"
+                hx-swap="innerHTML"
+                class="bg-red-600 hover:bg-red-700 text-white px-4 py-1.5 rounded-lg text-sm font-medium transition-colors">
+                Shutdown
+            </button>
+        </div>
+    </div>
+
+</div>
 </body>
 </html>
