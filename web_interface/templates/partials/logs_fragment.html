@@ -1,6 +1,9 @@
-<div class="bg-black text-green-300 font-mono text-sm p-2 overflow-y-scroll h-64 border border-green-500 rounded">
-  {% for line in logs %}
-    <div>{{ line[:80] }}{% if line|length > 80 %}...{% endif %}</div>
-  {% endfor %}
+{# web_interface/templates/partials/logs_fragment.html #}
+{# Self-refreshing: polling lives inside this fragment, stops when tab is switched #}
+<div hx-get="/logs"
+     hx-trigger="every 5s"
+     hx-target="#content-body"
+     hx-swap="innerHTML">
+  <pre class="bg-gray-950 text-green-400 font-mono text-xs rounded-lg p-4 overflow-y-auto h-64 leading-relaxed">{% for line in logs %}{{ line[:120] }}{% if line|length > 120 %}…{% endif %}
+{% endfor %}</pre>
 </div>
-
