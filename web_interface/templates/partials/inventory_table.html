@@ -1,49 +1,53 @@
-<h2 class="text-xl font-semibold mt-8 mb-2">📦 Products & Inventory</h2>
+{# web_interface/templates/partials/inventory_table.html #}
+<div>
+  <div class="flex items-center justify-between mb-4">
+    <h2 class="text-base font-semibold text-gray-900">Products &amp; Inventory</h2>
+    <button
+      hx-get="/inventory/new"
+      hx-target="#content-body"
+      hx-swap="innerHTML"
+      class="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-lg text-sm font-medium transition-colors">
+      Add Product
+    </button>
+  </div>
 
-<div class="mb-4">
-  <button 
-    hx-get="/inventory/new" 
-    hx-target="#inventory-box" 
-    hx-swap="innerHTML"
-    class="bg-green-600 text-white px-3 py-1 rounded">
-    ➕ Add New Product
-  </button>
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="border-b border-gray-200 text-xs text-gray-400 uppercase tracking-wide">
+        <th class="pb-2 text-left font-medium">SKU</th>
+        <th class="pb-2 text-left font-medium">Name</th>
+        <th class="pb-2 text-left font-medium">Price</th>
+        <th class="pb-2 text-left font-medium">Inventory</th>
+        <th class="pb-2 text-left font-medium">Actions</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-gray-100">
+      {% for product in products %}
+      <tr class="hover:bg-gray-50">
+        <td class="py-3 font-mono text-gray-600 text-xs">{{ product.sku }}</td>
+        <td class="py-3 text-gray-900">{{ product.name }}</td>
+        <td class="py-3 text-gray-900">${{ "%.2f"|format(product.price) }}</td>
+        <td class="py-3 text-gray-900">{{ product.inventory_count }}</td>
+        <td class="py-3">
+          <div class="flex gap-2">
+            <button
+              hx-get="/inventory/edit/{{ product.sku }}"
+              hx-target="#content-body"
+              hx-swap="innerHTML"
+              class="border border-gray-200 hover:bg-gray-50 text-gray-600 px-2.5 py-1 rounded text-xs font-medium transition-colors">
+              Edit
+            </button>
+            <button
+              hx-get="/inventory/copy/{{ product.sku }}"
+              hx-target="#content-body"
+              hx-swap="innerHTML"
+              class="border border-gray-200 hover:bg-gray-50 text-gray-600 px-2.5 py-1 rounded text-xs font-medium transition-colors">
+              Copy
+            </button>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
 </div>
-
-<table class="w-full table-auto bg-white text-black rounded">
-  <thead>
-    <tr class="bg-gray-200">
-      <th class="p-2 text-left">SKU</th>
-      <th class="p-2 text-left">Name</th>
-      <th class="p-2 text-left">Price</th>
-      <th class="p-2 text-left">Inventory</th>
-      <th class="p-2 text-left">Actions</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for product in products %}
-    <tr>
-      <td class="p-2 font-mono">{{ product.sku }}</td>
-      <td class="p-2">{{ product.name }}</td>
-      <td class="p-2">${{ '%.2f' | format(product.price) }}</td>
-      <td class="p-2">{{ product.inventory_count }}</td>
-      <td class="p-2 space-x-2">
-        <button 
-          hx-get="/inventory/edit/{{ product.sku }}" 
-          hx-target="#inventory-box" 
-          hx-swap="innerHTML"
-          class="bg-blue-500 px-2 py-1 rounded text-white">
-          Edit
-        </button>
-        <button 
-          hx-get="/inventory/copy/{{ product.sku }}" 
-          hx-target="#inventory-box" 
-          hx-swap="innerHTML"
-          class="bg-purple-600 px-2 py-1 rounded text-white">
-          Copy
-        </button>
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
