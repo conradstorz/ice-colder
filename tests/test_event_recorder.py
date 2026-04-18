@@ -200,10 +200,10 @@ class TestGetHistoricalAverage:
         assert avg["money_in"] is None
         assert avg["products_out"] is None
 
-    def test_returns_none_with_only_one_prior_period(self, tmp_path):
+    def test_returns_averages_with_one_prior_period(self, tmp_path):
         db = str(tmp_path / "events.db")
         rec = EventRecorder(db_path=db)
-        # Insert data in one prior 24h period only (25-49h ago)
+        # Insert data in one prior 24h period only (25-49h ago) — one period is enough
         ts = time.time() - 36 * 3600
         conn = sqlite3.connect(db)
         conn.execute(
@@ -217,7 +217,7 @@ class TestGetHistoricalAverage:
         conn.commit()
         conn.close()
         avg = rec.get_historical_average(24)
-        assert avg["money_in"] is None
+        assert avg["money_in"] == 5.0
 
     def test_averages_two_prior_periods(self, tmp_path):
         db = str(tmp_path / "events.db")
