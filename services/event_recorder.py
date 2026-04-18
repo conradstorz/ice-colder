@@ -170,7 +170,7 @@ class EventRecorder:
             if w["uptime_pct"] > 0:
                 active_windows.append(w)
 
-        if len(active_windows) < 2:
+        if len(active_windows) < 1:
             return {k: None for k in SUMMARY_KEYS}
 
         avg = {}
