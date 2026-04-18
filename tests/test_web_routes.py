@@ -132,6 +132,9 @@ class TestKpiEndpoint:
         try:
             response = client.get("/kpi")
             assert response.status_code == 200
+            # "no history yet" only appears in the recorder-present branch (average sub-line);
+            # the placeholder skeleton uses "no data" instead.
+            assert "no history yet" in response.text
         finally:
             r.set_event_recorder(None)
 
