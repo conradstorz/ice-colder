@@ -156,6 +156,66 @@ class ESP32Simulator(ABC):
         """Return the set of currently active fault names."""
         return {name for name, state in self._fault_state.items() if state["active"]}
 
+    async def _activate_fault(
+        self,
+        client: aiomqtt.Client,
+        fault: FaultDef,
+        recover_in: float | None = None,
+    ) -> None:
+        """Activate a fault: set state, call on_activate, publish alert."""
+        if recover_in is None:
+            lo, hi = RECOVERY_RANGES[fault.category]
+            recover_in = random.uniform(lo, hi)
+        self._fault_state[fault.name]["active"] = True
+        self._fault_state[fault.name]["recover_at"] = time.monotonic() + recover_in
+        await fault.on_activate(client)
+        await self._publish_alert(client, fault, "active", recover_in=recover_in)
+        logger.warning(
+            f"[{self.subsystem_name}] Fault activated: {fault.name} "
+            f"(recover in {recover_in / 60:.1f} min)"
+        )
+
+    async def _check_recoveries(self, client: aiomqtt.Client) -> None:
+        """Clear any faults whose recovery timer has elapsed."""
+        now = time.monotonic()
+        for fault in self._fault_defs:
+            state = self._fault_state[fault.name]
+            if state["active"] and now >= state["recover_at"]:
+                state["active"] = False
+                await fault.on_recover(client)
+                await self._publish_alert(client, fault, "cleared")
+                logger.info(f"[{self.subsystem_name}] Fault cleared: {fault.name}")
+
+    async def _try_roll_faults(self, client: aiomqtt.Client) -> None:
+        """Roll for new faults if none are currently active."""
+        if any(s["active"] for s in self._fault_state.values()):
+            return
+        for fault in self._fault_defs:
+            if random.random() < fault.probability:
+                await self._activate_fault(client, fault)
+                break  # one fault at a time
+
+    async def _publish_alert(
+        self,
+        client: aiomqtt.Client,
+        fault: FaultDef,
+        status: str,
+        recover_in: float | None = None,
+    ) -> None:
+        """Publish a structured alert to vmc/{machine_id}/alert/{subsystem}."""
+        topic = f"{self.topic_prefix}/alert/{self.subsystem_name}"
+        payload: dict = {
+            "subsystem": self.subsystem_name,
+            "fault": fault.name,
+            "status": status,
+            "message": fault.message,
+            "severity": fault.severity,
+        }
+        if recover_in is not None:
+            payload["recover_in_seconds"] = int(recover_in)
+        await client.publish(topic, json.dumps(payload))
+        logger.debug(f"[{self.subsystem_name}] Alert: {fault.name} {status}")
+
     def ha_discovery_entities(self) -> list[dict]:
         """Override in subclasses to return HA discovery entity definitions.
 

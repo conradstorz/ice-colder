@@ -139,6 +139,8 @@ class TestHADiscovery:
         assert payload["payload_off"] == "OFF"
 
 
+import time
+
 from simulators.base import FaultDef
 
 
@@ -198,3 +200,163 @@ class TestFaultRegistration:
             ))
         assert len(sim._fault_defs) == 3
         assert set(sim._fault_state.keys()) == {"fault_a", "fault_b", "fault_c"}
+
+
+class TestFaultLoop:
+    @pytest.mark.asyncio
+    async def test_activate_fault_sets_active_state(self):
+        sim = ConcreteSimulator()
+        fault = FaultDef(
+            name="test_fault", category="short", probability=1.0,
+            on_activate=AsyncMock(), on_recover=AsyncMock(),
+            message="Test fault",
+        )
+        sim.register_fault(fault)
+        client = AsyncMock()
+        await sim._activate_fault(client, fault)
+        assert sim._fault_state["test_fault"]["active"] is True
+        assert sim._fault_state["test_fault"]["recover_at"] > time.monotonic()
+
+    @pytest.mark.asyncio
+    async def test_activate_fault_calls_on_activate(self):
+        sim = ConcreteSimulator()
+        on_activate = AsyncMock()
+        fault = FaultDef(
+            name="test_fault", category="short", probability=1.0,
+            on_activate=on_activate, on_recover=AsyncMock(),
+            message="Test fault",
+        )
+        sim.register_fault(fault)
+        client = AsyncMock()
+        await sim._activate_fault(client, fault)
+        on_activate.assert_called_once_with(client)
+
+    @pytest.mark.asyncio
+    async def test_try_roll_faults_activates_on_probability_1(self):
+        sim = ConcreteSimulator()
+        on_activate = AsyncMock()
+        fault = FaultDef(
+            name="test_fault", category="short", probability=1.0,
+            on_activate=on_activate, on_recover=AsyncMock(),
+            message="Test fault",
+        )
+        sim.register_fault(fault)
+        client = AsyncMock()
+        await sim._try_roll_faults(client)
+        assert sim._fault_state["test_fault"]["active"] is True
+        on_activate.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_try_roll_faults_skips_on_probability_0(self):
+        sim = ConcreteSimulator()
+        on_activate = AsyncMock()
+        fault = FaultDef(
+            name="test_fault", category="short", probability=0.0,
+            on_activate=on_activate, on_recover=AsyncMock(),
+            message="Test fault",
+        )
+        sim.register_fault(fault)
+        client = AsyncMock()
+        await sim._try_roll_faults(client)
+        assert sim._fault_state["test_fault"]["active"] is False
+        on_activate.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_try_roll_faults_only_one_at_a_time(self):
+        sim = ConcreteSimulator()
+        for name in ("fault_a", "fault_b"):
+            sim.register_fault(FaultDef(
+                name=name, category="short", probability=1.0,
+                on_activate=AsyncMock(), on_recover=AsyncMock(),
+                message=f"{name} message",
+            ))
+        client = AsyncMock()
+        await sim._try_roll_faults(client)
+        active_count = sum(1 for s in sim._fault_state.values() if s["active"])
+        assert active_count == 1
+
+    @pytest.mark.asyncio
+    async def test_try_roll_faults_skips_if_fault_already_active(self):
+        sim = ConcreteSimulator()
+        on_activate = AsyncMock()
+        fault = FaultDef(
+            name="test_fault", category="short", probability=1.0,
+            on_activate=on_activate, on_recover=AsyncMock(),
+            message="Test fault",
+        )
+        sim.register_fault(fault)
+        # Pre-activate the fault
+        sim._fault_state["test_fault"]["active"] = True
+        client = AsyncMock()
+        await sim._try_roll_faults(client)
+        on_activate.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_check_recoveries_clears_overdue_fault(self):
+        sim = ConcreteSimulator()
+        on_recover = AsyncMock()
+        fault = FaultDef(
+            name="test_fault", category="short", probability=0.0,
+            on_activate=AsyncMock(), on_recover=on_recover,
+            message="Test fault",
+        )
+        sim.register_fault(fault)
+        sim._fault_state["test_fault"]["active"] = True
+        sim._fault_state["test_fault"]["recover_at"] = time.monotonic() - 1.0  # past due
+        client = AsyncMock()
+        await sim._check_recoveries(client)
+        assert sim._fault_state["test_fault"]["active"] is False
+        on_recover.assert_called_once_with(client)
+
+    @pytest.mark.asyncio
+    async def test_check_recoveries_leaves_non_overdue_fault(self):
+        sim = ConcreteSimulator()
+        on_recover = AsyncMock()
+        fault = FaultDef(
+            name="test_fault", category="short", probability=0.0,
+            on_activate=AsyncMock(), on_recover=on_recover,
+            message="Test fault",
+        )
+        sim.register_fault(fault)
+        sim._fault_state["test_fault"]["active"] = True
+        sim._fault_state["test_fault"]["recover_at"] = time.monotonic() + 9999.0
+        client = AsyncMock()
+        await sim._check_recoveries(client)
+        assert sim._fault_state["test_fault"]["active"] is True
+        on_recover.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_publish_alert_active_includes_recover_in(self):
+        sim = ConcreteSimulator(machine_id="vmc-0001")
+        fault = FaultDef(
+            name="test_fault", category="short", probability=1.0,
+            on_activate=AsyncMock(), on_recover=AsyncMock(),
+            message="Test fault message",
+            severity="warning",
+        )
+        client = AsyncMock()
+        await sim._publish_alert(client, fault, "active", recover_in=300.0)
+        client.publish.assert_called_once()
+        topic, payload_str = client.publish.call_args[0]
+        assert topic == "vmc/vmc-0001/alert/test_subsystem"
+        payload = json.loads(payload_str)
+        assert payload["subsystem"] == "test_subsystem"
+        assert payload["fault"] == "test_fault"
+        assert payload["status"] == "active"
+        assert payload["message"] == "Test fault message"
+        assert payload["severity"] == "warning"
+        assert payload["recover_in_seconds"] == 300
+
+    @pytest.mark.asyncio
+    async def test_publish_alert_cleared_omits_recover_in(self):
+        sim = ConcreteSimulator(machine_id="vmc-0001")
+        fault = FaultDef(
+            name="test_fault", category="short", probability=1.0,
+            on_activate=AsyncMock(), on_recover=AsyncMock(),
+            message="Test fault message",
+        )
+        client = AsyncMock()
+        await sim._publish_alert(client, fault, "cleared")
+        payload = json.loads(client.publish.call_args[0][1])
+        assert "recover_in_seconds" not in payload
+        assert payload["status"] == "cleared"
