@@ -137,3 +137,64 @@ class TestHADiscovery:
         payload = json.loads(call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs.get("payload"))
         assert payload["payload_on"] == "ON"
         assert payload["payload_off"] == "OFF"
+
+
+from simulators.base import FaultDef
+
+
+class TestFaultRegistration:
+    def test_register_fault_stores_def(self):
+        sim = ConcreteSimulator()
+        fault = FaultDef(
+            name="test_fault",
+            category="short",
+            probability=1.0,
+            on_activate=AsyncMock(),
+            on_recover=AsyncMock(),
+            message="Test fault",
+        )
+        sim.register_fault(fault)
+        assert len(sim._fault_defs) == 1
+        assert sim._fault_defs[0].name == "test_fault"
+
+    def test_register_fault_initialises_state(self):
+        sim = ConcreteSimulator()
+        fault = FaultDef(
+            name="test_fault",
+            category="short",
+            probability=1.0,
+            on_activate=AsyncMock(),
+            on_recover=AsyncMock(),
+            message="Test fault",
+        )
+        sim.register_fault(fault)
+        assert sim._fault_state["test_fault"] == {"active": False, "recover_at": 0.0}
+
+    def test_active_fault_names_empty_initially(self):
+        sim = ConcreteSimulator()
+        assert sim._active_fault_names == set()
+
+    def test_active_fault_names_reflects_active_state(self):
+        sim = ConcreteSimulator()
+        fault = FaultDef(
+            name="test_fault",
+            category="short",
+            probability=1.0,
+            on_activate=AsyncMock(),
+            on_recover=AsyncMock(),
+            message="Test fault",
+        )
+        sim.register_fault(fault)
+        sim._fault_state["test_fault"]["active"] = True
+        assert "test_fault" in sim._active_fault_names
+
+    def test_register_multiple_faults(self):
+        sim = ConcreteSimulator()
+        for name in ("fault_a", "fault_b", "fault_c"):
+            sim.register_fault(FaultDef(
+                name=name, category="short", probability=0.1,
+                on_activate=AsyncMock(), on_recover=AsyncMock(),
+                message=f"{name} message",
+            ))
+        assert len(sim._fault_defs) == 3
+        assert set(sim._fault_state.keys()) == {"fault_a", "fault_b", "fault_c"}

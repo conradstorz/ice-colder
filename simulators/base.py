@@ -8,16 +8,40 @@ and automatic reconnection. Subclasses implement run_simulation().
 import argparse
 import asyncio
 import json
+import random
 import sys
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import aiomqtt
 from loguru import logger
 from pydantic import BaseModel
 
 from config.config_model import ConfigModel
+
+
+RECOVERY_RANGES: dict[str, tuple[float, float]] = {
+    "short":  (3 * 60,  10 * 60),
+    "medium": (10 * 60, 20 * 60),
+    "long":   (20 * 60, 60 * 60),
+}
+
+FAULT_LOOP_INTERVAL = 30.0  # seconds between fault probability rolls
+
+
+@dataclass
+class FaultDef:
+    name: str
+    category: Literal["short", "medium", "long"]
+    probability: float         # chance per FAULT_LOOP_INTERVAL tick
+    on_activate: Callable      # async fn(client) — enter degraded state
+    on_recover: Callable       # async fn(client) — restore normal state
+    message: str               # human-readable alert text
+    severity: str = "warning"  # "warning" | "critical"
 
 
 class ESP32Simulator(ABC):
@@ -46,6 +70,8 @@ class ESP32Simulator(ABC):
         self.machine_id = machine_id or self.config.machine_id
         self._start_time = time.monotonic()
         self._subscriptions: list[tuple[str, asyncio.Queue]] = []
+        self._fault_defs: list[FaultDef] = []
+        self._fault_state: dict[str, dict] = {}
 
     @property
     def topic_prefix(self) -> str:
@@ -119,6 +145,16 @@ class ESP32Simulator(ABC):
             if pat != "+" and pat != top_parts[i]:
                 return False
         return len(pat_parts) == len(top_parts)
+
+    def register_fault(self, fault: FaultDef) -> None:
+        """Register a fault definition. Call from subclass __init__."""
+        self._fault_defs.append(fault)
+        self._fault_state[fault.name] = {"active": False, "recover_at": 0.0}
+
+    @property
+    def _active_fault_names(self) -> set[str]:
+        """Return the set of currently active fault names."""
+        return {name for name, state in self._fault_state.items() if state["active"]}
 
     def ha_discovery_entities(self) -> list[dict]:
         """Override in subclasses to return HA discovery entity definitions.
