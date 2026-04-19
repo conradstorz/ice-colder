@@ -413,3 +413,11 @@ class TestFaultInject:
         client = AsyncMock()
         await sim._handle_inject_command(client, {"fault": "fault_b"})
         on_activate_b.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_inject_ignores_missing_fault_key(self):
+        sim = ConcreteSimulator()
+        client = AsyncMock()
+        # Empty payload — no "fault" key
+        await sim._handle_inject_command(client, {})
+        assert sim._active_fault_names == set()

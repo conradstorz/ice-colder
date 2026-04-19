@@ -232,7 +232,7 @@ class ESP32Simulator(ABC):
         logger.info(f"[{self.subsystem_name}] Fault injected: {name}")
 
     async def _fault_loop(self, client: aiomqtt.Client) -> None:
-        """Periodic task: check recoveries, roll for new faults, handle inject commands."""
+        """Periodic task: drain inject commands, check recoveries, roll for new faults."""
         inject_topic = f"{self.topic_prefix}/cmd/sim/inject_fault"
         inject_queue = await self.subscribe(client, inject_topic)
         logger.info(f"[{self.subsystem_name}] Fault loop started, inject topic: {inject_topic}")
