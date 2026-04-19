@@ -2,11 +2,12 @@
 """Tests for simulators/base.py — ESP32Simulator base class."""
 import asyncio
 import json
+import time
 from unittest.mock import AsyncMock
 
 import pytest
 
-from simulators.base import ESP32Simulator
+from simulators.base import ESP32Simulator, FaultDef, RECOVERY_RANGES
 
 
 class ConcreteSimulator(ESP32Simulator):
@@ -139,11 +140,6 @@ class TestHADiscovery:
         assert payload["payload_off"] == "OFF"
 
 
-import time
-
-from simulators.base import FaultDef
-
-
 class TestFaultRegistration:
     def test_register_fault_stores_def(self):
         sim = ConcreteSimulator()
@@ -215,7 +211,9 @@ class TestFaultLoop:
         client = AsyncMock()
         await sim._activate_fault(client, fault)
         assert sim._fault_state["test_fault"]["active"] is True
-        assert sim._fault_state["test_fault"]["recover_at"] > time.monotonic()
+        now = time.monotonic()
+        lo, hi = RECOVERY_RANGES["short"]
+        assert now + lo - 1.0 <= sim._fault_state["test_fault"]["recover_at"] <= now + hi + 1.0
 
     @pytest.mark.asyncio
     async def test_activate_fault_calls_on_activate(self):
