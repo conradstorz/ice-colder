@@ -216,6 +216,37 @@ class ESP32Simulator(ABC):
         await client.publish(topic, json.dumps(payload))
         logger.debug(f"[{self.subsystem_name}] Alert: {fault.name} {status}")
 
+    async def _handle_inject_command(self, client: aiomqtt.Client, data: dict) -> None:
+        """Process a manual fault inject command payload."""
+        name = data.get("fault")
+        if not name:
+            return
+        fault = next((f for f in self._fault_defs if f.name == name), None)
+        if not fault:
+            logger.warning(f"[{self.subsystem_name}] Inject: unknown fault '{name}'")
+            return
+        if any(s["active"] for s in self._fault_state.values()):
+            logger.info(f"[{self.subsystem_name}] Inject ignored: a fault is already active")
+            return
+        await self._activate_fault(client, fault)
+        logger.info(f"[{self.subsystem_name}] Fault injected: {name}")
+
+    async def _fault_loop(self, client: aiomqtt.Client) -> None:
+        """Periodic task: check recoveries, roll for new faults, handle inject commands."""
+        inject_topic = f"{self.topic_prefix}/cmd/sim/inject_fault"
+        inject_queue = await self.subscribe(client, inject_topic)
+        logger.info(f"[{self.subsystem_name}] Fault loop started, inject topic: {inject_topic}")
+        while True:
+            await asyncio.sleep(FAULT_LOOP_INTERVAL)
+            # Drain inject commands first
+            while not inject_queue.empty():
+                _, data = inject_queue.get_nowait()
+                await self._handle_inject_command(client, data)
+            # Check if any active faults have recovered
+            await self._check_recoveries(client)
+            # Roll for new faults
+            await self._try_roll_faults(client)
+
     def ha_discovery_entities(self) -> list[dict]:
         """Override in subclasses to return HA discovery entity definitions.
 
@@ -286,6 +317,7 @@ class ESP32Simulator(ABC):
                         tg.create_task(self._heartbeat_loop(client))
                         tg.create_task(self.run_simulation(client))
                         tg.create_task(self._message_dispatcher(client))
+                        tg.create_task(self._fault_loop(client))
             except aiomqtt.MqttError as e:
                 logger.error(f"[{self.subsystem_name}] MQTT error: {e}")
             except Exception as e:

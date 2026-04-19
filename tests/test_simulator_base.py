@@ -358,3 +358,58 @@ class TestFaultLoop:
         payload = json.loads(client.publish.call_args[0][1])
         assert "recover_in_seconds" not in payload
         assert payload["status"] == "cleared"
+
+
+class TestFaultInject:
+    @pytest.mark.asyncio
+    async def test_handle_inject_activates_named_fault(self):
+        sim = ConcreteSimulator()
+        on_activate = AsyncMock()
+        fault = FaultDef(
+            name="test_fault", category="short", probability=0.0,
+            on_activate=on_activate, on_recover=AsyncMock(),
+            message="Test fault",
+        )
+        sim.register_fault(fault)
+        client = AsyncMock()
+        await sim._handle_inject_command(client, {"fault": "test_fault"})
+        assert sim._fault_state["test_fault"]["active"] is True
+        on_activate.assert_called_once_with(client)
+
+    @pytest.mark.asyncio
+    async def test_handle_inject_ignores_unknown_fault(self):
+        sim = ConcreteSimulator()
+        client = AsyncMock()
+        # Should not raise
+        await sim._handle_inject_command(client, {"fault": "nonexistent_fault"})
+
+    @pytest.mark.asyncio
+    async def test_handle_inject_ignored_if_fault_already_active(self):
+        sim = ConcreteSimulator()
+        on_activate = AsyncMock()
+        fault = FaultDef(
+            name="test_fault", category="short", probability=0.0,
+            on_activate=on_activate, on_recover=AsyncMock(),
+            message="Test fault",
+        )
+        sim.register_fault(fault)
+        sim._fault_state["test_fault"]["active"] = True
+        client = AsyncMock()
+        await sim._handle_inject_command(client, {"fault": "test_fault"})
+        on_activate.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_inject_ignored_if_different_fault_active(self):
+        sim = ConcreteSimulator()
+        on_activate_b = AsyncMock()
+        for name, activate in [("fault_a", AsyncMock()), ("fault_b", on_activate_b)]:
+            sim.register_fault(FaultDef(
+                name=name, category="short", probability=0.0,
+                on_activate=activate, on_recover=AsyncMock(),
+                message=f"{name} message",
+            ))
+        # fault_a already active
+        sim._fault_state["fault_a"]["active"] = True
+        client = AsyncMock()
+        await sim._handle_inject_command(client, {"fault": "fault_b"})
+        on_activate_b.assert_not_called()
