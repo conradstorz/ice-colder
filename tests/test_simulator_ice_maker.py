@@ -1,34 +1,42 @@
 # tests/test_simulator_ice_maker.py
 """Tests for simulators/ice_maker.py — ice maker temperature simulation."""
+
 import pytest
 from unittest.mock import AsyncMock
 
 from simulators.ice_maker import IceMakerSimulator, ThermalSensor, SENSOR_DEFS
-from simulators.base import FaultDef
 
 
 class TestThermalSensor:
     def test_initial_value(self):
-        sensor = ThermalSensor(name="test", target_on=50.0, target_off=30.0, rate=0.1, noise=0.0)
+        sensor = ThermalSensor(
+            name="test", target_on=50.0, target_off=30.0, rate=0.1, noise=0.0
+        )
         # Initial value is target_off (compressor starts off)
         assert sensor.value == 30.0
 
     def test_moves_toward_target_on(self):
-        sensor = ThermalSensor(name="test", target_on=50.0, target_off=30.0, rate=0.5, noise=0.0)
+        sensor = ThermalSensor(
+            name="test", target_on=50.0, target_off=30.0, rate=0.5, noise=0.0
+        )
         initial = sensor.value
         sensor.update(compressor_on=True, dt=1.0)
         # Should move toward 50.0 from 30.0
         assert sensor.value > initial
 
     def test_moves_toward_target_off(self):
-        sensor = ThermalSensor(name="test", target_on=50.0, target_off=30.0, rate=0.5, noise=0.0)
+        sensor = ThermalSensor(
+            name="test", target_on=50.0, target_off=30.0, rate=0.5, noise=0.0
+        )
         sensor._value = 50.0  # start at on-target
         sensor.update(compressor_on=False, dt=1.0)
         # Should move toward 30.0 from 50.0
         assert sensor.value < 50.0
 
     def test_noise_adds_variation(self):
-        sensor = ThermalSensor(name="test", target_on=50.0, target_off=30.0, rate=0.0, noise=1.0)
+        sensor = ThermalSensor(
+            name="test", target_on=50.0, target_off=30.0, rate=0.0, noise=1.0
+        )
         values = set()
         for _ in range(20):
             sensor.update(compressor_on=False, dt=1.0)
@@ -37,7 +45,9 @@ class TestThermalSensor:
         assert len(values) > 1
 
     def test_rate_zero_stays_put_without_noise(self):
-        sensor = ThermalSensor(name="test", target_on=50.0, target_off=30.0, rate=0.0, noise=0.0)
+        sensor = ThermalSensor(
+            name="test", target_on=50.0, target_off=30.0, rate=0.0, noise=0.0
+        )
         sensor.update(compressor_on=True, dt=1.0)
         assert sensor.value == 30.0  # no movement
 
@@ -49,9 +59,15 @@ class TestSensorDefs:
     def test_expected_sensor_names(self):
         names = {s["name"] for s in SENSOR_DEFS}
         expected = {
-            "water_inlet", "water_bath", "compressor", "exhaust_air",
-            "ambient_air", "refrigerant_high", "refrigerant_low",
-            "purge_water", "hot_gas_valve",
+            "water_inlet",
+            "water_bath",
+            "compressor",
+            "exhaust_air",
+            "ambient_air",
+            "refrigerant_high",
+            "refrigerant_low",
+            "purge_water",
+            "hot_gas_valve",
         }
         assert names == expected
 
@@ -72,7 +88,8 @@ class TestIceMakerSimulator:
         sim.tick(dt=5.0)
         # At least some sensors should have changed (noise)
         changed = sum(
-            1 for s in sim.sensors
+            1
+            for s in sim.sensors
             if round(s.value, 4) != round(initial_values[s.name], 4)
         )
         assert changed > 0
@@ -139,8 +156,9 @@ class TestHADiscovery:
         valid_prefixes = {"sensors/temp/", "ice_maker/event", "heartbeat/ice_maker"}
         for entity in entities:
             suffix = entity["state_topic_suffix"]
-            assert any(suffix.startswith(p) or suffix == p for p in valid_prefixes), \
-                f"Unexpected state_topic_suffix: {suffix}"
+            assert any(
+                suffix.startswith(p) or suffix == p for p in valid_prefixes
+            ), f"Unexpected state_topic_suffix: {suffix}"
 
     def test_all_object_ids_unique(self):
         sim = IceMakerSimulator()
@@ -161,7 +179,9 @@ class TestHADiscovery:
         # All should contain the machine_id
         assert all("vmc-test_ice_maker" in t for t in topics)
         # All should be retained
-        assert all(call.kwargs.get("retain") is True for call in client.publish.call_args_list)
+        assert all(
+            call.kwargs.get("retain") is True for call in client.publish.call_args_list
+        )
 
 
 class TestIceMakerFaultRegistration:
@@ -223,8 +243,10 @@ class TestCompressorOvertempFault:
     async def test_activate_publishes_halt_event(self):
         sim = IceMakerSimulator()
         published = []
+
         async def capture_publish(client, suffix, payload):
             published.append((suffix, payload))
+
         sim.publish = capture_publish
         client = AsyncMock()
         await sim._on_compressor_overtemp_activate(client)
@@ -263,6 +285,19 @@ class TestLowRefrigerantFault:
         assert sensor.target_on == original["target_on"]
         assert sensor.target_off == original["target_off"]
 
+    @pytest.mark.asyncio
+    async def test_activate_publishes_halt_event(self):
+        sim = IceMakerSimulator()
+        published = []
+
+        async def capture_publish(client, suffix, payload):
+            published.append((suffix, payload))
+
+        sim.publish = capture_publish
+        client = AsyncMock()
+        await sim._on_low_refrigerant_activate(client)
+        assert any("ice_maker/event" in s for s, _ in published)
+
     def test_tick_allows_compressor_cycling_during_low_refrigerant(self):
         sim = IceMakerSimulator()
         # Manually activate the already-registered fault
@@ -296,6 +331,19 @@ class TestWaterInletBlockedFault:
         assert sensor.target_on == original["target_on"]
         assert sensor.target_off == original["target_off"]
 
+    @pytest.mark.asyncio
+    async def test_activate_publishes_halt_event(self):
+        sim = IceMakerSimulator()
+        published = []
+
+        async def capture_publish(client, suffix, payload):
+            published.append((suffix, payload))
+
+        sim.publish = capture_publish
+        client = AsyncMock()
+        await sim._on_water_inlet_blocked_activate(client)
+        assert any("ice_maker/event" in s for s, _ in published)
+
 
 class TestDefrostStuckFault:
     @pytest.mark.asyncio
@@ -326,7 +374,5 @@ class TestDefrostStuckFault:
         # Advance well past the ice drop interval (900s default)
         for _ in range(200):
             sim.tick(dt=5.0)
-        ice_drop_events = [
-            e for e in sim._pending_events if e.event == "ice_dropped"
-        ]
+        ice_drop_events = [e for e in sim._pending_events if e.event == "ice_dropped"]
         assert ice_drop_events == []
