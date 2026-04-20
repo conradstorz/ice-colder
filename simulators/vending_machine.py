@@ -15,6 +15,7 @@ Run: uv run python -m simulators.vending_machine [--broker HOST] [--port PORT] [
 
 import asyncio
 import random
+from datetime import datetime
 
 import aiomqtt
 from loguru import logger
@@ -286,6 +287,32 @@ class VendingMachineSimulator(ESP32Simulator):
         await self._set_hw(client, "bin_half_full", True)
         logger.info("[vending] Fault cleared: ice_bin_empty")
 
+    def _arrival_factor(self, hour: int | None = None) -> float:
+        """Return an idle-time multiplier based on time of day.
+
+        Peak hours (11am-2pm, 5pm-8pm): factor 0.5 (customers arrive twice as fast).
+        Overnight (2am-6am): factor 2.0 (customers arrive half as fast).
+        Otherwise: factor 1.0.
+        """
+        if hour is None:
+            hour = datetime.now().hour
+        if 11 <= hour < 14 or 17 <= hour < 20:
+            return 0.5
+        if 2 <= hour < 6:
+            return 2.0
+        return 1.0
+
+    def _compute_idle_time(self, hour: int | None = None) -> float:
+        """Return idle wait time in seconds, accounting for faults and time-of-day."""
+        fault_active = (
+            "auger_jam" in self._active_fault_names
+            or "ice_bin_empty" in self._active_fault_names
+        )
+        if fault_active:
+            return random.uniform(5.0, 15.0)
+        factor = self._arrival_factor(hour=hour)
+        return random.uniform(self.IDLE_MIN, self.IDLE_MAX) * factor
+
     async def _run_ice_dispense(self, client: aiomqtt.Client, slot: int):
         """Run ice dispense sequence with realistic hardware transitions."""
         active = self._active_fault_names
@@ -437,8 +464,7 @@ class VendingMachineSimulator(ESP32Simulator):
     async def _customer_loop(self, client: aiomqtt.Client):
         """Simulate customers pressing buttons and waiting for dispense."""
         while True:
-            # Wait for next customer
-            idle_time = random.uniform(self.IDLE_MIN, self.IDLE_MAX)
+            idle_time = self._compute_idle_time()
             logger.info(f"[vending] Waiting {idle_time:.0f}s for next customer")
             await asyncio.sleep(idle_time)
 
@@ -447,16 +473,33 @@ class VendingMachineSimulator(ESP32Simulator):
             await self.publish(client, "hardware/buttons", ButtonPress(button=button))
             logger.info(f"[vending] Customer pressed button {button}")
 
-            # Wait for dispense command from RPi
+            # Indecisive customer (20%): changes their mind
+            if random.random() < 0.20:
+                await asyncio.sleep(random.uniform(5.0, 15.0))
+                other_buttons = [b for b in range(self.num_buttons) if b != button]
+                if other_buttons:
+                    button = random.choice(other_buttons)
+                    await self.publish(
+                        client, "hardware/buttons", ButtonPress(button=button)
+                    )
+                    logger.info(
+                        f"[vending] Indecisive customer changed to button {button}"
+                    )
+
+            # Impatient customer (15%): shorter timeout
+            timeout = (
+                random.uniform(10.0, 20.0)
+                if random.random() < 0.15
+                else self.DISPENSE_TIMEOUT
+            )
+
             try:
                 slot = await asyncio.wait_for(
                     self._dispense_command.get(),
-                    timeout=self.DISPENSE_TIMEOUT,
+                    timeout=timeout,
                 )
             except asyncio.TimeoutError:
-                logger.info(
-                    "[vending] No dispense command received, customer walked away"
-                )
+                logger.info("[vending] Customer walked away")
                 continue
 
             # Run the appropriate dispense sequence
@@ -464,6 +507,26 @@ class VendingMachineSimulator(ESP32Simulator):
                 await self._run_water_dispense(client, slot)
             else:
                 await self._run_ice_dispense(client, slot)
+
+            # Repeat customer (10%): buys again immediately
+            if random.random() < 0.10:
+                logger.info("[vending] Repeat customer buying again")
+                repeat_button = self._pick_button()
+                await self.publish(
+                    client, "hardware/buttons", ButtonPress(button=repeat_button)
+                )
+                logger.info(f"[vending] Repeat customer pressed button {repeat_button}")
+                try:
+                    slot = await asyncio.wait_for(
+                        self._dispense_command.get(),
+                        timeout=self.DISPENSE_TIMEOUT,
+                    )
+                    if self.slot_type(slot) == "water":
+                        await self._run_water_dispense(client, slot)
+                    else:
+                        await self._run_ice_dispense(client, slot)
+                except asyncio.TimeoutError:
+                    logger.info("[vending] Repeat customer walked away")
 
     async def run_simulation(self, client: aiomqtt.Client):
         """Run the button press, sensor monitoring, and dispense simulation."""

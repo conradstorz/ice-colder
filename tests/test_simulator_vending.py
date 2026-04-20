@@ -394,3 +394,38 @@ class TestIceBinEmptyFault:
         client = AsyncMock()
         await sim._on_ice_bin_empty_recover(client)
         assert ("bin_half_full", True) in set_hw_calls
+
+
+class TestCustomerBehaviours:
+    def test_arrival_factor_peak_morning(self):
+        sim = VendingMachineSimulator()
+        factor = sim._arrival_factor(hour=12)
+        assert factor == 0.5
+
+    def test_arrival_factor_peak_evening(self):
+        sim = VendingMachineSimulator()
+        factor = sim._arrival_factor(hour=18)
+        assert factor == 0.5
+
+    def test_arrival_factor_overnight(self):
+        sim = VendingMachineSimulator()
+        factor = sim._arrival_factor(hour=3)
+        assert factor == 2.0
+
+    def test_arrival_factor_normal(self):
+        sim = VendingMachineSimulator()
+        factor = sim._arrival_factor(hour=9)
+        assert factor == 1.0
+
+    def test_fault_aware_idle_time_shortened(self):
+        sim = VendingMachineSimulator()
+        sim._fault_state["auger_jam"] = {"active": True, "recover_at": 9e9}
+        idle = sim._compute_idle_time()
+        # Must be within 5-15 range (fault-aware)
+        assert 5.0 <= idle <= 15.0
+
+    def test_normal_idle_time_in_range(self):
+        sim = VendingMachineSimulator()
+        for _ in range(50):
+            idle = sim._compute_idle_time(hour=9)
+            assert sim.IDLE_MIN <= idle <= sim.IDLE_MAX
