@@ -1,7 +1,7 @@
 # tests/test_simulator_vending.py
 """Tests for simulators/vending_machine.py — vending interface simulation."""
-import asyncio
-from unittest.mock import AsyncMock
+
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -11,15 +11,17 @@ from simulators.vending_machine import VendingMachineSimulator, _classify_produc
 
 def _make_config() -> ConfigModel:
     """Build a 3-product config matching the real machine layout."""
-    return ConfigModel.model_validate({
-        "physical": {
-            "products": [
-                {"sku": "Ten Pounds Ice", "name": "Bagged Ice", "price": 3.00},
-                {"sku": "One Gallon Water", "name": "Small Water", "price": 0.50},
-                {"sku": "Five Gallons Water", "name": "Large Water", "price": 2.00},
-            ]
+    return ConfigModel.model_validate(
+        {
+            "physical": {
+                "products": [
+                    {"sku": "Ten Pounds Ice", "name": "Bagged Ice", "price": 3.00},
+                    {"sku": "One Gallon Water", "name": "Small Water", "price": 0.50},
+                    {"sku": "Five Gallons Water", "name": "Large Water", "price": 2.00},
+                ]
+            }
         }
-    })
+    )
 
 
 def _make_sim(**kwargs) -> VendingMachineSimulator:
@@ -193,12 +195,19 @@ class TestHADiscovery:
     def test_binary_sensor_names(self):
         sim = _make_sim()
         entities = sim.ha_discovery_entities()
-        binary_ids = {e["object_id"] for e in entities if e["component"] == "binary_sensor"}
+        binary_ids = {
+            e["object_id"] for e in entities if e["component"] == "binary_sensor"
+        }
         expected = {
-            "auger_motor", "agitator_motor", "fan",
-            "bag_full_sensor", "bag_drop_solenoid",
-            "water_valve_solenoid", "water_flow_sensor",
-            "bin_half_full", "heater_relay",
+            "auger_motor",
+            "agitator_motor",
+            "fan",
+            "bag_full_sensor",
+            "bag_drop_solenoid",
+            "water_valve_solenoid",
+            "water_flow_sensor",
+            "bin_half_full",
+            "heater_relay",
         }
         assert binary_ids == expected
 
@@ -234,3 +243,154 @@ class TestHADiscovery:
         entities = sim.ha_discovery_entities()
         ids = [e["object_id"] for e in entities]
         assert len(ids) == len(set(ids))
+
+
+class TestVendingFaultRegistration:
+    def test_four_faults_registered(self):
+        sim = VendingMachineSimulator()
+        assert len(sim._fault_defs) == 4
+
+    def test_fault_names(self):
+        sim = VendingMachineSimulator()
+        names = {f.name for f in sim._fault_defs}
+        assert names == {
+            "auger_jam",
+            "bag_drop_solenoid_stuck",
+            "water_valve_stuck_open",
+            "ice_bin_empty",
+        }
+
+
+class TestAugerJamFault:
+    @pytest.mark.asyncio
+    async def test_fault_is_registered(self):
+        sim = VendingMachineSimulator()
+        names = {f.name for f in sim._fault_defs}
+        assert "auger_jam" in names
+
+    @pytest.mark.asyncio
+    async def test_ice_dispense_publishes_timeout_during_fault(self):
+        sim = VendingMachineSimulator()
+        # Manually activate the already-registered fault
+        sim._fault_state["auger_jam"]["active"] = True
+        sim._fault_state["auger_jam"]["recover_at"] = 9e9
+        published_states = []
+
+        async def capture(client, topic, payload):
+            if "hardware/dispenser" in topic and hasattr(payload, "state"):
+                published_states.append(payload.state)
+
+        sim.publish = capture
+        sim._set_hw = AsyncMock()
+        client = AsyncMock()
+        # Patch asyncio.sleep to skip the 90s auger jam timeout
+        with patch("asyncio.sleep", new=AsyncMock()):
+            await sim._run_ice_dispense(client, slot=0)
+        assert "timeout" in published_states
+        assert "complete" not in published_states
+
+    @pytest.mark.asyncio
+    async def test_recover_logs_and_does_not_crash(self):
+        sim = VendingMachineSimulator()
+        client = AsyncMock()
+        # Should complete without error
+        await sim._on_auger_jam_recover(client)
+
+
+class TestBagDropSolenoidStuckFault:
+    @pytest.mark.asyncio
+    async def test_ice_dispense_publishes_jam_during_fault(self):
+        sim = VendingMachineSimulator()
+        # Manually activate the already-registered fault
+        sim._fault_state["bag_drop_solenoid_stuck"]["active"] = True
+        sim._fault_state["bag_drop_solenoid_stuck"]["recover_at"] = 9e9
+        published_states = []
+
+        async def capture(client, topic, payload):
+            if "hardware/dispenser" in topic and hasattr(payload, "state"):
+                published_states.append(payload.state)
+
+        sim.publish = capture
+        sim._set_hw = AsyncMock()
+        client = AsyncMock()
+        # Patch asyncio.sleep to skip fill time wait
+        with patch("asyncio.sleep", new=AsyncMock()):
+            await sim._run_ice_dispense(client, slot=0)
+        assert "jam" in published_states
+        assert "complete" not in published_states
+
+
+class TestWaterValveStuckOpenFault:
+    @pytest.mark.asyncio
+    async def test_activate_sets_valve_and_flow_sensor_on(self):
+        sim = VendingMachineSimulator()
+        set_hw_calls = []
+
+        async def capture_set_hw(client, device, state):
+            set_hw_calls.append((device, state))
+
+        sim._set_hw = capture_set_hw
+        client = AsyncMock()
+        await sim._on_water_valve_stuck_open_activate(client)
+        assert ("water_valve_solenoid", True) in set_hw_calls
+        assert ("water_flow_sensor", True) in set_hw_calls
+
+    @pytest.mark.asyncio
+    async def test_recover_closes_valve_and_flow_sensor(self):
+        sim = VendingMachineSimulator()
+        set_hw_calls = []
+
+        async def capture_set_hw(client, device, state):
+            set_hw_calls.append((device, state))
+
+        sim._set_hw = capture_set_hw
+        client = AsyncMock()
+        await sim._on_water_valve_stuck_open_recover(client)
+        assert ("water_valve_solenoid", False) in set_hw_calls
+        assert ("water_flow_sensor", False) in set_hw_calls
+
+
+class TestIceBinEmptyFault:
+    @pytest.mark.asyncio
+    async def test_activate_sets_bin_half_full_false(self):
+        sim = VendingMachineSimulator()
+        set_hw_calls = []
+
+        async def capture_set_hw(client, device, state):
+            set_hw_calls.append((device, state))
+            sim._hw[device] = state
+
+        sim._set_hw = capture_set_hw
+        client = AsyncMock()
+        await sim._on_ice_bin_empty_activate(client)
+        assert ("bin_half_full", False) in set_hw_calls
+
+    @pytest.mark.asyncio
+    async def test_ice_dispense_publishes_bin_empty_during_fault(self):
+        sim = VendingMachineSimulator()
+        sim._fault_state["ice_bin_empty"] = {"active": True, "recover_at": 9e9}
+        published_states = []
+
+        async def capture(client, topic, payload):
+            if "hardware/dispenser" in topic and hasattr(payload, "state"):
+                published_states.append(payload.state)
+
+        sim.publish = capture
+        sim._set_hw = AsyncMock()
+        client = AsyncMock()
+        await sim._run_ice_dispense(client, slot=0)
+        assert "bin_empty" in published_states
+        assert "complete" not in published_states
+
+    @pytest.mark.asyncio
+    async def test_recover_restores_bin_half_full(self):
+        sim = VendingMachineSimulator()
+        set_hw_calls = []
+
+        async def capture_set_hw(client, device, state):
+            set_hw_calls.append((device, state))
+
+        sim._set_hw = capture_set_hw
+        client = AsyncMock()
+        await sim._on_ice_bin_empty_recover(client)
+        assert ("bin_half_full", True) in set_hw_calls

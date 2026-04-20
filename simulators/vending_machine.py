@@ -12,14 +12,20 @@ dispense sequence with realistic hardware state transitions.
 
 Run: uv run python -m simulators.vending_machine [--broker HOST] [--port PORT] [--machine-id ID]
 """
+
 import asyncio
 import random
 
 import aiomqtt
 from loguru import logger
 
-from simulators.base import ESP32Simulator
-from services.mqtt_messages import ButtonPress, DispenserStatus, HardwareIO, SensorReading
+from simulators.base import ESP32Simulator, FaultDef
+from services.mqtt_messages import (
+    ButtonPress,
+    DispenserStatus,
+    HardwareIO,
+    SensorReading,
+)
 
 
 # Keywords that identify a product as water (case-insensitive check on name/sku)
@@ -55,8 +61,8 @@ SENSOR_PUBLISH_INTERVAL = 10.0  # seconds between periodic sensor publishes
 class VendingMachineSimulator(ESP32Simulator):
     """Simulates the vending machine button panel and dispenser hardware."""
 
-    IDLE_MIN = 30.0   # min seconds between customers
-    IDLE_MAX = 90.0   # max seconds between customers
+    IDLE_MIN = 30.0  # min seconds between customers
+    IDLE_MAX = 90.0  # max seconds between customers
     DISPENSE_TIMEOUT = 60.0  # seconds to wait for dispense command
 
     def __init__(self, **kwargs):
@@ -72,6 +78,52 @@ class VendingMachineSimulator(ESP32Simulator):
         self._cabinet_temp: float = 22.0  # starting cabinet temperature °C
         self._water_flow_total: float = 0.0  # cumulative gallons
         logger.info(f"[vending] {self.num_buttons} products: {self._slot_types}")
+
+        # Register faults
+        self.register_fault(
+            FaultDef(
+                name="auger_jam",
+                category="medium",
+                probability=0.001,
+                on_activate=self._on_auger_jam_activate,
+                on_recover=self._on_auger_jam_recover,
+                message="Auger motor jammed — ice bag fill timed out",
+                severity="warning",
+            )
+        )
+        self.register_fault(
+            FaultDef(
+                name="bag_drop_solenoid_stuck",
+                category="medium",
+                probability=0.0008,
+                on_activate=self._on_bag_drop_solenoid_stuck_activate,
+                on_recover=self._on_bag_drop_solenoid_stuck_recover,
+                message="Bag drop solenoid stuck — bag not releasing",
+                severity="warning",
+            )
+        )
+        self.register_fault(
+            FaultDef(
+                name="water_valve_stuck_open",
+                category="short",
+                probability=0.0012,
+                on_activate=self._on_water_valve_stuck_open_activate,
+                on_recover=self._on_water_valve_stuck_open_recover,
+                message="Water valve stuck open — water flowing continuously",
+                severity="critical",
+            )
+        )
+        self.register_fault(
+            FaultDef(
+                name="ice_bin_empty",
+                category="medium",
+                probability=0.0006,
+                on_activate=self._on_ice_bin_empty_activate,
+                on_recover=self._on_ice_bin_empty_recover,
+                message="Ice bin empty — refill required",
+                severity="warning",
+            )
+        )
 
     def ha_discovery_entities(self) -> list[dict]:
         """Return HA discovery definitions for vending machine hardware."""
@@ -90,53 +142,61 @@ class VendingMachineSimulator(ESP32Simulator):
             ("heater_relay", "Cabinet Heater", "running"),
         ]
         for device_id, display_name, device_class in binary_devices:
-            entities.append({
-                "component": "binary_sensor",
-                "object_id": device_id,
-                "name": f"Vending {display_name}",
-                "state_topic_suffix": f"hardware/io/{device_id}",
-                "value_template": "{{ 'ON' if value_json.state else 'OFF' }}",
-                "device_class": device_class,
-                "payload_on": "ON",
-                "payload_off": "OFF",
-            })
+            entities.append(
+                {
+                    "component": "binary_sensor",
+                    "object_id": device_id,
+                    "name": f"Vending {display_name}",
+                    "state_topic_suffix": f"hardware/io/{device_id}",
+                    "value_template": "{{ 'ON' if value_json.state else 'OFF' }}",
+                    "device_class": device_class,
+                    "payload_on": "ON",
+                    "payload_off": "OFF",
+                }
+            )
 
         # Cabinet temperature sensor
-        entities.append({
-            "component": "sensor",
-            "object_id": "cabinet_temp",
-            "name": "Vending Cabinet Temperature",
-            "state_topic_suffix": "sensors/temp/cabinet",
-            "value_template": "{{ value_json.value }}",
-            "device_class": "temperature",
-            "unit_of_measurement": "\u00b0C",
-            "state_class": "measurement",
-            "expire_after": 30,
-        })
+        entities.append(
+            {
+                "component": "sensor",
+                "object_id": "cabinet_temp",
+                "name": "Vending Cabinet Temperature",
+                "state_topic_suffix": "sensors/temp/cabinet",
+                "value_template": "{{ value_json.value }}",
+                "device_class": "temperature",
+                "unit_of_measurement": "\u00b0C",
+                "state_class": "measurement",
+                "expire_after": 30,
+            }
+        )
 
         # Water flow total sensor
-        entities.append({
-            "component": "sensor",
-            "object_id": "water_flow_total",
-            "name": "Vending Water Flow Total",
-            "state_topic_suffix": "sensors/water_flow",
-            "value_template": "{{ value_json.value }}",
-            "device_class": "water",
-            "unit_of_measurement": "gal",
-            "state_class": "total_increasing",
-        })
+        entities.append(
+            {
+                "component": "sensor",
+                "object_id": "water_flow_total",
+                "name": "Vending Water Flow Total",
+                "state_topic_suffix": "sensors/water_flow",
+                "value_template": "{{ value_json.value }}",
+                "device_class": "water",
+                "unit_of_measurement": "gal",
+                "state_class": "total_increasing",
+            }
+        )
 
         # Uptime
-        entities.append({
-            "component": "sensor",
-            "object_id": "uptime",
-            "name": "Vending Machine Uptime",
-            "state_topic_suffix": "heartbeat/vending",
-            "value_template": "{{ value_json.uptime_seconds }}",
-            "device_class": "duration",
-            "unit_of_measurement": "s",
-            "state_class": "total_increasing",
-        })
+        entities.append(
+            {
+                "component": "sensor",
+                "object_id": "uptime",
+                "name": "Vending Machine Uptime",
+                "state_topic_suffix": "heartbeat/vending",
+                "value_template": "{{ value_json.uptime_seconds }}",
+                "device_class": "duration",
+                "unit_of_measurement": "s",
+                "state_class": "total_increasing",
+            }
+        )
 
         return entities
 
@@ -149,8 +209,9 @@ class VendingMachineSimulator(ESP32Simulator):
     async def _set_hw(self, client: aiomqtt.Client, device: str, state: bool):
         """Update hardware state and publish to MQTT."""
         self._hw[device] = state
-        await self.publish(client, f"hardware/io/{device}",
-                           HardwareIO(device=device, state=state))
+        await self.publish(
+            client, f"hardware/io/{device}", HardwareIO(device=device, state=state)
+        )
 
     async def _publish_sensors(self, client: aiomqtt.Client):
         """Periodically publish cabinet temperature, water flow, and bin level."""
@@ -163,23 +224,89 @@ class VendingMachineSimulator(ESP32Simulator):
             elif self._cabinet_temp > 10.0 and self._hw["heater_relay"]:
                 await self._set_hw(client, "heater_relay", False)
 
-            await self.publish(client, "sensors/temp/cabinet",
-                               SensorReading(location="cabinet",
-                                             value=round(self._cabinet_temp, 2)))
-            await self.publish(client, "sensors/water_flow",
-                               SensorReading(location="water_flow",
-                                             value=round(self._water_flow_total, 2),
-                                             unit="gal"))
+            # If water valve stuck open, keep incrementing flow
+            if self._hw.get("water_flow_sensor") and self._hw.get(
+                "water_valve_solenoid"
+            ):
+                self._water_flow_total += 0.1 * (SENSOR_PUBLISH_INTERVAL / 1.0)
+
+            await self.publish(
+                client,
+                "sensors/temp/cabinet",
+                SensorReading(location="cabinet", value=round(self._cabinet_temp, 2)),
+            )
+            await self.publish(
+                client,
+                "sensors/water_flow",
+                SensorReading(
+                    location="water_flow",
+                    value=round(self._water_flow_total, 2),
+                    unit="gal",
+                ),
+            )
 
             # Publish current bin level state
             await self._set_hw(client, "bin_half_full", self._hw["bin_half_full"])
 
             await asyncio.sleep(SENSOR_PUBLISH_INTERVAL)
 
+    # --- Fault activate/recover methods ---
+
+    async def _on_auger_jam_activate(self, client: aiomqtt.Client) -> None:
+        logger.warning("[vending] FAULT: auger jam — bag fill will time out")
+
+    async def _on_auger_jam_recover(self, client: aiomqtt.Client) -> None:
+        logger.info("[vending] Fault cleared: auger_jam")
+
+    async def _on_bag_drop_solenoid_stuck_activate(
+        self, client: aiomqtt.Client
+    ) -> None:
+        logger.warning("[vending] FAULT: bag drop solenoid stuck")
+
+    async def _on_bag_drop_solenoid_stuck_recover(self, client: aiomqtt.Client) -> None:
+        await self._set_hw(client, "bag_full_sensor", False)
+        await self._set_hw(client, "bag_drop_solenoid", False)
+        logger.info("[vending] Fault cleared: bag_drop_solenoid_stuck")
+
+    async def _on_water_valve_stuck_open_activate(self, client: aiomqtt.Client) -> None:
+        await self._set_hw(client, "water_valve_solenoid", True)
+        await self._set_hw(client, "water_flow_sensor", True)
+        logger.warning("[vending] FAULT: water valve stuck open — flow incrementing")
+
+    async def _on_water_valve_stuck_open_recover(self, client: aiomqtt.Client) -> None:
+        await self._set_hw(client, "water_valve_solenoid", False)
+        await self._set_hw(client, "water_flow_sensor", False)
+        logger.info("[vending] Fault cleared: water_valve_stuck_open")
+
+    async def _on_ice_bin_empty_activate(self, client: aiomqtt.Client) -> None:
+        await self._set_hw(client, "bin_half_full", False)
+        logger.warning("[vending] FAULT: ice bin empty")
+
+    async def _on_ice_bin_empty_recover(self, client: aiomqtt.Client) -> None:
+        await self._set_hw(client, "bin_half_full", True)
+        logger.info("[vending] Fault cleared: ice_bin_empty")
+
     async def _run_ice_dispense(self, client: aiomqtt.Client, slot: int):
         """Run ice dispense sequence with realistic hardware transitions."""
-        await self.publish(client, "hardware/dispenser",
-                           DispenserStatus(slot=slot, state="motor_active"))
+        active = self._active_fault_names
+
+        await self.publish(
+            client,
+            "hardware/dispenser",
+            DispenserStatus(slot=slot, state="motor_active"),
+        )
+
+        # Ice bin empty: report immediately and abort
+        if "ice_bin_empty" in active:
+            await self._set_hw(client, "agitator_motor", False)
+            await self._set_hw(client, "fan", False)
+            await self.publish(
+                client,
+                "hardware/dispenser",
+                DispenserStatus(slot=slot, state="bin_empty"),
+            )
+            logger.warning(f"[vending] Slot {slot}: ice bin empty")
+            return
 
         # Start agitator and fan first
         await self._set_hw(client, "agitator_motor", True)
@@ -190,6 +317,20 @@ class VendingMachineSimulator(ESP32Simulator):
         await self._set_hw(client, "auger_motor", True)
         logger.info(f"[vending] Slot {slot}: auger running, filling bag")
 
+        if "auger_jam" in active:
+            # Auger runs but bag never fills — time out after 90 seconds
+            await asyncio.sleep(90.0)
+            await self._set_hw(client, "auger_motor", False)
+            await self._set_hw(client, "agitator_motor", False)
+            await self._set_hw(client, "fan", False)
+            await self.publish(
+                client,
+                "hardware/dispenser",
+                DispenserStatus(slot=slot, state="timeout"),
+            )
+            logger.warning(f"[vending] Slot {slot}: auger jam — dispense timed out")
+            return
+
         # Wait for bag to fill (simulated)
         fill_time = random.uniform(5.0, 12.0)
         await asyncio.sleep(fill_time)
@@ -199,12 +340,28 @@ class VendingMachineSimulator(ESP32Simulator):
         await self._set_hw(client, "auger_motor", False)
         logger.info(f"[vending] Slot {slot}: bag full")
 
-        await self.publish(client, "hardware/dispenser",
-                           DispenserStatus(slot=slot, state="fill_complete"))
+        await self.publish(
+            client,
+            "hardware/dispenser",
+            DispenserStatus(slot=slot, state="fill_complete"),
+        )
 
         await asyncio.sleep(0.5)
 
-        # Drop the bag
+        if "bag_drop_solenoid_stuck" in self._active_fault_names:
+            # Solenoid fires but bag doesn't drop — bag_full_sensor stays True
+            await self._set_hw(client, "bag_drop_solenoid", True)
+            await asyncio.sleep(0.5)
+            # bag_full_sensor intentionally NOT cleared
+            await self._set_hw(client, "agitator_motor", False)
+            await self._set_hw(client, "fan", False)
+            await self.publish(
+                client, "hardware/dispenser", DispenserStatus(slot=slot, state="jam")
+            )
+            logger.warning(f"[vending] Slot {slot}: bag drop solenoid stuck")
+            return
+
+        # Drop the bag normally
         await self._set_hw(client, "bag_drop_solenoid", True)
         await asyncio.sleep(0.5)
         await self._set_hw(client, "bag_drop_solenoid", False)
@@ -215,14 +372,18 @@ class VendingMachineSimulator(ESP32Simulator):
         await self._set_hw(client, "agitator_motor", False)
         await self._set_hw(client, "fan", False)
 
-        await self.publish(client, "hardware/dispenser",
-                           DispenserStatus(slot=slot, state="complete"))
+        await self.publish(
+            client, "hardware/dispenser", DispenserStatus(slot=slot, state="complete")
+        )
         logger.info(f"[vending] Slot {slot}: ice dispense complete")
 
     async def _run_water_dispense(self, client: aiomqtt.Client, slot: int):
         """Run water dispense sequence with valve and flow sensor."""
-        await self.publish(client, "hardware/dispenser",
-                           DispenserStatus(slot=slot, state="solenoid_open"))
+        await self.publish(
+            client,
+            "hardware/dispenser",
+            DispenserStatus(slot=slot, state="solenoid_open"),
+        )
 
         # Open valve
         await self._set_hw(client, "water_valve_solenoid", True)
@@ -233,16 +394,32 @@ class VendingMachineSimulator(ESP32Simulator):
         pulse_seconds = random.randint(5, 10)
         for i in range(pulse_seconds):
             await asyncio.sleep(1.0)
-            gallons_per_pulse = 0.1  # ~0.1 gal/sec
+            gallons_per_pulse = 0.1
             self._water_flow_total += gallons_per_pulse
-            logger.debug(f"[vending] Slot {slot}: flow total {self._water_flow_total:.1f} gal")
+            logger.debug(
+                f"[vending] Slot {slot}: flow total {self._water_flow_total:.1f} gal"
+            )
 
-        # Close valve
+        if "water_valve_stuck_open" in self._active_fault_names:
+            # Valve does not close — hardware io already set to True in on_activate
+            # flow incrementing continues in _publish_sensors
+            logger.warning(
+                f"[vending] Slot {slot}: water valve stuck open after dispense"
+            )
+            await self.publish(
+                client,
+                "hardware/dispenser",
+                DispenserStatus(slot=slot, state="complete"),
+            )
+            return
+
+        # Close valve normally
         await self._set_hw(client, "water_valve_solenoid", False)
         await self._set_hw(client, "water_flow_sensor", False)
 
-        await self.publish(client, "hardware/dispenser",
-                           DispenserStatus(slot=slot, state="complete"))
+        await self.publish(
+            client, "hardware/dispenser", DispenserStatus(slot=slot, state="complete")
+        )
         logger.info(f"[vending] Slot {slot}: water dispense complete")
 
     async def _listen_for_commands(self, client: aiomqtt.Client):
@@ -267,8 +444,7 @@ class VendingMachineSimulator(ESP32Simulator):
 
             # Customer presses a button
             button = self._pick_button()
-            await self.publish(client, "hardware/buttons",
-                               ButtonPress(button=button))
+            await self.publish(client, "hardware/buttons", ButtonPress(button=button))
             logger.info(f"[vending] Customer pressed button {button}")
 
             # Wait for dispense command from RPi
@@ -278,7 +454,9 @@ class VendingMachineSimulator(ESP32Simulator):
                     timeout=self.DISPENSE_TIMEOUT,
                 )
             except asyncio.TimeoutError:
-                logger.info("[vending] No dispense command received, customer walked away")
+                logger.info(
+                    "[vending] No dispense command received, customer walked away"
+                )
                 continue
 
             # Run the appropriate dispense sequence
