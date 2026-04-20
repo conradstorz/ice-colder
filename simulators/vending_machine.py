@@ -228,7 +228,7 @@ class VendingMachineSimulator(ESP32Simulator):
             if self._hw.get("water_flow_sensor") and self._hw.get(
                 "water_valve_solenoid"
             ):
-                self._water_flow_total += 0.1 * (SENSOR_PUBLISH_INTERVAL / 1.0)
+                self._water_flow_total += 0.1 * SENSOR_PUBLISH_INTERVAL
 
             await self.publish(
                 client,
@@ -348,7 +348,7 @@ class VendingMachineSimulator(ESP32Simulator):
 
         await asyncio.sleep(0.5)
 
-        if "bag_drop_solenoid_stuck" in self._active_fault_names:
+        if "bag_drop_solenoid_stuck" in active:
             # Solenoid fires but bag doesn't drop — bag_full_sensor stays True
             await self._set_hw(client, "bag_drop_solenoid", True)
             await asyncio.sleep(0.5)
