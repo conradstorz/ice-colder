@@ -182,3 +182,14 @@ cython_debug/
 
 # Git worktrees
 .worktrees/
+
+# Runtime data (SQLite event store)
+data/
+
+# Config backups produced by save_config / manual copies
+config.json.bak*
+config.json.tmp
+*.json.old
+
+# Vendored scaffold project (separate repo, never commit)
+colder-docker/
