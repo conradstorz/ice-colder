@@ -127,3 +127,20 @@ async def test_dispense_timeout_fallback_completes_transaction():
     vmc._finish_dispensing()
     assert vmc.state == "idle"  # no credit left
     vmc.cancel_pending_tasks()
+
+
+async def test_product_deleted_mid_session_refunds_and_errors():
+    vmc = make_vmc(price=2.50)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    messages: list[str] = []
+    vmc.set_message_callback(messages.append)
+    vmc.machine.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    vmc.credit_escrow = 5.00
+    vmc.products.clear()  # product deleted via the dashboard mid-session
+
+    vmc._process_payment()
+
+    assert vmc.state == "error"
+    assert vmc.credit_escrow == 0.0  # full escrow refunded by on_error
+    assert any("refunded" in m.lower() for m in messages)

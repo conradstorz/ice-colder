@@ -572,6 +572,14 @@ class VMC:
             )
             return
 
+        if self.selected_product is None or self.selected_product not in self.products:
+            logger.error(
+                "Selected product no longer exists in the catalog; cancelling sale."
+            )
+            txn_log.info("SALE CANCELLED: selected product removed from catalog")
+            self.error_occurred()
+            return
+
         price = self.selected_product.price if self.selected_product else 0
         if self.credit_escrow >= price:
             logger.info(
