@@ -442,6 +442,9 @@ class VMC:
     @logger.catch()
     def deposit_funds(self, amount, payment_method="Simulated Payment"):
         logger.debug(f"Depositing funds: amount={amount:.2f}, method={payment_method}")
+        if amount <= 0:
+            logger.warning(f"Ignoring non-positive deposit: {amount}")
+            return
         self.credit_escrow += amount
         self.last_payment_method = payment_method
         logger.info(

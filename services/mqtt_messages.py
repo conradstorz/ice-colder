@@ -37,7 +37,12 @@ class SensorReading(BaseModel):
 class PaymentEvent(BaseModel):
     """Credit inserted or payment status change from MDB ESP32."""
 
-    amount: float = Field(..., description="Amount in dollars")
+    amount: float = Field(
+        ...,
+        gt=0,
+        le=500,
+        description="Amount in dollars (bounded to reject forged/corrupt messages)",
+    )
     method: str = Field(..., description="Payment method (e.g., 'cash', 'card')")
     timestamp: datetime = Field(default_factory=_utc_now)
 
@@ -57,7 +62,7 @@ class PaymentStatus(BaseModel):
 class ButtonPress(BaseModel):
     """Physical button press from button panel ESP32."""
 
-    button: int = Field(..., description="Button index")
+    button: int = Field(..., ge=0, description="Button index")
     action: str = Field("pressed", description="Action type")
     timestamp: datetime = Field(default_factory=_utc_now)
 
@@ -111,7 +116,7 @@ class IceMakerEvent(BaseModel):
 class DispenseCommand(BaseModel):
     """Command to dispense product from a slot."""
 
-    slot: int = Field(..., description="Slot to dispense from")
+    slot: int = Field(..., ge=0, description="Slot to dispense from")
 
 
 class PaymentEnableCommand(BaseModel):
