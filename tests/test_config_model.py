@@ -94,6 +94,14 @@ def test_get_preferred_gateway_for_email():
     assert channel == Channel.email
 
 
+def test_web_config_defaults():
+    cfg = ConfigModel()
+    assert cfg.web.host == "0.0.0.0"
+    assert cfg.web.port == 26123
+    assert cfg.web.admin_username == "admin"
+    assert cfg.web.admin_password.get_secret_value() == "changeme"
+
+
 def test_get_preferred_gateway_for_none():
     """Returns None when no matching gateway is configured."""
     cfg = ConfigModel()

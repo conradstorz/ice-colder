@@ -195,9 +195,17 @@ async def main():
     )
 
     # Start uvicorn as an asyncio task (non-blocking)
-    uvicorn_config = uvicorn.Config(app, host="0.0.0.0", port=26123, log_level="info")
+    web_cfg = live_config.web
+    if web_cfg.admin_password.get_secret_value() == "changeme":
+        logger.warning(
+            "Web dashboard is using the DEFAULT admin password — "
+            "set web.admin_password in config.json before exposing this machine"
+        )
+    uvicorn_config = uvicorn.Config(
+        app, host=web_cfg.host, port=web_cfg.port, log_level="info"
+    )
     server = uvicorn.Server(uvicorn_config)
-    logger.info("Starting web interface on http://0.0.0.0:26123")
+    logger.info(f"Starting web interface on http://{web_cfg.host}:{web_cfg.port}")
 
     # Run the web server, MQTT client, and health monitor concurrently
     logger.info(

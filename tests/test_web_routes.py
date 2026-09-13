@@ -17,6 +17,7 @@ def client():
     routes.set_vmc_instance(vmc)
 
     with TestClient(app) as c:
+        c.auth = ("admin", "changeme")
         yield c
 
         for t in vmc._pending_tasks:
@@ -206,3 +207,17 @@ class TestStatusHealthSignal:
             assert "Issues Detected" in response.text
         finally:
             r.set_event_recorder(None)
+
+
+class TestAuth:
+    def test_unauthenticated_request_rejected(self, client):
+        resp = client.get("/", auth=None)
+        assert resp.status_code == 401
+
+    def test_wrong_password_rejected(self, client):
+        resp = client.get("/", auth=("admin", "wrong"))
+        assert resp.status_code == 401
+
+    def test_mutating_endpoint_requires_auth(self, client):
+        resp = client.post("/action/reset", auth=None)
+        assert resp.status_code == 401

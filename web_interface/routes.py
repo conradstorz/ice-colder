@@ -1,8 +1,10 @@
+import secrets as _secrets
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, FastAPI, Form, Query, Request
+from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 
 from config.config_model import ConfigModel, Product
@@ -39,6 +41,25 @@ def set_event_recorder(recorder):
     event_recorder = recorder
 
 
+_basic_auth = HTTPBasic()
+
+
+def require_auth(credentials: HTTPBasicCredentials = Depends(_basic_auth)):
+    """HTTP Basic auth for every dashboard route, checked against config.web."""
+    if config is None:
+        raise HTTPException(status_code=503, detail="Configuration not loaded")
+    user_ok = _secrets.compare_digest(credentials.username, config.web.admin_username)
+    pass_ok = _secrets.compare_digest(
+        credentials.password, config.web.admin_password.get_secret_value()
+    )
+    if not (user_ok and pass_ok):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+
 LOG_PATH = Path("logs/vmc.log")
 
 
@@ -65,7 +86,7 @@ def tail(file_path: Path, lines: int = 50) -> list[str]:
 
 
 def attach_routes(app: FastAPI, templates: Jinja2Templates):
-    router = APIRouter()
+    router = APIRouter(dependencies=[Depends(require_auth)])
 
     @router.post("/inventory/add", response_class=HTMLResponse)
     async def add_new_product(

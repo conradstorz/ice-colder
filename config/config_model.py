@@ -241,6 +241,18 @@ class MQTTConfig(BaseModel):
     )
 
 
+class WebConfig(BaseModel):
+    """Web dashboard binding and admin authentication."""
+
+    host: str = Field("0.0.0.0", description="Interface to bind the dashboard to")
+    port: int = Field(26123, description="Dashboard port")
+    admin_username: str = Field("admin", description="Dashboard admin username")
+    admin_password: SecretStr = Field(
+        default=SecretStr("changeme"),
+        description="Dashboard admin password — CHANGE THIS before deployment",
+    )
+
+
 class ConfigModel(BaseModel):
     """
     Top-level configuration for the Vending Machine Controller
@@ -262,6 +274,9 @@ class ConfigModel(BaseModel):
     )
     mqtt: MQTTConfig = Field(
         default_factory=MQTTConfig, description="MQTT broker connection configuration"
+    )
+    web: WebConfig = Field(
+        default_factory=WebConfig, description="Web dashboard configuration"
     )
 
     model_config = ConfigDict(extra="ignore")
