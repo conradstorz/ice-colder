@@ -180,6 +180,7 @@ class TestMDBBusResetFault:
     @pytest.mark.asyncio
     async def test_recover_restores_all_devices_ready(self):
         from unittest.mock import patch
+
         sim = MDBGatewaySimulator()
         client = AsyncMock()
         await sim._on_mdb_bus_reset_activate(client)

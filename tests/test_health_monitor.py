@@ -214,8 +214,8 @@ async def test_run_survives_check_exception(monkeypatch):
     monkeypatch.setattr(monitor, "_check", exploding_check)
     task = asyncio.create_task(monitor.run())
     await asyncio.wait_for(kept_going.wait(), timeout=5.0)
-    assert not task.done()          # loop survived the exception
-    assert calls["n"] >= 2          # and kept checking afterwards
+    assert not task.done()  # loop survived the exception
+    assert calls["n"] >= 2  # and kept checking afterwards
     task.cancel()
     try:
         await task

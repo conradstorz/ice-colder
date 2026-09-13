@@ -118,9 +118,13 @@ class MQTTClient:
                     logger.debug(f"MQTT: Reconnect failed: {e}")
 
             if _in_retry_loop:
-                logger.debug(f"MQTT: Reconnecting in {self._config.reconnect_interval}s...")
+                logger.debug(
+                    f"MQTT: Reconnecting in {self._config.reconnect_interval}s..."
+                )
             else:
-                logger.info(f"MQTT: Reconnecting in {self._config.reconnect_interval}s...")
+                logger.info(
+                    f"MQTT: Reconnecting in {self._config.reconnect_interval}s..."
+                )
             await asyncio.sleep(self._config.reconnect_interval)
 
     async def _connect_and_listen(self):
