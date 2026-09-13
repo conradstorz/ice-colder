@@ -101,14 +101,16 @@ deleted between selection and dispense (today that exception is swallowed
 by `@logger.catch` and no dispense command is ever sent — money taken,
 nothing dispensed, machine stuck in `dispensing` until the 60s fallback).
 
-Guard: before dispatching the dispense command, check
-`self.selected_product in self.products`; if not, log the anomaly and call
-`error_occurred()` — `on_error` already refunds the full escrow and the
-admin reset path recovers the machine. (Note: `_process_payment` deducts
-the price into thin air in this scenario; `on_error`'s refund only returns
-the remaining escrow. The guard therefore re-credits the price to
-`credit_escrow` before triggering `error_occurred()`, so the customer is
-made whole.)
+Guard (refined at planning): the check lives in `_process_payment`, after
+the state check and BEFORE the price is deducted — if
+`self.selected_product` is gone from `self.products`, log the anomaly and
+call `error_occurred()`; `on_error` refunds the full (undeducted) escrow,
+so the customer is made whole with no re-credit step. Placing the guard in
+`on_dispense_product` was rejected: triggering `error_occurred()` inside a
+`before`-callback nests transitions and would leave the machine in
+`dispensing` after the error transition completes. Because the loop is
+single-threaded and `_process_payment` → dispense runs synchronously, a
+deletion cannot interleave after this check.
 
 ### 6. Testing
 
