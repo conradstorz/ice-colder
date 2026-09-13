@@ -53,8 +53,8 @@ class TestThermalSensor:
 
 
 class TestSensorDefs:
-    def test_all_nine_sensors_defined(self):
-        assert len(SENSOR_DEFS) == 9
+    def test_all_ten_sensors_defined(self):
+        assert len(SENSOR_DEFS) == 10
 
     def test_expected_sensor_names(self):
         names = {s["name"] for s in SENSOR_DEFS}
@@ -67,7 +67,8 @@ class TestSensorDefs:
             "refrigerant_high",
             "refrigerant_low",
             "purge_water",
-            "hot_gas_valve",
+            "hot_gas_valve_1",
+            "hot_gas_valve_2",
         }
         assert names == expected
 
@@ -76,7 +77,7 @@ class TestIceMakerSimulator:
     def test_creates_with_defaults(self):
         sim = IceMakerSimulator()
         assert sim.subsystem_name == "ice_maker"
-        assert len(sim.sensors) == 9
+        assert len(sim.sensors) == 10
 
     def test_compressor_starts_off(self):
         sim = IceMakerSimulator()
@@ -104,16 +105,23 @@ class TestIceMakerSimulator:
 
 
 class TestHADiscovery:
-    def test_returns_11_entities(self):
+    def test_returns_12_entities(self):
         sim = IceMakerSimulator()
         entities = sim.ha_discovery_entities()
-        assert len(entities) == 11
+        assert len(entities) == 12
 
-    def test_nine_temperature_sensors(self):
+    def test_ten_temperature_sensors(self):
         sim = IceMakerSimulator()
         entities = sim.ha_discovery_entities()
         temp_sensors = [e for e in entities if e.get("device_class") == "temperature"]
-        assert len(temp_sensors) == 9
+        assert len(temp_sensors) == 10
+
+    def test_hot_gas_valve_entities(self):
+        sim = IceMakerSimulator()
+        ids = [e["object_id"] for e in sim.ha_discovery_entities()]
+        assert "hot_gas_valve_1_temp" in ids
+        assert "hot_gas_valve_2_temp" in ids
+        assert "hot_gas_valve_temp" not in ids
 
     def test_temperature_sensor_fields(self):
         sim = IceMakerSimulator()
@@ -168,11 +176,11 @@ class TestHADiscovery:
 
     @pytest.mark.asyncio
     async def test_discovery_publishes_all_entities(self):
-        """Smoke test: the base class publishes all 11 ice maker entities."""
+        """Smoke test: the base class publishes all 12 ice maker entities."""
         sim = IceMakerSimulator(machine_id="vmc-test")
         client = AsyncMock()
         await sim._publish_ha_discovery(client)
-        assert client.publish.call_count == 11
+        assert client.publish.call_count == 12
         topics = [call.args[0] for call in client.publish.call_args_list]
         # All should be under homeassistant/
         assert all(t.startswith("homeassistant/") for t in topics)
@@ -185,9 +193,9 @@ class TestHADiscovery:
 
 
 class TestIceMakerFaultRegistration:
-    def test_four_faults_registered(self):
+    def test_five_faults_registered(self):
         sim = IceMakerSimulator()
-        assert len(sim._fault_defs) == 4
+        assert len(sim._fault_defs) == 5
 
     def test_fault_names(self):
         sim = IceMakerSimulator()
@@ -196,7 +204,8 @@ class TestIceMakerFaultRegistration:
             "compressor_overtemp",
             "low_refrigerant",
             "water_inlet_blocked",
-            "defrost_stuck",
+            "defrost_stuck_1",
+            "defrost_stuck_2",
         }
 
     def test_sensor_by_name(self):
@@ -345,34 +354,86 @@ class TestWaterInletBlockedFault:
         assert any("ice_maker/event" in s for s, _ in published)
 
 
-class TestDefrostStuckFault:
-    @pytest.mark.asyncio
-    async def test_activate_pins_hot_gas_valve_target(self):
-        sim = IceMakerSimulator()
-        client = AsyncMock()
-        await sim._on_defrost_stuck_activate(client)
-        sensor = sim._sensor_by_name("hot_gas_valve")
-        assert sensor.target_on == 95.0
-        assert sensor.target_off == 95.0
+class TestDefrostStuckPerValve:
+    @staticmethod
+    def _force_active(sim, valve: int):
+        sim._fault_state[f"defrost_stuck_{valve}"]["active"] = True
+        sim._fault_state[f"defrost_stuck_{valve}"]["recover_at"] = 9e9
+
+    @staticmethod
+    def _fault_def(sim, valve: int):
+        return next(f for f in sim._fault_defs if f.name == f"defrost_stuck_{valve}")
 
     @pytest.mark.asyncio
-    async def test_recover_restores_hot_gas_valve_targets(self):
+    async def test_activate_pins_only_that_valve(self):
         sim = IceMakerSimulator()
         client = AsyncMock()
-        await sim._on_defrost_stuck_activate(client)
-        await sim._on_defrost_stuck_recover(client)
-        original = next(d for d in SENSOR_DEFS if d["name"] == "hot_gas_valve")
-        sensor = sim._sensor_by_name("hot_gas_valve")
-        assert sensor.target_on == original["target_on"]
-        assert sensor.target_off == original["target_off"]
+        await self._fault_def(sim, 1).on_activate(client)
+        v1 = sim._sensor_by_name("hot_gas_valve_1")
+        assert v1.target_on == 95.0
+        assert v1.target_off == 95.0
+        original = next(d for d in SENSOR_DEFS if d["name"] == "hot_gas_valve_2")
+        v2 = sim._sensor_by_name("hot_gas_valve_2")
+        assert v2.target_on == original["target_on"]
+        assert v2.target_off == original["target_off"]
 
-    def test_tick_suppresses_ice_drop_events_during_fault(self):
+    @pytest.mark.asyncio
+    async def test_recover_restores_only_that_valve(self):
         sim = IceMakerSimulator()
-        # Manually activate the already-registered fault
-        sim._fault_state["defrost_stuck"]["active"] = True
-        sim._fault_state["defrost_stuck"]["recover_at"] = 9e9
-        # Advance well past the ice drop interval (900s default)
-        for _ in range(200):
+        client = AsyncMock()
+        await self._fault_def(sim, 2).on_activate(client)
+        await self._fault_def(sim, 2).on_recover(client)
+        original = next(d for d in SENSOR_DEFS if d["name"] == "hot_gas_valve_2")
+        v2 = sim._sensor_by_name("hot_gas_valve_2")
+        assert v2.target_on == original["target_on"]
+        assert v2.target_off == original["target_off"]
+
+    @pytest.mark.asyncio
+    async def test_activate_and_recover_publish_no_events(self):
+        """Dumb machine: a stuck valve never self-reports."""
+        sim = IceMakerSimulator()
+        published = []
+
+        async def capture_publish(client, suffix, payload):
+            published.append((suffix, payload))
+
+        sim.publish = capture_publish
+        client = AsyncMock()
+        await self._fault_def(sim, 1).on_activate(client)
+        await self._fault_def(sim, 1).on_recover(client)
+        assert published == []
+
+    def test_compressor_keeps_cycling_while_valve_stuck(self):
+        sim = IceMakerSimulator()
+        self._force_active(sim, 1)
+        for _ in range(61):  # 305s > 300s off-cycle
             sim.tick(dt=5.0)
-        ice_drop_events = [e for e in sim._pending_events if e.event == "ice_dropped"]
-        assert ice_drop_events == []
+        assert sim.compressor_on is True
+
+    def test_harvests_alternate_when_healthy(self):
+        sim = IceMakerSimulator()
+        for _ in range(2 * 180):  # 1800s = two harvest intervals
+            sim.tick(dt=5.0)
+        drops = [e for e in sim._pending_events if e.event == "ice_dropped"]
+        assert [e.detail for e in drops] == ["evaporator_1", "evaporator_2"]
+
+    def test_stuck_valve_turn_fails_other_succeeds(self):
+        sim = IceMakerSimulator()
+        self._force_active(sim, 1)
+        for _ in range(2 * 180):
+            sim.tick(dt=5.0)
+        fails = [e for e in sim._pending_events if e.event == "failed_cycle"]
+        drops = [e for e in sim._pending_events if e.event == "ice_dropped"]
+        assert [e.detail for e in fails] == ["hot_gas_valve_1_stuck"]
+        assert [e.detail for e in drops] == ["evaporator_2"]
+
+    def test_both_stuck_yields_only_failed_cycles(self):
+        sim = IceMakerSimulator()
+        self._force_active(sim, 1)
+        self._force_active(sim, 2)
+        for _ in range(2 * 180):
+            sim.tick(dt=5.0)
+        drops = [e for e in sim._pending_events if e.event == "ice_dropped"]
+        fails = [e for e in sim._pending_events if e.event == "failed_cycle"]
+        assert drops == []
+        assert len(fails) == 2

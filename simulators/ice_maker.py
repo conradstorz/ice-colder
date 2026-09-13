@@ -2,7 +2,7 @@
 """
 Ice maker temperature monitoring simulator.
 
-Models a simplified refrigeration cycle with 9 temperature sensors.
+Models a simplified refrigeration cycle with 10 temperature sensors (including two hot gas valves).
 The compressor cycles on/off and all temperatures respond with thermal lag.
 
 Run: uv run python -m simulators.ice_maker [--broker HOST] [--port PORT] [--machine-id ID]
@@ -77,7 +77,14 @@ SENSOR_DEFS = [
         "noise": 0.2,
     },
     {
-        "name": "hot_gas_valve",
+        "name": "hot_gas_valve_1",
+        "target_on": 75.0,
+        "target_off": 30.0,
+        "rate": 0.04,
+        "noise": 0.5,
+    },
+    {
+        "name": "hot_gas_valve_2",
         "target_on": 75.0,
         "target_off": 30.0,
         "rate": 0.04,
@@ -130,6 +137,7 @@ class IceMakerSimulator(ESP32Simulator):
         self.compressor_on = False
         self._cycle_elapsed = 0.0
         self._ice_drop_elapsed = 0.0
+        self._next_harvest_valve = 1
         self._pending_events: list[IceMakerEvent] = []
 
         # Register faults
@@ -166,17 +174,21 @@ class IceMakerSimulator(ESP32Simulator):
                 severity="warning",
             )
         )
-        self.register_fault(
-            FaultDef(
-                name="defrost_stuck",
-                category="short",
-                probability=0.0015,
-                on_activate=self._on_defrost_stuck_activate,
-                on_recover=self._on_defrost_stuck_recover,
-                message="Defrost cycle stuck — hot gas valve elevated",
-                severity="warning",
+        for valve in (1, 2):
+            self.register_fault(
+                FaultDef(
+                    name=f"defrost_stuck_{valve}",
+                    category="short",
+                    probability=0.0015,
+                    on_activate=self._make_valve_stuck_activate(valve),
+                    on_recover=self._make_valve_stuck_recover(valve),
+                    message=(
+                        f"Hot gas valve {valve} stuck — "
+                        f"harvest failing on evaporator {valve}"
+                    ),
+                    severity="warning",
+                )
             )
-        )
 
     def _sensor_by_name(self, name: str) -> ThermalSensor:
         """Return the ThermalSensor with the given name."""
@@ -252,33 +264,36 @@ class IceMakerSimulator(ESP32Simulator):
         )
         logger.info("[ice_maker] Fault cleared: water_inlet_blocked")
 
-    async def _on_defrost_stuck_activate(self, client: aiomqtt.Client) -> None:
-        sensor = self._sensor_by_name("hot_gas_valve")
-        sensor.target_on = 95.0
-        sensor.target_off = 95.0
-        await self.publish(
-            client,
-            "ice_maker/event",
-            IceMakerEvent(event="halt", detail="defrost_stuck"),
-        )
-        logger.warning("[ice_maker] FAULT: defrost stuck — hot gas valve elevated")
+    def _make_valve_stuck_activate(self, valve: int):
+        """The machine has no fault detection: pin the valve temp, publish nothing."""
 
-    async def _on_defrost_stuck_recover(self, client: aiomqtt.Client) -> None:
-        original = next(d for d in SENSOR_DEFS if d["name"] == "hot_gas_valve")
-        sensor = self._sensor_by_name("hot_gas_valve")
-        sensor.target_on = original["target_on"]
-        sensor.target_off = original["target_off"]
-        await self.publish(
-            client,
-            "ice_maker/event",
-            IceMakerEvent(event="resume", detail="defrost_stuck_cleared"),
-        )
-        logger.info("[ice_maker] Fault cleared: defrost_stuck")
+        async def _activate(client: aiomqtt.Client) -> None:
+            sensor = self._sensor_by_name(f"hot_gas_valve_{valve}")
+            sensor.target_on = 95.0
+            sensor.target_off = 95.0
+            logger.warning(
+                f"[ice_maker] FAULT: hot gas valve {valve} stuck — "
+                "machine unaware, still cycling"
+            )
+
+        return _activate
+
+    def _make_valve_stuck_recover(self, valve: int):
+        async def _recover(client: aiomqtt.Client) -> None:
+            original = next(
+                d for d in SENSOR_DEFS if d["name"] == f"hot_gas_valve_{valve}"
+            )
+            sensor = self._sensor_by_name(f"hot_gas_valve_{valve}")
+            sensor.target_on = original["target_on"]
+            sensor.target_off = original["target_off"]
+            logger.info(f"[ice_maker] Fault cleared: defrost_stuck_{valve}")
+
+        return _recover
 
     def ha_discovery_entities(self) -> list[dict]:
         """Return HA discovery definitions for ice maker sensors."""
         entities = []
-        # 9 temperature sensors — one per thermal sensor
+        # 10 temperature sensors — one per thermal sensor
         for sensor in self.sensors:
             entities.append(
                 {
@@ -325,23 +340,22 @@ class IceMakerSimulator(ESP32Simulator):
         """Advance the simulation by dt seconds."""
         active = self._active_fault_names
 
-        # compressor_overtemp: halt compressor entirely
+        # compressor_overtemp: safety cutout — machine fully halted
         if "compressor_overtemp" in active:
             for sensor in self.sensors:
                 sensor.update(self.compressor_on, dt)
             self._check_temp_bounds()
             return
 
-        # low_refrigerant: compressor still cycles but cooling is ineffective
-        # (refrigerant_low target already overridden in on_activate — just run normally)
-        # water_inlet_blocked / defrost_stuck: halt compressor cycling
-        if active and "low_refrigerant" not in active:
+        # water_inlet_blocked: no water — machine halted
+        if "water_inlet_blocked" in active:
             for sensor in self.sensors:
                 sensor.update(self.compressor_on, dt)
             self._check_temp_bounds()
             return
 
-        # Normal operation (or low_refrigerant only — compressor cycles)
+        # Normal cycling. low_refrigerant and defrost_stuck_1/2 do NOT halt
+        # anything — this machine has no fault detection and keeps running.
         self._cycle_elapsed += dt
         cycle_time = (
             self.COMPRESSOR_ON_TIME if self.compressor_on else self.COMPRESSOR_OFF_TIME
@@ -360,13 +374,28 @@ class IceMakerSimulator(ESP32Simulator):
 
         self._check_temp_bounds()
 
-        # Periodic ice drops only when no fault active
-        if "defrost_stuck" not in active:
-            self._ice_drop_elapsed += dt
-            if self._ice_drop_elapsed >= self.ICE_DROP_INTERVAL:
-                self._ice_drop_elapsed = 0.0
-                self._pending_events.append(IceMakerEvent(event="ice_dropped"))
-                logger.info("[ice_maker] Ice dropped")
+        # Harvest attempts alternate evaporators and never pause for stuck
+        # valves — a stuck valve's turn simply fails.
+        self._ice_drop_elapsed += dt
+        if self._ice_drop_elapsed >= self.ICE_DROP_INTERVAL:
+            self._ice_drop_elapsed = 0.0
+            valve = self._next_harvest_valve
+            self._next_harvest_valve = 2 if valve == 1 else 1
+            if f"defrost_stuck_{valve}" in active:
+                self._pending_events.append(
+                    IceMakerEvent(
+                        event="failed_cycle",
+                        detail=f"hot_gas_valve_{valve}_stuck",
+                    )
+                )
+                logger.warning(
+                    f"[ice_maker] Harvest FAILED on evaporator {valve} (valve stuck)"
+                )
+            else:
+                self._pending_events.append(
+                    IceMakerEvent(event="ice_dropped", detail=f"evaporator_{valve}")
+                )
+                logger.info(f"[ice_maker] Ice dropped from evaporator {valve}")
 
     def _check_temp_bounds(self) -> None:
         """Append out-of-bounds events for any sensors outside safe range."""
