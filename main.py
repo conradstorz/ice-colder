@@ -121,6 +121,9 @@ def load_config() -> ConfigModel:
     return config_model
 
 
+_SUPERVISE_RESTART_DELAY = 5.0
+
+
 async def _supervise(name: str, coro_factory):
     """Keep a long-running component alive: log a crash and restart it after 5s.
 
@@ -135,7 +138,7 @@ async def _supervise(name: str, coro_factory):
             raise
         except Exception:
             logger.exception(f"{name} crashed; restarting in 5s")
-        await asyncio.sleep(5)
+        await asyncio.sleep(_SUPERVISE_RESTART_DELAY)
 
 
 @logger.catch()
