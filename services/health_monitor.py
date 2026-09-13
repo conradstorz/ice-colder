@@ -163,13 +163,16 @@ class HealthMonitor:
     # --- Main loop ---
 
     async def run(self):
-        """Run periodic health checks forever."""
+        """Run periodic health checks forever. A failing check is logged, never fatal."""
         logger.info(
             f"Health monitor started: interval={self._check_interval}s, "
             f"timeout={self._subsystem_timeout}s"
         )
         while True:
-            await self._check()
+            try:
+                await self._check()
+            except Exception:
+                logger.exception("Health check round failed")
             await asyncio.sleep(self._check_interval)
 
     async def _check(self):

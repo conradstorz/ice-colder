@@ -121,6 +121,23 @@ def load_config() -> ConfigModel:
     return config_model
 
 
+async def _supervise(name: str, coro_factory):
+    """Keep a long-running component alive: log a crash and restart it after 5s.
+
+    Prevents one component's unhandled exception from unwinding asyncio.gather
+    and taking down the whole VMC process.
+    """
+    while True:
+        try:
+            await coro_factory()
+            logger.warning(f"{name} exited unexpectedly; restarting in 5s")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(f"{name} crashed; restarting in 5s")
+        await asyncio.sleep(5)
+
+
 @logger.catch()
 async def main():
     setup_logging()
@@ -187,7 +204,11 @@ async def main():
         "Entering main event loop with web server, MQTT client, and health monitor"
     )
     try:
-        await asyncio.gather(server.serve(), mqtt.run(), health.run())
+        await asyncio.gather(
+            server.serve(),
+            _supervise("MQTT client", mqtt.run),
+            _supervise("health monitor", health.run),
+        )
     finally:
         vmc.cancel_pending_tasks()
         logger.info("Shutdown: cancelled pending VMC tasks")
