@@ -100,6 +100,16 @@ class TestActionEndpoint:
         assert resp.status_code == 200
         assert "Unknown" in resp.text
 
+    def test_reset_action_recovers_from_error(self, client):
+        from web_interface import routes as r
+
+        r.vmc_instance.error_occurred()
+        assert r.vmc_instance.state == "error"
+        resp = client.post("/action/reset")
+        assert resp.status_code == 200
+        assert "Reset complete" in resp.text
+        assert r.vmc_instance.state == "idle"
+
 
 class TestLogsEndpoint:
     def test_logs_returns_html(self, client):

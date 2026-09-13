@@ -154,7 +154,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
 
     @router.post("/action/{command}")
     async def control_action(command: str):
-        result = perform_command(command)
+        result = perform_command(command, vmc_instance)
         return HTMLResponse(f"<p>{result}</p>")
 
     @router.get("/logs", response_class=HTMLResponse)
