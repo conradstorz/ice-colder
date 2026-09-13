@@ -201,20 +201,21 @@ class TestGetSummary:
 
 async def test_run_survives_check_exception(monkeypatch):
     """A failing health check must not kill the run() loop."""
-
     monitor = HealthMonitor(check_interval=0.01)
     calls = {"n": 0}
+    kept_going = asyncio.Event()
 
     async def exploding_check():
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("boom")
+        kept_going.set()
 
     monkeypatch.setattr(monitor, "_check", exploding_check)
     task = asyncio.create_task(monitor.run())
-    await asyncio.sleep(0.1)
-    assert not task.done()  # loop survived the exception
-    assert calls["n"] >= 2  # and kept checking afterwards
+    await asyncio.wait_for(kept_going.wait(), timeout=5.0)
+    assert not task.done()          # loop survived the exception
+    assert calls["n"] >= 2          # and kept checking afterwards
     task.cancel()
     try:
         await task
