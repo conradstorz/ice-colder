@@ -156,9 +156,9 @@ class TestHADiscovery:
         valid_prefixes = {"sensors/temp/", "ice_maker/event", "heartbeat/ice_maker"}
         for entity in entities:
             suffix = entity["state_topic_suffix"]
-            assert any(suffix.startswith(p) or suffix == p for p in valid_prefixes), (
-                f"Unexpected state_topic_suffix: {suffix}"
-            )
+            assert any(
+                suffix.startswith(p) or suffix == p for p in valid_prefixes
+            ), f"Unexpected state_topic_suffix: {suffix}"
 
     def test_all_object_ids_unique(self):
         sim = IceMakerSimulator()
