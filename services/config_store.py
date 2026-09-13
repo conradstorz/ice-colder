@@ -2,19 +2,48 @@
 """
 Persists product catalog changes (add/update) back to config.json.
 
+Saves are atomic (write-to-tmp + os.replace) and keep one rolling
+``config.json.bak`` of the previous version. SecretStr fields are written
+with their real values so a save never destroys stored credentials.
+
 Note: inventory counts are managed by InventoryManager (inventory.json),
 not stored in config.json.
 """
 
+import json
+import os
+import shutil
 from pathlib import Path
-from config.config_model import ConfigModel, Product
+
 from loguru import logger
+from pydantic import SecretStr
+
+from config.config_model import ConfigModel, Product
 
 CONFIG_PATH = Path("config.json")
 
 
-def save_config(config: ConfigModel, path: Path = CONFIG_PATH):
-    path.write_text(config.model_dump_json(indent=2))
+def _config_json(config: ConfigModel) -> str:
+    """Serialize the config with real secret values (not masked)."""
+    data = config.model_dump(mode="python")
+
+    def _encode(obj):
+        if isinstance(obj, SecretStr):
+            return obj.get_secret_value()
+        raise TypeError(f"Not JSON serializable: {type(obj)!r}")
+
+    return json.dumps(data, indent=2, default=_encode)
+
+
+def save_config(config: ConfigModel, path: Path | None = None):
+    """Atomically write the config, keeping a rolling ``<name>.bak``."""
+    if path is None:
+        path = CONFIG_PATH
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(_config_json(config), encoding="utf-8")
+    if path.exists():
+        shutil.copy2(path, path.with_name(path.name + ".bak"))
+    os.replace(tmp, path)
 
 
 def add_product(
