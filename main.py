@@ -5,6 +5,7 @@ from services.notifier import Notifier
 from services.display_controller import DisplayController
 from services.inventory_manager import InventoryManager
 from services.event_recorder import EventRecorder
+from services.config_store import save_config
 
 import asyncio
 import json
@@ -74,16 +75,12 @@ def setup_logging():
     )
 
 
-def _generate_skeleton():
-    """Write a skeleton config.json with masked secrets and exit."""
-    skeleton = ConfigModel()
-    # Serialize with secrets masked so they aren't written in plain text
-    json_text = skeleton.model_dump_json(indent=4)
-    with open("config.json", "w", encoding="utf-8") as fw:
-        fw.write(json_text)
-    logger.info("Created skeleton 'config.json' with default values")
-    print("Created skeleton config.json — please edit and rerun.")
-    sys.exit(0)
+def _create_default_config() -> ConfigModel:
+    """First run: build blank defaults, persist them, and continue running."""
+    defaults = ConfigModel()
+    save_config(defaults)
+    logger.info("First run: created 'config.json' with blank defaults")
+    return defaults
 
 
 def load_config() -> ConfigModel:
@@ -96,8 +93,8 @@ def load_config() -> ConfigModel:
     logger.info("Loading configuration from 'config.json'")
 
     if not os.path.exists("config.json"):
-        logger.warning("'config.json' not found, creating skeleton")
-        _generate_skeleton()
+        logger.warning("'config.json' not found — first run: creating defaults")
+        return _create_default_config()
 
     try:
         with open("config.json", encoding="utf-8") as f:
