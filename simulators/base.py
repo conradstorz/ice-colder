@@ -5,6 +5,7 @@ Base class for ESP32 simulator processes.
 Handles MQTT connection, heartbeat publishing, CLI argument parsing,
 and automatic reconnection. Subclasses implement run_simulation().
 """
+
 import argparse
 import asyncio
 import json
@@ -25,9 +26,9 @@ from config.config_model import ConfigModel
 
 
 RECOVERY_RANGES: dict[str, tuple[float, float]] = {
-    "short":  (3 * 60,  10 * 60),
+    "short": (3 * 60, 10 * 60),
     "medium": (10 * 60, 20 * 60),
-    "long":   (20 * 60, 60 * 60),
+    "long": (20 * 60, 60 * 60),
 }
 
 FAULT_LOOP_INTERVAL = 30.0  # seconds between fault probability rolls
@@ -37,10 +38,10 @@ FAULT_LOOP_INTERVAL = 30.0  # seconds between fault probability rolls
 class FaultDef:
     name: str
     category: Literal["short", "medium", "long"]
-    probability: float         # chance per FAULT_LOOP_INTERVAL tick
-    on_activate: Callable      # async fn(client) — enter degraded state
-    on_recover: Callable       # async fn(client) — restore normal state
-    message: str               # human-readable alert text
+    probability: float  # chance per FAULT_LOOP_INTERVAL tick
+    on_activate: Callable  # async fn(client) — enter degraded state
+    on_recover: Callable  # async fn(client) — restore normal state
+    message: str  # human-readable alert text
     severity: str = "warning"  # "warning" | "critical"
 
 
@@ -90,10 +91,14 @@ class ESP32Simulator(ABC):
         while True:
             payload = self._build_heartbeat()
             await client.publish(topic, json.dumps(payload))
-            logger.debug(f"[{self.subsystem_name}] heartbeat: uptime={payload['uptime_seconds']}s")
+            logger.debug(
+                f"[{self.subsystem_name}] heartbeat: uptime={payload['uptime_seconds']}s"
+            )
             await asyncio.sleep(self.HEARTBEAT_INTERVAL)
 
-    async def publish(self, client: aiomqtt.Client, topic_suffix: str, payload: BaseModel | dict):
+    async def publish(
+        self, client: aiomqtt.Client, topic_suffix: str, payload: BaseModel | dict
+    ):
         """Publish a message to vmc/{machine_id}/{topic_suffix}."""
         full_topic = f"{self.topic_prefix}/{topic_suffix}"
         if isinstance(payload, BaseModel):
@@ -226,7 +231,9 @@ class ESP32Simulator(ABC):
             logger.warning(f"[{self.subsystem_name}] Inject: unknown fault '{name}'")
             return
         if any(s["active"] for s in self._fault_state.values()):
-            logger.info(f"[{self.subsystem_name}] Inject ignored: a fault is already active")
+            logger.info(
+                f"[{self.subsystem_name}] Inject ignored: a fault is already active"
+            )
             return
         await self._activate_fault(client, fault)
         logger.info(f"[{self.subsystem_name}] Fault injected: {name}")
@@ -235,7 +242,9 @@ class ESP32Simulator(ABC):
         """Periodic task: drain inject commands, check recoveries, roll for new faults."""
         inject_topic = f"{self.topic_prefix}/cmd/sim/inject_fault"
         inject_queue = await self.subscribe(client, inject_topic)
-        logger.info(f"[{self.subsystem_name}] Fault loop started, inject topic: {inject_topic}")
+        logger.info(
+            f"[{self.subsystem_name}] Fault loop started, inject topic: {inject_topic}"
+        )
         while True:
             await asyncio.sleep(FAULT_LOOP_INTERVAL)
             # Drain inject commands first
@@ -287,8 +296,12 @@ class ESP32Simulator(ABC):
                 "device": device,
             }
             for optional_key in (
-                "device_class", "unit_of_measurement", "state_class",
-                "payload_on", "payload_off", "expire_after",
+                "device_class",
+                "unit_of_measurement",
+                "state_class",
+                "payload_on",
+                "payload_off",
+                "expire_after",
             ):
                 if optional_key in entity:
                     payload[optional_key] = entity[optional_key]
@@ -322,9 +335,11 @@ class ESP32Simulator(ABC):
                 logger.error(f"[{self.subsystem_name}] MQTT error: {e}")
             except Exception as e:
                 logger.error(f"[{self.subsystem_name}] Unexpected error: {e}")
-                if hasattr(e, 'exceptions'):
+                if hasattr(e, "exceptions"):
                     for sub_exc in e.exceptions:
-                        logger.error(f"[{self.subsystem_name}]   Sub-exception: {sub_exc!r}")
+                        logger.error(
+                            f"[{self.subsystem_name}]   Sub-exception: {sub_exc!r}"
+                        )
 
             logger.info(f"[{self.subsystem_name}] Reconnecting in 5s...")
             await asyncio.sleep(5)
@@ -336,7 +351,9 @@ class ESP32Simulator(ABC):
         if config_path.exists():
             raw = json.loads(config_path.read_text(encoding="utf-8"))
             config = ConfigModel.model_validate(raw)
-            logger.info(f"Simulator loaded config from {path}: machine_id={config.machine_id}")
+            logger.info(
+                f"Simulator loaded config from {path}: machine_id={config.machine_id}"
+            )
             return config
         logger.warning(f"{path} not found, using default config")
         return ConfigModel()
@@ -345,10 +362,18 @@ class ESP32Simulator(ABC):
     def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         """Parse CLI arguments common to all simulators."""
         parser = argparse.ArgumentParser(description="ESP32 Simulator")
-        parser.add_argument("--config", default="config.json", help="Path to config.json")
-        parser.add_argument("--broker", default=None, help="MQTT broker host (overrides config)")
-        parser.add_argument("--port", type=int, default=None, help="MQTT broker port (overrides config)")
-        parser.add_argument("--machine-id", default=None, help="Machine ID (overrides config)")
+        parser.add_argument(
+            "--config", default="config.json", help="Path to config.json"
+        )
+        parser.add_argument(
+            "--broker", default=None, help="MQTT broker host (overrides config)"
+        )
+        parser.add_argument(
+            "--port", type=int, default=None, help="MQTT broker port (overrides config)"
+        )
+        parser.add_argument(
+            "--machine-id", default=None, help="Machine ID (overrides config)"
+        )
         return parser.parse_args(argv)
 
     @staticmethod

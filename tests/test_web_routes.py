@@ -1,4 +1,5 @@
 """Tests for web_interface routes using FastAPI TestClient."""
+
 import pytest
 from fastapi.testclient import TestClient
 from config.config_model import ConfigModel
@@ -50,11 +51,14 @@ class TestInventoryEndpoints:
         assert resp.status_code == 200
 
     def test_add_product(self, client):
-        resp = client.post("/inventory/add", data={
-            "sku": "TEST-001",
-            "name": "Test Ice",
-            "price": "2.50",
-        })
+        resp = client.post(
+            "/inventory/add",
+            data={
+                "sku": "TEST-001",
+                "name": "Test Ice",
+                "price": "2.50",
+            },
+        )
         assert resp.status_code == 200
         assert "Test Ice" in resp.text
 
@@ -127,6 +131,7 @@ class TestKpiEndpoint:
     def test_kpi_with_recorder(self, client, tmp_path):
         from services.event_recorder import EventRecorder
         from web_interface import routes as r
+
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
         try:
@@ -168,6 +173,7 @@ class TestStatusHealthSignal:
     def test_status_with_recorder_no_errors(self, client, tmp_path):
         from services.event_recorder import EventRecorder
         from web_interface import routes as r
+
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
         try:
@@ -180,6 +186,7 @@ class TestStatusHealthSignal:
     def test_status_with_recorder_has_errors(self, client, tmp_path):
         from services.event_recorder import EventRecorder
         from web_interface import routes as r
+
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         recorder.record("error")
         r.set_event_recorder(recorder)

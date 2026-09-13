@@ -126,6 +126,15 @@ class TestBillValidatorOfflineFault:
         device = next(d for d in sim.devices if d["name"] == "bill_validator")
         assert device["state"] == "offline"
 
+    @pytest.mark.asyncio
+    async def test_recover_sets_device_state_to_ready(self):
+        sim = MDBGatewaySimulator()
+        client = AsyncMock()
+        await sim._on_bill_validator_offline_activate(client)
+        await sim._on_bill_validator_offline_recover(client)
+        device = next(d for d in sim.devices if d["name"] == "bill_validator")
+        assert device["state"] == "ready"
+
     def test_excluded_methods_during_bill_fault(self):
         sim = MDBGatewaySimulator()
         sim._fault_state["bill_validator_offline"] = {"active": True, "recover_at": 9e9}
@@ -141,6 +150,15 @@ class TestCardReaderErrorFault:
         await sim._on_card_reader_error_activate(client)
         device = next(d for d in sim.devices if d["name"] == "card_reader")
         assert device["state"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_recover_sets_device_state_to_ready(self):
+        sim = MDBGatewaySimulator()
+        client = AsyncMock()
+        await sim._on_card_reader_error_activate(client)
+        await sim._on_card_reader_error_recover(client)
+        device = next(d for d in sim.devices if d["name"] == "card_reader")
+        assert device["state"] == "ready"
 
     def test_excluded_methods_during_card_fault(self):
         sim = MDBGatewaySimulator()
@@ -158,6 +176,17 @@ class TestMDBBusResetFault:
         await sim._on_mdb_bus_reset_activate(client)
         for device in sim.devices:
             assert device["state"] == "offline"
+
+    @pytest.mark.asyncio
+    async def test_recover_restores_all_devices_ready(self):
+        from unittest.mock import patch
+        sim = MDBGatewaySimulator()
+        client = AsyncMock()
+        await sim._on_mdb_bus_reset_activate(client)
+        with patch("asyncio.sleep", new=AsyncMock()):
+            await sim._on_mdb_bus_reset_recover(client)
+        for device in sim.devices:
+            assert device["state"] == "ready"
 
     def test_bus_reset_excludes_all_payment_methods(self):
         sim = MDBGatewaySimulator()

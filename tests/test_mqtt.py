@@ -1,7 +1,8 @@
 # tests/test_mqtt.py
 """Tests for MQTT message schemas, client topic matching, and VMC MQTT wiring."""
+
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -87,7 +88,12 @@ class TestStatusSchemas:
             assert a.source == "vmc"
 
     def test_vmc_status_json_roundtrip(self):
-        s = VMCStatus(state="dispensing", credit_escrow=2.50, selected_product="Ice 10lb", uptime_seconds=300)
+        s = VMCStatus(
+            state="dispensing",
+            credit_escrow=2.50,
+            selected_product="Ice 10lb",
+            uptime_seconds=300,
+        )
         data = s.model_dump()
         s2 = VMCStatus.model_validate(data)
         assert s2.state == "dispensing"
@@ -105,7 +111,10 @@ class TestTopicMatching:
         assert MQTTClient._topic_matches("payment/credit", "payment/status") is False
 
     def test_single_level_wildcard(self):
-        assert MQTTClient._topic_matches("sensors/temp/+", "sensors/temp/evaporator") is True
+        assert (
+            MQTTClient._topic_matches("sensors/temp/+", "sensors/temp/evaporator")
+            is True
+        )
 
     def test_single_level_wildcard_wrong_depth(self):
         assert MQTTClient._topic_matches("sensors/temp/+", "sensors/temp/a/b") is False
@@ -166,7 +175,9 @@ class TestMQTTClientUnit:
         msg.payload = b'{"amount": 1.0, "method": "cash"}'
 
         await client._dispatch(msg)
-        handler.assert_awaited_once_with("payment/credit", {"amount": 1.0, "method": "cash"})
+        handler.assert_awaited_once_with(
+            "payment/credit", {"amount": 1.0, "method": "cash"}
+        )
 
     @pytest.mark.asyncio
     async def test_dispatch_ignores_wrong_prefix(self):
@@ -233,7 +244,9 @@ class TestVMCMQTTWiring:
         vmc.attach_to_loop(loop)
         vmc.start_interaction()
 
-        await vmc._handle_mqtt_payment("payment/credit", {"amount": 2.50, "method": "card"})
+        await vmc._handle_mqtt_payment(
+            "payment/credit", {"amount": 2.50, "method": "card"}
+        )
         assert vmc.credit_escrow == 2.50
         assert vmc.last_payment_method == "card"
 

@@ -192,10 +192,6 @@ class MDBGatewaySimulator(ESP32Simulator):
             await asyncio.sleep(random.uniform(2.0, 5.0))
 
             excluded = self._build_payment_exclusions()
-            if "mdb_bus_reset" in self._active_fault_names:
-                logger.info("[mdb] Bus reset active — no payments accepted")
-                continue
-
             method = self.strategy.pick_method(excluded=excluded)
             if method is None:
                 logger.info(
@@ -271,7 +267,10 @@ class MDBGatewaySimulator(ESP32Simulator):
         return excluded
 
     def _device_by_name(self, name: str) -> dict:
-        return next(d for d in self.devices if d["name"] == name)
+        device = next((d for d in self.devices if d["name"] == name), None)
+        if device is None:
+            raise ValueError(f"[mdb] Unknown device: {name!r}")
+        return device
 
     async def _set_device_state(
         self, client: aiomqtt.Client, name: str, state: str

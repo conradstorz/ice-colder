@@ -3,7 +3,6 @@ from loguru import logger
 from typing import Dict, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 from config.config_model import Channel
-import json
 import os
 
 
@@ -55,7 +54,7 @@ class MachineState(BaseModel):
         channel: Channel,
         sku: str,
         amount: float,
-        timestamp: Optional[datetime] = None
+        timestamp: Optional[datetime] = None,
     ) -> None:
         """
         Update channel and product stats for a completed vend.

@@ -3,6 +3,7 @@ import asyncio
 from loguru import logger
 from services.async_payment_fsm import AsyncPaymentFSM
 
+
 class VirtualPaymentFSM(AsyncPaymentFSM):
     """
     Asynchronous FSM for managing virtual payment options.
@@ -12,6 +13,7 @@ class VirtualPaymentFSM(AsyncPaymentFSM):
       - check_payment_status() returning "success", "pending", or "timeout"
       - process_refund(amount) for processing refunds (this could be simulated)
     """
+
     def __init__(self, payment_gateways, callback=None, poll_interval=1.0):
         super().__init__("VirtualPaymentFSM", callback=callback)
         self.payment_gateways = payment_gateways
@@ -29,7 +31,9 @@ class VirtualPaymentFSM(AsyncPaymentFSM):
         """
         self.active = True
         self.status["state"] = "processing"
-        logger.info(f"VirtualPaymentFSM: Starting virtual payment for amount: ${amount:.2f}")
+        logger.info(
+            f"VirtualPaymentFSM: Starting virtual payment for amount: ${amount:.2f}"
+        )
         tasks = []
         for gateway in self.payment_gateways:
             task = asyncio.create_task(self._poll_gateway(gateway, amount))
@@ -70,7 +74,9 @@ class VirtualPaymentFSM(AsyncPaymentFSM):
             self.notify("payment_cancelled", {})
             await asyncio.sleep(0)
         else:
-            logger.debug("VirtualPaymentFSM: No active virtual payment tasks to cancel.")
+            logger.debug(
+                "VirtualPaymentFSM: No active virtual payment tasks to cancel."
+            )
 
     async def get_status(self) -> dict:
         logger.debug(f"VirtualPaymentFSM: Current status: {self.status}")
@@ -78,7 +84,9 @@ class VirtualPaymentFSM(AsyncPaymentFSM):
 
     async def dispense_change(self):
         # For virtual payments, dispensing change is not applicable.
-        logger.debug("VirtualPaymentFSM: No change dispensing required for virtual payments.")
+        logger.debug(
+            "VirtualPaymentFSM: No change dispensing required for virtual payments."
+        )
         await asyncio.sleep(0)
 
     async def refund(self, amount: float):
@@ -88,13 +96,20 @@ class VirtualPaymentFSM(AsyncPaymentFSM):
         Here we simulate a refund if a successful gateway has been used.
         """
         if self.successful_gateway is None:
-            logger.error("VirtualPaymentFSM: Cannot process refund because no payment was completed.")
+            logger.error(
+                "VirtualPaymentFSM: Cannot process refund because no payment was completed."
+            )
             self.notify("refund_failed", {"reason": "No completed payment"})
             return None
         # Simulate asynchronous refund processing.
         await asyncio.sleep(self.poll_interval)
-        logger.info(f"VirtualPaymentFSM: Refunding ${amount:.2f} via {self.successful_gateway}.")
-        self.notify("refund_processed", {"gateway": self.successful_gateway, "refund_amount": amount})
+        logger.info(
+            f"VirtualPaymentFSM: Refunding ${amount:.2f} via {self.successful_gateway}."
+        )
+        self.notify(
+            "refund_processed",
+            {"gateway": self.successful_gateway, "refund_amount": amount},
+        )
         return amount
 
     async def _poll_gateway(self, gateway_name, amount):
@@ -105,9 +120,13 @@ class VirtualPaymentFSM(AsyncPaymentFSM):
         try:
             for i in range(10):
                 await asyncio.sleep(self.poll_interval)
-                status = provider.check_payment_status()  # returns "success", "pending", or "timeout"
+                status = (
+                    provider.check_payment_status()
+                )  # returns "success", "pending", or "timeout"
                 if status == "success":
-                    self.notify("payment_success", {"gateway": gateway_name, "url": payment_url})
+                    self.notify(
+                        "payment_success", {"gateway": gateway_name, "url": payment_url}
+                    )
                     return gateway_name
                 elif status == "timeout":
                     self.notify("payment_timeout", {"gateway": gateway_name})
@@ -117,6 +136,8 @@ class VirtualPaymentFSM(AsyncPaymentFSM):
             self.notify("payment_timeout", {"gateway": gateway_name})
             return None
         except asyncio.CancelledError:
-            logger.info(f"VirtualPaymentFSM: Polling cancelled for gateway: {gateway_name}")
+            logger.info(
+                f"VirtualPaymentFSM: Polling cancelled for gateway: {gateway_name}"
+            )
             self.notify("payment_cancelled", {"gateway": gateway_name})
             raise

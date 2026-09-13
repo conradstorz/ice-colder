@@ -1,4 +1,5 @@
 """Tests for controller/vmc.py — VMC finite state machine transitions."""
+
 import pytest
 from unittest.mock import MagicMock
 from config.config_model import ConfigModel
@@ -131,6 +132,7 @@ class TestCallbacks:
 class TestEventRecorder:
     def test_error_transition_calls_recorder(self):
         from unittest.mock import MagicMock
+
         config = ConfigModel()
         vmc = VMC(config=config)
         recorder = MagicMock()

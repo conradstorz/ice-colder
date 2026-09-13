@@ -1,6 +1,5 @@
 """Tests for config/config_model.py — Pydantic configuration model."""
-import json
-import pytest
+
 from config.config_model import (
     ConfigModel,
     Product,
@@ -44,7 +43,13 @@ def test_product_defaults():
 
 
 def test_product_custom_values():
-    p = Product(sku="ICE-001", name="Bag of Ice", price=2.50, track_inventory=True, inventory_count=50)
+    p = Product(
+        sku="ICE-001",
+        name="Bag of Ice",
+        price=2.50,
+        track_inventory=True,
+        inventory_count=50,
+    )
     assert p.sku == "ICE-001"
     assert p.name == "Bag of Ice"
     assert p.price == 2.50
@@ -70,9 +75,7 @@ def test_config_from_dict():
             "serial_number": "1234-5678",
             "location": {"address": "456 Test Ave"},
             "people": {},
-            "products": [
-                {"sku": "T-001", "name": "Test Product", "price": 3.00}
-            ],
+            "products": [{"sku": "T-001", "name": "Test Product", "price": 3.00}],
         },
     }
     cfg = ConfigModel.model_validate(data)

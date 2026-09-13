@@ -1,7 +1,7 @@
 # tests/test_inventory_manager.py
 """Tests for services/inventory_manager.py — persistent inventory tracking."""
+
 import json
-from pathlib import Path
 
 import pytest
 from config.config_model import Product
@@ -16,9 +16,27 @@ def tmp_inventory(tmp_path):
 
 def _products():
     return [
-        Product(sku="ICE-SM", name="Small Ice", price=2.00, track_inventory=True, inventory_count=10),
-        Product(sku="ICE-LG", name="Large Ice", price=3.50, track_inventory=True, inventory_count=5),
-        Product(sku="WATER", name="Water", price=1.50, track_inventory=False, inventory_count=0),
+        Product(
+            sku="ICE-SM",
+            name="Small Ice",
+            price=2.00,
+            track_inventory=True,
+            inventory_count=10,
+        ),
+        Product(
+            sku="ICE-LG",
+            name="Large Ice",
+            price=3.50,
+            track_inventory=True,
+            inventory_count=5,
+        ),
+        Product(
+            sku="WATER",
+            name="Water",
+            price=1.50,
+            track_inventory=False,
+            inventory_count=0,
+        ),
     ]
 
 

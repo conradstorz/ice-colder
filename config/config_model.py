@@ -42,7 +42,6 @@ class ConfigModel(BaseModel): holds high-level fields for version, physical, pay
 from enum import Enum
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, ConfigDict, EmailStr, SecretStr, Field
-from loguru import logger
 
 
 # 1) First, an enum of supported communication channels
@@ -50,6 +49,7 @@ class Channel(str, Enum):
     """
     Supported communication channels
     """
+
     email = "email"
     sms = "sms"
     snapchat = "snapchat"
@@ -60,6 +60,7 @@ class Person(BaseModel):
     """
     Generic person record with contact details and preferred channels
     """
+
     name: str = Field("Your Name", description="Full name of the person")
     email: EmailStr = Field("user@example.com", description="Email address")
     phone: Optional[str] = Field("123-456-7890", description="Phone number")
@@ -67,63 +68,58 @@ class Person(BaseModel):
     notes: Optional[str] = Field("Notes about person", description="Optional notes")
     preferred_comm: List[Channel] = Field(
         default_factory=lambda: [Channel.email],
-        description="Preferred communication channels"
+        description="Preferred communication channels",
     )
 
 
 class PeopleConfig(BaseModel):
     machine_owner: Person = Field(
-        default_factory=Person,
-        description="Primary machine owner contact"
+        default_factory=Person, description="Primary machine owner contact"
     )
     location_owner: Person = Field(
-        default_factory=Person,
-        description="Primary location contact"
+        default_factory=Person, description="Primary location contact"
     )
     service_technicians: List[Person] = Field(
-        default_factory=list,
-        description="List of service technicians"
+        default_factory=list, description="List of service technicians"
     )
 
 
 class Location(BaseModel):
     address: str = Field("123 Main St", description="Physical address")
-    notes: Optional[str] = Field("Location notes", description="Additional location info")
+    notes: Optional[str] = Field(
+        "Location notes", description="Additional location info"
+    )
 
 
 class Product(BaseModel):
     sku: str = Field("SAMPLE-SKU", description="Machine Selection Code / Product SKU")
     name: str = Field("Sample Product", description="Product name")
-    description: Optional[str] = Field("A sample product", description="Product description")
+    description: Optional[str] = Field(
+        "A sample product", description="Product description"
+    )
     image_url: Optional[str] = Field(
-        "https://example.com/image.jpg",
-        description="URL to product image"
+        "https://example.com/image.jpg", description="URL to product image"
     )
     price: float = Field(1.00, description="Price in USD")
     track_inventory: bool = Field(False, description="Whether to track inventory")
-    inventory_count: int = Field(0, description="Starting inventory count (seeds inventory.json on first run)")
+    inventory_count: int = Field(
+        0, description="Starting inventory count (seeds inventory.json on first run)"
+    )
 
 
 class PhysicalDetails(BaseModel):
     common_name: str = Field(
-        "YOUR_MACHINE_NAME",
-        description="Friendly machine name; edit before use"
+        "YOUR_MACHINE_NAME", description="Friendly machine name; edit before use"
     )
-    serial_number: str = Field(
-        "0000-0000",
-        description="Hardware serial number"
-    )
+    serial_number: str = Field("0000-0000", description="Hardware serial number")
     location: Location = Field(
-        default_factory=Location,
-        description="Machine physical location"
+        default_factory=Location, description="Machine physical location"
     )
     people: PeopleConfig = Field(
-        default_factory=PeopleConfig,
-        description="Contact roles"
+        default_factory=PeopleConfig, description="Contact roles"
     )
     products: List[Product] = Field(
-        default_factory=lambda: [Product()],
-        description="List of products available"
+        default_factory=lambda: [Product()], description="List of products available"
     )
 
     # --- convenience properties ---
@@ -148,49 +144,31 @@ class PhysicalDetails(BaseModel):
         return self.people.service_technicians
 
 
-
 class StripeConfig(BaseModel):
     api_key: SecretStr = Field(
-        default=SecretStr("sk_test_xxx"),
-        description="Stripe API key (dummy value)"
+        default=SecretStr("sk_test_xxx"), description="Stripe API key (dummy value)"
     )
     webhook_secret: SecretStr = Field(
-        default=SecretStr("whsec_xxx"),
-        description="Stripe webhook secret"
+        default=SecretStr("whsec_xxx"), description="Stripe webhook secret"
     )
 
 
 class PayPalConfig(BaseModel):
     client_id: SecretStr = Field(
-        default=SecretStr("paypal_client_id"),
-        description="PayPal client ID"
+        default=SecretStr("paypal_client_id"), description="PayPal client ID"
     )
     client_secret: SecretStr = Field(
-        default=SecretStr("paypal_client_secret"),
-        description="PayPal client secret"
+        default=SecretStr("paypal_client_secret"), description="PayPal client secret"
     )
-    sandbox: bool = Field(
-        True,
-        description="Use PayPal sandbox mode"
-    )
+    sandbox: bool = Field(True, description="Use PayPal sandbox mode")
 
 
 class MDBDevice(BaseModel):
-    name: str = Field(
-        "Card Reader",
-        description="MDB device name"
-    )
-    exists: bool = Field(
-        False,
-        description="Flag indicating device presence"
-    )
-    serial_number: Optional[str] = Field(
-        "00000000",
-        description="Device serial number"
-    )
+    name: str = Field("Card Reader", description="MDB device name")
+    exists: bool = Field(False, description="Flag indicating device presence")
+    serial_number: Optional[str] = Field("00000000", description="Device serial number")
     settings: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Device-specific settings"
+        default_factory=dict, description="Device-specific settings"
     )
 
 
@@ -198,122 +176,92 @@ class MDBDevicesConfig(BaseModel):
     """
     MDB bus polling and device list
     """
-    polling_interval: float = Field(
-        0.5,
-        description="Polling interval in seconds"
-    )
+
+    polling_interval: float = Field(0.5, description="Polling interval in seconds")
     devices: List[MDBDevice] = Field(
-        default_factory=list,
-        description="List of MDB devices on the bus"
+        default_factory=list, description="List of MDB devices on the bus"
     )
 
 
 class PaymentConfig(BaseModel):
     stripe: StripeConfig = Field(
-        default_factory=StripeConfig,
-        description="Stripe payment gateway configuration"
+        default_factory=StripeConfig, description="Stripe payment gateway configuration"
     )
     paypal: Optional[PayPalConfig] = Field(
-        default_factory=PayPalConfig,
-        description="PayPal payment gateway configuration"
+        default_factory=PayPalConfig, description="PayPal payment gateway configuration"
     )
     mdb: MDBDevicesConfig = Field(
-        default_factory=MDBDevicesConfig,
-        description="MDB bus configuration"
+        default_factory=MDBDevicesConfig, description="MDB bus configuration"
     )
 
 
 class EmailGatewayConfig(BaseModel):
-    smtp_server: str = Field(
-        "smtp.example.com",
-        description="SMTP server address"
-    )
-    smtp_port: int = Field(
-        587,
-        description="SMTP port"
-    )
-    username: str = Field(
-        "user@example.com",
-        description="SMTP username"
-    )
+    smtp_server: str = Field("smtp.example.com", description="SMTP server address")
+    smtp_port: int = Field(587, description="SMTP port")
+    username: str = Field("user@example.com", description="SMTP username")
     password: SecretStr = Field(
-        default=SecretStr("password"),
-        description="SMTP password"
+        default=SecretStr("password"), description="SMTP password"
     )
-    default_from: str = Field(
-        "user@example.com",
-        description="Default From address"
-    )
+    default_from: str = Field("user@example.com", description="Default From address")
 
 
 class SMSGatewayConfig(BaseModel):
     account_sid: SecretStr = Field(
-        default=SecretStr("ACxxxxxxxxxxxxxxxxxxx"),
-        description="Twilio account SID"
+        default=SecretStr("ACxxxxxxxxxxxxxxxxxxx"), description="Twilio account SID"
     )
     auth_token: SecretStr = Field(
-        default=SecretStr("your_auth_token"),
-        description="Twilio auth token"
+        default=SecretStr("your_auth_token"), description="Twilio auth token"
     )
-    from_number: str = Field(
-        "+1234567890",
-        description="Default SMS From number"
-    )
+    from_number: str = Field("+1234567890", description="Default SMS From number")
 
 
 class CommunicationConfig(BaseModel):
     email_gateway: EmailGatewayConfig = Field(
-        default_factory=EmailGatewayConfig,
-        description="Email gateway configuration"
+        default_factory=EmailGatewayConfig, description="Email gateway configuration"
     )
     sms_gateway: SMSGatewayConfig = Field(
-        default_factory=SMSGatewayConfig,
-        description="SMS gateway configuration"
+        default_factory=SMSGatewayConfig, description="SMS gateway configuration"
     )
     snapchat_gateway: Optional[Dict[str, Any]] = Field(
-        None,
-        description="Snapchat gateway (optional)"
+        None, description="Snapchat gateway (optional)"
     )
 
 
 class MQTTConfig(BaseModel):
     """MQTT broker connection settings."""
+
     broker_host: str = Field("localhost", description="MQTT broker hostname or IP")
     broker_port: int = Field(1883, description="MQTT broker port")
     username: Optional[str] = Field(None, description="MQTT username (optional)")
     password: Optional[SecretStr] = Field(None, description="MQTT password (optional)")
     client_id: str = Field("ice-colder-vmc", description="MQTT client identifier")
     keepalive: int = Field(60, description="MQTT keepalive interval in seconds")
-    reconnect_interval: float = Field(5.0, description="Seconds to wait before reconnecting")
+    reconnect_interval: float = Field(
+        5.0, description="Seconds to wait before reconnecting"
+    )
 
 
 class ConfigModel(BaseModel):
     """
     Top-level configuration for the Vending Machine Controller
     """
-    version: str = Field(
-        "1.0.0",
-        description="Configuration schema version"
-    )
+
+    version: str = Field("1.0.0", description="Configuration schema version")
     machine_id: str = Field(
-        "vmc-0000",
-        description="Unique machine identifier, used as MQTT topic prefix"
+        "vmc-0000", description="Unique machine identifier, used as MQTT topic prefix"
     )
     physical: PhysicalDetails = Field(
-        default_factory=PhysicalDetails,
-        description="Physical machine details"
+        default_factory=PhysicalDetails, description="Physical machine details"
     )
     payment: PaymentConfig = Field(
-        default_factory=PaymentConfig,
-        description="Payment gateway configurations"
+        default_factory=PaymentConfig, description="Payment gateway configurations"
     )
     communication: CommunicationConfig = Field(
         default_factory=CommunicationConfig,
-        description="Communication channels configuration"
+        description="Communication channels configuration",
     )
     mqtt: MQTTConfig = Field(
-        default_factory=MQTTConfig,
-        description="MQTT broker connection configuration"
+        default_factory=MQTTConfig, description="MQTT broker connection configuration"
     )
 
     model_config = ConfigDict(extra="ignore")

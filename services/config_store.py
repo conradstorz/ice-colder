@@ -5,6 +5,7 @@ Persists product catalog changes (add/update) back to config.json.
 Note: inventory counts are managed by InventoryManager (inventory.json),
 not stored in config.json.
 """
+
 from pathlib import Path
 from config.config_model import ConfigModel, Product
 from loguru import logger

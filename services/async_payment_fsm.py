@@ -1,7 +1,7 @@
 # async_payment_fsm.py
-import abc
 from abc import ABC, abstractmethod
 from loguru import logger
+
 
 class AsyncPaymentFSM(ABC):
     """
@@ -9,6 +9,7 @@ class AsyncPaymentFSM(ABC):
     Provides a common interface for both physical (MDB-based)
     and virtual payment systems, including support for refunds.
     """
+
     def __init__(self, name: str, callback=None):
         self.name = name
         self.callback = callback
@@ -19,7 +20,9 @@ class AsyncPaymentFSM(ABC):
         logger.debug(f"{self.name} AsyncPaymentFSM: Callback registered.")
 
     def notify(self, event_type, data):
-        logger.info(f"{self.name} AsyncPaymentFSM: Notifying event '{event_type}' with data: {data}")
+        logger.info(
+            f"{self.name} AsyncPaymentFSM: Notifying event '{event_type}' with data: {data}"
+        )
         if self.callback:
             self.callback(event_type, data)
 

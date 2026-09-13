@@ -5,6 +5,7 @@ Event recorder — persists machine activity to SQLite for the dashboard.
 Records payment, dispense, ice_cycle, error, service_door, temp_exceedance,
 and heartbeat events. Provides time-windowed aggregate summaries.
 """
+
 import json
 import sqlite3
 import time
@@ -14,7 +15,11 @@ from typing import Optional
 from loguru import logger
 
 from services.mqtt_messages import (
-    DispenserStatus, HardwareIO, IceMakerEvent, PaymentEvent, SensorReading,
+    DispenserStatus,
+    HardwareIO,
+    IceMakerEvent,
+    PaymentEvent,
+    SensorReading,
     SubsystemHeartbeat,
 )
 
@@ -22,8 +27,13 @@ from services.mqtt_messages import (
 _HEARTBEAT_INTERVAL = 10.0
 
 SUMMARY_KEYS = (
-    "money_in", "products_out", "ice_cycles", "errors",
-    "service_door_opens", "temp_exceedances", "uptime_pct",
+    "money_in",
+    "products_out",
+    "ice_cycles",
+    "errors",
+    "service_door_opens",
+    "temp_exceedances",
+    "uptime_pct",
 )
 
 
@@ -66,7 +76,9 @@ class EventRecorder:
                 "CREATE INDEX IF NOT EXISTS idx_type_ts ON events (event_type, timestamp)"
             )
 
-    def record(self, event_type: str, value: float = 1.0, metadata: Optional[dict] = None):
+    def record(
+        self, event_type: str, value: float = 1.0, metadata: Optional[dict] = None
+    ):
         """Insert one event row."""
         meta_str = json.dumps(metadata) if metadata else None
         with sqlite3.connect(self._db_path) as conn:
@@ -79,6 +91,7 @@ class EventRecorder:
     def _compute_window(self, start_ts: float, end_ts: float) -> dict:
         """Compute aggregates for events in [start_ts, end_ts)."""
         with sqlite3.connect(self._db_path) as conn:
+
             def count(etype):
                 return conn.execute(
                     "SELECT COUNT(*) FROM events WHERE event_type=? AND timestamp>=? AND timestamp<?",
@@ -145,8 +158,11 @@ class EventRecorder:
     async def _on_sensor(self, topic: str, data: dict):
         reading = SensorReading.model_validate(data)
         if not (self._temp_min <= reading.value <= self._temp_max):
-            self.record("temp_exceedance", value=reading.value,
-                        metadata={"location": reading.location})
+            self.record(
+                "temp_exceedance",
+                value=reading.value,
+                metadata={"location": reading.location},
+            )
 
     async def _on_heartbeat(self, topic: str, data: dict):
         hb = SubsystemHeartbeat.model_validate(data)

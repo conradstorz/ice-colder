@@ -1,8 +1,8 @@
 # tests/test_health_monitor.py
 """Tests for health monitor, alert deduplication, and notifier."""
-import asyncio
+
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -211,7 +211,9 @@ class TestNotifier:
         alert = Alert(level="warning", source="test", message="test alert")
 
         # Should not raise even without real SMTP
-        with patch.object(notifier, "_send_email", new_callable=AsyncMock) as mock_email:
+        with patch.object(
+            notifier, "_send_email", new_callable=AsyncMock
+        ) as mock_email:
             await notifier.send(alert)
             mock_email.assert_awaited_once()
 
@@ -223,7 +225,9 @@ class TestNotifier:
 
         alert = Alert(level="warning", source="test", message="test alert")
 
-        with patch.object(notifier, "_send_email", new_callable=AsyncMock) as mock_email:
+        with patch.object(
+            notifier, "_send_email", new_callable=AsyncMock
+        ) as mock_email:
             await notifier.send(alert)
             await notifier.send(alert)  # should be suppressed
             assert mock_email.await_count == 1

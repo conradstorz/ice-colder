@@ -2,10 +2,12 @@ import tkinter as tk
 from abc import ABC, abstractmethod
 from collections import deque
 
+
 class DisplayDevice(ABC):
     """
     Abstract interface for all display devices.
     """
+
     @abstractmethod
     def show_text(self, message: str):
         """Render the given text message on the device."""
@@ -26,12 +28,16 @@ class DisplayDevice(ABC):
         """Cancel a previously scheduled callback."""
         pass
 
+
 class TkinterWindowDisplay(DisplayDevice):
     """
     A simple Tkinter window that simulates a display device for text.
     Supports positioning relative to an optional parent window.
     """
-    def __init__(self, parent_window=None, width=400, height=100, x_offset=50, y_offset=50):
+
+    def __init__(
+        self, parent_window=None, width=400, height=100, x_offset=50, y_offset=50
+    ):
         # Create a standalone or child window
         if parent_window:
             self.root = tk.Toplevel(master=parent_window)
@@ -45,7 +51,9 @@ class TkinterWindowDisplay(DisplayDevice):
             self.root.geometry(f"{width}x{height}")
         self.root.title("Display Manager")
         # Label for showing text; supports multiline
-        self.label = tk.Label(self.root, text="", font=("Helvetica", 14), justify="left")
+        self.label = tk.Label(
+            self.root, text="", font=("Helvetica", 14), justify="left"
+        )
         self.label.pack(expand=True, fill="both")
 
     def show_text(self, message: str):
@@ -63,10 +71,12 @@ class TkinterWindowDisplay(DisplayDevice):
         # Cancel a pending after callback
         self.root.after_cancel(timer_id)
 
+
 class MessageManager:
     """
     Queues messages for sequential display, ensuring each is shown for its full duration.
     """
+
     def __init__(self, device: DisplayDevice):
         self.device = device
         self.queue = deque()

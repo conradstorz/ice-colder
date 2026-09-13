@@ -1,5 +1,6 @@
 # tests/test_simulator_base.py
 """Tests for simulators/base.py — ESP32Simulator base class."""
+
 import asyncio
 import json
 import time
@@ -12,6 +13,7 @@ from simulators.base import ESP32Simulator, FaultDef, RECOVERY_RANGES
 
 class ConcreteSimulator(ESP32Simulator):
     """Minimal concrete subclass for testing the ABC."""
+
     def __init__(self, **kwargs):
         super().__init__(subsystem_name="test_subsystem", **kwargs)
         self.simulation_ran = False
@@ -58,7 +60,9 @@ class TestCLIParsing:
         assert args.machine_id is None
 
     def test_parse_custom(self):
-        args = ESP32Simulator.parse_args(["--broker", "10.0.0.1", "--port", "1884", "--machine-id", "vmc-0042"])
+        args = ESP32Simulator.parse_args(
+            ["--broker", "10.0.0.1", "--port", "1884", "--machine-id", "vmc-0042"]
+        )
         assert args.broker == "10.0.0.1"
         assert args.port == 1884
         assert args.machine_id == "vmc-0042"
@@ -97,9 +101,17 @@ class TestHADiscovery:
 
         client.publish.assert_called_once()
         call_args = client.publish.call_args
-        topic = call_args[0][0] if call_args[0] else call_args.kwargs.get("topic", call_args[0][0])
+        topic = (
+            call_args[0][0]
+            if call_args[0]
+            else call_args.kwargs.get("topic", call_args[0][0])
+        )
         assert topic == "homeassistant/sensor/vmc-0001_test_subsystem/fake_temp/config"
-        payload_str = call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs.get("payload")
+        payload_str = (
+            call_args[0][1]
+            if len(call_args[0]) > 1
+            else call_args.kwargs.get("payload")
+        )
         payload = json.loads(payload_str)
         assert payload["name"] == "Fake Temperature"
         assert payload["unique_id"] == "vmc-0001_test_subsystem_fake_temp"
@@ -133,9 +145,17 @@ class TestHADiscovery:
         await sim._publish_ha_discovery(client)
 
         call_args = client.publish.call_args
-        topic = call_args[0][0] if call_args[0] else call_args.kwargs.get("topic", call_args[0][0])
+        topic = (
+            call_args[0][0]
+            if call_args[0]
+            else call_args.kwargs.get("topic", call_args[0][0])
+        )
         assert "binary_sensor" in topic
-        payload = json.loads(call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs.get("payload"))
+        payload = json.loads(
+            call_args[0][1]
+            if len(call_args[0]) > 1
+            else call_args.kwargs.get("payload")
+        )
         assert payload["payload_on"] == "ON"
         assert payload["payload_off"] == "OFF"
 
@@ -189,11 +209,16 @@ class TestFaultRegistration:
     def test_register_multiple_faults(self):
         sim = ConcreteSimulator()
         for name in ("fault_a", "fault_b", "fault_c"):
-            sim.register_fault(FaultDef(
-                name=name, category="short", probability=0.1,
-                on_activate=AsyncMock(), on_recover=AsyncMock(),
-                message=f"{name} message",
-            ))
+            sim.register_fault(
+                FaultDef(
+                    name=name,
+                    category="short",
+                    probability=0.1,
+                    on_activate=AsyncMock(),
+                    on_recover=AsyncMock(),
+                    message=f"{name} message",
+                )
+            )
         assert len(sim._fault_defs) == 3
         assert set(sim._fault_state.keys()) == {"fault_a", "fault_b", "fault_c"}
 
@@ -203,8 +228,11 @@ class TestFaultLoop:
     async def test_activate_fault_sets_active_state(self):
         sim = ConcreteSimulator()
         fault = FaultDef(
-            name="test_fault", category="short", probability=1.0,
-            on_activate=AsyncMock(), on_recover=AsyncMock(),
+            name="test_fault",
+            category="short",
+            probability=1.0,
+            on_activate=AsyncMock(),
+            on_recover=AsyncMock(),
             message="Test fault",
         )
         sim.register_fault(fault)
@@ -213,15 +241,22 @@ class TestFaultLoop:
         assert sim._fault_state["test_fault"]["active"] is True
         now = time.monotonic()
         lo, hi = RECOVERY_RANGES["short"]
-        assert now + lo - 1.0 <= sim._fault_state["test_fault"]["recover_at"] <= now + hi + 1.0
+        assert (
+            now + lo - 1.0
+            <= sim._fault_state["test_fault"]["recover_at"]
+            <= now + hi + 1.0
+        )
 
     @pytest.mark.asyncio
     async def test_activate_fault_calls_on_activate(self):
         sim = ConcreteSimulator()
         on_activate = AsyncMock()
         fault = FaultDef(
-            name="test_fault", category="short", probability=1.0,
-            on_activate=on_activate, on_recover=AsyncMock(),
+            name="test_fault",
+            category="short",
+            probability=1.0,
+            on_activate=on_activate,
+            on_recover=AsyncMock(),
             message="Test fault",
         )
         sim.register_fault(fault)
@@ -234,8 +269,11 @@ class TestFaultLoop:
         sim = ConcreteSimulator()
         on_activate = AsyncMock()
         fault = FaultDef(
-            name="test_fault", category="short", probability=1.0,
-            on_activate=on_activate, on_recover=AsyncMock(),
+            name="test_fault",
+            category="short",
+            probability=1.0,
+            on_activate=on_activate,
+            on_recover=AsyncMock(),
             message="Test fault",
         )
         sim.register_fault(fault)
@@ -249,8 +287,11 @@ class TestFaultLoop:
         sim = ConcreteSimulator()
         on_activate = AsyncMock()
         fault = FaultDef(
-            name="test_fault", category="short", probability=0.0,
-            on_activate=on_activate, on_recover=AsyncMock(),
+            name="test_fault",
+            category="short",
+            probability=0.0,
+            on_activate=on_activate,
+            on_recover=AsyncMock(),
             message="Test fault",
         )
         sim.register_fault(fault)
@@ -263,11 +304,16 @@ class TestFaultLoop:
     async def test_try_roll_faults_only_one_at_a_time(self):
         sim = ConcreteSimulator()
         for name in ("fault_a", "fault_b"):
-            sim.register_fault(FaultDef(
-                name=name, category="short", probability=1.0,
-                on_activate=AsyncMock(), on_recover=AsyncMock(),
-                message=f"{name} message",
-            ))
+            sim.register_fault(
+                FaultDef(
+                    name=name,
+                    category="short",
+                    probability=1.0,
+                    on_activate=AsyncMock(),
+                    on_recover=AsyncMock(),
+                    message=f"{name} message",
+                )
+            )
         client = AsyncMock()
         await sim._try_roll_faults(client)
         active_count = sum(1 for s in sim._fault_state.values() if s["active"])
@@ -278,8 +324,11 @@ class TestFaultLoop:
         sim = ConcreteSimulator()
         on_activate = AsyncMock()
         fault = FaultDef(
-            name="test_fault", category="short", probability=1.0,
-            on_activate=on_activate, on_recover=AsyncMock(),
+            name="test_fault",
+            category="short",
+            probability=1.0,
+            on_activate=on_activate,
+            on_recover=AsyncMock(),
             message="Test fault",
         )
         sim.register_fault(fault)
@@ -294,13 +343,18 @@ class TestFaultLoop:
         sim = ConcreteSimulator()
         on_recover = AsyncMock()
         fault = FaultDef(
-            name="test_fault", category="short", probability=0.0,
-            on_activate=AsyncMock(), on_recover=on_recover,
+            name="test_fault",
+            category="short",
+            probability=0.0,
+            on_activate=AsyncMock(),
+            on_recover=on_recover,
             message="Test fault",
         )
         sim.register_fault(fault)
         sim._fault_state["test_fault"]["active"] = True
-        sim._fault_state["test_fault"]["recover_at"] = time.monotonic() - 1.0  # past due
+        sim._fault_state["test_fault"]["recover_at"] = (
+            time.monotonic() - 1.0
+        )  # past due
         client = AsyncMock()
         await sim._check_recoveries(client)
         assert sim._fault_state["test_fault"]["active"] is False
@@ -311,8 +365,11 @@ class TestFaultLoop:
         sim = ConcreteSimulator()
         on_recover = AsyncMock()
         fault = FaultDef(
-            name="test_fault", category="short", probability=0.0,
-            on_activate=AsyncMock(), on_recover=on_recover,
+            name="test_fault",
+            category="short",
+            probability=0.0,
+            on_activate=AsyncMock(),
+            on_recover=on_recover,
             message="Test fault",
         )
         sim.register_fault(fault)
@@ -327,8 +384,11 @@ class TestFaultLoop:
     async def test_publish_alert_active_includes_recover_in(self):
         sim = ConcreteSimulator(machine_id="vmc-0001")
         fault = FaultDef(
-            name="test_fault", category="short", probability=1.0,
-            on_activate=AsyncMock(), on_recover=AsyncMock(),
+            name="test_fault",
+            category="short",
+            probability=1.0,
+            on_activate=AsyncMock(),
+            on_recover=AsyncMock(),
             message="Test fault message",
             severity="warning",
         )
@@ -349,8 +409,11 @@ class TestFaultLoop:
     async def test_publish_alert_cleared_omits_recover_in(self):
         sim = ConcreteSimulator(machine_id="vmc-0001")
         fault = FaultDef(
-            name="test_fault", category="short", probability=1.0,
-            on_activate=AsyncMock(), on_recover=AsyncMock(),
+            name="test_fault",
+            category="short",
+            probability=1.0,
+            on_activate=AsyncMock(),
+            on_recover=AsyncMock(),
             message="Test fault message",
         )
         client = AsyncMock()
@@ -366,8 +429,11 @@ class TestFaultInject:
         sim = ConcreteSimulator()
         on_activate = AsyncMock()
         fault = FaultDef(
-            name="test_fault", category="short", probability=0.0,
-            on_activate=on_activate, on_recover=AsyncMock(),
+            name="test_fault",
+            category="short",
+            probability=0.0,
+            on_activate=on_activate,
+            on_recover=AsyncMock(),
             message="Test fault",
         )
         sim.register_fault(fault)
@@ -388,8 +454,11 @@ class TestFaultInject:
         sim = ConcreteSimulator()
         on_activate = AsyncMock()
         fault = FaultDef(
-            name="test_fault", category="short", probability=0.0,
-            on_activate=on_activate, on_recover=AsyncMock(),
+            name="test_fault",
+            category="short",
+            probability=0.0,
+            on_activate=on_activate,
+            on_recover=AsyncMock(),
             message="Test fault",
         )
         sim.register_fault(fault)
@@ -403,11 +472,16 @@ class TestFaultInject:
         sim = ConcreteSimulator()
         on_activate_b = AsyncMock()
         for name, activate in [("fault_a", AsyncMock()), ("fault_b", on_activate_b)]:
-            sim.register_fault(FaultDef(
-                name=name, category="short", probability=0.0,
-                on_activate=activate, on_recover=AsyncMock(),
-                message=f"{name} message",
-            ))
+            sim.register_fault(
+                FaultDef(
+                    name=name,
+                    category="short",
+                    probability=0.0,
+                    on_activate=activate,
+                    on_recover=AsyncMock(),
+                    message=f"{name} message",
+                )
+            )
         # fault_a already active
         sim._fault_state["fault_a"]["active"] = True
         client = AsyncMock()

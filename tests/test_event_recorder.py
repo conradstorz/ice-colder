@@ -23,9 +23,12 @@ class TestInit:
         db = str(tmp_path / "events.db")
         EventRecorder(db_path=db)
         conn = sqlite3.connect(db)
-        tables = [r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()]
+        tables = [
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        ]
         conn.close()
         assert "events" in tables
 
@@ -99,6 +102,7 @@ class TestRegisterHandlers:
     def _get_handlers(self, recorder):
         """Call register_handlers with a mock client, return {topic: handler} dict."""
         from unittest.mock import MagicMock
+
         client = MagicMock()
         recorder.register_handlers(client)
         return {call.args[0]: call.args[1] for call in client.register.call_args_list}
@@ -108,7 +112,11 @@ class TestRegisterHandlers:
         h = self._get_handlers(recorder)
         await h["payment/credit"](
             "payment/credit",
-            {"amount": 2.50, "method": "cash_coin", "timestamp": "2026-01-01T00:00:00+00:00"},
+            {
+                "amount": 2.50,
+                "method": "cash_coin",
+                "timestamp": "2026-01-01T00:00:00+00:00",
+            },
         )
         assert recorder.get_summary(24)["money_in"] == pytest.approx(2.50)
 
@@ -126,7 +134,11 @@ class TestRegisterHandlers:
         h = self._get_handlers(recorder)
         await h["hardware/dispenser"](
             "hardware/dispenser",
-            {"slot": 0, "state": "motor_active", "timestamp": "2026-01-01T00:00:00+00:00"},
+            {
+                "slot": 0,
+                "state": "motor_active",
+                "timestamp": "2026-01-01T00:00:00+00:00",
+            },
         )
         assert recorder.get_summary(24)["products_out"] == 0
 
@@ -135,7 +147,11 @@ class TestRegisterHandlers:
         h = self._get_handlers(recorder)
         await h["ice_maker/event"](
             "ice_maker/event",
-            {"event": "ice_dropped", "detail": None, "timestamp": "2026-01-01T00:00:00+00:00"},
+            {
+                "event": "ice_dropped",
+                "detail": None,
+                "timestamp": "2026-01-01T00:00:00+00:00",
+            },
         )
         assert recorder.get_summary(24)["ice_cycles"] == 1
 
@@ -144,7 +160,11 @@ class TestRegisterHandlers:
         h = self._get_handlers(recorder)
         await h["ice_maker/event"](
             "ice_maker/event",
-            {"event": "power_on", "detail": None, "timestamp": "2026-01-01T00:00:00+00:00"},
+            {
+                "event": "power_on",
+                "detail": None,
+                "timestamp": "2026-01-01T00:00:00+00:00",
+            },
         )
         assert recorder.get_summary(24)["ice_cycles"] == 0
 
@@ -153,7 +173,11 @@ class TestRegisterHandlers:
         h = self._get_handlers(recorder)
         await h["hardware/io/service_door"](
             "hardware/io/service_door",
-            {"device": "service_door", "state": True, "timestamp": "2026-01-01T00:00:00+00:00"},
+            {
+                "device": "service_door",
+                "state": True,
+                "timestamp": "2026-01-01T00:00:00+00:00",
+            },
         )
         assert recorder.get_summary(24)["service_door_opens"] == 1
 
@@ -162,7 +186,11 @@ class TestRegisterHandlers:
         h = self._get_handlers(recorder)
         await h["hardware/io/service_door"](
             "hardware/io/service_door",
-            {"device": "service_door", "state": False, "timestamp": "2026-01-01T00:00:00+00:00"},
+            {
+                "device": "service_door",
+                "state": False,
+                "timestamp": "2026-01-01T00:00:00+00:00",
+            },
         )
         assert recorder.get_summary(24)["service_door_opens"] == 0
 
@@ -171,7 +199,12 @@ class TestRegisterHandlers:
         h = self._get_handlers(recorder)
         await h["sensors/temp/+"](
             "sensors/temp/evaporator",
-            {"location": "evaporator", "value": 95.0, "unit": "C", "timestamp": "2026-01-01T00:00:00+00:00"},
+            {
+                "location": "evaporator",
+                "value": 95.0,
+                "unit": "C",
+                "timestamp": "2026-01-01T00:00:00+00:00",
+            },
         )
         assert recorder.get_summary(24)["temp_exceedances"] == 1
 
@@ -180,7 +213,12 @@ class TestRegisterHandlers:
         h = self._get_handlers(recorder)
         await h["sensors/temp/+"](
             "sensors/temp/evaporator",
-            {"location": "evaporator", "value": 22.0, "unit": "C", "timestamp": "2026-01-01T00:00:00+00:00"},
+            {
+                "location": "evaporator",
+                "value": 22.0,
+                "unit": "C",
+                "timestamp": "2026-01-01T00:00:00+00:00",
+            },
         )
         assert recorder.get_summary(24)["temp_exceedances"] == 0
 
@@ -189,7 +227,11 @@ class TestRegisterHandlers:
         h = self._get_handlers(recorder)
         await h["heartbeat/+"](
             "heartbeat/vending",
-            {"subsystem": "vending", "uptime_seconds": 300, "timestamp": "2026-01-01T00:00:00+00:00"},
+            {
+                "subsystem": "vending",
+                "uptime_seconds": 300,
+                "timestamp": "2026-01-01T00:00:00+00:00",
+            },
         )
         assert recorder.get_summary(24)["uptime_pct"] > 0
 

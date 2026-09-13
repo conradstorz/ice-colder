@@ -3,11 +3,13 @@ import asyncio
 from loguru import logger
 from services.async_payment_fsm import AsyncPaymentFSM
 
+
 class MDBPaymentFSM(AsyncPaymentFSM):
     """
     Asynchronous FSM for handling MDB interface payment devices.
     Handles physical payment devices (cash, coin, credit card readers) via the MDB standard.
     """
+
     def __init__(self, callback=None):
         super().__init__("MDBPaymentFSM", callback=callback)
         self.current_credit = 0.0
@@ -51,7 +53,9 @@ class MDBPaymentFSM(AsyncPaymentFSM):
         if amount > self.current_credit:
             amount = self.current_credit  # Refund whatever is available
         self.current_credit -= amount
-        logger.info(f"MDBPaymentFSM: Refunding ${amount:.2f}. Remaining credit: ${self.current_credit:.2f}")
+        logger.info(
+            f"MDBPaymentFSM: Refunding ${amount:.2f}. Remaining credit: ${self.current_credit:.2f}"
+        )
         self.notify("refund_processed", {"device": "MDB", "refund_amount": amount})
         await asyncio.sleep(0.1)
         return amount

@@ -8,8 +8,6 @@ handlers). This file is kept as a placeholder for the MDB protocol
 constants and message parsing that may be useful when implementing the
 ESP32 firmware or for testing.
 """
-from loguru import logger
-
 
 # MDB address constants (for reference / ESP32 firmware)
 MDB_ADDR_VMC = 0x00

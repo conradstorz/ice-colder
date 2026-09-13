@@ -6,6 +6,7 @@ Inventory counts are seeded from config Product.inventory_count on first run
 or when new products appear. Runtime counts survive restarts independently
 of config.json.
 """
+
 import json
 import os
 from pathlib import Path
@@ -49,7 +50,9 @@ class InventoryManager:
                 self._counts[sku] = saved[sku]
             else:
                 self._counts[sku] = product.inventory_count
-                logger.info(f"Inventory: seeded {sku} with {product.inventory_count} from config")
+                logger.info(
+                    f"Inventory: seeded {sku} with {product.inventory_count} from config"
+                )
 
         self._save()
 

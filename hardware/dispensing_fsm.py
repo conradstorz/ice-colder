@@ -3,6 +3,7 @@ import asyncio
 from transitions import Machine
 from loguru import logger
 
+
 class DispenseFSM:
     # Define states for the dispensing process
     states = ["init", "activating", "verifying", "completed", "error"]
@@ -11,12 +12,18 @@ class DispenseFSM:
         # Initialize the state machine with the first state: "init"
         self.machine = Machine(model=self, states=DispenseFSM.states, initial="init")
         # Define transitions for the dispensing process
-        self.machine.add_transition(trigger="start_activation", source="init", dest="activating")
-        self.machine.add_transition(trigger="verify_dispense", source="activating", dest="verifying")
-        self.machine.add_transition(trigger="complete_dispense", source="verifying", dest="completed")
+        self.machine.add_transition(
+            trigger="start_activation", source="init", dest="activating"
+        )
+        self.machine.add_transition(
+            trigger="verify_dispense", source="activating", dest="verifying"
+        )
+        self.machine.add_transition(
+            trigger="complete_dispense", source="verifying", dest="completed"
+        )
         # Any failure at any state will lead to "error"
         self.machine.add_transition(trigger="fail", source="*", dest="error")
-    
+
     async def run(self):
         try:
             logger.info("DispenseFSM: Starting dispensing process.")
@@ -41,6 +48,7 @@ class DispenseFSM:
             self.fail()
             logger.error(f"DispenseFSM: Error during dispensing process: {e}")
             return "error"
+
 
 # Example usage within VMC (main controller) in vmc.py:
 #

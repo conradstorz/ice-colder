@@ -1,5 +1,6 @@
 # tests/test_display_controller.py
 """Tests for services/display_controller.py — display mode management."""
+
 import asyncio
 from unittest.mock import MagicMock, AsyncMock
 
@@ -38,7 +39,9 @@ class TestDisplayControllerModes:
 
     def test_unknown_state_defaults_to_advertising(self):
         dc = DisplayController()
-        dc.update_for_state("interacting_with_user")  # change away from advertising first
+        dc.update_for_state(
+            "interacting_with_user"
+        )  # change away from advertising first
         dc.update_for_state("some_unknown_state")
         assert dc.current_mode == DisplayMode.advertising
 

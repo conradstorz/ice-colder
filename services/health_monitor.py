@@ -6,6 +6,7 @@ Tracks last-seen timestamps for ESP32 subsystems and MQTT connection.
 Fires alerts when subsystems go silent, temperatures drift out of range,
 or the FSM enters an error state.
 """
+
 import asyncio
 import time
 from dataclasses import dataclass, field
@@ -17,6 +18,7 @@ from loguru import logger
 @dataclass
 class SubsystemStatus:
     """Tracks liveness of a single subsystem (e.g., an ESP32)."""
+
     name: str
     last_seen: float = 0.0  # monotonic timestamp
     last_payload: dict = field(default_factory=dict)
@@ -35,6 +37,7 @@ class SubsystemStatus:
 @dataclass
 class TemperatureReading:
     """Latest temperature reading from a sensor location."""
+
     location: str
     value: float
     timestamp: float  # monotonic
@@ -43,6 +46,7 @@ class TemperatureReading:
 @dataclass
 class Alert:
     """A health alert ready to be sent to the owner."""
+
     level: str  # "info", "warning", "error", "critical"
     source: str
     message: str
@@ -173,33 +177,33 @@ class HealthMonitor:
         # Check MQTT connection
         if not self._mqtt_connected:
             await self._fire_alert(
-                "mqtt_disconnect", "warning", "mqtt",
-                "MQTT broker connection is down"
+                "mqtt_disconnect", "warning", "mqtt", "MQTT broker connection is down"
             )
 
         # Check VMC error state
         if self._vmc_state == "error":
-            await self._fire_alert(
-                "vmc_error", "error", "vmc",
-                "VMC is in error state"
-            )
+            await self._fire_alert("vmc_error", "error", "vmc", "VMC is in error state")
 
         # Check subsystem liveness
         for name, sub in self._subsystems.items():
             if sub.seconds_since_seen > self._subsystem_timeout:
                 await self._fire_alert(
-                    f"subsystem_stale:{name}", "warning", name,
+                    f"subsystem_stale:{name}",
+                    "warning",
+                    name,
                     f"Subsystem '{name}' has not reported in "
-                    f"{sub.seconds_since_seen:.0f}s (timeout: {self._subsystem_timeout}s)"
+                    f"{sub.seconds_since_seen:.0f}s (timeout: {self._subsystem_timeout}s)",
                 )
 
         # Check temperature ranges
         for loc, reading in self._temperatures.items():
             if not (self._temp_min <= reading.value <= self._temp_max):
                 await self._fire_alert(
-                    f"temp_range:{loc}", "critical", f"temp/{loc}",
+                    f"temp_range:{loc}",
+                    "critical",
+                    f"temp/{loc}",
                     f"Temperature at '{loc}' is {reading.value:.1f}C "
-                    f"(range: {self._temp_min} to {self._temp_max})"
+                    f"(range: {self._temp_min} to {self._temp_max})",
                 )
 
     async def _fire_alert(self, key: str, level: str, source: str, message: str):
