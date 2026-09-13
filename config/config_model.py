@@ -119,7 +119,7 @@ class PhysicalDetails(BaseModel):
         default_factory=PeopleConfig, description="Contact roles"
     )
     products: List[Product] = Field(
-        default_factory=lambda: [Product()], description="List of products available"
+        default_factory=list, description="List of products available"
     )
 
     # --- convenience properties ---

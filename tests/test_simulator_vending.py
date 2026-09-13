@@ -55,7 +55,10 @@ class TestInit:
         assert sim.slot_type(2) == "water"
 
     def test_single_product_config(self):
-        sim = VendingMachineSimulator()  # default ConfigModel has 1 product
+        config = ConfigModel.model_validate(
+            {"physical": {"products": [{"sku": "T-1", "name": "Test", "price": 1.0}]}}
+        )
+        sim = VendingMachineSimulator(config=config)
         assert sim.num_buttons == 1
 
     def test_hardware_state_initialized(self):

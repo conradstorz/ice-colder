@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from config.config_model import ConfigModel, MQTTConfig
+from config.config_model import ConfigModel, MQTTConfig, Product
 from controller.vmc import VMC
 from services.mqtt_client import MQTTClient
 from services.mqtt_messages import (
@@ -252,11 +252,13 @@ class TestVMCMQTTWiring:
 
     @pytest.mark.asyncio
     async def test_handle_mqtt_button_selects_product(self):
-        vmc = _make_vmc()
+        config = ConfigModel()
+        config.physical.products = [Product(sku="T-1", name="Test", price=1.0)]
+        vmc = VMC(config=config)
         loop = asyncio.get_running_loop()
         vmc.attach_to_loop(loop)
 
-        # VMC starts idle with default products; button 0 should select first product
+        # button 0 should select the first configured product
         await vmc._handle_mqtt_button("hardware/buttons", {"button": 0})
         assert vmc.selected_product is not None
         assert vmc.state == "interacting_with_user"

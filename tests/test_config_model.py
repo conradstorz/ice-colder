@@ -23,8 +23,7 @@ def test_default_config_model():
 def test_products_convenience_property():
     cfg = ConfigModel()
     assert cfg.products is cfg.physical.products
-    assert len(cfg.products) >= 1
-    assert isinstance(cfg.products[0], Product)
+    assert cfg.products == []
 
 
 def test_machine_owner_convenience_property():

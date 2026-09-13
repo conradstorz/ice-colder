@@ -64,9 +64,14 @@ class TestInventoryEndpoints:
         assert "Test Ice" in resp.text
 
     def test_edit_form(self, client):
-        """Edit form for default product SKU."""
-        resp = client.get("/inventory/edit/SAMPLE-SKU")
+        """Edit form for a product created via the dashboard."""
+        client.post(
+            "/inventory/add",
+            data={"sku": "EDIT-1", "name": "Editable", "price": "1.50"},
+        )
+        resp = client.get("/inventory/edit/EDIT-1")
         assert resp.status_code == 200
+        assert "Editable" in resp.text
 
 
 class TestConfigEndpoints:
