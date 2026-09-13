@@ -82,6 +82,15 @@ class TestConfigEndpoints:
         resp = client.get("/config/machine")
         assert resp.status_code == 200
 
+    def test_machine_info_shows_product_count(self, client):
+        client.post(
+            "/inventory/add",
+            data={"sku": "CNT-1", "name": "Counted", "price": "1.00"},
+        )
+        resp = client.get("/config/machine")
+        assert resp.status_code == 200
+        assert ">1</dd>" in resp.text.replace(" ", "").replace("\n", "")
+
     @pytest.mark.skip(reason="Template partials/contacts.html not yet created")
     def test_contacts(self, client):
         resp = client.get("/config/contacts")
