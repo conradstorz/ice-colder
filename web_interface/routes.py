@@ -8,7 +8,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 
 from config.config_model import ConfigModel, Product
-from services.config_store import add_product, update_product
+from services.config_store import add_product, delete_product, update_product
 from services.fsm_control import perform_command
 
 config: ConfigModel = None
@@ -39,6 +39,14 @@ event_recorder = None
 def set_event_recorder(recorder):
     global event_recorder
     event_recorder = recorder
+
+
+inventory_manager = None
+
+
+def set_inventory_manager(inv):
+    global inventory_manager
+    inventory_manager = inv
 
 
 _basic_auth = HTTPBasic()
@@ -96,6 +104,8 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         price: float = Form(...),
     ):
         success = add_product(config, sku, name, price)
+        if success and inventory_manager:
+            inventory_manager.add_sku(sku, 0, tracked=False)
 
         return templates.TemplateResponse(
             "partials/inventory_table.html",
@@ -255,6 +265,16 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
     ):
         update_product(config, sku, name, price)
 
+        return templates.TemplateResponse(
+            "partials/inventory_table.html",
+            {"request": request, "products": config.products},
+        )
+
+    @router.post("/inventory/delete/{sku}", response_class=HTMLResponse)
+    async def delete_inventory_item(request: Request, sku: str):
+        success = delete_product(config, sku)
+        if success and inventory_manager:
+            inventory_manager.remove_sku(sku)
         return templates.TemplateResponse(
             "partials/inventory_table.html",
             {"request": request, "products": config.products},

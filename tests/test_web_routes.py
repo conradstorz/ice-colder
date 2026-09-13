@@ -4,17 +4,20 @@ import pytest
 from fastapi.testclient import TestClient
 from config.config_model import ConfigModel
 from controller.vmc import VMC
+from services.inventory_manager import InventoryManager
 from web_interface.server import app
 from web_interface import routes
 
 
 @pytest.fixture
-def client():
-    """Create a TestClient with a real ConfigModel and VMC."""
+def client(tmp_path):
+    """Create a TestClient with a real ConfigModel, VMC, and InventoryManager."""
     cfg = ConfigModel()
     vmc = VMC(config=cfg)
+    inv = InventoryManager([], path=tmp_path / "inventory.json")
     routes.set_config_object(cfg)
     routes.set_vmc_instance(vmc)
+    routes.set_inventory_manager(inv)
 
     with TestClient(app) as c:
         c.auth = ("admin", "changeme")
@@ -212,6 +215,50 @@ class TestStatusHealthSignal:
             assert "Issues Detected" in response.text
         finally:
             r.set_event_recorder(None)
+
+
+class TestDeleteAndEmptyState:
+    def test_empty_state_shown_when_no_products(self, client):
+        resp = client.get("/inventory")
+        assert resp.status_code == 200
+        assert "No products configured" in resp.text
+
+    def test_delete_product_removes_row(self, client):
+        client.post(
+            "/inventory/add",
+            data={"sku": "DEL-1", "name": "Doomed", "price": "1.00"},
+        )
+        resp = client.post("/inventory/delete/DEL-1")
+        assert resp.status_code == 200
+        assert "Doomed" not in resp.text
+        assert "No products configured" in resp.text
+
+    def test_delete_unknown_sku_is_harmless(self, client):
+        resp = client.post("/inventory/delete/NOPE")
+        assert resp.status_code == 200
+
+    def test_delete_requires_auth(self, client):
+        resp = client.post("/inventory/delete/X", auth=None)
+        assert resp.status_code == 401
+
+    def test_add_registers_inventory_sku(self, client):
+        from web_interface import routes as r
+
+        client.post(
+            "/inventory/add",
+            data={"sku": "INV-1", "name": "Tracked Thing", "price": "1.00"},
+        )
+        assert "INV-1" in r.inventory_manager.get_all()
+
+    def test_delete_removes_inventory_sku(self, client):
+        from web_interface import routes as r
+
+        client.post(
+            "/inventory/add",
+            data={"sku": "INV-2", "name": "Gone Soon", "price": "1.00"},
+        )
+        client.post("/inventory/delete/INV-2")
+        assert "INV-2" not in r.inventory_manager.get_all()
 
 
 class TestAuth:

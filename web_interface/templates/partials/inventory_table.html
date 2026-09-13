@@ -44,7 +44,21 @@
               class="border border-gray-200 hover:bg-gray-50 text-gray-600 px-2.5 py-1 rounded text-xs font-medium transition-colors">
               Copy
             </button>
+            <button
+              hx-post="/inventory/delete/{{ product.sku }}"
+              hx-target="#content-body"
+              hx-swap="innerHTML"
+              hx-confirm="Delete {{ product.name }}?"
+              class="border border-red-200 hover:bg-red-50 text-red-600 px-2.5 py-1 rounded text-xs font-medium transition-colors">
+              Delete
+            </button>
           </div>
+        </td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="5" class="py-8 text-center text-gray-400 text-sm">
+          No products configured — add your first product.
         </td>
       </tr>
       {% endfor %}

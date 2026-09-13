@@ -156,6 +156,7 @@ async def main():
     vmc.set_inventory_manager(inventory)
     vmc.attach_to_loop(asyncio.get_running_loop())
     routes.set_vmc_instance(vmc)
+    routes.set_inventory_manager(inventory)
     logger.info("VMC instance created and attached to event loop")
 
     # Create health monitor and notifier
