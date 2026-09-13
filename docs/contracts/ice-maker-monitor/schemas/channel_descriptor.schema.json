@@ -1,0 +1,49 @@
+{
+  "description": "One telemetry channel the monitor declares in its capabilities.",
+  "properties": {
+    "channel_id": {
+      "description": "Slug; also the topic segment",
+      "pattern": "^[a-z0-9_]{1,64}$",
+      "title": "Channel Id",
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "temperature",
+        "current",
+        "voltage",
+        "level",
+        "binary",
+        "counter"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "unit": {
+      "default": "",
+      "description": "Unit, e.g. 'C', 'A', '%'; empty for binary",
+      "title": "Unit",
+      "type": "string"
+    },
+    "description": {
+      "default": "",
+      "description": "Human-readable channel description",
+      "title": "Description",
+      "type": "string"
+    },
+    "interval_seconds": {
+      "description": "Declared publish cadence",
+      "exclusiveMinimum": 0.0,
+      "maximum": 3600.0,
+      "title": "Interval Seconds",
+      "type": "number"
+    }
+  },
+  "required": [
+    "channel_id",
+    "kind",
+    "interval_seconds"
+  ],
+  "title": "ChannelDescriptor",
+  "type": "object"
+}

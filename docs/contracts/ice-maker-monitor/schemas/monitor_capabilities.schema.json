@@ -1,0 +1,110 @@
+{
+  "$defs": {
+    "ChannelDescriptor": {
+      "description": "One telemetry channel the monitor declares in its capabilities.",
+      "properties": {
+        "channel_id": {
+          "description": "Slug; also the topic segment",
+          "pattern": "^[a-z0-9_]{1,64}$",
+          "title": "Channel Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "temperature",
+            "current",
+            "voltage",
+            "level",
+            "binary",
+            "counter"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "unit": {
+          "default": "",
+          "description": "Unit, e.g. 'C', 'A', '%'; empty for binary",
+          "title": "Unit",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "description": "Human-readable channel description",
+          "title": "Description",
+          "type": "string"
+        },
+        "interval_seconds": {
+          "description": "Declared publish cadence",
+          "exclusiveMinimum": 0.0,
+          "maximum": 3600.0,
+          "title": "Interval Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "channel_id",
+        "kind",
+        "interval_seconds"
+      ],
+      "title": "ChannelDescriptor",
+      "type": "object"
+    }
+  },
+  "description": "Retained self-description published on connect and on channel changes.",
+  "properties": {
+    "subsystem": {
+      "const": "ice_maker",
+      "default": "ice_maker",
+      "title": "Subsystem",
+      "type": "string"
+    },
+    "contract_version": {
+      "description": "Contract semver, e.g. '1.0.0'",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "brand": {
+      "description": "Ice maker brand the monitor targets",
+      "title": "Brand",
+      "type": "string"
+    },
+    "model": {
+      "description": "Ice maker model",
+      "title": "Model",
+      "type": "string"
+    },
+    "firmware": {
+      "description": "Monitor software version",
+      "title": "Firmware",
+      "type": "string"
+    },
+    "channels": {
+      "items": {
+        "$ref": "#/$defs/ChannelDescriptor"
+      },
+      "title": "Channels",
+      "type": "array"
+    },
+    "commands": {
+      "description": "Contract commands this monitor supports",
+      "items": {
+        "type": "string"
+      },
+      "title": "Commands",
+      "type": "array"
+    },
+    "timestamp": {
+      "format": "date-time",
+      "title": "Timestamp",
+      "type": "string"
+    }
+  },
+  "required": [
+    "contract_version",
+    "brand",
+    "model",
+    "firmware"
+  ],
+  "title": "MonitorCapabilities",
+  "type": "object"
+}

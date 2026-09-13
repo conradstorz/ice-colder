@@ -1,0 +1,26 @@
+{
+  "description": "One reading on telemetry/ice_maker/<channel_id>.",
+  "properties": {
+    "channel_id": {
+      "pattern": "^[a-z0-9_]{1,64}$",
+      "title": "Channel Id",
+      "type": "string"
+    },
+    "value": {
+      "description": "Binary channels use 0.0/1.0",
+      "title": "Value",
+      "type": "number"
+    },
+    "timestamp": {
+      "format": "date-time",
+      "title": "Timestamp",
+      "type": "string"
+    }
+  },
+  "required": [
+    "channel_id",
+    "value"
+  ],
+  "title": "ChannelReading",
+  "type": "object"
+}
