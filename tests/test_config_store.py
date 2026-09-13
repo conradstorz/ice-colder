@@ -56,3 +56,22 @@ def test_add_product_uses_module_config_path(tmp_path, monkeypatch):
     cfg = ConfigModel()
     assert add_product(cfg, "NEW-1", "New Thing", 3.25) is True
     assert (tmp_path / "config.json").exists()
+
+
+def test_delete_product_removes_and_saves(tmp_path):
+    from config.config_model import Product
+    from services.config_store import delete_product
+
+    cfg = ConfigModel()
+    cfg.physical.products = [Product(sku="A-1", name="Thing A", price=1.0)]
+    assert delete_product(cfg, "A-1") is True
+    assert cfg.products == []
+    assert (tmp_path / "config.json").exists()
+
+
+def test_delete_product_unknown_sku_returns_false_without_saving(tmp_path):
+    from services.config_store import delete_product
+
+    cfg = ConfigModel()
+    assert delete_product(cfg, "NOPE") is False
+    assert not (tmp_path / "config.json").exists()

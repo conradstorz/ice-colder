@@ -130,3 +130,19 @@ class TestSetAndAdd:
         inv = InventoryManager(_products(), path=tmp_inventory)
         counts = inv.get_all()
         assert counts == {"ICE-SM": 10, "ICE-LG": 5, "WATER": 0}
+
+
+class TestRemoveSku:
+    def test_remove_sku_deletes_and_persists(self, tmp_path):
+        path = tmp_path / "inv.json"
+        inv = InventoryManager([], path=path)
+        inv.add_sku("X-1", 5, tracked=True)
+        inv.remove_sku("X-1")
+        assert inv.get_count("X-1") == 0
+        assert inv.is_tracked("X-1") is False
+        reloaded = InventoryManager([], path=path)
+        assert "X-1" not in reloaded.get_all()
+
+    def test_remove_sku_unknown_is_harmless(self, tmp_path):
+        inv = InventoryManager([], path=tmp_path / "inv.json")
+        inv.remove_sku("NOPE")  # must not raise

@@ -93,3 +93,15 @@ def update_product(
 
     logger.warning(f"SKU not found: {sku}")
     return False
+
+
+def delete_product(config: ConfigModel, sku: str) -> bool:
+    for i, p in enumerate(config.products):
+        if p.sku == sku:
+            del config.products[i]
+            save_config(config)
+            logger.info(f"Deleted product SKU={sku} | name='{p.name}'")
+            return True
+
+    logger.warning(f"Cannot delete product: SKU not found: {sku}")
+    return False

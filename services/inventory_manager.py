@@ -98,6 +98,14 @@ class InventoryManager:
         self._track[sku] = tracked
         self._save()
 
+    def remove_sku(self, sku: str):
+        """Remove a SKU from counts and tracking (e.g., product deleted)."""
+        removed = self._counts.pop(sku, None) is not None
+        self._track.pop(sku, None)
+        if removed:
+            self._save()
+            logger.info(f"Inventory: removed SKU {sku}")
+
     def get_all(self) -> dict[str, int]:
         """Return a copy of all inventory counts."""
         return dict(self._counts)
