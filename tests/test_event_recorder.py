@@ -324,3 +324,33 @@ class TestGetHistoricalAverage:
         conn.close()
         avg = rec.get_historical_average(24)
         assert avg["money_in"] == pytest.approx(9.0)  # (10 + 8) / 2, not (10+8+20)/3
+
+
+class TestRetention:
+    def test_prune_removes_events_older_than_retention(self, tmp_path):
+        rec = EventRecorder(db_path=str(tmp_path / "e.db"), retention_days=1)
+        old_ts = time.time() - 2 * 86400
+        with sqlite3.connect(str(tmp_path / "e.db")) as conn:
+            conn.execute(
+                "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+                ("payment", old_ts, 1.0),
+            )
+        rec.record("payment", 1.0)
+        rec.prune()
+        with sqlite3.connect(str(tmp_path / "e.db")) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        assert count == 1  # only the fresh event survives
+
+    def test_init_prunes_existing_old_events(self, tmp_path):
+        db = str(tmp_path / "e.db")
+        _rec = EventRecorder(db_path=db, retention_days=1)
+        old_ts = time.time() - 2 * 86400
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+                ("payment", old_ts, 1.0),
+            )
+        _rec2 = EventRecorder(db_path=db, retention_days=1)
+        with sqlite3.connect(db) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        assert count == 0

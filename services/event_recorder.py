@@ -54,11 +54,15 @@ class EventRecorder:
         db_path: str = "data/events.db",
         temp_min: float = -20.0,
         temp_max: float = 80.0,
+        retention_days: int = 90,
     ):
         self._db_path = db_path
         self._temp_min = temp_min
         self._temp_max = temp_max
+        self._retention_days = retention_days
+        self._last_prune = 0.0
         self._init_db()
+        self.prune()
 
     def _init_db(self):
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -87,6 +91,20 @@ class EventRecorder:
                 (event_type, time.time(), value, meta_str),
             )
         logger.debug(f"EventRecorder: {event_type} value={value}")
+        if time.time() - self._last_prune > 86400:
+            self.prune()
+
+    def prune(self):
+        """Delete events older than the retention window (SD-card growth guard)."""
+        cutoff = time.time() - self._retention_days * 86400
+        with sqlite3.connect(self._db_path) as conn:
+            cur = conn.execute("DELETE FROM events WHERE timestamp < ?", (cutoff,))
+        self._last_prune = time.time()
+        if cur.rowcount:
+            logger.info(
+                f"EventRecorder: pruned {cur.rowcount} events older than "
+                f"{self._retention_days} days"
+            )
 
     def _compute_window(self, start_ts: float, end_ts: float) -> dict:
         """Compute aggregates for events in [start_ts, end_ts)."""
