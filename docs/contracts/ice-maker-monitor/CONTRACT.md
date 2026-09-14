@@ -31,8 +31,9 @@ schema files are regenerated from source and are always current.
   credential/TLS provisioning is a deployment concern outside this contract.
 - Every topic is prefixed `vmc/{machine_id}/` — the monitor MUST be
   configured with the same `machine_id` as the VMC instance it serves.
-- QoS 1 for events, commands, acks, and capabilities. QoS 0 is acceptable
-  for high-rate sensor and telemetry readings.
+- **QoS 1** for events, commands, acks, capabilities, and heartbeats
+  (including Last-Will publication). **QoS 0** is acceptable only for
+  high-rate sensor and telemetry readings.
 - `vmc/{machine_id}/capabilities/ice_maker` is published **retained**.
   Every other topic in this contract is published **not retained**.
 - **Last Will and Testament:** on connect, the monitor MUST configure an
@@ -231,14 +232,11 @@ Monitor → VMC acknowledgement, published on `cmd/ice_maker/ack`.
 
 ## Reference implementation
 
-`simulators/ice_maker.py` in this repo speaks the full contract described
-above — retained capabilities announcement, declared-cadence telemetry
-publishing, and handlers with acks for all three commands (`power_cycle`,
-`force_report`, `set_interval`), including the power-cycle lockout and
-duplicate-`request_id` idempotency. It is a live conformance fixture: run
-it against an MQTT broker and observe or drive it exactly as a real
-brand-specific monitor would be observed or driven, to validate a monitor
-implementation or a VMC-side consumer against this contract.
+The ice-colder repository's `simulators/ice_maker.py` is the designated
+reference implementation of this contract. Once its contract upgrade lands
+(capabilities announce, telemetry channels, command handling with acks, LWT),
+running it against an MQTT broker provides a live conformance fixture:
+observe its published traffic and drive commands at it to compare behavior.
 
 ## Conformance checklist
 
