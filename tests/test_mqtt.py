@@ -224,7 +224,7 @@ class TestVMCMQTTWiring:
         vmc = _make_vmc()
         mock_client = MagicMock()
         vmc.set_mqtt_client(mock_client)
-        assert mock_client.register.call_count == 6
+        assert mock_client.register.call_count == 9
 
     def test_publish_status_without_client_does_nothing(self):
         vmc = _make_vmc()
@@ -262,3 +262,72 @@ class TestVMCMQTTWiring:
         await vmc._handle_mqtt_button("hardware/buttons", {"button": 0})
         assert vmc.selected_product is not None
         assert vmc.state == "interacting_with_user"
+
+
+class TestMonitorContractHandlers:
+    def _vmc_with_monitor(self):
+        from services.health_monitor import HealthMonitor
+
+        vmc = VMC(config=ConfigModel())
+        monitor = HealthMonitor()
+        vmc.set_health_monitor(monitor)
+        return vmc, monitor
+
+    async def test_capabilities_stored(self):
+        from contracts.ice_maker_monitor import CONTRACT_VERSION
+
+        vmc, _ = self._vmc_with_monitor()
+        await vmc._handle_mqtt_capabilities(
+            "capabilities/ice_maker",
+            {
+                "subsystem": "ice_maker",
+                "contract_version": CONTRACT_VERSION,
+                "brand": "BrandX",
+                "model": "IM-500",
+                "firmware": "0.1.0",
+                "channels": [],
+                "commands": ["power_cycle"],
+            },
+        )
+        assert "ice_maker" in vmc.subsystem_capabilities
+        assert vmc.subsystem_capabilities["ice_maker"]["brand"] == "BrandX"
+
+    async def test_malformed_capabilities_stored_raw_with_warning(self):
+        vmc, _ = self._vmc_with_monitor()
+        await vmc._handle_mqtt_capabilities(
+            "capabilities/vending", {"subsystem": "vending", "whatever": 1}
+        )
+        assert vmc.subsystem_capabilities["vending"] == {
+            "subsystem": "vending",
+            "whatever": 1,
+        }
+
+    async def test_telemetry_routed_to_health_monitor(self):
+        vmc, monitor = self._vmc_with_monitor()
+        await vmc._handle_mqtt_telemetry(
+            "telemetry/ice_maker/bin_level",
+            {"channel_id": "bin_level", "value": 42.0},
+        )
+        assert monitor.get_summary()["channels"]["bin_level"]["value"] == 42.0
+
+    async def test_lwt_heartbeat_marks_offline(self):
+        vmc, monitor = self._vmc_with_monitor()
+        await vmc._handle_mqtt_heartbeat(
+            "heartbeat/ice_maker", {"subsystem": "ice_maker", "uptime_seconds": 10}
+        )
+        assert monitor.get_summary()["subsystems"]["ice_maker"]["alive"] is True
+        await vmc._handle_mqtt_heartbeat(
+            "heartbeat/ice_maker", {"subsystem": "ice_maker", "uptime_seconds": -1}
+        )
+        assert monitor.get_summary()["subsystems"]["ice_maker"]["alive"] is False
+
+    async def test_command_ack_logged_without_error(self):
+        vmc, _ = self._vmc_with_monitor()
+        await vmc._handle_mqtt_command_ack(
+            "cmd/ice_maker/ack",
+            {
+                "request_id": "req-00000001",
+                "command": "power_cycle",
+                "status": "ok",
+            },
+        )  # must not raise

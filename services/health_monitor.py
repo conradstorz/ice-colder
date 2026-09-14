@@ -82,6 +82,7 @@ class HealthMonitor:
 
         self._subsystems: dict[str, SubsystemStatus] = {}
         self._temperatures: dict[str, TemperatureReading] = {}
+        self._channels: dict[str, TemperatureReading] = {}
         self._mqtt_connected: bool = False
         self._vmc_state: str = "unknown"
 
@@ -113,6 +114,17 @@ class HealthMonitor:
         # Clear out-of-range alert if back in range
         if self._temp_min <= value <= self._temp_max:
             self._fired_alerts.discard(f"temp_range:{location}")
+
+    def record_channel(self, channel_id: str, value: float):
+        """Record a generic telemetry channel reading (analog or binary)."""
+        self._channels[channel_id] = TemperatureReading(
+            location=channel_id, value=value, timestamp=time.monotonic()
+        )
+
+    def mark_offline(self, subsystem: str):
+        """Force a subsystem to stale/offline (e.g., MQTT Last-Will received)."""
+        if subsystem in self._subsystems:
+            self._subsystems[subsystem].last_seen = 0.0
 
     def update_mqtt_status(self, connected: bool):
         """Update MQTT connection status."""
@@ -151,11 +163,19 @@ class HealthMonitor:
                 "age_seconds": round(time.monotonic() - reading.timestamp, 1),
             }
 
+        channels = {}
+        for channel_id, reading in self._channels.items():
+            channels[channel_id] = {
+                "value": reading.value,
+                "age_seconds": round(time.monotonic() - reading.timestamp, 1),
+            }
+
         return {
             "mqtt_connected": self._mqtt_connected,
             "vmc_state": self._vmc_state,
             "subsystems": subsystems,
             "temperatures": temperatures,
+            "channels": channels,
             "check_interval": self._check_interval,
             "subsystem_timeout": self._subsystem_timeout,
         }

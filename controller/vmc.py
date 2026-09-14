@@ -3,6 +3,7 @@ import asyncio
 import time
 from transitions import Machine
 from loguru import logger
+from pydantic import ValidationError
 from services.payment_gateway_manager import PaymentGatewayManager
 from services.mqtt_messages import (
     VMCStatus,
@@ -11,6 +12,7 @@ from services.mqtt_messages import (
     DispenseCommand,
     IceMakerEvent,
 )
+from contracts.ice_maker_monitor import ChannelReading, CommandAck, MonitorCapabilities
 from config.config_model import ConfigModel
 from services.health_monitor import HealthMonitor
 from services.display_controller import DisplayController
@@ -109,6 +111,7 @@ class VMC:
             None  # Set via set_inventory_manager()
         )
         self._event_recorder = None  # Set via set_event_recorder()
+        self.subsystem_capabilities: dict[str, dict] = {}
         self._start_time = time.monotonic()
         self._session_timeout_seconds = 180.0  # 3 minutes
 
@@ -152,6 +155,9 @@ class VMC:
         client.register("sensors/temp/+", self._handle_mqtt_sensor)
         client.register("heartbeat/+", self._handle_mqtt_heartbeat)
         client.register("ice_maker/event", self._handle_mqtt_ice_maker_event)
+        client.register("capabilities/+", self._handle_mqtt_capabilities)
+        client.register("telemetry/ice_maker/+", self._handle_mqtt_telemetry)
+        client.register("cmd/ice_maker/ack", self._handle_mqtt_command_ack)
         logger.debug("VMC registered MQTT handlers.")
 
     def set_health_monitor(self, monitor: HealthMonitor):
@@ -268,6 +274,12 @@ class VMC:
             subsystem = data.get(
                 "subsystem", topic.split("/")[-1] if "/" in topic else topic
             )
+            if data.get("uptime_seconds") == -1:
+                logger.warning(
+                    f"Subsystem '{subsystem}' reported OFFLINE (MQTT last will)"
+                )
+                self._health_monitor.mark_offline(subsystem)
+                return
             self._health_monitor.record_heartbeat(subsystem, data)
 
     # Events logged to the ice maker log: power cycles, ice drops, out-of-spec
@@ -287,6 +299,37 @@ class VMC:
         if event.event in self._ICE_LOG_EVENTS:
             detail = f" ({event.detail})" if event.detail else ""
             ice_log.info(f"{event.event.upper()}{detail}")
+
+    async def _handle_mqtt_capabilities(self, topic: str, data: dict):
+        """Store a subsystem's self-declared capabilities for the dashboard."""
+        subsystem = data.get("subsystem") or topic.split("/")[-1]
+        try:
+            MonitorCapabilities.model_validate(data)
+            logger.info(
+                f"Capabilities registered for '{subsystem}' "
+                f"(contract {data.get('contract_version')}, "
+                f"{len(data.get('channels', []))} channels)"
+            )
+        except ValidationError:
+            logger.warning(
+                f"Capabilities for '{subsystem}' don't match the known schema; "
+                "storing raw payload"
+            )
+        self.subsystem_capabilities[subsystem] = data
+
+    async def _handle_mqtt_telemetry(self, topic: str, data: dict):
+        """Route a generic telemetry channel reading into health tracking."""
+        reading = ChannelReading.model_validate(data)
+        if self._health_monitor:
+            self._health_monitor.record_channel(reading.channel_id, reading.value)
+
+    async def _handle_mqtt_command_ack(self, topic: str, data: dict):
+        """Log command acknowledgements from the monitor."""
+        ack = CommandAck.model_validate(data)
+        detail = f" — {ack.detail}" if ack.detail else ""
+        logger.info(
+            f"Monitor ack: {ack.command} -> {ack.status}{detail} ({ack.request_id})"
+        )
 
     def _schedule(self, delay_seconds, callback) -> asyncio.Task | None:
         """Schedule a synchronous callback to run after delay_seconds on the event loop."""

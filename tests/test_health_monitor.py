@@ -223,6 +223,26 @@ async def test_run_survives_check_exception(monkeypatch):
         pass
 
 
+class TestChannelsAndOffline:
+    def test_record_channel_appears_in_summary(self):
+        monitor = HealthMonitor()
+        monitor.record_channel("compressor_current", 8.4)
+        channels = monitor.get_summary()["channels"]
+        assert channels["compressor_current"]["value"] == 8.4
+        assert channels["compressor_current"]["age_seconds"] >= 0
+
+    def test_mark_offline_makes_subsystem_stale(self):
+        monitor = HealthMonitor()
+        monitor.record_heartbeat("ice_maker")
+        monitor.mark_offline("ice_maker")
+        summary = monitor.get_summary()["subsystems"]["ice_maker"]
+        assert summary["alive"] is False
+        assert summary["stale"] is True
+
+    def test_mark_offline_unknown_subsystem_is_harmless(self):
+        HealthMonitor().mark_offline("nope")  # must not raise
+
+
 class TestNotifier:
     def test_notifier_creates(self):
         config = ConfigModel()
