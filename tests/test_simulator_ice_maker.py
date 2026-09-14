@@ -437,3 +437,115 @@ class TestDefrostStuckPerValve:
         fails = [e for e in sim._pending_events if e.event == "failed_cycle"]
         assert drops == []
         assert len(fails) == 2
+
+
+class TestMonitorContract:
+    def _sim(self):
+        return IceMakerSimulator(machine_id="vmc-test")
+
+    def test_capabilities_lists_all_channels_and_commands(self):
+        from contracts.ice_maker_monitor import CONTRACT_VERSION
+
+        caps = self._sim().build_capabilities()
+        assert caps.contract_version == CONTRACT_VERSION
+        ids = [c.channel_id for c in caps.channels]
+        assert len(ids) == 12  # 10 temps + compressor_current + bin_level
+        assert "hot_gas_valve_1" in ids
+        assert "compressor_current" in ids
+        assert "bin_level" in ids
+        assert caps.commands == ["power_cycle", "force_report", "set_interval"]
+
+    @pytest.mark.asyncio
+    async def test_power_cycle_ok_then_lockout(self):
+        from contracts.ice_maker_monitor import MonitorCommand
+
+        sim = self._sim()
+        published = []
+
+        async def capture(client, suffix, payload, retain=False):
+            published.append((suffix, payload))
+
+        sim.publish = capture
+        client = AsyncMock()
+        cmd = MonitorCommand(
+            request_id="req-00000001",
+            command="power_cycle",
+            params={"dwell_seconds": 5},
+        )
+        await sim._handle_command(client, cmd)
+        acks = [p for s, p in published if s == "cmd/ice_maker/ack"]
+        assert acks[-1].status == "ok"
+        assert sim.compressor_on is False
+
+        cmd2 = MonitorCommand(
+            request_id="req-00000002",
+            command="power_cycle",
+            params={"dwell_seconds": 5},
+        )
+        await sim._handle_command(client, cmd2)
+        acks = [p for s, p in published if s == "cmd/ice_maker/ack"]
+        assert acks[-1].status == "rejected"
+        assert acks[-1].detail == "lockout"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_request_id_reacks_without_reexecuting(self):
+        from contracts.ice_maker_monitor import MonitorCommand
+
+        sim = self._sim()
+        published = []
+
+        async def capture(client, suffix, payload, retain=False):
+            published.append((suffix, payload))
+
+        sim.publish = capture
+        client = AsyncMock()
+        cmd = MonitorCommand(
+            request_id="req-00000003",
+            command="set_interval",
+            params={"interval_seconds": 7},
+        )
+        await sim._handle_command(client, cmd)
+        first_ack_count = len(published)
+        sim._publish_interval = 99.0  # would change again if re-executed
+        await sim._handle_command(client, cmd)
+        assert len(published) == first_ack_count + 1  # re-acked
+        assert sim._publish_interval == 99.0  # NOT re-executed
+
+    @pytest.mark.asyncio
+    async def test_set_interval_changes_publish_interval(self):
+        from contracts.ice_maker_monitor import MonitorCommand
+
+        sim = self._sim()
+        sim.publish = AsyncMock()
+        client = AsyncMock()
+        await sim._handle_command(
+            client,
+            MonitorCommand(
+                request_id="req-00000004",
+                command="set_interval",
+                params={"interval_seconds": 30},
+            ),
+        )
+        assert sim._publish_interval == 30.0
+
+    @pytest.mark.asyncio
+    async def test_force_report_publishes_snapshot_and_acks(self):
+        from contracts.ice_maker_monitor import MonitorCommand
+
+        sim = self._sim()
+        published = []
+
+        async def capture(client, suffix, payload, retain=False):
+            published.append((suffix, payload))
+
+        sim.publish = capture
+        client = AsyncMock()
+        await sim._handle_command(
+            client,
+            MonitorCommand(request_id="req-00000005", command="force_report"),
+        )
+        suffixes = [s for s, _ in published]
+        assert sum(s.startswith("sensors/temp/") for s in suffixes) == 10
+        assert "telemetry/ice_maker/compressor_current" in suffixes
+        assert "telemetry/ice_maker/bin_level" in suffixes
+        assert suffixes[-1] == "cmd/ice_maker/ack"

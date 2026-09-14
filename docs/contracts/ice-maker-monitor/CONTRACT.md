@@ -232,10 +232,13 @@ Monitor → VMC acknowledgement, published on `cmd/ice_maker/ack`.
 
 ## Reference implementation
 
-The ice-colder repository's `simulators/ice_maker.py` is the designated
-reference implementation of this contract. Once its contract upgrade lands
-(capabilities announce, telemetry channels, command handling with acks, LWT),
-running it against an MQTT broker provides a live conformance fixture:
+The ice-colder repository's `simulators/ice_maker.py` is the reference
+implementation of this contract: it announces retained capabilities, publishes
+the `compressor_current` and `bin_level` telemetry channels alongside its
+temperature sensors, and handles `power_cycle`, `force_report`, and
+`set_interval` with acks, the 300-second power-cycle lockout, and
+request-id idempotency, over an MQTT connection with a Last-Will heartbeat.
+Running it against an MQTT broker provides a live conformance fixture:
 observe its published traffic and drive commands at it to compare behavior.
 
 ## Conformance checklist

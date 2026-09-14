@@ -495,3 +495,28 @@ class TestFaultInject:
         # Empty payload — no "fault" key
         await sim._handle_inject_command(client, {})
         assert sim._active_fault_names == set()
+
+
+class TestContractTransport:
+    def test_build_will_targets_heartbeat_with_offline_marker(self):
+        from simulators.ice_maker import IceMakerSimulator
+
+        sim = IceMakerSimulator(machine_id="vmc-test")
+        will = sim._build_will()
+        assert will.topic == "vmc/vmc-test/heartbeat/ice_maker"
+        assert json.loads(will.payload) == {
+            "subsystem": "ice_maker",
+            "uptime_seconds": -1,
+        }
+        assert will.qos == 1
+
+    @pytest.mark.asyncio
+    async def test_publish_passes_retain_flag(self):
+        from unittest.mock import AsyncMock
+
+        from simulators.ice_maker import IceMakerSimulator
+
+        sim = IceMakerSimulator(machine_id="vmc-test")
+        client = AsyncMock()
+        await sim.publish(client, "capabilities/ice_maker", {"x": 1}, retain=True)
+        assert client.publish.call_args.kwargs.get("retain") is True

@@ -10,10 +10,20 @@ Run: uv run python -m simulators.ice_maker [--broker HOST] [--port PORT] [--mach
 
 import asyncio
 import random
+import time
 
 import aiomqtt
 from loguru import logger
+from pydantic import ValidationError
 
+from contracts.ice_maker_monitor import (
+    CONTRACT_VERSION,
+    ChannelDescriptor,
+    ChannelReading,
+    CommandAck,
+    MonitorCapabilities,
+    MonitorCommand,
+)
 from simulators.base import ESP32Simulator, FaultDef
 from services.mqtt_messages import SensorReading, IceMakerEvent
 
@@ -92,6 +102,25 @@ SENSOR_DEFS = [
     },
 ]
 
+TELEMETRY_CHANNELS = [
+    ChannelDescriptor(
+        channel_id="compressor_current",
+        kind="current",
+        unit="A",
+        description="Compressor current draw",
+        interval_seconds=5.0,
+    ),
+    ChannelDescriptor(
+        channel_id="bin_level",
+        kind="level",
+        unit="%",
+        description="Ice bin fill level",
+        interval_seconds=5.0,
+    ),
+]
+
+POWER_CYCLE_LOCKOUT_SECONDS = 300.0
+
 
 class ThermalSensor:
     """Models a single temperature sensor with thermal lag toward a target."""
@@ -139,6 +168,10 @@ class IceMakerSimulator(ESP32Simulator):
         self._ice_drop_elapsed = 0.0
         self._next_harvest_valve = 1
         self._pending_events: list[IceMakerEvent] = []
+        self._publish_interval = float(self.PUBLISH_INTERVAL)
+        self._last_power_cycle = -1e9
+        self._acked: dict[str, CommandAck] = {}
+        self._bin_level = 20.0
 
         # Register faults
         self.register_fault(
@@ -395,6 +428,7 @@ class IceMakerSimulator(ESP32Simulator):
                 self._pending_events.append(
                     IceMakerEvent(event="ice_dropped", detail=f"evaporator_{valve}")
                 )
+                self._bin_level = min(100.0, self._bin_level + 2.0)
                 logger.info(f"[ice_maker] Ice dropped from evaporator {valve}")
 
     def _check_temp_bounds(self) -> None:
@@ -408,27 +442,135 @@ class IceMakerSimulator(ESP32Simulator):
                     )
                 )
 
+    def build_capabilities(self) -> MonitorCapabilities:
+        temp_channels = [
+            ChannelDescriptor(
+                channel_id=s.name,
+                kind="temperature",
+                unit="C",
+                description=f"{s.name.replace('_', ' ')} temperature",
+                interval_seconds=self._publish_interval,
+            )
+            for s in self.sensors
+        ]
+        return MonitorCapabilities(
+            contract_version=CONTRACT_VERSION,
+            brand="ice-colder",
+            model="simulator",
+            firmware="sim",
+            channels=temp_channels + TELEMETRY_CHANNELS,
+            commands=["power_cycle", "force_report", "set_interval"],
+        )
+
+    def _compressor_current(self) -> float:
+        base = 8.5 if self.compressor_on else 0.4
+        return round(base + random.gauss(0, 0.15), 2)
+
+    async def _publish_snapshot(self, client: aiomqtt.Client):
+        """Publish one full round of sensor + telemetry readings."""
+        for sensor in self.sensors:
+            reading = SensorReading(location=sensor.name, value=round(sensor.value, 2))
+            await self.publish(client, f"sensors/temp/{sensor.name}", reading)
+        await self.publish(
+            client,
+            "telemetry/ice_maker/compressor_current",
+            ChannelReading(
+                channel_id="compressor_current", value=self._compressor_current()
+            ),
+        )
+        await self.publish(
+            client,
+            "telemetry/ice_maker/bin_level",
+            ChannelReading(channel_id="bin_level", value=round(self._bin_level, 1)),
+        )
+
+    async def _handle_command(self, client: aiomqtt.Client, cmd: MonitorCommand):
+        if cmd.request_id in self._acked:
+            await self.publish(client, "cmd/ice_maker/ack", self._acked[cmd.request_id])
+            return
+
+        if cmd.command == "power_cycle":
+            now = time.monotonic()
+            if now - self._last_power_cycle < POWER_CYCLE_LOCKOUT_SECONDS:
+                ack = CommandAck(
+                    request_id=cmd.request_id,
+                    command=cmd.command,
+                    status="rejected",
+                    detail="lockout",
+                )
+            else:
+                self._last_power_cycle = now
+                dwell = cmd.params["dwell_seconds"]
+                self.compressor_on = False
+                self._cycle_elapsed = 0.0
+                self._pending_events.append(
+                    IceMakerEvent(event="power_off", detail="commanded power_cycle")
+                )
+                asyncio.get_running_loop().create_task(self._finish_power_cycle(dwell))
+                ack = CommandAck(
+                    request_id=cmd.request_id,
+                    command=cmd.command,
+                    status="ok",
+                    detail=f"dwell {dwell:.0f}s",
+                )
+        elif cmd.command == "set_interval":
+            self._publish_interval = float(cmd.params["interval_seconds"])
+            ack = CommandAck(
+                request_id=cmd.request_id, command=cmd.command, status="ok"
+            )
+        else:  # force_report — validated Literal, only three commands exist
+            await self._publish_snapshot(client)
+            ack = CommandAck(
+                request_id=cmd.request_id, command=cmd.command, status="ok"
+            )
+
+        self._acked[cmd.request_id] = ack
+        await self.publish(client, "cmd/ice_maker/ack", ack)
+        logger.info(
+            f"[ice_maker] Command {cmd.command} ({cmd.request_id}): {ack.status}"
+        )
+
+    async def _finish_power_cycle(self, dwell: float):
+        await asyncio.sleep(dwell)
+        self._pending_events.append(
+            IceMakerEvent(event="power_cycled", detail="power restored")
+        )
+        logger.info("[ice_maker] Power cycle complete")
+
+    async def _command_loop(self, client: aiomqtt.Client):
+        queue = await self.subscribe(client, f"{self.topic_prefix}/cmd/ice_maker")
+        while True:
+            _, data = await queue.get()
+            try:
+                cmd = MonitorCommand.model_validate(data)
+            except ValidationError as e:
+                logger.warning(f"[ice_maker] Invalid command dropped: {e}")
+                continue
+            await self._handle_command(client, cmd)
+
     async def run_simulation(self, client: aiomqtt.Client):
-        """Publish temperature readings and operational events."""
+        """Publish capabilities, then readings/events; handle contract commands."""
         logger.info("[ice_maker] Starting temperature monitoring simulation")
+        await self.publish(
+            client, "capabilities/ice_maker", self.build_capabilities(), retain=True
+        )
         await self.publish(
             client,
             "ice_maker/event",
             IceMakerEvent(event="power_on", detail="simulator started"),
         )
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(self._command_loop(client))
+            tg.create_task(self._publish_loop(client))
+
+    async def _publish_loop(self, client: aiomqtt.Client):
         while True:
-            self.tick(self.PUBLISH_INTERVAL)
-            for sensor in self.sensors:
-                reading = SensorReading(
-                    location=sensor.name,
-                    value=round(sensor.value, 2),
-                )
-                await self.publish(client, f"sensors/temp/{sensor.name}", reading)
-            # Publish any pending operational events
+            self.tick(self._publish_interval)
+            await self._publish_snapshot(client)
             for event in self._pending_events:
                 await self.publish(client, "ice_maker/event", event)
             self._pending_events.clear()
-            await asyncio.sleep(self.PUBLISH_INTERVAL)
+            await asyncio.sleep(self._publish_interval)
 
 
 if __name__ == "__main__":

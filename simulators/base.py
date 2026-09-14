@@ -96,8 +96,22 @@ class ESP32Simulator(ABC):
             )
             await asyncio.sleep(self.HEARTBEAT_INTERVAL)
 
+    def _build_will(self) -> aiomqtt.Will:
+        """LWT: mark this subsystem offline instantly on unclean disconnect."""
+        return aiomqtt.Will(
+            topic=f"{self.topic_prefix}/heartbeat/{self.subsystem_name}",
+            payload=json.dumps(
+                {"subsystem": self.subsystem_name, "uptime_seconds": -1}
+            ),
+            qos=1,
+        )
+
     async def publish(
-        self, client: aiomqtt.Client, topic_suffix: str, payload: BaseModel | dict
+        self,
+        client: aiomqtt.Client,
+        topic_suffix: str,
+        payload: BaseModel | dict,
+        retain: bool = False,
     ):
         """Publish a message to vmc/{machine_id}/{topic_suffix}."""
         full_topic = f"{self.topic_prefix}/{topic_suffix}"
@@ -105,7 +119,7 @@ class ESP32Simulator(ABC):
             data = payload.model_dump_json()
         else:
             data = json.dumps(payload)
-        await client.publish(full_topic, data)
+        await client.publish(full_topic, data, retain=retain)
         logger.debug(f"[{self.subsystem_name}] published to {full_topic}")
 
     async def subscribe(self, client: aiomqtt.Client, topic: str) -> asyncio.Queue:
@@ -320,6 +334,7 @@ class ESP32Simulator(ABC):
                     hostname=self.broker,
                     port=self.port,
                     identifier=f"sim-{self.subsystem_name}",
+                    will=self._build_will(),
                 ) as client:
                     logger.info(
                         f"[{self.subsystem_name}] Connected to {self.broker}:{self.port}"
