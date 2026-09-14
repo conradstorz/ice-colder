@@ -520,6 +520,12 @@ class IceMakerSimulator(ESP32Simulator):
                 )
         elif cmd.command == "set_interval":
             self._publish_interval = float(cmd.params["interval_seconds"])
+            await self.publish(
+                client,
+                "capabilities/ice_maker",
+                self.build_capabilities(),
+                retain=True,
+            )
             ack = CommandAck(
                 request_id=cmd.request_id, command=cmd.command, status="ok"
             )

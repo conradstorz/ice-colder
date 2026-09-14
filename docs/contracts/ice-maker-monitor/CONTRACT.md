@@ -205,6 +205,10 @@ Monitor → VMC acknowledgement, published on `cmd/ice_maker/ack`.
   different cadences.
 - `MonitorCapabilities` (retained) is re-published on every broker
   connection, and again whenever the monitor's channel set changes.
+  Capabilities MUST also be re-published (retained) whenever any declared
+  channel property changes — including `interval_seconds` after a
+  successful `set_interval` command — so the retained document always
+  reflects current behavior.
 
 ## Command semantics
 

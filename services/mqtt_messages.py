@@ -100,7 +100,7 @@ class IceMakerEvent(BaseModel):
 
     event: str = Field(
         ...,
-        description="Event type: power_on, power_off, ice_dropped, needs_cleaning, failed_cycle, temp_out_of_bounds",
+        description="Event type: power_on, power_off, ice_dropped, needs_cleaning, failed_cycle, temp_out_of_bounds, halt, resume, power_cycled",
     )
     detail: Optional[str] = Field(
         None, description="Additional detail (e.g., sensor name, cycle count)"

@@ -529,6 +529,29 @@ class TestMonitorContract:
         assert sim._publish_interval == 30.0
 
     @pytest.mark.asyncio
+    async def test_set_interval_republishes_capabilities(self):
+        from contracts.ice_maker_monitor import MonitorCommand
+
+        sim = self._sim()
+        published = []
+
+        async def capture(client, suffix, payload, retain=False, qos=1):
+            published.append((suffix, retain))
+
+        sim.publish = capture
+        client = AsyncMock()
+        await sim._handle_command(
+            client,
+            MonitorCommand(
+                request_id="req-00000006",
+                command="set_interval",
+                params={"interval_seconds": 60},
+            ),
+        )
+        assert ("capabilities/ice_maker", True) in published
+        assert published[-1][0] == "cmd/ice_maker/ack"
+
+    @pytest.mark.asyncio
     async def test_force_report_publishes_snapshot_and_acks(self):
         from contracts.ice_maker_monitor import MonitorCommand
 
