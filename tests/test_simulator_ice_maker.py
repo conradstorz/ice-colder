@@ -253,7 +253,7 @@ class TestCompressorOvertempFault:
         sim = IceMakerSimulator()
         published = []
 
-        async def capture_publish(client, suffix, payload):
+        async def capture_publish(client, suffix, payload, retain=False, qos=1):
             published.append((suffix, payload))
 
         sim.publish = capture_publish
@@ -299,7 +299,7 @@ class TestLowRefrigerantFault:
         sim = IceMakerSimulator()
         published = []
 
-        async def capture_publish(client, suffix, payload):
+        async def capture_publish(client, suffix, payload, retain=False, qos=1):
             published.append((suffix, payload))
 
         sim.publish = capture_publish
@@ -345,7 +345,7 @@ class TestWaterInletBlockedFault:
         sim = IceMakerSimulator()
         published = []
 
-        async def capture_publish(client, suffix, payload):
+        async def capture_publish(client, suffix, payload, retain=False, qos=1):
             published.append((suffix, payload))
 
         sim.publish = capture_publish
@@ -394,7 +394,7 @@ class TestDefrostStuckPerValve:
         sim = IceMakerSimulator()
         published = []
 
-        async def capture_publish(client, suffix, payload):
+        async def capture_publish(client, suffix, payload, retain=False, qos=1):
             published.append((suffix, payload))
 
         sim.publish = capture_publish
@@ -462,7 +462,7 @@ class TestMonitorContract:
         sim = self._sim()
         published = []
 
-        async def capture(client, suffix, payload, retain=False):
+        async def capture(client, suffix, payload, retain=False, qos=1):
             published.append((suffix, payload))
 
         sim.publish = capture
@@ -494,7 +494,7 @@ class TestMonitorContract:
         sim = self._sim()
         published = []
 
-        async def capture(client, suffix, payload, retain=False):
+        async def capture(client, suffix, payload, retain=False, qos=1):
             published.append((suffix, payload))
 
         sim.publish = capture
@@ -535,7 +535,7 @@ class TestMonitorContract:
         sim = self._sim()
         published = []
 
-        async def capture(client, suffix, payload, retain=False):
+        async def capture(client, suffix, payload, retain=False, qos=1):
             published.append((suffix, payload))
 
         sim.publish = capture
@@ -549,3 +549,17 @@ class TestMonitorContract:
         assert "telemetry/ice_maker/compressor_current" in suffixes
         assert "telemetry/ice_maker/bin_level" in suffixes
         assert suffixes[-1] == "cmd/ice_maker/ack"
+
+    @pytest.mark.asyncio
+    async def test_snapshot_publishes_readings_at_qos_0(self):
+        sim = self._sim()
+        client = AsyncMock()
+        await sim._publish_snapshot(client)
+        reading_calls = [
+            call
+            for call in client.publish.call_args_list
+            if "sensors/temp/" in call.args[0] or "telemetry/" in call.args[0]
+        ]
+        assert len(reading_calls) >= 12
+        for call in reading_calls:
+            assert call.kwargs.get("qos") == 0

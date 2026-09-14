@@ -172,6 +172,7 @@ class IceMakerSimulator(ESP32Simulator):
         self._last_power_cycle = -1e9
         self._acked: dict[str, CommandAck] = {}
         self._bin_level = 20.0
+        self._power_cycle_task: asyncio.Task | None = None
 
         # Register faults
         self.register_fault(
@@ -470,18 +471,20 @@ class IceMakerSimulator(ESP32Simulator):
         """Publish one full round of sensor + telemetry readings."""
         for sensor in self.sensors:
             reading = SensorReading(location=sensor.name, value=round(sensor.value, 2))
-            await self.publish(client, f"sensors/temp/{sensor.name}", reading)
+            await self.publish(client, f"sensors/temp/{sensor.name}", reading, qos=0)
         await self.publish(
             client,
             "telemetry/ice_maker/compressor_current",
             ChannelReading(
                 channel_id="compressor_current", value=self._compressor_current()
             ),
+            qos=0,
         )
         await self.publish(
             client,
             "telemetry/ice_maker/bin_level",
             ChannelReading(channel_id="bin_level", value=round(self._bin_level, 1)),
+            qos=0,
         )
 
     async def _handle_command(self, client: aiomqtt.Client, cmd: MonitorCommand):
@@ -506,7 +509,9 @@ class IceMakerSimulator(ESP32Simulator):
                 self._pending_events.append(
                     IceMakerEvent(event="power_off", detail="commanded power_cycle")
                 )
-                asyncio.get_running_loop().create_task(self._finish_power_cycle(dwell))
+                self._power_cycle_task = asyncio.get_running_loop().create_task(
+                    self._finish_power_cycle(dwell)
+                )
                 ack = CommandAck(
                     request_id=cmd.request_id,
                     command=cmd.command,

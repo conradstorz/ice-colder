@@ -520,3 +520,14 @@ class TestContractTransport:
         client = AsyncMock()
         await sim.publish(client, "capabilities/ice_maker", {"x": 1}, retain=True)
         assert client.publish.call_args.kwargs.get("retain") is True
+
+    @pytest.mark.asyncio
+    async def test_publish_defaults_to_qos_1(self):
+        from unittest.mock import AsyncMock
+
+        from simulators.ice_maker import IceMakerSimulator
+
+        sim = IceMakerSimulator(machine_id="vmc-test")
+        client = AsyncMock()
+        await sim.publish(client, "ice_maker/event", {"x": 1})
+        assert client.publish.call_args.kwargs.get("qos") == 1

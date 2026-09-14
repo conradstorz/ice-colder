@@ -90,7 +90,7 @@ class ESP32Simulator(ABC):
         topic = f"{self.topic_prefix}/heartbeat/{self.subsystem_name}"
         while True:
             payload = self._build_heartbeat()
-            await client.publish(topic, json.dumps(payload))
+            await client.publish(topic, json.dumps(payload), qos=1)
             logger.debug(
                 f"[{self.subsystem_name}] heartbeat: uptime={payload['uptime_seconds']}s"
             )
@@ -112,6 +112,7 @@ class ESP32Simulator(ABC):
         topic_suffix: str,
         payload: BaseModel | dict,
         retain: bool = False,
+        qos: int = 1,
     ):
         """Publish a message to vmc/{machine_id}/{topic_suffix}."""
         full_topic = f"{self.topic_prefix}/{topic_suffix}"
@@ -119,7 +120,7 @@ class ESP32Simulator(ABC):
             data = payload.model_dump_json()
         else:
             data = json.dumps(payload)
-        await client.publish(full_topic, data, retain=retain)
+        await client.publish(full_topic, data, qos=qos, retain=retain)
         logger.debug(f"[{self.subsystem_name}] published to {full_topic}")
 
     async def subscribe(self, client: aiomqtt.Client, topic: str) -> asyncio.Queue:
