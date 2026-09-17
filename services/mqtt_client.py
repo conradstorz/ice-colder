@@ -6,9 +6,10 @@ Connects to the MQTT broker, subscribes to ESP32 topics, dispatches
 incoming messages to registered handlers, and publishes VMC status/commands.
 Handles reconnection automatically.
 """
+
 import asyncio
 import json
-from typing import Any, Callable, Awaitable, Optional
+from typing import Callable, Awaitable, Optional
 
 import aiomqtt
 from loguru import logger
@@ -92,21 +93,38 @@ class MQTTClient:
         Main loop: connect, subscribe, and dispatch messages.
         Reconnects automatically on disconnection.
         """
+        _in_retry_loop = False
         while True:
             try:
                 await self._connect_and_listen()
+                _in_retry_loop = False
             except aiomqtt.MqttError as e:
                 self._connected = False
                 if self._connection_callback:
                     self._connection_callback(False)
-                logger.error(f"MQTT: Connection lost: {e}")
+                if not _in_retry_loop:
+                    logger.error(f"MQTT: Connection lost: {e}")
+                    _in_retry_loop = True
+                else:
+                    logger.debug(f"MQTT: Reconnect failed: {e}")
             except Exception as e:
                 self._connected = False
                 if self._connection_callback:
                     self._connection_callback(False)
-                logger.error(f"MQTT: Unexpected error: {e}")
+                if not _in_retry_loop:
+                    logger.error(f"MQTT: Unexpected error: {e}")
+                    _in_retry_loop = True
+                else:
+                    logger.debug(f"MQTT: Reconnect failed: {e}")
 
-            logger.info(f"MQTT: Reconnecting in {self._config.reconnect_interval}s...")
+            if _in_retry_loop:
+                logger.debug(
+                    f"MQTT: Reconnecting in {self._config.reconnect_interval}s..."
+                )
+            else:
+                logger.info(
+                    f"MQTT: Reconnecting in {self._config.reconnect_interval}s..."
+                )
             await asyncio.sleep(self._config.reconnect_interval)
 
     async def _connect_and_listen(self):
@@ -127,7 +145,9 @@ class MQTTClient:
             self._connected = True
             if self._connection_callback:
                 self._connection_callback(True)
-            logger.info(f"MQTT: Connected to {self._config.broker_host}:{self._config.broker_port}")
+            logger.info(
+                f"MQTT: Connected to {self._config.broker_host}:{self._config.broker_port}"
+            )
 
             # Subscribe to all registered topic patterns
             for topic_suffix, _ in self._handlers:
@@ -153,13 +173,15 @@ class MQTTClient:
         if not topic_str.startswith(prefix):
             return
 
-        suffix = topic_str[len(prefix):]
+        suffix = topic_str[len(prefix) :]
 
         # Parse payload
         try:
             payload = json.loads(message.payload)
         except (json.JSONDecodeError, TypeError):
-            logger.warning(f"MQTT: Non-JSON payload on {topic_str}: {message.payload!r}")
+            logger.warning(
+                f"MQTT: Non-JSON payload on {topic_str}: {message.payload!r}"
+            )
             return
 
         # Match against registered handlers

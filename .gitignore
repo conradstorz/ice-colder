@@ -1,3 +1,7 @@
+# Machine-specific config (copy config.example.json to config.json)
+config.json
+inventory.json
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -175,3 +179,17 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Git worktrees
+.worktrees/
+
+# Runtime data (SQLite event store)
+data/
+
+# Config backups produced by save_config / manual copies
+config.json.bak*
+config.json.tmp
+*.json.old
+
+# Vendored scaffold project (separate repo, never commit)
+colder-docker/

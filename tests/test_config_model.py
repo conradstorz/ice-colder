@@ -1,6 +1,8 @@
 """Tests for config/config_model.py — Pydantic configuration model."""
-import json
+
 import pytest
+from pydantic import ValidationError
+
 from config.config_model import (
     ConfigModel,
     Product,
@@ -24,8 +26,7 @@ def test_default_config_model():
 def test_products_convenience_property():
     cfg = ConfigModel()
     assert cfg.products is cfg.physical.products
-    assert len(cfg.products) >= 1
-    assert isinstance(cfg.products[0], Product)
+    assert cfg.products == []
 
 
 def test_machine_owner_convenience_property():
@@ -44,7 +45,13 @@ def test_product_defaults():
 
 
 def test_product_custom_values():
-    p = Product(sku="ICE-001", name="Bag of Ice", price=2.50, track_inventory=True, inventory_count=50)
+    p = Product(
+        sku="ICE-001",
+        name="Bag of Ice",
+        price=2.50,
+        track_inventory=True,
+        inventory_count=50,
+    )
     assert p.sku == "ICE-001"
     assert p.name == "Bag of Ice"
     assert p.price == 2.50
@@ -70,9 +77,7 @@ def test_config_from_dict():
             "serial_number": "1234-5678",
             "location": {"address": "456 Test Ave"},
             "people": {},
-            "products": [
-                {"sku": "T-001", "name": "Test Product", "price": 3.00}
-            ],
+            "products": [{"sku": "T-001", "name": "Test Product", "price": 3.00}],
         },
     }
     cfg = ConfigModel.model_validate(data)
@@ -91,6 +96,14 @@ def test_get_preferred_gateway_for_email():
     assert channel == Channel.email
 
 
+def test_web_config_defaults():
+    cfg = ConfigModel()
+    assert cfg.web.host == "0.0.0.0"
+    assert cfg.web.port == 26123
+    assert cfg.web.admin_username == "admin"
+    assert cfg.web.admin_password.get_secret_value() == "changeme"
+
+
 def test_get_preferred_gateway_for_none():
     """Returns None when no matching gateway is configured."""
     cfg = ConfigModel()
@@ -98,3 +111,52 @@ def test_get_preferred_gateway_for_none():
     person = Person(preferred_comm=[Channel.snapchat])
     result = cfg.get_preferred_gateway_for(person)
     assert result is None
+
+
+def test_product_default_slot_is_zero():
+    """Product() with no args must keep working (used by routes.py/tests) —
+    slot defaults to 0 rather than being required."""
+    p = Product()
+    assert p.slot == 0
+
+
+def test_legacy_config_without_slot_assigns_list_index():
+    """Old config.json files have no 'slot' key on products; loading one must
+    assign slot = list index so dispensing keeps its old positional semantics."""
+    data = {
+        "physical": {
+            "products": [
+                {"sku": "A", "name": "Ice", "price": 3.00},
+                {"sku": "B", "name": "Small Water", "price": 0.50},
+                {"sku": "C", "name": "Large Water", "price": 2.00},
+            ]
+        }
+    }
+    cfg = ConfigModel.model_validate(data)
+    assert [p.slot for p in cfg.products] == [0, 1, 2]
+
+
+def test_config_with_explicit_slots_preserved():
+    data = {
+        "physical": {
+            "products": [
+                {"sku": "A", "name": "Ice", "price": 3.00, "slot": 5},
+                {"sku": "B", "name": "Water", "price": 0.50, "slot": 2},
+            ]
+        }
+    }
+    cfg = ConfigModel.model_validate(data)
+    assert [p.slot for p in cfg.products] == [5, 2]
+
+
+def test_duplicate_slots_rejected():
+    data = {
+        "physical": {
+            "products": [
+                {"sku": "A", "name": "Ice", "price": 3.00, "slot": 0},
+                {"sku": "B", "name": "Water", "price": 0.50, "slot": 0},
+            ]
+        }
+    }
+    with pytest.raises(ValidationError):
+        ConfigModel.model_validate(data)

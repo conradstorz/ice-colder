@@ -10,6 +10,7 @@ Requirements:
 
 Tests are skipped automatically if the broker is unreachable.
 """
+
 import asyncio
 import json
 import sys
@@ -22,6 +23,7 @@ if sys.platform == "win32":
 
 try:
     import aiomqtt
+
     _BROKER_AVAILABLE = None  # checked at module scope below
 except ImportError:
     _BROKER_AVAILABLE = False
@@ -42,16 +44,17 @@ if _BROKER_AVAILABLE is None:
 
 pytestmark = [
     pytest.mark.asyncio,
-    pytest.mark.skipif(not _BROKER_AVAILABLE, reason="MQTT broker not available on localhost:1883"),
+    pytest.mark.skipif(
+        not _BROKER_AVAILABLE, reason="MQTT broker not available on localhost:1883"
+    ),
 ]
 
 
-from config.config_model import ConfigModel, Product
+from config.config_model import ConfigModel
 from controller.vmc import VMC
 from services.mqtt_client import MQTTClient
 from services.mqtt_messages import (
     ButtonPress,
-    DispenseCommand,
     DispenserStatus,
     PaymentEvent,
     SensorReading,
@@ -89,7 +92,9 @@ async def _wait_for_state(vmc: VMC, target_state: str, timeout: float = 10.0):
         if vmc.state == target_state:
             return
         await asyncio.sleep(0.05)
-    raise TimeoutError(f"VMC did not reach state '{target_state}' within {timeout}s (current: {vmc.state})")
+    raise TimeoutError(
+        f"VMC did not reach state '{target_state}' within {timeout}s (current: {vmc.state})"
+    )
 
 
 class TestFullTransactionLoop:
@@ -188,7 +193,6 @@ class TestFullTransactionLoop:
         async with aiomqtt.Client(
             hostname="localhost", port=1883, identifier="e2e-sim-overpay"
         ) as sim_client:
-
             loop = asyncio.get_running_loop()
             vmc.attach_to_loop(loop)
             vmc.set_mqtt_client(mqtt_client)
@@ -246,7 +250,6 @@ class TestFullTransactionLoop:
         async with aiomqtt.Client(
             hostname="localhost", port=1883, identifier="e2e-sim-underpay"
         ) as sim_client:
-
             loop = asyncio.get_running_loop()
             vmc.attach_to_loop(loop)
             vmc.set_mqtt_client(mqtt_client)
@@ -313,7 +316,6 @@ class TestFullTransactionLoop:
         async with aiomqtt.Client(
             hostname="localhost", port=1883, identifier="e2e-sim-error"
         ) as sim_client:
-
             loop = asyncio.get_running_loop()
             vmc.attach_to_loop(loop)
             vmc.set_mqtt_client(mqtt_client)
@@ -368,7 +370,6 @@ class TestSensorAndHeartbeatRouting:
         async with aiomqtt.Client(
             hostname="localhost", port=1883, identifier="e2e-sim-sensor"
         ) as sim_client:
-
             loop = asyncio.get_running_loop()
             vmc.attach_to_loop(loop)
             vmc.set_mqtt_client(mqtt_client)
@@ -411,7 +412,6 @@ class TestSensorAndHeartbeatRouting:
         async with aiomqtt.Client(
             hostname="localhost", port=1883, identifier="e2e-sim-hb"
         ) as sim_client:
-
             loop = asyncio.get_running_loop()
             vmc.attach_to_loop(loop)
             vmc.set_mqtt_client(mqtt_client)

@@ -6,6 +6,7 @@ Tracks last-seen timestamps for ESP32 subsystems and MQTT connection.
 Fires alerts when subsystems go silent, temperatures drift out of range,
 or the FSM enters an error state.
 """
+
 import asyncio
 import time
 from dataclasses import dataclass, field
@@ -17,6 +18,7 @@ from loguru import logger
 @dataclass
 class SubsystemStatus:
     """Tracks liveness of a single subsystem (e.g., an ESP32)."""
+
     name: str
     last_seen: float = 0.0  # monotonic timestamp
     last_payload: dict = field(default_factory=dict)
@@ -35,6 +37,7 @@ class SubsystemStatus:
 @dataclass
 class TemperatureReading:
     """Latest temperature reading from a sensor location."""
+
     location: str
     value: float
     timestamp: float  # monotonic
@@ -43,6 +46,7 @@ class TemperatureReading:
 @dataclass
 class Alert:
     """A health alert ready to be sent to the owner."""
+
     level: str  # "info", "warning", "error", "critical"
     source: str
     message: str
@@ -78,6 +82,7 @@ class HealthMonitor:
 
         self._subsystems: dict[str, SubsystemStatus] = {}
         self._temperatures: dict[str, TemperatureReading] = {}
+        self._channels: dict[str, TemperatureReading] = {}
         self._mqtt_connected: bool = False
         self._vmc_state: str = "unknown"
 
@@ -109,6 +114,23 @@ class HealthMonitor:
         # Clear out-of-range alert if back in range
         if self._temp_min <= value <= self._temp_max:
             self._fired_alerts.discard(f"temp_range:{location}")
+
+    def record_channel(self, channel_id: str, value: float):
+        """Record a generic telemetry channel reading (analog or binary)."""
+        self._channels[channel_id] = TemperatureReading(
+            location=channel_id, value=value, timestamp=time.monotonic()
+        )
+
+    def mark_offline(self, subsystem: str):
+        """Force a subsystem to stale/offline (e.g., MQTT Last-Will received).
+
+        If the subsystem was never tracked before (e.g. it died before ever
+        sending a live heartbeat after a VMC restart), start tracking it as
+        stale so it shows up in the dashboard and the stale alert can fire.
+        """
+        if subsystem not in self._subsystems:
+            self._subsystems[subsystem] = SubsystemStatus(name=subsystem)
+        self._subsystems[subsystem].last_seen = 0.0
 
     def update_mqtt_status(self, connected: bool):
         """Update MQTT connection status."""
@@ -147,11 +169,19 @@ class HealthMonitor:
                 "age_seconds": round(time.monotonic() - reading.timestamp, 1),
             }
 
+        channels = {}
+        for channel_id, reading in self._channels.items():
+            channels[channel_id] = {
+                "value": reading.value,
+                "age_seconds": round(time.monotonic() - reading.timestamp, 1),
+            }
+
         return {
             "mqtt_connected": self._mqtt_connected,
             "vmc_state": self._vmc_state,
             "subsystems": subsystems,
             "temperatures": temperatures,
+            "channels": channels,
             "check_interval": self._check_interval,
             "subsystem_timeout": self._subsystem_timeout,
         }
@@ -159,13 +189,16 @@ class HealthMonitor:
     # --- Main loop ---
 
     async def run(self):
-        """Run periodic health checks forever."""
+        """Run periodic health checks forever. A failing check is logged, never fatal."""
         logger.info(
             f"Health monitor started: interval={self._check_interval}s, "
             f"timeout={self._subsystem_timeout}s"
         )
         while True:
-            await self._check()
+            try:
+                await self._check()
+            except Exception:
+                logger.exception("Health check round failed")
             await asyncio.sleep(self._check_interval)
 
     async def _check(self):
@@ -173,33 +206,33 @@ class HealthMonitor:
         # Check MQTT connection
         if not self._mqtt_connected:
             await self._fire_alert(
-                "mqtt_disconnect", "warning", "mqtt",
-                "MQTT broker connection is down"
+                "mqtt_disconnect", "warning", "mqtt", "MQTT broker connection is down"
             )
 
         # Check VMC error state
         if self._vmc_state == "error":
-            await self._fire_alert(
-                "vmc_error", "error", "vmc",
-                "VMC is in error state"
-            )
+            await self._fire_alert("vmc_error", "error", "vmc", "VMC is in error state")
 
         # Check subsystem liveness
         for name, sub in self._subsystems.items():
             if sub.seconds_since_seen > self._subsystem_timeout:
                 await self._fire_alert(
-                    f"subsystem_stale:{name}", "warning", name,
+                    f"subsystem_stale:{name}",
+                    "warning",
+                    name,
                     f"Subsystem '{name}' has not reported in "
-                    f"{sub.seconds_since_seen:.0f}s (timeout: {self._subsystem_timeout}s)"
+                    f"{sub.seconds_since_seen:.0f}s (timeout: {self._subsystem_timeout}s)",
                 )
 
         # Check temperature ranges
         for loc, reading in self._temperatures.items():
             if not (self._temp_min <= reading.value <= self._temp_max):
                 await self._fire_alert(
-                    f"temp_range:{loc}", "critical", f"temp/{loc}",
+                    f"temp_range:{loc}",
+                    "critical",
+                    f"temp/{loc}",
                     f"Temperature at '{loc}' is {reading.value:.1f}C "
-                    f"(range: {self._temp_min} to {self._temp_max})"
+                    f"(range: {self._temp_min} to {self._temp_max})",
                 )
 
     async def _fire_alert(self, key: str, level: str, source: str, message: str):

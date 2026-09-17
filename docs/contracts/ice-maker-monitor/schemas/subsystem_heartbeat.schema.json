@@ -1,0 +1,26 @@
+{
+  "description": "Periodic heartbeat from any ESP32 subsystem.",
+  "properties": {
+    "subsystem": {
+      "description": "Subsystem identifier",
+      "title": "Subsystem",
+      "type": "string"
+    },
+    "uptime_seconds": {
+      "default": 0,
+      "description": "Seconds since last boot",
+      "title": "Uptime Seconds",
+      "type": "integer"
+    },
+    "timestamp": {
+      "format": "date-time",
+      "title": "Timestamp",
+      "type": "string"
+    }
+  },
+  "required": [
+    "subsystem"
+  ],
+  "title": "SubsystemHeartbeat",
+  "type": "object"
+}

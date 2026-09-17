@@ -1,37 +1,49 @@
-<div class="bg-gray-800 p-4 rounded space-y-4">
-  <h3 class="text-lg font-semibold">System Health</h3>
+{# web_interface/templates/partials/health_fragment.html #}
+<div class="space-y-5">
 
-  <div class="flex items-center gap-2">
-    <span class="w-3 h-3 rounded-full {{ 'bg-green-400' if health.mqtt_connected else 'bg-red-500' }}"></span>
-    <span>MQTT: {{ 'Connected' if health.mqtt_connected else 'Disconnected' }}</span>
+  <h2 class="text-base font-semibold text-gray-900">System Health</h2>
+
+  <div class="flex items-center gap-3">
+    <span class="w-2.5 h-2.5 rounded-full flex-shrink-0
+                 {{ 'bg-green-500' if health.mqtt_connected else 'bg-red-500' }}"></span>
+    <span class="text-sm text-gray-700">
+      MQTT: {{ 'Connected' if health.mqtt_connected else 'Disconnected' }}
+    </span>
   </div>
 
-  <div class="flex items-center gap-2">
-    <span class="w-3 h-3 rounded-full {{ 'bg-red-500' if health.vmc_state == 'error' else 'bg-green-400' }}"></span>
-    <span>VMC State: {{ health.vmc_state }}</span>
+  <div class="flex items-center gap-3">
+    <span class="w-2.5 h-2.5 rounded-full flex-shrink-0
+                 {{ 'bg-red-500' if health.vmc_state == 'error' else 'bg-green-500' }}"></span>
+    <span class="text-sm text-gray-700">VMC State: {{ health.vmc_state }}</span>
   </div>
 
   {% if health.subsystems %}
   <div>
-    <h4 class="font-semibold text-sm text-gray-400 mb-1">Subsystems</h4>
+    <h3 class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Subsystems</h3>
     <table class="w-full text-sm">
-      <thead><tr class="text-gray-400 text-left"><th>Name</th><th>Last Seen</th><th>Status</th></tr></thead>
-      <tbody>
-      {% for name, sub in health.subsystems.items() %}
+      <thead>
+        <tr class="border-b border-gray-200 text-xs text-gray-400 uppercase tracking-wide">
+          <th class="pb-2 text-left font-medium">Name</th>
+          <th class="pb-2 text-left font-medium">Last Seen</th>
+          <th class="pb-2 text-left font-medium">Status</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for name, sub in health.subsystems.items() %}
         <tr>
-          <td>{{ name }}</td>
-          <td>{{ sub.seconds_since_seen }}s ago</td>
-          <td>
+          <td class="py-2.5 text-gray-700 font-mono text-xs">{{ name }}</td>
+          <td class="py-2.5 text-gray-500">{{ sub.seconds_since_seen }}s ago</td>
+          <td class="py-2.5">
             {% if sub.stale %}
-              <span class="text-red-400">Stale</span>
+              <span class="text-red-600 font-medium">Stale</span>
             {% elif sub.alive %}
-              <span class="text-green-400">OK</span>
+              <span class="text-green-600 font-medium">OK</span>
             {% else %}
-              <span class="text-gray-500">Never seen</span>
+              <span class="text-gray-400">Never seen</span>
             {% endif %}
           </td>
         </tr>
-      {% endfor %}
+        {% endfor %}
       </tbody>
     </table>
   </div>
@@ -39,29 +51,36 @@
 
   {% if health.temperatures %}
   <div>
-    <h4 class="font-semibold text-sm text-gray-400 mb-1">Temperatures</h4>
+    <h3 class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Temperatures</h3>
     <table class="w-full text-sm">
-      <thead><tr class="text-gray-400 text-left"><th>Location</th><th>Value</th><th>Status</th></tr></thead>
-      <tbody>
-      {% for loc, temp in health.temperatures.items() %}
+      <thead>
+        <tr class="border-b border-gray-200 text-xs text-gray-400 uppercase tracking-wide">
+          <th class="pb-2 text-left font-medium">Location</th>
+          <th class="pb-2 text-left font-medium">Value</th>
+          <th class="pb-2 text-left font-medium">Status</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for loc, temp in health.temperatures.items() %}
         <tr>
-          <td>{{ loc }}</td>
-          <td>{{ temp.value }}°C</td>
-          <td>
+          <td class="py-2.5 text-gray-700">{{ loc }}</td>
+          <td class="py-2.5 text-gray-900 font-medium">{{ temp.value }}°C</td>
+          <td class="py-2.5">
             {% if temp.in_range %}
-              <span class="text-green-400">OK</span>
+              <span class="text-green-600 font-medium">OK</span>
             {% else %}
-              <span class="text-red-400">Out of range</span>
+              <span class="text-red-600 font-medium">Out of range</span>
             {% endif %}
           </td>
         </tr>
-      {% endfor %}
+        {% endfor %}
       </tbody>
     </table>
   </div>
   {% endif %}
 
   {% if not health.subsystems and not health.temperatures %}
-  <p class="text-gray-500 text-sm">No subsystems reporting yet.</p>
+  <p class="text-sm text-gray-400">No subsystems reporting yet.</p>
   {% endif %}
+
 </div>

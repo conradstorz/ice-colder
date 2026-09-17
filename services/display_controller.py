@@ -7,6 +7,7 @@ and publishes mode-change commands to the ESP32 display controller via MQTT.
 
 The RPi decides *what* to show; the ESP32 decides *how* to render it.
 """
+
 from loguru import logger
 
 from services.mqtt_messages import DisplayMode, DisplayCommand
@@ -57,7 +58,9 @@ class DisplayController:
 
         old_mode = self._current_mode
         self._current_mode = new_mode
-        logger.info(f"Display: {old_mode.value} -> {new_mode.value} (state={vmc_state})")
+        logger.info(
+            f"Display: {old_mode.value} -> {new_mode.value} (state={vmc_state})"
+        )
         self._publish_mode(new_mode)
 
     def set_mode(self, mode: DisplayMode):
@@ -72,7 +75,9 @@ class DisplayController:
     def _publish_mode(self, mode: DisplayMode):
         """Publish a DisplayCommand to MQTT."""
         if self._mqtt_client is None or self._loop is None:
-            logger.debug(f"Display: mode={mode.value} (MQTT not connected, skipped publish)")
+            logger.debug(
+                f"Display: mode={mode.value} (MQTT not connected, skipped publish)"
+            )
             return
 
         command = DisplayCommand(mode=mode)

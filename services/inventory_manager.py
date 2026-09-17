@@ -6,6 +6,7 @@ Inventory counts are seeded from config Product.inventory_count on first run
 or when new products appear. Runtime counts survive restarts independently
 of config.json.
 """
+
 import json
 import os
 from pathlib import Path
@@ -49,7 +50,9 @@ class InventoryManager:
                 self._counts[sku] = saved[sku]
             else:
                 self._counts[sku] = product.inventory_count
-                logger.info(f"Inventory: seeded {sku} with {product.inventory_count} from config")
+                logger.info(
+                    f"Inventory: seeded {sku} with {product.inventory_count} from config"
+                )
 
         self._save()
 
@@ -94,6 +97,14 @@ class InventoryManager:
         self._counts[sku] = count
         self._track[sku] = tracked
         self._save()
+
+    def remove_sku(self, sku: str):
+        """Remove a SKU from counts and tracking (e.g., product deleted)."""
+        removed = self._counts.pop(sku, None) is not None
+        self._track.pop(sku, None)
+        if removed:
+            self._save()
+            logger.info(f"Inventory: removed SKU {sku}")
 
     def get_all(self) -> dict[str, int]:
         """Return a copy of all inventory counts."""

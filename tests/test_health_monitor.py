@@ -1,8 +1,9 @@
 # tests/test_health_monitor.py
 """Tests for health monitor, alert deduplication, and notifier."""
+
 import asyncio
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -198,6 +199,75 @@ class TestGetSummary:
 # ── Notifier tests ────────────────────────────────────────────
 
 
+async def test_run_survives_check_exception(monkeypatch):
+    """A failing health check must not kill the run() loop."""
+    monitor = HealthMonitor(check_interval=0.01)
+    calls = {"n": 0}
+    kept_going = asyncio.Event()
+
+    async def exploding_check():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom")
+        kept_going.set()
+
+    monkeypatch.setattr(monitor, "_check", exploding_check)
+    task = asyncio.create_task(monitor.run())
+    await asyncio.wait_for(kept_going.wait(), timeout=5.0)
+    assert not task.done()  # loop survived the exception
+    assert calls["n"] >= 2  # and kept checking afterwards
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+class TestChannelsAndOffline:
+    def test_record_channel_appears_in_summary(self):
+        monitor = HealthMonitor()
+        monitor.record_channel("compressor_current", 8.4)
+        channels = monitor.get_summary()["channels"]
+        assert channels["compressor_current"]["value"] == 8.4
+        assert channels["compressor_current"]["age_seconds"] >= 0
+
+    def test_mark_offline_makes_subsystem_stale(self):
+        monitor = HealthMonitor()
+        monitor.record_heartbeat("ice_maker")
+        monitor.mark_offline("ice_maker")
+        summary = monitor.get_summary()["subsystems"]["ice_maker"]
+        assert summary["alive"] is False
+        assert summary["stale"] is True
+
+    def test_mark_offline_unknown_subsystem_is_harmless(self):
+        HealthMonitor().mark_offline("nope")  # must not raise
+
+    def test_mark_offline_unknown_subsystem_tracks_as_stale(self):
+        """A subsystem that dies (LWT) before ever sending a live heartbeat
+        must still be tracked so it shows up in the dashboard and can alert."""
+        monitor = HealthMonitor()
+        monitor.mark_offline("mdb")
+        summary = monitor.get_summary()["subsystems"]
+        assert "mdb" in summary
+        assert summary["mdb"]["alive"] is False
+        assert summary["mdb"]["stale"] is True
+
+    @pytest.mark.asyncio
+    async def test_mark_offline_unknown_subsystem_fires_stale_alert(self):
+        """Previously-untracked-but-now-offline subsystem must trigger the
+        stale alert on the next health check round."""
+        monitor = HealthMonitor()
+        monitor.update_mqtt_status(True)
+        monitor.mark_offline("ice_maker")
+        callback = AsyncMock()
+        monitor.set_alert_callback(callback)
+
+        await monitor._check()
+        callback.assert_awaited_once()
+        alert = callback.call_args[0][0]
+        assert "ice_maker" in alert.message
+
+
 class TestNotifier:
     def test_notifier_creates(self):
         config = ConfigModel()
@@ -211,7 +281,9 @@ class TestNotifier:
         alert = Alert(level="warning", source="test", message="test alert")
 
         # Should not raise even without real SMTP
-        with patch.object(notifier, "_send_email", new_callable=AsyncMock) as mock_email:
+        with patch.object(
+            notifier, "_send_email", new_callable=AsyncMock
+        ) as mock_email:
             await notifier.send(alert)
             mock_email.assert_awaited_once()
 
@@ -223,7 +295,9 @@ class TestNotifier:
 
         alert = Alert(level="warning", source="test", message="test alert")
 
-        with patch.object(notifier, "_send_email", new_callable=AsyncMock) as mock_email:
+        with patch.object(
+            notifier, "_send_email", new_callable=AsyncMock
+        ) as mock_email:
             await notifier.send(alert)
             await notifier.send(alert)  # should be suppressed
             assert mock_email.await_count == 1

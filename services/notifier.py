@@ -6,10 +6,10 @@ Routes alerts to the machine owner via their preferred communication channel.
 Currently supports logging (always) and email (when configured).
 Deduplicates alerts to avoid flooding the owner.
 """
+
 import asyncio
 import smtplib
 from email.message import EmailMessage
-from typing import Optional
 
 from loguru import logger
 

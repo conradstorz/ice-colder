@@ -3,8 +3,16 @@ import asyncio
 import time
 from transitions import Machine
 from loguru import logger
+from pydantic import ValidationError
 from services.payment_gateway_manager import PaymentGatewayManager
-from services.mqtt_messages import VMCStatus, PaymentEvent, ButtonPress, DispenseCommand, IceMakerEvent
+from services.mqtt_messages import (
+    VMCStatus,
+    PaymentEvent,
+    ButtonPress,
+    DispenseCommand,
+    IceMakerEvent,
+)
+from contracts.ice_maker_monitor import ChannelReading, CommandAck, MonitorCapabilities
 from config.config_model import ConfigModel
 from services.health_monitor import HealthMonitor
 from services.display_controller import DisplayController
@@ -48,6 +56,12 @@ TRANSITIONS = [
         "before": "on_complete_transaction",
     },
     {
+        "trigger": "cancel_sale",
+        "source": "interacting_with_user",
+        "dest": "idle",
+        "before": "on_cancel_sale",
+    },
+    {
         "trigger": "error_occurred",
         "source": "*",
         "dest": "error",
@@ -60,6 +74,7 @@ TRANSITIONS = [
         "before": "on_reset",
     },
 ]
+
 
 class VMC:
     states = ["idle", "interacting_with_user", "dispensing", "error"]
@@ -92,19 +107,31 @@ class VMC:
         self._session_timeout_task: asyncio.Task | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._mqtt_client = None  # Set via set_mqtt_client()
-        self._health_monitor: HealthMonitor | None = None  # Set via set_health_monitor()
-        self._display_controller: DisplayController | None = None  # Set via set_display_controller()
-        self._inventory: InventoryManager | None = None  # Set via set_inventory_manager()
+        self._health_monitor: HealthMonitor | None = (
+            None  # Set via set_health_monitor()
+        )
+        self._display_controller: DisplayController | None = (
+            None  # Set via set_display_controller()
+        )
+        self._inventory: InventoryManager | None = (
+            None  # Set via set_inventory_manager()
+        )
+        self._event_recorder = None  # Set via set_event_recorder()
+        self.subsystem_capabilities: dict[str, dict] = {}
         self._start_time = time.monotonic()
         self._session_timeout_seconds = 180.0  # 3 minutes
 
-        self.machine = Machine(model=self, states=VMC.states, initial=VMC.states[0], auto_transitions=False)
+        self.machine = Machine(
+            model=self, states=VMC.states, initial=VMC.states[0], auto_transitions=False
+        )
 
         for t in TRANSITIONS:
             self.machine.add_transition(**t)
         logger.debug("FSM transitions set up successfully.")
 
-        self.payment_gateway_manager = PaymentGatewayManager(config=self.config_model.payment.model_dump())
+        self.payment_gateway_manager = PaymentGatewayManager(
+            config=self.config_model.payment.model_dump()
+        )
         self.virtual_payment_index = 0
 
         logger.debug("VMC initialization complete.")
@@ -134,6 +161,9 @@ class VMC:
         client.register("sensors/temp/+", self._handle_mqtt_sensor)
         client.register("heartbeat/+", self._handle_mqtt_heartbeat)
         client.register("ice_maker/event", self._handle_mqtt_ice_maker_event)
+        client.register("capabilities/+", self._handle_mqtt_capabilities)
+        client.register("telemetry/ice_maker/+", self._handle_mqtt_telemetry)
+        client.register("cmd/ice_maker/ack", self._handle_mqtt_command_ack)
         logger.debug("VMC registered MQTT handlers.")
 
     def set_health_monitor(self, monitor: HealthMonitor):
@@ -150,6 +180,11 @@ class VMC:
         """Attach an InventoryManager for persistent stock tracking."""
         self._inventory = inventory
         logger.debug("VMC attached inventory manager.")
+
+    def set_event_recorder(self, recorder):
+        """Attach an EventRecorder so FSM error events are persisted."""
+        self._event_recorder = recorder
+        logger.debug("VMC attached event recorder.")
 
     def _update_display(self, target_state: str | None = None):
         """Update the customer-facing display based on the target FSM state.
@@ -168,7 +203,9 @@ class VMC:
         status = VMCStatus(
             state=self.state,
             credit_escrow=self.credit_escrow,
-            selected_product=self.selected_product.name if self.selected_product else None,
+            selected_product=self.selected_product.name
+            if self.selected_product
+            else None,
             uptime_seconds=int(time.monotonic() - self._start_time),
         )
         self._loop.create_task(self._mqtt_client.publish("status", status))
@@ -192,21 +229,70 @@ class VMC:
         vend_log.info(f"BUTTON PRESS: button {press.button}")
         self.select_product(press.button)
 
+    def _dispenser_event_slot_mismatch(self, data: dict) -> bool:
+        """True if `data`'s reported slot doesn't match the active sale's slot.
+
+        A delayed/duplicate dispenser event (QoS 0, no dedup) for a slot other
+        than the one currently being dispensed must not finalize or fault the
+        wrong sale. No mismatch is reported when there's no active selection
+        or the event carries no slot (nothing to compare against).
+        """
+        if self.selected_product is None:
+            return False
+        reported_slot = data.get("slot")
+        if reported_slot is None:
+            return False
+        return reported_slot != self.selected_product.slot
+
     async def _handle_mqtt_dispenser(self, topic: str, data: dict):
         """Handle dispenser status from ESP32."""
         logger.info(f"MQTT dispenser event: {data}")
         state = data.get("state", "")
         slot = data.get("slot", "?")
         if state == "complete" and self.state == "dispensing":
-            product_name = self.selected_product.name if self.selected_product else "Unknown"
+            if self._dispenser_event_slot_mismatch(data):
+                logger.warning(
+                    f"Ignoring dispenser completion for mismatched slot {slot} "
+                    f"(active sale is slot {self.selected_product.slot})"
+                )
+                return
+            product_name = (
+                self.selected_product.name if self.selected_product else "Unknown"
+            )
             txn_log.info(f"DISPENSE SUCCESS: slot {slot}, product '{product_name}'")
             vend_log.info(f"DISPENSE COMPLETE: slot {slot}, product '{product_name}'")
+            if self._event_recorder:
+                record_slot = (
+                    self.selected_product.slot
+                    if self.selected_product
+                    else data.get("slot")
+                )
+                if record_slot is not None:
+                    self._event_recorder.record("dispense", value=float(record_slot))
             self._finish_dispensing()
         elif state in ("jammed", "error"):
+            if self.state != "dispensing":
+                logger.warning(
+                    f"Ignoring dispenser fault outside dispensing state "
+                    f"(current state: {self.state}, reported: {state}, slot {slot})"
+                )
+                return
+            if self._dispenser_event_slot_mismatch(data):
+                logger.warning(
+                    f"Ignoring dispenser fault for mismatched slot {slot} "
+                    f"(active sale is slot {self.selected_product.slot})"
+                )
+                return
             self._cancel_dispense_timeout()
-            product_name = self.selected_product.name if self.selected_product else "Unknown"
-            txn_log.error(f"DISPENSE FAILED: slot {slot}, product '{product_name}', reason: {state}")
-            vend_log.error(f"DISPENSE FAILED: slot {slot}, product '{product_name}', reason: {state}")
+            product_name = (
+                self.selected_product.name if self.selected_product else "Unknown"
+            )
+            txn_log.error(
+                f"DISPENSE FAILED: slot {slot}, product '{product_name}', reason: {state}"
+            )
+            vend_log.error(
+                f"DISPENSE FAILED: slot {slot}, product '{product_name}', reason: {state}"
+            )
             logger.error(f"Dispenser error: {state}")
             # Refund the customer — the price was already deducted from escrow
             price = self.selected_product.price if self.selected_product else 0
@@ -221,7 +307,9 @@ class VMC:
         """Handle temperature/sensor reading from ESP32."""
         logger.debug(f"MQTT sensor [{topic}]: {data}")
         if self._health_monitor:
-            location = data.get("location", topic.split("/")[-1] if "/" in topic else topic)
+            location = data.get(
+                "location", topic.split("/")[-1] if "/" in topic else topic
+            )
             value = data.get("value")
             if value is not None:
                 self._health_monitor.record_temperature(location, float(value))
@@ -230,11 +318,26 @@ class VMC:
         """Handle heartbeat from ESP32 subsystem."""
         logger.debug(f"MQTT heartbeat [{topic}]: {data}")
         if self._health_monitor:
-            subsystem = data.get("subsystem", topic.split("/")[-1] if "/" in topic else topic)
+            subsystem = data.get(
+                "subsystem", topic.split("/")[-1] if "/" in topic else topic
+            )
+            if data.get("uptime_seconds") == -1:
+                logger.warning(
+                    f"Subsystem '{subsystem}' reported OFFLINE (MQTT last will)"
+                )
+                self._health_monitor.mark_offline(subsystem)
+                return
             self._health_monitor.record_heartbeat(subsystem, data)
 
     # Events logged to the ice maker log: power cycles, ice drops, out-of-spec
-    _ICE_LOG_EVENTS = {"power_on", "power_off", "ice_dropped", "needs_cleaning", "failed_cycle", "temp_out_of_bounds"}
+    _ICE_LOG_EVENTS = {
+        "power_on",
+        "power_off",
+        "ice_dropped",
+        "needs_cleaning",
+        "failed_cycle",
+        "temp_out_of_bounds",
+    }
 
     async def _handle_mqtt_ice_maker_event(self, topic: str, data: dict):
         """Handle operational events from the ice maker ESP32."""
@@ -243,6 +346,37 @@ class VMC:
         if event.event in self._ICE_LOG_EVENTS:
             detail = f" ({event.detail})" if event.detail else ""
             ice_log.info(f"{event.event.upper()}{detail}")
+
+    async def _handle_mqtt_capabilities(self, topic: str, data: dict):
+        """Store a subsystem's self-declared capabilities for the dashboard."""
+        subsystem = data.get("subsystem") or topic.split("/")[-1]
+        try:
+            MonitorCapabilities.model_validate(data)
+            logger.info(
+                f"Capabilities registered for '{subsystem}' "
+                f"(contract {data.get('contract_version')}, "
+                f"{len(data.get('channels', []))} channels)"
+            )
+        except ValidationError:
+            logger.warning(
+                f"Capabilities for '{subsystem}' don't match the known schema; "
+                "storing raw payload"
+            )
+        self.subsystem_capabilities[subsystem] = data
+
+    async def _handle_mqtt_telemetry(self, topic: str, data: dict):
+        """Route a generic telemetry channel reading into health tracking."""
+        reading = ChannelReading.model_validate(data)
+        if self._health_monitor:
+            self._health_monitor.record_channel(reading.channel_id, reading.value)
+
+    async def _handle_mqtt_command_ack(self, topic: str, data: dict):
+        """Log command acknowledgements from the monitor."""
+        ack = CommandAck.model_validate(data)
+        detail = f" — {ack.detail}" if ack.detail else ""
+        logger.info(
+            f"Monitor ack: {ack.command} -> {ack.status}{detail} ({ack.request_id})"
+        )
 
     def _schedule(self, delay_seconds, callback) -> asyncio.Task | None:
         """Schedule a synchronous callback to run after delay_seconds on the event loop."""
@@ -263,7 +397,9 @@ class VMC:
     def get_status(self) -> dict:
         return {
             "state": self.state,
-            "selected_product": self.selected_product.name if self.selected_product else None,
+            "selected_product": self.selected_product.name
+            if self.selected_product
+            else None,
             "credit_escrow": self.credit_escrow,
             "last_payment_method": self.last_payment_method,
         }
@@ -304,25 +440,38 @@ class VMC:
     # --- FSM Callback Methods ---
     @logger.catch()
     def on_start_interaction(self):
-        logger.info(f"{STATE_CHANGE_PREFIX} Transitioning to interacting_with_user for product: {self.selected_product}")
+        logger.info(
+            f"{STATE_CHANGE_PREFIX} Transitioning to interacting_with_user for product: {self.selected_product}"
+        )
         self._reset_session_timeout()
         self._publish_status()
         self._update_display("interacting_with_user")
         self._refresh_ui()
-        self.send_customer_message("Interaction started. Please insert funds or select a product.")
+        self.send_customer_message(
+            "Interaction started. Please insert funds or select a product."
+        )
 
     @logger.catch()
     def on_dispense_product(self):
-        logger.info(f"{STATE_CHANGE_PREFIX} Transitioning to dispensing for product: {self.selected_product}")
+        logger.info(
+            f"{STATE_CHANGE_PREFIX} Transitioning to dispensing for product: {self.selected_product}"
+        )
         self._cancel_session_timeout()
         self._publish_status()
         self._update_display("dispensing")
         self._refresh_ui()
-        self.send_customer_message("Processing your payment and dispensing your product...")
-        # Tell the vending ESP32 which slot to dispense
+        self.send_customer_message(
+            "Processing your payment and dispensing your product..."
+        )
+        # Tell the vending ESP32 which slot to dispense. Use the product's own
+        # stable `slot` field, NOT its position in self.products — deleting an
+        # earlier product from the catalog shifts list indices but must not
+        # change which physical motor/slot a remaining product dispenses from.
         if self._mqtt_client and self._loop and self.selected_product:
-            slot = self.products.index(self.selected_product)
-            vend_log.info(f"DISPENSE CMD: slot {slot}, product '{self.selected_product.name}'")
+            slot = self.selected_product.slot
+            vend_log.info(
+                f"DISPENSE CMD: slot {slot}, product '{self.selected_product.name}'"
+            )
             self._loop.create_task(
                 self._mqtt_client.publish("cmd/dispense", DispenseCommand(slot=slot))
             )
@@ -333,19 +482,35 @@ class VMC:
 
     @logger.catch()
     def on_complete_transaction(self):
-        logger.info(f"{STATE_CHANGE_PREFIX} Completing transaction. Remaining escrow: ${self.credit_escrow:.2f}")
+        logger.info(
+            f"{STATE_CHANGE_PREFIX} Completing transaction. Remaining escrow: ${self.credit_escrow:.2f}"
+        )
         dest = self._post_dispense_dest()
+        # Clear the completed selection now — a stale reference here is what let a
+        # late/duplicate MQTT dispenser fault (jammed/error, QoS 0, no dedup) issue a
+        # bogus refund at the old product's price. The state guard in
+        # _handle_mqtt_dispenser is the primary fix; clearing here removes the stale
+        # data too. Nothing downstream needs selected_product to persist across a
+        # completed sale — a customer with remaining credit picks a fresh product via
+        # select_product(), which overwrites it unconditionally.
+        self.selected_product = None
         self._publish_status()
         self._update_display(dest)
         self._refresh_ui()
         if self.credit_escrow > 0:
-            self.send_customer_message("Transaction complete. You have remaining credit. Please select another product if desired.")
+            self.send_customer_message(
+                "Transaction complete. You have remaining credit. Please select another product if desired."
+            )
         else:
-            self.send_customer_message("Transaction complete. Thank you for your purchase!")
+            self.send_customer_message(
+                "Transaction complete. Thank you for your purchase!"
+            )
 
     @logger.catch()
     def on_reset(self):
-        logger.info(f"{STATE_CHANGE_PREFIX} Resetting to idle state. Previous selection: {self.selected_product}")
+        logger.info(
+            f"{STATE_CHANGE_PREFIX} Resetting to idle state. Previous selection: {self.selected_product}"
+        )
         self.selected_product = None
         self.last_insufficient_message = ""
         self._publish_status()
@@ -353,31 +518,74 @@ class VMC:
         self._refresh_ui()
 
     @logger.catch()
+    def on_cancel_sale(self):
+        """Cancel a live session without treating it as a hardware/system error.
+
+        Mirrors the cleanup ``_expire_session`` performs (refund escrow, clear the
+        selection, cancel timers, notify, publish/update/refresh) but for the case
+        where the selected product was deleted from the catalog out from under an
+        in-progress customer session. Unlike ``on_error`` this does not park the
+        machine in ``error`` — a benign catalog edit shouldn't take the whole VMC
+        offline until an admin reset.
+        """
+        logger.info(
+            f"{STATE_CHANGE_PREFIX} Cancelling sale for product: {self.selected_product}. "
+            "Returning to idle without entering the error state."
+        )
+        txn_log.info("SALE CANCELLED: selected product removed from catalog")
+        self._cancel_session_timeout()
+        self._cancel_dispense_timeout()
+        self.request_refund()
+        self.selected_product = None
+        self.last_insufficient_message = ""
+        self._publish_status()
+        self._update_display("idle")
+        self._refresh_ui()
+        self.send_customer_message(
+            "Sorry, the selected product is no longer available. Please make a new selection."
+        )
+
+    @logger.catch()
     def on_error(self):
-        logger.error(f"{STATE_CHANGE_PREFIX} Error encountered for product: {self.selected_product}. Transitioning to error state.")
+        logger.error(
+            f"{STATE_CHANGE_PREFIX} Error encountered for product: {self.selected_product}. Transitioning to error state."
+        )
+        if self._event_recorder:
+            self._event_recorder.record("error", value=1.0)
         # Refund any remaining credit in escrow
         if self.credit_escrow > 0:
             refund = self.credit_escrow
             self.credit_escrow = 0.0
-            txn_log.info(f"REFUND (error state): ${refund:.2f} via {self.last_payment_method}")
+            txn_log.info(
+                f"REFUND (error state): ${refund:.2f} via {self.last_payment_method}"
+            )
             logger.info(f"Refunded ${refund:.2f} due to error state transition.")
         self._publish_status()
         self._update_display("error")
         self._refresh_ui()
-        self.send_customer_message("An error has occurred. Your payment has been refunded. Please contact support.")
+        self.send_customer_message(
+            "An error has occurred. Your payment has been refunded. Please contact support."
+        )
 
     # --- Business Logic Methods ---
     @logger.catch()
     def deposit_funds(self, amount, payment_method="Simulated Payment"):
         logger.debug(f"Depositing funds: amount={amount:.2f}, method={payment_method}")
+        if amount <= 0:
+            logger.warning(f"Ignoring non-positive deposit: {amount}")
+            return
         self.credit_escrow += amount
         self.last_payment_method = payment_method
-        logger.info(f"Deposited ${amount:.2f} via {payment_method}. New escrow: ${self.credit_escrow:.2f}")
+        logger.info(
+            f"Deposited ${amount:.2f} via {payment_method}. New escrow: ${self.credit_escrow:.2f}"
+        )
         if self.state == "interacting_with_user":
             self._reset_session_timeout()
         self._publish_status()
         self._refresh_ui()
-        self.send_customer_message(f"${amount:.2f} deposited. Current balance: ${self.credit_escrow:.2f}.")
+        self.send_customer_message(
+            f"${amount:.2f} deposited. Current balance: ${self.credit_escrow:.2f}."
+        )
 
     @logger.catch()
     def request_refund(self):
@@ -385,9 +593,15 @@ class VMC:
         if self.credit_escrow > 0:
             refund_amount = self.credit_escrow
             self.credit_escrow = 0.0
-            logger.info(f"Refund of ${refund_amount:.2f} issued via {self.last_payment_method}.")
-            txn_log.info(f"REFUND ISSUED: ${refund_amount:.2f} via {self.last_payment_method}")
-            self.send_customer_message(f"Refund of ${refund_amount:.2f} issued via {self.last_payment_method}.")
+            logger.info(
+                f"Refund of ${refund_amount:.2f} issued via {self.last_payment_method}."
+            )
+            txn_log.info(
+                f"REFUND ISSUED: ${refund_amount:.2f} via {self.last_payment_method}"
+            )
+            self.send_customer_message(
+                f"Refund of ${refund_amount:.2f} issued via {self.last_payment_method}."
+            )
             self._refresh_ui()
         else:
             self.send_customer_message("No funds to refund.")
@@ -406,14 +620,22 @@ class VMC:
             return
 
         current_gateway = gateways[self.virtual_payment_index]
-        logger.info(f"Initiating virtual payment via {current_gateway} for amount ${amount:.2f}")
-        payment_url = self.payment_gateway_manager.gateways[current_gateway].generate_payment_url(amount)
+        logger.info(
+            f"Initiating virtual payment via {current_gateway} for amount ${amount:.2f}"
+        )
+        payment_url = self.payment_gateway_manager.gateways[
+            current_gateway
+        ].generate_payment_url(amount)
         logger.debug(f"Generated payment URL: {payment_url}")
 
-        qr_image = self.payment_gateway_manager.generate_qr_code(current_gateway, amount)
+        qr_image = self.payment_gateway_manager.generate_qr_code(
+            current_gateway, amount
+        )
         if self.qrcode_callback:
             self.qrcode_callback(qr_image)
-        self.send_customer_message(f"Virtual Payment Option ({current_gateway}): Scan the QR code above.")
+        self.send_customer_message(
+            f"Virtual Payment Option ({current_gateway}): Scan the QR code above."
+        )
         self.virtual_payment_index = (self.virtual_payment_index + 1) % len(gateways)
 
     @logger.catch()
@@ -426,15 +648,27 @@ class VMC:
             logger.error(f"Invalid product index: {product_index}")
             return
 
+        # `product_index` here is the physical button index (ButtonPress.button),
+        # not the product's dispense `slot` — buttons stay positional for now.
         self.selected_product = self.products[product_index]
-        logger.info(f"Selected product: {self.selected_product.name} at ${self.selected_product.price:.2f}")
-        txn_log.info(f"PRODUCT SELECTED: '{self.selected_product.name}' (${self.selected_product.price:.2f}), button {product_index}")
-        vend_log.info(f"PRODUCT SELECTED: '{self.selected_product.name}' (${self.selected_product.price:.2f}), button {product_index}")
+        logger.info(
+            f"Selected product: {self.selected_product.name} at ${self.selected_product.price:.2f}"
+        )
+        txn_log.info(
+            f"PRODUCT SELECTED: '{self.selected_product.name}' (${self.selected_product.price:.2f}), button {product_index}"
+        )
+        vend_log.info(
+            f"PRODUCT SELECTED: '{self.selected_product.name}' (${self.selected_product.price:.2f}), button {product_index}"
+        )
 
-        if self._inventory and not self._inventory.is_available(self.selected_product.sku):
+        if self._inventory and not self._inventory.is_available(
+            self.selected_product.sku
+        ):
             logger.error(f"{self.selected_product.name} is sold out.")
             txn_log.info(f"SOLD OUT: '{self.selected_product.name}', customer rejected")
-            self.send_customer_message(f"{self.selected_product.name} is sold out. Please select another product.")
+            self.send_customer_message(
+                f"{self.selected_product.name} is sold out. Please select another product."
+            )
             return
 
         if self.state == "idle":
@@ -464,16 +698,33 @@ class VMC:
     def _process_payment(self):
         logger.debug(f"Processing payment for product: {self.selected_product}")
         if self.state != "interacting_with_user":
-            logger.debug("State is not interacting_with_user; aborting payment process.")
+            logger.debug(
+                "State is not interacting_with_user; aborting payment process."
+            )
+            return
+
+        if self.selected_product is None or self.selected_product not in self.products:
+            logger.error(
+                "Selected product no longer exists in the catalog; cancelling sale."
+            )
+            self.cancel_sale()
             return
 
         price = self.selected_product.price if self.selected_product else 0
         if self.credit_escrow >= price:
-            logger.info(f"{STATE_CHANGE_PREFIX} Escrow sufficient ({self.credit_escrow:.2f} >= {price:.2f}). Processing payment.")
-            txn_log.info(f"PAYMENT SUFFICIENT: ${self.credit_escrow:.2f} >= ${price:.2f} for '{self.selected_product.name}', charging ${price:.2f}")
-            self.send_customer_message("Sufficient funds received. Processing your payment...")
+            logger.info(
+                f"{STATE_CHANGE_PREFIX} Escrow sufficient ({self.credit_escrow:.2f} >= {price:.2f}). Processing payment."
+            )
+            txn_log.info(
+                f"PAYMENT SUFFICIENT: ${self.credit_escrow:.2f} >= ${price:.2f} for '{self.selected_product.name}', charging ${price:.2f}"
+            )
+            self.send_customer_message(
+                "Sufficient funds received. Processing your payment..."
+            )
             self.credit_escrow -= price
-            logger.debug(f"Deducted price from escrow. New escrow: {self.credit_escrow:.2f}")
+            logger.debug(
+                f"Deducted price from escrow. New escrow: {self.credit_escrow:.2f}"
+            )
             self.dispense_product()
             self._refresh_ui()
             # Dispenser hardware will send "complete" via MQTT → _handle_mqtt_dispenser
@@ -482,10 +733,14 @@ class VMC:
             self.last_insufficient_message = ""
         else:
             required = price - self.credit_escrow
-            message = f"Insufficient funds. Please insert an additional ${required:.2f}."
+            message = (
+                f"Insufficient funds. Please insert an additional ${required:.2f}."
+            )
             if message != self.last_insufficient_message:
                 logger.error(message)
-                txn_log.info(f"PAYMENT INSUFFICIENT: ${self.credit_escrow:.2f} < ${price:.2f} for '{self.selected_product.name}', need ${required:.2f} more")
+                txn_log.info(
+                    f"PAYMENT INSUFFICIENT: ${self.credit_escrow:.2f} < ${price:.2f} for '{self.selected_product.name}', need ${required:.2f} more"
+                )
                 self.send_customer_message(message)
                 self.last_insufficient_message = message
             self._schedule(5.0, self._process_payment)
@@ -528,19 +783,24 @@ class VMC:
 
     @logger.catch()
     def _finish_dispensing(self):
-        logger.debug(f"Finishing dispensing process for product: {self.selected_product}")
+        logger.debug(
+            f"Finishing dispensing process for product: {self.selected_product}"
+        )
         self._cancel_dispense_timeout()
         if self.state != "dispensing":
             logger.debug("State is not dispensing; cannot finish dispensing.")
             return
-        product_name = self.selected_product.name if self.selected_product else "Unknown"
+        product_name = (
+            self.selected_product.name if self.selected_product else "Unknown"
+        )
         logger.info(f"{STATE_CHANGE_PREFIX} Finished dispensing: {product_name}")
         self.send_customer_message("Product dispensed. Enjoy your purchase!")
         if self._inventory and self.selected_product:
             sku = self.selected_product.sku
             if self._inventory.is_tracked(sku):
                 self._inventory.decrement(sku)
-                logger.info(f"Inventory for {self.selected_product.name} updated: {self._inventory.get_count(sku)} remaining.")
+                logger.info(
+                    f"Inventory for {self.selected_product.name} updated: {self._inventory.get_count(sku)} remaining."
+                )
         self.complete_transaction()
         self._refresh_ui()
-

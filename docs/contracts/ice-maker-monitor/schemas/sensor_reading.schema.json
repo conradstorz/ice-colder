@@ -1,0 +1,32 @@
+{
+  "description": "Temperature or other sensor data from an ESP32.",
+  "properties": {
+    "location": {
+      "description": "Sensor location identifier (e.g., 'evaporator', 'bin_top')",
+      "title": "Location",
+      "type": "string"
+    },
+    "value": {
+      "description": "Sensor reading value",
+      "title": "Value",
+      "type": "number"
+    },
+    "unit": {
+      "default": "C",
+      "description": "Unit of measurement",
+      "title": "Unit",
+      "type": "string"
+    },
+    "timestamp": {
+      "format": "date-time",
+      "title": "Timestamp",
+      "type": "string"
+    }
+  },
+  "required": [
+    "location",
+    "value"
+  ],
+  "title": "SensorReading",
+  "type": "object"
+}

@@ -1,0 +1,33 @@
+{
+  "description": "Operational event from the ice maker ESP32.",
+  "properties": {
+    "event": {
+      "description": "Event type: power_on, power_off, ice_dropped, needs_cleaning, failed_cycle, temp_out_of_bounds, halt, resume, power_cycled",
+      "title": "Event",
+      "type": "string"
+    },
+    "detail": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Additional detail (e.g., sensor name, cycle count)",
+      "title": "Detail"
+    },
+    "timestamp": {
+      "format": "date-time",
+      "title": "Timestamp",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event"
+  ],
+  "title": "IceMakerEvent",
+  "type": "object"
+}
