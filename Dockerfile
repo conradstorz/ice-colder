@@ -13,6 +13,7 @@ RUN uv sync --frozen --no-dev
 
 # Copy application code
 COPY config/ config/
+COPY contracts/ contracts/
 COPY controller/ controller/
 COPY hardware/ hardware/
 COPY services/ services/
