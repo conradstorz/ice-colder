@@ -1,4 +1,5 @@
 # tests/test_event_recorder.py
+import json
 import os
 import sqlite3
 import time
@@ -235,6 +236,38 @@ class TestRegisterHandlers:
         )
         assert recorder.get_summary(24)["uptime_pct"] > 0
 
+    @pytest.mark.asyncio
+    async def test_heartbeat_lwt_not_counted_as_uptime(self, recorder):
+        """uptime_seconds == -1 is the MQTT Last-Will payload meaning OFFLINE;
+        it must not be recorded as an ordinary heartbeat (which would count
+        an outage as uptime)."""
+        h = self._get_handlers(recorder)
+        await h["heartbeat/+"](
+            "heartbeat/vending",
+            {
+                "subsystem": "vending",
+                "uptime_seconds": -1,
+                "timestamp": "2026-01-01T00:00:00+00:00",
+            },
+        )
+        assert recorder.get_summary(24)["uptime_pct"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_lwt_records_subsystem_offline_event(self, recorder):
+        h = self._get_handlers(recorder)
+        await h["heartbeat/+"](
+            "heartbeat/vending",
+            {
+                "subsystem": "vending",
+                "uptime_seconds": -1,
+                "timestamp": "2026-01-01T00:00:00+00:00",
+            },
+        )
+        with sqlite3.connect(recorder._db_path) as conn:
+            row = conn.execute("SELECT event_type, metadata FROM events").fetchone()
+        assert row[0] == "subsystem_offline"
+        assert json.loads(row[1]) == {"subsystem": "vending"}
+
 
 class TestGetHistoricalAverage:
     def test_returns_none_with_no_data(self, recorder):
@@ -242,10 +275,12 @@ class TestGetHistoricalAverage:
         assert avg["money_in"] is None
         assert avg["products_out"] is None
 
-    def test_returns_averages_with_one_prior_period(self, tmp_path):
+    def test_returns_none_with_only_one_prior_period(self, tmp_path):
+        """Spec requires at least 2 complete prior periods before averaging;
+        a single period is not statistically meaningful."""
         db = str(tmp_path / "events.db")
         rec = EventRecorder(db_path=db)
-        # Insert data in one prior 24h period only (25-49h ago) — one period is enough
+        # Insert data in one prior 24h period only (25-49h ago) — not enough.
         ts = time.time() - 36 * 3600
         conn = sqlite3.connect(db)
         conn.execute(
@@ -259,7 +294,8 @@ class TestGetHistoricalAverage:
         conn.commit()
         conn.close()
         avg = rec.get_historical_average(24)
-        assert avg["money_in"] == 5.0
+        assert avg["money_in"] is None
+        assert avg["products_out"] is None
 
     def test_averages_two_prior_periods(self, tmp_path):
         db = str(tmp_path / "events.db")
@@ -324,6 +360,79 @@ class TestGetHistoricalAverage:
         conn.close()
         avg = rec.get_historical_average(24)
         assert avg["money_in"] == pytest.approx(9.0)  # (10 + 8) / 2, not (10+8+20)/3
+
+
+class TestHistoricalAverageCache:
+    """get_historical_average runs up to 30 sqlite queries per metric window;
+    a short TTL cache keeps repeated dashboard polls from hammering the DB."""
+
+    @staticmethod
+    def _seed_two_active_periods(db, now, period):
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+            ("payment", now - 1.5 * period, 10.00),
+        )
+        conn.execute(
+            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+            ("heartbeat", now - 1.5 * period, 1),
+        )
+        conn.execute(
+            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+            ("payment", now - 2.5 * period, 6.00),
+        )
+        conn.execute(
+            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+            ("heartbeat", now - 2.5 * period, 1),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_cache_returns_cached_value_within_ttl(self, tmp_path, monkeypatch):
+        db = str(tmp_path / "events.db")
+        rec = EventRecorder(db_path=db)
+        base_time = time.time()
+        period = 24 * 3600
+        monkeypatch.setattr(time, "time", lambda: base_time)
+
+        self._seed_two_active_periods(db, base_time, period)
+
+        avg1 = rec.get_historical_average(24)
+        assert avg1["money_in"] == pytest.approx(8.0)
+
+        # Insert data that WOULD change the result if recomputed.
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+                ("payment", base_time - 1.5 * period, 100.00),
+            )
+
+        # Still within TTL (no time advance) — must serve the cached value.
+        avg2 = rec.get_historical_average(24)
+        assert avg2 == avg1
+
+    def test_cache_recomputes_after_ttl_expiry(self, tmp_path, monkeypatch):
+        db = str(tmp_path / "events.db")
+        rec = EventRecorder(db_path=db)
+        base_time = time.time()
+        period = 24 * 3600
+        monkeypatch.setattr(time, "time", lambda: base_time)
+
+        self._seed_two_active_periods(db, base_time, period)
+
+        avg1 = rec.get_historical_average(24)
+        assert avg1["money_in"] == pytest.approx(8.0)
+
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+                ("payment", base_time - 1.5 * period, 100.00),
+            )
+
+        # Advance past the TTL — must recompute and pick up the new data.
+        monkeypatch.setattr(time, "time", lambda: base_time + 61)
+        avg2 = rec.get_historical_average(24)
+        assert avg2["money_in"] == pytest.approx(58.0)  # (110 + 6) / 2
 
 
 class TestRetention:

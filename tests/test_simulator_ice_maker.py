@@ -164,9 +164,9 @@ class TestHADiscovery:
         valid_prefixes = {"sensors/temp/", "ice_maker/event", "heartbeat/ice_maker"}
         for entity in entities:
             suffix = entity["state_topic_suffix"]
-            assert any(suffix.startswith(p) or suffix == p for p in valid_prefixes), (
-                f"Unexpected state_topic_suffix: {suffix}"
-            )
+            assert any(
+                suffix.startswith(p) or suffix == p for p in valid_prefixes
+            ), f"Unexpected state_topic_suffix: {suffix}"
 
     def test_all_object_ids_unique(self):
         sim = IceMakerSimulator()
@@ -437,6 +437,44 @@ class TestDefrostStuckPerValve:
         fails = [e for e in sim._pending_events if e.event == "failed_cycle"]
         assert drops == []
         assert len(fails) == 2
+
+
+class TestAckedBounded:
+    @pytest.mark.asyncio
+    async def test_acked_stays_bounded(self):
+        from contracts.ice_maker_monitor import MonitorCommand
+
+        sim = IceMakerSimulator(machine_id="vmc-test")
+        sim.publish = AsyncMock()
+        client = AsyncMock()
+        limit = getattr(sim, "_ACKED_MAX", 256)
+        for i in range(limit + 50):
+            cmd = MonitorCommand(
+                request_id=f"req-{i:08d}",
+                command="force_report",
+            )
+            await sim._handle_command(client, cmd)
+        assert len(sim._acked) <= limit
+
+    @pytest.mark.asyncio
+    async def test_acked_keeps_most_recent_entries(self):
+        from contracts.ice_maker_monitor import MonitorCommand
+
+        sim = IceMakerSimulator(machine_id="vmc-test")
+        sim.publish = AsyncMock()
+        client = AsyncMock()
+        limit = getattr(sim, "_ACKED_MAX", 256)
+        total = limit + 50
+        for i in range(total):
+            cmd = MonitorCommand(
+                request_id=f"req-{i:08d}",
+                command="force_report",
+            )
+            await sim._handle_command(client, cmd)
+        # The oldest requests should have been evicted...
+        assert "req-00000000" not in sim._acked
+        # ...while the most recent ones remain.
+        assert f"req-{total - 1:08d}" in sim._acked
 
 
 class TestMonitorContract:

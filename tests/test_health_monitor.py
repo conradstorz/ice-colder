@@ -242,6 +242,31 @@ class TestChannelsAndOffline:
     def test_mark_offline_unknown_subsystem_is_harmless(self):
         HealthMonitor().mark_offline("nope")  # must not raise
 
+    def test_mark_offline_unknown_subsystem_tracks_as_stale(self):
+        """A subsystem that dies (LWT) before ever sending a live heartbeat
+        must still be tracked so it shows up in the dashboard and can alert."""
+        monitor = HealthMonitor()
+        monitor.mark_offline("mdb")
+        summary = monitor.get_summary()["subsystems"]
+        assert "mdb" in summary
+        assert summary["mdb"]["alive"] is False
+        assert summary["mdb"]["stale"] is True
+
+    @pytest.mark.asyncio
+    async def test_mark_offline_unknown_subsystem_fires_stale_alert(self):
+        """Previously-untracked-but-now-offline subsystem must trigger the
+        stale alert on the next health check round."""
+        monitor = HealthMonitor()
+        monitor.update_mqtt_status(True)
+        monitor.mark_offline("ice_maker")
+        callback = AsyncMock()
+        monitor.set_alert_callback(callback)
+
+        await monitor._check()
+        callback.assert_awaited_once()
+        alert = callback.call_args[0][0]
+        assert "ice_maker" in alert.message
+
 
 class TestNotifier:
     def test_notifier_creates(self):

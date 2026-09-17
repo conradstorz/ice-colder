@@ -70,9 +70,10 @@ class VendingMachineSimulator(ESP32Simulator):
         super().__init__(subsystem_name="vending", **kwargs)
         products = self.config.products
         self.num_buttons = len(products)
-        self._slot_types = {
-            i: _classify_product(p.name, p.sku) for i, p in enumerate(products)
-        }
+        # Keyed by each product's stable `slot`, not its list position — the
+        # real ESP32's motor wiring is fixed per slot, and list order can
+        # change independently (e.g. a product deleted from the catalog).
+        self._slot_types = {p.slot: _classify_product(p.name, p.sku) for p in products}
         self._dispense_command: asyncio.Queue = asyncio.Queue()
         # Hardware state
         self._hw: dict[str, bool] = dict(HARDWARE_DEVICES)
@@ -463,7 +464,17 @@ class VendingMachineSimulator(ESP32Simulator):
 
     async def _customer_loop(self, client: aiomqtt.Client):
         """Simulate customers pressing buttons and waiting for dispense."""
+        warned_no_products = False
         while True:
+            if self.num_buttons == 0:
+                if not warned_no_products:
+                    logger.warning(
+                        "[vending] No products configured — no buttons to press"
+                    )
+                    warned_no_products = True
+                await asyncio.sleep(self.IDLE_MIN)
+                continue
+
             idle_time = self._compute_idle_time()
             logger.info(f"[vending] Waiting {idle_time:.0f}s for next customer")
             await asyncio.sleep(idle_time)

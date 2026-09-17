@@ -1,6 +1,7 @@
 # tests/test_simulator_vending.py
 """Tests for simulators/vending_machine.py — vending interface simulation."""
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -53,6 +54,23 @@ class TestInit:
         assert sim.slot_type(0) == "ice"
         assert sim.slot_type(1) == "water"
         assert sim.slot_type(2) == "water"
+
+    def test_slot_map_keyed_by_slot_not_index(self):
+        """Products out of list order with explicit slots must classify by
+        their stable slot, not their position in the products list."""
+        config = ConfigModel.model_validate(
+            {
+                "physical": {
+                    "products": [
+                        {"sku": "A", "name": "Small Water", "price": 1.0, "slot": 5},
+                        {"sku": "B", "name": "Bagged Ice", "price": 1.0, "slot": 2},
+                    ]
+                }
+            }
+        )
+        sim = VendingMachineSimulator(config=config)
+        assert sim.slot_type(5) == "water"
+        assert sim.slot_type(2) == "ice"
 
     def test_single_product_config(self):
         config = ConfigModel.model_validate(
@@ -397,6 +415,46 @@ class TestIceBinEmptyFault:
         client = AsyncMock()
         await sim._on_ice_bin_empty_recover(client)
         assert ("bin_half_full", True) in set_hw_calls
+
+
+class TestZeroProducts:
+    @pytest.mark.asyncio
+    async def test_customer_loop_with_no_products_does_not_crash(self):
+        sim = VendingMachineSimulator(config=ConfigModel())
+        assert sim.num_buttons == 0
+        client = AsyncMock()
+        sim.publish = AsyncMock()
+        sleep_calls = []
+
+        async def fake_sleep(seconds):
+            sleep_calls.append(seconds)
+            if len(sleep_calls) >= 3:
+                raise asyncio.CancelledError
+
+        with patch("asyncio.sleep", new=fake_sleep):
+            with pytest.raises(asyncio.CancelledError):
+                await sim._customer_loop(client)
+
+        assert len(sleep_calls) == 3
+        sim.publish.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_customer_loop_logs_no_products_once(self):
+        sim = VendingMachineSimulator(config=ConfigModel())
+        client = AsyncMock()
+        sim.publish = AsyncMock()
+        sleep_calls = []
+
+        async def fake_sleep(seconds):
+            sleep_calls.append(seconds)
+            if len(sleep_calls) >= 5:
+                raise asyncio.CancelledError
+
+        with patch("asyncio.sleep", new=fake_sleep):
+            with patch("simulators.vending_machine.logger") as mock_logger:
+                with pytest.raises(asyncio.CancelledError):
+                    await sim._customer_loop(client)
+                assert mock_logger.warning.call_count == 1
 
 
 class TestCustomerBehaviours:

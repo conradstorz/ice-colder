@@ -9,6 +9,7 @@ and automatic reconnection. Subclasses implement run_simulation().
 import argparse
 import asyncio
 import json
+import os
 import random
 import sys
 import time
@@ -20,7 +21,7 @@ from typing import Literal
 
 import aiomqtt
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from config.config_model import ConfigModel
 
@@ -73,6 +74,7 @@ class ESP32Simulator(ABC):
         self._subscriptions: list[tuple[str, asyncio.Queue]] = []
         self._fault_defs: list[FaultDef] = []
         self._fault_state: dict[str, dict] = {}
+        self._recovery_tasks: set[asyncio.Task] = set()
 
     @property
     def topic_prefix(self) -> str:
@@ -169,7 +171,11 @@ class ESP32Simulator(ABC):
     def register_fault(self, fault: FaultDef) -> None:
         """Register a fault definition. Call from subclass __init__."""
         self._fault_defs.append(fault)
-        self._fault_state[fault.name] = {"active": False, "recover_at": 0.0}
+        self._fault_state[fault.name] = {
+            "active": False,
+            "recover_at": 0.0,
+            "recovering": False,
+        }
 
     @property
     def _active_fault_names(self) -> set[str]:
@@ -196,15 +202,45 @@ class ESP32Simulator(ABC):
         )
 
     async def _check_recoveries(self, client: aiomqtt.Client) -> None:
-        """Clear any faults whose recovery timer has elapsed."""
+        """Start recovery for any faults whose recovery timer has elapsed.
+
+        Recovery (``fault.on_recover``) runs in a background task rather than
+        being awaited inline: some recoveries are slow (e.g. restoring
+        several devices with per-device delays), and awaiting them here would
+        block this single ``_fault_loop`` from draining inject commands or
+        rolling other faults for the whole recovery duration. The fault is
+        marked "recovering" and stays counted as active (via
+        ``_active_fault_names``) until the background task actually
+        completes, so callers that gate behavior on active faults keep
+        excluding it the whole time.
+        """
         now = time.monotonic()
         for fault in self._fault_defs:
             state = self._fault_state[fault.name]
-            if state["active"] and now >= state["recover_at"]:
-                state["active"] = False
-                await fault.on_recover(client)
-                await self._publish_alert(client, fault, "cleared")
-                logger.info(f"[{self.subsystem_name}] Fault cleared: {fault.name}")
+            if (
+                state["active"]
+                and not state.get("recovering")
+                and now >= state["recover_at"]
+            ):
+                state["recovering"] = True
+                task = asyncio.create_task(self._run_recovery(client, fault))
+                self._recovery_tasks.add(task)
+                task.add_done_callback(self._recovery_tasks.discard)
+
+    async def _run_recovery(self, client: aiomqtt.Client, fault: FaultDef) -> None:
+        """Run a fault's on_recover callback, then clear its state and publish."""
+        await fault.on_recover(client)
+        state = self._fault_state[fault.name]
+        state["active"] = False
+        state["recovering"] = False
+        await self._publish_alert(client, fault, "cleared")
+        logger.info(f"[{self.subsystem_name}] Fault cleared: {fault.name}")
+
+    def _cancel_recovery_tasks(self) -> None:
+        """Cancel any outstanding recovery tasks (call on disconnect/shutdown)."""
+        for task in list(self._recovery_tasks):
+            task.cancel()
+        self._recovery_tasks.clear()
 
     async def _try_roll_faults(self, client: aiomqtt.Client) -> None:
         """Roll for new faults if none are currently active."""
@@ -356,30 +392,70 @@ class ESP32Simulator(ABC):
                         logger.error(
                             f"[{self.subsystem_name}]   Sub-exception: {sub_exc!r}"
                         )
+            finally:
+                # A recovery task holds the old (now-disconnected) client;
+                # don't let it linger into the next connection's lifetime.
+                self._cancel_recovery_tasks()
 
             logger.info(f"[{self.subsystem_name}] Reconnecting in 5s...")
             await asyncio.sleep(5)
 
     @staticmethod
-    def load_config(path: str = "config.json") -> ConfigModel:
-        """Load ConfigModel from JSON file, falling back to defaults."""
-        config_path = Path(path)
-        if config_path.exists():
+    def load_config(path: str | None = None) -> ConfigModel:
+        """Load ConfigModel from JSON file, falling back to defaults.
+
+        When ``path`` is None, honors ``ICE_COLDER_CONFIG`` (read at call
+        time, not import time) the same way main.py/config_store.py do,
+        defaulting to ``config.json``. Simulators must never crash-loop on a
+        bad config: a missing file, a directory at the path, unreadable/
+        invalid JSON, or a failed schema validation are all logged and fall
+        back to ``ConfigModel()`` defaults rather than raising.
+        """
+        resolved = (
+            path
+            if path is not None
+            else os.environ.get("ICE_COLDER_CONFIG", "config.json")
+        )
+        config_path = Path(resolved)
+
+        if not config_path.exists():
+            logger.warning(f"{resolved} not found, using default config")
+            return ConfigModel()
+
+        if config_path.is_dir():
+            logger.error(
+                f"Config path '{resolved}' is a directory, not a file; "
+                "using default config"
+            )
+            return ConfigModel()
+
+        try:
             raw = json.loads(config_path.read_text(encoding="utf-8"))
             config = ConfigModel.model_validate(raw)
-            logger.info(
-                f"Simulator loaded config from {path}: machine_id={config.machine_id}"
+        except (
+            OSError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            ValidationError,
+        ) as e:
+            logger.error(
+                f"Failed to load config from '{resolved}': {e}; using default config"
             )
-            return config
-        logger.warning(f"{path} not found, using default config")
-        return ConfigModel()
+            return ConfigModel()
+
+        logger.info(
+            f"Simulator loaded config from {resolved}: machine_id={config.machine_id}"
+        )
+        return config
 
     @staticmethod
     def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         """Parse CLI arguments common to all simulators."""
         parser = argparse.ArgumentParser(description="ESP32 Simulator")
         parser.add_argument(
-            "--config", default="config.json", help="Path to config.json"
+            "--config",
+            default=None,
+            help="Path to config.json (default: $ICE_COLDER_CONFIG or config.json)",
         )
         parser.add_argument(
             "--broker", default=None, help="MQTT broker host (overrides config)"

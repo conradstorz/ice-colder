@@ -41,7 +41,14 @@ class ConfigModel(BaseModel): holds high-level fields for version, physical, pay
 
 from enum import Enum
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, ConfigDict, EmailStr, SecretStr, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    SecretStr,
+    Field,
+    model_validator,
+)
 
 
 # 1) First, an enum of supported communication channels
@@ -105,6 +112,15 @@ class Product(BaseModel):
     inventory_count: int = Field(
         0, description="Starting inventory count (seeds inventory.json on first run)"
     )
+    # Default (rather than required) so `Product()` keeps working where it's
+    # constructed with no args (web_interface/routes.py new/copy forms, tests).
+    # Uniqueness across a machine's catalog is enforced by
+    # PhysicalDetails._check_unique_slots below, not here.
+    slot: int = Field(
+        0,
+        ge=0,
+        description="Physical dispenser slot / motor index on the vending ESP32",
+    )
 
 
 class PhysicalDetails(BaseModel):
@@ -121,6 +137,38 @@ class PhysicalDetails(BaseModel):
     products: List[Product] = Field(
         default_factory=list, description="List of products available"
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_missing_slots(cls, data: Any) -> Any:
+        """Assign slot = list index to any product dict lacking 'slot'.
+
+        Existing config.json files predate the 'slot' field, so old configs
+        must load unchanged and keep the list-position semantics they had
+        before (dispatch/dispense used to derive slot from list index).
+        """
+        if isinstance(data, dict):
+            products = data.get("products")
+            if isinstance(products, list):
+                new_products = []
+                for i, p in enumerate(products):
+                    if isinstance(p, dict) and "slot" not in p:
+                        p = {**p, "slot": i}
+                    new_products.append(p)
+                data = {**data, "products": new_products}
+        return data
+
+    @model_validator(mode="after")
+    def _check_unique_slots(self) -> "PhysicalDetails":
+        slots = [p.slot for p in self.products]
+        duplicates = sorted({s for s in slots if slots.count(s) > 1})
+        if duplicates:
+            raise ValueError(
+                f"Duplicate product slot(s) found: {duplicates}. "
+                "Each product must have a unique 'slot' (physical dispenser "
+                "slot / motor index)."
+            )
+        return self
 
     # --- convenience properties ---
     @property

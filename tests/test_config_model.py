@@ -1,5 +1,8 @@
 """Tests for config/config_model.py — Pydantic configuration model."""
 
+import pytest
+from pydantic import ValidationError
+
 from config.config_model import (
     ConfigModel,
     Product,
@@ -108,3 +111,52 @@ def test_get_preferred_gateway_for_none():
     person = Person(preferred_comm=[Channel.snapchat])
     result = cfg.get_preferred_gateway_for(person)
     assert result is None
+
+
+def test_product_default_slot_is_zero():
+    """Product() with no args must keep working (used by routes.py/tests) —
+    slot defaults to 0 rather than being required."""
+    p = Product()
+    assert p.slot == 0
+
+
+def test_legacy_config_without_slot_assigns_list_index():
+    """Old config.json files have no 'slot' key on products; loading one must
+    assign slot = list index so dispensing keeps its old positional semantics."""
+    data = {
+        "physical": {
+            "products": [
+                {"sku": "A", "name": "Ice", "price": 3.00},
+                {"sku": "B", "name": "Small Water", "price": 0.50},
+                {"sku": "C", "name": "Large Water", "price": 2.00},
+            ]
+        }
+    }
+    cfg = ConfigModel.model_validate(data)
+    assert [p.slot for p in cfg.products] == [0, 1, 2]
+
+
+def test_config_with_explicit_slots_preserved():
+    data = {
+        "physical": {
+            "products": [
+                {"sku": "A", "name": "Ice", "price": 3.00, "slot": 5},
+                {"sku": "B", "name": "Water", "price": 0.50, "slot": 2},
+            ]
+        }
+    }
+    cfg = ConfigModel.model_validate(data)
+    assert [p.slot for p in cfg.products] == [5, 2]
+
+
+def test_duplicate_slots_rejected():
+    data = {
+        "physical": {
+            "products": [
+                {"sku": "A", "name": "Ice", "price": 3.00, "slot": 0},
+                {"sku": "B", "name": "Water", "price": 0.50, "slot": 0},
+            ]
+        }
+    }
+    with pytest.raises(ValidationError):
+        ConfigModel.model_validate(data)

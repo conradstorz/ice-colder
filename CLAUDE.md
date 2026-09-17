@@ -30,9 +30,18 @@ restarts them on crash; if uvicorn exits, the process exits (Docker's
 
 ### Configuration (`config/config_model.py`, `config.json`)
 
-All configuration is a single Pydantic `ConfigModel` loaded from `config.json`. The model has four top-level sections: `version`, `physical` (machine details, people, products), `payment` (Stripe, PayPal, MDB), and `communication` (email, SMS, Snapchat gateways). `ConfigModel` exposes convenience properties (e.g., `config.products`, `config.machine_owner`, `config.stripe`) so consumers don't need to navigate the nested structure. Missing keys are filled from Pydantic defaults at load time. Saves via
+All configuration is a single Pydantic `ConfigModel` loaded from `config.json`. The model has six top-level sections: `version`, `physical` (machine details, people, products), `payment` (Stripe, PayPal, MDB), `communication` (email, SMS, Snapchat gateways), `mqtt` (broker connection), and `web` (dashboard host/port/admin credentials) — plus the scalar `machine_id` field. `ConfigModel` exposes convenience properties (e.g., `config.products`, `config.machine_owner`, `config.stripe`) so consumers don't need to navigate the nested structure. Missing keys are filled from Pydantic defaults at load time. Saves via
 `services/config_store.py` are atomic (tmp + rename), write real secret values,
 and keep a rolling `config.json.bak`.
+
+The config file path is configurable via the `ICE_COLDER_CONFIG` environment
+variable (read at call time by both `main.py` and `services/config_store.py`),
+defaulting to `config.json` in the current working directory when unset. This
+lets Docker point the app at a writable, bind-mounted location instead of
+relying on a bind-mount targeting `config.json` directly (which would let
+Docker create it as a directory on a fresh clone, since the file is
+gitignored). If the resolved config path exists but is a directory, startup
+logs a clear error and exits with code 1 rather than papering over it.
 
 ### FSM Core (`controller/vmc.py`)
 
@@ -60,7 +69,12 @@ FastAPI app (`server.py`) with Jinja2 templates and HTMX-driven partials. `route
 `uv run python main.py` (port 26123). `docker-compose.yml` orchestrates the VMC,
 the three ESP32 simulators, and a mosquitto broker, all with
 `restart: unless-stopped`. There is no `requirements.txt` — `pyproject.toml` is
-the single dependency source of truth.
+the single dependency source of truth. Inside compose, config lives at
+`data/config.json` (bind-mounted `./data:/app/data`, writable for the `vmc`
+service and read-only for the simulators), pointed to via `ICE_COLDER_CONFIG`
+in each service's `environment` — not bind-mounted directly as
+`config.json`, since that file is gitignored and doesn't exist on a fresh
+clone.
 
 ## Key Patterns
 

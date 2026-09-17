@@ -7,11 +7,11 @@ services:
     ports:
       - "26123:26123"
     volumes:
-      - ./config.json:/app/config.json:ro
       - ./LOGS:/app/LOGS
       - ./data:/app/data
     environment:
       - MQTT_BROKER_HOST=mosquitto
+      - ICE_COLDER_CONFIG=/app/data/config.json
     networks:
       - broker
     depends_on:
@@ -24,7 +24,9 @@ services:
     container_name: ice-colder-sim-ice-maker
     command: ["uv", "run", "python", "-m", "simulators.ice_maker", "--broker", "mosquitto"]
     volumes:
-      - ./config.json:/app/config.json:ro
+      - ./data:/app/data:ro
+    environment:
+      - ICE_COLDER_CONFIG=/app/data/config.json
     networks:
       - broker
     depends_on:
@@ -37,7 +39,9 @@ services:
     container_name: ice-colder-sim-mdb
     command: ["uv", "run", "python", "-m", "simulators.mdb_gateway", "--broker", "mosquitto"]
     volumes:
-      - ./config.json:/app/config.json:ro
+      - ./data:/app/data:ro
+    environment:
+      - ICE_COLDER_CONFIG=/app/data/config.json
     networks:
       - broker
     depends_on:
@@ -50,7 +54,9 @@ services:
     container_name: ice-colder-sim-vending
     command: ["uv", "run", "python", "-m", "simulators.vending_machine", "--broker", "mosquitto"]
     volumes:
-      - ./config.json:/app/config.json:ro
+      - ./data:/app/data:ro
+    environment:
+      - ICE_COLDER_CONFIG=/app/data/config.json
     networks:
       - broker
     depends_on:

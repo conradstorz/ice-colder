@@ -26,6 +26,11 @@ from services.mqtt_messages import (
 # Must match simulators/base.py HEARTBEAT_INTERVAL
 _HEARTBEAT_INTERVAL = 10.0
 
+# get_historical_average only covers prior *complete* periods, so its result
+# changes slowly; cache it briefly to spare the DB from up to 30 SELECTs per
+# call on every dashboard poll.
+_HISTORICAL_AVERAGE_CACHE_TTL = 60.0
+
 SUMMARY_KEYS = (
     "money_in",
     "products_out",
@@ -61,6 +66,7 @@ class EventRecorder:
         self._temp_max = temp_max
         self._retention_days = retention_days
         self._last_prune = 0.0
+        self._historical_avg_cache: dict[int, tuple[float, dict]] = {}
         self._init_db()
         self.prune()
 
@@ -184,16 +190,30 @@ class EventRecorder:
 
     async def _on_heartbeat(self, topic: str, data: dict):
         hb = SubsystemHeartbeat.model_validate(data)
+        if hb.uptime_seconds < 0:
+            # uptime_seconds == -1 is the MQTT Last-Will payload meaning the
+            # subsystem went OFFLINE — recording it as a "heartbeat" would
+            # make an outage count as uptime in _compute_window.
+            self.record("subsystem_offline", metadata={"subsystem": hb.subsystem})
+            return
         self.record("heartbeat", value=float(hb.uptime_seconds))
 
     def get_historical_average(self, period_hours: int) -> dict:
         """
         Return per-period averages over prior complete periods (up to 30).
         Only includes periods where at least one heartbeat was recorded
-        (machine was running). Returns all-None if fewer than 2 such periods exist.
+        (machine was running). Returns all-None if fewer than 2 such periods
+        exist. Result is cached briefly per period_hours since it only
+        covers prior *complete* periods and doesn't change quickly.
         """
-        period_secs = period_hours * 3600
         now = time.time()
+        cached = self._historical_avg_cache.get(period_hours)
+        if cached is not None:
+            cached_at, cached_result = cached
+            if now - cached_at < _HISTORICAL_AVERAGE_CACHE_TTL:
+                return cached_result
+
+        period_secs = period_hours * 3600
         window_start = now - period_secs
 
         active_windows = []
@@ -204,11 +224,14 @@ class EventRecorder:
             if w["uptime_pct"] > 0:
                 active_windows.append(w)
 
-        if len(active_windows) < 1:
-            return {k: None for k in SUMMARY_KEYS}
+        if len(active_windows) < 2:
+            result = {k: None for k in SUMMARY_KEYS}
+        else:
+            avg = {}
+            for key in SUMMARY_KEYS:
+                values = [w[key] for w in active_windows if w[key] is not None]
+                avg[key] = round(sum(values) / len(values), 2) if values else None
+            result = avg
 
-        avg = {}
-        for key in SUMMARY_KEYS:
-            values = [w[key] for w in active_windows if w[key] is not None]
-            avg[key] = round(sum(values) / len(values), 2) if values else None
-        return avg
+        self._historical_avg_cache[period_hours] = (now, result)
+        return result

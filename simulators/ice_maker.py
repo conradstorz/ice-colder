@@ -11,6 +11,7 @@ Run: uv run python -m simulators.ice_maker [--broker HOST] [--port PORT] [--mach
 import asyncio
 import random
 import time
+from collections import OrderedDict
 
 import aiomqtt
 from loguru import logger
@@ -120,6 +121,7 @@ TELEMETRY_CHANNELS = [
 ]
 
 POWER_CYCLE_LOCKOUT_SECONDS = 300.0
+ACKED_MAX = 256  # bound on retained command acks, oldest evicted first
 
 
 class ThermalSensor:
@@ -170,7 +172,8 @@ class IceMakerSimulator(ESP32Simulator):
         self._pending_events: list[IceMakerEvent] = []
         self._publish_interval = float(self.PUBLISH_INTERVAL)
         self._last_power_cycle = -1e9
-        self._acked: dict[str, CommandAck] = {}
+        self._ACKED_MAX = ACKED_MAX
+        self._acked: OrderedDict[str, CommandAck] = OrderedDict()
         self._bin_level = 20.0
         self._power_cycle_task: asyncio.Task | None = None
 
@@ -536,6 +539,8 @@ class IceMakerSimulator(ESP32Simulator):
             )
 
         self._acked[cmd.request_id] = ack
+        if len(self._acked) > self._ACKED_MAX:
+            self._acked.popitem(last=False)  # evict oldest, keep most recent N
         await self.publish(client, "cmd/ice_maker/ack", ack)
         logger.info(
             f"[ice_maker] Command {cmd.command} ({cmd.request_id}): {ack.status}"
