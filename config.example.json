@@ -39,7 +39,8 @@
         "image_url": "https://example.com/image.jpg",
         "price": 3.00,
         "track_inventory": false,
-        "inventory_count": 0
+        "inventory_count": 0,
+        "slot": 0
       },
       {
         "sku": "SAMPLE-WATER-SM",
@@ -48,7 +49,8 @@
         "image_url": "https://example.com/image.jpg",
         "price": 0.50,
         "track_inventory": false,
-        "inventory_count": 0
+        "inventory_count": 0,
+        "slot": 1
       },
       {
         "sku": "SAMPLE-WATER-LG",
@@ -57,7 +59,8 @@
         "image_url": "https://example.com/image.jpg",
         "price": 2.00,
         "track_inventory": false,
-        "inventory_count": 0
+        "inventory_count": 0,
+        "slot": 2
       }
     ]
   },

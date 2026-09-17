@@ -1,3 +1,4 @@
+import asyncio
 import secrets as _secrets
 from pathlib import Path
 from uuid import uuid4
@@ -102,8 +103,10 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         sku: str = Form(...),
         name: str = Form(...),
         price: float = Form(...),
+        slot: str | None = Form(None),
     ):
-        success = add_product(config, sku, name, price)
+        parsed_slot = int(slot) if slot not in (None, "") else None
+        success = add_product(config, sku, name, price, slot=parsed_slot)
         if success and inventory_manager:
             inventory_manager.add_sku(sku, 0, tracked=False)
 
@@ -154,7 +157,8 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         issues: list[str] = []
 
         if event_recorder:
-            errors_24h = event_recorder.get_summary(24)["errors"]
+            summary_24h = await asyncio.to_thread(event_recorder.get_summary, 24)
+            errors_24h = summary_24h["errors"]
             if errors_24h > 0:
                 issues.append(
                     f"{errors_24h} error{'s' if errors_24h != 1 else ''} in last 24h"
@@ -216,8 +220,8 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             )
         if period not in (24, 168, 720):
             period = 24
-        summary = event_recorder.get_summary(period)
-        average = event_recorder.get_historical_average(period)
+        summary = await asyncio.to_thread(event_recorder.get_summary, period)
+        average = await asyncio.to_thread(event_recorder.get_historical_average, period)
         return templates.TemplateResponse(
             "partials/activity_fragment.html",
             {
@@ -230,8 +234,12 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
 
     @router.get("/kpi", response_class=HTMLResponse)
     async def kpi_fragment(request: Request):
-        summary = event_recorder.get_summary(24) if event_recorder else None
-        average = event_recorder.get_historical_average(24) if event_recorder else None
+        if event_recorder:
+            summary = await asyncio.to_thread(event_recorder.get_summary, 24)
+            average = await asyncio.to_thread(event_recorder.get_historical_average, 24)
+        else:
+            summary = None
+            average = None
         return templates.TemplateResponse(
             "partials/kpi_fragment.html",
             {
@@ -262,8 +270,9 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         sku: str,
         name: str = Form(...),
         price: float = Form(...),
+        slot: int = Form(...),
     ):
-        update_product(config, sku, name, price)
+        update_product(config, sku, name, price, slot=slot)
 
         return templates.TemplateResponse(
             "partials/inventory_table.html",

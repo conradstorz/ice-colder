@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import sys
+from pathlib import Path
 
 from loguru import logger
 from pydantic import ValidationError
@@ -75,32 +76,53 @@ def setup_logging():
     )
 
 
-def _create_default_config() -> ConfigModel:
+def _config_path() -> str:
+    """Resolve the active config path from ``ICE_COLDER_CONFIG`` (read at call
+    time so tests can monkeypatch env and cwd independently), defaulting to
+    ``config.json`` in the current working directory — unchanged behavior for
+    local runs and tests.
+    """
+    return os.environ.get("ICE_COLDER_CONFIG", "config.json")
+
+
+def _create_default_config(path: str) -> ConfigModel:
     """First run: build blank defaults, persist them, and continue running."""
     defaults = ConfigModel()
-    save_config(defaults)
-    logger.info("First run: created 'config.json' with blank defaults")
+    save_config(defaults, Path(path))
+    logger.info(f"First run: created '{path}' with blank defaults")
     return defaults
 
 
 def load_config() -> ConfigModel:
     """
-    Load configuration from config.json.
+    Load configuration from the path named by ``ICE_COLDER_CONFIG`` (default
+    ``config.json``).
 
     Pydantic fills in defaults for any missing fields — no manual merge needed.
     The user's file is never overwritten.
     """
-    logger.info("Loading configuration from 'config.json'")
+    path = _config_path()
+    logger.info(f"Loading configuration from '{path}'")
 
-    if not os.path.exists("config.json"):
-        logger.warning("'config.json' not found — first run: creating defaults")
-        return _create_default_config()
+    if os.path.isdir(path):
+        logger.error(
+            f"Config path '{path}' is a directory, not a file. This typically "
+            "happens when a Docker bind-mount targets a file path that doesn't "
+            "exist yet on the host, so Docker creates a directory there instead. "
+            "Remove the directory and fix the bind-mount/ICE_COLDER_CONFIG "
+            "setting, then retry."
+        )
+        sys.exit(1)
+
+    if not os.path.exists(path):
+        logger.warning(f"'{path}' not found — first run: creating defaults")
+        return _create_default_config(path)
 
     try:
-        with open("config.json", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             raw = json.load(f)
     except Exception as e:
-        logger.exception(f"Error reading 'config.json': {e}")
+        logger.exception(f"Error reading '{path}': {e}")
         sys.exit(1)
 
     try:
@@ -119,6 +141,32 @@ def load_config() -> ConfigModel:
 
 
 _SUPERVISE_RESTART_DELAY = 5.0
+
+
+async def _run_until_server_exits(server_coro, *supervised):
+    """Run ``server_coro`` (uvicorn's ``server.serve()``) alongside long-running
+    ``supervised`` background coroutines (the MQTT client / health monitor
+    supervisors). Returns (or raises) as soon as ``server_coro`` completes,
+    cancelling the still-running supervised tasks first.
+
+    Without this, ``asyncio.gather`` over the server plus supervisors that loop
+    forever never returns when uvicorn exits (SIGTERM/SIGINT, or a startup
+    failure) — ``main()`` never reaches its ``finally`` block and the process
+    never exits, so Docker's ``restart: unless-stopped`` never gets a chance to
+    restart it.
+    """
+    server_task = asyncio.ensure_future(server_coro)
+    supervised_tasks = [asyncio.ensure_future(c) for c in supervised]
+    try:
+        return await server_task
+    finally:
+        for task in supervised_tasks:
+            task.cancel()
+        for task in supervised_tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 async def _supervise(name: str, coro_factory):
@@ -213,7 +261,7 @@ async def main():
         "Entering main event loop with web server, MQTT client, and health monitor"
     )
     try:
-        await asyncio.gather(
+        await _run_until_server_exits(
             server.serve(),
             _supervise("MQTT client", mqtt.run),
             _supervise("health monitor", health.run),

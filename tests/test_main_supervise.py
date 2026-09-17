@@ -41,3 +41,55 @@ async def test_supervise_propagates_cancellation():
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+class TestRunUntilServerExits:
+    """_run_until_server_exits is the process-exit fix: when the server
+    coroutine (uvicorn) returns or raises, the whole run must end and the
+    still-running supervised background coroutines must be cancelled —
+    otherwise gather() waits forever and Docker's restart policy never
+    gets a process exit."""
+
+    async def test_returns_when_server_completes_and_cancels_supervisors(self):
+        supervisor_cancelled = asyncio.Event()
+        supervisor_started = asyncio.Event()
+
+        async def fake_server():
+            await asyncio.sleep(0.01)
+            return "served"
+
+        async def fake_supervisor():
+            supervisor_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                supervisor_cancelled.set()
+                raise
+
+        await main_mod._run_until_server_exits(fake_server(), fake_supervisor())
+        assert supervisor_started.is_set()
+        assert supervisor_cancelled.is_set()
+
+    async def test_reraises_server_exception_after_cancelling_supervisors(self):
+        supervisor_cancelled = asyncio.Event()
+
+        async def fake_server():
+            raise RuntimeError("uvicorn boom")
+
+        async def fake_supervisor():
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                supervisor_cancelled.set()
+                raise
+
+        with pytest.raises(RuntimeError, match="uvicorn boom"):
+            await main_mod._run_until_server_exits(fake_server(), fake_supervisor())
+        assert supervisor_cancelled.is_set()
+
+    async def test_works_with_no_supervised_coroutines(self):
+        async def fake_server():
+            return "served"
+
+        result = await main_mod._run_until_server_exits(fake_server())
+        assert result == "served"

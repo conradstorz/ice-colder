@@ -76,6 +76,74 @@ class TestInventoryEndpoints:
         assert resp.status_code == 200
         assert "Editable" in resp.text
 
+    def test_add_product_without_slot_auto_assigns(self, client):
+        resp = client.post(
+            "/inventory/add",
+            data={"sku": "AUTO-1", "name": "Auto Slot", "price": "1.00"},
+        )
+        assert resp.status_code == 200
+        added = next(p for p in routes.config.products if p.sku == "AUTO-1")
+        assert added.slot == 0  # first product added to an empty catalog
+
+    def test_add_product_with_explicit_slot(self, client):
+        resp = client.post(
+            "/inventory/add",
+            data={"sku": "SLOT-1", "name": "Slotted", "price": "1.00", "slot": "7"},
+        )
+        assert resp.status_code == 200
+        added = next(p for p in routes.config.products if p.sku == "SLOT-1")
+        assert added.slot == 7
+
+    def test_add_product_with_negative_slot_does_not_500(self, client):
+        resp = client.post(
+            "/inventory/add",
+            data={
+                "sku": "NEG-1",
+                "name": "Negative Slot",
+                "price": "1.00",
+                "slot": "-1",
+            },
+        )
+        assert resp.status_code == 200
+        assert not any(p.sku == "NEG-1" for p in routes.config.products)
+
+    def test_inventory_table_renders_slot_column(self, client):
+        client.post(
+            "/inventory/add",
+            data={"sku": "SLOT-2", "name": "Slotted Two", "price": "1.00", "slot": "3"},
+        )
+        resp = client.get("/inventory")
+        assert resp.status_code == 200
+        assert "3" in resp.text
+
+    def test_edit_form_shows_slot_input(self, client):
+        client.post(
+            "/inventory/add",
+            data={
+                "sku": "EDIT-2",
+                "name": "Editable Two",
+                "price": "1.50",
+                "slot": "9",
+            },
+        )
+        resp = client.get("/inventory/edit/EDIT-2")
+        assert resp.status_code == 200
+        assert 'name="slot"' in resp.text
+        assert 'value="9"' in resp.text
+
+    def test_update_product_changes_slot(self, client):
+        client.post(
+            "/inventory/add",
+            data={"sku": "UPD-1", "name": "Updatable", "price": "1.50", "slot": "1"},
+        )
+        resp = client.post(
+            "/inventory/update/UPD-1",
+            data={"name": "Updatable", "price": "1.50", "slot": "6"},
+        )
+        assert resp.status_code == 200
+        updated = next(p for p in routes.config.products if p.sku == "UPD-1")
+        assert updated.slot == 6
+
 
 class TestConfigEndpoints:
     def test_machine_info(self, client):
@@ -189,6 +257,85 @@ class TestActivityPeriodParam:
         # Invalid period values should fall back to 24 without error
         response = client.get("/activity?period=99")
         assert response.status_code == 200
+
+
+class TestEventRecorderCallsOffloaded:
+    """/status, /kpi and /activity must never run sqlite-backed EventRecorder
+    calls directly on the asyncio event loop — they belong on a worker
+    thread via asyncio.to_thread so MQTT dispatch/FSM handling isn't
+    stalled by a synchronous SELECT."""
+
+    def test_status_offloads_get_summary_to_thread(self, client, tmp_path, monkeypatch):
+        from services.event_recorder import EventRecorder
+        from web_interface import routes as r
+
+        recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
+        r.set_event_recorder(recorder)
+
+        calls = []
+        real_to_thread = r.asyncio.to_thread
+
+        async def spying_to_thread(func, *args, **kwargs):
+            calls.append((func, args))
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(r.asyncio, "to_thread", spying_to_thread)
+        try:
+            resp = client.get("/status")
+            assert resp.status_code == 200
+            assert (recorder.get_summary, (24,)) in calls
+        finally:
+            r.set_event_recorder(None)
+
+    def test_kpi_offloads_summary_and_average_to_thread(
+        self, client, tmp_path, monkeypatch
+    ):
+        from services.event_recorder import EventRecorder
+        from web_interface import routes as r
+
+        recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
+        r.set_event_recorder(recorder)
+
+        calls = []
+        real_to_thread = r.asyncio.to_thread
+
+        async def spying_to_thread(func, *args, **kwargs):
+            calls.append((func, args))
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(r.asyncio, "to_thread", spying_to_thread)
+        try:
+            resp = client.get("/kpi")
+            assert resp.status_code == 200
+            assert (recorder.get_summary, (24,)) in calls
+            assert (recorder.get_historical_average, (24,)) in calls
+        finally:
+            r.set_event_recorder(None)
+
+    def test_activity_offloads_summary_and_average_to_thread(
+        self, client, tmp_path, monkeypatch
+    ):
+        from services.event_recorder import EventRecorder
+        from web_interface import routes as r
+
+        recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
+        r.set_event_recorder(recorder)
+
+        calls = []
+        real_to_thread = r.asyncio.to_thread
+
+        async def spying_to_thread(func, *args, **kwargs):
+            calls.append((func, args))
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(r.asyncio, "to_thread", spying_to_thread)
+        try:
+            resp = client.get("/activity?period=168")
+            assert resp.status_code == 200
+            assert (recorder.get_summary, (168,)) in calls
+            assert (recorder.get_historical_average, (168,)) in calls
+        finally:
+            r.set_event_recorder(None)
 
 
 class TestStatusHealthSignal:

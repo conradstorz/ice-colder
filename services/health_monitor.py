@@ -122,9 +122,15 @@ class HealthMonitor:
         )
 
     def mark_offline(self, subsystem: str):
-        """Force a subsystem to stale/offline (e.g., MQTT Last-Will received)."""
-        if subsystem in self._subsystems:
-            self._subsystems[subsystem].last_seen = 0.0
+        """Force a subsystem to stale/offline (e.g., MQTT Last-Will received).
+
+        If the subsystem was never tracked before (e.g. it died before ever
+        sending a live heartbeat after a VMC restart), start tracking it as
+        stale so it shows up in the dashboard and the stale alert can fire.
+        """
+        if subsystem not in self._subsystems:
+            self._subsystems[subsystem] = SubsystemStatus(name=subsystem)
+        self._subsystems[subsystem].last_seen = 0.0
 
     def update_mqtt_status(self, connected: bool):
         """Update MQTT connection status."""

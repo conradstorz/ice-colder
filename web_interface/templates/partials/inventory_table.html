@@ -17,6 +17,7 @@
         <th class="pb-2 text-left font-medium">SKU</th>
         <th class="pb-2 text-left font-medium">Name</th>
         <th class="pb-2 text-left font-medium">Price</th>
+        <th class="pb-2 text-left font-medium">Slot</th>
         <th class="pb-2 text-left font-medium">Inventory</th>
         <th class="pb-2 text-left font-medium">Actions</th>
       </tr>
@@ -27,6 +28,7 @@
         <td class="py-3 font-mono text-gray-600 text-xs">{{ product.sku }}</td>
         <td class="py-3 text-gray-900">{{ product.name }}</td>
         <td class="py-3 text-gray-900">${{ "%.2f"|format(product.price) }}</td>
+        <td class="py-3 text-gray-900">{{ product.slot }}</td>
         <td class="py-3 text-gray-900">{{ product.inventory_count }}</td>
         <td class="py-3">
           <div class="flex gap-2">
@@ -57,7 +59,7 @@
       </tr>
       {% else %}
       <tr>
-        <td colspan="5" class="py-8 text-center text-gray-400 text-sm">
+        <td colspan="6" class="py-8 text-center text-gray-400 text-sm">
           No products configured — add your first product.
         </td>
       </tr>

@@ -8,7 +8,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from simulators.base import ESP32Simulator, FaultDef, RECOVERY_RANGES
+from config.config_model import ConfigModel
+from simulators.base import (
+    ESP32Simulator,
+    FaultDef,
+    RECOVERY_RANGES,
+    RECOVERY_RETRY_SECONDS,
+)
 
 
 class ConcreteSimulator(ESP32Simulator):
@@ -54,7 +60,7 @@ class TestHeartbeat:
 class TestCLIParsing:
     def test_parse_defaults(self):
         args = ESP32Simulator.parse_args([])
-        assert args.config == "config.json"
+        assert args.config is None  # None means: consult ICE_COLDER_CONFIG at load time
         assert args.broker is None  # falls back to config
         assert args.port is None
         assert args.machine_id is None
@@ -186,7 +192,11 @@ class TestFaultRegistration:
             message="Test fault",
         )
         sim.register_fault(fault)
-        assert sim._fault_state["test_fault"] == {"active": False, "recover_at": 0.0}
+        assert sim._fault_state["test_fault"] == {
+            "active": False,
+            "recover_at": 0.0,
+            "recovering": False,
+        }
 
     def test_active_fault_names_empty_initially(self):
         sim = ConcreteSimulator()
@@ -357,8 +367,155 @@ class TestFaultLoop:
         )  # past due
         client = AsyncMock()
         await sim._check_recoveries(client)
+        # Recovery runs in a background task — wait for it to finish.
+        for task in list(sim._recovery_tasks):
+            await task
         assert sim._fault_state["test_fault"]["active"] is False
         on_recover.assert_called_once_with(client)
+
+    @pytest.mark.asyncio
+    async def test_check_recoveries_marks_recovering_immediately(self):
+        """The fault must stay 'active' while recovery is in flight."""
+        sim = ConcreteSimulator()
+        started = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def slow_recover(client):
+            started.set()
+            await finish.wait()
+
+        fault = FaultDef(
+            name="slow_fault",
+            category="short",
+            probability=0.0,
+            on_activate=AsyncMock(),
+            on_recover=slow_recover,
+            message="Slow fault",
+        )
+        sim.register_fault(fault)
+        sim._fault_state["slow_fault"]["active"] = True
+        sim._fault_state["slow_fault"]["recover_at"] = time.monotonic() - 1.0
+        client = AsyncMock()
+
+        await asyncio.wait_for(sim._check_recoveries(client), timeout=1.0)
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+
+        assert sim._fault_state["slow_fault"]["active"] is True
+        assert sim._fault_state["slow_fault"]["recovering"] is True
+        assert "slow_fault" in sim._active_fault_names
+
+        finish.set()
+        for task in list(sim._recovery_tasks):
+            await task
+        assert sim._fault_state["slow_fault"]["active"] is False
+        assert sim._fault_state["slow_fault"]["recovering"] is False
+
+    @pytest.mark.asyncio
+    async def test_check_recoveries_does_not_start_second_recovery(self):
+        """A fault already recovering must not get a second recovery task."""
+        sim = ConcreteSimulator()
+        started = asyncio.Event()
+        finish = asyncio.Event()
+        call_count = 0
+
+        async def slow_recover(client):
+            nonlocal call_count
+            call_count += 1
+            started.set()
+            await finish.wait()
+
+        fault = FaultDef(
+            name="slow_fault",
+            category="short",
+            probability=0.0,
+            on_activate=AsyncMock(),
+            on_recover=slow_recover,
+            message="Slow fault",
+        )
+        sim.register_fault(fault)
+        sim._fault_state["slow_fault"]["active"] = True
+        sim._fault_state["slow_fault"]["recover_at"] = time.monotonic() - 1.0
+        client = AsyncMock()
+
+        await asyncio.wait_for(sim._check_recoveries(client), timeout=1.0)
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        assert len(sim._recovery_tasks) == 1
+
+        # Second call while recovery is still in-flight must not add a task
+        await asyncio.wait_for(sim._check_recoveries(client), timeout=1.0)
+        assert len(sim._recovery_tasks) == 1
+        assert call_count == 1
+
+        finish.set()
+        for task in list(sim._recovery_tasks):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_try_roll_faults_blocked_while_other_fault_recovering(self):
+        """A slow recovery must not block a second fault from being excluded
+        from rolling — recovering counts as active."""
+        sim = ConcreteSimulator()
+        finish = asyncio.Event()
+
+        async def slow_recover(client):
+            await finish.wait()
+
+        recovering_fault = FaultDef(
+            name="recovering_fault",
+            category="short",
+            probability=0.0,
+            on_activate=AsyncMock(),
+            on_recover=slow_recover,
+            message="Recovering",
+        )
+        other_on_activate = AsyncMock()
+        other_fault = FaultDef(
+            name="other_fault",
+            category="short",
+            probability=1.0,
+            on_activate=other_on_activate,
+            on_recover=AsyncMock(),
+            message="Other",
+        )
+        sim.register_fault(recovering_fault)
+        sim.register_fault(other_fault)
+        sim._fault_state["recovering_fault"]["active"] = True
+        sim._fault_state["recovering_fault"]["recover_at"] = time.monotonic() - 1.0
+        client = AsyncMock()
+
+        await sim._check_recoveries(client)
+        await sim._try_roll_faults(client)
+        other_on_activate.assert_not_called()
+
+        finish.set()
+        for task in list(sim._recovery_tasks):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_cancel_recovery_tasks_cancels_outstanding(self):
+        sim = ConcreteSimulator()
+
+        async def never_finishes(client):
+            await asyncio.sleep(100)
+
+        fault = FaultDef(
+            name="stuck_fault",
+            category="short",
+            probability=0.0,
+            on_activate=AsyncMock(),
+            on_recover=never_finishes,
+            message="Stuck",
+        )
+        sim.register_fault(fault)
+        sim._fault_state["stuck_fault"]["active"] = True
+        sim._fault_state["stuck_fault"]["recover_at"] = time.monotonic() - 1.0
+        client = AsyncMock()
+        await sim._check_recoveries(client)
+        assert len(sim._recovery_tasks) == 1
+
+        sim._cancel_recovery_tasks()
+        await asyncio.sleep(0)
+        assert len(sim._recovery_tasks) == 0
 
     @pytest.mark.asyncio
     async def test_check_recoveries_leaves_non_overdue_fault(self):
@@ -380,6 +537,105 @@ class TestFaultLoop:
         assert sim._fault_state["test_fault"]["active"] is True
         on_recover.assert_not_called()
 
+
+class TestRecoveryFailure:
+    @pytest.mark.asyncio
+    async def test_run_recovery_failure_leaves_active_and_reschedules(self):
+        sim = ConcreteSimulator()
+        on_recover = AsyncMock(side_effect=RuntimeError("publish failed"))
+        fault = FaultDef(
+            name="test_fault",
+            category="short",
+            probability=0.0,
+            on_activate=AsyncMock(),
+            on_recover=on_recover,
+            message="Test fault",
+        )
+        sim.register_fault(fault)
+        sim._fault_state["test_fault"]["active"] = True
+        sim._fault_state["test_fault"]["recover_at"] = time.monotonic() - 1.0
+        client = AsyncMock()
+
+        await sim._check_recoveries(client)
+        for task in list(sim._recovery_tasks):
+            await task  # must not raise
+
+        state = sim._fault_state["test_fault"]
+        assert state["active"] is True
+        assert state["recovering"] is False
+        now = time.monotonic()
+        assert now < state["recover_at"] <= now + RECOVERY_RETRY_SECONDS + 3.0
+
+    @pytest.mark.asyncio
+    async def test_check_recoveries_retries_after_failure(self):
+        sim = ConcreteSimulator()
+        on_recover = AsyncMock(side_effect=[RuntimeError("boom"), None])
+        fault = FaultDef(
+            name="test_fault",
+            category="short",
+            probability=0.0,
+            on_activate=AsyncMock(),
+            on_recover=on_recover,
+            message="Test fault",
+        )
+        sim.register_fault(fault)
+        sim._fault_state["test_fault"]["active"] = True
+        sim._fault_state["test_fault"]["recover_at"] = time.monotonic() - 1.0
+        client = AsyncMock()
+
+        # First recovery attempt fails.
+        await sim._check_recoveries(client)
+        for task in list(sim._recovery_tasks):
+            await task
+        assert sim._fault_state["test_fault"]["active"] is True
+        assert sim._fault_state["test_fault"]["recovering"] is False
+
+        # Simulate time passing: force the recover_at into the past again.
+        sim._fault_state["test_fault"]["recover_at"] = time.monotonic() - 1.0
+
+        # Second recovery attempt succeeds.
+        await sim._check_recoveries(client)
+        for task in list(sim._recovery_tasks):
+            await task
+        assert sim._fault_state["test_fault"]["active"] is False
+        assert sim._fault_state["test_fault"]["recovering"] is False
+        assert on_recover.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_run_recovery_cancelled_leaves_active_and_propagates(self):
+        sim = ConcreteSimulator()
+        started = asyncio.Event()
+
+        async def cancellable_recover(client):
+            started.set()
+            await asyncio.sleep(100)
+
+        fault = FaultDef(
+            name="test_fault",
+            category="short",
+            probability=0.0,
+            on_activate=AsyncMock(),
+            on_recover=cancellable_recover,
+            message="Test fault",
+        )
+        sim.register_fault(fault)
+        sim._fault_state["test_fault"]["active"] = True
+        sim._fault_state["test_fault"]["recover_at"] = time.monotonic() - 1.0
+        client = AsyncMock()
+
+        await sim._check_recoveries(client)
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        task = next(iter(sim._recovery_tasks))
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        state = sim._fault_state["test_fault"]
+        assert state["active"] is True
+        assert state["recovering"] is False
+
+
+class TestPublishAlertFormat:
     @pytest.mark.asyncio
     async def test_publish_alert_active_includes_recover_in(self):
         sim = ConcreteSimulator(machine_id="vmc-0001")
@@ -495,6 +751,68 @@ class TestFaultInject:
         # Empty payload — no "fault" key
         await sim._handle_inject_command(client, {})
         assert sim._active_fault_names == set()
+
+
+class TestLoadConfig:
+    def test_no_path_no_env_falls_back_to_default_json(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("ICE_COLDER_CONFIG", raising=False)
+        monkeypatch.chdir(tmp_path)
+        config = ESP32Simulator.load_config()
+        assert config.machine_id == "vmc-0000"
+
+    def test_env_var_respected_when_no_path_given(self, tmp_path, monkeypatch):
+        custom = tmp_path / "custom-config.json"
+        custom.write_text(
+            json.dumps({"machine_id": "vmc-env-test"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("ICE_COLDER_CONFIG", str(custom))
+        config = ESP32Simulator.load_config()
+        assert config.machine_id == "vmc-env-test"
+
+    def test_explicit_path_overrides_env_var(self, tmp_path, monkeypatch):
+        env_path = tmp_path / "env-config.json"
+        env_path.write_text(json.dumps({"machine_id": "from-env"}), encoding="utf-8")
+        explicit_path = tmp_path / "explicit-config.json"
+        explicit_path.write_text(
+            json.dumps({"machine_id": "from-explicit"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("ICE_COLDER_CONFIG", str(env_path))
+        config = ESP32Simulator.load_config(str(explicit_path))
+        assert config.machine_id == "from-explicit"
+
+    def test_directory_at_path_falls_back_to_defaults(self, tmp_path):
+        directory = tmp_path / "config.json"
+        directory.mkdir()
+        config = ESP32Simulator.load_config(str(directory))
+        assert isinstance(config, ConfigModel)
+        assert config.machine_id == "vmc-0000"
+
+    def test_missing_file_falls_back_to_defaults(self, tmp_path):
+        missing = tmp_path / "does-not-exist.json"
+        config = ESP32Simulator.load_config(str(missing))
+        assert isinstance(config, ConfigModel)
+
+    def test_invalid_json_falls_back_to_defaults(self, tmp_path):
+        bad = tmp_path / "bad.json"
+        bad.write_text("{not valid json", encoding="utf-8")
+        config = ESP32Simulator.load_config(str(bad))
+        assert isinstance(config, ConfigModel)
+
+    def test_failed_validation_falls_back_to_defaults(self, tmp_path):
+        bad = tmp_path / "invalid-schema.json"
+        bad.write_text(
+            json.dumps({"physical": {"products": "not-a-list"}}), encoding="utf-8"
+        )
+        config = ESP32Simulator.load_config(str(bad))
+        assert isinstance(config, ConfigModel)
+
+    def test_valid_config_loads_normally(self, tmp_path):
+        good = tmp_path / "good.json"
+        good.write_text(json.dumps({"machine_id": "vmc-good"}), encoding="utf-8")
+        config = ESP32Simulator.load_config(str(good))
+        assert config.machine_id == "vmc-good"
 
 
 class TestContractTransport:

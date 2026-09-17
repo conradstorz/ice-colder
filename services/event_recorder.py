@@ -15,7 +15,6 @@ from typing import Optional
 from loguru import logger
 
 from services.mqtt_messages import (
-    DispenserStatus,
     HardwareIO,
     IceMakerEvent,
     PaymentEvent,
@@ -25,6 +24,11 @@ from services.mqtt_messages import (
 
 # Must match simulators/base.py HEARTBEAT_INTERVAL
 _HEARTBEAT_INTERVAL = 10.0
+
+# get_historical_average only covers prior *complete* periods, so its result
+# changes slowly; cache it briefly to spare the DB from up to 30 SELECTs per
+# call on every dashboard poll.
+_HISTORICAL_AVERAGE_CACHE_TTL = 60.0
 
 SUMMARY_KEYS = (
     "money_in",
@@ -61,6 +65,7 @@ class EventRecorder:
         self._temp_max = temp_max
         self._retention_days = retention_days
         self._last_prune = 0.0
+        self._historical_avg_cache: dict[int, tuple[float, dict]] = {}
         self._init_db()
         self.prune()
 
@@ -107,7 +112,18 @@ class EventRecorder:
             )
 
     def _compute_window(self, start_ts: float, end_ts: float) -> dict:
-        """Compute aggregates for events in [start_ts, end_ts)."""
+        """Compute aggregates for events in [start_ts, end_ts).
+
+        uptime_pct measures the fraction of _HEARTBEAT_INTERVAL-sized time
+        buckets in the window that have at least one heartbeat from ANY
+        subsystem — i.e. "was something alive during this interval", not raw
+        heartbeat row count. Counting rows overcounts when multiple
+        subsystems beat concurrently (three simulators beating every 10s
+        would read ~300%, clamped to 100%) while saying nothing about whether
+        any *particular* subsystem was up. Counting distinct covered buckets
+        is the most this metric can honestly claim; per-subsystem health is a
+        separate concern (see health_monitor / subsystem_offline events).
+        """
         with sqlite3.connect(self._db_path) as conn:
 
             def count(etype):
@@ -122,11 +138,15 @@ class EventRecorder:
                     (etype, start_ts, end_ts),
                 ).fetchone()[0]
 
-            heartbeat_count = count("heartbeat")
+            covered_buckets = conn.execute(
+                "SELECT COUNT(DISTINCT CAST(timestamp / ? AS INTEGER)) FROM events "
+                "WHERE event_type='heartbeat' AND timestamp>=? AND timestamp<?",
+                (_HEARTBEAT_INTERVAL, start_ts, end_ts),
+            ).fetchone()[0]
             period_secs = end_ts - start_ts
             uptime_pct = min(
                 100.0,
-                heartbeat_count * _HEARTBEAT_INTERVAL / period_secs * 100,
+                covered_buckets * _HEARTBEAT_INTERVAL / period_secs * 100,
             )
             return {
                 "money_in": round(total("payment"), 2),
@@ -146,9 +166,17 @@ class EventRecorder:
         return self._compute_window(now - period_hours * 3600, now + 0.001)
 
     def register_handlers(self, mqtt_client):
-        """Register MQTT handlers. Multiple callers can register for the same topic."""
+        """Register MQTT handlers. Multiple callers can register for the same topic.
+
+        Note: "dispense" events are NOT recorded from a direct
+        ``hardware/dispenser`` subscription here — only the VMC (see
+        ``controller.vmc.VMC._handle_mqtt_dispenser``) knows whether a
+        completion was actually accepted for the active sale (correct slot,
+        state == dispensing). Recording directly from the raw MQTT topic would
+        overcount products_out on duplicate/late completions the VMC ignores.
+        The VMC calls ``record("dispense", ...)`` itself when it accepts one.
+        """
         mqtt_client.register("payment/credit", self._on_payment)
-        mqtt_client.register("hardware/dispenser", self._on_dispenser)
         mqtt_client.register("ice_maker/event", self._on_ice_maker_event)
         mqtt_client.register("hardware/io/service_door", self._on_service_door)
         mqtt_client.register("sensors/temp/+", self._on_sensor)
@@ -157,11 +185,6 @@ class EventRecorder:
     async def _on_payment(self, topic: str, data: dict):
         event = PaymentEvent.model_validate(data)
         self.record("payment", value=event.amount)
-
-    async def _on_dispenser(self, topic: str, data: dict):
-        status = DispenserStatus.model_validate(data)
-        if status.state == "complete":
-            self.record("dispense", value=float(status.slot))
 
     async def _on_ice_maker_event(self, topic: str, data: dict):
         event = IceMakerEvent.model_validate(data)
@@ -184,16 +207,30 @@ class EventRecorder:
 
     async def _on_heartbeat(self, topic: str, data: dict):
         hb = SubsystemHeartbeat.model_validate(data)
+        if hb.uptime_seconds < 0:
+            # uptime_seconds == -1 is the MQTT Last-Will payload meaning the
+            # subsystem went OFFLINE — recording it as a "heartbeat" would
+            # make an outage count as uptime in _compute_window.
+            self.record("subsystem_offline", metadata={"subsystem": hb.subsystem})
+            return
         self.record("heartbeat", value=float(hb.uptime_seconds))
 
     def get_historical_average(self, period_hours: int) -> dict:
         """
         Return per-period averages over prior complete periods (up to 30).
         Only includes periods where at least one heartbeat was recorded
-        (machine was running). Returns all-None if fewer than 2 such periods exist.
+        (machine was running). Returns all-None if fewer than 2 such periods
+        exist. Result is cached briefly per period_hours since it only
+        covers prior *complete* periods and doesn't change quickly.
         """
-        period_secs = period_hours * 3600
         now = time.time()
+        cached = self._historical_avg_cache.get(period_hours)
+        if cached is not None:
+            cached_at, cached_result = cached
+            if now - cached_at < _HISTORICAL_AVERAGE_CACHE_TTL:
+                return cached_result
+
+        period_secs = period_hours * 3600
         window_start = now - period_secs
 
         active_windows = []
@@ -204,11 +241,14 @@ class EventRecorder:
             if w["uptime_pct"] > 0:
                 active_windows.append(w)
 
-        if len(active_windows) < 1:
-            return {k: None for k in SUMMARY_KEYS}
+        if len(active_windows) < 2:
+            result = {k: None for k in SUMMARY_KEYS}
+        else:
+            avg = {}
+            for key in SUMMARY_KEYS:
+                values = [w[key] for w in active_windows if w[key] is not None]
+                avg[key] = round(sum(values) / len(values), 2) if values else None
+            result = avg
 
-        avg = {}
-        for key in SUMMARY_KEYS:
-            values = [w[key] for w in active_windows if w[key] is not None]
-            avg[key] = round(sum(values) / len(values), 2) if values else None
-        return avg
+        self._historical_avg_cache[period_hours] = (now, result)
+        return result

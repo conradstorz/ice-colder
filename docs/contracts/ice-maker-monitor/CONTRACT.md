@@ -161,7 +161,7 @@ VMC → monitor command, published on `cmd/ice_maker`.
 
 | Field | Type | Constraints | Description |
 |---|---|---|---|
-| `request_id` | string | required; length 8–64 | UUID4 string; correlation key echoed in the matching `CommandAck` |
+| `request_id` | string | required; length 8–64 | Opaque correlation key, unique per command; UUID4 recommended but not enforced. Echoed in the matching `CommandAck` |
 | `command` | enum | required; one of `power_cycle`, `force_report`, `set_interval` | Command to execute |
 | `params` | object (string → number) | default `{}` | Per-command parameters — see below |
 | `timestamp` | string (date-time) | ISO-8601 UTC | Producer-side timestamp |

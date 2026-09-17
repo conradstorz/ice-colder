@@ -1,4 +1,5 @@
 # tests/test_event_recorder.py
+import json
 import os
 import sqlite3
 import time
@@ -92,10 +93,78 @@ class TestGetSummary:
         assert rec.get_summary(24)["money_in"] == 0.0
 
     def test_uptime_with_heartbeats(self, recorder):
-        # 360 heartbeats × 10s = 3600s in a 24h (86400s) window → ~4.2%
-        for _ in range(360):
-            recorder.record("heartbeat", value=100)
+        # 360 heartbeats at a real 10s cadence (distinct buckets), covering
+        # 3600s of a 24h (86400s) window → ~4.2%.
+        now = time.time()
+        conn = sqlite3.connect(recorder._db_path)
+        conn.executemany(
+            "INSERT INTO events (event_type, timestamp, value) VALUES ('heartbeat', ?, 100)",
+            [(now - i * 10,) for i in range(360)],
+        )
+        conn.commit()
+        conn.close()
         assert recorder.get_summary(24)["uptime_pct"] == pytest.approx(4.2, abs=0.1)
+
+
+class TestUptimeComputation:
+    """uptime_pct must measure the fraction of _HEARTBEAT_INTERVAL-sized time
+    buckets that have at least one heartbeat from ANY subsystem — not raw
+    heartbeat rows, which overcounts when multiple subsystems beat
+    concurrently (e.g. 3 simulators beating every 10s reads ~300%, clamped to
+    100%, even though one of them could be silently offline the whole time)."""
+
+    @staticmethod
+    def _insert_heartbeats(db_path, timestamps):
+        conn = sqlite3.connect(db_path)
+        conn.executemany(
+            "INSERT INTO events (event_type, timestamp, value) VALUES ('heartbeat', ?, 1)",
+            [(ts,) for ts in timestamps],
+        )
+        conn.commit()
+        conn.close()
+
+    def test_full_coverage_by_one_subsystem_reads_100_pct(self, recorder):
+        start = 1_000_000.0
+        end = start + 100.0  # 10 buckets of 10s
+        self._insert_heartbeats(recorder._db_path, [start + i * 10 for i in range(10)])
+        assert recorder._compute_window(start, end)["uptime_pct"] == pytest.approx(
+            100.0
+        )
+
+    def test_half_covered_window_reads_about_50_pct(self, recorder):
+        start = 1_000_000.0
+        end = start + 100.0
+        self._insert_heartbeats(recorder._db_path, [start + i * 10 for i in range(5)])
+        assert recorder._compute_window(start, end)["uptime_pct"] == pytest.approx(50.0)
+
+    def test_multiple_subsystems_in_same_bucket_count_once(self, recorder):
+        start = 1_000_000.0
+        end = start + 100.0
+        # Three subsystems all beat within the same 10s bucket.
+        self._insert_heartbeats(recorder._db_path, [start + 1, start + 2, start + 3])
+        # 1 of 10 buckets covered, not 3 rows worth.
+        assert recorder._compute_window(start, end)["uptime_pct"] == pytest.approx(10.0)
+
+    def test_metric_reads_100_pct_even_if_one_subsystem_silently_offline(
+        self, recorder
+    ):
+        """Two subsystems beat every 10s for the whole window; a third never
+        beats at all. uptime_pct measures 'at least one subsystem alive' per
+        bucket, not per-subsystem health, so this honestly reads 100% — it no
+        longer inflates past 100% (the bug), but per-subsystem outages are a
+        separate metric this one doesn't claim to cover."""
+        start = 1_000_000.0
+        end = start + 100.0
+        timestamps = []
+        for i in range(10):
+            timestamps.append(start + i * 10)  # subsystem A
+            timestamps.append(start + i * 10 + 0.5)  # subsystem B
+        self._insert_heartbeats(recorder._db_path, timestamps)
+        # Still reads 100% for "at least one subsystem alive" per bucket —
+        # this documents the metric's honest ceiling, not per-subsystem health.
+        assert recorder._compute_window(start, end)["uptime_pct"] == pytest.approx(
+            100.0
+        )
 
 
 class TestRegisterHandlers:
@@ -120,27 +189,14 @@ class TestRegisterHandlers:
         )
         assert recorder.get_summary(24)["money_in"] == pytest.approx(2.50)
 
-    @pytest.mark.asyncio
-    async def test_dispenser_complete_records_dispense(self, recorder):
+    def test_hardware_dispenser_not_registered(self, recorder):
+        """The recorder must NOT listen on hardware/dispenser directly — only
+        the VMC knows whether a completion was accepted for the active sale
+        (see controller.vmc.VMC._handle_mqtt_dispenser). A direct subscription
+        here would overcount products_out on duplicates/late completions the
+        VMC ignores."""
         h = self._get_handlers(recorder)
-        await h["hardware/dispenser"](
-            "hardware/dispenser",
-            {"slot": 0, "state": "complete", "timestamp": "2026-01-01T00:00:00+00:00"},
-        )
-        assert recorder.get_summary(24)["products_out"] == 1
-
-    @pytest.mark.asyncio
-    async def test_dispenser_motor_active_not_recorded(self, recorder):
-        h = self._get_handlers(recorder)
-        await h["hardware/dispenser"](
-            "hardware/dispenser",
-            {
-                "slot": 0,
-                "state": "motor_active",
-                "timestamp": "2026-01-01T00:00:00+00:00",
-            },
-        )
-        assert recorder.get_summary(24)["products_out"] == 0
+        assert "hardware/dispenser" not in h
 
     @pytest.mark.asyncio
     async def test_ice_dropped_records_cycle(self, recorder):
@@ -235,6 +291,38 @@ class TestRegisterHandlers:
         )
         assert recorder.get_summary(24)["uptime_pct"] > 0
 
+    @pytest.mark.asyncio
+    async def test_heartbeat_lwt_not_counted_as_uptime(self, recorder):
+        """uptime_seconds == -1 is the MQTT Last-Will payload meaning OFFLINE;
+        it must not be recorded as an ordinary heartbeat (which would count
+        an outage as uptime)."""
+        h = self._get_handlers(recorder)
+        await h["heartbeat/+"](
+            "heartbeat/vending",
+            {
+                "subsystem": "vending",
+                "uptime_seconds": -1,
+                "timestamp": "2026-01-01T00:00:00+00:00",
+            },
+        )
+        assert recorder.get_summary(24)["uptime_pct"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_lwt_records_subsystem_offline_event(self, recorder):
+        h = self._get_handlers(recorder)
+        await h["heartbeat/+"](
+            "heartbeat/vending",
+            {
+                "subsystem": "vending",
+                "uptime_seconds": -1,
+                "timestamp": "2026-01-01T00:00:00+00:00",
+            },
+        )
+        with sqlite3.connect(recorder._db_path) as conn:
+            row = conn.execute("SELECT event_type, metadata FROM events").fetchone()
+        assert row[0] == "subsystem_offline"
+        assert json.loads(row[1]) == {"subsystem": "vending"}
+
 
 class TestGetHistoricalAverage:
     def test_returns_none_with_no_data(self, recorder):
@@ -242,10 +330,12 @@ class TestGetHistoricalAverage:
         assert avg["money_in"] is None
         assert avg["products_out"] is None
 
-    def test_returns_averages_with_one_prior_period(self, tmp_path):
+    def test_returns_none_with_only_one_prior_period(self, tmp_path):
+        """Spec requires at least 2 complete prior periods before averaging;
+        a single period is not statistically meaningful."""
         db = str(tmp_path / "events.db")
         rec = EventRecorder(db_path=db)
-        # Insert data in one prior 24h period only (25-49h ago) — one period is enough
+        # Insert data in one prior 24h period only (25-49h ago) — not enough.
         ts = time.time() - 36 * 3600
         conn = sqlite3.connect(db)
         conn.execute(
@@ -259,7 +349,8 @@ class TestGetHistoricalAverage:
         conn.commit()
         conn.close()
         avg = rec.get_historical_average(24)
-        assert avg["money_in"] == 5.0
+        assert avg["money_in"] is None
+        assert avg["products_out"] is None
 
     def test_averages_two_prior_periods(self, tmp_path):
         db = str(tmp_path / "events.db")
@@ -324,6 +415,79 @@ class TestGetHistoricalAverage:
         conn.close()
         avg = rec.get_historical_average(24)
         assert avg["money_in"] == pytest.approx(9.0)  # (10 + 8) / 2, not (10+8+20)/3
+
+
+class TestHistoricalAverageCache:
+    """get_historical_average runs up to 30 sqlite queries per metric window;
+    a short TTL cache keeps repeated dashboard polls from hammering the DB."""
+
+    @staticmethod
+    def _seed_two_active_periods(db, now, period):
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+            ("payment", now - 1.5 * period, 10.00),
+        )
+        conn.execute(
+            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+            ("heartbeat", now - 1.5 * period, 1),
+        )
+        conn.execute(
+            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+            ("payment", now - 2.5 * period, 6.00),
+        )
+        conn.execute(
+            "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+            ("heartbeat", now - 2.5 * period, 1),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_cache_returns_cached_value_within_ttl(self, tmp_path, monkeypatch):
+        db = str(tmp_path / "events.db")
+        rec = EventRecorder(db_path=db)
+        base_time = time.time()
+        period = 24 * 3600
+        monkeypatch.setattr(time, "time", lambda: base_time)
+
+        self._seed_two_active_periods(db, base_time, period)
+
+        avg1 = rec.get_historical_average(24)
+        assert avg1["money_in"] == pytest.approx(8.0)
+
+        # Insert data that WOULD change the result if recomputed.
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+                ("payment", base_time - 1.5 * period, 100.00),
+            )
+
+        # Still within TTL (no time advance) — must serve the cached value.
+        avg2 = rec.get_historical_average(24)
+        assert avg2 == avg1
+
+    def test_cache_recomputes_after_ttl_expiry(self, tmp_path, monkeypatch):
+        db = str(tmp_path / "events.db")
+        rec = EventRecorder(db_path=db)
+        base_time = time.time()
+        period = 24 * 3600
+        monkeypatch.setattr(time, "time", lambda: base_time)
+
+        self._seed_two_active_periods(db, base_time, period)
+
+        avg1 = rec.get_historical_average(24)
+        assert avg1["money_in"] == pytest.approx(8.0)
+
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
+                ("payment", base_time - 1.5 * period, 100.00),
+            )
+
+        # Advance past the TTL — must recompute and pick up the new data.
+        monkeypatch.setattr(time, "time", lambda: base_time + 61)
+        avg2 = rec.get_historical_average(24)
+        assert avg2["money_in"] == pytest.approx(58.0)  # (110 + 6) / 2
 
 
 class TestRetention:
