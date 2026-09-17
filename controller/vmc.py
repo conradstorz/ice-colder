@@ -229,23 +229,58 @@ class VMC:
         vend_log.info(f"BUTTON PRESS: button {press.button}")
         self.select_product(press.button)
 
+    def _dispenser_event_slot_mismatch(self, data: dict) -> bool:
+        """True if `data`'s reported slot doesn't match the active sale's slot.
+
+        A delayed/duplicate dispenser event (QoS 0, no dedup) for a slot other
+        than the one currently being dispensed must not finalize or fault the
+        wrong sale. No mismatch is reported when there's no active selection
+        or the event carries no slot (nothing to compare against).
+        """
+        if self.selected_product is None:
+            return False
+        reported_slot = data.get("slot")
+        if reported_slot is None:
+            return False
+        return reported_slot != self.selected_product.slot
+
     async def _handle_mqtt_dispenser(self, topic: str, data: dict):
         """Handle dispenser status from ESP32."""
         logger.info(f"MQTT dispenser event: {data}")
         state = data.get("state", "")
         slot = data.get("slot", "?")
         if state == "complete" and self.state == "dispensing":
+            if self._dispenser_event_slot_mismatch(data):
+                logger.warning(
+                    f"Ignoring dispenser completion for mismatched slot {slot} "
+                    f"(active sale is slot {self.selected_product.slot})"
+                )
+                return
             product_name = (
                 self.selected_product.name if self.selected_product else "Unknown"
             )
             txn_log.info(f"DISPENSE SUCCESS: slot {slot}, product '{product_name}'")
             vend_log.info(f"DISPENSE COMPLETE: slot {slot}, product '{product_name}'")
+            if self._event_recorder:
+                record_slot = (
+                    self.selected_product.slot
+                    if self.selected_product
+                    else data.get("slot")
+                )
+                if record_slot is not None:
+                    self._event_recorder.record("dispense", value=float(record_slot))
             self._finish_dispensing()
         elif state in ("jammed", "error"):
             if self.state != "dispensing":
                 logger.warning(
                     f"Ignoring dispenser fault outside dispensing state "
                     f"(current state: {self.state}, reported: {state}, slot {slot})"
+                )
+                return
+            if self._dispenser_event_slot_mismatch(data):
+                logger.warning(
+                    f"Ignoring dispenser fault for mismatched slot {slot} "
+                    f"(active sale is slot {self.selected_product.slot})"
                 )
                 return
             self._cancel_dispense_timeout()

@@ -159,6 +159,28 @@ def test_update_product_can_change_slot(tmp_path, monkeypatch):
     assert cfg.products[0].slot == 4
 
 
+def test_add_product_rejects_negative_slot(tmp_path, monkeypatch):
+    import services.config_store as cs
+
+    monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
+    cfg = ConfigModel()
+    assert add_product(cfg, "NEW-1", "New Thing", 3.25, slot=-1) is False
+    assert len(cfg.products) == 0
+    assert not any(p.sku == "NEW-1" for p in cfg.products)
+
+
+def test_update_product_rejects_negative_slot(tmp_path, monkeypatch):
+    import services.config_store as cs
+    from config.config_model import Product
+    from services.config_store import update_product
+
+    monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
+    cfg = ConfigModel()
+    cfg.physical.products = [Product(sku="A", name="A", price=1.0, slot=0)]
+    assert update_product(cfg, "A", "A", 1.0, slot=-1) is False
+    assert cfg.products[0].slot == 0  # unchanged
+
+
 def test_update_product_rejects_slot_already_in_use(tmp_path, monkeypatch):
     import services.config_store as cs
     from config.config_model import Product

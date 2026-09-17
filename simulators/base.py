@@ -33,6 +33,7 @@ RECOVERY_RANGES: dict[str, tuple[float, float]] = {
 }
 
 FAULT_LOOP_INTERVAL = 30.0  # seconds between fault probability rolls
+RECOVERY_RETRY_SECONDS = 30.0  # delay before retrying a failed recovery
 
 
 @dataclass
@@ -64,12 +65,14 @@ class ESP32Simulator(ABC):
         port: int = 1883,
         machine_id: str | None = None,
         config: ConfigModel | None = None,
+        config_path: str | None = None,
     ):
         self.subsystem_name = subsystem_name
         self.broker = broker
         self.port = port
         self.config = config or ConfigModel()
         self.machine_id = machine_id or self.config.machine_id
+        self._config_path = config_path
         self._start_time = time.monotonic()
         self._subscriptions: list[tuple[str, asyncio.Queue]] = []
         self._fault_defs: list[FaultDef] = []
@@ -228,13 +231,31 @@ class ESP32Simulator(ABC):
                 task.add_done_callback(self._recovery_tasks.discard)
 
     async def _run_recovery(self, client: aiomqtt.Client, fault: FaultDef) -> None:
-        """Run a fault's on_recover callback, then clear its state and publish."""
-        await fault.on_recover(client)
+        """Run a fault's on_recover callback, then clear its state and publish.
+
+        If ``on_recover`` raises, the fault must not get stuck permanently
+        "recovering" (which would block both its own future recovery
+        attempts and any other fault from ever being rolled/injected).
+        Cancellation is re-raised so task cancellation still works normally;
+        any other exception is logged and the fault stays active with its
+        recovery timer pushed out so ``_check_recoveries`` retries later.
+        """
         state = self._fault_state[fault.name]
-        state["active"] = False
-        state["recovering"] = False
-        await self._publish_alert(client, fault, "cleared")
-        logger.info(f"[{self.subsystem_name}] Fault cleared: {fault.name}")
+        try:
+            await fault.on_recover(client)
+            state["active"] = False
+            state["recovering"] = False
+            await self._publish_alert(client, fault, "cleared")
+            logger.info(f"[{self.subsystem_name}] Fault cleared: {fault.name}")
+        except asyncio.CancelledError:
+            state["recovering"] = False
+            raise
+        except Exception as e:
+            logger.error(
+                f"[{self.subsystem_name}] Recovery failed for fault {fault.name}: {e}"
+            )
+            state["recovering"] = False
+            state["recover_at"] = time.monotonic() + RECOVERY_RETRY_SECONDS
 
     def _cancel_recovery_tasks(self) -> None:
         """Cancel any outstanding recovery tasks (call on disconnect/shutdown)."""
@@ -480,6 +501,7 @@ class ESP32Simulator(ABC):
             port=args.port or config.mqtt.broker_port,
             machine_id=args.machine_id,
             config=config,
+            config_path=args.config,
             **kwargs,
         )
         asyncio.run(sim.run())

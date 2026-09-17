@@ -16,6 +16,14 @@ def make_vmc(price: float = 2.50) -> VMC:
     return VMC(config=cfg)
 
 
+class FakeEventRecorder:
+    def __init__(self):
+        self.events: list[tuple] = []
+
+    def record(self, event_type, value=1.0, metadata=None):
+        self.events.append((event_type, value, metadata))
+
+
 class FakeSoldOutInventory:
     def is_available(self, sku):
         return False
@@ -76,6 +84,134 @@ async def test_late_dispenser_fault_after_completed_sale_is_ignored():
 
     assert vmc.state == "idle"
     assert vmc.credit_escrow == 0.0  # no bogus refund credited
+    vmc.cancel_pending_tasks()
+
+
+async def test_dispenser_jam_with_mismatched_slot_is_ignored():
+    """A delayed 'jammed' report for a different slot than the active sale must
+    not fault the machine or issue a refund for the wrong product."""
+    vmc = make_vmc()
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    messages: list[str] = []
+    vmc.set_message_callback(messages.append)
+    vmc.selected_product = vmc.products[0]
+    vmc.machine.set_state("dispensing")
+    vmc.credit_escrow = 0.0
+
+    other_slot = vmc.products[0].slot + 1
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser", {"slot": other_slot, "state": "jammed"}
+    )
+
+    assert vmc.state == "dispensing"  # unaffected — wrong slot
+    assert vmc.credit_escrow == 0.0  # no bogus refund
+    assert messages == []
+
+
+async def test_dispense_complete_with_mismatched_slot_is_ignored():
+    """A delayed/duplicate 'complete' for a different slot than the active sale
+    must not finalize the sale."""
+    vmc = make_vmc(price=2.50)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    vmc.machine.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    vmc.credit_escrow = 2.50
+
+    vmc._process_payment()
+    assert vmc.state == "dispensing"
+
+    other_slot = vmc.products[0].slot + 1
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser", {"slot": other_slot, "state": "complete"}
+    )
+
+    assert vmc.state == "dispensing"  # not finished — wrong slot
+    assert vmc.selected_product is vmc.products[0]
+    vmc.cancel_pending_tasks()
+
+
+async def test_dispense_complete_with_matching_slot_still_completes():
+    vmc = make_vmc(price=2.50)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    vmc.machine.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    vmc.credit_escrow = 2.50
+
+    vmc._process_payment()
+    assert vmc.state == "dispensing"
+
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser",
+        {"slot": vmc.products[0].slot, "state": "complete"},
+    )
+
+    assert vmc.state == "idle"  # completed — matching slot
+    assert vmc.selected_product is None
+    vmc.cancel_pending_tasks()
+
+
+async def test_dispense_complete_records_event_via_recorder():
+    """The VMC — not the recorder listening on hardware/dispenser directly —
+    is the source of truth for a 'dispense' event, since only the VMC knows
+    whether the completion was actually accepted for the active sale."""
+    vmc = make_vmc(price=2.50)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    recorder = FakeEventRecorder()
+    vmc.set_event_recorder(recorder)
+    vmc.machine.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    vmc.credit_escrow = 2.50
+
+    vmc._process_payment()
+    assert vmc.state == "dispensing"
+
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser",
+        {"slot": vmc.products[0].slot, "state": "complete"},
+    )
+
+    assert recorder.events == [("dispense", float(vmc.products[0].slot), None)]
+    vmc.cancel_pending_tasks()
+
+
+async def test_dispense_complete_with_mismatched_slot_does_not_record_event():
+    vmc = make_vmc(price=2.50)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    recorder = FakeEventRecorder()
+    vmc.set_event_recorder(recorder)
+    vmc.machine.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    vmc.credit_escrow = 2.50
+
+    vmc._process_payment()
+    assert vmc.state == "dispensing"
+
+    other_slot = vmc.products[0].slot + 1
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser", {"slot": other_slot, "state": "complete"}
+    )
+
+    assert recorder.events == []
+    vmc.cancel_pending_tasks()
+
+
+async def test_dispense_timeout_fallback_does_not_record_event():
+    """The 60s hardware-silence fallback completes the transaction without any
+    hardware confirmation, so it must not record a 'dispense' event."""
+    vmc = make_vmc(price=2.50)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    recorder = FakeEventRecorder()
+    vmc.set_event_recorder(recorder)
+    vmc.machine.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    vmc.credit_escrow = 2.50
+
+    vmc._process_payment()
+    assert vmc.state == "dispensing"
+
+    vmc._finish_dispensing()  # simulate the 60s hardware-silence fallback firing
+    assert vmc.state == "idle"
+    assert recorder.events == []
     vmc.cancel_pending_tasks()
 
 

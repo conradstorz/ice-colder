@@ -68,18 +68,13 @@ class VendingMachineSimulator(ESP32Simulator):
 
     def __init__(self, **kwargs):
         super().__init__(subsystem_name="vending", **kwargs)
-        products = self.config.products
-        self.num_buttons = len(products)
-        # Keyed by each product's stable `slot`, not its list position — the
-        # real ESP32's motor wiring is fixed per slot, and list order can
-        # change independently (e.g. a product deleted from the catalog).
-        self._slot_types = {p.slot: _classify_product(p.name, p.sku) for p in products}
+        self._apply_products(self.config.products)
+        logger.info(f"[vending] {self.num_buttons} products: {self._slot_types}")
         self._dispense_command: asyncio.Queue = asyncio.Queue()
         # Hardware state
         self._hw: dict[str, bool] = dict(HARDWARE_DEVICES)
         self._cabinet_temp: float = 22.0  # starting cabinet temperature °C
         self._water_flow_total: float = 0.0  # cumulative gallons
-        logger.info(f"[vending] {self.num_buttons} products: {self._slot_types}")
 
         # Register faults
         self.register_fault(
@@ -201,6 +196,14 @@ class VendingMachineSimulator(ESP32Simulator):
         )
 
         return entities
+
+    def _apply_products(self, products) -> None:
+        """(Re)build num_buttons and the slot->type map from a product list."""
+        self.num_buttons = len(products)
+        # Keyed by each product's stable `slot`, not its list position — the
+        # real ESP32's motor wiring is fixed per slot, and list order can
+        # change independently (e.g. a product deleted from the catalog).
+        self._slot_types = {p.slot: _classify_product(p.name, p.sku) for p in products}
 
     def slot_type(self, slot: int) -> str:
         return self._slot_types.get(slot, "ice")
@@ -472,6 +475,13 @@ class VendingMachineSimulator(ESP32Simulator):
                         "[vending] No products configured — no buttons to press"
                     )
                     warned_no_products = True
+                self.config = self.load_config(self._config_path)
+                if self.config.products:
+                    self._apply_products(self.config.products)
+                    logger.info(
+                        f"[vending] Products loaded: {self.num_buttons} products: "
+                        f"{self._slot_types}"
+                    )
                 await asyncio.sleep(self.IDLE_MIN)
                 continue
 

@@ -32,6 +32,8 @@ services:
     depends_on:
       mosquitto:
         condition: service_healthy
+      vmc:
+        condition: service_started
     restart: unless-stopped
 
   sim-mdb:
@@ -47,6 +49,8 @@ services:
     depends_on:
       mosquitto:
         condition: service_healthy
+      vmc:
+        condition: service_started
     restart: unless-stopped
 
   sim-vending:
@@ -62,6 +66,8 @@ services:
     depends_on:
       mosquitto:
         condition: service_healthy
+      vmc:
+        condition: service_started
     restart: unless-stopped
 
   mosquitto:

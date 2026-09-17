@@ -80,6 +80,12 @@ def add_product(
         logger.warning(f"Cannot add product: SKU '{sku}' already exists")
         return False
 
+    if slot is not None and slot < 0:
+        logger.warning(
+            f"Cannot add product SKU={sku}: slot {slot} is invalid (must be >= 0)"
+        )
+        return False
+
     used_slots = {p.slot for p in config.products}
     if slot is None:
         slot = _lowest_free_slot(config.products)
@@ -103,6 +109,12 @@ def update_product(
 ) -> bool:
     for p in config.products:
         if p.sku == sku:
+            if slot is not None and slot < 0:
+                logger.warning(
+                    f"Cannot update product SKU={sku}: slot {slot} is invalid (must be >= 0)"
+                )
+                return False
+
             if slot is not None and slot != p.slot:
                 used_slots = {other.slot for other in config.products if other is not p}
                 if slot in used_slots:

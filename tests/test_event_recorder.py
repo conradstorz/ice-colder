@@ -93,10 +93,78 @@ class TestGetSummary:
         assert rec.get_summary(24)["money_in"] == 0.0
 
     def test_uptime_with_heartbeats(self, recorder):
-        # 360 heartbeats × 10s = 3600s in a 24h (86400s) window → ~4.2%
-        for _ in range(360):
-            recorder.record("heartbeat", value=100)
+        # 360 heartbeats at a real 10s cadence (distinct buckets), covering
+        # 3600s of a 24h (86400s) window → ~4.2%.
+        now = time.time()
+        conn = sqlite3.connect(recorder._db_path)
+        conn.executemany(
+            "INSERT INTO events (event_type, timestamp, value) VALUES ('heartbeat', ?, 100)",
+            [(now - i * 10,) for i in range(360)],
+        )
+        conn.commit()
+        conn.close()
         assert recorder.get_summary(24)["uptime_pct"] == pytest.approx(4.2, abs=0.1)
+
+
+class TestUptimeComputation:
+    """uptime_pct must measure the fraction of _HEARTBEAT_INTERVAL-sized time
+    buckets that have at least one heartbeat from ANY subsystem — not raw
+    heartbeat rows, which overcounts when multiple subsystems beat
+    concurrently (e.g. 3 simulators beating every 10s reads ~300%, clamped to
+    100%, even though one of them could be silently offline the whole time)."""
+
+    @staticmethod
+    def _insert_heartbeats(db_path, timestamps):
+        conn = sqlite3.connect(db_path)
+        conn.executemany(
+            "INSERT INTO events (event_type, timestamp, value) VALUES ('heartbeat', ?, 1)",
+            [(ts,) for ts in timestamps],
+        )
+        conn.commit()
+        conn.close()
+
+    def test_full_coverage_by_one_subsystem_reads_100_pct(self, recorder):
+        start = 1_000_000.0
+        end = start + 100.0  # 10 buckets of 10s
+        self._insert_heartbeats(recorder._db_path, [start + i * 10 for i in range(10)])
+        assert recorder._compute_window(start, end)["uptime_pct"] == pytest.approx(
+            100.0
+        )
+
+    def test_half_covered_window_reads_about_50_pct(self, recorder):
+        start = 1_000_000.0
+        end = start + 100.0
+        self._insert_heartbeats(recorder._db_path, [start + i * 10 for i in range(5)])
+        assert recorder._compute_window(start, end)["uptime_pct"] == pytest.approx(50.0)
+
+    def test_multiple_subsystems_in_same_bucket_count_once(self, recorder):
+        start = 1_000_000.0
+        end = start + 100.0
+        # Three subsystems all beat within the same 10s bucket.
+        self._insert_heartbeats(recorder._db_path, [start + 1, start + 2, start + 3])
+        # 1 of 10 buckets covered, not 3 rows worth.
+        assert recorder._compute_window(start, end)["uptime_pct"] == pytest.approx(10.0)
+
+    def test_metric_reads_100_pct_even_if_one_subsystem_silently_offline(
+        self, recorder
+    ):
+        """Two subsystems beat every 10s for the whole window; a third never
+        beats at all. uptime_pct measures 'at least one subsystem alive' per
+        bucket, not per-subsystem health, so this honestly reads 100% — it no
+        longer inflates past 100% (the bug), but per-subsystem outages are a
+        separate metric this one doesn't claim to cover."""
+        start = 1_000_000.0
+        end = start + 100.0
+        timestamps = []
+        for i in range(10):
+            timestamps.append(start + i * 10)  # subsystem A
+            timestamps.append(start + i * 10 + 0.5)  # subsystem B
+        self._insert_heartbeats(recorder._db_path, timestamps)
+        # Still reads 100% for "at least one subsystem alive" per bucket —
+        # this documents the metric's honest ceiling, not per-subsystem health.
+        assert recorder._compute_window(start, end)["uptime_pct"] == pytest.approx(
+            100.0
+        )
 
 
 class TestRegisterHandlers:
@@ -121,27 +189,14 @@ class TestRegisterHandlers:
         )
         assert recorder.get_summary(24)["money_in"] == pytest.approx(2.50)
 
-    @pytest.mark.asyncio
-    async def test_dispenser_complete_records_dispense(self, recorder):
+    def test_hardware_dispenser_not_registered(self, recorder):
+        """The recorder must NOT listen on hardware/dispenser directly — only
+        the VMC knows whether a completion was accepted for the active sale
+        (see controller.vmc.VMC._handle_mqtt_dispenser). A direct subscription
+        here would overcount products_out on duplicates/late completions the
+        VMC ignores."""
         h = self._get_handlers(recorder)
-        await h["hardware/dispenser"](
-            "hardware/dispenser",
-            {"slot": 0, "state": "complete", "timestamp": "2026-01-01T00:00:00+00:00"},
-        )
-        assert recorder.get_summary(24)["products_out"] == 1
-
-    @pytest.mark.asyncio
-    async def test_dispenser_motor_active_not_recorded(self, recorder):
-        h = self._get_handlers(recorder)
-        await h["hardware/dispenser"](
-            "hardware/dispenser",
-            {
-                "slot": 0,
-                "state": "motor_active",
-                "timestamp": "2026-01-01T00:00:00+00:00",
-            },
-        )
-        assert recorder.get_summary(24)["products_out"] == 0
+        assert "hardware/dispenser" not in h
 
     @pytest.mark.asyncio
     async def test_ice_dropped_records_cycle(self, recorder):

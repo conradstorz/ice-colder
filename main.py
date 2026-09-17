@@ -143,6 +143,32 @@ def load_config() -> ConfigModel:
 _SUPERVISE_RESTART_DELAY = 5.0
 
 
+async def _run_until_server_exits(server_coro, *supervised):
+    """Run ``server_coro`` (uvicorn's ``server.serve()``) alongside long-running
+    ``supervised`` background coroutines (the MQTT client / health monitor
+    supervisors). Returns (or raises) as soon as ``server_coro`` completes,
+    cancelling the still-running supervised tasks first.
+
+    Without this, ``asyncio.gather`` over the server plus supervisors that loop
+    forever never returns when uvicorn exits (SIGTERM/SIGINT, or a startup
+    failure) — ``main()`` never reaches its ``finally`` block and the process
+    never exits, so Docker's ``restart: unless-stopped`` never gets a chance to
+    restart it.
+    """
+    server_task = asyncio.ensure_future(server_coro)
+    supervised_tasks = [asyncio.ensure_future(c) for c in supervised]
+    try:
+        return await server_task
+    finally:
+        for task in supervised_tasks:
+            task.cancel()
+        for task in supervised_tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+
 async def _supervise(name: str, coro_factory):
     """Keep a long-running component alive: log a crash and restart it after 5s.
 
@@ -235,7 +261,7 @@ async def main():
         "Entering main event loop with web server, MQTT client, and health monitor"
     )
     try:
-        await asyncio.gather(
+        await _run_until_server_exits(
             server.serve(),
             _supervise("MQTT client", mqtt.run),
             _supervise("health monitor", health.run),

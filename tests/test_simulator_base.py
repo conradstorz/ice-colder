@@ -9,7 +9,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from config.config_model import ConfigModel
-from simulators.base import ESP32Simulator, FaultDef, RECOVERY_RANGES
+from simulators.base import (
+    ESP32Simulator,
+    FaultDef,
+    RECOVERY_RANGES,
+    RECOVERY_RETRY_SECONDS,
+)
 
 
 class ConcreteSimulator(ESP32Simulator):
@@ -532,6 +537,105 @@ class TestFaultLoop:
         assert sim._fault_state["test_fault"]["active"] is True
         on_recover.assert_not_called()
 
+
+class TestRecoveryFailure:
+    @pytest.mark.asyncio
+    async def test_run_recovery_failure_leaves_active_and_reschedules(self):
+        sim = ConcreteSimulator()
+        on_recover = AsyncMock(side_effect=RuntimeError("publish failed"))
+        fault = FaultDef(
+            name="test_fault",
+            category="short",
+            probability=0.0,
+            on_activate=AsyncMock(),
+            on_recover=on_recover,
+            message="Test fault",
+        )
+        sim.register_fault(fault)
+        sim._fault_state["test_fault"]["active"] = True
+        sim._fault_state["test_fault"]["recover_at"] = time.monotonic() - 1.0
+        client = AsyncMock()
+
+        await sim._check_recoveries(client)
+        for task in list(sim._recovery_tasks):
+            await task  # must not raise
+
+        state = sim._fault_state["test_fault"]
+        assert state["active"] is True
+        assert state["recovering"] is False
+        now = time.monotonic()
+        assert now < state["recover_at"] <= now + RECOVERY_RETRY_SECONDS + 3.0
+
+    @pytest.mark.asyncio
+    async def test_check_recoveries_retries_after_failure(self):
+        sim = ConcreteSimulator()
+        on_recover = AsyncMock(side_effect=[RuntimeError("boom"), None])
+        fault = FaultDef(
+            name="test_fault",
+            category="short",
+            probability=0.0,
+            on_activate=AsyncMock(),
+            on_recover=on_recover,
+            message="Test fault",
+        )
+        sim.register_fault(fault)
+        sim._fault_state["test_fault"]["active"] = True
+        sim._fault_state["test_fault"]["recover_at"] = time.monotonic() - 1.0
+        client = AsyncMock()
+
+        # First recovery attempt fails.
+        await sim._check_recoveries(client)
+        for task in list(sim._recovery_tasks):
+            await task
+        assert sim._fault_state["test_fault"]["active"] is True
+        assert sim._fault_state["test_fault"]["recovering"] is False
+
+        # Simulate time passing: force the recover_at into the past again.
+        sim._fault_state["test_fault"]["recover_at"] = time.monotonic() - 1.0
+
+        # Second recovery attempt succeeds.
+        await sim._check_recoveries(client)
+        for task in list(sim._recovery_tasks):
+            await task
+        assert sim._fault_state["test_fault"]["active"] is False
+        assert sim._fault_state["test_fault"]["recovering"] is False
+        assert on_recover.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_run_recovery_cancelled_leaves_active_and_propagates(self):
+        sim = ConcreteSimulator()
+        started = asyncio.Event()
+
+        async def cancellable_recover(client):
+            started.set()
+            await asyncio.sleep(100)
+
+        fault = FaultDef(
+            name="test_fault",
+            category="short",
+            probability=0.0,
+            on_activate=AsyncMock(),
+            on_recover=cancellable_recover,
+            message="Test fault",
+        )
+        sim.register_fault(fault)
+        sim._fault_state["test_fault"]["active"] = True
+        sim._fault_state["test_fault"]["recover_at"] = time.monotonic() - 1.0
+        client = AsyncMock()
+
+        await sim._check_recoveries(client)
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        task = next(iter(sim._recovery_tasks))
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        state = sim._fault_state["test_fault"]
+        assert state["active"] is True
+        assert state["recovering"] is False
+
+
+class TestPublishAlertFormat:
     @pytest.mark.asyncio
     async def test_publish_alert_active_includes_recover_in(self):
         sim = ConcreteSimulator(machine_id="vmc-0001")

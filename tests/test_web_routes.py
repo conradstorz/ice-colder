@@ -94,6 +94,19 @@ class TestInventoryEndpoints:
         added = next(p for p in routes.config.products if p.sku == "SLOT-1")
         assert added.slot == 7
 
+    def test_add_product_with_negative_slot_does_not_500(self, client):
+        resp = client.post(
+            "/inventory/add",
+            data={
+                "sku": "NEG-1",
+                "name": "Negative Slot",
+                "price": "1.00",
+                "slot": "-1",
+            },
+        )
+        assert resp.status_code == 200
+        assert not any(p.sku == "NEG-1" for p in routes.config.products)
+
     def test_inventory_table_renders_slot_column(self, client):
         client.post(
             "/inventory/add",

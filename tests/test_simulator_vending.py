@@ -424,6 +424,10 @@ class TestZeroProducts:
         assert sim.num_buttons == 0
         client = AsyncMock()
         sim.publish = AsyncMock()
+        # The zero-products branch reloads config every iteration; keep it
+        # deterministic (still zero products) rather than hitting the real
+        # filesystem/env var.
+        sim.load_config = lambda path: ConfigModel()
         sleep_calls = []
 
         async def fake_sleep(seconds):
@@ -443,6 +447,7 @@ class TestZeroProducts:
         sim = VendingMachineSimulator(config=ConfigModel())
         client = AsyncMock()
         sim.publish = AsyncMock()
+        sim.load_config = lambda path: ConfigModel()
         sleep_calls = []
 
         async def fake_sleep(seconds):
@@ -455,6 +460,57 @@ class TestZeroProducts:
                 with pytest.raises(asyncio.CancelledError):
                     await sim._customer_loop(client)
                 assert mock_logger.warning.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_customer_loop_reloads_config_and_picks_up_new_products(self):
+        sim = VendingMachineSimulator(config=ConfigModel())
+        assert sim.num_buttons == 0
+        client = AsyncMock()
+        sim.publish = AsyncMock()
+
+        first_config = ConfigModel()
+        second_config = ConfigModel.model_validate(
+            {
+                "physical": {
+                    "products": [
+                        {"sku": "A", "name": "Bagged Ice", "price": 1.0, "slot": 0},
+                        {"sku": "B", "name": "Small Water", "price": 1.0, "slot": 1},
+                    ]
+                }
+            }
+        )
+        call_results = iter([first_config, second_config, second_config, second_config])
+        sim.load_config = lambda path: next(call_results)
+
+        sleep_calls = []
+
+        async def fake_sleep(seconds):
+            sleep_calls.append(seconds)
+            if len(sleep_calls) >= 2:
+                raise asyncio.CancelledError
+
+        with patch("asyncio.sleep", new=fake_sleep):
+            with pytest.raises(asyncio.CancelledError):
+                await sim._customer_loop(client)
+
+        assert sim.num_buttons == 2
+        assert sim._slot_types == {0: "ice", 1: "water"}
+
+    def test_apply_products_updates_num_buttons_and_slot_types(self):
+        sim = VendingMachineSimulator(config=ConfigModel())
+        config = ConfigModel.model_validate(
+            {
+                "physical": {
+                    "products": [
+                        {"sku": "A", "name": "Bagged Ice", "price": 1.0, "slot": 3},
+                        {"sku": "B", "name": "Small Water", "price": 1.0, "slot": 7},
+                    ]
+                }
+            }
+        )
+        sim._apply_products(config.products)
+        assert sim.num_buttons == 2
+        assert sim._slot_types == {3: "ice", 7: "water"}
 
 
 class TestCustomerBehaviours:

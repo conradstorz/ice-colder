@@ -15,7 +15,6 @@ from typing import Optional
 from loguru import logger
 
 from services.mqtt_messages import (
-    DispenserStatus,
     HardwareIO,
     IceMakerEvent,
     PaymentEvent,
@@ -113,7 +112,18 @@ class EventRecorder:
             )
 
     def _compute_window(self, start_ts: float, end_ts: float) -> dict:
-        """Compute aggregates for events in [start_ts, end_ts)."""
+        """Compute aggregates for events in [start_ts, end_ts).
+
+        uptime_pct measures the fraction of _HEARTBEAT_INTERVAL-sized time
+        buckets in the window that have at least one heartbeat from ANY
+        subsystem — i.e. "was something alive during this interval", not raw
+        heartbeat row count. Counting rows overcounts when multiple
+        subsystems beat concurrently (three simulators beating every 10s
+        would read ~300%, clamped to 100%) while saying nothing about whether
+        any *particular* subsystem was up. Counting distinct covered buckets
+        is the most this metric can honestly claim; per-subsystem health is a
+        separate concern (see health_monitor / subsystem_offline events).
+        """
         with sqlite3.connect(self._db_path) as conn:
 
             def count(etype):
@@ -128,11 +138,15 @@ class EventRecorder:
                     (etype, start_ts, end_ts),
                 ).fetchone()[0]
 
-            heartbeat_count = count("heartbeat")
+            covered_buckets = conn.execute(
+                "SELECT COUNT(DISTINCT CAST(timestamp / ? AS INTEGER)) FROM events "
+                "WHERE event_type='heartbeat' AND timestamp>=? AND timestamp<?",
+                (_HEARTBEAT_INTERVAL, start_ts, end_ts),
+            ).fetchone()[0]
             period_secs = end_ts - start_ts
             uptime_pct = min(
                 100.0,
-                heartbeat_count * _HEARTBEAT_INTERVAL / period_secs * 100,
+                covered_buckets * _HEARTBEAT_INTERVAL / period_secs * 100,
             )
             return {
                 "money_in": round(total("payment"), 2),
@@ -152,9 +166,17 @@ class EventRecorder:
         return self._compute_window(now - period_hours * 3600, now + 0.001)
 
     def register_handlers(self, mqtt_client):
-        """Register MQTT handlers. Multiple callers can register for the same topic."""
+        """Register MQTT handlers. Multiple callers can register for the same topic.
+
+        Note: "dispense" events are NOT recorded from a direct
+        ``hardware/dispenser`` subscription here — only the VMC (see
+        ``controller.vmc.VMC._handle_mqtt_dispenser``) knows whether a
+        completion was actually accepted for the active sale (correct slot,
+        state == dispensing). Recording directly from the raw MQTT topic would
+        overcount products_out on duplicate/late completions the VMC ignores.
+        The VMC calls ``record("dispense", ...)`` itself when it accepts one.
+        """
         mqtt_client.register("payment/credit", self._on_payment)
-        mqtt_client.register("hardware/dispenser", self._on_dispenser)
         mqtt_client.register("ice_maker/event", self._on_ice_maker_event)
         mqtt_client.register("hardware/io/service_door", self._on_service_door)
         mqtt_client.register("sensors/temp/+", self._on_sensor)
@@ -163,11 +185,6 @@ class EventRecorder:
     async def _on_payment(self, topic: str, data: dict):
         event = PaymentEvent.model_validate(data)
         self.record("payment", value=event.amount)
-
-    async def _on_dispenser(self, topic: str, data: dict):
-        status = DispenserStatus.model_validate(data)
-        if status.state == "complete":
-            self.record("dispense", value=float(status.slot))
 
     async def _on_ice_maker_event(self, topic: str, data: dict):
         event = IceMakerEvent.model_validate(data)

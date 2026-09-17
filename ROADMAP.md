@@ -51,8 +51,9 @@ Rules that follow from the split:
   outputs off, payment inhibited, no new vends. It does not reboot itself and
   it does not retry a half-finished vend.
 - The VMC never declares a vend successful because it sent the command. It
-  waits for the ESP32's `complete` report (already the case in
-  `controller/vmc.py`).
+  waits for the ESP32's `complete` report. **Not yet true:** `controller/vmc.py`
+  still finishes the sale on a 60 s timeout if no report arrives. Phase C
+  turns that timeout into a failed vend (`PAY-102`) instead of a success.
 - Remote actuation of motors, valves, doors or heaters outside a defined
   maintenance procedure is not a feature and will not be added.
 
@@ -304,6 +305,8 @@ generated schemas.
   permissive named.
 - Startup self-test state: after boot or `PWR-101`, hold payment off until the
   vending ESP32 reports permissives.
+- Dispense timeout becomes a failed vend: no `complete` report within the
+  bounded window means refund path and `PAY-102`, never a recorded sale.
 
 ### Phase D — Vending ESP32 firmware
 
