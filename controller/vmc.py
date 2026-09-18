@@ -1112,7 +1112,7 @@ class VMC:
                 f"Insufficient funds. Please insert an additional ${required:.2f}."
             )
             if message != self.last_insufficient_message:
-                logger.error(message)
+                logger.info(message)
                 txn_log.info(
                     f"PAYMENT INSUFFICIENT: ${self.credit_escrow:.2f} < ${price:.2f} for '{self.selected_product.name}', need ${required:.2f} more"
                 )

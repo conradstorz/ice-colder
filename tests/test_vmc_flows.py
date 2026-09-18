@@ -220,6 +220,28 @@ async def test_session_timeout_refunds_and_returns_to_idle():
     assert any("Refund" in m for m in messages)
 
 
+async def test_insufficient_funds_prompt_is_not_an_error_log():
+    """A customer who hasn't inserted enough yet is routine, not an ERROR."""
+    vmc = make_vmc(price=2.50)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    vmc.machine.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    vmc.credit_escrow = 0.50
+    records: list[tuple[str, str]] = []
+    handle = logger.add(
+        lambda m: records.append((m.record["level"].name, m.record["message"])),
+        level="DEBUG",
+        format="{message}",
+    )
+    try:
+        vmc._process_payment()
+    finally:
+        logger.remove(handle)
+    prompts = [lvl for lvl, msg in records if "Insufficient funds" in msg]
+    assert "INFO" in prompts
+    assert "ERROR" not in prompts
+
+
 async def test_insufficient_funds_waits_without_charging():
     vmc = make_vmc(price=2.50)
     vmc.attach_to_loop(asyncio.get_running_loop())
