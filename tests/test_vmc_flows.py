@@ -237,6 +237,7 @@ async def test_insufficient_funds_prompt_is_not_an_error_log():
         vmc._process_payment()
     finally:
         logger.remove(handle)
+        vmc.cancel_pending_tasks()  # drop the 5 s retry _process_payment scheduled
     prompts = [lvl for lvl, msg in records if "Insufficient funds" in msg]
     assert "INFO" in prompts
     assert "ERROR" not in prompts
