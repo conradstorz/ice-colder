@@ -1,6 +1,8 @@
 # controller/vmc.py
 import asyncio
 import time
+from dataclasses import dataclass
+from uuid import uuid4
 from transitions import Machine
 from loguru import logger
 from pydantic import ValidationError
@@ -20,6 +22,9 @@ from contracts.vending_machine import (
     OUTCOME_FAULTS,
     DispenserOutcome,
     FaultCode,
+    PaymentRefundCommand,
+    PaymentRefundResult,
+    RefundStatus,
     Scope,
     Severity,
 )
@@ -102,8 +107,20 @@ _SEVERITY_LEVEL = {
 }
 
 
+@dataclass
+class PendingRefund:
+    request_id: str
+    amount: float
+    reason: str
+    attempts: int = 1
+    deadline_task: asyncio.Task | None = None
+
+
 class VMC:
     states = ["idle", "interacting_with_user", "dispensing", "error"]
+
+    REFUND_ACK_TIMEOUT = 10.0  # seconds to wait for cmd/payment/refund/ack
+    REFUND_MAX_ATTEMPTS = 2  # one retry with the same request_id, then PAY-103
 
     @logger.catch()
     def __init__(self, config: ConfigModel):
@@ -147,6 +164,7 @@ class VMC:
         # Fault registry: product-scope faults by SKU, machine-scope faults by code.
         self._lockouts: dict[str, FaultCode] = {}
         self._machine_faults: dict[FaultCode, float] = {}
+        self._pending_refunds: dict[str, PendingRefund] = {}
         self._start_time = time.monotonic()
         self._session_timeout_seconds = 180.0  # 3 minutes
         self._dispense_timeout_seconds = (
@@ -181,6 +199,9 @@ class VMC:
         self._pending_tasks.clear()
         self._cancel_dispense_timeout()
         self._cancel_session_timeout()
+        for pending in self._pending_refunds.values():
+            if pending.deadline_task and not pending.deadline_task.done():
+                pending.deadline_task.cancel()
         logger.debug("VMC: all pending tasks cancelled.")
 
     def set_mqtt_client(self, client):
@@ -197,6 +218,7 @@ class VMC:
         client.register("telemetry/ice_maker/+", self._handle_mqtt_telemetry)
         client.register("cmd/ice_maker/ack", self._handle_mqtt_command_ack)
         client.register("hardware/io/+", self._handle_mqtt_hardware_io)
+        client.register("cmd/payment/refund/ack", self._handle_mqtt_refund_ack)
         logger.debug("VMC registered MQTT handlers.")
 
     def set_health_monitor(self, monitor: HealthMonitor):
@@ -698,7 +720,7 @@ class VMC:
         txn_log.info("SALE CANCELLED: selected product removed from catalog")
         self._cancel_session_timeout()
         self._cancel_dispense_timeout()
-        self.request_refund()
+        self.request_refund(reason="cancel")
         self.selected_product = None
         self.last_insufficient_message = ""
         self._publish_status()
@@ -780,14 +802,9 @@ class VMC:
         )
         if self._event_recorder:
             self._event_recorder.record("error", value=1.0)
-        # Refund any remaining credit in escrow
+        # Pay out any remaining credit through the gateway
         if self.credit_escrow > 0:
-            refund = self.credit_escrow
-            self.credit_escrow = 0.0
-            txn_log.info(
-                f"REFUND (error state): ${refund:.2f} via {self.last_payment_method}"
-            )
-            logger.info(f"Refunded ${refund:.2f} due to error state transition.")
+            self.request_refund(reason="error")
         self._publish_status()
         self._update_display("error")
         self._refresh_ui()
@@ -817,22 +834,110 @@ class VMC:
 
     @logger.catch()
     def request_refund(self, reason: str = "admin"):
+        """Pay the customer back: publish a refund command and await its ack.
+
+        This is the ONLY path that sends money out. Restoring a price to
+        escrow after a failed vend is not a refund and does not come here.
+        """
         logger.debug(f"Requesting refund with current credit: {self.credit_escrow:.2f}")
-        if self.credit_escrow > 0:
-            refund_amount = self.credit_escrow
-            self.credit_escrow = 0.0
-            logger.info(
-                f"Refund of ${refund_amount:.2f} issued via {self.last_payment_method}."
-            )
-            txn_log.info(
-                f"REFUND ISSUED: ${refund_amount:.2f} via {self.last_payment_method}"
-            )
-            self.send_customer_message(
-                f"Refund of ${refund_amount:.2f} issued via {self.last_payment_method}."
-            )
-            self._refresh_ui()
-        else:
+        if self.credit_escrow <= 0:
             self.send_customer_message("No funds to refund.")
+            return
+        amount = round(self.credit_escrow, 2)
+        self.credit_escrow = 0.0
+        pending = PendingRefund(request_id=uuid4().hex, amount=amount, reason=reason)
+        self._pending_refunds[pending.request_id] = pending
+        self._send_refund_command(pending)
+        logger.info(
+            f"Refund of ${amount:.2f} requested via {self.last_payment_method} "
+            f"(reason={reason}, request_id={pending.request_id})"
+        )
+        txn_log.info(
+            f"REFUND REQUESTED: ${amount:.2f} via {self.last_payment_method} "
+            f"reason={reason} request_id={pending.request_id}"
+        )
+        self.send_customer_message(
+            f"Refund of ${amount:.2f} issued via {self.last_payment_method}."
+        )
+        self._refresh_ui()
+
+    def _send_refund_command(self, pending: PendingRefund) -> None:
+        cmd = PaymentRefundCommand(
+            request_id=pending.request_id, amount=pending.amount, reason=pending.reason
+        )
+        if self._mqtt_client is not None:
+            self._fire_and_forget(self._mqtt_client.publish("cmd/payment/refund", cmd))
+        else:
+            logger.warning("No MQTT client; refund command not sent")
+        pending.deadline_task = self._schedule(
+            self.REFUND_ACK_TIMEOUT, lambda: self._refund_deadline(pending.request_id)
+        )
+
+    async def _handle_mqtt_refund_ack(self, topic: str, data: dict):
+        """Payment gateway acknowledged (or refused) a refund command."""
+        result = PaymentRefundResult.model_validate(data)
+        pending = self._pending_refunds.get(result.request_id)
+        if pending is None:
+            logger.warning(f"Refund ack for unknown request_id {result.request_id}")
+            return
+        if result.status is RefundStatus.ok:
+            self._refund_confirmed(pending, result.amount_returned)
+        else:
+            self._refund_attempt_failed(
+                pending, detail=result.detail or result.status.value
+            )
+
+    def _cancel_refund_deadline(self, pending: PendingRefund) -> None:
+        if pending.deadline_task and not pending.deadline_task.done():
+            pending.deadline_task.cancel()
+        pending.deadline_task = None
+
+    def _refund_confirmed(self, pending: PendingRefund, amount_returned: float) -> None:
+        self._cancel_refund_deadline(pending)
+        self._pending_refunds.pop(pending.request_id, None)
+        txn_log.info(
+            f"REFUND CONFIRMED: ${amount_returned:.2f} request_id={pending.request_id}"
+        )
+        if self._event_recorder:
+            self._event_recorder.record(
+                "refund",
+                value=amount_returned,
+                metadata={"request_id": pending.request_id, "reason": pending.reason},
+            )
+
+    def _refund_deadline(self, request_id: str) -> None:
+        pending = self._pending_refunds.get(request_id)
+        if pending is None:
+            return
+        pending.deadline_task = None
+        self._refund_attempt_failed(pending, detail="ack_timeout")
+
+    def _refund_attempt_failed(self, pending: PendingRefund, detail: str) -> None:
+        self._cancel_refund_deadline(pending)
+        if pending.attempts < self.REFUND_MAX_ATTEMPTS:
+            pending.attempts += 1
+            logger.warning(
+                f"Refund {pending.request_id} not confirmed ({detail}); "
+                f"retry {pending.attempts}/{self.REFUND_MAX_ATTEMPTS}"
+            )
+            self._send_refund_command(pending)
+            return
+        self._pending_refunds.pop(pending.request_id, None)
+        txn_log.error(
+            f"REFUND FAILED: ${pending.amount:.2f} request_id={pending.request_id} "
+            f"reason={pending.reason} detail={detail}"
+        )
+        if self._event_recorder:
+            self._event_recorder.record(
+                "refund_failed",
+                value=pending.amount,
+                metadata={
+                    "request_id": pending.request_id,
+                    "reason": pending.reason,
+                    "detail": detail,
+                },
+            )
+        self._raise_fault(FaultCode.PAY_103, outcome=detail)
 
     @logger.catch()
     def initiate_virtual_payment(self, amount):
@@ -1007,7 +1112,7 @@ class VMC:
             return
         logger.info("Customer session timed out due to inactivity.")
         txn_log.info(f"SESSION TIMEOUT: refunding ${self.credit_escrow:.2f}")
-        self.request_refund()
+        self.request_refund(reason="session_timeout")
         self.selected_product = None
         self.last_insufficient_message = ""
         # Manually transition back to idle (reset_state only works from error)

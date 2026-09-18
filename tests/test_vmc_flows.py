@@ -9,7 +9,12 @@ import asyncio
 import pytest
 
 from config.config_model import ConfigModel, Product
-from contracts.vending_machine import DispenserOutcome, FaultCode, OUTCOME_FAULTS
+from contracts.vending_machine import (
+    DispenserOutcome,
+    FaultCode,
+    OUTCOME_FAULTS,
+    PaymentRefundCommand,
+)
 from controller.vmc import VMC
 from services.health_monitor import HealthMonitor
 
@@ -83,7 +88,7 @@ async def test_dispenser_jam_with_mismatched_slot_is_ignored():
 
     other_slot = vmc.products[0].slot + 1
     await vmc._handle_mqtt_dispenser(
-        "hardware/dispenser", {"slot": other_slot, "state": "jammed"}
+        "hardware/dispenser", {"slot": other_slot, "state": "jam"}
     )
 
     assert vmc.state == "dispensing"  # unaffected — wrong slot
@@ -583,3 +588,166 @@ class TestVendOutcomes:
         )
         assert vmc.state == "interacting_with_user"
         assert not any(e[0] == "dispense" for e in rec.events)
+
+
+class RecordingClient:
+    def __init__(self):
+        self.published: list[tuple[str, object]] = []
+
+    def register(self, *_):
+        pass
+
+    async def publish(self, topic, payload):
+        self.published.append((topic, payload))
+
+    def refund_commands(self) -> list[PaymentRefundCommand]:
+        return [p for t, p in self.published if t == "cmd/payment/refund"]
+
+
+class TestRefunds:
+    async def test_request_refund_publishes_command_and_zeroes_escrow(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        client = RecordingClient()
+        vmc.set_mqtt_client(client)
+        vmc.credit_escrow = 1.75
+
+        vmc.request_refund(reason="session_timeout")
+        await asyncio.sleep(0)
+
+        cmds = client.refund_commands()
+        assert len(cmds) == 1
+        assert cmds[0].amount == 1.75
+        assert cmds[0].reason == "session_timeout"
+        assert vmc.credit_escrow == 0.0
+        assert cmds[0].request_id in vmc._pending_refunds
+
+    async def test_ack_ok_records_refund(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        client = RecordingClient()
+        vmc.set_mqtt_client(client)
+        rec = FakeEventRecorder()
+        vmc.set_event_recorder(rec)
+        vmc.credit_escrow = 2.0
+        vmc.request_refund(reason="cancel")
+        await asyncio.sleep(0)
+        rid = client.refund_commands()[0].request_id
+
+        await vmc._handle_mqtt_refund_ack(
+            "cmd/payment/refund/ack",
+            {"request_id": rid, "status": "ok", "amount_returned": 2.0},
+        )
+
+        assert rid not in vmc._pending_refunds
+        assert ("refund", 2.0, {"request_id": rid, "reason": "cancel"}) in rec.events
+
+    async def test_ack_failed_retries_once_then_pay_103(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        client = RecordingClient()
+        vmc.set_mqtt_client(client)
+        rec = FakeEventRecorder()
+        vmc.set_event_recorder(rec)
+        vmc.credit_escrow = 2.0
+        vmc.request_refund(reason="cancel")
+        await asyncio.sleep(0)
+        rid = client.refund_commands()[0].request_id
+
+        await vmc._handle_mqtt_refund_ack(
+            "cmd/payment/refund/ack",
+            {"request_id": rid, "status": "failed", "detail": "changer_empty"},
+        )
+        await asyncio.sleep(0)
+        assert [c.request_id for c in client.refund_commands()] == [rid, rid]
+        assert rid in vmc._pending_refunds
+
+        await vmc._handle_mqtt_refund_ack(
+            "cmd/payment/refund/ack",
+            {"request_id": rid, "status": "failed", "detail": "changer_empty"},
+        )
+        await asyncio.sleep(0)
+
+        assert rid not in vmc._pending_refunds
+        assert len(client.refund_commands()) == 2
+        assert (
+            "refund_failed",
+            2.0,
+            {"request_id": rid, "reason": "cancel", "detail": "changer_empty"},
+        ) in rec.events
+        assert "PAY-103" in [f["code"] for f in vmc.active_faults()]
+
+    async def test_no_ack_deadline_retries_then_pay_103(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc.REFUND_ACK_TIMEOUT = 0.01
+        client = RecordingClient()
+        vmc.set_mqtt_client(client)
+        rec = FakeEventRecorder()
+        vmc.set_event_recorder(rec)
+        vmc.credit_escrow = 3.0
+        vmc.request_refund(reason="error")
+
+        await asyncio.sleep(0.1)
+
+        assert len(client.refund_commands()) == 2
+        assert vmc._pending_refunds == {}
+        assert any(
+            e[0] == "refund_failed" and e[2]["detail"] == "ack_timeout"
+            for e in rec.events
+        )
+        assert "PAY-103" in [f["code"] for f in vmc.active_faults()]
+
+    async def test_unknown_request_id_ack_is_ignored(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        rec = FakeEventRecorder()
+        vmc.set_event_recorder(rec)
+        await vmc._handle_mqtt_refund_ack(
+            "cmd/payment/refund/ack",
+            {"request_id": "x" * 32, "status": "ok", "amount_returned": 1.0},
+        )
+        assert rec.events == []
+
+    async def test_on_error_pays_out_via_refund_command(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        client = RecordingClient()
+        vmc.set_mqtt_client(client)
+        vmc.machine.set_state("interacting_with_user")
+        vmc.credit_escrow = 1.25
+
+        vmc.error_occurred()
+        await asyncio.sleep(0)
+
+        assert vmc.state == "error"
+        assert vmc.credit_escrow == 0.0
+        cmds = client.refund_commands()
+        assert len(cmds) == 1 and cmds[0].amount == 1.25 and cmds[0].reason == "error"
+
+    async def test_all_products_locked_refunds_and_idles(self):
+        vmc = make_vmc()  # single product
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        client = RecordingClient()
+        vmc.set_mqtt_client(client)
+        _start_dispensing(vmc, 0)
+
+        await vmc._handle_mqtt_dispenser(
+            "hardware/dispenser", {"slot": 0, "state": "jam"}
+        )
+        await asyncio.sleep(0)
+
+        assert vmc.state == "idle"
+        assert vmc.credit_escrow == 0.0
+        refunds = client.refund_commands()
+        assert len(refunds) == 1
+        assert refunds[0].amount == 2.50
+        assert refunds[0].reason == "ICE-401"
+
+    def test_refund_ack_handler_is_registered(self):
+        vmc = make_vmc2()
+        client = RecordingClient()
+        topics = []
+        client.register = lambda topic, handler: topics.append(topic)
+        vmc.set_mqtt_client(client)
+        assert "cmd/payment/refund/ack" in topics
