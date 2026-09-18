@@ -7,6 +7,7 @@ which skips without a live MQTT broker.
 import asyncio
 
 import pytest
+from loguru import logger
 
 from config.config_model import ConfigModel, Product
 from contracts.vending_machine import (
@@ -751,3 +752,40 @@ class TestRefunds:
         client.register = lambda topic, handler: topics.append(topic)
         vmc.set_mqtt_client(client)
         assert "cmd/payment/refund/ack" in topics
+
+
+class TestFireAndForget:
+    async def test_failing_background_task_is_logged_not_lost(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        seen: list[str] = []
+        handle = logger.add(
+            lambda m: seen.append(str(m)), level="ERROR", format="{message}"
+        )
+        try:
+
+            async def boom():
+                raise RuntimeError("publish exploded")
+
+            vmc._fire_and_forget(boom())
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+        finally:
+            logger.remove(handle)
+        assert any("publish exploded" in s for s in seen)
+
+    async def test_background_task_is_tracked_until_done(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        started = asyncio.Event()
+
+        async def slow():
+            started.set()
+            await asyncio.sleep(10)
+
+        vmc._fire_and_forget(slow())
+        await started.wait()
+        assert any(not t.done() for t in vmc._pending_tasks)
+        vmc.cancel_pending_tasks()
+        await asyncio.sleep(0)
+        assert all(t.done() for t in vmc._pending_tasks) or vmc._pending_tasks == []

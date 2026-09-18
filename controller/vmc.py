@@ -557,11 +557,27 @@ class VMC:
         )
 
     def _fire_and_forget(self, coro) -> None:
-        """Run a coroutine on the attached loop without awaiting it."""
+        """Run a coroutine on the attached loop without awaiting it.
+
+        The task is kept in _pending_tasks (so it is not garbage-collected and
+        is cancelled on shutdown) and any exception it raises is logged rather
+        than silently dropped — these carry alerts and refund commands.
+        """
         if self._loop is None or self._loop.is_closed():
             coro.close()
             return
-        self._loop.create_task(coro)
+        task = self._loop.create_task(coro)
+        task.add_done_callback(self._log_task_failure)
+        self._pending_tasks.append(task)
+        self._pending_tasks = [t for t in self._pending_tasks if not t.done()]
+
+    @staticmethod
+    def _log_task_failure(task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(f"Background task {task.get_name()} failed: {exc!r}")
 
     def _schedule(self, delay_seconds, callback) -> asyncio.Task | None:
         """Schedule a synchronous callback to run after delay_seconds on the event loop."""
