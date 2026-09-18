@@ -112,7 +112,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
 
         return templates.TemplateResponse(
             "partials/inventory_table.html",
-            {"request": request, "products": config.products},
+            {"request": request, "products": config.products, "locked": _locked_skus()},
         )
 
     @router.get("/", response_class=HTMLResponse)
@@ -145,8 +145,16 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             "partials/comms.html", {"request": request, "comm": config.communication}
         )
 
-    @router.get("/status", response_class=HTMLResponse)
-    async def status_fragment(request: Request):
+    def _locked_skus() -> dict[str, str]:
+        if not vmc_instance:
+            return {}
+        return {
+            f["sku"]: f["code"]
+            for f in vmc_instance.active_faults()
+            if f["scope"] == "product"
+        }
+
+    async def _render_status(request: Request):
         if not vmc_instance:
             return HTMLResponse(
                 '<div class="bg-red-50 rounded-xl border border-red-200 shadow-sm p-5">'
@@ -155,6 +163,10 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
 
         status = vmc_instance.get_status()
         issues: list[str] = []
+        active_faults = vmc_instance.active_faults()
+        for f in active_faults:
+            target = f["product"] or "machine"
+            issues.append(f"{f['code']} {f['description']} ({target})")
 
         if event_recorder:
             summary_24h = await asyncio.to_thread(event_recorder.get_summary, 24)
@@ -184,8 +196,21 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
                 "status": status,
                 "is_healthy": len(issues) == 0,
                 "issues": issues,
+                "active_faults": active_faults,
             },
         )
+
+    @router.get("/status", response_class=HTMLResponse)
+    async def status_fragment(request: Request):
+        return await _render_status(request)
+
+    @router.post("/faults/{key}/clear", response_class=HTMLResponse)
+    async def clear_fault(request: Request, key: str):
+        if not vmc_instance or not vmc_instance.clear_fault(key, by="admin"):
+            raise HTTPException(
+                status_code=404, detail=f"No active fault with key {key}"
+            )
+        return await _render_status(request)
 
     @router.post("/action/{command}")
     async def control_action(command: str):
@@ -253,7 +278,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
     async def inventory_view(request: Request):
         return templates.TemplateResponse(
             "partials/inventory_table.html",
-            {"request": request, "products": config.products},
+            {"request": request, "products": config.products, "locked": _locked_skus()},
         )
 
     @router.get("/inventory/edit/{sku}", response_class=HTMLResponse)
@@ -276,7 +301,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
 
         return templates.TemplateResponse(
             "partials/inventory_table.html",
-            {"request": request, "products": config.products},
+            {"request": request, "products": config.products, "locked": _locked_skus()},
         )
 
     @router.post("/inventory/delete/{sku}", response_class=HTMLResponse)
@@ -286,7 +311,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             inventory_manager.remove_sku(sku)
         return templates.TemplateResponse(
             "partials/inventory_table.html",
-            {"request": request, "products": config.products},
+            {"request": request, "products": config.products, "locked": _locked_skus()},
         )
 
     @router.get("/inventory/new", response_class=HTMLResponse)

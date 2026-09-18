@@ -3,6 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 from config.config_model import ConfigModel
+from contracts.vending_machine import FaultCode
 from controller.vmc import VMC
 from services.inventory_manager import InventoryManager
 from web_interface.server import app
@@ -429,3 +430,76 @@ class TestAuth:
     def test_mutating_endpoint_requires_auth(self, client):
         resp = client.post("/action/reset", auth=None)
         assert resp.status_code == 401
+
+
+class TestFaultsUI:
+    def _lock(self, client):
+        vmc = routes.vmc_instance
+        vmc._raise_fault(FaultCode.ICE_301, sku=routes.config.products[0].sku)
+
+    def _add_product(self, client):
+        client.post(
+            "/inventory/add",
+            data={"sku": "ICE-1", "name": "Ice", "price": "2.5"},
+            auth=client.auth,
+        )
+
+    def test_status_lists_active_fault_with_clear_button(self, client):
+        self._add_product(client)
+        self._lock(client)
+        r = client.get("/status", auth=client.auth)
+        assert r.status_code == 200
+        assert "ICE-301" in r.text
+        assert "Ice" in r.text
+        assert 'hx-post="/faults/ICE-1/clear"' in r.text
+        assert "Issues Detected" in r.text
+
+    def test_status_without_faults_says_none(self, client):
+        r = client.get("/status", auth=client.auth)
+        assert "No active faults" in r.text
+
+    def test_clear_endpoint_clears_and_rerenders(self, client):
+        self._add_product(client)
+        self._lock(client)
+        r = client.post("/faults/ICE-1/clear", auth=client.auth)
+        assert r.status_code == 200
+        assert "ICE-301" not in r.text
+        assert routes.vmc_instance.active_faults() == []
+
+    def test_clear_unknown_key_returns_404(self, client):
+        r = client.post("/faults/NOPE/clear", auth=client.auth)
+        assert r.status_code == 404
+
+    def test_inventory_table_shows_locked_badge(self, client):
+        self._add_product(client)
+        self._lock(client)
+        r = client.get("/inventory", auth=client.auth)
+        assert "locked" in r.text.lower()
+        assert "ICE-301" in r.text
+
+    def test_kpi_shows_failed_vends(self, client, tmp_path):
+        from services.event_recorder import EventRecorder
+
+        rec = EventRecorder(db_path=str(tmp_path / "events.db"))
+        rec.record("vend_failed", value=2.5, metadata={"code": "ICE-301"})
+        routes.set_event_recorder(rec)
+        try:
+            r = client.get("/kpi", auth=client.auth)
+            assert "1 failed" in r.text
+        finally:
+            routes.set_event_recorder(None)
+
+    def test_activity_shows_failed_vends_and_refunds(self, client, tmp_path):
+        from services.event_recorder import EventRecorder
+
+        rec = EventRecorder(db_path=str(tmp_path / "events.db"))
+        rec.record("vend_failed", value=2.5)
+        rec.record("refund", value=2.5)
+        routes.set_event_recorder(rec)
+        try:
+            r = client.get("/activity", auth=client.auth)
+            assert "Failed Vends" in r.text
+            assert "Refunds Paid" in r.text
+            assert "$2.50" in r.text
+        finally:
+            routes.set_event_recorder(None)
