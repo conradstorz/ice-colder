@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# One run per ref at a time; a newer push cancels the older one so the mutable
+# `latest` tag can never be moved backward by a slower, superseded main run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     runs-on: ubuntu-latest

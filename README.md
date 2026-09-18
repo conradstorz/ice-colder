@@ -9,11 +9,13 @@ uv sync
 uv run python main.py
 ```
 
-**Docker:**
+**Docker (local dev, builds your checkout):**
 ```
-docker compose up
+docker compose up --build
 ```
-Config lives at `data/config.json` (created automatically on first run).
+Without `--build`, compose uses the published `ghcr.io/conradstorz/ice-colder`
+image instead of your working tree. Config lives at `data/config.json`
+(created automatically on first run).
 Dashboard: http://localhost:26123
 
 **Continuous deployment (simulation host):** every push to `main` runs CI
