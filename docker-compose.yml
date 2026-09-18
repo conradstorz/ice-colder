@@ -1,8 +1,17 @@
 name: ice-colder
 
+# The four Python services share one image. CI publishes
+# ghcr.io/conradstorz/ice-colder:latest on every push to main and Watchtower
+# (label-gated, daily 04:00 on the sim host) swaps the containers in. For an
+# immediate update: docker compose pull; docker compose up -d.
+# `build: .` stays so `docker compose up --build` still works for local dev.
+
 services:
   vmc:
+    image: ghcr.io/conradstorz/ice-colder:latest
     build: .
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
     container_name: ice-colder-vmc
     ports:
       - "26123:26123"
@@ -20,7 +29,10 @@ services:
     restart: unless-stopped
 
   sim-ice-maker:
+    image: ghcr.io/conradstorz/ice-colder:latest
     build: .
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
     container_name: ice-colder-sim-ice-maker
     command: ["uv", "run", "python", "-m", "simulators.ice_maker", "--broker", "mosquitto"]
     volumes:
@@ -37,7 +49,10 @@ services:
     restart: unless-stopped
 
   sim-mdb:
+    image: ghcr.io/conradstorz/ice-colder:latest
     build: .
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
     container_name: ice-colder-sim-mdb
     command: ["uv", "run", "python", "-m", "simulators.mdb_gateway", "--broker", "mosquitto"]
     volumes:
@@ -54,7 +69,10 @@ services:
     restart: unless-stopped
 
   sim-vending:
+    image: ghcr.io/conradstorz/ice-colder:latest
     build: .
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
     container_name: ice-colder-sim-vending
     command: ["uv", "run", "python", "-m", "simulators.vending_machine", "--broker", "mosquitto"]
     volumes:

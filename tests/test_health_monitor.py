@@ -382,6 +382,19 @@ class TestNotifier:
             mock_email.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_first_alert_is_not_suppressed_on_a_young_clock(self, monkeypatch):
+        """loop.time() is monotonic-since-boot; a small value must not look 'recent'."""
+        config = _configured_email_config()
+        notifier = Notifier(config)
+        loop = asyncio.get_running_loop()
+        monkeypatch.setattr(loop, "time", lambda: 12.0)  # 12 s after boot
+        with patch.object(
+            notifier, "_send_email", new_callable=AsyncMock
+        ) as mock_email:
+            await notifier.send(Alert(level="warning", source="t", message="m"))
+            mock_email.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_send_skips_placeholder_email_gateway(self):
         """A blank/default config points at smtp.example.com; never try to send."""
         config = ConfigModel()

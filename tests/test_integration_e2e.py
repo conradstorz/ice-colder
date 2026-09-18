@@ -17,6 +17,17 @@ import sys
 
 import pytest
 
+from config.config_model import ConfigModel
+from controller.vmc import VMC
+from services.health_monitor import HealthMonitor
+from services.mqtt_client import MQTTClient
+from services.mqtt_messages import (
+    ButtonPress,
+    DispenserStatus,
+    PaymentEvent,
+    SensorReading,
+)
+
 # Windows needs SelectorEventLoop for aiomqtt
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -48,18 +59,6 @@ pytestmark = [
         not _BROKER_AVAILABLE, reason="MQTT broker not available on localhost:1883"
     ),
 ]
-
-
-from config.config_model import ConfigModel
-from controller.vmc import VMC
-from services.mqtt_client import MQTTClient
-from services.mqtt_messages import (
-    ButtonPress,
-    DispenserStatus,
-    PaymentEvent,
-    SensorReading,
-)
-from services.health_monitor import HealthMonitor
 
 
 def _make_config() -> ConfigModel:

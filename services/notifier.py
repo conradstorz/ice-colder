@@ -41,8 +41,11 @@ class Notifier:
         """
         # Rate-limit per source
         now = asyncio.get_running_loop().time()
-        last = self._last_sent.get(alert.source, 0.0)
-        if now - last < self._cooldown_seconds:
+        last = self._last_sent.get(alert.source)
+        # `last is None` must mean "never sent": loop.time() is monotonic and can
+        # be small on a freshly booted host, so a 0.0 sentinel would wrongly
+        # suppress the first alert from every source for a whole cooldown.
+        if last is not None and now - last < self._cooldown_seconds:
             logger.debug(f"Notifier: Suppressing alert from {alert.source} (cooldown)")
             return
         self._last_sent[alert.source] = now
