@@ -251,6 +251,12 @@ class PaymentConfig(BaseModel):
     )
 
 
+def _is_placeholder_host(value: str) -> bool:
+    """True for the example.com placeholders written by a blank config."""
+    host = value.strip().lower().rsplit("@", 1)[-1]
+    return host == "example.com" or host.endswith(".example.com")
+
+
 class EmailGatewayConfig(BaseModel):
     smtp_server: str = Field("smtp.example.com", description="SMTP server address")
     smtp_port: int = Field(587, description="SMTP port")
@@ -259,6 +265,11 @@ class EmailGatewayConfig(BaseModel):
         default=SecretStr("password"), description="SMTP password"
     )
     default_from: str = Field("user@example.com", description="Default From address")
+
+    @property
+    def is_configured(self) -> bool:
+        """False while the gateway still points at the blank-config placeholder."""
+        return not _is_placeholder_host(self.smtp_server)
 
 
 class SMSGatewayConfig(BaseModel):

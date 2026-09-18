@@ -13,7 +13,7 @@ from email.message import EmailMessage
 
 from loguru import logger
 
-from config.config_model import ConfigModel, Channel
+from config.config_model import _is_placeholder_host, ConfigModel, Channel
 from services.health_monitor import Alert
 
 
@@ -32,6 +32,7 @@ class Notifier:
         # Rate limiting: track last send time per alert source
         self._last_sent: dict[str, float] = {}
         self._cooldown_seconds: float = 300.0  # 5 min between repeat alerts per source
+        self._warned_unconfigured = False
 
     async def send(self, alert: Alert):
         """
@@ -59,6 +60,16 @@ class Notifier:
         channel, gateway_config = gateway_info
 
         if channel == Channel.email:
+            if not gateway_config.is_configured or _is_placeholder_host(
+                self._owner.email
+            ):
+                if not self._warned_unconfigured:
+                    logger.warning(
+                        "Notifier: email gateway not configured (placeholder "
+                        "smtp server or owner address); alerts are logged only"
+                    )
+                    self._warned_unconfigured = True
+                return
             await self._send_email(alert, gateway_config)
         elif channel == Channel.sms:
             logger.info(f"Notifier: SMS alert would be sent to {self._owner.phone}")

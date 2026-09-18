@@ -6,6 +6,7 @@ import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from loguru import logger
 
 from config.config_model import ConfigModel
 from services.health_monitor import HealthMonitor, SubsystemStatus, Alert
@@ -353,6 +354,14 @@ class TestFaultPlumbing:
         assert hm.get_summary()["active_faults"] == []
 
 
+def _configured_email_config() -> ConfigModel:
+    """A config whose email gateway and owner address are not placeholders."""
+    config = ConfigModel()
+    config.communication.email_gateway.smtp_server = "smtp.mail.test"
+    config.machine_owner.email = "owner@mail.test"
+    return config
+
+
 class TestNotifier:
     def test_notifier_creates(self):
         config = ConfigModel()
@@ -361,7 +370,7 @@ class TestNotifier:
 
     @pytest.mark.asyncio
     async def test_send_logs_alert(self):
-        config = ConfigModel()
+        config = _configured_email_config()
         notifier = Notifier(config)
         alert = Alert(level="warning", source="test", message="test alert")
 
@@ -373,8 +382,44 @@ class TestNotifier:
             mock_email.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_send_cooldown(self):
+    async def test_send_skips_placeholder_email_gateway(self):
+        """A blank/default config points at smtp.example.com; never try to send."""
         config = ConfigModel()
+        assert not config.communication.email_gateway.is_configured
+        notifier = Notifier(config)
+        alert = Alert(level="error", source="vmc", message="ICE-301 fill timeout")
+        warnings: list[str] = []
+        handle = logger.add(
+            lambda m: warnings.append(str(m)), level="WARNING", format="{message}"
+        )
+        try:
+            with patch.object(
+                notifier, "_send_email", new_callable=AsyncMock
+            ) as mock_email:
+                await notifier.send(alert)
+                notifier._last_sent.clear()  # bypass cooldown for the second send
+                await notifier.send(alert)
+                mock_email.assert_not_awaited()
+        finally:
+            logger.remove(handle)
+        placeholder_warnings = [w for w in warnings if "not configured" in w]
+        assert len(placeholder_warnings) == 1
+        assert not any("Email send failed" in w for w in warnings)
+
+    @pytest.mark.asyncio
+    async def test_send_skips_placeholder_owner_email(self):
+        config = _configured_email_config()
+        config.machine_owner.email = "user@example.com"
+        notifier = Notifier(config)
+        with patch.object(
+            notifier, "_send_email", new_callable=AsyncMock
+        ) as mock_email:
+            await notifier.send(Alert(level="warning", source="t", message="m"))
+            mock_email.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_cooldown(self):
+        config = _configured_email_config()
         notifier = Notifier(config)
         notifier._cooldown_seconds = 9999  # long cooldown
 
