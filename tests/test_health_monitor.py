@@ -181,6 +181,7 @@ class TestGetSummary:
         assert summary["temperatures"] == {}
         assert summary["check_interval"] == 30
         assert summary["subsystem_timeout"] == 120
+        assert summary["active_faults"] == []
 
     def test_full_summary(self):
         monitor = HealthMonitor()
@@ -266,6 +267,90 @@ class TestChannelsAndOffline:
         callback.assert_awaited_once()
         alert = callback.call_args[0][0]
         assert "ice_maker" in alert.message
+
+
+class TestFaultPlumbing:
+    async def test_raise_alert_carries_code_and_dedups(self):
+        hm = HealthMonitor()
+        received = []
+
+        async def cb(alert):
+            received.append(alert)
+
+        hm.set_alert_callback(cb)
+        await hm.raise_alert(
+            "ICE-301:ICE-1",
+            "error",
+            "vmc",
+            "fill timeout",
+            code="ICE-301",
+            product_sku="ICE-1",
+        )
+        await hm.raise_alert(
+            "ICE-301:ICE-1",
+            "error",
+            "vmc",
+            "fill timeout",
+            code="ICE-301",
+            product_sku="ICE-1",
+        )
+        assert len(received) == 1
+        assert received[0].code == "ICE-301"
+        assert received[0].product_sku == "ICE-1"
+
+    async def test_clear_alert_rearms(self):
+        hm = HealthMonitor()
+        received = []
+
+        async def cb(alert):
+            received.append(alert)
+
+        hm.set_alert_callback(cb)
+        await hm.raise_alert("k", "warning", "vmc", "m")
+        hm.clear_alert("k")
+        await hm.raise_alert("k", "warning", "vmc", "m")
+        assert len(received) == 2
+
+    def test_set_active_faults_preserves_since(self, monkeypatch):
+        import time as _time
+
+        hm = HealthMonitor()
+        fault = {
+            "key": "ICE-1",
+            "sku": "ICE-1",
+            "product": "Ice",
+            "code": "ICE-301",
+            "severity": "lockout",
+            "scope": "product",
+            "description": "d",
+        }
+        t = [1000.0]
+        monkeypatch.setattr(_time, "monotonic", lambda: t[0])
+        hm.set_active_faults([fault])
+        t[0] = 1030.0
+        hm.set_active_faults([fault])
+        summary = hm.get_summary()
+        assert len(summary["active_faults"]) == 1
+        assert summary["active_faults"][0]["code"] == "ICE-301"
+        assert summary["active_faults"][0]["since_seconds"] == 30.0
+
+    def test_set_active_faults_drops_cleared(self):
+        hm = HealthMonitor()
+        hm.set_active_faults(
+            [
+                {
+                    "key": "a",
+                    "sku": "a",
+                    "product": "A",
+                    "code": "ICE-301",
+                    "severity": "lockout",
+                    "scope": "product",
+                    "description": "d",
+                }
+            ]
+        )
+        hm.set_active_faults([])
+        assert hm.get_summary()["active_faults"] == []
 
 
 class TestNotifier:
