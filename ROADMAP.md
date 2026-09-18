@@ -51,9 +51,9 @@ Rules that follow from the split:
   outputs off, payment inhibited, no new vends. It does not reboot itself and
   it does not retry a half-finished vend.
 - The VMC never declares a vend successful because it sent the command. It
-  waits for the ESP32's `complete` report. **Not yet true:** `controller/vmc.py`
-  still finishes the sale on a 60 s timeout if no report arrives. Phase C
-  turns that timeout into a failed vend (`PAY-102`) instead of a success.
+  waits for the ESP32's `complete` report for the slot it commanded. No
+  terminal report within `physical.dispense_timeout_seconds` is a failed vend
+  (`PAY-102`), never a sale.
 - Remote actuation of motors, valves, doors or heaters outside a defined
   maintenance procedure is not a feature and will not be added.
 
@@ -163,7 +163,7 @@ published; new codes are added, never renumbered.
 | `ICE-202` | Bag lost during fill | vend failed | Stop motors, refund path, alert |
 | `ICE-301` | Fill timeout (full sensor never tripped) | lockout ice | Stop dispenser, lock out ice until service |
 | `ICE-302` | Dispense/agitator motor fault (no run feedback / overcurrent) | lockout ice | Stop motors, lock out ice |
-| `ICE-401` | Trap door failed to open | vend failed | Stop, refund path |
+| `ICE-401` | Trap door failed to open | lockout ice | Stop, lock out ice until service |
 | `ICE-402` | Trap door failed to close | **critical** | Lock out all ice vending, immediate alert |
 | `WTR-101` | No flow after valve open | vend failed | Close valve, refund path |
 | `WTR-102` | Over-dispense (pulses exceeded) | lockout water | Close valve, lock out water |
@@ -175,6 +175,7 @@ published; new codes are added, never renumbered.
 | `ENV-103` | Heater high-limit tripped | **critical** | Alert |
 | `PAY-101` | Payment device offline | product unavailable | Inhibit both products |
 | `PAY-102` | Vend reported failed after credit taken | reconcile | Refund/retain per §7, alert |
+| `PAY-103` | Refund not confirmed by payment gateway | warning | Alert; operator reconciles against the event history |
 | `PWR-101` | Power restored after loss | info | Log, run self-test, keep payment inhibited until permissives pass |
 | `PWR-102` | 24 V control supply bad | **critical** | Inhibit both products |
 | `COM-101` | Vending ESP32 heartbeat lost / LWT | product unavailable | Inhibit both products, alert |
@@ -215,10 +216,15 @@ dwell → power on → confirm heartbeat → permissives → re-enable.
 
 - Money is accepted only while the corresponding `*_Sale_Available` flag is
   true. The VMC withdraws `payment/enable` the moment a flag drops.
-- The price is moved from escrow at the start of `dispensing`. If the ESP32
-  reports `jammed`/`error` **during** `dispensing`, the price returns to escrow
-  and the customer is offered change (`PAY-102`). Late or duplicate fault
-  reports after a completed sale are ignored.
+- The price is moved from escrow at the start of `dispensing`. A terminal
+  failure report (`bin_empty`, `timeout`, `jam`, `error`) or the dispense
+  timeout returns the price to escrow, locks out the product per its fault
+  severity, and keeps the customer in the session to choose again. If nothing
+  sellable remains the VMC pays out immediately. Late or duplicate reports
+  after a completed sale, and reports for another slot, are ignored.
+- A refund is a `cmd/payment/refund` command acked by the gateway within
+  10 s; one retry with the same `request_id`, then `PAY-103` for
+  reconciliation. Escrow bookkeeping alone is never called a refund.
 - A catalog edit that removes the product a customer has selected cancels the
   sale back to `idle` with escrow intact; it is not a machine error.
 - After a VMC restart mid-sale, the transaction is **uncertain**: payment stays
@@ -293,6 +299,8 @@ generated schemas.
 
 ### Phase C — VMC changes (this repo)
 
+- ~~Fault-code registry, honest vend outcomes, per-product lockouts, acked
+  refunds~~ — done (spec `docs/superpowers/specs/2026-09-17-fault-registry-vend-outcomes-design.md`).
 - Availability permissives (§3) drive `payment/enable` instead of FSM state.
 - Fault-code registry (§5) as a shared enum; `VMCAlert` carries a code;
   dashboard groups by code and severity.
@@ -305,8 +313,6 @@ generated schemas.
   permissive named.
 - Startup self-test state: after boot or `PWR-101`, hold payment off until the
   vending ESP32 reports permissives.
-- Dispense timeout becomes a failed vend: no `complete` report within the
-  bounded window means refund path and `PAY-102`, never a recorded sale.
 
 ### Phase D — Vending ESP32 firmware
 

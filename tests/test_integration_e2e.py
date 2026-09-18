@@ -441,3 +441,70 @@ class TestSensorAndHeartbeatRouting:
                     await mqtt_task
                 except (asyncio.CancelledError, Exception):
                     pass
+
+
+class TestFailedVendLoop:
+    """jam → vend_failed → lockout → clear → sell again, through a real broker."""
+
+    async def test_jam_locks_product_then_clear_sells_again(self):
+        config = _make_config()
+        prefix = f"vmc/{config.machine_id}"
+        mqtt_client = MQTTClient(config=config.mqtt, machine_id=config.machine_id)
+        vmc = VMC(config=config)
+        health = HealthMonitor()
+
+        async with aiomqtt.Client(
+            hostname="localhost", port=1883, identifier="e2e-fault-sim"
+        ) as sim_client:
+            await sim_client.subscribe(f"{prefix}/cmd/dispense")
+            await sim_client.subscribe(f"{prefix}/cmd/payment/refund")
+            loop = asyncio.get_running_loop()
+            vmc.attach_to_loop(loop)
+            vmc.set_mqtt_client(mqtt_client)
+            vmc.set_health_monitor(health)
+            mqtt_task = asyncio.create_task(mqtt_client.run())
+            try:
+                for _ in range(50):
+                    if mqtt_client.connected:
+                        break
+                    await asyncio.sleep(0.1)
+
+                async def sale(outcome: str):
+                    await sim_client.publish(
+                        f"{prefix}/hardware/buttons", json.dumps({"button": 0})
+                    )
+                    await _wait_for_state(vmc, "interacting_with_user")
+                    await sim_client.publish(
+                        f"{prefix}/payment/credit",
+                        json.dumps({"amount": 2.00, "method": "cash_bill"}),
+                    )
+                    await _wait_for_state(vmc, "dispensing")
+                    await sim_client.publish(
+                        f"{prefix}/hardware/dispenser",
+                        json.dumps({"slot": 0, "state": outcome}),
+                    )
+
+                await sale("jam")
+                await _wait_for_state(vmc, "interacting_with_user")
+                assert vmc.credit_escrow == 2.00
+                assert vmc._lockouts["ICE-SM"].value == "ICE-401"
+                assert health.get_summary()["active_faults"][0]["code"] == "ICE-401"
+
+                # Customer walks away: session expiry pays out via the gateway.
+                vmc._expire_session()
+                msg = await asyncio.wait_for(sim_client.messages.__anext__(), 5.0)
+                assert str(msg.topic).endswith("/cmd/payment/refund")
+                assert json.loads(msg.payload)["amount"] == 2.00
+                await _wait_for_state(vmc, "idle")
+
+                assert vmc.clear_fault("ICE-SM") is True
+                await sale("complete")
+                await _wait_for_state(vmc, "idle")
+                assert vmc._lockouts == {}
+            finally:
+                vmc.cancel_pending_tasks()
+                mqtt_task.cancel()
+                try:
+                    await mqtt_task
+                except asyncio.CancelledError:
+                    pass
