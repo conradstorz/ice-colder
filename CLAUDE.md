@@ -76,6 +76,12 @@ in each service's `environment` — not bind-mounted directly as
 `config.json`, since that file is gitignored and doesn't exist on a fresh
 clone.
 
+CI/CD: `.github/workflows/ci.yml` runs ruff and pytest on every push/PR and,
+on `main`, publishes the image to `ghcr.io/conradstorz/ice-colder` (`latest`
+and `sha-<commit>`). Compose services reference that image (with `build: .`
+kept for local `--build`) and carry the Watchtower enable label, so the
+simulation host updates itself; `docker compose pull` then `up -d` forces it.
+
 ## Key Patterns
 
 - **Logging**: Uses `loguru` throughout; logs rotate daily to `LOGS/vmc.log`. State changes are prefixed with `STATE_CHANGE_PREFIX`.
