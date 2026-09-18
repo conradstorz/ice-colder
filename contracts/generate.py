@@ -1,5 +1,5 @@
 # contracts/generate.py
-"""Generate the contract's JSON Schema files.
+"""Generate the contracts' JSON Schema files.
 
 Run after any model change: uv run python -m contracts.generate
 tests/test_contract_schemas.py fails if the committed files drift.
@@ -7,6 +7,8 @@ tests/test_contract_schemas.py fails if the committed files drift.
 
 import json
 from pathlib import Path
+
+from pydantic import BaseModel, TypeAdapter
 
 from services.mqtt_messages import IceMakerEvent, SensorReading, SubsystemHeartbeat
 
@@ -16,6 +18,12 @@ from contracts.ice_maker_monitor import (
     CommandAck,
     MonitorCapabilities,
     MonitorCommand,
+)
+from contracts.vending_machine import (
+    DispenserOutcome,
+    FaultCode,
+    PaymentRefundCommand,
+    PaymentRefundResult,
 )
 
 SCHEMA_DIR = Path("docs/contracts/ice-maker-monitor/schemas")
@@ -31,15 +39,38 @@ MODELS = {
     "command_ack": CommandAck,
 }
 
+VENDING_SCHEMA_DIR = Path("docs/contracts/vending-machine/schemas")
 
-def generate(out_dir: Path = SCHEMA_DIR) -> list[Path]:
-    out_dir.mkdir(parents=True, exist_ok=True)
+VENDING_MODELS = {
+    "dispenser_outcome": DispenserOutcome,
+    "fault_code": FaultCode,
+    "payment_refund_command": PaymentRefundCommand,
+    "payment_refund_result": PaymentRefundResult,
+}
+
+CONTRACTS: dict[str, tuple[Path, dict]] = {
+    "ice-maker-monitor": (SCHEMA_DIR, MODELS),
+    "vending-machine": (VENDING_SCHEMA_DIR, VENDING_MODELS),
+}
+
+
+def schema_for(model) -> dict:
+    """JSON Schema for a Pydantic model or a plain Enum."""
+    if isinstance(model, type) and issubclass(model, BaseModel):
+        return model.model_json_schema()
+    return TypeAdapter(model).json_schema()
+
+
+def generate(contracts: dict | None = None) -> list[Path]:
     written = []
-    for name, model in MODELS.items():
-        path = out_dir / f"{name}.schema.json"
-        schema = model.model_json_schema()
-        path.write_text(json.dumps(schema, indent=2) + "\n", encoding="utf-8")
-        written.append(path)
+    for schema_dir, models in (contracts or CONTRACTS).values():
+        schema_dir.mkdir(parents=True, exist_ok=True)
+        for name, model in models.items():
+            path = schema_dir / f"{name}.schema.json"
+            path.write_text(
+                json.dumps(schema_for(model), indent=2) + "\n", encoding="utf-8"
+            )
+            written.append(path)
     return written
 
 

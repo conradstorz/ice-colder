@@ -1,0 +1,55 @@
+{
+  "$defs": {
+    "RefundStatus": {
+      "enum": [
+        "ok",
+        "failed",
+        "unsupported"
+      ],
+      "title": "RefundStatus",
+      "type": "string"
+    }
+  },
+  "description": "Payment gateway -> VMC, published on cmd/payment/refund/ack (QoS 1).\n\nExactly one per command; a repeated request_id is answered with the\npreviously computed result and never paid twice.",
+  "properties": {
+    "request_id": {
+      "description": "Echoed from the command",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/RefundStatus"
+    },
+    "amount_returned": {
+      "default": 0.0,
+      "description": "Amount actually paid out",
+      "minimum": 0.0,
+      "title": "Amount Returned",
+      "type": "number"
+    },
+    "detail": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "e.g. 'changer_empty'",
+      "title": "Detail"
+    },
+    "timestamp": {
+      "format": "date-time",
+      "title": "Timestamp",
+      "type": "string"
+    }
+  },
+  "required": [
+    "request_id",
+    "status"
+  ],
+  "title": "PaymentRefundResult",
+  "type": "object"
+}
