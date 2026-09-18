@@ -17,6 +17,8 @@ from services.mqtt_messages import (
 from contracts.ice_maker_monitor import ChannelReading, CommandAck, MonitorCapabilities
 from contracts.vending_machine import (
     FAULT_TABLE,
+    OUTCOME_FAULTS,
+    DispenserOutcome,
     FaultCode,
     Scope,
     Severity,
@@ -68,6 +70,12 @@ TRANSITIONS = [
         "source": "interacting_with_user",
         "dest": "idle",
         "before": "on_cancel_sale",
+    },
+    {
+        "trigger": "vend_failed",
+        "source": "dispensing",
+        "dest": "interacting_with_user",
+        "before": "on_vend_failed",
     },
     {
         "trigger": "error_occurred",
@@ -141,6 +149,9 @@ class VMC:
         self._machine_faults: dict[FaultCode, float] = {}
         self._start_time = time.monotonic()
         self._session_timeout_seconds = 180.0  # 3 minutes
+        self._dispense_timeout_seconds = (
+            self.config_model.physical.dispense_timeout_seconds
+        )
 
         self.machine = Machine(
             model=self, states=VMC.states, initial=VMC.states[0], auto_transitions=False
@@ -394,63 +405,59 @@ class VMC:
         return reported_slot != self.selected_product.slot
 
     async def _handle_mqtt_dispenser(self, topic: str, data: dict):
-        """Handle dispenser status from ESP32."""
+        """Handle dispenser status from ESP32.
+
+        Only DispenserOutcome members end a sale; every other `state` string
+        is an intermediate hardware step and is logged.
+        """
         logger.info(f"MQTT dispenser event: {data}")
         state = data.get("state", "")
         slot = data.get("slot", "?")
-        if state == "complete" and self.state == "dispensing":
-            if self._dispenser_event_slot_mismatch(data):
-                logger.warning(
-                    f"Ignoring dispenser completion for mismatched slot {slot} "
-                    f"(active sale is slot {self.selected_product.slot})"
-                )
-                return
-            product_name = (
-                self.selected_product.name if self.selected_product else "Unknown"
+        try:
+            outcome = DispenserOutcome(state)
+        except ValueError:
+            vend_log.info(f"DISPENSER: slot {slot}, state: {state}")
+            return
+
+        if self.state != "dispensing":
+            logger.warning(
+                f"Ignoring dispenser outcome '{outcome.value}' outside dispensing "
+                f"state (current state: {self.state}, slot {slot})"
             )
+            return
+        if self._dispenser_event_slot_mismatch(data):
+            logger.warning(
+                f"Ignoring dispenser outcome '{outcome.value}' for mismatched slot "
+                f"{slot} (active sale is slot {self.selected_product.slot})"
+            )
+            return
+
+        product_name = (
+            self.selected_product.name if self.selected_product else "Unknown"
+        )
+        if outcome is DispenserOutcome.complete:
             txn_log.info(f"DISPENSE SUCCESS: slot {slot}, product '{product_name}'")
             vend_log.info(f"DISPENSE COMPLETE: slot {slot}, product '{product_name}'")
-            if self._event_recorder:
-                record_slot = (
-                    self.selected_product.slot
-                    if self.selected_product
-                    else data.get("slot")
+            if self._event_recorder and self.selected_product:
+                self._event_recorder.record(
+                    "dispense", value=float(self.selected_product.slot)
                 )
-                if record_slot is not None:
-                    self._event_recorder.record("dispense", value=float(record_slot))
             self._finish_dispensing()
-        elif state in ("jammed", "error"):
-            if self.state != "dispensing":
-                logger.warning(
-                    f"Ignoring dispenser fault outside dispensing state "
-                    f"(current state: {self.state}, reported: {state}, slot {slot})"
-                )
-                return
-            if self._dispenser_event_slot_mismatch(data):
-                logger.warning(
-                    f"Ignoring dispenser fault for mismatched slot {slot} "
-                    f"(active sale is slot {self.selected_product.slot})"
-                )
-                return
-            self._cancel_dispense_timeout()
-            product_name = (
-                self.selected_product.name if self.selected_product else "Unknown"
-            )
-            txn_log.error(
-                f"DISPENSE FAILED: slot {slot}, product '{product_name}', reason: {state}"
-            )
-            vend_log.error(
-                f"DISPENSE FAILED: slot {slot}, product '{product_name}', reason: {state}"
-            )
-            logger.error(f"Dispenser error: {state}")
-            # Refund the customer — the price was already deducted from escrow
-            price = self.selected_product.price if self.selected_product else 0
-            self.credit_escrow += price
-            txn_log.info(f"REFUND (dispense failure): ${price:.2f} returned to escrow")
-            self.error_occurred()
-        else:
-            # Intermediate hardware states: motor_active, fill_complete, solenoid_open, etc.
-            vend_log.info(f"DISPENSER: slot {slot}, state: {state}")
+            return
+
+        self._cancel_dispense_timeout()
+        code = OUTCOME_FAULTS[outcome]
+        sku = self.selected_product.sku if self.selected_product else None
+        txn_log.error(
+            f"DISPENSE FAILED: slot {slot}, product '{product_name}', "
+            f"outcome: {outcome.value}, fault: {code.value}"
+        )
+        vend_log.error(
+            f"DISPENSE FAILED: slot {slot}, product '{product_name}', "
+            f"outcome: {outcome.value}, fault: {code.value}"
+        )
+        self._raise_fault(code, sku=sku, outcome=outcome.value)
+        self._fail_vend(code, outcome=outcome.value)
 
     async def _handle_mqtt_sensor(self, topic: str, data: dict):
         """Handle temperature/sensor reading from ESP32."""
@@ -702,6 +709,71 @@ class VMC:
         )
 
     @logger.catch()
+    def on_vend_failed(self, code: FaultCode, outcome: str):
+        """`before` hook for dispensing -> interacting_with_user on a failed vend.
+
+        Restores the price to escrow (it was deducted in _process_payment),
+        records the failure, and clears the selection. Whether the customer
+        stays to choose again or is paid out is decided in _fail_vend.
+        """
+        product = self.selected_product
+        price = product.price if product else 0.0
+        name = product.name if product else "Unknown"
+        sku = product.sku if product else None
+        self._cancel_dispense_timeout()
+        self.credit_escrow += price
+        logger.error(
+            f"{STATE_CHANGE_PREFIX} Vend failed for '{name}' ({code.value}, {outcome}); "
+            f"${price:.2f} returned to escrow"
+        )
+        txn_log.error(
+            f"VEND FAILED: '{name}' {code.value} ({outcome}); ${price:.2f} returned to escrow"
+        )
+        if self._event_recorder:
+            self._event_recorder.record(
+                "vend_failed",
+                value=price,
+                metadata={"code": code.value, "sku": sku, "outcome": outcome},
+            )
+        self.selected_product = None
+        self.last_insufficient_message = ""
+        self.send_customer_message(
+            f"Sorry, {name} could not be dispensed ({code.value}). "
+            f"Your ${price:.2f} credit has been kept."
+        )
+
+    def _fail_vend(self, code: FaultCode, outcome: str) -> None:
+        """Run the vend_failed transition, then decide: choose again, or pay out."""
+        self.vend_failed(code=code, outcome=outcome)
+        if not self._sellable_products():
+            txn_log.info("No sellable products remain; refunding and returning to idle")
+            self.request_refund(reason=code.value)
+            self._cancel_session_timeout()
+            self.machine.set_state("idle")
+            self._publish_status()
+            self._update_display("idle")
+        else:
+            self.send_customer_message("Please choose another product.")
+            self._reset_session_timeout()
+            self._publish_status()
+            self._update_display("interacting_with_user")
+        self._refresh_ui()
+
+    @logger.catch()
+    def _dispense_timed_out(self):
+        """No terminal dispenser report arrived within the configured timeout."""
+        self._dispense_timeout_task = None
+        if self.state != "dispensing":
+            return
+        sku = self.selected_product.sku if self.selected_product else None
+        logger.error(
+            f"Dispense timed out after {self._dispense_timeout_seconds:.0f}s with no "
+            f"terminal report (slot {self.selected_product.slot if self.selected_product else '?'})"
+        )
+        self._raise_fault(FaultCode.PAY_102, sku=sku, outcome="no_report")
+        self._fail_vend(FaultCode.PAY_102, outcome="no_report")
+
+    @logger.catch()
     def on_error(self):
         logger.error(
             f"{STATE_CHANGE_PREFIX} Error encountered for product: {self.selected_product}. Transitioning to error state."
@@ -744,7 +816,7 @@ class VMC:
         )
 
     @logger.catch()
-    def request_refund(self):
+    def request_refund(self, reason: str = "admin"):
         logger.debug(f"Requesting refund with current credit: {self.credit_escrow:.2f}")
         if self.credit_escrow > 0:
             refund_amount = self.credit_escrow
@@ -894,9 +966,11 @@ class VMC:
             )
             self.dispense_product()
             self._refresh_ui()
-            # Dispenser hardware will send "complete" via MQTT → _handle_mqtt_dispenser
-            # Schedule a timeout fallback in case the hardware never responds
-            self._dispense_timeout_task = self._schedule(60.0, self._finish_dispensing)
+            # Dispenser hardware reports a terminal DispenserOutcome via MQTT; no
+            # report within the timeout is a failed vend (PAY-102).
+            self._dispense_timeout_task = self._schedule(
+                self._dispense_timeout_seconds, self._dispense_timed_out
+            )
             self.last_insufficient_message = ""
         else:
             required = price - self.credit_escrow

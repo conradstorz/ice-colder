@@ -6,8 +6,10 @@ which skips without a live MQTT broker.
 
 import asyncio
 
+import pytest
+
 from config.config_model import ConfigModel, Product
-from contracts.vending_machine import FaultCode
+from contracts.vending_machine import DispenserOutcome, FaultCode, OUTCOME_FAULTS
 from controller.vmc import VMC
 from services.health_monitor import HealthMonitor
 
@@ -40,27 +42,8 @@ class FakeSoldOutInventory:
         return 0
 
 
-async def test_dispenser_jam_refunds_and_enters_error():
-    vmc = make_vmc()
-    vmc.attach_to_loop(asyncio.get_running_loop())
-    messages: list[str] = []
-    vmc.set_message_callback(messages.append)
-    vmc.selected_product = vmc.products[0]
-    vmc.machine.set_state("dispensing")
-    vmc.credit_escrow = 0.0  # price already deducted before dispensing
-
-    await vmc._handle_mqtt_dispenser(
-        "hardware/dispenser", {"slot": 0, "state": "jammed"}
-    )
-
-    assert vmc.state == "error"
-    # Jam refunds the price into escrow; on_error then refunds escrow to customer.
-    assert vmc.credit_escrow == 0.0
-    assert any("refunded" in m.lower() for m in messages)
-
-
 async def test_late_dispenser_fault_after_completed_sale_is_ignored():
-    """A duplicate/late 'jammed' MQTT message (QoS 0, no dedup) arriving after a
+    """A duplicate/late 'jam' MQTT message (QoS 0, no dedup) arriving after a
     sale has already completed must not credit a bogus refund or take the VMC
     offline — only a fault reported *during* dispensing is real."""
     vmc = make_vmc(price=2.50)
@@ -80,9 +63,7 @@ async def test_late_dispenser_fault_after_completed_sale_is_ignored():
     assert vmc.credit_escrow == 0.0
 
     # Late/duplicate jam for the same slot arrives after completion.
-    await vmc._handle_mqtt_dispenser(
-        "hardware/dispenser", {"slot": 0, "state": "jammed"}
-    )
+    await vmc._handle_mqtt_dispenser("hardware/dispenser", {"slot": 0, "state": "jam"})
 
     assert vmc.state == "idle"
     assert vmc.credit_escrow == 0.0  # no bogus refund credited
@@ -504,3 +485,101 @@ class TestFaultRegistry:
         client = FakeClient()
         vmc.set_mqtt_client(client)
         assert "hardware/io/+" in client.topics
+
+
+def _start_dispensing(vmc: VMC, index: int = 0):
+    vmc.machine.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[index]
+    vmc.credit_escrow = vmc.products[index].price
+    vmc._process_payment()
+    assert vmc.state == "dispensing"
+
+
+class TestVendOutcomes:
+    @pytest.mark.parametrize("outcome", ["timeout", "jam", "bin_empty", "error"])
+    async def test_failure_outcome_restores_credit_and_records(self, outcome):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        rec = FakeEventRecorder()
+        vmc.set_event_recorder(rec)
+        published: list[tuple[str, object]] = []
+
+        class FakeClient:
+            def register(self, *_):
+                pass
+
+            async def publish(self, topic, payload):
+                published.append((topic, payload))
+
+        vmc.set_mqtt_client(FakeClient())
+        _start_dispensing(vmc, 0)
+        price = vmc.products[0].price
+
+        await vmc._handle_mqtt_dispenser(
+            "hardware/dispenser", {"slot": 0, "state": outcome}
+        )
+        await asyncio.sleep(0)
+
+        code = OUTCOME_FAULTS[DispenserOutcome(outcome)]
+        assert vmc.state == "interacting_with_user"
+        assert vmc.credit_escrow == price
+        assert vmc.selected_product is None
+        assert (
+            "vend_failed",
+            price,
+            {"code": code.value, "sku": "ICE-1", "outcome": outcome},
+        ) in rec.events
+        assert not any(t == "cmd/payment/refund" for t, _ in published)
+        assert vmc._lockouts == {"ICE-1": code}
+        assert vmc._dispense_timeout_task is None
+
+    async def test_intermediate_state_does_not_end_sale(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        _start_dispensing(vmc, 0)
+        await vmc._handle_mqtt_dispenser(
+            "hardware/dispenser", {"slot": 0, "state": "fill_complete"}
+        )
+        assert vmc.state == "dispensing"
+
+    async def test_dispense_timeout_is_a_failed_vend(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc._dispense_timeout_seconds = 0.01
+        rec = FakeEventRecorder()
+        vmc.set_event_recorder(rec)
+        _start_dispensing(vmc, 0)
+
+        await asyncio.sleep(0.05)
+
+        assert vmc.state == "interacting_with_user"
+        assert vmc.credit_escrow == 2.50
+        assert (
+            "vend_failed",
+            2.50,
+            {"code": "PAY-102", "sku": "ICE-1", "outcome": "no_report"},
+        ) in rec.events
+        assert vmc._lockouts == {}  # PAY-102 is vend_failed severity: no lockout
+        assert not any(e[0] == "dispense" for e in rec.events)
+
+    async def test_timeout_seconds_come_from_config(self):
+        cfg = ConfigModel()
+        cfg.physical.dispense_timeout_seconds = 45.0
+        cfg.physical.products = [Product(sku="ICE-1", name="Ice", price=1.0)]
+        vmc = VMC(config=cfg)
+        assert vmc._dispense_timeout_seconds == 45.0
+
+    async def test_complete_after_failure_is_ignored(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        rec = FakeEventRecorder()
+        vmc.set_event_recorder(rec)
+        _start_dispensing(vmc, 0)
+        await vmc._handle_mqtt_dispenser(
+            "hardware/dispenser", {"slot": 0, "state": "timeout"}
+        )
+        await vmc._handle_mqtt_dispenser(
+            "hardware/dispenser", {"slot": 0, "state": "complete"}
+        )
+        assert vmc.state == "interacting_with_user"
+        assert not any(e[0] == "dispense" for e in rec.events)
