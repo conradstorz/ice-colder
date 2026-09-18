@@ -819,14 +819,19 @@ class VMC:
         if self._event_recorder:
             self._event_recorder.record("error", value=1.0)
         # Pay out any remaining credit through the gateway
-        if self.credit_escrow > 0:
+        had_credit = self.credit_escrow > 0
+        if had_credit:
             self.request_refund(reason="error")
         self._publish_status()
         self._update_display("error")
         self._refresh_ui()
-        self.send_customer_message(
-            "An error has occurred. Your payment has been refunded. Please contact support."
-        )
+        if had_credit:
+            self.send_customer_message(
+                "An error has occurred. A refund of your credit has been requested. "
+                "Please contact support if it does not arrive."
+            )
+        else:
+            self.send_customer_message("An error has occurred. Please contact support.")
 
     # --- Business Logic Methods ---
     @logger.catch()
@@ -873,7 +878,8 @@ class VMC:
             f"reason={reason} request_id={pending.request_id}"
         )
         self.send_customer_message(
-            f"Refund of ${amount:.2f} issued via {self.last_payment_method}."
+            f"Refund of ${amount:.2f} requested via {self.last_payment_method}. "
+            "Please wait..."
         )
         self._refresh_ui()
 
@@ -920,6 +926,9 @@ class VMC:
                 value=amount_returned,
                 metadata={"request_id": pending.request_id, "reason": pending.reason},
             )
+        self.send_customer_message(
+            f"Refund of ${amount_returned:.2f} issued via {self.last_payment_method}."
+        )
 
     def _refund_deadline(self, request_id: str) -> None:
         pending = self._pending_refunds.get(request_id)
@@ -953,6 +962,10 @@ class VMC:
                     "detail": detail,
                 },
             )
+        self.send_customer_message(
+            f"We could not return ${pending.amount:.2f} automatically. "
+            f"Please contact support and quote {pending.request_id[:8]}."
+        )
         self._raise_fault(FaultCode.PAY_103, outcome=detail)
 
     @logger.catch()

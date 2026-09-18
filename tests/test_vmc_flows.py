@@ -611,6 +611,8 @@ class TestRefunds:
         vmc.attach_to_loop(asyncio.get_running_loop())
         client = RecordingClient()
         vmc.set_mqtt_client(client)
+        messages: list[str] = []
+        vmc.set_message_callback(messages.append)
         vmc.credit_escrow = 1.75
 
         vmc.request_refund(reason="session_timeout")
@@ -622,6 +624,10 @@ class TestRefunds:
         assert cmds[0].reason == "session_timeout"
         assert vmc.credit_escrow == 0.0
         assert cmds[0].request_id in vmc._pending_refunds
+        # A refund isn't real until the gateway acks it — don't tell the
+        # customer it's "issued" before that happens.
+        assert "requested" in messages[-1]
+        assert "issued" not in messages[-1]
 
     async def test_ack_ok_records_refund(self):
         vmc = make_vmc2()
@@ -630,6 +636,8 @@ class TestRefunds:
         vmc.set_mqtt_client(client)
         rec = FakeEventRecorder()
         vmc.set_event_recorder(rec)
+        messages: list[str] = []
+        vmc.set_message_callback(messages.append)
         vmc.credit_escrow = 2.0
         vmc.request_refund(reason="cancel")
         await asyncio.sleep(0)
@@ -642,6 +650,9 @@ class TestRefunds:
 
         assert rid not in vmc._pending_refunds
         assert ("refund", 2.0, {"request_id": rid, "reason": "cancel"}) in rec.events
+        # Only now, after the ack, may the customer be told it's issued.
+        assert "issued" in messages[-1]
+        assert "$2.00" in messages[-1]
 
     async def test_ack_failed_retries_once_then_pay_103(self):
         vmc = make_vmc2()
@@ -650,6 +661,8 @@ class TestRefunds:
         vmc.set_mqtt_client(client)
         rec = FakeEventRecorder()
         vmc.set_event_recorder(rec)
+        messages: list[str] = []
+        vmc.set_message_callback(messages.append)
         vmc.credit_escrow = 2.0
         vmc.request_refund(reason="cancel")
         await asyncio.sleep(0)
@@ -662,6 +675,8 @@ class TestRefunds:
         await asyncio.sleep(0)
         assert [c.request_id for c in client.refund_commands()] == [rid, rid]
         assert rid in vmc._pending_refunds
+        # Still just a retry in flight — no promise made either way yet.
+        assert "issued" not in messages[-1]
 
         await vmc._handle_mqtt_refund_ack(
             "cmd/payment/refund/ack",
@@ -677,6 +692,11 @@ class TestRefunds:
             {"request_id": rid, "reason": "cancel", "detail": "changer_empty"},
         ) in rec.events
         assert "PAY-103" in [f["code"] for f in vmc.active_faults()]
+        # Final failure must tell the customer to contact support, never
+        # that the refund was issued.
+        assert "contact support" in messages[-1]
+        assert rid[:8] in messages[-1]
+        assert "issued" not in messages[-1]
 
     async def test_no_ack_deadline_retries_then_pay_103(self):
         vmc = make_vmc2()
@@ -715,6 +735,8 @@ class TestRefunds:
         vmc.attach_to_loop(asyncio.get_running_loop())
         client = RecordingClient()
         vmc.set_mqtt_client(client)
+        messages: list[str] = []
+        vmc.set_message_callback(messages.append)
         vmc.machine.set_state("interacting_with_user")
         vmc.credit_escrow = 1.25
 
@@ -725,6 +747,27 @@ class TestRefunds:
         assert vmc.credit_escrow == 0.0
         cmds = client.refund_commands()
         assert len(cmds) == 1 and cmds[0].amount == 1.25 and cmds[0].reason == "error"
+        # The refund is only requested here, not confirmed — the final
+        # customer-facing message must not claim it has already happened.
+        assert "requested" in messages[-1]
+        assert "refunded" not in messages[-1]
+
+    async def test_on_error_without_credit_says_contact_support_only(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        client = RecordingClient()
+        vmc.set_mqtt_client(client)
+        messages: list[str] = []
+        vmc.set_message_callback(messages.append)
+        vmc.machine.set_state("interacting_with_user")
+        vmc.credit_escrow = 0.0
+
+        vmc.error_occurred()
+        await asyncio.sleep(0)
+
+        assert vmc.state == "error"
+        assert client.refund_commands() == []
+        assert messages[-1] == "An error has occurred. Please contact support."
 
     async def test_all_products_locked_refunds_and_idles(self):
         vmc = make_vmc()  # single product

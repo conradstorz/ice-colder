@@ -167,6 +167,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         for f in active_faults:
             target = f["product"] or "machine"
             issues.append(f"{f['code']} {f['description']} ({target})")
+            f["since_seconds"] = None
 
         if event_recorder:
             summary_24h = await asyncio.to_thread(event_recorder.get_summary, 24)
@@ -178,6 +179,9 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
 
         if health_monitor:
             health = health_monitor.get_summary()
+            ages = {f["key"]: f["since_seconds"] for f in health["active_faults"]}
+            for f in active_faults:
+                f["since_seconds"] = ages.get(f["key"])
             stale = [name for name, sub in health["subsystems"].items() if sub["stale"]]
             if stale:
                 issues.append(f"Stale subsystems: {', '.join(stale)}")

@@ -22,6 +22,9 @@
                 {% else %}bg-amber-100 text-amber-700{% endif %}">{{ f.code }}</span>
               <span class="text-gray-700">{{ f.description }}</span>
               <span class="text-gray-400">· {{ f.product or "machine" }}</span>
+              {% if f.since_seconds is not none %}
+              <span class="text-gray-400">· {% if f.since_seconds >= 60 %}{{ (f.since_seconds // 60)|int }}m{% else %}{{ f.since_seconds|int }}s{% endif %}</span>
+              {% endif %}
               <button hx-post="/faults/{{ f.key }}/clear" hx-target="#status-panel" hx-swap="innerHTML"
                       class="ml-auto text-xs text-blue-600 hover:underline">Clear</button>
             </li>
@@ -76,6 +79,9 @@
                 {% else %}bg-amber-100 text-amber-700{% endif %}">{{ f.code }}</span>
               <span class="text-gray-700">{{ f.description }}</span>
               <span class="text-gray-400">· {{ f.product or "machine" }}</span>
+              {% if f.since_seconds is not none %}
+              <span class="text-gray-400">· {% if f.since_seconds >= 60 %}{{ (f.since_seconds // 60)|int }}m{% else %}{{ f.since_seconds|int }}s{% endif %}</span>
+              {% endif %}
               <button hx-post="/faults/{{ f.key }}/clear" hx-target="#status-panel" hx-swap="innerHTML"
                       class="ml-auto text-xs text-blue-600 hover:underline">Clear</button>
             </li>

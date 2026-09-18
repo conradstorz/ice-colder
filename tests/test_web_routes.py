@@ -454,6 +454,32 @@ class TestFaultsUI:
         assert 'hx-post="/faults/ICE-1/clear"' in r.text
         assert "Issues Detected" in r.text
 
+    def test_status_shows_fault_age_when_health_monitor_set(self, client):
+        from services.health_monitor import HealthMonitor
+
+        hm = HealthMonitor()
+        routes.set_health_monitor(hm)
+        routes.vmc_instance.set_health_monitor(hm)
+        try:
+            self._add_product(client)
+            self._lock(client)
+            r = client.get("/status", auth=client.auth)
+            assert r.status_code == 200
+            assert "ICE-301" in r.text
+            assert "s</span>" in r.text
+        finally:
+            routes.set_health_monitor(None)
+
+    def test_status_still_renders_without_health_monitor(self, client):
+        self._add_product(client)
+        self._lock(client)
+        try:
+            r = client.get("/status", auth=client.auth)
+            assert r.status_code == 200
+            assert "ICE-301" in r.text
+        finally:
+            routes.set_health_monitor(None)
+
     def test_status_without_faults_says_none(self, client):
         r = client.get("/status", auth=client.auth)
         assert "No active faults" in r.text
