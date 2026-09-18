@@ -128,6 +128,14 @@ class PhysicalDetails(BaseModel):
         "YOUR_MACHINE_NAME", description="Friendly machine name; edit before use"
     )
     serial_number: str = Field("0000-0000", description="Hardware serial number")
+    dispense_timeout_seconds: float = Field(
+        120.0,
+        ge=10,
+        description=(
+            "Seconds the VMC waits for a terminal dispenser report after "
+            "commanding a dispense; expiry is a failed vend (PAY-102)"
+        ),
+    )
     location: Location = Field(
         default_factory=Location, description="Machine physical location"
     )

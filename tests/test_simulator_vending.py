@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from contracts.vending_machine import DispenserOutcome
 from config.config_model import ConfigModel
+from services.mqtt_messages import DispenserStatus
 from simulators.vending_machine import VendingMachineSimulator, _classify_product
 
 
@@ -546,3 +548,39 @@ class TestCustomerBehaviours:
         for _ in range(50):
             idle = sim._compute_idle_time(hour=9)
             assert sim.IDLE_MIN <= idle <= sim.IDLE_MAX
+
+
+class TestTerminalOutcomesFollowContract:
+    def _run(self, sim, coro):
+        with patch("simulators.vending_machine.asyncio.sleep", new=AsyncMock()):
+            asyncio.run(coro)
+        return [
+            call.args[2]
+            for call in sim.publish.await_args_list
+            if call.args[1] == "hardware/dispenser"
+        ]
+
+    @pytest.mark.parametrize(
+        "fault,expected",
+        [
+            (None, DispenserOutcome.complete),
+            ("ice_bin_empty", DispenserOutcome.bin_empty),
+            ("auger_jam", DispenserOutcome.timeout),
+            ("bag_drop_solenoid_stuck", DispenserOutcome.jam),
+        ],
+    )
+    def test_ice_dispense_ends_with_a_contract_outcome(self, fault, expected):
+        sim = _make_sim()
+        sim.publish = AsyncMock()
+        if fault:
+            sim._fault_state[fault]["active"] = True
+        statuses = self._run(sim, sim._run_ice_dispense(None, 0))
+        last = statuses[-1]
+        assert isinstance(last, DispenserStatus)
+        assert DispenserOutcome(last.state) is expected
+
+    def test_water_dispense_ends_complete(self):
+        sim = _make_sim()
+        sim.publish = AsyncMock()
+        statuses = self._run(sim, sim._run_water_dispense(None, 1))
+        assert DispenserOutcome(statuses[-1].state) is DispenserOutcome.complete

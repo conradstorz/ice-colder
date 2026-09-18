@@ -26,7 +26,13 @@
       {% for product in products %}
       <tr class="hover:bg-gray-50">
         <td class="py-3 font-mono text-gray-600 text-xs">{{ product.sku }}</td>
-        <td class="py-3 text-gray-900">{{ product.name }}</td>
+        <td class="py-3 text-gray-900">
+          {{ product.name }}
+          {% if locked and product.sku in locked %}
+          <span class="ml-2 text-xs font-mono px-1.5 py-0.5 rounded bg-orange-100 text-orange-700"
+                title="Locked out">locked · {{ locked[product.sku] }}</span>
+          {% endif %}
+        </td>
         <td class="py-3 text-gray-900">${{ "%.2f"|format(product.price) }}</td>
         <td class="py-3 text-gray-900">{{ product.slot }}</td>
         <td class="py-3 text-gray-900">{{ product.inventory_count }}</td>

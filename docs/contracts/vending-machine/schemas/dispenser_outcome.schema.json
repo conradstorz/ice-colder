@@ -1,0 +1,12 @@
+{
+  "description": "Terminal states a dispense can end in, published as DispenserStatus.state.\n\nAny other DispenserStatus.state string is an intermediate step\n(motor_active, fill_complete, solenoid_open, ...) and never ends a sale.",
+  "enum": [
+    "complete",
+    "bin_empty",
+    "timeout",
+    "jam",
+    "error"
+  ],
+  "title": "DispenserOutcome",
+  "type": "string"
+}

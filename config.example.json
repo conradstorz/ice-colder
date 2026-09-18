@@ -4,6 +4,7 @@
   "physical": {
     "common_name": "YOUR_MACHINE_NAME",
     "serial_number": "0000-0000",
+    "dispense_timeout_seconds": 120,
     "location": {
       "address": "123 Main St",
       "notes": "Location notes"

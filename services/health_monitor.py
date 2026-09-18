@@ -51,6 +51,8 @@ class Alert:
     source: str
     message: str
     timestamp: float = field(default_factory=time.monotonic)
+    code: Optional[str] = None  # FaultCode value, when the alert is a fault
+    product_sku: Optional[str] = None
 
 
 # Type for the callback that delivers alerts (e.g., to notifier service)
@@ -89,6 +91,8 @@ class HealthMonitor:
         self._alert_callback: Optional[AlertCallback] = None
         # Track which alerts have already fired to avoid spamming
         self._fired_alerts: set[str] = set()
+        # Active faults pushed by the VMC: key -> fault dict (+ "since" monotonic)
+        self._active_faults: dict[str, dict] = {}
 
     def set_alert_callback(self, callback: AlertCallback):
         """Register a coroutine to be called when an alert fires."""
@@ -131,6 +135,34 @@ class HealthMonitor:
         if subsystem not in self._subsystems:
             self._subsystems[subsystem] = SubsystemStatus(name=subsystem)
         self._subsystems[subsystem].last_seen = 0.0
+
+    def set_active_faults(self, faults: list[dict]):
+        """Replace the active-fault snapshot; `since` survives for keys already present."""
+        now = time.monotonic()
+        new: dict[str, dict] = {}
+        for f in faults:
+            key = f["key"]
+            since = self._active_faults.get(key, {}).get("since", now)
+            new[key] = {**f, "since": since}
+        self._active_faults = new
+
+    async def raise_alert(
+        self,
+        key: str,
+        level: str,
+        source: str,
+        message: str,
+        code: str | None = None,
+        product_sku: str | None = None,
+    ):
+        """Public entry for VMC-raised faults; dedups on `key` like periodic checks."""
+        await self._fire_alert(
+            key, level, source, message, code=code, product_sku=product_sku
+        )
+
+    def clear_alert(self, key: str):
+        """Forget a dedup key so the next raise_alert with it fires again."""
+        self._fired_alerts.discard(key)
 
     def update_mqtt_status(self, connected: bool):
         """Update MQTT connection status."""
@@ -176,6 +208,15 @@ class HealthMonitor:
                 "age_seconds": round(time.monotonic() - reading.timestamp, 1),
             }
 
+        now = time.monotonic()
+        active_faults = [
+            {
+                **{k: v for k, v in f.items() if k != "since"},
+                "since_seconds": round(now - f["since"], 1),
+            }
+            for f in self._active_faults.values()
+        ]
+
         return {
             "mqtt_connected": self._mqtt_connected,
             "vmc_state": self._vmc_state,
@@ -184,6 +225,7 @@ class HealthMonitor:
             "channels": channels,
             "check_interval": self._check_interval,
             "subsystem_timeout": self._subsystem_timeout,
+            "active_faults": active_faults,
         }
 
     # --- Main loop ---
@@ -235,13 +277,27 @@ class HealthMonitor:
                     f"(range: {self._temp_min} to {self._temp_max})",
                 )
 
-    async def _fire_alert(self, key: str, level: str, source: str, message: str):
+    async def _fire_alert(
+        self,
+        key: str,
+        level: str,
+        source: str,
+        message: str,
+        code: str | None = None,
+        product_sku: str | None = None,
+    ):
         """Fire an alert if it hasn't already been fired (deduplication)."""
         if key in self._fired_alerts:
             return
         self._fired_alerts.add(key)
 
-        alert = Alert(level=level, source=source, message=message)
+        alert = Alert(
+            level=level,
+            source=source,
+            message=message,
+            code=code,
+            product_sku=product_sku,
+        )
         logger.warning(f"Health alert [{level}] {source}: {message}")
 
         if self._alert_callback:

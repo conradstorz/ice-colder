@@ -305,8 +305,8 @@ class TestFullTransactionLoop:
                 except (asyncio.CancelledError, Exception):
                     pass
 
-    async def test_dispenser_error_transitions_to_error_state(self):
-        """Dispenser jam/error during vend puts VMC in error state."""
+    async def test_dispenser_fault_fails_vend_and_locks_product(self):
+        """Dispenser jam during vend runs vend_failed: escrow restored, product locked."""
         config = _make_config()
         prefix = f"vmc/{config.machine_id}"
 
@@ -328,7 +328,7 @@ class TestFullTransactionLoop:
                         break
                     await asyncio.sleep(0.1)
 
-                # Button + payment
+                # Button + payment (button 0 = Small Ice, ICE-SM, $2.00)
                 await sim_client.publish(
                     f"{prefix}/hardware/buttons",
                     ButtonPress(button=0).model_dump_json(),
@@ -341,12 +341,15 @@ class TestFullTransactionLoop:
                 )
                 await _wait_for_state(vmc, "dispensing", timeout=5.0)
 
-                # Dispenser reports error instead of complete
+                # Dispenser reports a jam instead of complete
                 await sim_client.publish(
                     f"{prefix}/hardware/dispenser",
-                    DispenserStatus(slot=0, state="jammed").model_dump_json(),
+                    DispenserStatus(slot=0, state="jam").model_dump_json(),
                 )
-                await _wait_for_state(vmc, "error", timeout=5.0)
+                await _wait_for_state(vmc, "interacting_with_user", timeout=5.0)
+                assert vmc.credit_escrow == 2.00
+                assert vmc._lockouts["ICE-SM"].value == "ICE-401"
+                assert vmc.state != "error"
 
             finally:
                 mqtt_task.cancel()
@@ -440,4 +443,76 @@ class TestSensorAndHeartbeatRouting:
                 try:
                     await mqtt_task
                 except (asyncio.CancelledError, Exception):
+                    pass
+
+
+class TestFailedVendLoop:
+    """jam → vend_failed → lockout → clear → sell again, through a real broker."""
+
+    async def test_jam_locks_product_then_clear_sells_again(self):
+        config = _make_config()
+        prefix = f"vmc/{config.machine_id}"
+        mqtt_client = MQTTClient(config=config.mqtt, machine_id=config.machine_id)
+        vmc = VMC(config=config)
+        health = HealthMonitor()
+
+        async with aiomqtt.Client(
+            hostname="localhost", port=1883, identifier="e2e-fault-sim"
+        ) as sim_client:
+            await sim_client.subscribe(f"{prefix}/cmd/dispense")
+            await sim_client.subscribe(f"{prefix}/cmd/payment/refund")
+            loop = asyncio.get_running_loop()
+            vmc.attach_to_loop(loop)
+            vmc.set_mqtt_client(mqtt_client)
+            vmc.set_health_monitor(health)
+            mqtt_task = asyncio.create_task(mqtt_client.run())
+            try:
+                for _ in range(50):
+                    if mqtt_client.connected:
+                        break
+                    await asyncio.sleep(0.1)
+
+                async def sale(outcome: str):
+                    await sim_client.publish(
+                        f"{prefix}/hardware/buttons", json.dumps({"button": 0})
+                    )
+                    await _wait_for_state(vmc, "interacting_with_user")
+                    await sim_client.publish(
+                        f"{prefix}/payment/credit",
+                        json.dumps({"amount": 2.00, "method": "cash_bill"}),
+                    )
+                    await _wait_for_state(vmc, "dispensing")
+                    await sim_client.publish(
+                        f"{prefix}/hardware/dispenser",
+                        json.dumps({"slot": 0, "state": outcome}),
+                    )
+
+                await sale("jam")
+                await _wait_for_state(vmc, "interacting_with_user")
+                assert vmc.credit_escrow == 2.00
+                assert vmc._lockouts["ICE-SM"].value == "ICE-401"
+                assert health.get_summary()["active_faults"][0]["code"] == "ICE-401"
+
+                # Customer walks away: session expiry pays out via the gateway.
+                vmc._expire_session()
+
+                async def next_refund():
+                    async for m in sim_client.messages:
+                        if str(m.topic).endswith("/cmd/payment/refund"):
+                            return json.loads(m.payload)
+
+                refund = await asyncio.wait_for(next_refund(), 5)
+                assert refund["amount"] == 2.00
+                await _wait_for_state(vmc, "idle")
+
+                assert vmc.clear_fault("ICE-SM") is True
+                await sale("complete")
+                await _wait_for_state(vmc, "idle")
+                assert vmc._lockouts == {}
+            finally:
+                vmc.cancel_pending_tasks()
+                mqtt_task.cancel()
+                try:
+                    await mqtt_task
+                except asyncio.CancelledError:
                     pass

@@ -1,0 +1,31 @@
+{
+  "description": "Stable fault codes (ROADMAP.md \u00a75). Never renumber; only add.",
+  "enum": [
+    "ICE-101",
+    "ICE-201",
+    "ICE-202",
+    "ICE-301",
+    "ICE-302",
+    "ICE-401",
+    "ICE-402",
+    "WTR-101",
+    "WTR-102",
+    "WTR-103",
+    "WTR-104",
+    "WTR-105",
+    "ENV-101",
+    "ENV-102",
+    "ENV-103",
+    "PAY-101",
+    "PAY-102",
+    "PAY-103",
+    "PWR-101",
+    "PWR-102",
+    "COM-101",
+    "COM-102",
+    "COM-103",
+    "SVC-101"
+  ],
+  "title": "FaultCode",
+  "type": "string"
+}

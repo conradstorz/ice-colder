@@ -10,6 +10,30 @@
           <span class="text-base font-semibold text-green-700">All Systems OK</span>
         </div>
         <p class="text-sm text-gray-400 mt-1">Machine is operating normally</p>
+        <div class="mt-3">
+          <div class="text-xs text-gray-400 uppercase tracking-wide mb-1">Active faults</div>
+          {% if active_faults %}
+          <ul class="space-y-1">
+            {% for f in active_faults %}
+            <li class="flex items-center gap-2 text-sm">
+              <span class="font-mono text-xs px-1.5 py-0.5 rounded
+                {% if f.severity == 'critical' %}bg-red-100 text-red-700
+                {% elif f.severity == 'lockout' %}bg-orange-100 text-orange-700
+                {% else %}bg-amber-100 text-amber-700{% endif %}">{{ f.code }}</span>
+              <span class="text-gray-700">{{ f.description }}</span>
+              <span class="text-gray-400">· {{ f.product or "machine" }}</span>
+              {% if f.since_seconds is not none %}
+              <span class="text-gray-400">· {% if f.since_seconds >= 60 %}{{ (f.since_seconds // 60)|int }}m{% else %}{{ f.since_seconds|int }}s{% endif %}</span>
+              {% endif %}
+              <button hx-post="/faults/{{ f.key }}/clear" hx-target="#status-panel" hx-swap="innerHTML"
+                      class="ml-auto text-xs text-blue-600 hover:underline">Clear</button>
+            </li>
+            {% endfor %}
+          </ul>
+          {% else %}
+          <p class="text-sm text-gray-400">No active faults</p>
+          {% endif %}
+        </div>
       </div>
       <div class="flex gap-8 text-sm text-right ml-8">
         <div>
@@ -43,6 +67,30 @@
           <li class="text-sm text-red-600">{{ issue }}</li>
           {% endfor %}
         </ul>
+        <div class="mt-3">
+          <div class="text-xs text-gray-400 uppercase tracking-wide mb-1">Active faults</div>
+          {% if active_faults %}
+          <ul class="space-y-1">
+            {% for f in active_faults %}
+            <li class="flex items-center gap-2 text-sm">
+              <span class="font-mono text-xs px-1.5 py-0.5 rounded
+                {% if f.severity == 'critical' %}bg-red-100 text-red-700
+                {% elif f.severity == 'lockout' %}bg-orange-100 text-orange-700
+                {% else %}bg-amber-100 text-amber-700{% endif %}">{{ f.code }}</span>
+              <span class="text-gray-700">{{ f.description }}</span>
+              <span class="text-gray-400">· {{ f.product or "machine" }}</span>
+              {% if f.since_seconds is not none %}
+              <span class="text-gray-400">· {% if f.since_seconds >= 60 %}{{ (f.since_seconds // 60)|int }}m{% else %}{{ f.since_seconds|int }}s{% endif %}</span>
+              {% endif %}
+              <button hx-post="/faults/{{ f.key }}/clear" hx-target="#status-panel" hx-swap="innerHTML"
+                      class="ml-auto text-xs text-blue-600 hover:underline">Clear</button>
+            </li>
+            {% endfor %}
+          </ul>
+          {% else %}
+          <p class="text-sm text-gray-400">No active faults</p>
+          {% endif %}
+        </div>
       </div>
       <div class="flex gap-8 text-sm text-right ml-8">
         <div>

@@ -160,3 +160,26 @@ def test_duplicate_slots_rejected():
     }
     with pytest.raises(ValidationError):
         ConfigModel.model_validate(data)
+
+
+class TestDispenseTimeout:
+    def test_default_is_120_seconds(self):
+        from config.config_model import ConfigModel
+
+        assert ConfigModel().physical.dispense_timeout_seconds == 120.0
+
+    def test_rejects_below_10_seconds(self):
+        import pytest
+        from pydantic import ValidationError
+
+        from config.config_model import ConfigModel
+
+        with pytest.raises(ValidationError):
+            ConfigModel.model_validate({"physical": {"dispense_timeout_seconds": 5}})
+
+    def test_example_config_declares_it(self):
+        import json
+        from pathlib import Path
+
+        raw = json.loads(Path("config.example.json").read_text(encoding="utf-8"))
+        assert raw["physical"]["dispense_timeout_seconds"] == 120

@@ -1,0 +1,35 @@
+{
+  "description": "VMC -> payment gateway, published on cmd/payment/refund (QoS 1).",
+  "properties": {
+    "request_id": {
+      "description": "Opaque correlation key, unique per refund; UUID4 hex by the VMC",
+      "maxLength": 64,
+      "minLength": 8,
+      "title": "Request Id",
+      "type": "string"
+    },
+    "amount": {
+      "description": "Amount to pay out, USD",
+      "exclusiveMinimum": 0.0,
+      "title": "Amount",
+      "type": "number"
+    },
+    "reason": {
+      "description": "A FaultCode value, or 'session_timeout', 'cancel', 'error', 'admin'",
+      "title": "Reason",
+      "type": "string"
+    },
+    "timestamp": {
+      "format": "date-time",
+      "title": "Timestamp",
+      "type": "string"
+    }
+  },
+  "required": [
+    "request_id",
+    "amount",
+    "reason"
+  ],
+  "title": "PaymentRefundCommand",
+  "type": "object"
+}

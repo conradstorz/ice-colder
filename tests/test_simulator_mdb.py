@@ -5,6 +5,8 @@ import pytest
 from simulators.mdb_gateway import MDBGatewaySimulator, PaymentStrategy
 from unittest.mock import AsyncMock
 
+from contracts.vending_machine import PaymentRefundCommand, RefundStatus
+
 
 class TestInit:
     def test_creates_with_defaults(self):
@@ -72,9 +74,9 @@ class TestPaymentStrategyExclusion:
 
 
 class TestMDBFaultRegistration:
-    def test_four_faults_registered(self):
+    def test_five_faults_registered(self):
         sim = MDBGatewaySimulator()
-        assert len(sim._fault_defs) == 4
+        assert len(sim._fault_defs) == 5
 
     def test_fault_names(self):
         sim = MDBGatewaySimulator()
@@ -84,6 +86,7 @@ class TestMDBFaultRegistration:
             "bill_validator_offline",
             "card_reader_error",
             "mdb_bus_reset",
+            "changer_empty",
         }
 
 
@@ -233,3 +236,66 @@ class TestHADiscovery:
         entities = sim.ha_discovery_entities()
         ids = [e["object_id"] for e in entities]
         assert len(ids) == len(set(ids))
+
+
+class TestRefunds:
+    def _sim(self):
+        sim = MDBGatewaySimulator()
+        sim.REFUND_DELAY_RANGE = (0.0, 0.0)
+        sim.publish = AsyncMock()
+        return sim
+
+    def _acks(self, sim):
+        return [
+            call.args[2]
+            for call in sim.publish.await_args_list
+            if call.args[1] == "cmd/payment/refund/ack"
+        ]
+
+    async def test_refund_acked_ok_with_amount(self):
+        sim = self._sim()
+        cmd = PaymentRefundCommand(request_id="r" * 32, amount=2.5, reason="cancel")
+        await sim._handle_refund(None, cmd)
+        acks = self._acks(sim)
+        assert len(acks) == 1
+        assert acks[0].status is RefundStatus.ok
+        assert acks[0].amount_returned == 2.5
+        assert acks[0].request_id == "r" * 32
+
+    async def test_repeated_request_id_resends_stored_result(self):
+        sim = self._sim()
+        cmd = PaymentRefundCommand(request_id="r" * 32, amount=2.5, reason="cancel")
+        await sim._handle_refund(None, cmd)
+        await sim._handle_refund(None, cmd)
+        acks = self._acks(sim)
+        assert len(acks) == 2
+        assert acks[0] is acks[1]  # same stored object, no second pay-out
+        assert len(sim._refund_results) == 1
+
+    async def test_changer_empty_fault_answers_failed(self):
+        sim = self._sim()
+        sim._fault_state["changer_empty"]["active"] = True
+        cmd = PaymentRefundCommand(request_id="r" * 32, amount=2.5, reason="cancel")
+        await sim._handle_refund(None, cmd)
+        ack = self._acks(sim)[0]
+        assert ack.status is RefundStatus.failed
+        assert ack.amount_returned == 0.0
+        assert ack.detail == "changer_empty"
+
+    async def test_result_cache_is_bounded(self):
+        sim = self._sim()
+        sim.REFUND_RESULTS_MAX = 3
+        for i in range(5):
+            cmd = PaymentRefundCommand(
+                request_id=f"{i:032d}", amount=1.0, reason="cancel"
+            )
+            await sim._handle_refund(None, cmd)
+        assert list(sim._refund_results) == [
+            "2".zfill(32),
+            "3".zfill(32),
+            "4".zfill(32),
+        ]
+
+    def test_changer_empty_fault_registered(self):
+        sim = MDBGatewaySimulator()
+        assert "changer_empty" in sim._fault_state

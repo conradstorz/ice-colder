@@ -1,6 +1,8 @@
 # controller/vmc.py
 import asyncio
 import time
+from dataclasses import dataclass
+from uuid import uuid4
 from transitions import Machine
 from loguru import logger
 from pydantic import ValidationError
@@ -11,8 +13,21 @@ from services.mqtt_messages import (
     ButtonPress,
     DispenseCommand,
     IceMakerEvent,
+    HardwareIO,
+    VMCAlert,
 )
 from contracts.ice_maker_monitor import ChannelReading, CommandAck, MonitorCapabilities
+from contracts.vending_machine import (
+    FAULT_TABLE,
+    OUTCOME_FAULTS,
+    DispenserOutcome,
+    FaultCode,
+    PaymentRefundCommand,
+    PaymentRefundResult,
+    RefundStatus,
+    Scope,
+    Severity,
+)
 from config.config_model import ConfigModel
 from services.health_monitor import HealthMonitor
 from services.display_controller import DisplayController
@@ -62,6 +77,12 @@ TRANSITIONS = [
         "before": "on_cancel_sale",
     },
     {
+        "trigger": "vend_failed",
+        "source": "dispensing",
+        "dest": "interacting_with_user",
+        "before": "on_vend_failed",
+    },
+    {
         "trigger": "error_occurred",
         "source": "*",
         "dest": "error",
@@ -75,9 +96,31 @@ TRANSITIONS = [
     },
 ]
 
+# Alert level sent to the owner for each fault severity.
+_SEVERITY_LEVEL = {
+    Severity.info: "info",
+    Severity.warning: "warning",
+    Severity.product_unavailable: "warning",
+    Severity.vend_failed: "warning",
+    Severity.lockout: "error",
+    Severity.critical: "critical",
+}
+
+
+@dataclass
+class PendingRefund:
+    request_id: str
+    amount: float
+    reason: str
+    attempts: int = 1
+    deadline_task: asyncio.Task | None = None
+
 
 class VMC:
     states = ["idle", "interacting_with_user", "dispensing", "error"]
+
+    REFUND_ACK_TIMEOUT = 10.0  # seconds to wait for cmd/payment/refund/ack
+    REFUND_MAX_ATTEMPTS = 2  # one retry with the same request_id, then PAY-103
 
     @logger.catch()
     def __init__(self, config: ConfigModel):
@@ -118,8 +161,15 @@ class VMC:
         )
         self._event_recorder = None  # Set via set_event_recorder()
         self.subsystem_capabilities: dict[str, dict] = {}
+        # Fault registry: product-scope faults by SKU, machine-scope faults by code.
+        self._lockouts: dict[str, FaultCode] = {}
+        self._machine_faults: dict[FaultCode, float] = {}
+        self._pending_refunds: dict[str, PendingRefund] = {}
         self._start_time = time.monotonic()
         self._session_timeout_seconds = 180.0  # 3 minutes
+        self._dispense_timeout_seconds = (
+            self.config_model.physical.dispense_timeout_seconds
+        )
 
         self.machine = Machine(
             model=self, states=VMC.states, initial=VMC.states[0], auto_transitions=False
@@ -149,6 +199,9 @@ class VMC:
         self._pending_tasks.clear()
         self._cancel_dispense_timeout()
         self._cancel_session_timeout()
+        for pending in self._pending_refunds.values():
+            if pending.deadline_task and not pending.deadline_task.done():
+                pending.deadline_task.cancel()
         logger.debug("VMC: all pending tasks cancelled.")
 
     def set_mqtt_client(self, client):
@@ -164,6 +217,8 @@ class VMC:
         client.register("capabilities/+", self._handle_mqtt_capabilities)
         client.register("telemetry/ice_maker/+", self._handle_mqtt_telemetry)
         client.register("cmd/ice_maker/ack", self._handle_mqtt_command_ack)
+        client.register("hardware/io/+", self._handle_mqtt_hardware_io)
+        client.register("cmd/payment/refund/ack", self._handle_mqtt_refund_ack)
         logger.debug("VMC registered MQTT handlers.")
 
     def set_health_monitor(self, monitor: HealthMonitor):
@@ -212,6 +267,133 @@ class VMC:
         if self._health_monitor:
             self._health_monitor.update_vmc_state(self.state)
 
+    # --- Fault registry ---
+
+    def _product_name(self, sku: str | None) -> str | None:
+        if sku is None:
+            return None
+        return next((p.name for p in self.products if p.sku == sku), sku)
+
+    def _sellable_products(self) -> list:
+        return [p for p in self.products if p.sku not in self._lockouts]
+
+    def active_faults(self) -> list[dict]:
+        """Snapshot for the dashboard/health monitor. Product faults first."""
+        out = []
+        for sku, code in self._lockouts.items():
+            spec = FAULT_TABLE[code]
+            out.append(
+                {
+                    "key": sku,
+                    "sku": sku,
+                    "product": self._product_name(sku),
+                    "code": code.value,
+                    "severity": spec.severity.value,
+                    "scope": spec.scope.value,
+                    "description": spec.description,
+                }
+            )
+        for code in self._machine_faults:
+            spec = FAULT_TABLE[code]
+            out.append(
+                {
+                    "key": code.value,
+                    "sku": None,
+                    "product": None,
+                    "code": code.value,
+                    "severity": spec.severity.value,
+                    "scope": spec.scope.value,
+                    "description": spec.description,
+                }
+            )
+        return out
+
+    def _push_active_faults(self) -> None:
+        if self._health_monitor:
+            self._health_monitor.set_active_faults(self.active_faults())
+
+    def _raise_fault(
+        self,
+        code: FaultCode,
+        sku: str | None = None,
+        outcome: str | None = None,
+    ) -> None:
+        """Record a fault: lock the product if its severity says so, alert the owner."""
+        spec = FAULT_TABLE[code]
+        locks = spec.severity in (Severity.lockout, Severity.product_unavailable)
+        if spec.scope is Scope.product and sku is not None and locks:
+            if self._lockouts.get(sku) != code:
+                self._lockouts[sku] = code
+                if self._event_recorder:
+                    self._event_recorder.record(
+                        "lockout_set", metadata={"code": code.value, "sku": sku}
+                    )
+        elif spec.scope is Scope.machine:
+            self._machine_faults.setdefault(code, time.monotonic())
+
+        name = self._product_name(sku)
+        message = f"{code.value} {spec.description}"
+        if name:
+            message += f" — product '{name}'"
+        if outcome:
+            message += f" (reported: {outcome})"
+        logger.error(f"FAULT {message}")
+
+        key = f"{code.value}:{sku or 'machine'}"
+        level = _SEVERITY_LEVEL[spec.severity]
+        if self._health_monitor:
+            self._fire_and_forget(
+                self._health_monitor.raise_alert(
+                    key, level, "vmc", message, code=code.value, product_sku=sku
+                )
+            )
+        if self._mqtt_client:
+            self._fire_and_forget(
+                self._mqtt_client.publish(
+                    "alerts",
+                    VMCAlert(level=level, message=message, code=code, product_sku=sku),
+                )
+            )
+        self._push_active_faults()
+
+    def clear_fault(self, key: str, by: str = "admin") -> bool:
+        """Clear a fault by key (SKU for product faults, code string for machine faults)."""
+        code = self._lockouts.pop(key, None)
+        if code is not None:
+            sku = key
+            if self._event_recorder:
+                self._event_recorder.record(
+                    "lockout_cleared",
+                    metadata={"code": code.value, "sku": sku, "by": by},
+                )
+            if self._health_monitor:
+                self._health_monitor.clear_alert(f"{code.value}:{sku}")
+            logger.info(f"Fault {code.value} cleared for product {sku} ({by})")
+        else:
+            try:
+                code = FaultCode(key)
+            except ValueError:
+                return False
+            if code not in self._machine_faults:
+                return False
+            del self._machine_faults[code]
+            if self._health_monitor:
+                self._health_monitor.clear_alert(f"{code.value}:machine")
+            logger.info(f"Machine fault {code.value} cleared ({by})")
+        self._push_active_faults()
+        self._publish_status()
+        return True
+
+    async def _handle_mqtt_hardware_io(self, topic: str, data: dict):
+        """Binary hardware IO from the vending ESP32; ice returning clears ICE-101."""
+        hw = HardwareIO.model_validate(data)
+        if hw.device == "bin_half_full" and hw.state:
+            for sku, code in list(self._lockouts.items()):
+                if code is FaultCode.ICE_101:
+                    self.clear_fault(sku, by="auto")
+        else:
+            logger.debug(f"MQTT hardware IO: {hw.device}={hw.state}")
+
     # --- MQTT inbound handlers ---
 
     async def _handle_mqtt_payment(self, topic: str, data: dict):
@@ -245,63 +427,59 @@ class VMC:
         return reported_slot != self.selected_product.slot
 
     async def _handle_mqtt_dispenser(self, topic: str, data: dict):
-        """Handle dispenser status from ESP32."""
+        """Handle dispenser status from ESP32.
+
+        Only DispenserOutcome members end a sale; every other `state` string
+        is an intermediate hardware step and is logged.
+        """
         logger.info(f"MQTT dispenser event: {data}")
         state = data.get("state", "")
         slot = data.get("slot", "?")
-        if state == "complete" and self.state == "dispensing":
-            if self._dispenser_event_slot_mismatch(data):
-                logger.warning(
-                    f"Ignoring dispenser completion for mismatched slot {slot} "
-                    f"(active sale is slot {self.selected_product.slot})"
-                )
-                return
-            product_name = (
-                self.selected_product.name if self.selected_product else "Unknown"
+        try:
+            outcome = DispenserOutcome(state)
+        except ValueError:
+            vend_log.info(f"DISPENSER: slot {slot}, state: {state}")
+            return
+
+        if self.state != "dispensing":
+            logger.warning(
+                f"Ignoring dispenser outcome '{outcome.value}' outside dispensing "
+                f"state (current state: {self.state}, slot {slot})"
             )
+            return
+        if self._dispenser_event_slot_mismatch(data):
+            logger.warning(
+                f"Ignoring dispenser outcome '{outcome.value}' for mismatched slot "
+                f"{slot} (active sale is slot {self.selected_product.slot})"
+            )
+            return
+
+        product_name = (
+            self.selected_product.name if self.selected_product else "Unknown"
+        )
+        if outcome is DispenserOutcome.complete:
             txn_log.info(f"DISPENSE SUCCESS: slot {slot}, product '{product_name}'")
             vend_log.info(f"DISPENSE COMPLETE: slot {slot}, product '{product_name}'")
-            if self._event_recorder:
-                record_slot = (
-                    self.selected_product.slot
-                    if self.selected_product
-                    else data.get("slot")
+            if self._event_recorder and self.selected_product:
+                self._event_recorder.record(
+                    "dispense", value=float(self.selected_product.slot)
                 )
-                if record_slot is not None:
-                    self._event_recorder.record("dispense", value=float(record_slot))
             self._finish_dispensing()
-        elif state in ("jammed", "error"):
-            if self.state != "dispensing":
-                logger.warning(
-                    f"Ignoring dispenser fault outside dispensing state "
-                    f"(current state: {self.state}, reported: {state}, slot {slot})"
-                )
-                return
-            if self._dispenser_event_slot_mismatch(data):
-                logger.warning(
-                    f"Ignoring dispenser fault for mismatched slot {slot} "
-                    f"(active sale is slot {self.selected_product.slot})"
-                )
-                return
-            self._cancel_dispense_timeout()
-            product_name = (
-                self.selected_product.name if self.selected_product else "Unknown"
-            )
-            txn_log.error(
-                f"DISPENSE FAILED: slot {slot}, product '{product_name}', reason: {state}"
-            )
-            vend_log.error(
-                f"DISPENSE FAILED: slot {slot}, product '{product_name}', reason: {state}"
-            )
-            logger.error(f"Dispenser error: {state}")
-            # Refund the customer — the price was already deducted from escrow
-            price = self.selected_product.price if self.selected_product else 0
-            self.credit_escrow += price
-            txn_log.info(f"REFUND (dispense failure): ${price:.2f} returned to escrow")
-            self.error_occurred()
-        else:
-            # Intermediate hardware states: motor_active, fill_complete, solenoid_open, etc.
-            vend_log.info(f"DISPENSER: slot {slot}, state: {state}")
+            return
+
+        self._cancel_dispense_timeout()
+        code = OUTCOME_FAULTS[outcome]
+        sku = self.selected_product.sku if self.selected_product else None
+        txn_log.error(
+            f"DISPENSE FAILED: slot {slot}, product '{product_name}', "
+            f"outcome: {outcome.value}, fault: {code.value}"
+        )
+        vend_log.error(
+            f"DISPENSE FAILED: slot {slot}, product '{product_name}', "
+            f"outcome: {outcome.value}, fault: {code.value}"
+        )
+        self._raise_fault(code, sku=sku, outcome=outcome.value)
+        self._fail_vend(code, outcome=outcome.value)
 
     async def _handle_mqtt_sensor(self, topic: str, data: dict):
         """Handle temperature/sensor reading from ESP32."""
@@ -377,6 +555,29 @@ class VMC:
         logger.info(
             f"Monitor ack: {ack.command} -> {ack.status}{detail} ({ack.request_id})"
         )
+
+    def _fire_and_forget(self, coro) -> None:
+        """Run a coroutine on the attached loop without awaiting it.
+
+        The task is kept in _pending_tasks (so it is not garbage-collected and
+        is cancelled on shutdown) and any exception it raises is logged rather
+        than silently dropped — these carry alerts and refund commands.
+        """
+        if self._loop is None or self._loop.is_closed():
+            coro.close()
+            return
+        task = self._loop.create_task(coro)
+        task.add_done_callback(self._log_task_failure)
+        self._pending_tasks.append(task)
+        self._pending_tasks = [t for t in self._pending_tasks if not t.done()]
+
+    @staticmethod
+    def _log_task_failure(task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(f"Background task {task.get_name()} failed: {exc!r}")
 
     def _schedule(self, delay_seconds, callback) -> asyncio.Task | None:
         """Schedule a synchronous callback to run after delay_seconds on the event loop."""
@@ -535,7 +736,7 @@ class VMC:
         txn_log.info("SALE CANCELLED: selected product removed from catalog")
         self._cancel_session_timeout()
         self._cancel_dispense_timeout()
-        self.request_refund()
+        self.request_refund(reason="cancel")
         self.selected_product = None
         self.last_insufficient_message = ""
         self._publish_status()
@@ -546,26 +747,91 @@ class VMC:
         )
 
     @logger.catch()
+    def on_vend_failed(self, code: FaultCode, outcome: str):
+        """`before` hook for dispensing -> interacting_with_user on a failed vend.
+
+        Restores the price to escrow (it was deducted in _process_payment),
+        records the failure, and clears the selection. Whether the customer
+        stays to choose again or is paid out is decided in _fail_vend.
+        """
+        product = self.selected_product
+        price = product.price if product else 0.0
+        name = product.name if product else "Unknown"
+        sku = product.sku if product else None
+        self._cancel_dispense_timeout()
+        self.credit_escrow += price
+        logger.error(
+            f"{STATE_CHANGE_PREFIX} Vend failed for '{name}' ({code.value}, {outcome}); "
+            f"${price:.2f} returned to escrow"
+        )
+        txn_log.error(
+            f"VEND FAILED: '{name}' {code.value} ({outcome}); ${price:.2f} returned to escrow"
+        )
+        if self._event_recorder:
+            self._event_recorder.record(
+                "vend_failed",
+                value=price,
+                metadata={"code": code.value, "sku": sku, "outcome": outcome},
+            )
+        self.selected_product = None
+        self.last_insufficient_message = ""
+        self.send_customer_message(
+            f"Sorry, {name} could not be dispensed ({code.value}). "
+            f"Your ${price:.2f} credit has been kept."
+        )
+
+    def _fail_vend(self, code: FaultCode, outcome: str) -> None:
+        """Run the vend_failed transition, then decide: choose again, or pay out."""
+        self.vend_failed(code=code, outcome=outcome)
+        if not self._sellable_products():
+            txn_log.info("No sellable products remain; refunding and returning to idle")
+            self.request_refund(reason=code.value)
+            self._cancel_session_timeout()
+            self.machine.set_state("idle")
+            self._publish_status()
+            self._update_display("idle")
+        else:
+            self.send_customer_message("Please choose another product.")
+            self._reset_session_timeout()
+            self._publish_status()
+            self._update_display("interacting_with_user")
+        self._refresh_ui()
+
+    @logger.catch()
+    def _dispense_timed_out(self):
+        """No terminal dispenser report arrived within the configured timeout."""
+        self._dispense_timeout_task = None
+        if self.state != "dispensing":
+            return
+        sku = self.selected_product.sku if self.selected_product else None
+        logger.error(
+            f"Dispense timed out after {self._dispense_timeout_seconds:.0f}s with no "
+            f"terminal report (slot {self.selected_product.slot if self.selected_product else '?'})"
+        )
+        self._raise_fault(FaultCode.PAY_102, sku=sku, outcome="no_report")
+        self._fail_vend(FaultCode.PAY_102, outcome="no_report")
+
+    @logger.catch()
     def on_error(self):
         logger.error(
             f"{STATE_CHANGE_PREFIX} Error encountered for product: {self.selected_product}. Transitioning to error state."
         )
         if self._event_recorder:
             self._event_recorder.record("error", value=1.0)
-        # Refund any remaining credit in escrow
-        if self.credit_escrow > 0:
-            refund = self.credit_escrow
-            self.credit_escrow = 0.0
-            txn_log.info(
-                f"REFUND (error state): ${refund:.2f} via {self.last_payment_method}"
-            )
-            logger.info(f"Refunded ${refund:.2f} due to error state transition.")
+        # Pay out any remaining credit through the gateway
+        had_credit = self.credit_escrow > 0
+        if had_credit:
+            self.request_refund(reason="error")
         self._publish_status()
         self._update_display("error")
         self._refresh_ui()
-        self.send_customer_message(
-            "An error has occurred. Your payment has been refunded. Please contact support."
-        )
+        if had_credit:
+            self.send_customer_message(
+                "An error has occurred. A refund of your credit has been requested. "
+                "Please contact support if it does not arrive."
+            )
+        else:
+            self.send_customer_message("An error has occurred. Please contact support.")
 
     # --- Business Logic Methods ---
     @logger.catch()
@@ -588,23 +854,119 @@ class VMC:
         )
 
     @logger.catch()
-    def request_refund(self):
+    def request_refund(self, reason: str = "admin"):
+        """Pay the customer back: publish a refund command and await its ack.
+
+        This is the ONLY path that sends money out. Restoring a price to
+        escrow after a failed vend is not a refund and does not come here.
+        """
         logger.debug(f"Requesting refund with current credit: {self.credit_escrow:.2f}")
-        if self.credit_escrow > 0:
-            refund_amount = self.credit_escrow
-            self.credit_escrow = 0.0
-            logger.info(
-                f"Refund of ${refund_amount:.2f} issued via {self.last_payment_method}."
-            )
-            txn_log.info(
-                f"REFUND ISSUED: ${refund_amount:.2f} via {self.last_payment_method}"
-            )
-            self.send_customer_message(
-                f"Refund of ${refund_amount:.2f} issued via {self.last_payment_method}."
-            )
-            self._refresh_ui()
-        else:
+        if self.credit_escrow <= 0:
             self.send_customer_message("No funds to refund.")
+            return
+        amount = round(self.credit_escrow, 2)
+        self.credit_escrow = 0.0
+        pending = PendingRefund(request_id=uuid4().hex, amount=amount, reason=reason)
+        self._pending_refunds[pending.request_id] = pending
+        self._send_refund_command(pending)
+        logger.info(
+            f"Refund of ${amount:.2f} requested via {self.last_payment_method} "
+            f"(reason={reason}, request_id={pending.request_id})"
+        )
+        txn_log.info(
+            f"REFUND REQUESTED: ${amount:.2f} via {self.last_payment_method} "
+            f"reason={reason} request_id={pending.request_id}"
+        )
+        self.send_customer_message(
+            f"Refund of ${amount:.2f} requested via {self.last_payment_method}. "
+            "Please wait..."
+        )
+        self._refresh_ui()
+
+    def _send_refund_command(self, pending: PendingRefund) -> None:
+        cmd = PaymentRefundCommand(
+            request_id=pending.request_id, amount=pending.amount, reason=pending.reason
+        )
+        if self._mqtt_client is not None:
+            self._fire_and_forget(self._mqtt_client.publish("cmd/payment/refund", cmd))
+        else:
+            logger.warning("No MQTT client; refund command not sent")
+        pending.deadline_task = self._schedule(
+            self.REFUND_ACK_TIMEOUT, lambda: self._refund_deadline(pending.request_id)
+        )
+
+    async def _handle_mqtt_refund_ack(self, topic: str, data: dict):
+        """Payment gateway acknowledged (or refused) a refund command."""
+        result = PaymentRefundResult.model_validate(data)
+        pending = self._pending_refunds.get(result.request_id)
+        if pending is None:
+            logger.warning(f"Refund ack for unknown request_id {result.request_id}")
+            return
+        if result.status is RefundStatus.ok:
+            self._refund_confirmed(pending, result.amount_returned)
+        else:
+            self._refund_attempt_failed(
+                pending, detail=result.detail or result.status.value
+            )
+
+    def _cancel_refund_deadline(self, pending: PendingRefund) -> None:
+        if pending.deadline_task and not pending.deadline_task.done():
+            pending.deadline_task.cancel()
+        pending.deadline_task = None
+
+    def _refund_confirmed(self, pending: PendingRefund, amount_returned: float) -> None:
+        self._cancel_refund_deadline(pending)
+        self._pending_refunds.pop(pending.request_id, None)
+        txn_log.info(
+            f"REFUND CONFIRMED: ${amount_returned:.2f} request_id={pending.request_id}"
+        )
+        if self._event_recorder:
+            self._event_recorder.record(
+                "refund",
+                value=amount_returned,
+                metadata={"request_id": pending.request_id, "reason": pending.reason},
+            )
+        self.send_customer_message(
+            f"Refund of ${amount_returned:.2f} issued via {self.last_payment_method}."
+        )
+
+    def _refund_deadline(self, request_id: str) -> None:
+        pending = self._pending_refunds.get(request_id)
+        if pending is None:
+            return
+        pending.deadline_task = None
+        self._refund_attempt_failed(pending, detail="ack_timeout")
+
+    def _refund_attempt_failed(self, pending: PendingRefund, detail: str) -> None:
+        self._cancel_refund_deadline(pending)
+        if pending.attempts < self.REFUND_MAX_ATTEMPTS:
+            pending.attempts += 1
+            logger.warning(
+                f"Refund {pending.request_id} not confirmed ({detail}); "
+                f"retry {pending.attempts}/{self.REFUND_MAX_ATTEMPTS}"
+            )
+            self._send_refund_command(pending)
+            return
+        self._pending_refunds.pop(pending.request_id, None)
+        txn_log.error(
+            f"REFUND FAILED: ${pending.amount:.2f} request_id={pending.request_id} "
+            f"reason={pending.reason} detail={detail}"
+        )
+        if self._event_recorder:
+            self._event_recorder.record(
+                "refund_failed",
+                value=pending.amount,
+                metadata={
+                    "request_id": pending.request_id,
+                    "reason": pending.reason,
+                    "detail": detail,
+                },
+            )
+        self.send_customer_message(
+            f"We could not return ${pending.amount:.2f} automatically. "
+            f"Please contact support and quote {pending.request_id[:8]}."
+        )
+        self._raise_fault(FaultCode.PAY_103, outcome=detail)
 
     @logger.catch()
     def initiate_virtual_payment(self, amount):
@@ -650,7 +1012,18 @@ class VMC:
 
         # `product_index` here is the physical button index (ButtonPress.button),
         # not the product's dispense `slot` — buttons stay positional for now.
-        self.selected_product = self.products[product_index]
+        candidate = self.products[product_index]
+        locked_code = self._lockouts.get(candidate.sku)
+        if locked_code is not None:
+            txn_log.info(
+                f"LOCKED OUT: '{candidate.name}' ({locked_code.value}), customer rejected"
+            )
+            self.send_customer_message(
+                f"{candidate.name} is unavailable ({locked_code.value}). "
+                "Please choose another product."
+            )
+            return
+        self.selected_product = candidate
         logger.info(
             f"Selected product: {self.selected_product.name} at ${self.selected_product.price:.2f}"
         )
@@ -727,9 +1100,11 @@ class VMC:
             )
             self.dispense_product()
             self._refresh_ui()
-            # Dispenser hardware will send "complete" via MQTT → _handle_mqtt_dispenser
-            # Schedule a timeout fallback in case the hardware never responds
-            self._dispense_timeout_task = self._schedule(60.0, self._finish_dispensing)
+            # Dispenser hardware reports a terminal DispenserOutcome via MQTT; no
+            # report within the timeout is a failed vend (PAY-102).
+            self._dispense_timeout_task = self._schedule(
+                self._dispense_timeout_seconds, self._dispense_timed_out
+            )
             self.last_insufficient_message = ""
         else:
             required = price - self.credit_escrow
@@ -766,7 +1141,7 @@ class VMC:
             return
         logger.info("Customer session timed out due to inactivity.")
         txn_log.info(f"SESSION TIMEOUT: refunding ${self.credit_escrow:.2f}")
-        self.request_refund()
+        self.request_refund(reason="session_timeout")
         self.selected_product = None
         self.last_insufficient_message = ""
         # Manually transition back to idle (reset_state only works from error)

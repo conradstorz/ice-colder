@@ -66,11 +66,13 @@ class MQTTClient:
         self._handlers.append((topic_suffix, handler))
         logger.debug(f"MQTT: Registered handler for {self.topic_prefix}/{topic_suffix}")
 
-    async def publish(self, topic_suffix: str, payload: BaseModel | dict):
+    async def publish(self, topic_suffix: str, payload: BaseModel | dict, qos: int = 1):
         """
         Publish a message to vmc/{machine_id}/{topic_suffix}.
 
         Accepts either a Pydantic model (serialized to JSON) or a plain dict.
+        Defaults to QoS 1 (contract-mandated for commands/acks/events/heartbeats/
+        refunds); pass qos=0 only for high-rate sensor readings.
         """
         if self._client is None or not self._connected:
             logger.warning(f"MQTT: Cannot publish to {topic_suffix} — not connected")
@@ -83,7 +85,7 @@ class MQTTClient:
             data = json.dumps(payload)
 
         try:
-            await self._client.publish(full_topic, data)
+            await self._client.publish(full_topic, data, qos=qos)
             logger.debug(f"MQTT: Published to {full_topic}")
         except Exception as e:
             logger.error(f"MQTT: Failed to publish to {full_topic}: {e}")
@@ -152,7 +154,7 @@ class MQTTClient:
             # Subscribe to all registered topic patterns
             for topic_suffix, _ in self._handlers:
                 full_topic = f"{self.topic_prefix}/{topic_suffix}"
-                await client.subscribe(full_topic)
+                await client.subscribe(full_topic, qos=1)
                 logger.info(f"MQTT: Subscribed to {full_topic}")
 
             # Listen and dispatch

@@ -20,6 +20,7 @@ from datetime import datetime
 import aiomqtt
 from loguru import logger
 
+from contracts.vending_machine import DispenserOutcome
 from simulators.base import ESP32Simulator, FaultDef
 from services.mqtt_messages import (
     ButtonPress,
@@ -334,7 +335,7 @@ class VendingMachineSimulator(ESP32Simulator):
             await self.publish(
                 client,
                 "hardware/dispenser",
-                DispenserStatus(slot=slot, state="bin_empty"),
+                DispenserStatus(slot=slot, state=DispenserOutcome.bin_empty.value),
             )
             logger.warning(f"[vending] Slot {slot}: ice bin empty")
             return
@@ -357,7 +358,7 @@ class VendingMachineSimulator(ESP32Simulator):
             await self.publish(
                 client,
                 "hardware/dispenser",
-                DispenserStatus(slot=slot, state="timeout"),
+                DispenserStatus(slot=slot, state=DispenserOutcome.timeout.value),
             )
             logger.warning(f"[vending] Slot {slot}: auger jam — dispense timed out")
             return
@@ -387,7 +388,9 @@ class VendingMachineSimulator(ESP32Simulator):
             await self._set_hw(client, "agitator_motor", False)
             await self._set_hw(client, "fan", False)
             await self.publish(
-                client, "hardware/dispenser", DispenserStatus(slot=slot, state="jam")
+                client,
+                "hardware/dispenser",
+                DispenserStatus(slot=slot, state=DispenserOutcome.jam.value),
             )
             logger.warning(f"[vending] Slot {slot}: bag drop solenoid stuck")
             return
@@ -404,7 +407,9 @@ class VendingMachineSimulator(ESP32Simulator):
         await self._set_hw(client, "fan", False)
 
         await self.publish(
-            client, "hardware/dispenser", DispenserStatus(slot=slot, state="complete")
+            client,
+            "hardware/dispenser",
+            DispenserStatus(slot=slot, state=DispenserOutcome.complete.value),
         )
         logger.info(f"[vending] Slot {slot}: ice dispense complete")
 
@@ -440,7 +445,7 @@ class VendingMachineSimulator(ESP32Simulator):
             await self.publish(
                 client,
                 "hardware/dispenser",
-                DispenserStatus(slot=slot, state="complete"),
+                DispenserStatus(slot=slot, state=DispenserOutcome.complete.value),
             )
             return
 
@@ -449,7 +454,9 @@ class VendingMachineSimulator(ESP32Simulator):
         await self._set_hw(client, "water_flow_sensor", False)
 
         await self.publish(
-            client, "hardware/dispenser", DispenserStatus(slot=slot, state="complete")
+            client,
+            "hardware/dispenser",
+            DispenserStatus(slot=slot, state=DispenserOutcome.complete.value),
         )
         logger.info(f"[vending] Slot {slot}: water dispense complete")
 

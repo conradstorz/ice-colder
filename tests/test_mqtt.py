@@ -162,6 +162,32 @@ class TestMQTTClientUnit:
         await client.publish("status", {"state": "idle"})
 
     @pytest.mark.asyncio
+    async def test_publish_defaults_to_qos_1(self):
+        cfg = MQTTConfig()
+        client = MQTTClient(config=cfg, machine_id="vmc-0001")
+        client._client = AsyncMock()
+        client._connected = True
+
+        await client.publish("status", {"state": "idle"})
+
+        client._client.publish.assert_awaited_once()
+        _, kwargs = client._client.publish.call_args
+        assert kwargs["qos"] == 1
+
+    @pytest.mark.asyncio
+    async def test_publish_honors_explicit_qos_0(self):
+        cfg = MQTTConfig()
+        client = MQTTClient(config=cfg, machine_id="vmc-0001")
+        client._client = AsyncMock()
+        client._connected = True
+
+        await client.publish("sensors/temp/evaporator", {"value": -12.5}, qos=0)
+
+        client._client.publish.assert_awaited_once()
+        _, kwargs = client._client.publish.call_args
+        assert kwargs["qos"] == 0
+
+    @pytest.mark.asyncio
     async def test_dispatch_routes_to_handler(self):
         cfg = MQTTConfig()
         client = MQTTClient(config=cfg, machine_id="test-machine")
@@ -210,6 +236,51 @@ class TestMQTTClientUnit:
         handler.assert_not_awaited()
 
 
+class _FakeAiomqttClient:
+    """Stand-in for aiomqtt.Client: records subscribe() calls, yields no messages."""
+
+    def __init__(self, *args, **kwargs):
+        self.subscribed: list[tuple[str, int]] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    async def subscribe(self, topic, qos=0):
+        self.subscribed.append((topic, qos))
+
+    async def _empty_messages(self):
+        return
+        yield  # pragma: no cover - never reached; makes this an async generator
+
+    @property
+    def messages(self):
+        return self._empty_messages()
+
+
+class TestMQTTClientSubscribeQoS:
+    @pytest.mark.asyncio
+    async def test_connect_and_listen_subscribes_at_qos_1(self, monkeypatch):
+        cfg = MQTTConfig()
+        client = MQTTClient(config=cfg, machine_id="vmc-0001")
+        client.register("payment/credit", AsyncMock())
+        client.register("sensors/temp/+", AsyncMock())
+
+        fake = _FakeAiomqttClient()
+        monkeypatch.setattr(
+            "services.mqtt_client.aiomqtt.Client", lambda *a, **kw: fake
+        )
+
+        await client._connect_and_listen()
+
+        assert fake.subscribed == [
+            ("vmc/vmc-0001/payment/credit", 1),
+            ("vmc/vmc-0001/sensors/temp/+", 1),
+        ]
+
+
 # ── VMC MQTT wiring tests ────────────────────────────────────
 
 
@@ -224,7 +295,7 @@ class TestVMCMQTTWiring:
         vmc = _make_vmc()
         mock_client = MagicMock()
         vmc.set_mqtt_client(mock_client)
-        assert mock_client.register.call_count == 9
+        assert mock_client.register.call_count == 11
 
     def test_publish_status_without_client_does_nothing(self):
         vmc = _make_vmc()

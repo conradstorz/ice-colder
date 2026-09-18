@@ -11,7 +11,10 @@ Messages flow in three directions:
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
+
 from pydantic import BaseModel, Field
+
+from contracts.vending_machine import FaultCode
 
 
 def _utc_now() -> datetime:
@@ -166,4 +169,6 @@ class VMCAlert(BaseModel):
     level: AlertLevel
     message: str
     source: str = Field("vmc", description="Subsystem that generated the alert")
+    code: Optional[FaultCode] = Field(None, description="Fault code, if any")
+    product_sku: Optional[str] = Field(None, description="Affected product, if any")
     timestamp: datetime = Field(default_factory=_utc_now)
