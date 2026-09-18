@@ -11,8 +11,16 @@ from services.mqtt_messages import (
     ButtonPress,
     DispenseCommand,
     IceMakerEvent,
+    HardwareIO,
+    VMCAlert,
 )
 from contracts.ice_maker_monitor import ChannelReading, CommandAck, MonitorCapabilities
+from contracts.vending_machine import (
+    FAULT_TABLE,
+    FaultCode,
+    Scope,
+    Severity,
+)
 from config.config_model import ConfigModel
 from services.health_monitor import HealthMonitor
 from services.display_controller import DisplayController
@@ -75,6 +83,16 @@ TRANSITIONS = [
     },
 ]
 
+# Alert level sent to the owner for each fault severity.
+_SEVERITY_LEVEL = {
+    Severity.info: "info",
+    Severity.warning: "warning",
+    Severity.product_unavailable: "warning",
+    Severity.vend_failed: "warning",
+    Severity.lockout: "error",
+    Severity.critical: "critical",
+}
+
 
 class VMC:
     states = ["idle", "interacting_with_user", "dispensing", "error"]
@@ -118,6 +136,9 @@ class VMC:
         )
         self._event_recorder = None  # Set via set_event_recorder()
         self.subsystem_capabilities: dict[str, dict] = {}
+        # Fault registry: product-scope faults by SKU, machine-scope faults by code.
+        self._lockouts: dict[str, FaultCode] = {}
+        self._machine_faults: dict[FaultCode, float] = {}
         self._start_time = time.monotonic()
         self._session_timeout_seconds = 180.0  # 3 minutes
 
@@ -164,6 +185,7 @@ class VMC:
         client.register("capabilities/+", self._handle_mqtt_capabilities)
         client.register("telemetry/ice_maker/+", self._handle_mqtt_telemetry)
         client.register("cmd/ice_maker/ack", self._handle_mqtt_command_ack)
+        client.register("hardware/io/+", self._handle_mqtt_hardware_io)
         logger.debug("VMC registered MQTT handlers.")
 
     def set_health_monitor(self, monitor: HealthMonitor):
@@ -211,6 +233,133 @@ class VMC:
         self._loop.create_task(self._mqtt_client.publish("status", status))
         if self._health_monitor:
             self._health_monitor.update_vmc_state(self.state)
+
+    # --- Fault registry ---
+
+    def _product_name(self, sku: str | None) -> str | None:
+        if sku is None:
+            return None
+        return next((p.name for p in self.products if p.sku == sku), sku)
+
+    def _sellable_products(self) -> list:
+        return [p for p in self.products if p.sku not in self._lockouts]
+
+    def active_faults(self) -> list[dict]:
+        """Snapshot for the dashboard/health monitor. Product faults first."""
+        out = []
+        for sku, code in self._lockouts.items():
+            spec = FAULT_TABLE[code]
+            out.append(
+                {
+                    "key": sku,
+                    "sku": sku,
+                    "product": self._product_name(sku),
+                    "code": code.value,
+                    "severity": spec.severity.value,
+                    "scope": spec.scope.value,
+                    "description": spec.description,
+                }
+            )
+        for code in self._machine_faults:
+            spec = FAULT_TABLE[code]
+            out.append(
+                {
+                    "key": code.value,
+                    "sku": None,
+                    "product": None,
+                    "code": code.value,
+                    "severity": spec.severity.value,
+                    "scope": spec.scope.value,
+                    "description": spec.description,
+                }
+            )
+        return out
+
+    def _push_active_faults(self) -> None:
+        if self._health_monitor:
+            self._health_monitor.set_active_faults(self.active_faults())
+
+    def _raise_fault(
+        self,
+        code: FaultCode,
+        sku: str | None = None,
+        outcome: str | None = None,
+    ) -> None:
+        """Record a fault: lock the product if its severity says so, alert the owner."""
+        spec = FAULT_TABLE[code]
+        locks = spec.severity in (Severity.lockout, Severity.product_unavailable)
+        if spec.scope is Scope.product and sku is not None and locks:
+            if self._lockouts.get(sku) != code:
+                self._lockouts[sku] = code
+                if self._event_recorder:
+                    self._event_recorder.record(
+                        "lockout_set", metadata={"code": code.value, "sku": sku}
+                    )
+        elif spec.scope is Scope.machine:
+            self._machine_faults.setdefault(code, time.monotonic())
+
+        name = self._product_name(sku)
+        message = f"{code.value} {spec.description}"
+        if name:
+            message += f" — product '{name}'"
+        if outcome:
+            message += f" (reported: {outcome})"
+        logger.error(f"FAULT {message}")
+
+        key = f"{code.value}:{sku or 'machine'}"
+        level = _SEVERITY_LEVEL[spec.severity]
+        if self._health_monitor:
+            self._fire_and_forget(
+                self._health_monitor.raise_alert(
+                    key, level, "vmc", message, code=code.value, product_sku=sku
+                )
+            )
+        if self._mqtt_client:
+            self._fire_and_forget(
+                self._mqtt_client.publish(
+                    "alerts",
+                    VMCAlert(level=level, message=message, code=code, product_sku=sku),
+                )
+            )
+        self._push_active_faults()
+
+    def clear_fault(self, key: str, by: str = "admin") -> bool:
+        """Clear a fault by key (SKU for product faults, code string for machine faults)."""
+        code = self._lockouts.pop(key, None)
+        if code is not None:
+            sku = key
+            if self._event_recorder:
+                self._event_recorder.record(
+                    "lockout_cleared",
+                    metadata={"code": code.value, "sku": sku, "by": by},
+                )
+            if self._health_monitor:
+                self._health_monitor.clear_alert(f"{code.value}:{sku}")
+            logger.info(f"Fault {code.value} cleared for product {sku} ({by})")
+        else:
+            try:
+                code = FaultCode(key)
+            except ValueError:
+                return False
+            if code not in self._machine_faults:
+                return False
+            del self._machine_faults[code]
+            if self._health_monitor:
+                self._health_monitor.clear_alert(f"{code.value}:machine")
+            logger.info(f"Machine fault {code.value} cleared ({by})")
+        self._push_active_faults()
+        self._publish_status()
+        return True
+
+    async def _handle_mqtt_hardware_io(self, topic: str, data: dict):
+        """Binary hardware IO from the vending ESP32; ice returning clears ICE-101."""
+        hw = HardwareIO.model_validate(data)
+        if hw.device == "bin_half_full" and hw.state:
+            for sku, code in list(self._lockouts.items()):
+                if code is FaultCode.ICE_101:
+                    self.clear_fault(sku, by="auto")
+        else:
+            logger.debug(f"MQTT hardware IO: {hw.device}={hw.state}")
 
     # --- MQTT inbound handlers ---
 
@@ -377,6 +526,13 @@ class VMC:
         logger.info(
             f"Monitor ack: {ack.command} -> {ack.status}{detail} ({ack.request_id})"
         )
+
+    def _fire_and_forget(self, coro) -> None:
+        """Run a coroutine on the attached loop without awaiting it."""
+        if self._loop is None or self._loop.is_closed():
+            coro.close()
+            return
+        self._loop.create_task(coro)
 
     def _schedule(self, delay_seconds, callback) -> asyncio.Task | None:
         """Schedule a synchronous callback to run after delay_seconds on the event loop."""
@@ -650,7 +806,18 @@ class VMC:
 
         # `product_index` here is the physical button index (ButtonPress.button),
         # not the product's dispense `slot` — buttons stay positional for now.
-        self.selected_product = self.products[product_index]
+        candidate = self.products[product_index]
+        locked_code = self._lockouts.get(candidate.sku)
+        if locked_code is not None:
+            txn_log.info(
+                f"LOCKED OUT: '{candidate.name}' ({locked_code.value}), customer rejected"
+            )
+            self.send_customer_message(
+                f"{candidate.name} is unavailable ({locked_code.value}). "
+                "Please choose another product."
+            )
+            return
+        self.selected_product = candidate
         logger.info(
             f"Selected product: {self.selected_product.name} at ${self.selected_product.price:.2f}"
         )

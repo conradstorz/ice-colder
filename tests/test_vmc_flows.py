@@ -7,7 +7,9 @@ which skips without a live MQTT broker.
 import asyncio
 
 from config.config_model import ConfigModel, Product
+from contracts.vending_machine import FaultCode
 from controller.vmc import VMC
+from services.health_monitor import HealthMonitor
 
 
 def make_vmc(price: float = 2.50) -> VMC:
@@ -376,3 +378,129 @@ async def test_dispense_uses_product_slot_not_list_index():
     topic, payload = published[-1]
     assert topic == "cmd/dispense"
     assert payload.slot == 1  # WATER-1's stable slot, not its new list index (0)
+
+
+def make_vmc2() -> VMC:
+    cfg = ConfigModel()
+    cfg.physical.products = [
+        Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0),
+        Product(sku="WATER-1", name="Water", price=1.00, slot=1),
+    ]
+    return VMC(config=cfg)
+
+
+class TestFaultRegistry:
+    async def test_lockout_fault_locks_product_and_alerts(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        rec = FakeEventRecorder()
+        vmc.set_event_recorder(rec)
+        hm = HealthMonitor()
+        vmc.set_health_monitor(hm)
+
+        vmc._raise_fault(FaultCode.ICE_301, sku="ICE-1", outcome="timeout")
+        await asyncio.sleep(0)
+
+        assert vmc._lockouts == {"ICE-1": FaultCode.ICE_301}
+        assert ("lockout_set", 1.0, {"code": "ICE-301", "sku": "ICE-1"}) in rec.events
+        assert "ICE-301:ICE-1" in hm._fired_alerts
+        faults = hm.get_summary()["active_faults"]
+        assert faults[0]["code"] == "ICE-301" and faults[0]["product"] == "Ice Bag"
+
+    async def test_vend_failed_severity_does_not_lock(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc._raise_fault(FaultCode.PAY_102, sku="ICE-1")
+        assert vmc._lockouts == {}
+        assert vmc.active_faults() == []
+
+    async def test_machine_scope_fault_keyed_by_code(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc._raise_fault(FaultCode.PAY_103)
+        faults = vmc.active_faults()
+        assert faults == [
+            {
+                "key": "PAY-103",
+                "sku": None,
+                "product": None,
+                "code": "PAY-103",
+                "severity": "warning",
+                "scope": "machine",
+                "description": "Refund not confirmed by payment gateway; needs reconciliation",
+            }
+        ]
+        assert vmc.clear_fault("PAY-103") is True
+        assert vmc.active_faults() == []
+
+    async def test_select_locked_product_is_refused(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        messages: list[str] = []
+        vmc.set_message_callback(messages.append)
+        vmc._raise_fault(FaultCode.ICE_301, sku="ICE-1")
+
+        vmc.select_product(0)
+
+        assert vmc.state == "idle"
+        assert vmc.selected_product is None
+        assert any("ICE-301" in m for m in messages)
+
+    async def test_sellable_products_excludes_locked(self):
+        vmc = make_vmc2()
+        vmc._raise_fault(FaultCode.ICE_401, sku="ICE-1")
+        assert [p.sku for p in vmc._sellable_products()] == ["WATER-1"]
+
+    async def test_clear_fault_records_and_rearms_alert(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        rec = FakeEventRecorder()
+        vmc.set_event_recorder(rec)
+        hm = HealthMonitor()
+        vmc.set_health_monitor(hm)
+        vmc._raise_fault(FaultCode.ICE_301, sku="ICE-1")
+        await asyncio.sleep(0)
+
+        assert vmc.clear_fault("ICE-1") is True
+        assert vmc._lockouts == {}
+        assert "ICE-301:ICE-1" not in hm._fired_alerts
+        assert (
+            "lockout_cleared",
+            1.0,
+            {"code": "ICE-301", "sku": "ICE-1", "by": "admin"},
+        ) in rec.events
+        assert hm.get_summary()["active_faults"] == []
+        assert vmc.clear_fault("ICE-1") is False
+
+    async def test_bin_half_full_auto_clears_ice_101(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        rec = FakeEventRecorder()
+        vmc.set_event_recorder(rec)
+        vmc._raise_fault(FaultCode.ICE_101, sku="ICE-1")
+        vmc._raise_fault(FaultCode.ICE_301, sku="WATER-1")
+
+        await vmc._handle_mqtt_hardware_io(
+            "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
+        )
+
+        assert vmc._lockouts == {"WATER-1": FaultCode.ICE_301}
+        assert (
+            "lockout_cleared",
+            1.0,
+            {"code": "ICE-101", "sku": "ICE-1", "by": "auto"},
+        ) in rec.events
+
+    def test_hardware_io_handler_is_registered(self):
+        vmc = make_vmc2()
+
+        class FakeClient:
+            def __init__(self):
+                self.topics = []
+
+            def register(self, topic, handler):
+                self.topics.append(topic)
+
+        client = FakeClient()
+        vmc.set_mqtt_client(client)
+        assert "hardware/io/+" in client.topics
