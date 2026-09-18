@@ -11,12 +11,19 @@ Run: uv run python -m simulators.mdb_gateway [--broker HOST] [--port PORT] [--ma
 
 import asyncio
 import random
+from collections import OrderedDict
 
 import aiomqtt
 from loguru import logger
+from pydantic import ValidationError
 
 from simulators.base import ESP32Simulator, FaultDef
 from services.mqtt_messages import PaymentEvent, PaymentStatus
+from contracts.vending_machine import (
+    PaymentRefundCommand,
+    PaymentRefundResult,
+    RefundStatus,
+)
 
 
 class PaymentStrategy:
@@ -58,6 +65,8 @@ class MDBGatewaySimulator(ESP32Simulator):
 
     DEVICE_STATUS_INTERVAL = 30.0  # seconds between device status publishes
     MAX_CASH_ATTEMPTS = 3
+    REFUND_DELAY_RANGE = (0.5, 2.0)  # seconds the changer takes to pay out
+    REFUND_RESULTS_MAX = 256  # idempotency cache bound, oldest evicted first
 
     def __init__(self, **kwargs):
         super().__init__(subsystem_name="mdb", **kwargs)
@@ -70,6 +79,8 @@ class MDBGatewaySimulator(ESP32Simulator):
         # Build a lookup of product name -> price from config
         self._product_prices = {p.name: p.price for p in self.config.products}
         self._vmc_status: asyncio.Queue = asyncio.Queue()
+        # request_id -> result, so a repeated refund command is never paid twice
+        self._refund_results: OrderedDict[str, PaymentRefundResult] = OrderedDict()
 
         # Register faults
         self.register_fault(
@@ -114,6 +125,17 @@ class MDBGatewaySimulator(ESP32Simulator):
                 on_recover=self._on_mdb_bus_reset_recover,
                 message="MDB bus reset — all payment devices temporarily offline",
                 severity="critical",
+            )
+        )
+        self.register_fault(
+            FaultDef(
+                name="changer_empty",
+                category="medium",
+                probability=0.0003,
+                on_activate=self._on_changer_empty_activate,
+                on_recover=self._on_changer_empty_recover,
+                message="Coin changer empty — refunds cannot be paid out",
+                severity="warning",
             )
         )
 
@@ -317,6 +339,62 @@ class MDBGatewaySimulator(ESP32Simulator):
             logger.info(f"[mdb] Device restored: {device['name']}")
         logger.info("[mdb] Fault cleared: mdb_bus_reset")
 
+    async def _on_changer_empty_activate(self, client: aiomqtt.Client) -> None:
+        logger.warning("[mdb] FAULT: changer empty — refunds will fail")
+
+    async def _on_changer_empty_recover(self, client: aiomqtt.Client) -> None:
+        logger.info("[mdb] Fault cleared: changer_empty")
+
+    async def _refund_loop(self, client: aiomqtt.Client):
+        """Answer VMC refund commands from the subscription queue."""
+        topic = f"{self.topic_prefix}/cmd/payment/refund"
+        queue = await self.subscribe(client, topic)
+        logger.info(f"[mdb] Listening for refund commands on {topic}")
+        while True:
+            _topic, data = await queue.get()
+            try:
+                cmd = PaymentRefundCommand.model_validate(data)
+            except ValidationError as e:
+                logger.error(f"[mdb] Bad refund command ignored: {e}")
+                continue
+            await self._handle_refund(client, cmd)
+
+    async def _handle_refund(
+        self, client: aiomqtt.Client, cmd: PaymentRefundCommand
+    ) -> None:
+        cached = self._refund_results.get(cmd.request_id)
+        if cached is not None:
+            logger.info(
+                f"[mdb] Refund {cmd.request_id}: repeat request, re-sending result"
+            )
+            await self.publish(client, "cmd/payment/refund/ack", cached)
+            return
+
+        await asyncio.sleep(random.uniform(*self.REFUND_DELAY_RANGE))
+        if "changer_empty" in self._active_fault_names:
+            result = PaymentRefundResult(
+                request_id=cmd.request_id,
+                status=RefundStatus.failed,
+                amount_returned=0.0,
+                detail="changer_empty",
+            )
+            logger.warning(
+                f"[mdb] Refund {cmd.request_id}: FAILED, changer empty (${cmd.amount:.2f})"
+            )
+        else:
+            result = PaymentRefundResult(
+                request_id=cmd.request_id,
+                status=RefundStatus.ok,
+                amount_returned=cmd.amount,
+            )
+            logger.info(
+                f"[mdb] Refund {cmd.request_id}: paid out ${cmd.amount:.2f} ({cmd.reason})"
+            )
+        self._refund_results[cmd.request_id] = result
+        while len(self._refund_results) > self.REFUND_RESULTS_MAX:
+            self._refund_results.popitem(last=False)
+        await self.publish(client, "cmd/payment/refund/ack", result)
+
     async def run_simulation(self, client: aiomqtt.Client):
         """Run the MDB gateway simulation."""
         logger.info("[mdb] Starting MDB gateway simulation")
@@ -324,6 +402,7 @@ class MDBGatewaySimulator(ESP32Simulator):
             tg.create_task(self._publish_device_status(client))
             tg.create_task(self._watch_vmc_status(client))
             tg.create_task(self._payment_loop(client))
+            tg.create_task(self._refund_loop(client))
 
 
 if __name__ == "__main__":
