@@ -40,12 +40,12 @@ def setup_logging():
         compression="zip",
         format="{message};{level} {time:YYYY-MM-DD HH:mm:ss}",
     )
-    # Add console logging for INFO and ERROR messages (plain text, with custom format)
+    # Console: one line per record, level before the message so greps attribute it correctly
     logger.add(
         sys.stdout,
         level="INFO",
         serialize=False,
-        format="{message}\n{level}: {time:YYYY-MM-DD HH:mm:ss}",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",
     )
     # Transaction log — customer interactions only (button, payment, dispense, refund)
     logger.add(
