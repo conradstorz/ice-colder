@@ -105,6 +105,15 @@ class TestGetSummary:
         conn.close()
         assert recorder.get_summary(24)["uptime_pct"] == pytest.approx(4.2, abs=0.1)
 
+    def test_vends_failed_and_refunds(self, recorder):
+        recorder.record("vend_failed", value=2.5, metadata={"code": "ICE-301"})
+        recorder.record("vend_failed", value=3.0, metadata={"code": "ICE-401"})
+        recorder.record("refund", value=2.5, metadata={"request_id": "r1"})
+        recorder.record("refund_failed", value=3.0, metadata={"request_id": "r2"})
+        s = recorder.get_summary(24)
+        assert s["vends_failed"] == 2
+        assert s["refunds"] == 2.5
+
 
 class TestUptimeComputation:
     """uptime_pct must measure the fraction of _HEARTBEAT_INTERVAL-sized time

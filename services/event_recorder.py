@@ -38,6 +38,8 @@ SUMMARY_KEYS = (
     "service_door_opens",
     "temp_exceedances",
     "uptime_pct",
+    "vends_failed",
+    "refunds",
 )
 
 
@@ -156,6 +158,8 @@ class EventRecorder:
                 "service_door_opens": count("service_door"),
                 "temp_exceedances": count("temp_exceedance"),
                 "uptime_pct": uptime_pct,
+                "vends_failed": count("vend_failed"),
+                "refunds": round(total("refund"), 2),
             }
 
     def get_summary(self, period_hours: int) -> dict:
