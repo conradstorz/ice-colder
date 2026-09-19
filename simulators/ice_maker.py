@@ -26,6 +26,7 @@ from contracts.ice_maker_monitor import (
     MonitorCommand,
 )
 from simulators.base import ESP32Simulator, FaultDef
+from services.build_info import BUILD_INFO
 from services.mqtt_messages import SensorReading, IceMakerEvent
 
 
@@ -461,7 +462,9 @@ class IceMakerSimulator(ESP32Simulator):
             contract_version=CONTRACT_VERSION,
             brand="ice-colder",
             model="simulator",
-            firmware="sim",
+            firmware=BUILD_INFO.commit_short,
+            hardware_id=self.fake_hardware_id(),
+            ip=self.container_ip(),
             channels=temp_channels + TELEMETRY_CHANNELS,
             commands=["power_cycle", "force_report", "set_interval"],
         )
@@ -565,11 +568,12 @@ class IceMakerSimulator(ESP32Simulator):
             await self._handle_command(client, cmd)
 
     async def run_simulation(self, client: aiomqtt.Client):
-        """Publish capabilities, then readings/events; handle contract commands."""
+        """Publish startup event, then readings/events; handle contract commands.
+
+        Capabilities are published by the base class on connect (after HA
+        discovery); this only re-publishes them on set_interval.
+        """
         logger.info("[ice_maker] Starting temperature monitoring simulation")
-        await self.publish(
-            client, "capabilities/ice_maker", self.build_capabilities(), retain=True
-        )
         await self.publish(
             client,
             "ice_maker/event",

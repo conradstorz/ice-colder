@@ -584,3 +584,11 @@ class TestTerminalOutcomesFollowContract:
         sim.publish = AsyncMock()
         statuses = self._run(sim, sim._run_water_dispense(None, 1))
         assert DispenserOutcome(statuses[-1].state) is DispenserOutcome.complete
+
+
+class TestVendingCapabilities:
+    def test_commands_and_contract(self):
+        caps = _make_sim().build_capabilities()
+        assert caps.subsystem == "vending"
+        assert caps.commands == ["dispense", "payment/enable"]
+        assert caps.contract_version == "0.2.0"

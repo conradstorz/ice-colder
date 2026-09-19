@@ -66,6 +66,9 @@ class VendingMachineSimulator(ESP32Simulator):
     IDLE_MIN = 30.0  # min seconds between customers
     IDLE_MAX = 90.0  # max seconds between customers
     DISPENSE_TIMEOUT = 60.0  # seconds to wait for dispense command
+    SUPPORTED_COMMANDS = ["dispense", "payment/enable"]
+    BRAND = "ice-colder"
+    MODEL = "vending-sim"
 
     def __init__(self, **kwargs):
         super().__init__(subsystem_name="vending", **kwargs)

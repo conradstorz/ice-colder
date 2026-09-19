@@ -8,9 +8,11 @@ and automatic reconnection. Subclasses implement run_simulation().
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import random
+import socket
 import sys
 import time
 from abc import ABC, abstractmethod
@@ -24,6 +26,11 @@ from loguru import logger
 from pydantic import BaseModel, ValidationError
 
 from config.config_model import ConfigModel
+from contracts.vending_machine import (
+    CONTRACT_VERSION as VENDING_CONTRACT_VERSION,
+    SubsystemCapabilities,
+)
+from services.build_info import BUILD_INFO
 
 
 RECOVERY_RANGES: dict[str, tuple[float, float]] = {
@@ -57,6 +64,10 @@ class ESP32Simulator(ABC):
     """
 
     HEARTBEAT_INTERVAL = 10.0  # seconds
+    CONTRACT_VERSION = VENDING_CONTRACT_VERSION  # ice maker overrides
+    SUPPORTED_COMMANDS: list[str] = []
+    BRAND = ""
+    MODEL = ""
 
     def __init__(
         self,
@@ -109,6 +120,43 @@ class ESP32Simulator(ABC):
                 {"subsystem": self.subsystem_name, "uptime_seconds": -1}
             ),
             qos=1,
+        )
+
+    def fake_hardware_id(self) -> str:
+        """Stable locally-administered MAC derived from machine id + subsystem."""
+        digest = hashlib.sha1(
+            f"{self.machine_id}/{self.subsystem_name}".encode()
+        ).digest()
+        return "02:" + ":".join(f"{b:02x}" for b in digest[:5])
+
+    @staticmethod
+    def container_ip() -> str | None:
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except OSError:
+            return None
+
+    def build_capabilities(self) -> SubsystemCapabilities:
+        """Retained self-description; subclasses override to add channels etc."""
+        return SubsystemCapabilities(
+            subsystem=self.subsystem_name,
+            firmware=BUILD_INFO.commit_short,
+            contract_version=self.CONTRACT_VERSION,
+            brand=self.BRAND,
+            model=self.MODEL,
+            hardware_id=self.fake_hardware_id(),
+            ip=self.container_ip(),
+            commands=list(self.SUPPORTED_COMMANDS),
+        )
+
+    async def _publish_capabilities(self, client: aiomqtt.Client) -> None:
+        caps = self.build_capabilities()
+        await self.publish(
+            client, f"capabilities/{self.subsystem_name}", caps, retain=True
+        )
+        logger.info(
+            f"[{self.subsystem_name}] Capabilities published "
+            f"(firmware {caps.firmware}, contract {caps.contract_version})"
         )
 
     async def publish(
@@ -399,6 +447,7 @@ class ESP32Simulator(ABC):
                     )
                     self._subscriptions.clear()
                     await self._publish_ha_discovery(client)
+                    await self._publish_capabilities(client)
                     async with asyncio.TaskGroup() as tg:
                         tg.create_task(self._heartbeat_loop(client))
                         tg.create_task(self.run_simulation(client))
