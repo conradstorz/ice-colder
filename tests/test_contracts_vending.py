@@ -15,10 +15,11 @@ from contracts.vending_machine import (
     Scope,
     Severity,
 )
+from contracts.vending_machine import EXPECTED_SUBSYSTEMS, SubsystemCapabilities
 
 
 def test_contract_version():
-    assert CONTRACT_VERSION == "0.1.0"
+    assert CONTRACT_VERSION == "0.2.0"
 
 
 def test_every_fault_code_has_a_table_entry():
@@ -103,3 +104,40 @@ def test_vmc_alert_carries_code_and_sku():
     assert data["code"] == "ICE-301"
     assert data["product_sku"] == "ICE-1"
     assert VMCAlert(level="info", message="y").code is None
+
+
+class TestSubsystemCapabilities:
+    def test_minimal(self):
+        caps = SubsystemCapabilities(
+            subsystem="vending", firmware="abc1234", contract_version="0.2.0"
+        )
+        assert caps.brand == "" and caps.model == ""
+        assert caps.hardware_id is None and caps.ip is None
+        assert caps.channels == [] and caps.commands == []
+
+    def test_full(self):
+        caps = SubsystemCapabilities(
+            subsystem="mdb",
+            firmware="abc1234",
+            contract_version="0.2.0",
+            brand="Acme",
+            model="X1",
+            hardware_id="02:11:22:33:44:55",
+            ip="192.168.86.40",
+            commands=["payment/enable", "refund"],
+        )
+        data = caps.model_dump(mode="json")
+        assert data["hardware_id"] == "02:11:22:33:44:55"
+        assert data["commands"] == ["payment/enable", "refund"]
+
+    def test_subsystem_pattern(self):
+        with pytest.raises(ValidationError):
+            SubsystemCapabilities(
+                subsystem="Bad Name", firmware="x", contract_version="0.2.0"
+            )
+
+    def test_contract_version_bumped(self):
+        assert CONTRACT_VERSION == "0.2.0"
+
+    def test_expected_subsystems(self):
+        assert EXPECTED_SUBSYSTEMS == ("vending", "mdb", "ice_maker")

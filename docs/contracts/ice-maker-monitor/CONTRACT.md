@@ -1,4 +1,4 @@
-# Ice Maker Monitor Contract — v1.0.0
+# Ice Maker Monitor Contract — v1.1.0
 
 This document, together with the JSON Schema files in `schemas/`, defines the
 interface between the ice-colder VMC (this repo) and the separate,
@@ -24,6 +24,9 @@ schema files are regenerated from source and are always current.
 - The VMC accepts any `1.x` monitor. It logs a warning on unknown fields or
   unknown event strings rather than rejecting the message (consumer-side
   Pydantic models use `extra="ignore"`).
+- **1.1.0** (2026-09-18): `MonitorCapabilities` gains optional `hardware_id`
+  and `ip`; the model is now the shared `SubsystemCapabilities` with
+  `subsystem` fixed to `ice_maker`.
 
 ## Transport rules
 
@@ -137,6 +140,8 @@ Retained self-description, published on `capabilities/ice_maker`.
 | `brand` | string | required | Ice maker brand the monitor targets |
 | `model` | string | required | Ice maker model |
 | `firmware` | string | required | Monitor project's own software version |
+| `hardware_id` | string \| null | default `null`; added in 1.1.0 | MAC address or serial number of the monitor board |
+| `ip` | string \| null | default `null`; added in 1.1.0 | The monitor's LAN address |
 | `channels` | array of `ChannelDescriptor` | default `[]` | Declared telemetry channels |
 | `commands` | array of string | default `[]` | Which of the contract commands (`power_cycle`, `force_report`, `set_interval`) this monitor supports |
 | `timestamp` | string (date-time) | ISO-8601 UTC | Producer-side timestamp |
@@ -267,5 +272,7 @@ A monitor implementation is conformant with contract v1.x when it:
       `request_id`.
 - [ ] Answers `status: "unsupported"` for any command not listed in its own
       `MonitorCapabilities.commands`.
+- [ ] SHOULD include `hardware_id` and `ip` in `MonitorCapabilities` so the
+      dashboard can match a board to a row.
 - [ ] Tolerates unknown fields in incoming `MonitorCommand` messages
       without failing.
