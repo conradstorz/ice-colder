@@ -27,6 +27,7 @@ class SubsystemStatus:
     last_payload: dict = field(default_factory=dict)
     capabilities: dict = field(default_factory=dict)
     capabilities_at: float = 0.0  # monotonic; 0.0 = never received
+    offline: bool = False  # set by a Last-Will; cleared by the next heartbeat
 
     @property
     def seconds_since_seen(self) -> float:
@@ -37,6 +38,11 @@ class SubsystemStatus:
     @property
     def alive(self) -> bool:
         return self.last_seen > 0.0
+
+    def is_stale(self, timeout: float) -> bool:
+        """Went quiet after being alive, or announced offline. A subsystem known
+        only from a retained capabilities document is 'never seen', not stale."""
+        return self.offline or (self.alive and self.seconds_since_seen > timeout)
 
 
 @dataclass
@@ -116,6 +122,7 @@ class HealthMonitor:
             logger.info(f"Health: New subsystem registered: {subsystem}")
         self._subsystems[subsystem].last_seen = time.monotonic()
         self._subsystems[subsystem].last_payload = payload or {}
+        self._subsystems[subsystem].offline = False
         # Clear stale alert for this subsystem
         self._fired_alerts.discard(f"subsystem_stale:{subsystem}")
 
@@ -174,6 +181,7 @@ class HealthMonitor:
         if subsystem not in self._subsystems:
             self._subsystems[subsystem] = SubsystemStatus(name=subsystem)
         self._subsystems[subsystem].last_seen = 0.0
+        self._subsystems[subsystem].offline = True
 
     def set_active_faults(self, faults: list[dict]):
         """Replace the active-fault snapshot; `since` survives for keys already present."""
@@ -230,11 +238,13 @@ class HealthMonitor:
             row = self.empty_subsystem_row()
             uptime = sub.last_payload.get("uptime_seconds")
             caps = sub.capabilities
+            channels = caps.get("channels")
+            commands = caps.get("commands")
             row.update(
                 {
                     "alive": sub.alive,
                     "seconds_since_seen": round(sub.seconds_since_seen, 1),
-                    "stale": sub.seconds_since_seen > self._subsystem_timeout,
+                    "stale": sub.is_stale(self._subsystem_timeout),
                     "uptime_seconds": (
                         int(uptime)
                         if sub.alive
@@ -248,8 +258,9 @@ class HealthMonitor:
                     "model": caps.get("model") or None,
                     "hardware_id": caps.get("hardware_id"),
                     "ip": caps.get("ip"),
-                    "channel_count": len(caps.get("channels") or []),
-                    "commands": list(caps.get("commands") or []),
+                    # Raw (schema-failed) payloads are stored too; never trust shapes.
+                    "channel_count": len(channels) if isinstance(channels, list) else 0,
+                    "commands": list(commands) if isinstance(commands, list) else [],
                     "capabilities_age_seconds": (
                         round(now - sub.capabilities_at, 1)
                         if sub.capabilities_at
@@ -332,7 +343,7 @@ class HealthMonitor:
 
         # Check subsystem liveness
         for name, sub in self._subsystems.items():
-            if sub.seconds_since_seen > self._subsystem_timeout:
+            if sub.is_stale(self._subsystem_timeout):
                 await self._fire_alert(
                     f"subsystem_stale:{name}",
                     "warning",

@@ -446,6 +446,60 @@ class TestNotifier:
             assert mock_email.await_count == 1
 
 
+class TestCapabilitiesOnlyLiveness:
+    """A retained capabilities document is not a heartbeat: never seen, not stale."""
+
+    def _caps(self, **extra):
+        return {
+            "subsystem": "vending",
+            "firmware": "f",
+            "contract_version": "0.2.0",
+            **extra,
+        }
+
+    def test_capabilities_only_is_never_seen_not_stale(self):
+        hm = HealthMonitor()
+        hm.record_capabilities("vending", self._caps())
+        row = hm.get_summary()["subsystems"]["vending"]
+        assert row["alive"] is False
+        assert row["stale"] is False
+
+    async def test_capabilities_only_does_not_fire_stale_alert(self):
+        hm = HealthMonitor(subsystem_timeout=1.0)
+        fired = []
+
+        async def cb(alert):
+            fired.append(alert)
+
+        hm.set_alert_callback(cb)
+        hm.record_capabilities("vending", self._caps())
+        await hm._check()
+        assert not any(a.source == "vending" for a in fired)
+
+    def test_mark_offline_still_stale_after_capabilities(self):
+        hm = HealthMonitor()
+        hm.record_capabilities("vending", self._caps())
+        hm.mark_offline("vending")
+        assert hm.get_summary()["subsystems"]["vending"]["stale"] is True
+
+    def test_heartbeat_clears_offline(self):
+        hm = HealthMonitor()
+        hm.mark_offline("vending")
+        hm.record_heartbeat("vending", {"subsystem": "vending", "uptime_seconds": 3})
+        row = hm.get_summary()["subsystems"]["vending"]
+        assert row["alive"] is True and row["stale"] is False
+
+    def test_malformed_channels_and_commands_do_not_break_summary(self):
+        hm = HealthMonitor()
+        hm.record_capabilities(
+            "mdb", self._caps(subsystem="mdb", channels=1, commands="refund")
+        )
+        row = hm.get_summary()["subsystems"]["mdb"]
+        assert row["channel_count"] == 0
+        assert row["commands"] == []
+        assert row["firmware"] == "f"
+
+
 class TestSubsystemIdentity:
     def _caps(self, **over):
         base = {
