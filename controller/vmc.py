@@ -16,7 +16,7 @@ from services.mqtt_messages import (
     HardwareIO,
     VMCAlert,
 )
-from contracts.ice_maker_monitor import ChannelReading, CommandAck, MonitorCapabilities
+from contracts.ice_maker_monitor import ChannelReading, CommandAck
 from contracts.vending_machine import (
     FAULT_TABLE,
     OUTCOME_FAULTS,
@@ -27,6 +27,7 @@ from contracts.vending_machine import (
     RefundStatus,
     Scope,
     Severity,
+    SubsystemCapabilities,
 )
 from config.config_model import ConfigModel
 from services.health_monitor import HealthMonitor
@@ -526,14 +527,14 @@ class VMC:
             ice_log.info(f"{event.event.upper()}{detail}")
 
     async def _handle_mqtt_capabilities(self, topic: str, data: dict):
-        """Store a subsystem's self-declared capabilities for the dashboard."""
+        """Store a subsystem's retained self-description and hand it to health."""
         subsystem = data.get("subsystem") or topic.split("/")[-1]
         try:
-            MonitorCapabilities.model_validate(data)
+            caps = SubsystemCapabilities.model_validate(data)
             logger.info(
                 f"Capabilities registered for '{subsystem}' "
-                f"(contract {data.get('contract_version')}, "
-                f"{len(data.get('channels', []))} channels)"
+                f"(firmware {caps.firmware}, contract {caps.contract_version}, "
+                f"{len(caps.channels)} channels)"
             )
         except ValidationError:
             logger.warning(
@@ -541,6 +542,8 @@ class VMC:
                 "storing raw payload"
             )
         self.subsystem_capabilities[subsystem] = data
+        if self._health_monitor:
+            self._health_monitor.record_capabilities(subsystem, data)
 
     async def _handle_mqtt_telemetry(self, topic: str, data: dict):
         """Route a generic telemetry channel reading into health tracking."""

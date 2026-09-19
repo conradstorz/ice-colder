@@ -402,3 +402,35 @@ class TestMonitorContractHandlers:
                 "status": "ok",
             },
         )  # must not raise
+
+    async def test_capabilities_forwarded_to_health_monitor(self):
+        from services.health_monitor import HealthMonitor
+
+        vmc = VMC(config=ConfigModel())
+        hm = HealthMonitor()
+        vmc.set_health_monitor(hm)
+        await vmc._handle_mqtt_capabilities(
+            "capabilities/vending",
+            {
+                "subsystem": "vending",
+                "firmware": "abc1234",
+                "contract_version": "0.2.0",
+                "hardware_id": "02:11:22:33:44:55",
+                "future_field": "ignored",
+            },
+        )
+        row = hm.get_summary()["subsystems"]["vending"]
+        assert row["firmware"] == "abc1234"
+        assert row["hardware_id"] == "02:11:22:33:44:55"
+        assert row["alive"] is False
+
+    async def test_malformed_capabilities_still_forwarded_raw(self):
+        from services.health_monitor import HealthMonitor
+
+        vmc = VMC(config=ConfigModel())
+        hm = HealthMonitor()
+        vmc.set_health_monitor(hm)
+        await vmc._handle_mqtt_capabilities(
+            "capabilities/mdb", {"subsystem": "mdb", "whatever": 1}
+        )
+        assert hm.get_summary()["subsystems"]["mdb"]["firmware"] is None

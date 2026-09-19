@@ -212,7 +212,7 @@ async def main():
     logger.info("VMC instance created and attached to event loop")
 
     # Create health monitor and notifier
-    health = HealthMonitor()
+    health = HealthMonitor(machine_id=live_config.machine_id)
     notifier = Notifier(config=live_config)
     health.set_alert_callback(notifier.send)
     routes.set_health_monitor(health)
