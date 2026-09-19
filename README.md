@@ -16,6 +16,13 @@ docker compose up --build
 Without `--build`, compose uses the published `ghcr.io/conradstorz/ice-colder`
 image instead of your working tree. Config lives at `data/config.json`
 (created automatically on first run).
+
+A local `--build` shows `unknown` as the VMC build on the health tab unless you
+pass the identity args CI uses:
+```
+docker compose build --build-arg VCS_REF=$(git rev-parse HEAD) --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+```
+
 Dashboard: http://localhost:26123
 
 **Continuous deployment (simulation host):** every push to `main` runs CI

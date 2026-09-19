@@ -51,6 +51,13 @@ logs a clear error and exits with code 1 rather than papering over it.
 
 FastAPI app (`server.py`) with Jinja2 templates and HTMX-driven partials. `routes.py` defines all endpoints and receives the `ConfigModel` and `VMC` instance via setter functions called from `main.py`. Templates live in `web_interface/templates/` with HTMX partial fragments in `templates/partials/`. Static assets in `web_interface/static/`.
 
+The System Health tab (`/health`) merges three sources: heartbeats (liveness,
+uptime), each subsystem's retained `capabilities/<subsystem>` document
+(`SubsystemCapabilities`: firmware, contract version, brand/model,
+hardware_id, ip), and the VMC's own build identity from
+`services/build_info.py` (image env vars set by CI, or `git` when run from a
+checkout). Subsystems in `EXPECTED_SUBSYSTEMS` are listed even before they speak.
+
 ### Services (`services/`)
 
 - `payment_gateway_manager.py` - manages Stripe/PayPal/Square gateways, generates QR codes via `qrcode` library
