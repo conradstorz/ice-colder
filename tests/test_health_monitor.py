@@ -444,3 +444,84 @@ class TestNotifier:
             await notifier.send(alert)
             await notifier.send(alert)  # should be suppressed
             assert mock_email.await_count == 1
+
+
+class TestSubsystemIdentity:
+    def _caps(self, **over):
+        base = {
+            "subsystem": "vending",
+            "firmware": "abc1234",
+            "contract_version": "0.2.0",
+            "brand": "ice-colder",
+            "model": "vending-sim",
+            "hardware_id": "02:11:22:33:44:55",
+            "ip": "172.18.0.5",
+            "channels": [],
+            "commands": ["dispense"],
+        }
+        base.update(over)
+        return base
+
+    def test_capabilities_before_heartbeat_is_never_seen(self):
+        hm = HealthMonitor()
+        hm.record_capabilities("vending", self._caps())
+        row = hm.get_summary()["subsystems"]["vending"]
+        assert row["alive"] is False
+        assert row["seconds_since_seen"] == float("inf")
+        assert row["firmware"] == "abc1234"
+        assert row["hardware_id"] == "02:11:22:33:44:55"
+        assert row["uptime_seconds"] is None
+
+    def test_heartbeat_gives_uptime_and_alive(self):
+        hm = HealthMonitor()
+        hm.record_heartbeat("vending", {"subsystem": "vending", "uptime_seconds": 321})
+        row = hm.get_summary()["subsystems"]["vending"]
+        assert row["alive"] is True
+        assert row["uptime_seconds"] == 321
+        assert row["firmware"] is None
+        assert row["commands"] == []
+        assert row["channel_count"] == 0
+
+    def test_lwt_uptime_is_none(self):
+        hm = HealthMonitor()
+        hm.record_heartbeat("mdb", {"subsystem": "mdb", "uptime_seconds": -1})
+        assert hm.get_summary()["subsystems"]["mdb"]["uptime_seconds"] is None
+
+    def test_capabilities_age_and_channel_count(self, monkeypatch):
+        import time as _time
+
+        hm = HealthMonitor()
+        t = [500.0]
+        monkeypatch.setattr(_time, "monotonic", lambda: t[0])
+        hm.record_capabilities(
+            "ice_maker",
+            self._caps(
+                subsystem="ice_maker",
+                channels=[{"channel_id": "a"}, {"channel_id": "b"}],
+            ),
+        )
+        t[0] = 545.0
+        row = hm.get_summary()["subsystems"]["ice_maker"]
+        assert row["channel_count"] == 2
+        assert row["capabilities_age_seconds"] == 45.0
+
+    def test_empty_row_shape(self):
+        row = HealthMonitor.empty_subsystem_row()
+        assert row["alive"] is False and row["stale"] is False
+        assert row["firmware"] is None and row["commands"] == []
+
+    def test_vmc_block(self, monkeypatch):
+        import time as _time
+
+        from services.build_info import BUILD_INFO
+
+        t = [1000.0]
+        monkeypatch.setattr(_time, "monotonic", lambda: t[0])
+        hm = HealthMonitor(machine_id="vmc-0000")
+        t[0] = 1060.0
+        vmc = hm.get_summary()["vmc"]
+        assert vmc["commit_short"] == BUILD_INFO.commit_short
+        assert vmc["source"] == BUILD_INFO.source
+        assert vmc["uptime_seconds"] == 60
+        assert vmc["machine_id"] == "vmc-0000"
+        assert vmc["python_version"].count(".") == 2

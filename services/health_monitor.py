@@ -8,11 +8,14 @@ or the FSM enters an error state.
 """
 
 import asyncio
+import platform
 import time
 from dataclasses import dataclass, field
 from typing import Optional, Callable, Awaitable
 
 from loguru import logger
+
+from services.build_info import BUILD_INFO
 
 
 @dataclass
@@ -22,6 +25,8 @@ class SubsystemStatus:
     name: str
     last_seen: float = 0.0  # monotonic timestamp
     last_payload: dict = field(default_factory=dict)
+    capabilities: dict = field(default_factory=dict)
+    capabilities_at: float = 0.0  # monotonic; 0.0 = never received
 
     @property
     def seconds_since_seen(self) -> float:
@@ -76,11 +81,15 @@ class HealthMonitor:
         subsystem_timeout: float = 120.0,
         temp_min: float = -20.0,
         temp_max: float = 80.0,
+        machine_id: str | None = None,
+        started_at: float | None = None,
     ):
         self._check_interval = check_interval
         self._subsystem_timeout = subsystem_timeout
         self._temp_min = temp_min
         self._temp_max = temp_max
+        self._machine_id = machine_id
+        self._started_at = time.monotonic() if started_at is None else started_at
 
         self._subsystems: dict[str, SubsystemStatus] = {}
         self._temperatures: dict[str, TemperatureReading] = {}
@@ -109,6 +118,36 @@ class HealthMonitor:
         self._subsystems[subsystem].last_payload = payload or {}
         # Clear stale alert for this subsystem
         self._fired_alerts.discard(f"subsystem_stale:{subsystem}")
+
+    def record_capabilities(self, subsystem: str, caps: dict):
+        """Store a subsystem's retained self-description. Never touches
+        last_seen: a retained document says what the board is, not that it
+        is up."""
+        if subsystem not in self._subsystems:
+            self._subsystems[subsystem] = SubsystemStatus(name=subsystem)
+            logger.info(f"Health: New subsystem registered (capabilities): {subsystem}")
+        status = self._subsystems[subsystem]
+        status.capabilities = dict(caps)
+        status.capabilities_at = time.monotonic()
+
+    @staticmethod
+    def empty_subsystem_row() -> dict:
+        """The dashboard row for a subsystem that has never been heard from."""
+        return {
+            "alive": False,
+            "seconds_since_seen": float("inf"),
+            "stale": False,
+            "uptime_seconds": None,
+            "firmware": None,
+            "contract_version": None,
+            "brand": None,
+            "model": None,
+            "hardware_id": None,
+            "ip": None,
+            "channel_count": 0,
+            "commands": [],
+            "capabilities_age_seconds": None,
+        }
 
     def record_temperature(self, location: str, value: float):
         """Record a temperature sensor reading."""
@@ -184,13 +223,41 @@ class HealthMonitor:
 
     def get_summary(self) -> dict:
         """Return a snapshot of all health data for the dashboard."""
+        now = time.monotonic()
+
         subsystems = {}
         for name, sub in self._subsystems.items():
-            subsystems[name] = {
-                "alive": sub.alive,
-                "seconds_since_seen": round(sub.seconds_since_seen, 1),
-                "stale": sub.seconds_since_seen > self._subsystem_timeout,
-            }
+            row = self.empty_subsystem_row()
+            uptime = sub.last_payload.get("uptime_seconds")
+            caps = sub.capabilities
+            row.update(
+                {
+                    "alive": sub.alive,
+                    "seconds_since_seen": round(sub.seconds_since_seen, 1),
+                    "stale": sub.seconds_since_seen > self._subsystem_timeout,
+                    "uptime_seconds": (
+                        int(uptime)
+                        if sub.alive
+                        and isinstance(uptime, (int, float))
+                        and uptime >= 0
+                        else None
+                    ),
+                    "firmware": caps.get("firmware"),
+                    "contract_version": caps.get("contract_version"),
+                    "brand": caps.get("brand") or None,
+                    "model": caps.get("model") or None,
+                    "hardware_id": caps.get("hardware_id"),
+                    "ip": caps.get("ip"),
+                    "channel_count": len(caps.get("channels") or []),
+                    "commands": list(caps.get("commands") or []),
+                    "capabilities_age_seconds": (
+                        round(now - sub.capabilities_at, 1)
+                        if sub.capabilities_at
+                        else None
+                    ),
+                }
+            )
+            subsystems[name] = row
 
         temperatures = {}
         for loc, reading in self._temperatures.items():
@@ -208,7 +275,6 @@ class HealthMonitor:
                 "age_seconds": round(time.monotonic() - reading.timestamp, 1),
             }
 
-        now = time.monotonic()
         active_faults = [
             {
                 **{k: v for k, v in f.items() if k != "since"},
@@ -226,6 +292,15 @@ class HealthMonitor:
             "check_interval": self._check_interval,
             "subsystem_timeout": self._subsystem_timeout,
             "active_faults": active_faults,
+            "vmc": {
+                "commit": BUILD_INFO.commit,
+                "commit_short": BUILD_INFO.commit_short,
+                "build_time": BUILD_INFO.build_time,
+                "source": BUILD_INFO.source,
+                "uptime_seconds": int(now - self._started_at),
+                "python_version": platform.python_version(),
+                "machine_id": self._machine_id,
+            },
         }
 
     # --- Main loop ---
