@@ -15,6 +15,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 from contracts.vending_machine import FaultCode
+from services.build_info import BUILD_INFO
 
 
 def _utc_now() -> datetime:
@@ -160,6 +161,10 @@ class VMCStatus(BaseModel):
     credit_escrow: float = Field(0.0)
     selected_product: Optional[str] = Field(None)
     uptime_seconds: int = Field(0)
+    version: str = Field(
+        default_factory=lambda: BUILD_INFO.commit_short,
+        description="VMC build (short commit)",
+    )
     timestamp: datetime = Field(default_factory=_utc_now)
 
 

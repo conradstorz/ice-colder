@@ -6,6 +6,7 @@ from services.display_controller import DisplayController
 from services.inventory_manager import InventoryManager
 from services.event_recorder import EventRecorder
 from services.config_store import save_config
+from services.build_info import BUILD_INFO
 
 import asyncio
 import json
@@ -190,6 +191,9 @@ async def _supervise(name: str, coro_factory):
 async def main():
     setup_logging()
     logger.info("Starting Vending Machine Controller")
+    logger.info(
+        f"Build: {BUILD_INFO.commit_short} ({BUILD_INFO.source}, {BUILD_INFO.build_time})"
+    )
 
     live_config = load_config()
     logger.debug(f"Configuration model: {live_config}")
