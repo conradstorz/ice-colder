@@ -23,7 +23,7 @@ All topics are relative to `vmc/{machine_id}/`.
 | `alerts` | VMC → world | `VMCAlert` (`services/mqtt_messages.py`) | carries a [`FaultCode`](schemas/fault_code.schema.json) when one applies |
 | `capabilities/<subsystem>` | subsystem → VMC | [`SubsystemCapabilities`](schemas/subsystem_capabilities.schema.json) | retained; MUST be published on connect and re-published on any change; `firmware`, `hardware_id`, `ip` identify the board |
 
-## Semantics fixed in 0.1.0
+## Semantics fixed in 0.2.0
 
 - The VMC finishes a sale only on `DispenserOutcome.complete` for the slot
   it commanded. `bin_empty`, `timeout`, `jam`, `error` end the sale as a

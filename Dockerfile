@@ -2,13 +2,6 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Build identity, passed by CI (see .github/workflows/ci.yml); "unknown" for
-# an ad-hoc local build. Read by services/build_info.py.
-ARG VCS_REF=unknown
-ARG BUILD_TIME=unknown
-ENV ICE_COLDER_COMMIT=$VCS_REF \
-    ICE_COLDER_BUILD_TIME=$BUILD_TIME
-
 # Install uv for fast dependency management
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
@@ -17,6 +10,14 @@ COPY pyproject.toml uv.lock ./
 
 # Install dependencies (no dev group in production)
 RUN uv sync --frozen --no-dev
+
+# Build identity, passed by CI (see .github/workflows/ci.yml); "unknown" for
+# an ad-hoc local build. Read by services/build_info.py. Placed after uv sync
+# so a new commit sha never invalidates the dependency layer.
+ARG VCS_REF=unknown
+ARG BUILD_TIME=unknown
+ENV ICE_COLDER_COMMIT=$VCS_REF \
+    ICE_COLDER_BUILD_TIME=$BUILD_TIME
 
 # Copy application code
 COPY config/ config/
