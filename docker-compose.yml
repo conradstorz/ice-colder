@@ -12,9 +12,11 @@ services:
     build: .
     labels:
       - com.centurylinklabs.watchtower.enable=true
+      - traefik.enable=true
+      - traefik.http.routers.ice.rule=Host(`ice.hpz440.ohr3023.org`)
+      - traefik.http.services.ice.loadbalancer.server.port=26123
+      - harbor.description=Ice Colder VMC
     container_name: ice-colder-vmc
-    ports:
-      - "26123:26123"
     volumes:
       - ./LOGS:/app/LOGS
       - ./data:/app/data
@@ -23,6 +25,7 @@ services:
       - ICE_COLDER_CONFIG=/app/data/config.json
     networks:
       - broker
+      - harbor
     depends_on:
       mosquitto:
         condition: service_healthy
@@ -33,6 +36,7 @@ services:
     build: .
     labels:
       - com.centurylinklabs.watchtower.enable=true
+      - harbor.kind=internal
     container_name: ice-colder-sim-ice-maker
     command: ["uv", "run", "python", "-m", "simulators.ice_maker", "--broker", "mosquitto"]
     volumes:
@@ -53,6 +57,7 @@ services:
     build: .
     labels:
       - com.centurylinklabs.watchtower.enable=true
+      - harbor.kind=internal
     container_name: ice-colder-sim-mdb
     command: ["uv", "run", "python", "-m", "simulators.mdb_gateway", "--broker", "mosquitto"]
     volumes:
@@ -73,6 +78,7 @@ services:
     build: .
     labels:
       - com.centurylinklabs.watchtower.enable=true
+      - harbor.kind=internal
     container_name: ice-colder-sim-vending
     command: ["uv", "run", "python", "-m", "simulators.vending_machine", "--broker", "mosquitto"]
     volumes:
@@ -91,6 +97,10 @@ services:
   mosquitto:
     image: eclipse-mosquitto:2
     container_name: ice-colder-mqtt
+    labels:
+      - harbor.kind=tcp
+      - harbor.port=1883
+      - harbor.description=MQTT broker
     ports:
       - "1883:1883"
     volumes:
@@ -110,3 +120,5 @@ services:
 networks:
   broker:
     driver: bridge
+  harbor:
+    external: true
