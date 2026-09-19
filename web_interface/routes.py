@@ -9,8 +9,10 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 
 from config.config_model import ConfigModel, Product
+from contracts.vending_machine import EXPECTED_SUBSYSTEMS
 from services.config_store import add_product, delete_product, update_product
 from services.fsm_control import perform_command
+from services.health_monitor import HealthMonitor
 
 config: ConfigModel = None
 
@@ -232,12 +234,12 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
     async def health_summary(request: Request):
         if not health_monitor:
             return HTMLResponse("<div>Health monitor not initialized</div>")
+        health = health_monitor.get_summary()
+        for name in EXPECTED_SUBSYSTEMS:
+            health["subsystems"].setdefault(name, HealthMonitor.empty_subsystem_row())
         return templates.TemplateResponse(
             "partials/health_fragment.html",
-            {
-                "request": request,
-                "health": health_monitor.get_summary(),
-            },
+            {"request": request, "health": health},
         )
 
     @router.get("/activity", response_class=HTMLResponse)
