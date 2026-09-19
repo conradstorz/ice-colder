@@ -113,11 +113,14 @@ class TestHealthMonitorChecks:
         assert "error state" in alert.message
 
     @pytest.mark.asyncio
-    async def test_stale_subsystem_fires_alert(self):
+    async def test_stale_subsystem_fires_alert(self, monkeypatch):
         monitor = HealthMonitor(subsystem_timeout=60.0)
         monitor.record_heartbeat("sensors")
-        # Backdate the last_seen so it appears stale
-        monitor._subsystems["sensors"].last_seen = time.monotonic() - 120.0
+        # Advance the clock instead of backdating last_seen: on a freshly booted
+        # host monotonic() can be < 120 s, and a non-positive last_seen means
+        # "never seen", which is not the same thing as stale.
+        seen_at = monitor._subsystems["sensors"].last_seen
+        monkeypatch.setattr(time, "monotonic", lambda: seen_at + 120.0)
         monitor.update_mqtt_status(True)
         callback = AsyncMock()
         monitor.set_alert_callback(callback)
