@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from config.config_model import ConfigModel
+from contracts.vending_machine import SubsystemCapabilities
+from services.build_info import BUILD_INFO
 from simulators.base import (
     ESP32Simulator,
     FaultDef,
@@ -20,8 +22,8 @@ from simulators.base import (
 class ConcreteSimulator(ESP32Simulator):
     """Minimal concrete subclass for testing the ABC."""
 
-    def __init__(self, **kwargs):
-        super().__init__(subsystem_name="test_subsystem", **kwargs)
+    def __init__(self, subsystem_name="test_subsystem", **kwargs):
+        super().__init__(subsystem_name=subsystem_name, **kwargs)
         self.simulation_ran = False
 
     async def run_simulation(self, client):
@@ -849,3 +851,33 @@ class TestContractTransport:
         client = AsyncMock()
         await sim.publish(client, "ice_maker/event", {"x": 1})
         assert client.publish.call_args.kwargs.get("qos") == 1
+
+
+class TestCapabilities:
+    def test_default_capabilities_validate(self):
+        sim = ConcreteSimulator(subsystem_name="test", machine_id="vmc-t")
+        caps = sim.build_capabilities()
+        assert isinstance(caps, SubsystemCapabilities)
+        assert caps.subsystem == "test"
+        assert caps.firmware == BUILD_INFO.commit_short
+        assert caps.contract_version == "0.2.0"
+        assert caps.hardware_id is not None
+
+    def test_hardware_id_is_stable_and_distinct(self):
+        a = ConcreteSimulator(subsystem_name="test", machine_id="vmc-t")
+        b = ConcreteSimulator(subsystem_name="test", machine_id="vmc-t")
+        c = ConcreteSimulator(subsystem_name="other", machine_id="vmc-t")
+        assert a.fake_hardware_id() == b.fake_hardware_id()
+        assert a.fake_hardware_id() != c.fake_hardware_id()
+        assert a.fake_hardware_id().startswith("02:")
+        assert len(a.fake_hardware_id()) == 17
+
+    async def test_publish_capabilities_is_retained(self):
+        sim = ConcreteSimulator(subsystem_name="test", machine_id="vmc-t")
+        sim.publish = AsyncMock()
+        await sim._publish_capabilities(None)
+        sim.publish.assert_awaited_once()
+        args, kwargs = sim.publish.await_args
+        assert args[1] == "capabilities/test"
+        assert isinstance(args[2], SubsystemCapabilities)
+        assert kwargs.get("retain") is True

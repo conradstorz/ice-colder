@@ -1,26 +1,25 @@
 """
-Shared contract models for the vending-machine ESP32 interface (v0.1.0).
+Shared contract models for the vending-machine ESP32 interface (v0.2.0).
 
-Terminal dispenser outcomes, the fault-code registry, and the refund
-command/ack exchanged between ice-colder (the VMC) and the vending
-ESP32 / MDB payment gateway. JSON Schemas are generated from these models
+Terminal dispenser outcomes, the fault-code registry, the refund
+command/ack, and the general subsystem-capabilities self-description
+exchanged between ice-colder (the VMC) and the vending ESP32 / MDB payment
+gateway / ice-maker monitor. JSON Schemas are generated from these models
 into docs/contracts/vending-machine/schemas/ by contracts/generate.py.
 The VMC and the simulators both import from here so the two sides cannot
 drift apart silently. Breaking changes require a major CONTRACT_VERSION
 bump; adding a FaultCode or an enum member is a minor bump.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel, Field
 
-CONTRACT_VERSION = "0.1.0"
+from contracts.common import ChannelDescriptor, _utc_now
 
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+CONTRACT_VERSION = "0.2.0"
 
 
 class DispenserOutcome(str, Enum):
@@ -253,3 +252,27 @@ class PaymentRefundResult(BaseModel):
     amount_returned: float = Field(0.0, ge=0, description="Amount actually paid out")
     detail: Optional[str] = Field(None, description="e.g. 'changer_empty'")
     timestamp: datetime = Field(default_factory=_utc_now)
+
+
+class SubsystemCapabilities(BaseModel):
+    """Retained self-description on capabilities/<subsystem>.
+
+    Published on connect and whenever any declared property changes. A
+    retained document never means the subsystem is alive — only heartbeats
+    do — it means "this is what that board is, if and when it is up".
+    """
+
+    subsystem: str = Field(..., pattern=r"^[a-z0-9_]{1,32}$")
+    firmware: str = Field(..., description="Software/firmware version string")
+    contract_version: str = Field(..., description="Contract semver implemented")
+    brand: str = Field("", description="Hardware brand, if meaningful")
+    model: str = Field("", description="Hardware model, if meaningful")
+    hardware_id: Optional[str] = Field(None, description="MAC or serial number")
+    ip: Optional[str] = Field(None, description="IPv4/IPv6 address on the LAN")
+    channels: list[ChannelDescriptor] = Field(default_factory=list)
+    commands: list[str] = Field(default_factory=list)
+    timestamp: datetime = Field(default_factory=_utc_now)
+
+
+# Subsystems the dashboard always lists, even before they have ever spoken.
+EXPECTED_SUBSYSTEMS: tuple[str, ...] = ("vending", "mdb", "ice_maker")

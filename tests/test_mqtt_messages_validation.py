@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from config.config_model import ConfigModel
 from controller.vmc import VMC
-from services.mqtt_messages import ButtonPress, DispenseCommand, PaymentEvent
+from services.mqtt_messages import ButtonPress, DispenseCommand, PaymentEvent, VMCStatus
 
 
 class TestPaymentEventBounds:
@@ -33,6 +33,9 @@ class TestOtherMessageBounds:
     def test_dispense_command_rejects_negative_slot(self):
         with pytest.raises(ValidationError):
             DispenseCommand(slot=-1)
+
+    def test_vmc_status_has_version(self):
+        assert isinstance(VMCStatus(state="idle").version, str)
 
 
 class TestVMCDepositGuard:

@@ -50,11 +50,10 @@
       "type": "object"
     }
   },
-  "description": "Retained self-description published on connect and on channel changes.\n\nThe ice-maker contract fixes `subsystem` and requires brand/model; the\noptional `hardware_id`/`ip` are the 1.1.0 additions.",
+  "description": "Retained self-description on capabilities/<subsystem>.\n\nPublished on connect and whenever any declared property changes. A\nretained document never means the subsystem is alive \u2014 only heartbeats\ndo \u2014 it means \"this is what that board is, if and when it is up\".",
   "properties": {
     "subsystem": {
-      "const": "ice_maker",
-      "default": "ice_maker",
+      "pattern": "^[a-z0-9_]{1,32}$",
       "title": "Subsystem",
       "type": "string"
     },
@@ -69,12 +68,14 @@
       "type": "string"
     },
     "brand": {
-      "description": "Ice maker brand the monitor targets",
+      "default": "",
+      "description": "Hardware brand, if meaningful",
       "title": "Brand",
       "type": "string"
     },
     "model": {
-      "description": "Ice maker model",
+      "default": "",
+      "description": "Hardware model, if meaningful",
       "title": "Model",
       "type": "string"
     },
@@ -125,11 +126,10 @@
     }
   },
   "required": [
+    "subsystem",
     "firmware",
-    "contract_version",
-    "brand",
-    "model"
+    "contract_version"
   ],
-  "title": "MonitorCapabilities",
+  "title": "SubsystemCapabilities",
   "type": "object"
 }

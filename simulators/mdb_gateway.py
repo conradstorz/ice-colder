@@ -67,6 +67,9 @@ class MDBGatewaySimulator(ESP32Simulator):
     MAX_CASH_ATTEMPTS = 3
     REFUND_DELAY_RANGE = (0.5, 2.0)  # seconds the changer takes to pay out
     REFUND_RESULTS_MAX = 256  # idempotency cache bound, oldest evicted first
+    SUPPORTED_COMMANDS = ["payment/enable", "refund"]
+    BRAND = "ice-colder"
+    MODEL = "mdb-sim"
 
     def __init__(self, **kwargs):
         super().__init__(subsystem_name="mdb", **kwargs)

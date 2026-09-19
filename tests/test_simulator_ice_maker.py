@@ -624,3 +624,17 @@ class TestMonitorContract:
         assert len(reading_calls) >= 12
         for call in reading_calls:
             assert call.kwargs.get("qos") == 0
+
+
+class TestIceMakerCapabilitiesIdentity:
+    def test_identity_fields_present(self):
+        from contracts.ice_maker_monitor import CONTRACT_VERSION, MonitorCapabilities
+        from services.build_info import BUILD_INFO
+        from simulators.ice_maker import IceMakerSimulator
+
+        caps = IceMakerSimulator(machine_id="vmc-t").build_capabilities()
+        assert isinstance(caps, MonitorCapabilities)
+        assert caps.contract_version == CONTRACT_VERSION == "1.1.0"
+        assert caps.firmware == BUILD_INFO.commit_short
+        assert caps.hardware_id is not None
+        assert caps.commands == ["power_cycle", "force_report", "set_interval"]

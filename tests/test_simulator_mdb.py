@@ -299,3 +299,11 @@ class TestRefunds:
     def test_changer_empty_fault_registered(self):
         sim = MDBGatewaySimulator()
         assert "changer_empty" in sim._fault_state
+
+
+class TestMDBCapabilities:
+    def test_commands_and_contract(self):
+        caps = MDBGatewaySimulator().build_capabilities()
+        assert caps.subsystem == "mdb"
+        assert caps.commands == ["payment/enable", "refund"]
+        assert caps.contract_version == "0.2.0"

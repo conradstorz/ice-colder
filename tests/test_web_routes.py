@@ -529,3 +529,74 @@ class TestFaultsUI:
             assert "$2.50" in r.text
         finally:
             routes.set_event_recorder(None)
+
+
+class TestHealthTabIdentity:
+    def _hm(self):
+        from services.health_monitor import HealthMonitor
+
+        hm = HealthMonitor(machine_id="vmc-test")
+        routes.set_health_monitor(hm)
+        return hm
+
+    def test_vmc_row(self, client):
+        from services.build_info import BUILD_INFO
+
+        self._hm()
+        try:
+            r = client.get("/health", auth=client.auth)
+            assert r.status_code == 200
+            assert BUILD_INFO.commit_short in r.text
+            assert BUILD_INFO.source in r.text
+            assert "vmc-test" in r.text
+        finally:
+            routes.set_health_monitor(None)
+
+    def test_expected_subsystems_listed_when_silent(self, client):
+        self._hm()
+        try:
+            r = client.get("/health", auth=client.auth)
+            for name in ("vending", "mdb", "ice_maker"):
+                assert name in r.text
+            assert r.text.count("Never seen") >= 3
+        finally:
+            routes.set_health_monitor(None)
+
+    def test_heartbeat_only_row_shows_dashes(self, client):
+        hm = self._hm()
+        try:
+            hm.record_heartbeat(
+                "vending", {"subsystem": "vending", "uptime_seconds": 90}
+            )
+            r = client.get("/health", auth=client.auth)
+            assert "1m" in r.text  # uptime humanized
+            assert "—" in r.text  # firmware/contract/hardware unknown
+        finally:
+            routes.set_health_monitor(None)
+
+    def test_capabilities_render(self, client):
+        hm = self._hm()
+        try:
+            hm.record_heartbeat("mdb", {"subsystem": "mdb", "uptime_seconds": 5})
+            hm.record_capabilities(
+                "mdb",
+                {
+                    "subsystem": "mdb",
+                    "firmware": "abc1234",
+                    "contract_version": "0.2.0",
+                    "brand": "ice-colder",
+                    "model": "mdb-sim",
+                    "hardware_id": "02:11:22:33:44:55",
+                    "ip": "172.18.0.7",
+                    "commands": ["refund"],
+                },
+            )
+            r = client.get("/health", auth=client.auth)
+            assert "abc1234" in r.text
+            assert "0.2.0" in r.text
+            assert "ice-colder mdb-sim" in r.text
+            assert "02:11:22:33:44:55" in r.text
+            assert "172.18.0.7" in r.text
+            assert "refund" in r.text  # in the row title
+        finally:
+            routes.set_health_monitor(None)

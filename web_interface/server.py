@@ -3,6 +3,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import routes
+from .filters import humanize_seconds
 
 # No CORS middleware: the dashboard is same-origin (HTMX partials from this app).
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -12,5 +13,6 @@ app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 # through the require_auth-gated router in routes.py.
 app.mount("/static", StaticFiles(directory="web_interface/static"), name="static")
 templates = Jinja2Templates(directory="web_interface/templates")
+templates.env.filters["humanize_seconds"] = humanize_seconds
 
 routes.attach_routes(app, templates)

@@ -24,6 +24,7 @@ from contracts.vending_machine import (
     FaultCode,
     PaymentRefundCommand,
     PaymentRefundResult,
+    SubsystemCapabilities,
 )
 
 SCHEMA_DIR = Path("docs/contracts/ice-maker-monitor/schemas")
@@ -46,6 +47,7 @@ VENDING_MODELS = {
     "fault_code": FaultCode,
     "payment_refund_command": PaymentRefundCommand,
     "payment_refund_result": PaymentRefundResult,
+    "subsystem_capabilities": SubsystemCapabilities,
 }
 
 CONTRACTS: dict[str, tuple[Path, dict]] = {

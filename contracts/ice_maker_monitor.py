@@ -1,6 +1,6 @@
 # contracts/ice_maker_monitor.py
 """
-Shared contract models for the ice-maker monitor interface (v1.0.0).
+Shared contract models for the ice-maker monitor interface (v1.1.0).
 
 These models are the machine-readable source of truth for the interface
 between ice-colder (the VMC) and the external brand-specific monitor
@@ -9,47 +9,38 @@ docs/contracts/ice-maker-monitor/schemas/ by contracts/generate.py.
 Breaking changes require a major CONTRACT_VERSION bump.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
-CONTRACT_VERSION = "1.0.0"
+from contracts.common import CHANNEL_ID_PATTERN, ChannelDescriptor, _utc_now
+from contracts.vending_machine import SubsystemCapabilities
 
-_CHANNEL_ID_PATTERN = r"^[a-z0-9_]{1,64}$"
+CONTRACT_VERSION = "1.1.0"
 
+_CHANNEL_ID_PATTERN = CHANNEL_ID_PATTERN  # kept for ChannelReading
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-class ChannelDescriptor(BaseModel):
-    """One telemetry channel the monitor declares in its capabilities."""
-
-    channel_id: str = Field(
-        ..., pattern=_CHANNEL_ID_PATTERN, description="Slug; also the topic segment"
-    )
-    kind: Literal["temperature", "current", "voltage", "level", "binary", "counter"]
-    unit: str = Field("", description="Unit, e.g. 'C', 'A', '%'; empty for binary")
-    description: str = Field("", description="Human-readable channel description")
-    interval_seconds: float = Field(
-        ..., gt=0, le=3600, description="Declared publish cadence"
-    )
+__all__ = [
+    "CONTRACT_VERSION",
+    "ChannelDescriptor",
+    "ChannelReading",
+    "CommandAck",
+    "MonitorCapabilities",
+    "MonitorCommand",
+]
 
 
-class MonitorCapabilities(BaseModel):
-    """Retained self-description published on connect and on channel changes."""
+class MonitorCapabilities(SubsystemCapabilities):
+    """Retained self-description published on connect and on channel changes.
+
+    The ice-maker contract fixes `subsystem` and requires brand/model; the
+    optional `hardware_id`/`ip` are the 1.1.0 additions.
+    """
 
     subsystem: Literal["ice_maker"] = "ice_maker"
-    contract_version: str = Field(..., description="Contract semver, e.g. '1.0.0'")
     brand: str = Field(..., description="Ice maker brand the monitor targets")
     model: str = Field(..., description="Ice maker model")
-    firmware: str = Field(..., description="Monitor software version")
-    channels: list[ChannelDescriptor] = Field(default_factory=list)
-    commands: list[str] = Field(
-        default_factory=list, description="Contract commands this monitor supports"
-    )
-    timestamp: datetime = Field(default_factory=_utc_now)
 
 
 class ChannelReading(BaseModel):

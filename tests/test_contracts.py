@@ -52,7 +52,7 @@ class TestMonitorCapabilities:
         assert caps.commands == []
 
     def test_contract_version_constant(self):
-        assert CONTRACT_VERSION == "1.0.0"
+        assert CONTRACT_VERSION == "1.1.0"
 
 
 class TestChannelReading:
@@ -118,3 +118,44 @@ class TestCommandAck:
     def test_rejects_unknown_status(self):
         with pytest.raises(ValidationError):
             CommandAck(request_id="r-12345678", command="power_cycle", status="maybe")
+
+
+class TestMonitorCapabilitiesIdentity:
+    def test_is_a_subsystem_capabilities(self):
+        from contracts.vending_machine import SubsystemCapabilities
+
+        assert issubclass(MonitorCapabilities, SubsystemCapabilities)
+
+    def test_subsystem_fixed_to_ice_maker(self):
+        caps = MonitorCapabilities(
+            contract_version="1.1.0", brand="B", model="M", firmware="f"
+        )
+        assert caps.subsystem == "ice_maker"
+        with pytest.raises(ValidationError):
+            MonitorCapabilities(
+                subsystem="vending",
+                contract_version="1.1.0",
+                brand="B",
+                model="M",
+                firmware="f",
+            )
+
+    def test_brand_model_still_required(self):
+        with pytest.raises(ValidationError):
+            MonitorCapabilities(contract_version="1.1.0", firmware="f")
+
+    def test_identity_fields_optional_and_accepted(self):
+        caps = MonitorCapabilities(
+            contract_version="1.1.0",
+            brand="B",
+            model="M",
+            firmware="f",
+            hardware_id="02:aa:bb:cc:dd:ee",
+            ip="10.0.0.5",
+        )
+        assert caps.hardware_id == "02:aa:bb:cc:dd:ee"
+
+    def test_contract_version_is_1_1_0(self):
+        from contracts.ice_maker_monitor import CONTRACT_VERSION
+
+        assert CONTRACT_VERSION == "1.1.0"
