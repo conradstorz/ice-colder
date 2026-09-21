@@ -8,8 +8,12 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 # Copy dependency files first for layer caching
 COPY pyproject.toml uv.lock ./
 
-# Install dependencies (no dev group in production)
-RUN uv sync --frozen --no-dev
+# Install dependencies (no dev group in production). The env vars make every
+# later `uv run` (CMD, compose `command:`) honour the same choice instead of
+# re-syncing the dev group at container start.
+ENV UV_FROZEN=1 \
+    UV_NO_DEV=1
+RUN uv sync
 
 # Build identity, passed by CI (see .github/workflows/ci.yml); "unknown" for
 # an ad-hoc local build. Read by services/build_info.py. Placed after uv sync
