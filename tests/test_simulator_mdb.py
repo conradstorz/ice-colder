@@ -347,3 +347,11 @@ class TestPaymentEnable:
         sim._last_status = {"state": "idle"}
         await sim._apply_enable({"accept": True})
         assert sim._vmc_status.empty()
+
+    async def test_repeated_enable_does_not_requeue_again(self):
+        sim = MDBGatewaySimulator()
+        sim._last_status = {"state": "interacting_with_user", "selected_product": "Ice"}
+        await sim._apply_enable({"accept": True})
+        assert sim._vmc_status.get_nowait()["state"] == "interacting_with_user"
+        await sim._apply_enable({"accept": True})
+        assert sim._vmc_status.empty()

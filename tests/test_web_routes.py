@@ -667,3 +667,17 @@ class TestAvailabilityOnDashboard:
     def test_screen_requires_auth(self, wired):
         client, _ = wired
         assert client.get("/screen", auth=("x", "y")).status_code == 401
+
+    def test_screen_body_neutral_when_unwired(self, client):
+        from web_interface import routes as r
+
+        r.set_availability(None)
+        r.set_health_monitor(None)
+        try:
+            resp = client.get("/screen/body")
+            assert resp.status_code == 200
+            assert "Disabled" not in resp.text
+            assert "Unavailable" not in resp.text
+        finally:
+            r.set_availability(None)
+            r.set_health_monitor(None)

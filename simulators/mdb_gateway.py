@@ -205,13 +205,15 @@ class MDBGatewaySimulator(ESP32Simulator):
         except ValidationError as e:
             logger.error(f"[mdb] Bad payment/enable ignored: {e}")
             return
-        if cmd.accept != self.accepting:
+        was_accepting = self.accepting
+        if cmd.accept != was_accepting:
             logger.info(
                 f"[mdb] Payment {'ENABLED' if cmd.accept else 'INHIBITED'} by VMC"
             )
         self.accepting = cmd.accept
         if (
             cmd.accept
+            and not was_accepting
             and self._last_status
             and self._last_status.get("state") == "interacting_with_user"
         ):

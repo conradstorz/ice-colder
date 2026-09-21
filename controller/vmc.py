@@ -1183,7 +1183,7 @@ class VMC:
         if self._availability:
             sellable, failing = self._availability.product_sellable(candidate)
             if not sellable:
-                reason = failing[0] if failing else "unavailable"
+                reason = failing[0]
                 txn_log.info(
                     f"UNAVAILABLE: '{candidate.name}' blocked by {reason}, customer rejected"
                 )

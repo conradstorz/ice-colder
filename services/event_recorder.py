@@ -109,6 +109,9 @@ class EventRecorder:
         deadline = time.monotonic() + timeout
         while self._queue.unfinished_tasks and time.monotonic() < deadline:
             time.sleep(0.005)
+        n = self._queue.unfinished_tasks
+        if n:
+            logger.warning(f"EventRecorder: flush timed out with {n} rows still queued")
 
     def _writer_loop(self) -> None:
         conn = sqlite3.connect(self._db_path, check_same_thread=False)

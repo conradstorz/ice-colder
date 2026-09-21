@@ -1,19 +1,19 @@
 {# Read-only owner status screen; no controls here. #}
 <div class="space-y-4">
-  <div class="rounded-2xl p-6 {{ 'bg-emerald-700' if payment_enabled else 'bg-red-800' }}">
+  <div class="rounded-2xl p-6 {{ 'bg-slate-700' if payment_enabled is none else ('bg-emerald-700' if payment_enabled else 'bg-red-800') }}">
     <div class="text-sm uppercase tracking-wide opacity-80">Payment</div>
-    <div class="text-4xl font-bold">{{ 'Enabled' if payment_enabled else 'Disabled' }}</div>
-    {% if payment_reasons %}
+    <div class="text-4xl font-bold">{{ '—' if payment_enabled is none else ('Enabled' if payment_enabled else 'Disabled') }}</div>
+    {% if payment_reasons and payment_enabled is not none %}
     <div class="mt-2 text-lg">{{ payment_reasons|join(', ') }}</div>
     {% endif %}
   </div>
 
   <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
     {% for kind, info in kinds.items() %}
-    <div class="rounded-2xl p-5 {{ 'bg-emerald-800' if info.ok else 'bg-slate-700' }}">
+    <div class="rounded-2xl p-5 {{ 'bg-slate-700' if info.ok is none else ('bg-emerald-800' if info.ok else 'bg-slate-700') }}">
       <div class="text-sm uppercase tracking-wide opacity-80">{{ kind|capitalize }}</div>
-      <div class="text-2xl font-semibold">{{ 'Available' if info.ok else 'Unavailable' }}</div>
-      {% if info.failing %}<div class="text-sm opacity-90 mt-1">{{ info.failing|join(', ') }}</div>{% endif %}
+      <div class="text-2xl font-semibold">{{ '—' if info.ok is none else ('Available' if info.ok else 'Unavailable') }}</div>
+      {% if info.failing and info.ok is not none %}<div class="text-sm opacity-90 mt-1">{{ info.failing|join(', ') }}</div>{% endif %}
     </div>
     {% endfor %}
   </div>

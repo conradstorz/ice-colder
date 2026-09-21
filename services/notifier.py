@@ -31,7 +31,9 @@ class Notifier:
         self._owner = config.machine_owner
         # Rate limiting: last send time per (source, code|message, sku)
         self._last_sent: dict[str, float] = {}
-        self._cooldown_seconds: float = 300.0  # 5 min between repeat alerts per source
+        self._cooldown_seconds: float = (
+            300.0  # 5 min between repeat alerts per (source, code|message, sku)
+        )
         self._warned_unconfigured = False
 
     @staticmethod

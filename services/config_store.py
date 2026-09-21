@@ -78,6 +78,8 @@ def _fsync_dir(directory: Path) -> None:
         return
     try:
         os.fsync(fd)
+    except OSError as e:
+        logger.warning(f"config_store: directory fsync failed for {directory}: {e}")
     finally:
         os.close(fd)
 
