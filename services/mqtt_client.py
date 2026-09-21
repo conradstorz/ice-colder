@@ -16,6 +16,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from config.config_model import MQTTConfig
+from services.mqtt_messages import VMCOnline
 
 
 # Type alias for message handler coroutines
@@ -56,6 +57,10 @@ class MQTTClient:
     def topic_prefix(self) -> str:
         return f"vmc/{self._machine_id}"
 
+    @property
+    def online_topic(self) -> str:
+        return f"{self.topic_prefix}/online"
+
     def register(self, topic_suffix: str, handler: MessageHandler):
         """
         Register a handler for messages matching a topic suffix.
@@ -66,13 +71,20 @@ class MQTTClient:
         self._handlers.append((topic_suffix, handler))
         logger.debug(f"MQTT: Registered handler for {self.topic_prefix}/{topic_suffix}")
 
-    async def publish(self, topic_suffix: str, payload: BaseModel | dict, qos: int = 1):
+    async def publish(
+        self,
+        topic_suffix: str,
+        payload: BaseModel | dict,
+        qos: int = 1,
+        retain: bool = False,
+    ):
         """
         Publish a message to vmc/{machine_id}/{topic_suffix}.
 
         Accepts either a Pydantic model (serialized to JSON) or a plain dict.
         Defaults to QoS 1 (contract-mandated for commands/acks/events/heartbeats/
-        refunds); pass qos=0 only for high-rate sensor readings.
+        refunds); pass qos=0 only for high-rate sensor readings. ``retain=True``
+        is for state a late subscriber must see (status, online), never commands.
         """
         if self._client is None or not self._connected:
             logger.warning(f"MQTT: Cannot publish to {topic_suffix} — not connected")
@@ -85,7 +97,7 @@ class MQTTClient:
             data = json.dumps(payload)
 
         try:
-            await self._client.publish(full_topic, data, qos=qos)
+            await self._client.publish(full_topic, data, qos=qos, retain=retain)
             logger.debug(f"MQTT: Published to {full_topic}")
         except Exception as e:
             logger.error(f"MQTT: Failed to publish to {full_topic}: {e}")
@@ -135,6 +147,12 @@ class MQTTClient:
         if self._config.password is not None:
             password = self._config.password.get_secret_value()
 
+        will = aiomqtt.Will(
+            topic=self.online_topic,
+            payload=VMCOnline(online=False).model_dump_json(),
+            qos=1,
+            retain=True,
+        )
         async with aiomqtt.Client(
             hostname=self._config.broker_host,
             port=self._config.broker_port,
@@ -142,9 +160,16 @@ class MQTTClient:
             password=password,
             identifier=self._config.client_id,
             keepalive=self._config.keepalive,
+            will=will,
         ) as client:
             self._client = client
             self._connected = True
+            await client.publish(
+                self.online_topic,
+                VMCOnline(online=True).model_dump_json(),
+                qos=1,
+                retain=True,
+            )
             if self._connection_callback:
                 self._connection_callback(True)
             logger.info(

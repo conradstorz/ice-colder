@@ -372,7 +372,7 @@ async def test_dispense_uses_product_slot_not_list_index():
         def register(self, *args, **kwargs):
             pass
 
-        async def publish(self, topic, payload):
+        async def publish(self, topic, payload, **kwargs):
             published.append((topic, payload))
 
     vmc.set_mqtt_client(FakeMqtt())
@@ -537,7 +537,7 @@ class TestVendOutcomes:
             def register(self, *_):
                 pass
 
-            async def publish(self, topic, payload):
+            async def publish(self, topic, payload, **kwargs):
                 published.append((topic, payload))
 
         vmc.set_mqtt_client(FakeClient())
@@ -621,7 +621,7 @@ class RecordingClient:
     def register(self, *_):
         pass
 
-    async def publish(self, topic, payload):
+    async def publish(self, topic, payload, **kwargs):
         self.published.append((topic, payload))
 
     def refund_commands(self) -> list[PaymentRefundCommand]:

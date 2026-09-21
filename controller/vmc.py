@@ -264,7 +264,7 @@ class VMC:
             else None,
             uptime_seconds=int(time.monotonic() - self._start_time),
         )
-        self._loop.create_task(self._mqtt_client.publish("status", status))
+        self._fire_and_forget(self._mqtt_client.publish("status", status, retain=True))
         if self._health_monitor:
             self._health_monitor.update_vmc_state(self.state)
 

@@ -168,6 +168,13 @@ class VMCStatus(BaseModel):
     timestamp: datetime = Field(default_factory=_utc_now)
 
 
+class VMCOnline(BaseModel):
+    """Retained presence on vmc/{id}/online; the Last-Will publishes online=false."""
+
+    online: bool
+    timestamp: datetime = Field(default_factory=_utc_now)
+
+
 class VMCAlert(BaseModel):
     """Alert published when something needs owner attention."""
 
