@@ -307,3 +307,31 @@ class TestMDBCapabilities:
         assert caps.subsystem == "mdb"
         assert caps.commands == ["payment/enable", "refund"]
         assert caps.contract_version == "0.3.0"
+
+
+class TestPaymentEnable:
+    def test_starts_inhibited_until_enabled(self):
+        sim = MDBGatewaySimulator()
+        assert sim.accepting is False
+
+    async def test_enable_command_toggles_accepting(self):
+        sim = MDBGatewaySimulator()
+        await sim._apply_enable({"accept": True})
+        assert sim.accepting is True
+        await sim._apply_enable({"accept": False})
+        assert sim.accepting is False
+
+    async def test_bad_enable_payload_ignored(self):
+        sim = MDBGatewaySimulator()
+        await sim._apply_enable({"nope": 1})
+        assert sim.accepting is False
+
+    async def test_no_credit_published_while_inhibited(self):
+        sim = MDBGatewaySimulator()
+        client = AsyncMock()
+        sim.publish = AsyncMock()
+        await sim._do_card_payment(client, "card", price=3.0)
+        sim.publish.assert_not_awaited()
+        await sim._apply_enable({"accept": True})
+        await sim._do_card_payment(client, "card", price=3.0)
+        sim.publish.assert_awaited()

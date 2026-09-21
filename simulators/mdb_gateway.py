@@ -18,7 +18,7 @@ from loguru import logger
 from pydantic import ValidationError
 
 from simulators.base import ESP32Simulator, FaultDef
-from services.mqtt_messages import PaymentEvent, PaymentStatus
+from services.mqtt_messages import PaymentEnableCommand, PaymentEvent, PaymentStatus
 from contracts.vending_machine import (
     PaymentRefundCommand,
     PaymentRefundResult,
@@ -74,6 +74,8 @@ class MDBGatewaySimulator(ESP32Simulator):
     def __init__(self, **kwargs):
         super().__init__(subsystem_name="mdb", **kwargs)
         self.strategy = PaymentStrategy()
+        # Real MDB peripherals stay inhibited until the VMC enables them.
+        self.accepting = False
         self.devices = [
             {"name": "coin_acceptor", "state": "ready"},
             {"name": "bill_validator", "state": "ready"},
@@ -195,6 +197,27 @@ class MDBGatewaySimulator(ESP32Simulator):
             _topic, data = await status_queue.get()
             await self._vmc_status.put(data)
 
+    async def _apply_enable(self, data: dict) -> None:
+        try:
+            cmd = PaymentEnableCommand.model_validate(data)
+        except ValidationError as e:
+            logger.error(f"[mdb] Bad payment/enable ignored: {e}")
+            return
+        if cmd.accept != self.accepting:
+            logger.info(
+                f"[mdb] Payment {'ENABLED' if cmd.accept else 'INHIBITED'} by VMC"
+            )
+        self.accepting = cmd.accept
+
+    async def _enable_loop(self, client: aiomqtt.Client):
+        """Track cmd/payment/enable from the VMC."""
+        topic = f"{self.topic_prefix}/cmd/payment/enable"
+        queue = await self.subscribe(client, topic)
+        logger.info(f"[mdb] Listening for payment enable on {topic}")
+        while True:
+            _topic, data = await queue.get()
+            await self._apply_enable(data)
+
     async def _payment_loop(self, client: aiomqtt.Client):
         """React to VMC state changes by inserting payments."""
         while True:
@@ -202,6 +225,10 @@ class MDBGatewaySimulator(ESP32Simulator):
             state = status.get("state", "")
 
             if state != "interacting_with_user":
+                continue
+
+            if not self.accepting:
+                logger.debug("[mdb] Interaction seen but payment inhibited; waiting")
                 continue
 
             selected = status.get("selected_product")
@@ -234,6 +261,10 @@ class MDBGatewaySimulator(ESP32Simulator):
     async def _do_cash_payment(self, client: aiomqtt.Client, method: str):
         """Insert cash denominations, possibly requiring multiple attempts."""
         for attempt in range(self.MAX_CASH_ATTEMPTS):
+            if not self.accepting:
+                logger.info("[mdb] Payment inhibited; cash rejected")
+                return
+
             if method == "cash_coin":
                 amount = self.strategy.pick_coin()
             else:
@@ -269,6 +300,9 @@ class MDBGatewaySimulator(ESP32Simulator):
         self, client: aiomqtt.Client, method: str, price: float = 3.00
     ):
         """Insert a card/NFC payment — single transaction."""
+        if not self.accepting:
+            logger.info("[mdb] Payment inhibited; card not accepted")
+            return
         amount = self.strategy.card_amount(price)
         await self.publish(
             client,
@@ -406,6 +440,7 @@ class MDBGatewaySimulator(ESP32Simulator):
             tg.create_task(self._watch_vmc_status(client))
             tg.create_task(self._payment_loop(client))
             tg.create_task(self._refund_loop(client))
+            tg.create_task(self._enable_loop(client))
 
 
 if __name__ == "__main__":
