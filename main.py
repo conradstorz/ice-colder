@@ -274,6 +274,8 @@ async def main():
     finally:
         vmc.cancel_pending_tasks()
         logger.info("Shutdown: cancelled pending VMC tasks")
+        recorder.flush()
+        logger.info("Shutdown: flushed event recorder")
 
 
 if __name__ == "__main__":

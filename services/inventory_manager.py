@@ -10,6 +10,7 @@ of config.json.
 import asyncio
 import json
 import os
+import threading
 from pathlib import Path
 
 from loguru import logger
@@ -31,6 +32,11 @@ class InventoryManager:
         self._path = path
         self._counts: dict[str, int] = {}
         self._track: dict[str, bool] = {}
+        # save_async() runs _save() on a worker thread (asyncio.to_thread)
+        # while admin routes can call set_count/add_sku/remove_sku on the
+        # event loop, which also calls _save() synchronously — guard the
+        # tmp-write-then-replace sequence against concurrent writers.
+        self._save_lock = threading.Lock()
         self._load(products)
 
     def _load(self, products: list):
@@ -59,13 +65,14 @@ class InventoryManager:
 
     def _save(self):
         """Persist current counts to disk atomically."""
-        tmp = f"{self._path}.tmp"
-        try:
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(self._counts, f, indent=2)
-            os.replace(tmp, self._path)
-        except Exception as e:
-            logger.error(f"Failed to save inventory: {e}")
+        with self._save_lock:
+            tmp = f"{self._path}.tmp"
+            try:
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(self._counts, f, indent=2)
+                os.replace(tmp, self._path)
+            except Exception as e:
+                logger.error(f"Failed to save inventory: {e}")
 
     def get_count(self, sku: str) -> int:
         """Return current inventory count for a SKU."""
