@@ -206,6 +206,9 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             if out_of_range:
                 issues.append(f"Temp issues: {', '.join(out_of_range)}")
 
+        payment_enabled = availability.payment_enabled if availability else None
+        payment_reasons = availability.blocking_reasons() if availability else []
+
         return templates.TemplateResponse(
             "partials/status_fragment.html",
             {
@@ -214,6 +217,8 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
                 "is_healthy": len(issues) == 0,
                 "issues": issues,
                 "active_faults": active_faults,
+                "payment_enabled": payment_enabled,
+                "payment_reasons": payment_reasons,
             },
         )
 
@@ -248,6 +253,10 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         health = health_monitor.get_summary()
         for name in EXPECTED_SUBSYSTEMS:
             health["subsystems"].setdefault(name, HealthMonitor.empty_subsystem_row())
+        health["availability"] = availability.table() if availability else []
+        health["payment_enabled"] = (
+            availability.payment_enabled if availability else None
+        )
         return templates.TemplateResponse(
             "partials/health_fragment.html",
             {"request": request, "health": health},
@@ -363,5 +372,51 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
                 "partials/inventory_add_form.html",
                 {"request": request, "product": copied, "mode": "copy"},
             )
+
+    def _screen_context(request: Request) -> dict:
+        status = (
+            vmc_instance.get_status()
+            if vmc_instance
+            else {"state": "unknown", "credit_escrow": 0.0}
+        )
+        faults = vmc_instance.active_faults() if vmc_instance else []
+        health = (
+            health_monitor.get_summary()
+            if health_monitor
+            else {"subsystems": {}, "mqtt_connected": False}
+        )
+        for name in EXPECTED_SUBSYSTEMS:
+            health["subsystems"].setdefault(name, HealthMonitor.empty_subsystem_row())
+        kinds = {}
+        for kind in ("ice", "water"):
+            ok, failing = (
+                availability.sale_available(kind) if availability else (None, [])
+            )
+            kinds[kind] = {"ok": ok, "failing": failing}
+        return {
+            "request": request,
+            "status": status,
+            "faults": faults,
+            "health": health,
+            "kinds": kinds,
+            "payment_enabled": availability.payment_enabled if availability else None,
+            "payment_reasons": availability.blocking_reasons() if availability else [],
+        }
+
+    @router.get("/screen", response_class=HTMLResponse)
+    async def screen(request: Request):
+        return templates.TemplateResponse("screen.html", {"request": request})
+
+    @router.get("/screen/body", response_class=HTMLResponse)
+    async def screen_body(request: Request):
+        ctx = _screen_context(request)
+        if event_recorder:
+            summary = await asyncio.to_thread(event_recorder.get_summary, 24)
+            ctx["money_24h"] = summary["money_in"]
+            ctx["vends_24h"] = summary["products_out"]
+        else:
+            ctx["money_24h"] = None
+            ctx["vends_24h"] = None
+        return templates.TemplateResponse("partials/screen_body.html", ctx)
 
     app.include_router(router)

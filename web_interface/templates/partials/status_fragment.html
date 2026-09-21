@@ -37,6 +37,17 @@
       </div>
       <div class="flex gap-8 text-sm text-right ml-8">
         <div>
+          <div class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">Payment</div>
+          {% if payment_enabled is none %}
+          <div class="font-medium text-gray-400">—</div>
+          {% elif payment_enabled %}
+          <div class="font-medium text-green-700">Enabled</div>
+          {% else %}
+          <div class="font-medium text-red-700">Disabled</div>
+          <div class="text-xs text-gray-500">{{ payment_reasons|join(', ') }}</div>
+          {% endif %}
+        </div>
+        <div>
           <div class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">State</div>
           <div class="font-medium text-gray-900">{{ status.state }}</div>
         </div>
@@ -93,6 +104,17 @@
         </div>
       </div>
       <div class="flex gap-8 text-sm text-right ml-8">
+        <div>
+          <div class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">Payment</div>
+          {% if payment_enabled is none %}
+          <div class="font-medium text-gray-400">—</div>
+          {% elif payment_enabled %}
+          <div class="font-medium text-green-700">Enabled</div>
+          {% else %}
+          <div class="font-medium text-red-700">Disabled</div>
+          <div class="text-xs text-gray-500">{{ payment_reasons|join(', ') }}</div>
+          {% endif %}
+        </div>
         <div>
           <div class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">State</div>
           <div class="font-medium text-gray-900">{{ status.state }}</div>

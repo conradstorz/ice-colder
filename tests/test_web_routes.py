@@ -623,3 +623,47 @@ class TestLogsContent:
 
         assert r.LOG_PATH == LOG_FILE
         assert LOG_FILE.parts[-2:] == ("LOGS", "vmc.log")
+
+
+class TestAvailabilityOnDashboard:
+    @pytest.fixture
+    def wired(self, client):
+        from services.availability import Availability
+        from services.health_monitor import HealthMonitor
+        from web_interface import routes as r
+
+        avail = Availability(r.config.products)
+        r.set_availability(avail)
+        r.set_health_monitor(HealthMonitor())
+        yield client, avail
+        r.set_availability(None)
+
+    def test_status_shows_payment_disabled_with_reason(self, wired):
+        client, avail = wired
+        resp = client.get("/status")
+        assert "Payment" in resp.text
+        assert "Disabled" in resp.text
+        assert "no products" in resp.text or "vending_alive" in resp.text
+
+    def test_health_lists_permissives_with_not_instrumented(self, wired):
+        client, _ = wired
+        resp = client.get("/health")
+        assert "bag_present" in resp.text
+        assert "not instrumented" in resp.text
+        assert "vending_alive" in resp.text
+
+    def test_screen_is_read_only_and_mobile(self, wired):
+        client, _ = wired
+        resp = client.get("/screen")
+        assert resp.status_code == 200
+        assert 'name="viewport"' in resp.text
+        assert "hx-post" not in resp.text
+        assert 'hx-get="/screen/body"' in resp.text
+        body = client.get("/screen/body")
+        assert body.status_code == 200
+        assert "hx-post" not in body.text
+        assert "Ice" in body.text and "Water" in body.text
+
+    def test_screen_requires_auth(self, wired):
+        client, _ = wired
+        assert client.get("/screen", auth=("x", "y")).status_code == 401
