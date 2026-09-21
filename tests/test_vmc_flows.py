@@ -20,6 +20,7 @@ from controller.vmc import VMC
 from services.availability import Availability
 from services.health_monitor import HealthMonitor
 from services.mqtt_messages import PaymentEnableCommand
+from services.session_store import SessionSnapshot, SessionStore
 
 
 def make_vmc(price: float = 2.50) -> VMC:
@@ -987,3 +988,102 @@ async def test_deposit_while_disabled_is_escrowed_and_logged():
     vmc.deposit_funds(1.0, payment_method="cash_coin")
     assert vmc.credit_escrow == 1.0
     vmc.cancel_pending_tasks()
+
+
+def _boot_with(tmp_path, snap):
+    store = SessionStore(tmp_path / "session.json")
+    if snap is not None:
+        store.save(snap)
+    vmc, monitor, avail, published = _wired_vmc()
+    vmc.set_session_store(store)
+    return vmc, avail, store
+
+
+async def test_clean_boot_raises_nothing(tmp_path):
+    vmc, avail, _ = _boot_with(tmp_path, None)
+    assert vmc.active_faults() == []
+    vmc.cancel_pending_tasks()
+
+
+async def test_boot_with_escrow_raises_pay_104_and_blocks(tmp_path):
+    rec = FakeEventRecorder()
+    vmc, avail, store = _boot_with(tmp_path, None)
+    vmc.set_event_recorder(rec)
+    store.save(SessionSnapshot(state="interacting_with_user", credit_escrow=1.25))
+    vmc.set_session_store(store)
+    assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+    assert (
+        "transaction_certain" in avail.blocking_reasons()
+        or avail.payment_enabled is False
+    )
+    assert any(
+        e[0] == "session_uncertain" and e[2]["credit_escrow"] == 1.25
+        for e in rec.events
+    )
+    assert store.load() is not None  # kept as evidence until cleared
+    vmc.cancel_pending_tasks()
+
+
+async def test_boot_mid_dispense_raises_pay_104(tmp_path):
+    vmc, avail, _ = _boot_with(
+        tmp_path,
+        SessionSnapshot(
+            state="dispensing", credit_escrow=0.0, selected_sku="ICE-1", dispense_slot=0
+        ),
+    )
+    assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+    vmc.cancel_pending_tasks()
+
+
+async def test_boot_with_corrupt_file_raises_pay_104(tmp_path):
+    (tmp_path / "session.json").write_text("garbage", encoding="utf-8")
+    vmc, avail, _ = _boot_with(tmp_path, None)
+    assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+    vmc.cancel_pending_tasks()
+
+
+async def test_clearing_pay_104_removes_file_and_reenables(tmp_path):
+    vmc, avail, store = _boot_with(
+        tmp_path, SessionSnapshot(state="interacting_with_user", credit_escrow=1.0)
+    )
+    assert vmc.clear_fault("PAY-104", by="admin") is True
+    await asyncio.sleep(0.05)
+    assert store.load() is None
+    assert "transaction_certain" not in avail.blocking_reasons()
+    vmc.cancel_pending_tasks()
+
+
+async def test_session_file_written_during_sale_and_cleared_after(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    vmc, monitor, avail, published = _wired_vmc()
+    vmc.set_session_store(store)
+    _all_alive(monitor, vmc)
+    avail.set_payment_device("coin_acceptor", "ready")
+    await vmc._handle_mqtt_hardware_io(
+        "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
+    )
+
+    vmc.deposit_funds(2.5, payment_method="cash_bill")
+    await asyncio.sleep(0.05)
+    snap = store.load()
+    assert snap is not None and snap.credit_escrow == 2.5
+
+    vmc.select_product(0)
+    await asyncio.sleep(1.2)  # _process_payment runs after 1s
+    assert vmc.state == "dispensing"
+    await asyncio.sleep(0.05)
+    snap = store.load()
+    assert snap.state == "dispensing" and snap.dispense_slot == 0
+
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser", {"slot": 0, "state": "complete"}
+    )
+    await asyncio.sleep(0.05)
+    assert vmc.state == "idle"
+    assert store.load() is None
+    vmc.cancel_pending_tasks()
+
+
+def test_reconcile_session_is_a_documented_stub():
+    vmc = make_vmc()
+    assert vmc.reconcile_session() is None

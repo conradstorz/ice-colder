@@ -1,7 +1,7 @@
 # controller/vmc.py
 import asyncio
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from uuid import uuid4
 from transitions import Machine
 from loguru import logger
@@ -36,6 +36,7 @@ from services.availability import Availability
 from services.health_monitor import HealthMonitor
 from services.display_controller import DisplayController
 from services.inventory_manager import InventoryManager
+from services.session_store import SessionSnapshot, SessionStore
 
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
 
@@ -172,6 +173,7 @@ class VMC:
         )
         self._event_recorder = None  # Set via set_event_recorder()
         self._availability: Availability | None = None  # Set via set_availability()
+        self._session_store: SessionStore | None = None  # Set via set_session_store()
         self.subsystem_capabilities: dict[str, dict] = {}
         # Fault registry: product-scope faults by SKU, machine-scope faults by code.
         self._lockouts: dict[str, FaultCode] = {}
@@ -297,6 +299,70 @@ class VMC:
         self._event_recorder = recorder
         logger.debug("VMC attached event recorder.")
 
+    def set_session_store(self, store: SessionStore):
+        """Attach the session store and evaluate any snapshot left by a previous run.
+
+        Call after attach_to_loop, set_health_monitor and set_availability so
+        the PAY-104 alert and the availability gate both land.
+        """
+        self._session_store = store
+        snap = store.load()
+        if snap is not None and snap.is_open():
+            self._flag_uncertain_session(snap)
+        elif snap is not None:
+            store.clear()
+        logger.debug("VMC attached session store.")
+
+    def _flag_uncertain_session(self, snap: SessionSnapshot) -> None:
+        detail = snap.error or (
+            f"state={snap.state} escrow=${snap.credit_escrow:.2f} "
+            f"sku={snap.selected_sku} refund={snap.pending_refund_request_id}"
+        )
+        logger.error(f"Transaction uncertain after restart: {detail}")
+        txn_log.error(f"RESTART WITH OPEN SESSION: {detail}")
+        if self._event_recorder:
+            self._event_recorder.record(
+                "session_uncertain", value=snap.credit_escrow, metadata=asdict(snap)
+            )
+        if self._availability:
+            self._availability.set_transaction_certain(False)
+        self._raise_fault(FaultCode.PAY_104, outcome=detail)
+
+    def reconcile_session(self) -> None:
+        """Future hook: query the payment gateway for held credit and clear
+        PAY-104 automatically. The contract has no credit query yet, so the
+        operator clears the fault from the dashboard after checking the machine.
+        """
+        return None
+
+    def _snapshot(self, state: str | None = None) -> SessionSnapshot:
+        pending = next(iter(self._pending_refunds), None)
+        product = self.selected_product
+        return SessionSnapshot(
+            state=state or self.state,
+            credit_escrow=round(self.credit_escrow, 2),
+            selected_sku=product.sku if product else None,
+            dispense_slot=product.slot
+            if product and (state or self.state) == "dispensing"
+            else None,
+            dispense_started_at=time.time()
+            if (state or self.state) == "dispensing"
+            else None,
+            pending_refund_request_id=pending,
+        )
+
+    def _persist_session(self, state: str | None = None) -> None:
+        """Save the live session, or remove the file once nothing is in flight."""
+        if self._session_store is None:
+            return
+        if FaultCode.PAY_104 in self._machine_faults:
+            return  # keep the evidence file untouched until the operator clears it
+        snap = self._snapshot(state)
+        if snap.is_open():
+            self._fire_and_forget(self._session_store.save_async(snap))
+        else:
+            self._fire_and_forget(self._session_store.clear_async())
+
     def _update_display(self, target_state: str | None = None):
         """Update the customer-facing display based on the target FSM state.
 
@@ -318,6 +384,7 @@ class VMC:
             self._health_monitor.update_vmc_state(self.state)
         if self._availability:
             self._availability.set_fsm_state(self.state)
+        self._persist_session()
         if self._mqtt_client is None or self._loop is None:
             return
         status = VMCStatus(
@@ -443,6 +510,11 @@ class VMC:
             if code not in self._machine_faults:
                 return False
             del self._machine_faults[code]
+            if code is FaultCode.PAY_104:
+                if self._session_store:
+                    self._session_store.clear()
+                if self._availability:
+                    self._availability.set_transaction_certain(True)
             if self._health_monitor:
                 self._health_monitor.clear_alert(f"{code.value}:machine")
             logger.info(f"Machine fault {code.value} cleared ({by})")
@@ -999,6 +1071,7 @@ class VMC:
     def _refund_confirmed(self, pending: PendingRefund, amount_returned: float) -> None:
         self._cancel_refund_deadline(pending)
         self._pending_refunds.pop(pending.request_id, None)
+        self._persist_session()
         txn_log.info(
             f"REFUND CONFIRMED: ${amount_returned:.2f} request_id={pending.request_id}"
         )
@@ -1030,6 +1103,7 @@ class VMC:
             self._send_refund_command(pending)
             return
         self._pending_refunds.pop(pending.request_id, None)
+        self._persist_session()
         txn_log.error(
             f"REFUND FAILED: ${pending.amount:.2f} request_id={pending.request_id} "
             f"reason={pending.reason} detail={detail}"
@@ -1195,6 +1269,7 @@ class VMC:
                 f"Deducted price from escrow. New escrow: {self.credit_escrow:.2f}"
             )
             self.dispense_product()
+            self._persist_session("dispensing")
             self._refresh_ui()
             # Dispenser hardware reports a terminal DispenserOutcome via MQTT; no
             # report within the timeout is a failed vend (PAY-102).
@@ -1275,4 +1350,5 @@ class VMC:
                     f"Inventory for {self.selected_product.name} updated: {self._inventory.get_count(sku)} remaining."
                 )
         self.complete_transaction()
+        self._persist_session()
         self._refresh_ui()

@@ -6,6 +6,7 @@ from services.display_controller import DisplayController
 from services.inventory_manager import InventoryManager
 from services.event_recorder import EventRecorder
 from services.availability import Availability
+from services.session_store import SessionStore
 from services.config_store import save_config
 from services.build_info import BUILD_INFO
 from services.paths import LOG_DIR, LOG_FILE
@@ -249,6 +250,9 @@ async def main():
     routes.set_event_recorder(recorder)
     availability.set_event_recorder(recorder)
     logger.info("Event recorder wired up")
+
+    vmc.set_session_store(SessionStore())
+    logger.info("Session store attached; previous open session checked")
 
     # Create display controller and wire to MQTT + VMC
     display = DisplayController()
