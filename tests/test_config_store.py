@@ -211,3 +211,28 @@ def test_delete_product_leaves_other_slots_unchanged(tmp_path, monkeypatch):
     assert delete_product(cfg, "A") is True
     remaining = {p.sku: p.slot for p in cfg.products}
     assert remaining == {"B": 1, "C": 2}
+
+
+def test_save_config_fsyncs_before_replace(tmp_path, monkeypatch):
+    import os
+    import services.config_store as cs
+
+    calls: list[str] = []
+    real_fsync = os.fsync
+    real_replace = os.replace
+
+    def fake_fsync(fd):
+        calls.append("fsync")
+        return real_fsync(fd)
+
+    def fake_replace(src, dst):
+        calls.append("replace")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(cs.os, "fsync", fake_fsync)
+    monkeypatch.setattr(cs.os, "replace", fake_replace)
+
+    save_config(ConfigModel(), tmp_path / "config.json")
+
+    assert "fsync" in calls
+    assert calls.index("fsync") < calls.index("replace")

@@ -50,14 +50,36 @@ def _config_json(config: ConfigModel) -> str:
 
 
 def save_config(config: ConfigModel, path: Path | None = None):
-    """Atomically write the config, keeping a rolling ``<name>.bak``."""
+    """Atomically write the config, keeping a rolling ``<name>.bak``.
+
+    The temp file is flushed and fsync'd before ``os.replace`` so a power loss
+    right after the rename cannot leave an empty or truncated config.json.
+    """
     if path is None:
         path = _config_path()
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(_config_json(config), encoding="utf-8")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(_config_json(config))
+        f.flush()
+        os.fsync(f.fileno())
     if path.exists():
         shutil.copy2(path, path.with_name(path.name + ".bak"))
     os.replace(tmp, path)
+    _fsync_dir(path.parent)
+
+
+def _fsync_dir(directory: Path) -> None:
+    """Flush the directory entry after a rename (no-op on Windows)."""
+    if os.name != "posix":
+        return
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _lowest_free_slot(products) -> int:
