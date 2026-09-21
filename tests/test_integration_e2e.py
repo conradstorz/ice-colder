@@ -17,7 +17,7 @@ import sys
 
 import pytest
 
-from config.config_model import ConfigModel
+from config.config_model import ConfigModel, Product
 from controller.vmc import VMC
 from services.health_monitor import HealthMonitor
 from services.mqtt_client import MQTTClient
@@ -515,3 +515,65 @@ class TestFailedVendLoop:
                     await mqtt_task
                 except asyncio.CancelledError:
                     pass
+
+
+async def test_vending_heartbeat_loss_withdraws_payment_enable():
+    """Live broker: vending LWT -> payment/enable false; heartbeat back -> true."""
+    from services.availability import Availability
+
+    cfg = ConfigModel()
+    cfg.machine_id = "e2e-enable"
+    cfg.physical.products = [Product(sku="ICE-1", name="Ice", price=1.0, kind="ice")]
+    mqtt = MQTTClient(config=cfg.mqtt, machine_id=cfg.machine_id)
+    vmc = VMC(config=cfg)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    monitor = HealthMonitor()
+    vmc.set_health_monitor(monitor)
+    avail = Availability(cfg.products)
+    vmc.set_availability(avail)
+    vmc.set_mqtt_client(mqtt)
+    mqtt.set_connection_callback(
+        lambda c: (monitor.update_mqtt_status(c), vmc.on_mqtt_connection(c))
+    )
+    run = asyncio.create_task(mqtt.run())
+
+    seen: list[bool] = []
+    async with aiomqtt.Client(hostname="localhost", port=1883) as probe:
+        await probe.subscribe(f"vmc/{cfg.machine_id}/cmd/payment/enable")
+        await asyncio.sleep(1.0)
+        prefix = f"vmc/{cfg.machine_id}"
+        for name in ("vending", "mdb", "ice_maker"):
+            await probe.publish(
+                f"{prefix}/heartbeat/{name}",
+                json.dumps({"subsystem": name, "uptime_seconds": 1}),
+            )
+        await probe.publish(
+            f"{prefix}/payment/status",
+            json.dumps({"device": "coin_acceptor", "state": "ready"}),
+        )
+        await probe.publish(
+            f"{prefix}/hardware/io/bin_half_full",
+            json.dumps({"device": "bin_half_full", "state": True}),
+        )
+        await asyncio.sleep(1.0)
+        await probe.publish(
+            f"{prefix}/heartbeat/vending",
+            json.dumps({"subsystem": "vending", "uptime_seconds": -1}),
+        )
+        await asyncio.sleep(1.0)
+        await probe.publish(
+            f"{prefix}/heartbeat/vending",
+            json.dumps({"subsystem": "vending", "uptime_seconds": 2}),
+        )
+        await asyncio.sleep(1.0)
+
+        while True:
+            try:
+                msg = await asyncio.wait_for(probe.messages.__anext__(), timeout=0.5)
+            except asyncio.TimeoutError:
+                break
+            seen.append(json.loads(msg.payload)["accept"])
+
+    run.cancel()
+    vmc.cancel_pending_tasks()
+    assert seen[-3:] == [True, False, True]
