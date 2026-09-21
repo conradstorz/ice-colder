@@ -5,6 +5,7 @@ from services.notifier import Notifier
 from services.display_controller import DisplayController
 from services.inventory_manager import InventoryManager
 from services.event_recorder import EventRecorder
+from services.availability import Availability
 from services.config_store import save_config
 from services.build_info import BUILD_INFO
 from services.paths import LOG_DIR, LOG_FILE
@@ -219,6 +220,11 @@ async def main():
     routes.set_health_monitor(health)
     logger.info("Health monitor and notifier set up and linked")
 
+    availability = Availability(live_config.products)
+    vmc.set_availability(availability)
+    routes.set_availability(availability)
+    logger.info("Availability wired to VMC and routes")
+
     # Create MQTT client and wire it to the VMC
     # Allow environment variable to override broker host (for Docker networking)
     broker_override = os.environ.get("MQTT_BROKER_HOST")
@@ -226,7 +232,12 @@ async def main():
         live_config.mqtt.broker_host = broker_override
         logger.info(f"MQTT broker host overridden by env: {broker_override}")
     mqtt = MQTTClient(config=live_config.mqtt, machine_id=live_config.machine_id)
-    mqtt.set_connection_callback(health.update_mqtt_status)
+
+    def _on_mqtt_connection(connected: bool) -> None:
+        health.update_mqtt_status(connected)
+        vmc.on_mqtt_connection(connected)
+
+    mqtt.set_connection_callback(_on_mqtt_connection)
     vmc.set_mqtt_client(mqtt)
     vmc.set_health_monitor(health)
     logger.info("MQTT client created and linked to VMC and health monitor")
@@ -236,6 +247,7 @@ async def main():
     recorder.register_handlers(mqtt)
     vmc.set_event_recorder(recorder)
     routes.set_event_recorder(recorder)
+    availability.set_event_recorder(recorder)
     logger.info("Event recorder wired up")
 
     # Create display controller and wire to MQTT + VMC

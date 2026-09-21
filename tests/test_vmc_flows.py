@@ -17,7 +17,9 @@ from contracts.vending_machine import (
     PaymentRefundCommand,
 )
 from controller.vmc import VMC
+from services.availability import Availability
 from services.health_monitor import HealthMonitor
+from services.mqtt_messages import PaymentEnableCommand
 
 
 def make_vmc(price: float = 2.50) -> VMC:
@@ -858,3 +860,130 @@ class TestFireAndForget:
         vmc.cancel_pending_tasks()
         await asyncio.sleep(0)
         assert all(t.done() for t in vmc._pending_tasks) or vmc._pending_tasks == []
+
+
+def _wired_vmc(products=None):
+    cfg = ConfigModel()
+    cfg.physical.products = products or [
+        Product(sku="ICE-1", name="Ice Bag", price=2.5, kind="ice"),
+        Product(sku="WTR-1", name="Water", price=1.0, kind="water"),
+    ]
+    vmc = VMC(config=cfg)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    monitor = HealthMonitor()
+    vmc.set_health_monitor(monitor)
+    avail = Availability(cfg.products)
+    vmc.set_availability(avail)
+    published: list = []
+
+    class FakeMQTT:
+        def register(self, *a, **k):
+            pass
+
+        async def publish(self, topic, payload, qos=1, retain=False):
+            published.append((topic, payload))
+
+    vmc.set_mqtt_client(FakeMQTT())
+    return vmc, monitor, avail, published
+
+
+def _all_alive(monitor: HealthMonitor, vmc: VMC):
+    for name in ("vending", "mdb", "ice_maker"):
+        monitor.record_heartbeat(name, {"uptime_seconds": 1})
+    vmc.on_mqtt_connection(True)
+
+
+async def _enables(published) -> list[bool]:
+    await asyncio.sleep(0)
+    return [
+        p.accept
+        for t, p in published
+        if t == "cmd/payment/enable" and isinstance(p, PaymentEnableCommand)
+    ]
+
+
+async def test_vending_heartbeat_loss_raises_com_101_and_disables_payment():
+    vmc, monitor, avail, published = _wired_vmc()
+    _all_alive(monitor, vmc)
+    avail.set_payment_device("coin_acceptor", "ready")
+    await vmc._handle_mqtt_hardware_io(
+        "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
+    )
+    assert avail.payment_enabled is True
+
+    monitor.mark_offline("vending")
+    codes = {f["code"] for f in vmc.active_faults()}
+    assert "COM-101" in codes
+    assert avail.payment_enabled is False
+    assert (await _enables(published))[-1] is False
+
+    monitor.record_heartbeat("vending", {"uptime_seconds": 5})
+    assert "COM-101" not in {f["code"] for f in vmc.active_faults()}
+    assert avail.payment_enabled is True
+    vmc.cancel_pending_tasks()
+
+
+async def test_ice_maker_loss_is_com_102_and_only_ice_blocked():
+    vmc, monitor, avail, published = _wired_vmc()
+    _all_alive(monitor, vmc)
+    avail.set_payment_device("coin_acceptor", "ready")
+    await vmc._handle_mqtt_hardware_io(
+        "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
+    )
+    monitor.mark_offline("ice_maker")
+    assert "COM-102" in {f["code"] for f in vmc.active_faults()}
+    assert avail.sale_available("ice")[0] is False
+    assert avail.payment_enabled is True
+    vmc.cancel_pending_tasks()
+
+
+async def test_mdb_loss_is_pay_101():
+    vmc, monitor, avail, _ = _wired_vmc()
+    _all_alive(monitor, vmc)
+    monitor.mark_offline("mdb")
+    assert "PAY-101" in {f["code"] for f in vmc.active_faults()}
+    assert avail.payment_enabled is False
+    vmc.cancel_pending_tasks()
+
+
+async def test_mqtt_disconnect_is_com_103_and_reconnect_republishes():
+    vmc, monitor, avail, published = _wired_vmc()
+    _all_alive(monitor, vmc)
+    vmc.on_mqtt_connection(False)
+    assert "COM-103" in {f["code"] for f in vmc.active_faults()}
+    before = len(await _enables(published))
+    vmc.on_mqtt_connection(True)
+    assert "COM-103" not in {f["code"] for f in vmc.active_faults()}
+    assert len(await _enables(published)) == before + 1
+    vmc.cancel_pending_tasks()
+
+
+async def test_payment_status_error_feeds_availability():
+    vmc, monitor, avail, _ = _wired_vmc()
+    _all_alive(monitor, vmc)
+    await vmc._handle_mqtt_payment_status(
+        "payment/status", {"device": "card_reader", "state": "error"}
+    )
+    assert "payment_devices_ready" in avail.blocking_reasons()
+    vmc.cancel_pending_tasks()
+
+
+async def test_select_product_refused_when_kind_unavailable_names_reason():
+    vmc, monitor, avail, _ = _wired_vmc()
+    _all_alive(monitor, vmc)
+    avail.set_payment_device("coin_acceptor", "ready")
+    monitor.mark_offline("ice_maker")
+    messages = []
+    vmc.set_message_callback(messages.append)
+    vmc.select_product(0)  # ICE-1
+    assert vmc.state == "idle"
+    assert vmc.selected_product is None
+    assert "ice_maker_alive" in messages[-1]
+    vmc.cancel_pending_tasks()
+
+
+async def test_deposit_while_disabled_is_escrowed_and_logged():
+    vmc, monitor, avail, _ = _wired_vmc()
+    vmc.deposit_funds(1.0, payment_method="cash_coin")
+    assert vmc.credit_escrow == 1.0
+    vmc.cancel_pending_tasks()

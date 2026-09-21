@@ -45,6 +45,14 @@ def set_event_recorder(recorder):
     event_recorder = recorder
 
 
+availability = None
+
+
+def set_availability(avail):
+    global availability
+    availability = avail
+
+
 inventory_manager = None
 
 
@@ -112,6 +120,8 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         success = add_product(config, sku, name, price, slot=parsed_slot)
         if success and inventory_manager:
             inventory_manager.add_sku(sku, 0, tracked=False)
+        if success and availability:
+            availability.set_products(config.products)
 
         return templates.TemplateResponse(
             "partials/inventory_table.html",
@@ -304,7 +314,9 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         price: float = Form(...),
         slot: int = Form(...),
     ):
-        update_product(config, sku, name, price, slot=slot)
+        success = update_product(config, sku, name, price, slot=slot)
+        if success and availability:
+            availability.set_products(config.products)
 
         return templates.TemplateResponse(
             "partials/inventory_table.html",
@@ -316,6 +328,8 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         success = delete_product(config, sku)
         if success and inventory_manager:
             inventory_manager.remove_sku(sku)
+        if success and availability:
+            availability.set_products(config.products)
         return templates.TemplateResponse(
             "partials/inventory_table.html",
             {"request": request, "products": config.products, "locked": _locked_skus()},

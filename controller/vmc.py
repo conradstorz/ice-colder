@@ -10,6 +10,8 @@ from services.payment_gateway_manager import PaymentGatewayManager
 from services.mqtt_messages import (
     VMCStatus,
     PaymentEvent,
+    PaymentEnableCommand,
+    PaymentStatus,
     ButtonPress,
     DispenseCommand,
     IceMakerEvent,
@@ -30,6 +32,7 @@ from contracts.vending_machine import (
     SubsystemCapabilities,
 )
 from config.config_model import ConfigModel
+from services.availability import Availability
 from services.health_monitor import HealthMonitor
 from services.display_controller import DisplayController
 from services.inventory_manager import InventoryManager
@@ -107,6 +110,13 @@ _SEVERITY_LEVEL = {
     Severity.critical: "critical",
 }
 
+# Heartbeat loss per subsystem -> registry fault (ROADMAP §5, §8).
+_LIVENESS_FAULTS = {
+    "vending": FaultCode.COM_101,
+    "ice_maker": FaultCode.COM_102,
+    "mdb": FaultCode.PAY_101,
+}
+
 
 @dataclass
 class PendingRefund:
@@ -161,6 +171,7 @@ class VMC:
             None  # Set via set_inventory_manager()
         )
         self._event_recorder = None  # Set via set_event_recorder()
+        self._availability: Availability | None = None  # Set via set_availability()
         self.subsystem_capabilities: dict[str, dict] = {}
         # Fault registry: product-scope faults by SKU, machine-scope faults by code.
         self._lockouts: dict[str, FaultCode] = {}
@@ -220,12 +231,56 @@ class VMC:
         client.register("cmd/ice_maker/ack", self._handle_mqtt_command_ack)
         client.register("hardware/io/+", self._handle_mqtt_hardware_io)
         client.register("cmd/payment/refund/ack", self._handle_mqtt_refund_ack)
+        client.register("payment/status", self._handle_mqtt_payment_status)
         logger.debug("VMC registered MQTT handlers.")
 
     def set_health_monitor(self, monitor: HealthMonitor):
-        """Attach a HealthMonitor so MQTT events feed into health tracking."""
+        """Attach a HealthMonitor; its liveness transitions become COM/PAY faults."""
         self._health_monitor = monitor
+        monitor.set_liveness_callback(self._on_subsystem_liveness)
         logger.debug("VMC attached health monitor.")
+
+    def set_availability(self, availability: Availability):
+        """Attach the permissive table; it publishes cmd/payment/enable through us."""
+        self._availability = availability
+        availability.set_fsm_state(self.state)
+        availability.set_active_faults(self.active_faults())
+        availability.set_publisher(self.publish_payment_enable)
+        logger.debug("VMC attached availability.")
+
+    def publish_payment_enable(self, accept: bool) -> None:
+        """Sync publisher handed to Availability (fire-and-forget on the loop)."""
+        if self._mqtt_client is None:
+            logger.warning("No MQTT client; payment/enable not sent")
+            return
+        self._fire_and_forget(
+            self._mqtt_client.publish(
+                "cmd/payment/enable", PaymentEnableCommand(accept=accept)
+            )
+        )
+
+    def _on_subsystem_liveness(self, subsystem: str, alive: bool) -> None:
+        code = _LIVENESS_FAULTS.get(subsystem)
+        if code is not None:
+            if alive:
+                self.clear_fault(code.value, by="auto")
+            else:
+                self._raise_fault(code, outcome="heartbeat_lost")
+        if self._availability:
+            self._availability.set_subsystem_alive(subsystem, alive)
+            if subsystem == "mdb" and alive:
+                self._availability.republish()
+
+    def on_mqtt_connection(self, connected: bool) -> None:
+        """Connection-state callback from MQTTClient (chained after the health monitor)."""
+        if self._availability:
+            self._availability.set_mqtt_connected(connected)
+        if connected:
+            self.clear_fault(FaultCode.COM_103.value, by="auto")
+            if self._availability:
+                self._availability.republish()
+        else:
+            self._raise_fault(FaultCode.COM_103, outcome="disconnected")
 
     def set_display_controller(self, controller: DisplayController):
         """Attach a DisplayController so FSM state changes update the customer display."""
@@ -253,7 +308,16 @@ class VMC:
             self._display_controller.update_for_state(target_state or self.state)
 
     def _publish_status(self):
-        """Publish current VMC status to MQTT (fire-and-forget)."""
+        """Publish current VMC status to MQTT (fire-and-forget).
+
+        State updates to the health monitor and availability happen
+        regardless of whether an MQTT client is attached; only the MQTT
+        publish itself needs one.
+        """
+        if self._health_monitor:
+            self._health_monitor.update_vmc_state(self.state)
+        if self._availability:
+            self._availability.set_fsm_state(self.state)
         if self._mqtt_client is None or self._loop is None:
             return
         status = VMCStatus(
@@ -265,8 +329,6 @@ class VMC:
             uptime_seconds=int(time.monotonic() - self._start_time),
         )
         self._fire_and_forget(self._mqtt_client.publish("status", status, retain=True))
-        if self._health_monitor:
-            self._health_monitor.update_vmc_state(self.state)
 
     # --- Fault registry ---
 
@@ -310,8 +372,11 @@ class VMC:
         return out
 
     def _push_active_faults(self) -> None:
+        faults = self.active_faults()
         if self._health_monitor:
-            self._health_monitor.set_active_faults(self.active_faults())
+            self._health_monitor.set_active_faults(faults)
+        if self._availability:
+            self._availability.set_active_faults(faults)
 
     def _raise_fault(
         self,
@@ -388,6 +453,8 @@ class VMC:
     async def _handle_mqtt_hardware_io(self, topic: str, data: dict):
         """Binary hardware IO from the vending ESP32; ice returning clears ICE-101."""
         hw = HardwareIO.model_validate(data)
+        if self._availability:
+            self._availability.set_hardware_io(hw.device, hw.state)
         if hw.device == "bin_half_full" and hw.state:
             for sku, code in list(self._lockouts.items()):
                 if code is FaultCode.ICE_101:
@@ -403,6 +470,13 @@ class VMC:
         logger.info(f"MQTT payment received: ${event.amount:.2f} via {event.method}")
         txn_log.info(f"PAYMENT RECEIVED: ${event.amount:.2f} via {event.method}")
         self.deposit_funds(event.amount, payment_method=event.method)
+
+    async def _handle_mqtt_payment_status(self, topic: str, data: dict):
+        """MDB device readiness; any device in error/offline blocks payment."""
+        status = PaymentStatus.model_validate(data)
+        logger.debug(f"MQTT payment status: {status.device}={status.state}")
+        if self._availability:
+            self._availability.set_payment_device(status.device, status.state)
 
     async def _handle_mqtt_button(self, topic: str, data: dict):
         """Handle button press from ESP32."""
@@ -843,6 +917,11 @@ class VMC:
         if amount <= 0:
             logger.warning(f"Ignoring non-positive deposit: {amount}")
             return
+        if self._availability and not self._availability.payment_enabled:
+            logger.warning(
+                f"Credit ${amount:.2f} arrived while payment is disabled "
+                f"({', '.join(self._availability.blocking_reasons())}); escrowed"
+            )
         self.credit_escrow += amount
         self.last_payment_method = payment_method
         logger.info(
@@ -1026,6 +1105,20 @@ class VMC:
                 "Please choose another product."
             )
             return
+
+        if self._availability:
+            sellable, failing = self._availability.product_sellable(candidate)
+            if not sellable:
+                reason = failing[0] if failing else "unavailable"
+                txn_log.info(
+                    f"UNAVAILABLE: '{candidate.name}' blocked by {reason}, customer rejected"
+                )
+                self.send_customer_message(
+                    f"{candidate.name} is unavailable right now ({reason}). "
+                    "Please try again later."
+                )
+                return
+
         self.selected_product = candidate
         logger.info(
             f"Selected product: {self.selected_product.name} at ${self.selected_product.price:.2f}"
