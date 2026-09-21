@@ -41,7 +41,10 @@ class FakeSoldOutInventory:
     def is_tracked(self, sku):
         return True
 
-    def decrement(self, sku):
+    def decrement(self, sku, **kwargs):
+        pass
+
+    async def save_async(self):
         pass
 
     def get_count(self, sku):

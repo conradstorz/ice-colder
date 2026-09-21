@@ -146,3 +146,17 @@ class TestRemoveSku:
     def test_remove_sku_unknown_is_harmless(self, tmp_path):
         inv = InventoryManager([], path=tmp_path / "inv.json")
         inv.remove_sku("NOPE")  # must not raise
+
+
+async def test_decrement_without_persist_then_save_async(tmp_path):
+    from config.config_model import Product
+    from services.inventory_manager import InventoryManager
+
+    path = tmp_path / "inventory.json"
+    inv = InventoryManager(
+        [Product(sku="A", track_inventory=True, inventory_count=3)], path=path
+    )
+    inv.decrement("A", persist=False)
+    assert json.loads(path.read_text())["A"] == 3  # not yet written
+    await inv.save_async()
+    assert json.loads(path.read_text())["A"] == 2

@@ -1176,7 +1176,8 @@ class VMC:
         if self._inventory and self.selected_product:
             sku = self.selected_product.sku
             if self._inventory.is_tracked(sku):
-                self._inventory.decrement(sku)
+                self._inventory.decrement(sku, persist=False)
+                self._fire_and_forget(self._inventory.save_async())
                 logger.info(
                     f"Inventory for {self.selected_product.name} updated: {self._inventory.get_count(sku)} remaining."
                 )

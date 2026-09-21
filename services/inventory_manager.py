@@ -7,6 +7,7 @@ or when new products appear. Runtime counts survive restarts independently
 of config.json.
 """
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -80,12 +81,17 @@ class InventoryManager:
             return True
         return self._counts.get(sku, 0) > 0
 
-    def decrement(self, sku: str):
-        """Decrement inventory for a SKU and persist."""
+    async def save_async(self) -> None:
+        """Persist off the event loop (VMC hot path)."""
+        await asyncio.to_thread(self._save)
+
+    def decrement(self, sku: str, *, persist: bool = True):
+        """Decrement inventory for a SKU; persist synchronously unless told not to."""
         if sku in self._counts:
             self._counts[sku] = max(0, self._counts[sku] - 1)
             logger.info(f"Inventory: {sku} decremented to {self._counts[sku]}")
-            self._save()
+            if persist:
+                self._save()
 
     def set_count(self, sku: str, count: int):
         """Set inventory count for a SKU (e.g., from admin dashboard)."""
