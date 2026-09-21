@@ -7,6 +7,7 @@ from services.inventory_manager import InventoryManager
 from services.event_recorder import EventRecorder
 from services.config_store import save_config
 from services.build_info import BUILD_INFO
+from services.paths import LOG_DIR, LOG_FILE
 
 import asyncio
 import json
@@ -28,13 +29,13 @@ def setup_logging():
     Set up logging configuration for the application.
     """
     # Create the LOGS subdirectory if it doesn't exist
-    os.makedirs("LOGS", exist_ok=True)
+    os.makedirs(LOG_DIR, exist_ok=True)
 
     # Remove any default logging handlers
     logger.remove()
     # log file with rotation and retention settings
     logger.add(
-        "LOGS/vmc.log",
+        str(LOG_FILE),
         serialize=False,
         rotation="00:00",
         retention="300 days",
@@ -50,7 +51,7 @@ def setup_logging():
     )
     # Transaction log — customer interactions only (button, payment, dispense, refund)
     logger.add(
-        "LOGS/transactions.log",
+        str(LOG_DIR / "transactions.log"),
         filter=lambda record: record["extra"].get("transaction", False),
         rotation="00:00",
         retention="300 days",
@@ -59,7 +60,7 @@ def setup_logging():
     )
     # Ice maker log — power cycles, ice drops, and out-of-spec behavior
     logger.add(
-        "LOGS/ice_maker.log",
+        str(LOG_DIR / "ice_maker.log"),
         filter=lambda record: record["extra"].get("ice_maker", False),
         rotation="00:00",
         retention="300 days",
@@ -68,7 +69,7 @@ def setup_logging():
     )
     # Vending machine log — button presses, dispense sequences, hardware events
     logger.add(
-        "LOGS/vending.log",
+        str(LOG_DIR / "vending.log"),
         filter=lambda record: record["extra"].get("vending", False),
         rotation="00:00",
         retention="300 days",

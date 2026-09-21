@@ -600,3 +600,26 @@ class TestHealthTabIdentity:
             assert "refund" in r.text  # in the row title
         finally:
             routes.set_health_monitor(None)
+
+
+class TestLogsContent:
+    def test_logs_tab_shows_written_line(self, client, tmp_path, monkeypatch):
+        from web_interface import routes as r
+
+        log_file = tmp_path / "LOGS" / "vmc.log"
+        log_file.parent.mkdir()
+        log_file.write_text(
+            "first line\nunique-marker-42;INFO 2026-09-21\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(r, "LOG_PATH", log_file)
+
+        resp = client.get("/logs")
+        assert resp.status_code == 200
+        assert "unique-marker-42" in resp.text
+
+    def test_log_path_matches_logging_setup(self):
+        from services.paths import LOG_FILE
+        from web_interface import routes as r
+
+        assert r.LOG_PATH == LOG_FILE
+        assert LOG_FILE.parts[-2:] == ("LOGS", "vmc.log")

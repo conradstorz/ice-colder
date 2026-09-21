@@ -13,6 +13,7 @@ from contracts.vending_machine import EXPECTED_SUBSYSTEMS
 from services.config_store import add_product, delete_product, update_product
 from services.fsm_control import perform_command
 from services.health_monitor import HealthMonitor
+from services.paths import LOG_FILE
 
 config: ConfigModel = None
 
@@ -71,7 +72,7 @@ def require_auth(credentials: HTTPBasicCredentials = Depends(_basic_auth)):
         )
 
 
-LOG_PATH = Path("logs/vmc.log")
+LOG_PATH = LOG_FILE
 
 
 def tail(file_path: Path, lines: int = 50) -> list[str]:
@@ -225,7 +226,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
 
     @router.get("/logs", response_class=HTMLResponse)
     async def view_logs(request: Request):
-        lines = tail(LOG_PATH, lines=10)
+        lines = await asyncio.to_thread(tail, LOG_PATH, 10)
         return templates.TemplateResponse(
             "partials/logs_fragment.html", {"request": request, "logs": lines}
         )
