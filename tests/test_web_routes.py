@@ -583,7 +583,7 @@ class TestHealthTabIdentity:
                 {
                     "subsystem": "mdb",
                     "firmware": "abc1234",
-                    "contract_version": "0.2.0",
+                    "contract_version": "0.3.0",
                     "brand": "ice-colder",
                     "model": "mdb-sim",
                     "hardware_id": "02:11:22:33:44:55",
@@ -593,7 +593,7 @@ class TestHealthTabIdentity:
             )
             r = client.get("/health", auth=client.auth)
             assert "abc1234" in r.text
-            assert "0.2.0" in r.text
+            assert "0.3.0" in r.text
             assert "ice-colder mdb-sim" in r.text
             assert "02:11:22:33:44:55" in r.text
             assert "172.18.0.7" in r.text

@@ -456,7 +456,7 @@ class TestCapabilitiesOnlyLiveness:
         return {
             "subsystem": "vending",
             "firmware": "f",
-            "contract_version": "0.2.0",
+            "contract_version": "0.3.0",
             **extra,
         }
 
@@ -508,7 +508,7 @@ class TestSubsystemIdentity:
         base = {
             "subsystem": "vending",
             "firmware": "abc1234",
-            "contract_version": "0.2.0",
+            "contract_version": "0.3.0",
             "brand": "ice-colder",
             "model": "vending-sim",
             "hardware_id": "02:11:22:33:44:55",

@@ -40,7 +40,7 @@ class ConfigModel(BaseModel): holds high-level fields for version, physical, pay
 """
 
 from enum import Enum
-from typing import List, Optional, Dict, Any
+from typing import List, Literal, Optional, Dict, Any
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -120,6 +120,13 @@ class Product(BaseModel):
         0,
         ge=0,
         description="Physical dispenser slot / motor index on the vending ESP32",
+    )
+    kind: Literal["ice", "water", "other"] = Field(
+        "other",
+        description=(
+            "Which availability permissives gate this product: ice, water, or "
+            "other (gated by every permissive)"
+        ),
     )
 
 

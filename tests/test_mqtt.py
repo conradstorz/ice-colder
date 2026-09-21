@@ -418,7 +418,7 @@ class TestMonitorContractHandlers:
             {
                 "subsystem": "vending",
                 "firmware": "abc1234",
-                "contract_version": "0.2.0",
+                "contract_version": "0.3.0",
                 "hardware_id": "02:11:22:33:44:55",
                 "future_field": "ignored",
             },

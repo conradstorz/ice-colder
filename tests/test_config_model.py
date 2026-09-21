@@ -183,3 +183,13 @@ class TestDispenseTimeout:
 
         raw = json.loads(Path("config.example.json").read_text(encoding="utf-8"))
         assert raw["physical"]["dispense_timeout_seconds"] == 120
+
+
+def test_product_kind_defaults_to_other_and_validates():
+    from pydantic import ValidationError
+    from config.config_model import Product
+
+    assert Product().kind == "other"
+    assert Product(kind="ice").kind == "ice"
+    with pytest.raises(ValidationError):
+        Product(kind="soda")
