@@ -582,3 +582,42 @@ class TestSubsystemIdentity:
         assert vmc["uptime_seconds"] == 60
         assert vmc["machine_id"] == "vmc-0000"
         assert vmc["python_version"].count(".") == 2
+
+
+class TestLivenessCallback:
+    def test_first_heartbeat_reports_alive_once(self):
+        m = HealthMonitor()
+        seen = []
+        m.set_liveness_callback(lambda name, alive: seen.append((name, alive)))
+        m.record_heartbeat("vending", {"uptime_seconds": 1})
+        m.record_heartbeat("vending", {"uptime_seconds": 2})
+        assert seen == [("vending", True)]
+
+    def test_lwt_reports_down_then_heartbeat_reports_up(self):
+        m = HealthMonitor()
+        seen = []
+        m.set_liveness_callback(lambda name, alive: seen.append((name, alive)))
+        m.record_heartbeat("mdb")
+        m.mark_offline("mdb")
+        m.mark_offline("mdb")
+        m.record_heartbeat("mdb")
+        assert seen == [("mdb", True), ("mdb", False), ("mdb", True)]
+
+    async def test_stale_reports_down_once(self):
+        m = HealthMonitor(subsystem_timeout=0.01)
+        seen = []
+        m.set_liveness_callback(lambda name, alive: seen.append((name, alive)))
+        m.record_heartbeat("ice_maker")
+        m._subsystems["ice_maker"].last_seen -= 1.0
+        await m._check()
+        await m._check()
+        assert seen == [("ice_maker", True), ("ice_maker", False)]
+
+    def test_callback_exception_is_swallowed(self):
+        m = HealthMonitor()
+
+        def boom(name, alive):
+            raise RuntimeError("x")
+
+        m.set_liveness_callback(boom)
+        m.record_heartbeat("vending")  # must not raise

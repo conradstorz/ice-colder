@@ -28,6 +28,7 @@ class SubsystemStatus:
     capabilities: dict = field(default_factory=dict)
     capabilities_at: float = 0.0  # monotonic; 0.0 = never received
     offline: bool = False  # set by a Last-Will; cleared by the next heartbeat
+    liveness_reported: Optional[bool] = None  # last value sent to the liveness callback
 
     @property
     def seconds_since_seen(self) -> float:
@@ -69,6 +70,9 @@ class Alert:
 # Type for the callback that delivers alerts (e.g., to notifier service)
 AlertCallback = Callable[[Alert], Awaitable[None]]
 
+# Type for the callback that reports subsystem liveness transitions
+LivenessCallback = Callable[[str, bool], None]
+
 
 class HealthMonitor:
     """
@@ -104,6 +108,7 @@ class HealthMonitor:
         self._vmc_state: str = "unknown"
 
         self._alert_callback: Optional[AlertCallback] = None
+        self._liveness_callback: Optional[LivenessCallback] = None
         # Track which alerts have already fired to avoid spamming
         self._fired_alerts: set[str] = set()
         # Active faults pushed by the VMC: key -> fault dict (+ "since" monotonic)
@@ -112,6 +117,22 @@ class HealthMonitor:
     def set_alert_callback(self, callback: AlertCallback):
         """Register a coroutine to be called when an alert fires."""
         self._alert_callback = callback
+
+    def set_liveness_callback(self, callback: LivenessCallback):
+        """Register a sync callback(subsystem, alive) fired once per transition:
+        first heartbeat / recovery -> True, Last-Will / first staleness -> False."""
+        self._liveness_callback = callback
+
+    def _notify_liveness(self, sub: SubsystemStatus, alive: bool) -> None:
+        if sub.liveness_reported == alive:
+            return
+        sub.liveness_reported = alive
+        if self._liveness_callback is None:
+            return
+        try:
+            self._liveness_callback(sub.name, alive)
+        except Exception as e:
+            logger.error(f"Health: liveness callback failed for {sub.name}: {e}")
 
     # --- Data recording (called from MQTT handlers) ---
 
@@ -125,6 +146,7 @@ class HealthMonitor:
         self._subsystems[subsystem].offline = False
         # Clear stale alert for this subsystem
         self._fired_alerts.discard(f"subsystem_stale:{subsystem}")
+        self._notify_liveness(self._subsystems[subsystem], True)
 
     def record_capabilities(self, subsystem: str, caps: dict):
         """Store a subsystem's retained self-description. Never touches
@@ -182,6 +204,7 @@ class HealthMonitor:
             self._subsystems[subsystem] = SubsystemStatus(name=subsystem)
         self._subsystems[subsystem].last_seen = 0.0
         self._subsystems[subsystem].offline = True
+        self._notify_liveness(self._subsystems[subsystem], False)
 
     def set_active_faults(self, faults: list[dict]):
         """Replace the active-fault snapshot; `since` survives for keys already present."""
@@ -344,6 +367,7 @@ class HealthMonitor:
         # Check subsystem liveness
         for name, sub in self._subsystems.items():
             if sub.is_stale(self._subsystem_timeout):
+                self._notify_liveness(sub, False)
                 await self._fire_alert(
                     f"subsystem_stale:{name}",
                     "warning",
