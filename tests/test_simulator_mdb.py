@@ -335,3 +335,15 @@ class TestPaymentEnable:
         await sim._apply_enable({"accept": True})
         await sim._do_card_payment(client, "card", price=3.0)
         sim.publish.assert_awaited()
+
+    async def test_enable_requeues_pending_interaction(self):
+        sim = MDBGatewaySimulator()
+        sim._last_status = {"state": "interacting_with_user", "selected_product": "Ice"}
+        await sim._apply_enable({"accept": True})
+        assert sim._vmc_status.get_nowait()["state"] == "interacting_with_user"
+
+    async def test_enable_does_not_requeue_idle_status(self):
+        sim = MDBGatewaySimulator()
+        sim._last_status = {"state": "idle"}
+        await sim._apply_enable({"accept": True})
+        assert sim._vmc_status.empty()

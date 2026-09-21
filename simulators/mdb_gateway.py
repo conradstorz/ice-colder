@@ -76,6 +76,7 @@ class MDBGatewaySimulator(ESP32Simulator):
         self.strategy = PaymentStrategy()
         # Real MDB peripherals stay inhibited until the VMC enables them.
         self.accepting = False
+        self._last_status: dict | None = None
         self.devices = [
             {"name": "coin_acceptor", "state": "ready"},
             {"name": "bill_validator", "state": "ready"},
@@ -195,6 +196,7 @@ class MDBGatewaySimulator(ESP32Simulator):
         logger.info(f"[mdb] Listening for VMC status on {topic}")
         while True:
             _topic, data = await status_queue.get()
+            self._last_status = data
             await self._vmc_status.put(data)
 
     async def _apply_enable(self, data: dict) -> None:
@@ -208,6 +210,13 @@ class MDBGatewaySimulator(ESP32Simulator):
                 f"[mdb] Payment {'ENABLED' if cmd.accept else 'INHIBITED'} by VMC"
             )
         self.accepting = cmd.accept
+        if (
+            cmd.accept
+            and self._last_status
+            and self._last_status.get("state") == "interacting_with_user"
+        ):
+            # Payment came back mid-session; give the waiting customer another go.
+            await self._vmc_status.put(self._last_status)
 
     async def _enable_loop(self, client: aiomqtt.Client):
         """Track cmd/payment/enable from the VMC."""
