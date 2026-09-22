@@ -158,6 +158,7 @@ class VMC:
         self.qrcode_callback = None
 
         self._pending_tasks: list[asyncio.Task] = []
+        self._persist_tasks: list[asyncio.Task] = []
         self._dispense_timeout_task: asyncio.Task | None = None
         self._session_timeout_task: asyncio.Task | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -186,7 +187,11 @@ class VMC:
         )
 
         self.machine = Machine(
-            model=self, states=VMC.states, initial=VMC.states[0], auto_transitions=False
+            model=self,
+            states=VMC.states,
+            initial=VMC.states[0],
+            auto_transitions=False,
+            after_state_change="_after_state_change",
         )
 
         for t in TRANSITIONS:
@@ -359,9 +364,9 @@ class VMC:
             return  # keep the evidence file untouched until the operator clears it
         snap = self._snapshot(state)
         if snap.is_open():
-            self._fire_and_forget(self._session_store.save_async(snap))
+            self._fire_and_forget(self._session_store.save_async(snap), persistent=True)
         else:
-            self._fire_and_forget(self._session_store.clear_async())
+            self._fire_and_forget(self._session_store.clear_async(), persistent=True)
 
     def _update_display(self, target_state: str | None = None):
         """Update the customer-facing display based on the target FSM state.
@@ -705,12 +710,16 @@ class VMC:
             f"Monitor ack: {ack.command} -> {ack.status}{detail} ({ack.request_id})"
         )
 
-    def _fire_and_forget(self, coro) -> None:
+    def _fire_and_forget(self, coro, *, persistent: bool = False) -> None:
         """Run a coroutine on the attached loop without awaiting it.
 
         The task is kept in _pending_tasks (so it is not garbage-collected and
         is cancelled on shutdown) and any exception it raises is logged rather
         than silently dropped — these carry alerts and refund commands.
+
+        Pass persistent=True for session/inventory writes that must not be
+        cancelled by a graceful shutdown; such tasks are additionally tracked
+        in _persist_tasks so drain_persistence() can await them.
         """
         if self._loop is None or self._loop.is_closed():
             coro.close()
@@ -719,6 +728,20 @@ class VMC:
         task.add_done_callback(self._log_task_failure)
         self._pending_tasks.append(task)
         self._pending_tasks = [t for t in self._pending_tasks if not t.done()]
+        if persistent:
+            self._persist_tasks.append(task)
+            self._persist_tasks = [t for t in self._persist_tasks if not t.done()]
+
+    async def drain_persistence(self, timeout: float = 3.0) -> None:
+        """Await in-flight session/inventory writes so shutdown never cancels them."""
+        pending = [t for t in self._persist_tasks if not t.done()]
+        if not pending:
+            return
+        done, still = await asyncio.wait(pending, timeout=timeout)
+        if still:
+            logger.warning(
+                f"Shutdown: {len(still)} persistence task(s) still running after {timeout}s"
+            )
 
     @staticmethod
     def _log_task_failure(task: asyncio.Task) -> None:
@@ -788,13 +811,22 @@ class VMC:
             self.message_callback(message)
 
     # --- FSM Callback Methods ---
+    def _after_state_change(self, *args, **kwargs):
+        """Runs after every FSM transition with self.state already updated.
+
+        Accepts and ignores *args/**kwargs — the ``transitions`` library
+        forwards whatever arguments the trigger was called with (e.g.
+        ``vend_failed(code=..., outcome=...)``) to every callback list,
+        including ``after_state_change``.
+        """
+        self._publish_status()
+
     @logger.catch()
     def on_start_interaction(self):
         logger.info(
             f"{STATE_CHANGE_PREFIX} Transitioning to interacting_with_user for product: {self.selected_product}"
         )
         self._reset_session_timeout()
-        self._publish_status()
         self._update_display("interacting_with_user")
         self._refresh_ui()
         self.send_customer_message(
@@ -807,7 +839,6 @@ class VMC:
             f"{STATE_CHANGE_PREFIX} Transitioning to dispensing for product: {self.selected_product}"
         )
         self._cancel_session_timeout()
-        self._publish_status()
         self._update_display("dispensing")
         self._refresh_ui()
         self.send_customer_message(
@@ -844,7 +875,6 @@ class VMC:
         # completed sale — a customer with remaining credit picks a fresh product via
         # select_product(), which overwrites it unconditionally.
         self.selected_product = None
-        self._publish_status()
         self._update_display(dest)
         self._refresh_ui()
         if self.credit_escrow > 0:
@@ -863,7 +893,6 @@ class VMC:
         )
         self.selected_product = None
         self.last_insufficient_message = ""
-        self._publish_status()
         self._update_display("idle")
         self._refresh_ui()
 
@@ -888,7 +917,6 @@ class VMC:
         self.request_refund(reason="cancel")
         self.selected_product = None
         self.last_insufficient_message = ""
-        self._publish_status()
         self._update_display("idle")
         self._refresh_ui()
         self.send_customer_message(
@@ -971,7 +999,6 @@ class VMC:
         had_credit = self.credit_escrow > 0
         if had_credit:
             self.request_refund(reason="error")
-        self._publish_status()
         self._update_display("error")
         self._refresh_ui()
         if had_credit:
@@ -1345,7 +1372,7 @@ class VMC:
             sku = self.selected_product.sku
             if self._inventory.is_tracked(sku):
                 self._inventory.decrement(sku, persist=False)
-                self._fire_and_forget(self._inventory.save_async())
+                self._fire_and_forget(self._inventory.save_async(), persistent=True)
                 logger.info(
                     f"Inventory for {self.selected_product.name} updated: {self._inventory.get_count(sku)} remaining."
                 )

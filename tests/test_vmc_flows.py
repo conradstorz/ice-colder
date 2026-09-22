@@ -1087,3 +1087,59 @@ async def test_session_file_written_during_sale_and_cleared_after(tmp_path):
 def test_reconcile_session_is_a_documented_stub():
     vmc = make_vmc()
     assert vmc.reconcile_session() is None
+
+
+# --- Finding A: FSM state published after the transition, not before ---
+
+
+async def test_error_occurred_and_reset_publish_destination_state_to_availability():
+    """error_occurred() must flip fsm_ok (and payment_enabled) immediately, and
+    reset_state() must restore it — both require the destination state, not the
+    source state, to be published to Availability."""
+    vmc, monitor, avail, published = _wired_vmc()
+    _all_alive(monitor, vmc)
+    avail.set_payment_device("coin_acceptor", "ready")
+    assert avail.payment_enabled is True
+
+    vmc.error_occurred()
+    assert avail.payment_enabled is False
+    assert "fsm_ok" in avail.blocking_reasons()
+
+    vmc.reset_state()
+    assert avail.payment_enabled is True
+    vmc.cancel_pending_tasks()
+
+
+async def test_status_publish_carries_destination_state():
+    """The last 'status' MQTT publish after a transition must show the
+    transition's destination state, not the state it started from."""
+    vmc, monitor, avail, published = _wired_vmc()
+    _all_alive(monitor, vmc)
+
+    vmc.start_interaction()
+    await asyncio.sleep(0)
+    statuses = [p for t, p in published if t == "status"]
+    assert statuses[-1].state == "interacting_with_user"
+
+    vmc.error_occurred()
+    await asyncio.sleep(0)
+    statuses = [p for t, p in published if t == "status"]
+    assert statuses[-1].state == "error"
+    vmc.cancel_pending_tasks()
+
+
+# --- Finding B: shutdown drains in-flight persistence writes ---
+
+
+async def test_drain_persistence_awaits_pending_session_write(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    vmc, monitor, avail, published = _wired_vmc()
+    vmc.set_session_store(store)
+
+    vmc.deposit_funds(1.0)
+    await vmc.drain_persistence()
+
+    snap = store.load()
+    assert snap is not None
+    assert snap.credit_escrow == 1.0
+    vmc.cancel_pending_tasks()

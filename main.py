@@ -288,6 +288,8 @@ async def main():
             _supervise("health monitor", health.run),
         )
     finally:
+        await vmc.drain_persistence()
+        logger.info("Shutdown: drained persistence tasks")
         vmc.cancel_pending_tasks()
         logger.info("Shutdown: cancelled pending VMC tasks")
         recorder.flush()

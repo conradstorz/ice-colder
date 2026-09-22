@@ -145,6 +145,46 @@ class TestInventoryEndpoints:
         updated = next(p for p in routes.config.products if p.sku == "UPD-1")
         assert updated.slot == 6
 
+    def test_add_product_carries_kind(self, client):
+        resp = client.post(
+            "/inventory/add",
+            data={
+                "sku": "KIND-1",
+                "name": "Water Bottle",
+                "price": "1.25",
+                "kind": "water",
+            },
+        )
+        assert resp.status_code == 200
+        assert routes.config.products[-1].kind == "water"
+
+    def test_update_product_changes_kind(self, client):
+        client.post(
+            "/inventory/add",
+            data={"sku": "KIND-2", "name": "Flexible", "price": "1.00"},
+        )
+        resp = client.post(
+            "/inventory/update/KIND-2",
+            data={"name": "Flexible", "price": "1.00", "slot": "0", "kind": "ice"},
+        )
+        assert resp.status_code == 200
+        updated = next(p for p in routes.config.products if p.sku == "KIND-2")
+        assert updated.kind == "ice"
+
+    def test_copy_form_preselects_source_product_kind(self, client):
+        client.post(
+            "/inventory/add",
+            data={
+                "sku": "KIND-3",
+                "name": "Sparkling Water",
+                "price": "1.50",
+                "kind": "water",
+            },
+        )
+        resp = client.get("/inventory/copy/KIND-3")
+        assert resp.status_code == 200
+        assert 'value="water" selected' in resp.text
+
 
 class TestConfigEndpoints:
     def test_machine_info(self, client):

@@ -236,3 +236,13 @@ def test_save_config_fsyncs_before_replace(tmp_path, monkeypatch):
 
     assert "fsync" in calls
     assert calls.index("fsync") < calls.index("replace")
+
+
+def test_add_product_unrecognized_kind_falls_back_to_other(tmp_path, monkeypatch):
+    import services.config_store as cs
+
+    monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
+    cfg = ConfigModel()
+    assert add_product(cfg, "NEW-1", "New Thing", 3.25, kind="soda") is True
+    new = next(p for p in cfg.products if p.sku == "NEW-1")
+    assert new.kind == "other"
