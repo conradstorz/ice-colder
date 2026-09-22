@@ -75,16 +75,18 @@ class SessionStore:
             logger.error(f"SessionStore: unreadable {self._path}: {e}")
             return SessionSnapshot(state="unknown", credit_escrow=0.0, error=str(e))
 
-    def clear(self) -> None:
+    def clear(self) -> bool:
+        """Remove the evidence file. Returns True only if it is gone afterwards."""
         try:
             self._path.unlink(missing_ok=True)
         except OSError as e:
             logger.error(f"SessionStore: could not remove {self._path}: {e}")
+        return not self._path.exists()
 
     async def save_async(self, snap: SessionSnapshot) -> None:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(self._executor, self.save, snap)
 
-    async def clear_async(self) -> None:
+    async def clear_async(self) -> bool:
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(self._executor, self.clear)
+        return await loop.run_in_executor(self._executor, self.clear)

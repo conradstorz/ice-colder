@@ -142,9 +142,10 @@ def update_product(
     name: str,
     price: float,
     slot: int | None = None,
-    kind: str = "other",
+    kind: str | None = None,
 ) -> bool:
-    kind = _clean_kind(kind)
+    if kind is not None:
+        kind = _clean_kind(kind)
     for p in config.products:
         if p.sku == sku:
             if slot is not None and slot < 0:
@@ -168,7 +169,7 @@ def update_product(
                 changes["price"] = (p.price, price)
             if slot is not None and p.slot != slot:
                 changes["slot"] = (p.slot, slot)
-            if p.kind != kind:
+            if kind is not None and p.kind != kind:
                 changes["kind"] = (p.kind, kind)
 
             if changes:
@@ -176,7 +177,8 @@ def update_product(
                 p.price = price
                 if slot is not None:
                     p.slot = slot
-                p.kind = kind
+                if kind is not None:
+                    p.kind = kind
                 save_config(config)
                 change_summary = ", ".join(
                     f"{field}: {old!r} -> {new!r}"

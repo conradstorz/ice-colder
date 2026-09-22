@@ -159,6 +159,24 @@ def test_update_product_can_change_slot(tmp_path, monkeypatch):
     assert cfg.products[0].slot == 4
 
 
+def test_update_product_omitted_kind_leaves_it_unchanged(tmp_path, monkeypatch):
+    import services.config_store as cs
+    from services.config_store import add_product, update_product
+
+    monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
+    cfg = ConfigModel()
+    assert add_product(cfg, "A", "A", 1.0, kind="water") is True
+
+    assert update_product(cfg, "A", "A2", 1.5, slot=cfg.products[0].slot) is True
+    assert cfg.products[0].kind == "water"
+
+    assert (
+        update_product(cfg, "A", "A2", 1.5, slot=cfg.products[0].slot, kind="ice")
+        is True
+    )
+    assert cfg.products[0].kind == "ice"
+
+
 def test_add_product_rejects_negative_slot(tmp_path, monkeypatch):
     import services.config_store as cs
 

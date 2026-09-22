@@ -1053,6 +1053,17 @@ async def test_clearing_pay_104_removes_file_and_reenables(tmp_path):
     vmc.cancel_pending_tasks()
 
 
+async def test_clear_pay_104_fails_closed_when_evidence_file_persists(tmp_path):
+    vmc, avail, store = _boot_with(
+        tmp_path, SessionSnapshot(state="interacting_with_user", credit_escrow=1.0)
+    )
+    store.clear = lambda: False
+    assert vmc.clear_fault("PAY-104", by="admin") is False
+    assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+    assert avail.payment_enabled is False
+    vmc.cancel_pending_tasks()
+
+
 async def test_session_file_written_during_sale_and_cleared_after(tmp_path):
     store = SessionStore(tmp_path / "session.json")
     vmc, monitor, avail, published = _wired_vmc()
@@ -1142,4 +1153,68 @@ async def test_drain_persistence_awaits_pending_session_write(tmp_path):
     snap = store.load()
     assert snap is not None
     assert snap.credit_escrow == 1.0
+    vmc.cancel_pending_tasks()
+
+
+async def test_cancel_pending_tasks_never_cancels_persistence(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    vmc, monitor, avail, published = _wired_vmc()
+    vmc.set_session_store(store)
+
+    vmc.deposit_funds(1.0)
+    vmc.cancel_pending_tasks()
+    await vmc.drain_persistence()
+
+    assert vmc._persist_tasks
+    assert all(not t.cancelled() for t in vmc._persist_tasks)
+    snap = store.load()
+    assert snap is not None
+    assert snap.credit_escrow == 1.0
+
+
+# --- Finding: dispensing snapshot persisted before cmd/dispense is sent ---
+
+
+async def test_dispense_snapshot_persisted_before_dispense_command(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    vmc = make_vmc(price=2.50)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    vmc.set_session_store(store)
+
+    published: list = []
+
+    class FakeMQTT:
+        def register(self, *a, **k):
+            pass
+
+        async def publish(self, topic, payload, qos=1, retain=False):
+            if topic == "cmd/dispense":
+                snap = store.load()
+                assert snap is not None
+                assert snap.state == "dispensing"
+            published.append((topic, payload))
+
+    vmc.set_mqtt_client(FakeMQTT())
+    vmc.machine.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    vmc.credit_escrow = 2.50
+
+    vmc._process_payment()
+    await asyncio.sleep(0.05)
+
+    assert any(t == "cmd/dispense" for t, _ in published)
+    vmc.cancel_pending_tasks()
+
+
+# --- Finding: retained status republished on MQTT (re)connect ---
+
+
+async def test_status_republished_on_mqtt_connect():
+    vmc, monitor, avail, published = _wired_vmc()
+    vmc.on_mqtt_connection(True)
+    await asyncio.sleep(0)
+
+    statuses = [p for t, p in published if t == "status"]
+    assert statuses
+    assert statuses[-1].state == "idle"
     vmc.cancel_pending_tasks()

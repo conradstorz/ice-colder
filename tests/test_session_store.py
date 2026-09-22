@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from services.session_store import SessionSnapshot, SessionStore
 
@@ -28,6 +29,22 @@ def test_clear_removes_file_and_is_idempotent(tmp_path):
     store.clear()
     store.clear()
     assert store.load() is None
+
+
+def test_clear_returns_true_on_missing_file(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    assert store.clear() is True
+
+
+def test_clear_returns_false_when_unlink_raises(tmp_path, monkeypatch):
+    store = SessionStore(tmp_path / "session.json")
+    store.save(SessionSnapshot(state="idle", credit_escrow=1.0))
+
+    def boom(self, missing_ok=False):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(Path, "unlink", boom)
+    assert store.clear() is False
 
 
 def test_corrupt_file_is_an_open_session_with_error(tmp_path):

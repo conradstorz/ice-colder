@@ -211,9 +211,15 @@ class VMC:
         logger.debug("VMC attached to asyncio event loop.")
 
     def cancel_pending_tasks(self):
-        """Cancel all pending scheduled tasks. Call during shutdown."""
+        """Cancel all pending scheduled tasks. Call during shutdown.
+
+        Persistence writes tracked in ``_persist_tasks`` are never cancelled
+        here — they are drained (awaited to completion) by
+        ``drain_persistence()`` instead, so a shutdown cannot truncate an
+        in-flight session/inventory save.
+        """
         for task in self._pending_tasks:
-            if not task.done():
+            if not task.done() and task not in self._persist_tasks:
                 task.cancel()
         self._pending_tasks.clear()
         self._cancel_dispense_timeout()
@@ -286,6 +292,7 @@ class VMC:
             self.clear_fault(FaultCode.COM_103.value, by="auto")
             if self._availability:
                 self._availability.republish()
+            self._publish_status()
         else:
             self._raise_fault(FaultCode.COM_103, outcome="disconnected")
 
@@ -514,10 +521,15 @@ class VMC:
                 return False
             if code not in self._machine_faults:
                 return False
+            if code is FaultCode.PAY_104 and self._session_store:
+                if not self._session_store.clear():
+                    logger.error(
+                        f"Fault {code.value}: could not remove session evidence file; "
+                        "leaving fault in place."
+                    )
+                    return False
             del self._machine_faults[code]
             if code is FaultCode.PAY_104:
-                if self._session_store:
-                    self._session_store.clear()
                 if self._availability:
                     self._availability.set_transaction_certain(True)
             if self._health_monitor:
@@ -853,9 +865,23 @@ class VMC:
             vend_log.info(
                 f"DISPENSE CMD: slot {slot}, product '{self.selected_product.name}'"
             )
-            self._loop.create_task(
-                self._mqtt_client.publish("cmd/dispense", DispenseCommand(slot=slot))
+            snap = self._snapshot("dispensing") if self._session_store else None
+            self._fire_and_forget(
+                self._persist_then_dispense(snap, DispenseCommand(slot=slot)),
+                persistent=True,
             )
+
+    async def _persist_then_dispense(self, snap, cmd: DispenseCommand) -> None:
+        """Write the dispensing snapshot to disk before the ESP32 is told to move.
+
+        A crash between the two leaves an open session on disk, so boot raises
+        PAY-104 instead of forgetting that credit was taken and a vend was
+        in flight.
+        """
+        if snap is not None and self._session_store is not None:
+            if FaultCode.PAY_104 not in self._machine_faults:
+                await self._session_store.save_async(snap)
+        await self._mqtt_client.publish("cmd/dispense", cmd)
 
     def _post_dispense_dest(self) -> str:
         """Return the FSM destination after dispensing: continue if credit remains, else idle."""
