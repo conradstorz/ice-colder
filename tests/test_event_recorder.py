@@ -327,6 +327,7 @@ class TestRegisterHandlers:
                 "timestamp": "2026-01-01T00:00:00+00:00",
             },
         )
+        recorder.flush()
         with sqlite3.connect(recorder._db_path) as conn:
             row = conn.execute("SELECT event_type, metadata FROM events").fetchone()
         assert row[0] == "subsystem_offline"
@@ -509,6 +510,7 @@ class TestRetention:
                 ("payment", old_ts, 1.0),
             )
         rec.record("payment", 1.0)
+        rec.flush()
         rec.prune()
         with sqlite3.connect(str(tmp_path / "e.db")) as conn:
             count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
@@ -527,3 +529,61 @@ class TestRetention:
         with sqlite3.connect(db) as conn:
             count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         assert count == 0
+
+
+class TestWriterThread:
+    def test_record_returns_before_row_is_visible_then_flush_makes_it_visible(
+        self, tmp_path
+    ):
+        db = str(tmp_path / "events.db")
+        rec = EventRecorder(db_path=db)
+        rec.record("payment", value=2.0)
+        rec.flush()
+        conn = sqlite3.connect(db)
+        assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+
+    def test_get_summary_flushes_pending_rows(self, recorder):
+        recorder.record("payment", value=1.5)
+        assert recorder.get_summary(24)["money_in"] == 1.5
+
+    def test_writer_survives_bad_row(self, tmp_path, monkeypatch):
+        """The writer thread's `except Exception` branch must really run —
+        sqlite happily stores NaN as NULL without raising, so that doesn't
+        exercise it. Instead, wrap the writer thread's connection so its
+        first INSERT raises sqlite3.OperationalError, then delegates
+        normally; the thread must log the failure, drop that row, and keep
+        processing the queue."""
+        real_connect = sqlite3.connect
+
+        class _FailFirstInsertConnection:
+            def __init__(self, conn):
+                self._conn = conn
+                self._insert_calls = 0
+
+            def execute(self, sql, *args, **kwargs):
+                if sql.strip().upper().startswith("INSERT"):
+                    self._insert_calls += 1
+                    if self._insert_calls == 1:
+                        raise sqlite3.OperationalError("boom")
+                return self._conn.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._conn, name)
+
+        def fake_connect(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+            if kwargs.get("check_same_thread") is False:
+                # Only the writer thread connects with check_same_thread=False;
+                # _init_db/prune's connections must behave normally.
+                return _FailFirstInsertConnection(conn)
+            return conn
+
+        monkeypatch.setattr(sqlite3, "connect", fake_connect)
+
+        db = tmp_path / "events.db"
+        rec = EventRecorder(db_path=str(db))
+        rec.record("payment", value=1.0)  # this row's INSERT will raise
+        rec.record("dispense", value=1.0)  # this row must still land
+        rec.flush()
+        assert rec.get_summary(24)["products_out"] == 1
+        assert rec.get_summary(24)["money_in"] == 0.0  # the failed row never landed

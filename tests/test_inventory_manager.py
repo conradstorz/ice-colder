@@ -2,6 +2,7 @@
 """Tests for services/inventory_manager.py — persistent inventory tracking."""
 
 import json
+import threading
 
 import pytest
 from config.config_model import Product
@@ -146,3 +147,39 @@ class TestRemoveSku:
     def test_remove_sku_unknown_is_harmless(self, tmp_path):
         inv = InventoryManager([], path=tmp_path / "inv.json")
         inv.remove_sku("NOPE")  # must not raise
+
+
+def test_save_is_thread_safe_under_concurrent_callers(tmp_inventory):
+    """_save() writes a fixed .tmp path via tmp-write-then-os.replace, and is
+    now reachable both from the event loop (admin routes calling
+    set_count/add_sku/remove_sku) and from a worker thread (save_async()).
+    Two threads hammering _save() concurrently must never corrupt the file
+    or race the tmp file out from under each other."""
+    inv = InventoryManager(_products(), path=tmp_inventory)
+
+    def hammer():
+        for _ in range(50):
+            inv._save()
+
+    threads = [threading.Thread(target=hammer) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    data = json.loads(tmp_inventory.read_text())
+    assert data == inv.get_all()
+
+
+async def test_decrement_without_persist_then_save_async(tmp_path):
+    from config.config_model import Product
+    from services.inventory_manager import InventoryManager
+
+    path = tmp_path / "inventory.json"
+    inv = InventoryManager(
+        [Product(sku="A", track_inventory=True, inventory_count=3)], path=path
+    )
+    inv.decrement("A", persist=False)
+    assert json.loads(path.read_text())["A"] == 3  # not yet written
+    await inv.save_async()
+    assert json.loads(path.read_text())["A"] == 2

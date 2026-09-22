@@ -29,32 +29,46 @@ class Notifier:
     def __init__(self, config: ConfigModel):
         self._config = config
         self._owner = config.machine_owner
-        # Rate limiting: track last send time per alert source
+        # Rate limiting: last send time per (source, code|message, sku)
         self._last_sent: dict[str, float] = {}
-        self._cooldown_seconds: float = 300.0  # 5 min between repeat alerts per source
+        self._cooldown_seconds: float = (
+            300.0  # 5 min between repeat alerts per (source, code|message, sku)
+        )
         self._warned_unconfigured = False
+
+    @staticmethod
+    def _cooldown_key(alert: Alert) -> str:
+        """One cooldown bucket per distinct fault, not per source.
+
+        Every registry fault is raised with source="vmc"; keying on source
+        alone silently dropped any second fault inside the cooldown.
+        """
+        return f"{alert.source}|{alert.code or alert.message}|{alert.product_sku or ''}"
 
     async def send(self, alert: Alert):
         """
         Route an alert to the owner via their preferred channel.
         Runs blocking I/O (SMTP) in a thread executor to stay async.
         """
-        # Rate-limit per source
         now = asyncio.get_running_loop().time()
-        last = self._last_sent.get(alert.source)
+        key = self._cooldown_key(alert)
+        last = self._last_sent.get(key)
         # `last is None` must mean "never sent": loop.time() is monotonic and can
         # be small on a freshly booted host, so a 0.0 sentinel would wrongly
-        # suppress the first alert from every source for a whole cooldown.
+        # suppress the first alert from every key for a whole cooldown.
         if last is not None and now - last < self._cooldown_seconds:
-            logger.debug(f"Notifier: Suppressing alert from {alert.source} (cooldown)")
+            logger.debug(f"Notifier: Suppressing alert {key} (cooldown)")
             return
-        self._last_sent[alert.source] = now
+        self._last_sent[key] = now
 
         logger.info(
             f"Notifier: [{alert.level}] {alert.source} -> {self._owner.name}: "
             f"{alert.message}"
         )
+        await self._deliver(alert)
 
+    async def _deliver(self, alert: Alert) -> None:
+        """Pick the owner's channel and send. Split out so tests can stub delivery."""
         gateway_info = self._config.get_preferred_gateway_for(self._owner)
         if gateway_info is None:
             logger.warning("Notifier: No configured gateway for owner")

@@ -7,7 +7,9 @@ and heartbeat events. Provides time-windowed aggregate summaries.
 """
 
 import json
+import queue
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -70,6 +72,13 @@ class EventRecorder:
         self._historical_avg_cache: dict[int, tuple[float, dict]] = {}
         self._init_db()
         self.prune()
+        # All inserts go through one daemon thread with one connection so MQTT
+        # handlers never block the event loop on SD-card writes.
+        self._queue: queue.Queue = queue.Queue()
+        self._writer = threading.Thread(
+            target=self._writer_loop, name="event-recorder", daemon=True
+        )
+        self._writer.start()
 
     def _init_db(self):
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -90,22 +99,46 @@ class EventRecorder:
     def record(
         self, event_type: str, value: float = 1.0, metadata: Optional[dict] = None
     ):
-        """Insert one event row."""
+        """Queue one event row; the writer thread inserts it."""
         meta_str = json.dumps(metadata) if metadata else None
-        with sqlite3.connect(self._db_path) as conn:
-            conn.execute(
-                "INSERT INTO events (event_type, timestamp, value, metadata) VALUES (?, ?, ?, ?)",
-                (event_type, time.time(), value, meta_str),
-            )
+        self._queue.put((event_type, time.time(), value, meta_str))
         logger.debug(f"EventRecorder: {event_type} value={value}")
-        if time.time() - self._last_prune > 86400:
-            self.prune()
+
+    def flush(self, timeout: float = 5.0) -> None:
+        """Block until every queued row is written (tests, shutdown, reads)."""
+        deadline = time.monotonic() + timeout
+        while self._queue.unfinished_tasks and time.monotonic() < deadline:
+            time.sleep(0.005)
+        n = self._queue.unfinished_tasks
+        if n:
+            logger.warning(f"EventRecorder: flush timed out with {n} rows still queued")
+
+    def _writer_loop(self) -> None:
+        conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        while True:
+            row = self._queue.get()
+            try:
+                conn.execute(
+                    "INSERT INTO events (event_type, timestamp, value, metadata) VALUES (?, ?, ?, ?)",
+                    row,
+                )
+                conn.commit()
+                if time.time() - self._last_prune > 86400:
+                    self._prune_with(conn)
+            except Exception:
+                logger.exception(f"EventRecorder: failed to write {row[0]}")
+            finally:
+                self._queue.task_done()
 
     def prune(self):
         """Delete events older than the retention window (SD-card growth guard)."""
-        cutoff = time.time() - self._retention_days * 86400
         with sqlite3.connect(self._db_path) as conn:
-            cur = conn.execute("DELETE FROM events WHERE timestamp < ?", (cutoff,))
+            self._prune_with(conn)
+
+    def _prune_with(self, conn: sqlite3.Connection) -> None:
+        cutoff = time.time() - self._retention_days * 86400
+        cur = conn.execute("DELETE FROM events WHERE timestamp < ?", (cutoff,))
+        conn.commit()
         self._last_prune = time.time()
         if cur.rowcount:
             logger.info(
@@ -126,6 +159,7 @@ class EventRecorder:
         is the most this metric can honestly claim; per-subsystem health is a
         separate concern (see health_monitor / subsystem_offline events).
         """
+        self.flush()
         with sqlite3.connect(self._db_path) as conn:
 
             def count(etype):

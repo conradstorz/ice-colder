@@ -1,0 +1,46 @@
+{# Read-only owner status screen; no controls here. #}
+<div class="space-y-4">
+  <div class="rounded-2xl p-6 {{ 'bg-slate-700' if payment_enabled is none else ('bg-emerald-700' if payment_enabled else 'bg-red-800') }}">
+    <div class="text-sm uppercase tracking-wide opacity-80">Payment</div>
+    <div class="text-4xl font-bold">{{ '—' if payment_enabled is none else ('Enabled' if payment_enabled else 'Disabled') }}</div>
+    {% if payment_reasons and payment_enabled is not none %}
+    <div class="mt-2 text-lg">{{ payment_reasons|join(', ') }}</div>
+    {% endif %}
+  </div>
+
+  <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+    {% for kind, info in kinds.items() %}
+    <div class="rounded-2xl p-5 {{ 'bg-slate-700' if info.ok is none else ('bg-emerald-800' if info.ok else 'bg-slate-700') }}">
+      <div class="text-sm uppercase tracking-wide opacity-80">{{ kind|capitalize }}</div>
+      <div class="text-2xl font-semibold">{{ '—' if info.ok is none else ('Available' if info.ok else 'Unavailable') }}</div>
+      {% if info.failing and info.ok is not none %}<div class="text-sm opacity-90 mt-1">{{ info.failing|join(', ') }}</div>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+    <div class="rounded-2xl bg-slate-800 p-4"><div class="text-xs uppercase opacity-70">State</div><div class="text-xl">{{ status.state }}</div></div>
+    <div class="rounded-2xl bg-slate-800 p-4"><div class="text-xs uppercase opacity-70">Escrow</div><div class="text-xl">${{ "%.2f"|format(status.credit_escrow) }}</div></div>
+    <div class="rounded-2xl bg-slate-800 p-4"><div class="text-xs uppercase opacity-70">Money 24h</div><div class="text-xl">{% if money_24h is not none %}${{ "%.2f"|format(money_24h) }}{% else %}—{% endif %}</div></div>
+    <div class="rounded-2xl bg-slate-800 p-4"><div class="text-xs uppercase opacity-70">Vends 24h</div><div class="text-xl">{{ vends_24h if vends_24h is not none else "—" }}</div></div>
+  </div>
+
+  <div class="rounded-2xl bg-slate-800 p-4">
+    <div class="text-xs uppercase opacity-70 mb-2">Subsystems</div>
+    <div class="flex flex-wrap gap-4">
+      <span class="flex items-center gap-2"><span class="w-3 h-3 rounded-full {{ 'bg-emerald-400' if health.mqtt_connected else 'bg-red-500' }}"></span>broker</span>
+      {% for name, sub in health.subsystems.items() %}
+      <span class="flex items-center gap-2"><span class="w-3 h-3 rounded-full {{ 'bg-red-500' if sub.stale else ('bg-emerald-400' if sub.alive else 'bg-slate-500') }}"></span>{{ name }}</span>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="rounded-2xl bg-slate-800 p-4">
+    <div class="text-xs uppercase opacity-70 mb-2">Active faults</div>
+    {% if faults %}
+    <ul class="space-y-1">
+      {% for f in faults %}<li><span class="font-mono">{{ f.code }}</span> {{ f.description }} <span class="opacity-70">· {{ f.product or "machine" }}</span></li>{% endfor %}
+    </ul>
+    {% else %}<p class="opacity-70">None</p>{% endif %}
+  </div>
+</div>

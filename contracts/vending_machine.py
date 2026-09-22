@@ -1,5 +1,5 @@
 """
-Shared contract models for the vending-machine ESP32 interface (v0.2.0).
+Shared contract models for the vending-machine ESP32 interface (v0.3.0).
 
 Terminal dispenser outcomes, the fault-code registry, the refund
 command/ack, and the general subsystem-capabilities self-description
@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from contracts.common import ChannelDescriptor, _utc_now
 
-CONTRACT_VERSION = "0.2.0"
+CONTRACT_VERSION = "0.3.0"
 
 
 class DispenserOutcome(str, Enum):
@@ -57,6 +57,7 @@ class FaultCode(str, Enum):
     PAY_101 = "PAY-101"
     PAY_102 = "PAY-102"
     PAY_103 = "PAY-103"
+    PAY_104 = "PAY-104"
     PWR_101 = "PWR-101"
     PWR_102 = "PWR-102"
     COM_101 = "COM-101"
@@ -175,6 +176,11 @@ FAULT_TABLE: dict[FaultCode, FaultSpec] = {
         severity=Severity.warning,
         scope=Scope.machine,
         description="Refund not confirmed by payment gateway; needs reconciliation",
+    ),
+    FaultCode.PAY_104: FaultSpec(
+        severity=Severity.lockout,
+        scope=Scope.machine,
+        description="Transaction uncertain after VMC restart; operator must reconcile",
     ),
     FaultCode.PWR_101: FaultSpec(
         severity=Severity.info,

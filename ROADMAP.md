@@ -94,9 +94,9 @@ Water_Sale_Available =
   AND 24 V control power good
 ```
 
-Today the VMC enables payment whenever it is `idle`. Replacing that with these
-flags is Phase C work. Inputs that the machine cannot yet report are treated as
-`UNKNOWN`, and `UNKNOWN` is **not** a pass.
+Implemented in `services/availability.py`: known inputs are evaluated, inputs
+the firmware cannot report yet are listed as not instrumented and pass until
+Phase B/D.
 
 ## 4. Product sequences and interlocks
 
@@ -176,6 +176,7 @@ published; new codes are added, never renumbered.
 | `PAY-101` | Payment device offline | product unavailable | Inhibit both products |
 | `PAY-102` | Vend reported failed after credit taken | reconcile | Refund/retain per §7, alert |
 | `PAY-103` | Refund not confirmed by payment gateway | warning | Alert; operator reconciles against the event history |
+| `PAY-104` | Transaction uncertain after VMC restart | lockout | Payment inhibited until an operator clears the fault; snapshot in event history |
 | `PWR-101` | Power restored after loss | info | Log, run self-test, keep payment inhibited until permissives pass |
 | `PWR-102` | 24 V control supply bad | **critical** | Inhibit both products |
 | `COM-101` | Vending ESP32 heartbeat lost / LWT | product unavailable | Inhibit both products, alert |
@@ -229,7 +230,8 @@ dwell → power on → confirm heartbeat → permissives → re-enable.
   sale back to `idle` with escrow intact; it is not a machine error.
 - After a VMC restart mid-sale, the transaction is **uncertain**: payment stays
   inhibited until the payment gateway's state and the ESP32's state are
-  reconciled, and the event is logged for manual review.
+  reconciled, and the event is logged for manual review (implemented as
+  `PAY-104`; see `services/session_store.py`).
 - The payment system is never power-cycled with a transaction open.
 
 ## 8. Failure modes
@@ -301,16 +303,19 @@ generated schemas.
 
 - ~~Fault-code registry, honest vend outcomes, per-product lockouts, acked
   refunds~~ — done (spec `docs/superpowers/specs/2026-09-17-fault-registry-vend-outcomes-design.md`).
-- Availability permissives (§3) drive `payment/enable` instead of FSM state.
+- ~~Availability permissives (§3) drive `payment/enable` instead of FSM
+  state.~~ — done (spec `docs/superpowers/specs/2026-09-21-unattended-operation-design.md`).
 - Fault-code registry (§5) as a shared enum; `VMCAlert` carries a code;
   dashboard groups by code and severity.
-- Refund policy (§7) as explicit code paths with tests, including the
-  restart-mid-sale reconciliation.
+- ~~Refund policy (§7) as explicit code paths with tests, including the
+  restart-mid-sale reconciliation.~~ — done (spec
+  `docs/superpowers/specs/2026-09-21-unattended-operation-design.md`).
 - Remote-command audit (§6): user, reason, `request_id`, prior state, ack,
   stored in the event history and shown on the dashboard.
 - Payment power-cycle sequence as an admin action with the preconditions in §6.
-- Per-product availability on the dashboard (ice vs water) with the failing
-  permissive named.
+- ~~Per-product availability on the dashboard (ice vs water) with the failing
+  permissive named.~~ — done (spec
+  `docs/superpowers/specs/2026-09-21-unattended-operation-design.md`).
 - Startup self-test state: after boot or `PWR-101`, hold payment off until the
   vending ESP32 reports permissives.
 

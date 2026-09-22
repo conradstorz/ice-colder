@@ -306,4 +306,52 @@ class TestMDBCapabilities:
         caps = MDBGatewaySimulator().build_capabilities()
         assert caps.subsystem == "mdb"
         assert caps.commands == ["payment/enable", "refund"]
-        assert caps.contract_version == "0.2.0"
+        assert caps.contract_version == "0.3.0"
+
+
+class TestPaymentEnable:
+    def test_starts_inhibited_until_enabled(self):
+        sim = MDBGatewaySimulator()
+        assert sim.accepting is False
+
+    async def test_enable_command_toggles_accepting(self):
+        sim = MDBGatewaySimulator()
+        await sim._apply_enable({"accept": True})
+        assert sim.accepting is True
+        await sim._apply_enable({"accept": False})
+        assert sim.accepting is False
+
+    async def test_bad_enable_payload_ignored(self):
+        sim = MDBGatewaySimulator()
+        await sim._apply_enable({"nope": 1})
+        assert sim.accepting is False
+
+    async def test_no_credit_published_while_inhibited(self):
+        sim = MDBGatewaySimulator()
+        client = AsyncMock()
+        sim.publish = AsyncMock()
+        await sim._do_card_payment(client, "card", price=3.0)
+        sim.publish.assert_not_awaited()
+        await sim._apply_enable({"accept": True})
+        await sim._do_card_payment(client, "card", price=3.0)
+        sim.publish.assert_awaited()
+
+    async def test_enable_requeues_pending_interaction(self):
+        sim = MDBGatewaySimulator()
+        sim._last_status = {"state": "interacting_with_user", "selected_product": "Ice"}
+        await sim._apply_enable({"accept": True})
+        assert sim._vmc_status.get_nowait()["state"] == "interacting_with_user"
+
+    async def test_enable_does_not_requeue_idle_status(self):
+        sim = MDBGatewaySimulator()
+        sim._last_status = {"state": "idle"}
+        await sim._apply_enable({"accept": True})
+        assert sim._vmc_status.empty()
+
+    async def test_repeated_enable_does_not_requeue_again(self):
+        sim = MDBGatewaySimulator()
+        sim._last_status = {"state": "interacting_with_user", "selected_product": "Ice"}
+        await sim._apply_enable({"accept": True})
+        assert sim._vmc_status.get_nowait()["state"] == "interacting_with_user"
+        await sim._apply_enable({"accept": True})
+        assert sim._vmc_status.empty()

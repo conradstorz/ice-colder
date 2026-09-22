@@ -2,6 +2,7 @@
 """Tests for MQTT message schemas, client topic matching, and VMC MQTT wiring."""
 
 import asyncio
+import json
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -251,6 +252,9 @@ class _FakeAiomqttClient:
     async def subscribe(self, topic, qos=0):
         self.subscribed.append((topic, qos))
 
+    async def publish(self, topic, payload, qos=0, retain=False):
+        pass
+
     async def _empty_messages(self):
         return
         yield  # pragma: no cover - never reached; makes this an async generator
@@ -295,7 +299,7 @@ class TestVMCMQTTWiring:
         vmc = _make_vmc()
         mock_client = MagicMock()
         vmc.set_mqtt_client(mock_client)
-        assert mock_client.register.call_count == 11
+        assert mock_client.register.call_count == 12
 
     def test_publish_status_without_client_does_nothing(self):
         vmc = _make_vmc()
@@ -414,7 +418,7 @@ class TestMonitorContractHandlers:
             {
                 "subsystem": "vending",
                 "firmware": "abc1234",
-                "contract_version": "0.2.0",
+                "contract_version": "0.3.0",
                 "hardware_id": "02:11:22:33:44:55",
                 "future_field": "ignored",
             },
@@ -434,3 +438,70 @@ class TestMonitorContractHandlers:
             "capabilities/mdb", {"subsystem": "mdb", "whatever": 1}
         )
         assert hm.get_summary()["subsystems"]["mdb"]["firmware"] is None
+
+
+class _RecordingAiomqttClient(_FakeAiomqttClient):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.published: list[tuple] = []
+
+    async def publish(self, topic, payload, qos=0, retain=False):
+        self.published.append((topic, payload, qos, retain))
+
+
+class TestMQTTPresence:
+    async def test_publish_forwards_retain(self):
+        client = MQTTClient(config=MQTTConfig(), machine_id="vmc-0001")
+        client._client = AsyncMock()
+        client._connected = True
+        await client.publish("status", {"a": 1}, retain=True)
+        client._client.publish.assert_awaited_once_with(
+            "vmc/vmc-0001/status", '{"a": 1}', qos=1, retain=True
+        )
+
+    async def test_connect_sets_last_will_and_publishes_online(self, monkeypatch):
+        import services.mqtt_client as mc
+
+        captured: dict = {}
+        fake = _RecordingAiomqttClient()
+
+        def factory(*args, **kwargs):
+            captured.update(kwargs)
+            return fake
+
+        monkeypatch.setattr(mc.aiomqtt, "Client", factory)
+        client = MQTTClient(config=MQTTConfig(), machine_id="vmc-0001")
+        await client._connect_and_listen()
+
+        will = captured["will"]
+        assert will.topic == "vmc/vmc-0001/online"
+        assert will.retain is True
+        assert will.qos == 1
+        assert json.loads(will.payload)["online"] is False
+
+        topic, payload, qos, retain = fake.published[0]
+        assert topic == "vmc/vmc-0001/online"
+        assert json.loads(payload)["online"] is True
+        assert (qos, retain) == (1, True)
+
+    def test_vmc_online_model(self):
+        from services.mqtt_messages import VMCOnline
+
+        m = VMCOnline(online=True)
+        assert m.online is True
+        assert isinstance(m.timestamp, datetime)
+
+
+class TestStatusRetained:
+    async def test_publish_status_is_retained(self):
+        vmc = _make_vmc()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        mqtt = MagicMock()
+        mqtt.publish = AsyncMock()
+        vmc._mqtt_client = mqtt
+        vmc._publish_status()
+        await asyncio.sleep(0)
+        args, kwargs = mqtt.publish.await_args
+        assert args[0] == "status"
+        assert kwargs.get("retain") is True
+        vmc.cancel_pending_tasks()

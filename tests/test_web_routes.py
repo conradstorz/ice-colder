@@ -145,6 +145,46 @@ class TestInventoryEndpoints:
         updated = next(p for p in routes.config.products if p.sku == "UPD-1")
         assert updated.slot == 6
 
+    def test_add_product_carries_kind(self, client):
+        resp = client.post(
+            "/inventory/add",
+            data={
+                "sku": "KIND-1",
+                "name": "Water Bottle",
+                "price": "1.25",
+                "kind": "water",
+            },
+        )
+        assert resp.status_code == 200
+        assert routes.config.products[-1].kind == "water"
+
+    def test_update_product_changes_kind(self, client):
+        client.post(
+            "/inventory/add",
+            data={"sku": "KIND-2", "name": "Flexible", "price": "1.00"},
+        )
+        resp = client.post(
+            "/inventory/update/KIND-2",
+            data={"name": "Flexible", "price": "1.00", "slot": "0", "kind": "ice"},
+        )
+        assert resp.status_code == 200
+        updated = next(p for p in routes.config.products if p.sku == "KIND-2")
+        assert updated.kind == "ice"
+
+    def test_copy_form_preselects_source_product_kind(self, client):
+        client.post(
+            "/inventory/add",
+            data={
+                "sku": "KIND-3",
+                "name": "Sparkling Water",
+                "price": "1.50",
+                "kind": "water",
+            },
+        )
+        resp = client.get("/inventory/copy/KIND-3")
+        assert resp.status_code == 200
+        assert 'value="water" selected' in resp.text
+
 
 class TestConfigEndpoints:
     def test_machine_info(self, client):
@@ -583,7 +623,7 @@ class TestHealthTabIdentity:
                 {
                     "subsystem": "mdb",
                     "firmware": "abc1234",
-                    "contract_version": "0.2.0",
+                    "contract_version": "0.3.0",
                     "brand": "ice-colder",
                     "model": "mdb-sim",
                     "hardware_id": "02:11:22:33:44:55",
@@ -593,10 +633,91 @@ class TestHealthTabIdentity:
             )
             r = client.get("/health", auth=client.auth)
             assert "abc1234" in r.text
-            assert "0.2.0" in r.text
+            assert "0.3.0" in r.text
             assert "ice-colder mdb-sim" in r.text
             assert "02:11:22:33:44:55" in r.text
             assert "172.18.0.7" in r.text
             assert "refund" in r.text  # in the row title
         finally:
             routes.set_health_monitor(None)
+
+
+class TestLogsContent:
+    def test_logs_tab_shows_written_line(self, client, tmp_path, monkeypatch):
+        from web_interface import routes as r
+
+        log_file = tmp_path / "LOGS" / "vmc.log"
+        log_file.parent.mkdir()
+        log_file.write_text(
+            "first line\nunique-marker-42;INFO 2026-09-21\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(r, "LOG_PATH", log_file)
+
+        resp = client.get("/logs")
+        assert resp.status_code == 200
+        assert "unique-marker-42" in resp.text
+
+    def test_log_path_matches_logging_setup(self):
+        from services.paths import LOG_FILE
+        from web_interface import routes as r
+
+        assert r.LOG_PATH == LOG_FILE
+        assert LOG_FILE.parts[-2:] == ("LOGS", "vmc.log")
+
+
+class TestAvailabilityOnDashboard:
+    @pytest.fixture
+    def wired(self, client):
+        from services.availability import Availability
+        from services.health_monitor import HealthMonitor
+        from web_interface import routes as r
+
+        avail = Availability(r.config.products)
+        r.set_availability(avail)
+        r.set_health_monitor(HealthMonitor())
+        yield client, avail
+        r.set_availability(None)
+
+    def test_status_shows_payment_disabled_with_reason(self, wired):
+        client, avail = wired
+        resp = client.get("/status")
+        assert "Payment" in resp.text
+        assert "Disabled" in resp.text
+        assert "no products" in resp.text or "vending_alive" in resp.text
+
+    def test_health_lists_permissives_with_not_instrumented(self, wired):
+        client, _ = wired
+        resp = client.get("/health")
+        assert "bag_present" in resp.text
+        assert "not instrumented" in resp.text
+        assert "vending_alive" in resp.text
+
+    def test_screen_is_read_only_and_mobile(self, wired):
+        client, _ = wired
+        resp = client.get("/screen")
+        assert resp.status_code == 200
+        assert 'name="viewport"' in resp.text
+        assert "hx-post" not in resp.text
+        assert 'hx-get="/screen/body"' in resp.text
+        body = client.get("/screen/body")
+        assert body.status_code == 200
+        assert "hx-post" not in body.text
+        assert "Ice" in body.text and "Water" in body.text
+
+    def test_screen_requires_auth(self, wired):
+        client, _ = wired
+        assert client.get("/screen", auth=("x", "y")).status_code == 401
+
+    def test_screen_body_neutral_when_unwired(self, client):
+        from web_interface import routes as r
+
+        r.set_availability(None)
+        r.set_health_monitor(None)
+        try:
+            resp = client.get("/screen/body")
+            assert resp.status_code == 200
+            assert "Disabled" not in resp.text
+            assert "Unavailable" not in resp.text
+        finally:
+            r.set_availability(None)
+            r.set_health_monitor(None)

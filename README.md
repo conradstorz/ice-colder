@@ -24,6 +24,7 @@ docker compose build --build-arg VCS_REF=$(git rev-parse HEAD) --build-arg BUILD
 ```
 
 Dashboard: http://localhost:26123
+Owner status screen (read-only, phone-friendly): http://localhost:26123/screen
 
 **Continuous deployment (simulation host):** every push to `main` runs CI
 (`.github/workflows/ci.yml`: ruff, pytest, image build) and publishes

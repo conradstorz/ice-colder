@@ -17,7 +17,10 @@ from contracts.vending_machine import (
     PaymentRefundCommand,
 )
 from controller.vmc import VMC
+from services.availability import Availability
 from services.health_monitor import HealthMonitor
+from services.mqtt_messages import PaymentEnableCommand
+from services.session_store import SessionSnapshot, SessionStore
 
 
 def make_vmc(price: float = 2.50) -> VMC:
@@ -41,7 +44,10 @@ class FakeSoldOutInventory:
     def is_tracked(self, sku):
         return True
 
-    def decrement(self, sku):
+    def decrement(self, sku, **kwargs):
+        pass
+
+    async def save_async(self):
         pass
 
     def get_count(self, sku):
@@ -372,7 +378,7 @@ async def test_dispense_uses_product_slot_not_list_index():
         def register(self, *args, **kwargs):
             pass
 
-        async def publish(self, topic, payload):
+        async def publish(self, topic, payload, **kwargs):
             published.append((topic, payload))
 
     vmc.set_mqtt_client(FakeMqtt())
@@ -537,7 +543,7 @@ class TestVendOutcomes:
             def register(self, *_):
                 pass
 
-            async def publish(self, topic, payload):
+            async def publish(self, topic, payload, **kwargs):
                 published.append((topic, payload))
 
         vmc.set_mqtt_client(FakeClient())
@@ -621,7 +627,7 @@ class RecordingClient:
     def register(self, *_):
         pass
 
-    async def publish(self, topic, payload):
+    async def publish(self, topic, payload, **kwargs):
         self.published.append((topic, payload))
 
     def refund_commands(self) -> list[PaymentRefundCommand]:
@@ -855,3 +861,360 @@ class TestFireAndForget:
         vmc.cancel_pending_tasks()
         await asyncio.sleep(0)
         assert all(t.done() for t in vmc._pending_tasks) or vmc._pending_tasks == []
+
+
+def _wired_vmc(products=None):
+    cfg = ConfigModel()
+    cfg.physical.products = products or [
+        Product(sku="ICE-1", name="Ice Bag", price=2.5, kind="ice"),
+        Product(sku="WTR-1", name="Water", price=1.0, kind="water"),
+    ]
+    vmc = VMC(config=cfg)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    monitor = HealthMonitor()
+    vmc.set_health_monitor(monitor)
+    avail = Availability(cfg.products)
+    vmc.set_availability(avail)
+    published: list = []
+
+    class FakeMQTT:
+        def register(self, *a, **k):
+            pass
+
+        async def publish(self, topic, payload, qos=1, retain=False):
+            published.append((topic, payload))
+
+    vmc.set_mqtt_client(FakeMQTT())
+    return vmc, monitor, avail, published
+
+
+def _all_alive(monitor: HealthMonitor, vmc: VMC):
+    for name in ("vending", "mdb", "ice_maker"):
+        monitor.record_heartbeat(name, {"uptime_seconds": 1})
+    vmc.on_mqtt_connection(True)
+
+
+async def _enables(published) -> list[bool]:
+    await asyncio.sleep(0)
+    return [
+        p.accept
+        for t, p in published
+        if t == "cmd/payment/enable" and isinstance(p, PaymentEnableCommand)
+    ]
+
+
+async def test_vending_heartbeat_loss_raises_com_101_and_disables_payment():
+    vmc, monitor, avail, published = _wired_vmc()
+    _all_alive(monitor, vmc)
+    avail.set_payment_device("coin_acceptor", "ready")
+    await vmc._handle_mqtt_hardware_io(
+        "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
+    )
+    assert avail.payment_enabled is True
+
+    monitor.mark_offline("vending")
+    codes = {f["code"] for f in vmc.active_faults()}
+    assert "COM-101" in codes
+    assert avail.payment_enabled is False
+    assert (await _enables(published))[-1] is False
+
+    monitor.record_heartbeat("vending", {"uptime_seconds": 5})
+    assert "COM-101" not in {f["code"] for f in vmc.active_faults()}
+    assert avail.payment_enabled is True
+    vmc.cancel_pending_tasks()
+
+
+async def test_ice_maker_loss_is_com_102_and_only_ice_blocked():
+    vmc, monitor, avail, published = _wired_vmc()
+    _all_alive(monitor, vmc)
+    avail.set_payment_device("coin_acceptor", "ready")
+    await vmc._handle_mqtt_hardware_io(
+        "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
+    )
+    monitor.mark_offline("ice_maker")
+    assert "COM-102" in {f["code"] for f in vmc.active_faults()}
+    assert avail.sale_available("ice")[0] is False
+    assert avail.payment_enabled is True
+    vmc.cancel_pending_tasks()
+
+
+async def test_mdb_loss_is_pay_101():
+    vmc, monitor, avail, _ = _wired_vmc()
+    _all_alive(monitor, vmc)
+    monitor.mark_offline("mdb")
+    assert "PAY-101" in {f["code"] for f in vmc.active_faults()}
+    assert avail.payment_enabled is False
+    vmc.cancel_pending_tasks()
+
+
+async def test_mqtt_disconnect_is_com_103_and_reconnect_republishes():
+    vmc, monitor, avail, published = _wired_vmc()
+    _all_alive(monitor, vmc)
+    vmc.on_mqtt_connection(False)
+    assert "COM-103" in {f["code"] for f in vmc.active_faults()}
+    before = len(await _enables(published))
+    vmc.on_mqtt_connection(True)
+    assert "COM-103" not in {f["code"] for f in vmc.active_faults()}
+    assert len(await _enables(published)) == before + 1
+    vmc.cancel_pending_tasks()
+
+
+async def test_payment_status_error_feeds_availability():
+    vmc, monitor, avail, _ = _wired_vmc()
+    _all_alive(monitor, vmc)
+    await vmc._handle_mqtt_payment_status(
+        "payment/status", {"device": "card_reader", "state": "error"}
+    )
+    assert "payment_devices_ready" in avail.blocking_reasons()
+    vmc.cancel_pending_tasks()
+
+
+async def test_select_product_refused_when_kind_unavailable_names_reason():
+    vmc, monitor, avail, _ = _wired_vmc()
+    _all_alive(monitor, vmc)
+    avail.set_payment_device("coin_acceptor", "ready")
+    monitor.mark_offline("ice_maker")
+    messages = []
+    vmc.set_message_callback(messages.append)
+    vmc.select_product(0)  # ICE-1
+    assert vmc.state == "idle"
+    assert vmc.selected_product is None
+    assert "ice_maker_alive" in messages[-1]
+    vmc.cancel_pending_tasks()
+
+
+async def test_deposit_while_disabled_is_escrowed_and_logged():
+    vmc, monitor, avail, _ = _wired_vmc()
+    vmc.deposit_funds(1.0, payment_method="cash_coin")
+    assert vmc.credit_escrow == 1.0
+    vmc.cancel_pending_tasks()
+
+
+def _boot_with(tmp_path, snap):
+    store = SessionStore(tmp_path / "session.json")
+    if snap is not None:
+        store.save(snap)
+    vmc, monitor, avail, published = _wired_vmc()
+    vmc.set_session_store(store)
+    return vmc, avail, store
+
+
+async def test_clean_boot_raises_nothing(tmp_path):
+    vmc, avail, _ = _boot_with(tmp_path, None)
+    assert vmc.active_faults() == []
+    vmc.cancel_pending_tasks()
+
+
+async def test_boot_with_escrow_raises_pay_104_and_blocks(tmp_path):
+    rec = FakeEventRecorder()
+    vmc, avail, store = _boot_with(tmp_path, None)
+    vmc.set_event_recorder(rec)
+    store.save(SessionSnapshot(state="interacting_with_user", credit_escrow=1.25))
+    vmc.set_session_store(store)
+    assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+    assert (
+        "transaction_certain" in avail.blocking_reasons()
+        or avail.payment_enabled is False
+    )
+    assert any(
+        e[0] == "session_uncertain" and e[2]["credit_escrow"] == 1.25
+        for e in rec.events
+    )
+    assert store.load() is not None  # kept as evidence until cleared
+    vmc.cancel_pending_tasks()
+
+
+async def test_boot_mid_dispense_raises_pay_104(tmp_path):
+    vmc, avail, _ = _boot_with(
+        tmp_path,
+        SessionSnapshot(
+            state="dispensing", credit_escrow=0.0, selected_sku="ICE-1", dispense_slot=0
+        ),
+    )
+    assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+    vmc.cancel_pending_tasks()
+
+
+async def test_boot_with_corrupt_file_raises_pay_104(tmp_path):
+    (tmp_path / "session.json").write_text("garbage", encoding="utf-8")
+    vmc, avail, _ = _boot_with(tmp_path, None)
+    assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+    vmc.cancel_pending_tasks()
+
+
+async def test_clearing_pay_104_removes_file_and_reenables(tmp_path):
+    vmc, avail, store = _boot_with(
+        tmp_path, SessionSnapshot(state="interacting_with_user", credit_escrow=1.0)
+    )
+    assert vmc.clear_fault("PAY-104", by="admin") is True
+    await asyncio.sleep(0.05)
+    assert store.load() is None
+    assert "transaction_certain" not in avail.blocking_reasons()
+    vmc.cancel_pending_tasks()
+
+
+async def test_clear_pay_104_fails_closed_when_evidence_file_persists(tmp_path):
+    vmc, avail, store = _boot_with(
+        tmp_path, SessionSnapshot(state="interacting_with_user", credit_escrow=1.0)
+    )
+    store.clear = lambda: False
+    assert vmc.clear_fault("PAY-104", by="admin") is False
+    assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+    assert avail.payment_enabled is False
+    vmc.cancel_pending_tasks()
+
+
+async def test_session_file_written_during_sale_and_cleared_after(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    vmc, monitor, avail, published = _wired_vmc()
+    vmc.set_session_store(store)
+    _all_alive(monitor, vmc)
+    avail.set_payment_device("coin_acceptor", "ready")
+    await vmc._handle_mqtt_hardware_io(
+        "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
+    )
+
+    vmc.deposit_funds(2.5, payment_method="cash_bill")
+    await asyncio.sleep(0.05)
+    snap = store.load()
+    assert snap is not None and snap.credit_escrow == 2.5
+
+    vmc.select_product(0)
+    await asyncio.sleep(1.2)  # _process_payment runs after 1s
+    assert vmc.state == "dispensing"
+    await asyncio.sleep(0.05)
+    snap = store.load()
+    assert snap.state == "dispensing" and snap.dispense_slot == 0
+
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser", {"slot": 0, "state": "complete"}
+    )
+    await asyncio.sleep(0.05)
+    assert vmc.state == "idle"
+    assert store.load() is None
+    vmc.cancel_pending_tasks()
+
+
+def test_reconcile_session_is_a_documented_stub():
+    vmc = make_vmc()
+    assert vmc.reconcile_session() is None
+
+
+# --- Finding A: FSM state published after the transition, not before ---
+
+
+async def test_error_occurred_and_reset_publish_destination_state_to_availability():
+    """error_occurred() must flip fsm_ok (and payment_enabled) immediately, and
+    reset_state() must restore it — both require the destination state, not the
+    source state, to be published to Availability."""
+    vmc, monitor, avail, published = _wired_vmc()
+    _all_alive(monitor, vmc)
+    avail.set_payment_device("coin_acceptor", "ready")
+    assert avail.payment_enabled is True
+
+    vmc.error_occurred()
+    assert avail.payment_enabled is False
+    assert "fsm_ok" in avail.blocking_reasons()
+
+    vmc.reset_state()
+    assert avail.payment_enabled is True
+    vmc.cancel_pending_tasks()
+
+
+async def test_status_publish_carries_destination_state():
+    """The last 'status' MQTT publish after a transition must show the
+    transition's destination state, not the state it started from."""
+    vmc, monitor, avail, published = _wired_vmc()
+    _all_alive(monitor, vmc)
+
+    vmc.start_interaction()
+    await asyncio.sleep(0)
+    statuses = [p for t, p in published if t == "status"]
+    assert statuses[-1].state == "interacting_with_user"
+
+    vmc.error_occurred()
+    await asyncio.sleep(0)
+    statuses = [p for t, p in published if t == "status"]
+    assert statuses[-1].state == "error"
+    vmc.cancel_pending_tasks()
+
+
+# --- Finding B: shutdown drains in-flight persistence writes ---
+
+
+async def test_drain_persistence_awaits_pending_session_write(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    vmc, monitor, avail, published = _wired_vmc()
+    vmc.set_session_store(store)
+
+    vmc.deposit_funds(1.0)
+    await vmc.drain_persistence()
+
+    snap = store.load()
+    assert snap is not None
+    assert snap.credit_escrow == 1.0
+    vmc.cancel_pending_tasks()
+
+
+async def test_cancel_pending_tasks_never_cancels_persistence(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    vmc, monitor, avail, published = _wired_vmc()
+    vmc.set_session_store(store)
+
+    vmc.deposit_funds(1.0)
+    vmc.cancel_pending_tasks()
+    await vmc.drain_persistence()
+
+    assert vmc._persist_tasks
+    assert all(not t.cancelled() for t in vmc._persist_tasks)
+    snap = store.load()
+    assert snap is not None
+    assert snap.credit_escrow == 1.0
+
+
+# --- Finding: dispensing snapshot persisted before cmd/dispense is sent ---
+
+
+async def test_dispense_snapshot_persisted_before_dispense_command(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    vmc = make_vmc(price=2.50)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    vmc.set_session_store(store)
+
+    published: list = []
+
+    class FakeMQTT:
+        def register(self, *a, **k):
+            pass
+
+        async def publish(self, topic, payload, qos=1, retain=False):
+            if topic == "cmd/dispense":
+                snap = store.load()
+                assert snap is not None
+                assert snap.state == "dispensing"
+            published.append((topic, payload))
+
+    vmc.set_mqtt_client(FakeMQTT())
+    vmc.machine.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    vmc.credit_escrow = 2.50
+
+    vmc._process_payment()
+    await asyncio.sleep(0.05)
+
+    assert any(t == "cmd/dispense" for t, _ in published)
+    vmc.cancel_pending_tasks()
+
+
+# --- Finding: retained status republished on MQTT (re)connect ---
+
+
+async def test_status_republished_on_mqtt_connect():
+    vmc, monitor, avail, published = _wired_vmc()
+    vmc.on_mqtt_connection(True)
+    await asyncio.sleep(0)
+
+    statuses = [p for t, p in published if t == "status"]
+    assert statuses
+    assert statuses[-1].state == "idle"
+    vmc.cancel_pending_tasks()

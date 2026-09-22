@@ -76,6 +76,39 @@
   </div>
   {% endif %}
 
+  {% if health.availability %}
+  <div>
+    <h3 class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">
+      Sale permissives — payment {{ 'enabled' if health.payment_enabled else 'disabled' }}
+    </h3>
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="border-b border-gray-200 text-xs text-gray-400 uppercase tracking-wide">
+          <th class="pb-2 text-left font-medium">Input</th>
+          <th class="pb-2 text-left font-medium">Applies</th>
+          <th class="pb-2 text-left font-medium">State</th>
+          <th class="pb-2 text-left font-medium">Detail</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for row in health.availability %}
+        <tr>
+          <td class="py-2 font-mono text-xs text-gray-700">{{ row.name }}</td>
+          <td class="py-2 text-gray-500">{{ row.applies_to }}</td>
+          <td class="py-2">
+            {% if not row.instrumented %}<span class="text-gray-400">not instrumented</span>
+            {% elif row.state == 'pass' %}<span class="text-green-600 font-medium">pass</span>
+            {% elif row.state == 'fail' %}<span class="text-red-600 font-medium">fail</span>
+            {% else %}<span class="text-amber-600 font-medium">unknown</span>{% endif %}
+          </td>
+          <td class="py-2 text-gray-500">{{ row.detail }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
   {% if health.temperatures %}
   <div>
     <h3 class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Temperatures</h3>

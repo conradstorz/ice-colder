@@ -45,7 +45,7 @@ logs a clear error and exits with code 1 rather than papering over it.
 
 ### FSM Core (`controller/vmc.py`)
 
-`VMC` is a finite state machine built on the `transitions` library. States: `idle` -> `interacting_with_user` -> `dispensing` -> back to `idle` (or `error` from any state). Extra transitions: `cancel_sale` (interacting → idle, catalog edit removed the selection) and `vend_failed` (dispensing → interacting, price restored to escrow, product locked out per `contracts/vending_machine.py` `FAULT_TABLE`). Refunds are real: `request_refund` publishes `cmd/payment/refund` and tracks the ack. The transition table is defined as a list of dicts (`TRANSITIONS`) at module level. Business logic (deposit funds, select product, dispense, refund) lives as methods on `VMC`. The VMC holds a reference to the live `ConfigModel` and a `PaymentGatewayManager`.
+`VMC` is a finite state machine built on the `transitions` library. States: `idle` -> `interacting_with_user` -> `dispensing` -> back to `idle` (or `error` from any state). Extra transitions: `cancel_sale` (interacting → idle, catalog edit removed the selection) and `vend_failed` (dispensing → interacting, price restored to escrow, product locked out per `contracts/vending_machine.py` `FAULT_TABLE`). Refunds are real: `request_refund` publishes `cmd/payment/refund` and tracks the ack. The transition table is defined as a list of dicts (`TRANSITIONS`) at module level. Business logic (deposit funds, select product, dispense, refund) lives as methods on `VMC`. The VMC holds a reference to the live `ConfigModel` and a `PaymentGatewayManager`. Heartbeat loss raises `COM-101` (vending), `COM-102` (ice maker), `PAY-101` (MDB) and `COM-103` (broker) through the fault registry and auto-clears on recovery.
 
 ### Web Dashboard (`web_interface/`)
 
@@ -63,6 +63,9 @@ checkout). Subsystems in `EXPECTED_SUBSYSTEMS` are listed even before they speak
 - `payment_gateway_manager.py` - manages Stripe/PayPal/Square gateways, generates QR codes via `qrcode` library
 - `config_store.py` - persists config changes (add/update products) back to `config.json`
 - `fsm_control.py` - translates admin commands (restart, reset, shutdown) into actions
+- `availability.py` - permissive truth table (ROADMAP §3); publishes `cmd/payment/enable` on change; feeds the health tab and `/screen`
+- `session_store.py` - atomic snapshot of the live sale in `data/session.json`; an open snapshot at boot raises `PAY-104` until an admin clears it
+- `paths.py` - `LOG_DIR`, `LOG_FILE`, `DATA_DIR` shared by main, routes and services
 
 ### Hardware (`hardware/`)
 

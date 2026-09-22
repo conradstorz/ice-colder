@@ -7,8 +7,10 @@ or when new products appear. Runtime counts survive restarts independently
 of config.json.
 """
 
+import asyncio
 import json
 import os
+import threading
 from pathlib import Path
 
 from loguru import logger
@@ -30,6 +32,11 @@ class InventoryManager:
         self._path = path
         self._counts: dict[str, int] = {}
         self._track: dict[str, bool] = {}
+        # save_async() runs _save() on a worker thread (asyncio.to_thread)
+        # while admin routes can call set_count/add_sku/remove_sku on the
+        # event loop, which also calls _save() synchronously — guard the
+        # tmp-write-then-replace sequence against concurrent writers.
+        self._save_lock = threading.Lock()
         self._load(products)
 
     def _load(self, products: list):
@@ -58,13 +65,14 @@ class InventoryManager:
 
     def _save(self):
         """Persist current counts to disk atomically."""
-        tmp = f"{self._path}.tmp"
-        try:
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(self._counts, f, indent=2)
-            os.replace(tmp, self._path)
-        except Exception as e:
-            logger.error(f"Failed to save inventory: {e}")
+        with self._save_lock:
+            tmp = f"{self._path}.tmp"
+            try:
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(self._counts, f, indent=2)
+                os.replace(tmp, self._path)
+            except Exception as e:
+                logger.error(f"Failed to save inventory: {e}")
 
     def get_count(self, sku: str) -> int:
         """Return current inventory count for a SKU."""
@@ -80,12 +88,17 @@ class InventoryManager:
             return True
         return self._counts.get(sku, 0) > 0
 
-    def decrement(self, sku: str):
-        """Decrement inventory for a SKU and persist."""
+    async def save_async(self) -> None:
+        """Persist off the event loop (VMC hot path)."""
+        await asyncio.to_thread(self._save)
+
+    def decrement(self, sku: str, *, persist: bool = True):
+        """Decrement inventory for a SKU; persist synchronously unless told not to."""
         if sku in self._counts:
             self._counts[sku] = max(0, self._counts[sku] - 1)
             logger.info(f"Inventory: {sku} decremented to {self._counts[sku]}")
-            self._save()
+            if persist:
+                self._save()
 
     def set_count(self, sku: str, count: int):
         """Set inventory count for a SKU (e.g., from admin dashboard)."""

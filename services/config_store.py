@@ -22,6 +22,14 @@ from config.config_model import ConfigModel, Product
 
 CONFIG_PATH = Path("config.json")
 
+_VALID_KINDS = ("ice", "water", "other")
+
+
+def _clean_kind(kind: str) -> str:
+    """Validate *kind* against the known permissive categories, falling back
+    to "other" for anything unrecognized (matches Product.kind's own default)."""
+    return kind if kind in _VALID_KINDS else "other"
+
 
 def _config_path() -> Path:
     """Resolve the active config path.
@@ -50,14 +58,38 @@ def _config_json(config: ConfigModel) -> str:
 
 
 def save_config(config: ConfigModel, path: Path | None = None):
-    """Atomically write the config, keeping a rolling ``<name>.bak``."""
+    """Atomically write the config, keeping a rolling ``<name>.bak``.
+
+    The temp file is flushed and fsync'd before ``os.replace`` so a power loss
+    right after the rename cannot leave an empty or truncated config.json.
+    """
     if path is None:
         path = _config_path()
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(_config_json(config), encoding="utf-8")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(_config_json(config))
+        f.flush()
+        os.fsync(f.fileno())
     if path.exists():
         shutil.copy2(path, path.with_name(path.name + ".bak"))
     os.replace(tmp, path)
+    _fsync_dir(path.parent)
+
+
+def _fsync_dir(directory: Path) -> None:
+    """Flush the directory entry after a rename (no-op on Windows)."""
+    if os.name != "posix":
+        return
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError as e:
+        logger.warning(f"config_store: directory fsync failed for {directory}: {e}")
+    finally:
+        os.close(fd)
 
 
 def _lowest_free_slot(products) -> int:
@@ -75,6 +107,7 @@ def add_product(
     name: str,
     price: float,
     slot: int | None = None,
+    kind: str = "other",
 ) -> bool:
     if any(p.sku == sku for p in config.products):
         logger.warning(f"Cannot add product: SKU '{sku}' already exists")
@@ -93,10 +126,13 @@ def add_product(
         logger.warning(f"Cannot add product SKU={sku}: slot {slot} is already in use")
         return False
 
-    new_product = Product(sku=sku, name=name, price=price, slot=slot)
+    kind = _clean_kind(kind)
+    new_product = Product(sku=sku, name=name, price=price, slot=slot, kind=kind)
     config.products.append(new_product)
     save_config(config)
-    logger.info(f"Added product SKU={sku} | name='{name}', price={price}, slot={slot}")
+    logger.info(
+        f"Added product SKU={sku} | name='{name}', price={price}, slot={slot}, kind={kind}"
+    )
     return True
 
 
@@ -106,7 +142,10 @@ def update_product(
     name: str,
     price: float,
     slot: int | None = None,
+    kind: str | None = None,
 ) -> bool:
+    if kind is not None:
+        kind = _clean_kind(kind)
     for p in config.products:
         if p.sku == sku:
             if slot is not None and slot < 0:
@@ -130,12 +169,16 @@ def update_product(
                 changes["price"] = (p.price, price)
             if slot is not None and p.slot != slot:
                 changes["slot"] = (p.slot, slot)
+            if kind is not None and p.kind != kind:
+                changes["kind"] = (p.kind, kind)
 
             if changes:
                 p.name = name
                 p.price = price
                 if slot is not None:
                     p.slot = slot
+                if kind is not None:
+                    p.kind = kind
                 save_config(config)
                 change_summary = ", ".join(
                     f"{field}: {old!r} -> {new!r}"

@@ -5,8 +5,11 @@ from services.notifier import Notifier
 from services.display_controller import DisplayController
 from services.inventory_manager import InventoryManager
 from services.event_recorder import EventRecorder
+from services.availability import Availability
+from services.session_store import SessionStore
 from services.config_store import save_config
 from services.build_info import BUILD_INFO
+from services.paths import LOG_DIR, LOG_FILE
 
 import asyncio
 import json
@@ -28,13 +31,13 @@ def setup_logging():
     Set up logging configuration for the application.
     """
     # Create the LOGS subdirectory if it doesn't exist
-    os.makedirs("LOGS", exist_ok=True)
+    os.makedirs(LOG_DIR, exist_ok=True)
 
     # Remove any default logging handlers
     logger.remove()
     # log file with rotation and retention settings
     logger.add(
-        "LOGS/vmc.log",
+        str(LOG_FILE),
         serialize=False,
         rotation="00:00",
         retention="300 days",
@@ -50,7 +53,7 @@ def setup_logging():
     )
     # Transaction log — customer interactions only (button, payment, dispense, refund)
     logger.add(
-        "LOGS/transactions.log",
+        str(LOG_DIR / "transactions.log"),
         filter=lambda record: record["extra"].get("transaction", False),
         rotation="00:00",
         retention="300 days",
@@ -59,7 +62,7 @@ def setup_logging():
     )
     # Ice maker log — power cycles, ice drops, and out-of-spec behavior
     logger.add(
-        "LOGS/ice_maker.log",
+        str(LOG_DIR / "ice_maker.log"),
         filter=lambda record: record["extra"].get("ice_maker", False),
         rotation="00:00",
         retention="300 days",
@@ -68,7 +71,7 @@ def setup_logging():
     )
     # Vending machine log — button presses, dispense sequences, hardware events
     logger.add(
-        "LOGS/vending.log",
+        str(LOG_DIR / "vending.log"),
         filter=lambda record: record["extra"].get("vending", False),
         rotation="00:00",
         retention="300 days",
@@ -218,6 +221,11 @@ async def main():
     routes.set_health_monitor(health)
     logger.info("Health monitor and notifier set up and linked")
 
+    availability = Availability(live_config.products)
+    vmc.set_availability(availability)
+    routes.set_availability(availability)
+    logger.info("Availability wired to VMC and routes")
+
     # Create MQTT client and wire it to the VMC
     # Allow environment variable to override broker host (for Docker networking)
     broker_override = os.environ.get("MQTT_BROKER_HOST")
@@ -225,7 +233,12 @@ async def main():
         live_config.mqtt.broker_host = broker_override
         logger.info(f"MQTT broker host overridden by env: {broker_override}")
     mqtt = MQTTClient(config=live_config.mqtt, machine_id=live_config.machine_id)
-    mqtt.set_connection_callback(health.update_mqtt_status)
+
+    def _on_mqtt_connection(connected: bool) -> None:
+        health.update_mqtt_status(connected)
+        vmc.on_mqtt_connection(connected)
+
+    mqtt.set_connection_callback(_on_mqtt_connection)
     vmc.set_mqtt_client(mqtt)
     vmc.set_health_monitor(health)
     logger.info("MQTT client created and linked to VMC and health monitor")
@@ -235,7 +248,11 @@ async def main():
     recorder.register_handlers(mqtt)
     vmc.set_event_recorder(recorder)
     routes.set_event_recorder(recorder)
+    availability.set_event_recorder(recorder)
     logger.info("Event recorder wired up")
+
+    vmc.set_session_store(SessionStore())
+    logger.info("Session store attached; previous open session checked")
 
     # Create display controller and wire to MQTT + VMC
     display = DisplayController()
@@ -271,8 +288,12 @@ async def main():
             _supervise("health monitor", health.run),
         )
     finally:
+        await vmc.drain_persistence()
+        logger.info("Shutdown: drained persistence tasks")
         vmc.cancel_pending_tasks()
         logger.info("Shutdown: cancelled pending VMC tasks")
+        recorder.flush()
+        logger.info("Shutdown: flushed event recorder")
 
 
 if __name__ == "__main__":

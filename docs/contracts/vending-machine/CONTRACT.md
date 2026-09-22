@@ -1,4 +1,4 @@
-# Vending Machine Contract — v0.2.0 (stub)
+# Vending Machine Contract — v0.3.0 (stub)
 
 This document and the JSON Schema files in `schemas/` define the interface
 between the ice-colder VMC and the vending ESP32 firmware plus the MDB
@@ -20,10 +20,11 @@ All topics are relative to `vmc/{machine_id}/`.
 | `hardware/dispenser` | ESP32 → VMC | `DispenserStatus` (`services/mqtt_messages.py`) | `state` is a [`DispenserOutcome`](schemas/dispenser_outcome.schema.json) for terminal states; any other string is an intermediate step |
 | `cmd/payment/refund` | VMC → gateway | [`PaymentRefundCommand`](schemas/payment_refund_command.schema.json) | QoS 1; `request_id` unique per refund |
 | `cmd/payment/refund/ack` | gateway → VMC | [`PaymentRefundResult`](schemas/payment_refund_result.schema.json) | QoS 1; exactly one per command; repeated `request_id` re-sends the stored result, never pays twice |
+| `cmd/payment/enable` | VMC → gateway | `PaymentEnableCommand {accept: bool}` | QoS 1; not retained; the VMC republishes on connect and whenever the `mdb` subsystem returns |
 | `alerts` | VMC → world | `VMCAlert` (`services/mqtt_messages.py`) | carries a [`FaultCode`](schemas/fault_code.schema.json) when one applies |
 | `capabilities/<subsystem>` | subsystem → VMC | [`SubsystemCapabilities`](schemas/subsystem_capabilities.schema.json) | retained; MUST be published on connect and re-published on any change; `firmware`, `hardware_id`, `ip` identify the board |
 
-## Semantics fixed in 0.2.0
+## Semantics fixed in 0.3.0
 
 - The VMC finishes a sale only on `DispenserOutcome.complete` for the slot
   it commanded. `bin_empty`, `timeout`, `jam`, `error` end the sale as a
@@ -32,6 +33,9 @@ All topics are relative to `vmc/{machine_id}/`.
   failed vend (`PAY-102`).
 - Refund ack deadline is 10 s; the VMC retries once with the same
   `request_id`, then raises `PAY-103`.
+- Transaction uncertain after VMC restart (a persisted open sale found on
+  boot) is `PAY-104` (lockout, machine scope); payment stays inhibited until
+  an operator clears the fault.
 - Fault codes are stable; see `ROADMAP.md` §5 for the registry.
 - The VMC expects `vending`, `mdb` and `ice_maker` (`EXPECTED_SUBSYSTEMS`); a
   subsystem that has never published a heartbeat is shown as never seen.
