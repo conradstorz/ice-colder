@@ -19,6 +19,19 @@ from config.config_model import MQTTConfig
 from services.mqtt_messages import VMCOnline
 
 
+# Config string -> aiomqtt protocol enum. aiomqtt defaults to V311; the VMC
+# and the simulators both negotiate v5 unless config.mqtt.protocol_version
+# says otherwise.
+PROTOCOL_VERSIONS = {
+    "3.1.1": aiomqtt.ProtocolVersion.V311,
+    "5": aiomqtt.ProtocolVersion.V5,
+}
+
+# Home Assistant deprecated the 3.x protocol versions in HA 2026.06 and drops
+# them in HA 2027.01; anything here is a legacy-broker stopgap, not a choice.
+DEPRECATED_PROTOCOL_VERSIONS = {"3.1.1"}
+
+
 # Type alias for message handler coroutines
 MessageHandler = Callable[[str, dict], Awaitable[None]]
 
@@ -147,6 +160,13 @@ class MQTTClient:
         if self._config.password is not None:
             password = self._config.password.get_secret_value()
 
+        if self._config.protocol_version in DEPRECATED_PROTOCOL_VERSIONS:
+            logger.warning(
+                f"MQTT: protocol_version={self._config.protocol_version} is "
+                "deprecated — Home Assistant requires v5 and removes 3.x "
+                "support in HA 2027.01. Set mqtt.protocol_version to '5'."
+            )
+
         will = aiomqtt.Will(
             topic=self.online_topic,
             payload=VMCOnline(online=False).model_dump_json(),
@@ -160,6 +180,7 @@ class MQTTClient:
             password=password,
             identifier=self._config.client_id,
             keepalive=self._config.keepalive,
+            protocol=PROTOCOL_VERSIONS[self._config.protocol_version],
             will=will,
         ) as client:
             self._client = client
@@ -173,7 +194,8 @@ class MQTTClient:
             if self._connection_callback:
                 self._connection_callback(True)
             logger.info(
-                f"MQTT: Connected to {self._config.broker_host}:{self._config.broker_port}"
+                f"MQTT: Connected to {self._config.broker_host}:{self._config.broker_port} "
+                f"(MQTT v{self._config.protocol_version})"
             )
 
             # Subscribe to all registered topic patterns

@@ -38,7 +38,7 @@
         "name": "Bagged Ice",
         "description": "10 lb bag of ice",
         "image_url": "https://example.com/image.jpg",
-        "price": 3.00,
+        "price": 3.0,
         "track_inventory": false,
         "inventory_count": 0,
         "slot": 0
@@ -48,7 +48,7 @@
         "name": "Small Water",
         "description": "1 gallon filtered water",
         "image_url": "https://example.com/image.jpg",
-        "price": 0.50,
+        "price": 0.5,
         "track_inventory": false,
         "inventory_count": 0,
         "slot": 1
@@ -58,7 +58,7 @@
         "name": "Large Water",
         "description": "5 gallon filtered water",
         "image_url": "https://example.com/image.jpg",
-        "price": 2.00,
+        "price": 2.0,
         "track_inventory": false,
         "inventory_count": 0,
         "slot": 2
@@ -101,6 +101,7 @@
     "username": null,
     "password": null,
     "client_id": "ice-colder-vmc",
+    "protocol_version": "5",
     "keepalive": 60,
     "reconnect_interval": 5.0
   },

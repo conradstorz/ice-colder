@@ -309,6 +309,16 @@ class MQTTConfig(BaseModel):
     username: Optional[str] = Field(None, description="MQTT username (optional)")
     password: Optional[SecretStr] = Field(None, description="MQTT password (optional)")
     client_id: str = Field("ice-colder-vmc", description="MQTT client identifier")
+    protocol_version: Literal["3.1.1", "5"] = Field(
+        "5",
+        description=(
+            "MQTT protocol version spoken by the VMC and the simulators. "
+            "Home Assistant requires a broker that supports v5 and removes "
+            "3.x support in HA 2027.01 (deprecated in 2026.06), so 3.1.1 is "
+            "a temporary escape hatch for a legacy broker only — it will "
+            "break HA discovery once that release lands."
+        ),
+    )
     keepalive: int = Field(60, description="MQTT keepalive interval in seconds")
     reconnect_interval: float = Field(
         5.0, description="Seconds to wait before reconnecting"
