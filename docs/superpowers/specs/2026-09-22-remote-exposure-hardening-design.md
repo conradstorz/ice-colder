@@ -30,9 +30,15 @@ replay a logged-in browser's credentials against the control endpoints.
 
 ## Decisions
 
-1. **Port 1883 stays published; authentication is required.** Home
-   Assistant on the LAN and the e2e tests use it. One broker user is shared by
-   the VMC, the simulators and Home Assistant.
+1. **Port 1883 stays published on the LAN only; authentication is
+   required.** Home Assistant on the LAN and the e2e tests use it. One broker
+   user is shared by the VMC, the simulators and Home Assistant. The trust
+   boundary is the LAN: the router forwards only 80/443 to Traefik, never
+   1883, and the compose file binds the listener to a configurable host
+   address (`MQTT_BIND_ADDR`, set to the LAN interface on hpz440) rather
+   than all interfaces. MQTT over TLS on 1883 is deferred: the credential
+   only ever crosses the LAN, and adding certificates to Home Assistant and
+   the simulators buys nothing until a broker leaves the LAN.
 2. **Credentials come from a gitignored `.env`.** A committed `.env.example`
    documents the variables. A one-shot init container generates the mosquitto
    password file; nothing secret is committed.
@@ -55,7 +61,16 @@ replay a logged-in browser's credentials against the control endpoints.
   # simulators and Home Assistant.
   MQTT_USERNAME=vmc
   MQTT_PASSWORD=change-me
+  # Host address the broker listens on. Use the LAN interface address so
+  # 1883 is never reachable through a stray port-forward or a second NIC.
+  MQTT_BIND_ADDR=0.0.0.0
+  # Docker network(s) Traefik reaches the VMC from; X-Forwarded-For is
+  # trusted only from these (comma-separated CIDRs).
+  ICE_COLDER_TRUSTED_PROXIES=
   ```
+
+  On hpz440: `MQTT_BIND_ADDR=192.168.86.26`,
+  `ICE_COLDER_TRUSTED_PROXIES=172.25.0.0/16` (the `harbor` network).
 
 - `.gitignore`: add `.env`.
 - `docker-compose.yml`:
@@ -69,8 +84,10 @@ replay a logged-in browser's credentials against the control endpoints.
     mount `./docker/mosquitto/config/mosquitto-prod.conf:/mosquitto/config/mosquitto.conf`
     and the config directory for `passwd`; healthcheck uses
     `mosquitto_sub -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" ...`.
+  - `mosquitto` `ports`: `"${MQTT_BIND_ADDR:-0.0.0.0}:1883:1883"`.
   - `vmc`, `sim-*`: `environment` gains `MQTT_USERNAME=${MQTT_USERNAME}` and
-    `MQTT_PASSWORD=${MQTT_PASSWORD}`.
+    `MQTT_PASSWORD=${MQTT_PASSWORD}`; `vmc` also gets
+    `ICE_COLDER_TRUSTED_PROXIES=${ICE_COLDER_TRUSTED_PROXIES:-}`.
   - Watchtower must not restart `mosquitto-init`; it carries no watchtower
     label.
 - `docker/docker-compose.prod.yml`: same init service and env wiring.
@@ -83,11 +100,13 @@ replay a logged-in browser's credentials against the control endpoints.
 ## 2. Clients read credentials
 
 - `main.py`: after the `MQTT_BROKER_HOST` override, apply `MQTT_USERNAME`
-  and `MQTT_PASSWORD` (as `SecretStr`) to `live_config.mqtt` when set. Log
-  the username, never the password.
+  and `MQTT_PASSWORD` (wrapped in `SecretStr`) to `live_config.mqtt` when
+  set. Log the username, never the password.
 - `simulators/base.py`: `ESP32Simulator.__init__` accepts
-  `username: str | None = None, password: str | None = None`; `entry_point`
-  fills them from the loaded config's `mqtt.username/password`, overridden by
+  `username: str | None = None, password: str | None = None` (plain
+  strings); `entry_point` fills them from the loaded config's
+  `mqtt.username` and `mqtt.password.get_secret_value()` (the field is a
+  `SecretStr`; passing it raw would send the masked value), overridden by
   the same env vars; `run()` passes them to `aiomqtt.Client`.
 - `tests/test_integration_e2e.py`: `_check_broker` and every client use
   `MQTT_USERNAME` / `MQTT_PASSWORD` from the environment when present.
@@ -121,9 +140,13 @@ replay a logged-in browser's credentials against the control endpoints.
   `password_problem(...)` is not None and `ICE_COLDER_ALLOW_WEAK_PASSWORD`
   is not `"1"`, log an error naming the problem and the two remedies and
   `sys.exit(1)`. With the flag set, log a warning instead.
-- `docker-compose.yml` `vmc` service sets `ICE_COLDER_ALLOW_WEAK_PASSWORD=1`
-  with a comment that this is the simulation host; the prod compose does
-  not.
+- Neither compose file sets `ICE_COLDER_ALLOW_WEAK_PASSWORD`; the root
+  compose is the internet-exposed stack, so committing the bypass there would
+  void the policy. The flag exists only for a local shell or an uncommitted
+  `docker-compose.override.yml`. Consequence for hpz440: its
+  `data/config.json` has no `web` section and the VMC will refuse to start
+  on the new image until one with a strong password is added, so that edit
+  is made before merging (see §7).
 
 ## 5. Dashboard CSRF guard
 
@@ -145,7 +168,7 @@ replay a logged-in browser's credentials against the control endpoints.
   class LoginLimiter:
       def __init__(self, max_failures: int = 10, window_seconds: float = 900.0,
                    lockout_seconds: float = 900.0, clock=time.monotonic): ...
-      def client_ip(self, request) -> str   # first X-Forwarded-For hop, else request.client.host
+      def client_ip(self, request) -> str   # see below
       def check(self, ip: str) -> float | None   # seconds remaining if locked, else None
       def record_failure(self, ip: str) -> None
       def record_success(self, ip: str) -> None  # clears the entry
@@ -155,6 +178,18 @@ replay a logged-in browser's credentials against the control endpoints.
   starts when the pruned count reaches `max_failures` and lasts
   `lockout_seconds`. State is per process and in memory; a restart clears it,
   which is acceptable for a single machine.
+
+  `client_ip` keys on `request.client.host` unless that peer address falls
+  inside one of `WebConfig.trusted_proxies` (a list of CIDRs, default empty,
+  overridable by the `ICE_COLDER_TRUSTED_PROXIES` env var). Only then is the
+  **rightmost** `X-Forwarded-For` entry used: that is the hop the trusted
+  proxy appended. Traefik on hpz440 runs without `forwardedHeaders.trustedIPs`,
+  so it discards any `X-Forwarded-For` a client supplies and sends a single
+  real address; the rightmost rule stays correct even if a proxy were later
+  configured to preserve client headers. With the list empty every request
+  is keyed on the peer, which behind a proxy collapses to one shared bucket:
+  a remote attacker could then lock the owner out of the dashboard (not the
+  machine), which is why the compose file sets the list.
 - `web_interface/routes.py`: module-level `login_limiter = LoginLimiter()`;
   `require_auth` gets `request: Request`, calls `check` first and raises 429
   with `Retry-After`, records failure or success after the comparison.
@@ -169,9 +204,12 @@ replay a logged-in browser's credentials against the control endpoints.
 - `ROADMAP.md` §10: answer the two remote-access bullets (Traefik TLS, Basic
   auth with limiter and CSRF guard, authenticated broker; VPN not required
   for the owner; technicians get the same login until roles exist).
-- After merge, on hpz440: create `.env`, add a `web` section with a real
-  password to `data/config.json`, `docker compose up -d`, update Home
-  Assistant's MQTT integration.
+- Before merge, on hpz440 (the new image refuses to start otherwise):
+  create `.env` with the values in §1 and add a `web` section with a strong
+  password to `data/config.json`. After merge: `git pull`,
+  `docker compose up -d`, update Home Assistant's MQTT integration, and
+  confirm from another LAN host that 1883 answers on 192.168.86.26 only and
+  that the router forwards nothing but 80/443.
 
 ## Non-goals
 
@@ -193,5 +231,8 @@ Cookie login and roles; read-only broker ACL for Home Assistant; TLS on
   POST without `HX-Request`; existing tests pass with the header.
 - `tests/test_simulator_base.py`: credentials reach `aiomqtt.Client`
   (monkeypatched factory captures kwargs); env override wins over config.
-- CI: a `compose-config` step runs `docker compose --env-file .env.example config -q`
-  to lint both compose files.
+- CI: a `compose-config` step runs
+  `docker compose --env-file .env.example -f docker-compose.yml config -q`
+  and
+  `docker compose --env-file .env.example -f docker/docker-compose.prod.yml config -q`
+  so both stacks are parsed and interpolated.
