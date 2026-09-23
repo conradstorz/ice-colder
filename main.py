@@ -15,13 +15,14 @@ import asyncio
 import json
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from loguru import logger
 from pydantic import SecretStr, ValidationError
 
 import uvicorn
-from config.config_model import ConfigModel
+from config.config_model import ConfigModel, MQTTConfig
 from services.auth_policy import generate_admin_password, is_loopback, password_problem
 from web_interface.server import app
 from web_interface import routes
@@ -151,28 +152,50 @@ def load_config() -> ConfigModel:
     return config_model
 
 
-def apply_env_overrides(config: ConfigModel) -> None:
+@dataclass
+class EnvOverrides:
+    """Env-derived values that must not be written back to config.json.
+
+    ``mqtt`` is a copy of ``config.mqtt`` with env values layered on top;
+    ``trusted_proxies`` is the env list if set, else the config's own.
+    """
+
+    mqtt: MQTTConfig
+    trusted_proxies: list[str]
+
+
+def apply_env_overrides(config: ConfigModel) -> EnvOverrides:
     """Docker-friendly overrides: broker host/credentials and trusted proxies.
+
+    Returns an ``EnvOverrides`` built from a copy of ``config.mqtt`` — the
+    live ``config`` is never mutated, so a later ``save_config(config)`` (the
+    inventory routes do this) can never persist an env-only secret like
+    ``MQTT_PASSWORD`` into config.json or its ``.bak``.
 
     Read at call time so tests can monkeypatch the environment.
     """
+    mqtt = config.mqtt.model_copy(deep=True)
+
     host = os.environ.get("MQTT_BROKER_HOST")
     if host:
-        config.mqtt.broker_host = host
+        mqtt.broker_host = host
         logger.info(f"MQTT broker host overridden by env: {host}")
     username = os.environ.get("MQTT_USERNAME")
     if username:
-        config.mqtt.username = username
+        mqtt.username = username
         logger.info(f"MQTT username overridden by env: {username}")
     password = os.environ.get("MQTT_PASSWORD")
     if password:
-        config.mqtt.password = SecretStr(password)
-    proxies = os.environ.get("ICE_COLDER_TRUSTED_PROXIES")
-    if proxies:
-        config.web.trusted_proxies = [
-            p.strip() for p in proxies.split(",") if p.strip()
-        ]
-        logger.info(f"Trusted proxies overridden by env: {config.web.trusted_proxies}")
+        mqtt.password = SecretStr(password)
+
+    proxies_env = os.environ.get("ICE_COLDER_TRUSTED_PROXIES")
+    if proxies_env:
+        trusted_proxies = [p.strip() for p in proxies_env.split(",") if p.strip()]
+        logger.info(f"Trusted proxies overridden by env: {trusted_proxies}")
+    else:
+        trusted_proxies = list(config.web.trusted_proxies)
+
+    return EnvOverrides(mqtt=mqtt, trusted_proxies=trusted_proxies)
 
 
 def enforce_password_policy(web) -> None:
@@ -257,7 +280,7 @@ async def main():
     )
 
     live_config = load_config()
-    apply_env_overrides(live_config)
+    overrides = apply_env_overrides(live_config)
     logger.debug(f"Configuration model: {live_config}")
     logger.info(
         f"Loaded configuration with version: {getattr(live_config, 'version', 'N/A')}"
@@ -265,6 +288,11 @@ async def main():
 
     # Wire up configuration, inventory, and VMC for the web routes
     routes.set_config_object(live_config)
+    # set_config_object above seeds the limiter from live_config.web.trusted_proxies
+    # (empty unless the operator set it in config.json) — apply the env override
+    # after, so ICE_COLDER_TRUSTED_PROXIES takes effect without ever touching
+    # live_config itself.
+    routes.login_limiter.set_trusted_proxies(overrides.trusted_proxies)
     inventory = InventoryManager(live_config.products)
     vmc = VMC(config=live_config)
     vmc.set_inventory_manager(inventory)
@@ -286,7 +314,7 @@ async def main():
     logger.info("Availability wired to VMC and routes")
 
     # Create MQTT client and wire it to the VMC
-    mqtt = MQTTClient(config=live_config.mqtt, machine_id=live_config.machine_id)
+    mqtt = MQTTClient(config=overrides.mqtt, machine_id=live_config.machine_id)
 
     def _on_mqtt_connection(connected: bool) -> None:
         health.update_mqtt_status(connected)
@@ -315,7 +343,7 @@ async def main():
     logger.info("Display controller created and linked to MQTT client and VMC")
 
     logger.info(
-        f"MQTT client configured for broker {live_config.mqtt.broker_host}:{live_config.mqtt.broker_port}"
+        f"MQTT client configured for broker {overrides.mqtt.broker_host}:{overrides.mqtt.broker_port}"
     )
 
     # Start uvicorn as an asyncio task (non-blocking)

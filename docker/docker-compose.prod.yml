@@ -27,9 +27,14 @@ services:
     container_name: ice-colder-mqtt
     ports:
       - "${MQTT_BIND_ADDR:?set MQTT_BIND_ADDR in .env to the LAN interface address}:1883:1883"
+    # Mount the whole config dir (not the individual files): `passwd` is
+    # gitignored and written by mosquitto-init at startup, so a single-file
+    # bind mount would let Docker create it as a directory on a fresh
+    # checkout. No :ro here either — the image entrypoint chowns under
+    # /mosquitto/config on start.
+    command: ["/usr/sbin/mosquitto", "-c", "/mosquitto/config/mosquitto-prod.conf"]
     volumes:
-      - ./mosquitto/config/mosquitto-prod.conf:/mosquitto/config/mosquitto.conf:ro
-      - ./mosquitto/config/passwd:/mosquitto/config/passwd:ro
+      - ./mosquitto/config:/mosquitto/config
       - ./mosquitto/data:/mosquitto/data
       - ./mosquitto/log:/mosquitto/log
     environment:

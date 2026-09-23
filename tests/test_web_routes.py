@@ -732,6 +732,21 @@ class TestLoginLimiter:
         r.set_config_object(ConfigModel())
         assert r.login_limiter._networks == []
 
+    def test_set_config_object_resets_trusted_proxies_set_before_it(self):
+        """set_config_object seeds the limiter from cfg.web.trusted_proxies,
+        overwriting anything set earlier — so main() must call
+        login_limiter.set_trusted_proxies(overrides.trusted_proxies) AFTER
+        set_config_object(live_config), never before, or an env-derived
+        override would be silently discarded."""
+        from config.config_model import ConfigModel
+        from web_interface import routes as r
+
+        r.login_limiter.set_trusted_proxies(["172.25.0.0/16"])
+        assert r.login_limiter._networks
+
+        r.set_config_object(ConfigModel())
+        assert r.login_limiter._networks == []
+
 
 class TestAvailabilityOnDashboard:
     @pytest.fixture

@@ -3,6 +3,7 @@ from pydantic import SecretStr
 
 import main as main_mod
 from config.config_model import ConfigModel, WebConfig
+from services.config_store import save_config
 
 
 def _web(host="0.0.0.0", password="changeme"):
@@ -43,11 +44,19 @@ def test_env_overrides_mqtt_credentials_and_trusted_proxies(monkeypatch):
     monkeypatch.setenv("MQTT_PASSWORD", "s3cret-value")
     monkeypatch.setenv("ICE_COLDER_TRUSTED_PROXIES", "172.25.0.0/16, 10.0.0.0/8")
     cfg = ConfigModel()
-    main_mod.apply_env_overrides(cfg)
-    assert cfg.mqtt.broker_host == "mosquitto"
-    assert cfg.mqtt.username == "vmc"
-    assert cfg.mqtt.password.get_secret_value() == "s3cret-value"
-    assert cfg.web.trusted_proxies == ["172.25.0.0/16", "10.0.0.0/8"]
+    overrides = main_mod.apply_env_overrides(cfg)
+
+    # Returned overrides carry the env values...
+    assert overrides.mqtt.broker_host == "mosquitto"
+    assert overrides.mqtt.username == "vmc"
+    assert overrides.mqtt.password.get_secret_value() == "s3cret-value"
+    assert overrides.trusted_proxies == ["172.25.0.0/16", "10.0.0.0/8"]
+
+    # ...but the live config passed in is never mutated.
+    assert cfg.mqtt.broker_host != "mosquitto"
+    assert cfg.mqtt.username is None
+    assert cfg.mqtt.password is None
+    assert cfg.web.trusted_proxies == []
 
 
 def test_env_overrides_absent_leave_config_alone(monkeypatch):
@@ -59,9 +68,28 @@ def test_env_overrides_absent_leave_config_alone(monkeypatch):
     ):
         monkeypatch.delenv(k, raising=False)
     cfg = ConfigModel()
-    main_mod.apply_env_overrides(cfg)
+    overrides = main_mod.apply_env_overrides(cfg)
+
+    # No env set: overrides fall back to the config's own (default) values...
+    assert overrides.mqtt.username is None
+    assert overrides.mqtt.password is None
+    assert overrides.trusted_proxies == []
+
+    # ...and the config itself is untouched either way.
     assert cfg.mqtt.username is None and cfg.mqtt.password is None
     assert cfg.web.trusted_proxies == []
+
+
+def test_env_password_never_reaches_saved_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("MQTT_PASSWORD", "env-only-secret-value")
+    for k in ("MQTT_BROKER_HOST", "MQTT_USERNAME", "ICE_COLDER_TRUSTED_PROXIES"):
+        monkeypatch.delenv(k, raising=False)
+
+    cfg = ConfigModel()
+    main_mod.apply_env_overrides(cfg)
+
+    save_config(cfg, tmp_path / "config.json")
+    assert "env-only-secret-value" not in (tmp_path / "config.json").read_text()
 
 
 def test_web_config_trusted_proxies_default_empty():

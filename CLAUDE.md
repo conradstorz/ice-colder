@@ -104,8 +104,14 @@ require a `.env` file (`cp .env.example .env`) and run a one-shot
 before `mosquitto` starts; `docker/docker-compose.yml` stays an anonymous
 broker for local development only. `MQTT_USERNAME`/`MQTT_PASSWORD` from
 `.env` are passed into the VMC and simulators and read by
-`main.apply_env_overrides`; `ICE_COLDER_TRUSTED_PROXIES` is read the same way
-into `config.web.trusted_proxies` for the dashboard's login limiter.
+`main.apply_env_overrides`, which returns an `EnvOverrides` (a `model_copy`
+of `config.mqtt` with env values applied, plus the resolved trusted-proxies
+list) without mutating the live `ConfigModel` — so an env-only
+`MQTT_PASSWORD` can never be written back to `config.json` by a later
+`save_config`. `ICE_COLDER_TRUSTED_PROXIES` is resolved the same way and
+applied to the dashboard's login limiter via
+`routes.login_limiter.set_trusted_proxies(...)`, called after
+`routes.set_config_object(...)` so the env value wins.
 
 ## Key Patterns
 
