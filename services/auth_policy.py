@@ -12,7 +12,8 @@ def password_problem(password: str) -> str | None:
     if not password:
         return "admin password is empty"
     if password.lower() in WEAK_PASSWORDS:
-        return f"admin password {password!r} is a well-known default"
+        # Never echo the value: this message is logged by the startup check.
+        return "admin password is a well-known default"
     if len(password) < MIN_PASSWORD_LENGTH:
         return f"admin password is shorter than {MIN_PASSWORD_LENGTH} characters"
     return None
