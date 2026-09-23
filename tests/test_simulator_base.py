@@ -6,11 +6,13 @@ import json
 import time
 from unittest.mock import AsyncMock
 
+import aiomqtt
 import pytest
 
 from config.config_model import ConfigModel
 from contracts.vending_machine import SubsystemCapabilities
 from services.build_info import BUILD_INFO
+from services.mqtt_client import PROTOCOL_VERSIONS
 from simulators.base import (
     ESP32Simulator,
     FaultDef,
@@ -930,3 +932,52 @@ class TestCredentials:
         except (asyncio.CancelledError, Exception):
             pass
         assert captured["username"] == "u" and captured["password"] == "p"
+
+
+class TestSimulatorProtocolVersion:
+    """Simulators must negotiate the same MQTT version the VMC does."""
+
+    @staticmethod
+    async def _connect_kwargs(monkeypatch, cfg) -> dict:
+        import simulators.base as base
+
+        captured: dict = {}
+
+        class FakeClient:
+            def __init__(self, *a, **kw):
+                captured.update(kw)
+
+            async def __aenter__(self):
+                raise base.aiomqtt.MqttError("stop")
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(base.aiomqtt, "Client", FakeClient)
+        sim = ConcreteSimulator(config=cfg)
+        task = asyncio.create_task(sim.run())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+        return captured
+
+    async def test_defaults_to_v5(self, monkeypatch):
+        captured = await self._connect_kwargs(monkeypatch, ConfigModel())
+        assert captured["protocol"] is aiomqtt.ProtocolVersion.V5
+
+    async def test_honors_configured_v311(self, monkeypatch):
+        cfg = ConfigModel()
+        cfg.mqtt.protocol_version = "3.1.1"
+        captured = await self._connect_kwargs(monkeypatch, cfg)
+        assert captured["protocol"] is aiomqtt.ProtocolVersion.V311
+
+    async def test_matches_the_vmc_client_for_every_version(self, monkeypatch):
+        """Parity: simulator and VMC resolve a version to the same enum."""
+        for version, expected in PROTOCOL_VERSIONS.items():
+            cfg = ConfigModel()
+            cfg.mqtt.protocol_version = version
+            captured = await self._connect_kwargs(monkeypatch, cfg)
+            assert captured["protocol"] is expected

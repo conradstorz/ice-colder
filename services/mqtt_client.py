@@ -28,7 +28,9 @@ PROTOCOL_VERSIONS = {
 }
 
 # Home Assistant deprecated the 3.x protocol versions in HA 2026.06 and drops
-# them in HA 2027.01; anything here is a legacy-broker stopgap, not a choice.
+# them in HA 2027.01. That requirement is on the broker rather than on us —
+# the broker bridges a 3.1.1 publisher to a v5 subscriber — so anything listed
+# here still works today; it is a legacy-broker stopgap, not a choice.
 DEPRECATED_PROTOCOL_VERSIONS = {"3.1.1"}
 
 
@@ -162,9 +164,10 @@ class MQTTClient:
 
         if self._config.protocol_version in DEPRECATED_PROTOCOL_VERSIONS:
             logger.warning(
-                f"MQTT: protocol_version={self._config.protocol_version} is "
-                "deprecated — Home Assistant requires v5 and removes 3.x "
-                "support in HA 2027.01. Set mqtt.protocol_version to '5'."
+                f"MQTT: protocol_version={self._config.protocol_version} is a "
+                "legacy stopgap — the ecosystem is retiring 3.x (Home "
+                "Assistant drops it in HA 2027.01). Set mqtt.protocol_version "
+                "to '5' unless the broker cannot negotiate it."
             )
 
         will = aiomqtt.Will(

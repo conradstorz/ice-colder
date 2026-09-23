@@ -313,10 +313,12 @@ class MQTTConfig(BaseModel):
         "5",
         description=(
             "MQTT protocol version spoken by the VMC and the simulators. "
-            "Home Assistant requires a broker that supports v5 and removes "
-            "3.x support in HA 2027.01 (deprecated in 2026.06), so 3.1.1 is "
-            "a temporary escape hatch for a legacy broker only — it will "
-            "break HA discovery once that release lands."
+            "Home Assistant requires a broker that supports v5 and drops 3.x "
+            "in HA 2027.01 (deprecated in 2026.06); that requirement is on "
+            "the broker, not on this client — a 3.1.1 publisher still "
+            "reaches a v5 subscriber through the broker. 3.1.1 remains for a "
+            "legacy broker that cannot negotiate v5, but the ecosystem is "
+            "retiring it and v5 is what the rest of the stack speaks."
         ),
     )
     keepalive: int = Field(60, description="MQTT keepalive interval in seconds")

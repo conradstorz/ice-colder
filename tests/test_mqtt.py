@@ -335,7 +335,7 @@ class TestMQTTProtocolVersion:
         cfg = MQTTConfig(protocol_version="3.1.1")
         with caplog.at_level("WARNING"):
             await self._connect_with(cfg, monkeypatch)
-        assert "deprecated" in caplog.text
+        assert "legacy stopgap" in caplog.text
         assert "2027.01" in caplog.text
 
 
