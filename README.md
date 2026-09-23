@@ -56,6 +56,12 @@ Then set:
   VMC from (comma-separated CIDRs); `X-Forwarded-For` is trusted only from
   these when the dashboard's login limiter picks a client IP to rate-limit.
 
+Before exposing a host through Traefik, confirm three things outside this
+repo: the router forwards only 80/443 (never 1883); Traefik's `websecure`
+entrypoint has TLS; and Traefik runs without `forwardedHeaders.trustedIPs`
+or `insecure` set, so it discards any `X-Forwarded-For` a client supplies
+(the login limiter's trusted-proxy rule depends on that).
+
 The dashboard itself refuses to start bound to a public interface with an
 admin password under 12 characters or a known default; set
 `ICE_COLDER_ALLOW_WEAK_PASSWORD=1` only on a private test host, never in the

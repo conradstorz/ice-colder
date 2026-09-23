@@ -130,7 +130,7 @@ services:
       - harbor.port=1883
       - harbor.description=MQTT broker
     ports:
-      - "${MQTT_BIND_ADDR:-0.0.0.0}:1883:1883"
+      - "${MQTT_BIND_ADDR:?set MQTT_BIND_ADDR in .env to the LAN interface address}:1883:1883"
     volumes:
       - ./docker/mosquitto/config/mosquitto-prod.conf:/mosquitto/config/mosquitto.conf:ro
       - ./docker/mosquitto/config/passwd:/mosquitto/config/passwd:ro

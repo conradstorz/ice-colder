@@ -97,6 +97,10 @@ def require_auth(
     login_limiter.record_success(ip)
 
 
+# Runs after the router-level require_auth (FastAPI resolves router
+# dependencies first), so a valid login on a non-HTMX POST is counted as a
+# success by the limiter and then refused here. Both must pass to reach a
+# handler; the order is intentional.
 def require_htmx(request: Request):
     """CSRF guard for mutating routes.
 
