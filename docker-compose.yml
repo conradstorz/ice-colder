@@ -5,6 +5,9 @@ name: ice-colder
 # (label-gated, daily 04:00 on the sim host) swaps the containers in. For an
 # immediate update: docker compose pull; docker compose up -d.
 # `build: .` stays so `docker compose up --build` still works for local dev.
+#
+# Requires a `.env` file: cp .env.example .env, then set MQTT_PASSWORD (and
+# the other values) before bringing the stack up.
 
 services:
   vmc:
@@ -14,6 +17,8 @@ services:
       - com.centurylinklabs.watchtower.enable=true
       - traefik.enable=true
       - traefik.http.routers.ice.rule=Host(`ice.hpz440.ohr3023.org`)
+      - traefik.http.routers.ice.entrypoints=websecure
+      - traefik.http.routers.ice.tls=true
       - traefik.http.services.ice.loadbalancer.server.port=26123
       - harbor.description=Ice Colder VMC
     container_name: ice-colder-vmc
@@ -22,7 +27,10 @@ services:
       - ./data:/app/data
     environment:
       - MQTT_BROKER_HOST=mosquitto
+      - MQTT_USERNAME=${MQTT_USERNAME}
+      - MQTT_PASSWORD=${MQTT_PASSWORD}
       - ICE_COLDER_CONFIG=/app/data/config.json
+      - ICE_COLDER_TRUSTED_PROXIES=${ICE_COLDER_TRUSTED_PROXIES:-}
     networks:
       - broker
       - harbor
@@ -43,6 +51,8 @@ services:
       - ./data:/app/data:ro
     environment:
       - ICE_COLDER_CONFIG=/app/data/config.json
+      - MQTT_USERNAME=${MQTT_USERNAME}
+      - MQTT_PASSWORD=${MQTT_PASSWORD}
     networks:
       - broker
     depends_on:
@@ -64,6 +74,8 @@ services:
       - ./data:/app/data:ro
     environment:
       - ICE_COLDER_CONFIG=/app/data/config.json
+      - MQTT_USERNAME=${MQTT_USERNAME}
+      - MQTT_PASSWORD=${MQTT_PASSWORD}
     networks:
       - broker
     depends_on:
@@ -85,6 +97,8 @@ services:
       - ./data:/app/data:ro
     environment:
       - ICE_COLDER_CONFIG=/app/data/config.json
+      - MQTT_USERNAME=${MQTT_USERNAME}
+      - MQTT_PASSWORD=${MQTT_PASSWORD}
     networks:
       - broker
     depends_on:
@@ -94,6 +108,28 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  mosquitto-init:
+    # One-shot: writes the broker password file from .env before mosquitto starts.
+    image: eclipse-mosquitto:2
+    container_name: ice-colder-mqtt-init
+    # Explicit: must be able to write the bind-mounted config dir and chown.
+    user: root
+    environment:
+      - MQTT_USERNAME=${MQTT_USERNAME:?set MQTT_USERNAME in .env}
+      - MQTT_PASSWORD=${MQTT_PASSWORD:?set MQTT_PASSWORD in .env}
+    volumes:
+      - ./docker/mosquitto/config:/mosquitto/config
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        if [ "$$MQTT_PASSWORD" = "change-me" ] || [ "$${#MQTT_PASSWORD}" -lt 12 ]; then
+          echo "mosquitto-init: MQTT_PASSWORD is the .env.example placeholder or shorter than 12 characters; set a real one in .env" >&2; exit 1;
+        fi &&
+        mosquitto_passwd -c -b /mosquitto/config/passwd "$$MQTT_USERNAME" "$$MQTT_PASSWORD" &&
+        chmod 600 /mosquitto/config/passwd &&
+        chown mosquitto:mosquitto /mosquitto/config/passwd
+    restart: "no"
+
   mosquitto:
     image: eclipse-mosquitto:2
     container_name: ice-colder-mqtt
@@ -102,16 +138,28 @@ services:
       - harbor.port=1883
       - harbor.description=MQTT broker
     ports:
-      - "1883:1883"
+      - "${MQTT_BIND_ADDR:?set MQTT_BIND_ADDR in .env to the LAN interface address}:1883:1883"
+    # Mount the whole config dir (not the individual files): `passwd` is
+    # gitignored and written by mosquitto-init at startup, so a single-file
+    # bind mount would let Docker create it as a directory on a fresh
+    # checkout. No :ro here either — the image entrypoint chowns under
+    # /mosquitto/config on start.
+    command: ["/usr/sbin/mosquitto", "-c", "/mosquitto/config/mosquitto-prod.conf"]
     volumes:
-      - ./docker/mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./docker/mosquitto/config:/mosquitto/config
       - ./docker/mosquitto/data:/mosquitto/data
       - ./docker/mosquitto/log:/mosquitto/log
+    environment:
+      - MQTT_USERNAME=${MQTT_USERNAME}
+      - MQTT_PASSWORD=${MQTT_PASSWORD}
     restart: unless-stopped
     networks:
       - broker
+    depends_on:
+      mosquitto-init:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD-SHELL", "mosquitto_sub -t '$$SYS/broker/uptime' -C 1 -W 3"]
+      test: ["CMD-SHELL", "mosquitto_sub -u \"$$MQTT_USERNAME\" -P \"$$MQTT_PASSWORD\" -t '$$SYS/broker/uptime' -C 1 -W 3"]
       interval: 5s
       timeout: 5s
       retries: 3

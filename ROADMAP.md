@@ -388,9 +388,15 @@ Answers change the design; collect them during Phase A.
 - Does the flow meter give a fixed pulse count per gallon, and has it been
   measured on this plumbing?
 - Which inputs exist for leak, water pressure, treatment health, service door?
-- Site connectivity: Ethernet, Wi-Fi or cellular, and is it behind carrier NAT
-  (which decides whether an outbound overlay such as Tailscale is required)?
-- Who besides the owner needs remote access, and at what permission level?
+- Site connectivity and remote access: answered for the software layer by
+  `docs/superpowers/specs/2026-09-22-remote-exposure-hardening-design.md`.
+  Traefik terminates TLS on the site router's 80/443 and reverse-proxies to
+  the dashboard; no VPN or outbound overlay (e.g. Tailscale) is required for
+  the owner. The dashboard is HTTP Basic auth with a login limiter (per-IP
+  lockout after repeated failures) and an `HX-Request` CSRF guard on POST
+  routes; the MQTT broker requires credentials and stays on the LAN, never
+  exposed through Traefik. Technicians share the owner login until per-role
+  accounts exist — that remains an open question for Phase C/§6.
 
 ## 11. Out of scope for this repo
 

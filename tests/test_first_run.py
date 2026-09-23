@@ -63,3 +63,21 @@ def test_directory_at_config_path_exits_with_code_1(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as exc_info:
         main_mod.load_config()
     assert exc_info.value.code == 1
+
+
+def test_first_run_generates_strong_password_and_logs_it_once(
+    tmp_path, monkeypatch, caplog
+):
+    from services.auth_policy import password_problem
+
+    monkeypatch.chdir(tmp_path)
+    caplog.set_level("WARNING")
+    cfg = main_mod.load_config()
+    pw = cfg.web.admin_password.get_secret_value()
+    assert password_problem(pw) is None
+    saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert saved["web"]["admin_password"] == pw
+    lines = [
+        r.message for r in caplog.records if "First run: dashboard login" in r.message
+    ]
+    assert len(lines) == 1 and pw in lines[0]

@@ -15,13 +15,15 @@ import asyncio
 import json
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from loguru import logger
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 import uvicorn
-from config.config_model import ConfigModel
+from config.config_model import ConfigModel, MQTTConfig
+from services.auth_policy import generate_admin_password, is_loopback, password_problem
 from web_interface.server import app
 from web_interface import routes
 
@@ -90,10 +92,16 @@ def _config_path() -> str:
 
 
 def _create_default_config(path: str) -> ConfigModel:
-    """First run: build blank defaults, persist them, and continue running."""
+    """First run: blank defaults plus a random admin password, persisted, then continue."""
     defaults = ConfigModel()
+    password = generate_admin_password()
+    defaults.web.admin_password = SecretStr(password)
     save_config(defaults, Path(path))
     logger.info(f"First run: created '{path}' with blank defaults")
+    logger.warning(
+        f"First run: dashboard login is {defaults.web.admin_username} / {password} "
+        "— change it in config.json"
+    )
     return defaults
 
 
@@ -142,6 +150,79 @@ def load_config() -> ConfigModel:
         sys.exit(1)
 
     return config_model
+
+
+@dataclass
+class EnvOverrides:
+    """Env-derived values that must not be written back to config.json.
+
+    ``mqtt`` is a copy of ``config.mqtt`` with env values layered on top;
+    ``trusted_proxies`` is the env list if set, else the config's own.
+    """
+
+    mqtt: MQTTConfig
+    trusted_proxies: list[str]
+
+
+def apply_env_overrides(config: ConfigModel) -> EnvOverrides:
+    """Docker-friendly overrides: broker host/credentials and trusted proxies.
+
+    Returns an ``EnvOverrides`` built from a copy of ``config.mqtt`` — the
+    live ``config`` is never mutated, so a later ``save_config(config)`` (the
+    inventory routes do this) can never persist an env-only secret like
+    ``MQTT_PASSWORD`` into config.json or its ``.bak``.
+
+    Read at call time so tests can monkeypatch the environment.
+    """
+    mqtt = config.mqtt.model_copy(deep=True)
+
+    host = os.environ.get("MQTT_BROKER_HOST")
+    if host:
+        mqtt.broker_host = host
+        logger.info(f"MQTT broker host overridden by env: {host}")
+    username = os.environ.get("MQTT_USERNAME")
+    if username:
+        mqtt.username = username
+        logger.info(f"MQTT username overridden by env: {username}")
+    password = os.environ.get("MQTT_PASSWORD")
+    if password:
+        mqtt.password = SecretStr(password)
+
+    proxies_env = os.environ.get("ICE_COLDER_TRUSTED_PROXIES")
+    if proxies_env:
+        trusted_proxies = [p.strip() for p in proxies_env.split(",") if p.strip()]
+        logger.info(f"Trusted proxies overridden by env: {trusted_proxies}")
+    else:
+        trusted_proxies = list(config.web.trusted_proxies)
+
+    return EnvOverrides(mqtt=mqtt, trusted_proxies=trusted_proxies)
+
+
+def enforce_password_policy(web) -> None:
+    """Refuse to serve a weak admin password on a non-loopback interface.
+
+    ICE_COLDER_ALLOW_WEAK_PASSWORD=1 downgrades the refusal to a warning; it is
+    for a local shell or an uncommitted compose override, never the committed
+    stack.
+    """
+    problem = password_problem(web.admin_password.get_secret_value())
+    if problem is None:
+        return
+    if is_loopback(web.host):
+        logger.warning(f"Dashboard on loopback with a weak password ({problem})")
+        return
+    if os.environ.get("ICE_COLDER_ALLOW_WEAK_PASSWORD") == "1":
+        logger.warning(
+            f"ICE_COLDER_ALLOW_WEAK_PASSWORD=1: serving on {web.host} although {problem}"
+        )
+        return
+    logger.error(
+        f"Refusing to serve the dashboard on {web.host}: {problem}. "
+        "Set web.admin_password in config.json to at least 12 characters, "
+        "or bind web.host to 127.0.0.1, or set ICE_COLDER_ALLOW_WEAK_PASSWORD=1 "
+        "for a private test host."
+    )
+    sys.exit(1)
 
 
 _SUPERVISE_RESTART_DELAY = 5.0
@@ -199,6 +280,7 @@ async def main():
     )
 
     live_config = load_config()
+    overrides = apply_env_overrides(live_config)
     logger.debug(f"Configuration model: {live_config}")
     logger.info(
         f"Loaded configuration with version: {getattr(live_config, 'version', 'N/A')}"
@@ -206,6 +288,11 @@ async def main():
 
     # Wire up configuration, inventory, and VMC for the web routes
     routes.set_config_object(live_config)
+    # set_config_object above seeds the limiter from live_config.web.trusted_proxies
+    # (empty unless the operator set it in config.json) — apply the env override
+    # after, so ICE_COLDER_TRUSTED_PROXIES takes effect without ever touching
+    # live_config itself.
+    routes.login_limiter.set_trusted_proxies(overrides.trusted_proxies)
     inventory = InventoryManager(live_config.products)
     vmc = VMC(config=live_config)
     vmc.set_inventory_manager(inventory)
@@ -227,12 +314,7 @@ async def main():
     logger.info("Availability wired to VMC and routes")
 
     # Create MQTT client and wire it to the VMC
-    # Allow environment variable to override broker host (for Docker networking)
-    broker_override = os.environ.get("MQTT_BROKER_HOST")
-    if broker_override:
-        live_config.mqtt.broker_host = broker_override
-        logger.info(f"MQTT broker host overridden by env: {broker_override}")
-    mqtt = MQTTClient(config=live_config.mqtt, machine_id=live_config.machine_id)
+    mqtt = MQTTClient(config=overrides.mqtt, machine_id=live_config.machine_id)
 
     def _on_mqtt_connection(connected: bool) -> None:
         health.update_mqtt_status(connected)
@@ -261,16 +343,12 @@ async def main():
     logger.info("Display controller created and linked to MQTT client and VMC")
 
     logger.info(
-        f"MQTT client configured for broker {live_config.mqtt.broker_host}:{live_config.mqtt.broker_port}"
+        f"MQTT client configured for broker {overrides.mqtt.broker_host}:{overrides.mqtt.broker_port}"
     )
 
     # Start uvicorn as an asyncio task (non-blocking)
     web_cfg = live_config.web
-    if web_cfg.admin_password.get_secret_value() == "changeme":
-        logger.warning(
-            "Web dashboard is using the DEFAULT admin password — "
-            "set web.admin_password in config.json before exposing this machine"
-        )
+    enforce_password_policy(web_cfg)
     uvicorn_config = uvicorn.Config(
         app, host=web_cfg.host, port=web_cfg.port, log_level="info"
     )

@@ -325,6 +325,13 @@ class WebConfig(BaseModel):
         default=SecretStr("changeme"),
         description="Dashboard admin password — CHANGE THIS before deployment",
     )
+    trusted_proxies: List[str] = Field(
+        default_factory=list,
+        description=(
+            "CIDRs of reverse proxies whose X-Forwarded-For is trusted for the "
+            "login limiter (e.g. the Docker network Traefik reaches the VMC from)"
+        ),
+    )
 
 
 class ConfigModel(BaseModel):

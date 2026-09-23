@@ -103,5 +103,12 @@
     "client_id": "ice-colder-vmc",
     "keepalive": 60,
     "reconnect_interval": 5.0
+  },
+  "web": {
+    "host": "0.0.0.0",
+    "port": 26123,
+    "admin_username": "admin",
+    "admin_password": "changeme",
+    "trusted_proxies": []
   }
 }

@@ -881,3 +881,52 @@ class TestCapabilities:
         assert args[1] == "capabilities/test"
         assert isinstance(args[2], SubsystemCapabilities)
         assert kwargs.get("retain") is True
+
+
+class TestCredentials:
+    def test_credentials_from_config_unwrap_secret(self, monkeypatch):
+        from pydantic import SecretStr
+
+        for k in ("MQTT_USERNAME", "MQTT_PASSWORD"):
+            monkeypatch.delenv(k, raising=False)
+        cfg = ConfigModel()
+        cfg.mqtt.username = "vmc"
+        cfg.mqtt.password = SecretStr("pw-from-config")
+        assert ESP32Simulator.credentials_from(cfg) == ("vmc", "pw-from-config")
+
+    def test_env_overrides_config(self, monkeypatch):
+        monkeypatch.setenv("MQTT_USERNAME", "envuser")
+        monkeypatch.setenv("MQTT_PASSWORD", "envpw")
+        cfg = ConfigModel()
+        assert ESP32Simulator.credentials_from(cfg) == ("envuser", "envpw")
+
+    def test_no_credentials_is_none_pair(self, monkeypatch):
+        for k in ("MQTT_USERNAME", "MQTT_PASSWORD"):
+            monkeypatch.delenv(k, raising=False)
+        assert ESP32Simulator.credentials_from(ConfigModel()) == (None, None)
+
+    async def test_run_passes_credentials_to_client(self, monkeypatch):
+        import simulators.base as base
+
+        captured = {}
+
+        class FakeClient:
+            def __init__(self, *a, **kw):
+                captured.update(kw)
+
+            async def __aenter__(self):
+                raise base.aiomqtt.MqttError("stop")
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(base.aiomqtt, "Client", FakeClient)
+        sim = ConcreteSimulator(username="u", password="p")
+        task = asyncio.create_task(sim.run())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+        assert captured["username"] == "u" and captured["password"] == "p"

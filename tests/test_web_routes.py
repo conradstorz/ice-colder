@@ -22,6 +22,7 @@ def client(tmp_path):
 
     with TestClient(app) as c:
         c.auth = ("admin", "changeme")
+        c.headers["HX-Request"] = "true"
         yield c
 
         for t in vmc._pending_tasks:
@@ -663,6 +664,88 @@ class TestLogsContent:
 
         assert r.LOG_PATH == LOG_FILE
         assert LOG_FILE.parts[-2:] == ("LOGS", "vmc.log")
+
+
+class TestCsrfGuard:
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/inventory/add",
+            "/faults/PAY-104/clear",
+            "/action/reset",
+            "/inventory/update/X",
+            "/inventory/delete/X",
+        ],
+    )
+    def test_post_without_htmx_header_is_forbidden(self, client, path):
+        resp = client.post(
+            path,
+            headers={"HX-Request": ""},
+            data={"sku": "X", "name": "n", "price": "1", "slot": "0", "kind": "other"},
+        )
+        assert resp.status_code == 403
+        assert "HTMX" in resp.text
+
+    def test_get_routes_do_not_need_header(self, client):
+        resp = client.get("/status", headers={"HX-Request": ""})
+        assert resp.status_code == 200
+
+
+class TestLoginLimiter:
+    def test_lockout_after_ten_failures(self, client):
+        from web_interface import routes as r
+
+        r.login_limiter._failures.clear()
+        r.login_limiter._locked_until.clear()
+        for _ in range(10):
+            assert client.get("/status", auth=("admin", "wrong")).status_code == 401
+        resp = client.get("/status", auth=("admin", "wrong"))
+        assert resp.status_code == 429
+        assert "Retry-After" in resp.headers
+        # even the right password is refused while locked
+        assert client.get("/status").status_code == 429
+        r.login_limiter._locked_until.clear()
+
+    def test_success_resets_counter(self, client):
+        from web_interface import routes as r
+
+        r.login_limiter._failures.clear()
+        r.login_limiter._locked_until.clear()
+        for _ in range(9):
+            client.get("/status", auth=("admin", "wrong"))
+        assert client.get("/status").status_code == 200
+        for _ in range(9):
+            client.get("/status", auth=("admin", "wrong"))
+        assert client.get("/status").status_code == 200
+
+    def test_trusted_proxies_applied_from_config(self, tmp_path):
+        from config.config_model import ConfigModel
+        from web_interface import routes as r
+
+        cfg = ConfigModel()
+        cfg.web.trusted_proxies = ["172.25.0.0/16"]
+        r.set_config_object(cfg)
+        assert (
+            r.login_limiter._networks
+            and str(r.login_limiter._networks[0]) == "172.25.0.0/16"
+        )
+        r.set_config_object(ConfigModel())
+        assert r.login_limiter._networks == []
+
+    def test_set_config_object_resets_trusted_proxies_set_before_it(self):
+        """set_config_object seeds the limiter from cfg.web.trusted_proxies,
+        overwriting anything set earlier — so main() must call
+        login_limiter.set_trusted_proxies(overrides.trusted_proxies) AFTER
+        set_config_object(live_config), never before, or an env-derived
+        override would be silently discarded."""
+        from config.config_model import ConfigModel
+        from web_interface import routes as r
+
+        r.login_limiter.set_trusted_proxies(["172.25.0.0/16"])
+        assert r.login_limiter._networks
+
+        r.set_config_object(ConfigModel())
+        assert r.login_limiter._networks == []
 
 
 class TestAvailabilityOnDashboard:

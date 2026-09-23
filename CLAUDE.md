@@ -51,6 +51,8 @@ logs a clear error and exits with code 1 rather than papering over it.
 
 FastAPI app (`server.py`) with Jinja2 templates and HTMX-driven partials. `routes.py` defines all endpoints and receives the `ConfigModel` and `VMC` instance via setter functions called from `main.py`. Templates live in `web_interface/templates/` with HTMX partial fragments in `templates/partials/`. Static assets in `web_interface/static/`.
 
+The dashboard is HTTP Basic auth (`config.web.admin_username`/`admin_password`); `web_interface/auth.py`'s `LoginLimiter` locks out a client IP after repeated failed logins within a sliding window, trusting `X-Forwarded-For` only from `config.web.trusted_proxies`. POST routes require the `HX-Request` header (HTMX's own requests set it), which blocks a plain cross-site form post as a CSRF guard.
+
 The System Health tab (`/health`) merges three sources: heartbeats (liveness,
 uptime), each subsystem's retained `capabilities/<subsystem>` document
 (`SubsystemCapabilities`: firmware, contract version, brand/model,
@@ -66,6 +68,7 @@ checkout). Subsystems in `EXPECTED_SUBSYSTEMS` are listed even before they speak
 - `availability.py` - permissive truth table (ROADMAP §3); publishes `cmd/payment/enable` on change; feeds the health tab and `/screen`
 - `session_store.py` - atomic snapshot of the live sale in `data/session.json`; an open snapshot at boot raises `PAY-104` until an admin clears it
 - `paths.py` - `LOG_DIR`, `LOG_FILE`, `DATA_DIR` shared by main, routes and services
+- `auth_policy.py` - admin-password policy shared by first-run setup and startup checks: rejects empty/default/short passwords, generates a random first-run password, identifies loopback hosts
 
 ### Hardware (`hardware/`)
 
@@ -91,6 +94,24 @@ on `main`, publishes the image to `ghcr.io/conradstorz/ice-colder` (`latest`
 and `sha-<commit>`). Compose services reference that image (with `build: .`
 kept for local `--build`) and carry the Watchtower enable label, so the
 simulation host updates itself; `docker compose pull` then `up -d` forces it.
+A `compose-config` CI job runs `docker compose config` against both compose
+files with `.env.example` to catch YAML/interpolation errors before `image`
+builds.
+
+Both the root `docker-compose.yml` and `docker/docker-compose.prod.yml`
+require a `.env` file (`cp .env.example .env`) and run a one-shot
+`mosquitto-init` service that writes the broker's password file from it
+before `mosquitto` starts; `docker/docker-compose.yml` stays an anonymous
+broker for local development only. `MQTT_USERNAME`/`MQTT_PASSWORD` from
+`.env` are passed into the VMC and simulators and read by
+`main.apply_env_overrides`, which returns an `EnvOverrides` (a `model_copy`
+of `config.mqtt` with env values applied, plus the resolved trusted-proxies
+list) without mutating the live `ConfigModel` — so an env-only
+`MQTT_PASSWORD` can never be written back to `config.json` by a later
+`save_config`. `ICE_COLDER_TRUSTED_PROXIES` is resolved the same way and
+applied to the dashboard's login limiter via
+`routes.login_limiter.set_trusted_proxies(...)`, called after
+`routes.set_config_object(...)` so the env value wins.
 
 ## Key Patterns
 
