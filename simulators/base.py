@@ -77,6 +77,8 @@ class ESP32Simulator(ABC):
         machine_id: str | None = None,
         config: ConfigModel | None = None,
         config_path: str | None = None,
+        username: str | None = None,
+        password: str | None = None,
     ):
         self.subsystem_name = subsystem_name
         self.broker = broker
@@ -84,6 +86,8 @@ class ESP32Simulator(ABC):
         self.config = config or ConfigModel()
         self.machine_id = machine_id or self.config.machine_id
         self._config_path = config_path
+        self.username = username
+        self.password = password
         self._start_time = time.monotonic()
         self._subscriptions: list[tuple[str, asyncio.Queue]] = []
         self._fault_defs: list[FaultDef] = []
@@ -441,6 +445,8 @@ class ESP32Simulator(ABC):
                     port=self.port,
                     identifier=f"sim-{self.subsystem_name}",
                     will=self._build_will(),
+                    username=self.username,
+                    password=self.password,
                 ) as client:
                     logger.info(
                         f"[{self.subsystem_name}] Connected to {self.broker}:{self.port}"
@@ -519,6 +525,15 @@ class ESP32Simulator(ABC):
         return config
 
     @staticmethod
+    def credentials_from(config: ConfigModel) -> tuple[str | None, str | None]:
+        """Broker credentials: env vars win over config; SecretStr is unwrapped."""
+        username = os.environ.get("MQTT_USERNAME") or config.mqtt.username
+        password = os.environ.get("MQTT_PASSWORD")
+        if not password and config.mqtt.password is not None:
+            password = config.mqtt.password.get_secret_value()
+        return (username or None, password or None)
+
+    @staticmethod
     def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         """Parse CLI arguments common to all simulators."""
         parser = argparse.ArgumentParser(description="ESP32 Simulator")
@@ -545,12 +560,15 @@ class ESP32Simulator(ABC):
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         args = ESP32Simulator.parse_args()
         config = ESP32Simulator.load_config(args.config)
+        username, password = ESP32Simulator.credentials_from(config)
         sim = simulator_class(
             broker=args.broker or config.mqtt.broker_host,
             port=args.port or config.mqtt.broker_port,
             machine_id=args.machine_id,
             config=config,
             config_path=args.config,
+            username=username,
+            password=password,
             **kwargs,
         )
         asyncio.run(sim.run())

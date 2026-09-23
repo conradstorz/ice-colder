@@ -13,9 +13,11 @@ Tests are skipped automatically if the broker is unreachable.
 
 import asyncio
 import json
+import os
 import sys
 
 import pytest
+from pydantic import SecretStr
 
 from config.config_model import ConfigModel, Product
 from controller.vmc import VMC
@@ -39,11 +41,18 @@ try:
 except ImportError:
     _BROKER_AVAILABLE = False
 
+_MQTT_AUTH = {
+    "username": os.environ.get("MQTT_USERNAME") or None,
+    "password": os.environ.get("MQTT_PASSWORD") or None,
+}
+
 
 async def _check_broker():
     """Return True if mosquitto is reachable on localhost:1883."""
     try:
-        async with aiomqtt.Client(hostname="localhost", port=1883) as client:
+        async with aiomqtt.Client(
+            hostname="localhost", port=1883, **_MQTT_AUTH
+        ) as client:
             await client.publish("test/ping", "ok")
         return True
     except Exception:
@@ -81,6 +90,10 @@ def _make_config() -> ConfigModel:
             "reconnect_interval": 1.0,
         },
     )
+    if _MQTT_AUTH["username"]:
+        config.mqtt.username = _MQTT_AUTH["username"]
+    if _MQTT_AUTH["password"]:
+        config.mqtt.password = SecretStr(_MQTT_AUTH["password"])
     return config
 
 
@@ -111,7 +124,7 @@ class TestFullTransactionLoop:
 
         # We need a separate "simulator" MQTT client to inject messages
         async with aiomqtt.Client(
-            hostname="localhost", port=1883, identifier="e2e-simulator"
+            hostname="localhost", port=1883, identifier="e2e-simulator", **_MQTT_AUTH
         ) as sim_client:
             # Subscribe to dispense commands so we can react
             await sim_client.subscribe(f"{prefix}/cmd/dispense")
@@ -190,7 +203,7 @@ class TestFullTransactionLoop:
         vmc = VMC(config=config)
 
         async with aiomqtt.Client(
-            hostname="localhost", port=1883, identifier="e2e-sim-overpay"
+            hostname="localhost", port=1883, identifier="e2e-sim-overpay", **_MQTT_AUTH
         ) as sim_client:
             loop = asyncio.get_running_loop()
             vmc.attach_to_loop(loop)
@@ -247,7 +260,7 @@ class TestFullTransactionLoop:
         vmc = VMC(config=config)
 
         async with aiomqtt.Client(
-            hostname="localhost", port=1883, identifier="e2e-sim-underpay"
+            hostname="localhost", port=1883, identifier="e2e-sim-underpay", **_MQTT_AUTH
         ) as sim_client:
             loop = asyncio.get_running_loop()
             vmc.attach_to_loop(loop)
@@ -313,7 +326,7 @@ class TestFullTransactionLoop:
         vmc = VMC(config=config)
 
         async with aiomqtt.Client(
-            hostname="localhost", port=1883, identifier="e2e-sim-error"
+            hostname="localhost", port=1883, identifier="e2e-sim-error", **_MQTT_AUTH
         ) as sim_client:
             loop = asyncio.get_running_loop()
             vmc.attach_to_loop(loop)
@@ -370,7 +383,7 @@ class TestSensorAndHeartbeatRouting:
         health = HealthMonitor()
 
         async with aiomqtt.Client(
-            hostname="localhost", port=1883, identifier="e2e-sim-sensor"
+            hostname="localhost", port=1883, identifier="e2e-sim-sensor", **_MQTT_AUTH
         ) as sim_client:
             loop = asyncio.get_running_loop()
             vmc.attach_to_loop(loop)
@@ -412,7 +425,7 @@ class TestSensorAndHeartbeatRouting:
         health = HealthMonitor()
 
         async with aiomqtt.Client(
-            hostname="localhost", port=1883, identifier="e2e-sim-hb"
+            hostname="localhost", port=1883, identifier="e2e-sim-hb", **_MQTT_AUTH
         ) as sim_client:
             loop = asyncio.get_running_loop()
             vmc.attach_to_loop(loop)
@@ -456,7 +469,7 @@ class TestFailedVendLoop:
         health = HealthMonitor()
 
         async with aiomqtt.Client(
-            hostname="localhost", port=1883, identifier="e2e-fault-sim"
+            hostname="localhost", port=1883, identifier="e2e-fault-sim", **_MQTT_AUTH
         ) as sim_client:
             await sim_client.subscribe(f"{prefix}/cmd/dispense")
             await sim_client.subscribe(f"{prefix}/cmd/payment/refund")
@@ -524,6 +537,10 @@ async def test_vending_heartbeat_loss_withdraws_payment_enable():
     cfg = ConfigModel()
     cfg.machine_id = "e2e-enable"
     cfg.physical.products = [Product(sku="ICE-1", name="Ice", price=1.0, kind="ice")]
+    if _MQTT_AUTH["username"]:
+        cfg.mqtt.username = _MQTT_AUTH["username"]
+    if _MQTT_AUTH["password"]:
+        cfg.mqtt.password = SecretStr(_MQTT_AUTH["password"])
     mqtt = MQTTClient(config=cfg.mqtt, machine_id=cfg.machine_id)
     vmc = VMC(config=cfg)
     vmc.attach_to_loop(asyncio.get_running_loop())
@@ -538,7 +555,7 @@ async def test_vending_heartbeat_loss_withdraws_payment_enable():
     run = asyncio.create_task(mqtt.run())
 
     seen: list[bool] = []
-    async with aiomqtt.Client(hostname="localhost", port=1883) as probe:
+    async with aiomqtt.Client(hostname="localhost", port=1883, **_MQTT_AUTH) as probe:
         await probe.subscribe(f"vmc/{cfg.machine_id}/cmd/payment/enable")
         await asyncio.sleep(1.0)
         prefix = f"vmc/{cfg.machine_id}"
