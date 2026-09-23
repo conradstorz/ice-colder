@@ -1,5 +1,8 @@
 name: mosquitto_broker
 
+# Anonymous broker for LOCAL DEVELOPMENT ONLY; the root compose and prod
+# compose require credentials.
+
 services:
   mosquitto:
     image: eclipse-mosquitto:2

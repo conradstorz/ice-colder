@@ -36,9 +36,17 @@ jobs:
       # e2e tests skip without a broker on localhost:1883; everything else runs.
       - run: uv run pytest -q
 
+  compose-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker network create harbor
+      - run: docker compose --env-file .env.example -f docker-compose.yml config -q
+      - run: docker compose --env-file .env.example -f docker/docker-compose.prod.yml config -q
+
   image:
     # PRs: prove the image builds. main: publish it for Watchtower on the sim host.
-    needs: [lint, test]
+    needs: [lint, test, compose-config]
     runs-on: ubuntu-latest
     permissions:
       contents: read

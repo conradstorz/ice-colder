@@ -1,13 +1,44 @@
 name: mosquitto_broker
 
+# Broker-only prod stack. Requires a `.env` in the repo root:
+# cp .env.example ../.env, then set MQTT_PASSWORD (and the other values).
+# docker compose --env-file ../.env -f docker-compose.prod.yml up -d
+
 services:
+  mosquitto-init:
+    # One-shot: writes the broker password file from .env before mosquitto starts.
+    image: eclipse-mosquitto:2
+    container_name: ice-colder-mqtt-init
+    environment:
+      - MQTT_USERNAME=${MQTT_USERNAME:?set MQTT_USERNAME in .env}
+      - MQTT_PASSWORD=${MQTT_PASSWORD:?set MQTT_PASSWORD in .env}
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+    entrypoint: ["sh", "-c"]
+    command:
+      - mosquitto_passwd -c -b /mosquitto/config/passwd "$$MQTT_USERNAME" "$$MQTT_PASSWORD" && chmod 600 /mosquitto/config/passwd && chown mosquitto:mosquitto /mosquitto/config/passwd
+    restart: "no"
+
   mosquitto:
     image: eclipse-mosquitto:2
     container_name: ice-colder-mqtt
     ports:
-      - "1883:1883"
+      - "${MQTT_BIND_ADDR:-0.0.0.0}:1883:1883"
     volumes:
-      - ./mosquitto/config/mosquitto-prod.conf:/mosquitto/config/mosquitto.conf
+      - ./mosquitto/config/mosquitto-prod.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/config/passwd:/mosquitto/config/passwd:ro
       - ./mosquitto/data:/mosquitto/data
       - ./mosquitto/log:/mosquitto/log
+    environment:
+      - MQTT_USERNAME=${MQTT_USERNAME}
+      - MQTT_PASSWORD=${MQTT_PASSWORD}
     restart: unless-stopped
+    depends_on:
+      mosquitto-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -u \"$$MQTT_USERNAME\" -P \"$$MQTT_PASSWORD\" -t '$$SYS/broker/uptime' -C 1 -W 3"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

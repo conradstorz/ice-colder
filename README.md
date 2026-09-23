@@ -37,3 +37,28 @@ docker compose pull
 docker compose up -d
 ```
 The real machine should pin a `sha-<commit>` tag instead of `latest`.
+
+### Credentials
+
+Copy `.env.example` to `.env` before bringing up either compose stack (the
+root `docker-compose.yml` or `docker/docker-compose.prod.yml`):
+```
+cp .env.example .env
+```
+Then set:
+- `MQTT_PASSWORD` — the broker password shared by the VMC, the simulators and
+  Home Assistant, which all authenticate as the same `MQTT_USERNAME`. A
+  one-shot `mosquitto-init` service writes it into the broker's password file
+  before `mosquitto` starts.
+- `MQTT_BIND_ADDR` — the LAN interface address the broker listens on, so port
+  1883 is never reachable through a stray port-forward or a second NIC.
+- `ICE_COLDER_TRUSTED_PROXIES` — the Docker network(s) Traefik reaches the
+  VMC from (comma-separated CIDRs); `X-Forwarded-For` is trusted only from
+  these when the dashboard's login limiter picks a client IP to rate-limit.
+
+The dashboard itself refuses to start bound to a public interface with an
+admin password under 12 characters or a known default; set
+`ICE_COLDER_ALLOW_WEAK_PASSWORD=1` only on a private test host, never in the
+committed compose stacks. On first run with no admin password configured, the
+VMC generates one and prints it once — capture it then, it is not logged
+again.
