@@ -1,14 +1,17 @@
 name: mosquitto_broker
 
-# Broker-only prod stack. Requires a `.env` in the repo root:
-# cp .env.example ../.env, then set MQTT_PASSWORD (and the other values).
-# docker compose --env-file ../.env -f docker-compose.prod.yml up -d
+# Broker-only prod stack. Requires a `.env` in the repo root. From this
+# directory:
+#   cp ../.env.example ../.env   # then set MQTT_PASSWORD and the other values
+#   docker compose --env-file ../.env -f docker-compose.prod.yml up -d
 
 services:
   mosquitto-init:
     # One-shot: writes the broker password file from .env before mosquitto starts.
     image: eclipse-mosquitto:2
     container_name: ice-colder-mqtt-init
+    # Explicit: must be able to write the bind-mounted config dir and chown.
+    user: root
     environment:
       - MQTT_USERNAME=${MQTT_USERNAME:?set MQTT_USERNAME in .env}
       - MQTT_PASSWORD=${MQTT_PASSWORD:?set MQTT_PASSWORD in .env}
