@@ -77,7 +77,10 @@ replay a logged-in browser's credentials against the control endpoints.
   - new service `mosquitto-init`: image `eclipse-mosquitto:2`, mounts
     `./docker/mosquitto/config:/mosquitto/config`, command
     `sh -c 'mosquitto_passwd -c -b /mosquitto/config/passwd "$MQTT_USERNAME" "$MQTT_PASSWORD" && chmod 600 /mosquitto/config/passwd'`,
-    `restart: "no"`, environment from `.env` with
+    preceded by a guard that exits non-zero when `MQTT_PASSWORD` is still the
+    `.env.example` placeholder `change-me` or shorter than 12 characters, so
+    a copied-but-unedited `.env` never brings up a broker with a public
+    credential; `restart: "no"`, environment from `.env` with
     `MQTT_PASSWORD: ${MQTT_PASSWORD:?set MQTT_PASSWORD in .env}` so a missing
     file fails `docker compose up` with a readable message.
   - `mosquitto`: `depends_on: mosquitto-init: condition: service_completed_successfully`;
@@ -99,9 +102,15 @@ replay a logged-in browser's credentials against the control endpoints.
 
 ## 2. Clients read credentials
 
-- `main.py`: after the `MQTT_BROKER_HOST` override, apply `MQTT_USERNAME`
-  and `MQTT_PASSWORD` (wrapped in `SecretStr`) to `live_config.mqtt` when
-  set. Log the username, never the password.
+- `main.py`: `apply_env_overrides(config) -> EnvOverrides` layers
+  `MQTT_BROKER_HOST`, `MQTT_USERNAME`, `MQTT_PASSWORD` (wrapped in
+  `SecretStr`) and `ICE_COLDER_TRUSTED_PROXIES` onto a **copy** of
+  `config.mqtt` and returns them; the live `ConfigModel` is never mutated.
+  The inventory routes call `save_config` on that live model and it writes
+  `SecretStr` values in clear text, so an env-sourced broker password must
+  never sit in it. `main()` hands `EnvOverrides.mqtt` to the MQTT client and
+  `EnvOverrides.trusted_proxies` to the login limiter. Log the username,
+  never the password.
 - `simulators/base.py`: `ESP32Simulator.__init__` accepts
   `username: str | None = None, password: str | None = None` (plain
   strings); `entry_point` fills them from the loaded config's
@@ -223,7 +232,9 @@ Cookie login and roles; read-only broker ACL for Home Assistant; TLS on
 - `tests/test_main_startup.py` (or extend `test_first_run.py`): first run
   writes a generated password and logs it once; weak password on
   `0.0.0.0` exits 1; loopback host passes; flag downgrades to warning;
-  `MQTT_USERNAME`/`MQTT_PASSWORD` land in `config.mqtt`.
+  `MQTT_USERNAME`/`MQTT_PASSWORD` land in the returned `EnvOverrides.mqtt`
+  while `config.mqtt` stays untouched, and a `save_config` after the
+  override never contains the env password.
 - `tests/test_login_limiter.py`: lockout after N failures inside the window,
   expiry after `lockout_seconds`, reset on success, window pruning,
   forwarded-IP parsing.

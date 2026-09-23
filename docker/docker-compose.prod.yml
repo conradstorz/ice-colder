@@ -19,7 +19,13 @@ services:
       - ./mosquitto/config:/mosquitto/config
     entrypoint: ["sh", "-c"]
     command:
-      - mosquitto_passwd -c -b /mosquitto/config/passwd "$$MQTT_USERNAME" "$$MQTT_PASSWORD" && chmod 600 /mosquitto/config/passwd && chown mosquitto:mosquitto /mosquitto/config/passwd
+      - >-
+        if [ "$$MQTT_PASSWORD" = "change-me" ] || [ "$${#MQTT_PASSWORD}" -lt 12 ]; then
+          echo "mosquitto-init: MQTT_PASSWORD is the .env.example placeholder or shorter than 12 characters; set a real one in .env" >&2; exit 1;
+        fi &&
+        mosquitto_passwd -c -b /mosquitto/config/passwd "$$MQTT_USERNAME" "$$MQTT_PASSWORD" &&
+        chmod 600 /mosquitto/config/passwd &&
+        chown mosquitto:mosquitto /mosquitto/config/passwd
     restart: "no"
 
   mosquitto:

@@ -46,7 +46,8 @@ root `docker-compose.yml` or `docker/docker-compose.prod.yml`):
 cp .env.example .env
 ```
 Then set:
-- `MQTT_PASSWORD` — the broker password shared by the VMC, the simulators and
+- `MQTT_PASSWORD` — at least 12 characters; `mosquitto-init` refuses the
+  example placeholder. The broker password shared by the VMC, the simulators and
   Home Assistant, which all authenticate as the same `MQTT_USERNAME`. A
   one-shot `mosquitto-init` service writes it into the broker's password file
   before `mosquitto` starts.
