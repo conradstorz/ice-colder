@@ -6,11 +6,17 @@ import json
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
+import aiomqtt
 import pytest
+from pydantic import ValidationError
 
 from config.config_model import ConfigModel, MQTTConfig, Product
 from controller.vmc import VMC
-from services.mqtt_client import MQTTClient
+from services.mqtt_client import (
+    MQTTClient,
+    PROTOCOL_VERSIONS,
+    DEPRECATED_PROTOCOL_VERSIONS,
+)
 from services.mqtt_messages import (
     ButtonPress,
     DispenseCommand,
@@ -283,6 +289,54 @@ class TestMQTTClientSubscribeQoS:
             ("vmc/vmc-0001/payment/credit", 1),
             ("vmc/vmc-0001/sensors/temp/+", 1),
         ]
+
+
+class TestMQTTProtocolVersion:
+    """The broker connection must negotiate MQTT v5 unless config says 3.1.1."""
+
+    @staticmethod
+    async def _connect_with(cfg, monkeypatch) -> dict:
+        captured: dict = {}
+        fake = _FakeAiomqttClient()
+
+        def _factory(*args, **kwargs):
+            captured.update(kwargs)
+            return fake
+
+        monkeypatch.setattr("services.mqtt_client.aiomqtt.Client", _factory)
+        client = MQTTClient(config=cfg, machine_id="vmc-0001")
+        await client._connect_and_listen()
+        return captured
+
+    @pytest.mark.asyncio
+    async def test_defaults_to_v5(self, monkeypatch):
+        captured = await self._connect_with(MQTTConfig(), monkeypatch)
+        assert captured["protocol"] is aiomqtt.ProtocolVersion.V5
+
+    @pytest.mark.asyncio
+    async def test_honors_configured_v311(self, monkeypatch):
+        cfg = MQTTConfig(protocol_version="3.1.1")
+        captured = await self._connect_with(cfg, monkeypatch)
+        assert captured["protocol"] is aiomqtt.ProtocolVersion.V311
+
+    def test_rejects_unknown_version(self):
+        with pytest.raises(ValidationError):
+            MQTTConfig(protocol_version="3.1")
+
+    def test_every_accepted_version_maps_to_an_enum(self):
+        accepted = MQTTConfig.model_fields["protocol_version"].annotation.__args__
+        assert set(accepted) == set(PROTOCOL_VERSIONS)
+
+    def test_default_is_not_deprecated(self):
+        assert MQTTConfig().protocol_version not in DEPRECATED_PROTOCOL_VERSIONS
+
+    @pytest.mark.asyncio
+    async def test_v311_logs_a_deprecation_warning(self, monkeypatch, caplog):
+        cfg = MQTTConfig(protocol_version="3.1.1")
+        with caplog.at_level("WARNING"):
+            await self._connect_with(cfg, monkeypatch)
+        assert "legacy stopgap" in caplog.text
+        assert "2027.01" in caplog.text
 
 
 # ── VMC MQTT wiring tests ────────────────────────────────────

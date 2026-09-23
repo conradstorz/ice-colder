@@ -31,6 +31,7 @@ from contracts.vending_machine import (
     SubsystemCapabilities,
 )
 from services.build_info import BUILD_INFO
+from services.mqtt_client import PROTOCOL_VERSIONS
 
 
 RECOVERY_RANGES: dict[str, tuple[float, float]] = {
@@ -447,6 +448,7 @@ class ESP32Simulator(ABC):
                     will=self._build_will(),
                     username=self.username,
                     password=self.password,
+                    protocol=PROTOCOL_VERSIONS[self.config.mqtt.protocol_version],
                 ) as client:
                     logger.info(
                         f"[{self.subsystem_name}] Connected to {self.broker}:{self.port}"
