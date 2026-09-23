@@ -14,13 +14,17 @@ from services.config_store import add_product, delete_product, update_product
 from services.fsm_control import perform_command
 from services.health_monitor import HealthMonitor
 from services.paths import LOG_FILE
+from web_interface.auth import LoginLimiter
 
 config: ConfigModel = None
+
+login_limiter = LoginLimiter()
 
 
 def set_config_object(cfg: ConfigModel):
     global config
     config = cfg
+    login_limiter.set_trusted_proxies(list(cfg.web.trusted_proxies))
 
 
 vmc_instance = None
@@ -64,20 +68,46 @@ def set_inventory_manager(inv):
 _basic_auth = HTTPBasic()
 
 
-def require_auth(credentials: HTTPBasicCredentials = Depends(_basic_auth)):
-    """HTTP Basic auth for every dashboard route, checked against config.web."""
+def require_auth(
+    request: Request, credentials: HTTPBasicCredentials = Depends(_basic_auth)
+):
+    """HTTP Basic auth for every dashboard route, checked against config.web,
+    with a per-IP failed-login lockout."""
     if config is None:
         raise HTTPException(status_code=503, detail="Configuration not loaded")
+    ip = login_limiter.client_ip(request)
+    remaining = login_limiter.check(ip)
+    if remaining is not None:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed logins; try again later",
+            headers={"Retry-After": str(int(remaining) + 1)},
+        )
     user_ok = _secrets.compare_digest(credentials.username, config.web.admin_username)
     pass_ok = _secrets.compare_digest(
         credentials.password, config.web.admin_password.get_secret_value()
     )
     if not (user_ok and pass_ok):
+        login_limiter.record_failure(ip)
         raise HTTPException(
             status_code=401,
             detail="Invalid credentials",
             headers={"WWW-Authenticate": "Basic"},
         )
+    login_limiter.record_success(ip)
+
+
+def require_htmx(request: Request):
+    """CSRF guard for mutating routes.
+
+    Browsers replay cached Basic-auth credentials on cross-site requests, so
+    a hostile page could POST to /action/* or /inventory/delete/*. HTMX sends
+    HX-Request: true on every request it makes; a cross-site form cannot add
+    it, and a cross-origin fetch with a custom header needs a CORS preflight
+    this app never answers.
+    """
+    if request.headers.get("HX-Request") != "true":
+        raise HTTPException(status_code=403, detail="HTMX request required")
 
 
 LOG_PATH = LOG_FILE
@@ -108,7 +138,11 @@ def tail(file_path: Path, lines: int = 50) -> list[str]:
 def attach_routes(app: FastAPI, templates: Jinja2Templates):
     router = APIRouter(dependencies=[Depends(require_auth)])
 
-    @router.post("/inventory/add", response_class=HTMLResponse)
+    @router.post(
+        "/inventory/add",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_htmx)],
+    )
     async def add_new_product(
         request: Request,
         sku: str = Form(...),
@@ -227,7 +261,11 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
     async def status_fragment(request: Request):
         return await _render_status(request)
 
-    @router.post("/faults/{key}/clear", response_class=HTMLResponse)
+    @router.post(
+        "/faults/{key}/clear",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_htmx)],
+    )
     async def clear_fault(request: Request, key: str):
         if not vmc_instance or not vmc_instance.clear_fault(key, by="admin"):
             raise HTTPException(
@@ -235,7 +273,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             )
         return await _render_status(request)
 
-    @router.post("/action/{command}")
+    @router.post("/action/{command}", dependencies=[Depends(require_htmx)])
     async def control_action(command: str):
         result = perform_command(command, vmc_instance)
         return HTMLResponse(f"<p>{result}</p>")
@@ -316,7 +354,11 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             {"request": request, "product": product},
         )
 
-    @router.post("/inventory/update/{sku}", response_class=HTMLResponse)
+    @router.post(
+        "/inventory/update/{sku}",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_htmx)],
+    )
     async def update_inventory_item(
         request: Request,
         sku: str,
@@ -334,7 +376,11 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             {"request": request, "products": config.products, "locked": _locked_skus()},
         )
 
-    @router.post("/inventory/delete/{sku}", response_class=HTMLResponse)
+    @router.post(
+        "/inventory/delete/{sku}",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_htmx)],
+    )
     async def delete_inventory_item(request: Request, sku: str):
         success = delete_product(config, sku)
         if success and inventory_manager:
