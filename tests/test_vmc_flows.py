@@ -1027,6 +1027,11 @@ async def test_pay_104_is_reported_as_a_warning():
 
 
 async def test_select_product_refused_while_vending_offline_but_payment_stays_on():
+    """Immediately after a refused selection the escrow is still held — but it
+    must not stay stranded forever. See
+    test_deposit_while_idle_and_vending_offline_is_refunded_on_timeout below
+    for the guarantee that the session timeout eventually refunds it.
+    """
     vmc, monitor, avail, _ = _wired_vmc()
     _all_alive(monitor, vmc)
     avail.set_payment_device("coin_acceptor", "ready")
@@ -1040,6 +1045,75 @@ async def test_select_product_refused_while_vending_offline_but_payment_stays_on
     vmc.select_product(0)
     assert vmc.selected_product is None
     assert vmc.credit_escrow == 2.00
+    assert vmc.state == "idle"
+    vmc.cancel_pending_tasks()
+
+
+async def test_deposit_while_idle_arms_session_timeout():
+    """A deposit before any selection is a legitimate entry point (see
+    on_start_interaction's own "insert funds or select a product" message),
+    so it must arm the safety-net timer even though the FSM stays idle.
+    """
+    vmc, monitor, avail, _ = _wired_vmc()
+    _all_alive(monitor, vmc)
+    avail.set_payment_device("coin_acceptor", "ready")
+
+    assert vmc.state == "idle"
+    assert vmc._session_timeout_task is None
+    vmc.deposit_funds(2.00)
+
+    assert vmc._session_timeout_task is not None
+    vmc.cancel_pending_tasks()
+
+
+async def test_deposit_while_idle_and_vending_offline_is_refunded_on_timeout():
+    """Regression test for the Critical finding: money deposited while idle
+    (vending subsystem offline, so the only selection attempt is refused)
+    must still be refunded when the session times out — never stranded
+    silently forever.
+    """
+    vmc, monitor, avail, published = _wired_vmc()
+    _all_alive(monitor, vmc)
+    avail.set_payment_device("coin_acceptor", "ready")
+    await vmc._handle_mqtt_hardware_io(
+        "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
+    )
+    monitor.mark_offline("vending")
+    vmc._session_timeout_seconds = 0.05
+
+    assert avail.payment_enabled is True
+    vmc.deposit_funds(2.00)
+    vmc.select_product(0)
+    assert vmc.selected_product is None
+    assert vmc.credit_escrow == 2.00
+    assert vmc.state == "idle"
+
+    await asyncio.sleep(0.3)
+
+    refund_cmds = [p for t, p in published if t == "cmd/payment/refund"]
+    assert len(refund_cmds) == 1
+    assert refund_cmds[0].reason == "session_timeout"
+    assert vmc.credit_escrow == 0.0
+    assert vmc.state == "idle"
+    vmc.cancel_pending_tasks()
+
+
+async def test_expire_session_is_a_noop_while_dispensing():
+    """A vend already in flight must never be refunded out from under the
+    customer just because a stale/late timeout callback fires."""
+    vmc = make_vmc2()
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    client = RecordingClient()
+    vmc.set_mqtt_client(client)
+    _start_dispensing(vmc, 0)
+    assert vmc.state == "dispensing"
+    escrow_before = vmc.credit_escrow
+
+    vmc._expire_session()
+
+    assert vmc.state == "dispensing"
+    assert vmc.credit_escrow == escrow_before
+    assert client.refund_commands() == []
     vmc.cancel_pending_tasks()
 
 
