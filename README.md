@@ -47,10 +47,16 @@ cp .env.example .env
 ```
 Then set:
 - `MQTT_PASSWORD` — at least 12 characters; `mosquitto-init` refuses the
-  example placeholder. The broker password shared by the VMC, the simulators and
-  Home Assistant, which all authenticate as the same `MQTT_USERNAME`. A
+  example placeholder. The broker password shared by the VMC and the
+  simulators, which all authenticate as the same `MQTT_USERNAME`. A
   one-shot `mosquitto-init` service writes it into the broker's password file
   before `mosquitto` starts.
+- `HA_MQTT_PASSWORD` — optional. Set it (12+ characters) to give Home Assistant
+  its own broker account, named by `HA_MQTT_USERNAME` (default
+  `homeassistant`), instead of sharing the VMC's credential. Left empty, no
+  such account is created. `mosquitto-init` rewrites the password file from
+  `.env` on every start, so accounts added by hand with `mosquitto_passwd` are
+  discarded on the next `docker compose up` — put them here instead.
 - `MQTT_BIND_ADDR` — the LAN interface address the broker listens on, so port
   1883 is never reachable through a stray port-forward or a second NIC.
 - `ICE_COLDER_TRUSTED_PROXIES` — the Docker network(s) Traefik reaches the

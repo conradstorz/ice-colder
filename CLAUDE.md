@@ -102,7 +102,11 @@ Both the root `docker-compose.yml` and `docker/docker-compose.prod.yml`
 require a `.env` file (`cp .env.example .env`) and run a one-shot
 `mosquitto-init` service that writes the broker's password file from it
 before `mosquitto` starts; `docker/docker-compose.yml` stays an anonymous
-broker for local development only. `MQTT_USERNAME`/`MQTT_PASSWORD` from
+broker for local development only. `mosquitto-init` rewrites that file from
+`.env` on every start (`mosquitto_passwd -c`), so accounts added by hand are
+discarded on the next `up`; the optional `HA_MQTT_USERNAME`/`HA_MQTT_PASSWORD`
+pair adds a second account for Home Assistant and is skipped when the password
+is empty. `MQTT_USERNAME`/`MQTT_PASSWORD` from
 `.env` are passed into the VMC and simulators and read by
 `main.apply_env_overrides`, which returns an `EnvOverrides` (a `model_copy`
 of `config.mqtt` with env values applied, plus the resolved trusted-proxies

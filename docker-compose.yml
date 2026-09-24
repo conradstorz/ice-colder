@@ -117,6 +117,10 @@ services:
     environment:
       - MQTT_USERNAME=${MQTT_USERNAME:?set MQTT_USERNAME in .env}
       - MQTT_PASSWORD=${MQTT_PASSWORD:?set MQTT_PASSWORD in .env}
+      # Optional second account so Home Assistant gets its own credential
+      # instead of sharing the VMC's. Leave HA_MQTT_PASSWORD empty to skip it.
+      - HA_MQTT_USERNAME=${HA_MQTT_USERNAME:-homeassistant}
+      - HA_MQTT_PASSWORD=${HA_MQTT_PASSWORD:-}
     volumes:
       - ./docker/mosquitto/config:/mosquitto/config
     entrypoint: ["sh", "-c"]
@@ -126,6 +130,12 @@ services:
           echo "mosquitto-init: MQTT_PASSWORD is the .env.example placeholder or shorter than 12 characters; set a real one in .env" >&2; exit 1;
         fi &&
         mosquitto_passwd -c -b /mosquitto/config/passwd "$$MQTT_USERNAME" "$$MQTT_PASSWORD" &&
+        if [ -n "$$HA_MQTT_PASSWORD" ]; then
+          if [ "$$HA_MQTT_PASSWORD" = "change-me" ] || [ "$${#HA_MQTT_PASSWORD}" -lt 12 ]; then
+            echo "mosquitto-init: HA_MQTT_PASSWORD is the .env.example placeholder or shorter than 12 characters; set a real one in .env" >&2; exit 1;
+          fi;
+          mosquitto_passwd -b /mosquitto/config/passwd "$$HA_MQTT_USERNAME" "$$HA_MQTT_PASSWORD";
+        fi &&
         chmod 600 /mosquitto/config/passwd &&
         chown mosquitto:mosquitto /mosquitto/config/passwd
     restart: "no"
