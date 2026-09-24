@@ -1045,7 +1045,8 @@ class VMC:
         if self._availability and not self._availability.payment_enabled:
             logger.warning(
                 f"Credit ${amount:.2f} arrived while payment is disabled "
-                f"({', '.join(self._availability.blocking_reasons())}); escrowed"
+                f"({', '.join(self._availability.payment_blocking_reasons())}); "
+                "escrowed"
             )
         self.credit_escrow += amount
         self.last_payment_method = payment_method
