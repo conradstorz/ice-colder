@@ -308,7 +308,7 @@ async def main():
     routes.set_health_monitor(health)
     logger.info("Health monitor and notifier set up and linked")
 
-    availability = Availability(live_config.products)
+    availability = Availability()
     vmc.set_availability(availability)
     routes.set_availability(availability)
     logger.info("Availability wired to VMC and routes")

@@ -546,7 +546,7 @@ async def test_vending_heartbeat_loss_withdraws_payment_enable():
     vmc.attach_to_loop(asyncio.get_running_loop())
     monitor = HealthMonitor()
     vmc.set_health_monitor(monitor)
-    avail = Availability(cfg.products)
+    avail = Availability()
     vmc.set_availability(avail)
     vmc.set_mqtt_client(mqtt)
     mqtt.set_connection_callback(

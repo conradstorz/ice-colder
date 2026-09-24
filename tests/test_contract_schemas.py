@@ -28,6 +28,6 @@ def test_committed_schema_matches_model(contract, name, schema_dir, model):
     committed = json.loads(
         (schema_dir / f"{name}.schema.json").read_text(encoding="utf-8")
     )
-    assert committed == schema_for(
-        model
-    ), f"{contract}/{name} schema drifted — run: uv run python -m contracts.generate"
+    assert committed == schema_for(model), (
+        f"{contract}/{name} schema drifted — run: uv run python -m contracts.generate"
+    )

@@ -159,8 +159,6 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         success = add_product(config, sku, name, price, slot=parsed_slot, kind=kind)
         if success and inventory_manager:
             inventory_manager.add_sku(sku, 0, tracked=False)
-        if success and availability:
-            availability.set_products(config.products)
 
         return templates.TemplateResponse(
             "partials/inventory_table.html",
@@ -371,9 +369,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         slot: int = Form(...),
         kind: str = Form("other"),
     ):
-        success = update_product(config, sku, name, price, slot=slot, kind=kind)
-        if success and availability:
-            availability.set_products(config.products)
+        update_product(config, sku, name, price, slot=slot, kind=kind)
 
         return templates.TemplateResponse(
             "partials/inventory_table.html",
@@ -389,8 +385,6 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         success = delete_product(config, sku)
         if success and inventory_manager:
             inventory_manager.remove_sku(sku)
-        if success and availability:
-            availability.set_products(config.products)
         return templates.TemplateResponse(
             "partials/inventory_table.html",
             {"request": request, "products": config.products, "locked": _locked_skus()},

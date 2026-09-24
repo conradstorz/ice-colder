@@ -97,14 +97,13 @@ class Availability:
     """Truth table of permissives plus the payment/enable publisher.
 
     Usage:
-        avail = Availability(config.products)
+        avail = Availability()
         avail.set_publisher(vmc.publish_payment_enable)   # sync callable(bool)
         avail.set_subsystem_alive("vending", True)         # ... from health monitor
         ok, failing = avail.product_sellable(product)
     """
 
-    def __init__(self, products: list):
-        self._products = list(products)
+    def __init__(self):
         self._lockouts: dict[str, str] = {}
         self._publish: Optional[Callable[[bool], None]] = None
         self._recorder = None
@@ -222,10 +221,6 @@ class Availability:
 
     def set_transaction_certain(self, certain: bool) -> None:
         self._set_bool("transaction_certain", certain, "PAY-104 active")
-
-    def set_products(self, products: list) -> None:
-        self._products = list(products)
-        self._recompute()
 
     def _refresh_ice_available(self) -> None:
         row = self._rows["ice_available"]

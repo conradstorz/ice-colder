@@ -22,14 +22,9 @@ def _all_good(avail: Availability) -> None:
     avail.set_hardware_io("bin_half_full", True)
 
 
-def _avail(products=None):
-    if products is None:
-        products = [
-            Product(sku="ICE-1", name="Ice", kind="ice"),
-            Product(sku="WTR-1", name="Water", kind="water"),
-        ]
+def _avail():
     published: list[bool] = []
-    a = Availability(products)
+    a = Availability()
     a.set_publisher(published.append)
     return a, published
 
@@ -183,7 +178,7 @@ def test_fsm_error_blocks_the_sale_and_uncertain_transaction_blocks_nothing():
 
 
 def test_other_kind_needs_every_permissive_to_sell():
-    a, _ = _avail([Product(sku="X", kind="other")])
+    a, _ = _avail()
     _all_good(a)
     a.set_subsystem_alive("ice_maker", False)
     assert a.payment_enabled is True
@@ -192,7 +187,7 @@ def test_other_kind_needs_every_permissive_to_sell():
 
 
 def test_no_products_still_allows_payment():
-    a, published = _avail([])
+    a, published = _avail()
     _all_good(a)
     assert a.payment_enabled is True
     assert a.payment_blocking_reasons() == []
@@ -214,17 +209,6 @@ def test_change_is_recorded():
     a.set_hardware_io("service_door", True)
     assert rec.events[-1][0] == "availability_changed"
     assert rec.events[-1][2]["enabled"] is False
-
-
-def test_set_products_reevaluates():
-    a, published = _avail([Product(sku="ICE-1", kind="ice")])
-    _all_good(a)
-    a.set_subsystem_alive("ice_maker", False)
-    assert a.payment_enabled is True
-    a.set_products(
-        [Product(sku="ICE-1", kind="ice"), Product(sku="WTR-1", kind="water")]
-    )
-    assert a.payment_enabled is True
 
 
 def test_gate_is_exported_on_every_row():

@@ -755,7 +755,7 @@ class TestAvailabilityOnDashboard:
         from services.health_monitor import HealthMonitor
         from web_interface import routes as r
 
-        avail = Availability(r.config.products)
+        avail = Availability()
         r.set_availability(avail)
         r.set_health_monitor(HealthMonitor())
         yield client, avail

@@ -873,7 +873,7 @@ def _wired_vmc(products=None):
     vmc.attach_to_loop(asyncio.get_running_loop())
     monitor = HealthMonitor()
     vmc.set_health_monitor(monitor)
-    avail = Availability(cfg.products)
+    avail = Availability()
     vmc.set_availability(avail)
     published: list = []
 
