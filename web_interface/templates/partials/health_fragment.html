@@ -79,13 +79,15 @@
   {% if health.availability %}
   <div>
     <h3 class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">
-      Sale permissives — payment {{ 'enabled' if health.payment_enabled else 'disabled' }}
+      Sale permissives — payment {{ 'enabled' if health.payment_enabled else 'disabled' }};
+      only <span class="text-red-600">safety</span> rows stop the machine
     </h3>
     <table class="w-full text-sm">
       <thead>
         <tr class="border-b border-gray-200 text-xs text-gray-400 uppercase tracking-wide">
           <th class="pb-2 text-left font-medium">Input</th>
           <th class="pb-2 text-left font-medium">Applies</th>
+          <th class="pb-2 text-left font-medium">Gate</th>
           <th class="pb-2 text-left font-medium">State</th>
           <th class="pb-2 text-left font-medium">Detail</th>
         </tr>
@@ -95,6 +97,11 @@
         <tr>
           <td class="py-2 font-mono text-xs text-gray-700">{{ row.name }}</td>
           <td class="py-2 text-gray-500">{{ row.applies_to }}</td>
+          <td class="py-2">
+            {% if row.gate == 'safety' %}<span class="text-xs font-medium text-red-600">safety</span>
+            {% elif row.gate == 'fulfillment' %}<span class="text-xs text-gray-500">fulfillment</span>
+            {% else %}<span class="text-xs text-gray-400">alert</span>{% endif %}
+          </td>
           <td class="py-2">
             {% if not row.instrumented %}<span class="text-gray-400">not instrumented</span>
             {% elif row.state == 'pass' %}<span class="text-green-600 font-medium">pass</span>

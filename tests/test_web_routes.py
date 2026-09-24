@@ -748,6 +748,47 @@ class TestLoginLimiter:
         assert r.login_limiter._networks == []
 
 
+class TestStillSellingBanner:
+    """A soft fault alerts but keeps selling; a hazard fault stops the machine."""
+
+    @pytest.fixture
+    def wired(self, client):
+        from services.availability import Availability
+        from services.health_monitor import HealthMonitor
+        from web_interface import routes as r
+
+        avail = Availability()
+        r.vmc_instance.set_availability(avail)
+        r.set_availability(avail)
+        r.set_health_monitor(HealthMonitor())
+        yield client
+        r.set_availability(None)
+        r.set_health_monitor(None)
+
+    def test_status_shows_still_selling_for_a_soft_fault(self, wired):
+        client = wired
+        vmc_instance = routes.vmc_instance
+        vmc_instance._raise_fault(FaultCode.PAY_104, outcome="restart")
+        body = client.get("/status", headers={"HX-Request": "true"}).text
+        assert "still selling" in body
+        assert "Machine Stopped" not in body
+        assert "PAY-104" in body
+
+    def test_status_shows_machine_stopped_for_a_hazard_fault(self, wired):
+        client = wired
+        vmc_instance = routes.vmc_instance
+        vmc_instance._raise_fault(FaultCode.WTR_104, outcome="leak")
+        body = client.get("/status", headers={"HX-Request": "true"}).text
+        assert "Machine Stopped" in body
+        assert "still selling" not in body
+
+    def test_health_permissives_table_shows_the_gate(self, wired):
+        client = wired
+        body = client.get("/health", headers={"HX-Request": "true"}).text
+        assert "Gate" in body
+        assert "fulfillment" in body
+
+
 class TestAvailabilityOnDashboard:
     @pytest.fixture
     def wired(self, client):
@@ -762,11 +803,15 @@ class TestAvailabilityOnDashboard:
         r.set_availability(None)
 
     def test_status_shows_payment_disabled_with_reason(self, wired):
+        # Only a safety-gate row can disable payment now; a service door left
+        # open is a real hazard, unlike a fulfillment-gate row (e.g. no
+        # products), which must not disable payment.
         client, avail = wired
+        avail.set_hardware_io("service_door", True)
         resp = client.get("/status")
         assert "Payment" in resp.text
         assert "Disabled" in resp.text
-        assert "no products" in resp.text or "vending_alive" in resp.text
+        assert "service_door_closed" in resp.text
 
     def test_health_lists_permissives_with_not_instrumented(self, wired):
         client, _ = wired

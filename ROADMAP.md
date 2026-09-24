@@ -98,6 +98,15 @@ Implemented in `services/availability.py`: known inputs are evaluated, inputs
 the firmware cannot report yet are listed as not instrumented and pass until
 Phase B/D.
 
+Each permissive carries a gate. Only `safety` rows — an active hazard fault
+(`PAYMENT_BLOCKING_FAULTS`), an open service door, a leak, a proven-open trap
+door, bad 24 V control power — inhibit `cmd/payment/enable`. Subsystem
+liveness, broker connectivity, bin level and FSM state are `fulfillment` rows:
+they refuse the individual sale at selection time and the customer is refunded
+on session timeout, but the machine keeps accepting money through a transient
+heartbeat gap or broker reconnect. `transaction_certain` (`PAY-104`) is an
+`alert` row and blocks nothing.
+
 ## 4. Product sequences and interlocks
 
 The VMC's FSM stays coarse: `idle → interacting_with_user → dispensing → idle`,

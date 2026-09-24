@@ -64,18 +64,22 @@
   </div>
 </div>
 {% else %}
-<div class="bg-red-50 rounded-xl border border-red-200 shadow-sm overflow-hidden">
+<div class="{{ 'bg-red-50 border-red-200' if machine_stopped else 'bg-amber-50 border-amber-200' }} rounded-xl border shadow-sm overflow-hidden">
   <div class="flex">
-    <div class="w-1 bg-red-500 flex-shrink-0"></div>
+    <div class="w-1 {{ 'bg-red-500' if machine_stopped else 'bg-amber-500' }} flex-shrink-0"></div>
     <div class="flex items-start justify-between flex-1 p-5">
       <div>
         <div class="flex items-center gap-2">
-          <span class="w-2.5 h-2.5 rounded-full bg-red-500 flex-shrink-0"></span>
-          <span class="text-base font-semibold text-red-700">Issues Detected</span>
+          <span class="w-2.5 h-2.5 rounded-full {{ 'bg-red-500' if machine_stopped else 'bg-amber-500' }} flex-shrink-0"></span>
+          {% if machine_stopped %}
+          <span class="text-base font-semibold text-red-700">Machine Stopped</span>
+          {% else %}
+          <span class="text-base font-semibold text-amber-700">Issues Detected — still selling</span>
+          {% endif %}
         </div>
         <ul class="mt-2 space-y-0.5">
           {% for issue in issues %}
-          <li class="text-sm text-red-600">{{ issue }}</li>
+          <li class="text-sm {{ 'text-red-600' if machine_stopped else 'text-amber-700' }}">{{ issue }}</li>
           {% endfor %}
         </ul>
         <div class="mt-3">

@@ -244,7 +244,9 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
                 issues.append(f"Temp issues: {', '.join(out_of_range)}")
 
         payment_enabled = availability.payment_enabled if availability else None
-        payment_reasons = availability.blocking_reasons() if availability else []
+        payment_reasons = (
+            availability.payment_blocking_reasons() if availability else []
+        )
 
         return templates.TemplateResponse(
             "partials/status_fragment.html",
@@ -256,6 +258,9 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
                 "active_faults": active_faults,
                 "payment_enabled": payment_enabled,
                 "payment_reasons": payment_reasons,
+                "machine_stopped": (
+                    None if payment_enabled is None else not payment_enabled
+                ),
             },
         )
 
@@ -447,7 +452,9 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             "health": health,
             "kinds": kinds,
             "payment_enabled": availability.payment_enabled if availability else None,
-            "payment_reasons": availability.blocking_reasons() if availability else [],
+            "payment_reasons": (
+                availability.payment_blocking_reasons() if availability else []
+            ),
         }
 
     @router.get("/screen", response_class=HTMLResponse)
