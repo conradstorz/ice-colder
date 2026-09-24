@@ -27,6 +27,7 @@ services:
         if [ "$$MQTT_PASSWORD" = "change-me" ] || [ "$${#MQTT_PASSWORD}" -lt 12 ]; then
           echo "mosquitto-init: MQTT_PASSWORD is the .env.example placeholder or shorter than 12 characters; set a real one in .env" >&2; exit 1;
         fi &&
+        rm -f /mosquitto/config/passwd &&
         mosquitto_passwd -c -b /mosquitto/config/passwd "$$MQTT_USERNAME" "$$MQTT_PASSWORD" &&
         if [ -n "$$HA_MQTT_PASSWORD" ]; then
           if [ "$$HA_MQTT_PASSWORD" = "change-me" ] || [ "$${#HA_MQTT_PASSWORD}" -lt 12 ]; then
