@@ -32,6 +32,9 @@ services:
           if [ "$$HA_MQTT_PASSWORD" = "change-me" ] || [ "$${#HA_MQTT_PASSWORD}" -lt 12 ]; then
             echo "mosquitto-init: HA_MQTT_PASSWORD is the .env.example placeholder or shorter than 12 characters; set a real one in .env" >&2; exit 1;
           fi;
+          if [ "$$HA_MQTT_USERNAME" = "$$MQTT_USERNAME" ]; then
+            echo "mosquitto-init: HA_MQTT_USERNAME must differ from MQTT_USERNAME; equal names would overwrite the VMC account's password and lock out the VMC and simulators" >&2; exit 1;
+          fi;
           mosquitto_passwd -b /mosquitto/config/passwd "$$HA_MQTT_USERNAME" "$$HA_MQTT_PASSWORD";
         fi &&
         chmod 600 /mosquitto/config/passwd &&
