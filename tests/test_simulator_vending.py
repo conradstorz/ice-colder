@@ -591,4 +591,4 @@ class TestVendingCapabilities:
         caps = _make_sim().build_capabilities()
         assert caps.subsystem == "vending"
         assert caps.commands == ["dispense", "payment/enable"]
-        assert caps.contract_version == "0.3.0"
+        assert caps.contract_version == "0.4.0"

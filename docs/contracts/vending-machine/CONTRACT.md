@@ -1,4 +1,4 @@
-# Vending Machine Contract — v0.3.0 (stub)
+# Vending Machine Contract — v0.4.0 (stub)
 
 This document and the JSON Schema files in `schemas/` define the interface
 between the ice-colder VMC and the vending ESP32 firmware plus the MDB
@@ -24,7 +24,7 @@ All topics are relative to `vmc/{machine_id}/`.
 | `alerts` | VMC → world | `VMCAlert` (`services/mqtt_messages.py`) | carries a [`FaultCode`](schemas/fault_code.schema.json) when one applies |
 | `capabilities/<subsystem>` | subsystem → VMC | [`SubsystemCapabilities`](schemas/subsystem_capabilities.schema.json) | retained; MUST be published on connect and re-published on any change; `firmware`, `hardware_id`, `ip` identify the board |
 
-## Semantics fixed in 0.3.0
+## Semantics fixed in 0.4.0
 
 - The VMC finishes a sale only on `DispenserOutcome.complete` for the slot
   it commanded. `bin_empty`, `timeout`, `jam`, `error` end the sale as a
@@ -34,8 +34,13 @@ All topics are relative to `vmc/{machine_id}/`.
 - Refund ack deadline is 10 s; the VMC retries once with the same
   `request_id`, then raises `PAY-103`.
 - Transaction uncertain after VMC restart (a persisted open sale found on
-  boot) is `PAY-104` (lockout, machine scope); payment stays inhibited until
-  an operator clears the fault.
+  boot) is `PAY-104` (warning, machine scope). It alerts the operator and
+  holds the session snapshot as evidence until an operator clears it; it does
+  **not** inhibit payment and does not block product selection.
+- Only the codes in `PAYMENT_BLOCKING_FAULTS` inhibit payment: `ICE-402`,
+  `WTR-103`, `WTR-104`, `ENV-102`, `ENV-103`, `PWR-102`. Every other fault
+  alerts and may block an individual sale, but never stops the machine taking
+  money.
 - Fault codes are stable; see `ROADMAP.md` §5 for the registry.
 - The VMC expects `vending`, `mdb` and `ice_maker` (`EXPECTED_SUBSYSTEMS`); a
   subsystem that has never published a heartbeat is shown as never seen.

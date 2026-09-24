@@ -306,7 +306,7 @@ class TestMDBCapabilities:
         caps = MDBGatewaySimulator().build_capabilities()
         assert caps.subsystem == "mdb"
         assert caps.commands == ["payment/enable", "refund"]
-        assert caps.contract_version == "0.3.0"
+        assert caps.contract_version == "0.4.0"
 
 
 class TestPaymentEnable:

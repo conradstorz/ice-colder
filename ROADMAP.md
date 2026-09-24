@@ -176,7 +176,7 @@ published; new codes are added, never renumbered.
 | `PAY-101` | Payment device offline | product unavailable | Inhibit both products |
 | `PAY-102` | Vend reported failed after credit taken | reconcile | Refund/retain per §7, alert |
 | `PAY-103` | Refund not confirmed by payment gateway | warning | Alert; operator reconciles against the event history |
-| `PAY-104` | Transaction uncertain after VMC restart | lockout | Payment inhibited until an operator clears the fault; snapshot in event history |
+| `PAY-104` | Transaction uncertain after VMC restart | warning | Alert; operator reconciles and clears. Payment stays enabled; snapshot in event history |
 | `PWR-101` | Power restored after loss | info | Log, run self-test, keep payment inhibited until permissives pass |
 | `PWR-102` | 24 V control supply bad | **critical** | Inhibit both products |
 | `COM-101` | Vending ESP32 heartbeat lost / LWT | product unavailable | Inhibit both products, alert |

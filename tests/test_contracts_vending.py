@@ -19,7 +19,7 @@ from contracts.vending_machine import EXPECTED_SUBSYSTEMS, SubsystemCapabilities
 
 
 def test_contract_version():
-    assert CONTRACT_VERSION == "0.3.0"
+    assert CONTRACT_VERSION == "0.4.0"
 
 
 def test_every_fault_code_has_a_table_entry():
@@ -109,7 +109,7 @@ def test_vmc_alert_carries_code_and_sku():
 class TestSubsystemCapabilities:
     def test_minimal(self):
         caps = SubsystemCapabilities(
-            subsystem="vending", firmware="abc1234", contract_version="0.3.0"
+            subsystem="vending", firmware="abc1234", contract_version="0.4.0"
         )
         assert caps.brand == "" and caps.model == ""
         assert caps.hardware_id is None and caps.ip is None
@@ -119,7 +119,7 @@ class TestSubsystemCapabilities:
         caps = SubsystemCapabilities(
             subsystem="mdb",
             firmware="abc1234",
-            contract_version="0.3.0",
+            contract_version="0.4.0",
             brand="Acme",
             model="X1",
             hardware_id="02:11:22:33:44:55",
@@ -133,22 +133,22 @@ class TestSubsystemCapabilities:
     def test_subsystem_pattern(self):
         with pytest.raises(ValidationError):
             SubsystemCapabilities(
-                subsystem="Bad Name", firmware="x", contract_version="0.3.0"
+                subsystem="Bad Name", firmware="x", contract_version="0.4.0"
             )
 
     def test_contract_version_bumped(self):
-        assert CONTRACT_VERSION == "0.3.0"
+        assert CONTRACT_VERSION == "0.4.0"
 
     def test_expected_subsystems(self):
         assert EXPECTED_SUBSYSTEMS == ("vending", "mdb", "ice_maker")
 
 
-def test_pay_104_is_a_machine_lockout():
+def test_pay_104_is_a_machine_warning():
     from contracts.vending_machine import FAULT_TABLE, FaultCode, Scope, Severity
 
     spec = FAULT_TABLE[FaultCode.PAY_104]
     assert FaultCode.PAY_104.value == "PAY-104"
-    assert spec.severity is Severity.lockout
+    assert spec.severity is Severity.warning
     assert spec.scope is Scope.machine
     assert "restart" in spec.description.lower()
 
@@ -156,4 +156,37 @@ def test_pay_104_is_a_machine_lockout():
 def test_contract_version_bumped_for_new_code():
     from contracts.vending_machine import CONTRACT_VERSION
 
-    assert CONTRACT_VERSION == "0.3.0"
+    assert CONTRACT_VERSION == "0.4.0"
+
+
+def test_payment_blocking_faults_is_exactly_the_six_hazards():
+    from contracts.vending_machine import PAYMENT_BLOCKING_FAULTS
+
+    assert PAYMENT_BLOCKING_FAULTS == frozenset(
+        {
+            FaultCode.ICE_402,
+            FaultCode.WTR_103,
+            FaultCode.WTR_104,
+            FaultCode.ENV_102,
+            FaultCode.ENV_103,
+            FaultCode.PWR_102,
+        }
+    )
+
+
+def test_every_payment_blocking_fault_is_a_machine_scope_critical():
+    from contracts.vending_machine import PAYMENT_BLOCKING_FAULTS
+
+    for code in PAYMENT_BLOCKING_FAULTS:
+        spec = FAULT_TABLE[code]
+        assert spec.scope is Scope.machine, code
+        assert spec.severity is Severity.critical, code
+
+
+def test_pay_104_is_a_warning_and_never_blocks_payment():
+    from contracts.vending_machine import PAYMENT_BLOCKING_FAULTS
+
+    spec = FAULT_TABLE[FaultCode.PAY_104]
+    assert spec.severity is Severity.warning
+    assert spec.scope is Scope.machine
+    assert FaultCode.PAY_104 not in PAYMENT_BLOCKING_FAULTS
