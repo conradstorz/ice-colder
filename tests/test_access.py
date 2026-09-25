@@ -695,3 +695,174 @@ class TestEnrollTokens:
         token = store.issue_enroll_token(u.id, "ip-1")
         store.clear_enroll_token(token)
         assert store.resolve_enroll_token(token, "ip-1") is None
+
+
+class TestEmergencyCodes:
+    def test_pool_is_twenty_unique_eight_digit_codes(self, store):
+        codes = store.generate_emergency_codes()
+        assert len(codes) == 20
+        assert len(set(codes)) == 20
+        assert all(len(c) == 8 and c.isdigit() for c in codes)
+        assert store.unused_emergency_code_count() == 20
+
+    def test_code_is_single_use(self, store):
+        u = store.create_user("Ada", None, Role.owner, "1379")
+        codes = store.generate_emergency_codes()
+        assert store.consume_emergency_code(codes[0], u.id, "enroll") is True
+        assert store.consume_emergency_code(codes[0], u.id, "enroll") is False
+        assert store.unused_emergency_code_count() == 19
+
+    def test_unknown_code_is_refused(self, store):
+        u = store.create_user("Ada", None, Role.owner, "1379")
+        store.generate_emergency_codes()
+        assert store.consume_emergency_code("00000000", u.id, "enroll") is False
+
+    def test_regenerate_replaces_used_and_unused_alike(self, store):
+        u = store.create_user("Ada", None, Role.owner, "1379")
+        old = store.generate_emergency_codes()
+        store.consume_emergency_code(old[0], u.id, "enroll")
+        new = store.generate_emergency_codes()
+        assert store.unused_emergency_code_count() == 20
+        assert store.consume_emergency_code(old[1], u.id, "enroll") is False
+        assert store.consume_emergency_code(new[1], u.id, "enroll") is True
+
+    def test_codes_are_not_written_in_clear(self, tmp_path):
+        path = tmp_path / "access.json"
+        s = AccessStore(path=path, clock=FakeClock(), wall_clock=FakeWallClock())
+        codes = s.generate_emergency_codes()
+        text = path.read_text(encoding="utf-8")
+        assert all(c not in text for c in codes)
+
+    def test_pool_survives_a_reload(self, tmp_path):
+        path = tmp_path / "access.json"
+        s1 = AccessStore(path=path, clock=FakeClock(), wall_clock=FakeWallClock())
+        u = s1.create_user("Ada", None, Role.owner, "1379")
+        codes = s1.generate_emergency_codes()
+        s2 = AccessStore(path=path, clock=FakeClock(), wall_clock=FakeWallClock())
+        assert s2.consume_emergency_code(codes[0], u.id, "enroll") is True
+
+
+class TestSetupCode:
+    def test_setup_mode_until_an_owner_exists(self, store):
+        assert store.setup_mode is True
+        store.create_user("Ada", None, Role.owner, "1379")
+        assert store.setup_mode is False
+
+    def test_begin_setup_returns_a_stable_eight_digit_code(self, store):
+        code = store.begin_setup()
+        assert len(code) == 8 and code.isdigit()
+        assert store.begin_setup() == code
+        assert store.pending_setup_code == code
+
+    def test_setup_code_verifies_and_is_not_stored_in_clear(self, tmp_path):
+        path = tmp_path / "access.json"
+        s = AccessStore(path=path, clock=FakeClock(), wall_clock=FakeWallClock())
+        code = s.begin_setup()
+        assert s.verify_setup_code(code) is True
+        assert s.verify_setup_code("00000000") is False
+        assert code not in path.read_text(encoding="utf-8")
+
+    def test_setup_code_survives_a_reload_but_its_plaintext_does_not(self, tmp_path):
+        path = tmp_path / "access.json"
+        s1 = AccessStore(path=path, clock=FakeClock(), wall_clock=FakeWallClock())
+        code = s1.begin_setup()
+        s2 = AccessStore(path=path, clock=FakeClock(), wall_clock=FakeWallClock())
+        assert s2.verify_setup_code(code) is True
+        assert s2.pending_setup_code is None
+
+    def test_finalize_invalidates_the_setup_code(self, store):
+        code = store.begin_setup()
+        store.create_user("Ada", None, Role.owner, "1379")
+        assert store.verify_setup_code(code) is True
+        store.finalize_setup()
+        assert store.setup_finalized is True
+        assert store.verify_setup_code(code) is False
+        assert store.pending_setup_code is None
+
+
+class TestTransfer:
+    @pytest.fixture
+    def seeded(self, tmp_path):
+        wall = FakeWallClock()
+        s = AccessStore(
+            path=tmp_path / "access.json", clock=FakeClock(), wall_clock=wall
+        )
+        owner = s.create_user("Ada", "ada@example.com", Role.owner, "1379")
+        tech = s.create_user("Tim", "tim@example.com", Role.tech, "2468")
+        s.generate_emergency_codes()
+        return s, owner, tech, wall
+
+    def test_start_leaves_the_owner_in_control(self, seeded):
+        s, owner, _, _ = seeded
+        code = s.start_transfer(owner.id)
+        assert len(code) == 8 and code.isdigit()
+        assert s.owner().id == owner.id
+        assert s.pending_transfer is not None
+        assert s.pending_transfer["started_by_user_id"] == owner.id
+
+    def test_transfer_code_verifies(self, seeded):
+        s, owner, _, _ = seeded
+        code = s.start_transfer(owner.id)
+        assert s.verify_transfer_code(code) is True
+        assert s.verify_transfer_code("00000000") is False
+
+    def test_transfer_expires_after_seven_days(self, seeded):
+        s, owner, _, wall = seeded
+        code = s.start_transfer(owner.id)
+        wall.advance(days=8)
+        assert s.pending_transfer is None
+        assert s.verify_transfer_code(code) is False
+        assert s.owner().id == owner.id
+
+    def test_cancel_restores_the_pending_state_to_null(self, seeded):
+        s, owner, _, _ = seeded
+        code = s.start_transfer(owner.id)
+        s.cancel_transfer()
+        assert s.pending_transfer is None
+        assert s.verify_transfer_code(code) is False
+        assert s.owner().id == owner.id
+
+    def test_complete_swaps_the_owner_and_keeps_other_users(self, seeded):
+        s, owner, tech, _ = seeded
+        device, _ = s.create_device("Tablet", shared=True)
+        s.trust_device(device.id, owner.id)
+        session = s.create_session(owner.id, device.id)
+        s.start_transfer(owner.id)
+        new_owner = s.complete_transfer("Bea", "bea@example.com", "9042")
+        assert s.owner().id == new_owner.id
+        assert s.get_user(owner.id) is None
+        assert s.get_user(tech.id) is not None
+        assert owner.id not in s.devices[device.id].trusted_user_ids
+        assert s.resolve_session(session) is None
+        assert s.unused_emergency_code_count() == 0
+        assert s.pending_transfer is None
+
+    def test_complete_without_a_pending_transfer_is_refused(self, seeded):
+        s, _, _, _ = seeded
+        with pytest.raises(AccessError):
+            s.complete_transfer("Bea", None, "9042")
+
+
+class TestMachineReport:
+    def test_report_names_users_devices_and_code_count(self, store):
+        from config.config_model import ConfigModel
+
+        owner = store.create_user("Ada", "ada@example.com", Role.owner, "1379")
+        store.create_user("Lee", "lee@example.com", Role.loader, "2468")
+        device, _ = store.create_device("Cabinet tablet", shared=True)
+        store.trust_device(device.id, owner.id)
+        store.generate_emergency_codes()
+        report = store.machine_report(ConfigModel())
+        assert "Ada" in report
+        assert "Lee" in report
+        assert "loader" in report
+        assert "Cabinet tablet" in report
+        assert "20" in report
+
+    def test_report_never_contains_a_hash(self, store):
+        from config.config_model import ConfigModel
+
+        store.create_user("Ada", "ada@example.com", Role.owner, "1379")
+        report = store.machine_report(ConfigModel())
+        assert "scrypt" not in report
+        assert "pin_hash" not in report

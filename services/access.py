@@ -36,6 +36,10 @@ SCRYPT_R = 8
 SCRYPT_P = 1
 SCRYPT_DKLEN = 32
 
+EMERGENCY_CODE_COUNT = 20
+CODE_DIGITS = 8
+TRANSFER_TTL_DAYS = 7
+
 
 class Role(str, Enum):
     owner = "owner"
@@ -361,6 +365,7 @@ class AccessStore:
         # enroll token -> (user_id, client, expires_at)
         self._enroll_tokens: dict[str, tuple[str, str, float]] = {}
         self._raw_extra: dict = {}
+        self._setup_plaintext: str | None = None
         self.load()
 
     # --- persistence ---
@@ -375,6 +380,9 @@ class AccessStore:
     def load(self) -> None:
         self.users = {}
         self.devices = {}
+        self._emergency_codes: list[dict] = []
+        self._setup: dict = {}
+        self._pending_transfer: dict | None = None
         self._raw_extra = {}
         self.corrupt = False
         if not self._path.exists():
@@ -408,8 +416,20 @@ class AccessStore:
                     created_at=data.get("created_at", ""),
                     last_seen_at=data.get("last_seen_at", ""),
                 )
+            self._emergency_codes = list(raw.get("emergency_codes", []))
+            self._setup = dict(raw.get("setup", {}))
+            self._pending_transfer = raw.get("pending_transfer") or None
             self._raw_extra = {
-                k: v for k, v in raw.items() if k not in ("users", "devices")
+                k: v
+                for k, v in raw.items()
+                if k
+                not in (
+                    "users",
+                    "devices",
+                    "emergency_codes",
+                    "setup",
+                    "pending_transfer",
+                )
             }
         except Exception as e:
             self.corrupt = True
@@ -463,6 +483,9 @@ class AccessStore:
             }
             for d in self.devices.values()
         }
+        doc["emergency_codes"] = [dict(c) for c in self._emergency_codes]
+        doc["setup"] = dict(self._setup)
+        doc["pending_transfer"] = self._pending_transfer
         return doc
 
     def save(self) -> None:
@@ -775,3 +798,202 @@ class AccessStore:
 
     def clear_enroll_token(self, token: str) -> None:
         self._enroll_tokens.pop(token, None)
+
+    # --- emergency codes ---
+
+    def generate_emergency_codes(self, count: int = EMERGENCY_CODE_COUNT) -> list[str]:
+        """Replace the whole pool, used or not. Plaintexts are returned once."""
+        codes: list[str] = []
+        while len(codes) < count:
+            code = generate_code(CODE_DIGITS)
+            if code not in codes:
+                codes.append(code)
+        self._emergency_codes = [
+            {
+                "code_hash": hash_secret(c),
+                "used_at": None,
+                "used_by_user_id": None,
+                "used_for": None,
+            }
+            for c in codes
+        ]
+        self._commit()
+        logger.info(f"AccessStore: generated {count} emergency codes")
+        return codes
+
+    def unused_emergency_code_count(self) -> int:
+        return sum(1 for c in self._emergency_codes if c["used_at"] is None)
+
+    def consume_emergency_code(self, code: str, user_id: str, used_for: str) -> bool:
+        """Mark an unused code used. False when it is unknown or already spent."""
+        for entry in self._emergency_codes:
+            if entry["used_at"] is None and verify_secret(code, entry["code_hash"]):
+                entry["used_at"] = self._stamp()
+                entry["used_by_user_id"] = user_id
+                entry["used_for"] = used_for
+                self._commit()
+                return True
+        return False
+
+    # --- setup code ---
+
+    @property
+    def setup_mode(self) -> bool:
+        return self.owner() is None
+
+    @property
+    def setup_finalized(self) -> bool:
+        return bool(self._setup.get("finalized"))
+
+    @property
+    def pending_setup_code(self) -> str | None:
+        """The plaintext, held in memory only while setup is unfinished."""
+        return self._setup_plaintext
+
+    def begin_setup(self) -> str:
+        """Generate (or return) the setup code that unlocks the wizard.
+
+        Only someone at the machine — reading the startup log or the customer
+        display — can see it, so a remote stranger cannot claim the machine.
+        """
+        if self._setup_plaintext and self._setup.get("setup_code_hash"):
+            return self._setup_plaintext
+        code = generate_code(CODE_DIGITS)
+        self._setup = {"setup_code_hash": hash_secret(code), "finalized": False}
+        self._setup_plaintext = code
+        self._commit()
+        return code
+
+    def verify_setup_code(self, code: str) -> bool:
+        stored = self._setup.get("setup_code_hash")
+        if not stored or self.setup_finalized:
+            return False
+        return verify_secret(code, stored)
+
+    def finalize_setup(self) -> None:
+        self._setup = {"setup_code_hash": None, "finalized": True}
+        self._setup_plaintext = None
+        self._commit()
+
+    # --- ownership transfer ---
+
+    @property
+    def pending_transfer(self) -> dict | None:
+        """The live transfer, or None once it has expired."""
+        pending = self._pending_transfer
+        if pending is None:
+            return None
+        try:
+            expires = datetime.fromisoformat(pending["expires_at"])
+        except (KeyError, ValueError):
+            return None
+        if self._wall() > expires:
+            return None
+        return pending
+
+    def start_transfer(self, started_by_user_id: str) -> str:
+        """Record a pending transfer and return its 8-digit code, shown once.
+
+        Nothing else changes: the current owner stays in control until the
+        incoming owner completes the wizard (spec §3.3).
+        """
+        self._require_user(started_by_user_id)
+        code = generate_code(CODE_DIGITS)
+        now = self._wall()
+        self._pending_transfer = {
+            "transfer_code_hash": hash_secret(code),
+            "started_at": now.isoformat(),
+            "expires_at": (now + timedelta(days=TRANSFER_TTL_DAYS)).isoformat(),
+            "started_by_user_id": started_by_user_id,
+        }
+        self._commit()
+        logger.warning("AccessStore: ownership transfer started")
+        return code
+
+    def verify_transfer_code(self, code: str) -> bool:
+        pending = self.pending_transfer
+        if pending is None:
+            return False
+        return verify_secret(code, pending["transfer_code_hash"])
+
+    def cancel_transfer(self) -> None:
+        self._pending_transfer = None
+        self._commit()
+
+    def complete_transfer(self, name: str, email: str | None, pin: str) -> User:
+        """Swap the owner in one write.
+
+        Creates the new owner, deletes the old one (and their device trust),
+        deletes every emergency code, ends every session, and clears the
+        pending transfer. Other users are retained for the review step.
+        """
+        if self.pending_transfer is None:
+            raise AccessError("no pending ownership transfer")
+        old_owner = self.owner()
+        pin_hash, pin_salt = hash_pin(pin)
+        new_owner = User(
+            id=str(uuid.uuid4()),
+            name=name,
+            email=email or None,
+            role=Role.owner,
+            pin_hash=pin_hash,
+            pin_salt=pin_salt,
+            created_at=self._stamp(),
+        )
+        if old_owner is not None:
+            del self.users[old_owner.id]
+            for device in self.devices.values():
+                if old_owner.id in device.trusted_user_ids:
+                    device.trusted_user_ids.remove(old_owner.id)
+        self.users[new_owner.id] = new_owner
+        self._emergency_codes = []
+        self._pending_transfer = None
+        self._commit()
+        self.end_all_sessions()
+        logger.warning(f"AccessStore: ownership transferred to {name}")
+        return new_owner
+
+    # --- machine report ---
+
+    def machine_report(self, config) -> str:
+        """Plain-text summary of who can reach this machine (spec §3.4)."""
+        owner = self.owner()
+        lines = [
+            "Ice-Colder machine access report",
+            "================================",
+            "",
+            f"Machine id:   {config.machine_id}",
+            f"Machine name: {config.physical.common_name}",
+            f"Owner:        {owner.name if owner else '(none)'}"
+            f" <{owner.email if owner and owner.email else 'no email'}>",
+            "",
+            "Users",
+            "-----",
+        ]
+        for user in sorted(self.users.values(), key=lambda u: u.name):
+            devices = sum(
+                1 for d in self.devices.values() if user.id in d.trusted_user_ids
+            )
+            lines.append(
+                f"  {user.name} ({user.role.value})"
+                f" email={user.email or '-'}"
+                f" disabled={user.disabled}"
+                f" last_login={user.last_login_at or 'never'}"
+                f" devices={devices}"
+            )
+        lines += ["", "Devices", "-------"]
+        for device in sorted(self.devices.values(), key=lambda d: d.label):
+            names = ", ".join(
+                self.users[uid].name
+                for uid in device.trusted_user_ids
+                if uid in self.users
+            )
+            lines.append(
+                f"  {device.label} shared={device.shared}"
+                f" trusted=[{names}] last_seen={device.last_seen_at}"
+            )
+        lines += [
+            "",
+            f"Unused emergency codes: {self.unused_emergency_code_count()}",
+        ]
+        return "\n".join(lines)
