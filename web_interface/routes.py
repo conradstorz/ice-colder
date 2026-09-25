@@ -91,6 +91,12 @@ def set_display_controller(display) -> None:
 # the log with the same warning. Reset naturally when a new code replaces it.
 _last_logged_setup_code: str | None = None
 
+# The 20 emergency-code plaintexts, held only between GET /setup/codes'
+# first render and Done (spec §3.1 step 2). Cleared by /setup/codes/done;
+# after that only their scrypt hashes exist anywhere, so a reload of
+# /setup/codes must never regenerate the pool while this list is non-empty.
+_pending_codes: list[str] = []
+
 
 def ensure_setup_mode() -> None:
     """Keep the setup code alive, logged and on the display while the store
@@ -603,6 +609,108 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             max_age=web_auth.DEVICE_COOKIE_MAX_AGE,
         )
         return resp
+
+    def _can_email_owner(owner) -> bool:
+        gateway = config.communication.email_gateway if config else None
+        return bool(owner and owner.email and gateway and gateway.is_configured)
+
+    def _setup_codes_page(
+        request: Request,
+        owner,
+        *,
+        notice: str | None = None,
+        error: str | None = None,
+        status_code: int = 200,
+        headers: dict | None = None,
+    ):
+        return templates.TemplateResponse(
+            "setup_codes.html",
+            {
+                "request": request,
+                "codes": _pending_codes,
+                "notice": notice,
+                "error": error,
+                "can_email": _can_email_owner(owner),
+            },
+            status_code=status_code,
+            headers=headers or {},
+        )
+
+    @public.get(
+        "/setup/codes",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.manage_ownership))],
+    )
+    async def setup_codes_page(request: Request):
+        if access_store is None:
+            raise HTTPException(status_code=503, detail="Access store not loaded")
+        global _pending_codes
+        # Once setup is finalized and nothing is left to show, there is
+        # nothing this page can do — the plaintexts are gone by design.
+        if access_store.setup_finalized and not _pending_codes:
+            return RedirectResponse("/", status_code=303)
+        if not _pending_codes:
+            # First view only: a reload must show this same pool, never a
+            # fresh one, or codes the owner already wrote down would be
+            # silently invalidated.
+            _pending_codes = access_store.generate_emergency_codes()
+        owner = web_auth.current_principal(request).user
+        return _setup_codes_page(request, owner)
+
+    @public.post(
+        "/setup/codes/email",
+        response_class=HTMLResponse,
+        dependencies=[
+            Depends(web_auth.require(Permission.manage_ownership)),
+            Depends(require_htmx),
+        ],
+    )
+    async def email_setup_codes(request: Request):
+        owner = web_auth.current_principal(request).user
+        if not _pending_codes or not _can_email_owner(owner):
+            return _setup_codes_page(
+                request,
+                owner,
+                error="Email is not available; copy the codes above instead.",
+            )
+        gateway = config.communication.email_gateway
+        body = (
+            "These 20 emergency codes let you sign in to the vending "
+            "machine dashboard on a browser it has never seen before, or "
+            "authorise a new owner during an ownership transfer. Each code "
+            "works exactly once. Keep them somewhere other than the "
+            "machine itself — they exist for when the machine cannot be "
+            "reached.\n\n" + "\n".join(_pending_codes)
+        )
+        ok = await send_email(
+            gateway, owner.email, "Vending machine emergency codes", body
+        )
+        if not ok:
+            return _setup_codes_page(
+                request,
+                owner,
+                error="Email could not be sent; copy the codes above instead.",
+            )
+        return _setup_codes_page(
+            request, owner, notice=f"Codes emailed to {owner.email}."
+        )
+
+    @public.post(
+        "/setup/codes/done",
+        dependencies=[
+            Depends(web_auth.require(Permission.manage_ownership)),
+            Depends(require_htmx),
+        ],
+    )
+    async def finish_setup(request: Request):
+        if access_store is None:
+            raise HTTPException(status_code=503, detail="Access store not loaded")
+        global _pending_codes
+        access_store.finalize_setup()
+        _pending_codes = []
+        if display_controller is not None:
+            display_controller.clear_setup_code()
+        return HTMLResponse("", headers={"HX-Redirect": "/"})
 
     router = APIRouter()
 

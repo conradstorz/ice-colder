@@ -1,5 +1,6 @@
 """Tests for web_interface routes using FastAPI TestClient."""
 
+import re
 import uuid
 
 import pytest
@@ -1436,9 +1437,14 @@ class TestSetupWizard:
         routes.set_config_object(cfg)
         routes.set_access_store(store)
         routes.set_display_controller(display)
+        # routes._pending_codes is module-level state shared by every test in
+        # this process (Task 15) — reset it on both sides so a test that
+        # generates codes can never leak them into the next one.
+        routes._pending_codes = []
 
         yield cfg, store, display
 
+        routes._pending_codes = []
         routes.set_access_store(None)
         routes.set_display_controller(None)
         web_auth.backoff._failures.clear()
@@ -1642,6 +1648,146 @@ class TestSetupWizard:
         owners = [u for u in store.users.values() if u.role == Role.owner]
         assert len(owners) == 1
         assert owners[0].name == "First"
+
+    # --- Task 15: /setup/codes (step 2) and Done ---
+
+    def _create_owner(self, anon, store) -> User:
+        """Walk step 1 to completion on *anon*, leaving it signed in as the
+        fresh owner, positioned to hit /setup/codes next."""
+        anon.get("/setup")
+        code = store.pending_setup_code
+        anon.post(
+            "/setup",
+            data={
+                "setup_code": code,
+                "name": "Ada",
+                "email": "ada@example.com",
+                "pin": "2468",
+                "pin_confirm": "2468",
+            },
+        )
+        return store.owner()
+
+    def test_codes_page_shows_twenty_distinct_codes(self, anon, fresh_store):
+        _cfg, store, _display = fresh_store
+        self._create_owner(anon, store)
+        resp = anon.get("/setup/codes")
+        assert resp.status_code == 200
+        codes = re.findall(r"\b\d{8}\b", resp.text)
+        assert len(codes) == 20
+        assert len(set(codes)) == 20
+        assert store.unused_emergency_code_count() == 20
+
+    def test_reload_shows_the_same_codes_and_does_not_regenerate(
+        self, anon, fresh_store
+    ):
+        _cfg, store, _display = fresh_store
+        self._create_owner(anon, store)
+        first = re.findall(r"\b\d{8}\b", anon.get("/setup/codes").text)
+        second = re.findall(r"\b\d{8}\b", anon.get("/setup/codes").text)
+        assert first == second
+        assert store.unused_emergency_code_count() == 20
+
+    def test_done_finalizes_clears_display_and_redirects(self, anon, fresh_store):
+        _cfg, store, display = fresh_store
+        self._create_owner(anon, store)
+        anon.get("/setup/codes")
+        assert display.setup_code is not None
+        resp = anon.post("/setup/codes/done", data={})
+        assert resp.headers["hx-redirect"] == "/"
+        assert store.setup_finalized is True
+        assert display.setup_code is None
+
+    def test_setup_code_stops_enrolling_after_done(self, anon, fresh_store):
+        _cfg, store, _display = fresh_store
+        owner = self._create_owner(anon, store)
+        code = store.pending_setup_code
+        anon.get("/setup/codes")
+        anon.post("/setup/codes/done", data={})
+        assert store.verify_setup_code(code) is False
+
+        second = TestClient(app, follow_redirects=False)
+        second.headers["HX-Request"] = "true"
+        second.post("/login", data={"user_id": owner.id, "pin": "2468"})
+        resp = second.post("/login/enroll", data={"code": code})
+        assert "hx-redirect" not in {k.lower() for k in resp.headers}
+        assert "not accepted" in resp.text.lower()
+        second.close()
+
+    def test_page_does_not_show_codes_again_after_done(self, anon, fresh_store):
+        _cfg, store, _display = fresh_store
+        self._create_owner(anon, store)
+        anon.get("/setup/codes")
+        anon.post("/setup/codes/done", data={})
+        resp = anon.get("/setup/codes")
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/"
+
+    def test_email_button_only_shown_when_gateway_configured(self, anon, fresh_store):
+        cfg, store, _display = fresh_store
+        self._create_owner(anon, store)
+        page = anon.get("/setup/codes")
+        assert "Email these to me" not in page.text
+        cfg.communication.email_gateway.smtp_server = "smtp.real.local"
+        page2 = anon.get("/setup/codes")
+        assert "Email these to me" in page2.text
+
+    def test_email_button_sends_all_codes_through_the_mailer(
+        self, anon, fresh_store, monkeypatch
+    ):
+        cfg, store, _display = fresh_store
+        self._create_owner(anon, store)
+        cfg.communication.email_gateway.smtp_server = "smtp.real.local"
+        sent = {}
+
+        async def fake_send_email(gateway, to, subject, body):
+            sent["to"] = to
+            sent["body"] = body
+            return True
+
+        monkeypatch.setattr(routes, "send_email", fake_send_email)
+        page = anon.get("/setup/codes")
+        codes = re.findall(r"\b\d{8}\b", page.text)
+        resp = anon.post("/setup/codes/email", data={})
+        assert resp.status_code == 200
+        assert sent["to"] == "ada@example.com"
+        for code in codes:
+            assert code in sent["body"]
+
+    def test_email_button_errors_without_crashing_when_gateway_unconfigured(
+        self, anon, fresh_store
+    ):
+        _cfg, store, _display = fresh_store
+        self._create_owner(anon, store)
+        anon.get("/setup/codes")
+        resp = anon.post("/setup/codes/email", data={})
+        assert resp.status_code == 200
+        assert "not available" in resp.text.lower()
+
+    def test_email_send_failure_is_an_error_not_a_crash(
+        self, anon, fresh_store, monkeypatch
+    ):
+        cfg, store, _display = fresh_store
+        self._create_owner(anon, store)
+        cfg.communication.email_gateway.smtp_server = "smtp.real.local"
+
+        async def fake_send_email(gateway, to, subject, body):
+            return False
+
+        monkeypatch.setattr(routes, "send_email", fake_send_email)
+        anon.get("/setup/codes")
+        resp = anon.post("/setup/codes/email", data={})
+        assert resp.status_code == 200
+        assert "error" in resp.text.lower() or "not" in resp.text.lower()
+
+    def test_tech_cannot_reach_codes_page(self, anon, fresh_store):
+        _cfg, store, _display = fresh_store
+        self._create_owner(anon, store)
+        tech = store.create_user("Tech", "tech@example.com", Role.tech, "1234")
+        tech_client = sign_in(store, tech)
+        resp = tech_client.get("/setup/codes")
+        assert resp.status_code == 403
+        tech_client.close()
 
 
 class TestCorruptAccessFile:
