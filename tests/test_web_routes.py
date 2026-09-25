@@ -877,3 +877,103 @@ class TestAvailabilityOnDashboard:
         finally:
             r.set_availability(None)
             r.set_health_monitor(None)
+
+
+class TestLogin:
+    @pytest.fixture
+    def public(self, tmp_path):
+        """A client with a seeded AccessStore and no session cookies."""
+        from services.access import AccessStore, Role
+        from web_interface import auth as web_auth
+
+        cfg = ConfigModel()
+        store = AccessStore(path=tmp_path / "access.json")
+        owner = store.create_user("Ada", "ada@example.com", Role.owner, "1379")
+        routes.set_config_object(cfg)
+        routes.set_access_store(store)
+        with TestClient(app, follow_redirects=False) as c:
+            c.headers["HX-Request"] = "true"
+            yield c, store, owner
+        routes.set_access_store(None)
+        web_auth.backoff.set_trusted_proxies([])
+
+    def test_login_page_lists_enabled_users_only(self, public):
+        from services.access import Role
+
+        c, store, owner = public
+        hidden = store.create_user("Hidden", None, Role.tech, "2468")
+        store.set_user_disabled(hidden.id, True)
+        resp = c.get("/login", headers={})
+        assert resp.status_code == 200
+        assert "Ada" in resp.text
+        assert "Hidden" not in resp.text
+
+    def test_correct_pin_on_an_untrusted_browser_shows_enrollment(self, public):
+        c, store, owner = public
+        resp = c.post("/login", data={"user_id": owner.id, "pin": "1379"})
+        assert resp.status_code == 200
+        assert "code" in resp.text.lower()
+        assert "hx-redirect" not in {k.lower() for k in resp.headers}
+        assert c.cookies.get("vmc_enroll")
+
+    def test_correct_pin_on_a_trusted_device_logs_in(self, public):
+        from web_interface import auth as web_auth
+
+        c, store, owner = public
+        device, token = store.create_device("Tablet", shared=True)
+        store.trust_device(device.id, owner.id)
+        c.cookies.set(web_auth.DEVICE_COOKIE, token)
+        resp = c.post("/login", data={"user_id": owner.id, "pin": "1379"})
+        assert resp.status_code == 200
+        assert resp.headers["hx-redirect"] == "/"
+        assert c.cookies.get("vmc_session")
+        assert store.get_user(owner.id).last_login_at is not None
+
+    def test_wrong_pin_returns_a_generic_message_and_no_session(self, public):
+        c, store, owner = public
+        resp = c.post("/login", data={"user_id": owner.id, "pin": "9999"})
+        assert resp.status_code == 200
+        assert "wrong pin" in resp.text.lower()
+        assert not c.cookies.get("vmc_session")
+
+    def test_unknown_user_looks_identical_to_a_wrong_pin(self, public):
+        c, store, owner = public
+        wrong = c.post("/login", data={"user_id": owner.id, "pin": "9999"})
+        unknown = c.post("/login", data={"user_id": "no-such-user", "pin": "9999"})
+        assert unknown.status_code == wrong.status_code
+        assert "wrong pin" in unknown.text.lower()
+
+    def test_disabled_user_cannot_log_in(self, public):
+        c, store, owner = public
+        store.set_user_disabled(owner.id, True)
+        resp = c.post("/login", data={"user_id": owner.id, "pin": "1379"})
+        assert not c.cookies.get("vmc_session")
+        assert "wrong pin" in resp.text.lower()
+
+    def test_repeated_failures_back_off_with_429_and_retry_after(self, public):
+        c, store, owner = public
+        for _ in range(3):
+            c.post("/login", data={"user_id": owner.id, "pin": "9999"})
+        resp = c.post("/login", data={"user_id": owner.id, "pin": "9999"})
+        assert resp.status_code == 429
+        assert int(resp.headers["retry-after"]) >= 1
+
+    def test_login_post_without_the_htmx_header_is_forbidden(self, public):
+        c, store, owner = public
+        resp = c.post(
+            "/login",
+            data={"user_id": owner.id, "pin": "1379"},
+            headers={"HX-Request": ""},
+        )
+        assert resp.status_code == 403
+
+    def test_login_page_redirects_to_setup_when_no_owner_exists(self, tmp_path):
+        from services.access import AccessStore
+
+        routes.set_config_object(ConfigModel())
+        routes.set_access_store(AccessStore(path=tmp_path / "access.json"))
+        with TestClient(app, follow_redirects=False) as c:
+            resp = c.get("/login")
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/setup"
+        routes.set_access_store(None)

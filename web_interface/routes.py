@@ -4,16 +4,18 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 
 from config.config_model import ConfigModel, Product
 from contracts.vending_machine import EXPECTED_SUBSYSTEMS
+from services.access import AccessStore
 from services.config_store import add_product, delete_product, update_product
 from services.fsm_control import perform_command
 from services.health_monitor import HealthMonitor
 from services.paths import LOG_FILE
+from web_interface import auth as web_auth
 from web_interface.auth import LoginLimiter
 
 config: ConfigModel = None
@@ -63,6 +65,15 @@ inventory_manager = None
 def set_inventory_manager(inv):
     global inventory_manager
     inventory_manager = inv
+
+
+access_store: AccessStore | None = None
+
+
+def set_access_store(store: AccessStore | None) -> None:
+    global access_store
+    access_store = store
+    web_auth.set_access_store(store)
 
 
 _basic_auth = HTTPBasic()
@@ -140,6 +151,122 @@ def tail(file_path: Path, lines: int = 50) -> list[str]:
 
 
 def attach_routes(app: FastAPI, templates: Jinja2Templates):
+    public = APIRouter()
+
+    def _keypad(
+        request: Request,
+        *,
+        selected_user_id=None,
+        error=None,
+        wait_seconds=None,
+        status_code=200,
+        headers=None,
+    ):
+        return templates.TemplateResponse(
+            "partials/keypad.html",
+            {
+                "request": request,
+                "users": access_store.enabled_users() if access_store else [],
+                "selected_user_id": selected_user_id,
+                "error": error,
+                "wait_seconds": wait_seconds,
+            },
+            status_code=status_code,
+            headers=headers or {},
+        )
+
+    @public.get("/login", response_class=HTMLResponse)
+    async def login_page(request: Request):
+        if access_store is None:
+            raise HTTPException(status_code=503, detail="Access store not loaded")
+        if access_store.setup_mode:
+            return RedirectResponse("/setup", status_code=303)
+        return templates.TemplateResponse(
+            "login.html",
+            {
+                "request": request,
+                "users": access_store.enabled_users(),
+                "selected_user_id": None,
+                "error": None,
+                "wait_seconds": None,
+            },
+        )
+
+    @public.post(
+        "/login", response_class=HTMLResponse, dependencies=[Depends(require_htmx)]
+    )
+    async def login_submit(
+        request: Request, user_id: str = Form(...), pin: str = Form(...)
+    ):
+        if access_store is None:
+            raise HTTPException(status_code=503, detail="Access store not loaded")
+        client = web_auth.client_key(request)
+        trusted = web_auth.is_trusted_client(request, user_id)
+
+        remaining = web_auth.backoff.check("pin", user_id, client, trusted=trusted)
+        if remaining is not None:
+            return _keypad(
+                request,
+                selected_user_id=user_id,
+                wait_seconds=int(remaining) + 1,
+                status_code=429,
+                headers={"Retry-After": str(int(remaining) + 1)},
+            )
+
+        # Identical response for a wrong PIN, an unknown user and a disabled
+        # one: the picker already leaks names, nothing else should leak state.
+        if not access_store.verify_user_pin(user_id, pin):
+            web_auth.backoff.record_failure("pin", user_id, client, trusted=trusted)
+            return _keypad(request, selected_user_id=user_id, error="Wrong PIN")
+
+        web_auth.backoff.record_success("pin", user_id, client, trusted=trusted)
+        device = access_store.device_for_token(
+            request.cookies.get(web_auth.DEVICE_COOKIE)
+        )
+        if device is not None and user_id in device.trusted_user_ids:
+            session_id = access_store.create_session(user_id, device.id)
+            access_store.record_login(user_id)
+            access_store.touch_device(device.id)
+            resp = HTMLResponse("", headers={"HX-Redirect": "/"})
+            web_auth.set_cookie(
+                resp, request, web_auth.SESSION_COOKIE, session_id, max_age=None
+            )
+            web_auth.set_cookie(
+                resp,
+                request,
+                web_auth.DEVICE_COOKIE,
+                request.cookies[web_auth.DEVICE_COOKIE],
+                max_age=web_auth.DEVICE_COOKIE_MAX_AGE,
+            )
+            return resp
+
+        return _enrollment_response(request, user_id)
+
+    def _enrollment_response(request: Request, user_id: str, error: str | None = None):
+        """Second factor: the PIN is proven, now prove the device (spec §2.3)."""
+        token = access_store.issue_enroll_token(user_id, web_auth.client_key(request))
+        user = access_store.get_user(user_id)
+        gateway = config.communication.email_gateway if config else None
+        resp = templates.TemplateResponse(
+            "enroll.html",
+            {
+                "request": request,
+                "user": user,
+                "error": error,
+                "can_email": bool(
+                    user and user.email and gateway and gateway.is_configured
+                ),
+            },
+        )
+        web_auth.set_cookie(
+            resp,
+            request,
+            web_auth.ENROLL_COOKIE,
+            token,
+            max_age=web_auth.ENROLL_COOKIE_MAX_AGE,
+        )
+        return resp
+
     router = APIRouter(dependencies=[Depends(require_auth)])
 
     @router.post(
@@ -484,3 +611,4 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         return templates.TemplateResponse("partials/screen_body.html", ctx)
 
     app.include_router(router)
+    app.include_router(public)
