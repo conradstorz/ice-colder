@@ -44,13 +44,17 @@ price is deducted from escrow, credits are consumed first-in-first-out and
 the consumed shares form the method breakdown for that sale: a $2.50 sale
 after $2.00 cash then $1.00 card yields `{"cash": 2.00, "card": 0.50}` and
 leaves a $0.50 card credit. `vend_failed` restores the price to escrow as a
-single credit with the sale's dominant method, which is the closest honest
-reconstruction. The session snapshot in `services/session_store.py` gains
-the credits list so a restart mid-sale keeps the breakdown.
+list of credits with exactly the shares that were consumed (the $2.00 cash
+and $0.50 card in the example come back as two credits), so the ledger
+never reclassifies money. The consumed shares are held on the in-flight
+sale (`VMC.pending_sale_shares`) between deduction and dispense outcome.
+The session snapshot in `services/session_store.py` gains both the credits
+list and the pending shares so a restart mid-sale keeps the breakdown.
 
-Method strings come from `PaymentEvent.method` unchanged (`cash`, `coin`,
-`card`, or whatever the MDB firmware reports); reports group by the raw
-string and the simulator is checked to emit the three canonical values.
+Method strings come from `PaymentEvent.method` unchanged and are stored
+raw. The MDB simulator today emits `cash_coin`, `cash_bill`, `card`, and
+`nfc`; real firmware may differ. Classification into cash or not happens at
+query time (§1.3), never by rewriting the stored value.
 
 ### 1.2 Tables
 
@@ -78,19 +82,32 @@ CREATE TABLE IF NOT EXISTS cash_collections (
 );
 ```
 
-`record_sale(sku, name, slot, price, methods)` and
-`record_cash_collection(user_id, user_name)` enqueue rows on the existing
-writer queue. `_prune_with` touches only `events`. The VMC calls
-`record_sale` at the same point it records `dispense` today; the `dispense`
+`record_cash_collection(user_id, user_name)` enqueues on the existing writer
+queue like any event. **Sales are written durably, not queued**:
+`record_sale(...)` is a synchronous insert on its own connection (WAL mode,
+`synchronous=NORMAL`) that the VMC awaits through `asyncio.to_thread` at the
+point where it records `dispense` today, before `_finish_dispensing`. The
+event loop is never blocked; the sale row is on disk before the FSM returns
+to idle. If the insert raises, the VMC appends the same record as one JSON
+line to `data/sales-journal.jsonl` (append + fsync) and raises the alert-
+class fault `DATA-101 sale journal in use`; at startup the recorder replays
+and truncates the journal, then clears the fault. A crash between dispenser
+completion and the insert is covered by the session snapshot: an open
+snapshot at boot already raises `PAY-104`, and its metadata now includes the
+pending sale, so the operator clearing `PAY-104` is offered "record this
+sale" or "discard". `_prune_with` touches only `events`. The `dispense`
 event stays for the existing KPIs.
 
 ### 1.3 Cash collection
 
 `expected_cash` is computed inside the writer thread at insert time, so it
-is consistent with every sale already written: the sum of the `cash` and
-`coin` shares of `sales.methods` with `ts` greater than the previous
-collection's `ts` (or all time for the first). Which method strings count
-as cash is the tuple `CASH_METHODS = ("cash", "coin")` in `services/reports.py`.
+is consistent with every sale already written: the sum of the cash-class
+shares of `sales.methods` with `ts` greater than the previous collection's
+`ts` (or all time for the first). `services/reports.py` defines
+`is_cash(method: str) -> bool`: true for `cash`, `coin`, `bill`, and any
+method whose lowercase name starts with `cash_` or `coin_` (which covers the
+simulator's `cash_coin` and `cash_bill`); a unit test pins the four
+simulator values. Anything else (`card`, `nfc`, `test`) is not cash.
 
 New permission `collect_cash` in part 1's `Permission` enum, granted to all
 four roles. The action is `POST /inventory/collect` with a two-tap confirm
@@ -109,7 +126,7 @@ the machine's local timezone (`datetime.astimezone()`), and a `bucket` is
 |---|---|
 | `by_period(window, bucket)` | rows of bucket start, revenue, vends, failed vends, refunds, uptime % (uptime and failed/refund counts come from `events` and are only available inside the 90-day retention; older buckets show `—`) |
 | `by_product(window)` | rows per SKU: name (latest seen), units, revenue, failed vends |
-| `by_method(window)` | rows per method: amount, share of revenue, sale count where the method contributed |
+| `by_method(window)` | rows per raw method string: amount, share of revenue, sale count where the method contributed, and a cash/other class column from `is_cash` |
 | `collections(limit)` | most recent collections: ts, user, expected cash, and the cash accepted since it (live figure for the newest row) |
 | `summary(window)` | totals used by the email: revenue, vends, failed, refunds, per-method split, cash since last collection |
 
@@ -159,11 +176,14 @@ saved through `save_config`.
 ### 4.2 Scheduler (`services/report_scheduler.py`)
 
 A coroutine `run(config, recorder, mailer, clock)` started in `main.py`
-under `_supervise("report scheduler", ...)`. It sleeps until the next due
-time computed from the live config (re-read every loop, so a Settings change
-takes effect without restart), then emails `summary()` for the previous
-completed day or week to the owner plus `extra_recipients`, and records a
-`report_sent` event with the period covered. On startup, if the schedule is
+under `_supervise("report scheduler", ...)`. It loops on a bounded sleep of
+at most 60 s, re-reading the live config each pass and recomputing the next
+due time, so turning the schedule off stops the next send within a minute
+and turning it on schedules from the new settings, not the old interval.
+Sends are de-duplicated by period: a `report_sent` event for the period
+about to be covered suppresses the send. When due, it emails `summary()` for
+the previous completed day or week to the owner plus `extra_recipients`, and
+records `report_sent` with the period covered. On startup, if the schedule is
 on and the last `report_sent` (within the 90-day event window) is older than
 one period, it sends one catch-up covering the most recent completed
 period, never a backlog. A failed send logs and retries at the next due
@@ -171,7 +191,16 @@ time; it never raises out of the loop.
 
 ## 5. Error handling
 
-- Sale recording never blocks the FSM: it is a queue put, like every event.
+- Sale recording never blocks the event loop (thread) and never loses the
+  row silently: insert, else journal plus `DATA-101`, else the session
+  snapshot's `PAY-104` path (§1.2).
+- **Corrupt events database.** `EventRecorder.__init__` currently raises on
+  an unreadable SQLite file, which would stop the whole process before the
+  VMC starts. In this part it instead renames the file to
+  `events.db.corrupt-<timestamp>` (preserving whatever is recoverable),
+  creates a fresh database, and raises the alert-class fault `DATA-102
+  event database was reset`, so the machine runs and the dashboard shows
+  why history is missing. The fault clears when an admin acknowledges it.
 - If `escrow_credits` and `credit_escrow` disagree (should not happen; a
   bug guard), the sale is recorded with `{"unknown": price}` and a warning.
 - Report queries on an empty database return empty rows and zero totals.
@@ -183,16 +212,21 @@ time; it never raises out of the loop.
 
 - `tests/test_vmc.py` additions: FIFO allocation across two methods,
   leftover credit keeps its method, refund clears credits, `vend_failed`
-  restores one credit, snapshot round-trips credits.
+  restores the exact consumed shares as separate credits, snapshot
+  round-trips credits and pending shares, sale insert is awaited before the
+  FSM returns to idle.
 - `tests/test_event_recorder.py` additions: `sales` rows survive `prune`,
-  `record_sale` JSON shape, `expected_cash` for first and subsequent
-  collections including a coin share.
+  `record_sale` JSON shape and that it is on disk before returning,
+  journal fallback on a failing insert and replay at startup, `expected_cash`
+  for first and subsequent collections including `cash_coin` and `cash_bill`
+  shares, corrupt-database recovery (§5).
 - `tests/test_reports.py`: seeded sales across a day, week, and month
   boundary in a fixed timezone; by_product ordering; by_method shares sum to
   revenue; `—` for buckets outside retention.
 - `tests/test_report_scheduler.py`: injected clock, next-due computation for
-  daily and weekly, catch-up-once on startup, no send when off, failure does
-  not stop the loop.
+  daily and weekly, catch-up-once on startup, no send when off, switching off
+  within one bounded sleep suppresses a due send, switching on schedules from
+  the new hour, a period is never sent twice, failure does not stop the loop.
 - Route tests: each report page 200 for owner and secretary, 403 for tech
   and loader; `/inventory/collect` 200 for loader and records a row; email
   action calls the stubbed mailer with a CSV attachment; `/settings/reports`
@@ -204,7 +238,8 @@ time; it never raises out of the loop.
 |---|---|
 | `controller/vmc.py` | `escrow_credits`, FIFO deduction, `record_sale` call |
 | `services/session_store.py` | Snapshot carries credits |
-| `services/event_recorder.py` | Two tables, `record_sale`, `record_cash_collection`, prune scope |
+| `services/event_recorder.py` | Two tables, durable `record_sale`, journal replay, `record_cash_collection`, prune scope, corrupt-file recovery |
+| `contracts/vending_machine.py` | `DATA-101`, `DATA-102` alert-class faults |
 | `services/reports.py` | New: queries and CSV rendering |
 | `services/report_scheduler.py` | New |
 | `services/mailer.py` | Attachments |

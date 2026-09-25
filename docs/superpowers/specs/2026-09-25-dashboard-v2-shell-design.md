@@ -53,6 +53,15 @@ URLs, no reload-to-place); a client-side router (JavaScript beyond HTMX).
   Boosted requests carry `HX-Request`, so the existing CSRF guard on POSTs
   keeps working. Full-page requests (reload, bookmark) render the same
   template with the bar.
+- Because only `<main>` is the swap target, every level response also
+  carries the bar as an out-of-band swap: `base.html` renders
+  `<header id="bar" hx-swap-oob="true">` from `level`, so Home/Back
+  visibility, the breadcrumb, and the title update on every boosted
+  navigation. The health pill inside the bar keeps its own `id` and
+  polling; HTMX re-initializes it after the OOB swap, and the pill's
+  `hx-trigger="load, every 5s"` fires again on the new element. A test
+  asserts a boosted child-level response contains both `<main>` and the OOB
+  bar with the child's crumbs.
 - **Bar** (56 px, dark): left to right
   - `Home` button (`hx-get="/"`), hidden on Home.
   - `Back` button to `level.parent_url`, hidden on Home.
@@ -229,7 +238,9 @@ POST endpoints keep the same names under the new prefixes
   parameterized children.
 - `tests/test_web_routes.py`: every level in §2 renders 200 for a role that
   holds its gate and 403 for one that does not; the bar contains Home and
-  Back except on Home; the breadcrumb text matches the level; tiles on Home
+  Back except on Home; the breadcrumb text matches the level; a request with
+  `HX-Request` and `HX-Boosted` headers returns the OOB bar with the new
+  level's crumbs; tiles on Home
   are filtered per role (loader sees exactly Health, Products, Inventory);
   Products › Catalog is 403 for loader while `/products/{sku}` shows price
   read-only; Inventory adjust changes counts through `InventoryManager`;

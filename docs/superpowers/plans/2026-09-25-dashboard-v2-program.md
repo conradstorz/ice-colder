@@ -27,7 +27,7 @@ depends on the ones before it.
 | 1 | `specs/2026-09-25-roles-and-access-design.md` | Named users with `owner` / `secretary` / `tech` / `loader` roles; PIN login; per-device trust with a one-time emailed OTP or an offline emergency code; setup wizard and ownership transfer; exponential back-off on every secret; a `Permission` table every route declares | nothing |
 | 2 | `specs/2026-09-25-dashboard-v2-shell-design.md` | `base.html` shell, level tree with real URLs, eight tiles filtered by permission, vendored Tailwind and HTMX for offline use, landscape / portrait / phone layouts, Settings edit forms, `routes.py` split by area | part 1 |
 | 3 | `specs/2026-09-25-sales-reports-design.md` | Per-sale records with FIFO payment-method attribution, never-pruned `sales` table, cash collection log, reports by period / product / method, email with CSV, scheduled daily or weekly summary | parts 1, 2 |
-| 4 | `specs/2026-09-25-system-tests-design.md` | Shared MQTT command/ack channel for every subsystem, `CommandDispatcher`, maintenance hold `SVC-101`, Tests level with automatic and operator-verdict tests, end-to-end simulated sale, test log, simulator support | parts 1, 2, 3 |
+| 4 | `specs/2026-09-25-system-tests-design.md` | Shared MQTT command/ack channel for every subsystem, `CommandDispatcher`, maintenance lease `SVC-102`, Tests level with automatic and operator-verdict tests, end-to-end simulated sale, test log, simulator support | parts 1, 2, 3 |
 
 The order is fixed. Part 2 removes the routes and templates part 1's
 login pages first land in, so part 1 ships against the old dashboard and
@@ -41,8 +41,9 @@ hold on the simulator stack (`docker compose up` with the three ESP32
 simulators and mosquitto).
 
 1. **A stranger cannot use the dashboard.** No default credential exists.
-   The wizard claims the machine once; after that every request carries a
-   session tied to a trusted device. A lost owner has no software recovery.
+   The wizard claims the machine once and only with a setup code that
+   exists solely at the machine; after that every request carries a session
+   tied to a trusted device. A lost owner has no software recovery.
 2. **The person at the tablet sees only what their role allows**, and the
    server enforces it regardless of what the page shows.
 3. **The tablet works with no internet at the machine**: styling, scripts,
@@ -62,8 +63,10 @@ simulators and mosquitto).
 8. **A tech can prove a subsystem works without making a sale**, and the
    machine cannot sell while they do it.
 9. **The dashboard is the last thing to go down.** Auth, reports, and tests
-   never block the FSM or the MQTT client; a corrupt access or events file
-   degrades the dashboard, not the machine.
+   never block the FSM or the MQTT client. A corrupt access file degrades
+   the dashboard only. A corrupt events database stops startup today; part 3
+   changes the recorder to set the file aside, start fresh, and raise an
+   alert fault, so from part 3 on it degrades history, not the machine.
 
 ## 3. Delivery model
 
@@ -158,23 +161,32 @@ The owner merges.
 The executor runs these before declaring a part done, on the compose
 simulator stack, and records the result in the pull request.
 
-**Part 1.** Fresh `data/` boots into setup mode; the wizard creates an
-owner and shows 20 codes; a second browser enrolls a tech by emergency code
-with no SMTP configured; a wrong PIN five times in a row waits 16 s before
-the sixth attempt; a loader gets 403 on price and 200 on slot; transfer
-walks the retained users and lands back in the wizard; every existing
-route test passes with the new fixtures. Goals 1, 2, 3 (offline
-enrollment), 9.
+**Part 1.** Fresh `data/` boots into setup mode and the setup code appears
+in the log and on the display; the wizard refuses a wrong code and creates
+an owner with the right one, then shows 20 codes; a second browser enrolls
+a tech by emergency code with no SMTP configured; a wrong PIN five times in
+a row waits 16 s before the sixth attempt, and twenty wrong PINs from
+untrusted addresses slow every untrusted address for that user while the
+trusted tablet is unaffected; a loader gets 403 on price and 200 on slot;
+transfer leaves the old owner in control until the new owner completes the
+wizard with the transfer code, then walks the retained users;
+`data/access.json` is mode `0600`; every existing route test passes with
+the new fixtures. Goals 1, 2, 3 (offline enrollment), 9.
 
 **Part 2.** The tablet layout at 1024×600 and 600×1024 and a 400 px phone
 show Home with the right tiles per role; every level in the spec's URL
-table renders with bar, crumbs, and working Back; the machine tablet with
+table renders with bar, crumbs, and working Back, and the bar updates on
+boosted navigation without a reload; the machine tablet with
 the network cable unplugged is fully styled; `/screen` is unchanged; the
 CSS class test passes; no route from the old dashboard answers. Goals 3,
 4, 5, 6.
 
-**Part 3.** A simulated sale paid with cash then card appears in by-method
-with the FIFO split; a loader's cash collection shows the expected cash;
+**Part 3.** A simulated sale paid with `cash_bill` then `card` appears in
+by-method with the FIFO split and the sale row is on disk before the FSM
+returns to idle; a failed vend restores the same shares; a loader's cash
+collection shows the expected cash counting the simulator's cash methods;
+a deliberately corrupted `events.db` is set aside at startup and the
+machine still boots;
 reports render for owner and secretary and 403 elsewhere; the emailed
 report arrives with a CSV attachment through a local SMTP stub; the
 scheduler sends one catch-up on restart and no backlog; `prune` leaves
@@ -182,11 +194,15 @@ scheduler sends one catch-up on restart and no backlog; `prune` leaves
 
 **Part 4.** Run-all on three alive simulators returns ping and self-test
 results; injecting a simulator fault makes that subsystem's self-test fail
-the matching check; a dispense test on slot 3 raises `SVC-101`, the MDB
-simulator receives payment disable, and a customer credit is refused; the
-simulated sale exercises the FSM and records no sale; the hold clears on
-leaving the level; the log shows the verdicts. Goals 6 (contract bump is
-deliberate and documented), 8, 9.
+the matching check; the Tests UI never offers `refund` or `payment/enable`;
+a dispense test on slot 3 raises `SVC-102`, the MDB simulator receives
+payment disable, and a credit injected during the lease is refunded rather
+than escrowed; a duplicated request id does not fire the motor twice; a
+second tech cannot release the first tech's lease mid-run; the simulated
+sale exercises the FSM and records no sale; production `cmd/dispense`
+still vends with the unmodified simulator build; the log shows the
+verdicts. Goals 6 (production topics unchanged; the contract bump is
+additive and documented), 8, 9.
 
 **Program.** All four merged; a fresh clone with `.env` from
 `.env.example` and `docker compose up` reaches the wizard; every goal in §2
@@ -204,9 +220,15 @@ and the command channel accurately.
   Backup guidance goes in `README.md` in part 1.
 - **Tailwind build drift.** The CSS class test in part 2 fails CI when a
   template uses a class the committed `app.css` lacks.
-- **Contract bump strands real firmware.** Part 4 is last and its contract
-  change is versioned; the health tab already flags mismatches, and a
-  subsystem on the old contract simply advertises no tests.
+- **Contract bump strands real firmware.** Part 4 leaves every production
+  topic (`cmd/dispense`, `cmd/payment/*`) untouched and adds the command
+  channel beside them; the ack shape is a superset of today's. The health
+  tab already flags version mismatches, and a subsystem on the old contract
+  simply advertises no tests.
+- **Setup and transfer windows.** The wizard is gated by a code that lives
+  only at the machine, and a transfer keeps the old owner in control until
+  the new one is fully established, so there is no moment when a remote
+  client can claim the machine.
 - **Refactor fatigue across four pull requests.** Each part has its own
   acceptance list and merges on its own; nothing waits on the whole
   program to be useful.

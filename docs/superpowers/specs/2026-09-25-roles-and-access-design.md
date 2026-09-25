@@ -21,9 +21,11 @@ Decisions made in brainstorming:
 - Second factor is per device, once: an emailed one-time password, or an
   owner-issued eight-digit emergency code from a pre-generated pool that works
   offline.
-- First owner is created by a setup wizard on first visit. Ownership transfer
-  re-runs the wizard and can only be started by the owner with a PIN plus an
-  unused emergency code. An owner who cannot produce a code has no software
+- First owner is created by a setup wizard on first visit, unlocked by a
+  setup code that only exists at the machine (startup log and the physical
+  display). Ownership transfer is a pending transaction the owner starts
+  with a PIN plus an unused emergency code and the incoming owner completes
+  in the wizard. An owner who cannot produce a code has no software
   recovery; the controller is replaced or factory-restored.
 - Everyone but the owner survives a transfer; the incoming owner reviews them
   one by one and can email a machine report.
@@ -47,7 +49,11 @@ no idle lock, no wizard).
 
 `services/access.py` owns an `AccessStore` loaded from `data/access.json`
 (`DATA_DIR` from `services/paths.py`). Writes are atomic tmp + rename, the same
-pattern as `services/config_store.py`. The file contains secrets and is never
+pattern as `services/config_store.py`, with the temp file opened via
+`os.open(..., 0o600)` so neither the temp nor the final file is ever readable
+by other users regardless of umask; the store also `chmod`s an existing file
+to `0600` at load and logs a warning if it had to. On Windows development
+hosts the chmod is a no-op. The file contains secrets and PII and is never
 merged into `config.json`.
 
 Persisted:
@@ -57,6 +63,8 @@ Persisted:
 | `users` | `id` (uuid4), `name`, `email` (optional, `EmailStr`), `role`, `pin_hash`, `pin_salt`, `disabled: bool`, `created_at`, `last_login_at` |
 | `devices` | `id` (uuid4), `token_hash` (sha256 of the cookie value), `label`, `shared: bool`, `trusted_user_ids: list[str]`, `created_at`, `last_seen_at` |
 | `emergency_codes` | `code_hash` (scrypt), `used_at`, `used_by_user_id`, `used_for` (`enroll` or `transfer`) |
+| `setup` | `setup_code_hash`, `finalized: bool` — the bootstrap secret (§3.1); cleared once setup is finalized |
+| `pending_transfer` | `transfer_code_hash`, `started_at`, `expires_at`, `started_by_user_id`, or null (§3.3) |
 
 Invariants enforced by the store: at most one user with role `owner`; a
 device's `trusted_user_ids` only references existing users; deleting a user
@@ -68,7 +76,7 @@ In memory only (lost on restart, which just means re-login):
 |---|---|
 | `sessions` | `id` (random 256-bit token), `user_id`, `device_id`, `created_at`, `last_active_at` |
 | `pending_otps` | keyed by `(user_id, device_id)`: 6-digit `code`, `expires_at` (10 min) |
-| `backoff` | keyed by `(kind, subject, client)`: `failures: int`, `next_allowed_at` |
+| `backoff` | keyed by `(kind, subject, client)`: `failures: int`, `next_allowed_at`; plus a per-user budget keyed by `(kind, subject)` for untrusted clients (§2.4) |
 
 Timestamps are UTC ISO-8601 in the file, `time.monotonic()` in memory. The
 store takes an injectable `clock` for tests, like `LoginLimiter` does today.
@@ -147,26 +155,42 @@ never completes enrollment is pruned after 24 hours with no trusted users.
 
 Every path that checks a secret uses the same rule. Failures are counted per
 `(kind, subject, client)` where `kind` is `pin`, `otp`, `emergency`,
-`transfer`, or `otp_send`; `subject` is the user id (or the string `pool` for
-emergency codes, which are not per user); `client` is the device id when a
-`vmc_device` cookie is present, otherwise the client IP as resolved by the
-existing trusted-proxy logic.
+`transfer`, `setup`, or `otp_send`; `subject` is the user id (or the string
+`pool` for emergency codes and `setup` for the setup code, which are not per
+user); `client` is the **stored device id** when the `vmc_device` cookie
+resolves to a device record in the store, otherwise the client IP as
+resolved by the existing trusted-proxy logic. A cookie that does not
+resolve is ignored for keying, so an attacker minting random cookie values
+gets one counter per IP, not one per cookie.
 
 After `n` consecutive failures the next attempt is allowed no sooner than
 `min(2 ** (n - 1), 3600)` seconds later: 1 s, 2 s, 4 s, … capped at one hour.
 A success resets the counter for that key. Entries idle for 24 hours are
-pruned. Because the key includes the client, a stranger hammering a user's
-PIN from their own phone slows only themselves; the legitimate user on the
-trusted tablet is unaffected. There are no hard caps, no per-user disabling,
-and no IP lockout. `LoginLimiter` is replaced by a `Backoff` class in
-`services/access.py` that keeps `client_ip` and the trusted-proxy handling;
-`main.py` calls `access.backoff.set_trusted_proxies(...)` where it called
+pruned.
+
+**Per-user budget for untrusted clients.** A distributed attacker with many
+IPs would otherwise get many independent counters against one user's PIN.
+So failures from clients on which the subject user is *not* trusted also
+count toward a second key `(kind, subject)`; after 20 such failures in a
+rolling hour the same exponential delay applies to every untrusted client
+for that user, capped at one hour. Attempts from a device where the user is
+already trusted are keyed only per device and never consult the per-user
+budget, so a stranger cannot slow the legitimate user on their own tablet
+or phone, only on devices the user has never enrolled. Both counters are
+in memory; a restart clears them.
+
+There are no hard caps, no per-user disabling, and no IP lockout.
+`LoginLimiter` is replaced by a `Backoff` class in `services/access.py`
+that keeps `client_ip` and the trusted-proxy handling; `main.py` calls
+`access.backoff.set_trusted_proxies(...)` where it called
 `routes.login_limiter.set_trusted_proxies(...)`.
 
 Brute-force arithmetic: a 6-digit OTP in a 10-minute window allows about 12
 guesses per client before the delay exceeds the window; an 8-digit emergency
-code allows about 17 guesses per client per day. Both are negligible against
-the code spaces.
+code allows about 17 guesses per client per day; a 4-digit PIN from
+untrusted clients is bounded by the per-user budget to roughly 20 guesses
+plus 17 per day thereafter across all attacker IPs combined. All are
+negligible against the code spaces.
 
 ### 2.5 Logout
 
@@ -179,15 +203,36 @@ picker.
 ### 3.1 Setup mode
 
 While the store has no user with role `owner`, every route except `/setup`
-and `/static/*` redirects to `/setup`. The wizard is deliberately open on the
-network in that window; the owner accepts that first boot is a race they win
-by being there.
+and `/static/*` redirects to `/setup`. The wizard is reachable from the
+network, so it is locked with a **setup code** that only exists at the
+machine:
 
-`GET /setup` → `POST /setup` fields: `name`, `email`, `pin`, `pin_confirm`,
-`shared_device: bool` ("This browser is the machine's own tablet"). On
-success: create the owner, create a device record for this browser with the
-`shared` flag, trust the owner on it, generate 20 emergency codes, create a
-session, and render the codes page.
+- On entering setup mode (first boot, or a completed transfer, §3.3) the
+  store generates an 8-digit setup code, stores its hash, writes the
+  plaintext to the startup log at warning level, and publishes it to the
+  customer display through `services/display_controller.py` (maintenance
+  mode, "Setup code: 1234 5678") for as long as setup mode lasts. Someone
+  standing at the machine, or reading `docker logs`, has it; a remote
+  stranger does not.
+- `POST /setup` requires the setup code and is subject to back-off kind
+  `setup`.
+
+Setup is two durable steps so a lost response cannot strand the owner:
+
+1. `POST /setup` fields: `setup_code`, `name`, `email`, `pin`,
+   `pin_confirm`, `shared_device: bool` ("This browser is the machine's own
+   tablet"). Creates the owner atomically (the store rejects a second owner,
+   so two racing submissions cannot both succeed), creates a device record
+   with the `shared` flag, trusts the owner on it, creates a session, sets
+   cookies, and redirects to `/setup/codes`. The setup code stays valid,
+   and until step 2 completes it is also accepted as an enrollment code for
+   the owner (§2.3): if this response is lost, the owner logs in with their
+   PIN on any browser and enrolls with the setup code.
+2. `GET /setup/codes` (owner session required) generates the 20 emergency
+   codes on first view and renders §3.2. **Done** finalizes setup: the setup
+   code is invalidated, the display returns to normal, and `setup.finalized`
+   is set. Reloading before Done shows the same codes again (they are held
+   in memory until finalized, then only their hashes remain).
 
 ### 3.2 Emergency codes page
 
@@ -201,17 +246,36 @@ remain unused.
 
 ### 3.3 Transfer of ownership
 
-Owner-only. `POST /users/transfer` fields: `pin`, `emergency_code`. Both are
-checked with back-off kinds `pin` and `transfer`. On success, atomically:
-delete the owner user, remove them from every device, delete every emergency
-code, end every session, and clear the caller's session cookie. The store is
-now in setup mode.
+Transfer is a pending transaction; the current owner keeps full control
+until the incoming owner has completed the wizard, so an abandoned handover
+never leaves the machine ownerless or claimable.
 
-The wizard detects retained users and, after the owner form, walks them one
-at a time: name, role, email, last login, number of trusted devices, with
-**Keep** and **Remove** buttons. Each decision is applied immediately. The
-final page shows the new emergency codes (§3.2) and adds **Email the machine
-report to me**.
+1. **Start** (owner only): `POST /users/transfer` fields: `pin`,
+   `emergency_code`, checked with back-off kinds `pin` and `transfer`. On
+   success the store records `pending_transfer` with a fresh 8-digit
+   transfer code (hash stored, plaintext shown once to the outgoing owner to
+   hand to the incoming one) and a 7-day expiry, and consumes the emergency
+   code with `used_for = "transfer"`. Nothing else changes. The Users level
+   shows the pending transfer with **Cancel** (owner only, PIN required).
+2. **Complete** (incoming owner, any browser): while a transfer is pending,
+   `/setup` is reachable alongside the normal login and requires the
+   transfer code instead of a setup code. The incoming owner fills the
+   owner form (§3.1 step 1 fields). The store then atomically: creates the
+   new owner, deletes the old owner user and removes them from every device,
+   deletes every emergency code, ends every session, and clears
+   `pending_transfer`. The new owner's session and device trust are created
+   in the same write.
+3. **Review**: the wizard walks the retained users one at a time: name,
+   role, email, last login, number of trusted devices, with **Keep** and
+   **Remove**. Each decision is applied immediately; leaving mid-review just
+   leaves the remaining users kept.
+4. **Codes**: `/setup/codes` as in §3.1 step 2, plus **Email the machine
+   report to me**. The transfer code remains valid as an enrollment code for
+   the new owner until Done, covering a lost response exactly as the setup
+   code does.
+
+An expired or cancelled transfer leaves everything as it was, except the
+consumed emergency code.
 
 ### 3.4 Machine report
 
@@ -268,7 +332,8 @@ initial PIN; a secretary may not choose `owner`); `POST /users/{id}/disable`,
 from every device so the next login re-enrolls); `POST /users/{id}/delete`;
 `GET /devices` list with `POST /devices/{id}/forget` and
 `POST /devices/{id}/shared` toggle. Owner-only: `POST /users/transfer`,
-`POST /users/codes/regenerate`, `POST /users/report`.
+`POST /users/transfer/cancel`, `POST /users/codes/regenerate`,
+`POST /users/report`.
 
 These render as partials in the current dashboard's content panel under a
 new **Users** tab. The v2 shell spec will re-home them as tiles.
@@ -283,6 +348,7 @@ new **Users** tab. The v2 shell spec will re-home them as tiles.
 | `web_interface/auth.py` | `LoginLimiter` removed; `require(...)`, session resolution, cookie helpers live here |
 | `web_interface/routes.py` | `require_auth` → `require(Permission...)` per route; new login, enroll, logout, setup, users, devices routes; catalog/placement split |
 | `web_interface/templates/login.html`, `enroll.html`, `setup.html`, `setup_codes.html`, `setup_review_user.html` | New full pages with viewport meta |
+| `services/display_controller.py` | Show and clear the setup code in maintenance mode |
 | `web_interface/templates/partials/keypad.html`, `users_list.html`, `user_form.html`, `devices_list.html`, `inventory_catalog_form.html`, `inventory_placement_form.html` | New partials |
 | `web_interface/templates/partials/inventory_edit_form.html` | Removed |
 | `config/config_model.py` | Drop `admin_username` / `admin_password` from `WebConfig` |
@@ -298,6 +364,9 @@ new **Users** tab. The v2 shell spec will re-home them as tiles.
   route instead of the setup wizard (a corrupt access file must not silently
   become an open setup wizard). The MQTT client and VMC still run; this is a
   dashboard-only failure.
+- Setup code or transfer code lost before Done: the owner re-enrolls with
+  it (§3.1); if both the code and the log are gone, the machine is in the
+  no-recovery case by design.
 - SMTP failure during OTP send: log, show "Email could not be sent, use an
   emergency code" on the page. Never block on the network: the send runs in a
   thread with a 15-second timeout.
@@ -312,18 +381,26 @@ new **Users** tab. The v2 shell spec will re-home them as tiles.
 - scrypt round-trip; two users with the same PIN have different hashes.
 - Single-owner invariant raised on a second owner.
 - Back-off delays follow 1, 2, 4, … capped at 3600, reset on success, and are
-  independent per client and per kind.
+  independent per client and per kind; an unresolvable device cookie keys on
+  IP; the per-user budget slows untrusted clients after 20 failures in an
+  hour and never affects a trusted device.
+- `access.json` and its temp file are created `0600` (skipped on Windows).
 - Session idle timeout differs for shared and personal devices; absolute cap.
 - Emergency code consumption is single-use; regenerate wipes the pool.
-- Transfer deletes the owner, ends sessions, keeps other users, enters setup
-  mode.
+- Transfer start leaves the owner in control; complete swaps owner, ends
+  sessions, keeps other users; cancel and expiry restore the pending state
+  to null; a second owner creation during a race is rejected.
+- Setup code is accepted for enrollment until Done, then rejected.
 - Deleting a user removes them from every device.
 
 `tests/test_web_routes.py` with a `login_as(role, shared=False)` helper that
 seeds a user and a trusted device and returns a client with both cookies:
 
-- Setup mode redirects every route to `/setup`; wizard creates the owner and
-  shows 20 codes.
+- Setup mode redirects every route to `/setup`; the wizard rejects a wrong
+  setup code with back-off, creates the owner with the right one, and shows
+  20 codes on `/setup/codes`; a lost step-1 response is recovered by logging
+  in and enrolling with the setup code; the display controller was asked to
+  show the code and to clear it after Done.
 - Login with correct PIN on an untrusted device shows enrollment; OTP path
   with a stubbed mailer; emergency-code path; wrong code backs off with a 429.
 - Locked shared session resumes with PIN only.
@@ -332,7 +409,9 @@ seeds a user and a trusted device and returns a client with both cookies:
 - Secretary cannot edit, disable, or delete the owner.
 - Catalog vs placement split: loader can change slot and count, gets 403 on
   price.
-- Transfer flow end to end including the review-users step.
+- Transfer flow end to end: start shows a transfer code, the old owner still
+  works, `/setup` with the transfer code completes the swap, review-users
+  step, cancel path.
 - HTMX guard still rejects POSTs without the header.
 
 ## 8. Out of scope
