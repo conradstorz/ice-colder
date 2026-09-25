@@ -1,11 +1,18 @@
 """Tests for services/access.py."""
 
+import json
+import os
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from services.access import (
     BACKOFF_CAP_SECONDS,
     ROLE_PERMISSIONS,
+    AccessError,
+    AccessStore,
     Backoff,
+    OwnerExistsError,
     Permission,
     Role,
     generate_code,
@@ -279,3 +286,198 @@ class TestPermissionTable:
         for role in (Role.secretary, Role.tech, Role.loader):
             assert Permission.manage_ownership not in ROLE_PERMISSIONS[role]
             assert Permission.edit_secrets not in ROLE_PERMISSIONS[role]
+
+
+class FakeWallClock:
+    def __init__(self, start: datetime | None = None):
+        self.now = start or datetime(2026, 9, 25, 12, 0, 0, tzinfo=timezone.utc)
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    def advance(self, **kwargs) -> None:
+        self.now += timedelta(**kwargs)
+
+
+@pytest.fixture
+def store(tmp_path):
+    return AccessStore(
+        path=tmp_path / "access.json", clock=FakeClock(), wall_clock=FakeWallClock()
+    )
+
+
+class TestStorePersistence:
+    def test_missing_file_is_empty_not_corrupt(self, store):
+        assert store.users == {}
+        assert store.devices == {}
+        assert store.corrupt is False
+        assert store.owner() is None
+
+    def test_created_user_survives_a_reload(self, tmp_path):
+        path = tmp_path / "access.json"
+        s1 = AccessStore(path=path, clock=FakeClock(), wall_clock=FakeWallClock())
+        user = s1.create_user("Ada", "ada@example.com", Role.owner, "1379")
+        s2 = AccessStore(path=path, clock=FakeClock(), wall_clock=FakeWallClock())
+        assert s2.get_user(user.id).name == "Ada"
+        assert s2.get_user(user.id).role is Role.owner
+        assert s2.verify_user_pin(user.id, "1379")
+
+    def test_pin_is_never_written_in_clear(self, tmp_path):
+        path = tmp_path / "access.json"
+        s = AccessStore(path=path, clock=FakeClock(), wall_clock=FakeWallClock())
+        s.create_user("Ada", None, Role.owner, "1379")
+        assert "1379" not in path.read_text(encoding="utf-8")
+
+    def test_invalid_json_marks_the_store_corrupt(self, tmp_path):
+        path = tmp_path / "access.json"
+        path.write_text("{not json", encoding="utf-8")
+        s = AccessStore(path=path, clock=FakeClock(), wall_clock=FakeWallClock())
+        assert s.corrupt is True
+        assert s.users == {}
+
+    def test_a_corrupt_store_refuses_to_write(self, tmp_path):
+        path = tmp_path / "access.json"
+        path.write_text("{not json", encoding="utf-8")
+        s = AccessStore(path=path, clock=FakeClock(), wall_clock=FakeWallClock())
+        with pytest.raises(AccessError):
+            s.create_user("Ada", None, Role.owner, "1379")
+        assert path.read_text(encoding="utf-8") == "{not json"
+
+    def test_timestamps_are_utc_iso8601(self, tmp_path):
+        path = tmp_path / "access.json"
+        s = AccessStore(path=path, clock=FakeClock(), wall_clock=FakeWallClock())
+        s.create_user("Ada", None, Role.owner, "1379")
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        created = list(raw["users"].values())[0]["created_at"]
+        assert created == "2026-09-25T12:00:00+00:00"
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX file modes only")
+    def test_file_is_created_0600(self, tmp_path):
+        path = tmp_path / "access.json"
+        s = AccessStore(path=path, clock=FakeClock(), wall_clock=FakeWallClock())
+        s.create_user("Ada", None, Role.owner, "1379")
+        assert (path.stat().st_mode & 0o777) == 0o600
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX file modes only")
+    def test_loose_permissions_are_tightened_with_a_warning(self, tmp_path, caplog):
+        path = tmp_path / "access.json"
+        path.write_text('{"users": {}, "devices": {}}', encoding="utf-8")
+        path.chmod(0o644)
+        AccessStore(path=path, clock=FakeClock(), wall_clock=FakeWallClock())
+        assert (path.stat().st_mode & 0o777) == 0o600
+        assert "0600" in caplog.text
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX file modes only")
+    def test_no_temp_file_is_left_behind(self, tmp_path):
+        path = tmp_path / "access.json"
+        s = AccessStore(path=path, clock=FakeClock(), wall_clock=FakeWallClock())
+        s.create_user("Ada", None, Role.owner, "1379")
+        assert list(tmp_path.glob("*.tmp")) == []
+
+
+class TestUsers:
+    def test_second_owner_is_rejected(self, store):
+        store.create_user("Ada", None, Role.owner, "1379")
+        with pytest.raises(OwnerExistsError):
+            store.create_user("Bob", None, Role.owner, "2468")
+
+    def test_second_owner_rejection_does_not_persist_the_user(self, store):
+        store.create_user("Ada", None, Role.owner, "1379")
+        with pytest.raises(OwnerExistsError):
+            store.create_user("Bob", None, Role.owner, "2468")
+        assert [u.name for u in store.users.values()] == ["Ada"]
+
+    def test_other_roles_may_repeat(self, store):
+        store.create_user("T1", None, Role.tech, "1379")
+        store.create_user("T2", None, Role.tech, "2468")
+        assert len(store.users) == 2
+
+    def test_promoting_a_second_user_to_owner_is_rejected(self, store):
+        store.create_user("Ada", None, Role.owner, "1379")
+        bob = store.create_user("Bob", None, Role.tech, "2468")
+        with pytest.raises(OwnerExistsError):
+            store.update_user(bob.id, role=Role.owner)
+
+    def test_disabled_user_fails_pin_verification(self, store):
+        u = store.create_user("Ada", None, Role.owner, "1379")
+        store.set_user_disabled(u.id, True)
+        assert store.verify_user_pin(u.id, "1379") is False
+
+    def test_unknown_user_fails_pin_verification(self, store):
+        assert store.verify_user_pin("nope", "1379") is False
+
+    def test_enabled_users_excludes_disabled(self, store):
+        a = store.create_user("Ada", None, Role.owner, "1379")
+        b = store.create_user("Bob", None, Role.tech, "2468")
+        store.set_user_disabled(b.id, True)
+        assert [u.id for u in store.enabled_users()] == [a.id]
+
+    def test_reset_pin_changes_the_hash_and_untrusts_every_device(self, store):
+        u = store.create_user("Ada", None, Role.owner, "1379")
+        dev, _ = store.create_device("Tablet", shared=True)
+        store.trust_device(dev.id, u.id)
+        store.set_user_pin(u.id, "2468")
+        assert store.verify_user_pin(u.id, "2468")
+        assert store.verify_user_pin(u.id, "1379") is False
+        assert store.devices[dev.id].trusted_user_ids == []
+
+    def test_deleting_a_user_removes_them_from_every_device(self, store):
+        u = store.create_user("Ada", None, Role.owner, "1379")
+        d1, _ = store.create_device("Tablet", shared=True)
+        d2, _ = store.create_device("Phone", shared=False)
+        store.trust_device(d1.id, u.id)
+        store.trust_device(d2.id, u.id)
+        store.delete_user(u.id)
+        assert store.get_user(u.id) is None
+        assert store.devices[d1.id].trusted_user_ids == []
+        assert store.devices[d2.id].trusted_user_ids == []
+
+    def test_trusting_an_unknown_user_is_refused(self, store):
+        dev, _ = store.create_device("Tablet", shared=True)
+        with pytest.raises(AccessError):
+            store.trust_device(dev.id, "nobody")
+
+
+class TestDevices:
+    def test_token_resolves_to_its_device_and_is_not_stored_raw(self, tmp_path):
+        path = tmp_path / "access.json"
+        s = AccessStore(path=path, clock=FakeClock(), wall_clock=FakeWallClock())
+        dev, token = s.create_device("Tablet", shared=True)
+        assert s.device_for_token(token).id == dev.id
+        assert token not in path.read_text(encoding="utf-8")
+
+    def test_unknown_or_missing_token_resolves_to_none(self, store):
+        store.create_device("Tablet", shared=True)
+        assert store.device_for_token("bogus") is None
+        assert store.device_for_token(None) is None
+
+    def test_forget_and_shared_toggle(self, store):
+        dev, _ = store.create_device("Tablet", shared=True)
+        store.set_device_shared(dev.id, False)
+        assert store.devices[dev.id].shared is False
+        store.forget_device(dev.id)
+        assert dev.id not in store.devices
+
+    def test_stale_unenrolled_devices_are_pruned_after_a_day(self, tmp_path):
+        wall = FakeWallClock()
+        s = AccessStore(
+            path=tmp_path / "access.json", clock=FakeClock(), wall_clock=wall
+        )
+        user = s.create_user("Ada", None, Role.owner, "1379")
+        kept, _ = s.create_device("Tablet", shared=True)
+        s.trust_device(kept.id, user.id)
+        abandoned, _ = s.create_device("Drive-by", shared=False)
+        wall.advance(hours=25)
+        assert s.prune_devices() == 1
+        assert kept.id in s.devices
+        assert abandoned.id not in s.devices
+
+    def test_fresh_unenrolled_devices_survive(self, tmp_path):
+        wall = FakeWallClock()
+        s = AccessStore(
+            path=tmp_path / "access.json", clock=FakeClock(), wall_clock=wall
+        )
+        fresh, _ = s.create_device("Drive-by", shared=False)
+        wall.advance(hours=23)
+        assert s.prune_devices() == 0
+        assert fresh.id in s.devices
