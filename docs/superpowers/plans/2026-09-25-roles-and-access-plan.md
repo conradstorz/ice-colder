@@ -4052,7 +4052,7 @@ git commit -m "feat(access): split the product form into catalog and placement"
 
 **Spec:** §3.1 ("publishes it to the customer display through `services/display_controller.py` (maintenance mode, 'Setup code: 1234 5678') for as long as setup mode lasts").
 
-> **§3.5 NOTIFICATION — the owner is told before this task runs.** `DisplayCommand` in `services/mqtt_messages.py` carries only `mode`; there is nowhere to put the text the spec asks for. This task adds an **optional** `message: str | None = None` field. It is additive, no in-repo consumer or simulator subscribes to `cmd/display` (grep: only `display_controller.py` publishes it), and the model lives in `services/mqtt_messages.py`, not in `contracts/`, so no `CONTRACT_VERSION` bump is implied. The executor must confirm the owner has approved this before starting, and record it in the pull-request deviations list. If the owner declines, the fallback is: log the setup code at warning level only and leave the display untouched, dropping the display assertions from Task 14's tests.
+> **§3.5 NOTIFICATION — OWNER APPROVED 2026-09-25.** `DisplayCommand` in `services/mqtt_messages.py` carries only `mode`; there is nowhere to put the text the spec asks for. This task adds an **optional** `message: str | None = None` field. It is additive, no in-repo consumer or simulator subscribes to `cmd/display` (grep: only `display_controller.py` publishes it), and the model lives in `services/mqtt_messages.py`, not in `contracts/`, so no `CONTRACT_VERSION` bump is implied. The owner has approved this explicitly; proceed as written and record it in the pull-request deviations list. No further confirmation is needed.
 
 **Files:**
 - Modify: `services/mqtt_messages.py`, `services/display_controller.py`
