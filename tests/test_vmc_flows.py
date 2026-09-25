@@ -873,7 +873,7 @@ def _wired_vmc(products=None):
     vmc.attach_to_loop(asyncio.get_running_loop())
     monitor = HealthMonitor()
     vmc.set_health_monitor(monitor)
-    avail = Availability(cfg.products)
+    avail = Availability()
     vmc.set_availability(avail)
     published: list = []
 
@@ -903,7 +903,7 @@ async def _enables(published) -> list[bool]:
     ]
 
 
-async def test_vending_heartbeat_loss_raises_com_101_and_disables_payment():
+async def test_vending_heartbeat_loss_raises_com_101_without_disabling_payment():
     vmc, monitor, avail, published = _wired_vmc()
     _all_alive(monitor, vmc)
     avail.set_payment_device("coin_acceptor", "ready")
@@ -915,12 +915,13 @@ async def test_vending_heartbeat_loss_raises_com_101_and_disables_payment():
     monitor.mark_offline("vending")
     codes = {f["code"] for f in vmc.active_faults()}
     assert "COM-101" in codes
-    assert avail.payment_enabled is False
-    assert (await _enables(published))[-1] is False
+    assert avail.payment_enabled is True
+    assert avail.sale_available("ice")[0] is False
+    assert "vending_alive" in avail.sale_available("ice")[1]
 
     monitor.record_heartbeat("vending", {"uptime_seconds": 5})
     assert "COM-101" not in {f["code"] for f in vmc.active_faults()}
-    assert avail.payment_enabled is True
+    assert avail.sale_available("ice")[0] is True
     vmc.cancel_pending_tasks()
 
 
@@ -938,12 +939,13 @@ async def test_ice_maker_loss_is_com_102_and_only_ice_blocked():
     vmc.cancel_pending_tasks()
 
 
-async def test_mdb_loss_is_pay_101():
+async def test_mdb_loss_is_pay_101_and_blocks_sales_not_payment():
     vmc, monitor, avail, _ = _wired_vmc()
     _all_alive(monitor, vmc)
     monitor.mark_offline("mdb")
     assert "PAY-101" in {f["code"] for f in vmc.active_faults()}
-    assert avail.payment_enabled is False
+    assert avail.payment_enabled is True
+    assert "payment_alive" in avail.sale_available("ice")[1]
     vmc.cancel_pending_tasks()
 
 
@@ -965,7 +967,7 @@ async def test_payment_status_error_feeds_availability():
     await vmc._handle_mqtt_payment_status(
         "payment/status", {"device": "card_reader", "state": "error"}
     )
-    assert "payment_devices_ready" in avail.blocking_reasons()
+    assert "payment_devices_ready" in avail.sale_available("ice")[1]
     vmc.cancel_pending_tasks()
 
 
@@ -999,23 +1001,183 @@ def _boot_with(tmp_path, snap):
     return vmc, avail, store
 
 
+async def test_pay_104_on_boot_leaves_payment_enabled(tmp_path):
+    rec = FakeEventRecorder()
+    vmc, avail, store = _boot_with(tmp_path, None)
+    vmc.set_event_recorder(rec)
+    store.save(SessionSnapshot(state="interacting_with_user", credit_escrow=1.25))
+    vmc.set_session_store(store)
+
+    assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+    assert avail.payment_enabled is True
+    assert avail.payment_blocking_reasons() == []
+    assert store.load() is not None  # evidence kept until an admin clears it
+    vmc.cancel_pending_tasks()
+
+
+async def test_pay_104_is_reported_as_a_warning():
+    vmc, monitor, avail, _ = _wired_vmc()
+    _all_alive(monitor, vmc)
+    vmc._raise_fault(FaultCode.PAY_104, outcome="test")
+    fault = next(f for f in vmc.active_faults() if f["code"] == "PAY-104")
+    assert fault["severity"] == "warning"
+    assert fault["scope"] == "machine"
+    assert avail.payment_enabled is True
+    vmc.cancel_pending_tasks()
+
+
+async def test_select_product_refused_while_vending_offline_but_payment_stays_on():
+    """Immediately after a refused selection the escrow is still held — but it
+    must not stay stranded forever. See
+    test_deposit_while_idle_and_vending_offline_is_refunded_on_timeout below
+    for the guarantee that the session timeout eventually refunds it.
+    """
+    vmc, monitor, avail, _ = _wired_vmc()
+    _all_alive(monitor, vmc)
+    avail.set_payment_device("coin_acceptor", "ready")
+    await vmc._handle_mqtt_hardware_io(
+        "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
+    )
+    monitor.mark_offline("vending")
+
+    assert avail.payment_enabled is True
+    vmc.deposit_funds(2.00)
+    vmc.select_product(0)
+    assert vmc.selected_product is None
+    assert vmc.credit_escrow == 2.00
+    assert vmc.state == "idle"
+    vmc.cancel_pending_tasks()
+
+
+async def test_deposit_while_idle_arms_session_timeout():
+    """A deposit before any selection is a legitimate entry point (see
+    on_start_interaction's own "insert funds or select a product" message),
+    so it must arm the safety-net timer even though the FSM stays idle.
+    """
+    vmc, monitor, avail, _ = _wired_vmc()
+    _all_alive(monitor, vmc)
+    avail.set_payment_device("coin_acceptor", "ready")
+
+    assert vmc.state == "idle"
+    assert vmc._session_timeout_task is None
+    vmc.deposit_funds(2.00)
+
+    assert vmc._session_timeout_task is not None
+    vmc.cancel_pending_tasks()
+
+
+async def test_deposit_while_idle_and_vending_offline_is_refunded_on_timeout():
+    """Regression test for the Critical finding: money deposited while idle
+    (vending subsystem offline, so the only selection attempt is refused)
+    must still be refunded when the session times out — never stranded
+    silently forever.
+    """
+    vmc, monitor, avail, published = _wired_vmc()
+    _all_alive(monitor, vmc)
+    avail.set_payment_device("coin_acceptor", "ready")
+    await vmc._handle_mqtt_hardware_io(
+        "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
+    )
+    monitor.mark_offline("vending")
+    vmc._session_timeout_seconds = 0.05
+
+    assert avail.payment_enabled is True
+    vmc.deposit_funds(2.00)
+    vmc.select_product(0)
+    assert vmc.selected_product is None
+    assert vmc.credit_escrow == 2.00
+    assert vmc.state == "idle"
+
+    await asyncio.sleep(0.3)
+
+    refund_cmds = [p for t, p in published if t == "cmd/payment/refund"]
+    assert len(refund_cmds) == 1
+    assert refund_cmds[0].reason == "session_timeout"
+    assert vmc.credit_escrow == 0.0
+    assert vmc.state == "idle"
+    vmc.cancel_pending_tasks()
+
+
+async def test_expire_session_is_a_noop_while_dispensing():
+    """A vend already in flight must never be refunded out from under the
+    customer just because a stale/late timeout callback fires."""
+    vmc = make_vmc2()
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    client = RecordingClient()
+    vmc.set_mqtt_client(client)
+    _start_dispensing(vmc, 0)
+    assert vmc.state == "dispensing"
+    escrow_before = vmc.credit_escrow
+
+    vmc._expire_session()
+
+    assert vmc.state == "dispensing"
+    assert vmc.credit_escrow == escrow_before
+    assert client.refund_commands() == []
+    vmc.cancel_pending_tasks()
+
+
+async def test_deposit_after_on_error_refund_is_refunded_on_timeout():
+    """Regression test: on_error refunds whatever escrow existed when the
+    error was raised, but deposit_funds arms the session timer on every
+    deposit regardless of state. A credit that arrives while the machine is
+    still parked in `error` (awaiting an admin reset_state) must not be
+    silently stranded when that timer fires.
+    """
+    vmc = make_vmc2()
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    client = RecordingClient()
+    vmc.set_mqtt_client(client)
+
+    vmc.credit_escrow = 0.0
+    vmc.error_occurred()
+    await asyncio.sleep(0)
+    assert vmc.state == "error"
+    assert client.refund_commands() == []  # nothing to refund yet
+
+    vmc.deposit_funds(1.50)
+    assert vmc.credit_escrow == 1.50
+    assert vmc._session_timeout_task is not None
+
+    vmc._expire_session()
+    await asyncio.sleep(0)
+
+    cmds = client.refund_commands()
+    assert len(cmds) == 1
+    assert cmds[0].amount == 1.50
+    assert cmds[0].reason == "session_timeout"
+    assert vmc.credit_escrow == 0.0
+    assert vmc.state == "error"  # still needs an admin reset_state
+    vmc.cancel_pending_tasks()
+
+
+async def test_hazard_fault_still_disables_payment():
+    vmc, monitor, avail, published = _wired_vmc()
+    _all_alive(monitor, vmc)
+    avail.set_payment_device("coin_acceptor", "ready")
+    vmc._raise_fault(FaultCode.WTR_104, outcome="leak")
+    assert avail.payment_enabled is False
+    assert avail.payment_blocking_reasons() == ["no_critical_fault"]
+    assert (await _enables(published))[-1] is False
+    vmc.cancel_pending_tasks()
+
+
 async def test_clean_boot_raises_nothing(tmp_path):
     vmc, avail, _ = _boot_with(tmp_path, None)
     assert vmc.active_faults() == []
     vmc.cancel_pending_tasks()
 
 
-async def test_boot_with_escrow_raises_pay_104_and_blocks(tmp_path):
+async def test_boot_with_escrow_raises_pay_104_without_blocking(tmp_path):
     rec = FakeEventRecorder()
     vmc, avail, store = _boot_with(tmp_path, None)
     vmc.set_event_recorder(rec)
     store.save(SessionSnapshot(state="interacting_with_user", credit_escrow=1.25))
     vmc.set_session_store(store)
     assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
-    assert (
-        "transaction_certain" in avail.blocking_reasons()
-        or avail.payment_enabled is False
-    )
+    assert avail.payment_enabled is True
+    rows = {r["name"]: r for r in avail.table()}
+    assert rows["transaction_certain"]["state"] == "fail"
     assert any(
         e[0] == "session_uncertain" and e[2]["credit_escrow"] == 1.25
         for e in rec.events
@@ -1049,7 +1211,8 @@ async def test_clearing_pay_104_removes_file_and_reenables(tmp_path):
     assert vmc.clear_fault("PAY-104", by="admin") is True
     await asyncio.sleep(0.05)
     assert store.load() is None
-    assert "transaction_certain" not in avail.blocking_reasons()
+    rows = {r["name"]: r for r in avail.table()}
+    assert rows["transaction_certain"]["state"] == "pass"
     vmc.cancel_pending_tasks()
 
 
@@ -1060,7 +1223,9 @@ async def test_clear_pay_104_fails_closed_when_evidence_file_persists(tmp_path):
     store.clear = lambda: False
     assert vmc.clear_fault("PAY-104", by="admin") is False
     assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
-    assert avail.payment_enabled is False
+    assert avail.payment_enabled is True
+    rows = {r["name"]: r for r in avail.table()}
+    assert rows["transaction_certain"]["state"] == "fail"
     vmc.cancel_pending_tasks()
 
 
@@ -1104,20 +1269,21 @@ def test_reconcile_session_is_a_documented_stub():
 
 
 async def test_error_occurred_and_reset_publish_destination_state_to_availability():
-    """error_occurred() must flip fsm_ok (and payment_enabled) immediately, and
-    reset_state() must restore it — both require the destination state, not the
-    source state, to be published to Availability."""
+    """error_occurred() must flip fsm_ok immediately, and reset_state() must
+    restore it — both require the destination state, not the source state, to
+    be published to Availability."""
     vmc, monitor, avail, published = _wired_vmc()
     _all_alive(monitor, vmc)
     avail.set_payment_device("coin_acceptor", "ready")
-    assert avail.payment_enabled is True
+    assert avail.sale_available("water")[0] is True
 
     vmc.error_occurred()
-    assert avail.payment_enabled is False
-    assert "fsm_ok" in avail.blocking_reasons()
+    assert avail.sale_available("water")[0] is False
+    assert "fsm_ok" in avail.sale_available("water")[1]
+    assert avail.payment_enabled is True
 
     vmc.reset_state()
-    assert avail.payment_enabled is True
+    assert avail.sale_available("water")[0] is True
     vmc.cancel_pending_tasks()
 
 

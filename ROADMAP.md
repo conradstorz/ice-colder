@@ -98,6 +98,15 @@ Implemented in `services/availability.py`: known inputs are evaluated, inputs
 the firmware cannot report yet are listed as not instrumented and pass until
 Phase B/D.
 
+Each permissive carries a gate. Only `safety` rows — an active hazard fault
+(`PAYMENT_BLOCKING_FAULTS`), an open service door, a leak, a proven-open trap
+door, bad 24 V control power — inhibit `cmd/payment/enable`. Subsystem
+liveness, broker connectivity, bin level and FSM state are `fulfillment` rows:
+they refuse the individual sale at selection time and the customer is refunded
+on session timeout, but the machine keeps accepting money through a transient
+heartbeat gap or broker reconnect. `transaction_certain` (`PAY-104`) is an
+`alert` row and blocks nothing.
+
 ## 4. Product sequences and interlocks
 
 The VMC's FSM stays coarse: `idle → interacting_with_user → dispensing → idle`,
@@ -176,13 +185,20 @@ published; new codes are added, never renumbered.
 | `PAY-101` | Payment device offline | product unavailable | Inhibit both products |
 | `PAY-102` | Vend reported failed after credit taken | reconcile | Refund/retain per §7, alert |
 | `PAY-103` | Refund not confirmed by payment gateway | warning | Alert; operator reconciles against the event history |
-| `PAY-104` | Transaction uncertain after VMC restart | lockout | Payment inhibited until an operator clears the fault; snapshot in event history |
-| `PWR-101` | Power restored after loss | info | Log, run self-test, keep payment inhibited until permissives pass |
-| `PWR-102` | 24 V control supply bad | **critical** | Inhibit both products |
+| `PAY-104` | Transaction uncertain after VMC restart | warning | Alert; operator reconciles and clears. Payment stays enabled; snapshot in event history |
+| `PWR-101` | Power restored after loss | info | Log, run self-test; payment stays enabled throughout (§3) — a self-test finding raises its own fault instead |
+| `PWR-102` | 24 V control supply bad | **critical** | Inhibit both products and payment machine-wide (`PAYMENT_BLOCKING_FAULTS`, §3) |
 | `COM-101` | Vending ESP32 heartbeat lost / LWT | product unavailable | Inhibit both products, alert |
 | `COM-102` | Ice-maker monitor heartbeat lost / LWT | warning | Ice availability becomes `UNKNOWN` |
 | `COM-103` | MQTT broker unreachable | warning | Dashboard stays up, alert when reconnected |
 | `SVC-101` | Service door open / service mode | info | Inhibit both products |
+
+Only the six machine-scope codes in `PAYMENT_BLOCKING_FAULTS` (§3) —
+`ICE-402`, `WTR-103`, `WTR-104`, `ENV-102`, `ENV-103`, `PWR-102` — inhibit
+`cmd/payment/enable`. Every other fault here, including a `critical` one not
+on that list, blocks the affected product (or triggers its listed response)
+without ever withdrawing payment; membership in the frozenset decides this,
+not severity.
 
 Severity meanings: *info* logs only; *warning* alerts; *product unavailable*
 disables one or both products until the condition clears on its own;
@@ -215,8 +231,13 @@ dwell → power on → confirm heartbeat → permissives → re-enable.
 
 ## 7. Payment and refund policy
 
-- Money is accepted only while the corresponding `*_Sale_Available` flag is
-  true. The VMC withdraws `payment/enable` the moment a flag drops.
+- Money is accepted whenever `payment_enabled` is true, gated only by the
+  `safety` permissives in §3 (an active `PAYMENT_BLOCKING_FAULTS` code, an
+  open service door, a leak, a proven-open trap door, bad 24 V control
+  power). The `*_Sale_Available` flags gate the individual sale at selection
+  time, not payment: a `fulfillment`-only failure (heartbeat loss, broker
+  reconnect, an empty bin) refuses the customer's selection but never
+  withdraws `cmd/payment/enable`.
 - The price is moved from escrow at the start of `dispensing`. A terminal
   failure report (`bin_empty`, `timeout`, `jam`, `error`) or the dispense
   timeout returns the price to escrow, locks out the product per its fault
@@ -228,10 +249,12 @@ dwell → power on → confirm heartbeat → permissives → re-enable.
   reconciliation. Escrow bookkeeping alone is never called a refund.
 - A catalog edit that removes the product a customer has selected cancels the
   sale back to `idle` with escrow intact; it is not a machine error.
-- After a VMC restart mid-sale, the transaction is **uncertain**: payment stays
-  inhibited until the payment gateway's state and the ESP32's state are
-  reconciled, and the event is logged for manual review (implemented as
-  `PAY-104`; see `services/session_store.py`).
+- After a VMC restart mid-sale, the transaction is **uncertain**: `PAY-104` is
+  raised as a warning and the event is logged for manual review, but payment
+  stays enabled — `PAY-104` is bookkeeping doubt about a sale that already
+  happened, not a reason to refuse the next one (§3). The operator
+  reconciles and clears the fault from the dashboard (implemented in
+  `services/session_store.py`).
 - The payment system is never power-cycled with a transaction open.
 
 ## 8. Failure modes
@@ -243,7 +266,7 @@ dwell → power on → confirm heartbeat → permissives → re-enable.
 | RPi down | ESP32s go to safe idle; no sales; nothing moves |
 | Vending ESP32 down (LWT or stale) | `COM-101`; both products inhibited |
 | Ice-maker monitor down | `COM-102`; ice availability `UNKNOWN`; ice inhibited |
-| Power loss and return | All outputs de-energized by hardware; `PWR-101`; self-test; payment inhibited until permissives pass |
+| Power loss and return | All outputs de-energized by hardware; `PWR-101`; self-test; payment stays enabled throughout (§3) unless the self-test raises a `PAYMENT_BLOCKING_FAULTS` code |
 | Bag missing | `ICE-201`; ice inhibited, water still sells |
 | Full-bag sensor stuck on | Caught at precheck / self-test; ice inhibited |
 | Full-bag sensor never trips | Max fill time stops motor; `ICE-301` |
@@ -316,8 +339,11 @@ generated schemas.
 - ~~Per-product availability on the dashboard (ice vs water) with the failing
   permissive named.~~ — done (spec
   `docs/superpowers/specs/2026-09-21-unattended-operation-design.md`).
-- Startup self-test state: after boot or `PWR-101`, hold payment off until the
-  vending ESP32 reports permissives.
+- Startup self-test state: after boot or `PWR-101`, run a self-test and raise
+  the specific fault for anything it finds. Per §3, payment stays enabled
+  throughout — self-test running is never itself a reason to withhold it, and
+  it is inhibited only if the self-test raises one of the six
+  `PAYMENT_BLOCKING_FAULTS` codes.
 
 ### Phase D — Vending ESP32 firmware
 
@@ -337,8 +363,9 @@ generated schemas.
 - Run the real VMC against the bench ESP32 and against the simulators with
   fault injection; every fault in §5 must be reproducible on demand.
 - Verify for each: outputs go safe immediately, correct code recorded, payment
-  inhibited, alert delivered, recovery requires the right condition, nothing
-  restarts on its own after a reboot.
+  inhibited only for the six `PAYMENT_BLOCKING_FAULTS` codes (§3) and stays
+  enabled through every other fault, alert delivered, recovery requires the
+  right condition, nothing restarts on its own after a reboot.
 
 ### Phase F — Staged retrofit
 

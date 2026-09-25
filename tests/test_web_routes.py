@@ -525,6 +525,20 @@ class TestFaultsUI:
         r = client.get("/status", auth=client.auth)
         assert "No active faults" in r.text
 
+    def test_status_banner_is_neutral_without_availability(self, client):
+        """No Availability is attached on this fixture, so routes.py sets
+        machine_stopped to None (payment state was never measured). Jinja
+        treats None the same as False, so before this fix the banner fell
+        into the "still selling" branch and asserted a payment state nobody
+        actually checked. It must instead say neither "Machine Stopped" nor
+        "still selling"."""
+        self._add_product(client)
+        self._lock(client)
+        r = client.get("/status", auth=client.auth)
+        assert "Issues Detected" in r.text
+        assert "Machine Stopped" not in r.text
+        assert "still selling" not in r.text
+
     def test_clear_endpoint_clears_and_rerenders(self, client):
         self._add_product(client)
         self._lock(client)
@@ -748,6 +762,47 @@ class TestLoginLimiter:
         assert r.login_limiter._networks == []
 
 
+class TestStillSellingBanner:
+    """A soft fault alerts but keeps selling; a hazard fault stops the machine."""
+
+    @pytest.fixture
+    def wired(self, client):
+        from services.availability import Availability
+        from services.health_monitor import HealthMonitor
+        from web_interface import routes as r
+
+        avail = Availability()
+        r.vmc_instance.set_availability(avail)
+        r.set_availability(avail)
+        r.set_health_monitor(HealthMonitor())
+        yield client
+        r.set_availability(None)
+        r.set_health_monitor(None)
+
+    def test_status_shows_still_selling_for_a_soft_fault(self, wired):
+        client = wired
+        vmc_instance = routes.vmc_instance
+        vmc_instance._raise_fault(FaultCode.PAY_104, outcome="restart")
+        body = client.get("/status", headers={"HX-Request": "true"}).text
+        assert "still selling" in body
+        assert "Machine Stopped" not in body
+        assert "PAY-104" in body
+
+    def test_status_shows_machine_stopped_for_a_hazard_fault(self, wired):
+        client = wired
+        vmc_instance = routes.vmc_instance
+        vmc_instance._raise_fault(FaultCode.WTR_104, outcome="leak")
+        body = client.get("/status", headers={"HX-Request": "true"}).text
+        assert "Machine Stopped" in body
+        assert "still selling" not in body
+
+    def test_health_permissives_table_shows_the_gate(self, wired):
+        client = wired
+        body = client.get("/health", headers={"HX-Request": "true"}).text
+        assert "Gate" in body
+        assert "fulfillment" in body
+
+
 class TestAvailabilityOnDashboard:
     @pytest.fixture
     def wired(self, client):
@@ -755,18 +810,36 @@ class TestAvailabilityOnDashboard:
         from services.health_monitor import HealthMonitor
         from web_interface import routes as r
 
-        avail = Availability(r.config.products)
+        avail = Availability()
         r.set_availability(avail)
         r.set_health_monitor(HealthMonitor())
         yield client, avail
         r.set_availability(None)
 
     def test_status_shows_payment_disabled_with_reason(self, wired):
+        # Only a safety-gate row can disable payment now; a service door left
+        # open is a real hazard, unlike a fulfillment-gate row (e.g. no
+        # products), which must not disable payment.
         client, avail = wired
+        avail.set_hardware_io("service_door", True)
         resp = client.get("/status")
         assert "Payment" in resp.text
         assert "Disabled" in resp.text
-        assert "no products" in resp.text or "vending_alive" in resp.text
+        assert "service_door_closed" in resp.text
+
+    def test_status_is_not_healthy_when_only_payment_is_disabled(self, wired):
+        """A safety permissive (service_door_closed) failing raises no fault
+        and adds nothing to `issues` — it just flips a permissive row. Before
+        this fix, `is_healthy` was `len(issues) == 0` alone, so this rendered
+        the green "All Systems OK" card with a red "Disabled" Payment field
+        buried in the corner, and "Machine Stopped" was unreachable in
+        exactly the case it exists for. A machine not taking money must never
+        render as healthy."""
+        client, avail = wired
+        avail.set_hardware_io("service_door", True)
+        resp = client.get("/status")
+        assert "All Systems OK" not in resp.text
+        assert "Machine Stopped" in resp.text
 
     def test_health_lists_permissives_with_not_instrumented(self, wired):
         client, _ = wired

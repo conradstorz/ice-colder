@@ -1,5 +1,5 @@
 """
-Shared contract models for the vending-machine ESP32 interface (v0.3.0).
+Shared contract models for the vending-machine ESP32 interface (v0.4.0).
 
 Terminal dispenser outcomes, the fault-code registry, the refund
 command/ack, and the general subsystem-capabilities self-description
@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from contracts.common import ChannelDescriptor, _utc_now
 
-CONTRACT_VERSION = "0.3.0"
+CONTRACT_VERSION = "0.4.0"
 
 
 class DispenserOutcome(str, Enum):
@@ -178,7 +178,7 @@ FAULT_TABLE: dict[FaultCode, FaultSpec] = {
         description="Refund not confirmed by payment gateway; needs reconciliation",
     ),
     FaultCode.PAY_104: FaultSpec(
-        severity=Severity.lockout,
+        severity=Severity.warning,
         scope=Scope.machine,
         description="Transaction uncertain after VMC restart; operator must reconcile",
     ),
@@ -213,6 +213,23 @@ FAULT_TABLE: dict[FaultCode, FaultSpec] = {
         description="Service door open / service mode",
     ),
 }
+
+# The only faults that may inhibit payment. Everything else — bookkeeping
+# doubt (PAY-104), heartbeat loss, broker loss, an empty bin — alerts the
+# operator and blocks the individual sale, but never stops the machine taking
+# money. Membership here, not severity, is the gate: adding a fault code can
+# never silently stop the machine, because stopping it requires editing this
+# frozenset on purpose.
+PAYMENT_BLOCKING_FAULTS: frozenset[FaultCode] = frozenset(
+    {
+        FaultCode.ICE_402,  # trap door failed to close
+        FaultCode.WTR_103,  # flow continues after valve close
+        FaultCode.WTR_104,  # leak / overflow detected
+        FaultCode.ENV_102,  # heater ineffective
+        FaultCode.ENV_103,  # heater high-limit tripped
+        FaultCode.PWR_102,  # 24 V control supply bad
+    }
+)
 
 # Which fault a terminal dispenser outcome raises. `complete` is not a fault.
 OUTCOME_FAULTS: dict[DispenserOutcome, FaultCode] = {

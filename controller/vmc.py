@@ -1045,15 +1045,23 @@ class VMC:
         if self._availability and not self._availability.payment_enabled:
             logger.warning(
                 f"Credit ${amount:.2f} arrived while payment is disabled "
-                f"({', '.join(self._availability.blocking_reasons())}); escrowed"
+                f"({', '.join(self._availability.payment_blocking_reasons())}); "
+                "escrowed"
             )
         self.credit_escrow += amount
         self.last_payment_method = payment_method
         logger.info(
             f"Deposited ${amount:.2f} via {payment_method}. New escrow: ${self.credit_escrow:.2f}"
         )
-        if self.state == "interacting_with_user":
-            self._reset_session_timeout()
+        # Arm/reset the safety-net timer on every deposit, not only once the
+        # FSM has reached interacting_with_user. Money can arrive (via the
+        # MDB gateway over MQTT) while still idle — before any button press,
+        # or while a soft fault (e.g. vending offline) is refusing every
+        # selection — and on_start_interaction's own message ("Please insert
+        # funds or select a product") already treats deposit-before-selection
+        # as a normal entry point. Without arming here, escrow taken while
+        # idle would never be refunded: see _expire_session's idle branch.
+        self._reset_session_timeout()
         self._publish_status()
         self._refresh_ui()
         self.send_customer_message(
@@ -1360,7 +1368,71 @@ class VMC:
 
     @logger.catch()
     def _expire_session(self):
-        """Called when the customer session times out due to inactivity."""
+        """Called when the session-timeout timer fires.
+
+        Three cases need the stranded-money guarantee to hold:
+
+        - ``interacting_with_user``: the customer walked away mid-session
+          (selected a product, or not) — unconditionally refund and reset,
+          exactly as before this fix. Handled even at zero escrow, so a
+          lingering selection is still cleared.
+        - ``idle`` with escrow > 0: money arrived (MQTT payment event) but
+          every selection attempt was refused before the FSM ever left idle
+          (e.g. the vending subsystem was offline) — or none was attempted
+          at all. Refund and stay idle; nothing else to reset.
+        - ``error`` with escrow > 0: ``on_error`` already refunds whatever
+          credit was present *at the moment it ran*, but ``deposit_funds``
+          arms/re-arms this same timer on every deposit regardless of FSM
+          state (see its docstring), so a credit that arrives *after*
+          ``on_error`` — the machine is still parked in ``error`` awaiting an
+          admin ``reset_state`` — is added to escrow with nothing left to
+          refund it: ``on_reset`` doesn't touch ``credit_escrow`` either.
+          Refund and stay in ``error``; the admin still has to clear the
+          fault that put the machine there.
+
+        ``dispensing`` is the only remaining no-op, and deliberately so: a
+        vend in flight must never be refunded out from under the customer.
+        A deposit that lands mid-vend still re-arms this timer, but by the
+        time it could fire the vend has already resolved — on success,
+        ``_post_dispense_dest`` lands on ``interacting_with_user`` whenever
+        that deposit left escrow positive, which this method's own branch
+        for that state then covers; on failure/timeout, ``_fail_vend``
+        explicitly re-arms (products remain) or refunds and forces ``idle``
+        (none do) before this timer could ever observe ``dispensing`` again.
+        """
+        if self.state == "idle":
+            if self.credit_escrow <= 0:
+                return
+            logger.info(
+                "Idle session timed out with stranded escrow; refunding "
+                f"${self.credit_escrow:.2f}."
+            )
+            txn_log.info(
+                f"SESSION TIMEOUT: refunding ${self.credit_escrow:.2f} (idle, no active selection)"
+            )
+            self.request_refund(reason="session_timeout")
+            self.selected_product = None
+            self.last_insufficient_message = ""
+            self._publish_status()
+            self._refresh_ui()
+            return
+        if self.state == "error":
+            if self.credit_escrow <= 0:
+                return
+            logger.info(
+                "Session timed out in error state with stranded escrow; "
+                f"refunding ${self.credit_escrow:.2f}."
+            )
+            txn_log.info(
+                f"SESSION TIMEOUT: refunding ${self.credit_escrow:.2f} "
+                "(error, deposited after on_error's own refund)"
+            )
+            self.request_refund(reason="session_timeout")
+            self.selected_product = None
+            self.last_insufficient_message = ""
+            self._publish_status()
+            self._refresh_ui()
+            return
         if self.state != "interacting_with_user":
             return
         logger.info("Customer session timed out due to inactivity.")

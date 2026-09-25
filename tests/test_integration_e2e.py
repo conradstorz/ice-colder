@@ -530,8 +530,12 @@ class TestFailedVendLoop:
                     pass
 
 
-async def test_vending_heartbeat_loss_withdraws_payment_enable():
-    """Live broker: vending LWT -> payment/enable false; heartbeat back -> true."""
+async def test_vending_heartbeat_loss_blocks_sale_not_payment_enable():
+    """Live broker: vending LWT no longer withdraws payment/enable —
+    `vending_alive` is a fulfillment-only permissive under the soft-faults
+    design (services/availability.py), so cmd/payment/enable stays true
+    throughout. Heartbeat loss instead blocks `sale_available` for that
+    product kind, and heartbeat recovery restores it."""
     from services.availability import Availability
 
     cfg = ConfigModel()
@@ -546,7 +550,7 @@ async def test_vending_heartbeat_loss_withdraws_payment_enable():
     vmc.attach_to_loop(asyncio.get_running_loop())
     monitor = HealthMonitor()
     vmc.set_health_monitor(monitor)
-    avail = Availability(cfg.products)
+    avail = Availability()
     vmc.set_availability(avail)
     vmc.set_mqtt_client(mqtt)
     mqtt.set_connection_callback(
@@ -578,11 +582,17 @@ async def test_vending_heartbeat_loss_withdraws_payment_enable():
             json.dumps({"subsystem": "vending", "uptime_seconds": -1}),
         )
         await asyncio.sleep(1.0)
+        assert avail.payment_enabled is True
+        sellable, reasons = avail.sale_available("ice")
+        assert sellable is False
+        assert "vending_alive" in reasons
+
         await probe.publish(
             f"{prefix}/heartbeat/vending",
             json.dumps({"subsystem": "vending", "uptime_seconds": 2}),
         )
         await asyncio.sleep(1.0)
+        assert avail.sale_available("ice")[0] is True
 
         while True:
             try:
@@ -593,4 +603,5 @@ async def test_vending_heartbeat_loss_withdraws_payment_enable():
 
     run.cancel()
     vmc.cancel_pending_tasks()
-    assert seen[-3:] == [True, False, True]
+    assert seen  # payment/enable was published at least once (initial true)
+    assert all(seen), "payment/enable must never go false on fulfillment-only loss"

@@ -65,8 +65,15 @@ checkout). Subsystems in `EXPECTED_SUBSYSTEMS` are listed even before they speak
 - `payment_gateway_manager.py` - manages Stripe/PayPal/Square gateways, generates QR codes via `qrcode` library
 - `config_store.py` - persists config changes (add/update products) back to `config.json`
 - `fsm_control.py` - translates admin commands (restart, reset, shutdown) into actions
-- `availability.py` - permissive truth table (ROADMAP §3); publishes `cmd/payment/enable` on change; feeds the health tab and `/screen`
-- `session_store.py` - atomic snapshot of the live sale in `data/session.json`; an open snapshot at boot raises `PAY-104` until an admin clears it
+- `availability.py` - permissive truth table (ROADMAP §3) split into three
+  gates: `safety` rows block payment and sales, `fulfillment` rows block only
+  the individual sale, `alert` rows block nothing. Publishes
+  `cmd/payment/enable` on change; feeds the health tab and `/screen`. Only the
+  six codes in `contracts.vending_machine.PAYMENT_BLOCKING_FAULTS` can inhibit
+  payment.
+- `session_store.py` - atomic snapshot of the live sale in `data/session.json`;
+  an open snapshot at boot raises `PAY-104`, which alerts the operator and
+  holds the evidence file until an admin clears it, but never inhibits payment
 - `paths.py` - `LOG_DIR`, `LOG_FILE`, `DATA_DIR` shared by main, routes and services
 - `auth_policy.py` - admin-password policy shared by first-run setup and startup checks: rejects empty/default/short passwords, generates a random first-run password, identifies loopback hosts
 

@@ -15,6 +15,8 @@ from typing import Callable, Optional
 
 from loguru import logger
 
+from contracts.vending_machine import PAYMENT_BLOCKING_FAULTS
+
 
 class PermissiveState(str, Enum):
     PASS = "pass"
@@ -28,6 +30,21 @@ class Applies(str, Enum):
     both = "both"
 
 
+class Gate(str, Enum):
+    """How far a failing permissive reaches.
+
+    safety      — a physical hazard. Blocks payment and every sale.
+    fulfillment — the machine cannot complete this sale right now. Blocks the
+                  sale; payment stays enabled so a transient heartbeat gap or
+                  broker reconnect never costs a night of revenue.
+    alert       — the operator should know, but nothing is blocked.
+    """
+
+    safety = "safety"
+    fulfillment = "fulfillment"
+    alert = "alert"
+
+
 @dataclass
 class Permissive:
     name: str
@@ -35,6 +52,7 @@ class Permissive:
     instrumented: bool
     state: PermissiveState
     detail: str = ""
+    gate: Gate = Gate.fulfillment
 
     def as_row(self) -> dict:
         return {
@@ -43,6 +61,7 @@ class Permissive:
             "instrumented": self.instrumented,
             "state": self.state.value,
             "detail": self.detail,
+            "gate": self.gate.value,
         }
 
 
@@ -53,7 +72,8 @@ LIVENESS_INPUTS = {
     "ice_maker": "ice_maker_alive",
 }
 
-_BLOCKING_SEVERITIES = {"critical", "lockout"}
+# active_faults() reports codes as strings; compare against the contract set.
+_PAYMENT_BLOCKING_CODES = {code.value for code in PAYMENT_BLOCKING_FAULTS}
 _BAD_DEVICE_STATES = {"error", "offline"}
 
 
@@ -62,26 +82,28 @@ def _inst(
     applies: Applies,
     state: PermissiveState = PermissiveState.UNKNOWN,
     detail: str = "",
+    gate: Gate = Gate.fulfillment,
 ) -> Permissive:
-    return Permissive(name, applies, True, state, detail)
+    return Permissive(name, applies, True, state, detail, gate)
 
 
-def _stub(name: str, applies: Applies) -> Permissive:
-    return Permissive(name, applies, False, PermissiveState.PASS, "not instrumented")
+def _stub(name: str, applies: Applies, gate: Gate = Gate.fulfillment) -> Permissive:
+    return Permissive(
+        name, applies, False, PermissiveState.PASS, "not instrumented", gate
+    )
 
 
 class Availability:
     """Truth table of permissives plus the payment/enable publisher.
 
     Usage:
-        avail = Availability(config.products)
+        avail = Availability()
         avail.set_publisher(vmc.publish_payment_enable)   # sync callable(bool)
         avail.set_subsystem_alive("vending", True)         # ... from health monitor
         ok, failing = avail.product_sellable(product)
     """
 
-    def __init__(self, products: list):
-        self._products = list(products)
+    def __init__(self):
         self._lockouts: dict[str, str] = {}
         self._publish: Optional[Callable[[bool], None]] = None
         self._recorder = None
@@ -97,21 +119,32 @@ class Availability:
             _inst("ice_maker_alive", Applies.ice),
             _inst("ice_available", Applies.ice, detail="no bin report yet"),
             _inst("fsm_ok", Applies.both),
-            _inst("no_critical_fault", Applies.both, PermissiveState.PASS),
+            _inst(
+                "no_critical_fault",
+                Applies.both,
+                PermissiveState.PASS,
+                gate=Gate.safety,
+            ),
             _inst(
                 "service_door_closed",
                 Applies.both,
                 PermissiveState.PASS,
                 "assumed closed; no report yet",
+                gate=Gate.safety,
             ),
-            _inst("transaction_certain", Applies.both, PermissiveState.PASS),
+            _inst(
+                "transaction_certain",
+                Applies.both,
+                PermissiveState.PASS,
+                gate=Gate.alert,
+            ),
             _stub("bag_present", Applies.ice),
-            _stub("trap_door_closed", Applies.ice),
-            _stub("control_power_ok", Applies.both),
+            _stub("trap_door_closed", Applies.ice, gate=Gate.safety),
+            _stub("control_power_ok", Applies.both, gate=Gate.safety),
             _stub("water_pressure_ok", Applies.water),
             _stub("water_treatment_ok", Applies.water),
-            _stub("no_leak", Applies.water),
-            _stub("water_valve_closed", Applies.water),
+            _stub("no_leak", Applies.water, gate=Gate.safety),
+            _stub("water_valve_closed", Applies.water, gate=Gate.safety),
         ]
         self._rows: dict[str, Permissive] = {r.name: r for r in rows}
 
@@ -169,7 +202,7 @@ class Availability:
         blocking = sorted(
             f["code"]
             for f in faults
-            if f.get("scope") == "machine" and f.get("severity") in _BLOCKING_SEVERITIES
+            if f.get("scope") == "machine" and f.get("code") in _PAYMENT_BLOCKING_CODES
         )
         self._rows["no_critical_fault"].state = (
             PermissiveState.FAIL if blocking else PermissiveState.PASS
@@ -189,10 +222,6 @@ class Availability:
     def set_transaction_certain(self, certain: bool) -> None:
         self._set_bool("transaction_certain", certain, "PAY-104 active")
 
-    def set_products(self, products: list) -> None:
-        self._products = list(products)
-        self._recompute()
-
     def _refresh_ice_available(self) -> None:
         row = self._rows["ice_available"]
         if self._ice_101_active:
@@ -207,13 +236,11 @@ class Availability:
     # --- outputs ---
 
     def _rows_for(self, kind: str) -> list[Permissive]:
+        """Rows that can block a sale of *kind*. Alert rows never block."""
+        rows = [r for r in self._rows.values() if r.gate is not Gate.alert]
         if kind in ("ice", "water"):
-            return [
-                r
-                for r in self._rows.values()
-                if r.applies_to in (Applies.both, Applies(kind))
-            ]
-        return list(self._rows.values())
+            return [r for r in rows if r.applies_to in (Applies.both, Applies(kind))]
+        return rows
 
     def sale_available(self, kind: str) -> tuple[bool, list[str]]:
         failing = [
@@ -229,17 +256,21 @@ class Availability:
             ok = False
         return ok, failing
 
+    def payment_blocking_reasons(self) -> list[str]:
+        """Failing safety rows — the only reasons payment may be inhibited.
+
+        Safety is machine-wide: a leak or a bad 24 V supply stops the whole
+        machine, regardless of which product kind the row nominally applies to.
+        """
+        return sorted(
+            r.name
+            for r in self._rows.values()
+            if r.gate is Gate.safety and r.state is not PermissiveState.PASS
+        )
+
     @property
     def payment_enabled(self) -> bool:
-        return any(self.product_sellable(p)[0] for p in self._products)
-
-    def blocking_reasons(self) -> list[str]:
-        """Why payment is off: the shortest failing list across products."""
-        if self.payment_enabled:
-            return []
-        if not self._products:
-            return ["no products"]
-        return min((self.product_sellable(p)[1] for p in self._products), key=len)
+        return not self.payment_blocking_reasons()
 
     def table(self) -> list[dict]:
         rows = sorted(self._rows.values(), key=lambda r: (not r.instrumented, r.name))
@@ -258,7 +289,7 @@ class Availability:
         if enabled == self._last_published:
             return
         self._last_published = enabled
-        reasons = self.blocking_reasons()
+        reasons = self.payment_blocking_reasons()
         logger.info(
             f"Availability: payment {'ENABLED' if enabled else 'DISABLED'}"
             + (f" ({', '.join(reasons)})" if reasons else "")
