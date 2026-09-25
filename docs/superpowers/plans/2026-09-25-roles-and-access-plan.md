@@ -3544,652 +3544,131 @@ git commit -m "feat(access): device enrollment by OTP or emergency code, and log
 
 ---
 
+> **Style note for tasks 11–21.** These tasks were rewritten on 2026-09-25 to
+> state interfaces and behavior rather than embedded implementations. Tasks
+> 1–10 above still carry full code bodies; that style caused three transcribed
+> defects (an unguarded `save()` in eleven methods, an enroll-token bound to
+> the wrong client key, a test that did not exercise what it named). From here
+> the implementer writes the code. The plan fixes *what* and *where*; the
+> implementer and its reviewer own *how*, against the spec.
+>
+> A task below gives: the spec section, the files it may touch, the interface
+> (exact names, signatures, routes, template variables), the behavior in
+> prose, and the tests to write first. Code blocks appear only for wire
+> formats and non-obvious algorithms. Everything named in an **Interfaces**
+> block is a contract another task depends on — spell those names exactly.
+
 ### Task 11: Permissions on every existing route; HTTP Basic removed
 
 **Spec:** §4 (enforcement), §7 (`login_as` helper, permission matrix test).
 
-This is the largest task in the plan and the one the reviewer should read hardest. It touches `routes.py`, `auth.py`, `dashboard.html` and `tests/test_web_routes.py` — four files. It is not split further because the fixture rewrite and the dependency swap cannot land separately without leaving the suite red.
+The largest task in the plan and the one the reviewer should read hardest. It touches four files and is not split further: the fixture rewrite and the dependency swap cannot land separately without leaving the suite red.
 
 **Files:**
-- Modify: `web_interface/routes.py`, `web_interface/auth.py` (delete `LoginLimiter`), `web_interface/templates/dashboard.html`
+- Modify: `web_interface/routes.py`, `web_interface/auth.py`, `web_interface/templates/dashboard.html`, `web_interface/templates/partials/inventory_table.html`
+- Modify: `main.py` (one line — see below)
 - Test: `tests/test_web_routes.py`
 
-**Route → permission map (authoritative for this task):**
+**Route → permission map (authoritative):**
 
 | Route | Permission |
 |---|---|
-| `GET /` | `view_status` |
-| `GET /status` | `view_status` |
-| `GET /kpi` | `view_status` |
-| `GET /activity` | `view_status` |
-| `GET /health` | `view_status` |
-| `GET /screen`, `GET /screen/body` | `view_status` |
-| `GET /inventory` | `view_status` |
+| `GET /`, `/status`, `/kpi`, `/activity`, `/health`, `/inventory`, `/screen`, `/screen/body` | `view_status` |
 | `GET /logs` | `view_logs` |
 | `POST /faults/{key}/clear` | `clear_faults` |
 | `POST /action/{command}` | `machine_controls` |
 | `GET /inventory/new`, `POST /inventory/add`, `GET /inventory/copy/{sku}`, `POST /inventory/delete/{sku}` | `edit_catalog` |
-| `GET /inventory/edit/{sku}`, `POST /inventory/update/{sku}` | `edit_catalog` (split in Task 12) |
+| `GET /inventory/edit/{sku}`, `POST /inventory/update/{sku}` | `edit_catalog` (both split in Task 12) |
 | `GET /config/machine`, `GET /config/contacts` | `edit_contacts` (spec §4: "`edit_contacts` — people and machine info") |
 | `GET /config/payments`, `GET /config/comms` | `edit_secrets` (spec §4: "`edit_secrets` — payment, comms, MQTT settings") |
 
 **Interfaces:**
-- Consumes: `web_auth.require`, `web_auth.template_context`, `web_auth.Principal`.
-- Produces:
-  - Every gated route declares `dependencies=[Depends(web_auth.require(Permission.x))]`; the router-level `require_auth` dependency and `require_auth` itself are **deleted**, as are `HTTPBasic` / `HTTPBasicCredentials` / `_basic_auth` / `login_limiter` / the `LoginLimiter` import.
-  - `require_htmx` is unchanged and stays on every POST.
-  - Every `templates.TemplateResponse` in a gated route builds its context with `web_auth.template_context(request, ...)` instead of a bare `{"request": request, ...}`.
-  - `tests/test_web_routes.py` gains a module-level `login_as(role, *, shared=False, store=None)` fixture factory returning a `TestClient` with `vmc_device` and `vmc_session` set.
-  - `web_interface/auth.py` no longer defines `LoginLimiter`, and its `ipaddress` / `time` / `deque` imports go with it.
+- Consumes: `web_auth.require`, `web_auth.template_context`, `web_auth.Principal` (Task 8).
+- Produces in `web_interface/routes.py`:
+  - Every gated route carries `Depends(web_auth.require(Permission.x))` in its `dependencies` list, per the table. Where a route already depends on `require_htmx`, it lists both; `require_htmx` stays on every POST unchanged.
+  - `require_auth`, `_basic_auth`, `login_limiter`, the `HTTPBasic` / `HTTPBasicCredentials` imports and the `LoginLimiter` import are **deleted**. The router is constructed with no default dependency.
+  - Every gated route's template context comes from `web_auth.template_context(request, ...)` rather than a bare `{"request": request, ...}` dict. `_screen_context` starts from `template_context(request)` too.
+- Produces in `web_interface/auth.py`: the `LoginLimiter` class is deleted, along with the imports only it used.
+- Produces in `main.py`: the single `routes.login_limiter.set_trusted_proxies(...)` call becomes `web_auth.backoff.set_trusted_proxies(overrides.trusted_proxies)`, importing `from web_interface import auth as web_auth`. The rest of `main.py` is Task 20.
+- Produces in `tests/test_web_routes.py` — these are contracts later tasks' tests use, so match the names exactly:
+  - `sign_in(store, user, *, shared=False) -> TestClient` — mints a device, trusts *user* on it, opens a session, and returns a client carrying `vmc_device`, `vmc_session` and the `HX-Request: true` header.
+  - `make_client(store, role=Role.owner, *, shared=False, name="Ada") -> tuple[TestClient, User]` — seeds a user of *role*, then `sign_in`.
+  - Fixture `wired` — builds `ConfigModel`, `VMC`, `InventoryManager` and an `AccessStore` in `tmp_path`, **seeds the owner "Ada" (email `ada@example.com`, PIN `1379`) and calls `store.finalize_setup()`** so route tests are never in setup mode, wires all four into `routes` via the `set_*` functions, yields `(cfg, vmc, inv, store)`, and on teardown clears the access store and cancels `vmc._pending_tasks`.
+  - Fixture `login_as` — `login_as(role=Role.owner, *, shared=False, name=None) -> TestClient`. `Role.owner` returns a client for the fixture's existing owner, because the store enforces one owner per machine; any other role seeds a fresh user. Closes every client it made on teardown.
+  - Fixture `client` — `login_as(Role.owner)`. Every pre-existing test in the file runs through it unchanged.
+  - Fixture `anonymous` — a `TestClient(app, follow_redirects=False)` with no cookies, against a `wired` store that does have an owner.
 
-- [ ] **Step 1: Rewrite the test fixtures and add the matrix test**
+**Behavior to get right:**
+- An unauthenticated page request (no `HX-Request` header) redirects 303 to `/login`; an unauthenticated HTMX request answers 401 with `HX-Redirect: /login`. Task 8 already implements this; this task only has to route through it.
+- A resolved principal missing the route's permission gets 403, not a redirect.
+- Templates must not render a control the server would refuse. Gate `dashboard.html`'s tab buttons and the three machine-control buttons on the permission their target route needs; gate `partials/inventory_table.html`'s Add/Copy/Delete controls on `edit_catalog`. Add a **Users** tab (`hx-get="/users"`, gated on `manage_users`; its routes arrive in Task 16) and a **Sign out** button (`hx-post="/logout"`). `perms` is a `frozenset[Permission]` and `Permission` is a `str` enum, so `{% if "view_logs" in perms %}` works.
 
-Replace the `client` fixture at the top of `tests/test_web_routes.py` and add the new helpers. Every existing test keeps its body; only the fixture changes, so they now run as the owner.
+**Tests to write first, in `tests/test_web_routes.py`:**
+1. A `TestPermissionMatrix` class parametrised over `(method, path, permission)` × every `Role`, asserting 200 when `permission in ROLE_PERMISSIONS[role]` and 403 otherwise. Cover at least: `GET /`, `/status`, `/kpi`, `/activity`, `/health`, `/screen`, `/inventory`, `/logs`, `/inventory/new`, `/config/machine`, `/config/contacts`, and `POST /action/restart`. **Exclude `/config/payments` and `/config/comms`** and say why in a comment: their templates do not exist yet (their own tests are `@pytest.mark.skip`ped for that reason), so they 500 for a permitted role and would make the matrix lie.
+2. No session on a page request → 303 to `/login`; on an HTMX request → 401 with `HX-Redirect: /login`; stale HTTP Basic credentials grant nothing (303 or 401, never 200). Use the `anonymous` fixture.
 
-```python
-import pytest
-from fastapi.testclient import TestClient
+**Housekeeping:** delete the old `TestAuth` and `TestLoginLimiter` classes — `TestPermissionMatrix` replaces them. Re-aim `test_delete_requires_auth` and `test_screen_requires_auth` at the redirect behavior instead of a 401 with `WWW-Authenticate`. Fold the second `wired` fixture further down the file (used by `TestStillSellingBanner` and `TestAvailabilityOnDashboard`) into the new one — do not leave two fixtures of that name; adapt those classes' unpacking, not their assertions.
 
-from config.config_model import ConfigModel
-from contracts.vending_machine import FaultCode
-from controller.vmc import VMC
-from services.access import AccessStore, Permission, Role
-from services.inventory_manager import InventoryManager
-from web_interface import auth as web_auth
-from web_interface import routes
-from web_interface.server import app
-
-
-def sign_in(store, user, *, shared=False):
-    """A TestClient carrying a trusted device and a live session for *user*."""
-    device, token = store.create_device(f"{user.name} device", shared=shared)
-    store.trust_device(device.id, user.id)
-    session_id = store.create_session(user.id, device.id)
-    c = TestClient(app)
-    c.cookies.set(web_auth.DEVICE_COOKIE, token)
-    c.cookies.set(web_auth.SESSION_COOKIE, session_id)
-    c.headers["HX-Request"] = "true"
-    return c
-
-
-def make_client(store, role=Role.owner, *, shared=False, name="Ada"):
-    """Seed a user of *role* and return (client, user)."""
-    user = store.create_user(name, f"{name.lower()}@example.com", role, "1379")
-    return sign_in(store, user, shared=shared), user
-
-
-@pytest.fixture
-def wired(tmp_path):
-    """Config, VMC, inventory and an AccessStore wired into the routes module.
-
-    The store is seeded with the owner "Ada" (PIN 1379) so the app is never in
-    setup mode for route tests — the setup gate has its own fixtures.
-    """
-    cfg = ConfigModel()
-    vmc = VMC(config=cfg)
-    inv = InventoryManager([], path=tmp_path / "inventory.json")
-    store = AccessStore(path=tmp_path / "access.json")
-    store.create_user("Ada", "ada@example.com", Role.owner, "1379")
-    store.finalize_setup()
-    routes.set_config_object(cfg)
-    routes.set_vmc_instance(vmc)
-    routes.set_inventory_manager(inv)
-    routes.set_access_store(store)
-    yield cfg, vmc, inv, store
-    routes.set_access_store(None)
-    for t in vmc._pending_tasks:
-        t.cancel()
-
-
-@pytest.fixture
-def login_as(wired):
-    """login_as(Role.tech) -> TestClient. Seeds the user and a trusted device.
-
-    Role.owner returns a client for the fixture's existing owner, because the
-    store enforces one owner per machine.
-    """
-    _, _, _, store = wired
-    created = []
-
-    def _login(role=Role.owner, *, shared=False, name=None):
-        if role is Role.owner:
-            user = store.owner()
-        else:
-            user = store.create_user(
-                name or f"User{len(created)}",
-                f"{(name or 'user').lower()}@example.com",
-                role,
-                "1379",
-            )
-        c = sign_in(store, user, shared=shared)
-        created.append(c)
-        return c
-
-    yield _login
-    for c in created:
-        c.close()
-
-
-@pytest.fixture
-def client(login_as):
-    """The owner's client — what every pre-existing test in this file uses."""
-    yield login_as(Role.owner)
-
-
-@pytest.fixture
-def anonymous(wired):
-    """A client with an owner seeded in the store but no cookies of its own."""
-    with TestClient(app, follow_redirects=False) as c:
-        yield c
-```
-
-Note for the implementer: the existing `wired` fixture further down the file (used by `TestStillSellingBanner` and `TestAvailabilityOnDashboard`) must be folded into this one — do not leave two fixtures named `wired`. Those classes currently unpack `wired` differently; adapt their bodies, not their assertions. `tests/test_web_routes.py` also needs `store.finalize_setup()` in any fixture that seeds an owner directly, so the `/setup/codes` route does not think setup is still running.
-
-Add the matrix test:
-
-```python
-# (route, method, permission). /config/payments and /config/comms are left out:
-# their templates do not exist yet (their own tests are skipped for that
-# reason), so they 500 for a permitted role and would make this matrix lie.
-PERMISSION_MATRIX = [
-    ("GET", "/", Permission.view_status),
-    ("GET", "/status", Permission.view_status),
-    ("GET", "/kpi", Permission.view_status),
-    ("GET", "/activity", Permission.view_status),
-    ("GET", "/health", Permission.view_status),
-    ("GET", "/screen", Permission.view_status),
-    ("GET", "/inventory", Permission.view_status),
-    ("GET", "/logs", Permission.view_logs),
-    ("GET", "/inventory/new", Permission.edit_catalog),
-    ("GET", "/config/machine", Permission.edit_contacts),
-    ("GET", "/config/contacts", Permission.edit_contacts),
-    ("POST", "/action/restart", Permission.machine_controls),
-]
-
-
-class TestPermissionMatrix:
-    @pytest.mark.parametrize("method,path,permission", PERMISSION_MATRIX)
-    @pytest.mark.parametrize("role", list(Role))
-    def test_route_answers_exactly_as_the_table_predicts(
-        self, login_as, method, path, permission, role
-    ):
-        from services.access import ROLE_PERMISSIONS
-
-        c = login_as(role)
-        resp = c.request(method, path)
-        allowed = permission in ROLE_PERMISSIONS[role]
-        if allowed:
-            assert resp.status_code == 200, f"{role} {method} {path}"
-        else:
-            assert resp.status_code == 403, f"{role} {method} {path}"
-
-    def test_no_session_redirects_a_page_request(self, anonymous):
-        resp = anonymous.get("/")
-        assert resp.status_code == 303
-        assert resp.headers["location"] == "/login"
-
-    def test_no_session_hx_redirects_a_partial_request(self, anonymous):
-        resp = anonymous.get("/status", headers={"HX-Request": "true"})
-        assert resp.status_code == 401
-        assert resp.headers["hx-redirect"] == "/login"
-
-    def test_basic_auth_credentials_no_longer_grant_access(self, anonymous):
-        resp = anonymous.get("/status", auth=("admin", "changeme"))
-        assert resp.status_code in (303, 401)
-```
-
-Delete the old `TestAuth` and `TestLoginLimiter` classes from `tests/test_web_routes.py`; `TestPermissionMatrix` replaces them. Change `test_delete_requires_auth` and `test_screen_requires_auth` to assert the new redirect behavior rather than 401-with-`WWW-Authenticate`.
-
-- [ ] **Step 2: Run the tests to verify they fail**
-
-Run: `uv run pytest tests/test_web_routes.py -v -k TestPermissionMatrix`
-Expected: FAIL — every role reaches every route (200), because the router still uses HTTP Basic.
-
-- [ ] **Step 3: Implement**
-
-In `web_interface/routes.py`:
-
-1. Delete the `HTTPBasic` / `HTTPBasicCredentials` imports, `_basic_auth`, `require_auth`, `login_limiter`, the `LoginLimiter` import, and the `login_limiter.set_trusted_proxies(...)` line inside `set_config_object`.
-2. Change the router construction from `APIRouter(dependencies=[Depends(require_auth)])` to `APIRouter()`.
-3. Add `dependencies=[Depends(web_auth.require(Permission.x))]` to every gated route per the table above; where a route already has `dependencies=[Depends(require_htmx)]`, list both:
-
-```python
-    @router.post(
-        "/action/{command}",
-        dependencies=[
-            Depends(require_htmx),
-            Depends(web_auth.require(Permission.machine_controls)),
-        ],
-    )
-```
-
-4. Replace every gated route's context dict with `web_auth.template_context(request, ...)`. For example:
-
-```python
-    @router.get(
-        "/inventory",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.view_status))],
-    )
-    async def inventory_view(request: Request):
-        return templates.TemplateResponse(
-            "partials/inventory_table.html",
-            web_auth.template_context(
-                request, products=config.products, locked=_locked_skus()
-            ),
-        )
-```
-
-Do the same for `dashboard`, `machine_info`, `contact_info`, `payment_config`, `comms_config`, `_render_status`, `view_logs`, `health_summary`, `activity_fragment`, `kpi_fragment`, `edit_inventory_item`, `update_inventory_item`, `delete_inventory_item`, `add_new_product`, `new_product_form`, `copy_product_form`, `screen`, `screen_body`. `_screen_context` returns a dict — have it start from `web_auth.template_context(request)` instead of `{"request": request}`.
-
-5. Import `Permission` from `services.access`.
-
-In `web_interface/auth.py`: delete the `LoginLimiter` class and the now-unused `ipaddress`, `time`, `deque` and `Callable` imports.
-
-In `web_interface/templates/dashboard.html`: wrap each tab button in the permission that its target route needs, and add a Users tab (its routes arrive in Task 16 — the button may point at `/users` now):
-
-```html
-{% if "view_logs" in perms %}
-<button hx-get="/logs" ...>Logs</button>
-{% endif %}
-{% if "edit_contacts" in perms %}
-<button hx-get="/config/machine" ...>Machine Info</button>
-{% endif %}
-{% if "manage_users" in perms %}
-<button hx-get="/users" hx-target="#content-body" hx-swap="innerHTML" ...>Users</button>
-{% endif %}
-```
-
-`perms` is a `frozenset[Permission]`; `Permission` is a `str` enum, so `"view_logs" in perms` is true when the member is present. Gate the three control buttons (restart / reset / shutdown) on `"machine_controls" in perms`, the inventory Add/Copy/Delete controls in `partials/inventory_table.html` on `"edit_catalog" in perms`, and add a Sign out button posting to `/logout` with `hx-post`.
-
-`main.py` still calls `routes.login_limiter.set_trusted_proxies(...)` — change that single line to `web_auth.backoff.set_trusted_proxies(overrides.trusted_proxies)` (importing `from web_interface import auth as web_auth`) so the app still starts. The rest of `main.py` is Task 20.
-
-- [ ] **Step 4: Run the full suite**
-
-Run: `uv run pytest`
-Expected: PASS except `tests/test_login_limiter.py` (deleted in Task 20 — delete it now if it blocks, and say so in the report) and the two `@pytest.mark.skip`ped payments/comms tests. Every other pre-existing test in `tests/test_web_routes.py` must pass unchanged apart from the two auth assertions called out above.
-
-- [ ] **Step 5: Lint and commit**
-
-```bash
-ruff check --fix .
-ruff format .
-git add web_interface tests/test_web_routes.py main.py
-git commit -m "feat(access): permission per route, cookie sessions replace HTTP Basic"
-```
+**Done when:** `uv run pytest` is green except `tests/test_login_limiter.py` (delete it here if it blocks, and say so in the report — Task 20 removes it otherwise) and the two skipped payments/comms tests. Commit: `feat(access): permission per route, cookie sessions replace HTTP Basic`.
 
 ---
 
 ### Task 12: Catalog / placement split on the product form
 
-**Spec:** §4 ("The product edit form splits into `/inventory/edit/{sku}/catalog` and `/inventory/edit/{sku}/placement`, each with its own POST and permission. The current single form is removed.").
+**Spec:** §4 — "The product edit form splits into `/inventory/edit/{sku}/catalog` and `/inventory/edit/{sku}/placement`, each with its own POST and permission. The current single form is removed."
 
 **Files:**
-- Modify: `web_interface/routes.py`
+- Modify: `web_interface/routes.py`, `web_interface/templates/partials/inventory_table.html`
 - Create: `web_interface/templates/partials/inventory_catalog_form.html`, `web_interface/templates/partials/inventory_placement_form.html`
 - Delete: `web_interface/templates/partials/inventory_edit_form.html`
 - Test: `tests/test_web_routes.py`
 
 **Interfaces:**
-- Consumes: `services.config_store.update_product`, `services.inventory_manager.InventoryManager.set_count`, `web_auth.require`.
-- Produces:
-  - `GET /inventory/edit/{sku}/catalog` and `POST /inventory/update/{sku}/catalog` — `edit_catalog`; fields `name`, `price`, `kind`
-  - `GET /inventory/edit/{sku}/placement` and `POST /inventory/update/{sku}/placement` — `edit_placement`; fields `slot`, `inventory_count`, `track_inventory`
-  - `GET /inventory/edit/{sku}` and `POST /inventory/update/{sku}` are **removed**
+- `GET /inventory/edit/{sku}/catalog` → `partials/inventory_catalog_form.html`; permission `edit_catalog`. Context: `product`.
+- `POST /inventory/update/{sku}/catalog`; form fields `name`, `price`, `kind`; permission `edit_catalog` + `require_htmx`; returns `partials/inventory_table.html`.
+- `GET /inventory/edit/{sku}/placement` → `partials/inventory_placement_form.html`; permission `edit_placement`. Context: `product`, `inventory_count`, `tracked`.
+- `POST /inventory/update/{sku}/placement`; form fields `slot`, `inventory_count`, `track_inventory` (checkbox, absent when unchecked); permission `edit_placement` + `require_htmx`; returns `partials/inventory_table.html`.
+- `GET /inventory/edit/{sku}` and `POST /inventory/update/{sku}` are **removed** — they must 404.
 
-- [ ] **Step 1: Write the failing tests**
+**Behavior to get right:**
+- A placement edit must not be able to move a catalog field. Pass the product's stored name and price through unchanged when persisting the slot.
+- `services/config_store.py:update_product` treats `slot=None` as "unchanged" (`services/config_store.py:157`) — verify that before relying on it for the catalog POST.
+- Counts and the tracked flag live in `InventoryManager` (`get_count`, `is_tracked`, `set_count`), not in `config.json`; read and write them there, falling back to the `Product` fields when no inventory manager is attached. `track_inventory` on the `Product` is set from the checkbox's presence.
+- The two form templates take their fields from the deleted `inventory_edit_form.html`: catalog keeps SKU (disabled), Name, Price, Kind; placement keeps SKU (disabled), Dispenser Slot (`min="0" step="1" required`), Inventory Count and a `track_inventory` checkbox. Both target `#content-body` and carry a Cancel button that `hx-get`s `/inventory`.
+- `partials/inventory_table.html`'s single Edit link becomes two — "Catalog" behind `edit_catalog`, "Placement" behind `edit_placement`.
 
-Append to `tests/test_web_routes.py`:
+**Tests to write first:** the old single-form routes 404; an owner reaches both forms; a catalog POST changes name, price and kind; a placement POST changes slot, count and the tracked flag; a **loader** gets 200 on the placement form and its POST and **403 on both catalog endpoints, with the price unchanged afterwards**; a tech behaves the same as the loader here. Re-aim the existing `test_edit_form`, `test_edit_form_shows_slot_input` and `test_update_product_changes_slot` at the new paths, keeping their assertions.
 
-```python
-class TestCatalogPlacementSplit:
-    def _seed(self, client):
-        client.post(
-            "/inventory/add",
-            data={"sku": "SPLIT-1", "name": "Bag of Ice", "price": "2.50", "slot": "4"},
-        )
-
-    def test_old_single_form_routes_are_gone(self, client):
-        self._seed(client)
-        assert client.get("/inventory/edit/SPLIT-1").status_code == 404
-        assert (
-            client.post(
-                "/inventory/update/SPLIT-1",
-                data={"name": "x", "price": "1", "slot": "1"},
-            ).status_code
-            == 404
-        )
-
-    def test_owner_sees_both_forms(self, client):
-        self._seed(client)
-        assert client.get("/inventory/edit/SPLIT-1/catalog").status_code == 200
-        assert client.get("/inventory/edit/SPLIT-1/placement").status_code == 200
-
-    def test_catalog_post_changes_price_and_name(self, client):
-        self._seed(client)
-        resp = client.post(
-            "/inventory/update/SPLIT-1/catalog",
-            data={"name": "Bigger Bag", "price": "3.25", "kind": "ice"},
-        )
-        assert resp.status_code == 200
-        product = next(p for p in routes.config.products if p.sku == "SPLIT-1")
-        assert product.name == "Bigger Bag"
-        assert product.price == 3.25
-        assert product.kind == "ice"
-
-    def test_placement_post_changes_slot_and_count(self, client, wired):
-        _, _, inv, _ = wired
-        self._seed(client)
-        inv.add_sku("SPLIT-1", 0, tracked=False)
-        resp = client.post(
-            "/inventory/update/SPLIT-1/placement",
-            data={"slot": "9", "inventory_count": "12", "track_inventory": "on"},
-        )
-        assert resp.status_code == 200
-        product = next(p for p in routes.config.products if p.sku == "SPLIT-1")
-        assert product.slot == 9
-        assert inv.get_count("SPLIT-1") == 12
-        assert inv.is_tracked("SPLIT-1") is True
-
-    def test_loader_may_change_slot_and_count(self, login_as, client):
-        self._seed(client)
-        loader = login_as(Role.loader)
-        assert loader.get("/inventory/edit/SPLIT-1/placement").status_code == 200
-        resp = loader.post(
-            "/inventory/update/SPLIT-1/placement",
-            data={"slot": "5", "inventory_count": "3"},
-        )
-        assert resp.status_code == 200
-
-    def test_loader_gets_403_on_price(self, login_as, client):
-        self._seed(client)
-        loader = login_as(Role.loader)
-        assert loader.get("/inventory/edit/SPLIT-1/catalog").status_code == 403
-        assert (
-            loader.post(
-                "/inventory/update/SPLIT-1/catalog",
-                data={"name": "Cheap", "price": "0.01", "kind": "ice"},
-            ).status_code
-            == 403
-        )
-        product = next(p for p in routes.config.products if p.sku == "SPLIT-1")
-        assert product.price == 2.50
-
-    def test_tech_may_place_but_not_price(self, login_as, client):
-        self._seed(client)
-        tech = login_as(Role.tech)
-        assert tech.get("/inventory/edit/SPLIT-1/placement").status_code == 200
-        assert tech.get("/inventory/edit/SPLIT-1/catalog").status_code == 403
-```
-
-Update the existing `test_edit_form`, `test_edit_form_shows_slot_input` and `test_update_product_changes_slot` to target the new paths (`/inventory/edit/{sku}/catalog` for name, `/inventory/edit/{sku}/placement` for slot). Keep their assertions.
-
-- [ ] **Step 2: Run the tests to verify they fail**
-
-Run: `uv run pytest tests/test_web_routes.py -v -k TestCatalogPlacementSplit`
-Expected: FAIL — 404 on `/inventory/edit/SPLIT-1/catalog`.
-
-- [ ] **Step 3: Implement**
-
-Replace `edit_inventory_item` and `update_inventory_item` in `web_interface/routes.py` with:
-
-```python
-    @router.get(
-        "/inventory/edit/{sku}/catalog",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.edit_catalog))],
-    )
-    async def edit_catalog_form(request: Request, sku: str):
-        product = next((p for p in config.products if p.sku == sku), None)
-        return templates.TemplateResponse(
-            "partials/inventory_catalog_form.html",
-            web_auth.template_context(request, product=product),
-        )
-
-    @router.post(
-        "/inventory/update/{sku}/catalog",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(require_htmx),
-            Depends(web_auth.require(Permission.edit_catalog)),
-        ],
-    )
-    async def update_catalog(
-        request: Request,
-        sku: str,
-        name: str = Form(...),
-        price: float = Form(...),
-        kind: str = Form("other"),
-    ):
-        update_product(config, sku, name, price, kind=kind)
-        return templates.TemplateResponse(
-            "partials/inventory_table.html",
-            web_auth.template_context(
-                request, products=config.products, locked=_locked_skus()
-            ),
-        )
-
-    @router.get(
-        "/inventory/edit/{sku}/placement",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.edit_placement))],
-    )
-    async def edit_placement_form(request: Request, sku: str):
-        product = next((p for p in config.products if p.sku == sku), None)
-        count = (
-            inventory_manager.get_count(sku)
-            if inventory_manager and product
-            else (product.inventory_count if product else 0)
-        )
-        tracked = (
-            inventory_manager.is_tracked(sku)
-            if inventory_manager and product
-            else bool(product and product.track_inventory)
-        )
-        return templates.TemplateResponse(
-            "partials/inventory_placement_form.html",
-            web_auth.template_context(
-                request, product=product, inventory_count=count, tracked=tracked
-            ),
-        )
-
-    @router.post(
-        "/inventory/update/{sku}/placement",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(require_htmx),
-            Depends(web_auth.require(Permission.edit_placement)),
-        ],
-    )
-    async def update_placement(
-        request: Request,
-        sku: str,
-        slot: int = Form(...),
-        inventory_count: int = Form(0),
-        track_inventory: str | None = Form(None),
-    ):
-        product = next((p for p in config.products if p.sku == sku), None)
-        if product is not None:
-            # Name, price and kind are catalog fields: pass the stored values
-            # through unchanged so a placement edit can never move them.
-            update_product(config, sku, product.name, product.price, slot=slot)
-            product.track_inventory = track_inventory is not None
-            if inventory_manager:
-                inventory_manager.set_count(sku, inventory_count)
-        return templates.TemplateResponse(
-            "partials/inventory_table.html",
-            web_auth.template_context(
-                request, products=config.products, locked=_locked_skus()
-            ),
-        )
-```
-
-`update_product(config, sku, name, price, kind=kind)` leaves `slot` at `None`, which the existing implementation treats as "unchanged" (`services/config_store.py:157`) — verify that before relying on it.
-
-Create `web_interface/templates/partials/inventory_catalog_form.html` — the SKU (disabled), Name, Price and Kind fields from the old `inventory_edit_form.html`, posting to `/inventory/update/{{ product.sku }}/catalog` with `hx-target="#content-body"`; heading "Edit Product — Catalog"; Cancel button `hx-get="/inventory"`.
-
-Create `web_interface/templates/partials/inventory_placement_form.html` — the SKU (disabled), Dispenser Slot (`min="0" step="1" required`), Inventory Count and a `track_inventory` checkbox, posting to `/inventory/update/{{ product.sku }}/placement`, same target and Cancel button; heading "Edit Product — Placement". Use `{{ inventory_count }}` and `{% if tracked %}checked{% endif %}`.
-
-Delete `web_interface/templates/partials/inventory_edit_form.html`. Update `partials/inventory_table.html`'s Edit link into two links — "Catalog" (shown when `"edit_catalog" in perms`) and "Placement" (shown when `"edit_placement" in perms`).
-
-- [ ] **Step 4: Run the tests to verify they pass**
-
-Run: `uv run pytest tests/test_web_routes.py -v`
-Expected: PASS.
-
-- [ ] **Step 5: Lint and commit**
-
-```bash
-ruff check --fix .
-ruff format .
-git add web_interface tests/test_web_routes.py
-git commit -m "feat(access): split the product form into catalog and placement"
-```
+**Done when:** `uv run pytest` green. Commit: `feat(access): split the product form into catalog and placement`.
 
 ---
 
 ### Task 13: Setup code on the customer display
 
-**Spec:** §3.1 ("publishes it to the customer display through `services/display_controller.py` (maintenance mode, 'Setup code: 1234 5678') for as long as setup mode lasts").
+**Spec:** §3.1 — "publishes it to the customer display through `services/display_controller.py` (maintenance mode, 'Setup code: 1234 5678') for as long as setup mode lasts".
 
-> **§3.5 NOTIFICATION — OWNER APPROVED 2026-09-25.** `DisplayCommand` in `services/mqtt_messages.py` carries only `mode`; there is nowhere to put the text the spec asks for. This task adds an **optional** `message: str | None = None` field. It is additive, no in-repo consumer or simulator subscribes to `cmd/display` (grep: only `display_controller.py` publishes it), and the model lives in `services/mqtt_messages.py`, not in `contracts/`, so no `CONTRACT_VERSION` bump is implied. The owner has approved this explicitly; proceed as written and record it in the pull-request deviations list. No further confirmation is needed.
+> **§3.5 NOTIFICATION — OWNER APPROVED 2026-09-25.** `DisplayCommand` carries only `mode`; there is nowhere to put the text the spec asks for. This task adds an **optional** `message: str | None = None` field. It is additive, nothing in-repo subscribes to `cmd/display` (only `display_controller.py` publishes it), and the model lives in `services/mqtt_messages.py`, not in `contracts/`, so no `CONTRACT_VERSION` bump is implied. Approved explicitly; proceed and record it in the pull-request deviations list. No further confirmation needed.
 
 **Files:**
 - Modify: `services/mqtt_messages.py`, `services/display_controller.py`
 - Test: `tests/test_display_controller.py`
 
 **Interfaces:**
-- Consumes: `DisplayMode.maintenance`.
-- Produces:
-  - `DisplayCommand.message: str | None = None`
-  - `DisplayController.show_setup_code(code: str) -> None` — sets maintenance mode and publishes `message=f"Setup code: {code[:4]} {code[4:]}"`; stores the code so `update_for_state` cannot overwrite it
-  - `DisplayController.clear_setup_code() -> None` — forgets the code and republishes the mode for the current FSM state
-  - `DisplayController.setup_code: str | None` property
-  - While a setup code is held, `update_for_state` records the state but does **not** publish, so the code stays on screen until setup finishes
+- `DisplayCommand.message: str | None = None`, with a field description saying it is additive and optional and that firmware ignoring it behaves exactly as before.
+- `DisplayController.setup_code -> str | None` (property)
+- `DisplayController.show_setup_code(code: str) -> None`
+- `DisplayController.clear_setup_code() -> None`
+- `DisplayController._publish_mode(mode, message: str | None = None)` — the message reaches `DisplayCommand`.
 
-- [ ] **Step 1: Write the failing tests**
+**Behavior to get right:**
+- `show_setup_code` sets maintenance mode and publishes `message="Setup code: 1234 5678"` — the eight digits split into two groups of four by a single space. It also logs the code at warning level.
+- While a setup code is held, `update_for_state` records the state but publishes **nothing**, so an FSM transition cannot wipe the code off the screen.
+- `clear_setup_code` forgets the code and republishes the mode for the last recorded state; calling it with no code held is a no-op that publishes nothing.
+- Ordinary commands still carry `message=None`.
 
-Append to `tests/test_display_controller.py` (follow the file's existing pattern for a fake MQTT client and loop):
+**Tests to write first:** show publishes maintenance with the grouped digits and sets `setup_code`; a state change while a code is held publishes nothing and leaves the mode at maintenance; clear returns to the state's mode with `message is None` and `setup_code is None`; clear with no code held publishes nothing; an ordinary state change carries `message is None`. Reuse whatever helpers `tests/test_display_controller.py` already uses to build a controller with a stub MQTT client and inspect published commands.
 
-```python
-class TestSetupCode:
-    def test_show_setup_code_publishes_maintenance_with_grouped_digits(self):
-        display, client, _ = _wired_display()   # existing helper in this file
-        display.show_setup_code("12345678")
-        topic, command = _last_publish(client)
-        assert topic == "cmd/display"
-        assert command.mode is DisplayMode.maintenance
-        assert command.message == "Setup code: 1234 5678"
-        assert display.setup_code == "12345678"
-
-    def test_state_changes_do_not_wipe_the_setup_code(self):
-        display, client, _ = _wired_display()
-        display.show_setup_code("12345678")
-        before = _publish_count(client)
-        display.update_for_state("dispensing")
-        assert _publish_count(client) == before
-        assert display.current_mode is DisplayMode.maintenance
-
-    def test_clear_setup_code_returns_to_the_state_mode(self):
-        display, client, _ = _wired_display()
-        display.show_setup_code("12345678")
-        display.update_for_state("idle")
-        display.clear_setup_code()
-        _, command = _last_publish(client)
-        assert command.mode is DisplayMode.advertising
-        assert command.message is None
-        assert display.setup_code is None
-
-    def test_clear_without_a_code_is_a_no_op(self):
-        display, client, _ = _wired_display()
-        before = _publish_count(client)
-        display.clear_setup_code()
-        assert _publish_count(client) == before
-
-    def test_message_defaults_to_none_on_ordinary_commands(self):
-        display, client, _ = _wired_display()
-        display.update_for_state("dispensing")
-        _, command = _last_publish(client)
-        assert command.message is None
-```
-
-The helpers `_wired_display`, `_last_publish` and `_publish_count` may not exist under those names — reuse whatever `tests/test_display_controller.py` already does to build a controller with a stub MQTT client and inspect published commands, and name the new helpers consistently with the file.
-
-- [ ] **Step 2: Run the tests to verify they fail**
-
-Run: `uv run pytest tests/test_display_controller.py -v -k TestSetupCode`
-Expected: FAIL — `AttributeError: 'DisplayController' object has no attribute 'show_setup_code'`.
-
-- [ ] **Step 3: Implement**
-
-In `services/mqtt_messages.py`:
-
-```python
-class DisplayCommand(BaseModel):
-    """Command to change the customer-facing display mode."""
-
-    mode: DisplayMode = Field(..., description="Display mode to switch to")
-    message: str | None = Field(
-        None,
-        description=(
-            "Optional line for the display to render under the mode, e.g. the "
-            "setup code while the dashboard is in setup mode. Additive and "
-            "optional: firmware that ignores it behaves exactly as before."
-        ),
-    )
-```
-
-In `services/display_controller.py`:
-
-```python
-    def __init__(self):
-        self._current_mode: DisplayMode = DisplayMode.advertising
-        self._mqtt_client = None
-        self._loop = None
-        self._setup_code: str | None = None
-        self._last_state: str = "idle"
-
-    @property
-    def setup_code(self) -> str | None:
-        return self._setup_code
-
-    def show_setup_code(self, code: str) -> None:
-        """Hold the setup code on the customer display for as long as setup lasts.
-
-        Someone standing at the machine can read it; a remote stranger cannot.
-        """
-        self._setup_code = code
-        self._current_mode = DisplayMode.maintenance
-        logger.warning(f"Display: showing setup code {code[:4]} {code[4:]}")
-        self._publish_mode(
-            DisplayMode.maintenance, message=f"Setup code: {code[:4]} {code[4:]}"
-        )
-
-    def clear_setup_code(self) -> None:
-        if self._setup_code is None:
-            return
-        self._setup_code = None
-        mode = _STATE_TO_MODE.get(self._last_state, DisplayMode.advertising)
-        self._current_mode = mode
-        logger.info("Display: setup code cleared")
-        self._publish_mode(mode)
-```
-
-`update_for_state` records `self._last_state = vmc_state` first and returns early while `self._setup_code is not None`. `_publish_mode` gains a `message: str | None = None` parameter and passes it into `DisplayCommand`.
-
-- [ ] **Step 4: Run the tests to verify they pass**
-
-Run: `uv run pytest tests/test_display_controller.py tests/test_mqtt.py -v`
-Expected: PASS — the 5 new tests and every existing display and MQTT test.
-
-- [ ] **Step 5: Lint and commit**
-
-```bash
-ruff check --fix .
-ruff format .
-git add services/mqtt_messages.py services/display_controller.py tests/test_display_controller.py
-git commit -m "feat(access): show the setup code on the customer display"
-```
+**Done when:** `uv run pytest tests/test_display_controller.py tests/test_mqtt.py` green, then the full suite. Commit: `feat(access): show the setup code on the customer display`.
 
 ---
 
@@ -4203,376 +3682,25 @@ git commit -m "feat(access): show the setup code on the customer display"
 - Test: `tests/test_web_routes.py`
 
 **Interfaces:**
-- Consumes: `AccessStore.setup_mode` / `begin_setup` / `verify_setup_code` / `create_user` (Tasks 4, 6), `DisplayController.show_setup_code` (Task 13).
-- Produces:
-  - `routes.set_display_controller(display) -> None` and module global `display_controller`
-  - `routes.ensure_setup_mode() -> None` — called from `main.py` and at the first request; while `store.setup_mode` and not `store.setup_finalized`, calls `store.begin_setup()`, logs the plaintext at **warning** level, and calls `display_controller.show_setup_code(code)` once
-  - An HTTP middleware on `app`: while the store is corrupt, every path except `/static/*` answers **503** with a plain "access file is corrupt" page; while `store.setup_mode`, every path except `/setup`, `/setup/codes` and `/static/*` redirects 303 to `/setup`
-  - `GET /setup` — the wizard page. Renders the owner form; while a transfer is pending (Task 19) it asks for the transfer code instead.
-  - `POST /setup` — `require_htmx`; fields `setup_code`, `name`, `email`, `pin`, `pin_confirm`, `shared_device` (checkbox). Back-off kind `setup`, subject `"setup"`. On success creates the owner, creates the device with the `shared` flag, trusts the owner, creates the session, sets both cookies, responds `HX-Redirect: /setup/codes`.
+- `routes.display_controller` module global and `routes.set_display_controller(display) -> None`.
+- `routes.ensure_setup_mode() -> None` — while the store is in setup mode, calls `begin_setup()`, logs the plaintext at **warning** level (grouped as two blocks of four), and hands it to `display_controller.show_setup_code(...)` once. When an owner exists it calls `display_controller.clear_setup_code()` instead. Safe to call repeatedly; `begin_setup()` is idempotent within a process.
+- An HTTP middleware registered on `app` inside `attach_routes`, running before every request except `/static/*`:
+  - store corrupt → **503** on every path with a plain page saying the access file is corrupt and the machine keeps running (spec §6: a corrupt file must never silently become an open setup wizard)
+  - store in setup mode → **303 to `/setup`** for every path except `/setup` and `/setup/codes`
+  - otherwise → pass through
+- `GET /setup` — public. Calls `ensure_setup_mode()`, renders the wizard, and redirects 303 to `/` when there is neither setup mode nor a pending transfer. Template context: `error`, `form` (a dict refilling `name` and `email`), `transfer` (bool).
+- `POST /setup` — public, `require_htmx`. Fields `setup_code`, `name`, `email`, `pin`, `pin_confirm`, `shared_device` (checkbox). On success: creates the owner, creates a device with the `shared` flag, trusts the owner on it, records the login, opens a session, sets `vmc_session` and `vmc_device`, and answers `HX-Redirect: /setup/codes`.
 
-- [ ] **Step 1: Write the failing tests**
+**Behavior to get right:**
+- Back-off kind `setup`, subject `"setup"` (kind `transfer` / subject `"transfer"` while a transfer is pending — Task 19 uses the same handler). Over the limit → 429 with `Retry-After` and the wizard re-rendered.
+- Order of checks: back-off, then the code, then `pin != pin_confirm`, then `pin_problem(pin)`. A wrong code records a failure; a bad PIN does not.
+- `OwnerExistsError` from two racing submissions is caught and re-rendered as an error, not a 500. The store, not the route, is what makes that safe.
+- The setup code stays valid after step 1 — it is Task 15's Done that invalidates it — so a lost response is recoverable by logging in and enrolling with it (Task 10 already accepts it while `setup_finalized` is false).
+- `setup.html` is a full page with viewport meta, posting `hx-post="/setup"` with `hx-target="body" hx-swap="outerHTML"`. Its copy tells the reader the code is in the machine's startup log and on the customer display. Heading "Set up this machine"; when `transfer` is true, "Take ownership" and the code field labelled "Transfer code". Render `error` in a `role="alert"` element.
 
-Append to `tests/test_web_routes.py`:
+**Tests to write first:** a fresh store redirects `/`, `/status`, `/inventory`, `/login` and `/health` to `/setup`, while `/setup` itself answers 200; the code is on the display and matches `store.pending_setup_code`; a wrong code creates no owner; repeated wrong codes reach 429; the right code creates the owner, sets both cookies, marks the device shared when the box is ticked and trusts the owner on it, and answers `HX-Redirect: /setup/codes`; a PIN failing `pin_problem` is rejected with the reason and no owner created; mismatched confirmation is rejected; a second browser recovers a lost step-1 response by signing in with the PIN and enrolling with the setup code; the POST without `HX-Request` is 403. Separately, a `TestCorruptAccessFile` class: `/`, `/setup`, `/login` and `/status` all answer 503 with "corrupt" in the body.
 
-```python
-class TestSetupWizard:
-    @pytest.fixture
-    def fresh(self, tmp_path):
-        from services.access import AccessStore
-        from services.display_controller import DisplayController
-
-        cfg = ConfigModel()
-        store = AccessStore(path=tmp_path / "access.json")
-        display = DisplayController()
-        routes.set_config_object(cfg)
-        routes.set_access_store(store)
-        routes.set_display_controller(display)
-        routes.ensure_setup_mode()
-        with TestClient(app, follow_redirects=False) as c:
-            c.headers["HX-Request"] = "true"
-            yield c, store, display
-        routes.set_access_store(None)
-        routes.set_display_controller(None)
-
-    def test_setup_mode_redirects_every_route(self, fresh):
-        c, store, _ = fresh
-        for path in ("/", "/status", "/inventory", "/login", "/health"):
-            resp = c.get(path)
-            assert resp.status_code == 303, path
-            assert resp.headers["location"] == "/setup"
-
-    def test_setup_page_itself_is_reachable(self, fresh):
-        c, _, _ = fresh
-        assert c.get("/setup").status_code == 200
-
-    def test_the_code_is_logged_and_shown_on_the_display(self, fresh, caplog):
-        c, store, display = fresh
-        assert display.setup_code == store.pending_setup_code
-        assert store.pending_setup_code is not None
-
-    def test_a_wrong_setup_code_creates_no_owner(self, fresh):
-        c, store, _ = fresh
-        resp = c.post(
-            "/setup",
-            data={
-                "setup_code": "00000000",
-                "name": "Ada",
-                "email": "ada@example.com",
-                "pin": "1379",
-                "pin_confirm": "1379",
-            },
-        )
-        assert resp.status_code == 200
-        assert store.owner() is None
-        assert "code" in resp.text.lower()
-
-    def test_repeated_wrong_setup_codes_back_off(self, fresh):
-        c, store, _ = fresh
-        body = {
-            "setup_code": "00000000",
-            "name": "Ada",
-            "email": "",
-            "pin": "1379",
-            "pin_confirm": "1379",
-        }
-        for _ in range(3):
-            c.post("/setup", data=body)
-        resp = c.post("/setup", data=body)
-        assert resp.status_code == 429
-
-    def test_the_right_code_creates_the_owner_and_signs_them_in(self, fresh):
-        c, store, _ = fresh
-        code = store.pending_setup_code
-        resp = c.post(
-            "/setup",
-            data={
-                "setup_code": code,
-                "name": "Ada",
-                "email": "ada@example.com",
-                "pin": "1379",
-                "pin_confirm": "1379",
-                "shared_device": "on",
-            },
-        )
-        assert resp.headers["hx-redirect"] == "/setup/codes"
-        owner = store.owner()
-        assert owner.name == "Ada"
-        assert c.cookies.get("vmc_session")
-        assert c.cookies.get("vmc_device")
-        device = next(iter(store.devices.values()))
-        assert device.shared is True
-        assert owner.id in device.trusted_user_ids
-
-    def test_a_bad_pin_is_rejected_with_the_reason(self, fresh):
-        c, store, _ = fresh
-        resp = c.post(
-            "/setup",
-            data={
-                "setup_code": store.pending_setup_code,
-                "name": "Ada",
-                "email": "",
-                "pin": "1234",
-                "pin_confirm": "1234",
-            },
-        )
-        assert resp.status_code == 200
-        assert "run" in resp.text.lower()
-        assert store.owner() is None
-
-    def test_mismatched_pin_confirmation_is_rejected(self, fresh):
-        c, store, _ = fresh
-        resp = c.post(
-            "/setup",
-            data={
-                "setup_code": store.pending_setup_code,
-                "name": "Ada",
-                "email": "",
-                "pin": "1379",
-                "pin_confirm": "9042",
-            },
-        )
-        assert store.owner() is None
-        assert "match" in resp.text.lower()
-
-    def test_a_lost_step_one_response_is_recovered_by_enrolling_with_the_code(
-        self, fresh
-    ):
-        c, store, _ = fresh
-        code = store.pending_setup_code
-        c.post(
-            "/setup",
-            data={
-                "setup_code": code,
-                "name": "Ada",
-                "email": "",
-                "pin": "1379",
-                "pin_confirm": "1379",
-            },
-        )
-        # A second browser: PIN, then the setup code as the enrollment code.
-        with TestClient(app, follow_redirects=False) as other:
-            other.headers["HX-Request"] = "true"
-            owner = store.owner()
-            other.post("/login", data={"user_id": owner.id, "pin": "1379"})
-            resp = other.post("/login/enroll", data={"code": code})
-            assert resp.headers["hx-redirect"] == "/"
-
-    def test_setup_post_without_the_htmx_header_is_forbidden(self, fresh):
-        c, store, _ = fresh
-        resp = c.post(
-            "/setup",
-            data={"setup_code": store.pending_setup_code, "name": "A", "email": "",
-                  "pin": "1379", "pin_confirm": "1379"},
-            headers={"HX-Request": ""},
-        )
-        assert resp.status_code == 403
-
-
-class TestCorruptAccessFile:
-    def test_every_route_serves_an_error_page_not_the_wizard(self, tmp_path):
-        from services.access import AccessStore
-
-        path = tmp_path / "access.json"
-        path.write_text("{not json", encoding="utf-8")
-        routes.set_config_object(ConfigModel())
-        routes.set_access_store(AccessStore(path=path))
-        with TestClient(app, follow_redirects=False) as c:
-            for p in ("/", "/setup", "/login", "/status"):
-                resp = c.get(p)
-                assert resp.status_code == 503, p
-                assert "corrupt" in resp.text.lower()
-        routes.set_access_store(None)
-```
-
-- [ ] **Step 2: Run the tests to verify they fail**
-
-Run: `uv run pytest tests/test_web_routes.py -v -k "TestSetupWizard or TestCorruptAccessFile"`
-Expected: FAIL — `AttributeError: module 'web_interface.routes' has no attribute 'set_display_controller'`.
-
-- [ ] **Step 3: Implement**
-
-Add to `web_interface/routes.py`, beside the other setters:
-
-```python
-display_controller = None
-
-
-def set_display_controller(display) -> None:
-    global display_controller
-    display_controller = display
-
-
-def ensure_setup_mode() -> None:
-    """Generate, log and display the setup code while no owner exists.
-
-    The code exists only at the machine — the startup log and the customer
-    display — so the wizard cannot be reached and claimed remotely (spec §3.1).
-    """
-    if access_store is None or access_store.corrupt:
-        return
-    if not access_store.setup_mode:
-        if display_controller is not None:
-            display_controller.clear_setup_code()
-        return
-    code = access_store.begin_setup()
-    logger.warning(
-        f"Dashboard is in SETUP MODE. Setup code: {code[:4]} {code[4:]} "
-        "— enter it at /setup to create the owner account."
-    )
-    if display_controller is not None and display_controller.setup_code != code:
-        display_controller.show_setup_code(code)
-```
-
-Add the gate as a middleware in `attach_routes` (registered on `app`, so it also covers `/static`):
-
-```python
-    SETUP_EXEMPT = ("/setup", "/setup/codes")
-
-    @app.middleware("http")
-    async def access_gate(request: Request, call_next):
-        path = request.url.path
-        if path.startswith("/static"):
-            return await call_next(request)
-        if access_store is None:
-            return await call_next(request)
-        if access_store.corrupt:
-            # A corrupt access file must not silently become an open setup
-            # wizard (spec §6). The VMC and MQTT client are unaffected.
-            return HTMLResponse(
-                "<h1>Access file is corrupt</h1><p>data/access.json could not be "
-                "read. The machine keeps running; the dashboard is unavailable "
-                "until an administrator restores or removes that file.</p>",
-                status_code=503,
-            )
-        if access_store.setup_mode and path not in SETUP_EXEMPT:
-            return RedirectResponse("/setup", status_code=303)
-        return await call_next(request)
-```
-
-Add the wizard routes to the public router:
-
-```python
-    def _setup_page(request: Request, *, error=None, form=None, status_code=200,
-                    headers=None):
-        pending = access_store.pending_transfer if access_store else None
-        return templates.TemplateResponse(
-            "setup.html",
-            {
-                "request": request,
-                "error": error,
-                "form": form or {},
-                "transfer": pending is not None,
-            },
-            status_code=status_code,
-            headers=headers or {},
-        )
-
-    @public.get("/setup", response_class=HTMLResponse)
-    async def setup_page(request: Request):
-        if access_store is None:
-            raise HTTPException(status_code=503, detail="Access store not loaded")
-        ensure_setup_mode()
-        if not access_store.setup_mode and access_store.pending_transfer is None:
-            return RedirectResponse("/", status_code=303)
-        return _setup_page(request)
-
-    @public.post(
-        "/setup", response_class=HTMLResponse, dependencies=[Depends(require_htmx)]
-    )
-    async def setup_submit(
-        request: Request,
-        setup_code: str = Form(...),
-        name: str = Form(...),
-        email: str = Form(""),
-        pin: str = Form(...),
-        pin_confirm: str = Form(...),
-        shared_device: str | None = Form(None),
-    ):
-        if access_store is None:
-            raise HTTPException(status_code=503, detail="Access store not loaded")
-        form = {"name": name, "email": email}
-        client = web_auth.client_key(request)
-        transferring = access_store.pending_transfer is not None
-
-        kind = "transfer" if transferring else "setup"
-        subject = "transfer" if transferring else "setup"
-        remaining = web_auth.backoff.check(kind, subject, client)
-        if remaining is not None:
-            return _setup_page(
-                request,
-                error=f"Too many attempts. Try again in {int(remaining) + 1} s.",
-                form=form,
-                status_code=429,
-                headers={"Retry-After": str(int(remaining) + 1)},
-            )
-
-        code_ok = (
-            access_store.verify_transfer_code(setup_code.strip())
-            if transferring
-            else access_store.verify_setup_code(setup_code.strip())
-        )
-        if not code_ok:
-            web_auth.backoff.record_failure(kind, subject, client)
-            return _setup_page(request, error="That code was not accepted", form=form)
-
-        if pin != pin_confirm:
-            return _setup_page(request, error="The two PINs do not match", form=form)
-        problem = pin_problem(pin)
-        if problem:
-            return _setup_page(request, error=problem, form=form)
-
-        web_auth.backoff.record_success(kind, subject, client)
-        try:
-            if transferring:
-                owner = access_store.complete_transfer(name, email or None, pin)
-            else:
-                owner = access_store.create_user(name, email or None, Role.owner, pin)
-        except OwnerExistsError:
-            # Two racing submissions: the store rejects the second one.
-            return _setup_page(
-                request, error="This machine already has an owner", form=form
-            )
-
-        device, token = access_store.create_device(
-            "Machine tablet" if shared_device else "Owner device",
-            shared=shared_device is not None,
-        )
-        access_store.trust_device(device.id, owner.id)
-        access_store.record_login(owner.id)
-        session_id = access_store.create_session(owner.id, device.id)
-
-        resp = HTMLResponse("", headers={"HX-Redirect": "/setup/codes"})
-        web_auth.set_cookie(
-            resp, request, web_auth.SESSION_COOKIE, session_id, max_age=None
-        )
-        web_auth.set_cookie(
-            resp,
-            request,
-            web_auth.DEVICE_COOKIE,
-            token,
-            max_age=web_auth.DEVICE_COOKIE_MAX_AGE,
-        )
-        return resp
-```
-
-Import `pin_problem` from `services.auth_policy`, `OwnerExistsError` and `Role` from `services.access`, and `logger` from `loguru` in `routes.py`.
-
-Create `web_interface/templates/setup.html`: the same page chrome as `login.html` (viewport meta, HTMX, Tailwind), an `<h1>` of "Set up this machine" (or "Take ownership" when `transfer`), a paragraph telling the user the code is in the machine's startup log and on the customer display, and a form `hx-post="/setup" hx-target="body" hx-swap="outerHTML"` with fields `setup_code`, `name`, `email`, `pin`, `pin_confirm` and a `shared_device` checkbox labelled "This browser is the machine's own tablet". Render `{{ error }}` in a `role="alert"` paragraph and refill `name`/`email` from `form`.
-
-- [ ] **Step 4: Run the tests to verify they pass**
-
-Run: `uv run pytest tests/test_web_routes.py -v`
-Expected: PASS. Every earlier test class must still pass — they seed an owner, so the gate lets them through.
-
-- [ ] **Step 5: Lint and commit**
-
-```bash
-ruff check --fix .
-ruff format .
-git add web_interface tests/test_web_routes.py
-git commit -m "feat(access): setup-mode gate and the owner wizard"
-```
+**Done when:** the full suite is green — every earlier test class seeds an owner, so the gate lets them through. Commit: `feat(access): setup-mode gate and the owner wizard`.
 
 ---
 
@@ -4586,214 +3714,22 @@ git commit -m "feat(access): setup-mode gate and the owner wizard"
 - Test: `tests/test_web_routes.py`
 
 **Interfaces:**
-- Consumes: `AccessStore.generate_emergency_codes` / `finalize_setup` (Task 6), `send_email` (Task 7), `require(Permission.manage_ownership)`.
-- Produces:
-  - `GET /setup/codes` — owner session required. Generates the 20 codes on first view and holds the plaintexts in a module-level `_pending_codes: list[str]` until Done; a reload before Done shows the same codes.
-  - `POST /setup/codes/email` — `require_htmx`, `manage_ownership`; emails the codes; re-renders with a notice.
-  - `POST /setup/codes/done` — `require_htmx`, `manage_ownership`; calls `finalize_setup()`, clears `_pending_codes`, calls `display_controller.clear_setup_code()`, responds `HX-Redirect: /`.
+- Module-level `routes._pending_codes: list[str]` — the plaintext codes, held **only** between generation and Done. After Done only hashes exist, so they can never be shown again.
+- `GET /setup/codes` — permission `manage_ownership`. Generates the 20 codes on first view, reuses `_pending_codes` on a reload, and redirects 303 to `/` once setup is finalized and nothing is pending. Context: `codes`, `notice`, `error`, `can_email`.
+- `POST /setup/codes/email` — `manage_ownership` + `require_htmx`. Emails the codes to the signed-in owner through `send_email`; re-renders with a notice, or an error when the gateway is unconfigured or the send fails.
+- `POST /setup/codes/done` — `manage_ownership` + `require_htmx`. Calls `finalize_setup()`, clears `_pending_codes`, calls `display_controller.clear_setup_code()`, answers `HX-Redirect: /`.
 
-- [ ] **Step 1: Write the failing tests**
+These three sit on the public router (they are exempt from the setup-mode gate) but carry `require(Permission.manage_ownership)` themselves, so only a signed-in owner reaches them.
 
-Append to `tests/test_web_routes.py`, inside `TestSetupWizard` or a new `TestSetupCodes` class using the same `fresh` fixture:
+**Behavior to get right:**
+- Reloading before Done shows the **same** codes and does not regenerate the pool — regenerating would invalidate codes the owner may have already written down.
+- Done is what invalidates the setup code; `verify_setup_code` must return False afterwards.
+- `setup_codes.html` is a full page: heading "Emergency codes", a warning that they are shown **once**, the codes in a monospace grid with **each code in its own element** so a `\b\d{8}\b` scan finds twenty distinct matches, an "Email these to me" button rendered only when `can_email`, a **Done** button, and `notice` / `error` paragraphs.
+- The email body explains that each code works once, to trust a new device or authorise an ownership transfer, and that they should be kept somewhere other than the machine.
 
-```python
-class TestSetupCodes:
-    @pytest.fixture
-    def after_step_one(self, tmp_path):
-        from services.access import AccessStore
-        from services.display_controller import DisplayController
+**Tests to write first:** twenty distinct 8-digit codes appear and `unused_emergency_code_count() == 20`; a reload shows the same set and the count is still 20; Done finalizes setup, clears the display and answers `HX-Redirect: /`; the setup code stops enrolling after Done; the page does not show codes again after Done; the email button routes through the mailer with all twenty codes in the body; a tech gets 403.
 
-        cfg = ConfigModel()
-        store = AccessStore(path=tmp_path / "access.json")
-        display = DisplayController()
-        routes.set_config_object(cfg)
-        routes.set_access_store(store)
-        routes.set_display_controller(display)
-        routes.ensure_setup_mode()
-        with TestClient(app, follow_redirects=False) as c:
-            c.headers["HX-Request"] = "true"
-            c.post(
-                "/setup",
-                data={
-                    "setup_code": store.pending_setup_code,
-                    "name": "Ada",
-                    "email": "ada@example.com",
-                    "pin": "1379",
-                    "pin_confirm": "1379",
-                    "shared_device": "on",
-                },
-            )
-            yield c, store, display
-        routes.set_access_store(None)
-        routes.set_display_controller(None)
-
-    def test_twenty_codes_are_shown(self, after_step_one):
-        c, store, _ = after_step_one
-        resp = c.get("/setup/codes")
-        assert resp.status_code == 200
-        assert store.unused_emergency_code_count() == 20
-        import re
-
-        assert len(set(re.findall(r"\b\d{8}\b", resp.text))) >= 20
-
-    def test_reloading_before_done_shows_the_same_codes(self, after_step_one):
-        import re
-
-        c, store, _ = after_step_one
-        first = set(re.findall(r"\b\d{8}\b", c.get("/setup/codes").text))
-        second = set(re.findall(r"\b\d{8}\b", c.get("/setup/codes").text))
-        assert first == second
-        assert store.unused_emergency_code_count() == 20
-
-    def test_done_finalizes_setup_and_clears_the_display(self, after_step_one):
-        c, store, display = after_step_one
-        resp = c.post("/setup/codes/done", data={})
-        assert resp.headers["hx-redirect"] == "/"
-        assert store.setup_finalized is True
-        assert display.setup_code is None
-
-    def test_the_setup_code_stops_enrolling_after_done(self, after_step_one):
-        c, store, _ = after_step_one
-        code = store.pending_setup_code
-        c.post("/setup/codes/done", data={})
-        assert store.verify_setup_code(code or "") is False
-
-    def test_codes_are_not_shown_again_after_done(self, after_step_one):
-        import re
-
-        c, store, _ = after_step_one
-        c.get("/setup/codes")
-        c.post("/setup/codes/done", data={})
-        resp = c.get("/setup/codes", follow_redirects=False)
-        assert resp.status_code in (303, 403) or not re.findall(r"\b\d{8}\b", resp.text)
-
-    def test_email_button_uses_the_mailer(self, after_step_one, monkeypatch):
-        c, store, _ = after_step_one
-        routes.config.communication.email_gateway.smtp_server = "smtp.real.local"
-        sent = {}
-
-        async def fake_send_email(gateway, to, subject, body):
-            sent["to"] = to
-            sent["body"] = body
-            return True
-
-        monkeypatch.setattr(routes, "send_email", fake_send_email)
-        c.get("/setup/codes")
-        resp = c.post("/setup/codes/email", data={})
-        assert resp.status_code == 200
-        assert sent["to"] == "ada@example.com"
-        assert len([w for w in sent["body"].split() if w.isdigit()]) >= 20
-
-    def test_a_non_owner_cannot_reach_the_codes_page(self, after_step_one, tmp_path):
-        from services.access import Role
-
-        c, store, _ = after_step_one
-        c.post("/setup/codes/done", data={})
-        other, _ = make_client(store, Role.tech, name="Tim")
-        assert other.get("/setup/codes").status_code == 403
-        other.close()
-```
-
-- [ ] **Step 2: Run the tests to verify they fail**
-
-Run: `uv run pytest tests/test_web_routes.py -v -k TestSetupCodes`
-Expected: FAIL — 404 on `/setup/codes`.
-
-- [ ] **Step 3: Implement**
-
-Add near the other module globals in `web_interface/routes.py`:
-
-```python
-# Plaintext emergency codes, held only between generation and Done. After
-# Done only their hashes exist, so they can never be shown again.
-_pending_codes: list[str] = []
-```
-
-Add to the public router (they are exempt from the setup gate but still require an owner session, so they carry `require(Permission.manage_ownership)` themselves):
-
-```python
-    def _codes_page(request: Request, *, notice=None, error=None):
-        return templates.TemplateResponse(
-            "setup_codes.html",
-            web_auth.template_context(
-                request,
-                codes=_pending_codes,
-                notice=notice,
-                error=error,
-                can_email=config.communication.email_gateway.is_configured,
-            ),
-        )
-
-    @public.get(
-        "/setup/codes",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.manage_ownership))],
-    )
-    async def setup_codes(request: Request):
-        global _pending_codes
-        if access_store.setup_finalized and not _pending_codes:
-            return RedirectResponse("/", status_code=303)
-        if not _pending_codes:
-            _pending_codes = access_store.generate_emergency_codes()
-        return _codes_page(request)
-
-    @public.post(
-        "/setup/codes/email",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(require_htmx),
-            Depends(web_auth.require(Permission.manage_ownership)),
-        ],
-    )
-    async def email_setup_codes(request: Request):
-        principal = web_auth.current_principal(request)
-        gateway = config.communication.email_gateway
-        if not principal.user.email or not gateway.is_configured:
-            return _codes_page(request, error="Email is not configured")
-        body = (
-            "Emergency codes for your ice-colder machine. Each works once, to "
-            "trust a new device or to authorise an ownership transfer. Keep "
-            "them somewhere other than the machine.\n\n"
-            + "\n".join(_pending_codes)
-        )
-        ok = await send_email(
-            gateway, principal.user.email, "Ice-colder emergency codes", body
-        )
-        if not ok:
-            return _codes_page(request, error="Email could not be sent")
-        return _codes_page(request, notice="Sent.")
-
-    @public.post(
-        "/setup/codes/done",
-        dependencies=[
-            Depends(require_htmx),
-            Depends(web_auth.require(Permission.manage_ownership)),
-        ],
-    )
-    async def finish_setup(request: Request):
-        global _pending_codes
-        access_store.finalize_setup()
-        _pending_codes = []
-        if display_controller is not None:
-            display_controller.clear_setup_code()
-        return HTMLResponse("", headers={"HX-Redirect": "/"})
-```
-
-Create `web_interface/templates/setup_codes.html`: page chrome as in `setup.html`; a heading "Emergency codes"; a warning that they are shown **once**; the codes in a monospace grid, each in its own element so `\b\d{8}\b` matches; an "Email these to me" button (`hx-post="/setup/codes/email"`, rendered only when `can_email`) and a **Done** button (`hx-post="/setup/codes/done"`); `notice` and `error` paragraphs.
-
-- [ ] **Step 4: Run the tests to verify they pass**
-
-Run: `uv run pytest tests/test_web_routes.py -v`
-Expected: PASS.
-
-- [ ] **Step 5: Lint and commit**
-
-```bash
-ruff check --fix .
-ruff format .
-git add web_interface tests/test_web_routes.py
-git commit -m "feat(access): emergency-code page and setup finalisation"
-```
+**Done when:** the full suite is green. Commit: `feat(access): emergency-code page and setup finalisation`.
 
 ---
 
@@ -4806,399 +3742,50 @@ git commit -m "feat(access): emergency-code page and setup finalisation"
 - Create: `web_interface/templates/partials/users_list.html`, `web_interface/templates/partials/user_form.html`
 - Test: `tests/test_web_routes.py`
 
-**Interfaces:**
-- Consumes: `AccessStore` user methods (Task 4), `pin_problem` (Task 1), `require(Permission.manage_users)`.
-- Produces (all render partials into the dashboard's `#content-body`, all POSTs carry `require_htmx`):
-  - `GET /users` → `partials/users_list.html` — `manage_users`
-  - `GET /users/new`, `POST /users/new` (`name`, `email`, `role`, `pin`) — `manage_users`; a secretary choosing `owner` gets 403
-  - `POST /users/{id}/disable`, `POST /users/{id}/enable` — `manage_users`
-  - `POST /users/{id}/reset-pin` (`pin`) — `manage_users`
-  - `POST /users/{id}/delete` — `manage_users`
-  - Helper `_guard_owner_target(principal, user_id)` — raises 403 when the target is the owner and the caller lacks `manage_ownership`
-  - `partials/users_list.html` context: `users` (all users), `owner_id`, `unused_codes` (int), `pending_transfer` (dict or None), `devices_count` per user
+**Interfaces** — all on the gated router, all rendering partials into `#content-body`, all POSTs carrying `require_htmx`:
+- `GET /users` → `partials/users_list.html`; `manage_users`
+- `GET /users/new` → `partials/user_form.html`; `manage_users`. Context: `roles`, `error`, `form`.
+- `POST /users/new` — fields `name`, `email`, `role`, `pin`; `manage_users`
+- `POST /users/{user_id}/disable`, `/enable`, `/reset-pin` (field `pin`), `/delete` — `manage_users`
+- Helper `_guard_owner_target(principal, user_id)` — raises 403 when the target is the owner and the caller lacks `manage_ownership`.
+- `partials/users_list.html` context: `users` (sorted by name), `owner_id`, `device_counts` (`dict[user_id, int]`), `unused_codes` (int), `pending_transfer` (dict or None), `error`, `notice`. Task 18 adds `transfer_code` and `new_codes`; write the renderer so adding them is a context change, not a restructure.
 
-- [ ] **Step 1: Write the failing tests**
+**Behavior to get right:**
+- A secretary may manage everyone **except** the owner, and may not create an owner — `_guard_owner_target` on every write whose target is the owner, and a 403 when a caller without `manage_ownership` submits `role=owner`. `GET /users/new` offers the `owner` option only to a caller who holds `manage_ownership`.
+- A new user's PIN runs through `pin_problem` first; a failure re-renders the list with the reason and creates nobody.
+- Reset PIN rehashes **and** drops the user from every device so the next login re-enrolls — `AccessStore.set_user_pin` already does both.
+- Disable and delete also end that user's live sessions (`end_sessions_for_user`), or a disabled user keeps their tab working until it idles out.
+- Hide the owner's Disable / Delete / Reset buttons from a caller without `manage_ownership`; the server check remains the authority.
+- The list shows, per user: name, role, email, disabled, last login, trusted-device count. Below it, "Unused emergency codes: N" and a `{% if pending_transfer %}` block Task 18 fills in.
 
-Append to `tests/test_web_routes.py`:
+**Tests to write first:** the owner sees the list containing "Ada"; the list shows the unused-code count; tech and loader get 403; the owner creates a loader; a bad PIN is refused with the reason and creates nobody; a secretary may not create an owner; a secretary gets 403 on disable, delete and reset-pin **targeting the owner**, and the owner is still enabled afterwards; a secretary may disable and re-enable a loader; reset-pin changes the hash and leaves the user trusted on no device; delete removes the user; a POST without `HX-Request` is 403.
 
-```python
-class TestUserManagement:
-    def test_owner_sees_the_user_list(self, client, wired):
-        _, _, _, store = wired
-        resp = client.get("/users")
-        assert resp.status_code == 200
-        assert "Ada" in resp.text
-
-    def test_list_shows_the_unused_emergency_code_count(self, client, wired):
-        _, _, _, store = wired
-        store.generate_emergency_codes()
-        assert "20" in client.get("/users").text
-
-    def test_tech_and_loader_get_403(self, login_as):
-        for role in (Role.tech, Role.loader):
-            assert login_as(role).get("/users").status_code == 403
-
-    def test_owner_creates_a_loader(self, client, wired):
-        _, _, _, store = wired
-        resp = client.post(
-            "/users/new",
-            data={"name": "Lee", "email": "lee@example.com", "role": "loader",
-                  "pin": "9042"},
-        )
-        assert resp.status_code == 200
-        assert any(u.name == "Lee" for u in store.users.values())
-
-    def test_a_bad_pin_is_refused_with_the_reason(self, client, wired):
-        _, _, _, store = wired
-        before = len(store.users)
-        resp = client.post(
-            "/users/new",
-            data={"name": "Lee", "email": "", "role": "loader", "pin": "1111"},
-        )
-        assert "same digit" in resp.text.lower()
-        assert len(store.users) == before
-
-    def test_secretary_may_not_create_an_owner(self, login_as, wired):
-        _, _, _, store = wired
-        sec = login_as(Role.secretary, name="Sue")
-        resp = sec.post(
-            "/users/new",
-            data={"name": "Bea", "email": "", "role": "owner", "pin": "9042"},
-        )
-        assert resp.status_code == 403
-
-    def test_secretary_may_not_disable_delete_or_reset_the_owner(
-        self, login_as, client, wired
-    ):
-        _, _, _, store = wired
-        owner = store.owner()
-        sec = login_as(Role.secretary, name="Sue")
-        assert sec.post(f"/users/{owner.id}/disable", data={}).status_code == 403
-        assert sec.post(f"/users/{owner.id}/delete", data={}).status_code == 403
-        assert (
-            sec.post(f"/users/{owner.id}/reset-pin", data={"pin": "9042"}).status_code
-            == 403
-        )
-        assert store.owner().disabled is False
-
-    def test_secretary_may_manage_a_loader(self, login_as, client, wired):
-        _, _, _, store = wired
-        sec = login_as(Role.secretary, name="Sue")
-        lee = login_as(Role.loader, name="Lee")
-        lee_user = next(u for u in store.users.values() if u.name == "Lee")
-        assert sec.post(f"/users/{lee_user.id}/disable", data={}).status_code == 200
-        assert store.get_user(lee_user.id).disabled is True
-        assert sec.post(f"/users/{lee_user.id}/enable", data={}).status_code == 200
-        assert store.get_user(lee_user.id).disabled is False
-
-    def test_reset_pin_untrusts_every_device(self, client, login_as, wired):
-        _, _, _, store = wired
-        login_as(Role.loader, name="Lee")
-        lee = next(u for u in store.users.values() if u.name == "Lee")
-        assert any(lee.id in d.trusted_user_ids for d in store.devices.values())
-        resp = client.post(f"/users/{lee.id}/reset-pin", data={"pin": "9042"})
-        assert resp.status_code == 200
-        assert store.verify_user_pin(lee.id, "9042")
-        assert not any(lee.id in d.trusted_user_ids for d in store.devices.values())
-
-    def test_delete_removes_the_user(self, client, login_as, wired):
-        _, _, _, store = wired
-        login_as(Role.loader, name="Lee")
-        lee = next(u for u in store.users.values() if u.name == "Lee")
-        assert client.post(f"/users/{lee.id}/delete", data={}).status_code == 200
-        assert store.get_user(lee.id) is None
-
-    def test_user_writes_need_the_htmx_header(self, client, wired):
-        _, _, _, store = wired
-        resp = client.post(
-            "/users/new",
-            data={"name": "Lee", "email": "", "role": "loader", "pin": "9042"},
-            headers={"HX-Request": ""},
-        )
-        assert resp.status_code == 403
-```
-
-- [ ] **Step 2: Run the tests to verify they fail**
-
-Run: `uv run pytest tests/test_web_routes.py -v -k TestUserManagement`
-Expected: FAIL — 404 on `/users`.
-
-- [ ] **Step 3: Implement**
-
-Add to the gated `router` in `web_interface/routes.py`:
-
-```python
-    def _users_list(request: Request, *, error=None, notice=None):
-        pending = access_store.pending_transfer
-        owner = access_store.owner()
-        return templates.TemplateResponse(
-            "partials/users_list.html",
-            web_auth.template_context(
-                request,
-                users=sorted(access_store.users.values(), key=lambda u: u.name),
-                owner_id=owner.id if owner else None,
-                devices=sorted(access_store.devices.values(), key=lambda d: d.label),
-                device_counts={
-                    u.id: sum(
-                        1
-                        for d in access_store.devices.values()
-                        if u.id in d.trusted_user_ids
-                    )
-                    for u in access_store.users.values()
-                },
-                unused_codes=access_store.unused_emergency_code_count(),
-                pending_transfer=pending,
-                error=error,
-                notice=notice,
-            ),
-        )
-
-    def _guard_owner_target(principal, user_id: str) -> None:
-        """A secretary may manage everyone except the owner (spec §4)."""
-        owner = access_store.owner()
-        if (
-            owner is not None
-            and owner.id == user_id
-            and Permission.manage_ownership not in principal.perms
-        ):
-            raise HTTPException(status_code=403, detail="Not permitted")
-
-    @router.get(
-        "/users",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.manage_users))],
-    )
-    async def users_list(request: Request):
-        return _users_list(request)
-
-    @router.get(
-        "/users/new",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.manage_users))],
-    )
-    async def new_user_form(request: Request):
-        principal = web_auth.current_principal(request)
-        return templates.TemplateResponse(
-            "partials/user_form.html",
-            web_auth.template_context(
-                request,
-                roles=[r for r in Role if r is not Role.owner
-                       or Permission.manage_ownership in principal.perms],
-                error=None,
-                form={},
-            ),
-        )
-
-    @router.post(
-        "/users/new",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(require_htmx),
-            Depends(web_auth.require(Permission.manage_users)),
-        ],
-    )
-    async def create_user_route(
-        request: Request,
-        principal=Depends(web_auth.require(Permission.manage_users)),
-        name: str = Form(...),
-        email: str = Form(""),
-        role: str = Form(...),
-        pin: str = Form(...),
-    ):
-        try:
-            wanted = Role(role)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Unknown role")
-        if wanted is Role.owner and Permission.manage_ownership not in principal.perms:
-            raise HTTPException(status_code=403, detail="Not permitted")
-        problem = pin_problem(pin)
-        if problem:
-            return _users_list(request, error=problem)
-        try:
-            access_store.create_user(name, email or None, wanted, pin)
-        except OwnerExistsError as e:
-            return _users_list(request, error=str(e))
-        return _users_list(request, notice=f"Added {name}")
-
-    @router.post(
-        "/users/{user_id}/disable",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(require_htmx),
-            Depends(web_auth.require(Permission.manage_users)),
-        ],
-    )
-    async def disable_user(
-        request: Request,
-        user_id: str,
-        principal=Depends(web_auth.require(Permission.manage_users)),
-    ):
-        _guard_owner_target(principal, user_id)
-        access_store.set_user_disabled(user_id, True)
-        access_store.end_sessions_for_user(user_id)
-        return _users_list(request)
-```
-
-Write `enable_user`, `reset_user_pin` and `delete_user_route` the same way: `_guard_owner_target` first, then `set_user_disabled(user_id, False)` / `set_user_pin(user_id, pin)` (validating with `pin_problem` and returning `_users_list(request, error=problem)` on failure) / `delete_user(user_id)` plus `end_sessions_for_user(user_id)`. Each returns `_users_list(request, notice=...)`.
-
-Create `web_interface/templates/partials/users_list.html`: a table of users (name, role, email, disabled, last login, device count) with Disable/Enable, Reset PIN and Delete buttons — each `hx-post` targeting `#content-body` — an "Add user" button (`hx-get="/users/new"`), a line reading "Unused emergency codes: {{ unused_codes }}", a `{% if pending_transfer %}` block (Task 18 fills in its Cancel button), and `error` / `notice` paragraphs. Hide the owner's Disable/Delete/Reset buttons unless `"manage_ownership" in perms`.
-
-Create `web_interface/templates/partials/user_form.html`: name, email, a `role` select built from `roles`, and a PIN field, posting to `/users/new` with `hx-target="#content-body"`, plus a Cancel button `hx-get="/users"`.
-
-- [ ] **Step 4: Run the tests to verify they pass**
-
-Run: `uv run pytest tests/test_web_routes.py -v`
-Expected: PASS.
-
-- [ ] **Step 5: Lint and commit**
-
-```bash
-ruff check --fix .
-ruff format .
-git add web_interface tests/test_web_routes.py
-git commit -m "feat(access): user management routes and Users tab partials"
-```
+**Done when:** the full suite is green. Commit: `feat(access): user management routes and Users tab partials`.
 
 ---
 
 ### Task 17: Device management routes
 
-**Spec:** §4.1 (`GET /devices`, `POST /devices/{id}/forget`, `POST /devices/{id}/shared`).
+**Spec:** §4.1 — `GET /devices`, `POST /devices/{id}/forget`, `POST /devices/{id}/shared`.
 
 **Files:**
-- Modify: `web_interface/routes.py`
+- Modify: `services/access.py`, `web_interface/routes.py`, `web_interface/templates/dashboard.html`
 - Create: `web_interface/templates/partials/devices_list.html`
 - Test: `tests/test_web_routes.py`
 
 **Interfaces:**
-- Consumes: `AccessStore.devices` / `forget_device` / `set_device_shared` (Task 4).
-- Produces:
-  - `GET /devices` → `partials/devices_list.html` — `manage_users`
-  - `POST /devices/{id}/forget` — `manage_users`, `require_htmx`; also ends every session on that device
-  - `POST /devices/{id}/shared` — `manage_users`, `require_htmx`; toggles the flag
-  - `partials/devices_list.html` context: `devices`, `user_names` (`dict[str, str]`)
-  - `AccessStore.end_sessions_for_device(device_id: str) -> None` (new, mirrors `end_sessions_for_user`)
+- `AccessStore.end_sessions_for_device(device_id: str) -> None` — new, mirrors `end_sessions_for_user`, memory-only.
+- `GET /devices` → `partials/devices_list.html`; `manage_users`. Context: `devices` (sorted by label), `user_names` (`dict[user_id, str]`), `notice`.
+- `POST /devices/{device_id}/forget` — `manage_users` + `require_htmx`; ends every session on that device **before** removing it.
+- `POST /devices/{device_id}/shared` — `manage_users` + `require_htmx`; toggles the flag; 404 for an unknown device.
 
-- [ ] **Step 1: Write the failing tests**
+**Behavior to get right:** forgetting a device must actually log out whoever is using it — the session dies with the device either way (`resolve_session` checks), but ending them explicitly keeps the in-memory table from growing. The list resolves trusted user ids to names through `user_names` and never renders a raw id.
 
-Append to `tests/test_web_routes.py`:
+Add a **Devices** button beside **Users** in `dashboard.html`, gated on `manage_users`.
 
-```python
-class TestDeviceManagement:
-    def test_owner_sees_devices_with_trusted_names(self, client, wired):
-        _, _, _, store = wired
-        assert "Ada" in client.get("/devices").text
+**Tests to write first:** the owner sees a device row naming its trusted user; a tech gets 403; forget removes the device and the forgotten device's client is refused on its next request; the shared toggle flips the flag; a POST without `HX-Request` is 403.
 
-    def test_tech_gets_403(self, login_as):
-        assert login_as(Role.tech).get("/devices").status_code == 403
-
-    def test_forget_removes_the_device_and_its_sessions(self, client, login_as, wired):
-        _, _, _, store = wired
-        lee_client = login_as(Role.loader, name="Lee")
-        lee = next(u for u in store.users.values() if u.name == "Lee")
-        device = next(d for d in store.devices.values() if lee.id in d.trusted_user_ids)
-        assert client.post(f"/devices/{device.id}/forget", data={}).status_code == 200
-        assert device.id not in store.devices
-        assert lee_client.get("/status").status_code == 401
-
-    def test_shared_toggle_flips_the_flag(self, client, wired):
-        _, _, _, store = wired
-        device = next(iter(store.devices.values()))
-        before = device.shared
-        assert client.post(f"/devices/{device.id}/shared", data={}).status_code == 200
-        assert store.devices[device.id].shared is not before
-
-    def test_device_writes_need_the_htmx_header(self, client, wired):
-        _, _, _, store = wired
-        device = next(iter(store.devices.values()))
-        resp = client.post(
-            f"/devices/{device.id}/shared", data={}, headers={"HX-Request": ""}
-        )
-        assert resp.status_code == 403
-```
-
-- [ ] **Step 2: Run the tests to verify they fail**
-
-Run: `uv run pytest tests/test_web_routes.py -v -k TestDeviceManagement`
-Expected: FAIL — 404 on `/devices`.
-
-- [ ] **Step 3: Implement**
-
-Add to `services/access.py`:
-
-```python
-    def end_sessions_for_device(self, device_id: str) -> None:
-        for sid, session in list(self._sessions.items()):
-            if session.device_id == device_id:
-                del self._sessions[sid]
-```
-
-Add to the gated router in `web_interface/routes.py`:
-
-```python
-    def _devices_list(request: Request, *, notice=None):
-        return templates.TemplateResponse(
-            "partials/devices_list.html",
-            web_auth.template_context(
-                request,
-                devices=sorted(access_store.devices.values(), key=lambda d: d.label),
-                user_names={u.id: u.name for u in access_store.users.values()},
-                notice=notice,
-            ),
-        )
-
-    @router.get(
-        "/devices",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.manage_users))],
-    )
-    async def devices_list(request: Request):
-        return _devices_list(request)
-
-    @router.post(
-        "/devices/{device_id}/forget",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(require_htmx),
-            Depends(web_auth.require(Permission.manage_users)),
-        ],
-    )
-    async def forget_device_route(request: Request, device_id: str):
-        access_store.end_sessions_for_device(device_id)
-        access_store.forget_device(device_id)
-        return _devices_list(request, notice="Device forgotten")
-
-    @router.post(
-        "/devices/{device_id}/shared",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(require_htmx),
-            Depends(web_auth.require(Permission.manage_users)),
-        ],
-    )
-    async def toggle_device_shared(request: Request, device_id: str):
-        device = access_store.devices.get(device_id)
-        if device is None:
-            raise HTTPException(status_code=404, detail="No such device")
-        access_store.set_device_shared(device_id, not device.shared)
-        return _devices_list(request)
-```
-
-Create `web_interface/templates/partials/devices_list.html`: a table with label, shared flag, the trusted users' names resolved through `user_names`, and last seen; a Forget button and a "Shared / Personal" toggle button per row, each `hx-post` targeting `#content-body`; and a `notice` paragraph. Add a "Devices" button beside "Users" in `dashboard.html`, gated on `"manage_users" in perms`.
-
-- [ ] **Step 4: Run the tests to verify they pass**
-
-Run: `uv run pytest tests/test_web_routes.py -v`
-Expected: PASS.
-
-- [ ] **Step 5: Lint and commit**
-
-```bash
-ruff check --fix .
-ruff format .
-git add services/access.py web_interface tests/test_web_routes.py
-git commit -m "feat(access): device list, forget and shared toggle"
-```
+**Done when:** the full suite is green. Commit: `feat(access): device list, forget and shared toggle`.
 
 ---
 
@@ -5210,262 +3797,23 @@ git commit -m "feat(access): device list, forget and shared toggle"
 - Modify: `web_interface/routes.py`, `web_interface/templates/partials/users_list.html`
 - Test: `tests/test_web_routes.py`
 
-**Interfaces:**
-- Consumes: `AccessStore.start_transfer` / `cancel_transfer` / `consume_emergency_code` / `generate_emergency_codes` / `machine_report` / `verify_user_pin` (Tasks 4, 6), `send_email` (Task 7).
-- Produces (all `manage_ownership` + `require_htmx`, all returning `partials/users_list.html`):
-  - `POST /users/transfer` (`pin`, `emergency_code`) — back-off kinds `pin` (subject: the owner's id) and `transfer` (subject: `"pool"`). On success consumes the emergency code with `used_for="transfer"`, records the pending transfer, and renders the list with `transfer_code` shown **once**.
-  - `POST /users/transfer/cancel` (`pin`) — back-off kind `pin`.
-  - `POST /users/codes/regenerate` (`pin`) — replaces the pool and renders the list with `new_codes` shown once.
-  - `POST /users/report` — emails `store.machine_report(config)` to the owner.
-  - `partials/users_list.html` gains optional `transfer_code`, `new_codes` and the `pending_transfer` Cancel form.
+**Interfaces** — all `manage_ownership` + `require_htmx`, all returning `partials/users_list.html`:
+- Helper `_check_owner_pin(request, principal, pin) -> str | None` — verifies the **caller's own** PIN under back-off kind `pin`, subject the caller's user id, `trusted` from `is_trusted_client`. Returns an error message or `None`.
+- `POST /users/transfer` — fields `pin`, `emergency_code`. Renders the list with `transfer_code` shown once.
+- `POST /users/transfer/cancel` — field `pin`.
+- `POST /users/codes/regenerate` — field `pin`. Renders the list with `new_codes` shown once.
+- `POST /users/report` — no fields; emails `store.machine_report(config)` to the signed-in owner.
+- `_users_list(...)` gains `transfer_code=None` and `new_codes=None` parameters, passed straight into the template context.
 
-- [ ] **Step 1: Write the failing tests**
+**Behavior to get right:**
+- `POST /users/transfer` checks the PIN first, then the emergency code under back-off kind `transfer`, subject `"pool"`. Only when **both** pass does it consume the code (`used_for="transfer"`) and record the pending transfer. A wrong PIN must leave the emergency-code pool untouched — check, then consume, never the other way round.
+- Starting a transfer changes nothing else: the current owner keeps working, and the store still reports them as owner. That is spec §3.3's whole point and the reviewer should verify it explicitly.
+- Regeneration replaces the entire pool, used codes included, and the old codes must stop working.
+- `users_list.html` gains, all inside `{% if "manage_ownership" in perms %}`: a Transfer ownership form (`pin`, `emergency_code`); a `{% if pending_transfer %}` block showing `started_at` / `expires_at` with a Cancel form (`pin`); a Regenerate emergency codes form (`pin`); an Email machine report button; and `{% if transfer_code %}` / `{% if new_codes %}` blocks rendering those values in monospace with a "shown once" warning, **each 8-digit code in its own element**.
 
-```python
-class TestTransferStart:
-    @pytest.fixture
-    def owned(self, client, wired):
-        _, _, _, store = wired
-        codes = store.generate_emergency_codes()
-        return client, store, store.owner(), codes
+**Tests to write first:** start shows an 8-digit transfer code, records the pending transfer and consumes exactly one emergency code; the old owner still reaches `/status` and is still the owner while it is pending; a wrong PIN starts nothing **and consumes no code**; a wrong emergency code starts nothing; cancel clears the pending transfer and leaves the owner in place; a secretary gets 403 on start and on cancel; regenerate replaces the pool, shows twenty new codes and none of the old ones; regenerate with a wrong PIN changes nothing; a secretary gets 403 on regenerate; the report is emailed to the owner and names the users; a tech gets 403 on the report.
 
-    def test_start_shows_a_transfer_code_and_consumes_an_emergency_code(self, owned):
-        import re
-
-        c, store, owner, codes = owned
-        resp = c.post(
-            "/users/transfer", data={"pin": "1379", "emergency_code": codes[0]}
-        )
-        assert resp.status_code == 200
-        assert re.search(r"\b\d{8}\b", resp.text)
-        assert store.pending_transfer is not None
-        assert store.unused_emergency_code_count() == 19
-
-    def test_the_old_owner_still_works_while_a_transfer_is_pending(self, owned):
-        c, store, owner, codes = owned
-        c.post("/users/transfer", data={"pin": "1379", "emergency_code": codes[0]})
-        assert c.get("/status").status_code == 200
-        assert store.owner().id == owner.id
-
-    def test_a_wrong_pin_starts_nothing(self, owned):
-        c, store, owner, codes = owned
-        resp = c.post(
-            "/users/transfer", data={"pin": "9999", "emergency_code": codes[0]}
-        )
-        assert store.pending_transfer is None
-        assert store.unused_emergency_code_count() == 20
-        assert resp.status_code in (200, 429)
-
-    def test_a_wrong_emergency_code_starts_nothing(self, owned):
-        c, store, owner, codes = owned
-        c.post("/users/transfer", data={"pin": "1379", "emergency_code": "00000000"})
-        assert store.pending_transfer is None
-
-    def test_cancel_clears_the_pending_transfer(self, owned):
-        c, store, owner, codes = owned
-        c.post("/users/transfer", data={"pin": "1379", "emergency_code": codes[0]})
-        assert c.post("/users/transfer/cancel", data={"pin": "1379"}).status_code == 200
-        assert store.pending_transfer is None
-        assert store.owner().id == owner.id
-
-    def test_a_secretary_cannot_start_or_cancel(self, login_as, owned):
-        c, store, owner, codes = owned
-        sec = login_as(Role.secretary, name="Sue")
-        assert (
-            sec.post(
-                "/users/transfer", data={"pin": "1379", "emergency_code": codes[1]}
-            ).status_code
-            == 403
-        )
-        assert sec.post("/users/transfer/cancel", data={"pin": "1379"}).status_code == 403
-
-
-class TestCodeRegenerationAndReport:
-    def test_regenerate_replaces_the_pool_and_shows_the_new_codes(self, client, wired):
-        import re
-
-        _, _, _, store = wired
-        old = store.generate_emergency_codes()
-        store.consume_emergency_code(old[0], store.owner().id, "enroll")
-        resp = client.post("/users/codes/regenerate", data={"pin": "1379"})
-        assert resp.status_code == 200
-        assert store.unused_emergency_code_count() == 20
-        shown = set(re.findall(r"\b\d{8}\b", resp.text))
-        assert len(shown) >= 20
-        assert not shown & set(old)
-
-    def test_regenerate_needs_the_owner_pin(self, client, wired):
-        _, _, _, store = wired
-        store.generate_emergency_codes()
-        client.post("/users/codes/regenerate", data={"pin": "9999"})
-        assert store.unused_emergency_code_count() == 20
-
-    def test_a_secretary_cannot_regenerate(self, login_as, wired):
-        sec = login_as(Role.secretary, name="Sue")
-        assert sec.post("/users/codes/regenerate", data={"pin": "1379"}).status_code == 403
-
-    def test_report_is_emailed_to_the_owner(self, client, wired, monkeypatch):
-        cfg, _, _, store = wired
-        cfg.communication.email_gateway.smtp_server = "smtp.real.local"
-        sent = {}
-
-        async def fake_send_email(gateway, to, subject, body):
-            sent["to"] = to
-            sent["body"] = body
-            return True
-
-        monkeypatch.setattr(routes, "send_email", fake_send_email)
-        resp = client.post("/users/report", data={})
-        assert resp.status_code == 200
-        assert sent["to"] == store.owner().email
-        assert "Ada" in sent["body"]
-
-    def test_a_tech_cannot_request_the_report(self, login_as):
-        assert login_as(Role.tech).post("/users/report", data={}).status_code == 403
-```
-
-- [ ] **Step 2: Run the tests to verify they fail**
-
-Run: `uv run pytest tests/test_web_routes.py -v -k "TestTransferStart or TestCodeRegenerationAndReport"`
-Expected: FAIL — 404 on `/users/transfer`.
-
-- [ ] **Step 3: Implement**
-
-Extend `_users_list` with `transfer_code=None, new_codes=None` parameters, passed straight into the template context. Add to the gated router:
-
-```python
-    def _check_owner_pin(request: Request, principal, pin: str) -> str | None:
-        """Verify the caller's own PIN under back-off. Returns an error message."""
-        client = web_auth.client_key(request)
-        trusted = web_auth.is_trusted_client(request, principal.user.id)
-        remaining = web_auth.backoff.check(
-            "pin", principal.user.id, client, trusted=trusted
-        )
-        if remaining is not None:
-            return f"Too many attempts. Try again in {int(remaining) + 1} s."
-        if not access_store.verify_user_pin(principal.user.id, pin):
-            web_auth.backoff.record_failure(
-                "pin", principal.user.id, client, trusted=trusted
-            )
-            return "Wrong PIN"
-        web_auth.backoff.record_success(
-            "pin", principal.user.id, client, trusted=trusted
-        )
-        return None
-
-    @router.post(
-        "/users/transfer",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(require_htmx),
-            Depends(web_auth.require(Permission.manage_ownership)),
-        ],
-    )
-    async def start_transfer_route(
-        request: Request,
-        principal=Depends(web_auth.require(Permission.manage_ownership)),
-        pin: str = Form(...),
-        emergency_code: str = Form(...),
-    ):
-        error = _check_owner_pin(request, principal, pin)
-        if error:
-            return _users_list(request, error=error)
-        client = web_auth.client_key(request)
-        remaining = web_auth.backoff.check("transfer", "pool", client)
-        if remaining is not None:
-            return _users_list(
-                request, error=f"Too many attempts. Wait {int(remaining) + 1} s."
-            )
-        if not access_store.consume_emergency_code(
-            emergency_code.strip(), principal.user.id, "transfer"
-        ):
-            web_auth.backoff.record_failure("transfer", "pool", client)
-            return _users_list(request, error="That emergency code was not accepted")
-        web_auth.backoff.record_success("transfer", "pool", client)
-        code = access_store.start_transfer(principal.user.id)
-        return _users_list(request, transfer_code=code)
-
-    @router.post(
-        "/users/transfer/cancel",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(require_htmx),
-            Depends(web_auth.require(Permission.manage_ownership)),
-        ],
-    )
-    async def cancel_transfer_route(
-        request: Request,
-        principal=Depends(web_auth.require(Permission.manage_ownership)),
-        pin: str = Form(...),
-    ):
-        error = _check_owner_pin(request, principal, pin)
-        if error:
-            return _users_list(request, error=error)
-        access_store.cancel_transfer()
-        return _users_list(request, notice="Transfer cancelled")
-
-    @router.post(
-        "/users/codes/regenerate",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(require_htmx),
-            Depends(web_auth.require(Permission.manage_ownership)),
-        ],
-    )
-    async def regenerate_codes_route(
-        request: Request,
-        principal=Depends(web_auth.require(Permission.manage_ownership)),
-        pin: str = Form(...),
-    ):
-        error = _check_owner_pin(request, principal, pin)
-        if error:
-            return _users_list(request, error=error)
-        codes = access_store.generate_emergency_codes()
-        return _users_list(request, new_codes=codes)
-
-    @router.post(
-        "/users/report",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(require_htmx),
-            Depends(web_auth.require(Permission.manage_ownership)),
-        ],
-    )
-    async def machine_report_route(
-        request: Request,
-        principal=Depends(web_auth.require(Permission.manage_ownership)),
-    ):
-        gateway = config.communication.email_gateway
-        if not principal.user.email or not gateway.is_configured:
-            return _users_list(request, error="Email is not configured")
-        ok = await send_email(
-            gateway,
-            principal.user.email,
-            "Ice-colder machine report",
-            access_store.machine_report(config),
-        )
-        return _users_list(
-            request,
-            notice="Report sent." if ok else None,
-            error=None if ok else "Report could not be sent",
-        )
-```
-
-In `partials/users_list.html` add, all inside `{% if "manage_ownership" in perms %}`: a **Transfer ownership** form (`pin`, `emergency_code`) posting to `/users/transfer`; a `{% if pending_transfer %}` block showing `started_at` / `expires_at` with a Cancel form (`pin`) posting to `/users/transfer/cancel`; a **Regenerate emergency codes** form (`pin`) posting to `/users/codes/regenerate`; an **Email machine report** button posting to `/users/report`; and `{% if transfer_code %}` / `{% if new_codes %}` blocks rendering those values in monospace with a "shown once" warning, each 8-digit code in its own element.
-
-- [ ] **Step 4: Run the tests to verify they pass**
-
-Run: `uv run pytest tests/test_web_routes.py -v`
-Expected: PASS.
-
-- [ ] **Step 5: Lint and commit**
-
-```bash
-ruff check --fix .
-ruff format .
-git add web_interface tests/test_web_routes.py
-git commit -m "feat(access): transfer start and cancel, code regeneration, machine report"
-```
+**Done when:** the full suite is green. Commit: `feat(access): transfer start and cancel, code regeneration, machine report`.
 
 ---
 
@@ -5474,267 +3822,25 @@ git commit -m "feat(access): transfer start and cancel, code regeneration, machi
 **Spec:** §3.3 steps 2–4.
 
 **Files:**
-- Modify: `web_interface/routes.py`, `web_interface/templates/setup.html`
+- Modify: `services/access.py`, `web_interface/routes.py`, `web_interface/templates/setup.html`
 - Create: `web_interface/templates/setup_review_user.html`
-- Test: `tests/test_web_routes.py`
+- Test: `tests/test_access.py`, `tests/test_web_routes.py`
 
 **Interfaces:**
-- Consumes: `AccessStore.complete_transfer` (Task 6), the `/setup` POST already branching on `pending_transfer` (Task 14).
-- Produces:
-  - The access gate (Task 14) also lets `/setup` through while `store.pending_transfer is not None`, **without** redirecting anything else — the old owner's dashboard keeps working.
-  - `GET /setup/review` — `manage_ownership`; renders `setup_review_user.html` for the next retained user, or redirects to `/setup/codes` when none are left
-  - `POST /setup/review/{user_id}/keep` and `POST /setup/review/{user_id}/remove` — `manage_ownership`, `require_htmx`; apply immediately and render the next user
-  - After `POST /setup` completes a transfer, the response redirects to `/setup/review` instead of `/setup/codes`
+- `AccessStore.complete_transfer(...)` gains one step: before clearing `_pending_transfer`, it moves the transfer code's hash into `setup` as `{"setup_code_hash": <that hash>, "finalized": False}`. `verify_setup_code` already refuses once `finalized` is true, so Task 15's Done closes the window. This is how spec §3.3 step 4's "the transfer code remains valid as an enrollment code for the new owner until Done" is implemented — do **not** keep `pending_transfer` alive to achieve it.
+- `GET /setup/review` — `manage_ownership`; renders `setup_review_user.html` for the next retained user, or redirects 303 to `/setup/codes` when none remain. Context: `user`, `device_count`.
+- `POST /setup/review/{user_id}/keep` and `POST /setup/review/{user_id}/remove` — `manage_ownership` + `require_htmx`; apply the decision immediately and render the next user, or answer `HX-Redirect: /setup/codes` when that was the last one.
+- `POST /setup` (Task 14) redirects to `/setup/review` when it completed a transfer, and to `/setup/codes` otherwise.
 
-- [ ] **Step 1: Write the failing tests**
+**Behavior to get right:**
+- A pending transfer does **not** put the store in setup mode, so the gate keeps letting the old owner's dashboard through untouched while `/setup` is simultaneously reachable for the incoming owner. Task 14's `GET /setup` already returns the page when `pending_transfer` is not None; confirm the gate needs no change.
+- Both decisions advance past the user just reviewed — "keep" is a no-op on the store but must not re-offer the same person. A reload of `GET /setup/review` restarting from the first remaining user is acceptable, because keeping is idempotent.
+- Removing a user ends their sessions before deleting them.
+- `setup_review_user.html` is a full page showing the user's name, role, email, last login and `device_count`, with **Keep** and **Remove** buttons (`hx-target="body" hx-swap="outerHTML"`) and a "Skip the rest" link to `/setup/codes`. Leaving mid-review simply keeps everyone remaining.
 
-```python
-class TestTransferCompletion:
-    @pytest.fixture
-    def pending(self, client, wired):
-        _, _, _, store = wired
-        store.create_user("Tim", "tim@example.com", Role.tech, "2468")
-        codes = store.generate_emergency_codes()
-        resp = client.post(
-            "/users/transfer", data={"pin": "1379", "emergency_code": codes[0]}
-        )
-        import re
+**Tests to write first.** In `tests/test_access.py`: the transfer code verifies as a setup code after `complete_transfer` and stops doing so after `finalize_setup`. In `tests/test_web_routes.py`: `/setup` is reachable while a transfer is pending; the rest of the dashboard is **not** redirected; the transfer code completes the swap — new owner installed, old owner gone, pending transfer cleared, emergency pool emptied, and the response redirects to `/setup/review`; the old owner's session is dead afterwards; a wrong transfer code changes nothing; review walks the retained users and removing the last one redirects on; keeping a user leaves them in place; the transfer code still enrolls the new owner on a second browser before Done.
 
-        code = re.search(r"\b\d{8}\b", resp.text).group(0)
-        return client, store, code
-
-    def test_setup_is_reachable_while_a_transfer_is_pending(self, pending):
-        c, store, code = pending
-        with TestClient(app, follow_redirects=False) as fresh:
-            assert fresh.get("/setup").status_code == 200
-
-    def test_the_rest_of_the_dashboard_is_not_redirected(self, pending):
-        c, store, code = pending
-        assert c.get("/status").status_code == 200
-
-    def test_the_transfer_code_completes_the_swap(self, pending):
-        c, store, code = pending
-        old_owner_id = store.owner().id
-        with TestClient(app, follow_redirects=False) as fresh:
-            fresh.headers["HX-Request"] = "true"
-            resp = fresh.post(
-                "/setup",
-                data={
-                    "setup_code": code,
-                    "name": "Bea",
-                    "email": "bea@example.com",
-                    "pin": "9042",
-                    "pin_confirm": "9042",
-                },
-            )
-            assert resp.headers["hx-redirect"] == "/setup/review"
-            assert fresh.cookies.get("vmc_session")
-        assert store.owner().name == "Bea"
-        assert store.get_user(old_owner_id) is None
-        assert store.pending_transfer is None
-        assert store.unused_emergency_code_count() == 0
-
-    def test_the_old_owners_session_is_dead_afterwards(self, pending):
-        c, store, code = pending
-        with TestClient(app, follow_redirects=False) as fresh:
-            fresh.headers["HX-Request"] = "true"
-            fresh.post(
-                "/setup",
-                data={"setup_code": code, "name": "Bea", "email": "", "pin": "9042",
-                      "pin_confirm": "9042"},
-            )
-        assert c.get("/status").status_code == 401
-
-    def test_a_wrong_transfer_code_changes_nothing(self, pending):
-        c, store, code = pending
-        owner_id = store.owner().id
-        with TestClient(app, follow_redirects=False) as fresh:
-            fresh.headers["HX-Request"] = "true"
-            fresh.post(
-                "/setup",
-                data={"setup_code": "00000000", "name": "Bea", "email": "",
-                      "pin": "9042", "pin_confirm": "9042"},
-            )
-        assert store.owner().id == owner_id
-
-    def test_review_walks_the_retained_users(self, pending):
-        c, store, code = pending
-        with TestClient(app, follow_redirects=False) as fresh:
-            fresh.headers["HX-Request"] = "true"
-            fresh.post(
-                "/setup",
-                data={"setup_code": code, "name": "Bea", "email": "", "pin": "9042",
-                      "pin_confirm": "9042"},
-            )
-            page = fresh.get("/setup/review")
-            assert page.status_code == 200
-            assert "Tim" in page.text
-            tim = next(u for u in store.users.values() if u.name == "Tim")
-            resp = fresh.post(f"/setup/review/{tim.id}/remove", data={})
-            assert resp.status_code in (200, 303)
-            assert store.get_user(tim.id) is None
-            assert fresh.get("/setup/review", follow_redirects=False).status_code == 303
-
-    def test_keeping_a_user_leaves_them_alone(self, pending):
-        c, store, code = pending
-        with TestClient(app, follow_redirects=False) as fresh:
-            fresh.headers["HX-Request"] = "true"
-            fresh.post(
-                "/setup",
-                data={"setup_code": code, "name": "Bea", "email": "", "pin": "9042",
-                      "pin_confirm": "9042"},
-            )
-            tim = next(u for u in store.users.values() if u.name == "Tim")
-            fresh.post(f"/setup/review/{tim.id}/keep", data={})
-        assert store.get_user(tim.id) is not None
-
-    def test_the_transfer_code_still_enrolls_the_new_owner_before_done(self, pending):
-        c, store, code = pending
-        with TestClient(app, follow_redirects=False) as fresh:
-            fresh.headers["HX-Request"] = "true"
-            fresh.post(
-                "/setup",
-                data={"setup_code": code, "name": "Bea", "email": "", "pin": "9042",
-                      "pin_confirm": "9042"},
-            )
-        # Simulate the lost response: a second browser signs in with the PIN.
-        with TestClient(app, follow_redirects=False) as other:
-            other.headers["HX-Request"] = "true"
-            bea = store.owner()
-            other.post("/login", data={"user_id": bea.id, "pin": "9042"})
-            resp = other.post("/login/enroll", data={"code": code})
-            assert resp.headers["hx-redirect"] == "/"
-```
-
-`test_the_transfer_code_still_enrolls_the_new_owner_before_done` depends on `complete_transfer` leaving the transfer-code hash usable until Done. Implement it by having `complete_transfer` move the hash into `setup` as the enrollment code (see below) rather than by keeping `pending_transfer` alive.
-
-- [ ] **Step 2: Run the tests to verify they fail**
-
-Run: `uv run pytest tests/test_web_routes.py -v -k TestTransferCompletion`
-Expected: FAIL — `/setup` is not reachable while an owner exists.
-
-- [ ] **Step 3: Implement**
-
-In `services/access.py`, `complete_transfer` gains a final step before `save()` so the incoming owner can still enroll with the transfer code until Done (spec §3.3 step 4):
-
-```python
-        self._setup = {
-            "setup_code_hash": self._pending_transfer["transfer_code_hash"],
-            "finalized": False,
-        }
-```
-
-placed **before** `self._pending_transfer = None`. `verify_setup_code` already refuses once `finalized` is true, so Done closes it. Add a test for this in `tests/test_access.py`:
-
-```python
-    def test_the_transfer_code_enrolls_the_new_owner_until_done(self, seeded):
-        s, owner, _, _ = seeded
-        code = s.start_transfer(owner.id)
-        s.complete_transfer("Bea", None, "9042")
-        assert s.verify_setup_code(code) is True
-        s.finalize_setup()
-        assert s.verify_setup_code(code) is False
-```
-
-In `web_interface/routes.py`:
-
-1. The access gate already only redirects when `access_store.setup_mode`; a pending transfer does not set setup mode, so nothing else needs changing there. `GET /setup` (Task 14) already returns the page when `access_store.pending_transfer is not None`.
-2. `setup_submit` redirects to `/setup/review` when `transferring` and `/setup/codes` otherwise.
-3. Add the review routes to the public router:
-
-```python
-    def _next_review_user(owner_id: str):
-        return next(
-            (
-                u
-                for u in sorted(access_store.users.values(), key=lambda u: u.name)
-                if u.id != owner_id
-            ),
-            None,
-        )
-
-    @public.get(
-        "/setup/review",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.manage_ownership))],
-    )
-    async def setup_review(request: Request):
-        principal = web_auth.current_principal(request)
-        user = _next_review_user(principal.user.id)
-        if user is None:
-            return RedirectResponse("/setup/codes", status_code=303)
-        return _review_page(request, user)
-
-    def _review_page(request: Request, user):
-        return templates.TemplateResponse(
-            "setup_review_user.html",
-            web_auth.template_context(
-                request,
-                user=user,
-                device_count=sum(
-                    1
-                    for d in access_store.devices.values()
-                    if user.id in d.trusted_user_ids
-                ),
-            ),
-        )
-
-    @public.post(
-        "/setup/review/{user_id}/keep",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(require_htmx),
-            Depends(web_auth.require(Permission.manage_ownership)),
-        ],
-    )
-    async def review_keep(request: Request, user_id: str):
-        return await _advance_review(request, user_id)
-
-    @public.post(
-        "/setup/review/{user_id}/remove",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(require_htmx),
-            Depends(web_auth.require(Permission.manage_ownership)),
-        ],
-    )
-    async def review_remove(request: Request, user_id: str):
-        access_store.end_sessions_for_user(user_id)
-        access_store.delete_user(user_id)
-        return await _advance_review(request, user_id)
-
-    async def _advance_review(request: Request, decided_user_id: str):
-        """Each decision applies immediately; leaving mid-review keeps the rest."""
-        principal = web_auth.current_principal(request)
-        remaining = [
-            u
-            for u in sorted(access_store.users.values(), key=lambda u: u.name)
-            if u.id not in (principal.user.id, decided_user_id)
-        ]
-        if not remaining:
-            return HTMLResponse("", headers={"HX-Redirect": "/setup/codes"})
-        return _review_page(request, remaining[0])
-```
-
-A "keep" decision must still advance past the user just reviewed, hence `decided_user_id` is excluded either way; on a reload `GET /setup/review` starts from the first remaining user, which is acceptable because keeping is a no-op.
-
-Create `web_interface/templates/setup_review_user.html`: page chrome as in `setup.html`; heading "Review users"; the user's name, role, email, last login and `device_count`; a **Keep** button (`hx-post="/setup/review/{{ user.id }}/keep"`) and a **Remove** button (`hx-post="/setup/review/{{ user.id }}/remove"`), both `hx-target="body" hx-swap="outerHTML"`; and a "Skip the rest" link to `/setup/codes`.
-
-In `setup.html`, when `transfer` is true, change the heading to "Take ownership" and the code field's label to "Transfer code".
-
-- [ ] **Step 4: Run the tests to verify they pass**
-
-Run: `uv run pytest`
-Expected: PASS across the suite.
-
-- [ ] **Step 5: Lint and commit**
-
-```bash
-ruff check --fix .
-ruff format .
-git add services/access.py web_interface tests
-git commit -m "feat(access): complete an ownership transfer and review retained users"
-```
+**Done when:** `uv run pytest` is green across the suite. Commit: `feat(access): complete an ownership transfer and review retained users`.
 
 ---
 
@@ -5748,165 +3854,23 @@ git commit -m "feat(access): complete an ownership transfer and review retained 
 - Delete: `tests/test_login_limiter.py`
 
 **Interfaces:**
-- Consumes: `AccessStore` (Task 4), `routes.set_access_store` / `set_display_controller` / `ensure_setup_mode` (Tasks 9, 14), `web_auth.backoff` (Task 8).
-- Produces:
-  - `WebConfig` has `host`, `port`, `trusted_proxies` only
-  - `services/auth_policy.py` exports `pin_problem`, `MIN_PIN_LENGTH`, `MAX_PIN_LENGTH`, `is_loopback`, `LOOPBACK_HOSTS` — `password_problem`, `generate_admin_password`, `WEAK_PASSWORDS`, `MIN_PASSWORD_LENGTH` are gone
-  - `main.enforce_password_policy` is replaced by `main.warn_if_setup_mode(store) -> None`
-  - `main()` constructs `AccessStore()` right after `load_config()` and calls `routes.set_access_store(store)`, `routes.set_display_controller(display)` (after the display controller is built) and `routes.ensure_setup_mode()`
-  - `ICE_COLDER_ALLOW_WEAK_PASSWORD` no longer exists anywhere
+- `WebConfig` keeps `host`, `port`, `trusted_proxies` only. Its docstring says authentication lives in `data/access.json`, not here; `trusted_proxies`' description says "login back-off keying", not "login limiter".
+- `services/auth_policy.py` exports `pin_problem`, `MIN_PIN_LENGTH`, `MAX_PIN_LENGTH`, `is_loopback`, `LOOPBACK_HOSTS`. `password_problem`, `generate_admin_password`, `WEAK_PASSWORDS`, `MIN_PASSWORD_LENGTH` and the `secrets` import are deleted.
+- `main.warn_if_setup_mode(store: AccessStore) -> None` replaces `main.enforce_password_policy`. It logs an error when the store is corrupt (saying the VMC and MQTT client keep running) and a warning when no owner exists ("Dashboard is in setup mode… Visit /setup at the machine"). It never exits.
+- `main._create_default_config` no longer generates or logs a password.
+- `ICE_COLDER_ALLOW_WEAK_PASSWORD` no longer exists anywhere.
 
-- [ ] **Step 1: Update the tests first**
+**Wiring in `main()`:** construct `AccessStore()` after `load_config()`; `routes.set_access_store(store)`; `web_auth.backoff.set_trusted_proxies(overrides.trusted_proxies)` (replacing the line Task 11 already edited); `warn_if_setup_mode(store)`. After the display controller is built: `routes.set_display_controller(display)` then `routes.ensure_setup_mode()`. Delete the `enforce_password_policy(web_cfg)` call before the uvicorn config.
 
-- `tests/test_config_model.py`: delete the two `admin_username` / `admin_password` assertions (lines 103–104) and add:
+**Tests to update first:** drop the `admin_username` / `admin_password` assertions in `tests/test_config_model.py` and assert the attributes are **absent**; replace `tests/test_first_run.py`'s generated-password test with one asserting neither key appears in the saved config; delete the five password-policy tests in `tests/test_startup_policy.py`, keep its env-override tests, and add two covering `warn_if_setup_mode` (warns with no owner, silent once an owner exists); strip the password tests from `tests/test_auth_policy.py`, keeping `is_loopback` and Task 1's PIN tests; delete `tests/test_login_limiter.py`.
 
-```python
-def test_web_config_has_no_admin_credentials():
-    cfg = ConfigModel()
-    assert not hasattr(cfg.web, "admin_username")
-    assert not hasattr(cfg.web, "admin_password")
-```
-
-- `tests/test_first_run.py`: delete `test_first_run_generates_strong_password_and_logs_it_once` and add:
-
-```python
-def test_first_run_config_has_no_admin_password(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    cfg = main.load_config()
-    saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
-    assert "admin_password" not in saved["web"]
-    assert "admin_username" not in saved["web"]
-```
-
-- `tests/test_startup_policy.py`: delete the five password-policy tests and the `_web` helper's `admin_password` argument; keep the env-override tests. Add:
-
-```python
-def test_setup_mode_is_warned_about(tmp_path, caplog):
-    from services.access import AccessStore
-
-    store = AccessStore(path=tmp_path / "access.json")
-    main.warn_if_setup_mode(store)
-    assert "setup mode" in caplog.text.lower()
-
-
-def test_no_warning_once_an_owner_exists(tmp_path, caplog):
-    from services.access import AccessStore, Role
-
-    store = AccessStore(path=tmp_path / "access.json")
-    store.create_user("Ada", None, Role.owner, "1379")
-    main.warn_if_setup_mode(store)
-    assert "setup mode" not in caplog.text.lower()
-```
-
-- `tests/test_auth_policy.py`: delete every `password_problem` / `generate_admin_password` test and their imports; keep `is_loopback` and the Task 1 PIN tests.
-- Delete `tests/test_login_limiter.py` — `LoginLimiter` no longer exists.
-
-Run: `uv run pytest tests/test_config_model.py tests/test_first_run.py tests/test_startup_policy.py -v`
-Expected: FAIL — `AttributeError: module 'main' has no attribute 'warn_if_setup_mode'` and the `hasattr` assertions failing.
-
-- [ ] **Step 2: Implement**
-
-`config/config_model.py` — `WebConfig` becomes:
-
-```python
-class WebConfig(BaseModel):
-    """Web dashboard binding. Authentication lives in data/access.json, not here."""
-
-    host: str = Field("0.0.0.0", description="Interface to bind the dashboard to")
-    port: int = Field(26123, description="Dashboard port")
-    trusted_proxies: List[str] = Field(
-        default_factory=list,
-        description=(
-            "CIDRs of reverse proxies whose X-Forwarded-For is trusted for "
-            "login back-off keying (e.g. the Docker network Traefik reaches "
-            "the VMC from)"
-        ),
-    )
-```
-
-`services/auth_policy.py` — delete `WEAK_PASSWORDS`, `MIN_PASSWORD_LENGTH`, `password_problem`, `generate_admin_password` and the now-unused `import secrets`.
-
-`config.example.json` — remove the `admin_username` and `admin_password` lines from the `web` object.
-
-`main.py`:
-
-- imports: drop `generate_admin_password`, `password_problem`; keep `is_loopback` only if still used (it is not — drop it too and remove the import line entirely if nothing remains). Add `from services.access import AccessStore` and `from web_interface import auth as web_auth`. Drop `SecretStr` if it becomes unused.
-- `_create_default_config` loses the password lines:
-
-```python
-def _create_default_config(path: str) -> ConfigModel:
-    """First run: blank defaults, persisted, then continue.
-
-    There is no admin credential any more: the dashboard boots into setup
-    mode and the setup code is logged by routes.ensure_setup_mode().
-    """
-    defaults = ConfigModel()
-    save_config(defaults, Path(path))
-    logger.info(f"First run: created '{path}' with blank defaults")
-    return defaults
-```
-
-- replace `enforce_password_policy` with:
-
-```python
-def warn_if_setup_mode(store: AccessStore) -> None:
-    """Say loudly that nobody owns this machine yet.
-
-    Replaces the old weak-admin-password check: there is no default
-    credential to be weak. The setup code itself is logged by
-    routes.ensure_setup_mode().
-    """
-    if store.corrupt:
-        logger.error(
-            "data/access.json is corrupt: the dashboard will serve an error "
-            "page. The VMC and MQTT client keep running."
-        )
-        return
-    if store.setup_mode:
-        logger.warning(
-            "Dashboard is in setup mode: no owner account exists yet. "
-            "Visit /setup at the machine to create one."
-        )
-```
-
-- in `main()`, after `routes.set_config_object(live_config)`:
-
-```python
-    access_store = AccessStore()
-    routes.set_access_store(access_store)
-    web_auth.backoff.set_trusted_proxies(overrides.trusted_proxies)
-    warn_if_setup_mode(access_store)
-```
-
-(replacing the `routes.login_limiter.set_trusted_proxies(...)` line Task 11 already edited), and after the display controller is created:
-
-```python
-    routes.set_display_controller(display)
-    routes.ensure_setup_mode()
-```
-
-- delete the `enforce_password_policy(web_cfg)` call before the uvicorn config.
-
-- [ ] **Step 3: Run the full suite**
-
-Run: `uv run pytest`
-Expected: PASS. Grep to confirm nothing is left behind:
+**Done when:** `uv run pytest` green and this matches nothing outside `docs/superpowers/plans/2026-09-12-*` and `2026-09-22-*`:
 
 ```bash
 grep -rn "admin_password\|admin_username\|LoginLimiter\|ALLOW_WEAK_PASSWORD" --include="*.py" --include="*.json" --include="*.yml" .
 ```
 
-Only `docs/superpowers/plans/2026-09-*` (historical plans) may match.
-
-- [ ] **Step 4: Lint and commit**
-
-```bash
-ruff check --fix .
-ruff format .
-git add config main.py services/auth_policy.py config.example.json tests
-git rm tests/test_login_limiter.py
-git commit -m "feat(access): remove the admin credential and wire AccessStore into startup"
-```
+Commit: `feat(access): remove the admin credential and wire AccessStore into startup`.
 
 ---
 
@@ -5914,104 +3878,39 @@ git commit -m "feat(access): remove the admin credential and wire AccessStore in
 
 **Spec:** §5 (files table: `.env.example`, `docker-compose*.yml`, `README.md`, `CLAUDE.md`), program plan §5 (backup guidance in `README.md`).
 
-**Files:**
-- Modify: `README.md`, `CLAUDE.md`, `.env.example`, `docker-compose.yml`, `docker/docker-compose.prod.yml`, `docker/docker-compose.yml`
-- Test: none (documentation task). Verify by grep and by `uv run pytest`.
+Documentation only — no code, no tests. **Haiku implementer.** Verify by grep and by `uv run pytest` / `ruff check .` still being green.
 
-**Interfaces:**
-- Consumes: everything above.
-- Produces: no code.
+**Files:** `README.md`, `CLAUDE.md`, `.env.example`, `docker-compose.yml`, `docker/docker-compose.prod.yml`, `docker/docker-compose.yml`.
 
-- [ ] **Step 1: Find every reference**
+**Start by finding every reference:**
 
 ```bash
-grep -rn "admin password\|admin_password\|ALLOW_WEAK_PASSWORD\|Basic auth\|HTTP Basic" README.md CLAUDE.md .env.example docker-compose.yml docker/
+grep -rn "admin password\|admin_password\|ALLOW_WEAK_PASSWORD\|Basic auth\|HTTP Basic\|login limiter" README.md CLAUDE.md .env.example docker-compose.yml docker/
 ```
 
-- [ ] **Step 2: Rewrite `README.md`**
+**`README.md`** — replace the weak-admin-password paragraph (around lines 72–79) with three things: (1) there is no default credential; first boot enters **setup mode**, the 8-digit setup code is printed in the startup log at warning level (`docker compose logs vmc`) and shown on the customer display, and the wizard creates the owner and then shows 20 emergency codes once; (2) a browser the machine has not seen needs a second factor once — a 6-digit emailed code when `communication.email_gateway` is configured, or an emergency code, which works with no network at all; (3) **back up `data/access.json`** — it holds every user, PIN hash, trusted device and emergency-code hash and is the single point of lockout, it sits inside the bind-mounted `./data`, the Users screen shows how many codes remain unused, and an owner who loses both their PIN and every emergency code has **no software recovery** (the controller is factory-restored by deleting `data/access.json` and rerunning the wizard). Keep the surrounding Traefik and `ICE_COLDER_TRUSTED_PROXIES` paragraphs; change only "the dashboard's login limiter" to "the dashboard's login back-off".
 
-Replace the paragraph at `README.md:72–79` (the weak-admin-password refusal and the first-run generated password) with:
+**`CLAUDE.md`** — three edits: the entry-point paragraph drops "HTTP Basic auth from `config.web.admin_username`/`admin_password`" in favour of sessions from `data/access.json`; the configuration paragraph notes `web` now holds host, port and trusted proxies only; the Web Dashboard section's HTTP Basic paragraph is replaced by a description of the `AccessStore` (path, 0600, four roles, PIN, per-device trust by OTP or offline emergency code), `require(...)` per route with `template_context` feeding templates `perms` and `current_user`, `Backoff` replacing `LoginLimiter` (exponential per `(kind, subject, client)` plus a per-user budget, no lockouts), setup mode redirecting everything to `/setup` behind a code that exists only at the machine, and `require_htmx` still guarding POSTs — now load-bearing because auth is cookie-based. Add `access.py` and `mailer.py` bullets to the Services list and correct the `auth_policy.py` bullet to "PIN policy (`pin_problem`)… `is_loopback` kept".
 
-```markdown
-The dashboard has no default credential. On first boot it enters **setup
-mode**: the VMC generates an 8-digit setup code, prints it in the startup log
-at warning level (`docker compose logs vmc`) and shows it on the customer
-display. Visit the dashboard, enter that code, and create the owner account —
-a name and a 4–8 digit PIN. The wizard then shows 20 emergency codes once;
-save them somewhere that is not the machine.
+**Compose and `.env.example`** — remove any admin-credential or `ICE_COLDER_ALLOW_WEAK_PASSWORD` entries. Confirm `./data` is bind-mounted read-write for the `vmc` service (it already is) so `data/access.json` persists, and add a comment there naming the file. **Do not run `docker compose`** — CI's `compose-config` job validates it.
 
-Signing in from a browser the machine has not seen before needs a second
-factor once: a 6-digit code emailed to the user (when
-`communication.email_gateway` is configured) or one of the 20 emergency
-codes, which works with no network at all.
-
-**Back up `data/access.json`.** It holds every user, PIN hash, trusted device
-and emergency-code hash, and it is the single point of lockout. It is inside
-the bind-mounted `./data` directory, so a copy of that directory is enough.
-The Users screen shows how many emergency codes remain unused — regenerate
-the pool before it runs dry. An owner who loses both their PIN and every
-emergency code has **no software recovery**: the controller must be
-factory-restored, which means deleting `data/access.json` and running the
-wizard again.
-```
-
-Keep the surrounding Traefik and `ICE_COLDER_TRUSTED_PROXIES` paragraphs; only the trusted-proxy sentence changes from "the dashboard's login limiter" to "the dashboard's login back-off".
-
-- [ ] **Step 3: Rewrite the `CLAUDE.md` sections**
-
-- Entry point paragraph: replace "HTTP Basic auth from `config.web.admin_username`/`admin_password`" with "sessions from `data/access.json`; no credential lives in `config.json`".
-- Configuration paragraph: note that `web` now holds host, port and trusted proxies only.
-- Web Dashboard section: replace the HTTP Basic paragraph with:
-
-```markdown
-The dashboard is session auth backed by `services/access.py`'s `AccessStore`
-(`data/access.json`, mode 0600): named users with one of four roles
-(`owner`, `secretary`, `tech`, `loader`), a 4–8 digit PIN, and per-device
-trust proved once by an emailed 6-digit OTP or an offline 8-digit emergency
-code. Every route declares a `Permission` through
-`web_interface/auth.py`'s `require(...)`; templates receive `perms` and
-`current_user` via `template_context` so they never render a control the
-server would refuse. `Backoff` (also in `services/access.py`) replaces the
-old `LoginLimiter`: exponential per `(kind, subject, client)` with a
-per-user budget for untrusted clients, no lockouts. While no owner exists
-the app is in setup mode — every route redirects to `/setup`, which is
-gated by a code printed in the startup log and shown on the customer
-display. POST routes still require the `HX-Request` header as a CSRF guard,
-which cookie auth makes load-bearing.
-```
-
-- Services section: add bullets for `access.py` and `mailer.py`, and correct the `auth_policy.py` bullet to "PIN policy (`pin_problem`) shared by the setup wizard and user management; `is_loopback` kept".
-
-- [ ] **Step 4: Compose and `.env.example`**
-
-Remove any admin-credential or `ICE_COLDER_ALLOW_WEAK_PASSWORD` entries from `.env.example` and all three compose files. Confirm `./data` is bind-mounted read-write for the `vmc` service (it already is) so `data/access.json` persists, and add a comment there naming the file. **Do not run `docker compose`** — CI's `compose-config` job validates it.
-
-- [ ] **Step 5: Verify and commit**
-
-```bash
-uv run pytest
-ruff check .
-git add README.md CLAUDE.md .env.example docker-compose.yml docker
-git commit -m "docs: setup mode, roles and access file replace the admin password"
-```
+Commit: `docs: setup mode, roles and access file replace the admin password`.
 
 ---
 
 ## Definition of Done
 
-The part is complete when all of the following hold:
-
 1. `uv run pytest` is green and `ruff check .` is clean.
 2. `grep -rn "admin_password\|admin_username\|LoginLimiter\|ALLOW_WEAK_PASSWORD" --include="*.py" --include="*.json" --include="*.yml" .` matches nothing outside `docs/superpowers/plans/2026-09-12-*` and `2026-09-22-*`.
 3. No new entry in `pyproject.toml`'s dependency list.
-4. `services/mqtt_messages.py`'s only change is the optional `DisplayCommand.message` field (Task 13), and the owner approved it.
+4. `services/mqtt_messages.py`'s only change is the optional `DisplayCommand.message` field (Task 13), approved by the owner.
 5. Every deviation and assumption recorded in the tasks above is listed in the pull-request description, alongside the part-1 acceptance results from program plan §4.
 
 ## Spec coverage check
 
 | Spec section | Task(s) |
 |---|---|
-| §1 data model, invariants, 0600 file, clocks | 4, 5, 6 |
+| §1 data model, invariants, 0600 file, clocks | 4, 4b, 5, 6 |
 | §1 `pin_problem`, `WebConfig` change, startup warning | 1, 20 |
 | §2.1 cookies, session validity | 8, 9 |
 | §2.2 `GET`/`POST /login` | 9 |
@@ -6029,4 +3928,3 @@ The part is complete when all of the following hold:
 | §6 error handling | 4 (corrupt), 7 (SMTP), 8 (dead session), 14 (corrupt page), 16 (bad PIN) |
 | §7 tests | every task |
 | §8 out of scope | nothing built |
-
