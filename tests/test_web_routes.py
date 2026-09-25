@@ -7,28 +7,110 @@ from fastapi.testclient import TestClient
 from config.config_model import ConfigModel
 from contracts.vending_machine import FaultCode
 from controller.vmc import VMC
+from services.access import ROLE_PERMISSIONS, AccessStore, Permission, Role, User
 from services.inventory_manager import InventoryManager
+from web_interface import auth as web_auth
 from web_interface.server import app
 from web_interface import routes
 
 
+def sign_in(store: AccessStore, user: User, *, shared: bool = False) -> TestClient:
+    """Mint a device, trust *user* on it, open a session, and return a
+    client that is fully logged in: it carries vmc_device, vmc_session and
+    the HX-Request: true header, the way a real enrolled browser would."""
+    device, token = store.create_device(f"{user.name}'s device", shared=shared)
+    store.trust_device(device.id, user.id)
+    session_id = store.create_session(user.id, device.id)
+    store.record_login(user.id)
+
+    client = TestClient(app)
+    client.headers["HX-Request"] = "true"
+    client.cookies.set(web_auth.DEVICE_COOKIE, token)
+    client.cookies.set(web_auth.SESSION_COOKIE, session_id)
+    return client
+
+
+def make_client(
+    store: AccessStore,
+    role: Role = Role.owner,
+    *,
+    shared: bool = False,
+    name: str = "Ada",
+) -> tuple[TestClient, User]:
+    """Seed a fresh user of *role* and sign them in."""
+    email = f"{name.lower().replace(' ', '.')}@example.com"
+    user = store.create_user(name, email, role, "2468")
+    return sign_in(store, user, shared=shared), user
+
+
 @pytest.fixture
-def client(tmp_path):
-    """Create a TestClient with a real ConfigModel, VMC, and InventoryManager."""
+def wired(tmp_path):
+    """A ConfigModel, VMC, InventoryManager and AccessStore, wired into
+    routes the way main() wires them. The owner "Ada" is already seeded
+    (email ada@example.com, PIN 1379) and setup is finalized, so route
+    tests are never in setup mode."""
     cfg = ConfigModel()
     vmc = VMC(config=cfg)
     inv = InventoryManager([], path=tmp_path / "inventory.json")
+    store = AccessStore(path=tmp_path / "access.json")
+    store.create_user("Ada", "ada@example.com", Role.owner, "1379")
+    store.finalize_setup()
+
     routes.set_config_object(cfg)
     routes.set_vmc_instance(vmc)
     routes.set_inventory_manager(inv)
+    routes.set_access_store(store)
 
-    with TestClient(app) as c:
-        c.auth = ("admin", "changeme")
-        c.headers["HX-Request"] = "true"
-        yield c
+    yield cfg, vmc, inv, store
 
-        for t in vmc._pending_tasks:
-            t.cancel()
+    routes.set_access_store(None)
+    for t in vmc._pending_tasks:
+        t.cancel()
+
+
+@pytest.fixture
+def login_as(wired):
+    """login_as(role=Role.owner, *, shared=False, name=None) -> TestClient.
+
+    Role.owner returns a client for the fixture's existing owner (the store
+    enforces one owner per machine); any other role seeds a fresh user.
+    Every client this makes is closed on teardown.
+    """
+    _cfg, _vmc, _inv, store = wired
+    clients: list[TestClient] = []
+
+    def _login_as(
+        role: Role = Role.owner, *, shared: bool = False, name: str | None = None
+    ) -> TestClient:
+        if role == Role.owner:
+            client = sign_in(store, store.owner(), shared=shared)
+        else:
+            client, _user = make_client(
+                store, role, shared=shared, name=name or role.value.capitalize()
+            )
+        clients.append(client)
+        return client
+
+    yield _login_as
+
+    for c in clients:
+        c.close()
+
+
+@pytest.fixture
+def client(login_as):
+    """Every pre-existing test in this file runs through this client,
+    authenticated as the owner."""
+    return login_as(Role.owner)
+
+
+@pytest.fixture
+def anonymous(wired):
+    """A client with no cookies at all, against a wired store that does
+    have an owner — for asserting what an unauthenticated visitor gets."""
+    c = TestClient(app, follow_redirects=False)
+    yield c
+    c.close()
 
 
 class TestDashboard:
@@ -203,7 +285,6 @@ class TestConfigEndpoints:
         assert resp.status_code == 200
         assert ">1</dd>" in resp.text.replace(" ", "").replace("\n", "")
 
-    @pytest.mark.skip(reason="Template partials/contacts.html not yet created")
     def test_contacts(self, client):
         resp = client.get("/config/contacts")
         assert resp.status_code == 200
@@ -217,6 +298,74 @@ class TestConfigEndpoints:
     def test_comms(self, client):
         resp = client.get("/config/comms")
         assert resp.status_code == 200
+
+
+# (method, path, permission) — the authoritative route -> permission table.
+# /config/payments and /config/comms are deliberately excluded: their
+# templates (partials/payments.html, partials/comms.html) don't exist yet —
+# their own TestConfigEndpoints tests above are @pytest.mark.skip'd for the
+# same reason — so a permitted role would get a 500 from the missing
+# template, not the 200 this matrix expects, and the matrix would lie.
+_MATRIX_ROUTES = [
+    ("GET", "/", Permission.view_status),
+    ("GET", "/status", Permission.view_status),
+    ("GET", "/kpi", Permission.view_status),
+    ("GET", "/activity", Permission.view_status),
+    ("GET", "/health", Permission.view_status),
+    ("GET", "/screen", Permission.view_status),
+    ("GET", "/inventory", Permission.view_status),
+    ("GET", "/logs", Permission.view_logs),
+    ("GET", "/inventory/new", Permission.edit_catalog),
+    ("GET", "/config/machine", Permission.edit_contacts),
+    ("GET", "/config/contacts", Permission.edit_contacts),
+    ("POST", "/action/restart", Permission.machine_controls),
+]
+
+
+class TestPermissionMatrix:
+    """For every (route, role) pair, 200 exactly when ROLE_PERMISSIONS[role]
+    holds the route's permission, and 403 otherwise."""
+
+    @pytest.mark.parametrize("role", list(Role))
+    @pytest.mark.parametrize("method, path, permission", _MATRIX_ROUTES)
+    def test_matrix(self, login_as, method, path, permission, role):
+        client = login_as(role)
+        resp = client.get(path) if method == "GET" else client.post(path)
+        if permission in ROLE_PERMISSIONS[role]:
+            assert resp.status_code == 200, (
+                role,
+                path,
+                resp.status_code,
+                resp.text[:300],
+            )
+        else:
+            assert resp.status_code == 403, (role, path, resp.status_code)
+
+
+class TestUnauthenticatedAccess:
+    """No session at all: Task 8's redirect/401 behavior, routed through by
+    every gated route now that HTTP Basic is gone. Stale HTTP Basic
+    credentials on the request must grant nothing — there is no HTTP Basic
+    left to check them against."""
+
+    def test_page_request_redirects_to_login(self, anonymous):
+        resp = anonymous.get("/")
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/login"
+
+    def test_htmx_request_gets_401_with_hx_redirect(self, anonymous):
+        resp = anonymous.get("/status", headers={"HX-Request": "true"})
+        assert resp.status_code == 401
+        assert resp.headers["hx-redirect"] == "/login"
+
+    def test_stale_basic_auth_credentials_grant_nothing(self, anonymous):
+        page_resp = anonymous.get("/", auth=("admin", "changeme"))
+        assert page_resp.status_code == 303
+
+        htmx_resp = anonymous.get(
+            "/status", auth=("admin", "changeme"), headers={"HX-Request": "true"}
+        )
+        assert htmx_resp.status_code == 401
 
 
 class TestActionEndpoint:
@@ -437,9 +586,10 @@ class TestDeleteAndEmptyState:
         resp = client.post("/inventory/delete/NOPE")
         assert resp.status_code == 200
 
-    def test_delete_requires_auth(self, client):
-        resp = client.post("/inventory/delete/X", auth=None)
+    def test_delete_requires_auth(self, anonymous):
+        resp = anonymous.post("/inventory/delete/X", headers={"HX-Request": "true"})
         assert resp.status_code == 401
+        assert resp.headers["hx-redirect"] == "/login"
 
     def test_add_registers_inventory_sku(self, client):
         from web_interface import routes as r
@@ -459,20 +609,6 @@ class TestDeleteAndEmptyState:
         )
         client.post("/inventory/delete/INV-2")
         assert "INV-2" not in r.inventory_manager.get_all()
-
-
-class TestAuth:
-    def test_unauthenticated_request_rejected(self, client):
-        resp = client.get("/", auth=None)
-        assert resp.status_code == 401
-
-    def test_wrong_password_rejected(self, client):
-        resp = client.get("/", auth=("admin", "wrong"))
-        assert resp.status_code == 401
-
-    def test_mutating_endpoint_requires_auth(self, client):
-        resp = client.post("/action/reset", auth=None)
-        assert resp.status_code == 401
 
 
 class TestFaultsUI:
@@ -707,68 +843,11 @@ class TestCsrfGuard:
         assert resp.status_code == 200
 
 
-class TestLoginLimiter:
-    def test_lockout_after_ten_failures(self, client):
-        from web_interface import routes as r
-
-        r.login_limiter._failures.clear()
-        r.login_limiter._locked_until.clear()
-        for _ in range(10):
-            assert client.get("/status", auth=("admin", "wrong")).status_code == 401
-        resp = client.get("/status", auth=("admin", "wrong"))
-        assert resp.status_code == 429
-        assert "Retry-After" in resp.headers
-        # even the right password is refused while locked
-        assert client.get("/status").status_code == 429
-        r.login_limiter._locked_until.clear()
-
-    def test_success_resets_counter(self, client):
-        from web_interface import routes as r
-
-        r.login_limiter._failures.clear()
-        r.login_limiter._locked_until.clear()
-        for _ in range(9):
-            client.get("/status", auth=("admin", "wrong"))
-        assert client.get("/status").status_code == 200
-        for _ in range(9):
-            client.get("/status", auth=("admin", "wrong"))
-        assert client.get("/status").status_code == 200
-
-    def test_trusted_proxies_applied_from_config(self, tmp_path):
-        from config.config_model import ConfigModel
-        from web_interface import routes as r
-
-        cfg = ConfigModel()
-        cfg.web.trusted_proxies = ["172.25.0.0/16"]
-        r.set_config_object(cfg)
-        assert (
-            r.login_limiter._networks
-            and str(r.login_limiter._networks[0]) == "172.25.0.0/16"
-        )
-        r.set_config_object(ConfigModel())
-        assert r.login_limiter._networks == []
-
-    def test_set_config_object_resets_trusted_proxies_set_before_it(self):
-        """set_config_object seeds the limiter from cfg.web.trusted_proxies,
-        overwriting anything set earlier — so main() must call
-        login_limiter.set_trusted_proxies(overrides.trusted_proxies) AFTER
-        set_config_object(live_config), never before, or an env-derived
-        override would be silently discarded."""
-        from config.config_model import ConfigModel
-        from web_interface import routes as r
-
-        r.login_limiter.set_trusted_proxies(["172.25.0.0/16"])
-        assert r.login_limiter._networks
-
-        r.set_config_object(ConfigModel())
-        assert r.login_limiter._networks == []
-
-
 class TestStillSellingBanner:
     """A soft fault alerts but keeps selling; a hazard fault stops the machine."""
 
     @pytest.fixture
-    def wired(self, client):
+    def selling_client(self, client):
         from services.availability import Availability
         from services.health_monitor import HealthMonitor
         from web_interface import routes as r
@@ -781,8 +860,8 @@ class TestStillSellingBanner:
         r.set_availability(None)
         r.set_health_monitor(None)
 
-    def test_status_shows_still_selling_for_a_soft_fault(self, wired):
-        client = wired
+    def test_status_shows_still_selling_for_a_soft_fault(self, selling_client):
+        client = selling_client
         vmc_instance = routes.vmc_instance
         vmc_instance._raise_fault(FaultCode.PAY_104, outcome="restart")
         body = client.get("/status", headers={"HX-Request": "true"}).text
@@ -790,16 +869,16 @@ class TestStillSellingBanner:
         assert "Machine Stopped" not in body
         assert "PAY-104" in body
 
-    def test_status_shows_machine_stopped_for_a_hazard_fault(self, wired):
-        client = wired
+    def test_status_shows_machine_stopped_for_a_hazard_fault(self, selling_client):
+        client = selling_client
         vmc_instance = routes.vmc_instance
         vmc_instance._raise_fault(FaultCode.WTR_104, outcome="leak")
         body = client.get("/status", headers={"HX-Request": "true"}).text
         assert "Machine Stopped" in body
         assert "still selling" not in body
 
-    def test_health_permissives_table_shows_the_gate(self, wired):
-        client = wired
+    def test_health_permissives_table_shows_the_gate(self, selling_client):
+        client = selling_client
         body = client.get("/health", headers={"HX-Request": "true"}).text
         assert "Gate" in body
         assert "fulfillment" in body
@@ -807,7 +886,7 @@ class TestStillSellingBanner:
 
 class TestAvailabilityOnDashboard:
     @pytest.fixture
-    def wired(self, client):
+    def avail_client(self, client):
         from services.availability import Availability
         from services.health_monitor import HealthMonitor
         from web_interface import routes as r
@@ -818,18 +897,18 @@ class TestAvailabilityOnDashboard:
         yield client, avail
         r.set_availability(None)
 
-    def test_status_shows_payment_disabled_with_reason(self, wired):
+    def test_status_shows_payment_disabled_with_reason(self, avail_client):
         # Only a safety-gate row can disable payment now; a service door left
         # open is a real hazard, unlike a fulfillment-gate row (e.g. no
         # products), which must not disable payment.
-        client, avail = wired
+        client, avail = avail_client
         avail.set_hardware_io("service_door", True)
         resp = client.get("/status")
         assert "Payment" in resp.text
         assert "Disabled" in resp.text
         assert "service_door_closed" in resp.text
 
-    def test_status_is_not_healthy_when_only_payment_is_disabled(self, wired):
+    def test_status_is_not_healthy_when_only_payment_is_disabled(self, avail_client):
         """A safety permissive (service_door_closed) failing raises no fault
         and adds nothing to `issues` — it just flips a permissive row. Before
         this fix, `is_healthy` was `len(issues) == 0` alone, so this rendered
@@ -837,21 +916,21 @@ class TestAvailabilityOnDashboard:
         buried in the corner, and "Machine Stopped" was unreachable in
         exactly the case it exists for. A machine not taking money must never
         render as healthy."""
-        client, avail = wired
+        client, avail = avail_client
         avail.set_hardware_io("service_door", True)
         resp = client.get("/status")
         assert "All Systems OK" not in resp.text
         assert "Machine Stopped" in resp.text
 
-    def test_health_lists_permissives_with_not_instrumented(self, wired):
-        client, _ = wired
+    def test_health_lists_permissives_with_not_instrumented(self, avail_client):
+        client, _ = avail_client
         resp = client.get("/health")
         assert "bag_present" in resp.text
         assert "not instrumented" in resp.text
         assert "vending_alive" in resp.text
 
-    def test_screen_is_read_only_and_mobile(self, wired):
-        client, _ = wired
+    def test_screen_is_read_only_and_mobile(self, avail_client):
+        client, _ = avail_client
         resp = client.get("/screen")
         assert resp.status_code == 200
         assert 'name="viewport"' in resp.text
@@ -862,9 +941,10 @@ class TestAvailabilityOnDashboard:
         assert "hx-post" not in body.text
         assert "Ice" in body.text and "Water" in body.text
 
-    def test_screen_requires_auth(self, wired):
-        client, _ = wired
-        assert client.get("/screen", auth=("x", "y")).status_code == 401
+    def test_screen_requires_auth(self, anonymous):
+        resp = anonymous.get("/screen")
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/login"
 
     def test_screen_body_neutral_when_unwired(self, client):
         from web_interface import routes as r

@@ -26,6 +26,7 @@ from config.config_model import ConfigModel, MQTTConfig
 from services.auth_policy import generate_admin_password, is_loopback, password_problem
 from web_interface.server import app
 from web_interface import routes
+from web_interface import auth as web_auth
 
 
 def setup_logging():
@@ -292,7 +293,7 @@ async def main():
     # (empty unless the operator set it in config.json) — apply the env override
     # after, so ICE_COLDER_TRUSTED_PROXIES takes effect without ever touching
     # live_config itself.
-    routes.login_limiter.set_trusted_proxies(overrides.trusted_proxies)
+    web_auth.backoff.set_trusted_proxies(overrides.trusted_proxies)
     inventory = InventoryManager(live_config.products)
     vmc = VMC(config=live_config)
     vmc.set_inventory_manager(inventory)

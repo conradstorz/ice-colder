@@ -1,33 +1,27 @@
 import asyncio
-import secrets as _secrets
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 
 from config.config_model import ConfigModel, Product
 from contracts.vending_machine import EXPECTED_SUBSYSTEMS
-from services.access import OTP_DIGITS, AccessStore
+from services.access import OTP_DIGITS, AccessStore, Permission
 from services.config_store import add_product, delete_product, update_product
 from services.fsm_control import perform_command
 from services.health_monitor import HealthMonitor
 from services.mailer import send_email
 from services.paths import LOG_FILE
 from web_interface import auth as web_auth
-from web_interface.auth import LoginLimiter
 
 config: ConfigModel = None
-
-login_limiter = LoginLimiter()
 
 
 def set_config_object(cfg: ConfigModel):
     global config
     config = cfg
-    login_limiter.set_trusted_proxies(list(cfg.web.trusted_proxies))
 
 
 vmc_instance = None
@@ -77,50 +71,17 @@ def set_access_store(store: AccessStore | None) -> None:
     web_auth.set_access_store(store)
 
 
-_basic_auth = HTTPBasic()
-
-
-def require_auth(
-    request: Request, credentials: HTTPBasicCredentials = Depends(_basic_auth)
-):
-    """HTTP Basic auth for every dashboard route, checked against config.web,
-    with a per-IP failed-login lockout."""
-    if config is None:
-        raise HTTPException(status_code=503, detail="Configuration not loaded")
-    ip = login_limiter.client_ip(request)
-    remaining = login_limiter.check(ip)
-    if remaining is not None:
-        raise HTTPException(
-            status_code=429,
-            detail="Too many failed logins; try again later",
-            headers={"Retry-After": str(int(remaining) + 1)},
-        )
-    user_ok = _secrets.compare_digest(credentials.username, config.web.admin_username)
-    pass_ok = _secrets.compare_digest(
-        credentials.password, config.web.admin_password.get_secret_value()
-    )
-    if not (user_ok and pass_ok):
-        login_limiter.record_failure(ip)
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid credentials",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-    login_limiter.record_success(ip)
-
-
-# Runs after the router-level require_auth (FastAPI resolves router
-# dependencies first), so a valid login on a non-HTMX POST is counted as a
-# success by the limiter and then refused here. Both must pass to reach a
-# handler; the order is intentional.
+# Listed ahead of require_htmx on every mutating route, so an unauthenticated
+# cross-site POST is turned away by the session check before the CSRF guard
+# even runs. Both must pass to reach a handler; the order is intentional.
 def require_htmx(request: Request):
     """CSRF guard for mutating routes.
 
-    Browsers replay cached Basic-auth credentials on cross-site requests, so
-    a hostile page could POST to /action/* or /inventory/delete/*. HTMX sends
-    HX-Request: true on every request it makes; a cross-site form cannot add
-    it, and a cross-origin fetch with a custom header needs a CORS preflight
-    this app never answers.
+    Cookie auth is replayed by the browser on cross-site requests same as
+    Basic auth was, so a hostile page could still POST to /action/* or
+    /inventory/delete/*. HTMX sends HX-Request: true on every request it
+    makes; a cross-site form cannot add it, and a cross-origin fetch with a
+    custom header needs a CORS preflight this app never answers.
     """
     if request.headers.get("HX-Request") != "true":
         raise HTTPException(status_code=403, detail="HTMX request required")
@@ -442,12 +403,15 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         web_auth.clear_cookie(resp, web_auth.SESSION_COOKIE)
         return resp
 
-    router = APIRouter(dependencies=[Depends(require_auth)])
+    router = APIRouter()
 
     @router.post(
         "/inventory/add",
         response_class=HTMLResponse,
-        dependencies=[Depends(require_htmx)],
+        dependencies=[
+            Depends(web_auth.require(Permission.edit_catalog)),
+            Depends(require_htmx),
+        ],
     )
     async def add_new_product(
         request: Request,
@@ -464,37 +428,63 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
 
         return templates.TemplateResponse(
             "partials/inventory_table.html",
-            {"request": request, "products": config.products, "locked": _locked_skus()},
+            web_auth.template_context(
+                request, products=config.products, locked=_locked_skus()
+            ),
         )
 
-    @router.get("/", response_class=HTMLResponse)
+    @router.get(
+        "/",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.view_status))],
+    )
     async def dashboard(request: Request):
-        return templates.TemplateResponse("dashboard.html", {"request": request})
+        return templates.TemplateResponse(
+            "dashboard.html", web_auth.template_context(request)
+        )
 
-    @router.get("/config/machine", response_class=HTMLResponse)
+    @router.get(
+        "/config/machine",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.edit_contacts))],
+    )
     async def machine_info(request: Request):
         return templates.TemplateResponse(
             "partials/machine_info.html",
-            {"request": request, "details": config.physical},
+            web_auth.template_context(request, details=config.physical),
         )
 
-    @router.get("/config/contacts", response_class=HTMLResponse)
+    @router.get(
+        "/config/contacts",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.edit_contacts))],
+    )
     async def contact_info(request: Request):
         return templates.TemplateResponse(
             "partials/contacts.html",
-            {"request": request, "people": config.physical.people},
+            web_auth.template_context(request, people=config.physical.people),
         )
 
-    @router.get("/config/payments", response_class=HTMLResponse)
+    @router.get(
+        "/config/payments",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.edit_secrets))],
+    )
     async def payment_config(request: Request):
         return templates.TemplateResponse(
-            "partials/payments.html", {"request": request, "payment": config.payment}
+            "partials/payments.html",
+            web_auth.template_context(request, payment=config.payment),
         )
 
-    @router.get("/config/comms", response_class=HTMLResponse)
+    @router.get(
+        "/config/comms",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.edit_secrets))],
+    )
     async def comms_config(request: Request):
         return templates.TemplateResponse(
-            "partials/comms.html", {"request": request, "comm": config.communication}
+            "partials/comms.html",
+            web_auth.template_context(request, comm=config.communication),
         )
 
     def _locked_skus() -> dict[str, str]:
@@ -562,28 +552,35 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
 
         return templates.TemplateResponse(
             "partials/status_fragment.html",
-            {
-                "request": request,
-                "status": status,
-                "is_healthy": is_healthy,
-                "issues": issues,
-                "active_faults": active_faults,
-                "payment_enabled": payment_enabled,
-                "payment_reasons": payment_reasons,
-                "machine_stopped": (
+            web_auth.template_context(
+                request,
+                status=status,
+                is_healthy=is_healthy,
+                issues=issues,
+                active_faults=active_faults,
+                payment_enabled=payment_enabled,
+                payment_reasons=payment_reasons,
+                machine_stopped=(
                     None if payment_enabled is None else not payment_enabled
                 ),
-            },
+            ),
         )
 
-    @router.get("/status", response_class=HTMLResponse)
+    @router.get(
+        "/status",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.view_status))],
+    )
     async def status_fragment(request: Request):
         return await _render_status(request)
 
     @router.post(
         "/faults/{key}/clear",
         response_class=HTMLResponse,
-        dependencies=[Depends(require_htmx)],
+        dependencies=[
+            Depends(web_auth.require(Permission.clear_faults)),
+            Depends(require_htmx),
+        ],
     )
     async def clear_fault(request: Request, key: str):
         if not vmc_instance or not vmc_instance.clear_fault(key, by="admin"):
@@ -592,19 +589,34 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             )
         return await _render_status(request)
 
-    @router.post("/action/{command}", dependencies=[Depends(require_htmx)])
+    @router.post(
+        "/action/{command}",
+        dependencies=[
+            Depends(web_auth.require(Permission.machine_controls)),
+            Depends(require_htmx),
+        ],
+    )
     async def control_action(command: str):
         result = perform_command(command, vmc_instance)
         return HTMLResponse(f"<p>{result}</p>")
 
-    @router.get("/logs", response_class=HTMLResponse)
+    @router.get(
+        "/logs",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.view_logs))],
+    )
     async def view_logs(request: Request):
         lines = await asyncio.to_thread(tail, LOG_PATH, 10)
         return templates.TemplateResponse(
-            "partials/logs_fragment.html", {"request": request, "logs": lines}
+            "partials/logs_fragment.html",
+            web_auth.template_context(request, logs=lines),
         )
 
-    @router.get("/health", response_class=HTMLResponse)
+    @router.get(
+        "/health",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.view_status))],
+    )
     async def health_summary(request: Request):
         if not health_monitor:
             return HTMLResponse("<div>Health monitor not initialized</div>")
@@ -617,10 +629,14 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         )
         return templates.TemplateResponse(
             "partials/health_fragment.html",
-            {"request": request, "health": health},
+            web_auth.template_context(request, health=health),
         )
 
-    @router.get("/activity", response_class=HTMLResponse)
+    @router.get(
+        "/activity",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.view_status))],
+    )
     async def activity_fragment(request: Request, period: int = Query(default=24)):
         if not event_recorder:
             return HTMLResponse(
@@ -633,15 +649,16 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         average = await asyncio.to_thread(event_recorder.get_historical_average, period)
         return templates.TemplateResponse(
             "partials/activity_fragment.html",
-            {
-                "request": request,
-                "period": period,
-                "summary": summary,
-                "average": average,
-            },
+            web_auth.template_context(
+                request, period=period, summary=summary, average=average
+            ),
         )
 
-    @router.get("/kpi", response_class=HTMLResponse)
+    @router.get(
+        "/kpi",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.view_status))],
+    )
     async def kpi_fragment(request: Request):
         if event_recorder:
             summary = await asyncio.to_thread(event_recorder.get_summary, 24)
@@ -651,32 +668,41 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             average = None
         return templates.TemplateResponse(
             "partials/kpi_fragment.html",
-            {
-                "request": request,
-                "summary": summary,
-                "average": average,
-            },
+            web_auth.template_context(request, summary=summary, average=average),
         )
 
-    @router.get("/inventory", response_class=HTMLResponse)
+    @router.get(
+        "/inventory",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.view_status))],
+    )
     async def inventory_view(request: Request):
         return templates.TemplateResponse(
             "partials/inventory_table.html",
-            {"request": request, "products": config.products, "locked": _locked_skus()},
+            web_auth.template_context(
+                request, products=config.products, locked=_locked_skus()
+            ),
         )
 
-    @router.get("/inventory/edit/{sku}", response_class=HTMLResponse)
+    @router.get(
+        "/inventory/edit/{sku}",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.edit_catalog))],
+    )
     async def edit_inventory_item(request: Request, sku: str):
         product = next((p for p in config.products if p.sku == sku), None)
         return templates.TemplateResponse(
             "partials/inventory_edit_form.html",
-            {"request": request, "product": product},
+            web_auth.template_context(request, product=product),
         )
 
     @router.post(
         "/inventory/update/{sku}",
         response_class=HTMLResponse,
-        dependencies=[Depends(require_htmx)],
+        dependencies=[
+            Depends(web_auth.require(Permission.edit_catalog)),
+            Depends(require_htmx),
+        ],
     )
     async def update_inventory_item(
         request: Request,
@@ -690,13 +716,18 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
 
         return templates.TemplateResponse(
             "partials/inventory_table.html",
-            {"request": request, "products": config.products, "locked": _locked_skus()},
+            web_auth.template_context(
+                request, products=config.products, locked=_locked_skus()
+            ),
         )
 
     @router.post(
         "/inventory/delete/{sku}",
         response_class=HTMLResponse,
-        dependencies=[Depends(require_htmx)],
+        dependencies=[
+            Depends(web_auth.require(Permission.edit_catalog)),
+            Depends(require_htmx),
+        ],
     )
     async def delete_inventory_item(request: Request, sku: str):
         success = delete_product(config, sku)
@@ -704,20 +735,30 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             inventory_manager.remove_sku(sku)
         return templates.TemplateResponse(
             "partials/inventory_table.html",
-            {"request": request, "products": config.products, "locked": _locked_skus()},
+            web_auth.template_context(
+                request, products=config.products, locked=_locked_skus()
+            ),
         )
 
-    @router.get("/inventory/new", response_class=HTMLResponse)
+    @router.get(
+        "/inventory/new",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.edit_catalog))],
+    )
     async def new_product_form(request: Request):
         # Blank form, random temporary SKU
         random_sku = f"SKU-{uuid4().hex[:6].upper()}"
         product = Product(sku=random_sku, name="", price=0.0, inventory_count=0)
         return templates.TemplateResponse(
             "partials/inventory_add_form.html",
-            {"request": request, "product": product, "mode": "new"},
+            web_auth.template_context(request, product=product, mode="new"),
         )
 
-    @router.get("/inventory/copy/{sku}", response_class=HTMLResponse)
+    @router.get(
+        "/inventory/copy/{sku}",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.edit_catalog))],
+    )
     async def copy_product_form(request: Request, sku: str):
         base = next((p for p in config.products if p.sku == sku), None)
         if base:
@@ -734,7 +775,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             )
             return templates.TemplateResponse(
                 "partials/inventory_add_form.html",
-                {"request": request, "product": copied, "mode": "copy"},
+                web_auth.template_context(request, product=copied, mode="copy"),
             )
 
     def _screen_context(request: Request) -> dict:
@@ -757,23 +798,33 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
                 availability.sale_available(kind) if availability else (None, [])
             )
             kinds[kind] = {"ok": ok, "failing": failing}
-        return {
-            "request": request,
-            "status": status,
-            "faults": faults,
-            "health": health,
-            "kinds": kinds,
-            "payment_enabled": availability.payment_enabled if availability else None,
-            "payment_reasons": (
+        return web_auth.template_context(
+            request,
+            status=status,
+            faults=faults,
+            health=health,
+            kinds=kinds,
+            payment_enabled=availability.payment_enabled if availability else None,
+            payment_reasons=(
                 availability.payment_blocking_reasons() if availability else []
             ),
-        }
+        )
 
-    @router.get("/screen", response_class=HTMLResponse)
+    @router.get(
+        "/screen",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.view_status))],
+    )
     async def screen(request: Request):
-        return templates.TemplateResponse("screen.html", {"request": request})
+        return templates.TemplateResponse(
+            "screen.html", web_auth.template_context(request)
+        )
 
-    @router.get("/screen/body", response_class=HTMLResponse)
+    @router.get(
+        "/screen/body",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.view_status))],
+    )
     async def screen_body(request: Request):
         ctx = _screen_context(request)
         if event_recorder:
