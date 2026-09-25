@@ -67,14 +67,14 @@ simulators and mosquitto).
 
 ## 3. Delivery model
 
-The owner has standing instructions: implementation is sub-agent driven,
-Sonnet is the ceiling model, Haiku does mechanical work. This plan applies
-those at three levels.
+The owner has standing instructions: implementation is sub-agent driven.
+Model policy for this program: Opus dispatches and executes each part,
+Sonnet and Haiku do the hands-on work underneath. Applied at three levels.
 
 ### 3.1 Levels of agent
 
-**Program orchestrator** (this session, or a fresh session given this
-document). Owns the order in §1, opens one branch and one pull request per
+**Program orchestrator** (Opus; this session, or a fresh session given
+this document). Owns the order in §1, opens one branch and one pull request per
 part, and never edits code itself. For each part it:
 
 1. Invokes `superpowers:writing-plans` against that part's spec to produce
@@ -87,7 +87,7 @@ part, and never edits code itself. For each part it:
    agent (§3.4).
 4. Stops and reports to the owner before starting the next part.
 
-**Part executor** (the agent `subagent-driven-development` runs as, Sonnet).
+**Part executor** (Opus; the agent `subagent-driven-development` runs as).
 Reads the plan and the spec. For each task it dispatches one implementer
 and one reviewer, in order, and does not move to the next task until the
 reviewer passes it. It keeps a running list of deviations from the spec and
@@ -98,7 +98,7 @@ dispatch, not after.
 
 **Implementer** (Sonnet for anything touching the FSM, auth, contracts, or
 the recorder; Haiku for templates, restyling, moving partials, docs, and
-test retargeting). Receives exactly: the task text, the spec section, the
+test retargeting; never Opus). Receives exactly: the task text, the spec section, the
 files it may touch, and the test it must make pass. Works test-first:
 writes the failing test, runs it, implements, runs `uv run pytest` for the
 affected test file, then `ruff check --fix .` and `ruff format .`. Reports
@@ -133,7 +133,8 @@ is cut, so every part builds on reviewed code.
 
 ### 3.4 Review loop
 
-GitHub Copilot reviews every pull request. A review agent (Sonnet) reads
+GitHub Copilot reviews every pull request. A review agent (Sonnet,
+dispatched by the part executor) reads
 each comment under `superpowers:receiving-code-review`: it verifies the
 claim against the code and the spec before acting, fixes what is real in a
 commit that names the comment, and replies with a reason when a comment is
