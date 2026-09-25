@@ -37,7 +37,7 @@
         </td>
         <td class="py-3 text-gray-900">${{ "%.2f"|format(product.price) }}</td>
         <td class="py-3 text-gray-900">{{ product.slot }}</td>
-        <td class="py-3 text-gray-900">{{ product.inventory_count }}</td>
+        <td class="py-3 text-gray-900">{{ inventory_counts[product.sku] if inventory_counts is defined and product.sku in inventory_counts else product.inventory_count }}</td>
         <td class="py-3">
           <div class="flex gap-2">
             {% if "edit_catalog" in perms %}

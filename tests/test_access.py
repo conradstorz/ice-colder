@@ -207,7 +207,12 @@ class TestHashing:
         h, s = hash_pin("1379")
         bytes.fromhex(h)
         bytes.fromhex(s)
-        assert "1379" not in h
+        # A literal-PIN hash function would produce the same digest for the
+        # same PIN and (if it depended on the PIN at all) a different digest
+        # for a different one; check the latter instead of scanning for a
+        # substring, which flakes at random on any 64-char hex digest.
+        h2, _s2 = hash_pin("2468")
+        assert h != h2
 
     def test_secret_round_trip(self):
         stored = hash_secret("12345678")

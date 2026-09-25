@@ -735,12 +735,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         if success and inventory_manager:
             inventory_manager.add_sku(sku, 0, tracked=False)
 
-        return templates.TemplateResponse(
-            "partials/inventory_table.html",
-            web_auth.template_context(
-                request, products=config.products, locked=_locked_skus()
-            ),
-        )
+        return _render_inventory_table(request)
 
     @router.get(
         "/",
@@ -986,12 +981,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         dependencies=[Depends(web_auth.require(Permission.view_status))],
     )
     async def inventory_view(request: Request):
-        return templates.TemplateResponse(
-            "partials/inventory_table.html",
-            web_auth.template_context(
-                request, products=config.products, locked=_locked_skus()
-            ),
-        )
+        return _render_inventory_table(request)
 
     @router.get(
         "/inventory/edit/{sku}/catalog",
@@ -1024,12 +1014,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         # update_product) — this endpoint owns name/price/kind only.
         update_product(config, sku, name, price, slot=None, kind=kind)
 
-        return templates.TemplateResponse(
-            "partials/inventory_table.html",
-            web_auth.template_context(
-                request, products=config.products, locked=_locked_skus()
-            ),
-        )
+        return _render_inventory_table(request)
 
     def _inventory_count(product: Product) -> int:
         if inventory_manager:
@@ -1040,6 +1025,21 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         if inventory_manager:
             return inventory_manager.is_tracked(product.sku)
         return product.track_inventory
+
+    def _render_inventory_table(request: Request):
+        # Counts live in InventoryManager, not on Product (see
+        # _inventory_count above) — every render of this partial must read
+        # through it so a loader's placement POST is reflected immediately
+        # instead of showing the stale/zero value still on Product.
+        return templates.TemplateResponse(
+            "partials/inventory_table.html",
+            web_auth.template_context(
+                request,
+                products=config.products,
+                locked=_locked_skus(),
+                inventory_counts={p.sku: _inventory_count(p) for p in config.products},
+            ),
+        )
 
     @router.get(
         "/inventory/edit/{sku}/placement",
@@ -1090,12 +1090,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
                 product.track_inventory = tracked
                 save_config(config)
 
-        return templates.TemplateResponse(
-            "partials/inventory_table.html",
-            web_auth.template_context(
-                request, products=config.products, locked=_locked_skus()
-            ),
-        )
+        return _render_inventory_table(request)
 
     @router.post(
         "/inventory/delete/{sku}",
@@ -1109,12 +1104,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         success = delete_product(config, sku)
         if success and inventory_manager:
             inventory_manager.remove_sku(sku)
-        return templates.TemplateResponse(
-            "partials/inventory_table.html",
-            web_auth.template_context(
-                request, products=config.products, locked=_locked_skus()
-            ),
-        )
+        return _render_inventory_table(request)
 
     @router.get(
         "/inventory/new",

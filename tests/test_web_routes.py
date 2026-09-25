@@ -345,6 +345,25 @@ class TestInventoryEndpoints:
         assert inv.get_count("PLC-2") == 15
         assert inv.is_tracked("PLC-2") is True
 
+    def test_placement_post_returns_table_showing_stored_count(self, client, wired):
+        """The count a loader just stored (in InventoryManager, not on
+        Product) must appear in the table HTMX swaps back in — not the
+        stale/zero value still on Product.inventory_count."""
+        _cfg, _vmc, inv, _store = wired
+        client.post(
+            "/inventory/add",
+            data={"sku": "PLC-5", "name": "Placed Item", "price": "2.00", "slot": "1"},
+        )
+        resp = client.post(
+            "/inventory/update/PLC-5/placement",
+            data={"slot": "1", "inventory_count": "42", "track_inventory": "on"},
+        )
+        assert resp.status_code == 200
+        assert inv.get_count("PLC-5") == 42
+        product = next(p for p in routes.config.products if p.sku == "PLC-5")
+        assert product.inventory_count != 42
+        assert ">42<" in resp.text
+
     def test_placement_post_unchecked_tracking_clears_flag(self, client, wired):
         _cfg, _vmc, inv, _store = wired
         client.post(
