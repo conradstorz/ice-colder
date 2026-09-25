@@ -98,6 +98,29 @@ class TestClientKeying:
         assert auth.is_trusted_client(request, user.id) is True
 
 
+class TestTemplateContext:
+    def test_current_user_hides_pin_material_but_keeps_the_public_fields(self, store):
+        user = store.create_user("Ada", "ada@example.com", Role.owner, "1379")
+        device, token = store.create_device("Tablet", shared=True)
+        store.trust_device(device.id, user.id)
+        session = store.create_session(user.id, device.id)
+        request = _fake_request(
+            cookies={auth.DEVICE_COOKIE: token, auth.SESSION_COOKIE: session}
+        )
+
+        ctx = auth.template_context(request)
+        current = ctx["current_user"]
+
+        assert not hasattr(current, "pin_hash")
+        assert not hasattr(current, "pin_salt")
+        assert current.id == user.id
+        assert current.name == "Ada"
+        assert current.email == "ada@example.com"
+        assert current.role == Role.owner
+        assert current.disabled is False
+        assert current.last_login_at == user.last_login_at
+
+
 class _FakeUrl:
     def __init__(self, scheme):
         self.scheme = scheme

@@ -114,6 +114,13 @@ def verify_pin(pin: str, pin_hash: str, pin_salt: str) -> bool:
     return secrets.compare_digest(candidate, pin_hash)
 
 
+# Fixed dummy hash+salt for verify_user_pin's miss path (unknown/disabled
+# user), generated once at import so every miss pays the same scrypt cost a
+# real wrong-PIN check would, instead of returning early and leaking which
+# case it was through response timing.
+_DUMMY_PIN_HASH, _DUMMY_PIN_SALT = hash_pin(secrets.token_hex(16))
+
+
 def hash_secret(value: str) -> str:
     """Salted scrypt for codes stored without a separate salt column."""
     salt = secrets.token_bytes(16)
@@ -609,6 +616,10 @@ class AccessStore:
     def verify_user_pin(self, user_id: str, pin: str) -> bool:
         user = self.users.get(user_id)
         if user is None or user.disabled:
+            # Pay the same scrypt cost a real wrong-PIN check would, so an
+            # unknown or disabled user id can't be distinguished from a
+            # wrong PIN by response timing.
+            verify_pin(pin, _DUMMY_PIN_HASH, _DUMMY_PIN_SALT)
             return False
         return verify_pin(pin, user.pin_hash, user.pin_salt)
 

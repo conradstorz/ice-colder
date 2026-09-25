@@ -22,6 +22,7 @@ from services.access import (
     AccessStore,
     Backoff,
     Permission,
+    Role,
     Session,
     User,
 )
@@ -147,13 +148,49 @@ def require(*permissions: Permission):
     return dependency
 
 
+@dataclass(frozen=True)
+class TemplateUser:
+    """The template-facing view of a User: everything a template needs to
+    greet, label or gate on a user, and nothing a template must never leak.
+
+    User carries pin_hash/pin_salt (needed to verify a PIN, irrelevant to
+    rendering a page); no template renders them today, but current_user
+    reaches every template, so the hazard is live for every template task
+    still to come. Narrowing the type here, once, is cheaper than trusting
+    every future template author to remember not to touch those fields.
+    """
+
+    id: str
+    name: str
+    email: str | None
+    role: Role
+    disabled: bool
+    last_login_at: str | None
+
+
+def _template_user(user: User) -> TemplateUser:
+    return TemplateUser(
+        id=user.id,
+        name=user.name,
+        email=user.email,
+        role=user.role,
+        disabled=user.disabled,
+        last_login_at=user.last_login_at,
+    )
+
+
 def template_context(request: Request, **extra) -> dict:
     """Every template gets current_user and perms, so it never renders a
-    button the server would refuse. Server-side checks remain the authority."""
+    button the server would refuse. Server-side checks remain the authority.
+
+    current_user is a TemplateUser, not the full User — see TemplateUser's
+    docstring. Code that needs the real User (pin_hash/pin_salt included)
+    should use current_principal(request).user instead.
+    """
     principal = current_principal(request)
     ctx = {
         "request": request,
-        "current_user": principal.user if principal else None,
+        "current_user": _template_user(principal.user) if principal else None,
         "perms": principal.perms if principal else frozenset(),
     }
     ctx.update(extra)

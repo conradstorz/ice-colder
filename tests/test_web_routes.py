@@ -1059,10 +1059,18 @@ class TestEnrollment:
         codes = store.generate_emergency_codes()
         c.post("/login", data={"user_id": owner.id, "pin": "1379"})
         c.post("/login/enroll", data={"code": codes[0]})
-        c.cookies.delete("vmc_session")
-        c.post("/login", data={"user_id": owner.id, "pin": "1379"})
-        resp = c.post("/login/enroll", data={"code": codes[0]})
+
+        # A fresh, untrusted client: no vmc_device, no vmc_session. Reusing
+        # `c` here would hit the "already trusted device" fast path on the
+        # second /login and never reach the emergency-code check at all.
+        fresh = TestClient(app, follow_redirects=False)
+        fresh.headers["HX-Request"] = "true"
+        fresh.post("/login", data={"user_id": owner.id, "pin": "1379"})
+        assert fresh.cookies.get("vmc_enroll")
+        resp = fresh.post("/login/enroll", data={"code": codes[0]})
         assert "hx-redirect" not in {k.lower() for k in resp.headers}
+        assert resp.status_code == 200
+        assert "not accepted" in resp.text.lower()
 
     def test_otp_path_with_a_stubbed_mailer(self, public, monkeypatch):
         c, store, owner, cfg = public

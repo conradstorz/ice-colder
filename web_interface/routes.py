@@ -315,12 +315,14 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             request.cookies.get(web_auth.ENROLL_COOKIE), web_auth.client_key(request)
         )
         if user_id is None:
-            # No HX-Redirect here: a device that is already trusted logs in
-            # directly (bypassing enrollment) without reissuing vmc_enroll,
-            # so a stray /login/enroll after that must look like any other
-            # rejected code — not carry a navigation hint of its own.
+            # htmx does not touch the DOM on a non-2xx response, so without
+            # HX-Redirect a lapsed enrollment window (or a device that
+            # skipped enrollment entirely) would leave the user staring at
+            # an unchanged screen with no error and no way forward.
             raise HTTPException(
-                status_code=401, detail="Enrollment expired; sign in again"
+                status_code=401,
+                detail="Enrollment expired; sign in again",
+                headers={"HX-Redirect": "/login"},
             )
         return user_id
 

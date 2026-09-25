@@ -421,6 +421,16 @@ class TestUsers:
     def test_unknown_user_fails_pin_verification(self, store):
         assert store.verify_user_pin("nope", "1379") is False
 
+    def test_disabled_and_unknown_user_miss_paths_still_return_false(self, store):
+        """The miss path now runs scrypt against dummy material before
+        returning (to close a PIN timing side-channel); this can't assert on
+        wall-clock time, but it does confirm the dummy-hash detour still
+        yields the plain False every other miss path returns."""
+        u = store.create_user("Ada", None, Role.owner, "1379")
+        store.set_user_disabled(u.id, True)
+        assert store.verify_user_pin(u.id, "1379") is False
+        assert store.verify_user_pin("no-such-user", "1379") is False
+
     def test_enabled_users_excludes_disabled(self, store):
         a = store.create_user("Ada", None, Role.owner, "1379")
         b = store.create_user("Bob", None, Role.tech, "2468")
