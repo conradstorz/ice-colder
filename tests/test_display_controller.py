@@ -103,6 +103,111 @@ class TestDisplayControllerMQTT:
 
         mock_client.publish.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_ordinary_state_change_carries_no_message(self):
+        dc = DisplayController()
+        mock_client = MagicMock()
+        mock_client.publish = AsyncMock()
+        loop = asyncio.get_running_loop()
+        dc.set_mqtt(mock_client, loop)
+
+        dc.update_for_state("error")  # advertising -> error, should publish
+        await asyncio.sleep(0.01)
+
+        mock_client.publish.assert_awaited_once()
+        command = mock_client.publish.call_args[0][1]
+        assert command.message is None
+
+
+class TestDisplayControllerSetupCode:
+    @pytest.mark.asyncio
+    async def test_show_setup_code_publishes_maintenance_with_grouped_digits(self):
+        dc = DisplayController()
+        mock_client = MagicMock()
+        mock_client.publish = AsyncMock()
+        loop = asyncio.get_running_loop()
+        dc.set_mqtt(mock_client, loop)
+
+        dc.show_setup_code("12345678")
+        await asyncio.sleep(0.01)
+
+        assert dc.current_mode == DisplayMode.maintenance
+        assert dc.setup_code == "12345678"
+        mock_client.publish.assert_awaited_once()
+        call_args = mock_client.publish.call_args
+        assert call_args[0][0] == "cmd/display"
+        command = call_args[0][1]
+        assert command.mode == DisplayMode.maintenance
+        assert command.message == "Setup code: 1234 5678"
+
+    @pytest.mark.asyncio
+    async def test_state_change_while_code_held_publishes_nothing(self):
+        dc = DisplayController()
+        mock_client = MagicMock()
+        mock_client.publish = AsyncMock()
+        loop = asyncio.get_running_loop()
+        dc.set_mqtt(mock_client, loop)
+
+        dc.show_setup_code("12345678")
+        await asyncio.sleep(0.01)
+        mock_client.publish.reset_mock()
+
+        dc.update_for_state("interacting_with_user")
+        await asyncio.sleep(0.01)
+
+        mock_client.publish.assert_not_awaited()
+        assert dc.current_mode == DisplayMode.maintenance
+        assert dc.setup_code == "12345678"
+
+    @pytest.mark.asyncio
+    async def test_clear_setup_code_returns_to_last_recorded_state(self):
+        dc = DisplayController()
+        mock_client = MagicMock()
+        mock_client.publish = AsyncMock()
+        loop = asyncio.get_running_loop()
+        dc.set_mqtt(mock_client, loop)
+
+        dc.show_setup_code("12345678")
+        await asyncio.sleep(0.01)
+        dc.update_for_state("interacting_with_user")  # recorded but not published
+        await asyncio.sleep(0.01)
+        mock_client.publish.reset_mock()
+
+        dc.clear_setup_code()
+        await asyncio.sleep(0.01)
+
+        assert dc.setup_code is None
+        assert dc.current_mode == DisplayMode.transaction
+        mock_client.publish.assert_awaited_once()
+        command = mock_client.publish.call_args[0][1]
+        assert command.mode == DisplayMode.transaction
+        assert command.message is None
+
+    @pytest.mark.asyncio
+    async def test_clear_setup_code_with_none_held_is_noop(self):
+        dc = DisplayController()
+        mock_client = MagicMock()
+        mock_client.publish = AsyncMock()
+        loop = asyncio.get_running_loop()
+        dc.set_mqtt(mock_client, loop)
+
+        dc.clear_setup_code()
+        await asyncio.sleep(0.01)
+
+        assert dc.setup_code is None
+        mock_client.publish.assert_not_awaited()
+
+    def test_show_setup_code_logs_at_warning_level(self, caplog):
+        caplog.set_level("WARNING")
+        dc = DisplayController()
+
+        dc.show_setup_code("12345678")
+
+        assert any(
+            "1234 5678" in r.message and r.levelname == "WARNING"
+            for r in caplog.records
+        )
+
 
 class TestVMCDisplayIntegration:
     def test_vmc_accepts_display_controller(self):

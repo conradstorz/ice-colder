@@ -140,6 +140,10 @@ class DisplayCommand(BaseModel):
     """Command to change the customer-facing display mode."""
 
     mode: DisplayMode = Field(..., description="Display mode to switch to")
+    message: Optional[str] = Field(
+        None,
+        description="Additive and optional; firmware that ignores it behaves exactly as before.",
+    )
 
 
 # ──────────────────────────────────────────────

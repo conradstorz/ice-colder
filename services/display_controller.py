@@ -36,10 +36,17 @@ class DisplayController:
         self._current_mode: DisplayMode = DisplayMode.advertising
         self._mqtt_client = None
         self._loop = None
+        self._setup_code: str | None = None
+        self._last_state: str = "idle"
 
     @property
     def current_mode(self) -> DisplayMode:
         return self._current_mode
+
+    @property
+    def setup_code(self) -> str | None:
+        """The setup code currently held on the display, if any."""
+        return self._setup_code
 
     def set_mqtt(self, client, loop):
         """Attach MQTT client and event loop for publishing commands."""
@@ -51,7 +58,16 @@ class DisplayController:
         """
         Update the display mode based on the current VMC FSM state.
         Only publishes if the mode actually changes.
+
+        While a setup code is held (`show_setup_code`), the state is still
+        recorded (so `clear_setup_code` knows what to return to) but nothing
+        is published — an FSM transition must not be able to wipe the setup
+        code off the screen while someone is reading it at the machine.
         """
+        self._last_state = vmc_state
+        if self._setup_code is not None:
+            return
+
         new_mode = _STATE_TO_MODE.get(vmc_state, DisplayMode.advertising)
         if new_mode == self._current_mode:
             return
@@ -72,7 +88,35 @@ class DisplayController:
         logger.info(f"Display: manually set to {mode.value}")
         self._publish_mode(mode)
 
-    def _publish_mode(self, mode: DisplayMode):
+    def show_setup_code(self, code: str) -> None:
+        """
+        Put the machine into setup mode: switch to maintenance and publish
+        the setup code, split into two groups of four digits, for as long as
+        setup mode lasts. Also logs the plaintext code at warning level, so
+        it lands in the startup log alongside the display.
+        """
+        self._setup_code = code
+        message = f"Setup code: {code[:4]} {code[4:]}"
+        logger.warning(message)
+
+        self._current_mode = DisplayMode.maintenance
+        self._publish_mode(DisplayMode.maintenance, message=message)
+
+    def clear_setup_code(self) -> None:
+        """
+        Forget the held setup code and republish the mode for the last
+        recorded FSM state. A no-op (no publish) if no code is held.
+        """
+        if self._setup_code is None:
+            return
+
+        self._setup_code = None
+        new_mode = _STATE_TO_MODE.get(self._last_state, DisplayMode.advertising)
+        self._current_mode = new_mode
+        logger.info(f"Display: setup code cleared, mode -> {new_mode.value}")
+        self._publish_mode(new_mode)
+
+    def _publish_mode(self, mode: DisplayMode, message: str | None = None):
         """Publish a DisplayCommand to MQTT."""
         if self._mqtt_client is None or self._loop is None:
             logger.debug(
@@ -80,5 +124,5 @@ class DisplayController:
             )
             return
 
-        command = DisplayCommand(mode=mode)
+        command = DisplayCommand(mode=mode, message=message)
         self._loop.create_task(self._mqtt_client.publish("cmd/display", command))
