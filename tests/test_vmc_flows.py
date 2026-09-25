@@ -1117,6 +1117,40 @@ async def test_expire_session_is_a_noop_while_dispensing():
     vmc.cancel_pending_tasks()
 
 
+async def test_deposit_after_on_error_refund_is_refunded_on_timeout():
+    """Regression test: on_error refunds whatever escrow existed when the
+    error was raised, but deposit_funds arms the session timer on every
+    deposit regardless of state. A credit that arrives while the machine is
+    still parked in `error` (awaiting an admin reset_state) must not be
+    silently stranded when that timer fires.
+    """
+    vmc = make_vmc2()
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    client = RecordingClient()
+    vmc.set_mqtt_client(client)
+
+    vmc.credit_escrow = 0.0
+    vmc.error_occurred()
+    await asyncio.sleep(0)
+    assert vmc.state == "error"
+    assert client.refund_commands() == []  # nothing to refund yet
+
+    vmc.deposit_funds(1.50)
+    assert vmc.credit_escrow == 1.50
+    assert vmc._session_timeout_task is not None
+
+    vmc._expire_session()
+    await asyncio.sleep(0)
+
+    cmds = client.refund_commands()
+    assert len(cmds) == 1
+    assert cmds[0].amount == 1.50
+    assert cmds[0].reason == "session_timeout"
+    assert vmc.credit_escrow == 0.0
+    assert vmc.state == "error"  # still needs an admin reset_state
+    vmc.cancel_pending_tasks()
+
+
 async def test_hazard_fault_still_disables_payment():
     vmc, monitor, avail, published = _wired_vmc()
     _all_alive(monitor, vmc)
