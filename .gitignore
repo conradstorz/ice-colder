@@ -193,3 +193,7 @@ config.json.tmp
 
 # Vendored scaffold project (separate repo, never commit)
 colder-docker/
+
+# Local-only compose overrides (never commit a weak-password bypass etc.)
+docker-compose.override.yml
+.superpowers/
