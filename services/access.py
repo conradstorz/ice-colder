@@ -8,9 +8,12 @@ into config.json.
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
+import secrets
 import time
 from collections import deque
+from enum import Enum
 from typing import Callable, Optional
 
 from loguru import logger
@@ -19,6 +22,117 @@ BACKOFF_CAP_SECONDS = 3600.0
 BUDGET_THRESHOLD = 20
 BUDGET_WINDOW_SECONDS = 3600.0
 BACKOFF_PRUNE_SECONDS = 86400.0
+
+SCRYPT_N = 2**14
+SCRYPT_R = 8
+SCRYPT_P = 1
+SCRYPT_DKLEN = 32
+
+
+class Role(str, Enum):
+    owner = "owner"
+    secretary = "secretary"
+    tech = "tech"
+    loader = "loader"
+
+
+class Permission(str, Enum):
+    view_status = "view_status"
+    clear_faults = "clear_faults"
+    view_logs = "view_logs"
+    machine_controls = "machine_controls"
+    run_tests = "run_tests"
+    edit_catalog = "edit_catalog"
+    edit_placement = "edit_placement"
+    view_reports = "view_reports"
+    edit_contacts = "edit_contacts"
+    edit_secrets = "edit_secrets"
+    manage_users = "manage_users"
+    manage_ownership = "manage_ownership"
+
+
+ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
+    Role.owner: frozenset(Permission),
+    Role.secretary: frozenset(
+        {
+            Permission.view_status,
+            Permission.edit_catalog,
+            Permission.edit_placement,
+            Permission.view_reports,
+            Permission.edit_contacts,
+            Permission.manage_users,
+        }
+    ),
+    Role.tech: frozenset(
+        {
+            Permission.view_status,
+            Permission.clear_faults,
+            Permission.view_logs,
+            Permission.machine_controls,
+            Permission.run_tests,
+            Permission.edit_placement,
+        }
+    ),
+    Role.loader: frozenset({Permission.view_status, Permission.edit_placement}),
+}
+
+
+def _scrypt(value: str, salt: bytes) -> bytes:
+    return hashlib.scrypt(
+        value.encode("utf-8"),
+        salt=salt,
+        n=SCRYPT_N,
+        r=SCRYPT_R,
+        p=SCRYPT_P,
+        dklen=SCRYPT_DKLEN,
+    )
+
+
+def hash_pin(pin: str, salt: str | None = None) -> tuple[str, str]:
+    """Return (pin_hash_hex, salt_hex); a fresh random salt unless one is given."""
+    salt_bytes = bytes.fromhex(salt) if salt else secrets.token_bytes(16)
+    return _scrypt(pin, salt_bytes).hex(), salt_bytes.hex()
+
+
+def verify_pin(pin: str, pin_hash: str, pin_salt: str) -> bool:
+    try:
+        candidate, _ = hash_pin(pin, pin_salt)
+    except ValueError:
+        return False
+    return secrets.compare_digest(candidate, pin_hash)
+
+
+def hash_secret(value: str) -> str:
+    """Salted scrypt for codes stored without a separate salt column."""
+    salt = secrets.token_bytes(16)
+    return f"scrypt${salt.hex()}${_scrypt(value, salt).hex()}"
+
+
+def verify_secret(value: str, stored: str) -> bool:
+    """Constant-time check against hash_secret output. Garbage returns False."""
+    try:
+        scheme, salt_hex, digest_hex = stored.split("$")
+        if scheme != "scrypt":
+            return False
+        salt = bytes.fromhex(salt_hex)
+    except (ValueError, AttributeError):
+        return False
+    return secrets.compare_digest(_scrypt(value, salt).hex(), digest_hex)
+
+
+def generate_code(digits: int) -> str:
+    """A zero-padded random decimal code of exactly *digits* digits."""
+    return str(secrets.randbelow(10**digits)).zfill(digits)
+
+
+def generate_token() -> str:
+    """A random 256-bit URL-safe token for cookies and session ids."""
+    return secrets.token_urlsafe(32)
+
+
+def token_fingerprint(token: str) -> str:
+    """sha256 of a cookie value — what the store keeps instead of the token."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 class Backoff:
