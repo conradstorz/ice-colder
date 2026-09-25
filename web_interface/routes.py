@@ -248,12 +248,22 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             availability.payment_blocking_reasons() if availability else []
         )
 
+        # A safety permissive (e.g. service_door_closed) can drive
+        # payment_enabled false without ever adding to `issues` — no fault is
+        # raised, just a permissive row failing. Fold that into the health
+        # predicate directly rather than reformatting payment_reasons (bare
+        # permissive names, not the fault table's human descriptions) into
+        # `issues`: the Payment panel in the template already renders those
+        # reasons whenever payment_enabled is false. `None` (no Availability
+        # attached) is unknown, not unhealthy, so it must not flip this.
+        is_healthy = len(issues) == 0 and payment_enabled is not False
+
         return templates.TemplateResponse(
             "partials/status_fragment.html",
             {
                 "request": request,
                 "status": status,
-                "is_healthy": len(issues) == 0,
+                "is_healthy": is_healthy,
                 "issues": issues,
                 "active_faults": active_faults,
                 "payment_enabled": payment_enabled,

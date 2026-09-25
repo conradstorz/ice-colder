@@ -525,6 +525,20 @@ class TestFaultsUI:
         r = client.get("/status", auth=client.auth)
         assert "No active faults" in r.text
 
+    def test_status_banner_is_neutral_without_availability(self, client):
+        """No Availability is attached on this fixture, so routes.py sets
+        machine_stopped to None (payment state was never measured). Jinja
+        treats None the same as False, so before this fix the banner fell
+        into the "still selling" branch and asserted a payment state nobody
+        actually checked. It must instead say neither "Machine Stopped" nor
+        "still selling"."""
+        self._add_product(client)
+        self._lock(client)
+        r = client.get("/status", auth=client.auth)
+        assert "Issues Detected" in r.text
+        assert "Machine Stopped" not in r.text
+        assert "still selling" not in r.text
+
     def test_clear_endpoint_clears_and_rerenders(self, client):
         self._add_product(client)
         self._lock(client)
@@ -812,6 +826,20 @@ class TestAvailabilityOnDashboard:
         assert "Payment" in resp.text
         assert "Disabled" in resp.text
         assert "service_door_closed" in resp.text
+
+    def test_status_is_not_healthy_when_only_payment_is_disabled(self, wired):
+        """A safety permissive (service_door_closed) failing raises no fault
+        and adds nothing to `issues` — it just flips a permissive row. Before
+        this fix, `is_healthy` was `len(issues) == 0` alone, so this rendered
+        the green "All Systems OK" card with a red "Disabled" Payment field
+        buried in the corner, and "Machine Stopped" was unreachable in
+        exactly the case it exists for. A machine not taking money must never
+        render as healthy."""
+        client, avail = wired
+        avail.set_hardware_io("service_door", True)
+        resp = client.get("/status")
+        assert "All Systems OK" not in resp.text
+        assert "Machine Stopped" in resp.text
 
     def test_health_lists_permissives_with_not_instrumented(self, wired):
         client, _ = wired
