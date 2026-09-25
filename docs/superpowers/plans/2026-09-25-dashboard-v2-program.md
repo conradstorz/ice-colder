@@ -113,6 +113,20 @@ Checks the behavior against the spec, not the style, runs the full
 `uv run pytest`, and returns pass or a list of concrete defects. A task
 with defects goes back to a fresh implementer with the defect list.
 
+**Waves (parts 2–4).** From part 2 on, the plan groups tasks into numbered
+waves and the executor dispatches a whole wave at once: every implementer in
+the wave in parallel (one agent call per task, sent together), then every
+reviewer in parallel, then one full `uv run pytest` and `ruff check .` before
+the next wave. A reviewer failure sends only its own task back to a fresh
+implementer; the rest of the wave proceeds. A wave holds only tasks whose
+"files it may touch" sets are pairwise disjoint and whose tests do not share
+a fixture another task in the same wave is editing. Anything touching a
+shared file — route registration, `conftest.py`, `main.py`, `CLAUDE.md`,
+`base.html`, `contracts/common.py` — is a serial step of its own between
+waves, dispatched one implementer and one reviewer at a time exactly as part
+1 was. Part 1 ran entirely serially and is not retrofitted. The model policy
+above is unchanged by this.
+
 ### 3.2 Increment size
 
 A task is the unit of hand-off. The rule of thumb: one service or one
@@ -124,6 +138,20 @@ Part 2's route split is one task per area module. Part 3's FIFO escrow
 change is its own task before anything touches the recorder. Part 4's
 contract models land before the dispatcher, the dispatcher before the VMC
 hold, the hold before any route.
+
+**A task states interfaces and behavior, not implementations.** Part 1's plan
+embedded full function bodies, and implementers transcribed them: an unguarded
+`save()` was copied into eleven `AccessStore` mutators, an enrollment token was
+bound to a client key the response had not yet set, and a test was written that
+never reached the branch its name promised. Every plan from part 2 on gives, per
+task: the spec section, the files it may touch, the interface (exact names,
+signatures, routes, template variables — these are contracts other tasks
+depend on and must be spelled out), the behavior in prose, and the tests to
+write first. A code block appears only for a wire format, a shell command, or a
+genuinely non-obvious algorithm. The implementer writes the code; its reviewer
+checks the result against the spec and the named interfaces, never against a
+snippet in the plan. Part 1's tasks 11–21 were rewritten this way mid-flight
+and produced measurably cleaner work: no task needed a fix round afterwards.
 
 ### 3.3 Branches and pull requests
 
