@@ -207,7 +207,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         if remaining is not None:
             return _keypad(
                 request,
-                selected_user_id=user_id,
+                selected_user_id=None,
                 wait_seconds=int(remaining) + 1,
                 status_code=429,
                 headers={"Retry-After": str(int(remaining) + 1)},
@@ -215,9 +215,12 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
 
         # Identical response for a wrong PIN, an unknown user and a disabled
         # one: the picker already leaks names, nothing else should leak state.
+        # selected_user_id is never echoed back here — the submitted id would
+        # only mark an <option> "selected" when it names an enabled user,
+        # which is itself an enumeration oracle.
         if not access_store.verify_user_pin(user_id, pin):
             web_auth.backoff.record_failure("pin", user_id, client, trusted=trusted)
-            return _keypad(request, selected_user_id=user_id, error="Wrong PIN")
+            return _keypad(request, selected_user_id=None, error="Wrong PIN")
 
         web_auth.backoff.record_success("pin", user_id, client, trusted=trusted)
         device = access_store.device_for_token(

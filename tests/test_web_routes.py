@@ -1,5 +1,7 @@
 """Tests for web_interface routes using FastAPI TestClient."""
 
+import uuid
+
 import pytest
 from fastapi.testclient import TestClient
 from config.config_model import ConfigModel
@@ -949,6 +951,34 @@ class TestLogin:
         resp = c.post("/login", data={"user_id": owner.id, "pin": "1379"})
         assert not c.cookies.get("vmc_session")
         assert "wrong pin" in resp.text.lower()
+
+    def test_failure_responses_do_not_leak_user_existence_via_selection(self, public):
+        """The picker must never mark an <option> 'selected' on a failure
+        path — that only happens when the submitted id names an enabled
+        user, which would let an attacker enumerate accounts without a PIN.
+        """
+        from services.access import Role
+
+        c, store, owner = public
+        disabled = store.create_user("Bob", None, Role.tech, "1111")
+        store.set_user_disabled(disabled.id, True)
+
+        # A unique id per run: the back-off tracker is a module-level
+        # singleton shared across tests, keyed by (kind, subject, client) —
+        # reusing a literal like "no-such-user" would collide with another
+        # test's failure count for this same TestClient and spuriously 429.
+        unknown_id = f"no-such-user-{uuid.uuid4()}"
+
+        wrong_pin = c.post("/login", data={"user_id": owner.id, "pin": "9999"})
+        unknown_user = c.post("/login", data={"user_id": unknown_id, "pin": "9999"})
+        disabled_user_correct_pin = c.post(
+            "/login", data={"user_id": disabled.id, "pin": "1111"}
+        )
+
+        assert wrong_pin.status_code == unknown_user.status_code
+        assert wrong_pin.status_code == disabled_user_correct_pin.status_code
+        assert wrong_pin.content == unknown_user.content
+        assert wrong_pin.content == disabled_user_correct_pin.content
 
     def test_repeated_failures_back_off_with_429_and_retry_after(self, public):
         c, store, owner = public
