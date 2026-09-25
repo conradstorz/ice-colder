@@ -314,6 +314,23 @@ class Device:
     last_seen_at: str = ""
 
 
+SHARED_IDLE_SECONDS = 300.0
+PERSONAL_IDLE_SECONDS = 28800.0
+SESSION_MAX_SECONDS = 86400.0
+OTP_TTL_SECONDS = 600.0
+OTP_DIGITS = 6
+ENROLL_TTL_SECONDS = 600.0
+
+
+@dataclass
+class Session:
+    id: str
+    user_id: str
+    device_id: str
+    created_at: float
+    last_active_at: float
+
+
 class AccessStore:
     """Users, devices, sessions, codes and setup state for the dashboard.
 
@@ -338,6 +355,11 @@ class AccessStore:
         self.corrupt = False
         self.users: dict[str, User] = {}
         self.devices: dict[str, Device] = {}
+        self._sessions: dict[str, Session] = {}
+        # (user_id, device_id) -> (code, expires_at)
+        self._pending_otps: dict[tuple[str, str], tuple[str, float]] = {}
+        # enroll token -> (user_id, client, expires_at)
+        self._enroll_tokens: dict[str, tuple[str, str, float]] = {}
         self._raw_extra: dict = {}
         self.load()
 
@@ -636,3 +658,108 @@ class AccessStore:
         if device is None:
             raise AccessError(f"no such device: {device_id}")
         return device
+
+    # --- sessions (memory only) ---
+
+    def create_session(self, user_id: str, device_id: str) -> str:
+        now = self._clock()
+        session = Session(
+            id=generate_token(),
+            user_id=user_id,
+            device_id=device_id,
+            created_at=now,
+            last_active_at=now,
+        )
+        self._sessions[session.id] = session
+        return session.id
+
+    def resolve_session(self, session_id: str | None) -> Session | None:
+        """The live session for this cookie, refreshing its idle clock.
+
+        Returns None — and forgets the session — when it has idled out, hit
+        the absolute cap, or lost its user or device (spec §6).
+        """
+        if not session_id:
+            return None
+        session = self._sessions.get(session_id)
+        if session is None:
+            return None
+        device = self.devices.get(session.device_id)
+        user = self.users.get(session.user_id)
+        if device is None or user is None or user.disabled:
+            del self._sessions[session_id]
+            return None
+        now = self._clock()
+        idle_limit = SHARED_IDLE_SECONDS if device.shared else PERSONAL_IDLE_SECONDS
+        if (
+            now - session.last_active_at > idle_limit
+            or now - session.created_at > SESSION_MAX_SECONDS
+        ):
+            del self._sessions[session_id]
+            return None
+        session.last_active_at = now
+        return session
+
+    def end_session(self, session_id: str) -> None:
+        self._sessions.pop(session_id, None)
+
+    def end_all_sessions(self) -> None:
+        self._sessions.clear()
+
+    def end_sessions_for_user(self, user_id: str) -> None:
+        for sid, session in list(self._sessions.items()):
+            if session.user_id == user_id:
+                del self._sessions[sid]
+
+    # --- one-time passwords (memory only) ---
+
+    def issue_otp(self, user_id: str, device_id: str) -> str:
+        """A fresh 6-digit OTP for this (user, device), replacing any pending one."""
+        code = generate_code(OTP_DIGITS)
+        self._pending_otps[(user_id, device_id)] = (
+            code,
+            self._clock() + OTP_TTL_SECONDS,
+        )
+        return code
+
+    def verify_otp(self, user_id: str, device_id: str, code: str) -> bool:
+        entry = self._pending_otps.get((user_id, device_id))
+        if entry is None:
+            return False
+        stored, expires_at = entry
+        if self._clock() > expires_at:
+            del self._pending_otps[(user_id, device_id)]
+            return False
+        if not secrets.compare_digest(stored, code):
+            return False
+        del self._pending_otps[(user_id, device_id)]
+        return True
+
+    # --- enrollment tokens (memory only) ---
+
+    def issue_enroll_token(self, user_id: str, client: str) -> str:
+        """Proof that this client just verified *user_id*'s PIN, valid 10 minutes."""
+        token = generate_token()
+        self._enroll_tokens[token] = (
+            user_id,
+            client,
+            self._clock() + ENROLL_TTL_SECONDS,
+        )
+        return token
+
+    def resolve_enroll_token(self, token: str | None, client: str) -> str | None:
+        if not token:
+            return None
+        entry = self._enroll_tokens.get(token)
+        if entry is None:
+            return None
+        user_id, bound_client, expires_at = entry
+        if self._clock() > expires_at:
+            del self._enroll_tokens[token]
+            return None
+        if bound_client != client:
+            return None
+        return user_id
+
+    def clear_enroll_token(self, token: str) -> None:
+        self._enroll_tokens.pop(token, None)

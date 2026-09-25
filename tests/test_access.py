@@ -518,3 +518,163 @@ class TestDevices:
         assert s.prune_devices() == 1
         assert naive.id in s.devices
         assert stale.id not in s.devices
+
+
+class TestSessions:
+    def test_session_resolves_to_its_user_and_device(self, store):
+        u = store.create_user("Ada", None, Role.owner, "1379")
+        d, _ = store.create_device("Phone", shared=False)
+        sid = store.create_session(u.id, d.id)
+        session = store.resolve_session(sid)
+        assert session.user_id == u.id
+        assert session.device_id == d.id
+
+    def test_unknown_session_resolves_to_none(self, store):
+        assert store.resolve_session("nope") is None
+        assert store.resolve_session(None) is None
+
+    def test_shared_device_idles_out_after_five_minutes(self, tmp_path):
+        clock = FakeClock()
+        s = AccessStore(
+            path=tmp_path / "access.json", clock=clock, wall_clock=FakeWallClock()
+        )
+        u = s.create_user("Ada", None, Role.owner, "1379")
+        d, _ = s.create_device("Tablet", shared=True)
+        sid = s.create_session(u.id, d.id)
+        clock.advance(299)
+        assert s.resolve_session(sid) is not None
+        clock.advance(301)
+        assert s.resolve_session(sid) is None
+
+    def test_personal_device_idles_out_after_eight_hours(self, tmp_path):
+        clock = FakeClock()
+        s = AccessStore(
+            path=tmp_path / "access.json", clock=clock, wall_clock=FakeWallClock()
+        )
+        u = s.create_user("Ada", None, Role.owner, "1379")
+        d, _ = s.create_device("Phone", shared=False)
+        sid = s.create_session(u.id, d.id)
+        clock.advance(28799)
+        assert s.resolve_session(sid) is not None
+        clock.advance(28801)
+        assert s.resolve_session(sid) is None
+
+    def test_activity_refreshes_the_idle_clock(self, tmp_path):
+        clock = FakeClock()
+        s = AccessStore(
+            path=tmp_path / "access.json", clock=clock, wall_clock=FakeWallClock()
+        )
+        u = s.create_user("Ada", None, Role.owner, "1379")
+        d, _ = s.create_device("Tablet", shared=True)
+        sid = s.create_session(u.id, d.id)
+        for _ in range(10):
+            clock.advance(200)
+            assert s.resolve_session(sid) is not None
+
+    def test_absolute_cap_ends_a_busy_session_at_a_day(self, tmp_path):
+        clock = FakeClock()
+        s = AccessStore(
+            path=tmp_path / "access.json", clock=clock, wall_clock=FakeWallClock()
+        )
+        u = s.create_user("Ada", None, Role.owner, "1379")
+        d, _ = s.create_device("Phone", shared=False)
+        sid = s.create_session(u.id, d.id)
+        for _ in range(500):
+            clock.advance(200)
+            s.resolve_session(sid)
+        assert s.resolve_session(sid) is None
+
+    def test_session_dies_with_its_user(self, store):
+        u = store.create_user("Ada", None, Role.owner, "1379")
+        d, _ = store.create_device("Phone", shared=False)
+        sid = store.create_session(u.id, d.id)
+        store.delete_user(u.id)
+        assert store.resolve_session(sid) is None
+
+    def test_session_dies_with_its_device(self, store):
+        u = store.create_user("Ada", None, Role.owner, "1379")
+        d, _ = store.create_device("Phone", shared=False)
+        sid = store.create_session(u.id, d.id)
+        store.forget_device(d.id)
+        assert store.resolve_session(sid) is None
+
+    def test_end_session_and_end_all(self, store):
+        u = store.create_user("Ada", None, Role.owner, "1379")
+        d, _ = store.create_device("Phone", shared=False)
+        s1 = store.create_session(u.id, d.id)
+        s2 = store.create_session(u.id, d.id)
+        store.end_session(s1)
+        assert store.resolve_session(s1) is None
+        assert store.resolve_session(s2) is not None
+        store.end_all_sessions()
+        assert store.resolve_session(s2) is None
+
+
+class TestOtps:
+    def test_otp_round_trip(self, store):
+        u = store.create_user("Ada", None, Role.owner, "1379")
+        d, _ = store.create_device("Phone", shared=False)
+        code = store.issue_otp(u.id, d.id)
+        assert len(code) == 6 and code.isdigit()
+        assert store.verify_otp(u.id, d.id, code) is True
+
+    def test_otp_is_single_use(self, store):
+        u = store.create_user("Ada", None, Role.owner, "1379")
+        d, _ = store.create_device("Phone", shared=False)
+        code = store.issue_otp(u.id, d.id)
+        assert store.verify_otp(u.id, d.id, code) is True
+        assert store.verify_otp(u.id, d.id, code) is False
+
+    def test_otp_expires_after_ten_minutes(self, tmp_path):
+        clock = FakeClock()
+        s = AccessStore(
+            path=tmp_path / "access.json", clock=clock, wall_clock=FakeWallClock()
+        )
+        u = s.create_user("Ada", None, Role.owner, "1379")
+        d, _ = s.create_device("Phone", shared=False)
+        code = s.issue_otp(u.id, d.id)
+        clock.advance(601)
+        assert s.verify_otp(u.id, d.id, code) is False
+
+    def test_resend_replaces_the_pending_otp(self, store):
+        u = store.create_user("Ada", None, Role.owner, "1379")
+        d, _ = store.create_device("Phone", shared=False)
+        first = store.issue_otp(u.id, d.id)
+        second = store.issue_otp(u.id, d.id)
+        assert store.verify_otp(u.id, d.id, first) is False
+        assert store.verify_otp(u.id, d.id, second) is True
+
+    def test_otp_is_bound_to_its_device(self, store):
+        u = store.create_user("Ada", None, Role.owner, "1379")
+        d1, _ = store.create_device("Phone", shared=False)
+        d2, _ = store.create_device("Laptop", shared=False)
+        code = store.issue_otp(u.id, d1.id)
+        assert store.verify_otp(u.id, d2.id, code) is False
+
+
+class TestEnrollTokens:
+    def test_enroll_token_round_trip(self, store):
+        u = store.create_user("Ada", None, Role.owner, "1379")
+        token = store.issue_enroll_token(u.id, "ip-1")
+        assert store.resolve_enroll_token(token, "ip-1") == u.id
+
+    def test_enroll_token_is_bound_to_its_client(self, store):
+        u = store.create_user("Ada", None, Role.owner, "1379")
+        token = store.issue_enroll_token(u.id, "ip-1")
+        assert store.resolve_enroll_token(token, "ip-2") is None
+
+    def test_enroll_token_expires_after_ten_minutes(self, tmp_path):
+        clock = FakeClock()
+        s = AccessStore(
+            path=tmp_path / "access.json", clock=clock, wall_clock=FakeWallClock()
+        )
+        u = s.create_user("Ada", None, Role.owner, "1379")
+        token = s.issue_enroll_token(u.id, "ip-1")
+        clock.advance(601)
+        assert s.resolve_enroll_token(token, "ip-1") is None
+
+    def test_cleared_enroll_token_stops_resolving(self, store):
+        u = store.create_user("Ada", None, Role.owner, "1379")
+        token = store.issue_enroll_token(u.id, "ip-1")
+        store.clear_enroll_token(token)
+        assert store.resolve_enroll_token(token, "ip-1") is None
