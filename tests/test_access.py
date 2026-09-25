@@ -12,6 +12,7 @@ from services.access import (
     AccessError,
     AccessStore,
     Backoff,
+    Device,
     OwnerExistsError,
     Permission,
     Role,
@@ -374,6 +375,20 @@ class TestStorePersistence:
         s.create_user("Ada", None, Role.owner, "1379")
         assert list(tmp_path.glob("*.tmp")) == []
 
+    def test_replace_failure_during_save_leaves_no_tmp_file(self, store, monkeypatch):
+        """os.replace can fail (permission error, locked destination — routine
+        on Windows); the temp file must still be cleaned up and the error
+        must still propagate to the caller rather than being swallowed."""
+        store.create_user("Ada", None, Role.owner, "1379")
+
+        def boom(*args, **kwargs):
+            raise OSError("simulated os.replace failure")
+
+        monkeypatch.setattr("services.access.os.replace", boom)
+        with pytest.raises(OSError):
+            store.create_user("Bob", None, Role.tech, "2468")
+        assert list(store.path.parent.glob("*.tmp")) == []
+
 
 class TestUsers:
     def test_second_owner_is_rejected(self, store):
@@ -481,3 +496,25 @@ class TestDevices:
         wall.advance(hours=23)
         assert s.prune_devices() == 0
         assert fresh.id in s.devices
+
+    def test_naive_timestamp_is_skipped_but_sweep_still_prunes_others(self, tmp_path):
+        """A malformed (timezone-naive) created_at must not raise TypeError and
+        abort the whole sweep; the bad record is left in place while a
+        separate, genuinely stale device is still pruned in the same call."""
+        wall = FakeWallClock()
+        s = AccessStore(
+            path=tmp_path / "access.json", clock=FakeClock(), wall_clock=wall
+        )
+        naive = Device(
+            id="naive-device",
+            token_hash="deadbeef",
+            label="Hand-edited",
+            created_at="2020-01-01T00:00:00",  # no tzinfo
+            last_seen_at="2020-01-01T00:00:00",
+        )
+        s.devices[naive.id] = naive
+        stale, _ = s.create_device("Drive-by", shared=False)
+        wall.advance(hours=25)
+        assert s.prune_devices() == 1
+        assert naive.id in s.devices
+        assert stale.id not in s.devices

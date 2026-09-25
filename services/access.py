@@ -456,10 +456,10 @@ class AccessStore:
                 json.dump(self._document(), f, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
+            os.replace(tmp, self._path)
         except Exception:
             tmp.unlink(missing_ok=True)
             raise
-        os.replace(tmp, self._path)
         self._tighten_permissions()
 
     # --- users ---
@@ -621,9 +621,10 @@ class AccessStore:
                 continue
             try:
                 created = datetime.fromisoformat(device.created_at)
-            except ValueError:
+                stale = created < cutoff
+            except (ValueError, TypeError):
                 continue
-            if created < cutoff:
+            if stale:
                 del self.devices[device.id]
                 removed += 1
         if removed:
