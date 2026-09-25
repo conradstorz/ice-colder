@@ -5,10 +5,12 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from loguru import logger
 
 from config.config_model import ConfigModel, Product
 from contracts.vending_machine import EXPECTED_SUBSYSTEMS
-from services.access import OTP_DIGITS, AccessStore, Permission
+from services.access import OTP_DIGITS, AccessStore, OwnerExistsError, Permission, Role
+from services.auth_policy import pin_problem
 from services.config_store import (
     add_product,
     delete_product,
@@ -76,6 +78,51 @@ def set_access_store(store: AccessStore | None) -> None:
     web_auth.set_access_store(store)
 
 
+display_controller = None
+
+
+def set_display_controller(display) -> None:
+    global display_controller
+    display_controller = display
+
+
+# The plaintext this process has already logged, so a page reload during
+# setup mode (GET /setup is hit on every load of the wizard) doesn't spam
+# the log with the same warning. Reset naturally when a new code replaces it.
+_last_logged_setup_code: str | None = None
+
+
+def ensure_setup_mode() -> None:
+    """Keep the setup code alive, logged and on the display while the store
+    has no owner; clear the display once one exists (spec §3.1).
+
+    Safe to call on every request that reaches /setup: begin_setup() is
+    idempotent while a code is live, and both the log line and the display
+    publish are gated so they happen once per code, not once per call.
+    """
+    global _last_logged_setup_code
+    if access_store is None or access_store.corrupt:
+        return
+    if not access_store.setup_mode:
+        if display_controller is not None:
+            display_controller.clear_setup_code()
+        return
+
+    code = access_store.begin_setup()
+    if display_controller is not None:
+        # show_setup_code() logs the plaintext itself (services/display_
+        # controller.py), so when a display is wired that single call is
+        # both the log line and the display publish; the setup_code check
+        # keeps it to once per code rather than once per /setup load.
+        if display_controller.setup_code != code:
+            display_controller.show_setup_code(code)
+    elif _last_logged_setup_code != code:
+        # No display wired (e.g. before main.py attaches one) — this is the
+        # only place the plaintext would otherwise land, so log it directly.
+        _last_logged_setup_code = code
+        logger.warning(f"Setup code: {code[:4]} {code[4:]}")
+
+
 # Listed ahead of require_htmx on every mutating route, so an unauthenticated
 # cross-site POST is turned away by the session check before the CSRF guard
 # even runs. Both must pass to reach a handler; the order is intentional.
@@ -119,6 +166,36 @@ def tail(file_path: Path, lines: int = 50) -> list[str]:
 
 def attach_routes(app: FastAPI, templates: Jinja2Templates):
     public = APIRouter()
+
+    # Runs before every request (module-level `access_store`/`corrupt` are
+    # read live, so this reflects whatever set_access_store() last set).
+    # /static/* is excluded — it's a Starlette Mount that can't take
+    # dependencies, and the wizard and error page both need it unstyled.
+    @app.middleware("http")
+    async def access_gate(request: Request, call_next):
+        path = request.url.path
+        if path.startswith("/static/"):
+            return await call_next(request)
+
+        store = access_store
+        if store is not None:
+            if store.corrupt:
+                # Spec §6: a corrupt access file must never silently become
+                # an open setup wizard, so every path — /setup included —
+                # gets the same error page instead of just this one route
+                # refusing to load.
+                return HTMLResponse(
+                    "<h1>Access file is corrupt</h1>"
+                    "<p>The machine's access file could not be read, so the "
+                    "dashboard is unavailable until an operator repairs or "
+                    "removes it at the machine. The vending machine itself "
+                    "keeps running.</p>",
+                    status_code=503,
+                )
+            if store.setup_mode and path not in ("/setup", "/setup/codes"):
+                return RedirectResponse("/setup", status_code=303)
+
+        return await call_next(request)
 
     def _keypad(
         request: Request,
@@ -406,6 +483,125 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             access_store.end_session(session_id)
         resp = HTMLResponse("", headers={"HX-Redirect": "/login"})
         web_auth.clear_cookie(resp, web_auth.SESSION_COOKIE)
+        return resp
+
+    def _setup_page(
+        request: Request,
+        *,
+        error: str | None = None,
+        form: dict | None = None,
+        status_code: int = 200,
+        headers: dict | None = None,
+    ):
+        return templates.TemplateResponse(
+            "setup.html",
+            {
+                "request": request,
+                "error": error,
+                "form": form or {"name": "", "email": ""},
+                "transfer": access_store.pending_transfer is not None,
+            },
+            status_code=status_code,
+            headers=headers or {},
+        )
+
+    @public.get("/setup", response_class=HTMLResponse)
+    async def setup_page(request: Request):
+        if access_store is None:
+            raise HTTPException(status_code=503, detail="Access store not loaded")
+        ensure_setup_mode()
+        # Nothing to do here once an owner exists and no transfer is live —
+        # send the visitor on to the normal login/dashboard flow instead of
+        # showing a wizard with no code that would accept.
+        if not access_store.setup_mode and access_store.pending_transfer is None:
+            return RedirectResponse("/", status_code=303)
+        return _setup_page(request)
+
+    @public.post(
+        "/setup", response_class=HTMLResponse, dependencies=[Depends(require_htmx)]
+    )
+    async def setup_submit(
+        request: Request,
+        setup_code: str = Form(...),
+        name: str = Form(...),
+        email: str = Form(""),
+        pin: str = Form(...),
+        pin_confirm: str = Form(...),
+        shared_device: str | None = Form(None),
+    ):
+        if access_store is None:
+            raise HTTPException(status_code=503, detail="Access store not loaded")
+
+        # Task 19 completes ownership transfer through this same handler:
+        # while a transfer is pending, the code being checked is the
+        # transfer code, not the setup code, and back-off is tracked
+        # separately so a stranger guessing transfer codes can't also burn
+        # down the setup code's budget or vice versa.
+        in_transfer = access_store.pending_transfer is not None
+        kind = "transfer" if in_transfer else "setup"
+        form = {"name": name, "email": email}
+        client = web_auth.client_key(request)
+
+        remaining = web_auth.backoff.check(kind, kind, client)
+        if remaining is not None:
+            return _setup_page(
+                request,
+                error=f"Too many attempts. Try again in {int(remaining) + 1} s.",
+                form=form,
+                status_code=429,
+                headers={"Retry-After": str(int(remaining) + 1)},
+            )
+
+        code_ok = (
+            access_store.verify_transfer_code(setup_code)
+            if in_transfer
+            else access_store.verify_setup_code(setup_code)
+        )
+        if not code_ok:
+            web_auth.backoff.record_failure(kind, kind, client)
+            return _setup_page(request, error="That code was not accepted.", form=form)
+        web_auth.backoff.record_success(kind, kind, client)
+
+        # A wrong code above is the one thing worth slowing a stranger down
+        # for; a mismatched confirmation or a weak PIN is the owner's own
+        # typo at the machine, so neither touches back-off (spec's ordering).
+        if pin != pin_confirm:
+            return _setup_page(request, error="PINs do not match.", form=form)
+
+        problem = pin_problem(pin)
+        if problem:
+            return _setup_page(request, error=problem, form=form)
+
+        shared = shared_device is not None
+        try:
+            if in_transfer:
+                owner = access_store.complete_transfer(name, email or None, pin)
+            else:
+                owner = access_store.create_user(name, email or None, Role.owner, pin)
+        except OwnerExistsError:
+            # Two racing step-1 submissions: the store enforces one owner
+            # and refuses the second, so this must read as an ordinary
+            # error, never a 500 (spec §3.1).
+            return _setup_page(
+                request, error="This machine already has an owner.", form=form
+            )
+
+        device, token = access_store.create_device(f"{name}'s device", shared=shared)
+        access_store.trust_device(device.id, owner.id)
+        access_store.record_login(owner.id)
+        session_id = access_store.create_session(owner.id, device.id)
+
+        resp = HTMLResponse("", headers={"HX-Redirect": "/setup/codes"})
+        web_auth.set_cookie(
+            resp, request, web_auth.SESSION_COOKIE, session_id, max_age=None
+        )
+        web_auth.set_cookie(
+            resp,
+            request,
+            web_auth.DEVICE_COOKIE,
+            token,
+            max_age=web_auth.DEVICE_COOKIE_MAX_AGE,
+        )
         return resp
 
     router = APIRouter()

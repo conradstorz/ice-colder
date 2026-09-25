@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ "Take ownership" if transfer else "Set up this machine" }} — Vending Machine</title>
+  <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-50 text-gray-900 font-sans min-h-screen flex items-center justify-center">
+  <main class="w-full max-w-sm p-6 space-y-4">
+    <h1 class="text-xl font-semibold">
+      {% if transfer %}Take ownership{% else %}Set up this machine{% endif %}
+    </h1>
+
+    {% if transfer %}
+      <p class="text-sm text-gray-600">
+        Enter the transfer code the outgoing owner gave you, then choose
+        your own name, email and PIN. The current owner keeps control of
+        the machine until this completes.
+      </p>
+    {% else %}
+      <p class="text-sm text-gray-600">
+        This machine has no owner yet. Someone standing at the machine can
+        read the setup code from the customer display or the startup log
+        (<code>docker logs</code>) — a remote visitor cannot see it. Enter
+        it below, then choose your name, email and a PIN to claim the
+        machine.
+      </p>
+    {% endif %}
+
+    <form hx-post="/setup" hx-target="body" hx-swap="outerHTML" class="space-y-3">
+      <div>
+        <label for="setup_code" class="block text-sm font-medium text-gray-700">
+          {{ "Transfer code" if transfer else "Setup code" }}
+        </label>
+        <input type="text" id="setup_code" name="setup_code" inputmode="numeric"
+               pattern="[0-9]*" autocomplete="off" required
+               class="w-full px-4 py-4 text-2xl tracking-widest text-center border border-gray-300 rounded-xl">
+      </div>
+
+      <div>
+        <label for="name" class="block text-sm font-medium text-gray-700">Your name</label>
+        <input type="text" id="name" name="name" required value="{{ form.name }}"
+               class="w-full px-4 py-3 border border-gray-300 rounded-xl">
+      </div>
+
+      <div>
+        <label for="email" class="block text-sm font-medium text-gray-700">Email</label>
+        <input type="email" id="email" name="email" value="{{ form.email }}"
+               class="w-full px-4 py-3 border border-gray-300 rounded-xl">
+      </div>
+
+      <div>
+        <label for="pin" class="block text-sm font-medium text-gray-700">Choose a PIN</label>
+        <input type="password" id="pin" name="pin" inputmode="numeric" required
+               autocomplete="new-password"
+               class="w-full px-4 py-3 border border-gray-300 rounded-xl">
+      </div>
+
+      <div>
+        <label for="pin_confirm" class="block text-sm font-medium text-gray-700">Confirm PIN</label>
+        <input type="password" id="pin_confirm" name="pin_confirm" inputmode="numeric" required
+               autocomplete="new-password"
+               class="w-full px-4 py-3 border border-gray-300 rounded-xl">
+      </div>
+
+      <label class="flex items-center gap-2 text-sm text-gray-700">
+        <input type="checkbox" id="shared_device" name="shared_device" value="true">
+        This browser is the machine's own tablet
+      </label>
+
+      <button type="submit" class="w-full py-4 bg-blue-600 text-white rounded-xl">Continue</button>
+    </form>
+
+    {% if error %}<p class="text-red-600 text-sm" role="alert">{{ error }}</p>{% endif %}
+  </main>
+</body>
+</html>

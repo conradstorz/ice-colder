@@ -8,6 +8,7 @@ from config.config_model import ConfigModel
 from contracts.vending_machine import FaultCode
 from controller.vmc import VMC
 from services.access import ROLE_PERMISSIONS, AccessStore, Permission, Role, User
+from services.display_controller import DisplayController
 from services.inventory_manager import InventoryManager
 from web_interface import auth as web_auth
 from web_interface.server import app
@@ -1406,3 +1407,265 @@ class TestEnrollment:
         resp = c.post("/login", data={"user_id": owner.id, "pin": "1379"})
         assert resp.headers["hx-redirect"] == "/"
         assert c.cookies.get("vmc_session")
+
+
+class TestSetupWizard:
+    """Setup mode: a fresh store has no owner, so every route except /setup
+    (and /static) is gated behind the wizard (spec §3.1)."""
+
+    @pytest.fixture
+    def fresh_store(self, tmp_path):
+        """A ConfigModel, an AccessStore with no owner yet, and a real
+        DisplayController (no MQTT attached, so publishing is a no-op) wired
+        into routes — the state the setup-mode gate and wizard run against.
+
+        The back-off subject for this route is the fixed string "setup"
+        (there is no user yet to key on), so unlike the per-user PIN
+        back-off tested elsewhere, the (kind, subject, client) triple is
+        identical across every test in this class — the shared
+        `web_auth.backoff` singleton must be cleared or one test's failures
+        would 429 the next.
+        """
+        web_auth.backoff._failures.clear()
+        web_auth.backoff._budget.clear()
+
+        cfg = ConfigModel()
+        store = AccessStore(path=tmp_path / "access.json")
+        display = DisplayController()
+
+        routes.set_config_object(cfg)
+        routes.set_access_store(store)
+        routes.set_display_controller(display)
+
+        yield cfg, store, display
+
+        routes.set_access_store(None)
+        routes.set_display_controller(None)
+        web_auth.backoff._failures.clear()
+        web_auth.backoff._budget.clear()
+        web_auth.backoff.set_trusted_proxies([])
+
+    @pytest.fixture
+    def anon(self, fresh_store):
+        c = TestClient(app, follow_redirects=False)
+        c.headers["HX-Request"] = "true"
+        yield c
+        c.close()
+
+    @pytest.mark.parametrize(
+        "path", ["/", "/status", "/inventory", "/login", "/health"]
+    )
+    def test_setup_mode_redirects_every_route_to_setup(self, anon, path):
+        resp = anon.get(path)
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/setup"
+
+    def test_setup_page_itself_answers_200(self, anon):
+        resp = anon.get("/setup")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert "set up" in resp.text.lower()
+
+    def test_setup_code_is_on_the_display_and_matches_the_store(
+        self, anon, fresh_store
+    ):
+        _cfg, store, display = fresh_store
+        anon.get("/setup")
+        assert store.pending_setup_code is not None
+        assert display.setup_code == store.pending_setup_code
+
+    def test_wrong_code_creates_no_owner(self, anon, fresh_store):
+        _cfg, store, _display = fresh_store
+        anon.get("/setup")
+        resp = anon.post(
+            "/setup",
+            data={
+                "setup_code": "00000000",
+                "name": "Ada",
+                "email": "ada@example.com",
+                "pin": "2468",
+                "pin_confirm": "2468",
+            },
+        )
+        assert resp.status_code == 200
+        assert store.owner() is None
+        assert "not accepted" in resp.text.lower()
+
+    def test_repeated_wrong_codes_reach_429(self, anon, fresh_store):
+        anon.get("/setup")
+        payload = {
+            "setup_code": "00000000",
+            "name": "Ada",
+            "email": "a@example.com",
+            "pin": "2468",
+            "pin_confirm": "2468",
+        }
+        for _ in range(3):
+            anon.post("/setup", data=payload)
+        resp = anon.post("/setup", data=payload)
+        assert resp.status_code == 429
+        assert int(resp.headers["retry-after"]) >= 1
+
+    def test_right_code_creates_the_owner_and_completes_step_one(
+        self, anon, fresh_store
+    ):
+        _cfg, store, _display = fresh_store
+        anon.get("/setup")
+        code = store.pending_setup_code
+        resp = anon.post(
+            "/setup",
+            data={
+                "setup_code": code,
+                "name": "Ada",
+                "email": "ada@example.com",
+                "pin": "2468",
+                "pin_confirm": "2468",
+                "shared_device": "true",
+            },
+        )
+        assert resp.headers["hx-redirect"] == "/setup/codes"
+        assert resp.cookies.get("vmc_session")
+        assert resp.cookies.get("vmc_device")
+
+        owner = store.owner()
+        assert owner is not None
+        assert owner.name == "Ada"
+        device = next(iter(store.devices.values()))
+        assert device.shared is True
+        assert owner.id in device.trusted_user_ids
+
+    def test_pin_failing_policy_is_rejected_with_the_reason(self, anon, fresh_store):
+        _cfg, store, _display = fresh_store
+        anon.get("/setup")
+        code = store.pending_setup_code
+        resp = anon.post(
+            "/setup",
+            data={
+                "setup_code": code,
+                "name": "Ada",
+                "email": "ada@example.com",
+                "pin": "1111",
+                "pin_confirm": "1111",
+            },
+        )
+        assert resp.status_code == 200
+        assert store.owner() is None
+        assert "same digit" in resp.text.lower()
+
+    def test_mismatched_confirmation_is_rejected(self, anon, fresh_store):
+        _cfg, store, _display = fresh_store
+        anon.get("/setup")
+        code = store.pending_setup_code
+        resp = anon.post(
+            "/setup",
+            data={
+                "setup_code": code,
+                "name": "Ada",
+                "email": "ada@example.com",
+                "pin": "2468",
+                "pin_confirm": "1234",
+            },
+        )
+        assert resp.status_code == 200
+        assert store.owner() is None
+        assert "match" in resp.text.lower()
+
+    def test_lost_step_one_response_recovered_via_login_and_enroll(
+        self, anon, fresh_store
+    ):
+        """The setup code stays valid as an enrollment code until Done
+        (Task 15), so a second browser that never saw the step-1 response
+        can still sign in and enroll with it (spec §3.1)."""
+        _cfg, store, _display = fresh_store
+        anon.get("/setup")
+        code = store.pending_setup_code
+        anon.post(
+            "/setup",
+            data={
+                "setup_code": code,
+                "name": "Ada",
+                "email": "ada@example.com",
+                "pin": "2468",
+                "pin_confirm": "2468",
+            },
+        )
+        owner = store.owner()
+        assert owner is not None
+
+        second = TestClient(app, follow_redirects=False)
+        second.headers["HX-Request"] = "true"
+        login_resp = second.post("/login", data={"user_id": owner.id, "pin": "2468"})
+        assert login_resp.status_code == 200
+        assert second.cookies.get("vmc_enroll")
+
+        enroll_resp = second.post("/login/enroll", data={"code": code})
+        assert enroll_resp.headers["hx-redirect"] == "/"
+        assert second.cookies.get("vmc_session")
+        second.close()
+
+    def test_post_without_htmx_header_is_403(self, fresh_store):
+        c = TestClient(app, follow_redirects=False)
+        resp = c.post(
+            "/setup",
+            data={
+                "setup_code": "00000000",
+                "name": "Ada",
+                "email": "a@example.com",
+                "pin": "2468",
+                "pin_confirm": "2468",
+            },
+        )
+        assert resp.status_code == 403
+        c.close()
+
+    def test_owner_race_is_caught_and_re_rendered_not_500(self, anon, fresh_store):
+        """Two racing step-1 submissions: the store rejects the second
+        owner, and the route must turn that into an ordinary error page,
+        never a 500 (spec §3.1)."""
+        _cfg, store, _display = fresh_store
+        anon.get("/setup")
+        code = store.pending_setup_code
+        store.create_user("First", "first@example.com", Role.owner, "2468")
+
+        resp = anon.post(
+            "/setup",
+            data={
+                "setup_code": code,
+                "name": "Second",
+                "email": "second@example.com",
+                "pin": "3690",
+                "pin_confirm": "3690",
+            },
+        )
+        assert resp.status_code == 200
+        assert "hx-redirect" not in {k.lower() for k in resp.headers}
+        owners = [u for u in store.users.values() if u.role == Role.owner]
+        assert len(owners) == 1
+        assert owners[0].name == "First"
+
+
+class TestCorruptAccessFile:
+    """A corrupt access.json must never silently become an open setup
+    wizard (spec §6) — every route answers 503 instead."""
+
+    @pytest.fixture
+    def corrupt(self, tmp_path):
+        path = tmp_path / "access.json"
+        path.write_text("{not valid json", encoding="utf-8")
+        store = AccessStore(path=path)
+        assert store.corrupt
+
+        routes.set_config_object(ConfigModel())
+        routes.set_access_store(store)
+
+        c = TestClient(app, follow_redirects=False)
+        yield c
+
+        routes.set_access_store(None)
+        c.close()
+
+    @pytest.mark.parametrize("path", ["/", "/setup", "/login", "/status"])
+    def test_every_route_serves_503_with_corrupt_in_body(self, corrupt, path):
+        resp = corrupt.get(path)
+        assert resp.status_code == 503
+        assert "corrupt" in resp.text.lower()
