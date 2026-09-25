@@ -153,12 +153,12 @@ class TestInventoryEndpoints:
         assert "Test Ice" in resp.text
 
     def test_edit_form(self, client):
-        """Edit form for a product created via the dashboard."""
+        """Catalog edit form for a product created via the dashboard."""
         client.post(
             "/inventory/add",
             data={"sku": "EDIT-1", "name": "Editable", "price": "1.50"},
         )
-        resp = client.get("/inventory/edit/EDIT-1")
+        resp = client.get("/inventory/edit/EDIT-1/catalog")
         assert resp.status_code == 200
         assert "Editable" in resp.text
 
@@ -212,7 +212,7 @@ class TestInventoryEndpoints:
                 "slot": "9",
             },
         )
-        resp = client.get("/inventory/edit/EDIT-2")
+        resp = client.get("/inventory/edit/EDIT-2/placement")
         assert resp.status_code == 200
         assert 'name="slot"' in resp.text
         assert 'value="9"' in resp.text
@@ -223,8 +223,8 @@ class TestInventoryEndpoints:
             data={"sku": "UPD-1", "name": "Updatable", "price": "1.50", "slot": "1"},
         )
         resp = client.post(
-            "/inventory/update/UPD-1",
-            data={"name": "Updatable", "price": "1.50", "slot": "6"},
+            "/inventory/update/UPD-1/placement",
+            data={"slot": "6", "inventory_count": "0"},
         )
         assert resp.status_code == 200
         updated = next(p for p in routes.config.products if p.sku == "UPD-1")
@@ -249,8 +249,8 @@ class TestInventoryEndpoints:
             data={"sku": "KIND-2", "name": "Flexible", "price": "1.00"},
         )
         resp = client.post(
-            "/inventory/update/KIND-2",
-            data={"name": "Flexible", "price": "1.00", "slot": "0", "kind": "ice"},
+            "/inventory/update/KIND-2/catalog",
+            data={"name": "Flexible", "price": "1.00", "kind": "ice"},
         )
         assert resp.status_code == 200
         updated = next(p for p in routes.config.products if p.sku == "KIND-2")
@@ -269,6 +269,183 @@ class TestInventoryEndpoints:
         resp = client.get("/inventory/copy/KIND-3")
         assert resp.status_code == 200
         assert 'value="water" selected' in resp.text
+
+    def test_old_single_edit_form_route_404s(self, client):
+        client.post(
+            "/inventory/add",
+            data={"sku": "OLD-1", "name": "Old Form", "price": "1.00"},
+        )
+        resp = client.get("/inventory/edit/OLD-1")
+        assert resp.status_code == 404
+
+    def test_old_single_update_route_404s(self, client):
+        client.post(
+            "/inventory/add",
+            data={"sku": "OLD-2", "name": "Old Form", "price": "1.00"},
+        )
+        resp = client.post(
+            "/inventory/update/OLD-2",
+            data={"name": "Old Form", "price": "1.00", "slot": "0"},
+        )
+        assert resp.status_code == 404
+
+    def test_catalog_edit_form(self, client):
+        client.post(
+            "/inventory/add",
+            data={"sku": "CAT-1", "name": "Catalog Item", "price": "2.00"},
+        )
+        resp = client.get("/inventory/edit/CAT-1/catalog")
+        assert resp.status_code == 200
+        assert "Catalog Item" in resp.text
+
+    def test_catalog_post_changes_name_price_kind(self, client):
+        client.post(
+            "/inventory/add",
+            data={"sku": "CAT-2", "name": "Old Name", "price": "1.00"},
+        )
+        resp = client.post(
+            "/inventory/update/CAT-2/catalog",
+            data={"name": "New Name", "price": "3.50", "kind": "water"},
+        )
+        assert resp.status_code == 200
+        updated = next(p for p in routes.config.products if p.sku == "CAT-2")
+        assert updated.name == "New Name"
+        assert updated.price == 3.50
+        assert updated.kind == "water"
+
+    def test_placement_edit_form(self, client):
+        client.post(
+            "/inventory/add",
+            data={"sku": "PLC-1", "name": "Placed Item", "price": "2.00", "slot": "4"},
+        )
+        resp = client.get("/inventory/edit/PLC-1/placement")
+        assert resp.status_code == 200
+        assert 'name="slot"' in resp.text
+        assert 'value="4"' in resp.text
+
+    def test_placement_post_changes_slot_count_and_tracked(self, client, wired):
+        _cfg, _vmc, inv, _store = wired
+        client.post(
+            "/inventory/add",
+            data={"sku": "PLC-2", "name": "Placed Item", "price": "2.00", "slot": "1"},
+        )
+        resp = client.post(
+            "/inventory/update/PLC-2/placement",
+            data={
+                "slot": "8",
+                "inventory_count": "15",
+                "track_inventory": "on",
+            },
+        )
+        assert resp.status_code == 200
+        updated = next(p for p in routes.config.products if p.sku == "PLC-2")
+        assert updated.slot == 8
+        assert inv.get_count("PLC-2") == 15
+        assert inv.is_tracked("PLC-2") is True
+
+    def test_placement_post_unchecked_tracking_clears_flag(self, client, wired):
+        _cfg, _vmc, inv, _store = wired
+        client.post(
+            "/inventory/add",
+            data={"sku": "PLC-3", "name": "Placed Item", "price": "2.00", "slot": "2"},
+        )
+        client.post(
+            "/inventory/update/PLC-3/placement",
+            data={"slot": "2", "inventory_count": "5", "track_inventory": "on"},
+        )
+        assert inv.is_tracked("PLC-3") is True
+        resp = client.post(
+            "/inventory/update/PLC-3/placement",
+            data={"slot": "2", "inventory_count": "5"},
+        )
+        assert resp.status_code == 200
+        assert inv.is_tracked("PLC-3") is False
+
+    def test_placement_post_cannot_change_name_or_price(self, client, wired):
+        """The whole point of the split: a placement POST must not smuggle a
+        catalog change through, regardless of what an attacker's form body
+        contains — fields the placement form doesn't own are not applied."""
+        _cfg, _vmc, inv, _store = wired
+        client.post(
+            "/inventory/add",
+            data={"sku": "PLC-4", "name": "Original", "price": "9.99", "slot": "3"},
+        )
+        resp = client.post(
+            "/inventory/update/PLC-4/placement",
+            data={
+                "slot": "5",
+                "inventory_count": "2",
+                "name": "Hacked Name",
+                "price": "0.01",
+            },
+        )
+        assert resp.status_code == 200
+        updated = next(p for p in routes.config.products if p.sku == "PLC-4")
+        assert updated.slot == 5
+        assert updated.name == "Original"
+        assert updated.price == 9.99
+
+
+class TestCatalogPlacementPermissions:
+    """A loader restocks (placement) but must never touch price/name/kind
+    (catalog). A tech behaves the same as a loader here."""
+
+    @pytest.mark.parametrize("role", [Role.loader, Role.tech])
+    def test_placement_form_and_post_allowed(self, login_as, wired, role):
+        _cfg, _vmc, inv, _store = wired
+        owner = login_as(Role.owner)
+        owner.post(
+            "/inventory/add",
+            data={
+                "sku": f"PERM-{role.value}",
+                "name": "Item",
+                "price": "5.00",
+                "slot": "1",
+            },
+        )
+
+        worker = login_as(role)
+        get_resp = worker.get(f"/inventory/edit/PERM-{role.value}/placement")
+        assert get_resp.status_code == 200
+
+        post_resp = worker.post(
+            f"/inventory/update/PERM-{role.value}/placement",
+            data={"slot": "2", "inventory_count": "3", "track_inventory": "on"},
+        )
+        assert post_resp.status_code == 200
+        updated = next(
+            p for p in routes.config.products if p.sku == f"PERM-{role.value}"
+        )
+        assert updated.slot == 2
+        assert updated.price == 5.00
+        assert inv.get_count(f"PERM-{role.value}") == 3
+
+    @pytest.mark.parametrize("role", [Role.loader, Role.tech])
+    def test_catalog_form_and_post_forbidden_price_unchanged(
+        self, login_as, wired, role
+    ):
+        _cfg, _vmc, _inv, _store = wired
+        owner = login_as(Role.owner)
+        owner.post(
+            "/inventory/add",
+            data={"sku": f"NOPE-{role.value}", "name": "Item", "price": "5.00"},
+        )
+
+        worker = login_as(role)
+        get_resp = worker.get(f"/inventory/edit/NOPE-{role.value}/catalog")
+        assert get_resp.status_code == 403
+
+        post_resp = worker.post(
+            f"/inventory/update/NOPE-{role.value}/catalog",
+            data={"name": "Hacked", "price": "0.01", "kind": "water"},
+        )
+        assert post_resp.status_code == 403
+
+        unchanged = next(
+            p for p in routes.config.products if p.sku == f"NOPE-{role.value}"
+        )
+        assert unchanged.price == 5.00
+        assert unchanged.name == "Item"
 
 
 class TestConfigEndpoints:
@@ -825,7 +1002,8 @@ class TestCsrfGuard:
             "/inventory/add",
             "/faults/PAY-104/clear",
             "/action/reset",
-            "/inventory/update/X",
+            "/inventory/update/X/catalog",
+            "/inventory/update/X/placement",
             "/inventory/delete/X",
         ],
     )
@@ -833,7 +1011,14 @@ class TestCsrfGuard:
         resp = client.post(
             path,
             headers={"HX-Request": ""},
-            data={"sku": "X", "name": "n", "price": "1", "slot": "0", "kind": "other"},
+            data={
+                "sku": "X",
+                "name": "n",
+                "price": "1",
+                "slot": "0",
+                "kind": "other",
+                "inventory_count": "0",
+            },
         )
         assert resp.status_code == 403
         assert "HTMX" in resp.text

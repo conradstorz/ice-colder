@@ -9,7 +9,12 @@ from fastapi.templating import Jinja2Templates
 from config.config_model import ConfigModel, Product
 from contracts.vending_machine import EXPECTED_SUBSYSTEMS
 from services.access import OTP_DIGITS, AccessStore, Permission
-from services.config_store import add_product, delete_product, update_product
+from services.config_store import (
+    add_product,
+    delete_product,
+    save_config,
+    update_product,
+)
 from services.fsm_control import perform_command
 from services.health_monitor import HealthMonitor
 from services.mailer import send_email
@@ -685,34 +690,101 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         )
 
     @router.get(
-        "/inventory/edit/{sku}",
+        "/inventory/edit/{sku}/catalog",
         response_class=HTMLResponse,
         dependencies=[Depends(web_auth.require(Permission.edit_catalog))],
     )
-    async def edit_inventory_item(request: Request, sku: str):
+    async def edit_inventory_catalog(request: Request, sku: str):
         product = next((p for p in config.products if p.sku == sku), None)
         return templates.TemplateResponse(
-            "partials/inventory_edit_form.html",
+            "partials/inventory_catalog_form.html",
             web_auth.template_context(request, product=product),
         )
 
     @router.post(
-        "/inventory/update/{sku}",
+        "/inventory/update/{sku}/catalog",
         response_class=HTMLResponse,
         dependencies=[
             Depends(web_auth.require(Permission.edit_catalog)),
             Depends(require_htmx),
         ],
     )
-    async def update_inventory_item(
+    async def update_inventory_catalog(
         request: Request,
         sku: str,
         name: str = Form(...),
         price: float = Form(...),
-        slot: int = Form(...),
         kind: str = Form("other"),
     ):
-        update_product(config, sku, name, price, slot=slot, kind=kind)
+        # slot=None leaves the stored slot untouched (services/config_store.py
+        # update_product) — this endpoint owns name/price/kind only.
+        update_product(config, sku, name, price, slot=None, kind=kind)
+
+        return templates.TemplateResponse(
+            "partials/inventory_table.html",
+            web_auth.template_context(
+                request, products=config.products, locked=_locked_skus()
+            ),
+        )
+
+    def _inventory_count(product: Product) -> int:
+        if inventory_manager:
+            return inventory_manager.get_count(product.sku)
+        return product.inventory_count
+
+    def _is_tracked(product: Product) -> bool:
+        if inventory_manager:
+            return inventory_manager.is_tracked(product.sku)
+        return product.track_inventory
+
+    @router.get(
+        "/inventory/edit/{sku}/placement",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.edit_placement))],
+    )
+    async def edit_inventory_placement(request: Request, sku: str):
+        product = next((p for p in config.products if p.sku == sku), None)
+        return templates.TemplateResponse(
+            "partials/inventory_placement_form.html",
+            web_auth.template_context(
+                request,
+                product=product,
+                inventory_count=_inventory_count(product) if product else 0,
+                tracked=_is_tracked(product) if product else False,
+            ),
+        )
+
+    @router.post(
+        "/inventory/update/{sku}/placement",
+        response_class=HTMLResponse,
+        dependencies=[
+            Depends(web_auth.require(Permission.edit_placement)),
+            Depends(require_htmx),
+        ],
+    )
+    async def update_inventory_placement(
+        request: Request,
+        sku: str,
+        slot: int = Form(...),
+        inventory_count: int = Form(...),
+        track_inventory: str | None = Form(None),
+    ):
+        product = next((p for p in config.products if p.sku == sku), None)
+        tracked = track_inventory is not None
+        if product:
+            # This endpoint owns slot/count/tracking only — pass the
+            # product's own stored name/price/kind through unchanged so a
+            # placement POST can never smuggle a catalog change, regardless
+            # of what a hostile form body contains.
+            update_product(
+                config, sku, product.name, product.price, slot=slot, kind=None
+            )
+            if inventory_manager:
+                inventory_manager.add_sku(sku, inventory_count, tracked=tracked)
+            else:
+                product.inventory_count = inventory_count
+                product.track_inventory = tracked
+                save_config(config)
 
         return templates.TemplateResponse(
             "partials/inventory_table.html",
