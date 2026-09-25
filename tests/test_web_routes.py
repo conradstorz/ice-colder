@@ -1007,3 +1007,129 @@ class TestLogin:
         assert resp.status_code == 303
         assert resp.headers["location"] == "/setup"
         routes.set_access_store(None)
+
+
+class TestEnrollment:
+    @pytest.fixture
+    def public(self, tmp_path):
+        from services.access import AccessStore, Role
+        from web_interface import auth as web_auth
+
+        cfg = ConfigModel()
+        store = AccessStore(path=tmp_path / "access.json")
+        owner = store.create_user("Ada", "ada@example.com", Role.owner, "1379")
+        store.generate_emergency_codes()
+        routes.set_config_object(cfg)
+        routes.set_access_store(store)
+        with TestClient(app, follow_redirects=False) as c:
+            c.headers["HX-Request"] = "true"
+            yield c, store, owner, cfg
+        routes.set_access_store(None)
+        web_auth.backoff.set_trusted_proxies([])
+
+    def test_enrollment_issues_a_device_cookie_immediately(self, public):
+        c, store, owner, _ = public
+        c.post("/login", data={"user_id": owner.id, "pin": "1379"})
+        assert c.cookies.get("vmc_device")
+        assert len(store.devices) == 1
+
+    def test_emergency_code_enrolls_and_logs_in(self, public):
+        c, store, owner, _ = public
+        codes = store.generate_emergency_codes()
+        c.post("/login", data={"user_id": owner.id, "pin": "1379"})
+        resp = c.post("/login/enroll", data={"code": codes[0]})
+        assert resp.headers["hx-redirect"] == "/"
+        assert c.cookies.get("vmc_session")
+        device = next(iter(store.devices.values()))
+        assert owner.id in device.trusted_user_ids
+        assert store.unused_emergency_code_count() == 19
+
+    def test_emergency_code_works_with_no_smtp_configured(self, public):
+        c, store, owner, cfg = public
+        assert cfg.communication.email_gateway.is_configured is False
+        codes = store.generate_emergency_codes()
+        c.post("/login", data={"user_id": owner.id, "pin": "1379"})
+        assert (
+            c.post("/login/enroll", data={"code": codes[0]}).headers["hx-redirect"]
+            == "/"
+        )
+
+    def test_a_used_emergency_code_is_refused(self, public):
+        c, store, owner, _ = public
+        codes = store.generate_emergency_codes()
+        c.post("/login", data={"user_id": owner.id, "pin": "1379"})
+        c.post("/login/enroll", data={"code": codes[0]})
+        c.cookies.delete("vmc_session")
+        c.post("/login", data={"user_id": owner.id, "pin": "1379"})
+        resp = c.post("/login/enroll", data={"code": codes[0]})
+        assert "hx-redirect" not in {k.lower() for k in resp.headers}
+
+    def test_otp_path_with_a_stubbed_mailer(self, public, monkeypatch):
+        c, store, owner, cfg = public
+        cfg.communication.email_gateway.smtp_server = "smtp.real.local"
+        sent = {}
+
+        async def fake_send_email(gateway, to, subject, body):
+            sent["to"] = to
+            sent["body"] = body
+            return True
+
+        monkeypatch.setattr(routes, "send_email", fake_send_email)
+        c.post("/login", data={"user_id": owner.id, "pin": "1379"})
+        page = c.post("/login/enroll/send", data={})
+        assert page.status_code == 200
+        assert sent["to"] == "ada@example.com"
+        code = "".join(ch for ch in sent["body"] if ch.isdigit())[-6:]
+        resp = c.post("/login/enroll", data={"code": code})
+        assert resp.headers["hx-redirect"] == "/"
+
+    def test_smtp_failure_tells_the_user_to_use_an_emergency_code(
+        self, public, monkeypatch
+    ):
+        c, store, owner, cfg = public
+        cfg.communication.email_gateway.smtp_server = "smtp.real.local"
+
+        async def fake_send_email(gateway, to, subject, body):
+            return False
+
+        monkeypatch.setattr(routes, "send_email", fake_send_email)
+        c.post("/login", data={"user_id": owner.id, "pin": "1379"})
+        page = c.post("/login/enroll/send", data={})
+        assert "emergency code" in page.text.lower()
+
+    def test_wrong_code_backs_off_with_429(self, public):
+        c, store, owner, _ = public
+        c.post("/login", data={"user_id": owner.id, "pin": "1379"})
+        for _ in range(3):
+            c.post("/login/enroll", data={"code": "00000000"})
+        resp = c.post("/login/enroll", data={"code": "00000000"})
+        assert resp.status_code == 429
+        assert int(resp.headers["retry-after"]) >= 1
+
+    def test_enroll_without_a_valid_enroll_cookie_is_refused(self, public):
+        c, store, owner, _ = public
+        codes = store.generate_emergency_codes()
+        resp = c.post("/login/enroll", data={"code": codes[0]})
+        assert resp.status_code in (401, 403)
+        assert not c.cookies.get("vmc_session")
+
+    def test_logout_ends_the_session_and_keeps_the_device(self, public):
+        c, store, owner, _ = public
+        codes = store.generate_emergency_codes()
+        c.post("/login", data={"user_id": owner.id, "pin": "1379"})
+        c.post("/login/enroll", data={"code": codes[0]})
+        device_cookie = c.cookies.get("vmc_device")
+        resp = c.post("/logout", data={})
+        assert resp.headers["hx-redirect"] == "/login"
+        assert not c.cookies.get("vmc_session")
+        assert c.cookies.get("vmc_device") == device_cookie
+
+    def test_locked_shared_session_resumes_with_pin_only(self, public):
+        c, store, owner, _ = public
+        codes = store.generate_emergency_codes()
+        c.post("/login", data={"user_id": owner.id, "pin": "1379"})
+        c.post("/login/enroll", data={"code": codes[0]})
+        c.post("/logout", data={})
+        resp = c.post("/login", data={"user_id": owner.id, "pin": "1379"})
+        assert resp.headers["hx-redirect"] == "/"
+        assert c.cookies.get("vmc_session")

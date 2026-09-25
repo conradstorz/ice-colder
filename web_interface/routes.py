@@ -10,10 +10,11 @@ from fastapi.templating import Jinja2Templates
 
 from config.config_model import ConfigModel, Product
 from contracts.vending_machine import EXPECTED_SUBSYSTEMS
-from services.access import AccessStore
+from services.access import OTP_DIGITS, AccessStore
 from services.config_store import add_product, delete_product, update_product
 from services.fsm_control import perform_command
 from services.health_monitor import HealthMonitor
+from services.mailer import send_email
 from services.paths import LOG_FILE
 from web_interface import auth as web_auth
 from web_interface.auth import LoginLimiter
@@ -245,22 +246,52 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
 
         return _enrollment_response(request, user_id)
 
-    def _enrollment_response(request: Request, user_id: str, error: str | None = None):
-        """Second factor: the PIN is proven, now prove the device (spec §2.3)."""
-        token = access_store.issue_enroll_token(user_id, web_auth.client_key(request))
+    def _enroll_page(
+        request: Request,
+        user_id: str,
+        *,
+        error=None,
+        notice=None,
+        wait_seconds=None,
+        status_code=200,
+        headers=None,
+    ):
         user = access_store.get_user(user_id)
         gateway = config.communication.email_gateway if config else None
-        resp = templates.TemplateResponse(
+        return templates.TemplateResponse(
             "enroll.html",
             {
                 "request": request,
                 "user": user,
                 "error": error,
+                "notice": notice,
+                "wait_seconds": wait_seconds,
                 "can_email": bool(
                     user and user.email and gateway and gateway.is_configured
                 ),
             },
+            status_code=status_code,
+            headers=headers or {},
         )
+
+    def _enrollment_response(request: Request, user_id: str, error: str | None = None):
+        """Second factor: the PIN is proven, now prove the device (spec §2.3)."""
+        device = access_store.device_for_token(
+            request.cookies.get(web_auth.DEVICE_COOKIE)
+        )
+        new_device_token = None
+        if device is None:
+            device, new_device_token = access_store.create_device(
+                "New device", shared=False
+            )
+
+        # Bind the enroll token to this device's id, not client_key(request):
+        # a device just minted above isn't reflected in request.cookies yet
+        # (that only happens on the *next* request), so client_key(request)
+        # would still fall back to the IP and the token could never resolve
+        # once the browser starts sending the new vmc_device cookie.
+        token = access_store.issue_enroll_token(user_id, device.id)
+        resp = _enroll_page(request, user_id, error=error)
         web_auth.set_cookie(
             resp,
             request,
@@ -268,6 +299,145 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             token,
             max_age=web_auth.ENROLL_COOKIE_MAX_AGE,
         )
+        if new_device_token is not None:
+            web_auth.set_cookie(
+                resp,
+                request,
+                web_auth.DEVICE_COOKIE,
+                new_device_token,
+                max_age=web_auth.DEVICE_COOKIE_MAX_AGE,
+            )
+        return resp
+
+    def _enroll_user_id(request: Request) -> str:
+        """The user whose PIN this browser just proved, or 401."""
+        user_id = access_store.resolve_enroll_token(
+            request.cookies.get(web_auth.ENROLL_COOKIE), web_auth.client_key(request)
+        )
+        if user_id is None:
+            # No HX-Redirect here: a device that is already trusted logs in
+            # directly (bypassing enrollment) without reissuing vmc_enroll,
+            # so a stray /login/enroll after that must look like any other
+            # rejected code — not carry a navigation hint of its own.
+            raise HTTPException(
+                status_code=401, detail="Enrollment expired; sign in again"
+            )
+        return user_id
+
+    @public.post(
+        "/login/enroll/send",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_htmx)],
+    )
+    async def send_enroll_otp(request: Request):
+        user_id = _enroll_user_id(request)
+        client = web_auth.client_key(request)
+        # Every send counts as a failure, so repeated sends slow down (spec §2.3).
+        remaining = web_auth.backoff.check("otp_send", user_id, client)
+        if remaining is not None:
+            return _enroll_page(
+                request,
+                user_id,
+                error=f"Wait {int(remaining) + 1} s before asking for another code.",
+                status_code=429,
+                headers={"Retry-After": str(int(remaining) + 1)},
+            )
+        web_auth.backoff.record_failure("otp_send", user_id, client)
+
+        user = access_store.get_user(user_id)
+        gateway = config.communication.email_gateway
+        device = access_store.device_for_token(
+            request.cookies.get(web_auth.DEVICE_COOKIE)
+        )
+        if (
+            user is None
+            or not user.email
+            or not gateway.is_configured
+            or device is None
+        ):
+            return _enroll_page(
+                request, user_id, error="Email is not available, use an emergency code"
+            )
+        code = access_store.issue_otp(user_id, device.id)
+        ok = await send_email(
+            gateway,
+            user.email,
+            "Vending machine sign-in code",
+            f"Your one-time code is {code}. It expires in ten minutes.",
+        )
+        if not ok:
+            return _enroll_page(
+                request, user_id, error="Email could not be sent, use an emergency code"
+            )
+        return _enroll_page(request, user_id, notice="Code sent. Check your email.")
+
+    @public.post(
+        "/login/enroll",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_htmx)],
+    )
+    async def enroll_device(request: Request, code: str = Form(...)):
+        user_id = _enroll_user_id(request)
+        client = web_auth.client_key(request)
+        device = access_store.device_for_token(
+            request.cookies.get(web_auth.DEVICE_COOKIE)
+        )
+        if device is None:
+            raise HTTPException(
+                status_code=401,
+                detail="Device record missing; sign in again",
+                headers={"HX-Redirect": "/login"},
+            )
+
+        code = code.strip()
+        kind = "otp" if len(code) == OTP_DIGITS else "emergency"
+        subject = user_id if kind == "otp" else "pool"
+        remaining = web_auth.backoff.check(kind, subject, client)
+        if remaining is not None:
+            return _enroll_page(
+                request,
+                user_id,
+                error="Too many attempts.",
+                wait_seconds=int(remaining) + 1,
+                status_code=429,
+                headers={"Retry-After": str(int(remaining) + 1)},
+            )
+
+        if kind == "otp":
+            ok = access_store.verify_otp(user_id, device.id, code)
+        else:
+            ok = access_store.consume_emergency_code(code, user_id, "enroll")
+            if not ok and not access_store.setup_finalized:
+                # Until Done, the setup code and the transfer code also enroll
+                # the owner, so a lost step-1 response cannot strand them
+                # (spec §3.1 step 1, §3.3 step 4).
+                ok = access_store.verify_setup_code(
+                    code
+                ) or access_store.verify_transfer_code(code)
+
+        if not ok:
+            web_auth.backoff.record_failure(kind, subject, client)
+            return _enroll_page(request, user_id, error="That code was not accepted")
+
+        web_auth.backoff.record_success(kind, subject, client)
+        access_store.trust_device(device.id, user_id)
+        session_id = access_store.create_session(user_id, device.id)
+        access_store.record_login(user_id)
+        resp = HTMLResponse("", headers={"HX-Redirect": "/"})
+        web_auth.set_cookie(
+            resp, request, web_auth.SESSION_COOKIE, session_id, max_age=None
+        )
+        web_auth.clear_cookie(resp, web_auth.ENROLL_COOKIE)
+        access_store.clear_enroll_token(request.cookies[web_auth.ENROLL_COOKIE])
+        return resp
+
+    @public.post("/logout", dependencies=[Depends(require_htmx)])
+    async def logout(request: Request):
+        session_id = request.cookies.get(web_auth.SESSION_COOKIE)
+        if session_id and access_store is not None:
+            access_store.end_session(session_id)
+        resp = HTMLResponse("", headers={"HX-Redirect": "/login"})
+        web_auth.clear_cookie(resp, web_auth.SESSION_COOKIE)
         return resp
 
     router = APIRouter(dependencies=[Depends(require_auth)])
