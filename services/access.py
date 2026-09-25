@@ -435,6 +435,9 @@ class AccessStore:
             self.corrupt = True
             self.users = {}
             self.devices = {}
+            self._emergency_codes = []
+            self._setup = {}
+            self._pending_transfer = None
             logger.error(
                 f"AccessStore: {self._path} is unreadable or invalid ({e}); the "
                 "dashboard will serve an error page. The VMC and MQTT client "
@@ -856,12 +859,14 @@ class AccessStore:
         Only someone at the machine — reading the startup log or the customer
         display — can see it, so a remote stranger cannot claim the machine.
         """
+        if self.setup_finalized:
+            raise AccessError("setup has already been finalized")
         if self._setup_plaintext and self._setup.get("setup_code_hash"):
             return self._setup_plaintext
         code = generate_code(CODE_DIGITS)
         self._setup = {"setup_code_hash": hash_secret(code), "finalized": False}
-        self._setup_plaintext = code
         self._commit()
+        self._setup_plaintext = code
         return code
 
     def verify_setup_code(self, code: str) -> bool:

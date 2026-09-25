@@ -779,6 +779,26 @@ class TestSetupCode:
         assert store.verify_setup_code(code) is False
         assert store.pending_setup_code is None
 
+    def test_begin_setup_after_finalize_raises_and_stays_finalized(self, store):
+        code = store.begin_setup()
+        store.create_user("Ada", None, Role.owner, "1379")
+        store.finalize_setup()
+        with pytest.raises(AccessError):
+            store.begin_setup()
+        assert store.setup_finalized is True
+        assert store.verify_setup_code(code) is False
+
+    def test_begin_setup_failed_commit_does_not_leak_new_plaintext(
+        self, store, monkeypatch
+    ):
+        def failing_save(self):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(AccessStore, "save", failing_save)
+        with pytest.raises(OSError):
+            store.begin_setup()
+        assert store.pending_setup_code is None
+
 
 class TestTransfer:
     @pytest.fixture
