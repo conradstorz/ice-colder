@@ -452,6 +452,23 @@ class TestUsers:
         with pytest.raises(AccessError):
             store.trust_device(dev.id, "nobody")
 
+    def test_failed_save_on_disable_resyncs_memory_to_disk(self, store, monkeypatch):
+        """set_user_disabled mutates memory before calling save(); if save()
+        fails, the in-memory flag must be put back in sync with what is
+        actually on disk rather than left ahead of it."""
+        u = store.create_user("Ada", None, Role.owner, "1379")
+
+        def boom(*args, **kwargs):
+            raise OSError("simulated os.replace failure")
+
+        monkeypatch.setattr("services.access.os.replace", boom)
+        with pytest.raises(OSError):
+            store.set_user_disabled(u.id, True)
+
+        assert store.users[u.id].disabled is False
+        on_disk = json.loads(store.path.read_text(encoding="utf-8"))
+        assert on_disk["users"][u.id]["disabled"] is False
+
 
 class TestDevices:
     def test_token_resolves_to_its_device_and_is_not_stored_raw(self, tmp_path):

@@ -484,6 +484,22 @@ class AccessStore:
             raise
         self._tighten_permissions()
 
+    def _commit(self) -> None:
+        """Persist and re-raise on failure, after resyncing memory to disk.
+
+        Every mutator writes to ``self.users``/``self.devices`` in memory
+        before calling this, so a failed ``save()`` would otherwise leave
+        memory ahead of what actually landed on disk until the next
+        successful write. ``load()`` puts memory back in sync with disk
+        first; the exception still propagates so the caller knows the write
+        failed.
+        """
+        try:
+            self.save()
+        except Exception:
+            self.load()
+            raise
+
     # --- users ---
 
     def owner(self) -> User | None:
@@ -512,11 +528,7 @@ class AccessStore:
             created_at=self._stamp(),
         )
         self.users[user.id] = user
-        try:
-            self.save()
-        except Exception:
-            del self.users[user.id]
-            raise
+        self._commit()
         logger.info(f"AccessStore: created user {name} ({role.value})")
         return user
 
@@ -543,7 +555,7 @@ class AccessStore:
             user.name = name
         if email is not None:
             user.email = email or None
-        self.save()
+        self._commit()
         return user
 
     def set_user_pin(self, user_id: str, pin: str) -> None:
@@ -554,11 +566,11 @@ class AccessStore:
         for device in self.devices.values():
             if user_id in device.trusted_user_ids:
                 device.trusted_user_ids.remove(user_id)
-        self.save()
+        self._commit()
 
     def set_user_disabled(self, user_id: str, disabled: bool) -> None:
         self._require_user(user_id).disabled = bool(disabled)
-        self.save()
+        self._commit()
 
     def delete_user(self, user_id: str) -> None:
         self._require_user(user_id)
@@ -566,7 +578,7 @@ class AccessStore:
         for device in self.devices.values():
             if user_id in device.trusted_user_ids:
                 device.trusted_user_ids.remove(user_id)
-        self.save()
+        self._commit()
 
     def verify_user_pin(self, user_id: str, pin: str) -> bool:
         user = self.users.get(user_id)
@@ -577,7 +589,7 @@ class AccessStore:
     def record_login(self, user_id: str) -> None:
         user = self._require_user(user_id)
         user.last_login_at = self._stamp()
-        self.save()
+        self._commit()
 
     def _require_user(self, user_id: str) -> User:
         user = self.users.get(user_id)
@@ -599,7 +611,7 @@ class AccessStore:
             last_seen_at=self._stamp(),
         )
         self.devices[device.id] = device
-        self.save()
+        self._commit()
         return device, token
 
     def device_for_token(self, token: str | None) -> Device | None:
@@ -616,23 +628,23 @@ class AccessStore:
         if user_id not in device.trusted_user_ids:
             device.trusted_user_ids.append(user_id)
         device.last_seen_at = self._stamp()
-        self.save()
+        self._commit()
 
     def forget_device(self, device_id: str) -> None:
         self._require_device(device_id)
         del self.devices[device_id]
-        self.save()
+        self._commit()
 
     def set_device_shared(self, device_id: str, shared: bool) -> None:
         self._require_device(device_id).shared = bool(shared)
-        self.save()
+        self._commit()
 
     def touch_device(self, device_id: str) -> None:
         device = self.devices.get(device_id)
         if device is None:
             return
         device.last_seen_at = self._stamp()
-        self.save()
+        self._commit()
 
     def prune_devices(self) -> int:
         """Drop devices older than 24 h that never completed enrollment."""
@@ -650,7 +662,7 @@ class AccessStore:
                 del self.devices[device.id]
                 removed += 1
         if removed:
-            self.save()
+            self._commit()
         return removed
 
     def _require_device(self, device_id: str) -> Device:
