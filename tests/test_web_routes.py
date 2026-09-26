@@ -1935,6 +1935,15 @@ class TestSetupWizard:
         assert first == second
         assert store.unused_emergency_code_count() == 20
 
+    def test_codes_page_is_marked_no_store(self, anon, fresh_store):
+        """A cacheable GET carrying plaintext recovery codes could be
+        retained/replayed by a browser or proxy after Done (Copilot review,
+        web_interface/routes.py:647)."""
+        _cfg, store, _display = fresh_store
+        self._create_owner(anon, store)
+        resp = anon.get("/setup/codes")
+        assert resp.headers["cache-control"] == "no-store"
+
     def test_done_finalizes_clears_display_and_redirects(self, anon, fresh_store):
         _cfg, store, display = fresh_store
         self._create_owner(anon, store)
@@ -2570,6 +2579,15 @@ class TestEmergencyCodeRegeneration:
         assert resp.status_code == 403
         for code in old_codes:
             assert store.consume_emergency_code(code, store.owner().id, "test") is True
+
+    def test_regenerate_response_is_marked_no_store(self, client, wired):
+        """The regenerated pool is plaintext, shown once — Copilot review,
+        web_interface/routes.py:647, extended to every response that renders
+        plaintext codes, not just GET /setup/codes."""
+        _cfg, _vmc, _inv, store = wired
+        store.generate_emergency_codes()
+        resp = client.post("/users/codes/regenerate", data={"pin": "1379"})
+        assert resp.headers["cache-control"] == "no-store"
 
 
 class TestMachineReport:

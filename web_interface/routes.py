@@ -667,6 +667,14 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         status_code: int = 200,
         headers: dict | None = None,
     ):
+        # This page (and any re-render of it) always carries the plaintext
+        # emergency-code pool while it is pending — Copilot review,
+        # web_interface/routes.py:647: a cacheable GET response would let a
+        # browser or reverse proxy retain/replay it after Done, contrary to
+        # the spec's one-time-display intent. no-store is unconditional
+        # here rather than gated on `_pending_codes` being non-empty, so a
+        # cache entry from before Done can never be served stale either.
+        resp_headers = {"Cache-Control": "no-store", **(headers or {})}
         return templates.TemplateResponse(
             "setup_codes.html",
             {
@@ -677,7 +685,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
                 "can_email": _can_email_owner(owner),
             },
             status_code=status_code,
-            headers=headers or {},
+            headers=resp_headers,
         )
 
     @public.get(
@@ -1371,6 +1379,14 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             )
             for u in users
         }
+        # This partial is the render target for /users/transfer and
+        # /users/codes/regenerate, which pass transfer_code/new_codes —
+        # plaintext secrets shown exactly once (Copilot review,
+        # web_interface/routes.py:647, extended per its own note to "any
+        # response that renders plaintext codes"). no-store unconditionally
+        # rather than only when those are set, so the same header applies
+        # every time this function is the response, not just sometimes.
+        resp_headers = {"Cache-Control": "no-store", **(headers or {})}
         return templates.TemplateResponse(
             "partials/users_list.html",
             web_auth.template_context(
@@ -1388,7 +1404,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
                 new_codes=new_codes,
             ),
             status_code=status_code,
-            headers=headers or {},
+            headers=resp_headers,
         )
 
     @router.get(
