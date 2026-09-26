@@ -485,10 +485,23 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             ok = access_store.verify_otp(user_id, device.id, code)
         else:
             ok = access_store.consume_emergency_code(code, user_id, "enroll")
-            if not ok and not access_store.setup_finalized:
+            owner = access_store.owner()
+            if (
+                not ok
+                and not access_store.setup_finalized
+                and owner is not None
+                and owner.id == user_id
+            ):
                 # Until Done, the setup code and the transfer code also enroll
-                # the owner, so a lost step-1 response cannot strand them
-                # (spec §3.1 step 1, §3.3 step 4).
+                # the owner — and only the owner (Copilot review,
+                # web_interface/routes.py:474): spec §3.1 step 1 and §3.3
+                # step 4 both describe this as recovery for the owner whose
+                # own step-1 response was lost, not a general-purpose code
+                # any logged-in user can redeem. Without the owner check, a
+                # tech or loader could enroll their own device with the
+                # machine-visible setup code before Done, or a retained user
+                # could enroll with the incoming owner's transfer code after
+                # a transfer.
                 ok = access_store.verify_setup_code(
                     code
                 ) or access_store.verify_transfer_code(code)

@@ -1825,6 +1825,38 @@ class TestSetupWizard:
             assert enroll_resp.headers["hx-redirect"] == "/"
             assert second.cookies.get("vmc_session")
 
+    def test_setup_code_cannot_enroll_a_non_owner(self, anon, fresh_store):
+        """The setup code is recovery for the owner's own lost step-1
+        response (spec §3.1 step 1), not a general enrollment code —
+        Copilot review, web_interface/routes.py:474. Before Done, a tech
+        must not be able to enroll their own device with the
+        machine-visible setup code."""
+        _cfg, store, _display = fresh_store
+        anon.get("/setup")
+        code = store.pending_setup_code
+        anon.post(
+            "/setup",
+            data={
+                "setup_code": code,
+                "name": "Ada",
+                "email": "ada@example.com",
+                "pin": "2468",
+                "pin_confirm": "2468",
+            },
+        )
+        tech = store.create_user("Tom", None, Role.tech, "1111")
+
+        with TestClient(app, follow_redirects=False) as second:
+            second.headers["HX-Request"] = "true"
+            login_resp = second.post("/login", data={"user_id": tech.id, "pin": "1111"})
+            assert login_resp.status_code == 200
+            assert second.cookies.get("vmc_enroll")
+
+            enroll_resp = second.post("/login/enroll", data={"code": code})
+            assert "hx-redirect" not in {k.lower() for k in enroll_resp.headers}
+            assert "not accepted" in enroll_resp.text.lower()
+            assert not second.cookies.get("vmc_session")
+
     def test_post_without_htmx_header_is_403(self, fresh_store):
         with TestClient(app, follow_redirects=False) as c:
             resp = c.post(
