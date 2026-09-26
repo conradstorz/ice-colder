@@ -233,6 +233,43 @@ class TestConfirmUrlRoundTrip:
         assert 'hx-get="/controls/confirm/restart"' in resp.text
 
 
+class TestConfirmEndpointReturnsFragment:
+    """GET /controls/confirm/{command} must return only the button
+    fragment, never a full document — the confirm endpoint's response is
+    swapped in via hx-target/hx-swap="outerHTML" into the existing page,
+    so a full <html>/<body>/<main> document would nest a second <main>
+    inside the page's own on every confirm and Cancel tap (Task 10 review
+    round 1). Substring checks alone can't catch this since the wanted
+    strings are also present inside the (unwanted) full document, so these
+    assert on the absence of document-level structure too.
+    """
+
+    def test_confirm_variant_is_a_fragment_not_a_document(self, client):
+        resp = client.get("/controls/confirm/restart?confirming=true")
+        assert resp.status_code == 200
+        lowered = resp.text.lower()
+        assert "<!doctype" not in lowered
+        assert "<html" not in lowered
+        assert "<head" not in lowered
+        assert "<body" not in lowered
+        assert "<main" not in lowered
+        # Still the exact button fragment the caller needs to swap in.
+        assert 'id="confirm-restart"' in resp.text
+        assert 'hx-post="/controls/restart"' in resp.text
+
+    def test_cancel_variant_is_a_fragment_not_a_document(self, client):
+        resp = client.get("/controls/confirm/restart?confirming=false")
+        assert resp.status_code == 200
+        lowered = resp.text.lower()
+        assert "<!doctype" not in lowered
+        assert "<html" not in lowered
+        assert "<head" not in lowered
+        assert "<body" not in lowered
+        assert "<main" not in lowered
+        assert 'id="confirm-restart"' in resp.text
+        assert 'hx-get="/controls/confirm/restart"' in resp.text
+
+
 class TestInlineFeedback:
     """Result messages replace the button area inline."""
 

@@ -35,11 +35,18 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         The confirming query parameter controls which state to render:
         - absent or truthy: render the confirm variant (Confirm/Cancel pair)
         - "false": render the plain first-tap button
+
+        Renders partials/confirm_command.html directly — a fragment, not
+        controls.html (which `{% extends "base.html" %}`) — so the response
+        is exactly the `<div id="confirm-{command}">...</div>` htmx is
+        swapping in via hx-target/hx-swap="outerHTML", not a whole
+        <html>/<head>/<body> document nesting a second <main> inside the
+        page's own on every confirm and Cancel tap.
         """
         confirming = request.query_params.get("confirming", "true").lower() != "false"
 
         return templates.TemplateResponse(
-            "controls.html",
+            "partials/confirm_command.html",
             context.template_context(
                 request,
                 level=LEVEL_CONTROLS,
