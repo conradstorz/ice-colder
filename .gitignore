@@ -197,3 +197,8 @@ colder-docker/
 # Local-only compose overrides (never commit a weak-password bypass etc.)
 docker-compose.override.yml
 .superpowers/
+
+# Build-time Tailwind CLI binary (~100MB standalone .exe) — downloaded by
+# hand, never committed; web_interface/static/app.css is the committed,
+# compiled artifact CI and the offline tablet actually need.
+.tailwind/
