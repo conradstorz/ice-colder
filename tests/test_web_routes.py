@@ -594,6 +594,7 @@ _MATRIX_ROUTES = [
     ("GET", "/", Permission.view_status),
     ("GET", "/status", Permission.view_status),
     ("GET", "/kpi", Permission.view_status),
+    ("GET", "/pill", Permission.view_status),
     ("GET", "/activity", Permission.view_status),
     ("GET", "/health", Permission.view_status),
     ("GET", "/screen", Permission.view_status),
@@ -2908,3 +2909,258 @@ class TestCorruptAccessFile:
         resp = corrupt.get(path)
         assert resp.status_code == 503
         assert "corrupt" in resp.text.lower()
+
+
+class TestHomePolling:
+    """Task 5: the hero (1s) and KPI (60s) polling attributes live on Home
+    itself, not on a fragment — the fragments they pull in stay untouched."""
+
+    def test_home_has_hero_with_1s_poll(self, client):
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert 'hx-get="/status"' in resp.text
+        assert 'id="status-panel"' in resp.text
+        assert "load, every 1s" in resp.text
+
+    def test_home_has_four_kpi_cards_with_60s_poll(self, client):
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert 'hx-get="/kpi"' in resp.text
+        assert 'id="kpi-panel"' in resp.text
+        assert "load, every 60s" in resp.text
+        # Four skeleton placeholder cards inside #kpi-panel before the first swap.
+        assert resp.text.count("animate-pulse") == 4
+
+    def test_activity_table_does_not_appear_on_home(self, client):
+        """The 24h/7d/30d table moves to Reports in Task 9 — Home must not
+        pull /activity at all."""
+        resp = client.get("/")
+        assert 'hx-get="/activity' not in resp.text
+
+
+class TestHomeTiles:
+    """Task 5: the eight-tile grid, gated per spec §2's permission table."""
+
+    def test_loader_sees_exactly_health_products_inventory(self, login_as):
+        client = login_as(Role.loader)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert ">Health<" in resp.text
+        assert ">Products<" in resp.text
+        assert ">Inventory<" in resp.text
+        for title in ("Reports", "Controls", "Tests", "Users", "Settings"):
+            assert f">{title}<" not in resp.text
+
+    def test_owner_sees_all_eight_tiles(self, client):
+        resp = client.get("/")
+        assert resp.status_code == 200
+        for title in (
+            "Health",
+            "Products",
+            "Inventory",
+            "Reports",
+            "Controls",
+            "Tests",
+            "Users",
+            "Settings",
+        ):
+            assert f">{title}<" in resp.text
+
+    def test_tech_sees_no_reports_users_settings(self, login_as):
+        client = login_as(Role.tech)
+        resp = client.get("/")
+        for title in ("Health", "Products", "Inventory", "Controls", "Tests"):
+            assert f">{title}<" in resp.text
+        for title in ("Reports", "Users", "Settings"):
+            assert f">{title}<" not in resp.text
+
+    def test_secretary_sees_no_controls_or_tests(self, login_as):
+        client = login_as(Role.secretary)
+        resp = client.get("/")
+        for title in (
+            "Health",
+            "Products",
+            "Inventory",
+            "Reports",
+            "Users",
+            "Settings",
+        ):
+            assert f">{title}<" in resp.text
+        for title in ("Controls", "Tests"):
+            assert f">{title}<" not in resp.text
+
+    def test_secretary_sees_reports_as_coming_soon(self, login_as):
+        client = login_as(Role.secretary)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "coming soon" in resp.text.lower()
+
+    def test_tiles_link_to_their_urls(self, client):
+        resp = client.get("/")
+        for url in (
+            "/health",
+            "/products",
+            "/inventory",
+            "/reports",
+            "/controls",
+            "/tests",
+            "/users",
+            "/settings",
+        ):
+            assert f'href="{url}"' in resp.text
+
+
+class TestHomeTileContext:
+    """Task 5: tile context lines are computed once per render, from the
+    live services — never from client-side polling."""
+
+    def test_health_tile_shows_zero_faults_on_a_clean_machine(self, client):
+        resp = client.get("/")
+        assert "0 active faults" in resp.text
+
+    def test_health_tile_shows_active_fault_count(self, client, wired):
+        _cfg, vmc, _inv, _store = wired
+        vmc._raise_fault(FaultCode.PAY_103, outcome="test")
+        resp = client.get("/")
+        assert "1 active fault" in resp.text
+
+    def test_products_tile_shows_product_count(self, client):
+        client.post(
+            "/inventory/add",
+            data={"sku": "TILE-1", "name": "Tile Product", "price": "1.00"},
+        )
+        resp = client.get("/")
+        assert "1 product" in resp.text
+
+    def test_users_tile_shows_user_count(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        store.create_user("Bob", "bob@example.com", Role.tech, "4321")
+        resp = client.get("/")
+        assert "2 users" in resp.text
+
+    def test_inventory_tile_says_tracking_off_when_nothing_tracked(self, client):
+        client.post(
+            "/inventory/add",
+            data={"sku": "TRK-OFF", "name": "Untracked", "price": "1.00"},
+        )
+        resp = client.get("/")
+        assert "tracking off" in resp.text
+
+    def test_inventory_tile_shows_zero_low_when_tracked_and_well_stocked(self, client):
+        client.post(
+            "/inventory/add",
+            data={"sku": "TRK-OK", "name": "Tracked OK", "price": "1.00", "slot": "1"},
+        )
+        client.post(
+            "/inventory/update/TRK-OK/placement",
+            data={"slot": "1", "inventory_count": "10", "track_inventory": "on"},
+        )
+        resp = client.get("/")
+        assert "0 low" in resp.text
+        assert "tracking off" not in resp.text
+
+    def test_inventory_tile_counts_products_at_or_below_the_low_stock_line(
+        self, client
+    ):
+        client.post(
+            "/inventory/add",
+            data={
+                "sku": "TRK-LOW",
+                "name": "Tracked Low",
+                "price": "1.00",
+                "slot": "1",
+            },
+        )
+        client.post(
+            "/inventory/update/TRK-LOW/placement",
+            data={"slot": "1", "inventory_count": "3", "track_inventory": "on"},
+        )
+        resp = client.get("/")
+        assert "1 low" in resp.text
+
+    def test_home_tolerates_every_optional_service_being_none(self, login_as, wired):
+        """/ must render for a role with a live session even when
+        vmc_instance, health_monitor, event_recorder, availability,
+        inventory_manager or access_store is None (executor resolution 3)."""
+        _cfg, _vmc, _inv, _store = wired
+        routes.set_vmc_instance(None)
+        routes.set_inventory_manager(None)
+        try:
+            client = login_as(Role.owner)
+            resp = client.get("/")
+            assert resp.status_code == 200
+            assert "tracking off" in resp.text
+        finally:
+            routes.set_vmc_instance(_vmc)
+            routes.set_inventory_manager(_inv)
+
+
+class TestPillEndpoint:
+    """Task 5: GET /pill, sharing context.health_snapshot() with /status."""
+
+    def test_pill_is_green_ok_on_a_clean_machine(self, client):
+        resp = client.get("/pill")
+        assert resp.status_code == 200
+        assert 'id="pill"' in resp.text
+        assert ">OK<" in resp.text
+        assert "bg-green-600" in resp.text
+
+    def test_pill_response_still_carries_its_own_polling_attributes(self, client):
+        """hx-swap="outerHTML" replaces the whole <span id="pill">, so the
+        response itself must carry id, hx-get and hx-trigger or polling
+        stops after the first tick (executor resolution 4)."""
+        resp = client.get("/pill")
+        assert resp.status_code == 200
+        assert 'id="pill"' in resp.text
+        assert 'hx-get="/pill"' in resp.text
+        assert 'hx-trigger="load, every 5s"' in resp.text
+        assert 'hx-swap="outerHTML"' in resp.text
+
+    def test_pill_is_red_and_names_the_fault_code(self, client, wired):
+        _cfg, vmc, _inv, _store = wired
+        vmc._raise_fault(FaultCode.PAY_103, outcome="test")
+        resp = client.get("/pill")
+        assert resp.status_code == 200
+        assert "bg-red-600" in resp.text
+        assert "PAY-103" in resp.text
+
+    def test_pill_names_the_higher_severity_of_two_faults(self, client, wired):
+        """ICE-301 is `lockout`, COM-103 is `warning` — lockout outranks
+        warning, so the pill must name ICE-301."""
+        _cfg, vmc, _inv, _store = wired
+        vmc._raise_fault(FaultCode.COM_103, outcome="test")
+        vmc._raise_fault(FaultCode.ICE_301, sku="whatever-sku", outcome="test")
+        resp = client.get("/pill")
+        assert resp.status_code == 200
+        assert "ICE-301" in resp.text
+        assert "COM-103" not in resp.text
+
+    def test_pill_tie_break_favors_the_product_fault(self, client, wired):
+        """ICE-101 and PAY-101 are both `product_unavailable`; active_faults()
+        returns product faults (ICE-101) before machine faults (PAY-101), so
+        a tie must favor ICE-101."""
+        _cfg, vmc, _inv, _store = wired
+        vmc._raise_fault(FaultCode.PAY_101, outcome="test")
+        vmc._raise_fault(FaultCode.ICE_101, sku="whatever-sku", outcome="test")
+        resp = client.get("/pill")
+        assert resp.status_code == 200
+        assert "ICE-101" in resp.text
+        assert "PAY-101" not in resp.text
+
+    def test_pill_with_no_vmc_is_neutral_not_500(self, login_as, wired):
+        _cfg, _vmc, _inv, _store = wired
+        routes.set_vmc_instance(None)
+        try:
+            client = login_as(Role.owner)
+            resp = client.get("/pill")
+            assert resp.status_code == 200
+            assert 'id="pill"' in resp.text
+            assert "bg-slate-400" in resp.text
+            assert "OK" not in resp.text
+        finally:
+            routes.set_vmc_instance(_vmc)
+
+    def test_pill_requires_a_session(self, anonymous):
+        resp = anonymous.get("/pill", headers={"HX-Request": "true"})
+        assert resp.status_code == 401
+        assert resp.headers["hx-redirect"] == "/login"

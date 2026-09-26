@@ -218,21 +218,50 @@ def _can_email_owner(owner) -> bool:
     return bool(owner and owner.email and gateway and gateway.is_configured)
 
 
-async def _render_status(templates, request: Request):
-    """The /status fragment body.
+# Spec §1.3 asks the Inventory tile for "products below their low-stock
+# line" without ever defining what that line is: there is no `low_stock`
+# field on Product, none in ConfigModel, and no threshold in
+# services/inventory_manager.py, and adding one would be a config.json
+# schema change beyond what this part's spec lists (a hard stop — see
+# Task 5 executor resolution 1). This module-level constant is part 2's
+# reversible placeholder instead: a tracked product is "low" when its
+# InventoryManager count is at or below this many units. Making the line
+# per-product configurable is future work, tracked outside this part.
+LOW_STOCK_THRESHOLD = 3
 
-    Shared by routes/home.py's GET /status and routes/legacy.py's POST
-    /faults/{key}/clear (which re-renders this same fragment after clearing
-    a fault) — per Task 1 executor resolution 3, a helper used by two area
-    modules lives here rather than in either one. `templates` is passed in
-    explicitly since this function lives outside any build_router(templates)
-    closure.
+
+async def health_snapshot() -> dict:
+    """The single health computation shared by /status's hero banner and
+    /pill's bar indicator (Task 5).
+
+    Returns a dict with keys `vmc_missing`, `status`, `is_healthy`,
+    `issues`, `active_faults`, `payment_enabled`, `payment_reasons` and
+    `machine_stopped` — exactly the pieces `_render_status` used to compute
+    inline and `partials/status_fragment.html` still receives unchanged.
+    `is_healthy` is the one predicate both the hero and the pill must agree
+    on: `len(issues) == 0 and payment_enabled is not False`. `issues`
+    accumulates, in order: one line per active fault, an "errors in last
+    24h" line when the event recorder has any, a stale-subsystems line,
+    and an out-of-range-temperature line — see the inline comments below
+    for why each one is folded in rather than computed separately.
+
+    When no VMC is wired, `vmc_missing` is True and every other key is a
+    neutral placeholder (`is_healthy` None, empty lists) — callers must
+    check `vmc_missing` first rather than trust `is_healthy`, exactly as
+    `_render_status` already special-cased this before any of the fields
+    below existed.
     """
     if not vmc_instance:
-        return HTMLResponse(
-            '<div class="bg-red-50 rounded-xl border border-red-200 shadow-sm p-5">'
-            '<p class="text-red-600 font-semibold">VMC not initialized</p></div>'
-        )
+        return {
+            "vmc_missing": True,
+            "status": None,
+            "is_healthy": None,
+            "issues": [],
+            "active_faults": [],
+            "payment_enabled": None,
+            "payment_reasons": [],
+            "machine_stopped": None,
+        }
 
     status = vmc_instance.get_status()
     issues: list[str] = []
@@ -277,16 +306,50 @@ async def _render_status(templates, request: Request):
     # attached) is unknown, not unhealthy, so it must not flip this.
     is_healthy = len(issues) == 0 and payment_enabled is not False
 
+    return {
+        "vmc_missing": False,
+        "status": status,
+        "is_healthy": is_healthy,
+        "issues": issues,
+        "active_faults": active_faults,
+        "payment_enabled": payment_enabled,
+        "payment_reasons": payment_reasons,
+        "machine_stopped": (None if payment_enabled is None else not payment_enabled),
+    }
+
+
+async def _render_status(templates, request: Request):
+    """The /status fragment body.
+
+    Shared by routes/home.py's GET /status and routes/legacy.py's POST
+    /faults/{key}/clear (which re-renders this same fragment after clearing
+    a fault) — per Task 1 executor resolution 3, a helper used by two area
+    modules lives here rather than in either one. `templates` is passed in
+    explicitly since this function lives outside any build_router(templates)
+    closure.
+
+    The health computation itself lives in `health_snapshot()` (Task 5),
+    shared with GET /pill, so the hero and the bar pill can never disagree
+    about what "healthy" means — this function only turns that snapshot
+    into the existing response shape.
+    """
+    snap = await health_snapshot()
+    if snap["vmc_missing"]:
+        return HTMLResponse(
+            '<div class="bg-red-50 rounded-xl border border-red-200 shadow-sm p-5">'
+            '<p class="text-red-600 font-semibold">VMC not initialized</p></div>'
+        )
+
     return templates.TemplateResponse(
         "partials/status_fragment.html",
         template_context(
             request,
-            status=status,
-            is_healthy=is_healthy,
-            issues=issues,
-            active_faults=active_faults,
-            payment_enabled=payment_enabled,
-            payment_reasons=payment_reasons,
-            machine_stopped=(None if payment_enabled is None else not payment_enabled),
+            status=snap["status"],
+            is_healthy=snap["is_healthy"],
+            issues=snap["issues"],
+            active_faults=snap["active_faults"],
+            payment_enabled=snap["payment_enabled"],
+            payment_reasons=snap["payment_reasons"],
+            machine_stopped=snap["machine_stopped"],
         ),
     )

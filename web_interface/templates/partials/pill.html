@@ -1,0 +1,22 @@
+{# web_interface/templates/partials/pill.html
+
+   GET /pill's response (web_interface/routes/home.py). base.html's bar
+   renders the same <span id="pill"> in its grey placeholder state, wrapped
+   in <a href="/health/faults">; hx-swap="outerHTML" replaces only this
+   <span> on each poll, leaving that wrapping anchor in the DOM — which is
+   why this file renders the bare span and never the anchor: nesting an
+   <a> inside the bar's existing one would be invalid HTML, and the anchor
+   never needs to change, only the span's color/text.
+
+   Because outerHTML replaces the whole element, this response must carry
+   its own id, hx-get and hx-trigger or polling stops after the first tick
+   (Task 5 brief, executor resolution 4) — do not drop any of the three
+   attributes below when touching this file.
+
+   Context (from routes/home.py's `pill()`):
+     pill_state - "ok" | "fault" | "neutral" (missing VMC)
+     pill_text  - "OK", a fault code (e.g. "ICE-301"), or an em dash
+#}
+{% set pill_colors = {"ok": "bg-green-600", "fault": "bg-red-600", "neutral": "bg-slate-400"} %}
+<span id="pill" hx-get="/pill" hx-trigger="load, every 5s" hx-swap="outerHTML"
+      class="inline-flex items-center rounded-full {{ pill_colors.get(pill_state, 'bg-slate-400') }} text-white text-xs font-semibold uppercase tracking-wide px-2 py-1">{{ pill_text }}</span>
