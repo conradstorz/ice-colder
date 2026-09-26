@@ -14,16 +14,19 @@ the skip count in that other file's suite drop on its own.
 
 import pytest
 
-from config.config_model import Channel
+from config.config_model import Channel, ConfigModel
 from services.access import Role
 from web_interface.routes import settings as settings_routes
 
 SECRET_MASK = settings_routes.SECRET_MASK
 
-# The literal default secret values baked into config.config_model — none
-# of these must ever appear as a rendered *value* in a Payments or Comms
-# page (brief resolution 4 / the task's "grep for real default secret
-# values" check). "paypal_client_id"/"paypal_client_secret" are excluded
+# The default secret *values* baked into config.config_model — none of
+# these must ever appear as a rendered *value* in a Payments or Comms page
+# (brief resolution 4 / the task's "grep for real default secret values"
+# check). Read straight out of a freshly constructed ConfigModel rather
+# than hardcoded here, so this list can never drift from config_model.py's
+# defaults (and a future change to those defaults can't silently make this
+# check vacuous). "paypal_client_id"/"paypal_client_secret" are excluded
 # from this plain substring list on purpose: those two default secret
 # *values* happen to be spelled identically to their own field's HTML
 # id/name attribute (config.config_model's dummy PayPalConfig defaults),
@@ -31,11 +34,12 @@ SECRET_MASK = settings_routes.SECRET_MASK
 # id="paypal_client_secret" markup as a false positive. They are checked
 # separately below as a rendered `value="..."` instead, which only the
 # real secret text (not the field's id/name) could match.
+_default_config = ConfigModel()
 _REAL_DEFAULT_SECRETS = [
-    "sk_test_xxx",
-    "whsec_xxx",
-    "your_auth_token",
-    "ACxxxxxxxxxxxxxxxxxxx",
+    _default_config.payment.stripe.api_key.get_secret_value(),
+    _default_config.payment.stripe.webhook_secret.get_secret_value(),
+    _default_config.communication.sms_gateway.auth_token.get_secret_value(),
+    _default_config.communication.sms_gateway.account_sid.get_secret_value(),
 ]
 
 
