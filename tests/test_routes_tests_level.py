@@ -8,7 +8,7 @@ Fixtures come from tests/conftest.py.
 """
 
 import pytest
-from re import search as re_search
+from re import DOTALL, search as re_search
 from services.access import Role
 
 
@@ -90,11 +90,40 @@ class TestTestsNoActionsMixin:
     """
 
     def _extract_main_body(self, html: str) -> str:
-        """Extract content between <main> and </main> tags."""
-        match = re_search(
-            r"<main[^>]*>(.*)</main>", html, flags=8
-        )  # flags=8 is re.DOTALL
-        return match.group(1) if match else ""
+        """Extract content between <main> and </main> tags.
+
+        Fails loudly (raises) rather than returning "" when the body
+        cannot be located: a helper whose failure mode is "return
+        something every containment assertion passes against" turns a
+        broken extraction into a hollow, always-green test suite. A
+        previous version passed a numeric `flags=8` (re.MULTILINE)
+        believing it to be re.DOTALL (which is 16), so `(.*)` could
+        never cross the newlines between `<main ...>` and `</main>`;
+        re_search always returned None and every "no actions"
+        assertion below silently checked `"X" not in ""`.
+        """
+        match = re_search(r"<main[^>]*>(.*)</main>", html, flags=DOTALL)
+        assert match is not None, (
+            "Could not locate <main>...</main> in the response body; "
+            "the no-actions assertions below cannot be trusted without it"
+        )
+        return match.group(1)
+
+    def test_extract_main_body_returns_real_content(self, client):
+        """Positive case: the helper must return the real body, not "".
+
+        Guards directly against the regression described above: proves
+        the extraction spans the newlines between the placeholder
+        heading and the closing </main> tag and yields non-empty,
+        recognizable content, rather than merely being exercised
+        indirectly through assertions that would also pass on "".
+        """
+        response = client.get("/tests")
+        assert response.status_code == 200
+        body = self._extract_main_body(response.text)
+        assert body != "", "Extracted main body must not be empty"
+        assert "Subsystem tests will arrive in a later release" in body
+        assert "<h1" in body
 
     def test_no_form_in_body(self, client):
         """Body contains no <form> elements."""
