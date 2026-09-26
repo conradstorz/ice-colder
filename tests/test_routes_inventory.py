@@ -17,7 +17,12 @@ from web_interface import context
 def _add_tracked(wired, sku, *, name="Tracked Item", slot=1, count=5):
     """Add a product to config and register it as a tracked SKU at *count*."""
     cfg, _vmc, inv, _store = wired
-    add_product(cfg, sku, name, 1.00, slot=slot, kind="other")
+    added = add_product(cfg, sku, name, 1.00, slot=slot, kind="other")
+    assert added, (
+        f"add_product refused SKU={sku!r} at slot={slot} (likely a slot "
+        "collision with another product added by this test) -- fix the "
+        "call site instead of silently no-op'ing the fixture"
+    )
     inv.add_sku(sku, count, tracked=True)
 
 
@@ -146,7 +151,7 @@ class TestInventoryAdjust:
         that SKU — returning the whole list would scroll-jump a tablet
         under a loader's repeated taps (brief resolution 7)."""
         _add_tracked(wired, "ADJ-6", name="Adjusted One", count=5)
-        _add_tracked(wired, "ADJ-7", name="Untouched Other", count=2)
+        _add_tracked(wired, "ADJ-7", name="Untouched Other", slot=2, count=2)
         resp = client.post("/inventory/ADJ-6/adjust", data={"delta": "1"})
         assert resp.status_code == 200
         assert "Adjusted One" in resp.text
