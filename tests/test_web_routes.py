@@ -7,16 +7,13 @@ import pytest
 from fastapi.testclient import TestClient
 from config.config_model import ConfigModel
 from contracts.vending_machine import FaultCode
-from controller.vmc import VMC
 from services.access import ROLE_PERMISSIONS, AccessStore, Permission, Role, User
 from services.display_controller import DisplayController
-from services.inventory_manager import InventoryManager
+from tests.conftest import make_client, sign_in
 from web_interface import auth as web_auth
+from web_interface import context
 from web_interface.server import app
 from web_interface import routes
-
-
-_ISSUED_CLIENTS: list[TestClient] = []
 
 # Emergency/transfer codes are 8 decimal digits, rendered by the templates
 # inside an element carrying the `code-value` hook class (see
@@ -34,134 +31,6 @@ _CODE_VALUE_RE = re.compile(r'class="[^"]*\bcode-value\b[^"]*">(\d{8})<')
 def _codes_in(html: str) -> list[str]:
     """Every code rendered via the `code-value` hook, in document order."""
     return _CODE_VALUE_RE.findall(html)
-
-
-@pytest.fixture(autouse=True)
-def _close_issued_clients():
-    """Close every client `sign_in` handed out, whatever the test did.
-
-    `sign_in` returns its client to the caller, so it cannot use a `with`
-    block itself. Tests that go through the `login_as` fixture are covered
-    by its own teardown, but several call `make_client(...)` directly and
-    never close the result — an unconditional leak. Funnelling every
-    issued client through here closes them all, and a second `.close()`
-    from `login_as` is harmless.
-    """
-    yield
-    while _ISSUED_CLIENTS:
-        _ISSUED_CLIENTS.pop().close()
-
-
-def sign_in(store: AccessStore, user: User, *, shared: bool = False) -> TestClient:
-    """Mint a device, trust *user* on it, open a session, and return a
-    client that is fully logged in: it carries vmc_device, vmc_session and
-    the HX-Request: true header, the way a real enrolled browser would."""
-    device, token = store.create_device(f"{user.name}'s device", shared=shared)
-    store.trust_device(device.id, user.id)
-    session_id = store.create_session(user.id, device.id)
-    store.record_login(user.id)
-
-    client = TestClient(app)
-    client.headers["HX-Request"] = "true"
-    client.cookies.set(web_auth.DEVICE_COOKIE, token)
-    client.cookies.set(web_auth.SESSION_COOKIE, session_id)
-    _ISSUED_CLIENTS.append(client)
-    return client
-
-
-def make_client(
-    store: AccessStore,
-    role: Role = Role.owner,
-    *,
-    shared: bool = False,
-    name: str = "Ada",
-) -> tuple[TestClient, User]:
-    """Seed a fresh user of *role* and sign them in."""
-    email = f"{name.lower().replace(' ', '.')}@example.com"
-    user = store.create_user(name, email, role, "2468")
-    return sign_in(store, user, shared=shared), user
-
-
-@pytest.fixture
-def wired(tmp_path):
-    """A ConfigModel, VMC, InventoryManager and AccessStore, wired into
-    routes the way main() wires them. The owner "Ada" is already seeded
-    (email ada@example.com, PIN 1379) and setup is finalized, so route
-    tests are never in setup mode.
-
-    `web_auth.backoff` is a module-level singleton shared by every test in
-    the process, keyed on a real clock — a PIN or emergency-code failure
-    left behind by one test can trip a 429 in the next, and only for one
-    of them depending on run order. Reset it on both sides so this
-    fixture's tests are isolated from whatever ran immediately before or
-    after them.
-    """
-    web_auth.backoff.reset()
-
-    cfg = ConfigModel()
-    vmc = VMC(config=cfg)
-    inv = InventoryManager([], path=tmp_path / "inventory.json")
-    store = AccessStore(path=tmp_path / "access.json")
-    store.create_user("Ada", "ada@example.com", Role.owner, "1379")
-    store.finalize_setup()
-
-    routes.set_config_object(cfg)
-    routes.set_vmc_instance(vmc)
-    routes.set_inventory_manager(inv)
-    routes.set_access_store(store)
-
-    yield cfg, vmc, inv, store
-
-    routes.set_access_store(None)
-    for t in vmc._pending_tasks:
-        t.cancel()
-    web_auth.backoff.reset()
-    web_auth.backoff.set_trusted_proxies([])
-
-
-@pytest.fixture
-def login_as(wired):
-    """login_as(role=Role.owner, *, shared=False, name=None) -> TestClient.
-
-    Role.owner returns a client for the fixture's existing owner (the store
-    enforces one owner per machine); any other role seeds a fresh user.
-    Every client this makes is closed on teardown.
-    """
-    _cfg, _vmc, _inv, store = wired
-    clients: list[TestClient] = []
-
-    def _login_as(
-        role: Role = Role.owner, *, shared: bool = False, name: str | None = None
-    ) -> TestClient:
-        if role == Role.owner:
-            client = sign_in(store, store.owner(), shared=shared)
-        else:
-            client, _user = make_client(
-                store, role, shared=shared, name=name or role.value.capitalize()
-            )
-        clients.append(client)
-        return client
-
-    yield _login_as
-
-    for c in clients:
-        c.close()
-
-
-@pytest.fixture
-def client(login_as):
-    """Every pre-existing test in this file runs through this client,
-    authenticated as the owner."""
-    return login_as(Role.owner)
-
-
-@pytest.fixture
-def anonymous(wired):
-    """A client with no cookies at all, against a wired store that does
-    have an owner — for asserting what an unauthenticated visitor gets."""
-    c = TestClient(app, follow_redirects=False)
-    yield c
-    c.close()
 
 
 class TestDashboard:
@@ -219,7 +88,7 @@ class TestInventoryEndpoints:
             data={"sku": "AUTO-1", "name": "Auto Slot", "price": "1.00"},
         )
         assert resp.status_code == 200
-        added = next(p for p in routes.config.products if p.sku == "AUTO-1")
+        added = next(p for p in context.config.products if p.sku == "AUTO-1")
         assert added.slot == 0  # first product added to an empty catalog
 
     def test_add_product_with_explicit_slot(self, client):
@@ -228,7 +97,7 @@ class TestInventoryEndpoints:
             data={"sku": "SLOT-1", "name": "Slotted", "price": "1.00", "slot": "7"},
         )
         assert resp.status_code == 200
-        added = next(p for p in routes.config.products if p.sku == "SLOT-1")
+        added = next(p for p in context.config.products if p.sku == "SLOT-1")
         assert added.slot == 7
 
     def test_add_product_with_negative_slot_does_not_500(self, client):
@@ -242,7 +111,7 @@ class TestInventoryEndpoints:
             },
         )
         assert resp.status_code == 200
-        assert not any(p.sku == "NEG-1" for p in routes.config.products)
+        assert not any(p.sku == "NEG-1" for p in context.config.products)
 
     def test_inventory_table_renders_slot_column(self, client):
         client.post(
@@ -278,7 +147,7 @@ class TestInventoryEndpoints:
             data={"slot": "6", "inventory_count": "0"},
         )
         assert resp.status_code == 200
-        updated = next(p for p in routes.config.products if p.sku == "UPD-1")
+        updated = next(p for p in context.config.products if p.sku == "UPD-1")
         assert updated.slot == 6
 
     def test_add_product_carries_kind(self, client):
@@ -292,7 +161,7 @@ class TestInventoryEndpoints:
             },
         )
         assert resp.status_code == 200
-        assert routes.config.products[-1].kind == "water"
+        assert context.config.products[-1].kind == "water"
 
     def test_update_product_changes_kind(self, client):
         client.post(
@@ -304,7 +173,7 @@ class TestInventoryEndpoints:
             data={"name": "Flexible", "price": "1.00", "kind": "ice"},
         )
         assert resp.status_code == 200
-        updated = next(p for p in routes.config.products if p.sku == "KIND-2")
+        updated = next(p for p in context.config.products if p.sku == "KIND-2")
         assert updated.kind == "ice"
 
     def test_copy_form_preselects_source_product_kind(self, client):
@@ -359,7 +228,7 @@ class TestInventoryEndpoints:
             data={"name": "New Name", "price": "3.50", "kind": "water"},
         )
         assert resp.status_code == 200
-        updated = next(p for p in routes.config.products if p.sku == "CAT-2")
+        updated = next(p for p in context.config.products if p.sku == "CAT-2")
         assert updated.name == "New Name"
         assert updated.price == 3.50
         assert updated.kind == "water"
@@ -389,7 +258,7 @@ class TestInventoryEndpoints:
             },
         )
         assert resp.status_code == 200
-        updated = next(p for p in routes.config.products if p.sku == "PLC-2")
+        updated = next(p for p in context.config.products if p.sku == "PLC-2")
         assert updated.slot == 8
         assert inv.get_count("PLC-2") == 15
         assert inv.is_tracked("PLC-2") is True
@@ -409,7 +278,7 @@ class TestInventoryEndpoints:
         )
         assert resp.status_code == 200
         assert inv.get_count("PLC-5") == 42
-        product = next(p for p in routes.config.products if p.sku == "PLC-5")
+        product = next(p for p in context.config.products if p.sku == "PLC-5")
         assert product.inventory_count != 42
         assert ">42<" in resp.text
 
@@ -450,7 +319,7 @@ class TestInventoryEndpoints:
             },
         )
         assert resp.status_code == 200
-        updated = next(p for p in routes.config.products if p.sku == "PLC-4")
+        updated = next(p for p in context.config.products if p.sku == "PLC-4")
         assert updated.slot == 5
         assert updated.name == "Original"
         assert updated.price == 9.99
@@ -477,7 +346,7 @@ class TestInventoryEndpoints:
         )
         assert resp.status_code == 200
         assert inv.get_count("PLC-6") == 9
-        updated = next(p for p in routes.config.products if p.sku == "PLC-6")
+        updated = next(p for p in context.config.products if p.sku == "PLC-6")
         assert updated.slot == 1
 
     def test_placement_post_with_slot_already_in_use_changes_nothing(
@@ -510,7 +379,7 @@ class TestInventoryEndpoints:
             data={"slot": "1", "inventory_count": "50"},  # slot 1 is PLC-7's
         )
         assert resp.status_code == 200
-        updated = next(p for p in routes.config.products if p.sku == "PLC-8")
+        updated = next(p for p in context.config.products if p.sku == "PLC-8")
         assert updated.slot == 2
         assert inv.get_count("PLC-8") == 9
         assert inv.is_tracked("PLC-8") is True
@@ -544,7 +413,7 @@ class TestCatalogPlacementPermissions:
         )
         assert post_resp.status_code == 200
         updated = next(
-            p for p in routes.config.products if p.sku == f"PERM-{role.value}"
+            p for p in context.config.products if p.sku == f"PERM-{role.value}"
         )
         assert updated.slot == 2
         assert updated.price == 5.00
@@ -572,7 +441,7 @@ class TestCatalogPlacementPermissions:
         assert post_resp.status_code == 403
 
         unchanged = next(
-            p for p in routes.config.products if p.sku == f"NOPE-{role.value}"
+            p for p in context.config.products if p.sku == f"NOPE-{role.value}"
         )
         assert unchanged.price == 5.00
         assert unchanged.name == "Item"
@@ -722,7 +591,7 @@ class TestActionEndpoint:
         assert "Unknown" in resp.text
 
     def test_reset_action_recovers_from_error(self, client):
-        from web_interface import routes as r
+        from web_interface import context as r
 
         r.vmc_instance.error_occurred()
         assert r.vmc_instance.state == "error"
@@ -761,7 +630,7 @@ class TestKpiEndpoint:
 
     def test_kpi_with_recorder(self, client, tmp_path):
         from services.event_recorder import EventRecorder
-        from web_interface import routes as r
+        from web_interface import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
@@ -802,7 +671,7 @@ class TestEventRecorderCallsOffloaded:
 
     def test_status_offloads_get_summary_to_thread(self, client, tmp_path, monkeypatch):
         from services.event_recorder import EventRecorder
-        from web_interface import routes as r
+        from web_interface import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
@@ -826,7 +695,7 @@ class TestEventRecorderCallsOffloaded:
         self, client, tmp_path, monkeypatch
     ):
         from services.event_recorder import EventRecorder
-        from web_interface import routes as r
+        from web_interface import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
@@ -851,7 +720,7 @@ class TestEventRecorderCallsOffloaded:
         self, client, tmp_path, monkeypatch
     ):
         from services.event_recorder import EventRecorder
-        from web_interface import routes as r
+        from web_interface import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
@@ -882,7 +751,7 @@ class TestStatusHealthSignal:
 
     def test_status_with_recorder_no_errors(self, client, tmp_path):
         from services.event_recorder import EventRecorder
-        from web_interface import routes as r
+        from web_interface import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
@@ -895,7 +764,7 @@ class TestStatusHealthSignal:
 
     def test_status_with_recorder_has_errors(self, client, tmp_path):
         from services.event_recorder import EventRecorder
-        from web_interface import routes as r
+        from web_interface import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         recorder.record("error")
@@ -934,7 +803,7 @@ class TestDeleteAndEmptyState:
         assert resp.headers["hx-redirect"] == "/login"
 
     def test_add_registers_inventory_sku(self, client):
-        from web_interface import routes as r
+        from web_interface import context as r
 
         client.post(
             "/inventory/add",
@@ -943,7 +812,7 @@ class TestDeleteAndEmptyState:
         assert "INV-1" in r.inventory_manager.get_all()
 
     def test_delete_removes_inventory_sku(self, client):
-        from web_interface import routes as r
+        from web_interface import context as r
 
         client.post(
             "/inventory/add",
@@ -955,8 +824,8 @@ class TestDeleteAndEmptyState:
 
 class TestFaultsUI:
     def _lock(self, client):
-        vmc = routes.vmc_instance
-        vmc._raise_fault(FaultCode.ICE_301, sku=routes.config.products[0].sku)
+        vmc = context.vmc_instance
+        vmc._raise_fault(FaultCode.ICE_301, sku=context.config.products[0].sku)
 
     def _add_product(self, client):
         client.post(
@@ -980,7 +849,7 @@ class TestFaultsUI:
 
         hm = HealthMonitor()
         routes.set_health_monitor(hm)
-        routes.vmc_instance.set_health_monitor(hm)
+        context.vmc_instance.set_health_monitor(hm)
         try:
             self._add_product(client)
             self._lock(client)
@@ -1025,7 +894,7 @@ class TestFaultsUI:
         r = client.post("/faults/ICE-1/clear", auth=client.auth)
         assert r.status_code == 200
         assert "ICE-301" not in r.text
-        assert routes.vmc_instance.active_faults() == []
+        assert context.vmc_instance.active_faults() == []
 
     def test_clear_unknown_key_returns_404(self, client):
         r = client.post("/faults/NOPE/clear", auth=client.auth)
@@ -1139,7 +1008,7 @@ class TestHealthTabIdentity:
 
 class TestLogsContent:
     def test_logs_tab_shows_written_line(self, client, tmp_path, monkeypatch):
-        from web_interface import routes as r
+        from web_interface import context as r
 
         log_file = tmp_path / "LOGS" / "vmc.log"
         log_file.parent.mkdir()
@@ -1154,7 +1023,7 @@ class TestLogsContent:
 
     def test_log_path_matches_logging_setup(self):
         from services.paths import LOG_FILE
-        from web_interface import routes as r
+        from web_interface import context as r
 
         assert r.LOG_PATH == LOG_FILE
         assert LOG_FILE.parts[-2:] == ("LOGS", "vmc.log")
@@ -1200,7 +1069,7 @@ class TestStillSellingBanner:
     def selling_client(self, client):
         from services.availability import Availability
         from services.health_monitor import HealthMonitor
-        from web_interface import routes as r
+        from web_interface import context as r
 
         avail = Availability()
         r.vmc_instance.set_availability(avail)
@@ -1212,7 +1081,7 @@ class TestStillSellingBanner:
 
     def test_status_shows_still_selling_for_a_soft_fault(self, selling_client):
         client = selling_client
-        vmc_instance = routes.vmc_instance
+        vmc_instance = context.vmc_instance
         vmc_instance._raise_fault(FaultCode.PAY_104, outcome="restart")
         body = client.get("/status", headers={"HX-Request": "true"}).text
         assert "still selling" in body
@@ -1221,7 +1090,7 @@ class TestStillSellingBanner:
 
     def test_status_shows_machine_stopped_for_a_hazard_fault(self, selling_client):
         client = selling_client
-        vmc_instance = routes.vmc_instance
+        vmc_instance = context.vmc_instance
         vmc_instance._raise_fault(FaultCode.WTR_104, outcome="leak")
         body = client.get("/status", headers={"HX-Request": "true"}).text
         assert "Machine Stopped" in body
@@ -1239,7 +1108,7 @@ class TestAvailabilityOnDashboard:
     def avail_client(self, client):
         from services.availability import Availability
         from services.health_monitor import HealthMonitor
-        from web_interface import routes as r
+        from web_interface import context as r
 
         avail = Availability()
         r.set_availability(avail)
@@ -1297,7 +1166,7 @@ class TestAvailabilityOnDashboard:
         assert resp.headers["location"] == "/login"
 
     def test_screen_body_neutral_when_unwired(self, client):
-        from web_interface import routes as r
+        from web_interface import context as r
 
         r.set_availability(None)
         r.set_health_monitor(None)
@@ -1584,7 +1453,7 @@ class TestEnrollment:
             sent["body"] = body
             return True
 
-        monkeypatch.setattr(routes, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.auth, "send_email", fake_send_email)
         c.post("/login", data={"user_id": owner.id, "pin": "1379"})
         page = c.post("/login/enroll/send", data={})
         assert page.status_code == 200
@@ -1632,7 +1501,7 @@ class TestEnrollment:
         async def fake_send_email(gateway, to, subject, body):
             return False
 
-        monkeypatch.setattr(routes, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.auth, "send_email", fake_send_email)
         c.post("/login", data={"user_id": owner.id, "pin": "1379"})
         page = c.post("/login/enroll/send", data={})
         assert "emergency code" in page.text.lower()
@@ -1701,14 +1570,14 @@ class TestSetupWizard:
         routes.set_config_object(cfg)
         routes.set_access_store(store)
         routes.set_display_controller(display)
-        # routes._pending_codes is module-level state shared by every test in
+        # context._pending_codes is module-level state shared by every test in
         # this process (Task 15) — reset it on both sides so a test that
         # generates codes can never leak them into the next one.
-        routes._pending_codes = []
+        context._pending_codes = []
 
         yield cfg, store, display
 
-        routes._pending_codes = []
+        context._pending_codes = []
         routes.set_access_store(None)
         routes.set_display_controller(None)
         web_auth.backoff.reset()
@@ -2048,7 +1917,7 @@ class TestSetupWizard:
             sent["body"] = body
             return True
 
-        monkeypatch.setattr(routes, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.auth, "send_email", fake_send_email)
         page = anon.get("/setup/codes")
         codes = _codes_in(page.text)
         resp = anon.post("/setup/codes/email", data={})
@@ -2077,7 +1946,7 @@ class TestSetupWizard:
         async def fake_send_email(gateway, to, subject, body):
             return False
 
-        monkeypatch.setattr(routes, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.auth, "send_email", fake_send_email)
         anon.get("/setup/codes")
         resp = anon.post("/setup/codes/email", data={})
         assert resp.status_code == 200
@@ -2708,7 +2577,7 @@ class TestMachineReport:
             sent["body"] = body
             return True
 
-        monkeypatch.setattr(routes, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.legacy, "send_email", fake_send_email)
         resp = client.post("/users/report", data={})
         assert resp.status_code == 200
         assert sent["to"] == "ada@example.com"
@@ -2724,7 +2593,7 @@ class TestMachineReport:
             sent["body"] = body
             return True
 
-        monkeypatch.setattr(routes, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.legacy, "send_email", fake_send_email)
         client.post("/users/report", data={})
         for user in store.users.values():
             assert user.pin_hash not in sent["body"]

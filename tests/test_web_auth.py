@@ -5,7 +5,7 @@ from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from services.access import AccessStore, Permission, Role
-from web_interface import auth
+from web_interface import auth, context
 
 
 @pytest.fixture
@@ -108,7 +108,7 @@ class TestTemplateContext:
             cookies={auth.DEVICE_COOKIE: token, auth.SESSION_COOKIE: session}
         )
 
-        ctx = auth.template_context(request)
+        ctx = context.template_context(request)
         current = ctx["current_user"]
 
         assert not hasattr(current, "pin_hash")
