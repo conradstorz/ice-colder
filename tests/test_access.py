@@ -207,11 +207,11 @@ class TestHashing:
         h, s = hash_pin("1379")
         bytes.fromhex(h)
         bytes.fromhex(s)
-        # A literal-PIN hash function would produce the same digest for the
-        # same PIN and (if it depended on the PIN at all) a different digest
-        # for a different one; check the latter instead of scanning for a
-        # substring, which flakes at random on any 64-char hex digest.
-        h2, _s2 = hash_pin("2468")
+        # Hold the salt constant and vary only the PIN, so a difference in
+        # the digest can only be explained by the digest actually depending
+        # on the PIN (rather than on a freshly randomized salt, which would
+        # make any two calls differ regardless of the PIN).
+        h2, _s2 = hash_pin("2468", s)
         assert h != h2
 
     def test_secret_round_trip(self):
