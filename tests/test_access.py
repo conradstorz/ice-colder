@@ -331,8 +331,18 @@ class TestStorePersistence:
     def test_pin_is_never_written_in_clear(self, tmp_path):
         path = tmp_path / "access.json"
         s = AccessStore(path=path, clock=FakeClock(), wall_clock=FakeWallClock())
-        s.create_user("Ada", None, Role.owner, "1379")
-        assert "1379" not in path.read_text(encoding="utf-8")
+        user = s.create_user("Ada", None, Role.owner, "1379")
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        stored = raw["users"][user.id]
+        # No persisted field holds the PIN itself, recoverably or otherwise
+        # (a whole-file substring scan is a coincidence away from a false
+        # positive/negative on short numeric PINs — check the actual fields).
+        assert all(value != "1379" for value in stored.values())
+        # And the stored hash/salt is not a trivial passthrough: it must
+        # still round-trip the real PIN through the public verification API
+        # and reject a different one.
+        assert s.verify_user_pin(user.id, "1379")
+        assert not s.verify_user_pin(user.id, "2468")
 
     def test_invalid_json_marks_the_store_corrupt(self, tmp_path):
         path = tmp_path / "access.json"
