@@ -1,15 +1,63 @@
-"""Stub area router for controls.
+"""Controls level: restart, reset, shutdown with two-tap server-rendered confirm."""
 
-Empty on purpose: Task 1 of the dashboard-v2-shell plan only splits the
-existing routes.py into an area-per-module package; the routes that will
-live here move over in a later, dedicated plan task, one area at a time.
-Registered in web_interface/routes/__init__.py alongside the real routers
-so that later task can add routes here without also touching __init__.py.
-"""
-
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+
+from services import fsm_control
+from web_interface import auth as web_auth
+from web_interface import context
+from web_interface.levels import LEVEL_CONTROLS
+from services.access import Permission
 
 
 def build_router(templates: Jinja2Templates) -> APIRouter:
-    return APIRouter()
+    router = APIRouter()
+
+    @router.get(
+        "/controls",
+        dependencies=[Depends(web_auth.require(Permission.machine_controls))],
+    )
+    async def get_controls(request: Request):
+        """Render the Controls level with three command buttons."""
+        return templates.TemplateResponse(
+            "controls.html",
+            context.template_context(request, level=LEVEL_CONTROLS),
+        )
+
+    @router.get(
+        "/controls/confirm/{command}",
+        dependencies=[Depends(web_auth.require(Permission.machine_controls))],
+    )
+    async def get_confirm(request: Request, command: str):
+        """Render the confirm variant of a command button.
+
+        The confirming query parameter controls which state to render:
+        - absent or truthy: render the confirm variant (Confirm/Cancel pair)
+        - "false": render the plain first-tap button
+        """
+        confirming = request.query_params.get("confirming", "true").lower() != "false"
+
+        return templates.TemplateResponse(
+            "controls.html",
+            context.template_context(
+                request,
+                level=LEVEL_CONTROLS,
+                command=command,
+                confirming=confirming,
+            ),
+        )
+
+    @router.post(
+        "/controls/{command}",
+        dependencies=[
+            Depends(web_auth.require(Permission.machine_controls)),
+            Depends(context.require_htmx),
+        ],
+    )
+    async def post_command(request: Request, command: str):
+        """Execute a machine control command and return the result message."""
+        result = fsm_control.perform_command(command, context.vmc_instance)
+        return HTMLResponse(f"<p>{result}</p>")
+
+    return router
