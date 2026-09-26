@@ -1195,9 +1195,17 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             # product's own stored name/price/kind through unchanged so a
             # placement POST can never smuggle a catalog change, regardless
             # of what a hostile form body contains.
-            update_product(
+            slot_ok = update_product(
                 config, sku, product.name, product.price, slot=slot, kind=None
             )
+            # update_product returns False when the requested slot is
+            # already in use (or negative); that used to be ignored, so a
+            # rejected slot change still wrote the count/tracking below,
+            # leaving placement state half-applied (Copilot review,
+            # web_interface/routes.py:1202). A validation failure must leave
+            # every field of this form unchanged, not just the slot.
+            if not slot_ok:
+                return _render_inventory_table(request)
             if inventory_manager:
                 inventory_manager.add_sku(sku, inventory_count, tracked=tracked)
             else:

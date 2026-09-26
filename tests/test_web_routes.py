@@ -480,6 +480,41 @@ class TestInventoryEndpoints:
         updated = next(p for p in routes.config.products if p.sku == "PLC-6")
         assert updated.slot == 1
 
+    def test_placement_post_with_slot_already_in_use_changes_nothing(
+        self, client, wired
+    ):
+        """update_product returns False when the requested slot already
+        belongs to another product; that return value used to be ignored,
+        so a rejected slot change still wrote the count/tracking flag,
+        leaving placement half-applied (Copilot review,
+        web_interface/routes.py:1202). A slot conflict must leave every
+        field — slot, count, and tracking — exactly as it was."""
+        _cfg, _vmc, inv, _store = wired
+        client.post(
+            "/inventory/add",
+            data={"sku": "PLC-7", "name": "Item A", "price": "2.00", "slot": "1"},
+        )
+        client.post(
+            "/inventory/add",
+            data={"sku": "PLC-8", "name": "Item B", "price": "3.00", "slot": "2"},
+        )
+        client.post(
+            "/inventory/update/PLC-8/placement",
+            data={"slot": "2", "inventory_count": "9", "track_inventory": "on"},
+        )
+        assert inv.get_count("PLC-8") == 9
+        assert inv.is_tracked("PLC-8") is True
+
+        resp = client.post(
+            "/inventory/update/PLC-8/placement",
+            data={"slot": "1", "inventory_count": "50"},  # slot 1 is PLC-7's
+        )
+        assert resp.status_code == 200
+        updated = next(p for p in routes.config.products if p.sku == "PLC-8")
+        assert updated.slot == 2
+        assert inv.get_count("PLC-8") == 9
+        assert inv.is_tracked("PLC-8") is True
+
 
 class TestCatalogPlacementPermissions:
     """A loader restocks (placement) but must never touch price/name/kind
