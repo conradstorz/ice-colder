@@ -319,6 +319,15 @@ async def main():
     def _on_mqtt_connection(connected: bool) -> None:
         health.update_mqtt_status(connected)
         vmc.on_mqtt_connection(connected)
+        if connected:
+            # Anything published while disconnected (most notably the setup
+            # code, if this is a fresh boot: ensure_setup_mode() below runs
+            # before this callback ever fires) was silently dropped by
+            # MQTTClient.publish()'s own "not connected" guard — republish
+            # once connected, and again on every reconnect, so the display
+            # is never left without whatever it should currently show
+            # (Copilot review, main.py:349).
+            display.republish()
 
     mqtt.set_connection_callback(_on_mqtt_connection)
     vmc.set_mqtt_client(mqtt)

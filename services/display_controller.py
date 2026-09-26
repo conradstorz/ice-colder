@@ -116,6 +116,28 @@ class DisplayController:
         logger.info(f"Display: setup code cleared, mode -> {new_mode.value}")
         self._publish_mode(new_mode)
 
+    def republish(self) -> None:
+        """Re-send whatever is currently shown, unconditionally.
+
+        Called when the MQTT connection is (re-)established (Copilot
+        review, main.py:349): `ensure_setup_mode()` runs right after the
+        MQTT client is constructed but before `mqtt.run()` connects it, so
+        `show_setup_code()`'s publish attempt is silently dropped by
+        `MQTTClient.publish()`'s own "not connected" guard — yet
+        `_setup_code` is already set at that point, so the `setup_code !=
+        code` check in `ensure_setup_mode()` skips every later call on a
+        real first boot, and the code never reaches the display. Unlike
+        `update_for_state`/`show_setup_code`, this never checks whether the
+        mode already matches — a mode published while disconnected was
+        never actually sent, so equality with the in-memory value proves
+        nothing about what the display has seen.
+        """
+        if self._setup_code is not None:
+            message = f"Setup code: {self._setup_code[:4]} {self._setup_code[4:]}"
+            self._publish_mode(DisplayMode.maintenance, message=message)
+        else:
+            self._publish_mode(self._current_mode)
+
     def _publish_mode(self, mode: DisplayMode, message: str | None = None):
         """Publish a DisplayCommand to MQTT."""
         if self._mqtt_client is None or self._loop is None:
