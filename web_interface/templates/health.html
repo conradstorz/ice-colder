@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Health · Vending Machine{% endblock %}
+{% block body %}
+<div class="space-y-4">
+
+  {% if vmc_build %}
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+    <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+      <span class="w-2.5 h-2.5 rounded-full flex-shrink-0 {{ 'bg-green-500' if mqtt_connected else 'bg-red-500' }}"></span>
+      <span class="text-sm text-gray-700">MQTT {{ 'connected' if mqtt_connected else 'disconnected' }}</span>
+      <span class="text-gray-300" aria-hidden="true">·</span>
+      <span class="text-sm text-gray-700">VMC {{ vmc_state }}</span>
+      <span class="text-gray-300" aria-hidden="true">·</span>
+      <span class="font-mono text-xs text-gray-500" title="{{ vmc_build.commit }}">{{ vmc_build.commit_short }}</span>
+      <span class="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">{{ vmc_build.source }}</span>
+      <span class="text-xs text-gray-400">up {{ vmc_build.uptime_seconds|humanize_seconds }}</span>
+      <span class="font-mono text-xs text-gray-500">{{ vmc_build.machine_id or "—" }}</span>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-touch">
+    {% for tile in tiles %}
+      {% if tile.enabled %}
+        {% include "partials/tile.html" %}
+      {% endif %}
+    {% endfor %}
+  </div>
+
+</div>
+{% endblock %}

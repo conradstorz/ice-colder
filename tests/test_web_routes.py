@@ -599,7 +599,7 @@ _MATRIX_ROUTES = [
     ("GET", "/health", Permission.view_status),
     ("GET", "/screen", Permission.view_status),
     ("GET", "/inventory", Permission.view_status),
-    ("GET", "/logs", Permission.view_logs),
+    ("GET", "/health/logs", Permission.view_logs),
     ("GET", "/inventory/new", Permission.edit_catalog),
     ("GET", "/config/machine", Permission.edit_contacts),
     ("GET", "/config/contacts", Permission.edit_contacts),
@@ -708,12 +708,6 @@ class TestActionEndpoint:
         assert resp.status_code == 200
         assert "Reset complete" in resp.text
         assert r.vmc_instance.state == "idle"
-
-
-class TestLogsEndpoint:
-    def test_logs_returns_html(self, client):
-        resp = client.get("/logs")
-        assert resp.status_code == 200
 
 
 class TestActivityEndpoint:
@@ -1096,29 +1090,28 @@ class TestHealthTabIdentity:
         finally:
             routes.set_health_monitor(None)
 
-    def test_expected_subsystems_listed_when_silent(self, client):
-        self._hm()
-        try:
-            r = client.get("/health", auth=client.auth)
-            for name in ("vending", "mdb", "ice_maker"):
-                assert name in r.text
-            assert r.text.count("Never seen") >= 3
-        finally:
-            routes.set_health_monitor(None)
-
     def test_heartbeat_only_row_shows_dashes(self, client):
+        # Retargeted (Task 6): the per-subsystem uptime/firmware/contract
+        # row this checks now lives on /health/subsystems, not /health
+        # (Task 6 splits the old single fragment across the six Health
+        # levels) -- listing every EXPECTED_SUBSYSTEMS name itself is
+        # covered by tests/test_routes_health.py now, so that half of the
+        # old test_expected_subsystems_listed_when_silent is not repeated
+        # here.
         hm = self._hm()
         try:
             hm.record_heartbeat(
                 "vending", {"subsystem": "vending", "uptime_seconds": 90}
             )
-            r = client.get("/health", auth=client.auth)
+            r = client.get("/health/subsystems", auth=client.auth)
             assert "1m" in r.text  # uptime humanized
             assert "—" in r.text  # firmware/contract/hardware unknown
         finally:
             routes.set_health_monitor(None)
 
     def test_capabilities_render(self, client):
+        # Retargeted (Task 6): identity fields (brand/model/hardware id/ip)
+        # now live on the per-subsystem detail page, not /health.
         hm = self._hm()
         try:
             hm.record_heartbeat("mdb", {"subsystem": "mdb", "uptime_seconds": 5})
@@ -1135,31 +1128,21 @@ class TestHealthTabIdentity:
                     "commands": ["refund"],
                 },
             )
-            r = client.get("/health", auth=client.auth)
+            r = client.get("/health/subsystems/mdb", auth=client.auth)
             assert "abc1234" in r.text
             assert "0.3.0" in r.text
             assert "ice-colder mdb-sim" in r.text
             assert "02:11:22:33:44:55" in r.text
             assert "172.18.0.7" in r.text
-            assert "refund" in r.text  # in the row title
         finally:
             routes.set_health_monitor(None)
 
 
 class TestLogsContent:
-    def test_logs_tab_shows_written_line(self, client, tmp_path, monkeypatch):
-        from web_interface import context as r
-
-        log_file = tmp_path / "LOGS" / "vmc.log"
-        log_file.parent.mkdir()
-        log_file.write_text(
-            "first line\nunique-marker-42;INFO 2026-09-21\n", encoding="utf-8"
-        )
-        monkeypatch.setattr(r, "LOG_PATH", log_file)
-
-        resp = client.get("/logs")
-        assert resp.status_code == 200
-        assert "unique-marker-42" in resp.text
+    # test_logs_tab_shows_written_line removed here (Task 6): GET /logs is
+    # gone (replaced by GET /health/logs) and
+    # tests/test_routes_health.py::...::test_shows_a_written_line covers
+    # the identical behavior against the new URL.
 
     def test_log_path_matches_logging_setup(self):
         from services.paths import LOG_FILE
@@ -1237,9 +1220,10 @@ class TestStillSellingBanner:
         assert "still selling" not in body
 
     def test_health_permissives_table_shows_the_gate(self, selling_client):
+        # Retargeted (Task 6): the permissive table moved to
+        # /health/availability.
         client = selling_client
-        body = client.get("/health", headers={"HX-Request": "true"}).text
-        assert "Gate" in body
+        body = client.get("/health/availability", headers={"HX-Request": "true"}).text
         assert "fulfillment" in body
 
 
@@ -1282,8 +1266,10 @@ class TestAvailabilityOnDashboard:
         assert "Machine Stopped" in resp.text
 
     def test_health_lists_permissives_with_not_instrumented(self, avail_client):
+        # Retargeted (Task 6): the permissive table moved to
+        # /health/availability.
         client, _ = avail_client
-        resp = client.get("/health")
+        resp = client.get("/health/availability")
         assert "bag_present" in resp.text
         assert "not instrumented" in resp.text
         assert "vending_alive" in resp.text

@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Logs · Vending Machine{% endblock %}
+{% block body %}
+{# No hx-trigger="every ..." anywhere on this level (executor resolution 7):
+   /status, /kpi and /pill are the only polling endpoints in part 2. Refresh
+   re-hx-gets this same level -- with no hx-target/hx-swap of its own it
+   inherits <body>'s ambient hx-target="main" hx-swap="innerHTML show:top",
+   the same mechanism every boosted navigation link on this shell already
+   relies on. #}
+<div class="space-y-3">
+  <div class="flex justify-end">
+    <button hx-get="/health/logs"
+            class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">Refresh</button>
+  </div>
+  <pre class="bg-gray-950 text-green-400 font-mono text-xs rounded-lg p-4 overflow-y-auto h-96 leading-relaxed">{% for line in logs %}{{ line[:200] }}{% if line|length > 200 %}…{% endif %}
+{% endfor %}</pre>
+</div>
+{% endblock %}

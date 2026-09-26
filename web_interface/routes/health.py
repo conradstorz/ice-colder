@@ -1,15 +1,368 @@
-"""Stub area router for health.
+"""The six Health levels (spec §2): the /health landing page and its four
+sub-levels (Subsystems, Faults, Availability, Logs), plus the per-subsystem
+detail page and the fault-clear flow.
 
-Empty on purpose: Task 1 of the dashboard-v2-shell plan only splits the
-existing routes.py into an area-per-module package; the routes that will
-live here move over in a later, dedicated plan task, one area at a time.
-Registered in web_interface/routes/__init__.py alongside the real routers
-so that later task can add routes here without also touching __init__.py.
+Data sources are exactly the ones the old routes/legacy.py `GET /health`
+fragment used (health_monitor.get_summary(), HealthMonitor.empty_subsystem_
+row(), availability.table()/.payment_enabled/.payment_blocking_reasons(),
+vmc.active_faults()) -- this module only splits that single fragment's
+content across the six levels; see .superpowers/sdd/part2/task-6-brief.md.
 """
 
-from fastapi import APIRouter
+import asyncio
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+
+from contracts.vending_machine import EXPECTED_SUBSYSTEMS, PAYMENT_BLOCKING_FAULTS
+from services.access import Permission
+from services.health_monitor import HealthMonitor
+from web_interface import auth as web_auth
+from web_interface import context
+from web_interface.levels import (
+    LEVEL_HEALTH,
+    LEVEL_HEALTH_AVAILABILITY,
+    LEVEL_HEALTH_FAULTS,
+    LEVEL_HEALTH_LOGS,
+    LEVEL_HEALTH_SUBSYSTEMS,
+    Level,
+)
+
+# active_faults() reports fault codes as strings (FaultCode.value); compare
+# against the contract's enum set once, here, rather than in _fault_gate.
+_PAYMENT_BLOCKING_CODES = {code.value for code in PAYMENT_BLOCKING_FAULTS}
+
+
+def _fault_gate(fault: dict) -> str:
+    """Classify one active fault into "safety" / "fulfillment" / "alert".
+
+    Executor resolution 1 (task-6-brief.md): the spec asks for "the gate
+    class per fault", but no such mapping exists in the codebase --
+    services/availability.py's Gate enum classifies permissive *rows*, not
+    faults, and contracts/vending_machine.py's FAULT_TABLE carries
+    severity/scope but no gate. This derives it once, here, and nowhere
+    else (never inline in a template, never re-derived):
+
+      * code in PAYMENT_BLOCKING_FAULTS -> "safety" (those six codes are
+        exactly the ones that can inhibit payment -- see
+        services/availability.py's Gate docstring)
+      * else scope == "product" -> "fulfillment" (blocks only that sale)
+      * else -> "alert" (blocks nothing)
+
+    A reversible part-2 stand-in: the spec never defined a fault-to-gate
+    mapping: a future task may add a real one (e.g. a `gate` field on
+    FaultSpec) and delete this function.
+    """
+    if fault["code"] in _PAYMENT_BLOCKING_CODES:
+        return "safety"
+    if fault["scope"] == "product":
+        return "fulfillment"
+    return "alert"
+
+
+def _subsystem_summary() -> dict[str, dict]:
+    """One row per EXPECTED_SUBSYSTEMS entry: the live row from the health
+    monitor when it has ever heard from that subsystem, else the neutral
+    empty_subsystem_row() placeholder -- and the placeholder for every
+    subsystem when no health monitor is wired at all (rule 3)."""
+    live = (
+        context.health_monitor.get_summary()["subsystems"]
+        if context.health_monitor
+        else {}
+    )
+    return {
+        name: live.get(name, HealthMonitor.empty_subsystem_row())
+        for name in EXPECTED_SUBSYSTEMS
+    }
+
+
+def _faults_with_age() -> list[dict]:
+    """vmc.active_faults() joined with health_monitor's since_seconds and
+    this module's derived gate, on `key` -- exactly the join
+    context._render_status already does for the same reason (executor
+    resolution 6). A fault renders without an age when no health monitor
+    is wired, rather than failing; an empty list when no VMC is wired."""
+    if not context.vmc_instance:
+        return []
+    faults = context.vmc_instance.active_faults()
+    ages: dict[str, float | None] = {}
+    if context.health_monitor:
+        ages = {
+            f["key"]: f["since_seconds"]
+            for f in context.health_monitor.get_summary()["active_faults"]
+        }
+    for f in faults:
+        f["since_seconds"] = ages.get(f["key"])
+        f["gate"] = _fault_gate(f)
+    return faults
+
+
+def _availability_context_line(avail) -> str:
+    """Availability tile's summary line on /health (resolution 8)."""
+    if not avail:
+        return "—"
+    if avail.payment_enabled:
+        return "Payment enabled"
+    n = len(avail.payment_blocking_reasons())
+    return f"Payment disabled ({n})"
 
 
 def build_router(templates: Jinja2Templates) -> APIRouter:
-    return APIRouter()
+    router = APIRouter()
+
+    def _render_fault_list_oob(request: Request) -> HTMLResponse:
+        """Re-render health_faults.html's `body` block standalone, marked
+        hx-swap-oob, for POST /health/faults/{key}/clear's response
+        (executor resolution 9).
+
+        confirm_button.html's Confirm tap has a fixed hx-target: the
+        just-cleared fault's own small per-row button wrapper
+        (#clear-<key>) -- but clearing a fault must remove its whole row,
+        not just change that one button's state, so the entire
+        #fault-list container is refreshed out-of-band instead, the same
+        pattern base.html's own #bar already relies on (Task 4) for
+        exactly the same reason: something outside the literal hx-target
+        needs to change too.
+
+        Template.new_context() + Template.blocks["body"] is the standard
+        Jinja2 way to render one block without going through the
+        {% extends %} chain (confirmed against this project's Jinja2
+        3.1.6), so this reuses health_faults.html's own row markup as the
+        single source of truth rather than duplicating it in Python.
+        """
+        principal = web_auth.current_principal(request)
+        perms = principal.perms if principal else frozenset()
+        can_clear = Permission.clear_faults in perms
+        faults = _faults_with_age()
+        template = templates.get_template("health_faults.html")
+        ctx = template.new_context(
+            context.template_context(
+                request,
+                level=LEVEL_HEALTH_FAULTS,
+                faults=faults,
+                can_clear=can_clear,
+                oob=True,
+            )
+        )
+        html = "".join(template.blocks["body"](ctx))
+        return HTMLResponse(html)
+
+    @router.get(
+        "/health",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.view_status))],
+    )
+    async def health_home(request: Request):
+        principal = web_auth.current_principal(request)
+        perms = principal.perms if principal else frozenset()
+        summary = (
+            context.health_monitor.get_summary() if context.health_monitor else None
+        )
+        subsystems = _subsystem_summary()
+        faults = _faults_with_age()
+        ok = sum(1 for r in subsystems.values() if r["alive"] and not r["stale"])
+
+        # Resolution 8: build all four sub-tile dicts with the keys
+        # partials/tile.html expects, coming_soon false on all four --
+        # Logs is the only one whose `enabled` depends on the viewer's
+        # permissions rather than always being true.
+        tiles = [
+            {
+                "title": "Subsystems",
+                "url": LEVEL_HEALTH_SUBSYSTEMS.url,
+                "icon": "health",
+                "context": f"{ok}/{len(subsystems)} OK",
+                "enabled": True,
+                "coming_soon": False,
+            },
+            {
+                "title": "Faults",
+                "url": LEVEL_HEALTH_FAULTS.url,
+                "icon": "health",
+                "context": f"{len(faults)} active fault{'s' if len(faults) != 1 else ''}",
+                "enabled": True,
+                "coming_soon": False,
+            },
+            {
+                "title": "Availability",
+                "url": LEVEL_HEALTH_AVAILABILITY.url,
+                "icon": "health",
+                "context": _availability_context_line(context.availability),
+                "enabled": True,
+                "coming_soon": False,
+            },
+            {
+                "title": "Logs",
+                "url": LEVEL_HEALTH_LOGS.url,
+                "icon": "health",
+                "context": "Last 50 lines",
+                "enabled": Permission.view_logs in perms,
+                "coming_soon": False,
+            },
+        ]
+
+        return templates.TemplateResponse(
+            "health.html",
+            context.template_context(
+                request,
+                level=LEVEL_HEALTH,
+                tiles=tiles,
+                mqtt_connected=summary["mqtt_connected"] if summary else None,
+                vmc_state=summary["vmc_state"] if summary else None,
+                vmc_build=summary["vmc"] if summary else None,
+            ),
+        )
+
+    @router.get(
+        "/health/subsystems",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.view_status))],
+    )
+    async def subsystems_view(request: Request):
+        return templates.TemplateResponse(
+            "health_subsystems.html",
+            context.template_context(
+                request, level=LEVEL_HEALTH_SUBSYSTEMS, subsystems=_subsystem_summary()
+            ),
+        )
+
+    @router.get(
+        "/health/subsystems/{name}",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.view_status))],
+    )
+    async def subsystem_detail(request: Request, name: str):
+        if name not in EXPECTED_SUBSYSTEMS:
+            raise HTTPException(status_code=404, detail=f"Unknown subsystem '{name}'")
+        row = _subsystem_summary()[name]
+
+        # health_monitor.get_summary()["temperatures"] is keyed by sensor
+        # location (e.g. "evaporator", "cabinet"), with no field anywhere
+        # linking a location back to the EXPECTED_SUBSYSTEMS name that
+        # reported it -- the spec asks for "temperature ranges where the
+        # subsystem reports them", but there is no subsystem -> location
+        # mapping in the data model to filter by, and adding one is out of
+        # this task's scope (services/health_monitor.py is not ours to
+        # touch). Reversible part-2 stand-in: show every known reading on
+        # every subsystem's detail page rather than fabricate an
+        # attribution the codebase doesn't support.
+        summary = (
+            context.health_monitor.get_summary() if context.health_monitor else None
+        )
+        temperatures = summary["temperatures"] if summary else {}
+
+        level = Level.child(LEVEL_HEALTH_SUBSYSTEMS, name, f"/health/subsystems/{name}")
+        return templates.TemplateResponse(
+            "health_subsystem.html",
+            context.template_context(
+                request, level=level, name=name, row=row, temperatures=temperatures
+            ),
+        )
+
+    @router.get(
+        "/health/faults",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.view_status))],
+    )
+    async def faults_view(request: Request):
+        principal = web_auth.current_principal(request)
+        perms = principal.perms if principal else frozenset()
+        can_clear = Permission.clear_faults in perms
+        return templates.TemplateResponse(
+            "health_faults.html",
+            context.template_context(
+                request,
+                level=LEVEL_HEALTH_FAULTS,
+                faults=_faults_with_age(),
+                can_clear=can_clear,
+                oob=False,
+            ),
+        )
+
+    @router.get(
+        "/health/faults/{key}/clear/confirm",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.clear_faults))],
+    )
+    async def fault_clear_confirm(
+        request: Request, key: str, confirming: str | None = Query(default=None)
+    ):
+        """confirm_button.html's confirm_url contract (Task 5): absent or
+        anything but the literal string "false" renders the confirming
+        (Confirm/Cancel) state; "false" renders the plain first-tap
+        button -- this is what its Cancel button sends via hx-vals."""
+        return templates.TemplateResponse(
+            "partials/confirm_button.html",
+            context.template_context(
+                request,
+                label="Clear",
+                confirm_label="Confirm",
+                post_url=f"/health/faults/{key}/clear",
+                target=f"#clear-{key}",
+                confirm_url=f"/health/faults/{key}/clear/confirm",
+                confirming=(confirming != "false"),
+            ),
+        )
+
+    @router.post(
+        "/health/faults/{key}/clear",
+        response_class=HTMLResponse,
+        dependencies=[
+            Depends(web_auth.require(Permission.clear_faults)),
+            Depends(context.require_htmx),
+        ],
+    )
+    async def clear_fault(request: Request, key: str):
+        """Replaces the old POST /faults/{key}/clear (legacy.py keeps that
+        route for Home's status fragment; Task 15 retires it -- executor
+        resolution 2)."""
+        if not context.vmc_instance or not context.vmc_instance.clear_fault(
+            key, by="admin"
+        ):
+            raise HTTPException(
+                status_code=404, detail=f"No active fault with key {key}"
+            )
+        return _render_fault_list_oob(request)
+
+    @router.get(
+        "/health/availability",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.view_status))],
+    )
+    async def availability_view(request: Request):
+        avail = context.availability
+        rows = avail.table() if avail else []
+        payment_enabled = avail.payment_enabled if avail else None
+        blocking_reasons = avail.payment_blocking_reasons() if avail else []
+        per_kind = {
+            "ice": avail.sale_available("ice") if avail else (None, []),
+            "water": avail.sale_available("water") if avail else (None, []),
+        }
+        return templates.TemplateResponse(
+            "health_availability.html",
+            context.template_context(
+                request,
+                level=LEVEL_HEALTH_AVAILABILITY,
+                rows=rows,
+                payment_enabled=payment_enabled,
+                blocking_reasons=blocking_reasons,
+                per_kind=per_kind,
+            ),
+        )
+
+    @router.get(
+        "/health/logs",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.view_logs))],
+    )
+    async def logs_view(request: Request):
+        # 50 lines per the spec (executor resolution 7); the old fragment's
+        # 10 was never the spec value.
+        lines = await asyncio.to_thread(context.tail, context.LOG_PATH, 50)
+        return templates.TemplateResponse(
+            "health_logs.html",
+            context.template_context(request, level=LEVEL_HEALTH_LOGS, logs=lines),
+        )
+
+    return router

@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Availability · Vending Machine{% endblock %}
+{% block body %}
+<div class="space-y-4">
+
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+    <div class="flex items-center gap-3">
+      <span class="w-2.5 h-2.5 rounded-full flex-shrink-0
+        {% if payment_enabled is none %}bg-gray-300{% elif payment_enabled %}bg-green-500{% else %}bg-red-500{% endif %}"></span>
+      <span class="text-tile-title font-semibold text-gray-900">
+        {% if payment_enabled is none %}Payment status unknown
+        {% elif payment_enabled %}Payment enabled
+        {% else %}Payment disabled{% endif %}
+      </span>
+    </div>
+    {% if blocking_reasons %}
+    <p class="text-sm text-gray-500 mt-1">{{ blocking_reasons|join(', ') }}</p>
+    {% endif %}
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-touch">
+    {% for kind, label in (('ice', 'Ice'), ('water', 'Water')) %}
+    {% set ok, failing = per_kind[kind] %}
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+      <div class="flex items-center gap-2">
+        <span class="w-2.5 h-2.5 rounded-full flex-shrink-0
+          {% if ok is none %}bg-gray-300{% elif ok %}bg-green-500{% else %}bg-red-500{% endif %}"></span>
+        <span class="font-semibold text-gray-900">{{ label }}</span>
+      </div>
+      {% if failing %}<p class="text-sm text-gray-500 mt-1">{{ failing|join(', ') }}</p>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="space-y-2">
+    <h2 class="text-xs font-medium text-gray-400 uppercase tracking-wide">
+      Permissives — only <span class="text-red-600">safety</span> rows stop the machine
+    </h2>
+    {% for row in rows %}
+    <div class="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+      <span class="font-mono text-xs text-gray-700">{{ row.name }}</span>
+      <span class="text-xs text-gray-400">{{ row.applies_to }}</span>
+      <span class="text-xs px-1.5 py-0.5 rounded
+        {% if row.gate == 'safety' %}bg-red-50 text-red-600
+        {% elif row.gate == 'fulfillment' %}bg-gray-100 text-gray-600
+        {% else %}bg-gray-50 text-gray-400{% endif %}">{{ row.gate }}</span>
+      <span class="text-sm font-medium
+        {% if not row.instrumented %}text-gray-400
+        {% elif row.state == 'pass' %}text-green-600
+        {% elif row.state == 'fail' %}text-red-600
+        {% else %}text-amber-600{% endif %}">
+        {{ 'not instrumented' if not row.instrumented else row.state }}
+      </span>
+      {% if row.detail %}<span class="text-xs text-gray-500">{{ row.detail }}</span>{% endif %}
+    </div>
+    {% else %}
+    <p class="text-sm text-gray-400">No availability data.</p>
+    {% endfor %}
+  </div>
+
+</div>
+{% endblock %}

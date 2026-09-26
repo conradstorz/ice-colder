@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Faults · Vending Machine{% endblock %}
+{% block body %}
+{# `oob` is only ever true when routes/health.py's POST /health/faults/{key}/clear
+   renders this same block standalone (Template.blocks["body"]) to refresh the
+   whole list out-of-band after a clear -- the ordinary page GET always passes
+   oob=False, since marking this div hx-swap-oob on a normal (boosted or full)
+   page load would make htmx divert it out of the main-content swap entirely,
+   leaving `main` rendered without its fault list. #}
+<div id="fault-list" class="space-y-2"{% if oob %} hx-swap-oob="true"{% endif %}>
+  {% if faults %}
+    {% for f in faults %}
+    <div class="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+      <span class="font-mono text-xs px-1.5 py-0.5 rounded
+        {% if f.severity == 'critical' %}bg-red-100 text-red-700
+        {% elif f.severity == 'lockout' %}bg-orange-100 text-orange-700
+        {% else %}bg-amber-100 text-amber-700{% endif %}">{{ f.code }}</span>
+      <span class="text-sm text-gray-700">{{ f.description }}</span>
+      <span class="text-xs text-gray-400">{{ f.product or "machine" }}</span>
+      <span class="text-xs px-1.5 py-0.5 rounded
+        {% if f.gate == 'safety' %}bg-red-50 text-red-600
+        {% elif f.gate == 'fulfillment' %}bg-gray-100 text-gray-600
+        {% else %}bg-gray-50 text-gray-400{% endif %}">{{ f.gate }}</span>
+      {% if f.since_seconds is not none %}
+      <span class="text-xs text-gray-400">
+        {% if f.since_seconds >= 60 %}{{ (f.since_seconds // 60)|int }}m{% else %}{{ f.since_seconds|int }}s{% endif %} ago
+      </span>
+      {% endif %}
+      {% if can_clear %}
+      <div class="ml-auto">
+        {% set target = "#clear-" ~ f.key %}
+        {% set confirm_url = "/health/faults/" ~ f.key ~ "/clear/confirm" %}
+        {% set post_url = "/health/faults/" ~ f.key ~ "/clear" %}
+        {% set label = "Clear" %}
+        {% set confirm_label = "Confirm" %}
+        {% set confirming = false %}
+        {% include "partials/confirm_button.html" with context %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  {% else %}
+  <p class="text-sm text-gray-400">No active faults</p>
+  {% endif %}
+</div>
+{% endblock %}

@@ -16,7 +16,6 @@ from fastapi.templating import Jinja2Templates
 from loguru import logger
 
 from config.config_model import Product
-from contracts.vending_machine import EXPECTED_SUBSYSTEMS
 from services.access import AccessError, OwnerExistsError, Permission, Role
 from services.auth_policy import pin_problem
 from services.config_store import (
@@ -26,7 +25,6 @@ from services.config_store import (
     update_product,
 )
 from services.fsm_control import perform_command
-from services.health_monitor import HealthMonitor
 from services.mailer import send_email
 from web_interface import auth as web_auth
 from web_interface import context
@@ -140,40 +138,6 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
     async def control_action(command: str):
         result = perform_command(command, context.vmc_instance)
         return HTMLResponse(f"<p>{result}</p>")
-
-    @router.get(
-        "/logs",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.view_logs))],
-    )
-    async def view_logs(request: Request):
-        lines = await asyncio.to_thread(context.tail, context.LOG_PATH, 10)
-        return templates.TemplateResponse(
-            "partials/logs_fragment.html",
-            context.template_context(request, logs=lines),
-        )
-
-    @router.get(
-        "/health",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.view_status))],
-    )
-    async def health_summary(request: Request):
-        if not context.health_monitor:
-            return HTMLResponse("<div>Health monitor not initialized</div>")
-        health = context.health_monitor.get_summary()
-        for name in EXPECTED_SUBSYSTEMS:
-            health["subsystems"].setdefault(name, HealthMonitor.empty_subsystem_row())
-        health["availability"] = (
-            context.availability.table() if context.availability else []
-        )
-        health["payment_enabled"] = (
-            context.availability.payment_enabled if context.availability else None
-        )
-        return templates.TemplateResponse(
-            "partials/health_fragment.html",
-            context.template_context(request, health=health),
-        )
 
     @router.get(
         "/activity",
