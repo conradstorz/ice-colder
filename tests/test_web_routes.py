@@ -1311,6 +1311,54 @@ class TestAvailabilityOnDashboard:
             r.set_health_monitor(None)
 
 
+class TestOfflineAssets:
+    """Program goal 3 / part-1 acceptance: the tablet works with no internet
+    at the machine. login.html, enroll.html, setup.html, setup_codes.html
+    and setup_review_user.html all loaded HTMX from unpkg.com, so a machine
+    with the network cable unplugged would never run it — every hx-post
+    form (including /login/enroll's emergency-code path, guarded by
+    require_htmx) would fall back to a plain, non-HTMX request and get
+    refused, so offline enrollment could not actually complete (Copilot
+    review, web_interface/templates/enroll.html:25). HTMX is now vendored
+    at web_interface/static/htmx.min.js and served with no network
+    dependency; Tailwind is deliberately left on its CDN (losing it only
+    degrades styling, not function)."""
+
+    @pytest.fixture
+    def public(self, tmp_path):
+        cfg = ConfigModel()
+        store = AccessStore(path=tmp_path / "access.json")
+        store.create_user("Ada", "ada@example.com", Role.owner, "1379")
+        store.finalize_setup()
+        routes.set_config_object(cfg)
+        routes.set_access_store(store)
+        with TestClient(app, follow_redirects=False) as c:
+            c.headers["HX-Request"] = "true"
+            yield c
+        routes.set_access_store(None)
+
+    def test_static_htmx_is_served_locally(self, public):
+        resp = public.get("/static/htmx.min.js")
+        assert resp.status_code == 200
+        assert b"htmx" in resp.content.lower()
+
+    def test_login_page_loads_htmx_from_the_local_static_file(self, public):
+        resp = public.get("/login")
+        assert "unpkg.com" not in resp.text
+        assert "/static/htmx.min.js" in resp.text
+
+    def test_setup_page_loads_htmx_from_the_local_static_file(self, tmp_path):
+        cfg = ConfigModel()
+        store = AccessStore(path=tmp_path / "access.json")
+        routes.set_config_object(cfg)
+        routes.set_access_store(store)
+        with TestClient(app, follow_redirects=False) as c:
+            resp = c.get("/setup")
+        assert "unpkg.com" not in resp.text
+        assert "/static/htmx.min.js" in resp.text
+        routes.set_access_store(None)
+
+
 class TestLogin:
     @pytest.fixture
     def public(self, tmp_path):
