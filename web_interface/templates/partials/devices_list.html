@@ -18,6 +18,7 @@
     </thead>
     <tbody class="divide-y divide-gray-100">
       {% for device in devices %}
+      {% set may_write = owner_id not in device.trusted_user_ids or "manage_ownership" in perms %}
       <tr class="hover:bg-gray-50">
         <td class="py-3 text-gray-900">{{ device.label }}</td>
         <td class="py-3 text-gray-600">
@@ -36,7 +37,7 @@
         </td>
         <td class="py-3 text-gray-600">{{ device.last_seen_at or "never" }}</td>
         <td class="py-3">
-          {% if "manage_users" in perms %}
+          {% if "manage_users" in perms and may_write %}
           <div class="flex flex-wrap items-center gap-2">
             <button
               hx-post="/devices/{{ device.id }}/shared"

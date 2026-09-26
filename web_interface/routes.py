@@ -1168,6 +1168,29 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         ):
             raise HTTPException(status_code=403, detail="Not permitted")
 
+    def _guard_owner_device(principal: web_auth.Principal, device) -> None:
+        """403 when *device* trusts the owner and the caller lacks
+        manage_ownership.
+
+        Sibling to _guard_owner_target for the device case: same
+        permission logic (manage_users covers everyone except the owner,
+        manage_ownership is required to touch the owner), but the target
+        here is "a device the owner is trusted on" rather than "the owner's
+        user record" — spec §4's "remove devices" line sits inside the
+        manage_users row whose secretary cell reads "never the owner", and
+        that carve-out has to reach both device writes (forget, shared) the
+        same way it reaches the four user writes. Called after the caller
+        has already confirmed *device* exists (a 404 for an unknown id must
+        not depend on ownership), before any store mutation.
+        """
+        owner = access_store.owner()
+        if (
+            owner is not None
+            and owner.id in device.trusted_user_ids
+            and Permission.manage_ownership not in principal.perms
+        ):
+            raise HTTPException(status_code=403, detail="Not permitted")
+
     def _user_row(user) -> dict:
         # A plain dict with only what a template needs — never pin_hash or
         # pin_salt, the same hazard web_auth.TemplateUser exists to avoid
@@ -1386,6 +1409,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         }
 
     def _render_devices_list(request: Request, *, notice: str | None = None):
+        owner = access_store.owner()
         devices = sorted(access_store.devices.values(), key=lambda d: d.label)
         user_names = {u.id: u.name for u in access_store.users.values()}
         return templates.TemplateResponse(
@@ -1394,6 +1418,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
                 request,
                 devices=[_device_row(d) for d in devices],
                 user_names=user_names,
+                owner_id=owner.id if owner else None,
                 notice=notice,
             ),
         )
@@ -1415,8 +1440,14 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         ],
     )
     async def forget_device_route(request: Request, device_id: str):
-        if device_id not in access_store.devices:
+        device = access_store.devices.get(device_id)
+        if device is None:
             raise HTTPException(status_code=404, detail="No such device")
+        # Existence is checked first so a 404 for an unknown id never
+        # depends on ownership; the owner-device guard runs only once we
+        # know there is a device to reason about.
+        principal = web_auth.current_principal(request)
+        _guard_owner_device(principal, device)
         # Order matters: a forgotten device must not keep whoever is using it
         # logged in one request longer than necessary (resolve_session would
         # eventually refuse it once the device record is gone, but ending the
@@ -1438,6 +1469,8 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         device = access_store.devices.get(device_id)
         if device is None:
             raise HTTPException(status_code=404, detail="No such device")
+        principal = web_auth.current_principal(request)
+        _guard_owner_device(principal, device)
         access_store.set_device_shared(device_id, not device.shared)
         return _render_devices_list(request)
 

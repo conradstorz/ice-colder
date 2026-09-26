@@ -2017,6 +2017,83 @@ class TestDeviceManagement:
         resp = client.post("/devices/no-such-device/forget")
         assert resp.status_code == 404
 
+    def test_secretary_forbidden_from_forgetting_the_owners_device(
+        self, login_as, wired
+    ):
+        """§4: 'remove devices' sits inside the manage_users row whose
+        secretary cell reads 'never the owner' — a secretary must not be
+        able to force the owner's re-enrollment on demand."""
+        _cfg, _vmc, _inv, store = wired
+        owner = login_as(Role.owner)
+        secretary = login_as(Role.secretary)
+        device_id = next(
+            d.id
+            for d in store.devices.values()
+            if store.owner().id in d.trusted_user_ids
+        )
+
+        resp = secretary.post(f"/devices/{device_id}/forget")
+
+        assert resp.status_code == 403
+        assert device_id in store.devices
+        assert store.owner().id in store.devices[device_id].trusted_user_ids
+        # A 403 that revoked anyway would still be a breach: the owner's
+        # own session, on that very device, must keep working.
+        assert owner.get("/devices").status_code == 200
+
+    def test_secretary_forbidden_from_sharing_the_owners_device(self, login_as, wired):
+        _cfg, _vmc, _inv, store = wired
+        login_as(Role.owner)
+        secretary = login_as(Role.secretary)
+        device_id = next(
+            d.id
+            for d in store.devices.values()
+            if store.owner().id in d.trusted_user_ids
+        )
+        before = store.devices[device_id].shared
+
+        resp = secretary.post(f"/devices/{device_id}/shared")
+
+        assert resp.status_code == 403
+        assert store.devices[device_id].shared == before
+
+    def test_secretary_may_still_manage_a_device_the_owner_is_not_on(
+        self, login_as, wired
+    ):
+        """The guard must not over-restrict: managing ordinary staff
+        devices is the secretary's actual job."""
+        _cfg, _vmc, _inv, store = wired
+        secretary = login_as(Role.secretary)
+        loader_client, loader = make_client(store, Role.loader, name="Loafer4")
+        device_id = next(
+            d.id for d in store.devices.values() if loader.id in d.trusted_user_ids
+        )
+
+        resp = secretary.post(f"/devices/{device_id}/shared")
+        assert resp.status_code == 200
+        assert store.devices[device_id].shared is True
+
+        resp = secretary.post(f"/devices/{device_id}/forget")
+        assert resp.status_code == 200
+        assert device_id not in store.devices
+        loader_client.close()
+
+    def test_owner_may_still_forget_and_share_their_own_device(self, login_as, wired):
+        _cfg, _vmc, _inv, store = wired
+        owner = login_as(Role.owner)
+        # A second device trusted on the owner, distinct from the one
+        # `owner` is currently authenticated through.
+        device, _token = store.create_device("Ada's spare", shared=False)
+        store.trust_device(device.id, store.owner().id)
+
+        resp = owner.post(f"/devices/{device.id}/shared")
+        assert resp.status_code == 200
+        assert store.devices[device.id].shared is True
+
+        resp = owner.post(f"/devices/{device.id}/forget")
+        assert resp.status_code == 200
+        assert device.id not in store.devices
+
     def test_list_never_prints_a_raw_user_id_for_a_deleted_user(self, login_as, wired):
         _cfg, _vmc, _inv, store = wired
         owner = login_as(Role.owner)
