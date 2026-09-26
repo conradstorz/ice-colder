@@ -390,6 +390,33 @@ class TestCreateCopyDelete:
         # form's own error-path re-render depends on).
         assert 'id="sku" name="sku" value="SRC-1"' not in resp.text
 
+    def test_copy_breadcrumb_chain_is_four_entries(self, client, wired):
+        """Home / Products / <product name> / Copy, nested under the
+        product being copied (not under Products) — the shell's Back
+        button on /products/{sku}/copy must return to /products/{sku},
+        not to /products.
+
+        The form's own Cancel link already points at /products/{sku}
+        (unrelated to this defect and unchanged by the fix), and the
+        name field's prefill ("<name> Copy") already contains the bare
+        product name as a substring — so both are checked precisely
+        enough not to pass by accident on the pre-fix rendering.
+        """
+        import re
+
+        _add(client, "SRC-BC", name="Source Bread Crumb", price="1.00")
+        resp = client.get("/products/SRC-BC/copy")
+        assert resp.status_code == 200
+        # The breadcrumb nav's third crumb is the product's own name,
+        # linking to /products/SRC-BC — the fourth crumb the defect
+        # dropped by nesting Copy under Products instead of the product.
+        assert ">Source Bread Crumb</a>" in resp.text
+        assert ">Copy<" in resp.text
+        # The shell's Back button (in the header, distinct from the
+        # form's Cancel link further down the page) must resolve to the
+        # product's own level, not the Products list.
+        assert re.search(r'<a href="/products/SRC-BC"[\s\S]*?>Back</a>', resp.text)
+
     def test_copy_then_create_makes_independent_product(self, client, wired):
         cfg, _vmc, inv, _store = wired
         _add(client, "SRC-2", name="Source Two", price="6.00", kind="ice", slot="4")

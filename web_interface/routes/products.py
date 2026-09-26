@@ -126,7 +126,21 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         error: str | None,
     ):
         if mode == "copy" and source_sku:
-            level = Level.child(LEVEL_PRODUCTS, "Copy", f"/products/{source_sku}/copy")
+            source_product = _find_product(source_sku)
+            if source_product is not None:
+                level = Level.child(
+                    _product_level(source_product),
+                    "Copy",
+                    f"/products/{source_sku}/copy",
+                )
+            else:
+                # Source product vanished (race with a concurrent delete)
+                # between the GET that rendered this form and this re-render
+                # — fall back rather than crash; there is no product level to
+                # nest under.
+                level = Level.child(
+                    LEVEL_PRODUCTS, "Copy", f"/products/{source_sku}/copy"
+                )
         else:
             level = LEVEL_PRODUCTS_NEW
         return templates.TemplateResponse(
