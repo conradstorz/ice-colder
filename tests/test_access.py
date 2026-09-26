@@ -1,11 +1,15 @@
 """Tests for services/access.py."""
 
+import ast
+import hashlib
 import json
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
+import services.access as access
 from services.access import (
     BACKOFF_CAP_SECONDS,
     ROLE_PERMISSIONS,
@@ -224,6 +228,45 @@ class TestHashing:
         assert verify_secret("12345678", "") is False
         assert verify_secret("12345678", "nonsense") is False
         assert verify_secret("12345678", "scrypt$zz$zz") is False
+
+    def test_production_scrypt_n_default_is_unchanged(self):
+        """Guard against silently shipping a weaker production work factor.
+
+        A session-scoped autouse fixture in conftest.py patches
+        services.access.SCRYPT_N to a tiny value for the whole test run, so
+        reading the live module attribute here would just confirm the
+        fixture ran and prove nothing about production. Instead this parses
+        the SCRYPT_N assignment straight out of the shipped source file on
+        disk, which the fixture never touches, so it genuinely reflects
+        what ships.
+        """
+        source = ast.parse(Path(access.__file__).read_text(encoding="utf-8"))
+        assignments = [
+            node
+            for node in ast.walk(source)
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id == "SCRYPT_N" for t in node.targets
+            )
+        ]
+        assert len(assignments) == 1, "expected exactly one SCRYPT_N assignment"
+        # The literal is `2**14`, a BinOp — ast.literal_eval doesn't evaluate
+        # operators, so recreate just enough of it (an int constant, or one
+        # int constant raised to another via **) by hand rather than
+        # reaching for a general-purpose eval.
+        expr = assignments[0].value
+        if isinstance(expr, ast.Constant):
+            shipped_value = expr.value
+        elif (
+            isinstance(expr, ast.BinOp)
+            and isinstance(expr.op, ast.Pow)
+            and isinstance(expr.left, ast.Constant)
+            and isinstance(expr.right, ast.Constant)
+        ):
+            shipped_value = expr.left.value**expr.right.value
+        else:
+            pytest.fail(f"unsupported SCRYPT_N literal shape: {ast.dump(expr)}")
+        assert shipped_value == 2**14
 
 
 class TestCodeGeneration:
@@ -445,6 +488,30 @@ class TestUsers:
         store.set_user_disabled(u.id, True)
         assert store.verify_user_pin(u.id, "1379") is False
         assert store.verify_user_pin("no-such-user", "1379") is False
+
+    def test_disabled_and_unknown_user_miss_paths_invoke_scrypt(
+        self, store, monkeypatch
+    ):
+        """The timing side-channel guard only holds if the dummy-hash detour
+        genuinely runs scrypt (rather than, say, short-circuiting to False).
+        The test-session scrypt cost is lowered elsewhere, so this can't tell
+        anything from wall-clock time either way — it spies on
+        hashlib.scrypt directly and asserts it was actually called once per
+        miss, real derivation and all."""
+        real_scrypt = hashlib.scrypt
+        calls = []
+
+        def spy(*args, **kwargs):
+            calls.append(kwargs)
+            return real_scrypt(*args, **kwargs)
+
+        u = store.create_user("Ada", None, Role.owner, "1379")
+        store.set_user_disabled(u.id, True)
+
+        monkeypatch.setattr("services.access.hashlib.scrypt", spy)
+        assert store.verify_user_pin(u.id, "1379") is False
+        assert store.verify_user_pin("no-such-user", "1379") is False
+        assert len(calls) == 2
 
     def test_enabled_users_excludes_disabled(self, store):
         a = store.create_user("Ada", None, Role.owner, "1379")
