@@ -287,3 +287,15 @@ class TestInlineFeedback:
         assert resp.status_code == 200
         assert resp.text.startswith("<p>")
         assert "Unknown command" in resp.text
+
+    def test_unknown_command_is_html_escaped(self, client):
+        """Copilot review (PR 20, comment 4113241294): fsm_control's
+        unknown-command branch echoes the raw {command} path parameter
+        back into its message, and this route used to embed that message
+        into an HTMLResponse via an f-string, bypassing Jinja
+        auto-escaping. /controls/<markup> must not be able to inject
+        markup into the HTMX target the response is swapped into."""
+        resp = client.post("/controls/%3Cimg%20src=x%20onerror=alert(1)%3E")
+        assert resp.status_code == 200
+        assert "<img" not in resp.text
+        assert "&lt;img" in resp.text

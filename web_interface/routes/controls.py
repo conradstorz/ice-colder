@@ -1,7 +1,6 @@
 """Controls level: restart, reset, shutdown with two-tap server-rendered confirm."""
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from services import fsm_control
@@ -63,8 +62,19 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         ],
     )
     async def post_command(request: Request, command: str):
-        """Execute a machine control command and return the result message."""
+        """Execute a machine control command and return the result message.
+
+        fsm_control.perform_command's unknown-command branch echoes the raw
+        `command` path parameter back into its message, so this renders
+        through partials/command_result.html rather than an f-string
+        HTMLResponse: Jinja2Templates auto-escapes `result`, so a request to
+        /controls/<markup> can no longer inject markup into the HTMX target
+        (Copilot review, PR 20).
+        """
         result = fsm_control.perform_command(command, context.vmc_instance)
-        return HTMLResponse(f"<p>{result}</p>")
+        return templates.TemplateResponse(
+            "partials/command_result.html",
+            context.template_context(request, result=result),
+        )
 
     return router
