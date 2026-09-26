@@ -1841,6 +1841,61 @@ class TestEnrollment:
         assert 'hx-target="body"' not in resp.text
         assert 'hx-select="main"' in resp.text
 
+    def test_untrusted_device_login_response_swaps_cleanly(self, public):
+        """Task 14 fix round 2, finding A: a correct PIN on an untrusted
+        device — an ordinary first login on any new device, not an edge
+        case — is answered by POST /login with a full enroll.html render
+        (base.html and all), swapped into the *keypad's* #login-form
+        (hx-target="#login-form" hx-swap="outerHTML", no hx-select — see
+        partials/keypad.html). Left alone, htmx's OOB pass would patch the
+        live #bar and drop the header node from the response regardless of
+        target, then the outerHTML swap would nest the response's whole
+        <main> inside #login-form's own live <main> (login.html) instead
+        of replacing it.
+
+        This response must therefore carry HX-Retarget/HX-Reselect
+        headers overriding the keypad form's static target for this one
+        response, reproducing round 1's target="main" hx-select="main"
+        pattern per-response — the raw response itself, being a normal
+        base.html render, already has exactly one <header id="bar"> and
+        one <main> regardless of those headers, so counting them here
+        would not by itself catch a reversion (see the class's earlier
+        twin of this test for why); the headers are what's actually being
+        pinned.
+        """
+        c, store, owner, _ = public
+        resp = c.post("/login", data={"user_id": owner.id, "pin": "1379"})
+        assert resp.status_code == 200
+        assert resp.headers.get("hx-retarget") == "main"
+        assert resp.headers.get("hx-reselect") == "main"
+        assert resp.text.count('<header id="bar"') == 1
+        assert len(re.findall(r"<main[ >]", resp.text)) == 1
+
+    def test_untrusted_device_email_button_is_pinned(self, public):
+        """Task 14 fix round 1 changed enroll.html's "Email me a code"
+        button to hx-target="main" hx-select="main" hx-swap="outerHTML",
+        but every other test in this class configures no email_gateway,
+        so can_email is always false and the button never renders —
+        reverting its attributes leaves the whole suite green (Task 14
+        fix round 2, finding B). Configure the gateway and the owner's
+        email (already set by the `public` fixture) so the button
+        actually renders, and pin its own tag's attributes specifically
+        — not just that "hx-select=\"main\"" appears somewhere on the
+        page, which the page's own /login/enroll form (round 1's fix,
+        always present) would already satisfy regardless of this
+        button's attributes.
+        """
+        c, store, owner, cfg = public
+        cfg.communication.email_gateway.smtp_server = "smtp.real.local"
+        resp = c.post("/login", data={"user_id": owner.id, "pin": "1379"})
+        assert resp.status_code == 200
+        match = re.search(r'<button hx-post="/login/enroll/send"[^>]*>', resp.text)
+        assert match is not None, "Email me a code button did not render"
+        tag = match.group(0)
+        assert 'hx-target="main"' in tag
+        assert 'hx-select="main"' in tag
+        assert 'hx-swap="outerHTML"' in tag
+
 
 class TestSetupWizard:
     """Setup mode: a fresh store has no owner, so every route except /setup
@@ -2251,6 +2306,31 @@ class TestSetupWizard:
         assert sent["to"] == "ada@example.com"
         for code in codes:
             assert code in sent["body"]
+
+    def test_email_button_is_pinned(self, anon, fresh_store):
+        """Task 14 fix round 1 changed this "Email these to me" button to
+        hx-target="main" hx-select="main" hx-swap="outerHTML", but every
+        other test in this class configures no email_gateway, so
+        can_email is always false and the button never renders —
+        reverting its attributes leaves the whole suite green (Task 14
+        fix round 2, finding B). Configure the gateway so the button
+        actually renders, and pin its own tag's attributes specifically
+        — not just that "hx-select=\"main\"" appears somewhere on the
+        page, which the "Done" button (always present, already pinned by
+        test_codes_email_response_has_exactly_one_bar_and_main) would
+        already satisfy regardless of this button's attributes.
+        """
+        cfg, store, _display = fresh_store
+        self._create_owner(anon, store)
+        cfg.communication.email_gateway.smtp_server = "smtp.real.local"
+        page = anon.get("/setup/codes")
+        assert page.status_code == 200
+        match = re.search(r'<button hx-post="/setup/codes/email"[^>]*>', page.text)
+        assert match is not None, "Email these to me button did not render"
+        tag = match.group(0)
+        assert 'hx-target="main"' in tag
+        assert 'hx-select="main"' in tag
+        assert 'hx-swap="outerHTML"' in tag
 
     def test_email_button_errors_without_crashing_when_gateway_unconfigured(
         self, anon, fresh_store

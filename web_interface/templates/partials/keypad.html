@@ -9,7 +9,21 @@
    Nothing added here may vary with the submitted user_id: no greeting, no
    per-user styling, no new hidden field. The `selected` attribute below is
    untouched part-1 logic (002460d) — selected_user_id is never echoed back
-   on a failure path, so it is never true here; do not change that. #}
+   on a failure path, so it is never true here; do not change that.
+
+   Task 14 fix round 2, finding A: the form below deliberately keeps
+   hx-target="#login-form" hx-swap="outerHTML" with no hx-select for
+   every case here (wrong PIN, back-off wait) — those two response
+   shapes are bare re-renders of this same partial and must keep landing
+   in #login-form exactly as today. The third shape POST /login can
+   answer — correct PIN, untrusted device — renders enroll.html (which
+   extends base.html) instead of this partial; retargeting this form
+   itself at "main" would select nothing out of *this* partial's bare
+   fragment (it has no <main>) and blank the failure paths above. So that
+   third case is retargeted per-response instead, via HX-Retarget/
+   HX-Reselect headers set only on that response in
+   web_interface/routes/auth.py's _enrollment_response — see its comment
+   for the mechanism. #}
 <form id="login-form"
       hx-post="/login"
       hx-target="#login-form"

@@ -187,6 +187,34 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         # once the browser starts sending the new vmc_device cookie.
         token = context.access_store.issue_enroll_token(user_id, device.id)
         resp = _enroll_page(request, user_id, error=error)
+        # Task 14 fix round 2, finding A: this is the response to the
+        # keypad's own `#login-form` POST (partials/keypad.html:
+        # hx-target="#login-form", hx-swap="outerHTML", no hx-select — that
+        # must stay exactly as-is, because the *other* two shapes
+        # login_submit can answer (wrong PIN, back-off wait) are bare
+        # partials/keypad.html re-renders that rely on those exact static
+        # attributes and must keep swapping into #login-form unmodified).
+        # But enroll.html now extends base.html, so *this* response also
+        # carries the OOB `<header id="bar">` plus a `<main>`. Left alone,
+        # htmx's OOB pass patches the live bar and drops the header node
+        # from the response regardless of target; the outerHTML swap then
+        # replaces #login-form (nested inside login.html's own live
+        # <main>) with the response's whole <main> — nesting a <main>
+        # inside a <main>, and leaving a later swap from inside it
+        # targeting the wrong (outer) <main> too.
+        #
+        # HX-Retarget/HX-Reselect are htmx response headers: they override
+        # the triggering element's target/select for this one response
+        # only, leaving #login-form's own static attributes untouched for
+        # its other two response shapes. Retargeting at "main" (the
+        # document's live <main>, ambient body default) and reselecting
+        # "main" from the parsed response reproduces round 1's
+        # target="main" hx-select="main" hx-swap="outerHTML" pattern
+        # (hx-swap stays "outerHTML" from the form's own static attribute,
+        # no HX-Reswap needed) — just applied per-response via headers
+        # instead of per-element via static attributes.
+        resp.headers["HX-Retarget"] = "main"
+        resp.headers["HX-Reselect"] = "main"
         web_auth.set_cookie(
             resp,
             request,
