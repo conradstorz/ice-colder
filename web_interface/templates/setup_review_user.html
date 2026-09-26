@@ -1,7 +1,14 @@
 {% extends "base.html" %}
 
 {# Task 14: adopted onto the dashboard v2 shell — see login.html for the
-   variant-bar rationale. #}
+   variant-bar rationale.
+
+   Fix round 1 (finding 1): see enroll.html's comment — the two buttons
+   below target "main" with hx-select="main" and hx-swap="outerHTML"
+   instead of the old hx-target="body", since both POST handlers can
+   re-render this full page for the next candidate and outerHTML on "body"
+   was destroying the live #bar that base.html's OOB swap had just
+   patched. #}
 
 {% block title %}Review users — Vending Machine{% endblock %}
 
@@ -28,13 +35,13 @@
   <div class="flex gap-3">
     <button
       hx-post="/setup/review/{{ user.id }}/keep"
-      hx-target="body" hx-swap="outerHTML"
+      hx-target="main" hx-select="main" hx-swap="outerHTML"
       class="flex-1 py-3 bg-blue-600 text-white rounded-xl">
       Keep
     </button>
     <button
       hx-post="/setup/review/{{ user.id }}/remove"
-      hx-target="body" hx-swap="outerHTML"
+      hx-target="main" hx-select="main" hx-swap="outerHTML"
       hx-confirm="Remove {{ user.name }}? They will lose access to this machine."
       class="flex-1 py-3 border border-red-300 text-red-700 rounded-xl">
       Remove

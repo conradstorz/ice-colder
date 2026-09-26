@@ -1348,6 +1348,161 @@ class TestOfflineAssets:
         routes.set_access_store(None)
 
 
+class TestAuthPagesShellHardening:
+    """Task 14 fix round 1, finding 2: the reviewer mutation-tested the two
+    assertions the original brief asked for and found both gaps live — a
+    reintroduced `cdn.tailwindcss.com` <script> in login.html's body block,
+    and reintroduced Home/Back/Lock markup in its bar_variant block — were
+    caught by nothing in the whole suite. TestOfflineAssets only checks
+    unpkg on two of the five auth pages; TestShellBar.test_no_cdn_references
+    only checks "/" and "/tests", neither an auth page. This class covers
+    both properties, plus the vendored-asset positive check, across all
+    five: /login, the "trust this device" enrollment page, /setup,
+    /setup/codes and the post-transfer setup-user-review page.
+
+    Every one of the five is built once by the `auth_pages` fixture below
+    (a GET render of each) and the three properties are then parametrised
+    over its keys, rather than five near-identical test bodies.
+    """
+
+    @pytest.fixture
+    def auth_pages(self, tmp_path):
+        web_auth.backoff.reset()
+        cfg = ConfigModel()
+        pages: dict[str, str] = {}
+
+        # /login — an ordinary sign-in page, no session, no device.
+        store_login = AccessStore(path=tmp_path / "login.json")
+        store_login.create_user("Ada", "ada@example.com", Role.owner, "1379")
+        routes.set_config_object(cfg)
+        routes.set_access_store(store_login)
+        with TestClient(app, follow_redirects=False) as c:
+            c.headers["HX-Request"] = "true"
+            pages["login"] = c.get("/login").text
+        routes.set_access_store(None)
+
+        # enroll.html — correct PIN, device the store has never trusted:
+        # login_submit's own path to "Trust this device" (see TestLogin
+        # .test_correct_pin_on_an_untrusted_browser_shows_enrollment).
+        web_auth.backoff.reset()
+        store_enroll = AccessStore(path=tmp_path / "enroll.json")
+        owner = store_enroll.create_user("Ada", "ada@example.com", Role.owner, "1379")
+        routes.set_access_store(store_enroll)
+        with TestClient(app, follow_redirects=False) as c:
+            c.headers["HX-Request"] = "true"
+            pages["enroll"] = c.post(
+                "/login", data={"user_id": owner.id, "pin": "1379"}
+            ).text
+        routes.set_access_store(None)
+
+        # setup.html — a fresh store, no owner yet (setup mode).
+        web_auth.backoff.reset()
+        store_setup = AccessStore(path=tmp_path / "setup.json")
+        display = DisplayController()
+        routes.set_access_store(store_setup)
+        routes.set_display_controller(display)
+        with TestClient(app, follow_redirects=False) as c:
+            c.headers["HX-Request"] = "true"
+            pages["setup"] = c.get("/setup").text
+
+            # setup_codes.html — walk step 1 to completion on the same
+            # client so its session cookie carries manage_ownership into
+            # the GET below (the pattern TestSetupWizard._create_owner uses).
+            code = store_setup.pending_setup_code
+            c.post(
+                "/setup",
+                data={
+                    "setup_code": code,
+                    "name": "Ada",
+                    "email": "ada@example.com",
+                    "pin": "2468",
+                    "pin_confirm": "2468",
+                },
+            )
+            pages["setup_codes"] = c.get("/setup/codes").text
+        routes.set_access_store(None)
+        routes.set_display_controller(None)
+
+        # setup_review_user.html — complete an ownership transfer with one
+        # retained user still waiting to be reviewed (TestOwnershipTransfer
+        # Completion's own pattern).
+        web_auth.backoff.reset()
+        store_review = AccessStore(path=tmp_path / "review.json")
+        routes.set_access_store(store_review)
+        old_owner = store_review.create_user(
+            "Ada", "ada@example.com", Role.owner, "1379"
+        )
+        store_review.finalize_setup()
+        store_review.create_user("Lee", "lee@example.com", Role.loader, "7890")
+        device, token = store_review.create_device("Kiosk", shared=False)
+        store_review.trust_device(device.id, old_owner.id)
+        session_id = store_review.create_session(old_owner.id, device.id)
+        with TestClient(app, follow_redirects=False) as c:
+            c.headers["HX-Request"] = "true"
+            c.cookies.set(web_auth.DEVICE_COOKIE, token)
+            c.cookies.set(web_auth.SESSION_COOKIE, session_id)
+            codes = store_review.generate_emergency_codes()
+            transfer_resp = c.post(
+                "/users/transfer", data={"pin": "1379", "emergency_code": codes[0]}
+            )
+            transfer_code = _codes_in(transfer_resp.text)[0]
+
+        with TestClient(app, follow_redirects=False) as c2:
+            c2.headers["HX-Request"] = "true"
+            c2.get("/setup")
+            c2.post(
+                "/setup",
+                data={
+                    "setup_code": transfer_code,
+                    "name": "Bea",
+                    "email": "bea@example.com",
+                    "pin": "9042",
+                    "pin_confirm": "9042",
+                },
+            )
+            pages["setup_review"] = c2.get("/setup/review").text
+        routes.set_access_store(None)
+        web_auth.backoff.reset()
+
+        yield pages
+
+        routes.set_access_store(None)
+        routes.set_display_controller(None)
+        web_auth.backoff.reset()
+        web_auth.backoff.set_trusted_proxies([])
+
+    _PAGES = ["login", "enroll", "setup", "setup_codes", "setup_review"]
+
+    @pytest.mark.parametrize("page", _PAGES)
+    def test_no_cdn_references_on_any_auth_page(self, auth_pages, page):
+        """Both the unpkg regression (part 1, Copilot review eefc1db) and
+        its Tailwind-CDN sibling — the exact defect the reviewer proved
+        nothing in the suite would catch — checked on every one of the
+        five, not just two."""
+        html = auth_pages[page]
+        assert "unpkg" not in html
+        assert "cdn.tailwindcss.com" not in html
+
+    @pytest.mark.parametrize("page", _PAGES)
+    def test_every_auth_page_loads_the_vendored_assets(self, auth_pages, page):
+        html = auth_pages[page]
+        assert "/static/app.css" in html
+        assert "/static/htmx.min.js" in html
+
+    @pytest.mark.parametrize("page", _PAGES)
+    def test_variant_bar_has_no_nav_lock_or_pill_on_any_auth_page(
+        self, auth_pages, page
+    ):
+        """The reintroduced-Home/Back/Lock regression the reviewer proved
+        nothing in the suite would catch, checked on every one of the five
+        pages whose bar_variant is meant to be nothing but a static label."""
+        html = auth_pages[page]
+        assert ">Home</a>" not in html
+        assert ">Back</a>" not in html
+        assert "Lock</button>" not in html
+        assert 'id="pill"' not in html
+
+
 class TestLogin:
     @pytest.fixture
     def public(self, tmp_path):
@@ -1663,6 +1818,29 @@ class TestEnrollment:
         assert resp.headers["hx-redirect"] == "/"
         assert c.cookies.get("vmc_session")
 
+    def test_wrong_code_response_has_exactly_one_bar_and_main(self, public):
+        """Task 14 fix round 1, finding 1: POST /login/enroll's failure
+        path re-renders the full enroll.html page (base.html and all), so
+        the response must still carry exactly one shell `<header id="bar">`
+        alongside exactly one `<main>` — never zero (the OOB header
+        dropped) and never two (a nested `<main>`).
+
+        The header/main counts alone can't fail on a reversion: they come
+        from base.html regardless of the triggering form's own hx
+        attributes, which is what the fix actually changed (Task 14 fix
+        round 1 mutation proof 3) — so this also pins those attributes
+        directly: hx-target="body" must be gone from this response and
+        hx-select="main" must be present.
+        """
+        c, store, owner, _ = public
+        c.post("/login", data={"user_id": owner.id, "pin": "1379"})
+        resp = c.post("/login/enroll", data={"code": "00000000"})
+        assert resp.status_code == 200
+        assert resp.text.count('<header id="bar"') == 1
+        assert len(re.findall(r"<main[ >]", resp.text)) == 1
+        assert 'hx-target="body"' not in resp.text
+        assert 'hx-select="main"' in resp.text
+
 
 class TestSetupWizard:
     """Setup mode: a fresh store has no owner, so every route except /setup
@@ -1748,6 +1926,34 @@ class TestSetupWizard:
         assert resp.status_code == 200
         assert store.owner() is None
         assert "not accepted" in resp.text.lower()
+
+    def test_wrong_code_response_has_exactly_one_bar_and_main(self, anon, fresh_store):
+        """Task 14 fix round 1, finding 1: POST /setup's failure path
+        re-renders the full setup.html page, so it must still carry
+        exactly one shell `<header id="bar">` and exactly one `<main>` —
+        never zero (the OOB header dropped) and never two (a nested
+        `<main>`).
+
+        The header/main counts alone can't fail on a reversion (see
+        TestEnrollment's twin of this test for why) — this also pins the
+        form's own hx attributes directly.
+        """
+        anon.get("/setup")
+        resp = anon.post(
+            "/setup",
+            data={
+                "setup_code": "00000000",
+                "name": "Ada",
+                "email": "ada@example.com",
+                "pin": "2468",
+                "pin_confirm": "2468",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.text.count('<header id="bar"') == 1
+        assert len(re.findall(r"<main[ >]", resp.text)) == 1
+        assert 'hx-target="body"' not in resp.text
+        assert 'hx-select="main"' in resp.text
 
     def test_repeated_wrong_codes_reach_429(self, anon, fresh_store):
         anon.get("/setup")
@@ -2055,6 +2261,27 @@ class TestSetupWizard:
         resp = anon.post("/setup/codes/email", data={})
         assert resp.status_code == 200
         assert "not available" in resp.text.lower()
+
+    def test_codes_email_response_has_exactly_one_bar_and_main(self, anon, fresh_store):
+        """Task 14 fix round 1, finding 1: POST /setup/codes/email's error
+        path re-renders the full setup_codes.html page, so it must still
+        carry exactly one shell `<header id="bar">` and exactly one
+        `<main>` — never zero (the OOB header dropped) and never two (a
+        nested `<main>`).
+
+        The header/main counts alone can't fail on a reversion (see
+        TestEnrollment's twin of this test for why) — this also pins the
+        "Done" button's own hx attributes directly.
+        """
+        _cfg, store, _display = fresh_store
+        self._create_owner(anon, store)
+        anon.get("/setup/codes")
+        resp = anon.post("/setup/codes/email", data={})
+        assert resp.status_code == 200
+        assert resp.text.count('<header id="bar"') == 1
+        assert len(re.findall(r"<main[ >]", resp.text)) == 1
+        assert 'hx-target="body"' not in resp.text
+        assert 'hx-select="main"' in resp.text
 
     def test_email_send_failure_is_an_error_not_a_crash(
         self, anon, fresh_store, monkeypatch
@@ -2612,6 +2839,29 @@ class TestOwnershipTransferCompletion:
         resp3 = new_owner_client.post(f"/setup/review/{tim.id}/remove")
         assert resp3.headers["hx-redirect"] == "/setup/codes"
         assert store.get_user(tim.id) is None
+
+    def test_keep_response_has_exactly_one_bar_and_main(self, client, wired):
+        """Task 14 fix round 1, finding 1: POST /setup/review/{id}/keep
+        re-renders the full setup_review_user.html page for the next
+        candidate, so that response must still carry exactly one shell
+        `<header id="bar">` and exactly one `<main>` — never zero (the OOB
+        header dropped) and never two (a nested `<main>`).
+
+        The header/main counts alone can't fail on a reversion (see
+        TestEnrollment's twin of this test for why) — this also pins the
+        Keep/Remove buttons' own hx attributes directly.
+        """
+        _cfg, _vmc, _inv, store = wired
+        lee = store.create_user("Lee", "lee@example.com", Role.loader, "7890")
+        store.create_user("Tim", "tim@example.com", Role.tech, "3456")
+        new_owner_client = self._complete_transfer(client, store)
+
+        resp = new_owner_client.post(f"/setup/review/{lee.id}/keep")
+        assert resp.status_code == 200
+        assert resp.text.count('<header id="bar"') == 1
+        assert len(re.findall(r"<main[ >]", resp.text)) == 1
+        assert 'hx-target="body"' not in resp.text
+        assert 'hx-select="main"' in resp.text
         assert store.get_user(lee.id) is not None
 
     def test_review_with_nobody_left_redirects_straight_to_codes(self, client, wired):

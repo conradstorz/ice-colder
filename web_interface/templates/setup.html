@@ -4,7 +4,13 @@
    variant-bar rationale (no Home/Back/Lock/pill on an unauthenticated
    page). The setup-mode gate (routes/__init__.py, untouched by this task)
    exempts /static/*, so app.css and htmx.min.js still load while a fresh
-   machine has no owner. #}
+   machine has no owner.
+
+   Fix round 1 (finding 1): see enroll.html's comment for why the form
+   below targets "main" with hx-select="main" and hx-swap="outerHTML"
+   rather than the old hx-target="body" — this handler re-renders the
+   full page on every validation failure, and outerHTML on "body" was
+   destroying the live #bar that base.html's OOB swap had just patched. #}
 
 {% block title %}{{ "Take ownership" if transfer else "Set up this machine" }} — Vending Machine{% endblock %}
 
@@ -34,7 +40,7 @@
     </p>
   {% endif %}
 
-  <form hx-post="/setup" hx-target="body" hx-swap="outerHTML" class="space-y-3">
+  <form hx-post="/setup" hx-target="main" hx-select="main" hx-swap="outerHTML" class="space-y-3">
     <div>
       <label for="setup_code" class="block text-sm font-medium text-gray-700">
         {{ "Transfer code" if transfer else "Setup code" }}

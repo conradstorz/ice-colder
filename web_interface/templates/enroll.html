@@ -2,7 +2,21 @@
 
 {# Task 14: adopted onto the dashboard v2 shell — see login.html for the
    variant-bar rationale (no Home/Back/Lock/pill on an unauthenticated
-   page). #}
+   page).
+
+   Fix round 1 (finding 1): every POST handler below re-renders this full
+   page (base.html and all), which now carries base.html's OOB
+   `<header id="bar">` on every response. hx-target="body" swaps the whole
+   live body's children for what's left of the parsed response after htmx's
+   OOB pass already patched the live #bar and *removed* the header node
+   from that response content (per htmx.min.js's Ce/Ee) — so the live #bar
+   itself gets cleared away in the same swap that just updated it. Fixed by
+   retargeting at "main", the shell's own convention, with hx-select="main"
+   so htmx pulls only the response's <main> out of the parsed body (the OOB
+   header is already spent by then) and hx-swap="outerHTML" so that
+   selected <main> replaces the live one outright instead of nesting inside
+   it (innerHTML would insert the response's whole <main> element as a
+   child of the live target <main>). #}
 
 {% block title %}Trust this device — Vending Machine{% endblock %}
 
@@ -19,13 +33,13 @@
   </p>
 
   {% if can_email %}
-    <button hx-post="/login/enroll/send" hx-target="body" hx-swap="outerHTML"
+    <button hx-post="/login/enroll/send" hx-target="main" hx-select="main" hx-swap="outerHTML"
             class="w-full py-3 border border-gray-300 rounded-xl text-sm">
       Email me a code
     </button>
   {% endif %}
 
-  <form hx-post="/login/enroll" hx-target="body" hx-swap="outerHTML" class="space-y-3">
+  <form hx-post="/login/enroll" hx-target="main" hx-select="main" hx-swap="outerHTML" class="space-y-3">
     <label for="code" class="block text-sm font-medium text-gray-700">Code</label>
     <input type="text" id="code" name="code" inputmode="numeric" pattern="[0-9]*"
            autocomplete="one-time-code" required

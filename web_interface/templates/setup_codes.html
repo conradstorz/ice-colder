@@ -3,7 +3,13 @@
 {# Task 14: adopted onto the dashboard v2 shell — see login.html for the
    variant-bar rationale. This page is reached after step 1 (the visitor
    already has a session as the new owner), but §3 resolution 3 still
-   applies: it is outside the navigation tree, so no Home/Back/Lock/pill. #}
+   applies: it is outside the navigation tree, so no Home/Back/Lock/pill.
+
+   Fix round 1 (finding 1): see enroll.html's comment — the two buttons
+   below target "main" with hx-select="main" and hx-swap="outerHTML"
+   instead of the old hx-target="body", since both POST handlers re-render
+   this full page and outerHTML on "body" was destroying the live #bar
+   that base.html's OOB swap had just patched. #}
 
 {% block title %}Emergency codes — Vending Machine{% endblock %}
 
@@ -31,7 +37,7 @@
   </ul>
 
   {% if can_email %}
-    <button hx-post="/setup/codes/email" hx-target="body" hx-swap="outerHTML"
+    <button hx-post="/setup/codes/email" hx-target="main" hx-select="main" hx-swap="outerHTML"
             class="w-full py-3 border border-gray-300 rounded-xl text-sm">
       Email these to me
     </button>
@@ -40,7 +46,7 @@
   {% if notice %}<p class="text-green-700 text-sm">{{ notice }}</p>{% endif %}
   {% if error %}<p class="text-red-600 text-sm" role="alert">{{ error }}</p>{% endif %}
 
-  <button hx-post="/setup/codes/done" hx-target="body" hx-swap="outerHTML"
+  <button hx-post="/setup/codes/done" hx-target="main" hx-select="main" hx-swap="outerHTML"
           class="w-full py-4 bg-blue-600 text-white rounded-xl">
     Done
   </button>
