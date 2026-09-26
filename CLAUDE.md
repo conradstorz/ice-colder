@@ -15,6 +15,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | Run all tests | `uv run pytest` |
 | Run a single test | `uv run pytest tests/test_file.py::test_name` |
 | Lint/format | `ruff check --fix .` then `ruff format .` |
+| Build Tailwind CSS | `.tailwind/tailwindcss.exe -c web_interface/tailwind.config.js -i web_interface/tailwind.input.css -o web_interface/static/app.css --minify` |
+
+**Tailwind:** The binary is [v3.4.17 standalone CLI](https://github.com/tailwindlabs/tailwindcss/releases/download/v3.4.17/tailwindcss-windows-x64.exe); a Linux or macOS checkout needs the matching asset from the same release. The binary is gitignored (`.tailwind/`, ~40 MB); `web_interface/static/app.css` is **committed**. `tests/test_static_css.py` fails CI when a template uses a class the committed file lacks.
 
 ## Architecture
 
@@ -49,7 +52,11 @@ logs a clear error and exits with code 1 rather than papering over it.
 
 ### Web Dashboard (`web_interface/`)
 
-FastAPI app (`server.py`) with Jinja2 templates and HTMX-driven partials. `routes.py` defines all endpoints and receives the `ConfigModel` and `VMC` instance via setter functions called from `main.py`. Templates live in `web_interface/templates/` with HTMX partial fragments in `templates/partials/`. Static assets in `web_interface/static/`.
+FastAPI app (`server.py`) with Jinja2 templates and HTMX-driven partials. `routes/` is a package with one module per area (`home.py`, `health.py`, `products.py`, `inventory.py`, `reports.py`, `controls.py`, `tests_level.py`, `users.py`, `settings.py`); `routes/__init__.py` wires them all with `attach_routes`. Templates live in `web_interface/templates/` with HTMX partial fragments in `templates/partials/`. Static assets in `web_interface/static/`.
+
+**The v2 shell** (`base.html` + `web_interface/levels.py`) replaces the tabbed dashboard. Every level is a real URL and every level has its own breadcrumb trail and Back button that goes to the parent, not through history. `base.html` defines three blocks: `title` (for `<title>`), `body` (the sole content of `<main>`, where your level goes), and `bar_variant` (the bar header, not to be overridden). The bar itself uses `hx-swap-oob="true"` to deliver an out-of-band swap on every response, so a boosted navigation updates it with no reload. The navigation tree is a hierarchy of 24 named levels plus three parameterized ones (a product SKU, a subsystem name, a user id). Each level is defined in `web_interface/levels.py` as a frozen dataclass with `title`, `url`, `parent`, and properties `crumbs`, `parent_url`, plus a classmethod `Level.child(parent, title, url)` for parameterized levels.
+
+`web_interface/context.py` holds shared state (config, VMC, health monitor, access store, availability, inventory manager) and helpers: `template_context(request, level=None, **extra)` injects request, current_user and perms into every template, `require_htmx` guards all POST routes (the CSRF dependency), `tail(file_path, lines=50)` reads log tails, `health_snapshot()` is the single health predicate shared by `/status` and `/pill` (so the hero and pill never disagree), and `LOW_STOCK_THRESHOLD = 3` (a tracked product is "low" at or below this count; not configurable per-product yet).
 
 The dashboard uses cookie-based session auth via `services/access.py`'s `AccessStore`,
 persisted in `data/access.json` (mode 0600). Users have four roles (`owner`,
@@ -57,16 +64,19 @@ persisted in `data/access.json` (mode 0600). Users have four roles (`owner`,
 requires a second factor: a 6-digit OTP sent by email (when
 `communication.email_gateway` is configured) or an 8-digit emergency code,
 which works offline. On first boot, setup mode redirects every route to `/setup`
-behind a code that exists only at the machine. The `Backoff` class (replacing
-`LoginLimiter`) enforces exponential back-off per `(kind, subject, client)` tuple
-plus a per-user budget for untrusted clients — no hard caps, so a stranger can
-never lock a legitimate user out. Every route is gated by `require(Permission)`;
+behind a code that exists only at the machine. The `Backoff` class enforces
+exponential back-off per `(kind, subject, client)` tuple plus a per-user budget
+for untrusted clients — no hard caps. Every route is gated by `require(Permission)`;
 templates receive `perms` and `current_user` via `template_context` so the server
 does not render controls it would refuse. POST routes require the `HX-Request`
 header (HTMX's own requests set it), which blocks a plain cross-site form post
-as a CSRF guard.
+as a CSRF guard. The only fragment endpoints are `/status` (home hero, 1 s), `/kpi` (home KPIs, 60 s), and `/pill` (health indicator, 5 s); lists and forms load once and refresh on action.
 
-The System Health tab (`/health`) merges three sources: heartbeats (liveness,
+The Home level shows a status strip (hero showing the next scheduled event or the health summary) plus a tile grid of eight tiles: Health, Products, Inventory, Reports, Controls, Tests, Users, Settings. A tile is rendered only when `perms` intersects that tile's permission set; the grid adapts to screen width (4×2 on desktop, 2×4 on tablets, 1 column on phones). Each tile links to its level, and the pill in the top-right taps to `/health/faults`.
+
+Tailwind v3.4.17 and HTMX 1.9.10 are **vendored** in `static/app.css` and `static/htmx.min.js`, so the tablet operator's dashboard works with no internet. The customer-facing `/screen` page (and `/screen/body`) keeps CDN references and is out of scope for part 2. Secrets on Settings pages are masked: a placeholder is rendered for a field that is already set, and posting the unchanged placeholder leaves the stored value alone. The MQTT page shows the effective value and disables the field when an env override is active, and never writes an env value into `config.json`. Machine id, web host and web port are displayed but not editable.
+
+The Health level (`/health`) merges three sources: heartbeats (liveness,
 uptime), each subsystem's retained `capabilities/<subsystem>` document
 (`SubsystemCapabilities`: firmware, contract version, brand/model,
 hardware_id, ip), and the VMC's own build identity from
@@ -144,3 +154,27 @@ applied to the dashboard's login back-off via
 - **Logging**: Uses `loguru` throughout; logs rotate daily to `LOGS/vmc.log`. State changes are prefixed with `STATE_CHANGE_PREFIX`.
 - **Config mutation**: Product changes go through `services/config_store.py` which writes back to `config.json`. The in-memory `ConfigModel` is mutated directly (Pydantic models with mutable fields).
 - **Web UI updates**: The dashboard uses HTMX to swap HTML partials from FastAPI endpoints. No SPA framework.
+
+## Removed Routes (Dashboard v2)
+
+The v2 shell replaces all URLs from the old tabbed dashboard. Anyone holding a bookmark or an external script can find the replacement here:
+
+| Removed | Replacement |
+|---|---|
+| `GET /` (old tabbed dashboard body) | `GET /` (the v2 Home: status strip + tile grid) |
+| `GET /health` (fragment) | `GET /health` (a level) and its four sub-levels |
+| `GET /logs` | `GET /health/logs` (50 lines, was 10) |
+| `GET /activity` | `GET /reports?period=` |
+| `POST /action/{command}` | `POST /controls/{command}` |
+| `POST /faults/{key}/clear` | `POST /health/faults/{key}/clear` |
+| `GET /inventory` (table fragment) | `GET /inventory` (the restock level) |
+| `GET /inventory/new`, `POST /inventory/add` | `GET`/`POST /products/new` |
+| `GET /inventory/copy/{sku}` | `GET /products/{sku}/copy` |
+| `GET /inventory/edit/{sku}/catalog`, `POST /inventory/update/{sku}/catalog` | `GET`/`POST /products/{sku}/catalog` |
+| `GET /inventory/edit/{sku}/placement`, `POST /inventory/update/{sku}/placement` | `GET`/`POST /products/{sku}/placement` |
+| `POST /inventory/delete/{sku}` | `POST /products/{sku}/delete` |
+| `GET /config/machine` | `GET`/`POST /settings/machine` |
+| `GET /config/contacts` | `GET`/`POST /settings/contacts` |
+| `GET /config/payments` | `GET`/`POST /settings/payments` |
+| `GET /config/comms` | `GET`/`POST /settings/comms` |
+| the old `/users/*` and `/devices/*` forms | the `/users` and `/devices` levels |
