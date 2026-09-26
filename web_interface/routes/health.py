@@ -10,6 +10,8 @@ content across the six levels; see .superpowers/sdd/part2/task-6-brief.md.
 """
 
 import asyncio
+import hashlib
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
@@ -32,6 +34,35 @@ from web_interface.levels import (
 # active_faults() reports fault codes as strings (FaultCode.value); compare
 # against the contract's enum set once, here, rather than in _fault_gate.
 _PAYMENT_BLOCKING_CODES = {code.value for code in PAYMENT_BLOCKING_FAULTS}
+
+# A fault's `key` is either a FaultCode.value (machine-scope, always drawn
+# from this fixed charset) or a product SKU (free text). Only characters in
+# this set are safe to drop, unescaped, into a CSS id selector.
+_SELECTOR_SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _dom_safe_key(key: str) -> str:
+    """A selector-safe id fragment for a fault's #clear-<key> button.
+
+    Copilot review (PR 20, comment 4113241371): for a product-scoped
+    fault, `key` is the SKU, which is free text and not guaranteed to be
+    CSS-selector-safe -- a SKU containing "." makes an unescaped
+    "#clear-<sku>" selector parse the "." as a class-selector delimiter,
+    so it resolves to the wrong element (or none), and the two-tap Clear
+    control can't swap its own confirmation state or target the clear
+    response.
+
+    Keys already made only of selector-safe characters pass through
+    unchanged -- existing ids such as "clear-PAY-103" (a machine
+    FaultCode.value, always drawn from a fixed safe charset) must not
+    change; tests/test_routes_health.py asserts on that literal string.
+    Anything else is replaced by a stable hash of the raw key, so two
+    different unsafe keys can never collide with each other or with an
+    unrelated safe key. The raw key itself is untouched everywhere else
+    (URLs, active-fault lookups) -- only this derived id changes."""
+    if _SELECTOR_SAFE_KEY_RE.fullmatch(key):
+        return key
+    return "h" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
 
 
 def _fault_gate(fault: dict) -> str:
@@ -95,6 +126,7 @@ def _faults_with_age() -> list[dict]:
     for f in faults:
         f["since_seconds"] = ages.get(f["key"])
         f["gate"] = _fault_gate(f)
+        f["dom_key"] = _dom_safe_key(f["key"])
     return faults
 
 
@@ -299,7 +331,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
                 label="Clear",
                 confirm_label="Confirm",
                 post_url=f"/health/faults/{key}/clear",
-                target=f"#clear-{key}",
+                target=f"#clear-{_dom_safe_key(key)}",
                 confirm_url=f"/health/faults/{key}/clear/confirm",
                 confirming=(confirming != "false"),
             ),

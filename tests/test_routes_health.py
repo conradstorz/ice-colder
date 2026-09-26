@@ -10,12 +10,14 @@ matching the pattern already used throughout tests/test_web_routes.py, since
 both are plain module globals in web_interface.context shared across tests.
 """
 
+import re
+
 from contracts.vending_machine import FaultCode
 from services.access import ROLE_PERMISSIONS, Permission, Role
 from services.config_store import add_product
 from web_interface import context
 from web_interface import routes
-from web_interface.routes.health import _fault_gate
+from web_interface.routes.health import _dom_safe_key, _fault_gate
 
 import pytest
 
@@ -280,6 +282,62 @@ class TestFaultClearFlow:
         client = login_as(Role.loader)
         resp = client.post(f"/health/faults/{key}/clear")
         assert resp.status_code == 403
+
+    def test_product_scoped_fault_with_dotted_sku_gets_a_selector_safe_dom_id(
+        self, wired, login_as
+    ):
+        """Copilot review (PR 20, comment 4113241371): f.key is the SKU for
+        a product-scoped fault, and SKUs are free text -- a SKU containing
+        "." used to be dropped straight into "#clear-<sku>", an unescaped
+        CSS id selector where "." is a class-selector delimiter, so
+        htmx's hx-target could resolve to the wrong element (or none) and
+        the two-tap Clear control could not reliably swap its own
+        confirmation state. The rendered id/hx-target must now be built
+        from a selector-safe key, round-tripping identically across the
+        list, confirm and cancel renders, while the raw SKU stays in the
+        endpoint URLs (post_url/confirm_url)."""
+        _cfg, vmc, _inv, _store = wired
+        key = _seed_product(_cfg, "ICE.301")
+        vmc._raise_fault(FaultCode.ICE_301, sku=key)
+        client = login_as(Role.tech)
+
+        list_resp = client.get("/health/faults")
+        assert list_resp.status_code == 200
+        # The old, unsafe id must be gone...
+        assert f'id="clear-{key}"' not in list_resp.text
+        # ...but the raw SKU must still be exactly what the endpoint URLs use.
+        assert f"/health/faults/{key}/clear" in list_resp.text
+        assert f"/health/faults/{key}/clear/confirm" in list_resp.text
+
+        dom_id = f"clear-{_dom_safe_key(key)}"
+        assert re.fullmatch(r"clear-[A-Za-z0-9_-]+", dom_id)
+        assert f'id="{dom_id}"' in list_resp.text
+        assert f'hx-target="#{dom_id}"' in list_resp.text
+
+        confirm_resp = client.get(f"/health/faults/{key}/clear/confirm")
+        assert confirm_resp.status_code == 200
+        assert f'id="{dom_id}"' in confirm_resp.text
+        assert f'hx-target="#{dom_id}"' in confirm_resp.text
+
+        cancel_resp = client.get(
+            f"/health/faults/{key}/clear/confirm", params={"confirming": "false"}
+        )
+        assert cancel_resp.status_code == 200
+        assert f'id="{dom_id}"' in cancel_resp.text
+
+    def test_dom_safe_key_preserves_already_safe_keys(self):
+        """Machine FaultCode.value keys (e.g. "PAY-103") are always drawn
+        from a fixed selector-safe charset and must pass through unchanged
+        -- existing tests assert on the literal id "clear-PAY-103"."""
+        assert _dom_safe_key("PAY-103") == "PAY-103"
+
+    def test_dom_safe_key_is_stable_and_collision_free_for_unsafe_keys(self):
+        a = _dom_safe_key("ICE.301")
+        b = _dom_safe_key("ICE.301")
+        c = _dom_safe_key("ICE_301")
+        assert a == b  # deterministic
+        assert re.fullmatch(r"[A-Za-z0-9_-]+", a)
+        assert a != c  # a dotted SKU never collides with a similar safe one
 
     def test_post_clear_without_htmx_header_is_403(self, wired, login_as):
         _cfg, vmc, _inv, _store = wired

@@ -28,7 +28,7 @@
       {% endif %}
       {% if can_clear %}
       <div class="ml-auto">
-        {% set target = "#clear-" ~ f.key %}
+        {% set target = "#clear-" ~ f.dom_key %}
         {% set confirm_url = "/health/faults/" ~ f.key ~ "/clear/confirm" %}
         {% set post_url = "/health/faults/" ~ f.key ~ "/clear" %}
         {% set label = "Clear" %}
