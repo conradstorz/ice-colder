@@ -56,13 +56,13 @@ def test_third_level_constant_has_three_crumbs_ending_in_itself():
 def test_parent_url_matches_parent_url_for_every_constant():
     for name, level in _level_constants().items():
         if level.parent is None:
-            assert (
-                level.parent_url == "/"
-            ), f"{name} has no parent but parent_url != '/'"
+            assert level.parent_url == "/", (
+                f"{name} has no parent but parent_url != '/'"
+            )
         else:
-            assert (
-                level.parent_url == level.parent.url
-            ), f"{name}.parent_url does not match its parent's url"
+            assert level.parent_url == level.parent.url, (
+                f"{name}.parent_url does not match its parent's url"
+            )
 
 
 def test_child_produces_parent_crumbs_plus_its_own_and_is_a_new_object():
