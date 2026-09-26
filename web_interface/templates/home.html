@@ -7,8 +7,17 @@
      is what a first paint shows before the first swap lands; the fragment
      itself (partials/status_fragment.html) computes is_healthy from the
      same context.health_snapshot() the bar's pill uses, so the two can
-     never disagree. #}
-  <div id="status-panel" hx-get="/status" hx-trigger="load, every 1s" hx-swap="innerHTML">
+     never disagree.
+
+     hx-target="this" is load-bearing: <body> carries hx-target="main" for
+     boosted navigation, and that is inherited by any descendant lacking
+     its own hx-target. Without this, every "load" poll below (this panel,
+     the KPI panel, and the bar's #pill) would target the page's <main>
+     instead of itself — the first response to land would wipe out all of
+     main's real content (innerHTML), and the next (the pill's outerHTML
+     swap) would replace <main> itself with a bare span, destroying it
+     outright. #}
+  <div id="status-panel" hx-get="/status" hx-trigger="load, every 1s" hx-swap="innerHTML" hx-target="this">
     <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
       <div class="flex">
         <div class="w-1 bg-gray-200 flex-shrink-0"></div>
@@ -20,7 +29,7 @@
   {# KPI cards (spec §1.3): polls /kpi every 60s; four sibling cards land
      inside this grid wrapper (partials/kpi_fragment.html). #}
   <div id="kpi-panel" class="grid grid-cols-2 md:grid-cols-4 gap-touch"
-       hx-get="/kpi" hx-trigger="load, every 60s" hx-swap="innerHTML">
+       hx-get="/kpi" hx-trigger="load, every 60s" hx-swap="innerHTML" hx-target="this">
     <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 h-28 animate-pulse"></div>
     <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 h-28 animate-pulse"></div>
     <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 h-28 animate-pulse"></div>

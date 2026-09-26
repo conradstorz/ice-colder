@@ -12,6 +12,7 @@ from contracts.vending_machine import FaultCode
 from services.access import ROLE_PERMISSIONS, AccessStore, Permission, Role, User
 from services.display_controller import DisplayController
 from tests.conftest import make_client, sign_in
+from tests.dom_utils import find_by_id, parse_elements
 from web_interface import auth as web_auth
 from web_interface import context
 from web_interface.server import app
@@ -100,6 +101,88 @@ class TestShellBar:
         resp = client.get("/")
         assert 'hx-get="/pill"' in resp.text
         assert "every 5s" in resp.text
+
+
+class TestHomeSelfPollTargets:
+    """Regression test for the Dashboard v2 Home landing DOM-destruction
+    bug: a real browser, not TestClient, was the only thing that ever saw
+    it — the server's response was always well-formed. base.html's
+    `<body hx-boost="true" hx-target="main" ...>` means any descendant
+    that fires its own request but declares no hx-target of its own
+    inherits "main" (htmx walks up the DOM for it). Three elements fire an
+    `hx-trigger="load"` request the instant Home loads — #status-panel,
+    #kpi-panel (home.html) and #pill (base.html) — and none of them used
+    to declare an hx-target of their own, so each one's response landed on
+    the page's single <main> instead of on itself: the first to land (an
+    innerHTML swap) wiped out every real child of <main> (the tile grid
+    included), and the next (the pill's own outerHTML swap) went further
+    and replaced <main> itself with a bare <span>, destroying it outright
+    (after which every later pill re-poll fails to find a target at all).
+
+    A plain substring check (e.g. 'hx-get="/pill"' in resp.text, added by
+    the original Task 5 brief and still above as
+    test_pill_placeholder_polls_every_5s) cannot tell whether an element
+    also carries hx-target, because it never looks at *which* element an
+    attribute is on — only whether some byte sequence occurs anywhere in
+    the response. The assertions below parse the actual served HTML
+    (tests/dom_utils.py, html.parser-based) and inspect each element's own
+    attributes, which is what would have caught this before it shipped.
+
+    This is the CI-running half of the regression coverage — it can prove
+    the server-rendered self-target attribute is present, but it cannot by
+    itself prove a real browser's htmx runtime behaves correctly (the
+    served HTML was always fine; the destruction was 100% client-side).
+    tests/test_dashboard_v2_home_browser.py is the other half: an opt-in,
+    real-headless-Chrome end-to-end check of the actual DOM after a live
+    page load. That one does NOT run as part of `uv run pytest` / CI (no
+    Chrome there) — see its module docstring for how to run it.
+    """
+
+    def test_main_and_pill_are_singular(self, client):
+        resp = client.get("/")
+        elements = parse_elements(resp.text)
+
+        mains = [e for e in elements if e.tag == "main"]
+        assert len(mains) == 1
+
+        pills = find_by_id(elements, "pill")
+        assert len(pills) == 1
+
+        tile_anchors = [
+            e
+            for e in elements
+            if e.tag == "a" and e.is_within("main") and e.attrs.get("href")
+        ]
+        assert len(tile_anchors) > 0
+
+    @pytest.mark.parametrize(
+        "element_id",
+        ["status-panel", "kpi-panel", "pill"],
+    )
+    def test_self_polling_element_targets_itself(self, client, element_id):
+        """Each self-polling element must declare its own hx-target="this"
+        — without it, it inherits <body>'s hx-target="main" and its
+        periodic "load"/"every Ns" poll clobbers or destroys <main>
+        instead of updating itself."""
+        resp = client.get("/")
+        elements = find_by_id(parse_elements(resp.text), element_id)
+        assert len(elements) == 1, f"expected exactly one #{element_id}"
+        assert elements[0].attrs.get("hx-target") == "this", (
+            f'#{element_id} must carry hx-target="this" (it fires its own '
+            'hx-trigger="load" request and has no other explicit target; '
+            'without hx-target="this" it silently inherits <body>\'s '
+            'hx-target="main" — see this class\'s docstring)'
+        )
+
+    def test_pill_partial_rerender_also_targets_itself(self, client):
+        """partials/pill.html — the template /pill re-renders itself with
+        on every poll — must carry the same self-target as the copy
+        base.html ships in the initial page, or the *second* poll (using
+        this re-rendered markup) regresses even with the first fixed."""
+        resp = client.get("/pill")
+        elements = find_by_id(parse_elements(resp.text), "pill")
+        assert len(elements) == 1
+        assert elements[0].attrs.get("hx-target") == "this"
 
 
 class TestShellErrorPages:

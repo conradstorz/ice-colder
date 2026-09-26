@@ -43,7 +43,18 @@
       </nav>
 
       <a href="/health/faults" class="touch-target px-2 shrink-0" aria-label="System health">
-        <span id="pill" hx-get="/pill" hx-trigger="load, every 5s" hx-swap="outerHTML"
+        {# hx-target="this" is load-bearing: <body> carries hx-target="main"
+           for boosted navigation, and that attribute is inherited by any
+           descendant that doesn't declare its own (htmx's ne() walks up the
+           tree). Without an explicit self-target here, this span's own
+           "load, every 5s" poll would target the page's <main> instead of
+           itself — its outerHTML swap would then replace <main> wholesale
+           with this bare span, destroying it (and, once gone,
+           document.querySelector("main") returns null forever after, so
+           the next poll fails with htmx:targetError and the pill never
+           updates again). See partials/pill.html, which this swaps into,
+           for the same fix on the re-rendered copy. #}
+        <span id="pill" hx-get="/pill" hx-trigger="load, every 5s" hx-swap="outerHTML" hx-target="this"
               class="inline-flex items-center rounded-full bg-slate-400 text-white text-xs font-semibold uppercase tracking-wide px-2 py-1">…</span>
       </a>
 

@@ -18,5 +18,8 @@
      pill_text  - "OK", a fault code (e.g. "ICE-301"), or an em dash
 #}
 {% set pill_colors = {"ok": "bg-green-600", "fault": "bg-red-600", "neutral": "bg-slate-400"} %}
-<span id="pill" hx-get="/pill" hx-trigger="load, every 5s" hx-swap="outerHTML"
+{# hx-target="this": see base.html's copy of this span for why an explicit
+   self-target is required — without it, this span inherits <body>'s
+   hx-target="main" and its outerHTML swap replaces <main> itself. #}
+<span id="pill" hx-get="/pill" hx-trigger="load, every 5s" hx-swap="outerHTML" hx-target="this"
       class="inline-flex items-center rounded-full {{ pill_colors.get(pill_state, 'bg-slate-400') }} text-white text-xs font-semibold uppercase tracking-wide px-2 py-1">{{ pill_text }}</span>
