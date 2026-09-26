@@ -16,6 +16,25 @@ from web_interface.server import app
 from web_interface import routes
 
 
+_ISSUED_CLIENTS: list[TestClient] = []
+
+
+@pytest.fixture(autouse=True)
+def _close_issued_clients():
+    """Close every client `sign_in` handed out, whatever the test did.
+
+    `sign_in` returns its client to the caller, so it cannot use a `with`
+    block itself. Tests that go through the `login_as` fixture are covered
+    by its own teardown, but several call `make_client(...)` directly and
+    never close the result — an unconditional leak. Funnelling every
+    issued client through here closes them all, and a second `.close()`
+    from `login_as` is harmless.
+    """
+    yield
+    while _ISSUED_CLIENTS:
+        _ISSUED_CLIENTS.pop().close()
+
+
 def sign_in(store: AccessStore, user: User, *, shared: bool = False) -> TestClient:
     """Mint a device, trust *user* on it, open a session, and return a
     client that is fully logged in: it carries vmc_device, vmc_session and
@@ -29,6 +48,7 @@ def sign_in(store: AccessStore, user: User, *, shared: bool = False) -> TestClie
     client.headers["HX-Request"] = "true"
     client.cookies.set(web_auth.DEVICE_COOKIE, token)
     client.cookies.set(web_auth.SESSION_COOKIE, session_id)
+    _ISSUED_CLIENTS.append(client)
     return client
 
 
@@ -1363,14 +1383,14 @@ class TestEnrollment:
         # A fresh, untrusted client: no vmc_device, no vmc_session. Reusing
         # `c` here would hit the "already trusted device" fast path on the
         # second /login and never reach the emergency-code check at all.
-        fresh = TestClient(app, follow_redirects=False)
-        fresh.headers["HX-Request"] = "true"
-        fresh.post("/login", data={"user_id": owner.id, "pin": "1379"})
-        assert fresh.cookies.get("vmc_enroll")
-        resp = fresh.post("/login/enroll", data={"code": codes[0]})
-        assert "hx-redirect" not in {k.lower() for k in resp.headers}
-        assert resp.status_code == 200
-        assert "not accepted" in resp.text.lower()
+        with TestClient(app, follow_redirects=False) as fresh:
+            fresh.headers["HX-Request"] = "true"
+            fresh.post("/login", data={"user_id": owner.id, "pin": "1379"})
+            assert fresh.cookies.get("vmc_enroll")
+            resp = fresh.post("/login/enroll", data={"code": codes[0]})
+            assert "hx-redirect" not in {k.lower() for k in resp.headers}
+            assert resp.status_code == 200
+            assert "not accepted" in resp.text.lower()
 
     def test_otp_path_with_a_stubbed_mailer(self, public, monkeypatch):
         c, store, owner, cfg = public
@@ -1629,31 +1649,31 @@ class TestSetupWizard:
         owner = store.owner()
         assert owner is not None
 
-        second = TestClient(app, follow_redirects=False)
-        second.headers["HX-Request"] = "true"
-        login_resp = second.post("/login", data={"user_id": owner.id, "pin": "2468"})
-        assert login_resp.status_code == 200
-        assert second.cookies.get("vmc_enroll")
+        with TestClient(app, follow_redirects=False) as second:
+            second.headers["HX-Request"] = "true"
+            login_resp = second.post(
+                "/login", data={"user_id": owner.id, "pin": "2468"}
+            )
+            assert login_resp.status_code == 200
+            assert second.cookies.get("vmc_enroll")
 
-        enroll_resp = second.post("/login/enroll", data={"code": code})
-        assert enroll_resp.headers["hx-redirect"] == "/"
-        assert second.cookies.get("vmc_session")
-        second.close()
+            enroll_resp = second.post("/login/enroll", data={"code": code})
+            assert enroll_resp.headers["hx-redirect"] == "/"
+            assert second.cookies.get("vmc_session")
 
     def test_post_without_htmx_header_is_403(self, fresh_store):
-        c = TestClient(app, follow_redirects=False)
-        resp = c.post(
-            "/setup",
-            data={
-                "setup_code": "00000000",
-                "name": "Ada",
-                "email": "a@example.com",
-                "pin": "2468",
-                "pin_confirm": "2468",
-            },
-        )
-        assert resp.status_code == 403
-        c.close()
+        with TestClient(app, follow_redirects=False) as c:
+            resp = c.post(
+                "/setup",
+                data={
+                    "setup_code": "00000000",
+                    "name": "Ada",
+                    "email": "a@example.com",
+                    "pin": "2468",
+                    "pin_confirm": "2468",
+                },
+            )
+            assert resp.status_code == 403
 
     def test_owner_race_is_caught_and_re_rendered_not_500(self, anon, fresh_store):
         """Two racing step-1 submissions: the store rejects the second
@@ -1737,13 +1757,12 @@ class TestSetupWizard:
         anon.post("/setup/codes/done", data={})
         assert store.verify_setup_code(code) is False
 
-        second = TestClient(app, follow_redirects=False)
-        second.headers["HX-Request"] = "true"
-        second.post("/login", data={"user_id": owner.id, "pin": "2468"})
-        resp = second.post("/login/enroll", data={"code": code})
-        assert "hx-redirect" not in {k.lower() for k in resp.headers}
-        assert "not accepted" in resp.text.lower()
-        second.close()
+        with TestClient(app, follow_redirects=False) as second:
+            second.headers["HX-Request"] = "true"
+            second.post("/login", data={"user_id": owner.id, "pin": "2468"})
+            resp = second.post("/login/enroll", data={"code": code})
+            assert "hx-redirect" not in {k.lower() for k in resp.headers}
+            assert "not accepted" in resp.text.lower()
 
     def test_page_does_not_show_codes_again_after_done(self, anon, fresh_store):
         _cfg, store, _display = fresh_store
@@ -1815,10 +1834,9 @@ class TestSetupWizard:
         _cfg, store, _display = fresh_store
         self._create_owner(anon, store)
         tech = store.create_user("Tech", "tech@example.com", Role.tech, "1234")
-        tech_client = sign_in(store, tech)
-        resp = tech_client.get("/setup/codes")
-        assert resp.status_code == 403
-        tech_client.close()
+        with sign_in(store, tech) as tech_client:
+            resp = tech_client.get("/setup/codes")
+            assert resp.status_code == 403
 
 
 class TestUserManagement:
@@ -1922,34 +1940,36 @@ class TestUserManagement:
         _cfg, _vmc, _inv, store = wired
         owner = login_as(Role.owner)
         loader_client, loader = make_client(store, Role.loader, name="Loafer")
-        session_id = loader_client.cookies.get(web_auth.SESSION_COOKIE)
-        assert store.resolve_session(session_id) is not None
-        resp = owner.post(f"/users/{loader.id}/disable")
-        assert resp.status_code == 200
-        assert store.resolve_session(session_id) is None
-        loader_client.close()
+        with loader_client:
+            session_id = loader_client.cookies.get(web_auth.SESSION_COOKIE)
+            assert store.resolve_session(session_id) is not None
+            resp = owner.post(f"/users/{loader.id}/disable")
+            assert resp.status_code == 200
+            assert store.resolve_session(session_id) is None
 
     def test_delete_ends_the_users_live_sessions(self, login_as, wired):
         _cfg, _vmc, _inv, store = wired
         owner = login_as(Role.owner)
         loader_client, loader = make_client(store, Role.loader, name="Loafer3")
-        session_id = loader_client.cookies.get(web_auth.SESSION_COOKIE)
-        resp = owner.post(f"/users/{loader.id}/delete")
-        assert resp.status_code == 200
-        assert store.resolve_session(session_id) is None
-        loader_client.close()
+        with loader_client:
+            session_id = loader_client.cookies.get(web_auth.SESSION_COOKIE)
+            resp = owner.post(f"/users/{loader.id}/delete")
+            assert resp.status_code == 200
+            assert store.resolve_session(session_id) is None
 
     def test_reset_pin_changes_hash_and_untrusts_every_device(self, login_as, wired):
         _cfg, _vmc, _inv, store = wired
         owner = login_as(Role.owner)
         loader_client, loader = make_client(store, Role.loader, name="Loafer2")
-        old_hash = loader.pin_hash
-        resp = owner.post(f"/users/{loader.id}/reset-pin", data={"pin": "5297"})
-        assert resp.status_code == 200
-        updated = store.get_user(loader.id)
-        assert updated.pin_hash != old_hash
-        assert all(loader.id not in d.trusted_user_ids for d in store.devices.values())
-        loader_client.close()
+        with loader_client:
+            old_hash = loader.pin_hash
+            resp = owner.post(f"/users/{loader.id}/reset-pin", data={"pin": "5297"})
+            assert resp.status_code == 200
+            updated = store.get_user(loader.id)
+            assert updated.pin_hash != old_hash
+            assert all(
+                loader.id not in d.trusted_user_ids for d in store.devices.values()
+            )
 
     def test_delete_removes_the_user(self, login_as, wired):
         _cfg, _vmc, _inv, store = wired
@@ -2103,9 +2123,23 @@ class TestOwnershipTransferCompletion:
     """§3.3 steps 2-4: the incoming owner completes the wizard with the
     transfer code, then reviews the retained users."""
 
+    @pytest.fixture(autouse=True)
+    def _anon_clients(self):
+        """Every client `_anon()` hands out is tracked here and closed on
+        teardown, whatever the test does — mirroring how the module-level
+        `login_as` fixture closes every client it makes. A bare TestClient
+        closed only by a trailing `.close()` as the test's last statement
+        leaks when the test raises before reaching it, and a leaked client
+        left the suite order-dependent."""
+        self._clients: list[TestClient] = []
+        yield
+        for c in self._clients:
+            c.close()
+
     def _anon(self) -> TestClient:
         c = TestClient(app, follow_redirects=False)
         c.headers["HX-Request"] = "true"
+        self._clients.append(c)
         return c
 
     def _start_transfer(self, client, store) -> str:
@@ -2143,7 +2177,6 @@ class TestOwnershipTransferCompletion:
         resp = anon.get("/setup")
         assert resp.status_code == 200
         assert "transfer code" in resp.text.lower()
-        anon.close()
 
     def test_other_routes_are_not_redirected_while_a_transfer_is_pending(
         self, client, wired
@@ -2166,7 +2199,6 @@ class TestOwnershipTransferCompletion:
         assert store.pending_transfer == pending_before
         assert store.owner().name == "Ada"
         assert len(store.users) == 1
-        anon.close()
 
     def test_transfer_code_completes_the_swap(self, client, wired):
         _cfg, _vmc, _inv, store = wired
@@ -2183,7 +2215,6 @@ class TestOwnershipTransferCompletion:
         assert store.get_user(old_owner.id) is None
         assert store.pending_transfer is None
         assert store.unused_emergency_code_count() == 0
-        anon.close()
 
     def test_old_owners_session_is_dead_after_the_swap(self, client, wired):
         _cfg, _vmc, _inv, store = wired
@@ -2195,7 +2226,6 @@ class TestOwnershipTransferCompletion:
         resp = client.get("/status")
         assert resp.status_code == 401
         assert resp.headers["hx-redirect"] == "/login"
-        anon.close()
 
     def test_transfer_code_still_enrolls_new_owner_on_a_second_browser(
         self, client, wired
@@ -2220,8 +2250,6 @@ class TestOwnershipTransferCompletion:
         enroll_resp = second.post("/login/enroll", data={"code": code})
         assert enroll_resp.headers["hx-redirect"] == "/"
         assert second.cookies.get("vmc_session")
-        first.close()
-        second.close()
 
     def test_review_walks_retained_users_and_removing_the_last_one_redirects_on(
         self, client, wired
@@ -2244,7 +2272,6 @@ class TestOwnershipTransferCompletion:
         assert resp3.headers["hx-redirect"] == "/setup/codes"
         assert store.get_user(tim.id) is None
         assert store.get_user(lee.id) is not None
-        new_owner_client.close()
 
     def test_review_with_nobody_left_redirects_straight_to_codes(self, client, wired):
         _cfg, _vmc, _inv, store = wired
@@ -2252,7 +2279,6 @@ class TestOwnershipTransferCompletion:
         resp = new_owner_client.get("/setup/review")
         assert resp.status_code == 303
         assert resp.headers["location"] == "/setup/codes"
-        new_owner_client.close()
 
     def test_keeping_a_user_leaves_them_in_place(self, client, wired):
         _cfg, _vmc, _inv, store = wired
@@ -2261,7 +2287,6 @@ class TestOwnershipTransferCompletion:
         resp = new_owner_client.post(f"/setup/review/{tim.id}/keep")
         assert resp.headers["hx-redirect"] == "/setup/codes"
         assert store.get_user(tim.id) is not None
-        new_owner_client.close()
 
     def test_removing_a_user_ends_their_sessions_first(self, client, wired):
         _cfg, _vmc, _inv, store = wired
@@ -2277,7 +2302,6 @@ class TestOwnershipTransferCompletion:
         assert resp.headers["hx-redirect"] == "/setup/codes"
         assert store.resolve_session(session_id) is None
         assert store.get_user(tim.id) is None
-        new_owner_client.close()
 
 
 class TestEmergencyCodeRegeneration:
@@ -2389,23 +2413,23 @@ class TestDeviceManagement:
         _cfg, _vmc, _inv, store = wired
         owner = login_as(Role.owner)
         loader_client, loader = make_client(store, Role.loader, name="Loafer")
-        device_id = next(
-            d.id for d in store.devices.values() if loader.id in d.trusted_user_ids
-        )
-        session_id = loader_client.cookies.get(web_auth.SESSION_COOKIE)
-        assert store.resolve_session(session_id) is not None
+        with loader_client:
+            device_id = next(
+                d.id for d in store.devices.values() if loader.id in d.trusted_user_ids
+            )
+            session_id = loader_client.cookies.get(web_auth.SESSION_COOKIE)
+            assert store.resolve_session(session_id) is not None
 
-        resp = owner.post(f"/devices/{device_id}/forget")
+            resp = owner.post(f"/devices/{device_id}/forget")
 
-        assert resp.status_code == 200
-        assert device_id not in store.devices
-        assert store.resolve_session(session_id) is None
-        # The forgotten device's own client is refused on its very next
-        # request, not merely absent from the list.
-        refused = loader_client.get("/status")
-        assert refused.status_code == 401
-        assert refused.headers["hx-redirect"] == "/login"
-        loader_client.close()
+            assert resp.status_code == 200
+            assert device_id not in store.devices
+            assert store.resolve_session(session_id) is None
+            # The forgotten device's own client is refused on its very next
+            # request, not merely absent from the list.
+            refused = loader_client.get("/status")
+            assert refused.status_code == 401
+            assert refused.headers["hx-redirect"] == "/login"
 
     def test_shared_toggle_flips_the_flag(self, login_as, wired):
         _cfg, _vmc, _inv, store = wired
@@ -2477,18 +2501,18 @@ class TestDeviceManagement:
         _cfg, _vmc, _inv, store = wired
         secretary = login_as(Role.secretary)
         loader_client, loader = make_client(store, Role.loader, name="Loafer4")
-        device_id = next(
-            d.id for d in store.devices.values() if loader.id in d.trusted_user_ids
-        )
+        with loader_client:
+            device_id = next(
+                d.id for d in store.devices.values() if loader.id in d.trusted_user_ids
+            )
 
-        resp = secretary.post(f"/devices/{device_id}/shared")
-        assert resp.status_code == 200
-        assert store.devices[device_id].shared is True
+            resp = secretary.post(f"/devices/{device_id}/shared")
+            assert resp.status_code == 200
+            assert store.devices[device_id].shared is True
 
-        resp = secretary.post(f"/devices/{device_id}/forget")
-        assert resp.status_code == 200
-        assert device_id not in store.devices
-        loader_client.close()
+            resp = secretary.post(f"/devices/{device_id}/forget")
+            assert resp.status_code == 200
+            assert device_id not in store.devices
 
     def test_owner_may_still_forget_and_share_their_own_device(self, login_as, wired):
         _cfg, _vmc, _inv, store = wired
