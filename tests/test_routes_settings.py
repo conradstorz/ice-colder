@@ -543,6 +543,29 @@ class TestCommsPage:
         resp = client.post("/settings/comms/test", headers={"HX-Request": ""})
         assert resp.status_code == 403
 
+    def test_send_test_email_escapes_a_stored_markup_owner_email(
+        self, client, wired, monkeypatch
+    ):
+        """Copilot review (PR 20, comments 4113241318 and 4113241335): the
+        route used to interpolate the mutable machine-owner email into an
+        HTMLResponse via an f-string, and the template marked that whole
+        string `safe` -- so a contacts editor storing markup in the owner's
+        email would have it execute when an owner triggered this test-email
+        action. The stored email must come back HTML-escaped."""
+        cfg, _vmc, _inv, _store = wired
+        cfg.communication.email_gateway.smtp_server = "smtp.real-provider.test"
+        cfg.physical.people.machine_owner.email = "<img src=x onerror=alert(1)>"
+
+        async def _fake_send_email(*args, **kwargs):
+            return True
+
+        monkeypatch.setattr(settings_routes, "send_email", _fake_send_email)
+
+        resp = client.post("/settings/comms/test")
+        assert resp.status_code == 200
+        assert "<img" not in resp.text
+        assert "&lt;img" in resp.text
+
 
 class TestMqttPage:
     @pytest.mark.parametrize(

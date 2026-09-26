@@ -75,6 +75,6 @@
 <div class="max-w-md space-y-2 border-t border-gray-100 pt-4 mt-6">
   <button type="button" hx-post="/settings/comms/test" hx-target="#test-email-result" hx-swap="innerHTML"
           class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Send test email</button>
-  <div id="test-email-result">{% if test_result %}{{ test_result|safe }}{% endif %}</div>
+  <div id="test-email-result">{% include "partials/comms_test_result.html" %}</div>
 </div>
 {% endblock %}

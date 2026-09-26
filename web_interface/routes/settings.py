@@ -393,9 +393,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
 
     # ---------------------------------------------------------------- Comms
 
-    def _render_comms_form(
-        request: Request, *, error: str | None, test_result: str | None = None
-    ):
+    def _render_comms_form(request: Request, *, error: str | None):
         comm = context.config.communication
         return templates.TemplateResponse(
             "settings_comms.html",
@@ -408,7 +406,6 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
                 sms_account_sid=SECRET_MASK,
                 sms_auth_token=SECRET_MASK,
                 error=error,
-                test_result=test_result,
             ),
         )
 
@@ -484,9 +481,11 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         gateway = context.config.communication.email_gateway
         owner_email = context.config.physical.people.machine_owner.email
         if not gateway.is_configured:
-            return HTMLResponse(
-                '<p class="text-red-600 text-sm">Test email failed: the '
-                "email gateway is not configured.</p>"
+            return templates.TemplateResponse(
+                "partials/comms_test_result.html",
+                context.template_context(
+                    request, test_status="not_configured", owner_email=owner_email
+                ),
             )
         ok = await send_email(
             gateway,
@@ -495,14 +494,13 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
             "This is a test message from the ice-colder dashboard's "
             "Settings > Comms page.",
         )
-        if ok:
-            return HTMLResponse(
-                f'<p class="text-green-700 text-sm">Test email sent to '
-                f"{owner_email}.</p>"
-            )
-        return HTMLResponse(
-            '<p class="text-red-600 text-sm">Test email failed to send. '
-            "Check the gateway settings and try again.</p>"
+        return templates.TemplateResponse(
+            "partials/comms_test_result.html",
+            context.template_context(
+                request,
+                test_status="ok" if ok else "failed",
+                owner_email=owner_email,
+            ),
         )
 
     # ---------------------------------------------------------------- MQTT
