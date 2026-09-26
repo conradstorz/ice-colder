@@ -1,0 +1,42 @@
+{# web_interface/templates/partials/codes_regenerate.html
+
+   The swappable region inside users_codes.html's Regenerate control. Not
+   one of task-12's six named templates — added because confirm_button.html
+   (Task 5, must not be modified) always swaps its own rendered `<div
+   id=target>` via hx-swap="outerHTML", so the region that must grow to
+   also show the freshly-generated codes has to be this file's own
+   `<div id="codes-regenerate">`, not confirm_button.html's. Rendered three
+   ways, all through this same file so the id and markup never drift:
+     - GET /users/codes (the initial page): confirming=false, no codes yet.
+     - GET /users/codes/regenerate/confirm: confirm_button.html's own
+       confirm_url contract (task-12 brief resolution 8).
+     - POST /users/codes/regenerate: confirming reset to false, and
+       new_codes populated on success — shown exactly once, this response
+       only (task-12 brief resolution 9).
+
+   The enclosing <form> in users_codes.html carries the owner's PIN input;
+   htmx includes the values of the closest enclosing form on every request
+   from an element inside it (including the plain hx-post/hx-get buttons
+   confirm_button.html renders), so the PIN reaches POST
+   /users/codes/regenerate without this file or confirm_button.html having
+   to know about it.
+#}
+<div id="codes-regenerate" class="flex flex-col items-start gap-2">
+  {% set label = "Regenerate" %}
+  {% set confirm_label = "Confirm" %}
+  {% set post_url = "/users/codes/regenerate" %}
+  {% set target = "#codes-regenerate" %}
+  {% set confirm_url = "/users/codes/regenerate/confirm" %}
+  {% include "partials/confirm_button.html" with context %}
+
+  {% if error %}<p class="text-red-600 text-sm" role="alert">{{ error }}</p>{% endif %}
+
+  {% if new_codes %}
+  <div class="p-3 border border-blue-200 bg-blue-50 rounded-lg">
+    <p class="font-medium text-blue-800 text-sm">New emergency codes — write these down now, they will not be shown again</p>
+    <ul class="mt-1 font-mono text-blue-700 text-sm grid grid-cols-2 sm:grid-cols-4 gap-1">
+      {% for code in new_codes %}<li class="code-value">{{ code }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</div>

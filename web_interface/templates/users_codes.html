@@ -1,0 +1,29 @@
+{# web_interface/templates/users_codes.html
+
+   GET /users/codes (gate manage_ownership, owner only). Regenerate is
+   wired through partials/confirm_button.html per task-12 brief resolution
+   8; the actual swappable region is partials/codes_regenerate.html — see
+   its own header comment for why a second file was needed alongside it.
+#}
+{% extends "base.html" %}
+{% block title %}Emergency codes · Vending Machine{% endblock %}
+{% block body %}
+<div class="space-y-4">
+  <h1 class="text-hero font-semibold text-gray-900">Emergency codes</h1>
+
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+    <p class="text-sm text-gray-600">Unused codes remaining: <span class="font-semibold text-gray-900">{{ unused_codes }}</span></p>
+  </div>
+
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-3">
+    <h2 class="text-base font-semibold text-gray-900">Regenerate all codes</h2>
+    <p class="text-sm text-gray-500">Replaces every code, used or not. Old codes stop working immediately.</p>
+    <form class="flex flex-wrap items-center gap-touch">
+      <input type="text" name="pin" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
+             placeholder="Your PIN" required
+             class="touch-target px-3 rounded-md border border-gray-300 text-sm w-40">
+      {% include "partials/codes_regenerate.html" with context %}
+    </form>
+  </div>
+</div>
+{% endblock %}

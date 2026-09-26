@@ -1,0 +1,112 @@
+{# web_interface/templates/user.html
+
+   GET /users/{id} (gate manage_users): one person's detail. `may_write` is
+   false in exactly one case — a secretary viewing the owner's own row —
+   and when it is false this page renders no <input>, no Disable/Enable, no
+   Reset PIN and no Delete control at all (task-12 brief resolution 6):
+   name/email/role show as plain read-only text instead. `is_self` (the
+   owner viewing their own row) keeps the profile form and Reset PIN, but
+   never renders Disable or Delete for that row (part 1's owner
+   self-lockout guarantee, template half) — the server refuses those same
+   two writes regardless of what this page renders (routes/users.py's
+   _guard_owner_self_lockout).
+#}
+{% extends "base.html" %}
+{% block title %}{{ target.name }} · Vending Machine{% endblock %}
+{% block body %}
+<div class="space-y-4">
+  <h1 class="text-hero font-semibold text-gray-900">
+    {{ target.name }}
+    {% if is_owner_target %}<span class="ml-2 align-middle text-xs text-gray-400">(owner)</span>{% endif %}
+    {% if target.disabled %}
+    <span class="ml-2 align-middle text-xs font-mono px-1.5 py-0.5 rounded bg-orange-100 text-orange-700">disabled</span>
+    {% endif %}
+  </h1>
+
+  {% if error %}<p class="text-red-600 text-sm" role="alert">{{ error }}</p>{% endif %}
+
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+    {% if may_write %}
+    <form hx-post="/users/{{ target.id }}" class="space-y-4 max-w-md">
+      <div>
+        <label for="name" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Name</label>
+        <input type="text" id="name" name="name" value="{{ target.name }}" required
+               class="touch-target w-full px-3 rounded-md border border-gray-300 text-sm text-gray-900">
+      </div>
+      <div>
+        <label for="email" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Email</label>
+        <input type="email" id="email" name="email" value="{{ target.email or '' }}"
+               class="touch-target w-full px-3 rounded-md border border-gray-300 text-sm text-gray-900">
+      </div>
+      <div>
+        <label for="role" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Role</label>
+        {% if is_owner_target %}
+        <input type="hidden" name="role" value="{{ target.role.value }}">
+        <p class="touch-target flex items-center px-3 text-sm text-gray-500">Owner (fixed)</p>
+        {% else %}
+        <select id="role" name="role"
+                class="touch-target w-full px-3 rounded-md border border-gray-300 text-sm text-gray-900">
+          {% for r in roles %}
+          <option value="{{ r.value }}" {{ "selected" if target.role.value == r.value }}>{{ r.value.capitalize() }}</option>
+          {% endfor %}
+        </select>
+        {% endif %}
+      </div>
+      <button type="submit"
+              class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">Save</button>
+    </form>
+    {% else %}
+    <div class="space-y-3 max-w-md">
+      <div>
+        <div class="text-xs text-gray-400 uppercase tracking-wide">Name</div>
+        <div class="text-base text-gray-900">{{ target.name }}</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400 uppercase tracking-wide">Email</div>
+        <div class="text-base text-gray-900">{{ target.email or "—" }}</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400 uppercase tracking-wide">Role</div>
+        <div class="text-base text-gray-900 capitalize">{{ target.role.value }}</div>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 text-sm text-gray-600">
+    Last login: {{ target.last_login_at or "never" }} · Devices trusted: {{ device_count }}
+  </div>
+
+  {% if may_write %}
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-4">
+    <form hx-post="/users/{{ target.id }}/reset-pin" class="flex flex-wrap items-center gap-touch">
+      <input type="text" name="pin" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
+             placeholder="New PIN (4-8 digits)" required
+             class="touch-target px-3 rounded-md border border-gray-300 text-sm w-48">
+      <button type="submit"
+              class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Reset PIN</button>
+    </form>
+
+    {% if not is_self %}
+    <div class="flex flex-wrap gap-touch">
+      {% if target.disabled %}
+      <form hx-post="/users/{{ target.id }}/enable">
+        <button type="submit"
+                class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Enable</button>
+      </form>
+      {% else %}
+      <form hx-post="/users/{{ target.id }}/disable">
+        <button type="submit"
+                class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Disable</button>
+      </form>
+      {% endif %}
+      <form hx-post="/users/{{ target.id }}/delete">
+        <button type="submit"
+                class="touch-target px-4 rounded-md border border-red-200 text-red-600 text-sm font-medium hover:bg-red-50">Delete</button>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

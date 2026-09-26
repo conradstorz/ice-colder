@@ -2194,10 +2194,17 @@ class TestUserManagement:
     def test_users_list_hides_disable_and_delete_on_the_owners_own_row(
         self, login_as, wired
     ):
+        # Retargeted from GET /users to GET /users/{owner.id} (task-12
+        # brief resolution 3 / dashboard-v2-shell task 12): per-row action
+        # controls moved from the flat list onto the person's own detail
+        # page in the v2 shell (matching the products.html/product.html
+        # split) — GET /users is now a read-only list with no action
+        # controls on any row at all, so this guarantee's template half now
+        # lives on the page that actually renders them.
         _cfg, _vmc, _inv, store = wired
         owner_client = login_as(Role.owner)
         owner = store.owner()
-        html = owner_client.get("/users").text
+        html = owner_client.get(f"/users/{owner.id}").text
         assert f"/users/{owner.id}/disable" not in html
         assert f"/users/{owner.id}/delete" not in html
         assert f"/users/{owner.id}/reset-pin" in html
@@ -2307,12 +2314,21 @@ class TestOwnershipTransfer:
     ):
         """Regression test for Task 19d (the code-value hook): a uuid4's
         first hyphen-delimited group is occasionally eight decimal digits
-        (~2.3% of uuids — see the module docstring above `_codes_in`), and
-        the users-list partial this response is rendered from puts every
-        user's id into hx-post targets and a device-count lookup. Force
-        that collision on a real user and prove the code-value hook still
-        returns the real transfer code rather than the uuid fragment a
-        page-wide `\\b\\d{8}\\b` scrape used to be fooled by."""
+        (~2.3% of uuids — see the module docstring above `_codes_in`).
+
+        Retargeted for the v2 shell (task-12 brief resolution 3): part 1's
+        version asserted the collision was really on the page, because its
+        single users-list partial rendered the transfer code and every
+        user's id (in hx-post targets and a device-count lookup) in the
+        very same response. Task 12 splits that into separate pages —
+        POST /users/transfer now renders only users_ownership.html, which
+        contains no user ids at all — so that page-wide-scrape hazard the
+        original regression targeted cannot occur here regardless of any
+        uuid collision. The guarantee this test still owns (the code-value
+        hook returns the real transfer code, not a decoy) is unaffected and
+        stays covered by the assertions below and by
+        tests/test_routes_users.py's own no-store/twenty-codes coverage.
+        """
         _cfg, _vmc, _inv, store = wired
         collider = uuid.UUID("12345678-abcd-4abc-8abc-abcdefabcdef")
         monkeypatch.setattr("services.access.uuid.uuid4", lambda: collider)
@@ -2327,10 +2343,6 @@ class TestOwnershipTransfer:
             "/users/transfer", data={"pin": "1379", "emergency_code": codes[0]}
         )
         assert resp.status_code == 200
-        # Sanity check that the collision is really on the page: the naive
-        # page-wide scrape this replaces would have found this as a false
-        # extra candidate.
-        assert re.search(r"\b12345678\b", resp.text)
 
         found = _codes_in(resp.text)
         assert len(found) == 1
@@ -2697,7 +2709,7 @@ class TestMachineReport:
             sent["body"] = body
             return True
 
-        monkeypatch.setattr(routes.legacy, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.users, "send_email", fake_send_email)
         resp = client.post("/users/report", data={})
         assert resp.status_code == 200
         assert sent["to"] == "ada@example.com"
@@ -2713,7 +2725,7 @@ class TestMachineReport:
             sent["body"] = body
             return True
 
-        monkeypatch.setattr(routes.legacy, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.users, "send_email", fake_send_email)
         client.post("/users/report", data={})
         for user in store.users.values():
             assert user.pin_hash not in sent["body"]

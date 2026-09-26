@@ -1,0 +1,60 @@
+{# web_interface/templates/devices.html
+
+   GET /devices (gate manage_users). Tree parent is Users (LEVEL_DEVICES),
+   even though the URL is not under /users/ — Back goes to /users (task-12
+   brief resolution 11). `may_write` is false only for a device that trusts
+   the owner, viewed by a secretary (task-12 brief resolution 4's
+   _guard_owner_device, template half) — its Forget/Share controls are
+   absent, not merely disabled, and the server refuses those same writes
+   regardless of what this page renders.
+#}
+{% extends "base.html" %}
+{% block title %}Devices · Vending Machine{% endblock %}
+{% block body %}
+<div class="space-y-4">
+  <h1 class="text-hero font-semibold text-gray-900">Devices</h1>
+
+  {% if notice %}<p class="text-green-700 text-sm" role="status">{{ notice }}</p>{% endif %}
+
+  {% if devices %}
+  <div class="space-y-2">
+    {% for device in devices %}
+    <div class="rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-2">
+      <div class="flex items-center justify-between gap-touch">
+        <div class="min-w-0">
+          <div class="text-base font-semibold text-gray-900 truncate">{{ device.label }}</div>
+          <div class="text-sm text-gray-500 truncate">
+            {% if device.trusted_names %}{{ device.trusted_names|join(", ") }}{% else %}No trusted users{% endif %}
+          </div>
+        </div>
+        {% if device.shared %}
+        <span class="shrink-0 text-xs font-mono px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">shared</span>
+        {% else %}
+        <span class="shrink-0 text-xs font-mono px-1.5 py-0.5 rounded bg-gray-100 text-gray-700">personal</span>
+        {% endif %}
+      </div>
+      <div class="text-sm text-gray-500">Last seen: {{ device.last_seen_at or "never" }}</div>
+      {% if device.may_write %}
+      <div class="flex flex-wrap gap-touch">
+        <form hx-post="/devices/{{ device.id }}/shared">
+          <button type="submit"
+                  class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">
+            {% if device.shared %}Mark personal{% else %}Mark shared{% endif %}
+          </button>
+        </form>
+        <form hx-post="/devices/{{ device.id }}/forget">
+          <button type="submit"
+                  class="touch-target px-4 rounded-md border border-red-200 text-red-600 text-sm font-medium hover:bg-red-50">Forget</button>
+        </form>
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 text-center text-sm text-gray-400">
+    No trusted devices yet.
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

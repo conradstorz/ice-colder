@@ -1,0 +1,56 @@
+{# web_interface/templates/user_form.html
+
+   GET/POST /users/new (gate manage_users). A top-level template, distinct
+   from the pre-existing web_interface/templates/partials/user_form.html —
+   that one stays on disk for Task 15 to delete (task-12 brief resolution
+   14). "owner" is only ever offered as a role when the caller holds
+   manage_ownership; the server refuses it regardless of what this form
+   offers (routes/users.py's create_user).
+#}
+{% extends "base.html" %}
+{% block title %}Add User · Vending Machine{% endblock %}
+{% block body %}
+<div class="space-y-4">
+  <h1 class="text-hero font-semibold text-gray-900">Add User</h1>
+
+  {% if error %}<p class="text-red-600 text-sm" role="alert">{{ error }}</p>{% endif %}
+
+  <form hx-post="/users/new" class="space-y-4 max-w-md bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+    <div>
+      <label for="name" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Name</label>
+      <input type="text" id="name" name="name" value="{{ form.name }}" required
+             class="touch-target w-full px-3 rounded-md border border-gray-300 text-sm text-gray-900">
+    </div>
+
+    <div>
+      <label for="email" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Email (optional)</label>
+      <input type="email" id="email" name="email" value="{{ form.email }}"
+             class="touch-target w-full px-3 rounded-md border border-gray-300 text-sm text-gray-900">
+    </div>
+
+    <div>
+      <label for="role" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Role</label>
+      <select id="role" name="role"
+              class="touch-target w-full px-3 rounded-md border border-gray-300 text-sm text-gray-900">
+        {% for r in roles %}
+        <option value="{{ r.value }}" {{ "selected" if form.role == r.value }}>{{ r.value.capitalize() }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div>
+      <label for="pin" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Initial PIN (4-8 digits)</label>
+      <input type="text" id="pin" name="pin" inputmode="numeric" pattern="[0-9]*"
+             autocomplete="off" required
+             class="touch-target w-full px-3 rounded-md border border-gray-300 text-sm text-gray-900">
+    </div>
+
+    <div class="flex gap-touch pt-2">
+      <button type="submit"
+              class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">Add User</button>
+      <a href="/users"
+         class="touch-target inline-flex items-center px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
