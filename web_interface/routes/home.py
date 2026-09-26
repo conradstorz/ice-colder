@@ -1,7 +1,10 @@
-"""The dashboard shell (`/`) and its live-updating `/status`, `/kpi` and
-`/pill` fragments. Everything else (health, inventory, users, devices,
-activity, logs, action, faults, ...) stays in routes/legacy.py for now —
-see Task 1 executor resolution 2 in .superpowers/sdd/part2/task-1-brief.md.
+"""Home (`/`) and the three fragment endpoints: `/status`, `/kpi` and `/pill`.
+
+These are the only polling endpoints in the dashboard — the hero every 1 s,
+the KPI cards every 60 s, and the health pill every 5 s. Every other area
+lives in its own sibling module (`health.py`, `products.py`, `inventory.py`,
+`reports.py`, `controls.py`, `tests_level.py`, `users.py`, `settings.py`),
+assembled by `routes/__init__.py::attach_routes`.
 """
 
 import asyncio
