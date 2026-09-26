@@ -760,6 +760,11 @@ class AccessStore:
             if session.user_id == user_id:
                 del self._sessions[sid]
 
+    def end_sessions_for_device(self, device_id: str) -> None:
+        for sid, session in list(self._sessions.items()):
+            if session.device_id == device_id:
+                del self._sessions[sid]
+
     # --- one-time passwords (memory only) ---
 
     def issue_otp(self, user_id: str, device_id: str) -> str:

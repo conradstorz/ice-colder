@@ -1374,6 +1374,73 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         access_store.end_sessions_for_user(user_id)
         return _render_users_list(request)
 
+    def _device_row(device) -> dict:
+        # A plain dict with only what the template needs — never token_hash,
+        # the fingerprint of the cookie value has no business on a page.
+        return {
+            "id": device.id,
+            "label": device.label,
+            "shared": device.shared,
+            "trusted_user_ids": list(device.trusted_user_ids),
+            "last_seen_at": device.last_seen_at,
+        }
+
+    def _render_devices_list(request: Request, *, notice: str | None = None):
+        devices = sorted(access_store.devices.values(), key=lambda d: d.label)
+        user_names = {u.id: u.name for u in access_store.users.values()}
+        return templates.TemplateResponse(
+            "partials/devices_list.html",
+            web_auth.template_context(
+                request,
+                devices=[_device_row(d) for d in devices],
+                user_names=user_names,
+                notice=notice,
+            ),
+        )
+
+    @router.get(
+        "/devices",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.manage_users))],
+    )
+    async def devices_list(request: Request):
+        return _render_devices_list(request)
+
+    @router.post(
+        "/devices/{device_id}/forget",
+        response_class=HTMLResponse,
+        dependencies=[
+            Depends(web_auth.require(Permission.manage_users)),
+            Depends(require_htmx),
+        ],
+    )
+    async def forget_device_route(request: Request, device_id: str):
+        if device_id not in access_store.devices:
+            raise HTTPException(status_code=404, detail="No such device")
+        # Order matters: a forgotten device must not keep whoever is using it
+        # logged in one request longer than necessary (resolve_session would
+        # eventually refuse it once the device record is gone, but ending the
+        # session here is immediate and keeps the in-memory table from
+        # growing with sessions nothing will ever resolve again).
+        access_store.end_sessions_for_device(device_id)
+        access_store.forget_device(device_id)
+        return _render_devices_list(request, notice="Device forgotten.")
+
+    @router.post(
+        "/devices/{device_id}/shared",
+        response_class=HTMLResponse,
+        dependencies=[
+            Depends(web_auth.require(Permission.manage_users)),
+            Depends(require_htmx),
+        ],
+    )
+    async def toggle_device_shared_route(request: Request, device_id: str):
+        device = access_store.devices.get(device_id)
+        if device is None:
+            raise HTTPException(status_code=404, detail="No such device")
+        access_store.set_device_shared(device_id, not device.shared)
+        return _render_devices_list(request)
+
     def _screen_context(request: Request) -> dict:
         status = (
             vmc_instance.get_status()
