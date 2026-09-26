@@ -142,12 +142,17 @@
         </button>
       </form>
       {# Shown once, in the response that created it — never re-rendered
-         on a later request. Each 8-digit code sits in its own <li>. #}
+         on a later request. Each 8-digit code sits in its own <li>, marked
+         with the code-value hook class so tests (and anything else that
+         needs to scrape a code) can find it unambiguously — the page also
+         renders user uuids (e.g. in hx-post targets), whose first group is
+         occasionally eight decimal digits and would otherwise collide with
+         a page-wide "\b\d{8}\b" scrape. #}
       {% if new_codes is defined and new_codes %}
       <div class="mt-3 p-3 border border-blue-200 bg-blue-50 rounded-lg">
         <p class="font-medium text-blue-800">New emergency codes — write these down now, they will not be shown again</p>
         <ul class="mt-1 font-mono text-blue-700 grid grid-cols-2 sm:grid-cols-4 gap-1">
-          {% for code in new_codes %}<li>{{ code }}</li>{% endfor %}
+          {% for code in new_codes %}<li class="code-value">{{ code }}</li>{% endfor %}
         </ul>
       </div>
       {% endif %}
@@ -167,11 +172,12 @@
           Cancel transfer
         </button>
       </form>
-      {# Shown once, in the response that started the transfer. #}
+      {# Shown once, in the response that started the transfer. Marked with
+         the code-value hook class — see the emergency-codes comment above. #}
       {% if transfer_code is defined and transfer_code %}
       <div class="mt-3 p-3 border border-amber-200 bg-amber-50 rounded-lg">
         <p class="font-medium text-amber-800">Transfer code — write this down now, give it to the new owner, it will not be shown again</p>
-        <p class="mt-1"><span class="font-mono">{{ transfer_code }}</span></p>
+        <p class="mt-1"><span class="font-mono code-value">{{ transfer_code }}</span></p>
       </div>
       {% endif %}
     </div>

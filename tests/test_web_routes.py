@@ -18,6 +18,23 @@ from web_interface import routes
 
 _ISSUED_CLIENTS: list[TestClient] = []
 
+# Emergency/transfer codes are 8 decimal digits, rendered by the templates
+# inside an element carrying the `code-value` hook class (see
+# web_interface/templates/setup_codes.html and
+# web_interface/templates/partials/users_list.html). A page-wide
+# `\b\d{8}\b` scrape used to be used instead, but the users-list partial
+# also renders user uuids into hx-post targets and a device-count lookup,
+# and a uuid4's first hyphen-delimited group is occasionally eight decimal
+# digits (~2.3% of the time per uuid) — the scrape would then pick up a
+# uuid fragment instead of the real code. Anchoring on the hook class
+# instead of document-wide digit-boundary matching sidesteps that.
+_CODE_VALUE_RE = re.compile(r'class="[^"]*\bcode-value\b[^"]*">(\d{8})<')
+
+
+def _codes_in(html: str) -> list[str]:
+    """Every code rendered via the `code-value` hook, in document order."""
+    return _CODE_VALUE_RE.findall(html)
+
 
 @pytest.fixture(autouse=True)
 def _close_issued_clients():
@@ -1724,7 +1741,7 @@ class TestSetupWizard:
         self._create_owner(anon, store)
         resp = anon.get("/setup/codes")
         assert resp.status_code == 200
-        codes = re.findall(r"\b\d{8}\b", resp.text)
+        codes = _codes_in(resp.text)
         assert len(codes) == 20
         assert len(set(codes)) == 20
         assert store.unused_emergency_code_count() == 20
@@ -1734,8 +1751,8 @@ class TestSetupWizard:
     ):
         _cfg, store, _display = fresh_store
         self._create_owner(anon, store)
-        first = re.findall(r"\b\d{8}\b", anon.get("/setup/codes").text)
-        second = re.findall(r"\b\d{8}\b", anon.get("/setup/codes").text)
+        first = _codes_in(anon.get("/setup/codes").text)
+        second = _codes_in(anon.get("/setup/codes").text)
         assert first == second
         assert store.unused_emergency_code_count() == 20
 
@@ -1797,7 +1814,7 @@ class TestSetupWizard:
 
         monkeypatch.setattr(routes, "send_email", fake_send_email)
         page = anon.get("/setup/codes")
-        codes = re.findall(r"\b\d{8}\b", page.text)
+        codes = _codes_in(page.text)
         resp = anon.post("/setup/codes/email", data={})
         assert resp.status_code == 200
         assert sent["to"] == "ada@example.com"
@@ -2002,10 +2019,44 @@ class TestOwnershipTransfer:
             "/users/transfer", data={"pin": "1379", "emergency_code": codes[0]}
         )
         assert resp.status_code == 200
-        found = re.findall(r"\b\d{8}\b", resp.text)
+        found = _codes_in(resp.text)
         assert len(found) == 1
         assert store.pending_transfer is not None
         assert store.unused_emergency_code_count() == 19
+
+    def test_transfer_code_survives_a_colliding_user_uuid(
+        self, client, wired, monkeypatch
+    ):
+        """Regression test for Task 19d (the code-value hook): a uuid4's
+        first hyphen-delimited group is occasionally eight decimal digits
+        (~2.3% of uuids — see the module docstring above `_codes_in`), and
+        the users-list partial this response is rendered from puts every
+        user's id into hx-post targets and a device-count lookup. Force
+        that collision on a real user and prove the code-value hook still
+        returns the real transfer code rather than the uuid fragment a
+        page-wide `\\b\\d{8}\\b` scrape used to be fooled by."""
+        _cfg, _vmc, _inv, store = wired
+        collider = uuid.UUID("12345678-abcd-4abc-8abc-abcdefabcdef")
+        monkeypatch.setattr("services.access.uuid.uuid4", lambda: collider)
+        colliding_user = store.create_user(
+            "Collider", "collider@example.com", Role.tech, "1111"
+        )
+        monkeypatch.undo()
+        assert colliding_user.id == str(collider)
+
+        codes = store.generate_emergency_codes()
+        resp = client.post(
+            "/users/transfer", data={"pin": "1379", "emergency_code": codes[0]}
+        )
+        assert resp.status_code == 200
+        # Sanity check that the collision is really on the page: the naive
+        # page-wide scrape this replaces would have found this as a false
+        # extra candidate.
+        assert re.search(r"\b12345678\b", resp.text)
+
+        found = _codes_in(resp.text)
+        assert len(found) == 1
+        assert store.verify_transfer_code(found[0]) is True
 
     def test_second_start_while_pending_is_refused_and_consumes_nothing(
         self, client, wired
@@ -2020,7 +2071,7 @@ class TestOwnershipTransfer:
         first = client.post(
             "/users/transfer", data={"pin": "1379", "emergency_code": codes[0]}
         )
-        first_transfer_code = re.findall(r"\b\d{8}\b", first.text)[0]
+        first_transfer_code = _codes_in(first.text)[0]
         pending_before = dict(store.pending_transfer)
         unused_before = store.unused_emergency_code_count()
 
@@ -2147,7 +2198,7 @@ class TestOwnershipTransferCompletion:
         resp = client.post(
             "/users/transfer", data={"pin": "1379", "emergency_code": codes[0]}
         )
-        return re.findall(r"\b\d{8}\b", resp.text)[0]
+        return _codes_in(resp.text)[0]
 
     def _submit_transfer_form(self, anon, code, *, name="Bea", pin="9042"):
         return anon.post(
@@ -2313,7 +2364,7 @@ class TestEmergencyCodeRegeneration:
         old_codes = store.generate_emergency_codes()
         resp = client.post("/users/codes/regenerate", data={"pin": "1379"})
         assert resp.status_code == 200
-        found = re.findall(r"\b\d{8}\b", resp.text)
+        found = _codes_in(resp.text)
         assert len(found) == 20
         assert set(found).isdisjoint(old_codes)
         assert store.unused_emergency_code_count() == 20
@@ -2326,7 +2377,7 @@ class TestEmergencyCodeRegeneration:
         old_codes = store.generate_emergency_codes()
         resp = client.post("/users/codes/regenerate", data={"pin": "0000"})
         assert resp.status_code == 200
-        found = re.findall(r"\b\d{8}\b", resp.text)
+        found = _codes_in(resp.text)
         assert found == []
         # Every original code still works.
         for code in old_codes:
