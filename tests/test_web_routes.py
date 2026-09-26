@@ -517,6 +517,8 @@ _MATRIX_ROUTES = [
     ("GET", "/config/machine", Permission.edit_contacts),
     ("GET", "/config/contacts", Permission.edit_contacts),
     ("POST", "/action/restart", Permission.machine_controls),
+    ("GET", "/users", Permission.manage_users),
+    ("GET", "/users/new", Permission.manage_users),
 ]
 
 
@@ -1807,6 +1809,153 @@ class TestSetupWizard:
         resp = tech_client.get("/setup/codes")
         assert resp.status_code == 403
         tech_client.close()
+
+
+class TestUserManagement:
+    """§4.1: a secretary manages everyone except the owner — every write
+    whose target is the owner needs manage_ownership, and a secretary may
+    never mint one either."""
+
+    def test_owner_sees_the_list_containing_ada(self, client):
+        resp = client.get("/users")
+        assert resp.status_code == 200
+        assert "Ada" in resp.text
+
+    def test_list_shows_the_unused_code_count(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        store.generate_emergency_codes()
+        resp = client.get("/users")
+        assert resp.status_code == 200
+        assert "20" in resp.text
+
+    @pytest.mark.parametrize("role", [Role.tech, Role.loader])
+    def test_tech_and_loader_get_403(self, login_as, role):
+        worker = login_as(role)
+        resp = worker.get("/users")
+        assert resp.status_code == 403
+
+    def test_owner_creates_a_loader(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        resp = client.post(
+            "/users/new",
+            data={"name": "Lonnie", "email": "", "role": "loader", "pin": "5297"},
+        )
+        assert resp.status_code == 200
+        assert "Lonnie" in resp.text
+        created = next(u for u in store.users.values() if u.name == "Lonnie")
+        assert created.role == Role.loader
+
+    def test_bad_pin_is_refused_with_the_reason_and_creates_nobody(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        before = len(store.users)
+        resp = client.post(
+            "/users/new",
+            data={"name": "Nope", "email": "", "role": "loader", "pin": "1111"},
+        )
+        assert resp.status_code == 200
+        assert "same digit repeated" in resp.text
+        assert len(store.users) == before
+
+    def test_secretary_may_not_create_an_owner(self, login_as, wired):
+        _cfg, _vmc, _inv, store = wired
+        secretary = login_as(Role.secretary)
+        original_owner_id = store.owner().id
+        resp = secretary.post(
+            "/users/new",
+            data={"name": "Usurper", "email": "", "role": "owner", "pin": "5297"},
+        )
+        assert resp.status_code == 403
+        assert store.owner().id == original_owner_id
+        assert not any(u.name == "Usurper" for u in store.users.values())
+
+    def test_new_user_form_offers_owner_only_to_manage_ownership(self, login_as):
+        owner = login_as(Role.owner)
+        secretary = login_as(Role.secretary)
+        assert 'value="owner"' in owner.get("/users/new").text
+        assert 'value="owner"' not in secretary.get("/users/new").text
+
+    @pytest.mark.parametrize(
+        "action,extra",
+        [
+            ("disable", {}),
+            ("enable", {}),
+            ("delete", {}),
+            ("reset-pin", {"pin": "5297"}),
+        ],
+    )
+    def test_secretary_403_on_owner_targeting_writes(
+        self, login_as, wired, action, extra
+    ):
+        _cfg, _vmc, _inv, store = wired
+        secretary = login_as(Role.secretary)
+        owner = store.owner()
+        resp = secretary.post(f"/users/{owner.id}/{action}", data=extra)
+        assert resp.status_code == 403
+        refreshed = store.get_user(owner.id)
+        assert refreshed is not None
+        assert refreshed.disabled is False
+
+    def test_secretary_may_disable_and_reenable_a_loader(self, login_as, wired):
+        _cfg, _vmc, _inv, store = wired
+        secretary = login_as(Role.secretary)
+        loader = store.create_user(
+            "Loader One", "loader1@example.com", Role.loader, "5297"
+        )
+        resp = secretary.post(f"/users/{loader.id}/disable")
+        assert resp.status_code == 200
+        assert store.get_user(loader.id).disabled is True
+        resp = secretary.post(f"/users/{loader.id}/enable")
+        assert resp.status_code == 200
+        assert store.get_user(loader.id).disabled is False
+
+    def test_disable_ends_the_users_live_sessions(self, login_as, wired):
+        _cfg, _vmc, _inv, store = wired
+        owner = login_as(Role.owner)
+        loader_client, loader = make_client(store, Role.loader, name="Loafer")
+        session_id = loader_client.cookies.get(web_auth.SESSION_COOKIE)
+        assert store.resolve_session(session_id) is not None
+        resp = owner.post(f"/users/{loader.id}/disable")
+        assert resp.status_code == 200
+        assert store.resolve_session(session_id) is None
+        loader_client.close()
+
+    def test_delete_ends_the_users_live_sessions(self, login_as, wired):
+        _cfg, _vmc, _inv, store = wired
+        owner = login_as(Role.owner)
+        loader_client, loader = make_client(store, Role.loader, name="Loafer3")
+        session_id = loader_client.cookies.get(web_auth.SESSION_COOKIE)
+        resp = owner.post(f"/users/{loader.id}/delete")
+        assert resp.status_code == 200
+        assert store.resolve_session(session_id) is None
+        loader_client.close()
+
+    def test_reset_pin_changes_hash_and_untrusts_every_device(self, login_as, wired):
+        _cfg, _vmc, _inv, store = wired
+        owner = login_as(Role.owner)
+        loader_client, loader = make_client(store, Role.loader, name="Loafer2")
+        old_hash = loader.pin_hash
+        resp = owner.post(f"/users/{loader.id}/reset-pin", data={"pin": "5297"})
+        assert resp.status_code == 200
+        updated = store.get_user(loader.id)
+        assert updated.pin_hash != old_hash
+        assert all(loader.id not in d.trusted_user_ids for d in store.devices.values())
+        loader_client.close()
+
+    def test_delete_removes_the_user(self, login_as, wired):
+        _cfg, _vmc, _inv, store = wired
+        owner = login_as(Role.owner)
+        loader = store.create_user("Gone", "gone@example.com", Role.loader, "5297")
+        resp = owner.post(f"/users/{loader.id}/delete")
+        assert resp.status_code == 200
+        assert store.get_user(loader.id) is None
+
+    def test_post_without_htmx_header_is_forbidden(self, client):
+        resp = client.post(
+            "/users/new",
+            headers={"HX-Request": ""},
+            data={"name": "X", "email": "", "role": "loader", "pin": "5297"},
+        )
+        assert resp.status_code == 403
 
 
 class TestCorruptAccessFile:

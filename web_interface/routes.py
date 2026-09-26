@@ -9,7 +9,14 @@ from loguru import logger
 
 from config.config_model import ConfigModel, Product
 from contracts.vending_machine import EXPECTED_SUBSYSTEMS
-from services.access import OTP_DIGITS, AccessStore, OwnerExistsError, Permission, Role
+from services.access import (
+    OTP_DIGITS,
+    AccessError,
+    AccessStore,
+    OwnerExistsError,
+    Permission,
+    Role,
+)
 from services.auth_policy import pin_problem
 from services.config_store import (
     add_product,
@@ -1143,6 +1150,229 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
                 "partials/inventory_add_form.html",
                 web_auth.template_context(request, product=copied, mode="copy"),
             )
+
+    def _guard_owner_target(principal: web_auth.Principal, user_id: str) -> None:
+        """403 when *user_id* is the owner and the caller lacks manage_ownership.
+
+        A secretary is the owner's delegate — manage_users lets them touch
+        every other user, but the spec (§4) carves the owner out of that:
+        any write whose target is the owner needs manage_ownership. Called
+        first, before any store mutation, by every one of the four writes
+        that take a user id (disable, enable, reset-pin, delete).
+        """
+        owner = access_store.owner()
+        if (
+            owner is not None
+            and owner.id == user_id
+            and Permission.manage_ownership not in principal.perms
+        ):
+            raise HTTPException(status_code=403, detail="Not permitted")
+
+    def _user_row(user) -> dict:
+        # A plain dict with only what a template needs — never pin_hash or
+        # pin_salt, the same hazard web_auth.TemplateUser exists to avoid
+        # for current_user (see its docstring).
+        return {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "role": user.role.value,
+            "disabled": user.disabled,
+            "last_login_at": user.last_login_at,
+        }
+
+    def _render_users_list(
+        request: Request,
+        *,
+        error: str | None = None,
+        notice: str | None = None,
+        status_code: int = 200,
+    ):
+        owner = access_store.owner()
+        users = sorted(access_store.users.values(), key=lambda u: u.name)
+        device_counts = {
+            u.id: sum(
+                1 for d in access_store.devices.values() if u.id in d.trusted_user_ids
+            )
+            for u in users
+        }
+        return templates.TemplateResponse(
+            "partials/users_list.html",
+            web_auth.template_context(
+                request,
+                users=[_user_row(u) for u in users],
+                owner_id=owner.id if owner else None,
+                device_counts=device_counts,
+                unused_codes=access_store.unused_emergency_code_count(),
+                pending_transfer=access_store.pending_transfer,
+                error=error,
+                notice=notice,
+            ),
+            status_code=status_code,
+        )
+
+    @router.get(
+        "/users",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.manage_users))],
+    )
+    async def users_list(request: Request):
+        return _render_users_list(request)
+
+    def _new_user_form(
+        request: Request,
+        principal: web_auth.Principal,
+        *,
+        error: str | None = None,
+        form: dict | None = None,
+    ):
+        # A secretary may create every role except owner — there is exactly
+        # one owner, and only manage_ownership can mint one (spec §4.1).
+        roles = [
+            r
+            for r in Role
+            if r is not Role.owner or Permission.manage_ownership in principal.perms
+        ]
+        return templates.TemplateResponse(
+            "partials/user_form.html",
+            web_auth.template_context(
+                request,
+                roles=roles,
+                error=error,
+                form=form or {"name": "", "email": "", "role": ""},
+            ),
+        )
+
+    @router.get(
+        "/users/new",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.manage_users))],
+    )
+    async def new_user_form(request: Request):
+        principal = web_auth.current_principal(request)
+        return _new_user_form(request, principal)
+
+    @router.post(
+        "/users/new",
+        response_class=HTMLResponse,
+        dependencies=[
+            Depends(web_auth.require(Permission.manage_users)),
+            Depends(require_htmx),
+        ],
+    )
+    async def create_user(
+        request: Request,
+        name: str = Form(...),
+        email: str = Form(""),
+        role: str = Form(...),
+        pin: str = Form(...),
+    ):
+        principal = web_auth.current_principal(request)
+        try:
+            role_enum = Role(role)
+        except ValueError:
+            return _render_users_list(request, error="Invalid role.")
+        # A secretary submitting role=owner directly (bypassing the hidden
+        # <option>) must still be refused server-side — the form only hides
+        # the control, it is never the authority.
+        if (
+            role_enum is Role.owner
+            and Permission.manage_ownership not in principal.perms
+        ):
+            raise HTTPException(status_code=403, detail="Not permitted")
+
+        problem = pin_problem(pin)
+        if problem:
+            # Spec §6: a PIN that fails pin_problem returns with the reason
+            # and creates nobody — the list is the surface this renders
+            # back into, so that is what carries the error here.
+            return _render_users_list(request, error=problem)
+
+        try:
+            access_store.create_user(name, email or None, role_enum, pin)
+        except OwnerExistsError:
+            return _render_users_list(
+                request, error="This machine already has an owner."
+            )
+        return _render_users_list(request, notice=f"{name} added.")
+
+    @router.post(
+        "/users/{user_id}/disable",
+        response_class=HTMLResponse,
+        dependencies=[
+            Depends(web_auth.require(Permission.manage_users)),
+            Depends(require_htmx),
+        ],
+    )
+    async def disable_user(request: Request, user_id: str):
+        principal = web_auth.current_principal(request)
+        _guard_owner_target(principal, user_id)
+        try:
+            access_store.set_user_disabled(user_id, True)
+        except AccessError:
+            raise HTTPException(status_code=404, detail="No such user")
+        # A disabled user must not keep an open tab working until it idles
+        # out on its own (spec's intent behind disable existing at all).
+        access_store.end_sessions_for_user(user_id)
+        return _render_users_list(request)
+
+    @router.post(
+        "/users/{user_id}/enable",
+        response_class=HTMLResponse,
+        dependencies=[
+            Depends(web_auth.require(Permission.manage_users)),
+            Depends(require_htmx),
+        ],
+    )
+    async def enable_user(request: Request, user_id: str):
+        principal = web_auth.current_principal(request)
+        _guard_owner_target(principal, user_id)
+        try:
+            access_store.set_user_disabled(user_id, False)
+        except AccessError:
+            raise HTTPException(status_code=404, detail="No such user")
+        return _render_users_list(request)
+
+    @router.post(
+        "/users/{user_id}/reset-pin",
+        response_class=HTMLResponse,
+        dependencies=[
+            Depends(web_auth.require(Permission.manage_users)),
+            Depends(require_htmx),
+        ],
+    )
+    async def reset_user_pin(request: Request, user_id: str, pin: str = Form(...)):
+        principal = web_auth.current_principal(request)
+        _guard_owner_target(principal, user_id)
+        problem = pin_problem(pin)
+        if problem:
+            return _render_users_list(request, error=problem)
+        try:
+            # set_user_pin rehashes and drops the user from every device, so
+            # the next login re-enrolls (spec §4.1) — AccessStore already
+            # does both halves of that.
+            access_store.set_user_pin(user_id, pin)
+        except AccessError:
+            raise HTTPException(status_code=404, detail="No such user")
+        return _render_users_list(request, notice="PIN reset.")
+
+    @router.post(
+        "/users/{user_id}/delete",
+        response_class=HTMLResponse,
+        dependencies=[
+            Depends(web_auth.require(Permission.manage_users)),
+            Depends(require_htmx),
+        ],
+    )
+    async def delete_user_route(request: Request, user_id: str):
+        principal = web_auth.current_principal(request)
+        _guard_owner_target(principal, user_id)
+        try:
+            access_store.delete_user(user_id)
+        except AccessError:
+            raise HTTPException(status_code=404, detail="No such user")
+        access_store.end_sessions_for_user(user_id)
+        return _render_users_list(request)
 
     def _screen_context(request: Request) -> dict:
         status = (
