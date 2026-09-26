@@ -2,7 +2,8 @@
 
 The state lives in services/access.py's AccessStore; this module is the FastAPI
 side of it. HTTP Basic auth is gone (Task 11) — a Backoff instance here
-replaces the old LoginLimiter and main.py hands it the trusted proxies.
+enforces per-subject rate-limiting with exponential back-off and per-user
+budget for untrusted clients, and main.py hands it the trusted proxies.
 """
 
 from __future__ import annotations

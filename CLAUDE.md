@@ -22,15 +22,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `main()` loads `config.json` into a Pydantic `ConfigModel`, then runs three
 concurrent asyncio tasks on a single event loop: a uvicorn web server (host/port
-from `config.web`, default `0.0.0.0:26123`, HTTP Basic auth from
-`config.web.admin_username`/`admin_password`), the MQTT client, and the health
-monitor. The MQTT client and health monitor are wrapped in a supervisor that
-restarts them on crash; if uvicorn exits, the process exits (Docker's
-`restart: unless-stopped` handles process-level restarts).
+from `config.web`, default `0.0.0.0:26123`, with sessions persisted in
+`data/access.json`), the MQTT client, and the health monitor. The MQTT client
+and health monitor are wrapped in a supervisor that restarts them on crash; if
+uvicorn exits, the process exits (Docker's `restart: unless-stopped` handles
+process-level restarts).
 
 ### Configuration (`config/config_model.py`, `config.json`)
 
-All configuration is a single Pydantic `ConfigModel` loaded from `config.json`. The model has six top-level sections: `version`, `physical` (machine details, people, products), `payment` (Stripe, PayPal, MDB), `communication` (email, SMS, Snapchat gateways), `mqtt` (broker connection), and `web` (dashboard host/port/admin credentials) — plus the scalar `machine_id` field. `ConfigModel` exposes convenience properties (e.g., `config.products`, `config.machine_owner`, `config.stripe`) so consumers don't need to navigate the nested structure. Missing keys are filled from Pydantic defaults at load time. Saves via
+All configuration is a single Pydantic `ConfigModel` loaded from `config.json`. The model has six top-level sections: `version`, `physical` (machine details, people, products), `payment` (Stripe, PayPal, MDB), `communication` (email, SMS, Snapchat gateways), `mqtt` (broker connection), and `web` (dashboard host/port/trusted proxies) — plus the scalar `machine_id` field. `ConfigModel` exposes convenience properties (e.g., `config.products`, `config.machine_owner`, `config.stripe`) so consumers don't need to navigate the nested structure. Missing keys are filled from Pydantic defaults at load time. Saves via
 `services/config_store.py` are atomic (tmp + rename), write real secret values,
 and keep a rolling `config.json.bak`.
 
@@ -51,7 +51,20 @@ logs a clear error and exits with code 1 rather than papering over it.
 
 FastAPI app (`server.py`) with Jinja2 templates and HTMX-driven partials. `routes.py` defines all endpoints and receives the `ConfigModel` and `VMC` instance via setter functions called from `main.py`. Templates live in `web_interface/templates/` with HTMX partial fragments in `templates/partials/`. Static assets in `web_interface/static/`.
 
-The dashboard is HTTP Basic auth (`config.web.admin_username`/`admin_password`); `web_interface/auth.py`'s `LoginLimiter` locks out a client IP after repeated failed logins within a sliding window, trusting `X-Forwarded-For` only from `config.web.trusted_proxies`. POST routes require the `HX-Request` header (HTMX's own requests set it), which blocks a plain cross-site form post as a CSRF guard.
+The dashboard uses cookie-based session auth via `services/access.py`'s `AccessStore`,
+persisted in `data/access.json` (mode 0600). Users have four roles (`owner`,
+`secretary`, `tech`, `loader`) and a 4–8 digit PIN. First login on a new device
+requires a second factor: a 6-digit OTP sent by email (when
+`communication.email_gateway` is configured) or an 8-digit emergency code,
+which works offline. On first boot, setup mode redirects every route to `/setup`
+behind a code that exists only at the machine. The `Backoff` class (replacing
+`LoginLimiter`) enforces exponential back-off per `(kind, subject, client)` tuple
+plus a per-user budget for untrusted clients — no hard caps, so a stranger can
+never lock a legitimate user out. Every route is gated by `require(Permission)`;
+templates receive `perms` and `current_user` via `template_context` so the server
+does not render controls it would refuse. POST routes require the `HX-Request`
+header (HTMX's own requests set it), which blocks a plain cross-site form post
+as a CSRF guard.
 
 The System Health tab (`/health`) merges three sources: heartbeats (liveness,
 uptime), each subsystem's retained `capabilities/<subsystem>` document
@@ -64,6 +77,8 @@ checkout). Subsystems in `EXPECTED_SUBSYSTEMS` are listed even before they speak
 
 - `payment_gateway_manager.py` - manages Stripe/PayPal/Square gateways, generates QR codes via `qrcode` library
 - `config_store.py` - persists config changes (add/update products) back to `config.json`
+- `access.py` - session auth with roles, PINs, devices, emergency codes, and back-off; persists to `data/access.json`
+- `mailer.py` - sends OTP and setup-code emails via SMTP
 - `fsm_control.py` - translates admin commands (restart, reset, shutdown) into actions
 - `availability.py` - permissive truth table (ROADMAP §3) split into three
   gates: `safety` rows block payment and sales, `fulfillment` rows block only
@@ -75,7 +90,7 @@ checkout). Subsystems in `EXPECTED_SUBSYSTEMS` are listed even before they speak
   an open snapshot at boot raises `PAY-104`, which alerts the operator and
   holds the evidence file until an admin clears it, but never inhibits payment
 - `paths.py` - `LOG_DIR`, `LOG_FILE`, `DATA_DIR` shared by main, routes and services
-- `auth_policy.py` - admin-password policy shared by first-run setup and startup checks: rejects empty/default/short passwords, generates a random first-run password, identifies loopback hosts
+- `auth_policy.py` - PIN policy (`pin_problem`); validates 4–8 digits with no repeats or runs; identifies loopback hosts (`is_loopback`)
 
 ### Hardware (`hardware/`)
 
@@ -120,8 +135,8 @@ of `config.mqtt` with env values applied, plus the resolved trusted-proxies
 list) without mutating the live `ConfigModel` — so an env-only
 `MQTT_PASSWORD` can never be written back to `config.json` by a later
 `save_config`. `ICE_COLDER_TRUSTED_PROXIES` is resolved the same way and
-applied to the dashboard's login limiter via
-`routes.login_limiter.set_trusted_proxies(...)`, called after
+applied to the dashboard's login back-off via
+`routes.backoff.set_trusted_proxies(...)`, called after
 `routes.set_config_object(...)` so the env value wins.
 
 ## Key Patterns
