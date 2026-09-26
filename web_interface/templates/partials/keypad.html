@@ -1,4 +1,15 @@
-{# web_interface/templates/partials/keypad.html — PIN entry, swapped into #login-form #}
+{# web_interface/templates/partials/keypad.html — PIN entry, swapped into #login-form.
+
+   Task 14: restyled to the shell's touch rules (spec §3 — keys at least
+   48px tall with 8px gaps), using the existing `touch-target` (48px
+   min-height) and `gap-touch` (8px) tokens rather than inventing new ones.
+
+   Security: this partial is the login failure response body (POST /login
+   swaps only #login-form, never the surrounding page — see login.html).
+   Nothing added here may vary with the submitted user_id: no greeting, no
+   per-user styling, no new hidden field. The `selected` attribute below is
+   untouched part-1 logic (002460d) — selected_user_id is never echoed back
+   on a failure path, so it is never true here; do not change that. #}
 <form id="login-form"
       hx-post="/login"
       hx-target="#login-form"
@@ -7,7 +18,7 @@
 
   <label for="user_id" class="block text-sm font-medium text-gray-700">Who are you?</label>
   <select id="user_id" name="user_id" required
-          class="w-full px-4 py-4 text-lg border border-gray-300 rounded-xl">
+          class="touch-target w-full px-4 text-lg border border-gray-300 rounded-xl">
     {% for u in users %}
       <option value="{{ u.id }}" {{ "selected" if selected_user_id == u.id }}>{{ u.name }}</option>
     {% endfor %}
@@ -16,16 +27,16 @@
   <label for="pin" class="block text-sm font-medium text-gray-700">PIN</label>
   <input type="password" id="pin" name="pin" inputmode="numeric" pattern="[0-9]*"
          autocomplete="off" required
-         class="w-full px-4 py-4 text-2xl tracking-widest text-center border border-gray-300 rounded-xl">
+         class="touch-target w-full px-4 text-2xl tracking-widest text-center border border-gray-300 rounded-xl">
 
-  <div class="grid grid-cols-3 gap-2">
+  <div class="grid grid-cols-3 gap-touch">
     {% for d in ["1","2","3","4","5","6","7","8","9"] %}
       <button type="button" data-digit="{{ d }}"
-              class="py-5 text-2xl bg-gray-100 rounded-xl">{{ d }}</button>
+              class="touch-target justify-center text-2xl bg-gray-100 rounded-xl">{{ d }}</button>
     {% endfor %}
-    <button type="button" data-clear="1" class="py-5 text-lg bg-gray-100 rounded-xl">Clear</button>
-    <button type="button" data-digit="0" class="py-5 text-2xl bg-gray-100 rounded-xl">0</button>
-    <button type="submit" class="py-5 text-lg bg-blue-600 text-white rounded-xl">Enter</button>
+    <button type="button" data-clear="1" class="touch-target justify-center text-lg bg-gray-100 rounded-xl">Clear</button>
+    <button type="button" data-digit="0" class="touch-target justify-center text-2xl bg-gray-100 rounded-xl">0</button>
+    <button type="submit" class="touch-target justify-center text-lg bg-blue-600 text-white rounded-xl">Enter</button>
   </div>
 
   {% if error %}

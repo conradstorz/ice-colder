@@ -69,13 +69,13 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
             return RedirectResponse("/setup", status_code=303)
         return templates.TemplateResponse(
             "login.html",
-            {
-                "request": request,
-                "users": context.access_store.enabled_users(),
-                "selected_user_id": None,
-                "error": None,
-                "wait_seconds": None,
-            },
+            context.template_context(
+                request,
+                users=context.access_store.enabled_users(),
+                selected_user_id=None,
+                error=None,
+                wait_seconds=None,
+            ),
         )
 
     @public.post(
@@ -155,16 +155,16 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         gateway = context.config.communication.email_gateway if context.config else None
         return templates.TemplateResponse(
             "enroll.html",
-            {
-                "request": request,
-                "user": user,
-                "error": error,
-                "notice": notice,
-                "wait_seconds": wait_seconds,
-                "can_email": bool(
+            context.template_context(
+                request,
+                user=user,
+                error=error,
+                notice=notice,
+                wait_seconds=wait_seconds,
+                can_email=bool(
                     user and user.email and gateway and gateway.is_configured
                 ),
-            },
+            ),
             status_code=status_code,
             headers=headers or {},
         )
@@ -360,12 +360,12 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
     ):
         return templates.TemplateResponse(
             "setup.html",
-            {
-                "request": request,
-                "error": error,
-                "form": form or {"name": "", "email": ""},
-                "transfer": context.access_store.pending_transfer is not None,
-            },
+            context.template_context(
+                request,
+                error=error,
+                form=form or {"name": "", "email": ""},
+                transfer=context.access_store.pending_transfer is not None,
+            ),
             status_code=status_code,
             headers=headers or {},
         )
@@ -501,13 +501,13 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         resp_headers = {"Cache-Control": "no-store", **(headers or {})}
         return templates.TemplateResponse(
             "setup_codes.html",
-            {
-                "request": request,
-                "codes": context._pending_codes,
-                "notice": notice,
-                "error": error,
-                "can_email": context._can_email_owner(owner),
-            },
+            context.template_context(
+                request,
+                codes=context._pending_codes,
+                notice=notice,
+                error=error,
+                can_email=context._can_email_owner(owner),
+            ),
             status_code=status_code,
             headers=resp_headers,
         )
@@ -610,11 +610,11 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         )
         return templates.TemplateResponse(
             "setup_review_user.html",
-            {
-                "request": request,
-                "user": _user_row(user),
-                "device_count": device_count,
-            },
+            context.template_context(
+                request,
+                user=_user_row(user),
+                device_count=device_count,
+            ),
         )
 
     def _user_row(user) -> dict:
