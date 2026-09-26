@@ -61,17 +61,35 @@ Then set:
   1883 is never reachable through a stray port-forward or a second NIC.
 - `ICE_COLDER_TRUSTED_PROXIES` — the Docker network(s) Traefik reaches the
   VMC from (comma-separated CIDRs); `X-Forwarded-For` is trusted only from
-  these when the dashboard's login limiter picks a client IP to rate-limit.
+  these when the dashboard's login back-off picks a client IP to rate-limit.
 
 Before exposing a host through Traefik, confirm three things outside this
 repo: the router forwards only 80/443 (never 1883); Traefik's `websecure`
 entrypoint has TLS; and Traefik runs without `forwardedHeaders.trustedIPs`
 or `insecure` set, so it discards any `X-Forwarded-For` a client supplies
-(the login limiter's trusted-proxy rule depends on that).
+(the login back-off's trusted-proxy rule depends on that).
 
-The dashboard itself refuses to start bound to a public interface with an
-admin password under 12 characters or a known default; set
-`ICE_COLDER_ALLOW_WEAK_PASSWORD=1` only on a private test host, never in the
-committed compose stacks. On first run with no admin password configured, the
-VMC generates one and prints it once — capture it then, it is not logged
-again.
+### Authentication and Access Control
+
+There is no default credential. On first boot, the dashboard enters **setup mode**:
+an 8-digit setup code is printed in the startup log at warning level
+(`docker compose logs vmc`) and displayed on the customer display. A setup wizard
+creates the owner account (name, email, 4–8 digit PIN), then shows 20 pre-generated
+**emergency codes** once — write them down. `data/access.json` stores only a scrypt
+hash of each code, not the plaintext, so it is not a recoverable backup of them.
+
+Four roles exist: `owner` (one per machine), `secretary` (owner's delegates),
+`tech` (maintenance), `loader` (stock). Credential is a PIN of 4–8 digits.
+
+A browser the machine has not seen before requires a second factor once: either a
+6-digit code emailed when `communication.email_gateway` is configured, or an
+emergency code from the pool, which works entirely offline. After that, a PIN alone
+signs in on that device.
+
+**Back up `data/access.json`** — it holds every user, PIN hash, trusted device, and
+emergency-code hash and is the single point of lockout. It lives inside the
+bind-mounted `./data` directory (visible in the Users screen with a count of
+unused emergency codes). An owner who loses both their PIN and every emergency
+code has **no software recovery** — the only path back is a factory restore:
+delete `data/access.json` and rerun the wizard, which discards all users and
+devices.

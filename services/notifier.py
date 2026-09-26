@@ -8,13 +8,13 @@ Deduplicates alerts to avoid flooding the owner.
 """
 
 import asyncio
-import smtplib
 from email.message import EmailMessage
 
 from loguru import logger
 
 from config.config_model import _is_placeholder_host, ConfigModel, Channel
 from services.health_monitor import Alert
+from services.mailer import smtp_send
 
 
 class Notifier:
@@ -113,18 +113,7 @@ class Notifier:
 
         loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(None, self._smtp_send, email_config, msg)
+            await loop.run_in_executor(None, smtp_send, email_config, msg)
             logger.info(f"Notifier: Email sent to {self._owner.email}")
         except Exception as e:
             logger.error(f"Notifier: Email send failed: {e}")
-
-    @staticmethod
-    def _smtp_send(email_config, msg: EmailMessage):
-        """Blocking SMTP send (called in executor)."""
-        with smtplib.SMTP(email_config.smtp_server, email_config.smtp_port) as server:
-            server.starttls()
-            server.login(
-                email_config.username,
-                email_config.password.get_secret_value(),
-            )
-            server.send_message(msg)

@@ -10,7 +10,7 @@ app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 # NOTE: /static is served WITHOUT auth (Starlette mounts can't take dependencies).
 # Keep only non-sensitive assets (css/js/images) here; everything else goes
-# through the require_auth-gated router in routes.py.
+# through the permission-gated router in routes.py (see require() decorator).
 app.mount("/static", StaticFiles(directory="web_interface/static"), name="static")
 templates = Jinja2Templates(directory="web_interface/templates")
 templates.env.filters["humanize_seconds"] = humanize_seconds

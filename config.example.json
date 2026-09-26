@@ -108,8 +108,6 @@
   "web": {
     "host": "0.0.0.0",
     "port": 26123,
-    "admin_username": "admin",
-    "admin_password": "changeme",
     "trusted_proxies": []
   }
 }

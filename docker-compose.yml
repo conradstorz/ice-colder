@@ -24,7 +24,7 @@ services:
     container_name: ice-colder-vmc
     volumes:
       - ./LOGS:/app/LOGS
-      - ./data:/app/data
+      - ./data:/app/data  # Persists config.json and access.json (users, PINs, devices, emergency codes)
     environment:
       - MQTT_BROKER_HOST=mosquitto
       - MQTT_USERNAME=${MQTT_USERNAME}

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Trust this device — Vending Machine</title>
+  <script src="/static/htmx.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-50 text-gray-900 font-sans min-h-screen flex items-center justify-center">
+  <main class="w-full max-w-sm p-6 space-y-4">
+    <h1 class="text-xl font-semibold">Trust this device</h1>
+    <p class="text-sm text-gray-600">
+      Hello {{ user.name }}. This browser has not been used here before.
+      Enter a 6-digit emailed code or an 8-digit emergency code, once.
+    </p>
+
+    {% if can_email %}
+      <button hx-post="/login/enroll/send" hx-target="body" hx-swap="outerHTML"
+              class="w-full py-3 border border-gray-300 rounded-xl text-sm">
+        Email me a code
+      </button>
+    {% endif %}
+
+    <form hx-post="/login/enroll" hx-target="body" hx-swap="outerHTML" class="space-y-3">
+      <label for="code" class="block text-sm font-medium text-gray-700">Code</label>
+      <input type="text" id="code" name="code" inputmode="numeric" pattern="[0-9]*"
+             autocomplete="one-time-code" required
+             class="w-full px-4 py-4 text-2xl tracking-widest text-center border border-gray-300 rounded-xl">
+      <button type="submit" class="w-full py-4 bg-blue-600 text-white rounded-xl">Continue</button>
+    </form>
+
+    {% if notice %}<p class="text-green-700 text-sm">{{ notice }}</p>{% endif %}
+    {% if error %}<p class="text-red-600 text-sm" role="alert">{{ error }}</p>{% endif %}
+    {% if wait_seconds %}
+      <p class="text-amber-700 text-sm">Try again in {{ wait_seconds }} s.</p>
+    {% endif %}
+  </main>
+</body>
+</html>

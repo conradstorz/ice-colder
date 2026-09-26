@@ -1,0 +1,70 @@
+{# web_interface/templates/partials/devices_list.html #}
+<div>
+  <div class="flex items-center justify-between mb-4">
+    <h2 class="text-base font-semibold text-gray-900">Devices</h2>
+  </div>
+
+  {% if notice %}<p class="text-green-700 text-sm mb-3" role="status">{{ notice }}</p>{% endif %}
+
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="border-b border-gray-200 text-xs text-gray-400 uppercase tracking-wide">
+        <th class="pb-2 text-left font-medium">Device</th>
+        <th class="pb-2 text-left font-medium">Trusted Users</th>
+        <th class="pb-2 text-left font-medium">Type</th>
+        <th class="pb-2 text-left font-medium">Last Seen</th>
+        <th class="pb-2 text-left font-medium">Actions</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-gray-100">
+      {% for device in devices %}
+      {% set may_write = owner_id not in device.trusted_user_ids or "manage_ownership" in perms %}
+      <tr class="hover:bg-gray-50">
+        <td class="py-3 text-gray-900">{{ device.label }}</td>
+        <td class="py-3 text-gray-600">
+          {% if device.trusted_user_ids %}
+          {% for uid in device.trusted_user_ids %}{{ user_names.get(uid, "(removed user)") }}{% if not loop.last %}, {% endif %}{% endfor %}
+          {% else %}
+          &mdash;
+          {% endif %}
+        </td>
+        <td class="py-3">
+          {% if device.shared %}
+          <span class="text-xs font-mono px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">shared</span>
+          {% else %}
+          <span class="text-xs font-mono px-1.5 py-0.5 rounded bg-gray-100 text-gray-700">personal</span>
+          {% endif %}
+        </td>
+        <td class="py-3 text-gray-600">{{ device.last_seen_at or "never" }}</td>
+        <td class="py-3">
+          {% if "manage_users" in perms and may_write %}
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              hx-post="/devices/{{ device.id }}/shared"
+              hx-target="#content-body"
+              hx-swap="innerHTML"
+              class="border border-gray-200 hover:bg-gray-50 text-gray-600 px-2.5 py-1 rounded text-xs font-medium transition-colors">
+              {% if device.shared %}Mark personal{% else %}Mark shared{% endif %}
+            </button>
+            <button
+              hx-post="/devices/{{ device.id }}/forget"
+              hx-target="#content-body"
+              hx-swap="innerHTML"
+              hx-confirm="Forget {{ device.label }}? Anyone using it is logged out immediately."
+              class="border border-red-200 hover:bg-red-50 text-red-600 px-2.5 py-1 rounded text-xs font-medium transition-colors">
+              Forget
+            </button>
+          </div>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="5" class="py-8 text-center text-gray-400 text-sm">
+          No trusted devices yet.
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
