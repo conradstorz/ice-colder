@@ -2128,6 +2128,43 @@ class TestUserManagement:
         assert refreshed is not None
         assert refreshed.disabled is False
 
+    @pytest.mark.parametrize("action", ["disable", "delete"])
+    def test_owner_cannot_disable_or_delete_themselves(self, login_as, wired, action):
+        """_guard_owner_target alone only blocks a *non-owner* targeting the
+        owner — the owner holds manage_ownership, so it let the owner
+        disable/delete their own account, which leaves setup_finalized true
+        with no owner and no recovery short of deleting data/access.json
+        (Copilot review, web_interface/routes.py:1277)."""
+        _cfg, _vmc, _inv, store = wired
+        owner_client = login_as(Role.owner)
+        owner = store.owner()
+        resp = owner_client.post(f"/users/{owner.id}/{action}")
+        assert resp.status_code == 403
+        refreshed = store.get_user(owner.id)
+        assert refreshed is not None
+        assert refreshed.disabled is False
+
+    def test_owner_may_still_reset_their_own_pin(self, login_as, wired):
+        """Unlike disable/delete, self-reset-pin carries no lockout risk —
+        it must stay allowed."""
+        _cfg, _vmc, _inv, store = wired
+        owner_client = login_as(Role.owner)
+        owner = store.owner()
+        resp = owner_client.post(f"/users/{owner.id}/reset-pin", data={"pin": "8642"})
+        assert resp.status_code == 200
+        assert store.verify_user_pin(owner.id, "8642") is True
+
+    def test_users_list_hides_disable_and_delete_on_the_owners_own_row(
+        self, login_as, wired
+    ):
+        _cfg, _vmc, _inv, store = wired
+        owner_client = login_as(Role.owner)
+        owner = store.owner()
+        html = owner_client.get("/users").text
+        assert f"/users/{owner.id}/disable" not in html
+        assert f"/users/{owner.id}/delete" not in html
+        assert f"/users/{owner.id}/reset-pin" in html
+
     def test_secretary_may_disable_and_reenable_a_loader(self, login_as, wired):
         _cfg, _vmc, _inv, store = wired
         secretary = login_as(Role.secretary)

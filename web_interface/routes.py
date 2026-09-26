@@ -1325,6 +1325,31 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         ):
             raise HTTPException(status_code=403, detail="Not permitted")
 
+    def _guard_owner_self_lockout(principal: web_auth.Principal, user_id: str) -> None:
+        """403 when *user_id* is the owner disabling or deleting themselves.
+
+        Copilot review, web_interface/routes.py:1277: _guard_owner_target
+        only blocks a *non-owner* from targeting the owner; the owner always
+        holds manage_ownership, so it let the owner disable or delete their
+        own account. Deleting the sole owner leaves setup_finalized true
+        with no owner, and ensure_setup_mode()'s begin_setup() then raises
+        AccessError("setup has already been finalized") instead of
+        recovering — verified directly by
+        test_access.py::TestSetupCode::test_begin_setup_after_finalize_raises_and_stays_finalized,
+        which already covers exactly this "finalized, no fresh code" state
+        with no try/except anywhere on the request path (access_gate,
+        setup_page, ensure_setup_mode), so the dashboard would serve a 500
+        on every route until someone deletes data/access.json by hand.
+        Disabling self is a milder version of the same lockout. Called only
+        by disable and delete, in addition to _guard_owner_target;
+        reset-pin and enable carry no such risk and are unaffected.
+        """
+        owner = access_store.owner()
+        if owner is not None and owner.id == user_id and principal.user.id == user_id:
+            raise HTTPException(
+                status_code=403, detail="The owner cannot do this to their own account"
+            )
+
     def _guard_owner_device(principal: web_auth.Principal, device) -> None:
         """403 when *device* trusts the owner and the caller lacks
         manage_ownership.
@@ -1503,6 +1528,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
     async def disable_user(request: Request, user_id: str):
         principal = web_auth.current_principal(request)
         _guard_owner_target(principal, user_id)
+        _guard_owner_self_lockout(principal, user_id)
         try:
             access_store.set_user_disabled(user_id, True)
         except AccessError:
@@ -1563,6 +1589,7 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
     async def delete_user_route(request: Request, user_id: str):
         principal = web_auth.current_principal(request)
         _guard_owner_target(principal, user_id)
+        _guard_owner_self_lockout(principal, user_id)
         try:
             access_store.delete_user(user_id)
         except AccessError:

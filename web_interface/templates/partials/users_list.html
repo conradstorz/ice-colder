@@ -31,6 +31,7 @@
     <tbody class="divide-y divide-gray-100">
       {% for user in users %}
       {% set may_write = user.id != owner_id or "manage_ownership" in perms %}
+      {% set is_self_owner = user.id == owner_id and current_user and user.id == current_user.id %}
       <tr class="hover:bg-gray-50">
         <td class="py-3 text-gray-900">
           {{ user.name }}
@@ -60,7 +61,7 @@
               class="border border-gray-200 hover:bg-gray-50 text-gray-600 px-2.5 py-1 rounded text-xs font-medium transition-colors">
               Enable
             </button>
-            {% else %}
+            {% elif not is_self_owner %}
             <button
               hx-post="/users/{{ user.id }}/disable"
               hx-target="#content-body"
@@ -83,6 +84,7 @@
                 Reset PIN
               </button>
             </form>
+            {% if not is_self_owner %}
             <button
               hx-post="/users/{{ user.id }}/delete"
               hx-target="#content-body"
@@ -91,6 +93,7 @@
               class="border border-red-200 hover:bg-red-50 text-red-600 px-2.5 py-1 rounded text-xs font-medium transition-colors">
               Delete
             </button>
+            {% endif %}
           </div>
           {% endif %}
         </td>
