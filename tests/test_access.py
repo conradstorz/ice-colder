@@ -877,6 +877,26 @@ class TestTransfer:
         with pytest.raises(AccessError):
             s.complete_transfer("Bea", None, "9042")
 
+    def test_transfer_code_verifies_as_a_setup_code_after_completion(self, seeded):
+        """Spec §3.3 step 4: the transfer code remains valid as an
+        enrollment code for the new owner until Done — complete_transfer
+        moves its hash into `setup`, unfinalized, rather than keeping
+        `pending_transfer` alive (which would leave the machine claimable)."""
+        s, owner, _, _ = seeded
+        code = s.start_transfer(owner.id)
+        s.complete_transfer("Bea", "bea@example.com", "9042")
+        assert s.pending_transfer is None
+        assert s.setup_finalized is False
+        assert s.verify_setup_code(code) is True
+
+    def test_transfer_code_stops_verifying_as_a_setup_code_after_finalize(self, seeded):
+        s, owner, _, _ = seeded
+        code = s.start_transfer(owner.id)
+        s.complete_transfer("Bea", "bea@example.com", "9042")
+        s.finalize_setup()
+        assert s.setup_finalized is True
+        assert s.verify_setup_code(code) is False
+
 
 class TestMachineReport:
     def test_report_names_users_devices_and_code_count(self, store):

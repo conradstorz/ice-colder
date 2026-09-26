@@ -960,8 +960,19 @@ class AccessStore:
         Creates the new owner, deletes the old one (and their device trust),
         deletes every emergency code, ends every session, and clears the
         pending transfer. Other users are retained for the review step.
+
+        Spec §3.3 step 4: the transfer code remains valid as an enrollment
+        code for the incoming owner until Done. Before clearing
+        ``_pending_transfer`` its hash is moved into ``setup`` as
+        ``{"setup_code_hash": <hash>, "finalized": False}`` —
+        ``verify_setup_code`` already refuses once ``finalized`` is true, so
+        a later ``finalize_setup()`` (Task 15's Done) closes the window.
+        ``pending_transfer`` itself is not kept alive to achieve this: a
+        live pending transfer would leave the machine claimable by anyone
+        who still held the code.
         """
-        if self.pending_transfer is None:
+        pending = self.pending_transfer
+        if pending is None:
             raise AccessError("no pending ownership transfer")
         old_owner = self.owner()
         pin_hash, pin_salt = hash_pin(pin)
@@ -981,6 +992,10 @@ class AccessStore:
                     device.trusted_user_ids.remove(old_owner.id)
         self.users[new_owner.id] = new_owner
         self._emergency_codes = []
+        self._setup = {
+            "setup_code_hash": pending["transfer_code_hash"],
+            "finalized": False,
+        }
         self._pending_transfer = None
         self._commit()
         self.end_all_sessions()

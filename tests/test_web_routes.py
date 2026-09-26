@@ -2099,6 +2099,187 @@ class TestOwnershipTransfer:
         assert store.pending_transfer is not None
 
 
+class TestOwnershipTransferCompletion:
+    """§3.3 steps 2-4: the incoming owner completes the wizard with the
+    transfer code, then reviews the retained users."""
+
+    def _anon(self) -> TestClient:
+        c = TestClient(app, follow_redirects=False)
+        c.headers["HX-Request"] = "true"
+        return c
+
+    def _start_transfer(self, client, store) -> str:
+        codes = store.generate_emergency_codes()
+        resp = client.post(
+            "/users/transfer", data={"pin": "1379", "emergency_code": codes[0]}
+        )
+        return re.findall(r"\b\d{8}\b", resp.text)[0]
+
+    def _submit_transfer_form(self, anon, code, *, name="Bea", pin="9042"):
+        return anon.post(
+            "/setup",
+            data={
+                "setup_code": code,
+                "name": name,
+                "email": f"{name.lower()}@example.com",
+                "pin": pin,
+                "pin_confirm": pin,
+            },
+        )
+
+    def _complete_transfer(self, client, store) -> TestClient:
+        """Complete a transfer end to end, returning a client signed in as
+        the new owner (positioned right after the redirect to /setup/review)."""
+        code = self._start_transfer(client, store)
+        anon = self._anon()
+        anon.get("/setup")
+        self._submit_transfer_form(anon, code)
+        return anon
+
+    def test_setup_is_reachable_while_a_transfer_is_pending(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        self._start_transfer(client, store)
+        anon = self._anon()
+        resp = anon.get("/setup")
+        assert resp.status_code == 200
+        assert "transfer code" in resp.text.lower()
+        anon.close()
+
+    def test_other_routes_are_not_redirected_while_a_transfer_is_pending(
+        self, client, wired
+    ):
+        _cfg, _vmc, _inv, store = wired
+        self._start_transfer(client, store)
+        resp = client.get("/status")
+        assert resp.status_code == 200
+        resp = client.get("/users")
+        assert resp.status_code == 200
+
+    def test_wrong_transfer_code_changes_nothing(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        self._start_transfer(client, store)
+        pending_before = dict(store.pending_transfer)
+        anon = self._anon()
+        anon.get("/setup")
+        resp = self._submit_transfer_form(anon, "00000000")
+        assert resp.status_code == 200
+        assert store.pending_transfer == pending_before
+        assert store.owner().name == "Ada"
+        assert len(store.users) == 1
+        anon.close()
+
+    def test_transfer_code_completes_the_swap(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        old_owner = store.owner()
+        code = self._start_transfer(client, store)
+        anon = self._anon()
+        anon.get("/setup")
+        resp = self._submit_transfer_form(anon, code)
+        assert resp.headers["hx-redirect"] == "/setup/review"
+
+        new_owner = store.owner()
+        assert new_owner is not None
+        assert new_owner.name == "Bea"
+        assert store.get_user(old_owner.id) is None
+        assert store.pending_transfer is None
+        assert store.unused_emergency_code_count() == 0
+        anon.close()
+
+    def test_old_owners_session_is_dead_after_the_swap(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        code = self._start_transfer(client, store)
+        anon = self._anon()
+        anon.get("/setup")
+        self._submit_transfer_form(anon, code)
+
+        resp = client.get("/status")
+        assert resp.status_code == 401
+        assert resp.headers["hx-redirect"] == "/login"
+        anon.close()
+
+    def test_transfer_code_still_enrolls_new_owner_on_a_second_browser(
+        self, client, wired
+    ):
+        """A lost step-2 response cannot strand the incoming owner: the
+        transfer code still enrolls them, exactly as the setup code does
+        for step 1 (spec §3.3 step 4)."""
+        _cfg, _vmc, _inv, store = wired
+        code = self._start_transfer(client, store)
+        first = self._anon()
+        first.get("/setup")
+        self._submit_transfer_form(first, code)
+        new_owner = store.owner()
+
+        second = self._anon()
+        login_resp = second.post(
+            "/login", data={"user_id": new_owner.id, "pin": "9042"}
+        )
+        assert login_resp.status_code == 200
+        assert second.cookies.get("vmc_enroll")
+
+        enroll_resp = second.post("/login/enroll", data={"code": code})
+        assert enroll_resp.headers["hx-redirect"] == "/"
+        assert second.cookies.get("vmc_session")
+        first.close()
+        second.close()
+
+    def test_review_walks_retained_users_and_removing_the_last_one_redirects_on(
+        self, client, wired
+    ):
+        _cfg, _vmc, _inv, store = wired
+        lee = store.create_user("Lee", "lee@example.com", Role.loader, "7890")
+        tim = store.create_user("Tim", "tim@example.com", Role.tech, "3456")
+        new_owner_client = self._complete_transfer(client, store)
+
+        resp = new_owner_client.get("/setup/review")
+        assert resp.status_code == 200
+        assert "Lee" in resp.text
+
+        resp2 = new_owner_client.post(f"/setup/review/{lee.id}/keep")
+        assert resp2.status_code == 200
+        assert "Tim" in resp2.text
+        assert store.get_user(lee.id) is not None
+
+        resp3 = new_owner_client.post(f"/setup/review/{tim.id}/remove")
+        assert resp3.headers["hx-redirect"] == "/setup/codes"
+        assert store.get_user(tim.id) is None
+        assert store.get_user(lee.id) is not None
+        new_owner_client.close()
+
+    def test_review_with_nobody_left_redirects_straight_to_codes(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        new_owner_client = self._complete_transfer(client, store)
+        resp = new_owner_client.get("/setup/review")
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/setup/codes"
+        new_owner_client.close()
+
+    def test_keeping_a_user_leaves_them_in_place(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        tim = store.create_user("Tim", "tim@example.com", Role.tech, "3456")
+        new_owner_client = self._complete_transfer(client, store)
+        resp = new_owner_client.post(f"/setup/review/{tim.id}/keep")
+        assert resp.headers["hx-redirect"] == "/setup/codes"
+        assert store.get_user(tim.id) is not None
+        new_owner_client.close()
+
+    def test_removing_a_user_ends_their_sessions_first(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        tim = store.create_user("Tim", "tim@example.com", Role.tech, "3456")
+        new_owner_client = self._complete_transfer(client, store)
+        # Tim signs back in after the swap (which already cleared every
+        # session), so there is a live session to check removal against.
+        device, _token = store.create_device("Tim's tablet", shared=False)
+        store.trust_device(device.id, tim.id)
+        session_id = store.create_session(tim.id, device.id)
+
+        resp = new_owner_client.post(f"/setup/review/{tim.id}/remove")
+        assert resp.headers["hx-redirect"] == "/setup/codes"
+        assert store.resolve_session(session_id) is None
+        assert store.get_user(tim.id) is None
+        new_owner_client.close()
+
+
 class TestEmergencyCodeRegeneration:
     """§3.2: the owner can replace the whole pool at any time from the
     Users area."""

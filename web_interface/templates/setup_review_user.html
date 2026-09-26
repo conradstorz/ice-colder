@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Review users — Vending Machine</title>
+  <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-50 text-gray-900 font-sans min-h-screen flex items-center justify-center">
+  <main class="w-full max-w-sm p-6 space-y-4">
+    <h1 class="text-xl font-semibold">Review existing users</h1>
+    <p class="text-sm text-gray-600">
+      This machine already had these people set up. Keep anyone who should
+      still have access, or remove anyone who shouldn't.
+    </p>
+
+    <div class="border border-gray-200 rounded-xl p-4 space-y-1 bg-white">
+      <p class="font-medium text-gray-900">{{ user.name }}</p>
+      <p class="text-sm text-gray-600">Role: {{ user.role }}</p>
+      <p class="text-sm text-gray-600">Email: {{ user.email or "—" }}</p>
+      <p class="text-sm text-gray-600">Last login: {{ user.last_login_at or "never" }}</p>
+      <p class="text-sm text-gray-600">Trusted devices: {{ device_count }}</p>
+    </div>
+
+    <div class="flex gap-3">
+      <button
+        hx-post="/setup/review/{{ user.id }}/keep"
+        hx-target="body" hx-swap="outerHTML"
+        class="flex-1 py-3 bg-blue-600 text-white rounded-xl">
+        Keep
+      </button>
+      <button
+        hx-post="/setup/review/{{ user.id }}/remove"
+        hx-target="body" hx-swap="outerHTML"
+        hx-confirm="Remove {{ user.name }}? They will lose access to this machine."
+        class="flex-1 py-3 border border-red-300 text-red-700 rounded-xl">
+        Remove
+      </button>
+    </div>
+
+    <p class="text-sm text-center">
+      <a href="/setup/codes" class="text-gray-500 underline">Skip the rest</a>
+    </p>
+  </main>
+</body>
+</html>

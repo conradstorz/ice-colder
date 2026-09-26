@@ -604,7 +604,11 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         access_store.record_login(owner.id)
         session_id = access_store.create_session(owner.id, device.id)
 
-        resp = HTMLResponse("", headers={"HX-Redirect": "/setup/codes"})
+        # A completed transfer still has the retained users to walk (spec
+        # §3.3 step 3) before the codes step; ordinary first-owner setup
+        # goes straight to the codes step as before.
+        next_step = "/setup/review" if in_transfer else "/setup/codes"
+        resp = HTMLResponse("", headers={"HX-Redirect": next_step})
         web_auth.set_cookie(
             resp, request, web_auth.SESSION_COOKIE, session_id, max_age=None
         )
@@ -718,6 +722,98 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         if display_controller is not None:
             display_controller.clear_setup_code()
         return HTMLResponse("", headers={"HX-Redirect": "/"})
+
+    # --- Task 19: reviewing retained users after a completed transfer ---
+
+    def _review_candidates() -> list:
+        """Every user except the (new) owner, in a stable order.
+
+        Recomputed fresh on every request — never cached — since a Keep is
+        a no-op on the store and a Remove deletes exactly one entry, so
+        re-deriving this list from live state is always cheap and correct.
+        """
+        owner = access_store.owner()
+        owner_id = owner.id if owner else None
+        return sorted(
+            (u for u in access_store.users.values() if u.id != owner_id),
+            key=lambda u: (u.name, u.id),
+        )
+
+    def _setup_review_response(request: Request, user):
+        device_count = sum(
+            1 for d in access_store.devices.values() if user.id in d.trusted_user_ids
+        )
+        return templates.TemplateResponse(
+            "setup_review_user.html",
+            {
+                "request": request,
+                "user": _user_row(user),
+                "device_count": device_count,
+            },
+        )
+
+    def _review_response_after(request: Request, order: list, user_id: str):
+        """Render whichever candidate in *order* comes after *user_id*, or
+        answer HX-Redirect to /setup/codes when that was the last one.
+
+        *order* is the candidate list computed before the decision on
+        *user_id* was applied — a Keep leaves it accurate as-is; a Remove
+        only ever deletes *user_id* itself, so every later entry still
+        resolves.
+        """
+        ids = [u.id for u in order]
+        idx = ids.index(user_id) + 1
+        while idx < len(ids):
+            candidate = access_store.get_user(ids[idx])
+            if candidate is not None:
+                return _setup_review_response(request, candidate)
+            idx += 1
+        return HTMLResponse("", headers={"HX-Redirect": "/setup/codes"})
+
+    @public.get(
+        "/setup/review",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.manage_ownership))],
+    )
+    async def setup_review_page(request: Request):
+        candidates = _review_candidates()
+        if not candidates:
+            return RedirectResponse("/setup/codes", status_code=303)
+        # A reload always restarts from the first remaining user — fine,
+        # because Keep is idempotent (spec's own allowance).
+        return _setup_review_response(request, candidates[0])
+
+    @public.post(
+        "/setup/review/{user_id}/keep",
+        response_class=HTMLResponse,
+        dependencies=[
+            Depends(web_auth.require(Permission.manage_ownership)),
+            Depends(require_htmx),
+        ],
+    )
+    async def setup_review_keep(request: Request, user_id: str):
+        order = _review_candidates()
+        if user_id not in {u.id for u in order}:
+            raise HTTPException(status_code=404, detail="No such user")
+        # Keep is a no-op on the store: the user is simply not touched.
+        return _review_response_after(request, order, user_id)
+
+    @public.post(
+        "/setup/review/{user_id}/remove",
+        response_class=HTMLResponse,
+        dependencies=[
+            Depends(web_auth.require(Permission.manage_ownership)),
+            Depends(require_htmx),
+        ],
+    )
+    async def setup_review_remove(request: Request, user_id: str):
+        order = _review_candidates()
+        if user_id not in {u.id for u in order}:
+            raise HTTPException(status_code=404, detail="No such user")
+        # Sessions end before the user record itself is deleted.
+        access_store.end_sessions_for_user(user_id)
+        access_store.delete_user(user_id)
+        return _review_response_after(request, order, user_id)
 
     router = APIRouter()
 
