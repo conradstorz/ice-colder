@@ -75,7 +75,8 @@ There is no default credential. On first boot, the dashboard enters **setup mode
 an 8-digit setup code is printed in the startup log at warning level
 (`docker compose logs vmc`) and displayed on the customer display. A setup wizard
 creates the owner account (name, email, 4–8 digit PIN), then shows 20 pre-generated
-**emergency codes** once — write them down; the only other copy is in `data/access.json`.
+**emergency codes** once — write them down. `data/access.json` stores only a scrypt
+hash of each code, not the plaintext, so it is not a recoverable backup of them.
 
 Four roles exist: `owner` (one per machine), `secretary` (owner's delegates),
 `tech` (maintenance), `loader` (stock). Credential is a PIN of 4–8 digits.
