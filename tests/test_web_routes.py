@@ -858,6 +858,13 @@ class TestStatusHealthSignal:
         assert response.status_code == 200
         assert "All Systems OK" in response.text
 
+    def test_status_healthy_headline_uses_hero_token(self, client):
+        """Fix round 1 (Task 5 review): spec §3 sets the hero headline at
+        24px (`text-hero`); the fragment shipped it at `text-base` (16px)."""
+        response = client.get("/status")
+        assert 'text-hero font-semibold text-green-700">All Systems OK' in response.text
+        assert "text-base font-semibold" not in response.text
+
     def test_status_with_recorder_no_errors(self, client, tmp_path):
         from services.event_recorder import EventRecorder
         from web_interface import context as r
@@ -952,6 +959,30 @@ class TestFaultsUI:
         assert "Ice" in r.text
         assert 'hx-post="/faults/ICE-1/clear"' in r.text
         assert "Issues Detected" in r.text
+
+    def test_status_issues_headline_uses_hero_token(self, client):
+        """Fix round 1 (Task 5 review): the "Issues Detected" / "Machine
+        Stopped" headline is the same hero as the healthy one and must
+        carry the same 24px token, not `text-base`."""
+        self._add_product(client)
+        self._lock(client)
+        r = client.get("/status", auth=client.auth)
+        assert "text-hero font-semibold" in r.text
+        assert "text-base font-semibold" not in r.text
+
+    def test_status_clear_button_is_a_touch_target_not_a_text_link(self, client):
+        """Fix round 1 (Task 5 review): the per-fault Clear control — the
+        button a person standing at the machine taps most often on Home —
+        shipped as a bare `text-xs ... hover:underline` link, nowhere near
+        spec §3's 48px-tall touch target, and relied on `:hover` for its
+        only visible affordance. It must carry the shared `.touch-target`
+        component (min-height 48px) and a visible, non-hover background."""
+        self._add_product(client)
+        self._lock(client)
+        r = client.get("/status", auth=client.auth)
+        assert "touch-target" in r.text
+        assert "bg-blue-50" in r.text
+        assert "text-xs text-blue-600 hover:underline" not in r.text
 
     def test_status_shows_fault_age_when_health_monitor_set(self, client):
         from services.health_monitor import HealthMonitor

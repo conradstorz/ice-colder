@@ -7,7 +7,7 @@
       <div>
         <div class="flex items-center gap-2">
           <span class="w-2.5 h-2.5 rounded-full bg-green-500 flex-shrink-0"></span>
-          <span class="text-base font-semibold text-green-700">All Systems OK</span>
+          <span class="text-hero font-semibold text-green-700">All Systems OK</span>
         </div>
         <p class="text-sm text-gray-400 mt-1">Machine is operating normally</p>
         <div class="mt-3">
@@ -26,7 +26,7 @@
               <span class="text-gray-400">· {% if f.since_seconds >= 60 %}{{ (f.since_seconds // 60)|int }}m{% else %}{{ f.since_seconds|int }}s{% endif %}</span>
               {% endif %}
               <button hx-post="/faults/{{ f.key }}/clear" hx-target="#status-panel" hx-swap="innerHTML"
-                      class="ml-auto text-xs text-blue-600 hover:underline">Clear</button>
+                      class="touch-target ml-auto px-4 rounded-md bg-blue-50 text-blue-700 text-sm font-medium hover:bg-blue-100">Clear</button>
             </li>
             {% endfor %}
           </ul>
@@ -87,7 +87,7 @@
       <div>
         <div class="flex items-center gap-2">
           <span class="w-2.5 h-2.5 rounded-full {{ banner_accent }} flex-shrink-0"></span>
-          <span class="text-base font-semibold {{ banner_title_cls }}">{{ banner_title }}</span>
+          <span class="text-hero font-semibold {{ banner_title_cls }}">{{ banner_title }}</span>
         </div>
         <ul class="mt-2 space-y-0.5">
           {% for issue in issues %}
@@ -110,7 +110,7 @@
               <span class="text-gray-400">· {% if f.since_seconds >= 60 %}{{ (f.since_seconds // 60)|int }}m{% else %}{{ f.since_seconds|int }}s{% endif %}</span>
               {% endif %}
               <button hx-post="/faults/{{ f.key }}/clear" hx-target="#status-panel" hx-swap="innerHTML"
-                      class="ml-auto text-xs text-blue-600 hover:underline">Clear</button>
+                      class="touch-target ml-auto px-4 rounded-md bg-blue-50 text-blue-700 text-sm font-medium hover:bg-blue-100">Clear</button>
             </li>
             {% endfor %}
           </ul>
