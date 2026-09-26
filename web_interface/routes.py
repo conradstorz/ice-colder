@@ -30,6 +30,18 @@ from services.mailer import send_email
 from services.paths import LOG_FILE
 from web_interface import auth as web_auth
 
+# Backoff subject for a user_id form value that names nobody. Copilot review
+# (web_interface/routes.py:263): the raw form value was used as the backoff
+# subject before checking the user existed, so a client could mint a fresh
+# random id on every request and get a fresh, never-throttled counter while
+# still forcing verify_user_pin's dummy-hash scrypt cost — unbounded memory
+# growth (until the 24-hour prune) and a throttling bypass. Every id that
+# does not name a real user collapses onto this one bounded subject instead,
+# so repeated attempts against different fake ids are throttled exactly like
+# repeated attempts against one id.
+_UNKNOWN_USER_SUBJECT = "unknown"
+
+
 config: ConfigModel = None
 
 
@@ -259,8 +271,16 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             raise HTTPException(status_code=503, detail="Access store not loaded")
         client = web_auth.client_key(request)
         trusted = web_auth.is_trusted_client(request, user_id)
+        # See _UNKNOWN_USER_SUBJECT: bound the back-off subject to known
+        # users so an arbitrary form value can't buy an unbounded, unthrottled
+        # counter.
+        subject = (
+            user_id
+            if access_store.get_user(user_id) is not None
+            else _UNKNOWN_USER_SUBJECT
+        )
 
-        remaining = web_auth.backoff.check("pin", user_id, client, trusted=trusted)
+        remaining = web_auth.backoff.check("pin", subject, client, trusted=trusted)
         if remaining is not None:
             return _keypad(
                 request,
@@ -276,10 +296,10 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         # only mark an <option> "selected" when it names an enabled user,
         # which is itself an enumeration oracle.
         if not access_store.verify_user_pin(user_id, pin):
-            web_auth.backoff.record_failure("pin", user_id, client, trusted=trusted)
+            web_auth.backoff.record_failure("pin", subject, client, trusted=trusted)
             return _keypad(request, selected_user_id=None, error="Wrong PIN")
 
-        web_auth.backoff.record_success("pin", user_id, client, trusted=trusted)
+        web_auth.backoff.record_success("pin", subject, client, trusted=trusted)
         device = access_store.device_for_token(
             request.cookies.get(web_auth.DEVICE_COOKIE)
         )

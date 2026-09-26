@@ -1318,6 +1318,12 @@ class TestLogin:
         from services.access import AccessStore, Role
         from web_interface import auth as web_auth
 
+        # web_auth.backoff is a module-level singleton shared by every test
+        # in the process. Unknown user_ids now collapse onto one bounded
+        # subject (routes._UNKNOWN_USER_SUBJECT), so a prior test's failures
+        # against a fake id would otherwise bleed into this one's.
+        web_auth.backoff.reset()
+
         cfg = ConfigModel()
         store = AccessStore(path=tmp_path / "access.json")
         owner = store.create_user("Ada", "ada@example.com", Role.owner, "1379")
@@ -1327,6 +1333,7 @@ class TestLogin:
             c.headers["HX-Request"] = "true"
             yield c, store, owner
         routes.set_access_store(None)
+        web_auth.backoff.reset()
         web_auth.backoff.set_trusted_proxies([])
 
     def test_login_page_lists_enabled_users_only(self, public):
@@ -1409,6 +1416,23 @@ class TestLogin:
         assert wrong_pin.status_code == disabled_user_correct_pin.status_code
         assert wrong_pin.content == unknown_user.content
         assert wrong_pin.content == disabled_user_correct_pin.content
+
+    def test_unknown_user_ids_share_one_bounded_backoff_subject(self, public):
+        """A client minting a fresh random user_id on every request must not
+        get a fresh, unthrottled back-off counter each time (Copilot review,
+        web_interface/routes.py:263): every id that names nobody collapses
+        onto one bounded subject, so a failure against one fake id trips the
+        delay for the very next fake id too.
+        """
+        c, store, owner = public
+        first = c.post(
+            "/login", data={"user_id": f"nobody-{uuid.uuid4()}", "pin": "9999"}
+        )
+        second = c.post(
+            "/login", data={"user_id": f"nobody-{uuid.uuid4()}", "pin": "9999"}
+        )
+        assert first.status_code == 200
+        assert second.status_code == 429
 
     def test_repeated_failures_back_off_with_429_and_retry_after(self, public):
         c, store, owner = public
