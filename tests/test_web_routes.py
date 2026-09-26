@@ -1,7 +1,9 @@
 """Tests for web_interface routes using FastAPI TestClient."""
 
 import re
+import subprocess
 import uuid
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -159,442 +161,38 @@ class TestStatusEndpoint:
         assert "text/html" in resp.headers["content-type"]
 
 
-class TestInventoryEndpoints:
-    # GET /inventory itself moved to web_interface/routes/inventory.py
-    # (task 8) — its 200-for-every-role coverage now lives in
-    # tests/test_routes_inventory.py's TestInventoryListGating.
-
-    def test_inventory_new_form(self, client):
-        resp = client.get("/inventory/new")
-        assert resp.status_code == 200
-
-    def test_add_product(self, client):
-        resp = client.post(
-            "/inventory/add",
-            data={
-                "sku": "TEST-001",
-                "name": "Test Ice",
-                "price": "2.50",
-            },
-        )
-        assert resp.status_code == 200
-        assert "Test Ice" in resp.text
-
-    def test_edit_form(self, client):
-        """Catalog edit form for a product created via the dashboard."""
-        client.post(
-            "/inventory/add",
-            data={"sku": "EDIT-1", "name": "Editable", "price": "1.50"},
-        )
-        resp = client.get("/inventory/edit/EDIT-1/catalog")
-        assert resp.status_code == 200
-        assert "Editable" in resp.text
-
-    def test_add_product_without_slot_auto_assigns(self, client):
-        resp = client.post(
-            "/inventory/add",
-            data={"sku": "AUTO-1", "name": "Auto Slot", "price": "1.00"},
-        )
-        assert resp.status_code == 200
-        added = next(p for p in context.config.products if p.sku == "AUTO-1")
-        assert added.slot == 0  # first product added to an empty catalog
-
-    def test_add_product_with_explicit_slot(self, client):
-        resp = client.post(
-            "/inventory/add",
-            data={"sku": "SLOT-1", "name": "Slotted", "price": "1.00", "slot": "7"},
-        )
-        assert resp.status_code == 200
-        added = next(p for p in context.config.products if p.sku == "SLOT-1")
-        assert added.slot == 7
-
-    def test_add_product_with_negative_slot_does_not_500(self, client):
-        resp = client.post(
-            "/inventory/add",
-            data={
-                "sku": "NEG-1",
-                "name": "Negative Slot",
-                "price": "1.00",
-                "slot": "-1",
-            },
-        )
-        assert resp.status_code == 200
-        assert not any(p.sku == "NEG-1" for p in context.config.products)
-
-    def test_edit_form_shows_slot_input(self, client):
-        client.post(
-            "/inventory/add",
-            data={
-                "sku": "EDIT-2",
-                "name": "Editable Two",
-                "price": "1.50",
-                "slot": "9",
-            },
-        )
-        resp = client.get("/inventory/edit/EDIT-2/placement")
-        assert resp.status_code == 200
-        assert 'name="slot"' in resp.text
-        assert 'value="9"' in resp.text
-
-    def test_update_product_changes_slot(self, client):
-        client.post(
-            "/inventory/add",
-            data={"sku": "UPD-1", "name": "Updatable", "price": "1.50", "slot": "1"},
-        )
-        resp = client.post(
-            "/inventory/update/UPD-1/placement",
-            data={"slot": "6", "inventory_count": "0"},
-        )
-        assert resp.status_code == 200
-        updated = next(p for p in context.config.products if p.sku == "UPD-1")
-        assert updated.slot == 6
-
-    def test_add_product_carries_kind(self, client):
-        resp = client.post(
-            "/inventory/add",
-            data={
-                "sku": "KIND-1",
-                "name": "Water Bottle",
-                "price": "1.25",
-                "kind": "water",
-            },
-        )
-        assert resp.status_code == 200
-        assert context.config.products[-1].kind == "water"
-
-    def test_update_product_changes_kind(self, client):
-        client.post(
-            "/inventory/add",
-            data={"sku": "KIND-2", "name": "Flexible", "price": "1.00"},
-        )
-        resp = client.post(
-            "/inventory/update/KIND-2/catalog",
-            data={"name": "Flexible", "price": "1.00", "kind": "ice"},
-        )
-        assert resp.status_code == 200
-        updated = next(p for p in context.config.products if p.sku == "KIND-2")
-        assert updated.kind == "ice"
-
-    def test_copy_form_preselects_source_product_kind(self, client):
-        client.post(
-            "/inventory/add",
-            data={
-                "sku": "KIND-3",
-                "name": "Sparkling Water",
-                "price": "1.50",
-                "kind": "water",
-            },
-        )
-        resp = client.get("/inventory/copy/KIND-3")
-        assert resp.status_code == 200
-        assert 'value="water" selected' in resp.text
-
-    def test_old_single_edit_form_route_404s(self, client):
-        client.post(
-            "/inventory/add",
-            data={"sku": "OLD-1", "name": "Old Form", "price": "1.00"},
-        )
-        resp = client.get("/inventory/edit/OLD-1")
-        assert resp.status_code == 404
-
-    def test_old_single_update_route_404s(self, client):
-        client.post(
-            "/inventory/add",
-            data={"sku": "OLD-2", "name": "Old Form", "price": "1.00"},
-        )
-        resp = client.post(
-            "/inventory/update/OLD-2",
-            data={"name": "Old Form", "price": "1.00", "slot": "0"},
-        )
-        assert resp.status_code == 404
-
-    def test_catalog_edit_form(self, client):
-        client.post(
-            "/inventory/add",
-            data={"sku": "CAT-1", "name": "Catalog Item", "price": "2.00"},
-        )
-        resp = client.get("/inventory/edit/CAT-1/catalog")
-        assert resp.status_code == 200
-        assert "Catalog Item" in resp.text
-
-    def test_catalog_post_changes_name_price_kind(self, client):
-        client.post(
-            "/inventory/add",
-            data={"sku": "CAT-2", "name": "Old Name", "price": "1.00"},
-        )
-        resp = client.post(
-            "/inventory/update/CAT-2/catalog",
-            data={"name": "New Name", "price": "3.50", "kind": "water"},
-        )
-        assert resp.status_code == 200
-        updated = next(p for p in context.config.products if p.sku == "CAT-2")
-        assert updated.name == "New Name"
-        assert updated.price == 3.50
-        assert updated.kind == "water"
-
-    def test_placement_edit_form(self, client):
-        client.post(
-            "/inventory/add",
-            data={"sku": "PLC-1", "name": "Placed Item", "price": "2.00", "slot": "4"},
-        )
-        resp = client.get("/inventory/edit/PLC-1/placement")
-        assert resp.status_code == 200
-        assert 'name="slot"' in resp.text
-        assert 'value="4"' in resp.text
-
-    def test_placement_post_changes_slot_count_and_tracked(self, client, wired):
-        _cfg, _vmc, inv, _store = wired
-        client.post(
-            "/inventory/add",
-            data={"sku": "PLC-2", "name": "Placed Item", "price": "2.00", "slot": "1"},
-        )
-        resp = client.post(
-            "/inventory/update/PLC-2/placement",
-            data={
-                "slot": "8",
-                "inventory_count": "15",
-                "track_inventory": "on",
-            },
-        )
-        assert resp.status_code == 200
-        updated = next(p for p in context.config.products if p.sku == "PLC-2")
-        assert updated.slot == 8
-        assert inv.get_count("PLC-2") == 15
-        assert inv.is_tracked("PLC-2") is True
-
-    def test_placement_post_returns_table_showing_stored_count(self, client, wired):
-        """The count a loader just stored (in InventoryManager, not on
-        Product) must appear in the table HTMX swaps back in — not the
-        stale/zero value still on Product.inventory_count."""
-        _cfg, _vmc, inv, _store = wired
-        client.post(
-            "/inventory/add",
-            data={"sku": "PLC-5", "name": "Placed Item", "price": "2.00", "slot": "1"},
-        )
-        resp = client.post(
-            "/inventory/update/PLC-5/placement",
-            data={"slot": "1", "inventory_count": "42", "track_inventory": "on"},
-        )
-        assert resp.status_code == 200
-        assert inv.get_count("PLC-5") == 42
-        product = next(p for p in context.config.products if p.sku == "PLC-5")
-        assert product.inventory_count != 42
-        assert ">42<" in resp.text
-
-    def test_placement_post_unchecked_tracking_clears_flag(self, client, wired):
-        _cfg, _vmc, inv, _store = wired
-        client.post(
-            "/inventory/add",
-            data={"sku": "PLC-3", "name": "Placed Item", "price": "2.00", "slot": "2"},
-        )
-        client.post(
-            "/inventory/update/PLC-3/placement",
-            data={"slot": "2", "inventory_count": "5", "track_inventory": "on"},
-        )
-        assert inv.is_tracked("PLC-3") is True
-        resp = client.post(
-            "/inventory/update/PLC-3/placement",
-            data={"slot": "2", "inventory_count": "5"},
-        )
-        assert resp.status_code == 200
-        assert inv.is_tracked("PLC-3") is False
-
-    def test_placement_post_cannot_change_name_or_price(self, client, wired):
-        """The whole point of the split: a placement POST must not smuggle a
-        catalog change through, regardless of what an attacker's form body
-        contains — fields the placement form doesn't own are not applied."""
-        _cfg, _vmc, inv, _store = wired
-        client.post(
-            "/inventory/add",
-            data={"sku": "PLC-4", "name": "Original", "price": "9.99", "slot": "3"},
-        )
-        resp = client.post(
-            "/inventory/update/PLC-4/placement",
-            data={
-                "slot": "5",
-                "inventory_count": "2",
-                "name": "Hacked Name",
-                "price": "0.01",
-            },
-        )
-        assert resp.status_code == 200
-        updated = next(p for p in context.config.products if p.sku == "PLC-4")
-        assert updated.slot == 5
-        assert updated.name == "Original"
-        assert updated.price == 9.99
-
-    def test_placement_post_negative_count_is_rejected(self, client, wired):
-        """A negative inventory_count is silent data corruption in the exact
-        workflow this part exists to enable — mirror config_store.py's
-        slot < 0 guard: reject the whole write and leave the stored count
-        unchanged (services/config_store.py add_product/update_product)."""
-        _cfg, _vmc, inv, _store = wired
-        client.post(
-            "/inventory/add",
-            data={"sku": "PLC-6", "name": "Placed Item", "price": "2.00", "slot": "1"},
-        )
-        client.post(
-            "/inventory/update/PLC-6/placement",
-            data={"slot": "1", "inventory_count": "9", "track_inventory": "on"},
-        )
-        assert inv.get_count("PLC-6") == 9
-
-        resp = client.post(
-            "/inventory/update/PLC-6/placement",
-            data={"slot": "6", "inventory_count": "-3", "track_inventory": "on"},
-        )
-        assert resp.status_code == 200
-        assert inv.get_count("PLC-6") == 9
-        updated = next(p for p in context.config.products if p.sku == "PLC-6")
-        assert updated.slot == 1
-
-    def test_placement_post_with_slot_already_in_use_changes_nothing(
-        self, client, wired
-    ):
-        """update_product returns False when the requested slot already
-        belongs to another product; that return value used to be ignored,
-        so a rejected slot change still wrote the count/tracking flag,
-        leaving placement half-applied (Copilot review,
-        web_interface/routes.py:1202). A slot conflict must leave every
-        field — slot, count, and tracking — exactly as it was."""
-        _cfg, _vmc, inv, _store = wired
-        client.post(
-            "/inventory/add",
-            data={"sku": "PLC-7", "name": "Item A", "price": "2.00", "slot": "1"},
-        )
-        client.post(
-            "/inventory/add",
-            data={"sku": "PLC-8", "name": "Item B", "price": "3.00", "slot": "2"},
-        )
-        client.post(
-            "/inventory/update/PLC-8/placement",
-            data={"slot": "2", "inventory_count": "9", "track_inventory": "on"},
-        )
-        assert inv.get_count("PLC-8") == 9
-        assert inv.is_tracked("PLC-8") is True
-
-        resp = client.post(
-            "/inventory/update/PLC-8/placement",
-            data={"slot": "1", "inventory_count": "50"},  # slot 1 is PLC-7's
-        )
-        assert resp.status_code == 200
-        updated = next(p for p in context.config.products if p.sku == "PLC-8")
-        assert updated.slot == 2
-        assert inv.get_count("PLC-8") == 9
-        assert inv.is_tracked("PLC-8") is True
+# TestInventoryEndpoints and TestCatalogPlacementPermissions removed
+# (Task 15): both classes covered the old /inventory/{new,add,edit,update,
+# copy}/* catalog and placement routes in routes/legacy.py, deleted by this
+# task. Every behavior they proved is covered by the new /products/* routes
+# (web_interface/routes/products.py, Task 7) in tests/test_routes_products.py:
+# TestCatalogWrites, TestPlacementWrites, TestCreateCopyDelete,
+# TestProductsListGating, TestCatalogGating and TestPlacementGating.
 
 
-class TestCatalogPlacementPermissions:
-    """A loader restocks (placement) but must never touch price/name/kind
-    (catalog). A tech behaves the same as a loader here."""
-
-    @pytest.mark.parametrize("role", [Role.loader, Role.tech])
-    def test_placement_form_and_post_allowed(self, login_as, wired, role):
-        _cfg, _vmc, inv, _store = wired
-        owner = login_as(Role.owner)
-        owner.post(
-            "/inventory/add",
-            data={
-                "sku": f"PERM-{role.value}",
-                "name": "Item",
-                "price": "5.00",
-                "slot": "1",
-            },
-        )
-
-        worker = login_as(role)
-        get_resp = worker.get(f"/inventory/edit/PERM-{role.value}/placement")
-        assert get_resp.status_code == 200
-
-        post_resp = worker.post(
-            f"/inventory/update/PERM-{role.value}/placement",
-            data={"slot": "2", "inventory_count": "3", "track_inventory": "on"},
-        )
-        assert post_resp.status_code == 200
-        updated = next(
-            p for p in context.config.products if p.sku == f"PERM-{role.value}"
-        )
-        assert updated.slot == 2
-        assert updated.price == 5.00
-        assert inv.get_count(f"PERM-{role.value}") == 3
-
-    @pytest.mark.parametrize("role", [Role.loader, Role.tech])
-    def test_catalog_form_and_post_forbidden_price_unchanged(
-        self, login_as, wired, role
-    ):
-        _cfg, _vmc, _inv, _store = wired
-        owner = login_as(Role.owner)
-        owner.post(
-            "/inventory/add",
-            data={"sku": f"NOPE-{role.value}", "name": "Item", "price": "5.00"},
-        )
-
-        worker = login_as(role)
-        get_resp = worker.get(f"/inventory/edit/NOPE-{role.value}/catalog")
-        assert get_resp.status_code == 403
-
-        post_resp = worker.post(
-            f"/inventory/update/NOPE-{role.value}/catalog",
-            data={"name": "Hacked", "price": "0.01", "kind": "water"},
-        )
-        assert post_resp.status_code == 403
-
-        unchanged = next(
-            p for p in context.config.products if p.sku == f"NOPE-{role.value}"
-        )
-        assert unchanged.price == 5.00
-        assert unchanged.name == "Item"
-
-
-class TestConfigEndpoints:
-    def test_machine_info(self, client):
-        resp = client.get("/config/machine")
-        assert resp.status_code == 200
-
-    def test_machine_info_shows_product_count(self, client):
-        client.post(
-            "/inventory/add",
-            data={"sku": "CNT-1", "name": "Counted", "price": "1.00"},
-        )
-        resp = client.get("/config/machine")
-        assert resp.status_code == 200
-        assert ">1</dd>" in resp.text.replace(" ", "").replace("\n", "")
-
-    def test_contacts(self, client):
-        resp = client.get("/config/contacts")
-        assert resp.status_code == 200
-
-    @pytest.mark.skip(reason="Template partials/payments.html not yet created")
-    def test_payments(self, client):
-        resp = client.get("/config/payments")
-        assert resp.status_code == 200
-
-    @pytest.mark.skip(reason="Template partials/comms.html not yet created")
-    def test_comms(self, client):
-        resp = client.get("/config/comms")
-        assert resp.status_code == 200
-
+# TestConfigEndpoints removed (Task 15): /config/machine and /config/contacts
+# are covered by tests/test_routes_settings.py's TestMachinePage and
+# TestContactsPage (both GET /settings/machine and /settings/contacts,
+# Task 13) — test_machine_info_shows_product_count's own claim (a product
+# count on the machine info page) has no replacement, since the new
+# /settings/machine page carries no such count; that display did not
+# survive the migration. The skipped test_payments and test_comms (for
+# /config/payments and /config/comms, whose templates never existed) are
+# deleted per this task's executor resolution 5: their routes are among the
+# fifteen this task deletes, and Task 13 built real, unskipped coverage of
+# their replacements in tests/test_routes_settings.py's TestPaymentsPage and
+# TestCommsPage (13 tests each). This drops the skip count from 13 to 11.
 
 # (method, path, permission) — the authoritative route -> permission table.
-# /config/payments and /config/comms are deliberately excluded: their
-# templates (partials/payments.html, partials/comms.html) don't exist yet —
-# their own TestConfigEndpoints tests above are @pytest.mark.skip'd for the
-# same reason — so a permitted role would get a 500 from the missing
-# template, not the 200 this matrix expects, and the matrix would lie.
 _MATRIX_ROUTES = [
     ("GET", "/", Permission.view_status),
     ("GET", "/status", Permission.view_status),
     ("GET", "/kpi", Permission.view_status),
     ("GET", "/pill", Permission.view_status),
-    ("GET", "/activity", Permission.view_status),
     ("GET", "/health", Permission.view_status),
     ("GET", "/screen", Permission.view_status),
     ("GET", "/inventory", Permission.view_status),
     ("GET", "/health/logs", Permission.view_logs),
-    ("GET", "/inventory/new", Permission.edit_catalog),
-    ("GET", "/config/machine", Permission.edit_contacts),
-    ("GET", "/config/contacts", Permission.edit_contacts),
-    ("POST", "/action/restart", Permission.machine_controls),
     ("GET", "/users", Permission.manage_users),
     ("GET", "/users/new", Permission.manage_users),
 ]
@@ -626,25 +224,46 @@ class TestPermissionMatrix:
         fault is raised before each role's attempt (clearing it consumes
         it), so a permitted role hits a real fault to clear rather than the
         404 an absent one would produce — that 404 would make the matrix
-        lie about the permission being exercised."""
+        lie about the permission being exercised.
+
+        Retargeted (Task 15) from the deleted POST /faults/{key}/clear to
+        its replacement, POST /health/faults/{key}/clear (Task 6) — kept
+        rather than deleted because tests/test_routes_health.py's own
+        clear-flow coverage (TestFaultClearFlow) never exercises the
+        secretary role, which lacks clear_faults and is the only role in
+        this sweep whose 403 isn't proven anywhere else."""
         _cfg, vmc, _inv, _store = wired
         vmc._raise_fault(FaultCode.PAY_103, outcome="permission matrix seed")
         client = login_as(role)
-        resp = client.post("/faults/PAY-103/clear")
+        resp = client.post("/health/faults/PAY-103/clear")
         if Permission.clear_faults in ROLE_PERMISSIONS[role]:
             assert resp.status_code == 200, (role, resp.status_code, resp.text[:300])
         else:
             assert resp.status_code == 403, (role, resp.status_code)
 
     @pytest.mark.parametrize("role", list(Role))
-    def test_matrix_edit_catalog_write(self, login_as, role):
-        """The only existing edit_catalog coverage is GET /inventory/new —
+    def test_matrix_edit_catalog_write(self, login_as, wired, role):
+        """The only existing edit_catalog coverage is GET /products/new —
         no row proves a *write* is refused. This posts to the catalog
         (name/price/kind) endpoint, which is gated on edit_catalog
-        separately from edit_placement (see TestCatalogPlacementPermissions)."""
+        separately from edit_placement (see
+        tests/test_routes_products.py's TestCatalogGating).
+
+        Retargeted (Task 15) from the deleted POST
+        /inventory/update/{sku}/catalog to its replacement, POST
+        /products/{sku}/catalog (Task 7) — kept rather than deleted because
+        no test in test_routes_products.py sweeps every role against
+        ROLE_PERMISSIONS the way this one does (its own coverage stops at
+        tech/loader 403). Unlike the old handler, the new one 404s on an
+        unknown SKU before the permission's 200/403 branch would ever show,
+        so a real product must exist first."""
+        from services.config_store import add_product
+
+        _cfg, _vmc, _inv, _store = wired
+        add_product(_cfg, "MATRIX-1", "Matrix Item", 1.00)
         client = login_as(role)
         resp = client.post(
-            "/inventory/update/MATRIX-1/catalog",
+            "/products/MATRIX-1/catalog",
             data={"name": "Matrix Item", "price": "1.00", "kind": "other"},
         )
         if Permission.edit_catalog in ROLE_PERMISSIONS[role]:
@@ -679,36 +298,34 @@ class TestUnauthenticatedAccess:
         assert htmx_resp.status_code == 401
 
 
+# TestActionEndpoint retargeted (Task 15): POST /action/{command} is one of
+# the fifteen legacy.py routes this task deletes, replaced by POST
+# /controls/{command} (Task 11). test_restart_action and test_unknown_action
+# are deleted as straight duplicates of tests/test_routes_controls.py's
+# TestPostCommands::test_post_restart_returns_200 and
+# ::test_post_unknown_command_does_not_500. test_reset_action_recovers_from_error
+# is kept and retargeted: no test in test_routes_controls.py drives the VMC
+# into an actual error state first (TestResetStateLogic only covers the
+# already-idle branch), so this is the only place proving perform_command's
+# reset-from-error path against the reset command's real target.
 class TestActionEndpoint:
-    def test_restart_action(self, client):
-        resp = client.post("/action/restart")
-        assert resp.status_code == 200
-        assert "Restart" in resp.text
-
-    def test_unknown_action(self, client):
-        resp = client.post("/action/foobar")
-        assert resp.status_code == 200
-        assert "Unknown" in resp.text
-
     def test_reset_action_recovers_from_error(self, client):
         from web_interface import context as r
 
         r.vmc_instance.error_occurred()
         assert r.vmc_instance.state == "error"
-        resp = client.post("/action/reset")
+        resp = client.post("/controls/reset")
         assert resp.status_code == 200
         assert "Reset complete" in resp.text
         assert r.vmc_instance.state == "idle"
 
 
-class TestActivityEndpoint:
-    def test_activity_returns_200(self, client):
-        response = client.get("/activity")
-        assert response.status_code == 200
-
-    def test_activity_without_recorder_returns_fallback(self, client):
-        response = client.get("/activity")
-        assert response.status_code == 200
+# TestActivityEndpoint removed (Task 15): GET /activity is one of the
+# fifteen legacy.py routes this task deletes, replaced by GET /reports
+# (Task 9). Both tests here are straight duplicates of
+# tests/test_routes_reports.py's TestReportsPermissionGate::test_reports_gate
+# (a 200 for a permitted role) and TestReportsNoRecorder::
+# test_no_recorder_renders_placeholder (the no-recorder fallback).
 
 
 class TestKpiEndpoint:
@@ -738,23 +355,10 @@ class TestKpiEndpoint:
             r.set_event_recorder(None)
 
 
-class TestActivityPeriodParam:
-    def test_activity_default_period(self, client):
-        response = client.get("/activity")
-        assert response.status_code == 200
-
-    def test_activity_period_168(self, client):
-        response = client.get("/activity?period=168")
-        assert response.status_code == 200
-
-    def test_activity_period_720(self, client):
-        response = client.get("/activity?period=720")
-        assert response.status_code == 200
-
-    def test_activity_invalid_period_falls_back_to_24(self, client):
-        # Invalid period values should fall back to 24 without error
-        response = client.get("/activity?period=99")
-        assert response.status_code == 200
+# TestActivityPeriodParam removed (Task 15): GET /activity is gone (see
+# above); its period-parameter behavior (24/168/720 valid, invalid falls
+# back to 24) is covered by tests/test_routes_reports.py's
+# TestReportsPeriodParameter against the replacement, GET /reports.
 
 
 class TestEventRecorderCallsOffloaded:
@@ -810,30 +414,11 @@ class TestEventRecorderCallsOffloaded:
         finally:
             r.set_event_recorder(None)
 
-    def test_activity_offloads_summary_and_average_to_thread(
-        self, client, tmp_path, monkeypatch
-    ):
-        from services.event_recorder import EventRecorder
-        from web_interface import context as r
-
-        recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
-        r.set_event_recorder(recorder)
-
-        calls = []
-        real_to_thread = r.asyncio.to_thread
-
-        async def spying_to_thread(func, *args, **kwargs):
-            calls.append((func, args))
-            return await real_to_thread(func, *args, **kwargs)
-
-        monkeypatch.setattr(r.asyncio, "to_thread", spying_to_thread)
-        try:
-            resp = client.get("/activity?period=168")
-            assert resp.status_code == 200
-            assert (recorder.get_summary, (168,)) in calls
-            assert (recorder.get_historical_average, (168,)) in calls
-        finally:
-            r.set_event_recorder(None)
+    # test_activity_offloads_summary_and_average_to_thread removed (Task
+    # 15): GET /activity is gone; the identical offloading assertion against
+    # its replacement, GET /reports, is
+    # tests/test_routes_reports.py::TestReportsRecorderOffloading::
+    # test_reports_offloads_to_thread.
 
 
 class TestStatusHealthSignal:
@@ -878,51 +463,32 @@ class TestStatusHealthSignal:
             r.set_event_recorder(None)
 
 
-class TestDeleteAndEmptyState:
-    # The "No products configured" empty state on bare GET /inventory
-    # moved to web_interface/routes/inventory.py (task 8); its own empty
-    # state is covered by tests/test_routes_inventory.py instead. This
-    # class keeps its coverage of the /inventory/delete/{sku} route (which
-    # renders the still-legacy partials/inventory_table.html fragment,
-    # untouched by task 8) unchanged.
-
-    def test_delete_product_removes_row(self, client):
-        client.post(
-            "/inventory/add",
-            data={"sku": "DEL-1", "name": "Doomed", "price": "1.00"},
-        )
-        resp = client.post("/inventory/delete/DEL-1")
-        assert resp.status_code == 200
-        assert "Doomed" not in resp.text
-        assert "No products configured" in resp.text
-
-    def test_delete_unknown_sku_is_harmless(self, client):
-        resp = client.post("/inventory/delete/NOPE")
-        assert resp.status_code == 200
-
-    def test_delete_requires_auth(self, anonymous):
-        resp = anonymous.post("/inventory/delete/X", headers={"HX-Request": "true"})
-        assert resp.status_code == 401
-        assert resp.headers["hx-redirect"] == "/login"
-
-    def test_add_registers_inventory_sku(self, client):
-        from web_interface import context as r
-
-        client.post(
-            "/inventory/add",
-            data={"sku": "INV-1", "name": "Tracked Thing", "price": "1.00"},
-        )
-        assert "INV-1" in r.inventory_manager.get_all()
-
-    def test_delete_removes_inventory_sku(self, client):
-        from web_interface import context as r
-
-        client.post(
-            "/inventory/add",
-            data={"sku": "INV-2", "name": "Gone Soon", "price": "1.00"},
-        )
-        client.post("/inventory/delete/INV-2")
-        assert "INV-2" not in r.inventory_manager.get_all()
+# TestDeleteAndEmptyState removed (Task 15): every test here hit
+# POST /inventory/add or POST /inventory/delete/{sku}, both among the
+# fifteen legacy.py routes this task deletes, replaced by POST /products/new
+# and POST /products/{sku}/delete (Task 7).
+#   - test_delete_product_removes_row and test_add_registers_inventory_sku /
+#     test_delete_removes_inventory_sku are straight duplicates of
+#     tests/test_routes_products.py's TestCreateCopyDelete::
+#     test_delete_works_for_owner_and_removes_inventory_sku and
+#     ::test_create_works_for_owner_and_registers_inventory_sku, plus
+#     TestProductsListGating::test_empty_state_shown_when_no_products for
+#     the "No products configured" empty state.
+#   - test_delete_unknown_sku_is_harmless asserted a 200 no-op that no
+#     longer exists by design: the new route 404s on an unknown SKU (rule
+#     4, "a missing object is a shell 404") before ever reaching a delete.
+#     That is exactly tests/test_routes_products.py's TestUnknownSku::
+#     test_unknown_sku_post_routes_are_shell_404 (parametrized over
+#     "/products/NOPE/delete" among others) — deleted here rather than
+#     retargeted, since retargeting would mean asserting the opposite
+#     status code from the original test's whole point.
+#   - test_delete_requires_auth (an anonymous POST getting 401 + hx-redirect
+#     to /login) is not itself repeated against /products/{sku}/delete
+#     anywhere, but the mechanism it proves — web_auth.require()'s
+#     unauthenticated response — is route-agnostic and already exercised
+#     against a mutating route by TestShellErrorPages::
+#     test_unauthenticated_htmx_request_still_gets_401_redirect and
+#     TestUnauthenticatedAccess::test_htmx_request_gets_401_with_hx_redirect.
 
 
 class TestFaultsUI:
@@ -931,20 +497,26 @@ class TestFaultsUI:
         vmc._raise_fault(FaultCode.ICE_301, sku=context.config.products[0].sku)
 
     def _add_product(self, client):
+        # Retargeted (Task 15): POST /inventory/add is gone; POST
+        # /products/new (Task 7) is its replacement.
         client.post(
-            "/inventory/add",
+            "/products/new",
             data={"sku": "ICE-1", "name": "Ice", "price": "2.5"},
             auth=client.auth,
         )
 
-    def test_status_lists_active_fault_with_clear_button(self, client):
+    def test_status_lists_active_fault(self, client):
+        """Renamed from test_status_lists_active_fault_with_clear_button
+        (Task 15): the per-fault Clear button on Home's hero is gone
+        (executor resolution 2 — clearing now lives entirely on
+        /health/faults), but the active fault list itself stays (spec
+        §1.3), so this keeps everything except the hx-post assertion."""
         self._add_product(client)
         self._lock(client)
         r = client.get("/status", auth=client.auth)
         assert r.status_code == 200
         assert "ICE-301" in r.text
         assert "Ice" in r.text
-        assert 'hx-post="/faults/ICE-1/clear"' in r.text
         assert "Issues Detected" in r.text
 
     def test_status_issues_headline_uses_hero_token(self, client):
@@ -957,19 +529,13 @@ class TestFaultsUI:
         assert "text-hero font-semibold" in r.text
         assert "text-base font-semibold" not in r.text
 
-    def test_status_clear_button_is_a_touch_target_not_a_text_link(self, client):
-        """Fix round 1 (Task 5 review): the per-fault Clear control — the
-        button a person standing at the machine taps most often on Home —
-        shipped as a bare `text-xs ... hover:underline` link, nowhere near
-        spec §3's 48px-tall touch target, and relied on `:hover` for its
-        only visible affordance. It must carry the shared `.touch-target`
-        component (min-height 48px) and a visible, non-hover background."""
-        self._add_product(client)
-        self._lock(client)
-        r = client.get("/status", auth=client.auth)
-        assert "touch-target" in r.text
-        assert "bg-blue-50" in r.text
-        assert "text-xs text-blue-600 hover:underline" not in r.text
+    # test_status_clear_button_is_a_touch_target_not_a_text_link removed
+    # (Task 15): it asserted on the markup of Home's per-fault Clear
+    # button, which executor resolution 2 removes outright (clearing moves
+    # entirely to /health/faults, two-tap-confirmed). There is nothing left
+    # to assert on Home, and its equivalent — health_faults.html's own
+    # Clear button — is a fresh row Task 6 already wrote, unrelated to this
+    # touch-target fix.
 
     def test_status_shows_fault_age_when_health_monitor_set(self, client):
         from services.health_monitor import HealthMonitor
@@ -1015,17 +581,14 @@ class TestFaultsUI:
         assert "Machine Stopped" not in r.text
         assert "still selling" not in r.text
 
-    def test_clear_endpoint_clears_and_rerenders(self, client):
-        self._add_product(client)
-        self._lock(client)
-        r = client.post("/faults/ICE-1/clear", auth=client.auth)
-        assert r.status_code == 200
-        assert "ICE-301" not in r.text
-        assert context.vmc_instance.active_faults() == []
-
-    def test_clear_unknown_key_returns_404(self, client):
-        r = client.post("/faults/NOPE/clear", auth=client.auth)
-        assert r.status_code == 404
+    # test_clear_endpoint_clears_and_rerenders and
+    # test_clear_unknown_key_returns_404 removed (Task 15): POST
+    # /faults/{key}/clear is one of the fifteen legacy.py routes this task
+    # deletes. Both are straight duplicates of
+    # tests/test_routes_health.py's TestFaultClearFlow::
+    # test_clear_confirm_then_post_clears_for_a_tech and
+    # ::test_post_clear_unknown_key_is_404 against the replacement, POST
+    # /health/faults/{key}/clear (Task 6).
 
     # test_inventory_table_shows_locked_badge removed: it asserted on the
     # old /inventory fragment's lockout badge, a route task 8 replaced.
@@ -1047,7 +610,12 @@ class TestFaultsUI:
         finally:
             routes.set_event_recorder(None)
 
-    def test_activity_shows_failed_vends_and_refunds(self, client, tmp_path):
+    def test_reports_shows_failed_vends_and_refunds(self, client, tmp_path):
+        """Retargeted (Task 15) from GET /activity to its replacement, GET
+        /reports (Task 9) — kept rather than deleted because
+        tests/test_routes_reports.py never asserts on the table's actual
+        cell content (only its overflow-x-auto wrapper and that a <table>
+        exists), so this specific content check has no duplicate."""
         from services.event_recorder import EventRecorder
 
         rec = EventRecorder(db_path=str(tmp_path / "events.db"))
@@ -1055,7 +623,7 @@ class TestFaultsUI:
         rec.record("refund", value=2.5)
         routes.set_event_recorder(rec)
         try:
-            r = client.get("/activity", auth=client.auth)
+            r = client.get("/reports", auth=client.auth)
             assert "Failed Vends" in r.text
             assert "Refunds Paid" in r.text
             assert "$2.50" in r.text
@@ -1146,34 +714,19 @@ class TestLogsContent:
         assert LOG_FILE.parts[-2:] == ("LOGS", "vmc.log")
 
 
+# TestCsrfGuard's own parametrized test_post_without_htmx_header_is_forbidden
+# is removed (Task 15): every one of its six paths (/inventory/add,
+# /faults/PAY-104/clear, /action/reset, /inventory/update/X/catalog,
+# /inventory/update/X/placement, /inventory/delete/X) is one of the fifteen
+# legacy.py routes this task deletes, and each has an equivalent
+# require_htmx 403 test against its replacement elsewhere:
+# tests/test_routes_products.py::TestCsrfGuard (new, delete, catalog,
+# placement), tests/test_routes_health.py::TestFaultClearFlow::
+# test_post_clear_without_htmx_header_is_403 (fault clear), and
+# tests/test_routes_controls.py::TestPostCommands::
+# test_post_requires_htmx_header (action/controls). Only the unrelated
+# GET-routes-are-exempt test below survives, so this is no longer a class.
 class TestCsrfGuard:
-    @pytest.mark.parametrize(
-        "path",
-        [
-            "/inventory/add",
-            "/faults/PAY-104/clear",
-            "/action/reset",
-            "/inventory/update/X/catalog",
-            "/inventory/update/X/placement",
-            "/inventory/delete/X",
-        ],
-    )
-    def test_post_without_htmx_header_is_forbidden(self, client, path):
-        resp = client.post(
-            path,
-            headers={"HX-Request": ""},
-            data={
-                "sku": "X",
-                "name": "n",
-                "price": "1",
-                "slot": "0",
-                "kind": "other",
-                "inventory_count": "0",
-            },
-        )
-        assert resp.status_code == 403
-        assert "HTMX" in resp.text
-
     def test_get_routes_do_not_need_header(self, client):
         resp = client.get("/status", headers={"HX-Request": ""})
         assert resp.status_code == 200
@@ -3378,8 +2931,11 @@ class TestHomeTileContext:
         assert "1 active fault" in resp.text
 
     def test_products_tile_shows_product_count(self, client):
+        # Retargeted (Task 15): POST /inventory/add is gone; this only ever
+        # used it to seed a product, so it now goes through the
+        # replacement, POST /products/new (Task 7).
         client.post(
-            "/inventory/add",
+            "/products/new",
             data={"sku": "TILE-1", "name": "Tile Product", "price": "1.00"},
         )
         resp = client.get("/")
@@ -3392,20 +2948,24 @@ class TestHomeTileContext:
         assert "2 users" in resp.text
 
     def test_inventory_tile_says_tracking_off_when_nothing_tracked(self, client):
+        # Retargeted (Task 15): POST /inventory/add -> POST /products/new.
         client.post(
-            "/inventory/add",
+            "/products/new",
             data={"sku": "TRK-OFF", "name": "Untracked", "price": "1.00"},
         )
         resp = client.get("/")
         assert "tracking off" in resp.text
 
     def test_inventory_tile_shows_zero_low_when_tracked_and_well_stocked(self, client):
+        # Retargeted (Task 15): POST /inventory/add -> POST /products/new;
+        # POST /inventory/update/{sku}/placement -> POST
+        # /products/{sku}/placement (Task 7).
         client.post(
-            "/inventory/add",
+            "/products/new",
             data={"sku": "TRK-OK", "name": "Tracked OK", "price": "1.00", "slot": "1"},
         )
         client.post(
-            "/inventory/update/TRK-OK/placement",
+            "/products/TRK-OK/placement",
             data={"slot": "1", "inventory_count": "10", "track_inventory": "on"},
         )
         resp = client.get("/")
@@ -3415,8 +2975,9 @@ class TestHomeTileContext:
     def test_inventory_tile_counts_products_at_or_below_the_low_stock_line(
         self, client
     ):
+        # Retargeted (Task 15): same two routes as the test above.
         client.post(
-            "/inventory/add",
+            "/products/new",
             data={
                 "sku": "TRK-LOW",
                 "name": "Tracked Low",
@@ -3425,7 +2986,7 @@ class TestHomeTileContext:
             },
         )
         client.post(
-            "/inventory/update/TRK-LOW/placement",
+            "/products/TRK-LOW/placement",
             data={"slot": "1", "inventory_count": "3", "track_inventory": "on"},
         )
         resp = client.get("/")
@@ -3517,3 +3078,156 @@ class TestPillEndpoint:
         resp = anonymous.get("/pill", headers={"HX-Request": "true"})
         assert resp.status_code == 401
         assert resp.headers["hx-redirect"] == "/login"
+
+
+# --- Task 15: proving the demolition -----------------------------------
+#
+# Everything below is new coverage for the routes/templates this task
+# deletes: a 404 sweep over every route removed from routes/legacy.py, a
+# template-include integrity check, and a byte-identical check against
+# origin/main for the two /screen templates the Global Constraints require
+# stay untouched all through part 2.
+
+_TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "web_interface" / "templates"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# The fifteen routes deleted from web_interface/routes/legacy.py (task-15
+# brief, executor resolution 1), each with the real method it answered —
+# posting GET to a POST-only route (or vice versa) would 405, not 404, and
+# that would prove nothing about the route being gone.
+_REMOVED_ROUTES = [
+    ("POST", "/action/restart"),
+    ("GET", "/activity"),
+    ("GET", "/config/comms"),
+    ("GET", "/config/contacts"),
+    ("GET", "/config/machine"),
+    ("GET", "/config/payments"),
+    ("POST", "/faults/PAY-103/clear"),
+    ("POST", "/inventory/add"),
+    ("GET", "/inventory/copy/SKU-1"),
+    ("POST", "/inventory/delete/SKU-1"),
+    ("GET", "/inventory/edit/SKU-1/catalog"),
+    ("GET", "/inventory/edit/SKU-1/placement"),
+    ("POST", "/inventory/update/SKU-1/catalog"),
+    ("POST", "/inventory/update/SKU-1/placement"),
+    ("GET", "/inventory/new"),
+]
+
+
+class TestRemovedLegacyRoutesAre404:
+    """Task 15's own required coverage (brief resolution 9): every route
+    routes/legacy.py used to serve now 404s, and the routes that survive
+    the same deletion (in home.py, health.py, screen.py and
+    inventory.py) still answer 200.
+
+    `client` is the owner, who held every permission any of these routes
+    ever gated on, and carries the HX-Request header sign_in sets by
+    default — so a 404 here can only be the route itself being gone, never
+    a permission 403 or a CSRF 403 wearing a 404's clothes. See this
+    task's report for direct evidence that these assertions are not
+    vacuous (two of them were re-checked with the route temporarily
+    restored, and failed as expected)."""
+
+    @pytest.mark.parametrize("method, path", _REMOVED_ROUTES)
+    def test_removed_route_is_404(self, client, method, path):
+        resp = client.get(path) if method == "GET" else client.post(path, data={})
+        assert resp.status_code == 404, (method, path, resp.status_code)
+
+    @pytest.mark.parametrize(
+        "path", ["/status", "/kpi", "/pill", "/screen", "/screen/body", "/inventory"]
+    )
+    def test_surviving_fragment_route_is_still_200(self, client, path):
+        resp = client.get(path)
+        assert resp.status_code == 200, (path, resp.status_code)
+
+
+class TestTemplateIncludeIntegrity:
+    """Every {% include %} and {% extends %} target across
+    web_interface/templates/**/*.html must resolve to a real file — cheap
+    insurance against exactly the class of mistake this task risks
+    (deleting a partial something still includes, per brief resolution 6's
+    name-collision trap)."""
+
+    _TAG_RE = re.compile(r'{%-?\s*(?:include|extends)\s+"([^"]+)"')
+
+    def _all_targets(self):
+        for template_path in _TEMPLATES_DIR.rglob("*.html"):
+            text = template_path.read_text(encoding="utf-8")
+            for target in self._TAG_RE.findall(text):
+                yield template_path, target
+
+    def test_every_include_and_extends_target_exists(self):
+        missing = []
+        checked = 0
+        for template_path, target in self._all_targets():
+            checked += 1
+            if not (_TEMPLATES_DIR / target).exists():
+                missing.append((str(template_path.relative_to(_TEMPLATES_DIR)), target))
+        assert checked > 0, "no {% include %} / {% extends %} tags found at all"
+        assert missing == []
+
+    def test_deleted_partials_are_not_referenced_anywhere(self):
+        """The twelve partials this task deletes, named explicitly — a
+        second, independent check alongside the generic sweep above, so a
+        regex miss in _TAG_RE can't silently hide a real reference."""
+        deleted = {
+            "partials/activity_fragment.html",
+            "partials/health_fragment.html",
+            "partials/inventory_table.html",
+            "partials/inventory_add_form.html",
+            "partials/inventory_catalog_form.html",
+            "partials/inventory_placement_form.html",
+            "partials/logs_fragment.html",
+            "partials/machine_info.html",
+            "partials/contacts.html",
+            "partials/users_list.html",
+            "partials/user_form.html",
+            "partials/devices_list.html",
+        }
+        referenced = {target for _path, target in self._all_targets()}
+        assert deleted & referenced == set()
+
+    def test_survivor_partials_are_still_referenced(self):
+        """The flip side: partials/user_form.html's collision with the
+        top-level templates/user_form.html Task 12 created (brief
+        resolution 6) means a naive delete-by-name could take the wrong
+        file. This confirms the top-level survivor is untouched and still
+        a real, extending template — not proof by itself, but a second
+        signal alongside the app booting and the full suite passing."""
+        assert (_TEMPLATES_DIR / "user_form.html").exists()
+        text = (_TEMPLATES_DIR / "user_form.html").read_text(encoding="utf-8")
+        assert '{% extends "base.html" %}' in text
+        assert not (_TEMPLATES_DIR / "partials" / "user_form.html").exists()
+
+
+class TestScreenTemplatesUnchanged:
+    """Global Constraint: templates/screen.html and
+    partials/screen_body.html must stay byte-identical to origin/main for
+    the whole of part 2 (brief resolution 11) — verified by diff, not by
+    eye. Skipped, rather than failed, when origin/main isn't reachable (a
+    shallow clone/CI checkout with no origin remote) instead of reporting a
+    false defect for an environment problem."""
+
+    @pytest.mark.parametrize(
+        "relpath",
+        [
+            "web_interface/templates/screen.html",
+            "web_interface/templates/partials/screen_body.html",
+        ],
+    )
+    def test_matches_origin_main(self, relpath):
+        diff_command = ["git", "diff", "--quiet", "origin/main", "--", relpath]
+        result = subprocess.run(
+            diff_command,
+            cwd=_REPO_ROOT,
+            capture_output=True,
+        )
+        if result.returncode not in (0, 1):
+            pytest.skip(
+                f"git diff against origin/main failed (rc={result.returncode}): "
+                f"{result.stderr.decode(errors='replace')}"
+            )
+        assert result.returncode == 0, (
+            f"{relpath} differs from origin/main — this file must stay "
+            "byte-identical for the whole of part 2"
+        )

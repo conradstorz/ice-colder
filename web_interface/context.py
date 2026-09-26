@@ -210,9 +210,10 @@ def _can_email_owner(owner) -> bool:
     configured.
 
     Shared by routes/auth.py (the setup-codes page and its email button)
-    and routes/legacy.py (the users list's email-report button) — the only
-    helper used by two area modules besides template_context and
-    _render_status, per Task 1 executor resolution 3.
+    and routes/users.py (the users list's email-report button, moved
+    verbatim from the now-deleted routes/legacy.py by Task 12) — one of the
+    couple of helpers used by more than one area module besides
+    template_context and _render_status, per Task 1 executor resolution 3.
     """
     gateway = config.communication.email_gateway if config else None
     return bool(owner and owner.email and gateway and gateway.is_configured)
@@ -321,12 +322,15 @@ async def health_snapshot() -> dict:
 async def _render_status(templates, request: Request):
     """The /status fragment body.
 
-    Shared by routes/home.py's GET /status and routes/legacy.py's POST
-    /faults/{key}/clear (which re-renders this same fragment after clearing
-    a fault) — per Task 1 executor resolution 3, a helper used by two area
-    modules lives here rather than in either one. `templates` is passed in
-    explicitly since this function lives outside any build_router(templates)
-    closure.
+    Task 15 deleted routes/legacy.py's POST /faults/{key}/clear, which used
+    to re-render this same fragment after clearing a fault (Home's Clear
+    button went with it — executor resolution 2 — clearing now lives
+    entirely on /health/faults). The only caller left is routes/home.py's
+    GET /status; this function still lives here rather than in home.py per
+    Task 1 executor resolution 3's original reasoning, and its signature is
+    unchanged since nothing about what it renders (or how) needed to
+    change. `templates` is passed in explicitly since this function lives
+    outside any build_router(templates) closure.
 
     The health computation itself lives in `health_snapshot()` (Task 5),
     shared with GET /pill, so the hero and the bar pill can never disagree

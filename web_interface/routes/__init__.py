@@ -30,7 +30,7 @@ from web_interface.context import (
     set_vmc_instance,
 )
 from web_interface.routes import auth as auth_routes
-from web_interface.routes import controls, health, home, inventory, legacy, products
+from web_interface.routes import controls, health, home, inventory, products
 from web_interface.routes import reports, screen, settings, tests_level, users
 
 __all__ = [
@@ -52,11 +52,11 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     access-gate middleware exactly once.
 
     Registration order mirrors the original single-file attach_routes: every
-    permission-gated router (home, legacy, screen, and the still-empty area
-    stubs) is included before routes/auth.py's session-less public router,
-    the same relative order `app.include_router(router)` then
-    `app.include_router(public)` had before this split — route matching
-    order can matter, so that order is preserved here.
+    permission-gated router (home, screen, and the area modules) is included
+    before routes/auth.py's session-less public router, the same relative
+    order `app.include_router(router)` then `app.include_router(public)` had
+    before this split — route matching order can matter, so that order is
+    preserved here.
     """
 
     # Runs before every request (context.access_store is read live, so this
@@ -141,7 +141,6 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     # Permission-gated routers first (the original `router`), the
     # session-less auth/setup router last (the original `public`).
     app.include_router(home.build_router(templates))
-    app.include_router(legacy.build_router(templates))
     app.include_router(screen.build_router(templates))
     app.include_router(health.build_router(templates))
     app.include_router(products.build_router(templates))
