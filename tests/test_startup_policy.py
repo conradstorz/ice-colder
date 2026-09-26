@@ -1,41 +1,7 @@
-import pytest
-from pydantic import SecretStr
-
 import main as main_mod
 from config.config_model import ConfigModel, WebConfig
+from services.access import AccessStore, Role
 from services.config_store import save_config
-
-
-def _web(host="0.0.0.0", password="changeme"):
-    return WebConfig(host=host, admin_password=SecretStr(password))
-
-
-def test_weak_password_on_public_host_exits(monkeypatch):
-    monkeypatch.delenv("ICE_COLDER_ALLOW_WEAK_PASSWORD", raising=False)
-    with pytest.raises(SystemExit) as e:
-        main_mod.enforce_password_policy(_web())
-    assert e.value.code == 1
-
-
-def test_short_password_on_public_host_exits(monkeypatch):
-    monkeypatch.delenv("ICE_COLDER_ALLOW_WEAK_PASSWORD", raising=False)
-    with pytest.raises(SystemExit):
-        main_mod.enforce_password_policy(_web(password="short-pw"))
-
-
-def test_weak_password_on_loopback_is_allowed(monkeypatch):
-    monkeypatch.delenv("ICE_COLDER_ALLOW_WEAK_PASSWORD", raising=False)
-    main_mod.enforce_password_policy(_web(host="127.0.0.1"))
-
-
-def test_bypass_flag_downgrades_to_warning(monkeypatch):
-    monkeypatch.setenv("ICE_COLDER_ALLOW_WEAK_PASSWORD", "1")
-    main_mod.enforce_password_policy(_web())
-
-
-def test_strong_password_passes(monkeypatch):
-    monkeypatch.delenv("ICE_COLDER_ALLOW_WEAK_PASSWORD", raising=False)
-    main_mod.enforce_password_policy(_web(password="correct-horse-battery"))
 
 
 def test_env_overrides_mqtt_credentials_and_trusted_proxies(monkeypatch):
@@ -94,3 +60,46 @@ def test_env_password_never_reaches_saved_config(tmp_path, monkeypatch):
 
 def test_web_config_trusted_proxies_default_empty():
     assert WebConfig().trusted_proxies == []
+
+
+def test_warn_if_setup_mode_warns_with_no_owner(tmp_path, caplog):
+    """No owner yet: warn_if_setup_mode logs a warning pointing at /setup and
+    never exits — a dashboard concern must never stop the machine selling."""
+    store = AccessStore(path=tmp_path / "access.json")
+    caplog.set_level("WARNING")
+
+    main_mod.warn_if_setup_mode(store)  # must not raise SystemExit
+
+    messages = [r.message for r in caplog.records]
+    assert any("setup mode" in m and "/setup" in m for m in messages), messages
+
+
+def test_warn_if_setup_mode_silent_once_owner_exists(tmp_path, caplog):
+    store = AccessStore(path=tmp_path / "access.json")
+    store.create_user(name="Owner", email=None, role=Role.owner, pin="48213")
+    caplog.set_level("WARNING")
+    caplog.clear()
+
+    main_mod.warn_if_setup_mode(store)
+
+    messages = [r.message for r in caplog.records]
+    assert not any("setup mode" in m for m in messages)
+
+
+def test_warn_if_setup_mode_logs_error_on_corrupt_store_and_never_exits(
+    tmp_path, caplog
+):
+    """A corrupt access.json is a dashboard-only failure: log at error level,
+    say the VMC and MQTT client keep running, and never call sys.exit."""
+    bad = tmp_path / "access.json"
+    bad.write_text("{not valid json", encoding="utf-8")
+    store = AccessStore(path=bad)
+    assert store.corrupt
+    caplog.set_level("WARNING")
+
+    main_mod.warn_if_setup_mode(store)  # must not raise SystemExit
+
+    messages = [r.message for r in caplog.records]
+    assert any(
+        "corrupt" in m.lower() and ("VMC" in m or "MQTT" in m) for m in messages
+    ), messages

@@ -328,20 +328,18 @@ class MQTTConfig(BaseModel):
 
 
 class WebConfig(BaseModel):
-    """Web dashboard binding and admin authentication."""
+    """Web dashboard binding. Authentication lives in ``data/access.json``
+    (named users, roles and PINs via ``services/access.py``), not here —
+    this model carries no credential."""
 
     host: str = Field("0.0.0.0", description="Interface to bind the dashboard to")
     port: int = Field(26123, description="Dashboard port")
-    admin_username: str = Field("admin", description="Dashboard admin username")
-    admin_password: SecretStr = Field(
-        default=SecretStr("changeme"),
-        description="Dashboard admin password — CHANGE THIS before deployment",
-    )
     trusted_proxies: List[str] = Field(
         default_factory=list,
         description=(
-            "CIDRs of reverse proxies whose X-Forwarded-For is trusted for the "
-            "login limiter (e.g. the Docker network Traefik reaches the VMC from)"
+            "CIDRs of reverse proxies whose X-Forwarded-For is trusted for "
+            "login back-off keying (e.g. the Docker network Traefik reaches "
+            "the VMC from)"
         ),
     )
 

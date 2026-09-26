@@ -23,7 +23,7 @@ from pydantic import SecretStr, ValidationError
 
 import uvicorn
 from config.config_model import ConfigModel, MQTTConfig
-from services.auth_policy import generate_admin_password, is_loopback, password_problem
+from services.access import AccessStore
 from web_interface.server import app
 from web_interface import routes
 from web_interface import auth as web_auth
@@ -93,16 +93,15 @@ def _config_path() -> str:
 
 
 def _create_default_config(path: str) -> ConfigModel:
-    """First run: blank defaults plus a random admin password, persisted, then continue."""
+    """First run: blank defaults, persisted, then continue.
+
+    No credential is generated here — authentication lives entirely in
+    ``data/access.json`` (services/access.py), created separately and
+    walked through the setup wizard at /setup.
+    """
     defaults = ConfigModel()
-    password = generate_admin_password()
-    defaults.web.admin_password = SecretStr(password)
     save_config(defaults, Path(path))
     logger.info(f"First run: created '{path}' with blank defaults")
-    logger.warning(
-        f"First run: dashboard login is {defaults.web.admin_username} / {password} "
-        "— change it in config.json"
-    )
     return defaults
 
 
@@ -199,31 +198,29 @@ def apply_env_overrides(config: ConfigModel) -> EnvOverrides:
     return EnvOverrides(mqtt=mqtt, trusted_proxies=trusted_proxies)
 
 
-def enforce_password_policy(web) -> None:
-    """Refuse to serve a weak admin password on a non-loopback interface.
+def warn_if_setup_mode(store: AccessStore) -> None:
+    """Log the dashboard's access-store health at startup. Never exits: a
+    dashboard-only problem must never stop the machine selling.
 
-    ICE_COLDER_ALLOW_WEAK_PASSWORD=1 downgrades the refusal to a warning; it is
-    for a local shell or an uncommitted compose override, never the committed
-    stack.
+    - Corrupt ``data/access.json``: logged at error level. The dashboard
+      serves an error page on every route, but the VMC and MQTT client are
+      unaffected and keep running.
+    - No owner yet: logged at warning level — the dashboard is in setup mode
+      until someone completes the wizard at /setup on the machine.
+    - An owner already exists: silent.
     """
-    problem = password_problem(web.admin_password.get_secret_value())
-    if problem is None:
-        return
-    if is_loopback(web.host):
-        logger.warning(f"Dashboard on loopback with a weak password ({problem})")
-        return
-    if os.environ.get("ICE_COLDER_ALLOW_WEAK_PASSWORD") == "1":
-        logger.warning(
-            f"ICE_COLDER_ALLOW_WEAK_PASSWORD=1: serving on {web.host} although {problem}"
+    if store.corrupt:
+        logger.error(
+            f"Access store at {store.path} is corrupt: the dashboard will "
+            "serve an error page on every route. The VMC and MQTT client "
+            "are unaffected and keep running."
         )
         return
-    logger.error(
-        f"Refusing to serve the dashboard on {web.host}: {problem}. "
-        "Set web.admin_password in config.json to at least 12 characters, "
-        "or bind web.host to 127.0.0.1, or set ICE_COLDER_ALLOW_WEAK_PASSWORD=1 "
-        "for a private test host."
-    )
-    sys.exit(1)
+    if store.setup_mode:
+        logger.warning(
+            "Dashboard is in setup mode: no owner exists yet. Visit /setup "
+            "at the machine to create one."
+        )
 
 
 _SUPERVISE_RESTART_DELAY = 5.0
@@ -289,11 +286,13 @@ async def main():
 
     # Wire up configuration, inventory, and VMC for the web routes
     routes.set_config_object(live_config)
-    # set_config_object above seeds the limiter from live_config.web.trusted_proxies
-    # (empty unless the operator set it in config.json) — apply the env override
-    # after, so ICE_COLDER_TRUSTED_PROXIES takes effect without ever touching
-    # live_config itself.
+    access_store = AccessStore()
+    routes.set_access_store(access_store)
+    # trusted_proxies is env-overridable (ICE_COLDER_TRUSTED_PROXIES) — apply
+    # the resolved list to the back-off's client-IP keying after the access
+    # store is wired, so it takes effect without ever touching live_config.
     web_auth.backoff.set_trusted_proxies(overrides.trusted_proxies)
+    warn_if_setup_mode(access_store)
     inventory = InventoryManager(live_config.products)
     vmc = VMC(config=live_config)
     vmc.set_inventory_manager(inventory)
@@ -343,13 +342,18 @@ async def main():
     vmc.set_display_controller(display)
     logger.info("Display controller created and linked to MQTT client and VMC")
 
+    # Only now can setup mode reach the customer display — ensure_setup_mode()
+    # publishes the setup code there when no owner exists yet, so it must run
+    # after set_display_controller, not before.
+    routes.set_display_controller(display)
+    routes.ensure_setup_mode()
+
     logger.info(
         f"MQTT client configured for broker {overrides.mqtt.broker_host}:{overrides.mqtt.broker_port}"
     )
 
     # Start uvicorn as an asyncio task (non-blocking)
     web_cfg = live_config.web
-    enforce_password_policy(web_cfg)
     uvicorn_config = uvicorn.Config(
         app, host=web_cfg.host, port=web_cfg.port, log_level="info"
     )

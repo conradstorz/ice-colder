@@ -100,8 +100,14 @@ def test_web_config_defaults():
     cfg = ConfigModel()
     assert cfg.web.host == "0.0.0.0"
     assert cfg.web.port == 26123
-    assert cfg.web.admin_username == "admin"
-    assert cfg.web.admin_password.get_secret_value() == "changeme"
+
+
+def test_web_config_has_no_admin_credential():
+    """Authentication lives entirely in data/access.json now (Task 20) — no
+    admin_username/admin_password field exists on WebConfig at all."""
+    cfg = ConfigModel()
+    assert not hasattr(cfg.web, "admin_username")
+    assert not hasattr(cfg.web, "admin_password")
 
 
 def test_get_preferred_gateway_for_none():
