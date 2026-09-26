@@ -1,0 +1,75 @@
+{# web_interface/templates/settings_mqtt.html
+
+   GET/POST /settings/mqtt (gate edit_secrets). Broker host, port and
+   username, plus password masked. There is no TLS field on MQTTConfig
+   (brief resolution 3) — adding one would be a config.json schema change,
+   a hard stop for this part, so this page does not render one; the note
+   below says so instead of silently omitting it.
+
+   Any field with a live environment override (MQTT_BROKER_HOST,
+   MQTT_USERNAME, MQTT_PASSWORD) renders disabled and shows the effective
+   value that override applies at runtime — never what's stored in
+   config.json — and the route's POST handler ignores that field even if
+   a direct POST supplies one, so an env-only value can never be written
+   back into config.json (brief resolution 6).
+#}
+{% extends "base.html" %}
+{% block title %}MQTT · Settings · Vending Machine{% endblock %}
+{% block body %}
+<form hx-post="/settings/mqtt" class="max-w-md space-y-4">
+  <h1 class="text-hero font-semibold text-gray-900">MQTT</h1>
+
+  {% if error %}
+  <p class="text-sm text-red-600">{{ error }}</p>
+  {% endif %}
+
+  <p class="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-3">
+    Environment variables (MQTT_BROKER_HOST, MQTT_USERNAME, MQTT_PASSWORD) override
+    these values at runtime without changing what is saved here. There is no TLS
+    setting on this machine's MQTT configuration.
+  </p>
+
+  <div>
+    <label for="broker_host" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+      Broker host{% if "broker_host" in overrides %} (set by environment){% endif %}
+    </label>
+    <input type="text" id="broker_host" name="broker_host" value="{{ broker_host }}"
+           {{ "disabled" if "broker_host" in overrides }}
+           class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500
+           {{ 'bg-gray-100 text-gray-500' if 'broker_host' in overrides }}">
+  </div>
+
+  <div>
+    <label for="broker_port" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Broker port</label>
+    <input type="number" id="broker_port" name="broker_port" value="{{ broker_port }}" inputmode="numeric"
+           class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+  </div>
+
+  <div>
+    <label for="username" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+      Username{% if "username" in overrides %} (set by environment){% endif %}
+    </label>
+    <input type="text" id="username" name="username" value="{{ username }}"
+           {{ "disabled" if "username" in overrides }}
+           class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500
+           {{ 'bg-gray-100 text-gray-500' if 'username' in overrides }}">
+  </div>
+
+  <div>
+    <label for="password" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+      Password{% if "password" in overrides %} (set by environment){% endif %}
+    </label>
+    <input type="password" id="password" name="password" value="{{ password }}" autocomplete="off"
+           {{ "disabled" if "password" in overrides }}
+           class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500
+           {{ 'bg-gray-100 text-gray-500' if 'password' in overrides }}">
+  </div>
+
+  <div class="flex gap-touch pt-2">
+    <button type="submit"
+            class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">Save</button>
+    <a href="/settings"
+       class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Cancel</a>
+  </div>
+</form>
+{% endblock %}

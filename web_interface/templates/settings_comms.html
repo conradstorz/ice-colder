@@ -1,0 +1,80 @@
+{# web_interface/templates/settings_comms.html
+
+   GET/POST /settings/comms (gate edit_secrets). Email and SMS gateway
+   secrets are masked exactly like Payments. The Send test email button
+   posts to /settings/comms/test (also edit_secrets + require_htmx) and
+   swaps its inline result into #test-email-result — no toast, no modal,
+   per the global feedback rule.
+#}
+{% extends "base.html" %}
+{% block title %}Comms · Settings · Vending Machine{% endblock %}
+{% block body %}
+<form hx-post="/settings/comms" class="max-w-md space-y-6">
+  <h1 class="text-hero font-semibold text-gray-900">Comms</h1>
+
+  {% if error %}
+  <p class="text-sm text-red-600">{{ error }}</p>
+  {% endif %}
+
+  <div class="space-y-4">
+    <h2 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">Email gateway</h2>
+    <div>
+      <label for="smtp_server" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">SMTP server</label>
+      <input type="text" id="smtp_server" name="smtp_server" value="{{ email.smtp_server }}"
+             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+    </div>
+    <div>
+      <label for="smtp_port" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">SMTP port</label>
+      <input type="number" id="smtp_port" name="smtp_port" value="{{ email.smtp_port }}" inputmode="numeric"
+             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+    </div>
+    <div>
+      <label for="smtp_username" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Username</label>
+      <input type="text" id="smtp_username" name="smtp_username" value="{{ email.username }}"
+             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+    </div>
+    <div>
+      <label for="smtp_password" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Password</label>
+      <input type="password" id="smtp_password" name="smtp_password" value="{{ email_password }}" autocomplete="off"
+             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+    </div>
+    <div>
+      <label for="default_from" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Default From address</label>
+      <input type="text" id="default_from" name="default_from" value="{{ email.default_from }}"
+             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+    </div>
+  </div>
+
+  <div class="space-y-4 border-t border-gray-100 pt-4">
+    <h2 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">SMS gateway</h2>
+    <div>
+      <label for="sms_account_sid" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Account SID</label>
+      <input type="password" id="sms_account_sid" name="sms_account_sid" value="{{ sms_account_sid }}" autocomplete="off"
+             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+    </div>
+    <div>
+      <label for="sms_auth_token" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Auth token</label>
+      <input type="password" id="sms_auth_token" name="sms_auth_token" value="{{ sms_auth_token }}" autocomplete="off"
+             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+    </div>
+    <div>
+      <label for="sms_from_number" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">From number</label>
+      <input type="text" id="sms_from_number" name="sms_from_number" value="{{ sms.from_number }}"
+             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+    </div>
+  </div>
+
+  <div class="flex gap-touch pt-2">
+    <button type="submit"
+            class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">Save</button>
+    <a href="/settings"
+       class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Cancel</a>
+  </div>
+</form>
+
+<div class="max-w-md space-y-2 border-t border-gray-100 pt-4 mt-6">
+  <button type="button" hx-post="/settings/comms/test" hx-target="#test-email-result" hx-swap="innerHTML"
+          class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Send test email</button>
+  <div id="test-email-result">{% if test_result %}{{ test_result|safe }}{% endif %}</div>
+</div>
+{% endblock %}
