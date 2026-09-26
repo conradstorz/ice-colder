@@ -455,6 +455,31 @@ class TestInventoryEndpoints:
         assert updated.name == "Original"
         assert updated.price == 9.99
 
+    def test_placement_post_negative_count_is_rejected(self, client, wired):
+        """A negative inventory_count is silent data corruption in the exact
+        workflow this part exists to enable — mirror config_store.py's
+        slot < 0 guard: reject the whole write and leave the stored count
+        unchanged (services/config_store.py add_product/update_product)."""
+        _cfg, _vmc, inv, _store = wired
+        client.post(
+            "/inventory/add",
+            data={"sku": "PLC-6", "name": "Placed Item", "price": "2.00", "slot": "1"},
+        )
+        client.post(
+            "/inventory/update/PLC-6/placement",
+            data={"slot": "1", "inventory_count": "9", "track_inventory": "on"},
+        )
+        assert inv.get_count("PLC-6") == 9
+
+        resp = client.post(
+            "/inventory/update/PLC-6/placement",
+            data={"slot": "6", "inventory_count": "-3", "track_inventory": "on"},
+        )
+        assert resp.status_code == 200
+        assert inv.get_count("PLC-6") == 9
+        updated = next(p for p in routes.config.products if p.sku == "PLC-6")
+        assert updated.slot == 1
+
 
 class TestCatalogPlacementPermissions:
     """A loader restocks (placement) but must never touch price/name/kind
@@ -589,6 +614,39 @@ class TestPermissionMatrix:
             )
         else:
             assert resp.status_code == 403, (role, path, resp.status_code)
+
+    @pytest.mark.parametrize("role", list(Role))
+    def test_matrix_clear_faults(self, login_as, wired, role):
+        """No row above exercises clear_faults — every _MATRIX_ROUTES entry
+        is a GET, or a POST none of which is gated on it. A fresh machine
+        fault is raised before each role's attempt (clearing it consumes
+        it), so a permitted role hits a real fault to clear rather than the
+        404 an absent one would produce — that 404 would make the matrix
+        lie about the permission being exercised."""
+        _cfg, vmc, _inv, _store = wired
+        vmc._raise_fault(FaultCode.PAY_103, outcome="permission matrix seed")
+        client = login_as(role)
+        resp = client.post("/faults/PAY-103/clear")
+        if Permission.clear_faults in ROLE_PERMISSIONS[role]:
+            assert resp.status_code == 200, (role, resp.status_code, resp.text[:300])
+        else:
+            assert resp.status_code == 403, (role, resp.status_code)
+
+    @pytest.mark.parametrize("role", list(Role))
+    def test_matrix_edit_catalog_write(self, login_as, role):
+        """The only existing edit_catalog coverage is GET /inventory/new —
+        no row proves a *write* is refused. This posts to the catalog
+        (name/price/kind) endpoint, which is gated on edit_catalog
+        separately from edit_placement (see TestCatalogPlacementPermissions)."""
+        client = login_as(role)
+        resp = client.post(
+            "/inventory/update/MATRIX-1/catalog",
+            data={"name": "Matrix Item", "price": "1.00", "kind": "other"},
+        )
+        if Permission.edit_catalog in ROLE_PERMISSIONS[role]:
+            assert resp.status_code == 200, (role, resp.status_code, resp.text[:300])
+        else:
+            assert resp.status_code == 403, (role, resp.status_code)
 
 
 class TestUnauthenticatedAccess:
@@ -1427,6 +1485,36 @@ class TestEnrollment:
         code = "".join(ch for ch in sent["body"] if ch.isdigit())[-6:]
         resp = c.post("/login/enroll", data={"code": code})
         assert resp.headers["hx-redirect"] == "/"
+
+    def test_tech_enrolls_with_owner_issued_emergency_code(self, public):
+        """Program plan §4's part-1 acceptance list: 'a second browser
+        enrolls a tech by emergency code with no SMTP configured.' Every
+        other TestEnrollment case uses the owner (the `public` fixture only
+        ever creates one), which proves the codes work but not the property
+        that actually matters: the pool is issued by the owner yet must be
+        spendable by any enabled user, on any browser, with no network."""
+        c, store, owner, cfg = public
+        tech = store.create_user("Tom", None, Role.tech, "2222")
+
+        # The offline path is what's being exercised — confirm the email
+        # path is genuinely unavailable, not merely unused.
+        assert cfg.communication.email_gateway.is_configured is False
+
+        codes = store.generate_emergency_codes()
+        assert store.unused_emergency_code_count() == 20
+
+        # A fresh, untrusted client: no vmc_device, no vmc_session — a
+        # second browser the tech has never used before.
+        with TestClient(app, follow_redirects=False) as fresh:
+            fresh.headers["HX-Request"] = "true"
+            fresh.post("/login", data={"user_id": tech.id, "pin": "2222"})
+            resp = fresh.post("/login/enroll", data={"code": codes[0]})
+
+            assert resp.headers["hx-redirect"] == "/"
+            assert fresh.cookies.get("vmc_session")
+            device = next(iter(store.devices.values()))
+            assert tech.id in device.trusted_user_ids
+            assert store.unused_emergency_code_count() == 19
 
     def test_smtp_failure_tells_the_user_to_use_an_emergency_code(
         self, public, monkeypatch

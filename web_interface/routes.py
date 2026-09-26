@@ -1179,6 +1179,18 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         product = next((p for p in config.products if p.sku == sku), None)
         tracked = track_inventory is not None
         if product:
+            if inventory_count < 0:
+                # Mirror services/config_store.py's slot < 0 guard: reject
+                # the whole write and log a warning rather than let a
+                # negative stock level silently corrupt InventoryManager —
+                # restocking is the loader's job, and this is exactly the
+                # workflow that must not be allowed to corrupt data.
+                logger.warning(
+                    f"Cannot update placement SKU={sku}: inventory_count "
+                    f"{inventory_count} is invalid (must be >= 0)"
+                )
+                return _render_inventory_table(request)
+
             # This endpoint owns slot/count/tracking only — pass the
             # product's own stored name/price/kind through unchanged so a
             # placement POST can never smuggle a catalog change, regardless
