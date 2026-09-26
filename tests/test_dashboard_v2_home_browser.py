@@ -178,9 +178,9 @@ def test_home_dom_is_intact_in_a_real_browser(live_server):
         env=env,
     )
 
-    assert (
-        result.stdout.strip()
-    ), f"browser check produced no output; stderr: {result.stderr}"
+    assert result.stdout.strip(), (
+        f"browser check produced no output; stderr: {result.stderr}"
+    )
     payload = json.loads(result.stdout.strip().splitlines()[-1])
 
     assert payload.get("ok") is True, (
