@@ -185,6 +185,67 @@ class TestHomeSelfPollTargets:
         assert elements[0].attrs.get("hx-target") == "this"
 
 
+class TestBoostedSwapDoesNotNestMain:
+    """Regression test for the *second* instance of the htmx
+    ambient-hx-target defect (TestHomeSelfPollTargets above is the first).
+
+    base.html's `<body hx-boost="true" hx-target="main" ...>` doesn't only
+    supply a default for self-polling widgets — it is the default
+    hx-target *and* hx-swap for every boosted link, form, or bare hx-get/
+    hx-post element on the whole shell that declares no target/swap of its
+    own: roughly two dozen elements (every Settings/Products/Users form,
+    health_logs.html's Refresh button) plus ordinary navigation itself —
+    every tile link, every breadcrumb, and base.html's own Home/Back links,
+    none of which carry an explicit hx-target.
+
+    Every one of those responses is a *full* HTML document (doctype, head,
+    the OOB `#bar`, and the level's own `<main>`), because every level
+    extends base.html. htmx's boosted-request handling parses that
+    document, peels off the OOB `#bar` (matched and swapped separately),
+    and is left with the child level's own `<main>` element as the
+    fragment to swap in. With `hx-swap="innerHTML"` (the literal text of
+    spec §1.1), that fragment — a whole `<main>` element, tag included —
+    is inserted as a *child* of the page's live `<main>` instead of
+    replacing it, nesting `<main><main>...</main></main>` on every one of
+    those interactions. Verified in a real browser (headless Chrome via
+    CDP): clicking a Home tile, clicking the Home/Back links, tapping
+    Health > Logs' Refresh button (twice, to confirm it doesn't clean up
+    after itself), and submitting a Settings/Products/Users form down a
+    path that re-renders the same level instead of issuing an HX-Redirect
+    (a validation error on Products > New's duplicate-SKU check or
+    Users > New's PIN-length check; the *success* path on most forms goes
+    through `HX-Redirect`, which is a real browser navigation, not a swap,
+    and was never affected) all left a stray nested `<main>` behind with
+    `hx-swap="innerHTML"`, and none did with `hx-swap="outerHTML"`.
+
+    As with the first defect, only a real browser executing htmx's JS can
+    observe the nesting itself — the served HTML string is, as always,
+    entirely well-formed, and TestClient never runs a browser. But which
+    swap style `<body>` declares is itself a server-visible fact, and
+    that's what the assertion below checks: outerHTML replaces the live
+    `<main>` element wholesale with the incoming one instead of grafting
+    it inside, so exactly one `<main>` survives every swap regardless of
+    which of the ~two-dozen ambient-target elements produced it.
+    """
+
+    def test_body_boost_swap_is_outer_html_not_inner_html(self, client):
+        resp = client.get("/")
+        elements = parse_elements(resp.text)
+        bodies = [e for e in elements if e.tag == "body"]
+        assert len(bodies) == 1, "expected exactly one <body>"
+
+        swap = (bodies[0].attrs.get("hx-swap") or "").split()
+        assert swap and swap[0] == "outerHTML", (
+            'base.html\'s <body> must declare hx-swap="outerHTML ..." — '
+            "every level response is a full document, and hx-swap="
+            '"innerHTML" would nest the incoming level\'s own <main> '
+            "inside the page's live <main> on every boosted navigation, "
+            "Refresh click, or form re-render that doesn't HX-Redirect "
+            "(see this class's docstring)."
+        )
+        assert bodies[0].attrs.get("hx-target") == "main"
+
+
 class TestShellErrorPages:
     """Task 4: spec §5's in-shell 403/404 pages, and the exception handler
     that must not swallow auth.py's 401/303 (executor resolution 4)."""

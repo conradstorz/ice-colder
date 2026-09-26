@@ -4,9 +4,10 @@
 {# No hx-trigger="every ..." anywhere on this level (executor resolution 7):
    /status, /kpi and /pill are the only polling endpoints in part 2. Refresh
    re-hx-gets this same level -- with no hx-target/hx-swap of its own it
-   inherits <body>'s ambient hx-target="main" hx-swap="innerHTML show:top",
+   inherits <body>'s ambient hx-target="main" hx-swap="outerHTML show:top",
    the same mechanism every boosted navigation link on this shell already
-   relies on. #}
+   relies on (see base.html for why that default is outerHTML, not
+   innerHTML). #}
 <div class="space-y-3">
   <div class="flex justify-end">
     <button hx-get="/health/logs"

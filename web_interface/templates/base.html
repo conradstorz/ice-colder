@@ -8,7 +8,21 @@
   <script src="/static/htmx.min.js"></script>
 </head>
 <body class="bg-slate-50 text-gray-900 font-sans text-base min-h-screen"
-      hx-boost="true" hx-target="main" hx-swap="innerHTML show:top">
+      hx-boost="true" hx-target="main" hx-swap="outerHTML show:top">
+
+  {# Ambient swap style is outerHTML, not innerHTML, because every level
+     response is a full document (this same base.html re-rendered): htmx's
+     boost handling parses that document, peels off the OOB #bar below,
+     and hands whatever is left of <body> -- the child level's OWN <main>
+     element, tag and all -- to the swap. An innerHTML swap into this
+     <main> would then graft that incoming <main> element inside this one
+     (main > main), on every boosted link click, breadcrumb tap, Refresh
+     button (health_logs.html) and form re-render that doesn't declare its
+     own hx-target (24+ elements across Settings/Products/Users forms plus
+     ordinary navigation) -- the second instance of the htmx
+     ambient-hx-target defect fixed for #status-panel/#kpi-panel/#pill
+     above. outerHTML instead replaces this <main> element wholesale with
+     the incoming one, so exactly one <main> survives every swap. #}
 
   {# Rendered on every response (full page or boosted) so a boosted nav
      swap updates the bar via the OOB match on #bar; a full page load just
