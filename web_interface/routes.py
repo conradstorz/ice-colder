@@ -1210,6 +1210,9 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
         error: str | None = None,
         notice: str | None = None,
         status_code: int = 200,
+        headers: dict[str, str] | None = None,
+        transfer_code: str | None = None,
+        new_codes: list[str] | None = None,
     ):
         owner = access_store.owner()
         users = sorted(access_store.users.values(), key=lambda u: u.name)
@@ -1230,8 +1233,13 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
                 pending_transfer=access_store.pending_transfer,
                 error=error,
                 notice=notice,
+                # Each shown exactly once, in the response that created it —
+                # never persisted, never re-rendered on a later request.
+                transfer_code=transfer_code,
+                new_codes=new_codes,
             ),
             status_code=status_code,
+            headers=headers or {},
         )
 
     @router.get(
@@ -1396,6 +1404,188 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             raise HTTPException(status_code=404, detail="No such user")
         access_store.end_sessions_for_user(user_id)
         return _render_users_list(request)
+
+    def _check_owner_pin(
+        request: Request, principal: web_auth.Principal, pin: str
+    ) -> tuple[str, int | None] | None:
+        """Verify the caller's own PIN; None on success, else (message,
+        retry_after_seconds) on failure.
+
+        `retry_after_seconds` is the whole-second wait to report as a
+        Retry-After header (and a 429 status, at the call site) when the
+        PIN back-off has tripped; it is None for an ordinary wrong-PIN
+        refusal, which stays a plain re-render — the shape every other
+        back-off site in this file already uses (see /login's PIN check,
+        /login/enroll/send and /login/enroll, and /setup): a bare error
+        message cannot carry a status code, so a caller that only got a
+        string would fall through to the route's default 200.
+
+        Always the caller's own user id — never some other user's — under
+        back-off kind "pin", the same kind and subject a login attempt for
+        this user uses, so a stranger burning down this budget on the
+        login page also slows an attacker here and vice versa. `trusted`
+        follows the caller's own device, exactly as login does.
+        """
+        client = web_auth.client_key(request)
+        trusted = web_auth.is_trusted_client(request, principal.user.id)
+        remaining = web_auth.backoff.check(
+            "pin", principal.user.id, client, trusted=trusted
+        )
+        if remaining is not None:
+            retry_after = int(remaining) + 1
+            return f"Too many attempts. Try again in {retry_after} s.", retry_after
+        if not access_store.verify_user_pin(principal.user.id, pin):
+            web_auth.backoff.record_failure(
+                "pin", principal.user.id, client, trusted=trusted
+            )
+            return "Wrong PIN.", None
+        web_auth.backoff.record_success(
+            "pin", principal.user.id, client, trusted=trusted
+        )
+        return None
+
+    def _owner_pin_problem_response(request: Request, problem: tuple[str, int | None]):
+        """Render the users list for a _check_owner_pin failure.
+
+        A tripped back-off (retry_after is not None) answers 429 with
+        Retry-After, matching every other back-off site in this file; an
+        ordinary wrong PIN stays a plain 200 re-render with the error.
+        """
+        message, retry_after = problem
+        if retry_after is not None:
+            return _render_users_list(
+                request,
+                error=message,
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+            )
+        return _render_users_list(request, error=message)
+
+    @router.post(
+        "/users/transfer",
+        response_class=HTMLResponse,
+        dependencies=[
+            Depends(web_auth.require(Permission.manage_ownership)),
+            Depends(require_htmx),
+        ],
+    )
+    async def start_ownership_transfer(
+        request: Request, pin: str = Form(...), emergency_code: str = Form(...)
+    ):
+        # Guard first, before the PIN check and before the code check, so a
+        # re-entrant call while a transfer is already pending can spend
+        # nothing: it must not consume a second emergency code, must not
+        # overwrite the existing pending_transfer, and must not invalidate
+        # the transfer code already handed to the incoming owner. The
+        # template hides this form while a transfer is pending, but that is
+        # not the authority (spec §4) — this check is.
+        if access_store.pending_transfer is not None:
+            return _render_users_list(
+                request,
+                error=(
+                    "A transfer is already pending. Cancel it before starting another."
+                ),
+            )
+
+        # Spec §3.3 step 1's whole point: check first, consume only on
+        # success, never the other way round — a wrong PIN must leave the
+        # emergency-code pool untouched, or a typo in the owner's own
+        # browser could burn down the machine's only offline recovery.
+        principal = web_auth.current_principal(request)
+        problem = _check_owner_pin(request, principal, pin)
+        if problem:
+            return _owner_pin_problem_response(request, problem)
+
+        client = web_auth.client_key(request)
+        remaining = web_auth.backoff.check("transfer", "pool", client)
+        if remaining is not None:
+            return _render_users_list(
+                request,
+                error=f"Too many attempts. Try again in {int(remaining) + 1} s.",
+                status_code=429,
+            )
+
+        # consume_emergency_code only mutates the pool on a match, so a
+        # wrong code both fails this check and consumes nothing — the PIN
+        # check above already ran, so this is the only mutation gated on
+        # both proofs passing.
+        if not access_store.consume_emergency_code(
+            emergency_code.strip(), principal.user.id, "transfer"
+        ):
+            web_auth.backoff.record_failure("transfer", "pool", client)
+            return _render_users_list(request, error="That code was not accepted.")
+        web_auth.backoff.record_success("transfer", "pool", client)
+
+        # Nothing else changes here: the current owner stays fully in
+        # control until the incoming owner completes the wizard.
+        transfer_code = access_store.start_transfer(principal.user.id)
+        return _render_users_list(
+            request,
+            notice="Ownership transfer started. Give this code to the new owner.",
+            transfer_code=transfer_code,
+        )
+
+    @router.post(
+        "/users/transfer/cancel",
+        response_class=HTMLResponse,
+        dependencies=[
+            Depends(web_auth.require(Permission.manage_ownership)),
+            Depends(require_htmx),
+        ],
+    )
+    async def cancel_ownership_transfer(request: Request, pin: str = Form(...)):
+        principal = web_auth.current_principal(request)
+        problem = _check_owner_pin(request, principal, pin)
+        if problem:
+            return _owner_pin_problem_response(request, problem)
+        access_store.cancel_transfer()
+        return _render_users_list(request, notice="Ownership transfer cancelled.")
+
+    @router.post(
+        "/users/codes/regenerate",
+        response_class=HTMLResponse,
+        dependencies=[
+            Depends(web_auth.require(Permission.manage_ownership)),
+            Depends(require_htmx),
+        ],
+    )
+    async def regenerate_emergency_codes_route(request: Request, pin: str = Form(...)):
+        principal = web_auth.current_principal(request)
+        problem = _check_owner_pin(request, principal, pin)
+        if problem:
+            return _owner_pin_problem_response(request, problem)
+        # Replaces the whole pool, used codes included; the old codes stop
+        # working immediately (AccessStore.generate_emergency_codes).
+        new_codes = access_store.generate_emergency_codes()
+        return _render_users_list(
+            request, notice="Emergency codes regenerated.", new_codes=new_codes
+        )
+
+    @router.post(
+        "/users/report",
+        response_class=HTMLResponse,
+        dependencies=[
+            Depends(web_auth.require(Permission.manage_ownership)),
+            Depends(require_htmx),
+        ],
+    )
+    async def email_machine_report_route(request: Request):
+        principal = web_auth.current_principal(request)
+        owner = principal.user
+        if not _can_email_owner(owner):
+            return _render_users_list(
+                request,
+                error="Email is not available; check the email gateway settings.",
+            )
+        gateway = config.communication.email_gateway
+        # machine_report already omits every hash and PIN (spec §3.4).
+        report = access_store.machine_report(config)
+        ok = await send_email(
+            gateway, owner.email, "Vending machine access report", report
+        )
+        if not ok:
+            return _render_users_list(request, error="Email could not be sent.")
+        return _render_users_list(request, notice=f"Report emailed to {owner.email}.")
 
     def _device_row(device) -> dict:
         # A plain dict with only what the template needs — never token_hash,

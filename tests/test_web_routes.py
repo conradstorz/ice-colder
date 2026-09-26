@@ -50,7 +50,17 @@ def wired(tmp_path):
     """A ConfigModel, VMC, InventoryManager and AccessStore, wired into
     routes the way main() wires them. The owner "Ada" is already seeded
     (email ada@example.com, PIN 1379) and setup is finalized, so route
-    tests are never in setup mode."""
+    tests are never in setup mode.
+
+    `web_auth.backoff` is a module-level singleton shared by every test in
+    the process, keyed on a real clock — a PIN or emergency-code failure
+    left behind by one test can trip a 429 in the next, and only for one
+    of them depending on run order. Reset it on both sides so this
+    fixture's tests are isolated from whatever ran immediately before or
+    after them.
+    """
+    web_auth.backoff.reset()
+
     cfg = ConfigModel()
     vmc = VMC(config=cfg)
     inv = InventoryManager([], path=tmp_path / "inventory.json")
@@ -68,6 +78,8 @@ def wired(tmp_path):
     routes.set_access_store(None)
     for t in vmc._pending_tasks:
         t.cancel()
+    web_auth.backoff.reset()
+    web_auth.backoff.set_trusted_proxies([])
 
 
 @pytest.fixture
@@ -1448,8 +1460,7 @@ class TestSetupWizard:
         `web_auth.backoff` singleton must be cleared or one test's failures
         would 429 the next.
         """
-        web_auth.backoff._failures.clear()
-        web_auth.backoff._budget.clear()
+        web_auth.backoff.reset()
 
         cfg = ConfigModel()
         store = AccessStore(path=tmp_path / "access.json")
@@ -1468,8 +1479,7 @@ class TestSetupWizard:
         routes._pending_codes = []
         routes.set_access_store(None)
         routes.set_display_controller(None)
-        web_auth.backoff._failures.clear()
-        web_auth.backoff._budget.clear()
+        web_auth.backoff.reset()
         web_auth.backoff.set_trusted_proxies([])
 
     @pytest.fixture
@@ -1955,6 +1965,227 @@ class TestUserManagement:
             headers={"HX-Request": ""},
             data={"name": "X", "email": "", "role": "loader", "pin": "5297"},
         )
+        assert resp.status_code == 403
+
+
+class TestOwnershipTransfer:
+    """§3.3 step 1: starting a transfer is owner-PIN + one emergency code,
+    checked before anything is consumed, and it must change nothing about
+    the current owner's own standing."""
+
+    def test_start_shows_code_records_pending_and_consumes_one_emergency_code(
+        self, client, wired
+    ):
+        _cfg, _vmc, _inv, store = wired
+        codes = store.generate_emergency_codes()
+        resp = client.post(
+            "/users/transfer", data={"pin": "1379", "emergency_code": codes[0]}
+        )
+        assert resp.status_code == 200
+        found = re.findall(r"\b\d{8}\b", resp.text)
+        assert len(found) == 1
+        assert store.pending_transfer is not None
+        assert store.unused_emergency_code_count() == 19
+
+    def test_second_start_while_pending_is_refused_and_consumes_nothing(
+        self, client, wired
+    ):
+        """A re-entrant /users/transfer while one is already pending must be
+        refused before checking or consuming anything: no second emergency
+        code spent, the existing pending_transfer left alone, and — the
+        real-world stake — the transfer code already handed to the incoming
+        owner must still work."""
+        _cfg, _vmc, _inv, store = wired
+        codes = store.generate_emergency_codes()
+        first = client.post(
+            "/users/transfer", data={"pin": "1379", "emergency_code": codes[0]}
+        )
+        first_transfer_code = re.findall(r"\b\d{8}\b", first.text)[0]
+        pending_before = dict(store.pending_transfer)
+        unused_before = store.unused_emergency_code_count()
+
+        resp = client.post(
+            "/users/transfer", data={"pin": "1379", "emergency_code": codes[1]}
+        )
+        assert resp.status_code == 200
+        assert "already pending" in resp.text.lower()
+        assert store.unused_emergency_code_count() == unused_before
+        assert store.pending_transfer == pending_before
+        assert store.verify_transfer_code(first_transfer_code) is True
+
+    def test_started_transfer_records_used_for_transfer(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        codes = store.generate_emergency_codes()
+        client.post("/users/transfer", data={"pin": "1379", "emergency_code": codes[0]})
+        used = next(
+            e
+            for e in store._emergency_codes  # noqa: SLF001 - test inspects internal state
+            if e["used_at"] is not None
+        )
+        assert used["used_for"] == "transfer"
+
+    def test_owner_keeps_full_control_while_transfer_is_pending(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        codes = store.generate_emergency_codes()
+        client.post("/users/transfer", data={"pin": "1379", "emergency_code": codes[0]})
+        owner = store.owner()
+        assert owner is not None
+        assert owner.name == "Ada"
+        # The old owner's session still works for an ordinary page.
+        resp = client.get("/status")
+        assert resp.status_code == 200
+        # ... and still reaches the Users area with owner permissions.
+        resp = client.get("/users")
+        assert resp.status_code == 200
+
+    def test_wrong_pin_starts_nothing_and_consumes_no_code(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        codes = store.generate_emergency_codes()
+        resp = client.post(
+            "/users/transfer", data={"pin": "0000", "emergency_code": codes[0]}
+        )
+        assert resp.status_code == 200
+        assert store.pending_transfer is None
+        assert store.unused_emergency_code_count() == 20
+
+    def test_wrong_emergency_code_starts_nothing(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        store.generate_emergency_codes()
+        resp = client.post(
+            "/users/transfer", data={"pin": "1379", "emergency_code": "00000000"}
+        )
+        assert resp.status_code == 200
+        assert store.pending_transfer is None
+        assert store.unused_emergency_code_count() == 20
+
+    def test_cancel_clears_pending_transfer_and_leaves_owner_in_place(
+        self, client, wired
+    ):
+        _cfg, _vmc, _inv, store = wired
+        codes = store.generate_emergency_codes()
+        client.post("/users/transfer", data={"pin": "1379", "emergency_code": codes[0]})
+        assert store.pending_transfer is not None
+        resp = client.post("/users/transfer/cancel", data={"pin": "1379"})
+        assert resp.status_code == 200
+        assert store.pending_transfer is None
+        assert store.owner().name == "Ada"
+
+    def test_cancel_with_wrong_pin_leaves_transfer_pending(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        codes = store.generate_emergency_codes()
+        client.post("/users/transfer", data={"pin": "1379", "emergency_code": codes[0]})
+        resp = client.post("/users/transfer/cancel", data={"pin": "0000"})
+        assert resp.status_code == 200
+        assert store.pending_transfer is not None
+
+    def test_secretary_gets_403_on_start(self, login_as, wired):
+        _cfg, _vmc, _inv, store = wired
+        codes = store.generate_emergency_codes()
+        secretary = login_as(Role.secretary)
+        resp = secretary.post(
+            "/users/transfer", data={"pin": "2468", "emergency_code": codes[0]}
+        )
+        assert resp.status_code == 403
+        assert store.pending_transfer is None
+        assert store.unused_emergency_code_count() == 20
+
+    def test_secretary_gets_403_on_cancel(self, client, login_as, wired):
+        _cfg, _vmc, _inv, store = wired
+        codes = store.generate_emergency_codes()
+        client.post("/users/transfer", data={"pin": "1379", "emergency_code": codes[0]})
+        secretary = login_as(Role.secretary)
+        resp = secretary.post("/users/transfer/cancel", data={"pin": "2468"})
+        assert resp.status_code == 403
+        assert store.pending_transfer is not None
+
+
+class TestEmergencyCodeRegeneration:
+    """§3.2: the owner can replace the whole pool at any time from the
+    Users area."""
+
+    def test_regenerate_replaces_pool_and_shows_twenty_new_codes(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        old_codes = store.generate_emergency_codes()
+        resp = client.post("/users/codes/regenerate", data={"pin": "1379"})
+        assert resp.status_code == 200
+        found = re.findall(r"\b\d{8}\b", resp.text)
+        assert len(found) == 20
+        assert set(found).isdisjoint(old_codes)
+        assert store.unused_emergency_code_count() == 20
+        # The old codes no longer work.
+        for code in old_codes:
+            assert store.consume_emergency_code(code, store.owner().id, "test") is False
+
+    def test_regenerate_with_wrong_pin_changes_nothing(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        old_codes = store.generate_emergency_codes()
+        resp = client.post("/users/codes/regenerate", data={"pin": "0000"})
+        assert resp.status_code == 200
+        found = re.findall(r"\b\d{8}\b", resp.text)
+        assert found == []
+        # Every original code still works.
+        for code in old_codes:
+            assert store.consume_emergency_code(code, store.owner().id, "test") is True
+
+    def test_secretary_gets_403_on_regenerate(self, login_as, wired):
+        _cfg, _vmc, _inv, store = wired
+        old_codes = store.generate_emergency_codes()
+        secretary = login_as(Role.secretary)
+        resp = secretary.post("/users/codes/regenerate", data={"pin": "2468"})
+        assert resp.status_code == 403
+        for code in old_codes:
+            assert store.consume_emergency_code(code, store.owner().id, "test") is True
+
+
+class TestMachineReport:
+    """§3.4: the report is available on demand to the owner from the Users
+    area, and never to anyone else."""
+
+    def test_report_is_emailed_to_the_owner_and_names_the_users(
+        self, client, wired, monkeypatch
+    ):
+        cfg, _vmc, _inv, store = wired
+        cfg.communication.email_gateway.smtp_server = "smtp.real.local"
+        store.create_user("Lonnie", "lonnie@example.com", Role.loader, "5297")
+        sent = {}
+
+        async def fake_send_email(gateway, to, subject, body):
+            sent["to"] = to
+            sent["body"] = body
+            return True
+
+        monkeypatch.setattr(routes, "send_email", fake_send_email)
+        resp = client.post("/users/report", data={})
+        assert resp.status_code == 200
+        assert sent["to"] == "ada@example.com"
+        assert "Ada" in sent["body"]
+        assert "Lonnie" in sent["body"]
+
+    def test_report_never_contains_a_hash_or_pin(self, client, wired, monkeypatch):
+        cfg, _vmc, _inv, store = wired
+        cfg.communication.email_gateway.smtp_server = "smtp.real.local"
+        sent = {}
+
+        async def fake_send_email(gateway, to, subject, body):
+            sent["body"] = body
+            return True
+
+        monkeypatch.setattr(routes, "send_email", fake_send_email)
+        client.post("/users/report", data={})
+        for user in store.users.values():
+            assert user.pin_hash not in sent["body"]
+            assert user.pin_salt not in sent["body"]
+
+    def test_report_errors_without_crashing_when_gateway_unconfigured(
+        self, client, wired
+    ):
+        resp = client.post("/users/report", data={})
+        assert resp.status_code == 200
+        assert "not available" in resp.text.lower()
+
+    def test_tech_gets_403_on_report(self, login_as):
+        tech = login_as(Role.tech)
+        resp = tech.post("/users/report", data={})
         assert resp.status_code == 403
 
 

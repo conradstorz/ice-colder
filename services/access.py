@@ -190,6 +190,19 @@ class Backoff:
             except ValueError:
                 logger.warning(f"Backoff: ignoring invalid trusted proxy CIDR {cidr!r}")
 
+    def reset(self) -> None:
+        """Clear every recorded failure and budget entry.
+
+        The process only ever holds one `Backoff` (`web_auth.backoff`), so
+        every test that exercises it shares that same registry — this is
+        the public way to isolate one test's counters from the next,
+        rather than a test reaching into `_failures`/`_budget` directly.
+        Trusted-proxy configuration is untouched; call
+        `set_trusted_proxies` separately if that also needs resetting.
+        """
+        self._failures.clear()
+        self._budget.clear()
+
     def _is_trusted_proxy(self, peer: str) -> bool:
         try:
             addr = ipaddress.ip_address(peer)
