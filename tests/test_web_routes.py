@@ -160,9 +160,9 @@ class TestStatusEndpoint:
 
 
 class TestInventoryEndpoints:
-    def test_inventory_list(self, client):
-        resp = client.get("/inventory")
-        assert resp.status_code == 200
+    # GET /inventory itself moved to web_interface/routes/inventory.py
+    # (task 8) — its 200-for-every-role coverage now lives in
+    # tests/test_routes_inventory.py's TestInventoryListGating.
 
     def test_inventory_new_form(self, client):
         resp = client.get("/inventory/new")
@@ -220,15 +220,6 @@ class TestInventoryEndpoints:
         )
         assert resp.status_code == 200
         assert not any(p.sku == "NEG-1" for p in context.config.products)
-
-    def test_inventory_table_renders_slot_column(self, client):
-        client.post(
-            "/inventory/add",
-            data={"sku": "SLOT-2", "name": "Slotted Two", "price": "1.00", "slot": "3"},
-        )
-        resp = client.get("/inventory")
-        assert resp.status_code == 200
-        assert "3" in resp.text
 
     def test_edit_form_shows_slot_input(self, client):
         client.post(
@@ -888,10 +879,12 @@ class TestStatusHealthSignal:
 
 
 class TestDeleteAndEmptyState:
-    def test_empty_state_shown_when_no_products(self, client):
-        resp = client.get("/inventory")
-        assert resp.status_code == 200
-        assert "No products configured" in resp.text
+    # The "No products configured" empty state on bare GET /inventory
+    # moved to web_interface/routes/inventory.py (task 8); its own empty
+    # state is covered by tests/test_routes_inventory.py instead. This
+    # class keeps its coverage of the /inventory/delete/{sku} route (which
+    # renders the still-legacy partials/inventory_table.html fragment,
+    # untouched by task 8) unchanged.
 
     def test_delete_product_removes_row(self, client):
         client.post(
@@ -1034,12 +1027,13 @@ class TestFaultsUI:
         r = client.post("/faults/NOPE/clear", auth=client.auth)
         assert r.status_code == 404
 
-    def test_inventory_table_shows_locked_badge(self, client):
-        self._add_product(client)
-        self._lock(client)
-        r = client.get("/inventory", auth=client.auth)
-        assert "locked" in r.text.lower()
-        assert "ICE-301" in r.text
+    # test_inventory_table_shows_locked_badge removed: it asserted on the
+    # old /inventory fragment's lockout badge, a route task 8 replaced.
+    # Lockout badges are not part of the Inventory restock level's brief
+    # (web_interface/routes/inventory.py never reads active_faults());
+    # that coverage already lives on the Products level instead —
+    # tests/test_routes_products.py::TestLockBadge
+    # ::test_locked_badge_shown_on_list_and_detail.
 
     def test_kpi_shows_failed_vends(self, client, tmp_path):
         from services.event_recorder import EventRecorder

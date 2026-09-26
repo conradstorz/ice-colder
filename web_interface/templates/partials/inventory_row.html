@@ -1,0 +1,42 @@
+{# web_interface/templates/partials/inventory_row.html
+
+   One row in the Inventory restock list (task 8, spec §2 "Inventory
+   row"): name, a read-only slot field, and — for a tracked product only —
+   the current count and the four adjust buttons (-10 -1 +1 +10).
+
+   Included by inventory.html's list (`{% for row in rows %}{% include
+   ... with context %}{% endfor %}`) and rendered standalone as the whole
+   response body of POST /inventory/{sku}/adjust, so the row markup lives
+   in exactly one place rather than being duplicated between the full list
+   and the single-row response (task-8 brief resolution 7).
+
+   Expects `row`: a dict with sku, name, slot, tracked (bool) and, only
+   when tracked is true, count (int). An untracked row carries no count
+   and renders no adjust buttons — so a loader can see what isn't being
+   counted, without being invited to adjust it (brief resolution 8).
+#}
+<div id="inventory-row-{{ row.sku }}"
+     class="touch-target flex-wrap justify-between rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+  <div class="min-w-0">
+    <div class="text-base font-semibold text-gray-900 truncate">{{ row.name }}</div>
+    <input type="text" inputmode="numeric" disabled aria-label="Slot"
+           value="{{ row.slot }}"
+           class="mt-1 w-16 rounded border border-gray-200 bg-gray-50 px-2 py-1 font-mono text-xs text-gray-500">
+  </div>
+  {% if row.tracked %}
+  <div class="flex items-center gap-touch">
+    <span id="inventory-count-{{ row.sku }}"
+          class="w-10 text-center text-base font-semibold text-gray-900">{{ row.count }}</span>
+    <div class="flex gap-touch">
+      {% for delta in (-10, -1, 1, 10) %}
+      <button type="button"
+              hx-post="/inventory/{{ row.sku }}/adjust"
+              hx-vals='{"delta": "{{ delta }}"}'
+              hx-target="#inventory-row-{{ row.sku }}"
+              hx-swap="outerHTML"
+              class="touch-target w-14 justify-center rounded-md border border-gray-300 text-sm font-semibold text-gray-700 hover:bg-gray-50">{{ "%+d"|format(delta) }}</button>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</div>

@@ -164,14 +164,6 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         )
 
     @router.get(
-        "/inventory",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.view_status))],
-    )
-    async def inventory_view(request: Request):
-        return _render_inventory_table(request)
-
-    @router.get(
         "/inventory/edit/{sku}/catalog",
         response_class=HTMLResponse,
         dependencies=[Depends(web_auth.require(Permission.edit_catalog))],
