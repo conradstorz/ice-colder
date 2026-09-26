@@ -73,6 +73,37 @@ def _guard_owner_self_lockout(principal: web_auth.Principal, user_id: str) -> No
         )
 
 
+def _guard_owner_self_demotion(
+    principal: web_auth.Principal, user_id: str, role_enum: Role
+) -> None:
+    """403 when the owner tries to change their own role away from
+    Role.owner through the profile-edit route.
+
+    _guard_owner_target only blocks a *non-owner* from targeting the
+    owner; the owner always holds manage_ownership, so it let the owner
+    demote themselves. services/access.py::update_user only blocks
+    *creating a second* owner (it checks current_owner.id != user_id), not
+    the sole owner giving theirs up. Doing so leaves the access store
+    finalized but ownerless: no one holds manage_ownership, so emergency
+    codes, ownership transfer and every owner-targeted write become
+    permanently unreachable, and part 1's design gives a lost owner no
+    software recovery path. This is the same hazard
+    _guard_owner_self_lockout blocks for disable and delete; this closes
+    the same door for a role change. A name/email edit on the owner's own
+    row is unaffected — this only fires when the submitted role is not
+    Role.owner. Task 12 fix round 1 (security review defect)."""
+    owner = context.access_store.owner()
+    if (
+        owner is not None
+        and owner.id == user_id
+        and principal.user.id == user_id
+        and role_enum is not Role.owner
+    ):
+        raise HTTPException(
+            status_code=403, detail="The owner cannot change their own role"
+        )
+
+
 def _guard_owner_device(principal: web_auth.Principal, device) -> None:
     """403 when *device* trusts the owner and the caller lacks
     manage_ownership.
@@ -703,6 +734,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
             role_enum = Role(role)
         except ValueError:
             return _render_user_detail(request, target, error="Invalid role.")
+        _guard_owner_self_demotion(principal, user_id, role_enum)
         if (
             role_enum is Role.owner
             and Permission.manage_ownership not in principal.perms

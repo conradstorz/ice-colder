@@ -401,3 +401,73 @@ class TestProfileEdit:
         )
         assert resp.status_code == 200
         assert store.get_user(target.id).name == "New"
+
+    @pytest.mark.parametrize("new_role", ["secretary", "tech"])
+    def test_owner_cannot_demote_themselves(self, login_as, wired, new_role):
+        """Critical defect (task-12 review): POST /users/{owner.id} with a
+        role other than owner used to succeed, leaving the store finalized
+        but ownerless (store.owner() is None, no one holds
+        manage_ownership — emergency codes, transfer and owner-targeted
+        writes become permanently unreachable, with no software recovery
+        per part 1's design). _guard_owner_self_demotion refuses this in
+        the route layer, mirroring _guard_owner_self_lockout. Assert the
+        store state, not just the status code — a 403 that still wrote
+        would pass a status-only test."""
+        _cfg, _vmc, _inv, store = wired
+        owner = login_as(Role.owner)
+        owner_user = store.owner()
+        resp = owner.post(
+            f"/users/{owner_user.id}",
+            data={
+                "name": owner_user.name,
+                "email": owner_user.email or "",
+                "role": new_role,
+            },
+        )
+        assert resp.status_code == 403
+        assert store.owner() is not None
+        assert store.owner().id == owner_user.id
+        assert store.get_user(owner_user.id).role == Role.owner
+
+    def test_owner_may_still_edit_their_own_name_and_email(self, login_as, wired):
+        """The fix must not over-reach: a name/email edit that leaves the
+        owner's own role unchanged (the only role the shell's hidden
+        <input> ever submits for the owner's own row) still goes
+        through."""
+        _cfg, _vmc, _inv, store = wired
+        owner = login_as(Role.owner)
+        owner_user = store.owner()
+        resp = owner.post(
+            f"/users/{owner_user.id}",
+            data={
+                "name": "New Owner Name",
+                "email": "new-owner@example.com",
+                "role": "owner",
+            },
+        )
+        assert resp.status_code == 200
+        updated = store.get_user(owner_user.id)
+        assert updated.name == "New Owner Name"
+        assert updated.email == "new-owner@example.com"
+        assert updated.role == Role.owner
+        assert store.owner().id == owner_user.id
+
+    def test_secretary_still_refused_on_owners_row(self, login_as, wired):
+        """_guard_owner_target's existing behavior (a non-owner can never
+        write to the owner's row at all) must be unaffected by the new
+        guard."""
+        _cfg, _vmc, _inv, store = wired
+        secretary = login_as(Role.secretary)
+        owner_user = store.owner()
+        resp = secretary.post(
+            f"/users/{owner_user.id}",
+            data={
+                "name": owner_user.name,
+                "email": owner_user.email or "",
+                "role": "secretary",
+            },
+        )
+        assert resp.status_code == 403
+        assert store.owner() is not None
+        assert store.owner().id == owner_user.id
+        assert store.get_user(owner_user.id).role == Role.owner
