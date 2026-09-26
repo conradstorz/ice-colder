@@ -1576,6 +1576,12 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates):
             access_store.set_user_pin(user_id, pin)
         except AccessError:
             raise HTTPException(status_code=404, detail="No such user")
+        # set_user_pin only drops device *trust*; resolve_session() does not
+        # re-check it, so a session opened before the reset would otherwise
+        # keep working on its old device until it idles out on its own —
+        # disable and delete already end sessions on their own writes, this
+        # one didn't (Copilot review, web_interface/routes.py:1493).
+        access_store.end_sessions_for_user(user_id)
         return _render_users_list(request, notice="PIN reset.")
 
     @router.post(

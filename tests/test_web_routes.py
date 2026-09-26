@@ -2213,6 +2213,22 @@ class TestUserManagement:
                 loader.id not in d.trusted_user_ids for d in store.devices.values()
             )
 
+    def test_reset_pin_ends_the_users_live_sessions(self, login_as, wired):
+        """set_user_pin only drops device *trust*; resolve_session() doesn't
+        re-check it, so without ending sessions here the old session would
+        keep working until it idles out — contradicting the spec's "the
+        next login re-enrolls" (Copilot review, web_interface/routes.py:1493).
+        """
+        _cfg, _vmc, _inv, store = wired
+        owner = login_as(Role.owner)
+        loader_client, loader = make_client(store, Role.loader, name="Loafer4")
+        with loader_client:
+            session_id = loader_client.cookies.get(web_auth.SESSION_COOKIE)
+            assert store.resolve_session(session_id) is not None
+            resp = owner.post(f"/users/{loader.id}/reset-pin", data={"pin": "5297"})
+            assert resp.status_code == 200
+            assert store.resolve_session(session_id) is None
+
     def test_delete_removes_the_user(self, login_as, wired):
         _cfg, _vmc, _inv, store = wired
         owner = login_as(Role.owner)
