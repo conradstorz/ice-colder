@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Catalog · {{ product.name or product.sku }} · Vending Machine{% endblock %}
+{% block body %}
+<form hx-post="/products/{{ product.sku }}/catalog" class="max-w-md space-y-4">
+  <h1 class="text-hero font-semibold text-gray-900">Catalog</h1>
+
+  {% if error %}
+  <p class="text-sm text-red-600">{{ error }}</p>
+  {% endif %}
+
+  <div>
+    <label for="sku" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">SKU</label>
+    <input type="text" id="sku" value="{{ product.sku }}" disabled
+           class="touch-target w-full px-3 bg-gray-100 border border-gray-200 rounded-lg text-sm text-gray-500 font-mono">
+  </div>
+
+  <div>
+    <label for="name" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Name</label>
+    <input type="text" id="name" name="name" value="{{ product.name }}"
+           class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+  </div>
+
+  <div>
+    <label for="price" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Price (USD)</label>
+    <input type="number" id="price" name="price" value="{{ product.price }}" step="0.01" inputmode="numeric"
+           class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+  </div>
+
+  <div>
+    <label for="kind" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Kind</label>
+    <select id="kind" name="kind"
+            class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+      <option value="ice" {{ "selected" if product.kind == "ice" }}>Ice</option>
+      <option value="water" {{ "selected" if product.kind == "water" }}>Water</option>
+      <option value="other" {{ "selected" if product.kind == "other" }}>Other</option>
+    </select>
+  </div>
+
+  <div class="flex gap-touch pt-2">
+    <button type="submit"
+            class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">Save</button>
+    <a href="/products/{{ product.sku }}"
+       class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Cancel</a>
+  </div>
+</form>
+{% endblock %}

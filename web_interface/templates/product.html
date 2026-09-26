@@ -1,0 +1,70 @@
+{# web_interface/templates/product.html
+
+   Read-only product summary (GET /products/{sku}). Renders no <input> at
+   all: name, price and kind are plain text, visible to a loader/tech
+   (edit_placement only) the same as to an owner/secretary (edit_catalog) —
+   the read-only rule this task exists to enforce (brief resolution 4).
+   Editing happens one level down, through the Catalog and Placement
+   sub-tiles, each gated on its own permission via `tile.enabled`
+   (partials/tile.html only renders a tile at all when that is true, so a
+   role lacking edit_catalog never has the Catalog tile's URL anywhere in
+   this page's HTML — brief resolution 9).
+#}
+{% extends "base.html" %}
+{% block title %}{{ product.name or product.sku }} · Vending Machine{% endblock %}
+{% block body %}
+<div class="space-y-4">
+  <div>
+    <h1 class="text-hero font-semibold text-gray-900">
+      {{ product.name or product.sku }}
+      {% if locked_code %}
+      <span class="ml-2 align-middle text-xs font-mono px-1.5 py-0.5 rounded bg-orange-100 text-orange-700"
+            title="Locked out">locked · {{ locked_code }}</span>
+      {% endif %}
+    </h1>
+    <p class="text-sm text-gray-500 font-mono">{{ product.sku }}</p>
+  </div>
+
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-touch">
+      <div>
+        <div class="text-xs text-gray-400 uppercase tracking-wide">Price</div>
+        <div class="text-base font-medium text-gray-900">${{ "%.2f"|format(product.price) }}</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400 uppercase tracking-wide">Kind</div>
+        <div class="text-base font-medium text-gray-900 capitalize">{{ product.kind }}</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400 uppercase tracking-wide">Slot</div>
+        <div class="text-base font-medium text-gray-900">{{ product.slot }}</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400 uppercase tracking-wide">In stock</div>
+        <div class="text-base font-medium text-gray-900">
+          {{ count }}{% if not tracked %} <span class="text-gray-400 font-normal">(not tracked)</span>{% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-touch">
+    {% for tile in tiles %}
+      {% if tile.enabled %}
+        {% include "partials/tile.html" %}
+      {% endif %}
+    {% endfor %}
+  </div>
+
+  {% if "edit_catalog" in perms %}
+  <div class="flex gap-touch">
+    <a href="/products/{{ product.sku }}/copy"
+       class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Copy</a>
+    <form hx-post="/products/{{ product.sku }}/delete" class="inline-flex">
+      <button type="submit"
+              class="touch-target px-4 rounded-md border border-red-200 text-red-600 text-sm font-medium hover:bg-red-50">Delete</button>
+    </form>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
