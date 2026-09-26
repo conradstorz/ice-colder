@@ -1,15 +1,34 @@
-"""Stub area router for tests_level.
+"""Area router for the Tests level (spec §2's /tests).
 
-Empty on purpose: Task 1 of the dashboard-v2-shell plan only splits the
-existing routes.py into an area-per-module package; the routes that will
-live here move over in a later, dedicated plan task, one area at a time.
-Registered in web_interface/routes/__init__.py alongside the real routers
-so that later task can add routes here without also touching __init__.py.
+Task 4 of the dashboard-v2-shell plan adds the one route this module
+needs as a child-level stub for base.html's shell: `GET /tests`, gated on
+Permission.run_tests, rendering a minimal tests.html through the shell.
+Task 11 replaces the placeholder body with the real test-run UI; per that
+task's brief (executor resolution 2), no form, hx-post, or other route is
+added here yet.
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+
+from services.access import Permission
+from web_interface import auth as web_auth
+from web_interface import context
+from web_interface.levels import LEVEL_TESTS
 
 
 def build_router(templates: Jinja2Templates) -> APIRouter:
-    return APIRouter()
+    router = APIRouter()
+
+    @router.get(
+        "/tests",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.run_tests))],
+    )
+    async def tests_level(request: Request):
+        return templates.TemplateResponse(
+            "tests.html", context.template_context(request, level=LEVEL_TESTS)
+        )
+
+    return router

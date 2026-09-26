@@ -10,8 +10,12 @@ unchanged for main.py and existing tests — see
 """
 
 from fastapi import FastAPI, Request
+from fastapi.exception_handlers import (
+    http_exception_handler as fastapi_http_exception_handler,
+)
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from web_interface import context
 from web_interface.context import (
@@ -84,6 +88,55 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 return RedirectResponse("/setup", status_code=303)
 
         return await call_next(request)
+
+    # In-shell 404/403 pages (spec §5): only these two statuses are ours to
+    # render — everything else (in particular auth.py's unauthenticated-
+    # request 401 + HX-Redirect and 303 + Location) must reach the client
+    # exactly as raised, so it is delegated to FastAPI's own handler with
+    # status, detail and headers intact. Registered once, here, so the
+    # whole app gets it and server.py needs no change (Task 4 executor
+    # resolution 6).
+    #
+    # Keyed on Starlette's own HTTPException, not fastapi.HTTPException:
+    # Starlette's router raises the *base* class directly for "no route
+    # matched" (a genuine 404, e.g. a mistyped URL), which is not an
+    # instance of fastapi.HTTPException — registering on the subclass
+    # would miss it. auth.py's require() raises fastapi.HTTPException,
+    # which *is* an instance of this base class, so one handler catches
+    # both.
+    @app.exception_handler(StarletteHTTPException)
+    async def _shell_http_exception_handler(
+        request: Request, exc: StarletteHTTPException
+    ):
+        if exc.status_code == 404:
+            return templates.TemplateResponse(
+                "error.html",
+                context.template_context(
+                    request,
+                    level=None,
+                    error_title="Not found",
+                    error_message="The page you're looking for doesn't exist.",
+                ),
+                status_code=404,
+            )
+        if exc.status_code == 403:
+            return templates.TemplateResponse(
+                "error.html",
+                context.template_context(
+                    request,
+                    level=None,
+                    error_title="You don't have access to this",
+                    error_message="Ask an owner or manager to grant access.",
+                    # exc.detail carries the specific reason (e.g.
+                    # require_htmx's "HTMX request required", or require()'s
+                    # "Not permitted") — surfaced as a secondary line rather
+                    # than swallowed, per the "never as bare JSON" mandate
+                    # this is HTML, not a substitute for it.
+                    error_detail=str(exc.detail) if exc.detail else None,
+                ),
+                status_code=403,
+            )
+        return await fastapi_http_exception_handler(request, exc)
 
     # Permission-gated routers first (the original `router`), the
     # session-less auth/setup router last (the original `public`).

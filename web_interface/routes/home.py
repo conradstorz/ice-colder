@@ -13,6 +13,7 @@ from fastapi.templating import Jinja2Templates
 from services.access import Permission
 from web_interface import auth as web_auth
 from web_interface import context
+from web_interface.levels import LEVEL_HOME
 
 
 def build_router(templates: Jinja2Templates) -> APIRouter:
@@ -25,7 +26,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
     )
     async def dashboard(request: Request):
         return templates.TemplateResponse(
-            "dashboard.html", context.template_context(request)
+            "home.html", context.template_context(request, level=LEVEL_HOME)
         )
 
     @router.get(

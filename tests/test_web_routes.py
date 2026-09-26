@@ -44,6 +44,114 @@ class TestDashboard:
         assert "Vending Machine" in resp.text
 
 
+class TestShellBar:
+    """Task 4: base.html's out-of-band navigation bar (spec §1.1)."""
+
+    def test_home_has_bar_without_home_or_back_buttons(self, client):
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert '<header id="bar"' in resp.text
+        # The breadcrumb's own current-page entry legitimately reads
+        # "Home" (an unlinked <span>) — only the nav *button* (an <a>) is
+        # what must be absent here.
+        assert ">Home</a>" not in resp.text
+        assert ">Back</a>" not in resp.text
+
+    def test_boosted_child_request_returns_main_and_oob_bar(self, client):
+        """A boosted nav to a child level: HX-Request + HX-Boosted, as htmx
+        sends for a boosted link click."""
+        resp = client.get(
+            "/tests", headers={"HX-Request": "true", "HX-Boosted": "true"}
+        )
+        assert resp.status_code == 200
+        assert "<main" in resp.text
+        assert '<header id="bar"' in resp.text
+        assert "hx-swap-oob" in resp.text
+        assert "Tests" in resp.text
+
+    def test_full_page_child_request_also_has_bar(self, wired):
+        """The same URL, requested the way a reload or bookmark would (no
+        HX-Request/HX-Boosted headers), renders the same shell."""
+        _cfg, _vmc, _inv, store = wired
+        user = store.owner()
+        device, token = store.create_device("Kiosk", shared=False)
+        store.trust_device(device.id, user.id)
+        session_id = store.create_session(user.id, device.id)
+        page_client = TestClient(app)
+        page_client.cookies.set(web_auth.DEVICE_COOKIE, token)
+        page_client.cookies.set(web_auth.SESSION_COOKIE, session_id)
+        try:
+            resp = page_client.get("/tests")
+        finally:
+            page_client.close()
+        assert resp.status_code == 200
+        assert '<header id="bar"' in resp.text
+        assert "Tests" in resp.text
+
+    def test_no_cdn_references(self, client):
+        for path in ("/", "/tests"):
+            resp = client.get(path)
+            assert "unpkg" not in resp.text
+            assert "cdn.tailwindcss.com" not in resp.text
+
+    def test_pill_placeholder_polls_every_5s(self, client):
+        resp = client.get("/")
+        assert 'hx-get="/pill"' in resp.text
+        assert "every 5s" in resp.text
+
+
+class TestShellErrorPages:
+    """Task 4: spec §5's in-shell 403/404 pages, and the exception handler
+    that must not swallow auth.py's 401/303 (executor resolution 4)."""
+
+    def test_404_renders_in_shell(self, client):
+        resp = client.get("/definitely-not-a-real-route")
+        assert resp.status_code == 404
+        assert "text/html" in resp.headers["content-type"]
+        assert '<header id="bar"' in resp.text
+        assert "Not found" in resp.text
+
+    def test_403_renders_in_shell(self, login_as):
+        client = login_as(Role.loader)  # loader has no run_tests permission
+        resp = client.get("/tests")
+        assert resp.status_code == 403
+        assert "text/html" in resp.headers["content-type"]
+        assert '<header id="bar"' in resp.text
+        # Jinja autoescapes the apostrophe (&#39;); match on the
+        # unambiguous, escaping-proof part of the phrase instead.
+        assert "have access to this" in resp.text
+
+    def test_csrf_403_also_renders_in_shell(self, wired):
+        """require_htmx's 403 (no HX-Request header on a mutating POST)
+        goes through the same handler as any other 403."""
+        _cfg, _vmc, _inv, store = wired
+        client = TestClient(app)
+        user = store.owner()
+        device, token = store.create_device("Kiosk", shared=False)
+        store.trust_device(device.id, user.id)
+        session_id = store.create_session(user.id, device.id)
+        client.cookies.set(web_auth.DEVICE_COOKIE, token)
+        client.cookies.set(web_auth.SESSION_COOKIE, session_id)
+        try:
+            resp = client.post("/logout")
+        finally:
+            client.close()
+        assert resp.status_code == 403
+        assert '<header id="bar"' in resp.text
+
+    def test_unauthenticated_htmx_request_still_gets_401_redirect(self, anonymous):
+        """The exception handler must delegate this, not render error.html."""
+        resp = anonymous.get("/status", headers={"HX-Request": "true"})
+        assert resp.status_code == 401
+        assert resp.headers["hx-redirect"] == "/login"
+        assert "<header" not in resp.text
+
+    def test_unauthenticated_page_request_still_redirects(self, anonymous):
+        resp = anonymous.get("/")
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/login"
+
+
 class TestStatusEndpoint:
     def test_status_returns_html(self, client):
         resp = client.get("/status")
