@@ -573,6 +573,49 @@ class VMC:
         self._publish_status()
         return True
 
+    def pending_sale_for_recovery(self) -> dict | None:
+        """Read-only: the pending sale recorded in the session snapshot, if
+        any -- feeds the Health > Faults PAY-104 card's "record this sale"
+        / "discard" choice (Task 14).
+
+        Returns ``None`` unless ``PAY-104`` is currently an active machine
+        fault *and* the on-disk snapshot carries a non-empty
+        ``pending_sale_shares``; a card whose snapshot carries no pending
+        sale (or whose fault has already been cleared, including by a
+        replayed record/discard) keeps the plain Clear button instead of
+        the two recovery actions. Never mutates fault state or the
+        snapshot -- the caller decides what to do next.
+
+        The price is the sum of the shares, not a fresh catalog lookup:
+        the shares are the money actually taken for this sale, whereas the
+        catalog price may have been edited (or the product removed from
+        the catalog entirely) since the crash, and the row this recovers
+        must record what was actually collected, not today's price. The
+        product name is still looked up from the catalog by SKU for
+        display, falling back to the SKU itself when the product no
+        longer exists (`_product_name` already does this).
+        """
+        if FaultCode.PAY_104 not in self._machine_faults:
+            return None
+        if self._session_store is None:
+            return None
+        try:
+            snap = self._session_store.load()
+        except Exception:
+            return None
+        if snap is None or not snap.pending_sale_shares:
+            return None
+        sku = snap.selected_sku
+        if sku is None:
+            return None
+        return {
+            "sku": sku,
+            "name": self._product_name(sku),
+            "slot": snap.dispense_slot,
+            "price": round(sum(snap.pending_sale_shares.values()), 2),
+            "methods": dict(snap.pending_sale_shares),
+        }
+
     async def _handle_mqtt_hardware_io(self, topic: str, data: dict):
         """Binary hardware IO from the vending ESP32; ice returning clears ICE-101."""
         hw = HardwareIO.model_validate(data)

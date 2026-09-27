@@ -16,8 +16,13 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from loguru import logger
 
-from contracts.vending_machine import EXPECTED_SUBSYSTEMS, PAYMENT_BLOCKING_FAULTS
+from contracts.vending_machine import (
+    EXPECTED_SUBSYSTEMS,
+    PAYMENT_BLOCKING_FAULTS,
+    FaultCode,
+)
 from services.access import Permission
 from services.health_monitor import HealthMonitor
 from web_interface import auth as web_auth
@@ -127,6 +132,14 @@ def _faults_with_age() -> list[dict]:
         f["since_seconds"] = ages.get(f["key"])
         f["gate"] = _fault_gate(f)
         f["dom_key"] = _dom_safe_key(f["key"])
+        # Task 14: only the machine-scope PAY-104 fault ever carries a
+        # pending sale; every other fault (product-scope, or another
+        # machine-scope code) gets None, keeping its plain Clear button.
+        f["pending_sale"] = (
+            context.vmc_instance.pending_sale_for_recovery()
+            if f["code"] == FaultCode.PAY_104.value
+            else None
+        )
     return faults
 
 
@@ -355,6 +368,154 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
             raise HTTPException(
                 status_code=404, detail=f"No active fault with key {key}"
             )
+        return _render_fault_list_oob(request)
+
+    def _pay104_active() -> bool:
+        return bool(context.vmc_instance) and any(
+            f["code"] == FaultCode.PAY_104.value
+            for f in context.vmc_instance.active_faults()
+        )
+
+    @router.get(
+        "/health/faults/PAY-104/record-sale/confirm",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.clear_faults))],
+    )
+    async def pay104_record_sale_confirm(
+        request: Request, confirming: str | None = Query(default=None)
+    ):
+        """Same confirm_url contract as fault_clear_confirm above."""
+        dom_key = _dom_safe_key(FaultCode.PAY_104.value)
+        return templates.TemplateResponse(
+            "partials/confirm_button.html",
+            context.template_context(
+                request,
+                label="Record sale",
+                confirm_label="Confirm",
+                post_url="/health/faults/PAY-104/record-sale",
+                target=f"#record-sale-{dom_key}",
+                confirm_url="/health/faults/PAY-104/record-sale/confirm",
+                confirming=(confirming != "false"),
+            ),
+        )
+
+    @router.post(
+        "/health/faults/PAY-104/record-sale",
+        response_class=HTMLResponse,
+        dependencies=[
+            Depends(web_auth.require(Permission.clear_faults)),
+            Depends(context.require_htmx),
+        ],
+    )
+    async def pay104_record_sale(request: Request):
+        """Write the pending sale through record_sale, then clear PAY-104
+        (which discards the snapshot as part of the existing clear path).
+
+        Ordering is write-then-clear, deliberately: record_sale is
+        synchronous, durable and already journals the record itself
+        (append + fsync) before re-raising on any insert failure (spec
+        §1.2) -- so if it raises, the row is never lost, but PAY-104 must
+        stay active rather than be cleared with nothing recorded in the
+        database, or an operator would have no way to know a retry is
+        still owed. Clearing first and writing second would risk exactly
+        that: a crash between the two leaves the fault cleared with no row
+        and no evidence file to recover from.
+
+        Idempotency: `pending_sale_for_recovery()` returns None once the
+        fault has already been cleared (by this route, by `/discard`, or
+        by a plain admin Clear) -- the session snapshot is the idempotency
+        token, discarded in the same `clear_fault` call that removes the
+        fault. A replayed POST (double-tap, retried request, a second
+        operator) then finds nothing pending and is treated as already
+        handled, not an error.
+        """
+        vmc = context.vmc_instance
+        if vmc is None:
+            raise HTTPException(status_code=404, detail="No VMC attached")
+        pending = vmc.pending_sale_for_recovery()
+        if pending is None:
+            # Already recorded/discarded/cleared by an earlier request --
+            # nothing to do. Money-safe no-op, not an error.
+            return _render_fault_list_oob(request)
+        if context.event_recorder is None:
+            raise HTTPException(
+                status_code=500, detail="No event recorder attached; cannot record sale"
+            )
+        try:
+            await asyncio.to_thread(
+                context.event_recorder.record_sale,
+                pending["sku"],
+                pending["name"],
+                pending["slot"],
+                pending["price"],
+                pending["methods"],
+            )
+        except Exception:
+            logger.exception(
+                f"PAY-104 record-sale: record_sale failed for sku={pending['sku']!r}; "
+                "already journaled as fallback by record_sale itself -- leaving "
+                "PAY-104 active so the operator can retry"
+            )
+            vmc.raise_data_fault(
+                FaultCode.DATA_101,
+                outcome=f"sku={pending['sku']} price=${pending['price']:.2f}",
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Could not record the sale; PAY-104 left active for retry",
+            ) from None
+        if not vmc.clear_fault(FaultCode.PAY_104.value, by="admin"):
+            raise HTTPException(
+                status_code=500,
+                detail="Sale recorded but PAY-104 could not be cleared",
+            )
+        return _render_fault_list_oob(request)
+
+    @router.get(
+        "/health/faults/PAY-104/discard/confirm",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.clear_faults))],
+    )
+    async def pay104_discard_confirm(
+        request: Request, confirming: str | None = Query(default=None)
+    ):
+        dom_key = _dom_safe_key(FaultCode.PAY_104.value)
+        return templates.TemplateResponse(
+            "partials/confirm_button.html",
+            context.template_context(
+                request,
+                label="Discard",
+                confirm_label="Confirm",
+                post_url="/health/faults/PAY-104/discard",
+                target=f"#discard-{dom_key}",
+                confirm_url="/health/faults/PAY-104/discard/confirm",
+                confirming=(confirming != "false"),
+            ),
+        )
+
+    @router.post(
+        "/health/faults/PAY-104/discard",
+        response_class=HTMLResponse,
+        dependencies=[
+            Depends(web_auth.require(Permission.clear_faults)),
+            Depends(context.require_htmx),
+        ],
+    )
+    async def pay104_discard(request: Request):
+        """Clear PAY-104 (discarding the snapshot) without recording a sale.
+
+        Idempotent the same way `/record-sale` is: if PAY-104 is no longer
+        active (already discarded, already recorded, or cleared by a plain
+        admin Clear), this is a no-op rather than a 404 -- a replay must
+        never surface as an error.
+        """
+        vmc = context.vmc_instance
+        if vmc is None:
+            raise HTTPException(status_code=404, detail="No VMC attached")
+        if not _pay104_active():
+            return _render_fault_list_oob(request)
+        if not vmc.clear_fault(FaultCode.PAY_104.value, by="admin"):
+            raise HTTPException(status_code=500, detail="Could not clear PAY-104")
         return _render_fault_list_oob(request)
 
     @router.get(
