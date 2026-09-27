@@ -40,7 +40,7 @@
           {% for row in rows %}
           <tr class="hover:bg-gray-50">
             <td class="px-5 py-3">
-              <a href="/reports/product/{{ row.sku }}?range={{ range }}"
+              <a href="/reports/product/{{ row.sku|sku_url_segment }}?range={{ range }}"
                  class="text-blue-600 hover:text-blue-700 font-medium">{{ row.name }}</a>
               <span class="text-gray-400 text-xs ml-2">{{ row.sku }}</span>
             </td>

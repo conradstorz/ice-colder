@@ -53,6 +53,7 @@ from services.access import Permission
 from services.mailer import send_email
 from web_interface import auth as web_auth
 from web_interface import context
+from web_interface.filters import sku_url_segment
 from web_interface.levels import (
     LEVEL_REPORTS,
     LEVEL_REPORTS_COLLECTIONS,
@@ -294,8 +295,16 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         # The breadcrumb uses the CATALOG's product name -- never a name
         # derived from query rows, which carry no `name` field at all for
         # this by_period shape (and are simply absent for a no-sales SKU).
+        # sku_url_segment: `sku` is an arbitrary catalog string, but this
+        # becomes the breadcrumb/Back URL for a `{sku}` single-segment
+        # route -- see its docstring (web_interface/filters.py). The same
+        # function backs the `sku_url_segment` Jinja filter used by
+        # reports_product.html and reports_product_sku.html so all three
+        # links for a SKU agree.
         level = Level.child(
-            LEVEL_REPORTS_PRODUCT, product.name or sku, f"/reports/product/{sku}"
+            LEVEL_REPORTS_PRODUCT,
+            product.name or sku,
+            f"/reports/product/{sku_url_segment(sku)}",
         )
 
         lines = [
@@ -487,7 +496,12 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         return _render(request, data)
 
     @router.get(
-        "/reports/product/{sku}",
+        # `{sku:path}` (not plain `{sku}`) -- see sku_url_segment's
+        # docstring (web_interface/filters.py): a `str`-converter route
+        # 404s on a percent-encoded `/` (`%2F`) since the ASGI server
+        # decodes it before Starlette's router sees it, so a SKU
+        # containing `/` needs the `path` converter to route at all.
+        "/reports/product/{sku:path}",
         response_class=HTMLResponse,
         dependencies=[Depends(web_auth.require(Permission.view_reports))],
     )

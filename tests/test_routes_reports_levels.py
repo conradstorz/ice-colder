@@ -21,6 +21,7 @@ import csv
 import io
 import re
 import time
+from urllib.parse import quote
 
 import pytest
 
@@ -266,6 +267,73 @@ class TestProductSku:
         assert "text/html" in resp.headers["content-type"]
         assert '<header id="bar"' in resp.text
         assert "Not found" in resp.text
+
+
+class TestSkuUrlSafety:
+    """Family C (Copilot review): Product.sku is an arbitrary catalog
+    string, but every route that takes one is matched against a single
+    URL path, so a raw '?' (starts a query string) or a raw '/' (a
+    plain str-converter route 404s on the client's percent-encoded
+    '%2F' -- see sku_url_segment's docstring) breaks routing outright.
+    Every link built from a SKU (the product table row, the per-SKU
+    page's own range/bucket tabs, and Level.child's breadcrumb/Back URL)
+    must go through the same web_interface.filters.sku_url_segment
+    encoding, and the route must use {sku:path}, end to end: the link
+    resolves, the page loads, and the breadcrumb Back still works.
+    """
+
+    @pytest.mark.parametrize("sku", ["A/B", "A?B"])
+    def test_product_table_row_link_resolves_for_unsafe_sku(
+        self, client, wired, recorder, sku
+    ):
+        cfg, _vmc, _inv, _store = wired
+        product = _add_product(cfg, sku=sku, name="Odd SKU Product", slot=7)
+        # by_product's table only lists SKUs with sales in the window.
+        recorder.record_sale(
+            product.sku, product.name, 7, 1.50, {"cash": 1.50}, ts=time.time() - 10
+        )
+
+        table_resp = client.get("/reports/product")
+        assert table_resp.status_code == 200
+        hrefs = re.findall(r'href="(/reports/product/[^"]+)"', table_resp.text)
+        matching = [h for h in hrefs if h.startswith("/reports/product/A")]
+        assert matching, f"no row link found for sku={sku!r} in {hrefs}"
+        href = matching[0]
+        # The percent-encoded SKU is present as one opaque unit -- not a
+        # raw '?' that would start a query string early.
+        assert quote(sku) in href
+
+        sku_resp = client.get(href)
+        assert sku_resp.status_code == 200
+        assert "Odd SKU Product" in sku_resp.text
+
+    @pytest.mark.parametrize("sku", ["A/B", "A?B"])
+    def test_sku_level_tabs_and_breadcrumb_back_resolve_for_unsafe_sku(
+        self, client, wired, sku
+    ):
+        cfg, _vmc, _inv, _store = wired
+        _add_product(cfg, sku=sku, name="Odd SKU Product", slot=7)
+        encoded = quote(sku)
+
+        resp = client.get(f"/reports/product/{encoded}")
+        assert resp.status_code == 200
+        html = resp.text
+
+        # Range + bucket tabs on the sku-level page itself.
+        tab_hrefs = re.findall(r'href="(/reports/product/[^"]+)"', html)
+        assert len(tab_hrefs) >= 8, tab_hrefs  # 5 range + 3 bucket tabs
+        for tab_href in tab_hrefs:
+            assert quote(sku) in tab_href
+            tab_resp = client.get(tab_href)
+            assert tab_resp.status_code == 200, f"{tab_href} did not resolve"
+
+        # Breadcrumb: parent is /reports/product (unaffected by the SKU),
+        # and the Back button -- level.parent_url in base.html -- resolves.
+        hrefs, leaf = _breadcrumb(html)
+        assert hrefs == ["/", "/reports", "/reports/product"]
+        assert leaf == "Odd SKU Product"
+        back_resp = client.get(hrefs[-1])
+        assert back_resp.status_code == 200
 
 
 class TestTableOverflowContainer:

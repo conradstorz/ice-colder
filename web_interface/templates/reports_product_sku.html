@@ -40,7 +40,7 @@
     <div class="flex border-b border-gray-200 px-1 pt-1">
       {% for r, label in [("7d", "7 Days"), ("30d", "30 Days"), ("90d", "90 Days"), ("12m", "12 Months"), ("all", "All Time")] %}
       <a
-        href="/reports/product/{{ sku }}?range={{ r }}"
+        href="/reports/product/{{ sku|sku_url_segment }}?range={{ r }}"
         class="px-4 py-2.5 text-sm font-medium -mb-px transition-colors
                {% if r == range %}border-b-2 border-blue-600 text-blue-600
                {% else %}text-gray-500 hover:text-gray-700 border-b-2 border-transparent hover:border-gray-300{% endif %}">
@@ -53,7 +53,7 @@
     <div class="flex border-b border-gray-200 px-1 pt-1">
       {% for b, label in [("day", "Day"), ("week", "Week"), ("month", "Month")] %}
       <a
-        href="/reports/product/{{ sku }}?range={{ range }}&amp;bucket={{ b }}"
+        href="/reports/product/{{ sku|sku_url_segment }}?range={{ range }}&amp;bucket={{ b }}"
         class="px-4 py-2.5 text-sm font-medium -mb-px transition-colors
                {% if b == bucket %}border-b-2 border-blue-600 text-blue-600
                {% else %}text-gray-500 hover:text-gray-700 border-b-2 border-transparent hover:border-gray-300{% endif %}">
