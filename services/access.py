@@ -61,6 +61,7 @@ class Permission(str, Enum):
     edit_secrets = "edit_secrets"
     manage_users = "manage_users"
     manage_ownership = "manage_ownership"
+    collect_cash = "collect_cash"
 
 
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
@@ -73,6 +74,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.view_reports,
             Permission.edit_contacts,
             Permission.manage_users,
+            Permission.collect_cash,
         }
     ),
     Role.tech: frozenset(
@@ -83,9 +85,16 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.machine_controls,
             Permission.run_tests,
             Permission.edit_placement,
+            Permission.collect_cash,
         }
     ),
-    Role.loader: frozenset({Permission.view_status, Permission.edit_placement}),
+    Role.loader: frozenset(
+        {
+            Permission.view_status,
+            Permission.edit_placement,
+            Permission.collect_cash,
+        }
+    ),
 }
 
 

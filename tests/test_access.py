@@ -311,6 +311,7 @@ class TestPermissionTable:
                 Permission.view_reports,
                 Permission.edit_contacts,
                 Permission.manage_users,
+                Permission.collect_cash,
             }
         )
 
@@ -323,18 +324,27 @@ class TestPermissionTable:
                 Permission.machine_controls,
                 Permission.run_tests,
                 Permission.edit_placement,
+                Permission.collect_cash,
             }
         )
 
     def test_loader_matrix(self):
         assert ROLE_PERMISSIONS[Role.loader] == frozenset(
-            {Permission.view_status, Permission.edit_placement}
+            {
+                Permission.view_status,
+                Permission.edit_placement,
+                Permission.collect_cash,
+            }
         )
 
     def test_only_owner_manages_ownership_or_secrets(self):
         for role in (Role.secretary, Role.tech, Role.loader):
             assert Permission.manage_ownership not in ROLE_PERMISSIONS[role]
             assert Permission.edit_secrets not in ROLE_PERMISSIONS[role]
+
+    def test_every_role_holds_collect_cash(self):
+        for role in Role:
+            assert Permission.collect_cash in ROLE_PERMISSIONS[role]
 
 
 class FakeWallClock:

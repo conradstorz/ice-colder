@@ -24,9 +24,9 @@ def _level_constants():
     }
 
 
-def test_discovers_all_24_levels():
+def test_discovers_all_29_levels():
     constants = _level_constants()
-    assert len(constants) == 24
+    assert len(constants) == 29
 
 
 def test_home_has_one_crumb_and_root_parent_url():
@@ -104,3 +104,48 @@ def test_level_is_a_frozen_dataclass():
     home = levels.LEVEL_HOME
     with pytest.raises(dataclasses.FrozenInstanceError):
         home.title = "Changed"
+
+
+class TestNewReportLevels:
+    """The five report/settings levels pre-created for wave-3 tasks."""
+
+    def test_reports_sub_levels_are_children_of_reports_with_right_titles_and_urls(
+        self,
+    ):
+        cases = [
+            (levels.LEVEL_REPORTS_PERIOD, "By period", "/reports/period"),
+            (levels.LEVEL_REPORTS_PRODUCT, "By product", "/reports/product"),
+            (levels.LEVEL_REPORTS_METHOD, "By method", "/reports/method"),
+            (
+                levels.LEVEL_REPORTS_COLLECTIONS,
+                "Cash collections",
+                "/reports/collections",
+            ),
+        ]
+        for level, title, url in cases:
+            assert level.title == title
+            assert level.url == url
+            assert level.parent is levels.LEVEL_REPORTS
+            assert len(level.crumbs) == 3
+            assert level.crumbs[0] == (
+                levels.LEVEL_HOME.title,
+                levels.LEVEL_HOME.url,
+            )
+            assert level.crumbs[1] == (
+                levels.LEVEL_REPORTS.title,
+                levels.LEVEL_REPORTS.url,
+            )
+            assert level.crumbs[-1] == (level.title, level.url)
+
+    def test_settings_reports_is_a_child_of_settings(self):
+        level = levels.LEVEL_SETTINGS_REPORTS
+        assert level.title == "Reports"
+        assert level.url == "/settings/reports"
+        assert level.parent is levels.LEVEL_SETTINGS
+        assert len(level.crumbs) == 3
+        assert level.crumbs[0] == (levels.LEVEL_HOME.title, levels.LEVEL_HOME.url)
+        assert level.crumbs[1] == (
+            levels.LEVEL_SETTINGS.title,
+            levels.LEVEL_SETTINGS.url,
+        )
+        assert level.crumbs[-1] == (level.title, level.url)

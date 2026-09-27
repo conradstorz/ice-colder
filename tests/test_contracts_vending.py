@@ -190,3 +190,33 @@ def test_pay_104_is_a_warning_and_never_blocks_payment():
     assert spec.severity is Severity.warning
     assert spec.scope is Scope.machine
     assert FaultCode.PAY_104 not in PAYMENT_BLOCKING_FAULTS
+
+
+def test_data_101_is_an_alert_class_machine_warning_for_the_sale_journal():
+    spec = FAULT_TABLE[FaultCode.DATA_101]
+    assert FaultCode.DATA_101.value == "DATA-101"
+    assert spec.severity is Severity.warning
+    assert spec.scope is Scope.machine
+    assert (
+        spec.description
+        == "Sale journal in use; sales are being written to a fallback file"
+    )
+
+
+def test_data_102_is_an_alert_class_machine_warning_for_the_event_db_reset():
+    spec = FAULT_TABLE[FaultCode.DATA_102]
+    assert FaultCode.DATA_102.value == "DATA-102"
+    assert spec.severity is Severity.warning
+    assert spec.scope is Scope.machine
+    assert (
+        spec.description
+        == "Event database was reset after corruption; history before the reset is lost"
+    )
+
+
+def test_data_faults_never_block_payment_and_the_six_hazards_are_unchanged():
+    from contracts.vending_machine import PAYMENT_BLOCKING_FAULTS
+
+    assert FaultCode.DATA_101 not in PAYMENT_BLOCKING_FAULTS
+    assert FaultCode.DATA_102 not in PAYMENT_BLOCKING_FAULTS
+    assert len(PAYMENT_BLOCKING_FAULTS) == 6
