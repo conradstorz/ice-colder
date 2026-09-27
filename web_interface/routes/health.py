@@ -40,6 +40,23 @@ from web_interface.levels import (
 # against the contract's enum set once, here, rather than in _fault_gate.
 _PAYMENT_BLOCKING_CODES = {code.value for code in PAYMENT_BLOCKING_FAULTS}
 
+# Task 14 review finding 1: pending_sale_for_recovery()'s read, record_sale's
+# write and clear_fault's clear must run as one critical section, or a
+# second request arriving while the first is mid-write (record_sale runs on
+# a worker thread via asyncio.to_thread, which yields the event loop for the
+# duration) finds the fault still active and the snapshot still on disk and
+# repeats the whole sequence -- a second row for one sale. A module-level
+# asyncio.Lock, held for the full check-write-clear span of both
+# /record-sale and /discard, closes that: the two routes below never run
+# their bodies concurrently with each other or with themselves.
+#
+# This serialises only within one process. main.py runs a single in-process
+# uvicorn server (one event loop, no worker-process pool), so a process-wide
+# lock is sufficient for this deployment -- it would not be if uvicorn were
+# ever run with multiple workers (each worker has its own Python process and
+# therefore its own, independent lock instance).
+_pay104_lock = asyncio.Lock()
+
 # A fault's `key` is either a FaultCode.value (machine-scope, always drawn
 # from this fixed charset) or a product SKU (free text). Only characters in
 # this set are safe to drop, unescaped, into a CSS id selector.
@@ -428,48 +445,77 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         fault. A replayed POST (double-tap, retried request, a second
         operator) then finds nothing pending and is treated as already
         handled, not an error.
+
+        The whole check-write-clear sequence runs under `_pay104_lock`
+        (review finding 1): without it, a second request arriving while
+        `record_sale`'s `asyncio.to_thread` await has yielded the event
+        loop -- still inside this same critical section -- would repeat
+        the same read of `pending_sale_for_recovery()`, find the fault
+        still active and the snapshot still on disk, and write a second
+        row for the same sale.
+
+        Review finding 2: a successful write followed by a `clear_fault`
+        failure (the snapshot could not be removed) must not leave a
+        window where a later request re-records the same sale. On that
+        path, `mark_pending_sale_recorded()` durably clears the
+        snapshot's pending-sale shares before this returns -- so any
+        later call to `pending_sale_for_recovery()` reports `None` (its
+        own contract: no shares, no pending sale) even though PAY-104
+        legitimately remains active for the operator to acknowledge.
         """
         vmc = context.vmc_instance
         if vmc is None:
             raise HTTPException(status_code=404, detail="No VMC attached")
-        pending = vmc.pending_sale_for_recovery()
-        if pending is None:
-            # Already recorded/discarded/cleared by an earlier request --
-            # nothing to do. Money-safe no-op, not an error.
+        async with _pay104_lock:
+            pending = vmc.pending_sale_for_recovery()
+            if pending is None:
+                # Already recorded/discarded/cleared by an earlier request
+                # -- nothing to do. Money-safe no-op, not an error.
+                return _render_fault_list_oob(request)
+            if context.event_recorder is None:
+                raise HTTPException(
+                    status_code=500,
+                    detail="No event recorder attached; cannot record sale",
+                )
+            try:
+                await asyncio.to_thread(
+                    context.event_recorder.record_sale,
+                    pending["sku"],
+                    pending["name"],
+                    pending["slot"],
+                    pending["price"],
+                    pending["methods"],
+                )
+            except Exception:
+                logger.exception(
+                    f"PAY-104 record-sale: record_sale failed for "
+                    f"sku={pending['sku']!r}; already journaled as fallback by "
+                    "record_sale itself -- leaving PAY-104 active so the "
+                    "operator can retry"
+                )
+                vmc.raise_data_fault(
+                    FaultCode.DATA_101,
+                    outcome=f"sku={pending['sku']} price=${pending['price']:.2f}",
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail="Could not record the sale; PAY-104 left active for retry",
+                ) from None
+            if not vmc.clear_fault(FaultCode.PAY_104.value, by="admin"):
+                # The sale is recorded and must never be recorded again --
+                # mark the snapshot before responding, still inside the
+                # lock, so no later request (concurrent or sequential)
+                # can find a pending sale here again.
+                vmc.mark_pending_sale_recorded()
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        "Sale recorded; PAY-104 needs operator attention "
+                        "(the snapshot could not be cleared automatically) "
+                        "-- retrying will not record the sale again"
+                    ),
+                )
             return _render_fault_list_oob(request)
-        if context.event_recorder is None:
-            raise HTTPException(
-                status_code=500, detail="No event recorder attached; cannot record sale"
-            )
-        try:
-            await asyncio.to_thread(
-                context.event_recorder.record_sale,
-                pending["sku"],
-                pending["name"],
-                pending["slot"],
-                pending["price"],
-                pending["methods"],
-            )
-        except Exception:
-            logger.exception(
-                f"PAY-104 record-sale: record_sale failed for sku={pending['sku']!r}; "
-                "already journaled as fallback by record_sale itself -- leaving "
-                "PAY-104 active so the operator can retry"
-            )
-            vmc.raise_data_fault(
-                FaultCode.DATA_101,
-                outcome=f"sku={pending['sku']} price=${pending['price']:.2f}",
-            )
-            raise HTTPException(
-                status_code=500,
-                detail="Could not record the sale; PAY-104 left active for retry",
-            ) from None
-        if not vmc.clear_fault(FaultCode.PAY_104.value, by="admin"):
-            raise HTTPException(
-                status_code=500,
-                detail="Sale recorded but PAY-104 could not be cleared",
-            )
-        return _render_fault_list_oob(request)
 
     @router.get(
         "/health/faults/PAY-104/discard/confirm",
@@ -508,15 +554,20 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         active (already discarded, already recorded, or cleared by a plain
         admin Clear), this is a no-op rather than a 404 -- a replay must
         never surface as an error.
+
+        Shares `_pay104_lock` with `/record-sale` (review finding 1) so a
+        discard can never interleave with a record-sale that is mid-write
+        for the same fault.
         """
         vmc = context.vmc_instance
         if vmc is None:
             raise HTTPException(status_code=404, detail="No VMC attached")
-        if not _pay104_active():
+        async with _pay104_lock:
+            if not _pay104_active():
+                return _render_fault_list_oob(request)
+            if not vmc.clear_fault(FaultCode.PAY_104.value, by="admin"):
+                raise HTTPException(status_code=500, detail="Could not clear PAY-104")
             return _render_fault_list_oob(request)
-        if not vmc.clear_fault(FaultCode.PAY_104.value, by="admin"):
-            raise HTTPException(status_code=500, detail="Could not clear PAY-104")
-        return _render_fault_list_oob(request)
 
     @router.get(
         "/health/availability",

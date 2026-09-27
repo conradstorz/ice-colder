@@ -616,6 +616,46 @@ class VMC:
             "methods": dict(snap.pending_sale_shares),
         }
 
+    def mark_pending_sale_recorded(self) -> bool:
+        """Durably mark the on-disk PAY-104 snapshot's pending sale as
+        already recorded, without touching fault state (Task 14 finding 2).
+
+        Used only from the record-sale route, only after `record_sale` has
+        already succeeded but `clear_fault` then failed to remove the
+        snapshot (e.g. the file could not be unlinked) -- PAY-104
+        legitimately stays active so the operator still has evidence to
+        acknowledge, but the sale itself must never be written a second
+        time. Rewriting the snapshot with `pending_sale_shares` cleared
+        makes `pending_sale_for_recovery()` return ``None`` on any later
+        call (its own contract: only non-``None`` when the shares are
+        non-empty), regardless of whether the fault is still active, so a
+        follow-up record-sale request finds nothing pending and a
+        follow-up faults-list render falls back to the plain Clear button.
+
+        Narrow by design: never clears the fault, never writes a sale,
+        never raises -- a failure here (no session store attached, the
+        snapshot unreadable, or the rewrite itself failing) is logged and
+        reported back as ``False`` rather than propagated, since the
+        caller already has a sale recorded and a 500 in flight and must
+        not lose either to a secondary I/O problem here.
+        """
+        if self._session_store is None:
+            return False
+        try:
+            snap = self._session_store.load()
+        except Exception as e:
+            logger.error(f"PAY-104: could not load snapshot to mark recorded: {e}")
+            return False
+        if snap is None:
+            return False
+        snap.pending_sale_shares = None
+        try:
+            self._session_store.save(snap)
+        except Exception as e:
+            logger.error(f"PAY-104: could not save snapshot marked recorded: {e}")
+            return False
+        return True
+
     async def _handle_mqtt_hardware_io(self, topic: str, data: dict):
         """Binary hardware IO from the vending ESP32; ice returning clears ICE-101."""
         hw = HardwareIO.model_validate(data)

@@ -14,10 +14,22 @@ Every test asserts a positive control first (the fault is active and
 `pending_sale_for_recovery()` reports the pending sale) before asserting
 what an action did -- see task-14-brief.md's "beware the fixture that
 makes the asserted branch unreachable".
+
+Part 3 review (findings 1 and 2): TestRecordSale's
+`test_replay_after_success_writes_no_second_row_and_does_not_error` only
+issues its second POST after the first has fully returned -- it proves the
+*sequential* replay path is safe (the snapshot is gone, the accessor
+returns None) and says nothing about two in-flight requests racing the
+check itself. `TestRecordSaleExactlyOnce` below adds the two cases that
+test was never able to cover: genuine concurrency (two requests actually
+in flight together) and a `clear_fault` failure after a successful write.
 """
 
+import asyncio
 import sqlite3
+import threading
 
+import httpx
 import pytest
 
 from contracts.vending_machine import FaultCode
@@ -27,6 +39,7 @@ from services.config_store import add_product
 from services.event_recorder import EventRecorder
 from services.session_store import SessionStore
 from web_interface import routes
+from web_interface.server import app
 
 
 def _pay104_setup(
@@ -235,6 +248,12 @@ class TestRecordSale:
     def test_replay_after_success_writes_no_second_row_and_does_not_error(
         self, pay104, login_as
     ):
+        """Sequential replay only: the second POST is issued after the
+        first has fully returned, so this proves a *strictly sequential*
+        replay (double GET/refresh, retried request after the response was
+        already seen) is safe -- it says nothing about two requests
+        actually in flight together. See TestRecordSaleExactlyOnce for
+        that (review findings 1 and 2)."""
         client = login_as(Role.tech)
 
         first = client.post("/health/faults/PAY-104/record-sale")
@@ -351,3 +370,149 @@ class TestDiscard:
         assert resp.status_code == 403
         vmc = pay104["vmc"]
         assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+
+
+class TestRecordSaleExactlyOnce:
+    """Part 3 review findings 1 and 2: exactly-once under genuine
+    concurrency, and exactly-once when a successful write is followed by a
+    `clear_fault` failure. Neither is covered by the sequential replay
+    test above."""
+
+    async def test_two_concurrent_requests_write_exactly_one_row(
+        self, pay104, login_as
+    ):
+        """Finding 1: two /record-sale requests actually in flight at the
+        same time must still write only one row.
+
+        Two requests are sent together via `asyncio.gather` against the
+        real ASGI app over an in-process transport (httpx.ASGITransport),
+        so both genuinely run as concurrent asyncio tasks on this test's
+        one event loop -- no TestClient here, since starlette's
+        TestClient is a synchronous wrapper and cannot express two
+        requests in flight at once.
+
+        `record_sale` is stubbed to rendezvous the two calls: the first
+        arrival waits (bounded, so the fixed/serialized code cannot hang)
+        for a second arrival before actually inserting, which widens the
+        race window so the unfixed code reliably shows the bug rather
+        than depending on scheduler luck. Against the fixed code, the
+        module-level `_pay104_lock` in web_interface/routes/health.py
+        never lets the second request's `pending_sale_for_recovery()`
+        check run until the first request has fully finished (write +
+        clear) inside the lock, so `record_sale` is only ever entered
+        once, the rendezvous wait times out harmlessly, and exactly one
+        row is written.
+        """
+        vmc = pay104["vmc"]
+        # Positive control, restated right before the concurrent write.
+        assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+        assert vmc.pending_sale_for_recovery() is not None
+        assert pay104["session_path"].exists()
+
+        recorder = pay104["recorder"]
+        real_record_sale = recorder.record_sale
+
+        arrivals = {"n": 0}
+        arrivals_lock = threading.Lock()
+        second_arrived = threading.Event()
+
+        def rendezvous_record_sale(*args, **kwargs):
+            with arrivals_lock:
+                arrivals["n"] += 1
+                is_first = arrivals["n"] == 1
+            if is_first:
+                # Give a genuine second racer a chance to also reach this
+                # point before writing -- bounded so the fixed/serialized
+                # code (where no second call ever arrives) does not hang.
+                second_arrived.wait(timeout=0.5)
+            else:
+                second_arrived.set()
+            return real_record_sale(*args, **kwargs)
+
+        recorder.record_sale = rendezvous_record_sale
+
+        client = login_as(Role.tech)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+            cookies=client.cookies,
+            headers=client.headers,
+        ) as async_client:
+            responses = await asyncio.gather(
+                async_client.post("/health/faults/PAY-104/record-sale"),
+                async_client.post("/health/faults/PAY-104/record-sale"),
+            )
+
+        # The row count is the finding this test exists to prove -- assert
+        # it first, so an unfixed run fails on the duplicate itself rather
+        # than on a downstream symptom (e.g. the loser of the clear_fault
+        # race getting a 500 because the other request already cleared
+        # the fault out from under it).
+        rows = _sales_rows(pay104["db_path"])
+        assert len(rows) == 1, (
+            f"expected exactly one sale row from two concurrent requests, "
+            f"got {len(rows)}"
+        )
+        # arrivals["n"] may be 1 (fixed: lock serialized the two requests,
+        # the second found nothing pending and never called record_sale)
+        # or 2 (unfixed: both raced past the check and both wrote).
+
+        for resp in responses:
+            assert resp.status_code == 200
+
+    def test_clear_fault_failure_after_successful_write_blocks_replay(
+        self, pay104, login_as, monkeypatch
+    ):
+        """Finding 2: record_sale succeeds but the snapshot cannot be
+        removed (SessionStore.clear() fails) -- PAY-104 must legitimately
+        stay active, but the sale must never be recorded a second time.
+
+        Simulates the removal failure by monkeypatching the VMC's own
+        attached SessionStore's `clear()` (never services/session_store.py
+        itself) to always report failure, mirroring `VMC.clear_fault`'s
+        own PAY-104 branch. Asserts the row was written exactly once, the
+        fault is still active through the same `active_faults()` registry
+        the route uses, the on-disk snapshot has been rewritten with its
+        pending-sale shares cleared (so the card falls back to the plain
+        Clear button) rather than removed outright, and a second
+        record-sale attempt writes no second row.
+        """
+        vmc = pay104["vmc"]
+        # Positive control, restated right before the write this test is
+        # actually about.
+        assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+        assert vmc.pending_sale_for_recovery() is not None
+        assert pay104["session_path"].exists()
+
+        monkeypatch.setattr(vmc._session_store, "clear", lambda: False)
+
+        client = login_as(Role.tech)
+        first = client.post("/health/faults/PAY-104/record-sale")
+        assert first.status_code == 500
+
+        rows = _sales_rows(pay104["db_path"])
+        assert len(rows) == 1
+        sku, name, slot, price, methods_json = rows[0]
+        assert sku == "ICE-1"
+        assert price == pay104["price"]
+
+        # The fault, through the same registry the route reads, is still
+        # active -- clear_fault's own removal failure left it in place.
+        assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+
+        # The snapshot is still on disk (clear_fault's unlink "failed"),
+        # but its pending-sale shares have been durably rewritten away --
+        # the accessor now reports no pending sale even with the fault
+        # still active.
+        assert pay104["session_path"].exists()
+        assert vmc.pending_sale_for_recovery() is None
+        rewritten = SessionStore(pay104["session_path"]).load()
+        assert rewritten is not None
+        assert not rewritten.pending_sale_shares
+
+        # A second attempt (operator retry, or a second tap) must be a
+        # money-safe no-op, not a second row.
+        second = client.post("/health/faults/PAY-104/record-sale")
+        assert second.status_code == 200
+        assert len(_sales_rows(pay104["db_path"])) == 1
