@@ -425,6 +425,59 @@ def test_compute_next_due_daily_dst_window_controlled_by_tz_param_not_now_tzinfo
     # would mean now.tzinfo (no transition) was consulted instead.
 
 
+def test_compute_next_due_today_boundary_correct_when_now_read_on_transition_day_itself():
+    """Copilot review (PR 21, Family D): every DST test above reads `now`
+    the day AFTER its transition, where `now.tzinfo`'s frozen offset
+    (production's `datetime.now().astimezone()` shape) already happens to
+    be correct for that day's own midnight -- so none of them can catch a
+    bug specific to `today`'s own derivation. This test reads `now` ON the
+    spring-forward day itself (2026-03-08, transition 02:00 EST -> 03:00
+    EDT), after the transition instant, with a frozen -4 (EDT) tzinfo --
+    exactly what `astimezone()` gives once the OS clock has crossed into
+    EDT. `today`'s TRUE local midnight is still EST (-5): the transition
+    happens at 02:00, after midnight. Naively flooring `now` (keeping its
+    frozen -4 tzinfo) tags midnight -4 instead -- one hour of that day's
+    sales would fall outside `[period_start, period_end)` for the *next*
+    day's report (which starts at this wrongly-early `period_end`), and
+    the *same* hour would also be excluded from *this* day's own report,
+    since here `today` becomes `period_end`, the window's exclusive upper
+    bound -- either way an hour of real sales is silently dropped from
+    whichever report bounds on this instant.
+    """
+    config = _config(schedule="daily", hour=7)
+    now = datetime(2026, 3, 8, 9, 0, 0, tzinfo=timezone(timedelta(hours=-4)))
+
+    due = report_scheduler.compute_next_due(config, now, tz=SPRING_FORWARD_TZ)
+
+    assert due is not None
+    true_period_end = datetime(
+        2026, 3, 8, 0, 0, 0, tzinfo=timezone(timedelta(hours=-5))
+    )
+    assert due.period_end.timestamp() == true_period_end.timestamp()
+
+    # The bug this guards against tags midnight with now.tzinfo's frozen
+    # -4 instead of the true -5 -- exactly 3600s EARLIER in true UTC terms
+    # (a -4 tag on the same wall-clock midnight resolves to an earlier UTC
+    # instant than a -5 tag). Asserted explicitly so a regression back to
+    # the naive floor fails loudly here rather than merely not-matching
+    # the line above.
+    buggy_period_end = datetime(
+        2026, 3, 8, 0, 0, 0, tzinfo=timezone(timedelta(hours=-4))
+    )
+    assert buggy_period_end.timestamp() - true_period_end.timestamp() == -3600.0
+    assert due.period_end.timestamp() != buggy_period_end.timestamp()
+
+    # period_start (March 7, entirely pre-transition) is unaffected either
+    # way -- confirms the fix didn't disturb the already-correct backward
+    # shift, and pins the window to a plain 24h day.
+    true_period_start = datetime(
+        2026, 3, 7, 0, 0, 0, tzinfo=timezone(timedelta(hours=-5))
+    )
+    assert due.period_start.timestamp() == true_period_start.timestamp()
+    window_seconds = due.period_end.timestamp() - due.period_start.timestamp()
+    assert window_seconds == 86400.0
+
+
 # --------------------------------------------------------------------------
 # Item 1 (round-3 hardening): now/tz incoherence must warn, never raise, and
 # must stay silent on both legitimate pairings.
@@ -706,6 +759,78 @@ async def test_run_daily_sends_once_and_dedupes_same_period(recorder, fast_sleep
     assert events[0]["schedule"] == "daily"
     assert events[0]["period_start"] == "2026-09-19"
     assert events[0]["period_end"] == "2026-09-20"
+
+
+def _make_recorder_with_dead_writer(tmp_path, monkeypatch) -> EventRecorder:
+    """An EventRecorder whose writer thread's initial connect fails, so
+    every ``record()`` call queues forever and ``flush()`` returns
+    immediately without error (see EventRecorder.flush's own docstring).
+    Mirrors tests/test_event_recorder.py's own
+    ``TestWriterThreadDeadGuard._make_recorder_with_dead_writer`` --
+    duplicated here rather than imported, for the same reason this file
+    duplicates the DST synthetic tzinfo classes above (this task's
+    permitted file list does not include that test module).
+    """
+    real_connect = sqlite3.connect
+
+    def fake_connect(*args, **kwargs):
+        if kwargs.get("check_same_thread") is False:
+            raise sqlite3.OperationalError(
+                "simulated: writer thread could not open database"
+            )
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", fake_connect)
+    db = str(tmp_path / "events.db")
+    rec = EventRecorder(db_path=db)
+    # Give the daemon thread a moment to actually run and die -- avoids a
+    # race where is_alive() is checked before it has even tried to connect.
+    rec._writer.join(timeout=2.0)
+    assert not rec._writer.is_alive(), (
+        "test setup bug: the writer thread did not die as intended"
+    )
+    return rec
+
+
+async def test_run_writer_thread_dead_does_not_resend_within_same_process(
+    tmp_path, monkeypatch, fast_sleep
+):
+    """Family D (Copilot review): report_sent is only QUEUED on the writer
+    thread by `recorder.record(...)`. If that thread has died,
+    `_period_already_sent`'s own `flush()` returns immediately (by design,
+    see EventRecorder.flush) without ever writing the marker, so the very
+    next pass's de-dup query sees no matching row. A naive implementation
+    relying solely on that DB read would resend the same summary on every
+    subsequent pass; the in-process `last_sent_period` guard must prevent
+    that for the rest of this run, even though the database itself can
+    never durably confirm the send happened.
+    """
+    recorder = _make_recorder_with_dead_writer(tmp_path, monkeypatch)
+    config = _config(schedule="daily", hour=7, owner_email="owner@example.com")
+    mailer = _StubMailer()
+    clock = _FakeClock(
+        [
+            _dt(2026, 9, 20, 9, 0),  # due -> sends; marker can never land
+            _dt(2026, 9, 20, 11, 0),  # same period -- must not resend
+            _dt(2026, 9, 20, 13, 0),  # same period again -- must not resend
+        ]
+    )
+
+    await _drain(config, recorder, mailer, clock)
+
+    assert clock.calls == 4  # every scripted pass genuinely ran
+    # Exactly one send across all three passes, despite the durable marker
+    # never landing.
+    assert len(mailer.calls) == 1
+
+    # Proves the marker genuinely never made it into the database -- the
+    # in-process guard under test is the ONLY thing that prevented a
+    # resend here, not a lucky durable write this test failed to break.
+    with sqlite3.connect(recorder._db_path) as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type='report_sent'"
+        ).fetchone()[0]
+    assert count == 0
 
 
 async def test_run_dedup_checks_all_sent_periods_not_only_the_latest_row(

@@ -77,6 +77,18 @@ never a list of every period missed while the schedule was off or the
 process was down -- so there is nothing to iterate over and no way for a
 backlog to accumulate.
 
+The write itself only *queues* the marker on ``recorder``'s writer thread,
+not commits it synchronously, so ``run`` also keeps an in-memory
+``last_sent_period`` guard (Family D, mirroring ``last_failed_period``
+immediately below): ``_period_already_sent``'s own ``flush()`` call returns
+immediately, without error, both when the writer thread has died and when
+it is merely delayed past its timeout, so the very next pass's de-dup query
+can miss a marker that a send genuinely just wrote. ``run`` attempts to
+flush and re-verify the marker right after recording it and logs an error
+if it still didn't land, but it is ``last_sent_period`` -- not that
+durability attempt -- that actually prevents a duplicate send for the rest
+of this process's run.
+
 A failed send is retried at the *next due occurrence*, not on every
 subsequent 60 s pass, matching the design's §4.2 "a failed send logs and
 retries at the next due time": ``run`` keeps an in-memory
@@ -282,17 +294,72 @@ def _shift_local_day(reference: datetime, days_before: int, tz) -> datetime:
     margin_ts = (
         reference.timestamp() - (days_before + _ADVANCE_MARGIN_DAYS) * _DAY_SECONDS
     )
-    current = _floor_to_bucket(_to_local(margin_ts, tz), "day")
     # Bounded well past the number of real days being walked -- generous
     # headroom for the margin plus any per-step fall-back retries -- so a
     # pathological tz can never spin this loop forever (mirroring
     # `_MAX_BUCKET_KEY_RETRIES`'s own role one level up).
     max_steps = days_before + _ADVANCE_MARGIN_DAYS + _MAX_BUCKET_KEY_RETRIES
+    return _walk_to_local_midnight(target_date, margin_ts, tz, max_steps)
+
+
+def _walk_to_local_midnight(
+    target_date, anchor_ts: float, tz, max_steps: int
+) -> datetime:
+    """True local midnight of ``target_date``, found by walking forward one
+    real day at a time from ``anchor_ts`` (a timestamp expected to floor to
+    at or before ``target_date``) via :func:`_advance_one_local_day`, which
+    is DST-safe by construction (see its own docstring: forward-only is the
+    safe direction). Shared by :func:`_shift_local_day` (walking back from
+    a later reference) and :func:`_true_local_today` (walking forward from
+    a safely-earlier anchor to re-derive *today's* own true midnight), so
+    every local-midnight boundary this module produces goes through the
+    same DST-correct algorithm rather than two independently-written ones
+    that could quietly disagree.
+    """
+    current = _floor_to_bucket(_to_local(anchor_ts, tz), "day")
     steps = 0
     while current.date() < target_date and steps < max_steps:
         current = _advance_one_local_day(current, tz)
         steps += 1
     return current
+
+
+def _true_local_today(now: datetime, tz) -> datetime:
+    """The true local midnight for ``now``'s own calendar date, re-derived
+    via ``tz`` rather than trusting ``now.tzinfo`` for that earlier
+    wall-clock instant.
+
+    ``now``'s calendar *date* needs no re-derivation -- a single reading of
+    ``now`` cannot itself straddle a transition, so ``now.date()`` is
+    already correct. What CAN be wrong is which UTC offset midnight of
+    that date carries: in production ``now.tzinfo`` is a frozen,
+    date-invariant offset (``datetime.now().astimezone()`` -- see the
+    module docstring), correct for the moment `now` was read but not
+    necessarily for midnight of that same day. On a spring-forward day,
+    reading ``now`` after the transition (e.g. 09:00 EDT) and simply
+    zeroing its hour/minute/second (``_floor_to_bucket`` alone, the
+    previous behaviour) keeps that post-transition EDT offset attached to
+    a midnight that was actually still EST -- an hour wrong. Unlike
+    ``due_at`` (see ``compute_next_due``'s docstring, which explains why
+    THAT hour-scale error is harmless there), this value flows straight
+    into ``period_end``/``period_start`` for a ``daily`` schedule and is
+    used as a literal report-window boundary (``.timestamp()`` in
+    ``run``), where an hour-wrong offset genuinely drops or double-counts
+    an hour of sales -- so it must be correct, not merely "close enough
+    for a comparison."
+
+    Walks forward from a safely-earlier anchor via
+    :func:`_walk_to_local_midnight`, the same mechanism
+    :func:`_shift_local_day` uses -- this is that same algorithm applied
+    with ``days_before=0`` relative to ``now`` itself, which
+    :func:`_shift_local_day` cannot do (it returns ``reference`` unchanged
+    for ``days_before <= 0``, precisely because its callers only ever want
+    that fast path when re-derivation is unnecessary; here it is not).
+    """
+    target_date = now.date()
+    margin_ts = now.timestamp() - _ADVANCE_MARGIN_DAYS * _DAY_SECONDS
+    max_steps = _ADVANCE_MARGIN_DAYS + _MAX_BUCKET_KEY_RETRIES
+    return _walk_to_local_midnight(target_date, margin_ts, tz, max_steps)
 
 
 # Comfortably more than any real DST transition's magnitude, and -- paired
@@ -405,15 +472,22 @@ def compute_next_due(
     ``now`` is expected to already be in the local timezone the schedule's
     ``hour``/``weekday`` are meant against (mirroring how
     ``services/reports.py`` treats an already-localized datetime). ``today``
-    (same calendar day as ``now``) is derived directly from ``now`` -- safe
-    without further DST care, since no transition can occur *within* the
-    single reading ``now`` already represents. Any boundary that walks
-    BACKWARD to a different calendar day -- ``occurrence_day`` for a
-    ``weekly`` schedule (up to 6 days back) and ``period_start`` for both
-    schedules (1 or 7 days back) -- goes through :func:`_shift_local_day`,
-    which re-derives that day's true local midnight via
-    ``services.reports``'s DST-correct ``_to_local``/``_floor_to_bucket``
-    rather than naive ``timedelta`` subtraction, so a spring-forward or
+    (same calendar day as ``now``) is re-derived via :func:`_true_local_today`
+    rather than a plain floor of ``now``: the *calendar date* needs no DST
+    care (a single reading of ``now`` cannot itself straddle a transition),
+    but the UTC offset midnight of that date carries can still differ from
+    ``now.tzinfo``'s own offset when ``now`` is read after a transition that
+    already occurred earlier the same day -- see :func:`_true_local_today`'s
+    docstring for the mechanism and why this matters here specifically
+    (unlike ``due_at`` below, ``today``/``period_end`` for a ``daily``
+    schedule is used as a literal report-window boundary, not merely a
+    comparand). Any boundary that walks BACKWARD to a different calendar day
+    -- ``occurrence_day`` for a ``weekly`` schedule (up to 6 days back) and
+    ``period_start`` for both schedules (1 or 7 days back) -- goes through
+    :func:`_shift_local_day`, which re-derives that day's true local
+    midnight via ``services.reports``'s DST-correct
+    ``_to_local``/``_floor_to_bucket`` rather than naive ``timedelta``
+    subtraction, so a spring-forward or
     fall-back transition between the two dates cannot merge or split the
     reported window (see the module docstring's Finding 2 note and
     ``_shift_local_day``'s own docstring). ``due_at`` is intentionally left
@@ -455,7 +529,7 @@ def compute_next_due(
     if schedule == "off":
         return None
 
-    today = _floor_to_bucket(now, "day")
+    today = _true_local_today(now, tz)
 
     if schedule == "daily":
         occurrence_day = today
@@ -588,12 +662,25 @@ async def run(
     zone explicitly. See the module docstring for why ``tz=None`` is
     DST-correct and why ``now``/``tz`` must stay consistent.
     """
-    # In-memory only -- deliberately not persisted; see the module
-    # docstring's retry-cadence paragraph (Finding 3). Holds the period_key
-    # of the most recent send that failed, so a failure is retried at the
-    # next due occurrence rather than on every subsequent bounded-sleep
-    # pass.
+    # Both in-memory only -- deliberately not persisted; see the module
+    # docstring's retry-cadence paragraph (Finding 3). `last_failed_period`
+    # holds the period_key of the most recent send that failed, so a
+    # failure is retried at the next due occurrence rather than on every
+    # subsequent bounded-sleep pass. `last_sent_period` is this same
+    # in-process guard's mirror for a SUCCESSFUL send (Copilot review,
+    # Family D): `recorder.record("report_sent", ...)` below only queues
+    # the de-dup marker for the writer thread -- `_period_already_sent`'s
+    # own `flush()` returns immediately, without error, both when the
+    # writer thread has died and when it is merely delayed past its
+    # timeout (see EventRecorder.flush's docstring), so the marker can be
+    # invisible to the very next pass's de-dup query even though the send
+    # genuinely happened. Without this guard that would re-send the same
+    # summary on the next bounded-sleep pass; checking it here prevents
+    # that for the remainder of this process's run, the same acceptable
+    # scope `last_failed_period` already has (a restart before the marker
+    # lands would still resend once -- see below).
     last_failed_period: Optional[str] = None
+    last_sent_period: Optional[str] = None
     while True:
         now = clock()  # may raise a test sentinel; see module docstring
         try:
@@ -602,6 +689,7 @@ async def run(
                 due is not None
                 and now >= due.due_at
                 and due.period_key != last_failed_period
+                and due.period_key != last_sent_period
             ):
                 already_sent = await asyncio.to_thread(
                     _period_already_sent, recorder, due.period_key
@@ -626,6 +714,27 @@ async def run(
                                 "period_end": due.period_end.date().isoformat(),
                             },
                         )
+                        # Attempt to make the marker durable before the
+                        # next pass could possibly run, and surface it
+                        # plainly (Family D's "or ... surface a
+                        # persistence failure") when it did not land --
+                        # last_sent_period below is what actually prevents
+                        # a duplicate send either way.
+                        landed = await asyncio.to_thread(
+                            _period_already_sent, recorder, due.period_key
+                        )
+                        if not landed:
+                            logger.error(
+                                "report scheduler: report_sent marker for "
+                                f"period {due.period_key} did not persist "
+                                "after flush (writer thread delayed past "
+                                "its timeout, or it has died) -- relying "
+                                "on this process's in-memory guard to "
+                                "avoid an immediate duplicate send; a "
+                                "restart before the marker lands would "
+                                "resend once"
+                            )
+                        last_sent_period = due.period_key
                         last_failed_period = None
                     else:
                         logger.warning(
