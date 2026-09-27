@@ -95,8 +95,19 @@ and truncates the journal, then clears the fault. A crash between dispenser
 completion and the insert is covered by the session snapshot: an open
 snapshot at boot already raises `PAY-104`, and its metadata now includes the
 pending sale, so the operator clearing `PAY-104` is offered "record this
-sale" or "discard". `_prune_with` touches only `events`. The `dispense`
-event stays for the existing KPIs.
+sale" or "discard". That offer lives on the Health › Faults level from part
+2: a `PAY-104` card whose snapshot carries a pending sale shows the SKU,
+price and method shares, with two actions, both gated `clear_faults` and
+both using the two-tap confirm:
+
+| Route | Effect |
+|---|---|
+| `POST /health/faults/PAY-104/record-sale` | Writes the row through `record_sale`, clears the fault, discards the snapshot |
+| `POST /health/faults/PAY-104/discard` | Clears the fault and discards the snapshot without recording |
+
+A `PAY-104` whose snapshot carries no pending sale keeps part 2's plain
+Clear button. `_prune_with` touches only `events`. The `dispense` event
+stays for the existing KPIs.
 
 ### 1.3 Cash collection
 
@@ -231,6 +242,12 @@ time; it never raises out of the loop.
   and loader; `/inventory/collect` 200 for loader and records a row; email
   action calls the stubbed mailer with a CSV attachment; `/settings/reports`
   round-trips.
+- `PAY-104` recovery on Health › Faults: a card whose snapshot carries a
+  pending sale shows the SKU, price and method shares; `record-sale` writes
+  exactly that row, clears the fault and discards the snapshot; `discard`
+  clears and discards without writing; both are 403 for a role without
+  `clear_faults` and both need the two-tap confirm; a `PAY-104` with no
+  pending sale still offers the plain Clear.
 
 ## 7. Files
 
@@ -246,7 +263,7 @@ time; it never raises out of the loop.
 | `services/access.py` | `collect_cash` permission |
 | `config/config_model.py` | `ReportsConfig` |
 | `main.py` | Start the scheduler |
-| `web_interface/routes/reports.py`, `inventory.py`, `settings.py` | New levels and actions |
+| `web_interface/routes/reports.py`, `inventory.py`, `settings.py`, `health.py` | New levels and actions; `health.py` gains the two `PAY-104` recovery actions (§1.2) |
 | `web_interface/templates/reports_*.html`, `settings_reports.html` | New |
 | `tests/test_reports.py`, `tests/test_report_scheduler.py`, additions to existing test files | New and extended |
 | `CLAUDE.md` | Document the sales tables and the scheduler |

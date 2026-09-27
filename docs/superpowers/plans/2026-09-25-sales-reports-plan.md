@@ -84,14 +84,16 @@ Values copied verbatim from the spec. Every task's requirements implicitly inclu
 | 5 | **Serial** | 6 | `controller/vmc.py` again — wire the awaited `record_sale` call and the snapshot's pending sale |
 | 6 | **Wave 2** | 7, 8 | `services/reports.py` + its tests vs. `services/mailer.py` attachments + its tests. Disjoint |
 | 7 | **Serial** | 9 | `services/report_scheduler.py` + `main.py` |
-| 8 | **Wave 3** | 10, 11, 12 | Report levels (`routes/reports.py` + `reports_*.html`) vs. cash collection (`routes/inventory.py`) vs. Settings › Reports (`routes/settings.py` + `settings_reports.html`). Disjoint except `levels.py`, which Task 3 pre-populates |
+| 8 | **Wave 3** | 10, 11, 12, 14 | Report levels (`routes/reports.py` + `reports_*.html`) vs. cash collection (`routes/inventory.py`) vs. Settings › Reports (`routes/settings.py` + `settings_reports.html`) vs. `PAY-104` recovery (`routes/health.py` + `health_faults.html`). Disjoint except `levels.py`, which Task 3 pre-populates |
 | 9 | **Serial** | 13 | `CLAUDE.md` |
 
-**3 waves, 6 serial steps, 13 tasks.** Tasks 4, 5 and 6 are serial *and* sequential on purpose: the ledger must exist before the recorder can be tested against it, and the recorder must exist before the VMC can await it. Splitting them into one wave would let two implementers edit `controller/vmc.py` at once.
+**3 waves, 6 serial steps, 14 tasks.** Tasks 4, 5 and 6 are serial *and* sequential on purpose: the ledger must exist before the recorder can be tested against it, and the recorder must exist before the VMC can await it. Splitting them into one wave would let two implementers edit `controller/vmc.py` at once.
+
+Task 14 is numbered after 13 because it was added once the owner closed the spec gap Task 6 surfaced, but it runs in **wave 3**, not after the docs task. Task 13's documentation must describe it, so dispatch wave 3 in full before starting Task 13.
 
 **Level constants are pre-created in Task 3** so no wave-3 task edits `web_interface/levels.py` — the same trick part 2 used for router registration.
 
-**Model policy** (program plan §3.1): **Sonnet** for tasks 3, 4, 5, 6, 7, 9, 10, 12 (FSM, recorder, money, contracts, scheduler, config writes); **Haiku** for tasks 1, 2, 8, 11, 13 (CI config, a comment, a mailer parameter, one route plus template, docs). Reviewers **always Sonnet**.
+**Model policy** (program plan §3.1): **Sonnet** for tasks 3, 4, 5, 6, 7, 9, 10, 12, 14 (FSM, recorder, money, contracts, scheduler, config writes, and the `PAY-104` write path); **Haiku** for tasks 1, 2, 8, 11, 13 (CI config, a comment, a mailer parameter, one route plus template, docs). Reviewers **always Sonnet**.
 
 ---
 
@@ -275,7 +277,7 @@ CREATE TABLE IF NOT EXISTS cash_collections (
 - **Ordering is the property under test**, not co-occurrence: the row must exist before the FSM returns to idle. Prove it by observing state at the moment of the write (for example a recorder stub that captures `vmc.state` when called, or asserting the row is readable from a second connection at that instant) rather than by checking both are true at the end.
 - On a `record_sale` failure: journal the record, raise `DATA-101`, and let the sale complete — a storage problem must not fail the vend or stop the machine.
 - At startup `main.py` replays the journal and clears `DATA-101` when the journal drains; if the recorder reports a corrupt-database reset, it raises `DATA-102`. Neither may exit the process, and both must leave the VMC and MQTT client running (program goal 9).
-- The `PAY-104` snapshot metadata gains the pending sale so an operator clearing it can be offered "record this sale" or "discard". **This task only carries the data into the snapshot and exposes it**; building the operator choice into the UI is not in the spec's route list, so if you find no route for it, record that as a spec gap and do not invent one.
+- The `PAY-104` snapshot metadata gains the pending sale so an operator clearing it can be offered "record this sale" or "discard". **This task only carries the data into the snapshot and exposes it.** Task 14 builds the two routes and the UI; do not build them here, and do not clear or discard the snapshot from this task.
 
 **Tests to write first:** a successful vend writes exactly one sale row with the FIFO shares from Task 4, and that row is readable **before** the FSM reaches idle; a failing `record_sale` still completes the vend, journals the record and raises `DATA-101`; startup replays a non-empty journal, clears `DATA-101`, and leaves no rows behind; a corrupt database at startup raises `DATA-102` and the process continues with a working VMC and MQTT client; `vend_failed` after a deduction writes **no** sale row and restores the credits (guards against double-counting a failed vend); the snapshot's `PAY-104` metadata contains the pending sale.
 
@@ -365,7 +367,7 @@ CREATE TABLE IF NOT EXISTS cash_collections (
 
 ---
 
-## Wave 3 — tasks 10, 11 and 12 in parallel
+## Wave 3 — tasks 10, 11, 12 and 14 in parallel
 
 Level constants come from Task 3, so no task here edits `web_interface/levels.py`.
 
@@ -439,6 +441,38 @@ Level constants come from Task 3, so no task here edits `web_interface/levels.py
 
 ---
 
+### Task 14: `PAY-104` recovery — record or discard a pending sale
+
+**Spec:** §1.2 (the route table added by the 2026-09-27 amendment), §6 (its testing bullet).
+
+This closes the gap Task 6 was told to report rather than invent. The spec said the operator clearing `PAY-104` "is offered 'record this sale' or 'discard'" but listed no endpoint; the spec now names both, and this task builds them. Disjoint from tasks 10–12: it touches only `health.py`, the faults template and its own test file.
+
+**Files:**
+- Modify: `web_interface/routes/health.py`, `web_interface/templates/health_faults.html`
+- Create: `tests/test_routes_health_pay104.py`
+
+**Interfaces — Consumes:** Task 5's `record_sale`, Task 6's pending-sale metadata on the session snapshot, part 2's `partials/confirm_button.html` and its `confirming` contract, part 2's selector-safe `dom_key` for fault cards.
+
+**Interfaces — Produces:**
+- On Health › Faults, a `PAY-104` card whose snapshot carries a pending sale renders the **SKU, price and method shares** and two actions in place of the plain Clear.
+- `POST /health/faults/PAY-104/record-sale` — gated `clear_faults` + `require_htmx`, two-tap confirm. Writes the row through `record_sale`, clears the fault, discards the snapshot.
+- `POST /health/faults/PAY-104/discard` — gated `clear_faults` + `require_htmx`, two-tap confirm. Clears the fault and discards the snapshot **without** recording.
+- A confirm endpoint per action, following the shape part 2's fault Clear already uses.
+- A `PAY-104` card whose snapshot carries **no** pending sale keeps part 2's plain Clear button unchanged.
+
+**Behaviour to get right:**
+- **Record the sale exactly once.** A double-tap, a replayed request, or a second operator must not write two rows. The snapshot is the idempotency token: discard it as part of the same operation, and treat a missing snapshot as "already handled" rather than an error. Test the replay explicitly — this is money, and part 4's spec makes duplicate-request protection a first-class concern for exactly this reason.
+- The row written must carry the **shares from the snapshot**, not a re-derived or `{"unknown": price}` fallback. The whole point of persisting the shares in Task 4 is that this path can honour them.
+- Clearing the fault goes through the existing fault-registry clear path, so the availability gates and the pill update as they already do. Do not clear it by mutating state directly.
+- `record_sale` is synchronous and durable; call it through `asyncio.to_thread` like every other caller, and if it fails, fall through to Task 5's journal ladder rather than leaving the fault cleared with no row.
+- Rebuild `app.css` if new classes appear, per the wave convention.
+
+**Tests to write first:** a `PAY-104` with a pending sale renders the SKU, price and each method share; `record-sale` writes exactly one row with the snapshot's shares, clears the fault and removes the snapshot; **a second `record-sale` after the first writes no second row** and does not error; `discard` clears the fault and removes the snapshot with **no** row written; both are 403 for a role without `clear_faults` (secretary, loader) and 200 for owner and tech; both are 403 without `HX-Request`; the first tap returns a confirm control that neither writes nor clears; Cancel returns to the initial state having done neither; a `PAY-104` with no pending sale still renders the plain Clear and clearing it writes no row.
+
+**Done when:** the new test file and the full suite are green, with each new test shown to fail against the pre-change implementation. Commit: `feat(reports): record or discard a PAY-104 pending sale from Health › Faults`.
+
+---
+
 ## Serial step 9
 
 ### Task 13: Documentation
@@ -473,6 +507,7 @@ Documentation only. **Haiku implementer.** Verify with the full suite and `uv ru
 8. Part 1 and part 2 properties do not regress: identical login-failure bodies, `no-store` on plaintext-code responses, owner self-lockout refused, owner-targeted writes gated on `manage_ownership`, placement writes unable to touch catalog fields, exactly one `<main>` and one `#pill` after a boosted navigation.
 9. The CI skip-guard fails on an unrecognised skip (Task 1), and the three browser tests still run in CI.
 10. Every new test has been shown to fail against the pre-change implementation, and the executor's report says so per task.
+11. A `PAY-104` pending sale can be recorded **at most once**: a replayed `record-sale` writes no second row (Task 14).
 
 ## Program goals claimed (program plan §2)
 
@@ -484,6 +519,7 @@ Documentation only. **Haiku implementer.** Verify with the full suite and `uv ru
 |---|---|
 | §1.1 escrow credits, FIFO, `vend_failed` restore, snapshot | 4 |
 | §1.2 tables, durable `record_sale`, journal, prune scope | 5, 6 |
+| §1.2 `PAY-104` record-sale / discard routes (2026-09-27 amendment) | 14 |
 | §1.2 `DATA-101`; §5 `DATA-102` | 3, 5, 6 |
 | §1.3 `expected_cash`, `is_cash`, `collect_cash`, `POST /inventory/collect` | 3, 5, 7, 11 |
 | §2 all five queries, windows, bucketing | 7 |
@@ -493,7 +529,7 @@ Documentation only. **Haiku implementer.** Verify with the full suite and `uv ru
 | §4.2 scheduler | 9 |
 | §5 error handling | 5 (corrupt, journal), 6 (ladder, startup), 7 (empty db, `—`), 10 (inline email failure), 12 (`save_config` failure) |
 | §6 testing | every task; `tests/test_reports.py` in 7, `tests/test_report_scheduler.py` in 9 |
-| §7 files | 1–13 |
+| §7 files | 1–14 |
 | §8 out of scope | nothing built |
 | Part 2 debts (owner-directed) | 1 (skip-guard), 2 (comment) |
 
