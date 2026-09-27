@@ -797,13 +797,21 @@ class VMC:
             self.pending_sale_shares = None
             return
         methods = self.pending_sale_shares or {"unknown": round(product.price, 2)}
+        # Price comes from the consumed shares, not `product.price`:
+        # `selected_product` is the *live* catalog object
+        # (services/config_store.update_product mutates it in place), so an
+        # operator can edit the price while this sale is mid-dispense. The
+        # shares are what was actually deducted from escrow and must be
+        # what gets recorded — matches the convention already used by
+        # `pending_sale_for_recovery` for the PAY-104 recovery path.
+        price = round(sum(methods.values()), 2)
         try:
             await asyncio.to_thread(
                 self._event_recorder.record_sale,
                 product.sku,
                 product.name,
                 product.slot,
-                product.price,
+                price,
                 methods,
             )
         except Exception:
@@ -814,7 +822,7 @@ class VMC:
             )
             self._raise_fault(
                 FaultCode.DATA_101,
-                outcome=f"sku={product.sku} price=${product.price:.2f}",
+                outcome=f"sku={product.sku} price=${price:.2f}",
             )
         finally:
             self.pending_sale_shares = None
@@ -1192,13 +1200,19 @@ class VMC:
         (pending_sale_shares), as separate Credits, not one blob of the
         current/default method. That is what stops a failed vend laundering
         cash into card (or any other method) in the sales ledger.
+
+        The restored total is likewise derived from those shares, not a
+        fresh `product.price` read: `selected_product` is the *live*
+        catalog object (services/config_store.update_product mutates it in
+        place), so an operator can edit the price while this sale is
+        mid-dispense. Re-crediting the edited price here would both credit
+        the wrong amount to escrow and report it in the failure event, the
+        transaction log and the customer message below.
         """
         product = self.selected_product
-        price = product.price if product else 0.0
         name = product.name if product else "Unknown"
         sku = product.sku if product else None
         self._cancel_dispense_timeout()
-        self.credit_escrow += price
         shares = self.pending_sale_shares
         self.pending_sale_shares = None
         if shares is None:
@@ -1206,11 +1220,15 @@ class VMC:
             # dispensing, which is only entered right after
             # _consume_credits_fifo sets pending_sale_shares. Guard, not a
             # path — attribute to "unknown" rather than guess a method.
+            price = product.price if product else 0.0
             logger.warning(
                 "on_vend_failed: no pending_sale_shares recorded; crediting "
                 f"${price:.2f} back to escrow as 'unknown'"
             )
             shares = {"unknown": round(price, 2)}
+        else:
+            price = round(sum(shares.values()), 2)
+        self.credit_escrow += price
         now = time.time()
         for share_method, share_amount in shares.items():
             if share_amount > 0:

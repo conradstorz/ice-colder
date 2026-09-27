@@ -326,6 +326,66 @@ async def test_dispense_complete_sale_record_failure_raises_data_101_but_complet
     vmc.cancel_pending_tasks()
 
 
+async def test_dispense_complete_records_price_from_shares_not_live_catalog_price(
+    tmp_path,
+):
+    """`selected_product` is the *live* catalog ``Product`` object -- the
+    same one `services/config_store.update_product` mutates in place. If an
+    operator edits the price while a sale is mid-dispense, `product.price`
+    at record time reflects the *new* price, not what the customer actually
+    paid. The stored row must reflect `pending_sale_shares` (the money
+    actually deducted), matching `methods`, not a live catalog re-read.
+    """
+    real_recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
+    vmc = make_vmc(price=2.50)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+
+    class SaleOnlyRecorder:
+        """Forwards only record_sale to the real recorder -- mirrors
+        test_dispense_complete_records_sale_durably_before_fsm_returns_to_idle's
+        OrderCapturingRecorder above. The "dispense" event this test doesn't
+        care about is otherwise queued to the real recorder's background
+        writer thread, which can race record_sale's own fresh WAL
+        connection for the same db file; that race is a pre-existing,
+        unrelated timing issue outside the scope of this fix.
+        """
+
+        def record(self, event_type, value=1.0, metadata=None):
+            pass
+
+        def record_sale(self, sku, name, slot, price, methods, ts=None):
+            return real_recorder.record_sale(sku, name, slot, price, methods, ts=ts)
+
+    vmc.set_event_recorder(SaleOnlyRecorder())
+    vmc.machine.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    vmc.deposit_funds(2.50, payment_method="cash_bill")
+
+    vmc._process_payment()
+    assert vmc.state == "dispensing"
+    assert vmc.pending_sale_shares == {"cash_bill": 2.50}
+
+    # Operator edits the catalog price mid-flight, in place -- exactly what
+    # services/config_store.update_product does to the same live object.
+    vmc.selected_product.price = 9.99
+
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser",
+        {"slot": vmc.products[0].slot, "state": "complete"},
+    )
+    assert vmc.state == "idle"
+
+    with sqlite3.connect(str(tmp_path / "events.db")) as conn:
+        rows = conn.execute("SELECT price, methods FROM sales").fetchall()
+    assert len(rows) == 1
+    price, methods_json = rows[0]
+    methods = json.loads(methods_json)
+    assert methods == {"cash_bill": 2.50}
+    # The row must record what was actually charged, not the edited price.
+    assert price == pytest.approx(2.50)
+    vmc.cancel_pending_tasks()
+
+
 async def test_vend_failed_after_deduction_writes_no_sale_row_and_restores_credits(
     tmp_path,
 ):
@@ -360,6 +420,59 @@ async def test_vend_failed_after_deduction_writes_no_sale_row_and_restores_credi
     with sqlite3.connect(str(tmp_path / "events.db")) as conn:
         count = conn.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
     assert count == 0  # no sale row for a vend that never completed
+    vmc.cancel_pending_tasks()
+
+
+async def test_vend_failed_restores_shares_total_not_live_catalog_price(tmp_path):
+    """Same live-object hazard as the record_sale test above, on the other
+    branch: `on_vend_failed` must restore exactly what `pending_sale_shares`
+    says was deducted, not re-read `product.price` after an operator edited
+    it mid-flight. Otherwise escrow is re-credited a different total than
+    was taken, and the failure event/log/customer message all report the
+    wrong amount too.
+    """
+    real_recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
+    vmc = make_vmc2()  # two products: WATER-1 stays sellable after ICE-1 locks
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    vmc.set_event_recorder(real_recorder)
+    messages: list[str] = []
+    vmc.set_message_callback(messages.append)
+    vmc.machine.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]  # ICE-1, price 2.50
+    vmc.deposit_funds(2.50, payment_method="cash_bill")
+
+    vmc._process_payment()
+    assert vmc.state == "dispensing"
+    assert vmc.pending_sale_shares == {"cash_bill": 2.50}
+
+    # Operator edits the catalog price mid-flight, in place.
+    vmc.selected_product.price = 9.99
+
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser", {"slot": vmc.products[0].slot, "state": "jam"}
+    )
+
+    assert vmc.state == "interacting_with_user"
+    assert vmc.pending_sale_shares is None
+    # Restored total must match what was actually deducted, not the edited
+    # catalog price.
+    assert vmc.credit_escrow == pytest.approx(2.50)
+    assert len(vmc.escrow_credits) == 1
+    assert vmc.escrow_credits[0].method == "cash_bill"
+    assert vmc.escrow_credits[0].amount == pytest.approx(2.50)
+
+    # The customer message must also report what was actually taken, not
+    # the edited catalog price.
+    assert any("$2.50" in m for m in messages)
+    assert not any("$9.99" in m for m in messages)
+
+    real_recorder.flush()
+    with sqlite3.connect(str(tmp_path / "events.db")) as conn:
+        row = conn.execute(
+            "SELECT value FROM events WHERE event_type = 'vend_failed'"
+        ).fetchone()
+    assert row is not None
+    assert row[0] == pytest.approx(2.50)
     vmc.cancel_pending_tasks()
 
 
