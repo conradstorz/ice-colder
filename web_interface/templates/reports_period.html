@@ -29,9 +29,23 @@
       {% endfor %}
     </div>
 
-    {# Bucket tabs #}
+    {# Bucket tabs. "Day" is disabled (not a link) when range is "all":
+       Day buckets from the epoch means one row -- and, per by_period's
+       own per-bucket queries, several SQL queries -- for every real day
+       the machine has ever run, tens of thousands of rows/100k+ queries
+       on a long-lived machine. Blocked server-side too (_resolve_bucket
+       falls back to the range's default bucket for this exact
+       combination) -- this only keeps an operator from ever generating
+       the link in the first place. #}
     <div class="flex border-b border-gray-200 px-1 pt-1">
       {% for b, label in [("day", "Day"), ("week", "Week"), ("month", "Month")] %}
+      {% if b == "day" and range == "all" %}
+      <span
+        class="px-4 py-2.5 text-sm font-medium -mb-px border-b-2 border-transparent text-gray-300 cursor-not-allowed"
+        title="Day buckets aren't available for All Time -- pick a shorter range, or use Week/Month.">
+        {{ label }}
+      </span>
+      {% else %}
       <a
         href="/reports/period?range={{ range }}&amp;bucket={{ b }}"
         class="px-4 py-2.5 text-sm font-medium -mb-px transition-colors
@@ -39,6 +53,7 @@
                {% else %}text-gray-500 hover:text-gray-700 border-b-2 border-transparent hover:border-gray-300{% endif %}">
         {{ label }}
       </a>
+      {% endif %}
       {% endfor %}
     </div>
 

@@ -20,6 +20,7 @@ Fixtures come from tests/conftest.py.
 import csv
 import io
 import re
+import sqlite3
 import time
 from urllib.parse import quote
 
@@ -30,6 +31,7 @@ from services.config_store import add_product
 from services.event_recorder import EventRecorder
 from web_interface import context as ctx
 from web_interface import routes
+from web_interface.routes import reports as reports_routes
 
 
 @pytest.fixture
@@ -181,6 +183,11 @@ class TestBucketDefault:
         assert _active_tab(resp.text, f"/reports/period?range={range_key}")
         # ...and the expected bucket's tab is active, no other bucket's is.
         for bucket in ("day", "week", "month"):
+            if range_key == "all" and bucket == "day":
+                # Not a live link at all here (Family D, Copilot review) --
+                # see TestAllDayComboCapped below -- so there is no href
+                # for _active_tab to find, active or not.
+                continue
             is_active = _active_tab(
                 resp.text, f"/reports/period?range={range_key}&amp;bucket={bucket}"
             )
@@ -194,6 +201,80 @@ class TestBucketDefault:
         assert resp.status_code == 200
         assert _active_tab(resp.text, "/reports/period?range=7d&amp;bucket=month")
         assert not _active_tab(resp.text, "/reports/period?range=7d&amp;bucket=day")
+
+
+class TestAllDayComboCapped:
+    """Family D (Copilot review): reports_period.html let 'all' + 'day' be
+    selected even though by_period walks one bucket -- several SQL queries
+    each -- per real DAY since the epoch, tens of thousands of rows and
+    well over 100,000 queries on a long-lived machine, blocking the report
+    worker and hammering the SD-card database for one request. Measured
+    directly against services.reports.by_period (bypassing the route, for
+    speed) before writing this fix: resolve_window("all") + bucket="day"
+    produced 20,725 rows in 2.13s against an EMPTY database (2026-09-27);
+    bucket="month" over the same window produced 682 rows in 0.07s -- both
+    numbers scale with wall-clock time, but the ~30x gap does not.
+    _resolve_bucket now refuses that specific combination server-side
+    (falls back to the range's own default bucket -- month for "all" --
+    the same shape an unrecognized bucket already gets), not merely a
+    UI-only guard a typed or bookmarked URL would bypass.
+    """
+
+    def test_resolve_bucket_refuses_all_plus_day(self):
+        assert reports_routes._resolve_bucket("all", "day") == "month"
+        assert reports_routes._resolve_bucket("all", "day") != "day"
+        # Every other combination is unaffected -- this is not a blanket
+        # "day never allowed" rule, only the one dangerous pairing.
+        assert reports_routes._resolve_bucket("all", "week") == "week"
+        assert reports_routes._resolve_bucket("all", "month") == "month"
+        assert reports_routes._resolve_bucket("30d", "day") == "day"
+        assert reports_routes._resolve_bucket("7d", "day") == "day"
+
+    def test_all_day_request_renders_month_not_day(self, client):
+        resp = client.get("/reports/period?range=all&bucket=day")
+        assert resp.status_code == 200
+        assert _active_tab(resp.text, "/reports/period?range=all&amp;bucket=month")
+        # The "Day" tab is not even a live link while range=all -- a
+        # disabled span, not an <a href=...> -- so there is no such link
+        # to click in the first place, not merely one that isn't active.
+        assert 'href="/reports/period?range=all&amp;bucket=day"' not in resp.text
+
+    def test_all_day_request_query_count_is_bounded(
+        self, client, wired, recorder, monkeypatch
+    ):
+        """Measures the actual number of SQL statements the real request
+        issues against the events database via sqlite3's own trace
+        callback -- a genuine count, not a timing guess. Before the fix
+        this exact request issues on the order of tens of thousands of
+        statements (one bucket's worth of queries per real day since the
+        epoch); after, at most a few thousand (one bucket's worth per
+        month) for any realistic 'now'.
+        """
+        real_connect = sqlite3.connect
+        total_statements = [0]
+
+        def _count(_sql):
+            total_statements[0] += 1
+
+        def counting_connect(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+            conn.set_trace_callback(_count)
+            return conn
+
+        monkeypatch.setattr(sqlite3, "connect", counting_connect)
+        resp = client.get("/reports/period?range=all&bucket=day")
+
+        assert resp.status_code == 200
+        # Bounded well under the "tens of thousands / 100,000+" regime the
+        # unguarded combination produces (see the class docstring's real
+        # measurement) -- generous headroom above a realistic month-bucket
+        # count (roughly 2-6 queries per month since the epoch) so this
+        # never flakes as time passes, while still being orders of
+        # magnitude below what "day" over "all" would cost.
+        assert total_statements[0] < 10_000, (
+            f"expected a bounded (month-bucket) query count, got "
+            f"{total_statements[0]} -- the all+day guard may not be active"
+        )
 
 
 class TestInvalidRangeFallsBack:

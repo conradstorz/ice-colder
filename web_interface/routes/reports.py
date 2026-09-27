@@ -147,8 +147,20 @@ def _default_bucket(range_key: str) -> str:
 
 def _resolve_bucket(range_key: str, bucket: str | None) -> str:
     """An unrecognized or absent bucket falls back to the range's default,
-    never a 422 -- the same fallback shape as `_effective_range`."""
-    if bucket in _VALID_BUCKETS:
+    never a 422 -- the same fallback shape as `_effective_range`.
+
+    `range="all"` + `bucket="day"` is refused server-side too, not merely
+    hidden in the UI (reports_period.html disables that tab, but a typed
+    or bookmarked URL bypasses a UI-only guard): `by_period` walks one
+    bucket -- and, per its own docstring, several SQL queries -- per real
+    day from the epoch to now, tens of thousands of rows and well over
+    100,000 queries on a long-lived machine, blocking the report worker
+    and hammering the SD-card database for one request. Falls back to the
+    range's own default bucket (month for "all"), the same shape an
+    unrecognized bucket already gets, rather than a 422 -- a stale or
+    hand-edited query string must never break the page.
+    """
+    if bucket in _VALID_BUCKETS and not (range_key == "all" and bucket == "day"):
         return bucket
     return _default_bucket(range_key)
 
