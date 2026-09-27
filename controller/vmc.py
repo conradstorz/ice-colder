@@ -37,6 +37,7 @@ from services.health_monitor import HealthMonitor
 from services.display_controller import DisplayController
 from services.inventory_manager import InventoryManager
 from services.session_store import Credit, SessionSnapshot, SessionStore
+from services.event_recorder import SaleRecordingFailed
 
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
 
@@ -783,14 +784,31 @@ class VMC:
         the vend or stop the machine. It must not journal the record itself
         on top of that: ``record_sale`` already did.
 
-        ``pending_sale_shares`` is cleared here on the success path.
+        ``pending_sale_shares`` is cleared here on the success path (DB
+        insert succeeded) and on the ordinary failure path (DB insert
+        failed but the journal fallback caught it — ``DATA-101``).
         ``on_vend_failed`` already clears it (and restores the exact shares
-        as credits) on the failure path — clearing it here too, whether the
-        DB insert or only the journal fallback captured the row, is what
-        stops the session snapshot from ever advertising an already-
+        as credits) on a *dispense* failure path — clearing it here too is
+        what stops the session snapshot from ever advertising an already-
         recorded sale as still pending; leaving it set would let a later
         "record this sale" PAY-104 recovery (Task 14) write the same money
         a second time.
+
+        If the DB insert *and* the journal fallback both fail
+        (``SaleRecordingFailed`` — e.g. a full or read-only data volume),
+        the sale is recorded nowhere durable at all, so this deliberately
+        does **not** clear ``pending_sale_shares`` and raises ``PAY-104``
+        instead of ``DATA-101``. ``PAY-104`` is the fault
+        ``pending_sale_for_recovery()`` already keys its Health › Faults
+        "record this sale" / "discard" recovery on, and ``_persist_session``
+        already refuses to touch the on-disk snapshot once ``PAY-104`` is
+        active — so the "dispensing" snapshot already written at deduction
+        time (``_process_payment``) survives untouched as the sale's only
+        remaining record, in this same running process, with no reboot
+        required. Reusing this existing recovery path (rather than
+        inventing a second one) is deliberate: it is exactly the situation
+        that path already exists to handle — a sale whose completion is
+        uncertain and must be reconciled by an operator.
         """
         product = self.selected_product
         if self._event_recorder is None or product is None:
@@ -814,6 +832,21 @@ class VMC:
                 price,
                 methods,
             )
+        except SaleRecordingFailed:
+            logger.exception(
+                f"record_sale AND its journal fallback both failed for "
+                f"sku={product.sku!r}; the sale is recorded nowhere durable. "
+                "Raising PAY-104 and preserving pending_sale_shares so the "
+                "on-disk session snapshot is not cleared — it is the only "
+                "remaining record of this sale."
+            )
+            if self._availability:
+                self._availability.set_transaction_certain(False)
+            self._raise_fault(
+                FaultCode.PAY_104,
+                outcome=f"sku={product.sku} price=${price:.2f} unrecorded",
+            )
+            return  # do not clear pending_sale_shares — see docstring
         except Exception:
             logger.exception(
                 f"record_sale failed for sku={product.sku!r}; already journaled "
@@ -824,8 +857,7 @@ class VMC:
                 FaultCode.DATA_101,
                 outcome=f"sku={product.sku} price=${price:.2f}",
             )
-        finally:
-            self.pending_sale_shares = None
+        self.pending_sale_shares = None
 
     async def _handle_mqtt_dispenser(self, topic: str, data: dict):
         """Handle dispenser status from ESP32.

@@ -806,6 +806,49 @@ class TestRecordSaleFailureJournal:
         assert count == 0
 
 
+class TestRecordSaleBothInsertAndJournalFail:
+    """The third rung: if the sales insert fails AND the journal fallback
+    also fails (e.g. a full or read-only data volume), the sale must not be
+    silently lost. record_sale signals this distinctly (SaleRecordingFailed)
+    rather than letting the plain insert exception -- indistinguishable
+    from the ordinary, journal-covered failure -- propagate."""
+
+    def test_raises_sale_recording_failed_not_the_plain_insert_error(
+        self, tmp_path, monkeypatch, journal_path
+    ):
+        db = str(tmp_path / "e.db")
+        rec = EventRecorder(db_path=db)
+
+        real_connect = sqlite3.connect
+
+        def fake_connect(path, *args, **kwargs):
+            conn = real_connect(path, *args, **kwargs)
+            if str(path) == db and kwargs.get("check_same_thread") is not False:
+                return _FailingSalesInsertConn(conn)
+            return conn
+
+        monkeypatch.setattr(sqlite3, "connect", fake_connect)
+        monkeypatch.setattr(
+            event_recorder_module,
+            "_append_journal_line",
+            lambda payload: (_ for _ in ()).throw(OSError("disk full")),
+        )
+
+        methods = {"cash": 2.00}
+        with pytest.raises(event_recorder_module.SaleRecordingFailed) as excinfo:
+            rec.record_sale("SKU3", "Gum", 6, 2.00, methods, ts=1000.0)
+
+        # Chained from the original insert failure, not swallowed.
+        assert isinstance(excinfo.value.__cause__, sqlite3.OperationalError)
+
+        # Nothing landed anywhere durable: no journal line...
+        assert not journal_path.exists()
+        # ...and no row in the database.
+        with real_connect(db) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+        assert count == 0
+
+
 class TestReplaySalesJournal:
     def test_is_noop_when_file_absent(self, tmp_path, journal_path):
         rec = EventRecorder(db_path=str(tmp_path / "e.db"))

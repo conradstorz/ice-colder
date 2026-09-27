@@ -20,7 +20,7 @@ from contracts.vending_machine import (
 )
 from controller.vmc import VMC
 from services.availability import Availability
-from services.event_recorder import EventRecorder
+from services.event_recorder import EventRecorder, SaleRecordingFailed
 from services.health_monitor import HealthMonitor
 from services.mqtt_messages import PaymentEnableCommand
 from services.session_store import Credit, SessionSnapshot, SessionStore
@@ -323,6 +323,77 @@ async def test_dispense_complete_sale_record_failure_raises_data_101_but_complet
     assert vmc.selected_product is None
     assert vmc.pending_sale_shares is None  # cleared even on the failure path
     assert "DATA-101" in {f["code"] for f in vmc.active_faults()}
+    vmc.cancel_pending_tasks()
+
+
+async def test_record_sale_totally_lost_preserves_pay104_recovery_not_data_101(
+    tmp_path,
+):
+    """Third rung of the durability ladder: the sales insert can fail AND
+    the journal fallback can also fail (a full or read-only data volume) --
+    services.event_recorder.SaleRecordingFailed signals exactly that. The
+    vend must still complete (a storage problem must never fail the vend),
+    but the sale must not simply vanish: this must raise PAY-104 (not the
+    ordinary DATA-101) and must NOT clear pending_sale_shares, so the
+    'dispensing' snapshot _process_payment already wrote to disk survives
+    untouched (_persist_session refuses to touch the file once PAY-104 is
+    active) as the sale's only remaining record -- recoverable through the
+    existing Health > Faults record/discard flow with no reboot required.
+    """
+    store_path = tmp_path / "session.json"
+    vmc = make_vmc(price=2.50)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    vmc.set_session_store(SessionStore(store_path))
+    vmc.set_availability(Availability())
+
+    class TotallyFailingRecorder:
+        def __init__(self):
+            self.record_sale_calls = 0
+
+        def record(self, event_type, value=1.0, metadata=None):
+            pass
+
+        def record_sale(self, sku, name, slot, price, methods, ts=None):
+            self.record_sale_calls += 1
+            raise SaleRecordingFailed("db insert and journal fallback both failed")
+
+    recorder = TotallyFailingRecorder()
+    vmc.set_event_recorder(recorder)
+    vmc.machine.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    vmc.deposit_funds(2.50, payment_method="cash_bill")
+
+    vmc._process_payment()
+    assert vmc.state == "dispensing"
+    await vmc.drain_persistence()  # the 'dispensing' snapshot is now on disk
+
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser",
+        {"slot": vmc.products[0].slot, "state": "complete"},
+    )
+
+    assert recorder.record_sale_calls == 1  # the failure branch was entered
+    assert vmc.state == "idle"  # the vend still completed regardless
+    assert vmc.selected_product is None
+
+    faults = {f["code"] for f in vmc.active_faults()}
+    assert "PAY-104" in faults
+    assert "DATA-101" not in faults  # not treated as the ordinary path
+
+    # The sale must be recoverable through the existing PAY-104 flow, in
+    # this same process, with no reboot -- proving the on-disk snapshot
+    # genuinely survived, not merely that some in-memory flag is set.
+    pending = vmc.pending_sale_for_recovery()
+    assert pending is not None, "sale evidence was lost -- nothing to recover"
+    assert pending["sku"] == "ICE-1"
+    assert pending["price"] == pytest.approx(2.50)
+    assert pending["methods"] == {"cash_bill": 2.50}
+
+    # And the on-disk file itself, read on a separate SessionStore/second
+    # connection to the same path -- not vmc's own in-memory state.
+    reloaded = SessionStore(store_path).load()
+    assert reloaded is not None
+    assert reloaded.pending_sale_shares == {"cash_bill": 2.50}
     vmc.cancel_pending_tasks()
 
 

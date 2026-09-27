@@ -252,3 +252,69 @@ def test_reconcile_never_raises_on_recorder_failure(monkeypatch):
     vmc = VMC(config=ConfigModel())
     main_mod.reconcile_sales_journal_faults(vmc, ExplodingRecorder())  # must not raise
     assert vmc.state == "idle"  # completely unaffected
+
+
+def test_reconcile_raises_data_101_when_replay_commits_but_journal_rewrite_fails(
+    tmp_path, monkeypatch
+):
+    """If replay_sales_journal() commits its row(s) to `sales` but then
+    raises before it can rewrite/truncate the journal (e.g. the final
+    os.replace cannot complete -- a full or read-only volume), the journal
+    file is still non-empty. reconcile_sales_journal_faults must not let
+    that exception escape to its own outer swallow-everything handler
+    before checking the journal's state: DATA-101 must still be raised (or
+    retained) so the operator gets an alert instead of the next boot
+    silently rediscovering the same stuck journal.
+    """
+    journal_path = tmp_path / "sales-journal.jsonl"
+    monkeypatch.setattr(event_recorder_module, "JOURNAL_PATH", journal_path)
+    payload = {
+        "ts": time.time(),
+        "sku": "ICE-1",
+        "name": "Ice Bag",
+        "slot": 0,
+        "price": 2.50,
+        "methods": {"cash_bill": 2.50},
+    }
+    journal_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    db_path = tmp_path / "events.db"
+    real_recorder = EventRecorder(db_path=str(db_path))
+
+    class RewriteFailsAfterCommitRecorder:
+        """Wraps a real recorder: replay genuinely inserts the row (so
+        `sales` reflects a real commit, like the scenario under test) but
+        then raises instead of truncating the journal -- reproducing "the
+        insert succeeded, the final journal rewrite did not" without
+        needing to fake os.replace internals."""
+
+        db_was_corrupt = False
+
+        def replay_sales_journal(self):
+            real_recorder.record_sale(
+                payload["sku"],
+                payload["name"],
+                payload["slot"],
+                payload["price"],
+                payload["methods"],
+                ts=payload["ts"],
+                idempotent=True,
+            )
+            raise OSError("journal rewrite: os.replace could not complete")
+
+    vmc = VMC(config=ConfigModel())
+
+    main_mod.reconcile_sales_journal_faults(
+        vmc, RewriteFailsAfterCommitRecorder()
+    )  # must not raise/exit
+
+    assert "DATA-101" in {f["code"] for f in vmc.active_faults()}
+
+    # The row genuinely landed in `sales` -- this is "committed but not
+    # drained", not merely "nothing happened".
+    with sqlite3.connect(str(db_path)) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+    assert count == 1
+    # And the journal file itself is still non-empty, proving the alert
+    # matches reality rather than being raised blindly.
+    assert journal_path.read_text(encoding="utf-8").strip()

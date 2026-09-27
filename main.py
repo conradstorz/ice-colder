@@ -246,6 +246,15 @@ def reconcile_sales_journal_faults(vmc: VMC, recorder: EventRecorder) -> None:
       or a reject — see its docstring. The unambiguous signal is whether
       ``JOURNAL_PATH`` is now absent or empty (drained: clear the fault) or
       still has content (stuck: raise/keep the fault).
+    - ``replay_sales_journal()`` itself can raise (e.g. it commits rows to
+      ``sales`` but its final ``os.replace`` rewriting the journal cannot
+      complete). That exception is caught here, separately from the outer
+      swallow-everything handler, specifically so the journal-state check
+      below still runs afterward — otherwise the outer handler would log
+      and swallow it before ``DATA-101`` is ever reconciled, leaving the
+      operator with no alert even though the journal is still non-empty
+      (replayed rows included) and the next boot would have to rediscover
+      the same problem from scratch.
     """
     try:
         if recorder.db_was_corrupt:
@@ -256,9 +265,17 @@ def reconcile_sales_journal_faults(vmc: VMC, recorder: EventRecorder) -> None:
             vmc.raise_data_fault(FaultCode.DATA_102, outcome=detail)
             logger.error(f"Event database was reset after corruption: {detail}")
 
-        inserted = recorder.replay_sales_journal()
-        if inserted:
-            logger.info(f"Sales journal replay: inserted {inserted} row(s)")
+        try:
+            inserted = recorder.replay_sales_journal()
+            if inserted:
+                logger.info(f"Sales journal replay: inserted {inserted} row(s)")
+        except Exception:
+            logger.exception(
+                "replay_sales_journal raised (e.g. the journal rewrite could "
+                "not complete); falling through to check the journal's "
+                "current state so DATA-101 is still raised/retained rather "
+                "than silently dropped"
+            )
 
         journal_path = event_recorder_module.JOURNAL_PATH
         drained = (

@@ -63,6 +63,20 @@ SUMMARY_KEYS = (
 # directory via monkeypatch.setattr(event_recorder, "JOURNAL_PATH", ...).
 JOURNAL_PATH = DATA_DIR / "sales-journal.jsonl"
 
+
+class SaleRecordingFailed(Exception):
+    """``record_sale`` could not write the sale anywhere durable: the
+    ``sales`` insert failed *and* the journal fallback write also failed
+    (e.g. a full or read-only data volume) -- unlike the ordinary "insert
+    failed, journal caught it" case, which re-raises the original insert
+    exception unchanged. Distinguished by type so ``VMC._record_sale`` can
+    tell "the row is safe in the journal, an ordinary DATA-101 alert is
+    enough" apart from "the row is nowhere; this must not be silently
+    treated the same way," and instead preserve it via the PAY-104
+    recovery path (see that method's docstring).
+    """
+
+
 # Tags a writer-queue item as a cash-collection job rather than the plain
 # 4-tuple `record()` puts on the queue for an events row. A namedtuple is
 # still a tuple, but isinstance() distinguishes it by its own class, so
@@ -560,6 +574,14 @@ class EventRecorder:
         ``replay_sales_journal`` always inserts idempotently on
         ``(ts, sku)`` regardless of how the row reached the journal, so a
         later replay of this same row cannot duplicate it either.
+
+        If the journal append *itself* also fails (e.g. the same full or
+        read-only volume that caused the insert to fail), this raises
+        ``SaleRecordingFailed`` instead of the original insert exception --
+        the row is then recorded nowhere durable at all, which the plain
+        "insert failed, DATA-101, journal has it" path must not be
+        mistaken for. See ``SaleRecordingFailed``'s docstring and
+        ``VMC._record_sale``.
         """
         ts = time.time() if ts is None else ts
         payload = {
@@ -578,11 +600,23 @@ class EventRecorder:
                 conn, ts, sku, name, slot, price, methods, idempotent=idempotent
             )
             conn.commit()
-        except Exception:
+        except Exception as insert_exc:
             logger.exception(
                 f"EventRecorder: record_sale failed for sku={sku!r}; journaling instead"
             )
-            _append_journal_line(payload)
+            try:
+                _append_journal_line(payload)
+            except Exception:
+                logger.exception(
+                    f"EventRecorder: record_sale's journal fallback ALSO failed "
+                    f"for sku={sku!r}; the sale is not recorded anywhere durable "
+                    "-- raising SaleRecordingFailed instead of the plain insert "
+                    "error so the caller cannot mistake this for the ordinary, "
+                    "journal-covered failure path"
+                )
+                raise SaleRecordingFailed(
+                    f"record_sale and its journal fallback both failed for sku={sku!r}"
+                ) from insert_exc
             raise
         finally:
             if conn is not None:
