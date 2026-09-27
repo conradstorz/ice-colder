@@ -192,6 +192,8 @@ published; new codes are added, never renumbered.
 | `COM-102` | Ice-maker monitor heartbeat lost / LWT | warning | Ice availability becomes `UNKNOWN` |
 | `COM-103` | MQTT broker unreachable | warning | Dashboard stays up, alert when reconnected |
 | `SVC-101` | Service door open / service mode | info | Inhibit both products |
+| `DATA-101` | Sale journal in use (durable insert failed) | warning | Append sale to fallback journal, alert; recorder replays and truncates the journal at startup, clearing the fault |
+| `DATA-102` | Event database was reset after corruption | warning | Rename `events.db` aside, create a fresh database, alert; clears on admin acknowledgement |
 
 Only the six machine-scope codes in `PAYMENT_BLOCKING_FAULTS` (§3) —
 `ICE-402`, `WTR-103`, `WTR-104`, `ENV-102`, `ENV-103`, `PWR-102` — inhibit
