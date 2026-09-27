@@ -88,6 +88,65 @@ def _syn_midnight(year, month, day):
     return datetime(year, month, day, tzinfo=SYN_TZ)
 
 
+class _SyntheticFallBackTz(tzinfo):
+    """Deterministic stand-in for a real DST FALL-BACK transition.
+
+    Mirror image of `_SyntheticDstTz` above: the offset *decreases* across
+    the transition (-04:00 -> -05:00, mirroring US Eastern's fall back from
+    EDT to EST) instead of increasing. Same rationale for existing
+    (no `zoneinfo`/`tzdata` on this machine, none may be added) and the
+    same `fromutc`-returns-a-frozen-offset trick so this class reproduces
+    the *specific* bug under review: a loop that re-derives and re-floors
+    the next boundary but judges advancement by epoch alone. On this
+    fall-back direction, the re-derived, re-floored candidate can land back
+    on the SAME local calendar bucket as `current` -- just under the new,
+    smaller-magnitude offset -- while its epoch is still strictly greater
+    (by exactly the one-hour DST delta). That is precisely the case an
+    epoch-only `next_start <= current` guard cannot see.
+
+    The transition instant: local wall time reaches 02:00 EDT (-04:00) and
+    falls back to 01:00 EST (-05:00) -- both equal to 06:00 UTC on
+    2026-11-01, which is `_TRANSITION_UTC` below. Only used at local
+    midnight and other non-ambiguous hours in this test file, never inside
+    the repeated 01:00-02:00 local hour, so there is no ambiguity to
+    resolve for the instants this file actually builds.
+    """
+
+    _TRANSITION_UTC = datetime(2026, 11, 1, 6, 0, 0)  # 02:00 EDT == 01:00 EST
+    _BEFORE = timedelta(hours=-4)  # EDT
+    _AFTER = timedelta(hours=-5)  # EST
+
+    def fromutc(self, dt):
+        naive_utc = dt.replace(tzinfo=None)
+        offset = self._BEFORE if naive_utc < self._TRANSITION_UTC else self._AFTER
+        return (dt + offset).replace(tzinfo=timezone(offset))
+
+    def utcoffset(self, dt):
+        # Reached only when this class is attached directly to a
+        # wall-clock datetime (as `_syn_fb_midnight` below does) -- never
+        # reached via `fromutc` above, which returns a frozen
+        # `datetime.timezone` instead of `self`.
+        if dt is None:
+            return self._BEFORE
+        naive_local = dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+        local_before_boundary = self._TRANSITION_UTC + self._BEFORE  # 02:00 local
+        return self._BEFORE if naive_local < local_before_boundary else self._AFTER
+
+    def dst(self, dt):
+        return timedelta(0)
+
+    def tzname(self, dt):
+        return "SYNFB"
+
+
+SYN_FB_TZ = _SyntheticFallBackTz()
+
+
+def _syn_fb_midnight(year, month, day):
+    """True local midnight on the given date, in `SYN_FB_TZ`."""
+    return datetime(year, month, day, tzinfo=SYN_FB_TZ)
+
+
 @pytest.fixture
 def recorder(tmp_path):
     return EventRecorder(db_path=str(tmp_path / "events.db"))
@@ -295,6 +354,172 @@ class TestByPeriodDstTransition:
             # -- and never zero or negative, which would mean an overlap
             # or a non-advancing bucket.
             assert gap in (23 * 3600.0, 24 * 3600.0, 25 * 3600.0)
+
+
+# --------------------------------------------------------------------------
+# Finding (Critical, this round): the spring-forward fix must generalise to
+# a FALL-BACK transition (offset decreases). On that direction, the
+# re-derived, re-floored next boundary can land back on the same local
+# calendar bucket `current` already represents -- an epoch-only
+# `next_start <= current` guard never fires, and a phantom, wrongly-split
+# bucket row slips through, for "day", "week" and "month" alike.
+# --------------------------------------------------------------------------
+
+
+class TestByPeriodFallBackTransition:
+    # (year, month, day) tuples at true local midnight, spanning the
+    # 2026-11-01 fall-back transition -- three days before, the transition
+    # day itself, two days after.
+    _DAY_DATES = [
+        (2026, 10, 29),
+        (2026, 10, 30),
+        (2026, 10, 31),
+        (2026, 11, 1),
+        (2026, 11, 2),
+        (2026, 11, 3),
+        (2026, 11, 4),
+    ]
+    # True local Monday-midnights spanning the same transition -- the week
+    # 2026-10-26..2026-11-01 contains it (2026-11-02 is a Monday, confirmed
+    # separately: `date(2026, 11, 2).weekday() == 0`).
+    _WEEK_DATES = [
+        (2026, 10, 12),
+        (2026, 10, 19),
+        (2026, 10, 26),
+        (2026, 11, 2),
+        (2026, 11, 9),
+    ]
+    # True local month-starts spanning the same transition -- November
+    # 2026 contains it.
+    _MONTH_DATES = [
+        (2026, 9, 1),
+        (2026, 10, 1),
+        (2026, 11, 1),
+        (2026, 12, 1),
+        (2027, 1, 1),
+    ]
+
+    def test_day_no_merge_25h_day_contiguous_and_sum_invariant(self, recorder):
+        dates = self._DAY_DATES
+        sale_ts = {d: _syn_fb_midnight(*d).timestamp() for d in dates}
+        for i, d in enumerate(dates):
+            recorder.record_sale(
+                f"D{i}", f"Day {d}", 1, 1.00, {"cash": 1.00}, ts=sale_ts[d]
+            )
+
+        window = (sale_ts[dates[0]], _syn_fb_midnight(2026, 11, 5).timestamp())
+        rows = reports.by_period(recorder, window, "day", tz=SYN_FB_TZ)
+
+        # Positive half first: exactly one bucket per true local day -- no
+        # phantom bucket, no two rows sharing a local start. A merged/split
+        # bug would show 8 rows here (one date split into two), not 7.
+        assert len(rows) == len(dates)
+        bucket_starts = [r["bucket_start"] for r in rows]
+        assert len(set(bucket_starts)) == len(bucket_starts)
+
+        for row in rows:
+            assert row["revenue"] == pytest.approx(1.00)
+            assert row["vends"] == 1
+
+        expected_starts = [_syn_fb_midnight(*d) for d in dates]
+        actual_starts = [datetime.fromisoformat(r["bucket_start"]) for r in rows]
+        assert actual_starts == expected_starts
+
+        # Contiguous: consecutive bucket starts are exactly one real
+        # elapsed day apart -- 25h (90000s) on the transition day
+        # (2026-11-01, which GAINS an hour to fall-back), 24h everywhere
+        # else. 90000 is the mirror of the spring-forward test's 82800.
+        gaps = [
+            (actual_starts[i + 1] - actual_starts[i]).total_seconds()
+            for i in range(len(actual_starts) - 1)
+        ]
+        assert gaps == [86400.0, 86400.0, 86400.0, 90000.0, 86400.0, 86400.0]
+
+        # q_end of each row equals q_start of the next: re-derive both via
+        # the module's own helpers rather than trusting bucket_start alone.
+        for i in range(len(dates) - 1):
+            end_of_this = reports._floor_to_bucket(
+                reports._to_local(sale_ts[dates[i + 1]], SYN_FB_TZ), "day"
+            )
+            assert end_of_this == actual_starts[i + 1]
+
+        # Sum invariant: nothing double-counted, nothing dropped.
+        assert sum(r["revenue"] for r in rows) == pytest.approx(float(len(dates)))
+        assert sum(r["vends"] for r in rows) == len(dates)
+
+    def test_week_no_merge_contiguous_and_sum_invariant(self, recorder):
+        dates = self._WEEK_DATES
+        sale_ts = {d: _syn_fb_midnight(*d).timestamp() for d in dates}
+        for i, d in enumerate(dates):
+            recorder.record_sale(
+                f"W{i}", f"Week {d}", 1, 1.00, {"cash": 1.00}, ts=sale_ts[d]
+            )
+
+        window = (sale_ts[dates[0]], _syn_fb_midnight(2026, 11, 16).timestamp())
+        rows = reports.by_period(recorder, window, "week", tz=SYN_FB_TZ)
+
+        # Positive half first: exactly one bucket per true local week.
+        assert len(rows) == len(dates)
+        bucket_starts = [r["bucket_start"] for r in rows]
+        assert len(set(bucket_starts)) == len(bucket_starts)
+
+        for row in rows:
+            assert row["revenue"] == pytest.approx(1.00)
+            assert row["vends"] == 1
+            bucket_dt = datetime.fromisoformat(row["bucket_start"])
+            assert bucket_dt.weekday() == 0  # every week bucket starts Monday
+
+        expected_starts = [_syn_fb_midnight(*d) for d in dates]
+        actual_starts = [datetime.fromisoformat(r["bucket_start"]) for r in rows]
+        assert actual_starts == expected_starts
+
+        # Contiguous: the week containing the fall-back (2026-10-26 ->
+        # 2026-11-02) is 169h (608400s) -- one hour longer than a normal
+        # 168h (604800s) week -- every other gap is the normal 604800.
+        gaps = [
+            (actual_starts[i + 1] - actual_starts[i]).total_seconds()
+            for i in range(len(actual_starts) - 1)
+        ]
+        assert gaps == [604800.0, 604800.0, 608400.0, 604800.0]
+
+        assert sum(r["revenue"] for r in rows) == pytest.approx(float(len(dates)))
+        assert sum(r["vends"] for r in rows) == len(dates)
+
+    def test_month_no_merge_contiguous_and_sum_invariant(self, recorder):
+        dates = self._MONTH_DATES
+        sale_ts = {d: _syn_fb_midnight(*d).timestamp() for d in dates}
+        for i, d in enumerate(dates):
+            recorder.record_sale(
+                f"M{i}", f"Month {d}", 1, 1.00, {"cash": 1.00}, ts=sale_ts[d]
+            )
+
+        window = (sale_ts[dates[0]], _syn_fb_midnight(2027, 2, 1).timestamp())
+        rows = reports.by_period(recorder, window, "month", tz=SYN_FB_TZ)
+
+        # Positive half first: exactly one bucket per true local month.
+        assert len(rows) == len(dates)
+        bucket_starts = [r["bucket_start"] for r in rows]
+        assert len(set(bucket_starts)) == len(bucket_starts)
+
+        for row in rows:
+            assert row["revenue"] == pytest.approx(1.00)
+            assert row["vends"] == 1
+
+        expected_starts = [_syn_fb_midnight(*d) for d in dates]
+        actual_starts = [datetime.fromisoformat(r["bucket_start"]) for r in rows]
+        assert actual_starts == expected_starts
+
+        # Contiguous: November 2026 (contains the fall-back) is 721h
+        # (2595600s) -- one hour longer than its normal 720h (2592000s) --
+        # every other gap is the plain days-in-month * 86400.
+        gaps = [
+            (actual_starts[i + 1] - actual_starts[i]).total_seconds()
+            for i in range(len(actual_starts) - 1)
+        ]
+        assert gaps == [2592000.0, 2678400.0, 2595600.0, 2678400.0]
+
+        assert sum(r["revenue"] for r in rows) == pytest.approx(float(len(dates)))
+        assert sum(r["vends"] for r in rows) == len(dates)
 
 
 # --------------------------------------------------------------------------

@@ -138,6 +138,38 @@ def _next_bucket(dt: datetime, bucket: str) -> datetime:
     raise ValueError(f"unknown bucket: {bucket!r}")
 
 
+def _bucket_key(dt: datetime, bucket: str) -> tuple:
+    """A local *calendar* bucket identity for `dt`, ignoring its UTC offset.
+
+    Two aware datetimes can be different instants yet the same local
+    calendar bucket -- e.g. a fall-back transition's `2026-11-01T00:00:00
+    -04:00` and `2026-11-01T00:00:00-05:00` are the same local day, an hour
+    apart in epoch terms. Comparing bucket identity on epoch (as the old
+    `next_start <= current` guard alone did) cannot see that; comparing on
+    this key -- calendar fields only -- can. `dt` is expected already
+    floored to its bucket's start (via `_floor_to_bucket`); for "week" that
+    means `dt` is already a Monday, so no re-derivation is needed there,
+    but it is computed independently anyway so this function is correct on
+    its own terms, not just for pre-floored input.
+    """
+    if bucket == "day":
+        return (dt.year, dt.month, dt.day)
+    if bucket == "week":
+        monday = dt - timedelta(days=dt.weekday())
+        return (monday.year, monday.month, monday.day)
+    if bucket == "month":
+        return (dt.year, dt.month)
+    raise ValueError(f"unknown bucket: {bucket!r}")
+
+
+# Bound on same-bucket re-advances inside the `by_period` loop below (see
+# the comment there): a handful of retries covers any real fall-back
+# transition (one calendar bucket's worth of "false advance" is all a
+# sane tzinfo can produce), while still guaranteeing the loop cannot spin
+# forever against a pathological one.
+_MAX_BUCKET_KEY_RETRIES = 8
+
+
 def _cash_since(conn: sqlite3.Connection, since_ts: Optional[float]) -> float:
     """Sum the cash-class shares of `sales.methods` with ts > since_ts.
 
@@ -187,7 +219,12 @@ def by_period(
     `timedelta` to a stale offset -- so a bucket always starts and ends at
     true local midnight (or week/month start) even across a DST
     transition, and a day that is locally 23 or 25 hours long is queried
-    over that true span rather than a naive 24.
+    over that true span rather than a naive 24. Advancement itself is
+    judged on the local *calendar* bucket, not on epoch instant (see
+    `_bucket_key` and the loop below) -- required for a fall-back
+    transition, where the re-derived, re-floored next boundary can land
+    on the same calendar bucket `current` already represents, at a later
+    epoch, under the new offset.
     """
     recorder.flush()
     start_ts, end_ts = window
@@ -214,21 +251,48 @@ def by_period(
             # merge or split a day across a DST transition. Re-deriving on
             # every iteration, then re-flooring, lands exactly on true
             # local midnight/week/month-start regardless.
-            unfloored_next = _next_bucket(current, bucket)
-            next_start = _floor_to_bucket(
-                _to_local(unfloored_next.timestamp(), tz), bucket
-            )
+            #
+            # Advancement is judged on the LOCAL CALENDAR BUCKET
+            # (`_bucket_key`), not on epoch instant. On a spring-forward
+            # transition (offset increases) that distinction is moot -- the
+            # re-derived, re-floored candidate always lands on a later
+            # calendar date. On a FALL-BACK transition (offset *decreases*,
+            # e.g. -04:00 -> -05:00), the re-derived, re-floored candidate
+            # can land back on the SAME local calendar bucket `current`
+            # already represents -- just expressed under the new, smaller-
+            # magnitude offset -- while its epoch is still strictly greater
+            # than `current`'s (by exactly the DST delta). An epoch-only
+            # guard (`next_start <= current`) never fires on that case, so
+            # a phantom, wrongly-split bucket row would slip through. Keep
+            # re-deriving from the candidate's own epoch, re-flooring each
+            # time, until the bucket key itself genuinely advances -- that
+            # is what guarantees exactly one local bucket is consumed per
+            # outer-loop iteration in both DST directions.
+            current_key = _bucket_key(current, bucket)
+            candidate = _next_bucket(current, bucket)
+            next_start = _floor_to_bucket(_to_local(candidate.timestamp(), tz), bucket)
+            retries = 0
+            while (
+                _bucket_key(next_start, bucket) <= current_key
+                and retries < _MAX_BUCKET_KEY_RETRIES
+            ):
+                candidate = _next_bucket(next_start, bucket)
+                next_start = _floor_to_bucket(
+                    _to_local(candidate.timestamp(), tz), bucket
+                )
+                retries += 1
             if next_start <= current:
-                # Pathological non-advance guard (e.g. a degenerate tzinfo):
-                # force progress with the unfloored boundary so the loop
-                # cannot spin forever.
-                next_start = unfloored_next
+                # Pathological non-advance guard (e.g. a degenerate tzinfo
+                # that exhausted the retries above without its bucket key
+                # ever moving forward): force progress with the unfloored
+                # candidate so the loop cannot spin forever.
+                next_start = candidate
 
             q_start = max(current.timestamp(), start_ts)
             # `q_end` MUST come from the same re-floored `next_start` used
-            # to seed the next iteration's `current` -- not from
-            # `unfloored_next` -- or the two buckets would overlap by the
-            # DST offset and double-count the sales in that overlap.
+            # to seed the next iteration's `current` -- not from the
+            # unfloored `candidate` -- or the two buckets would overlap by
+            # the DST offset and double-count the sales in that overlap.
             q_end = min(next_start.timestamp(), end_ts)
 
             revenue = conn.execute(
