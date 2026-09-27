@@ -526,6 +526,15 @@ class VMC:
             )
         self._push_active_faults()
 
+    def raise_data_fault(self, code: FaultCode, outcome: str | None = None) -> None:
+        """Public entry point for a caller outside the FSM (main.py, at
+        startup) to raise a machine-scope data fault (``DATA-101``/
+        ``DATA-102``) without reaching into the fault registry directly —
+        every in-FSM caller uses ``_raise_fault``; this is the one seam for
+        the one caller that isn't one.
+        """
+        self._raise_fault(code, outcome=outcome)
+
     def clear_fault(self, key: str, by: str = "admin") -> bool:
         """Clear a fault by key (SKU for product faults, code string for machine faults)."""
         code = self._lockouts.pop(key, None)
@@ -615,6 +624,56 @@ class VMC:
             return False
         return reported_slot != self.selected_product.slot
 
+    async def _record_sale(self) -> None:
+        """Durably record the just-completed sale before `_finish_dispensing`.
+
+        Runs the recorder's synchronous, own-connection ``record_sale``
+        (services/event_recorder.py) off the event loop via
+        ``asyncio.to_thread``, so the loop is never blocked on the disk
+        write — the row is on disk before the FSM returns to idle (spec
+        §1.2). ``record_sale`` already appends the same record to the sales
+        journal (append + fsync) and re-raises on any insert failure; this
+        only needs to catch that, raise the alert-class ``DATA-101``, and
+        let the vend finish regardless — a storage problem must never fail
+        the vend or stop the machine. It must not journal the record itself
+        on top of that: ``record_sale`` already did.
+
+        ``pending_sale_shares`` is cleared here on the success path.
+        ``on_vend_failed`` already clears it (and restores the exact shares
+        as credits) on the failure path — clearing it here too, whether the
+        DB insert or only the journal fallback captured the row, is what
+        stops the session snapshot from ever advertising an already-
+        recorded sale as still pending; leaving it set would let a later
+        "record this sale" PAY-104 recovery (Task 14) write the same money
+        a second time.
+        """
+        product = self.selected_product
+        if self._event_recorder is None or product is None:
+            self.pending_sale_shares = None
+            return
+        methods = self.pending_sale_shares or {"unknown": round(product.price, 2)}
+        try:
+            await asyncio.to_thread(
+                self._event_recorder.record_sale,
+                product.sku,
+                product.name,
+                product.slot,
+                product.price,
+                methods,
+            )
+        except Exception:
+            logger.exception(
+                f"record_sale failed for sku={product.sku!r}; already journaled "
+                "as fallback by record_sale itself — raising DATA-101 and "
+                "finishing the vend regardless"
+            )
+            self._raise_fault(
+                FaultCode.DATA_101,
+                outcome=f"sku={product.sku} price=${product.price:.2f}",
+            )
+        finally:
+            self.pending_sale_shares = None
+
     async def _handle_mqtt_dispenser(self, topic: str, data: dict):
         """Handle dispenser status from ESP32.
 
@@ -653,6 +712,7 @@ class VMC:
                 self._event_recorder.record(
                     "dispense", value=float(self.selected_product.slot)
                 )
+            await self._record_sale()
             self._finish_dispensing()
             return
 

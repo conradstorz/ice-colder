@@ -5,6 +5,7 @@ from services.notifier import Notifier
 from services.display_controller import DisplayController
 from services.inventory_manager import InventoryManager
 from services.event_recorder import EventRecorder
+from services import event_recorder as event_recorder_module
 from services.availability import Availability
 from services.session_store import SessionStore
 from services.config_store import save_config
@@ -23,6 +24,7 @@ from pydantic import SecretStr, ValidationError
 
 import uvicorn
 from config.config_model import ConfigModel, MQTTConfig
+from contracts.vending_machine import FaultCode
 from services.access import AccessStore
 from web_interface.server import app
 from web_interface import routes
@@ -223,6 +225,62 @@ def warn_if_setup_mode(store: AccessStore) -> None:
         )
 
 
+def reconcile_sales_journal_faults(vmc: VMC, recorder: EventRecorder) -> None:
+    """At startup: replay any journalled sales and reconcile DATA-101/DATA-102.
+
+    Never exits and never raises out to the caller — a reports/history
+    problem must never stop the VMC or MQTT client (program goal 9), so
+    every step here is best-effort and any unexpected failure is logged and
+    swallowed rather than propagated.
+
+    - ``DATA-102`` is raised once whenever the recorder reports it quarantined
+      a corrupt database on this boot (``recorder.db_was_corrupt``, set by
+      ``EventRecorder.__init__``, never by this function).
+    - ``DATA-101`` is reconciled from the *journal's own state after replay*,
+      never from ``replay_sales_journal()``'s return value: that integer is
+      only the count of rows this call actually inserted, and it is ``0``
+      both when there was nothing to do and when every row was a duplicate
+      or a reject — see its docstring. The unambiguous signal is whether
+      ``JOURNAL_PATH`` is now absent or empty (drained: clear the fault) or
+      still has content (stuck: raise/keep the fault).
+    """
+    try:
+        if recorder.db_was_corrupt:
+            detail = (
+                recorder.corrupt_backup_path
+                or "corrupt event database quarantined at startup"
+            )
+            vmc.raise_data_fault(FaultCode.DATA_102, outcome=detail)
+            logger.error(f"Event database was reset after corruption: {detail}")
+
+        inserted = recorder.replay_sales_journal()
+        if inserted:
+            logger.info(f"Sales journal replay: inserted {inserted} row(s)")
+
+        journal_path = event_recorder_module.JOURNAL_PATH
+        drained = (
+            not journal_path.exists()
+            or not journal_path.read_text(encoding="utf-8").strip()
+        )
+        if drained:
+            vmc.clear_fault(FaultCode.DATA_101.value)
+        else:
+            vmc.raise_data_fault(
+                FaultCode.DATA_101,
+                outcome="sales journal not fully drained after replay",
+            )
+            logger.error(
+                "Sales journal still has unresolved rows after replay; "
+                "DATA-101 remains set"
+            )
+    except Exception:
+        logger.exception(
+            "reconcile_sales_journal_faults failed; continuing startup "
+            "regardless (a reports/history problem must never stop the "
+            "VMC or MQTT client)"
+        )
+
+
 _SUPERVISE_RESTART_DELAY = 5.0
 
 
@@ -341,6 +399,7 @@ async def main():
     routes.set_event_recorder(recorder)
     availability.set_event_recorder(recorder)
     logger.info("Event recorder wired up")
+    reconcile_sales_journal_faults(vmc, recorder)
 
     vmc.set_session_store(SessionStore())
     logger.info("Session store attached; previous open session checked")
