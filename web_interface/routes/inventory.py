@@ -13,9 +13,17 @@ retires the rest.
 
 Counts live in InventoryManager, never in the stale Product.inventory_count
 seed field (part 1's d58da37, brief resolution 4) — see _row_for below.
+
+Task 11 adds the cash collection endpoints: GET /inventory/collect/confirm
+and POST /inventory/collect with a two-tap confirm using
+partials/confirm_button.html.
 """
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+import asyncio
+import sqlite3
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
@@ -125,6 +133,87 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         return templates.TemplateResponse(
             "partials/inventory_row.html",
             context.template_context(request, row=_row_for(product)),
+        )
+
+    @router.get(
+        "/inventory/collect/confirm",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.collect_cash))],
+    )
+    async def collect_confirm(
+        request: Request, confirming: str | None = Query(default=None)
+    ):
+        """confirm_button.html's confirm_url contract: absent or anything but
+        the literal string "false" renders the confirming (Confirm/Cancel)
+        state; "false" renders the plain first-tap button -- this is what its
+        Cancel button sends via hx-vals."""
+        return templates.TemplateResponse(
+            "partials/confirm_button.html",
+            context.template_context(
+                request,
+                label="Collect Cash",
+                confirm_label="Confirm Collection",
+                post_url="/inventory/collect",
+                target="#collect-cash-confirm",
+                confirm_url="/inventory/collect/confirm",
+                confirming=(confirming != "false"),
+            ),
+        )
+
+    @router.post(
+        "/inventory/collect",
+        response_class=HTMLResponse,
+        dependencies=[
+            Depends(web_auth.require(Permission.collect_cash)),
+            Depends(context.require_htmx),
+        ],
+    )
+    async def collect_cash(request: Request):
+        """Record a cash collection and return the recorded time and expected amount."""
+        if not context.event_recorder:
+            raise HTTPException(status_code=500, detail="Event recorder not configured")
+
+        principal = web_auth.current_principal(request)
+        if not principal:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+
+        user_id = principal.user.id
+        user_name = principal.user.name
+
+        # Record the cash collection, which enqueues it on the writer thread.
+        context.event_recorder.record_cash_collection(user_id, user_name)
+
+        # Flush the queue to ensure the row is written.
+        await asyncio.to_thread(context.event_recorder.flush)
+
+        # Read the row back to get the expected_cash value that was computed
+        # in the writer thread at insert time (this ensures consistency with
+        # the recorded value, not a figure recomputed here in the route).
+        conn = sqlite3.connect(context.event_recorder._db_path)
+        try:
+            cursor = conn.execute(
+                "SELECT ts, expected_cash FROM cash_collections "
+                "ORDER BY ts DESC LIMIT 1"
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise HTTPException(
+                    status_code=500, detail="Cash collection row not found after insert"
+                )
+            ts, expected_cash = row
+        finally:
+            conn.close()
+
+        # Format the recorded time as a human-readable string.
+        recorded_time = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+
+        return templates.TemplateResponse(
+            "partials/cash_collection_result.html",
+            context.template_context(
+                request,
+                recorded_time=recorded_time,
+                expected_cash=expected_cash,
+            ),
         )
 
     return router

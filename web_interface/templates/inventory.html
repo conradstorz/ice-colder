@@ -4,6 +4,18 @@
 <div class="space-y-4">
   <h1 class="text-hero font-semibold text-gray-900">Inventory</h1>
 
+  {# Task 11: Cash collection from inventory level #}
+  {% if "collect_cash" in perms %}
+  <div class="flex justify-start">
+    {% set label = "Collect Cash" %}
+    {% set confirm_label = "Confirm Collection" %}
+    {% set post_url = "/inventory/collect" %}
+    {% set target = "#collect-cash-confirm" %}
+    {% set confirm_url = "/inventory/collect/confirm" %}
+    {% include "partials/confirm_button.html" with context %}
+  </div>
+  {% endif %}
+
   {% if rows %}
   <div class="space-y-2">
     {% for row in rows %}
