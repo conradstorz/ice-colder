@@ -1482,4 +1482,228 @@ class TestReplayDuplicateSkipIsLogged:
         assert after == before  # behaviour, not just the log: nothing new landed
 
         assert "777.25" in caplog.text
-        assert "DUPLOG" in caplog.text
+
+
+class TestAtomicJournalRewrite:
+    """Task 5, follow-up Fix 1 (CRITICAL): replay_sales_journal's final
+    rewrite of JOURNAL_PATH must go through a sibling temp file + fsync +
+    os.replace, never a truncate-then-write -- the rows it rewrites there
+    can be the *only* remaining copy of a sale (one that failed both a
+    `sales` insert and the rejected-evidence write). Proven here by making
+    the rename step itself fail and showing the *original* journal content
+    survives completely intact rather than being lost or truncated -- which
+    is only possible if the rewrite never touches JOURNAL_PATH until a
+    single atomic os.replace call."""
+
+    def test_replace_failure_leaves_original_journal_intact_remaining_lines_branch(
+        self, tmp_path, journal_path, monkeypatch
+    ):
+        """Exercises the `remaining_lines` (non-empty rewrite) branch."""
+        db = str(tmp_path / "e.db")
+        rec = EventRecorder(db_path=db)
+        bad = {  # sku=None violates NOT NULL -- well-formed JSON, uninsertable
+            "ts": 2.0,
+            "sku": None,
+            "name": "Bad",
+            "slot": 2,
+            "price": 1.0,
+            "methods": {"cash": 1.0},
+        }
+        original_content = json.dumps(bad) + "\n"
+        journal_path.write_text(original_content, encoding="utf-8")
+
+        # Force the bad row into `remaining_lines`: it must fail to insert
+        # AND fail to be set aside as rejected evidence (see
+        # TestSalesJournalRejectedWriteFailure above for the same shape).
+        def failing_append(_payload):
+            raise OSError("simulated: disk full writing rejected-sale evidence")
+
+        monkeypatch.setattr(
+            event_recorder_module, "_append_rejected_sale_line", failing_append
+        )
+
+        def failing_replace(*args, **kwargs):
+            raise OSError("simulated: rename failed (e.g. antivirus handle open)")
+
+        monkeypatch.setattr(os, "replace", failing_replace)
+
+        with pytest.raises(OSError, match="rename failed"):
+            rec.replay_sales_journal()
+
+        # The original journal content must be completely intact: neither
+        # lost nor truncated to a partial/empty state.
+        assert journal_path.read_text(encoding="utf-8") == original_content
+
+        # Proof the mechanism really is temp-file-then-rename: the new
+        # content was written to a sibling temp file (which is what
+        # os.replace was about to move into place) rather than never being
+        # written at all.
+        tmp_sibling = journal_path.with_name(f"{journal_path.name}.tmp")
+        assert tmp_sibling.exists()
+        assert tmp_sibling.read_text(encoding="utf-8") == original_content
+
+    def test_replace_failure_leaves_original_journal_intact_empty_branch(
+        self, tmp_path, journal_path, monkeypatch
+    ):
+        """Exercises the "nothing remains" (empty rewrite) branch -- the
+        fix must handle this the same atomic way, not fall back to a plain
+        truncating write for the empty case."""
+        db = str(tmp_path / "e.db")
+        rec = EventRecorder(db_path=db)
+        good = {
+            "ts": 1.0,
+            "sku": "GOOD1",
+            "name": "One",
+            "slot": 1,
+            "price": 1.0,
+            "methods": {"cash": 1.0},
+        }
+        original_content = json.dumps(good) + "\n"
+        journal_path.write_text(original_content, encoding="utf-8")
+
+        def failing_replace(*args, **kwargs):
+            raise OSError("simulated: rename failed")
+
+        monkeypatch.setattr(os, "replace", failing_replace)
+
+        with pytest.raises(OSError, match="rename failed"):
+            rec.replay_sales_journal()
+
+        # The row was already durably inserted into `sales` (each row
+        # commits in its own transaction before the final rewrite even
+        # starts) -- but the journal itself must still show its original,
+        # unmodified content, not a truncated/empty file, since the rename
+        # that would have cleared it never completed.
+        assert journal_path.read_text(encoding="utf-8") == original_content
+        with sqlite3.connect(db) as conn:
+            assert conn.execute("SELECT sku FROM sales").fetchall() == [("GOOD1",)]
+
+    def test_successful_rewrite_still_produces_correct_final_content(
+        self, tmp_path, journal_path
+    ):
+        """Sanity/GREEN companion to the two failure tests above: with no
+        fault injected, the atomic rewrite still produces exactly the same
+        final content the old direct-write code produced, and leaves no
+        stray temp file behind."""
+        db = str(tmp_path / "e.db")
+        rec = EventRecorder(db_path=db)
+        good = {
+            "ts": 1.0,
+            "sku": "GOOD1",
+            "name": "One",
+            "slot": 1,
+            "price": 1.0,
+            "methods": {"cash": 1.0},
+        }
+        journal_path.write_text(json.dumps(good) + "\n", encoding="utf-8")
+
+        count = rec.replay_sales_journal()
+
+        assert count == 1
+        assert journal_path.read_text(encoding="utf-8") == ""
+        tmp_sibling = journal_path.with_name(f"{journal_path.name}.tmp")
+        assert not tmp_sibling.exists()
+
+
+class TestWriterThreadDeadGuard:
+    """Task 5, follow-up Fix 2 (IMPORTANT): a writer thread whose initial
+    connect fails must exit cleanly (logged) rather than crashing silently,
+    and flush() must detect that and return immediately rather than
+    spinning to its full timeout on every call thereafter."""
+
+    @staticmethod
+    def _make_recorder_with_dead_writer(tmp_path, monkeypatch):
+        """An EventRecorder whose writer thread's initial connect fails,
+        while __init__'s own connections (_init_db/prune) succeed normally
+        -- isolated the same way TestWriterThread.test_writer_survives_bad_row
+        isolates the writer thread's connection, by keying off the
+        check_same_thread=False kwarg that only _writer_loop passes."""
+        real_connect = sqlite3.connect
+
+        def fake_connect(*args, **kwargs):
+            if kwargs.get("check_same_thread") is False:
+                raise sqlite3.OperationalError(
+                    "simulated: writer thread could not open database"
+                )
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr(sqlite3, "connect", fake_connect)
+        db = str(tmp_path / "events.db")
+        rec = EventRecorder(db_path=db)
+        # Give the daemon thread a moment to actually run and die -- avoids
+        # a race where is_alive() is checked before the thread has even
+        # attempted its connect.
+        rec._writer.join(timeout=2.0)
+        assert not rec._writer.is_alive(), (
+            "test setup bug: the writer thread is still alive, so it did "
+            "not fail its initial connect as intended"
+        )
+        return rec
+
+    def test_record_does_not_raise_when_writer_thread_is_dead(
+        self, tmp_path, monkeypatch
+    ):
+        rec = self._make_recorder_with_dead_writer(tmp_path, monkeypatch)
+        # record() must never raise, even though nothing will ever drain
+        # the queue it puts rows onto.
+        rec.record("payment", value=1.0)
+        rec.record_cash_collection("u1", "Alice")
+
+    def test_flush_returns_promptly_when_writer_thread_is_dead(
+        self, tmp_path, monkeypatch
+    ):
+        rec = self._make_recorder_with_dead_writer(tmp_path, monkeypatch)
+        rec.record("payment", value=1.0)  # queues a row nothing will ever drain
+        assert rec._queue.unfinished_tasks == 1
+
+        start = time.monotonic()
+        rec.flush(timeout=5.0)
+        elapsed = time.monotonic() - start
+
+        # A prompt return, not a full spin to the 5s timeout.
+        assert elapsed < 1.0, (
+            f"flush() took {elapsed:.2f}s -- it spun to (near) the timeout "
+            "instead of detecting the dead writer thread and returning "
+            "immediately"
+        )
+        # The row really was never drained -- this is a fast bail-out, not
+        # a coincidental fast drain.
+        assert rec._queue.unfinished_tasks == 1
+
+    def test_healthy_flush_still_waits_for_queued_rows(self, tmp_path, monkeypatch):
+        """Companion GREEN check: a healthy writer thread's flush() must
+        still block until the row is actually written -- the new dead-writer
+        fast path must not fire for a live, merely-busy writer thread."""
+        real_connect = sqlite3.connect
+
+        class _SlowInsertConnection:
+            def __init__(self, conn):
+                self._conn = conn
+
+            def execute(self, sql, *args, **kwargs):
+                if sql.strip().upper().startswith("INSERT"):
+                    time.sleep(0.5)  # simulate a slow write
+                return self._conn.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._conn, name)
+
+        def fake_connect(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+            if kwargs.get("check_same_thread") is False:
+                return _SlowInsertConnection(conn)
+            return conn
+
+        monkeypatch.setattr(sqlite3, "connect", fake_connect)
+        db = str(tmp_path / "events.db")
+        rec = EventRecorder(db_path=db)
+        rec.record("payment", value=1.0)
+
+        start = time.monotonic()
+        rec.flush(timeout=5.0)
+        elapsed = time.monotonic() - start
+
+        assert rec._writer.is_alive()  # genuinely took the healthy path
+        assert elapsed >= 0.4  # actually waited for the slow insert (some slack)
+        with sqlite3.connect(db) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1

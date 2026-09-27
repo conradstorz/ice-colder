@@ -101,6 +101,30 @@ def _append_line(path: Path, payload: dict) -> None:
         os.fsync(f.fileno())
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Replace `path`'s entire content atomically and durably.
+
+    Writes to a sibling temp file, flushes + fsyncs it, then ``os.replace``s
+    it over `path`. Unlike ``Path.write_text`` (which truncates the target
+    then writes into it, with no fsync), this can never leave `path` missing
+    or half-written: until the ``os.replace`` call, the original content at
+    `path` is untouched, and ``os.replace`` itself is atomic at the
+    filesystem level -- a crash before it leaves the old content intact, a
+    crash after it leaves the new content intact, and there is no instant at
+    which neither exists. Used by ``replay_sales_journal`` to rewrite
+    JOURNAL_PATH, since the lines it rewrites there can be the only
+    remaining copy of a sale (see that method's docstring) -- matches the
+    shape of ``_append_line`` above (flush + fsync) and
+    ``services/config_store.py``'s ``save_config`` (temp file + os.replace).
+    """
+    tmp_path = path.with_name(f"{path.name}.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, path)
+
+
 def _append_journal_line(payload: dict) -> None:
     """Append one JSON line to JOURNAL_PATH, durably (flush + fsync)."""
     _append_line(JOURNAL_PATH, payload)
@@ -664,13 +688,32 @@ class EventRecorder:
             conn.close()
 
         if remaining_lines:
-            JOURNAL_PATH.write_text("\n".join(remaining_lines) + "\n", encoding="utf-8")
+            _atomic_write_text(JOURNAL_PATH, "\n".join(remaining_lines) + "\n")
         else:
-            JOURNAL_PATH.write_text("", encoding="utf-8")
+            _atomic_write_text(JOURNAL_PATH, "")
         return count
 
     def flush(self, timeout: float = 5.0) -> None:
-        """Block until every queued row is written (tests, shutdown, reads)."""
+        """Block until every queued row is written (tests, shutdown, reads).
+
+        Returns immediately -- without waiting out `timeout` -- if the
+        writer thread is not alive (its initial database connect failed;
+        see `_writer_loop`). Once that thread has died nothing will ever
+        call `task_done()` again, so the old unconditional wait-loop would
+        spin to the full timeout on *every* future call, and
+        `get_historical_average` alone calls `_compute_window` (which calls
+        `flush()`) up to 30 times per invocation.
+        """
+        if not self._writer.is_alive():
+            n = self._queue.unfinished_tasks
+            if n:
+                logger.warning(
+                    f"EventRecorder: flush() called but the writer thread "
+                    f"for db_path={self._db_path!r} is not running; "
+                    f"returning immediately with {n} row(s) that will never "
+                    "be written"
+                )
+            return
         deadline = time.monotonic() + timeout
         while self._queue.unfinished_tasks and time.monotonic() < deadline:
             time.sleep(0.005)
@@ -679,7 +722,20 @@ class EventRecorder:
             logger.warning(f"EventRecorder: flush timed out with {n} rows still queued")
 
     def _writer_loop(self) -> None:
-        conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        try:
+            conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        except Exception:
+            logger.exception(
+                f"EventRecorder: writer thread could not open db_path="
+                f"{self._db_path!r}; this daemon thread is exiting and no "
+                "queued event or cash-collection row will ever be written "
+                "for the rest of this process. record() will keep "
+                "accepting rows without raising (they simply accumulate "
+                "unwritten); flush() will detect this thread is not alive "
+                "and return immediately instead of spinning to its full "
+                "timeout on every call."
+            )
+            return
         while True:
             row = self._queue.get()
             try:
