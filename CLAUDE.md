@@ -214,8 +214,8 @@ applied to the dashboard's login back-off via
 - **Config mutation**: Product changes go through `services/config_store.py` which writes back to `config.json`. The in-memory `ConfigModel` is mutated directly (Pydantic models with mutable fields).
 - **Web UI updates**: The dashboard uses HTMX to swap HTML partials from FastAPI endpoints. No SPA framework.
 - **Timezone handling**: Report bucketing uses the machine's local timezone; weeks start on **Monday**; a sale exactly on a boundary (e.g. midnight) belongs to the **later** bucket.
-- **DST testing**: `zoneinfo.ZoneInfo` is **unusable on a Windows checkout without `tzdata`**, so the DST tests in `tests/test_report_scheduler.py` use synthetic `tzinfo` classes rather than real IANA zones. Production code uses the OS's real timezone resolver.
-- **CSS class extractor limitation**: `tests/test_static_css.py`'s class extractor cannot tell markup inside a Jinja2 comment (`{# ... #}`) from real markup, so a template comment containing a literal `class="..."` will fail the test. This is a known limitation of the regex-based static extraction; do not add Tailwind classes in comments.
+- **DST testing**: `zoneinfo.ZoneInfo` is **unusable on a Windows checkout without `tzdata`**, so the DST tests use synthetic `tzinfo` classes. The primary synthetic zones (`_SyntheticDstTz` and `_SyntheticFallBackTz`) are in `tests/test_reports.py` (lines 24, 91) to test report bucketing across DST transitions; `tests/test_report_scheduler.py` mirrors them (lines 72, 102) to verify the scheduler threads its `tz` parameter correctly. Production code uses the OS's real timezone resolver.
+- **CSS class extractor limitation**: `tests/test_static_css.py`'s class extractor cannot tell markup inside a Jinja2 comment (`{# ... #}`) from real markup, so a template comment containing a literal `class="..."` will fail the test. This regex-based limitation (`_CLASS_ATTR_RE` at line 25) has no comment awareness — mentioning a Tailwind class name in a comment is safe, but writing an actual `class="..."` attribute in one is not.
 
 ## Removed Routes (Dashboard v2)
 
