@@ -54,6 +54,11 @@ def validate_skips(skips: list[dict]) -> tuple[bool, list[str]]:
     """
     illegitimate = []
     for skip in skips:
+        if not isinstance(skip, dict):
+            # A malformed entry (not even a dict) must fail closed, not be
+            # silently skipped over or crash the guard.
+            illegitimate.append(f"<malformed skip entry: {skip!r}>")
+            continue
         reason = skip.get("reason", "")
         if not is_skip_legitimate(reason):
             illegitimate.append(skip.get("nodeid", "<unknown>"))
@@ -62,3 +67,65 @@ def validate_skips(skips: list[dict]) -> tuple[bool, list[str]]:
         return False, illegitimate
 
     return True, []
+
+
+# Written by tests/conftest.py's pytest_sessionfinish hook in place of a real
+# skip list when it cannot see pytest's own stats (terminalreporter missing,
+# or missing .stats). Writing "[]" in that situation would be indistinguishable
+# from a clean run with zero skips and let run_skip_guard.py report
+# "Guard OK: All 0 skipped test(s) are legitimate" -- a false green with no
+# investigation, which is exactly the defect class this guard exists to
+# eliminate. The marker is a dict (never a valid skip-report shape, which is
+# always a list) carrying an explicit key so it cannot be mistaken for one.
+MISSING_TERMINALREPORTER_MARKER = {
+    "__skip_guard_error__": "terminalreporter_unavailable",
+    "detail": (
+        "pytest_sessionfinish could not obtain the terminalreporter plugin "
+        "(or it had no .stats attribute), so skip data was not collected "
+        "this run. This is a build failure, not a report of zero skips."
+    ),
+}
+
+
+def is_error_marker(report_data: object) -> bool:
+    """True if *report_data* is the "could not collect skips" marker rather
+    than a normal skip-report list (or anything else)."""
+    return isinstance(report_data, dict) and "__skip_guard_error__" in report_data
+
+
+def build_skip_report(stats: dict) -> list[dict]:
+    """Build the skip-report list from pytest's terminalreporter.stats mapping.
+
+    Pure and filesystem-free so it can be unit-tested directly against
+    constructed stand-in report objects, with no dependency on the pytest
+    session or its ordering -- `tests/conftest.py`'s `pytest_sessionfinish`
+    hook is a thin adapter that calls this and writes the result to disk.
+
+    Args:
+        stats: pytest terminalreporter.stats mapping (category -> list of
+            report objects). Only the "skipped" category is read; each
+            report is expected to expose `.nodeid` and `.longrepr` the way
+            pytest's own TestReport does, but a report missing either is
+            tolerated (falls back to "<unknown>" / "").
+
+    Returns:
+        A list of {"nodeid": str, "reason": str} dicts, one per skipped test.
+    """
+    skips = []
+    for report in stats.get("skipped", []):
+        skip_reason = ""
+        longrepr = getattr(report, "longrepr", None)
+        if isinstance(longrepr, tuple) and len(longrepr) >= 3:
+            skip_reason = longrepr[2]
+        elif isinstance(longrepr, str):
+            skip_reason = longrepr
+        elif longrepr is not None:
+            skip_reason = str(longrepr)
+
+        skips.append(
+            {
+                "nodeid": getattr(report, "nodeid", "<unknown>"),
+                "reason": skip_reason,
+            }
+        )
+    return skips

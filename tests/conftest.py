@@ -2,6 +2,7 @@
 
 import json
 import logging
+import sys
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from config.config_model import ConfigModel
 from controller.vmc import VMC
 from services.access import AccessStore, Role, User
 from services.inventory_manager import InventoryManager
+from tests.skip_policy import MISSING_TERMINALREPORTER_MARKER, build_skip_report
 from web_interface import auth as web_auth
 from web_interface import routes
 from web_interface.server import app
@@ -204,42 +206,50 @@ def pytest_sessionfinish(session):
 
     This hook runs at the end of the test session and writes a JSON file
     listing every skipped test's nodeid and reason. The CI workflow uses
-    this file to enforce the skip policy: only recognised skip reasons
-    are allowed; any other skip fails the build.
+    this file (via tests/run_skip_guard.py) to enforce the skip policy:
+    only recognised skip reasons are allowed; any other skip fails the
+    build.
 
     The report is written to skip-report.json in the working directory.
-    """
-    skips = []
+    This hook is intentionally a thin adapter: the report-building logic
+    lives in the pure, importable `build_skip_report` (tests/skip_policy.py)
+    so it can be unit-tested directly, and the two failure modes below are
+    handled here rather than left to chance:
 
-    # Collect all skipped tests from the session's terminalreporter
+    - If pytest's own terminalreporter can't be found (or has no .stats),
+      writing "[]" would be indistinguishable from a real run with zero
+      skips, and the guard would report a false "Guard OK". Write the
+      explicit MISSING_TERMINALREPORTER_MARKER instead so the guard fails
+      loudly and names the cause.
+    - A failure to write the report file itself (unwritable cwd, a
+      transiently locked file -- plausible on Windows) must never fail a
+      developer's local `pytest` run, which the brief requires to keep
+      passing regardless of this guard. The guard already fails closed in
+      CI when the file is simply missing, so swallowing the write error
+      here (with a loud terminal warning) still turns a broken CI run red.
+    """
+    terminalreporter = None
     if hasattr(session, "config") and hasattr(session.config, "pluginmanager"):
         terminalreporter = session.config.pluginmanager.get_plugin("terminalreporter")
-        if terminalreporter and hasattr(terminalreporter, "stats"):
-            for report in terminalreporter.stats.get("skipped", []):
-                # report.nodeid is the test nodeid
-                # report.wasxfail is used for xfail, not skip
-                # The skip reason is in report.longrepr[2] if it's a tuple/string
-                skip_reason = ""
-                if hasattr(report, "longrepr"):
-                    if isinstance(report.longrepr, tuple) and len(report.longrepr) >= 3:
-                        skip_reason = report.longrepr[2]
-                    elif isinstance(report.longrepr, str):
-                        skip_reason = report.longrepr
-                    else:
-                        skip_reason = str(report.longrepr)
 
-                skips.append(
-                    {
-                        "nodeid": report.nodeid,
-                        "reason": skip_reason,
-                    }
-                )
+    if terminalreporter is not None and hasattr(terminalreporter, "stats"):
+        report_data = build_skip_report(terminalreporter.stats)
+    else:
+        report_data = MISSING_TERMINALREPORTER_MARKER
 
-    # Write the report to skip-report.json
     report_path = Path("skip-report.json")
-    with open(report_path, "w") as f:
-        json.dump(skips, f, indent=2)
+    try:
+        with open(report_path, "w") as f:
+            json.dump(report_data, f, indent=2)
+    except OSError as e:
+        print(
+            f"\nWARNING: could not write {report_path}: {e}. "
+            "The skip guard depends on this file in CI; if this happens "
+            "there it will fail closed (missing file), but locally this "
+            "must not fail your test run, so continuing.",
+            file=sys.stderr,
+        )
+        return
 
-    # Print for debugging
-    if skips:
-        print(f"\nWrote {len(skips)} skipped test(s) to {report_path}")
+    if isinstance(report_data, list) and report_data:
+        print(f"\nWrote {len(report_data)} skipped test(s) to {report_path}")
