@@ -36,7 +36,7 @@ process-level restarts).
 
 ### Configuration (`config/config_model.py`, `config.json`)
 
-All configuration is a single Pydantic `ConfigModel` loaded from `config.json`. The model has six top-level sections: `version`, `physical` (machine details, people, products), `payment` (Stripe, PayPal, MDB), `communication` (email, SMS, Snapchat gateways), `mqtt` (broker connection), and `web` (dashboard host/port/trusted proxies) — plus the scalar `machine_id` field. `ConfigModel` exposes convenience properties (e.g., `config.products`, `config.machine_owner`, `config.stripe`) so consumers don't need to navigate the nested structure. Missing keys are filled from Pydantic defaults at load time. Saves via
+All configuration is a single Pydantic `ConfigModel` loaded from `config.json`. The model has seven top-level sections: `version`, `physical` (machine details, people, products), `payment` (Stripe, PayPal, MDB), `communication` (email, SMS, Snapchat gateways), `mqtt` (broker connection), `web` (dashboard host/port/trusted proxies), and `reports` (scheduled sales-summary email: `schedule` off/daily/weekly, `hour` 0–23, `weekday` Monday-based 0–6, `extra_recipients`) — plus the scalar `machine_id` field. The reports section is edited at **`/settings/reports`** gated on `edit_contacts`. `ConfigModel` exposes convenience properties (e.g., `config.products`, `config.machine_owner`, `config.stripe`) so consumers don't need to navigate the nested structure. Missing keys are filled from Pydantic defaults at load time. Saves via
 `services/config_store.py` are atomic (tmp + rename), write real secret values,
 and keep a rolling `config.json.bak`.
 
@@ -52,6 +52,10 @@ logs a clear error and exits with code 1 rather than papering over it.
 ### FSM Core (`controller/vmc.py`)
 
 `VMC` is a finite state machine built on the `transitions` library. States: `idle` -> `interacting_with_user` -> `dispensing` -> back to `idle` (or `error` from any state). Extra transitions: `cancel_sale` (interacting → idle, catalog edit removed the selection) and `vend_failed` (dispensing → interacting, price restored to escrow, product locked out per `contracts/vending_machine.py` `FAULT_TABLE`). Refunds are real: `request_refund` publishes `cmd/payment/refund` and tracks the ack. The transition table is defined as a list of dicts (`TRANSITIONS`) at module level. Business logic (deposit funds, select product, dispense, refund) lives as methods on `VMC`. The VMC holds a reference to the live `ConfigModel` and a `PaymentGatewayManager`. Heartbeat loss raises `COM-101` (vending), `COM-102` (ice maker), `PAY-101` (MDB) and `COM-103` (broker) through the fault registry and auto-clears on recovery.
+
+**FIFO method attribution:** `escrow_credits` is a FIFO ledger of `Credit(method, amount, ts)` that backs `credit_escrow`, which remains the authoritative total. Deducting a sale's price consumes credits first-in-first-out and records the per-method shares on `pending_sale_shares`; `vend_failed` restores **exactly those shares as separate credits with their original methods**, so money is never reclassified when a sale fails. Method strings are stored raw from `PaymentEvent.method` and classified only at query time. If the ledger and the total ever disagree the sale is booked to `{"unknown": price}` with a warning — a bug guard, not a path.
+
+**Sales recording durability:** A sale is inserted **synchronously on its own WAL connection** (`synchronous=NORMAL`) and **awaited via `asyncio.to_thread` before the FSM returns to idle** — the write sits at `_record_sale`, immediately before `_finish_dispensing`, and the `dispense` event stays because the existing KPIs read it. On failure the record goes to `data/sales-journal.jsonl` (append + fsync) and the VMC raises **`DATA-101`** while letting the vend complete — a storage problem must never fail a sale. At startup the journal is replayed: the replay insert is **idempotent on `(ts, sku)`** so a crash between the insert and the truncate cannot duplicate a row, each row commits in its **own transaction** so one bad row cannot block the others, and a row that can be neither inserted nor set aside stays in the journal. `main.py` clears `DATA-101` on the **journal being drained** (absent or empty after the call), **never** on the replay function's integer return — that integer is the count inserted and is `0` both for "nothing to do" and for "fully drained, all duplicates or rejects". A corrupt `events.db` is renamed aside to `events.db.corrupt-<timestamp>`, a fresh database is created, and **`DATA-102`** is raised so the machine keeps running; the constructor never raises on a corrupt file.
 
 ### Web Dashboard (`web_interface/`)
 
@@ -77,7 +81,13 @@ The tree, every URL with the permission that gates it (`Permission.<x>` from `se
 | `/products/{sku}/placement` | `edit_placement` |
 | `/products/{sku}/copy` | `edit_catalog` |
 | `/inventory` | `edit_placement` |
+| `POST /inventory/collect` | `collect_cash` (**all four roles**) |
 | `/reports` | `view_reports` |
+| `/reports/period` | `view_reports` |
+| `/reports/product` | `view_reports` |
+| `/reports/product/{sku}` | `view_reports` |
+| `/reports/method` | `view_reports` |
+| `/reports/collections` | `view_reports` |
 | `/controls` | `machine_controls` |
 | `/tests` | `run_tests` |
 | `/users` | `manage_users` |
@@ -93,6 +103,9 @@ The tree, every URL with the permission that gates it (`Permission.<x>` from `se
 | `/settings/comms` | `edit_secrets` |
 | `/settings/mqtt` | `edit_secrets` |
 | `/settings/web` | `edit_secrets` |
+| `/settings/reports` | `edit_contacts` |
+| `POST /health/faults/PAY-104/record-sale` | `clear_faults` (two-tap confirm) |
+| `POST /health/faults/PAY-104/discard` | `clear_faults` (two-tap confirm) |
 
 `/devices` sits under Users in this **navigation** tree (`LEVEL_DEVICES`'s `parent` is `LEVEL_USERS` in `web_interface/levels.py`) even though its URL is not under `/users/` — the tree is a navigation hierarchy, not a URL-prefix hierarchy. Every mutating route under these levels additionally requires `Depends(context.require_htmx)`.
 
@@ -140,6 +153,9 @@ The Health level is split across six sub-levels rather than one merged page. `/h
   holds the evidence file until an admin clears it, but never inhibits payment
 - `paths.py` - `LOG_DIR`, `LOG_FILE`, `DATA_DIR` shared by main, routes and services
 - `auth_policy.py` - PIN policy (`pin_problem`); validates 4–8 digits with no repeats or runs; identifies loopback hosts (`is_loopback`)
+- `event_recorder.py` - records heartbeats, refunds, vend failures, and sales to a durable SQLite schema; `sales` and `cash_collections` are never pruned, while `events` keeps a 90-day retention window via `_prune_with` (which touches only the `events` table)
+- `reports.py` - five report queries (`by_period`, `by_product`, `by_method`, `collections`, `summary`); window presets (`7d`, `30d`, `90d`, `12m`, `all`) via `resolve_window` (unknown values fall back to `30d`); CSV rendering via `render_csv` (returns **bytes**); and report filename via `report_filename`. All functions are **synchronous** and called from routes through `asyncio.to_thread`; each calls `recorder.flush()` first
+- `report_scheduler.py` - a supervised loop with a **bounded sleep of at most 60 s**, re-reading the live `config` each pass so turning the schedule off stops the next send within a minute; **per-period de-duplication** via a `report_sent` event, matching **any** stored event for the period rather than only the most recent; and **at most one catch-up** at startup for the most recent completed period, never a backlog. A failed send waits for the next due occurrence rather than retrying every pass
 
 ### Hardware (`hardware/`)
 
@@ -188,11 +204,18 @@ applied to the dashboard's login back-off via
 `routes.backoff.set_trusted_proxies(...)`, called after
 `routes.set_config_object(...)` so the env value wins.
 
+## Fault Codes and Severity
+
+`DATA-101` (sale journal in use; sales are being written to a fallback file) and `DATA-102` (event database was reset after corruption; history before the reset is lost) are both **alert-class** (`Severity.warning`, `Scope.machine`) and are **deliberately absent from `PAYMENT_BLOCKING_FAULTS`**, which still holds exactly six codes. Neither fault can ever stop the machine taking money. Both are registered in `contracts/vending_machine.py`.
+
 ## Key Patterns
 
 - **Logging**: Uses `loguru` throughout; logs rotate daily to `LOGS/vmc.log`. State changes are prefixed with `STATE_CHANGE_PREFIX`.
 - **Config mutation**: Product changes go through `services/config_store.py` which writes back to `config.json`. The in-memory `ConfigModel` is mutated directly (Pydantic models with mutable fields).
 - **Web UI updates**: The dashboard uses HTMX to swap HTML partials from FastAPI endpoints. No SPA framework.
+- **Timezone handling**: Report bucketing uses the machine's local timezone; weeks start on **Monday**; a sale exactly on a boundary (e.g. midnight) belongs to the **later** bucket.
+- **DST testing**: `zoneinfo.ZoneInfo` is **unusable on a Windows checkout without `tzdata`**, so the DST tests in `tests/test_report_scheduler.py` use synthetic `tzinfo` classes rather than real IANA zones. Production code uses the OS's real timezone resolver.
+- **CSS class extractor limitation**: `tests/test_static_css.py`'s class extractor cannot tell markup inside a Jinja2 comment (`{# ... #}`) from real markup, so a template comment containing a literal `class="..."` will fail the test. This is a known limitation of the regex-based static extraction; do not add Tailwind classes in comments.
 
 ## Removed Routes (Dashboard v2)
 
