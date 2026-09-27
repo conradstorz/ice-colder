@@ -35,7 +35,7 @@ suppressing branch cannot be passing merely because it was never reached.
 
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 
 import pytest
 
@@ -51,6 +51,82 @@ FIXED_TZ = timezone(timedelta(hours=-5))
 
 def _dt(year, month, day, hour=0, minute=0, second=0):
     return datetime(year, month, day, hour, minute, second, tzinfo=FIXED_TZ)
+
+
+# --------------------------------------------------------------------------
+# Synthetic DST tzinfo doubles for Finding 2 -- mirrors
+# tests/test_reports.py's own `_SyntheticDstTz`/`_SyntheticFallBackTz`
+# (duplicated here rather than imported, since this task's permitted file
+# list does not include that test module, and `zoneinfo.ZoneInfo` is not
+# usable on this machine -- no tzdata installed, and adding the `tzdata`
+# package is forbidden, no new runtime dependency; `pyproject.toml`/
+# `uv.lock` must not change). See that module's docstrings for the full
+# rationale of the `fromutc`-returns-a-frozen-snapshot design (it is what
+# makes these classes reproduce the *specific* bug under review, matching
+# what `datetime.astimezone(None)` actually returns in production, rather
+# than a "fully dynamic" tzinfo that would self-correct even under the
+# unfixed code and prove nothing).
+# --------------------------------------------------------------------------
+
+
+class _SyntheticSpringForwardTz(tzinfo):
+    """One hard-coded UTC transition instant: UTC-5 before, UTC-4 after --
+    mirrors US Eastern's 2026-03-08 spring-forward (02:00 EST -> 03:00 EDT)."""
+
+    _TRANSITION_UTC = datetime(2026, 3, 8, 7, 0, 0)  # 02:00 EST == 03:00 EDT
+    _BEFORE = timedelta(hours=-5)  # EST
+    _AFTER = timedelta(hours=-4)  # EDT
+
+    def fromutc(self, dt):
+        naive_utc = dt.replace(tzinfo=None)
+        offset = self._BEFORE if naive_utc < self._TRANSITION_UTC else self._AFTER
+        return (dt + offset).replace(tzinfo=timezone(offset))
+
+    def utcoffset(self, dt):
+        if dt is None:
+            return self._BEFORE
+        naive_local = dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+        local_before_boundary = self._TRANSITION_UTC + self._BEFORE  # 02:00 local
+        return self._BEFORE if naive_local < local_before_boundary else self._AFTER
+
+    def dst(self, dt):
+        return timedelta(0)
+
+    def tzname(self, dt):
+        return "SYN-SPRING"
+
+
+SPRING_FORWARD_TZ = _SyntheticSpringForwardTz()
+
+
+class _SyntheticFallBackTz(tzinfo):
+    """Mirror image: offset *decreases* across the transition -- mirrors US
+    Eastern's 2026-11-01 fall-back (02:00 EDT -> 01:00 EST, both == 06:00 UTC)."""
+
+    _TRANSITION_UTC = datetime(2026, 11, 1, 6, 0, 0)  # 02:00 EDT == 01:00 EST
+    _BEFORE = timedelta(hours=-4)  # EDT
+    _AFTER = timedelta(hours=-5)  # EST
+
+    def fromutc(self, dt):
+        naive_utc = dt.replace(tzinfo=None)
+        offset = self._BEFORE if naive_utc < self._TRANSITION_UTC else self._AFTER
+        return (dt + offset).replace(tzinfo=timezone(offset))
+
+    def utcoffset(self, dt):
+        if dt is None:
+            return self._BEFORE
+        naive_local = dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+        local_before_boundary = self._TRANSITION_UTC + self._BEFORE  # 02:00 local
+        return self._BEFORE if naive_local < local_before_boundary else self._AFTER
+
+    def dst(self, dt):
+        return timedelta(0)
+
+    def tzname(self, dt):
+        return "SYN-FALLBACK"
+
+
+FALL_BACK_TZ = _SyntheticFallBackTz()
 
 
 def _config(
@@ -163,6 +239,102 @@ def test_compute_next_due_weekly_on_a_later_weekday_same_cycle():
     assert due.due_at == _dt(2026, 9, 16, 9, 0, 0)
     assert now >= due.due_at
     assert due.period_key == "weekly:2026-09-09"
+
+
+# --------------------------------------------------------------------------
+# Finding 2 (Important): period_start/period_end must be the TRUE local day,
+# re-derived DST-correctly (via services.reports's helpers), not a naive
+# `timedelta` shifted under a stale offset snapshot.
+# --------------------------------------------------------------------------
+
+
+def test_compute_next_due_daily_period_is_dst_correct_across_spring_forward():
+    # "sent the morning after a spring-forward" -- 2026-03-08 is the
+    # transition date (02:00 EST -> 03:00 EDT); `now` is the next morning,
+    # entirely EDT, matching the finding's own reproduction exactly.
+    config = _config(schedule="daily", hour=7)
+    now = datetime(2026, 3, 9, 9, 0, 0, tzinfo=SPRING_FORWARD_TZ)
+
+    due = report_scheduler.compute_next_due(config, now)
+
+    assert due is not None
+    # period_end: today's (March 9's) true local midnight -- no transition
+    # on this day itself, included as a sanity anchor.
+    assert due.period_end == datetime(2026, 3, 9, 0, 0, 0, tzinfo=SPRING_FORWARD_TZ)
+
+    # period_start: March 8's TRUE local midnight is EST (the transition
+    # happens at 02:00 that day, after midnight) -- not EDT. The bug this
+    # guards against tagged it EDT instead, exactly 3600s off (matching the
+    # finding's own measured reproduction: true=1772946000.0, buggy
+    # (tagged EDT)=1772942400.0, difference -3600.0).
+    true_start = datetime(2026, 3, 8, 0, 0, 0, tzinfo=timezone(timedelta(hours=-5)))
+    assert due.period_start.timestamp() == true_start.timestamp()
+    assert due.period_start.timestamp() == 1772946000.0
+
+    # The window is exactly the true local day: 23h (82800s) on this
+    # transition day -- never a naive 24h (86400s) merging the hour that
+    # was skipped.
+    window_seconds = due.period_end.timestamp() - due.period_start.timestamp()
+    assert window_seconds == 82800.0
+
+    assert due.period_key == "daily:2026-03-08"
+
+
+def test_compute_next_due_daily_period_is_dst_correct_across_fall_back():
+    # Mirror image: 2026-11-01 fall-back (02:00 EDT -> 01:00 EST); `now` is
+    # the next morning, entirely EST.
+    config = _config(schedule="daily", hour=7)
+    now = datetime(2026, 11, 2, 9, 0, 0, tzinfo=FALL_BACK_TZ)
+
+    due = report_scheduler.compute_next_due(config, now)
+
+    assert due is not None
+    assert due.period_end == datetime(2026, 11, 2, 0, 0, 0, tzinfo=FALL_BACK_TZ)
+
+    # period_start: November 1's true local midnight is EDT (the fall-back
+    # to EST happens at 02:00 that day, after midnight).
+    true_start = datetime(2026, 11, 1, 0, 0, 0, tzinfo=timezone(timedelta(hours=-4)))
+    assert due.period_start.timestamp() == true_start.timestamp()
+
+    # The window is exactly the true local day: 25h (90000s) on this
+    # transition day -- the mirror of the spring-forward test's 82800s --
+    # never a naive 24h (86400s) splitting the extra hour into a phantom
+    # second bucket.
+    window_seconds = due.period_end.timestamp() - due.period_start.timestamp()
+    assert window_seconds == 90000.0
+
+    assert due.period_key == "daily:2026-11-01"
+
+
+def test_compute_next_due_weekly_period_is_dst_correct_across_spring_forward():
+    # A weekly schedule whose period_start walks a full 7 days back and
+    # lands EXACTLY ON the 2026-03-08 transition day itself -- proves the
+    # fix generalises beyond a single-day walk (`period_length_days=7`,
+    # `_ADVANCE_MARGIN_DAYS` headroom, and `_shift_local_day`'s forward
+    # stepping all exercised over a longer span) while still hitting the
+    # transition-day edge case a naive single-jump anchor (e.g. local noon
+    # of the target day) gets wrong. 2026-03-15 and 2026-03-08 are both
+    # Sundays.
+    config = _config(schedule="weekly", hour=9, weekday=6)  # Sunday
+    now = datetime(2026, 3, 15, 10, 0, 0, tzinfo=SPRING_FORWARD_TZ)
+
+    due = report_scheduler.compute_next_due(config, now)
+
+    assert due is not None
+    assert due.period_end == datetime(2026, 3, 15, 0, 0, 0, tzinfo=SPRING_FORWARD_TZ)
+    # period_start: 2026-03-08's true local midnight -- EST (the transition
+    # to EDT happens at 02:00 that day, after midnight). The bug this
+    # guards against would instead tag it with `now`'s own EDT offset
+    # (carried back across the transition), 3600s off truth -- matching
+    # the finding's own measured reproduction.
+    true_start = datetime(2026, 3, 8, 0, 0, 0, tzinfo=timezone(timedelta(hours=-5)))
+    assert due.period_start.timestamp() == true_start.timestamp()
+    assert due.period_start.timestamp() == 1772946000.0
+    # The 7-day window spans the transition: 167h (601200s), one hour
+    # short of a normal 168h (604800s) week.
+    window_seconds = due.period_end.timestamp() - due.period_start.timestamp()
+    assert window_seconds == 604800.0 - 3600.0
+    assert due.period_key == "weekly:2026-03-08"
 
 
 # --------------------------------------------------------------------------
@@ -305,6 +477,70 @@ async def test_run_daily_sends_once_and_dedupes_same_period(recorder, fast_sleep
     assert events[0]["period_end"] == "2026-09-20"
 
 
+async def test_run_dedup_checks_all_sent_periods_not_only_the_latest_row(
+    recorder, fast_sleep
+):
+    """Finding 1 (Critical): daily -> weekly -> daily must not resend a
+    period already sent, even though the weekly send in between becomes the
+    newest ``report_sent`` row. Reproduces the reviewer's exact sequence:
+    ``daily`` sends ``daily:2026-09-19``; the admin switches to ``weekly``,
+    which sends a *different* period and becomes the most recent row; the
+    admin switches back to ``daily`` while ``daily:2026-09-19`` is still the
+    due period -- comparing only against the latest row would resend it.
+    """
+    config = _config(schedule="daily", hour=7)
+    mailer = _StubMailer()
+
+    def _switch_to_weekly():
+        config.reports.schedule = "weekly"
+        config.reports.weekday = 6  # Sunday -- 2026-09-20 is a Sunday
+        config.reports.hour = 10
+
+    def _switch_back_to_daily():
+        config.reports.schedule = "daily"
+        config.reports.hour = 7
+
+    clock = _FakeClock(
+        [
+            _dt(2026, 9, 20, 9, 0),  # pass 1: daily due -> sends daily:2026-09-19
+            # pass 2: switches to weekly right before this instant, which is
+            # due for the weekly cycle -> sends a DIFFERENT period, becoming
+            # the newest report_sent row.
+            (_dt(2026, 9, 20, 10, 0), _switch_to_weekly),
+            # pass 3: switches back to daily right before this instant --
+            # daily:2026-09-19 (pass 1's period) is STILL the due period
+            # (same calendar day, before the next day's due_at arrives).
+            (_dt(2026, 9, 20, 11, 0), _switch_back_to_daily),
+        ]
+    )
+
+    await _drain(config, recorder, mailer, clock)
+
+    # Every scripted instant (plus the sentinel call) was consumed, so pass
+    # 3 genuinely ran.
+    assert clock.calls == 4
+    # Exactly two sends -- daily:2026-09-19 once, and the weekly period
+    # once -- never a THIRD (duplicate) send of daily:2026-09-19 at pass 3.
+    assert len(mailer.calls) == 2
+    assert mailer.calls[0]["subject"] == "vmc-test sales summary (2026-09-19)"
+
+    events = _report_sent_events(recorder)
+    daily_events = [e for e in events if e["period"] == "daily:2026-09-19"]
+    assert len(daily_events) == 1  # never duplicated
+    weekly_events = [e for e in events if e["period"] == "weekly:2026-09-13"]
+    assert len(weekly_events) == 1
+
+    # Positive control: pass 3's instant, under `daily` as it stood right
+    # after the switch-back, genuinely WAS due for daily:2026-09-19 again --
+    # proving the dedup (not "never reached due") is what stopped the
+    # resend.
+    due_at_pass3 = report_scheduler.compute_next_due(
+        _config(schedule="daily", hour=7), _dt(2026, 9, 20, 11, 0)
+    )
+    assert due_at_pass3.period_key == "daily:2026-09-19"
+    assert _dt(2026, 9, 20, 11, 0) >= due_at_pass3.due_at
+
+
 async def test_run_switch_daily_to_off_suppresses_a_send_that_was_due(
     recorder, fast_sleep
 ):
@@ -439,26 +675,48 @@ async def test_run_startup_catchup_sends_exactly_one_most_recent_period(
     # day, never 09-02, 09-03, ... -- proof there is no backlog iteration.
 
 
-async def test_run_send_failure_does_not_stop_loop_and_retries(recorder, fast_sleep):
+async def test_run_send_failure_retries_at_next_due_period_not_next_pass(
+    recorder, fast_sleep
+):
+    """Finding 3 (Important, spec-conformance): §4.2 says a failed send
+    "logs and retries at the next due TIME" -- for `daily` that is the
+    following day's occurrence, not sixty seconds later. This test
+    (authorised by the task brief to replace the old
+    `test_run_send_failure_does_not_stop_loop_and_retries`, which asserted
+    the OLD, spec-contradicting every-pass retry cadence) asserts: the loop
+    survives the failure, the SAME period is not retried on the very next
+    pass (still the same day, still due), and a retry does happen once the
+    NEXT period becomes due (the following day).
+    """
     config = _config(schedule="daily", hour=7)
     mailer = _StubMailer(results=[False, True])
     clock = _FakeClock(
         [
-            _dt(2026, 9, 20, 9, 0),  # due -> first attempt fails
-            _dt(2026, 9, 20, 9, 30),  # still due (nothing recorded) -> succeeds
-            _dt(2026, 9, 20, 10, 0),  # already sent now -> no third attempt
+            _dt(2026, 9, 20, 9, 0),  # due for daily:2026-09-19 -> fails
+            _dt(2026, 9, 20, 9, 30),  # SAME period, still due -> must NOT retry
+            _dt(2026, 9, 21, 9, 0),  # NEXT period due (daily:2026-09-20) -> retries
         ]
     )
 
     await _drain(config, recorder, mailer, clock)
 
+    # Every scripted instant (plus the sentinel call) was consumed, so the
+    # 9:30 pass -- the one that must NOT retry -- genuinely ran.
     assert clock.calls == 4
-    # Exactly two attempts: the loop kept going after the first failure
-    # (proving it doesn't stop) and stopped calling once dedup took over.
+    # Exactly two attempts total: the initial failure, and the retry once
+    # the NEXT period became due -- never a third, pass-driven attempt at
+    # 9:30 for the SAME period. This also proves the loop survives the
+    # failure (a second attempt happens at all) without resorting to the
+    # every-60s cadence the spec forbids.
     assert len(mailer.calls) == 2
+    assert mailer.calls[0]["subject"] == "vmc-test sales summary (2026-09-19)"
+    assert mailer.calls[1]["subject"] == "vmc-test sales summary (2026-09-20)"
+
+    # The failed period never wrote a report_sent row; only the retried,
+    # successful one did.
     events = _report_sent_events(recorder)
     assert len(events) == 1
-    assert events[0]["period"] == "daily:2026-09-19"
+    assert events[0]["period"] == "daily:2026-09-20"
 
 
 async def test_run_recipients_are_owner_plus_extra_deduplicated(recorder, fast_sleep):
