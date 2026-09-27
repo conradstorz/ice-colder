@@ -5,17 +5,41 @@ See ``docs/superpowers/specs/2026-09-25-sales-reports-design.md`` §4.1 (the
 ``ReportsConfig`` shape) and §4.2 (this module's contract) for the
 authoritative spec.
 
-``run(config, recorder, mailer, clock)`` is started by ``main.py`` under
-``_supervise("report scheduler", ...)``, alongside the MQTT client and health
-monitor. It loops forever on a bounded sleep of at most 60 s, re-reading the
-*live* ``config`` object every pass and recomputing the next due time from
-scratch via :func:`compute_next_due` -- a pure, module-level function with no
-I/O, deliberately kept separate from the loop so it can be tested
-exhaustively without an event loop, a recorder, or a mailer. Because the
-config is re-read every pass rather than captured once, a schedule flipped
-to ``"off"`` stops the next send within one bounded sleep, and a schedule
-flipped on schedules from the settings in force *at that pass*, never a
-stale, previously computed interval.
+``run(config, recorder, mailer, clock, tz=None)`` is started by ``main.py``
+under ``_supervise("report scheduler", ...)``, alongside the MQTT client and
+health monitor. It loops forever on a bounded sleep of at most 60 s,
+re-reading the *live* ``config`` object every pass and recomputing the next
+due time from scratch via :func:`compute_next_due` -- a pure, module-level
+function with no I/O, deliberately kept separate from the loop so it can be
+tested exhaustively without an event loop, a recorder, or a mailer. Because
+the config is re-read every pass rather than captured once, a schedule
+flipped to ``"off"`` stops the next send within one bounded sleep, and a
+schedule flipped on schedules from the settings in force *at that pass*,
+never a stale, previously computed interval.
+
+``tz`` is optional and last on both ``run`` and ``compute_next_due``, and
+defaults to ``None`` on both -- production (``main.py``) passes neither
+argument and gets ``None`` all the way down to ``services.reports``'s
+``_to_local``/``_floor_to_bucket``/``_next_bucket``/``_bucket_key``, whose
+``tz=None`` path means "resolve each epoch's offset through the OS, fresh,
+for that specific instant" (see ``_to_local``'s own docstring) -- which is
+exactly the DST-correct behaviour, and exactly how ``by_period`` gets it
+right on its own default path. This module previously derived a tzinfo from
+``now.tzinfo`` and threaded *that* through instead; that broke in production
+specifically because ``main.py``'s clock (``datetime.now().astimezone()``)
+attaches a frozen, date-invariant ``datetime.timezone`` fixed offset for the
+one instant it was read at, and handing that frozen offset to
+``_to_local``/``_floor_to_bucket`` for an *earlier* boundary (a previous
+midnight or week-start) cannot re-derive that earlier instant's true offset
+-- it just reapplies the current instant's offset, which is wrong exactly
+across a DST transition. Tests pass their synthetic zone explicitly as
+``tz=`` instead, so the existing DST window assertions stay meaningful. A
+caller must keep ``now`` and ``tz`` consistent: ``now`` decides *whether*
+something is due and *which* calendar day it is, while ``tz`` governs how
+local boundaries are re-derived -- passing a synthetic-zone ``now`` together
+with ``tz=None`` would ask the OS's real zone to reinterpret an instant built
+under a made-up one, which is incoherent. The two are always paired: this
+module never manufactures a ``tz`` independent of the ``now`` it receives.
 
 Sends are de-duplicated by period: before sending, the loop asks whether
 *any* ``report_sent`` event's ``metadata["period"]`` matches the period
@@ -83,7 +107,7 @@ import contextlib
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, tzinfo
 from typing import Awaitable, Callable, Optional
 
 from loguru import logger
@@ -252,13 +276,27 @@ def _shift_local_day(reference: datetime, days_before: int, tz) -> datetime:
     return current
 
 
-def compute_next_due(config, now: datetime) -> Optional[NextDue]:
+def compute_next_due(
+    config, now: datetime, tz: Optional[tzinfo] = None
+) -> Optional[NextDue]:
     """Pure calendar computation: no I/O, no wall-clock read of its own.
 
     Given the live ``config`` (only ``config.reports`` is consulted:
-    ``schedule``, ``hour``, ``weekday``) and an aware, already-local ``now``,
-    return the current cycle's scheduled occurrence and the period it
-    covers, or ``None`` when ``schedule == "off"``.
+    ``schedule``, ``hour``, ``weekday``), an aware, already-local ``now``,
+    and an optional ``tz``, return the current cycle's scheduled occurrence
+    and the period it covers, or ``None`` when ``schedule == "off"``.
+
+    ``tz`` -- optional and last, defaulting to ``None`` -- is the tzinfo
+    handed to ``services.reports``'s ``_to_local``/``_floor_to_bucket`` for
+    every BACKWARD-walking boundary this function derives (see
+    :func:`_shift_local_day` below). It is deliberately NOT derived from
+    ``now.tzinfo``: ``now.tzinfo`` may be a frozen, date-invariant fixed
+    offset (exactly what ``datetime.now().astimezone()`` produces -- see the
+    module docstring), which cannot re-derive an EARLIER boundary's true
+    offset across a DST transition. Passing ``tz=None`` (production's
+    default) instead asks ``_to_local`` to resolve each epoch through the OS
+    fresh, for that specific instant -- DST-correct. Callers must keep
+    ``now`` and ``tz`` consistent -- see the module docstring.
 
     Purity is what makes this function's tests the heart of the task: given
     the same ``config`` and ``now``, it always returns the same answer,
@@ -292,7 +330,6 @@ def compute_next_due(config, now: datetime) -> Optional[NextDue]:
     if schedule == "off":
         return None
 
-    tz = now.tzinfo
     today = _floor_to_bucket(now, "day")
 
     if schedule == "daily":
@@ -406,8 +443,17 @@ async def run(
     recorder,
     mailer: Callable[..., Awaitable[bool]],
     clock: Callable[[], datetime],
+    tz: Optional[tzinfo] = None,
 ) -> None:
-    """The supervised scheduler loop. See the module docstring."""
+    """The supervised scheduler loop. See the module docstring.
+
+    ``tz`` is optional and last, defaulting to ``None``, and is passed
+    straight through to :func:`compute_next_due` unchanged every pass --
+    production (``main.py``) never passes it, so every boundary is resolved
+    per instant through the OS (DST-correct); tests pass their synthetic
+    zone explicitly. See the module docstring for why ``tz=None`` is
+    DST-correct and why ``now``/``tz`` must stay consistent.
+    """
     # In-memory only -- deliberately not persisted; see the module
     # docstring's retry-cadence paragraph (Finding 3). Holds the period_key
     # of the most recent send that failed, so a failure is retried at the
@@ -417,7 +463,7 @@ async def run(
     while True:
         now = clock()  # may raise a test sentinel; see module docstring
         try:
-            due = compute_next_due(config, now)
+            due = compute_next_due(config, now, tz)
             if (
                 due is not None
                 and now >= due.due_at

@@ -180,7 +180,7 @@ def test_compute_next_due_off_returns_none():
 def test_compute_next_due_daily_before_hour_is_not_yet_due():
     config = _config(schedule="daily", hour=7)
     now = _dt(2026, 9, 20, 6, 59, 59)
-    due = report_scheduler.compute_next_due(config, now)
+    due = report_scheduler.compute_next_due(config, now, tz=FIXED_TZ)
     assert due is not None
     assert due.due_at == _dt(2026, 9, 20, 7, 0, 0)
     assert now < due.due_at
@@ -192,7 +192,7 @@ def test_compute_next_due_daily_before_hour_is_not_yet_due():
 def test_compute_next_due_daily_exactly_at_hour_is_due():
     config = _config(schedule="daily", hour=7)
     now = _dt(2026, 9, 20, 7, 0, 0)
-    due = report_scheduler.compute_next_due(config, now)
+    due = report_scheduler.compute_next_due(config, now, tz=FIXED_TZ)
     assert due.due_at == now
     assert now >= due.due_at
     assert due.period_key == "daily:2026-09-19"
@@ -201,7 +201,7 @@ def test_compute_next_due_daily_exactly_at_hour_is_due():
 def test_compute_next_due_daily_just_after_hour_is_due():
     config = _config(schedule="daily", hour=7)
     now = _dt(2026, 9, 20, 9, 0, 0)
-    due = report_scheduler.compute_next_due(config, now)
+    due = report_scheduler.compute_next_due(config, now, tz=FIXED_TZ)
     assert now >= due.due_at
     assert due.due_at == _dt(2026, 9, 20, 7, 0, 0)
     assert due.period_key == "daily:2026-09-19"
@@ -212,7 +212,7 @@ def test_compute_next_due_weekly_before_hour_on_configured_weekday():
     # 2026-09-16 is a Wednesday.
     config = _config(schedule="weekly", hour=9, weekday=2)
     now = _dt(2026, 9, 16, 8, 59, 59)
-    due = report_scheduler.compute_next_due(config, now)
+    due = report_scheduler.compute_next_due(config, now, tz=FIXED_TZ)
     assert due.due_at == _dt(2026, 9, 16, 9, 0, 0)
     assert now < due.due_at
     assert due.period_start == _dt(2026, 9, 9, 0, 0, 0)
@@ -223,7 +223,7 @@ def test_compute_next_due_weekly_before_hour_on_configured_weekday():
 def test_compute_next_due_weekly_exactly_at_hour_is_due():
     config = _config(schedule="weekly", hour=9, weekday=2)
     now = _dt(2026, 9, 16, 9, 0, 0)
-    due = report_scheduler.compute_next_due(config, now)
+    due = report_scheduler.compute_next_due(config, now, tz=FIXED_TZ)
     assert now >= due.due_at
     assert due.period_key == "weekly:2026-09-09"
 
@@ -235,7 +235,7 @@ def test_compute_next_due_weekly_on_a_later_weekday_same_cycle():
     # of time-of-day (the occurrence's own hour has necessarily passed).
     config = _config(schedule="weekly", hour=9, weekday=2)
     now = _dt(2026, 9, 18, 0, 0, 1)
-    due = report_scheduler.compute_next_due(config, now)
+    due = report_scheduler.compute_next_due(config, now, tz=FIXED_TZ)
     assert due.due_at == _dt(2026, 9, 16, 9, 0, 0)
     assert now >= due.due_at
     assert due.period_key == "weekly:2026-09-09"
@@ -255,7 +255,7 @@ def test_compute_next_due_daily_period_is_dst_correct_across_spring_forward():
     config = _config(schedule="daily", hour=7)
     now = datetime(2026, 3, 9, 9, 0, 0, tzinfo=SPRING_FORWARD_TZ)
 
-    due = report_scheduler.compute_next_due(config, now)
+    due = report_scheduler.compute_next_due(config, now, tz=SPRING_FORWARD_TZ)
 
     assert due is not None
     # period_end: today's (March 9's) true local midnight -- no transition
@@ -286,7 +286,7 @@ def test_compute_next_due_daily_period_is_dst_correct_across_fall_back():
     config = _config(schedule="daily", hour=7)
     now = datetime(2026, 11, 2, 9, 0, 0, tzinfo=FALL_BACK_TZ)
 
-    due = report_scheduler.compute_next_due(config, now)
+    due = report_scheduler.compute_next_due(config, now, tz=FALL_BACK_TZ)
 
     assert due is not None
     assert due.period_end == datetime(2026, 11, 2, 0, 0, 0, tzinfo=FALL_BACK_TZ)
@@ -318,7 +318,7 @@ def test_compute_next_due_weekly_period_is_dst_correct_across_spring_forward():
     config = _config(schedule="weekly", hour=9, weekday=6)  # Sunday
     now = datetime(2026, 3, 15, 10, 0, 0, tzinfo=SPRING_FORWARD_TZ)
 
-    due = report_scheduler.compute_next_due(config, now)
+    due = report_scheduler.compute_next_due(config, now, tz=SPRING_FORWARD_TZ)
 
     assert due is not None
     assert due.period_end == datetime(2026, 3, 15, 0, 0, 0, tzinfo=SPRING_FORWARD_TZ)
@@ -335,6 +335,94 @@ def test_compute_next_due_weekly_period_is_dst_correct_across_spring_forward():
     window_seconds = due.period_end.timestamp() - due.period_start.timestamp()
     assert window_seconds == 604800.0 - 3600.0
     assert due.period_key == "weekly:2026-03-08"
+
+
+# --------------------------------------------------------------------------
+# tz threading -- this round's fix: `compute_next_due`/`run` must derive
+# local boundaries from an explicit, optional `tz` parameter, never from
+# `now.tzinfo` (which in production is a frozen, date-invariant offset --
+# see the module docstring).
+# --------------------------------------------------------------------------
+
+
+def test_compute_next_due_threads_tz_param_not_now_tzinfo(monkeypatch):
+    """The threading test -- this round's key evidence.
+
+    Spies on ``report_scheduler._to_local`` (imported from
+    ``services.reports`` into this module's namespace, so patching the
+    module-level name here intercepts every call ``_advance_one_local_day``/
+    ``_shift_local_day`` make) while still delegating to the real
+    implementation, so ``compute_next_due``'s actual behaviour is
+    unaffected -- only the ``tz`` argument each call received is recorded.
+    A spy was chosen over asserting the resulting boundaries match
+    ``_to_local(ts, None)`` independently, because the boundaries alone
+    cannot discriminate this bug in general (they coincidentally agree
+    whenever there is no DST transition in the walked range, which most
+    ``now`` values hit) -- watching the actual argument passed proves
+    directly that ``None`` (the per-instant OS-resolution path), not
+    ``now.tzinfo``, reaches ``_to_local``, regardless of whether this
+    particular ``now`` straddles a transition.
+
+    ``now.tzinfo`` here is ``FIXED_TZ`` -- a real, distinct-from-``None``
+    object -- so this MUST FAIL against the code as it stood before this
+    round (``tz = now.tzinfo`` in ``compute_next_due``): every recorded
+    call would carry ``FIXED_TZ``, not ``None``.
+    """
+    calls: list = []
+    real_to_local = report_scheduler._to_local
+
+    def _spy(ts, tz):
+        calls.append(tz)
+        return real_to_local(ts, tz)
+
+    monkeypatch.setattr(report_scheduler, "_to_local", _spy)
+
+    config = _config(schedule="daily", hour=7)
+    now = _dt(2026, 9, 20, 9, 0, 0)  # aware in FIXED_TZ, not None
+
+    due = report_scheduler.compute_next_due(config, now)  # tz defaults to None
+
+    assert due is not None
+    # Positive control: the backward day-walk (period_start) genuinely
+    # invoked _to_local at least once -- proving the spy was actually
+    # exercised, not merely installed and bypassed.
+    assert calls, "expected _to_local to be invoked by the backward day-walk"
+    assert all(tz is None for tz in calls)
+    assert FIXED_TZ not in calls
+
+
+def test_compute_next_due_daily_dst_window_controlled_by_tz_param_not_now_tzinfo():
+    """Proves the ``tz`` PARAMETER -- not ``now.tzinfo`` -- is what
+    controls DST re-derivation, using values that would produce a visibly
+    DIFFERENT (wrong) answer if ``now.tzinfo`` were still consulted.
+
+    ``now`` is tagged with a PLAIN, non-DST-aware fixed UTC-4 offset --
+    exactly the frozen-offset shape ``datetime.now().astimezone()``
+    produces in production (see the module docstring) -- describing the
+    SAME instant the spring-forward test above uses (2026-03-09 09:00 EDT
+    == 2026-03-09 09:00 under this fixed UTC-4 tzinfo). The DST-aware
+    synthetic zone is supplied ONLY via the ``tz=`` parameter. If the
+    window were still (wrongly) derived from ``now.tzinfo``, the walk-back
+    would see no transition at all and produce a naive 24h (86400s)
+    period; deriving it from ``tz`` instead reproduces the true,
+    DST-shortened 82800s window from the spring-forward test above. A
+    parameter that were NOT actually in control could not produce this
+    result from a ``now.tzinfo`` that has no transition to find.
+    """
+    config = _config(schedule="daily", hour=7)
+    now = datetime(2026, 3, 9, 9, 0, 0, tzinfo=timezone(timedelta(hours=-4)))
+
+    due = report_scheduler.compute_next_due(config, now, tz=SPRING_FORWARD_TZ)
+
+    assert due is not None
+    assert due.period_end == datetime(
+        2026, 3, 9, 0, 0, 0, tzinfo=timezone(timedelta(hours=-4))
+    )
+    true_start = datetime(2026, 3, 8, 0, 0, 0, tzinfo=timezone(timedelta(hours=-5)))
+    assert due.period_start.timestamp() == true_start.timestamp()
+    window_seconds = due.period_end.timestamp() - due.period_start.timestamp()
+    assert window_seconds == 82800.0  # DST-correct via tz; a naive 86400
+    # would mean now.tzinfo (no transition) was consulted instead.
 
 
 # --------------------------------------------------------------------------
@@ -409,10 +497,18 @@ def fast_sleep(monkeypatch):
     monkeypatch.setattr(report_scheduler.asyncio, "sleep", _noop)
 
 
-async def _drain(config, recorder, mailer, clock):
-    """Run the scheduler until the fake clock's sentinel ends it."""
+async def _drain(config, recorder, mailer, clock, tz=FIXED_TZ):
+    """Run the scheduler until the fake clock's sentinel ends it.
+
+    ``tz`` defaults to ``FIXED_TZ`` -- every ``run`` test below uses ``_dt``
+    (``FIXED_TZ``-aware) ``now`` values, and, like ``compute_next_due``
+    itself, would otherwise fall through to ``tz=None`` (the machine's own
+    real timezone) and become host-dependent, exactly what this task warns
+    against. Production (``main.py``) never passes ``tz`` at all, so it
+    still gets ``None``, unaffected by this test default.
+    """
     with pytest.raises(_StopScheduler):
-        await report_scheduler.run(config, recorder, mailer, clock)
+        await report_scheduler.run(config, recorder, mailer, clock, tz)
 
 
 async def test_run_off_schedule_sends_nothing(recorder, fast_sleep):
@@ -440,7 +536,7 @@ async def test_run_off_schedule_sends_nothing(recorder, fast_sleep):
     # really would be due -- proving `off` is what suppressed the send,
     # not that 9am was never going to be "due" in the first place.
     due = report_scheduler.compute_next_due(
-        _config(schedule="daily", hour=7), _dt(2026, 9, 20, 9, 0)
+        _config(schedule="daily", hour=7), _dt(2026, 9, 20, 9, 0), tz=FIXED_TZ
     )
     assert due is not None
     assert _dt(2026, 9, 20, 9, 0) >= due.due_at
@@ -535,7 +631,7 @@ async def test_run_dedup_checks_all_sent_periods_not_only_the_latest_row(
     # proving the dedup (not "never reached due") is what stopped the
     # resend.
     due_at_pass3 = report_scheduler.compute_next_due(
-        _config(schedule="daily", hour=7), _dt(2026, 9, 20, 11, 0)
+        _config(schedule="daily", hour=7), _dt(2026, 9, 20, 11, 0), tz=FIXED_TZ
     )
     assert due_at_pass3.period_key == "daily:2026-09-19"
     assert _dt(2026, 9, 20, 11, 0) >= due_at_pass3.due_at
@@ -568,7 +664,7 @@ async def test_run_switch_daily_to_off_suppresses_a_send_that_was_due(
     # Positive control: the very same instant, under the schedule as it
     # stood right before the flip, genuinely was due.
     due = report_scheduler.compute_next_due(
-        _config(schedule="daily", hour=7), _dt(2026, 9, 20, 9, 0)
+        _config(schedule="daily", hour=7), _dt(2026, 9, 20, 9, 0), tz=FIXED_TZ
     )
     assert _dt(2026, 9, 20, 9, 0) >= due.due_at
 
