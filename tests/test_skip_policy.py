@@ -147,6 +147,21 @@ class TestSkipValidation:
         assert is_valid is False
         assert len(errors) == 2
 
+    def test_non_string_reason_fails_closed_not_crash(self):
+        """A `reason` key present with a non-string value -- a JSON null,
+        surviving straight through .get("reason", "") since the key IS
+        present, or any other non-string -- must not reach
+        pattern.fullmatch and crash the guard. It has to fail closed like
+        any other unrecognised reason instead."""
+        skips = [
+            {"nodeid": "t::null_reason", "reason": None},
+            {"nodeid": "t::int_reason", "reason": 42},
+            {"nodeid": "t::list_reason", "reason": ["Skipped: POSIX file modes only"]},
+        ]
+        is_valid, errors = validate_skips(skips)
+        assert is_valid is False
+        assert set(errors) == {"t::null_reason", "t::int_reason", "t::list_reason"}
+
 
 class TestBuildSkipReport:
     """Unit tests for the pure report-building function the
@@ -390,3 +405,19 @@ class TestGuardScriptRejectsBadReports:
         err = capsys.readouterr().err
         assert exit_code == 1
         assert "t::bad" in err
+
+    def test_a_null_reason_fails_through_the_guards_own_error_path(
+        self, tmp_path, capsys
+    ):
+        """A report entry with `"reason": null` (valid JSON, e.g. from a
+        malformed upstream report) must produce the guard's own
+        `::error::Guard FAILED` message naming the nodeid -- not an
+        uncaught TypeError/traceback from pattern.fullmatch(None)."""
+        path = tmp_path / "skip-report.json"
+        path.write_text(json.dumps([{"nodeid": "t::null_reason", "reason": None}]))
+        exit_code = check_report(path)
+        out, err = capsys.readouterr()
+        assert exit_code == 1
+        assert "::error::Guard FAILED" in err
+        assert "t::null_reason" in err
+        assert "Guard OK" not in out

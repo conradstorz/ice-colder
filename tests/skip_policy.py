@@ -60,6 +60,13 @@ def validate_skips(skips: list[dict]) -> tuple[bool, list[str]]:
             illegitimate.append(f"<malformed skip entry: {skip!r}>")
             continue
         reason = skip.get("reason", "")
+        if not isinstance(reason, str):
+            # A reason that isn't a string (e.g. a JSON null, present with
+            # the key but not defaulted away by .get) cannot be matched
+            # against the regex policy and must fail closed like any other
+            # illegitimate reason, not crash the guard.
+            illegitimate.append(skip.get("nodeid", "<unknown>"))
+            continue
         if not is_skip_legitimate(reason):
             illegitimate.append(skip.get("nodeid", "<unknown>"))
 
