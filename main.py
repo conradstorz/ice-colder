@@ -11,12 +11,15 @@ from services.session_store import SessionStore
 from services.config_store import save_config
 from services.build_info import BUILD_INFO
 from services.paths import LOG_DIR, LOG_FILE
+from services.mailer import send_email
+from services import report_scheduler
 
 import asyncio
 import json
 import os
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
@@ -310,6 +313,15 @@ async def _run_until_server_exits(server_coro, *supervised):
                 pass
 
 
+def _local_now() -> datetime:
+    """Clock for the report scheduler: an aware, local-timezone `datetime`.
+
+    A plain wall-clock read -- unlike a test's fake clock, this never
+    raises, matching report_scheduler.run's contract (see its docstring).
+    """
+    return datetime.now().astimezone()
+
+
 async def _supervise(name: str, coro_factory):
     """Keep a long-running component alive: log a crash and restart it after 5s.
 
@@ -437,6 +449,12 @@ async def main():
             server.serve(),
             _supervise("MQTT client", mqtt.run),
             _supervise("health monitor", health.run),
+            _supervise(
+                "report scheduler",
+                lambda: report_scheduler.run(
+                    live_config, recorder, send_email, _local_now
+                ),
+            ),
         )
     finally:
         await vmc.drain_persistence()
