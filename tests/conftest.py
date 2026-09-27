@@ -1,6 +1,8 @@
 """Shared fixtures. Isolates every test from the developer's real config.json."""
 
+import json
 import logging
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -195,3 +197,49 @@ def anonymous(wired):
     c = TestClient(app, follow_redirects=False)
     yield c
     c.close()
+
+
+def pytest_sessionfinish(session):
+    """Write a machine-readable report of all skipped tests.
+
+    This hook runs at the end of the test session and writes a JSON file
+    listing every skipped test's nodeid and reason. The CI workflow uses
+    this file to enforce the skip policy: only recognised skip reasons
+    are allowed; any other skip fails the build.
+
+    The report is written to skip-report.json in the working directory.
+    """
+    skips = []
+
+    # Collect all skipped tests from the session's terminalreporter
+    if hasattr(session, "config") and hasattr(session.config, "pluginmanager"):
+        terminalreporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        if terminalreporter and hasattr(terminalreporter, "stats"):
+            for report in terminalreporter.stats.get("skipped", []):
+                # report.nodeid is the test nodeid
+                # report.wasxfail is used for xfail, not skip
+                # The skip reason is in report.longrepr[2] if it's a tuple/string
+                skip_reason = ""
+                if hasattr(report, "longrepr"):
+                    if isinstance(report.longrepr, tuple) and len(report.longrepr) >= 3:
+                        skip_reason = report.longrepr[2]
+                    elif isinstance(report.longrepr, str):
+                        skip_reason = report.longrepr
+                    else:
+                        skip_reason = str(report.longrepr)
+
+                skips.append(
+                    {
+                        "nodeid": report.nodeid,
+                        "reason": skip_reason,
+                    }
+                )
+
+    # Write the report to skip-report.json
+    report_path = Path("skip-report.json")
+    with open(report_path, "w") as f:
+        json.dump(skips, f, indent=2)
+
+    # Print for debugging
+    if skips:
+        print(f"\nWrote {len(skips)} skipped test(s) to {report_path}")
