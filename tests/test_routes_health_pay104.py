@@ -188,6 +188,55 @@ class TestFaultsListRendersPendingSale:
             routes.set_event_recorder(None)
 
 
+class TestPlainClearRejectedWithPendingSale:
+    """Copilot review (PR 21, comment 4116341469): health_faults.html
+    already hides the plain Clear button in favor of Record sale/Discard
+    whenever PAY-104 carries a pending sale (TestFaultsListRendersPendingSale
+    above) -- but that's a UI-only guard. `POST /health/faults/PAY-104/clear`
+    itself must refuse the same request directly, since an authenticated
+    caller can always reach a route the UI merely doesn't link to (a stale
+    confirm URL, curl, devtools).
+    """
+
+    def test_direct_post_to_clear_is_rejected_and_evidence_survives(
+        self, pay104, login_as
+    ):
+        vmc = pay104["vmc"]
+        client = login_as(Role.tech)
+
+        resp = client.post("/health/faults/PAY-104/clear")
+
+        assert resp.status_code == 409
+        assert "Record sale" in resp.json()["detail"]
+        # The fault is still active -- not silently cleared.
+        assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+        # The money evidence is untouched: the snapshot file still exists
+        # and still reports the exact same pending sale, and no sale row
+        # was ever written.
+        assert pay104["session_path"].exists()
+        pending = vmc.pending_sale_for_recovery()
+        assert pending is not None
+        assert pending["sku"] == "ICE-1"
+        assert pending["methods"] == pay104["shares"]
+        assert _sales_rows(pay104["db_path"]) == []
+
+    def test_recovery_actions_still_work_after_a_rejected_clear_attempt(
+        self, pay104, login_as
+    ):
+        """The rejection above must not corrupt state: the legitimate
+        Discard action still works normally afterward."""
+        vmc = pay104["vmc"]
+        client = login_as(Role.tech)
+        client.post("/health/faults/PAY-104/clear")  # rejected, per above
+
+        client.get("/health/faults/PAY-104/discard/confirm")  # first tap
+        resp = client.post("/health/faults/PAY-104/discard")
+
+        assert resp.status_code == 200
+        assert "PAY-104" not in {f["code"] for f in vmc.active_faults()}
+        assert _sales_rows(pay104["db_path"]) == []
+
+
 class TestRecordSale:
     def test_first_tap_returns_confirm_without_writing_or_clearing(
         self, pay104, login_as

@@ -378,10 +378,40 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
     async def clear_fault(request: Request, key: str):
         """Replaces the old POST /faults/{key}/clear (legacy.py keeps that
         route for Home's status fragment; Task 15 retires it -- executor
-        resolution 2)."""
-        if not context.vmc_instance or not context.vmc_instance.clear_fault(
-            key, by="admin"
+        resolution 2).
+
+        Copilot review (PR 21): health_faults.html already hides this
+        plain Clear button in favor of the two Task 14 recovery actions
+        (Record sale / Discard) whenever PAY-104 carries a pending sale --
+        but that is a UI-only guard, and this route is reachable directly
+        (a stale confirm URL, curl, devtools) regardless of what the
+        template rendered. `clear_fault` on PAY-104 removes the session
+        evidence file with no record of and no explicit decision about the
+        pending sale, silently losing the only account of that money. So
+        this rejects a plain Clear on PAY-104 the same way the server
+        already refuses other bypassed-UI-guard writes elsewhere in this
+        app, leaving `/PAY-104/record-sale` and `/PAY-104/discard` as the
+        only way to resolve it.
+        """
+        vmc = context.vmc_instance
+        if not vmc:
+            raise HTTPException(
+                status_code=404, detail=f"No active fault with key {key}"
+            )
+        if (
+            key == FaultCode.PAY_104.value
+            and vmc.pending_sale_for_recovery() is not None
         ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "PAY-104 has a pending sale on record -- use Record "
+                    "sale or Discard instead of Clear, so the money is "
+                    "accounted for one way or the other rather than "
+                    "silently dropped."
+                ),
+            )
+        if not vmc.clear_fault(key, by="admin"):
             raise HTTPException(
                 status_code=404, detail=f"No active fault with key {key}"
             )
