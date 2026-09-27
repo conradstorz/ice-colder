@@ -3,15 +3,25 @@ import json
 import os
 import sqlite3
 import time
+from pathlib import Path
 
 import pytest
 
-from services.event_recorder import EventRecorder
+from services import event_recorder as event_recorder_module
+from services.event_recorder import EventRecorder, is_cash
 
 
 @pytest.fixture
 def recorder(tmp_path):
     return EventRecorder(db_path=str(tmp_path / "events.db"))
+
+
+@pytest.fixture
+def journal_path(tmp_path, monkeypatch):
+    """Point the module-level JOURNAL_PATH at a temp file for this test."""
+    path = tmp_path / "sales-journal.jsonl"
+    monkeypatch.setattr(event_recorder_module, "JOURNAL_PATH", path)
+    return path
 
 
 class TestInit:
@@ -587,3 +597,316 @@ class TestWriterThread:
         rec.flush()
         assert rec.get_summary(24)["products_out"] == 1
         assert rec.get_summary(24)["money_in"] == 0.0  # the failed row never landed
+
+
+class TestIsCash:
+    @pytest.mark.parametrize(
+        "method, expected",
+        [
+            ("cash", True),
+            ("coin", True),
+            ("bill", True),
+            ("cash_coin", True),
+            ("cash_bill", True),
+            ("CASH_COIN", True),  # case-insensitive
+            ("card", False),
+            ("nfc", False),
+            ("test", False),
+        ],
+    )
+    def test_pinned_values(self, method, expected):
+        assert is_cash(method) is expected
+
+
+class TestSalesRetentionScope:
+    def test_prune_does_not_touch_sales(self, tmp_path):
+        """A sale older than the retention window must survive prune()."""
+        db = str(tmp_path / "e.db")
+        rec = EventRecorder(db_path=db, retention_days=1)
+        old_ts = time.time() - 2 * 86400  # well outside the 1-day retention
+        rec.record_sale("SKU1", "Cola", 1, 1.50, {"cash": 1.50}, ts=old_ts)
+
+        rec.prune()
+
+        with sqlite3.connect(db) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+        assert count == 1
+
+
+class TestRecordSale:
+    def test_writes_documented_shape_and_is_durable_from_second_connection(
+        self, tmp_path
+    ):
+        db = str(tmp_path / "e.db")
+        rec = EventRecorder(db_path=db)
+        methods = {"cash": 1.00, "card": 0.50}
+
+        rec.record_sale("SKU1", "Cola", 3, 1.50, methods, ts=1234.5)
+
+        # A second, separate connection -- not the one record_sale used --
+        # is the point: it proves the row is really on disk, not merely
+        # buffered in the connection that wrote it.
+        conn2 = sqlite3.connect(db)
+        try:
+            row = conn2.execute(
+                "SELECT ts, sku, name, slot, price, methods FROM sales"
+            ).fetchone()
+        finally:
+            conn2.close()
+
+        assert row is not None
+        ts, sku, name, slot, price, methods_json = row
+        assert ts == pytest.approx(1234.5)
+        assert sku == "SKU1"
+        assert name == "Cola"
+        assert slot == 3
+        assert price == pytest.approx(1.50)
+        assert json.loads(methods_json) == methods
+
+    def test_default_ts_is_current_time(self, tmp_path):
+        db = str(tmp_path / "e.db")
+        rec = EventRecorder(db_path=db)
+        before = time.time()
+
+        rec.record_sale("SKU9", "Water", None, 1.00, {"cash": 1.00})
+
+        after = time.time()
+        conn = sqlite3.connect(db)
+        try:
+            (ts,) = conn.execute("SELECT ts FROM sales").fetchone()
+        finally:
+            conn.close()
+        assert before <= ts <= after
+
+
+class _FailingSalesInsertConn:
+    """Wraps a real sqlite3.Connection so its first `INSERT INTO sales`
+    raises, then behaves normally for everything else -- proving the
+    insert-failure branch of record_sale is actually entered (as opposed to,
+    say, the connect() call failing, which the implementation might handle
+    differently)."""
+
+    def __init__(self, conn):
+        self._conn = conn
+        self._insert_calls = 0
+
+    def execute(self, sql, *args, **kwargs):
+        if sql.strip().upper().startswith("INSERT INTO SALES"):
+            self._insert_calls += 1
+            if self._insert_calls == 1:
+                raise sqlite3.OperationalError("boom")
+        return self._conn.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+class TestRecordSaleFailureJournal:
+    def test_failed_insert_appends_exactly_one_fsynced_journal_line(
+        self, tmp_path, monkeypatch, journal_path
+    ):
+        db = str(tmp_path / "e.db")
+        rec = EventRecorder(db_path=db)
+
+        real_connect = sqlite3.connect
+
+        def fake_connect(path, *args, **kwargs):
+            conn = real_connect(path, *args, **kwargs)
+            if str(path) == db and kwargs.get("check_same_thread") is not False:
+                return _FailingSalesInsertConn(conn)
+            return conn
+
+        monkeypatch.setattr(sqlite3, "connect", fake_connect)
+
+        methods = {"cash": 2.00}
+        with pytest.raises(sqlite3.OperationalError):
+            rec.record_sale("SKU2", "Chips", 5, 2.00, methods, ts=999.0)
+
+        assert journal_path.exists()
+        lines = journal_path.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1  # exactly one line, not zero and not a partial retry
+        entry = json.loads(lines[0])
+        assert entry["sku"] == "SKU2"
+        assert entry["name"] == "Chips"
+        assert entry["slot"] == 5
+        assert entry["price"] == pytest.approx(2.00)
+        assert entry["methods"] == methods
+        assert entry["ts"] == pytest.approx(999.0)
+
+        # The row must NOT have landed in the database -- the insert really
+        # failed rather than partially succeeding. Use real_connect, since
+        # sqlite3.connect is still patched at this point in the test.
+        with real_connect(db) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+        assert count == 0
+
+
+class TestReplaySalesJournal:
+    def test_is_noop_when_file_absent(self, tmp_path, journal_path):
+        rec = EventRecorder(db_path=str(tmp_path / "e.db"))
+        assert not journal_path.exists()
+
+        count = rec.replay_sales_journal()
+
+        assert count == 0
+        assert not journal_path.exists()
+
+    def test_is_noop_when_file_empty(self, tmp_path, journal_path):
+        journal_path.write_text("", encoding="utf-8")
+        rec = EventRecorder(db_path=str(tmp_path / "e.db"))
+
+        count = rec.replay_sales_journal()
+
+        assert count == 0
+
+    def test_inserts_rows_and_leaves_file_empty(self, tmp_path, journal_path):
+        db = str(tmp_path / "e.db")
+        rec = EventRecorder(db_path=db)
+        entries = [
+            {
+                "ts": 1.0,
+                "sku": "A",
+                "name": "Alpha",
+                "slot": 1,
+                "price": 1.0,
+                "methods": {"cash": 1.0},
+            },
+            {
+                "ts": 2.0,
+                "sku": "B",
+                "name": "Beta",
+                "slot": 2,
+                "price": 2.0,
+                "methods": {"card": 2.0},
+            },
+        ]
+        journal_path.write_text(
+            "\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8"
+        )
+
+        count = rec.replay_sales_journal()
+
+        assert count == 2
+        assert journal_path.read_text(encoding="utf-8") == ""
+        with sqlite3.connect(db) as conn:
+            rows = conn.execute(
+                "SELECT sku, name, slot, price, methods FROM sales ORDER BY sku"
+            ).fetchall()
+        assert [r[0] for r in rows] == ["A", "B"]
+        assert json.loads(rows[0][4]) == {"cash": 1.0}
+        assert json.loads(rows[1][4]) == {"card": 2.0}
+
+    def test_partial_final_line_does_not_lose_earlier_good_lines(
+        self, tmp_path, journal_path
+    ):
+        db = str(tmp_path / "e.db")
+        rec = EventRecorder(db_path=db)
+        good = {
+            "ts": 1.0,
+            "sku": "A",
+            "name": "Alpha",
+            "slot": 1,
+            "price": 1.0,
+            "methods": {"cash": 1.0},
+        }
+        # second line is a truncated write: no closing brace/quote, no newline
+        content = json.dumps(good) + '\n{"ts": 2.0, "sku": "B", "name": "Bet'
+        journal_path.write_text(content, encoding="utf-8")
+
+        count = rec.replay_sales_journal()
+
+        assert count == 1
+        with sqlite3.connect(db) as conn:
+            rows = conn.execute("SELECT sku FROM sales").fetchall()
+        assert rows == [("A",)]
+        assert journal_path.read_text(encoding="utf-8") == ""
+
+
+class TestExpectedCash:
+    def test_all_time_then_since_previous_collection(self, tmp_path):
+        db = str(tmp_path / "e.db")
+        rec = EventRecorder(db_path=db)
+
+        rec.record_sale(
+            "A", "Alpha", 1, 1.00, {"cash_coin": 0.75, "card": 0.25}, ts=100.0
+        )
+        rec.record_sale("B", "Beta", 2, 2.00, {"cash_bill": 2.00}, ts=200.0)
+        rec.record_sale("C", "Gamma", 3, 1.50, {"card": 1.00, "nfc": 0.50}, ts=300.0)
+
+        rec.record_cash_collection("u1", "Alice")
+        rec.flush()
+
+        with sqlite3.connect(db) as conn:
+            first_rows = conn.execute(
+                "SELECT ts, user_id, user_name, expected_cash FROM cash_collections ORDER BY id"
+            ).fetchall()
+        assert len(first_rows) == 1
+        first_ts, first_user, _, first_expected = first_rows[0]
+        assert first_user == "u1"
+        # all-time cash: cash_coin (0.75) + cash_bill (2.00); card/nfc excluded
+        assert first_expected == pytest.approx(0.75 + 2.00)
+
+        # Sales after the first collection: mix of cash and non-cash.
+        rec.record_sale("D", "Delta", 4, 3.00, {"cash": 3.00}, ts=first_ts + 10)
+        rec.record_sale("E", "Epsilon", 5, 1.00, {"card": 1.00}, ts=first_ts + 20)
+        rec.record_sale("F", "Zeta", 6, 0.50, {"coin": 0.50}, ts=first_ts + 30)
+        # A sale timestamped before the previous collection must not count,
+        # even though it is inserted after it.
+        rec.record_sale("G", "Old", 7, 5.00, {"cash": 5.00}, ts=first_ts - 5)
+
+        rec.record_cash_collection("u2", "Bob")
+        rec.flush()
+
+        with sqlite3.connect(db) as conn:
+            second_rows = conn.execute(
+                "SELECT user_id, expected_cash FROM cash_collections ORDER BY id"
+            ).fetchall()
+        assert len(second_rows) == 2
+        second_user, second_expected = second_rows[1]
+        assert second_user == "u2"
+        assert second_expected == pytest.approx(3.00 + 0.50)
+
+
+class TestCorruptDatabaseRecovery:
+    def test_normal_db_is_not_flagged_corrupt(self, tmp_path):
+        rec = EventRecorder(db_path=str(tmp_path / "events.db"))
+        assert rec.db_was_corrupt is False
+        assert rec.corrupt_backup_path is None
+
+    def test_corrupt_db_is_quarantined_and_recorder_is_usable_after(self, tmp_path):
+        db_path = tmp_path / "events.db"
+        garbage = b"this is not a valid sqlite database, just garbage bytes"
+        db_path.write_bytes(garbage)
+
+        rec = EventRecorder(db_path=str(db_path))
+
+        # The flag for DATA-102 is set, not raised.
+        assert rec.db_was_corrupt is True
+        assert rec.corrupt_backup_path is not None
+        backup = Path(rec.corrupt_backup_path)
+        # Proves the corrupt branch was truly entered (an actual rename of
+        # the actual bad bytes), not just a flag flipped without action.
+        assert backup.exists()
+        assert backup.name.startswith("events.db.corrupt-")
+        assert backup.read_bytes() == garbage
+        assert not (backup == db_path)
+
+        # A fresh, valid database now lives at the original path.
+        assert db_path.exists()
+        with sqlite3.connect(str(db_path)) as conn:
+            tables = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+        assert {"events", "sales", "cash_collections"} <= tables
+
+        # The recorder is fully usable afterwards.
+        rec.record("payment", value=1.0)
+        rec.flush()
+        assert rec.get_summary(24)["money_in"] == pytest.approx(1.0)
+        rec.record_sale("SKU1", "Cola", 1, 1.50, {"cash": 1.50}, ts=time.time())
+        with sqlite3.connect(str(db_path)) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+        assert count == 1
