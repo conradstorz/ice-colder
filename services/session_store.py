@@ -25,6 +25,20 @@ SESSION_PATH = DATA_DIR / "session.json"
 
 
 @dataclass
+class Credit:
+    """One deposit still sitting in escrow, in the raw method it arrived as.
+
+    Defined here rather than in controller/vmc.py because SessionSnapshot
+    (below) has to serialise a list of these, and vmc.py already imports this
+    module — the reverse import would be a cycle.
+    """
+
+    method: str
+    amount: float
+    ts: float
+
+
+@dataclass
 class SessionSnapshot:
     state: str
     credit_escrow: float
@@ -32,6 +46,8 @@ class SessionSnapshot:
     dispense_slot: Optional[int] = None
     dispense_started_at: Optional[float] = None
     pending_refund_request_id: Optional[str] = None
+    credits: list[Credit] = field(default_factory=list)
+    pending_sale_shares: Optional[dict[str, float]] = None
     saved_at: float = field(default_factory=time.time)
     error: Optional[str] = None  # set when the file could not be parsed
 
@@ -70,6 +86,13 @@ class SessionStore:
             return None
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
+            # asdict() flattened Credit to plain dicts on save; a file written
+            # before this field existed has no "credits" key at all, which
+            # SessionSnapshot(**raw) already handles via default_factory=list
+            # — only rehydrate when the key is actually present.
+            raw_credits = raw.get("credits")
+            if raw_credits is not None:
+                raw["credits"] = [Credit(**c) for c in raw_credits]
             return SessionSnapshot(**raw)
         except Exception as e:
             logger.error(f"SessionStore: unreadable {self._path}: {e}")

@@ -36,7 +36,7 @@ from services.availability import Availability
 from services.health_monitor import HealthMonitor
 from services.display_controller import DisplayController
 from services.inventory_manager import InventoryManager
-from services.session_store import SessionSnapshot, SessionStore
+from services.session_store import Credit, SessionSnapshot, SessionStore
 
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
 
@@ -134,6 +134,17 @@ class VMC:
     REFUND_ACK_TIMEOUT = 10.0  # seconds to wait for cmd/payment/refund/ack
     REFUND_MAX_ATTEMPTS = 2  # one retry with the same request_id, then PAY-103
 
+    # Amounts within this many dollars of each other are the same money for
+    # ledger purposes. Every amount in this system is meaningful only to the
+    # cent (round(x, 2) is used throughout, e.g. request_refund below), so a
+    # residue smaller than half a cent can only be float noise — 0.1 + 0.2
+    # deposited as two credits and then spent as one 0.3 sale leaves a
+    # remainder around 4e-17, many orders of magnitude under this — and can
+    # never be a real, distinguishable amount of money. Half a cent is also
+    # the largest tolerance that can never itself be mistaken for a whole
+    # cent: an actual one-cent credit ($0.01) is always kept.
+    CREDIT_TOLERANCE = 0.005
+
     @logger.catch()
     def __init__(self, config: ConfigModel):
         global txn_log, ice_log, vend_log
@@ -150,6 +161,16 @@ class VMC:
 
         self.selected_product = None
         self.credit_escrow = 0.0
+        # escrow_credits is the FIFO ledger behind credit_escrow: every deposit
+        # appends one Credit in its raw method, and credit_escrow must always
+        # equal round(sum(c.amount for c in escrow_credits), 2) — the two are
+        # never allowed to diverge (see _consume_credits_fifo's bug guard).
+        self.escrow_credits: list[Credit] = []
+        # Shares consumed by the sale currently in dispensing, keyed by raw
+        # method string. Set by _consume_credits_fifo when a sale's price is
+        # deducted; consumed (and reset to None) by on_vend_failed. None
+        # whenever no sale is in flight.
+        self.pending_sale_shares: dict[str, float] | None = None
         self.last_insufficient_message = ""
         self.last_payment_method = "Simulated Payment"
 
@@ -361,6 +382,10 @@ class VMC:
             if (state or self.state) == "dispensing"
             else None,
             pending_refund_request_id=pending,
+            credits=list(self.escrow_credits),
+            pending_sale_shares=dict(self.pending_sale_shares)
+            if self.pending_sale_shares is not None
+            else None,
         )
 
     def _persist_session(self, state: str | None = None) -> None:
@@ -956,6 +981,12 @@ class VMC:
         Restores the price to escrow (it was deducted in _process_payment),
         records the failure, and clears the selection. Whether the customer
         stays to choose again or is paid out is decided in _fail_vend.
+
+        The restore must never reclassify money: it re-credits exactly the
+        per-method shares _consume_credits_fifo consumed for this sale
+        (pending_sale_shares), as separate Credits, not one blob of the
+        current/default method. That is what stops a failed vend laundering
+        cash into card (or any other method) in the sales ledger.
         """
         product = self.selected_product
         price = product.price if product else 0.0
@@ -963,6 +994,24 @@ class VMC:
         sku = product.sku if product else None
         self._cancel_dispense_timeout()
         self.credit_escrow += price
+        shares = self.pending_sale_shares
+        self.pending_sale_shares = None
+        if shares is None:
+            # Should be unreachable: on_vend_failed only runs from
+            # dispensing, which is only entered right after
+            # _consume_credits_fifo sets pending_sale_shares. Guard, not a
+            # path — attribute to "unknown" rather than guess a method.
+            logger.warning(
+                "on_vend_failed: no pending_sale_shares recorded; crediting "
+                f"${price:.2f} back to escrow as 'unknown'"
+            )
+            shares = {"unknown": round(price, 2)}
+        now = time.time()
+        for share_method, share_amount in shares.items():
+            if share_amount > 0:
+                self.escrow_credits.append(
+                    Credit(method=share_method, amount=share_amount, ts=now)
+                )
         logger.error(
             f"{STATE_CHANGE_PREFIX} Vend failed for '{name}' ({code.value}, {outcome}); "
             f"${price:.2f} returned to escrow"
@@ -1049,6 +1098,9 @@ class VMC:
                 "escrowed"
             )
         self.credit_escrow += amount
+        self.escrow_credits.append(
+            Credit(method=payment_method, amount=amount, ts=time.time())
+        )
         self.last_payment_method = payment_method
         logger.info(
             f"Deposited ${amount:.2f} via {payment_method}. New escrow: ${self.credit_escrow:.2f}"
@@ -1068,6 +1120,52 @@ class VMC:
             f"${amount:.2f} deposited. Current balance: ${self.credit_escrow:.2f}."
         )
 
+    def _consume_credits_fifo(self, price: float) -> dict[str, float]:
+        """Consume escrow_credits FIFO for `price`, returning consumed shares.
+
+        Mutates escrow_credits in place: fully-consumed credits are removed,
+        a partially-consumed credit shrinks in place (same method, reduced
+        amount), and untouched credits are left exactly as they were. The
+        returned dict sums each raw method string to the amount of it that
+        was spent on this sale — this is the method breakdown a later task
+        records for the sale, and it is also what on_vend_failed re-credits
+        if the vend does not complete, so it must never be re-derived from
+        anything but the credits actually consumed here.
+
+        Divergence guard: escrow_credits is supposed to sum to credit_escrow
+        at all times (every path that changes one changes the other). If it
+        does not — a bug elsewhere, e.g. credit_escrow mutated directly
+        without going through deposit_funds — the ledger cannot be trusted
+        to attribute this sale correctly, so no credit is touched and the
+        whole price is booked to the single method "unknown" instead of
+        silently mis-attributing it to whatever methods happen to be in the
+        (wrong) list. This is a bug guard, not an expected path.
+        """
+        ledger_total = round(sum(c.amount for c in self.escrow_credits), 2)
+        if abs(ledger_total - round(self.credit_escrow, 2)) > self.CREDIT_TOLERANCE:
+            logger.warning(
+                f"escrow_credits total (${ledger_total:.2f}) diverged from "
+                f"credit_escrow (${self.credit_escrow:.2f}); booking "
+                f"${price:.2f} to 'unknown' rather than misattribute it"
+            )
+            return {"unknown": round(price, 2)}
+
+        remaining = round(price, 2)
+        shares: dict[str, float] = {}
+        kept: list[Credit] = []
+        for credit in self.escrow_credits:
+            if remaining <= self.CREDIT_TOLERANCE:
+                kept.append(credit)
+                continue
+            take = round(min(credit.amount, remaining), 2)
+            shares[credit.method] = round(shares.get(credit.method, 0.0) + take, 2)
+            remaining = round(remaining - take, 2)
+            leftover = round(credit.amount - take, 2)
+            if leftover > self.CREDIT_TOLERANCE:
+                kept.append(Credit(method=credit.method, amount=leftover, ts=credit.ts))
+        self.escrow_credits = kept
+        return shares
+
     @logger.catch()
     def request_refund(self, reason: str = "admin"):
         """Pay the customer back: publish a refund command and await its ack.
@@ -1081,6 +1179,7 @@ class VMC:
             return
         amount = round(self.credit_escrow, 2)
         self.credit_escrow = 0.0
+        self.escrow_credits = []
         pending = PendingRefund(request_id=uuid4().hex, amount=amount, reason=reason)
         self._pending_refunds[pending.request_id] = pending
         self._send_refund_command(pending)
@@ -1325,9 +1424,11 @@ class VMC:
             self.send_customer_message(
                 "Sufficient funds received. Processing your payment..."
             )
+            self.pending_sale_shares = self._consume_credits_fifo(price)
             self.credit_escrow -= price
             logger.debug(
-                f"Deducted price from escrow. New escrow: {self.credit_escrow:.2f}"
+                f"Deducted price from escrow. New escrow: {self.credit_escrow:.2f} "
+                f"(shares: {self.pending_sale_shares})"
             )
             self.dispense_product()
             self._persist_session("dispensing")

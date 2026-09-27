@@ -20,7 +20,7 @@ from controller.vmc import VMC
 from services.availability import Availability
 from services.health_monitor import HealthMonitor
 from services.mqtt_messages import PaymentEnableCommand
-from services.session_store import SessionSnapshot, SessionStore
+from services.session_store import Credit, SessionSnapshot, SessionStore
 
 
 def make_vmc(price: float = 2.50) -> VMC:
@@ -620,6 +620,193 @@ class TestVendOutcomes:
         assert not any(e[0] == "dispense" for e in rec.events)
 
 
+class TestCreditLedger:
+    """The FIFO escrow credit ledger (§1.1): deposit -> deduct -> restore/refund."""
+
+    async def test_fifo_worked_example_splits_and_leaves_remainder(self):
+        """The spec's own acceptance example: $2.00 cash then $1.00 card,
+        a $2.50 sale, must yield {"cash": 2.00, "card": 0.50} and leave
+        exactly one $0.50 card credit — not just a total that happens to
+        add up."""
+        vmc = make_vmc(price=2.50)
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc.machine.set_state("interacting_with_user")
+        vmc.selected_product = vmc.products[0]
+        vmc.deposit_funds(2.00, payment_method="cash_bill")
+        vmc.deposit_funds(1.00, payment_method="card")
+
+        vmc._process_payment()
+
+        # Confirms the deduction branch (credit_escrow >= price) actually ran,
+        # rather than the insufficient-funds branch silently passing.
+        assert vmc.state == "dispensing"
+        assert vmc.pending_sale_shares == {"cash_bill": 2.00, "card": 0.50}
+        assert vmc.credit_escrow == 0.50
+        assert len(vmc.escrow_credits) == 1
+        assert vmc.escrow_credits[0].method == "card"
+        assert vmc.escrow_credits[0].amount == 0.50
+        vmc.cancel_pending_tasks()
+
+    async def test_exact_match_consumes_one_credit_entirely(self):
+        vmc = make_vmc(price=2.50)
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc.machine.set_state("interacting_with_user")
+        vmc.selected_product = vmc.products[0]
+        vmc.deposit_funds(2.50, payment_method="cash_coin")
+
+        vmc._process_payment()
+
+        assert vmc.state == "dispensing"
+        assert vmc.pending_sale_shares == {"cash_coin": 2.50}
+        assert vmc.escrow_credits == []
+        assert vmc.credit_escrow == 0.0
+        vmc.cancel_pending_tasks()
+
+    async def test_sale_spanning_three_credits(self):
+        vmc = make_vmc(price=2.50)
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc.machine.set_state("interacting_with_user")
+        vmc.selected_product = vmc.products[0]
+        vmc.deposit_funds(1.00, payment_method="cash_coin")
+        vmc.deposit_funds(1.00, payment_method="cash_coin")
+        vmc.deposit_funds(1.00, payment_method="card")
+
+        vmc._process_payment()
+
+        assert vmc.state == "dispensing"
+        assert vmc.pending_sale_shares == {"cash_coin": 2.00, "card": 0.50}
+        assert len(vmc.escrow_credits) == 1
+        assert vmc.escrow_credits[0].method == "card"
+        assert vmc.escrow_credits[0].amount == 0.50
+        vmc.cancel_pending_tasks()
+
+    async def test_vend_failed_restores_separate_credits_with_original_methods(self):
+        """vend_failed must re-credit the exact per-method shares that were
+        consumed, as separate Credits — not one blob under the default/last
+        payment method. This is the property that stops the ledger
+        laundering cash into card."""
+        vmc = make_vmc(price=2.50)
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc.machine.set_state("interacting_with_user")
+        vmc.selected_product = vmc.products[0]
+        vmc.deposit_funds(2.00, payment_method="cash_bill")
+        vmc.deposit_funds(0.50, payment_method="card")
+        vmc._process_payment()
+        assert vmc.state == "dispensing"  # sale actually in flight
+        assert vmc.pending_sale_shares == {"cash_bill": 2.00, "card": 0.50}
+        assert vmc.escrow_credits == []  # both credits fully consumed
+
+        vmc.vend_failed(code=FaultCode.PAY_102, outcome="no_report")
+
+        assert vmc.state == "interacting_with_user"
+        assert vmc.credit_escrow == 2.50
+        assert vmc.pending_sale_shares is None
+        assert len(vmc.escrow_credits) == 2
+        assert vmc.escrow_credits[0].method == "cash_bill"
+        assert vmc.escrow_credits[0].amount == 2.00
+        assert vmc.escrow_credits[1].method == "card"
+        assert vmc.escrow_credits[1].amount == 0.50
+        vmc.cancel_pending_tasks()
+
+    async def test_rejected_deposit_appends_no_credit(self):
+        vmc = make_vmc(price=2.50)
+        vmc.attach_to_loop(asyncio.get_running_loop())
+
+        vmc.deposit_funds(0.0, payment_method="cash_coin")
+        vmc.deposit_funds(-1.0, payment_method="cash_coin")
+
+        assert vmc.escrow_credits == []
+        assert vmc.credit_escrow == 0.0
+
+    async def test_divergence_guard_books_unknown_and_warns(self):
+        """credit_escrow mutated directly (bypassing deposit_funds, as many
+        pre-existing tests in this file do) leaves escrow_credits empty
+        while credit_escrow is nonzero. _consume_credits_fifo must not
+        guess a method in that case: it books the whole price to 'unknown'
+        and logs a warning, rather than attributing real money to the
+        wrong (or no) method."""
+        vmc = make_vmc(price=2.50)
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc.machine.set_state("interacting_with_user")
+        vmc.selected_product = vmc.products[0]
+        vmc.credit_escrow = 5.00  # escrow_credits stays [] -> diverges
+
+        records: list[tuple[str, str]] = []
+        handle = logger.add(
+            lambda m: records.append((m.record["level"].name, m.record["message"])),
+            level="DEBUG",
+            format="{message}",
+        )
+        try:
+            vmc._process_payment()
+        finally:
+            logger.remove(handle)
+
+        assert vmc.state == "dispensing"  # deduction branch ran
+        assert vmc.pending_sale_shares == {"unknown": 2.50}
+        assert vmc.credit_escrow == 2.50
+        assert any(lvl == "WARNING" and "diverged" in msg for lvl, msg in records)
+        vmc.cancel_pending_tasks()
+
+    async def test_float_boundary_tolerance(self):
+        """CREDIT_TOLERANCE (0.005, half a cent) is used in two places; both
+        boundaries are tested here.
+
+        1. The leftover-credit decision: a genuine one-cent overshoot is
+           real money and must survive as its own credit — the tolerance
+           must never be generous enough to eat an actual cent.
+        2. The divergence guard: escrow_credits and credit_escrow rounded to
+           the cent agreeing exactly is trusted; even the smallest real
+           disagreement once both sides are cent-quantized — one cent — must
+           trip the guard rather than silently attribute real money to
+           whatever methods happen to be sitting in an untrustworthy list.
+        """
+        # (1) $2.51 deposited, $2.50 charged -> a real $0.01 remains.
+        vmc = make_vmc(price=2.50)
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc.machine.set_state("interacting_with_user")
+        vmc.selected_product = vmc.products[0]
+        vmc.deposit_funds(2.51, payment_method="cash_coin")
+
+        vmc._process_payment()
+
+        assert vmc.state == "dispensing"
+        assert vmc.pending_sale_shares == {"cash_coin": 2.50}
+        assert len(vmc.escrow_credits) == 1
+        assert vmc.escrow_credits[0].amount == 0.01
+        vmc.cancel_pending_tasks()
+
+        # (2a) Ledger and total agree exactly -> trusted, FIFO shares returned.
+        vmc2 = make_vmc(price=1.00)
+        vmc2.attach_to_loop(asyncio.get_running_loop())
+        vmc2.machine.set_state("interacting_with_user")
+        vmc2.selected_product = vmc2.products[0]
+        vmc2.escrow_credits = [Credit(method="cash_coin", amount=1.00, ts=0.0)]
+        vmc2.credit_escrow = 1.00
+
+        vmc2._process_payment()
+
+        assert vmc2.state == "dispensing"
+        assert vmc2.pending_sale_shares == {"cash_coin": 1.00}
+        vmc2.cancel_pending_tasks()
+
+        # (2b) One cent off -> the guard trips; escrow_credits is left
+        # untouched (not consumed, not merged) and the share is "unknown".
+        vmc3 = make_vmc(price=1.00)
+        vmc3.attach_to_loop(asyncio.get_running_loop())
+        vmc3.machine.set_state("interacting_with_user")
+        vmc3.selected_product = vmc3.products[0]
+        vmc3.escrow_credits = [Credit(method="cash_coin", amount=1.00, ts=0.0)]
+        vmc3.credit_escrow = 1.01
+
+        vmc3._process_payment()
+
+        assert vmc3.state == "dispensing"
+        assert vmc3.pending_sale_shares == {"unknown": 1.00}
+        assert vmc3.escrow_credits == [Credit(method="cash_coin", amount=1.00, ts=0.0)]
+        vmc3.cancel_pending_tasks()
+
+
 class RecordingClient:
     def __init__(self):
         self.published: list[tuple[str, object]] = []
@@ -657,6 +844,20 @@ class TestRefunds:
         # customer it's "issued" before that happens.
         assert "requested" in messages[-1]
         assert "issued" not in messages[-1]
+
+    async def test_refund_clears_credit_list_as_well_as_total(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        client = RecordingClient()
+        vmc.set_mqtt_client(client)
+        vmc.deposit_funds(1.00, payment_method="cash_coin")
+        vmc.deposit_funds(0.75, payment_method="card")
+        assert len(vmc.escrow_credits) == 2  # confirms deposit_funds populated it
+
+        vmc.request_refund(reason="cancel")
+
+        assert vmc.credit_escrow == 0.0
+        assert vmc.escrow_credits == []
 
     async def test_ack_ok_records_refund(self):
         vmc = make_vmc2()
