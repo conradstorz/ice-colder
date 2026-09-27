@@ -926,6 +926,64 @@ class TestCollections:
         assert by_user_again["u2"]["expected_cash"] == pytest.approx(10.00)
         assert by_user_again["u1"]["expected_cash"] == pytest.approx(first_stored)
 
+    def test_tied_ts_newest_by_id_gets_the_live_figure(self, recorder, monkeypatch):
+        """Finding 1 (whole-branch review, part 3): `collections()`'s
+        `ORDER BY ts DESC LIMIT ?` had no tie-break on `id`, so two rows
+        sharing an identical `ts` were labelled newest/oldest by SQLite's
+        incidental tie order rather than by which was truly inserted last.
+
+        The tie is forced genuinely, not hoped for: `time.time()` is
+        monkeypatched (same technique as
+        `tests/test_routes_inventory_collect.py`'s
+        `TestConcurrentCollectionsShowOwnRow`) so both `record_cash_
+        collection` calls are queued with the exact same `ts`. Alice is
+        queued first (gets `id=1`), Bob second (`id=2`, the true newest) --
+        mirroring the review's own Alice/Bob reproduction.
+        """
+        frozen_ts = time.time()
+
+        # A sale from well before either collection: it must count in
+        # Alice's all-time stored total (she is the very first collection
+        # ever) but never in any "since <frozen_ts>" total. Passed via the
+        # explicit `ts` param so this does not depend on wall-clock luck.
+        recorder.record_sale("A", "Alpha", 1, 1.00, {"cash": 1.00}, ts=frozen_ts - 10)
+
+        monkeypatch.setattr("services.event_recorder.time.time", lambda: frozen_ts)
+        recorder.record_cash_collection("alice", "Alice")  # id=1
+        recorder.record_cash_collection("bob", "Bob")  # id=2, the true newest
+        recorder.flush()
+        monkeypatch.undo()
+
+        with sqlite3.connect(recorder._db_path) as conn:
+            id_rows = conn.execute(
+                "SELECT id, user_id, ts, expected_cash FROM cash_collections "
+                "ORDER BY id ASC"
+            ).fetchall()
+        assert [r[1] for r in id_rows] == ["alice", "bob"], (
+            "test setup requires alice=id1, bob=id2"
+        )
+        assert id_rows[0][2] == id_rows[1][2] == frozen_ts, (
+            "test setup requires both rows to share a tied ts"
+        )
+        # Sanity on the stored figures each row was actually given at
+        # insert time, independent of the bug under test.
+        assert id_rows[0][3] == pytest.approx(1.00)  # alice: all sales so far
+        assert id_rows[1][3] == pytest.approx(0.00)  # bob: nothing since alice
+
+        # A sale strictly after the tied ts -- only the TRUE newest row
+        # (bob, id=2) should ever reflect it live.
+        recorder.record_sale("B", "Beta", 2, 5.00, {"cash": 5.00}, ts=frozen_ts + 10)
+
+        rows = reports.collections(recorder, limit=10)
+
+        # bob is the true newest collection (greatest id at the tied ts)
+        # and must be first, carrying the live figure; alice must show her
+        # stored figure, unaffected by the sale recorded after her.
+        assert rows[0]["user_id"] == "bob"
+        assert rows[0]["expected_cash"] == pytest.approx(5.00)
+        assert rows[1]["user_id"] == "alice"
+        assert rows[1]["expected_cash"] == pytest.approx(1.00)
+
 
 # --------------------------------------------------------------------------
 # CSV rendering and filenames

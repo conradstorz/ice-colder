@@ -810,8 +810,15 @@ class EventRecorder:
         with everything already written, rather than racing a route or the
         caller's own read.
         """
+        # `id DESC` breaks a tied `ts` deterministically (see
+        # `services/reports.py`'s `collections()` docstring for the
+        # identical hazard). Benign either way here: two rows can only tie
+        # on `ts` if they share the same timestamp, so whichever is picked
+        # as "previous" yields an identical `WHERE sales.ts > ?` cutoff --
+        # added for consistency and defensive clarity, not because either
+        # choice was wrong.
         prev = conn.execute(
-            "SELECT ts FROM cash_collections ORDER BY ts DESC LIMIT 1"
+            "SELECT ts FROM cash_collections ORDER BY ts DESC, id DESC LIMIT 1"
         ).fetchone()
         if prev is None:
             cursor = conn.execute("SELECT methods FROM sales")

@@ -514,6 +514,22 @@ def collections(recorder, limit: int = 50) -> list[dict]:
     from the stored column, since sales keep arriving after the last
     collection was recorded. Older rows show the stored `expected_cash`
     exactly as `record_cash_collection` computed it at insert time.
+
+    Ordered `ts DESC, id DESC` -- the `id DESC` tie-break makes the
+    later-inserted row win deterministic even when two rows share an
+    identical `ts` (finite `time.time()` resolution makes that a real
+    possibility -- see the identical hazard fixed in
+    `web_interface/routes/inventory.py` and `by_product`'s `id ASC`
+    precedent above), rather than falling back to SQLite's incidental,
+    unguaranteed tie order. Without this, the row at index 0 -- the one
+    given the *live* figure -- could be an older collection than one of
+    the rows behind it, misattributing whose action is current. `id` is
+    used only to order the query; it is not added to the returned row
+    dicts, matching `by_product`'s existing precedent of using `id`
+    purely as a tie-break and keeping the public row shape unchanged
+    (`render_csv`'s `DictWriter(..., extrasaction="ignore")` would have
+    tolerated an extra key either way, but there is no reason to add one
+    no caller needs).
     """
     recorder.flush()
     db_path = recorder._db_path
@@ -522,7 +538,7 @@ def collections(recorder, limit: int = 50) -> list[dict]:
     with contextlib.closing(sqlite3.connect(db_path)) as conn:
         rows = conn.execute(
             "SELECT ts, user_id, user_name, expected_cash FROM cash_collections "
-            "ORDER BY ts DESC LIMIT ?",
+            "ORDER BY ts DESC, id DESC LIMIT ?",
             (limit,),
         ).fetchall()
         for i, (ts, user_id, user_name, expected_cash) in enumerate(rows):
