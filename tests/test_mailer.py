@@ -188,3 +188,69 @@ async def test_send_email_rejects_malformed_mime_type(gateway, caplog):
     assert "malformed mime type" in caplog.text
     assert "invalidmime" in caplog.text
     assert "file.bin" in caplog.text
+
+
+async def test_send_email_with_wrong_length_attachment_tuple_returns_false(
+    gateway, caplog
+):
+    """A 2-tuple instead of a (filename, payload, mime_type) 3-tuple must not raise."""
+    with patch("services.mailer.smtp_send") as mock_send:
+        ok = await send_email(
+            gateway,
+            "ada@example.com",
+            "Bad shape",
+            "Text",
+            attachments=[("f.txt", b"data")],
+        )
+
+    assert ok is False
+    mock_send.assert_not_called()
+    assert "failed to build attachment" in caplog.text
+
+
+async def test_send_email_with_bare_tuple_attachments_returns_false(gateway, caplog):
+    """A bare tuple instead of a list of tuples must not raise."""
+    with patch("services.mailer.smtp_send") as mock_send:
+        ok = await send_email(
+            gateway,
+            "ada@example.com",
+            "Bad container",
+            "Text",
+            attachments=("f.txt", b"data", "text/plain"),
+        )
+
+    assert ok is False
+    mock_send.assert_not_called()
+    assert "failed to build attachment" in caplog.text
+
+
+async def test_send_email_with_bytes_mime_type_returns_false(gateway, caplog):
+    """A mime_type given as bytes instead of str must not raise."""
+    with patch("services.mailer.smtp_send") as mock_send:
+        ok = await send_email(
+            gateway,
+            "ada@example.com",
+            "Bad mime type",
+            "Text",
+            attachments=[("f.txt", b"data", b"text/plain")],
+        )
+
+    assert ok is False
+    mock_send.assert_not_called()
+    assert "failed to build attachment" in caplog.text
+
+
+async def test_send_email_with_non_bytes_payload_returns_false(gateway, caplog):
+    """A payload given as str instead of bytes must not raise."""
+    with patch("services.mailer.smtp_send") as mock_send:
+        ok = await send_email(
+            gateway,
+            "ada@example.com",
+            "Bad payload",
+            "Text",
+            attachments=[("f.txt", "not bytes", "text/plain")],
+        )
+
+    assert ok is False
+    mock_send.assert_not_called()
+    assert "failed to build attachment" in caplog.text

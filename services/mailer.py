@@ -39,9 +39,15 @@ async def send_email(
         subject: Email subject.
         body: Email body (plain text).
         attachments: Optional list of (filename, payload, mime_type) tuples.
-                    When None (default), message remains single-part.
+                    When None or empty (default), the message remains
+                    single-part, exactly as it was before this parameter
+                    existed.
                     Each mime_type must contain '/' (e.g., 'text/csv').
-                    If a mime_type is malformed, returns False.
+                    Never raises: any problem building the attachments —
+                    a malformed mime_type, a wrongly shaped attachments
+                    argument, or a payload/mime_type of the wrong type —
+                    is logged and returns False, the same contract as an
+                    SMTP failure.
     """
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -49,20 +55,27 @@ async def send_email(
     msg["To"] = to
     msg.set_content(body)
 
-    # Add attachments if provided
+    # Add attachments if provided. This whole step must never raise: it sits
+    # in its own try/except so a malformed attachments argument (wrong tuple
+    # shape, wrong element types) logs and returns False instead of escaping
+    # send_email's "never raises" contract.
     if attachments:
-        for filename, payload, mime_type in attachments:
-            # Validate and parse mime type
-            if "/" not in mime_type:
-                logger.error(
-                    f"mailer: malformed mime type '{mime_type}' for attachment '{filename}'"
-                )
-                return False
+        try:
+            for filename, payload, mime_type in attachments:
+                # Validate and parse mime type
+                if "/" not in mime_type:
+                    logger.error(
+                        f"mailer: malformed mime type '{mime_type}' for attachment '{filename}'"
+                    )
+                    return False
 
-            maintype, subtype = mime_type.split("/", 1)
-            msg.add_attachment(
-                payload, maintype=maintype, subtype=subtype, filename=filename
-            )
+                maintype, subtype = mime_type.split("/", 1)
+                msg.add_attachment(
+                    payload, maintype=maintype, subtype=subtype, filename=filename
+                )
+        except Exception as e:
+            logger.error(f"mailer: failed to build attachment(s) for {to}: {e}")
+            return False
 
     loop = asyncio.get_running_loop()
     try:
