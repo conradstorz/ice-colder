@@ -7,7 +7,7 @@
    Review round, Finding 3: confirm_button.html always swaps its OWN
    `<div id="{{ target }}">` via hx-swap="outerHTML" (confirm_button.html:
    44,47,53). For this feature target="#collect-cash-confirm", and this
-   file used to render a bare `<div class="bg-green-50 ...">` with no id
+   file used to render a bare div styled with bg-green-50 but with no id
    at all -- once a successful POST swapped it in, `#collect-cash-confirm`
    was permanently gone from the DOM and the Collect Cash control could
    never be used again without a full page reload.
