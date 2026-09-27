@@ -4,19 +4,23 @@ and the email action (Task 10) -- see docs/superpowers/specs/
 
 Design notes / deliberate deviations, recorded here per the task brief:
 
-- `/reports/product/{sku}` shows this SKU's own totals (name, units,
-  revenue, failed_vends) for the selected range -- computed by filtering
-  `services.reports.by_product`'s result set down to one sku -- rather than
-  a per-bucket ("by period") breakdown. `services/reports.py` exposes no
-  sku-filtered bucketing function, and adding one there is outside this
-  task's file list (only `web_interface/routes/reports.py` and the new
-  templates are listed; `services/reports.py` is explicitly "reviewed and
-  merged" context, not mine to edit). Duplicating `by_period`'s carefully
-  DST-aware bucketing logic here, in routes.py, for one sku would be a
-  large, risky undertaking for a page whose own "Tests to write first" list
-  only requires 200 for a real sku and a shell 404 for an unknown one.
-  Documented here and in the task report as a deliberate interpretation,
-  not a silent guess.
+- `/reports/product/{sku}` shows this SKU's sales **by period** (Task 10
+  follow-up, Finding 1): one row per bucket via `services.reports.by_period`
+  with its `sku=` filter, the same day/week/month bucketing and range/bucket
+  tabs as `/reports/period`, plus a total row. The event-derived columns
+  `refunds` and `uptime_pct` are always `None` (rendered `—`) on this page,
+  never a real number: a `refund` event's metadata carries no SKU (a refund
+  pays back a customer's whole escrow, not one product) and uptime is an
+  inherently machine-wide liveness measure, so showing either here would
+  misattribute a machine-wide figure to one product. `failed_vends` IS
+  attributable per SKU (`vend_failed`'s metadata carries one, see
+  `VMC.on_vend_failed`) and so is filtered and shown. See
+  `services/reports.py::by_period`'s docstring for the full reasoning.
+  The catalog lookup (`_find_product`) still runs, and 404s, before any
+  query -- a real SKU with zero sales in the window still renders 200 with
+  an empty/zero table, never a 404 -- and the breadcrumb still uses the
+  catalog's product name, never a name derived from query rows (which do
+  not carry one).
 - `GET /reports/collections` accepts `?range=` (the brief's Interfaces
   section lists it for all four level routes uniformly) but does not feed
   it into `services.reports.collections`, which takes no window argument
@@ -264,45 +268,68 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
             "label": "product",
         }
 
-    async def _compute_product_sku(range_key: str, sku: str) -> dict:
+    async def _compute_product_sku(range_key: str, bucket_key: str, sku: str) -> dict:
+        # Catalog lookup runs -- and 404s -- BEFORE any query, same as
+        # every other level's shell 404: a real SKU with zero sales in the
+        # window must still render 200 with a zero row, never a 404, and
+        # this ordering is what guarantees that.
         product = _find_product(sku)
         if product is None:
-            # A missing or deleted SKU is a shell 404 (products.py's own
-            # _get_or_404 pattern), never a bare JSON error.
             raise HTTPException(status_code=404, detail=f"No such product: {sku}")
 
-        row = None
+        rows: list[dict] = []
         if context.event_recorder:
             window = reports_service.resolve_window(range_key)
-            all_rows = await asyncio.to_thread(
-                reports_service.by_product, context.event_recorder, window
+            rows = await asyncio.to_thread(
+                reports_service.by_period,
+                context.event_recorder,
+                window,
+                bucket_key,
+                None,
+                sku,
             )
-            row = next((r for r in all_rows if r["sku"] == sku), None)
-        if row is None:
-            row = {
-                "sku": sku,
-                "name": product.name,
-                "units": 0,
-                "revenue": 0.0,
-                "failed_vends": 0,
-            }
+        total = _totalize_period(rows)
+        csv_rows = [*rows, {"bucket_start": "Total", **total}]
 
+        # The breadcrumb uses the CATALOG's product name -- never a name
+        # derived from query rows, which carry no `name` field at all for
+        # this by_period shape (and are simply absent for a no-sales SKU).
         level = Level.child(
             LEVEL_REPORTS_PRODUCT, product.name or sku, f"/reports/product/{sku}"
         )
-        body = (
-            f"{row['name']} ({row['sku']}): units {row['units']}, "
-            f"revenue ${row['revenue']:.2f}, failed {row['failed_vends']}"
+
+        lines = [
+            f"{r['bucket_start']}: revenue {_fmt(r['revenue'], money=True)}, "
+            f"vends {r['vends']}, failed {_fmt(r['failed_vends'])}, "
+            f"refunds {_fmt(r['refunds'], money=True)}, "
+            f"uptime {_fmt(r['uptime_pct'])}"
+            for r in rows
+        ]
+        lines.append(
+            f"Total: revenue {_fmt(total['revenue'], money=True)}, "
+            f"vends {total['vends']}, failed {_fmt(total['failed_vends'])}, "
+            f"refunds {_fmt(total['refunds'], money=True)}, "
+            f"uptime {_fmt(total['uptime_pct'])}"
         )
+        body = f"{product.name} ({sku}) by period:\n" + "\n".join(lines)
+
         return {
-            "rows": [row],
-            "csv_rows": [row],
-            "header": PRODUCT_HEADER,
-            "subject": f"Sales report: {row['name']} ({range_key})",
+            "rows": rows,
+            "total": total,
+            "csv_rows": csv_rows,
+            "header": PERIOD_HEADER,
+            "subject": (
+                f"Sales report: {product.name} by period ({range_key}, {bucket_key})"
+            ),
             "body": body,
             "level": level,
             "template": "reports_product_sku.html",
-            "extra": {"range": range_key, "sku": sku},
+            "extra": {
+                "range": range_key,
+                "bucket": bucket_key,
+                "sku": sku,
+                "product_name": product.name,
+            },
             "label": f"product-{sku}",
         }
 
@@ -331,25 +358,28 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         }
 
     async def _compute_collections(range_key: str) -> dict:
-        rows: list[dict] = []
+        raw_rows: list[dict] = []
         if context.event_recorder:
-            rows = await asyncio.to_thread(
+            raw_rows = await asyncio.to_thread(
                 reports_service.collections, context.event_recorder, 50
             )
-        # `ts_display` is added for the template only (a human timestamp);
-        # `render_csv` below ignores any key outside `COLLECTIONS_HEADER`
-        # (DictWriter(..., extrasaction="ignore")), so the CSV attachment
-        # still carries the raw epoch `ts`, not this formatted string.
-        for row in rows:
-            row["ts_display"] = _ts_display(row["ts"])
+        # `ts_display` is added for the template only (a human timestamp).
+        # Unlike the earlier version of this helper, it is added by
+        # building new dicts here rather than mutating the service's
+        # returned rows in place -- `raw_rows` (what `render_csv` uses)
+        # stays exactly what `reports_service.collections` returned, and
+        # `render_csv`'s `DictWriter(..., extrasaction="ignore")` would
+        # have ignored the extra key either way, so this is a tidiness fix
+        # with no behavior change.
+        rows = [{**row, "ts_display": _ts_display(row["ts"])} for row in raw_rows]
         lines = [
             f"{_ts_display(r['ts'])} {r['user_name']}: "
             f"expected ${r['expected_cash']:.2f}"
-            for r in rows
+            for r in raw_rows
         ]
         return {
             "rows": rows,
-            "csv_rows": rows,
+            "csv_rows": raw_rows,
             "header": COLLECTIONS_HEADER,
             "subject": "Sales report: cash collections",
             "body": "\n".join(lines) or "No collections recorded.",
@@ -465,9 +495,11 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         request: Request,
         sku: str,
         range: str = Query(default=reports_service.DEFAULT_WINDOW),
+        bucket: str | None = Query(default=None),
     ):
         range_key = _effective_range(range)
-        data = await _compute_product_sku(range_key, sku)
+        bucket_key = _resolve_bucket(range_key, bucket)
+        data = await _compute_product_sku(range_key, bucket_key, sku)
         return _render(request, data)
 
     @router.get(
@@ -533,7 +565,8 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
                 raise HTTPException(
                     status_code=400, detail="sku is required for product_sku report"
                 )
-            data = await _compute_product_sku(range_key, sku)
+            bucket_key = _resolve_bucket(range_key, bucket)
+            data = await _compute_product_sku(range_key, bucket_key, sku)
         elif report == "method":
             data = await _compute_method(range_key)
         elif report == "collections":

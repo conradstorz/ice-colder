@@ -195,6 +195,7 @@ def by_period(
     window: tuple[float, float],
     bucket: str,
     tz: Optional[tzinfo] = None,
+    sku: Optional[str] = None,
 ) -> list[dict]:
     """Rows of bucket start, revenue, vends, failed vends, refunds, uptime %.
 
@@ -204,6 +205,20 @@ def by_period(
     whose entire range predates the retention cutoff, those three columns
     are `None` (rendered `—` by the template) rather than 0 -- a 0 would
     misreport "no failures" when the truth is "we no longer know".
+
+    `sku` (optional, kept last so no existing caller breaks) filters the
+    `sales` side (revenue, vends) to that one SKU, and filters
+    `failed_vends` to `vend_failed` events whose `metadata.sku` matches it
+    (that key is populated by `VMC.on_vend_failed`, see
+    `controller/vmc.py`). `refunds` and `uptime_pct` are always `None` when
+    `sku` is given, regardless of retention: a `refund` event's metadata
+    carries only `{request_id, reason}` -- no SKU, because a refund pays
+    back a customer's whole escrow, not one product -- and uptime is a
+    machine-wide liveness measure with no per-product meaning at all.
+    Reporting either as a real number on a per-SKU page would misattribute
+    a machine-wide figure to one product; `None` (rendered `—`) is the
+    honest answer, exactly like the retention rule this module already
+    applies elsewhere.
 
     For a bucket that *straddles* the cutoff (its start predates it but its
     end does not), the three event-derived columns are computed normally
@@ -295,17 +310,48 @@ def by_period(
             # the DST offset and double-count the sales in that overlap.
             q_end = min(next_start.timestamp(), end_ts)
 
-            revenue = conn.execute(
-                "SELECT COALESCE(SUM(price), 0.0) FROM sales WHERE ts>=? AND ts<?",
-                (q_start, q_end),
-            ).fetchone()[0]
-            vends = conn.execute(
-                "SELECT COUNT(*) FROM sales WHERE ts>=? AND ts<?",
-                (q_start, q_end),
-            ).fetchone()[0]
+            if sku is None:
+                revenue = conn.execute(
+                    "SELECT COALESCE(SUM(price), 0.0) FROM sales WHERE ts>=? AND ts<?",
+                    (q_start, q_end),
+                ).fetchone()[0]
+                vends = conn.execute(
+                    "SELECT COUNT(*) FROM sales WHERE ts>=? AND ts<?",
+                    (q_start, q_end),
+                ).fetchone()[0]
+            else:
+                revenue = conn.execute(
+                    "SELECT COALESCE(SUM(price), 0.0) FROM sales "
+                    "WHERE ts>=? AND ts<? AND sku=?",
+                    (q_start, q_end, sku),
+                ).fetchone()[0]
+                vends = conn.execute(
+                    "SELECT COUNT(*) FROM sales WHERE ts>=? AND ts<? AND sku=?",
+                    (q_start, q_end, sku),
+                ).fetchone()[0]
 
             if q_end <= retention_cutoff:
                 failed_vends = None
+                refunds = None
+                uptime_pct = None
+            elif sku is not None:
+                # A vend_failed event's metadata carries a sku (see
+                # VMC.on_vend_failed) but SQLite's json1 extension is not
+                # assumed available here, so filter in Python -- the same
+                # approach by_product already uses for this same table.
+                # refunds/uptime_pct are never attributable to one SKU (see
+                # the docstring), so they stay None whenever sku is given,
+                # independent of retention.
+                meta_rows = conn.execute(
+                    "SELECT metadata FROM events WHERE event_type='vend_failed' "
+                    "AND timestamp>=? AND timestamp<?",
+                    (q_start, q_end),
+                ).fetchall()
+                failed_vends = sum(
+                    1
+                    for (meta_json,) in meta_rows
+                    if meta_json and json.loads(meta_json).get("sku") == sku
+                )
                 refunds = None
                 uptime_pct = None
             else:

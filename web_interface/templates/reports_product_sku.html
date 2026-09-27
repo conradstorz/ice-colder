@@ -1,23 +1,42 @@
 {# web_interface/templates/reports_product_sku.html
 
    GET /reports/product/{sku} (gate view_reports): a sub-level of
-   /reports/product (Level.child) -- this SKU's own totals for the
-   selected range. See routes/reports.py's module docstring for why this
-   is the SKU's window totals (via by_product filtered to one sku) rather
-   than a per-bucket breakdown: services/reports.py exposes no sku-filtered
-   bucketing function and adding one there is outside this task's file
-   list.
+   /reports/product (Level.child) -- this SKU's own sales BY PERIOD (spec
+   §3: "showing that SKU by period"), via services.reports.by_period's
+   sku= filter -- one row per day/week/month bucket plus a total row, same
+   shape and range/bucket tabs as /reports/period.
+
+   `product_name` (not `rows[0].name`) carries the catalog's product name
+   for the title/breadcrumb: a by_period row has no `name` field at all,
+   and a real SKU with zero sales in the window still renders this page
+   (rows == [] is valid), so relying on rows[0] would break exactly then.
+
+   `refunds` and `uptime_pct` render "-" (None) on every row here, by
+   design -- never a real number: a refund event's metadata carries no
+   SKU (a refund pays back a customer's whole escrow, not one product)
+   and uptime is an inherently machine-wide measure. `failed_vends` IS
+   attributable per SKU (vend_failed's metadata carries one) and is shown
+   normally, subject to the same 90-day retention "-" rule as every other
+   level. See services/reports.py::by_period's docstring for the full
+   reasoning.
 #}
 {% extends "base.html" %}
-{% block title %}{{ rows[0].name if rows else "Product" }} · Vending Machine{% endblock %}
+{% block title %}{{ product_name or sku }} · Vending Machine{% endblock %}
 {% block body %}
 <div class="space-y-4">
 
   {% if email_notice %}<p class="text-green-700 text-sm" role="status">{{ email_notice }}</p>{% endif %}
   {% if email_error %}<p class="text-red-600 text-sm" role="alert">{{ email_error }}</p>{% endif %}
 
+  <p class="text-sm text-gray-500">
+    {{ product_name }} <span class="text-gray-400">{{ sku }}</span> --
+    refunds and uptime are machine-wide figures and cannot be attributed to
+    a single product, so they always show <span class="font-medium">—</span> here.
+  </p>
+
   <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
 
+    {# Range tabs #}
     <div class="flex border-b border-gray-200 px-1 pt-1">
       {% for r, label in [("7d", "7 Days"), ("30d", "30 Days"), ("90d", "90 Days"), ("12m", "12 Months"), ("all", "All Time")] %}
       <a
@@ -30,28 +49,68 @@
       {% endfor %}
     </div>
 
+    {# Bucket tabs #}
+    <div class="flex border-b border-gray-200 px-1 pt-1">
+      {% for b, label in [("day", "Day"), ("week", "Week"), ("month", "Month")] %}
+      <a
+        href="/reports/product/{{ sku }}?range={{ range }}&amp;bucket={{ b }}"
+        class="px-4 py-2.5 text-sm font-medium -mb-px transition-colors
+               {% if b == bucket %}border-b-2 border-blue-600 text-blue-600
+               {% else %}text-gray-500 hover:text-gray-700 border-b-2 border-transparent hover:border-gray-300{% endif %}">
+        {{ label }}
+      </a>
+      {% endfor %}
+    </div>
+
     <div class="overflow-x-auto">
       <table class="w-full text-sm">
         <thead>
           <tr class="text-left text-gray-500 text-xs uppercase tracking-wide">
-            <th class="px-5 py-3">Product</th>
-            <th class="px-5 py-3 text-right">Units</th>
+            <th class="px-5 py-3">Bucket</th>
             <th class="px-5 py-3 text-right">Revenue</th>
+            <th class="px-5 py-3 text-right">Vends</th>
             <th class="px-5 py-3 text-right">Failed vends</th>
+            <th class="px-5 py-3 text-right">Refunds</th>
+            <th class="px-5 py-3 text-right">Uptime</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-gray-100">
           {% for row in rows %}
           <tr>
-            <td class="px-5 py-3">
-              {{ row.name }}
-              <span class="text-gray-400 text-xs ml-2">{{ row.sku }}</span>
-            </td>
-            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">{{ row.units }}</td>
+            <td class="px-5 py-3 text-gray-700 whitespace-nowrap">{{ row.bucket_start }}</td>
             <td class="px-5 py-3 text-right whitespace-nowrap font-medium text-gray-900">${{ "%.2f"|format(row.revenue) }}</td>
-            <td class="px-5 py-3 text-right whitespace-nowrap {{ 'text-red-600' if row.failed_vends else 'text-gray-900' }}">{{ row.failed_vends }}</td>
+            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">{{ row.vends }}</td>
+            <td class="px-5 py-3 text-right whitespace-nowrap {{ 'text-red-600' if row.failed_vends else 'text-gray-900' }}">
+              {{ row.failed_vends if row.failed_vends is not none else "—" }}
+            </td>
+            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">
+              {{ "$%.2f"|format(row.refunds) if row.refunds is not none else "—" }}
+            </td>
+            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">
+              {{ "%.1f%%"|format(row.uptime_pct) if row.uptime_pct is not none else "—" }}
+            </td>
+          </tr>
+          {% else %}
+          <tr>
+            <td class="px-5 py-3 text-gray-400" colspan="6">No data in this range.</td>
           </tr>
           {% endfor %}
+          {% if rows %}
+          <tr class="border-t-2 border-gray-200 font-semibold">
+            <td class="px-5 py-3 text-gray-700">Total</td>
+            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">${{ "%.2f"|format(total.revenue) }}</td>
+            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">{{ total.vends }}</td>
+            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">
+              {{ total.failed_vends if total.failed_vends is not none else "—" }}
+            </td>
+            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">
+              {{ "$%.2f"|format(total.refunds) if total.refunds is not none else "—" }}
+            </td>
+            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">
+              {{ "%.1f%%"|format(total.uptime_pct) if total.uptime_pct is not none else "—" }}
+            </td>
+          </tr>
+          {% endif %}
         </tbody>
       </table>
     </div>
@@ -61,6 +120,7 @@
   <form hx-post="/reports/email">
     <input type="hidden" name="report" value="product_sku">
     <input type="hidden" name="range" value="{{ range }}">
+    <input type="hidden" name="bucket" value="{{ bucket }}">
     <input type="hidden" name="sku" value="{{ sku }}">
     <button type="submit"
             class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">

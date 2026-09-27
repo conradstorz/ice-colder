@@ -269,12 +269,55 @@ class TestProductSku:
 
 
 class TestTableOverflowContainer:
+    """Finding 2: the two substring checks this test used to make
+    (`"overflow-x-auto" in resp.text` and `"<table" in resp.text`) are
+    independent -- a page with overflow-x-auto on an unrelated div and a
+    bare table elsewhere would pass. This regex instead requires an
+    overflow-x-auto-carrying div's opening tag to be followed by a
+    `<table` before that *specific* div closes, so it can only pass when
+    the table genuinely nests inside the overflow container.
+    """
+
+    # A non-greedy "anything that isn't a </div>" between the container's
+    # opening tag and <table -- so a <table> appearing anywhere AFTER the
+    # overflow-x-auto div closes (i.e. NOT nested inside it) cannot match,
+    # while the real markup (container -> ... -> <table -- possibly with
+    # ordinary non-div content, or nested divs whose own closes come
+    # before the outer one, in between) still does. Proven to discriminate
+    # by test_regression_container_and_table_separated_would_fail below.
+    _CONTAINER_THEN_TABLE = re.compile(
+        r'<div\b[^>]*class="[^"]*\boverflow-x-auto\b[^"]*"[^>]*>'
+        r"(?:(?!</div>).)*?<table\b",
+        re.DOTALL,
+    )
+
     @pytest.mark.parametrize("url", LEVEL_URLS)
     def test_table_wrapped_in_overflow_x_auto(self, client, url):
         resp = client.get(url)
         assert resp.status_code == 200
-        assert "overflow-x-auto" in resp.text
-        assert "<table" in resp.text
+        assert self._CONTAINER_THEN_TABLE.search(resp.text), (
+            "expected a <table> to appear before the overflow-x-auto "
+            "container's own closing </div>, i.e. genuinely nested inside it"
+        )
+
+    def test_regression_container_and_table_separated_would_fail(self):
+        """Proof the strengthened assertion above actually discriminates:
+        break it by separating the container from the table (an unrelated
+        div carries overflow-x-auto; the table lives elsewhere, unwrapped)
+        and show the same regex now fails to match -- this is the failure
+        Finding 2 says the old two-substring check could never catch.
+        """
+        broken_html = (
+            '<div class="overflow-x-auto">unrelated content</div>'
+            "<p>some other markup in between</p>"
+            '<table class="w-full text-sm"><tr><td>x</td></tr></table>'
+        )
+        # The old (weak) assertions would both still pass on this markup...
+        assert "overflow-x-auto" in broken_html
+        assert "<table" in broken_html
+        # ...but the strengthened one correctly rejects it: the table is
+        # not nested inside the overflow-x-auto div's own closing </div>.
+        assert self._CONTAINER_THEN_TABLE.search(broken_html) is None
 
 
 class TestEmailReport:
@@ -390,3 +433,98 @@ class TestEmailReport:
         resp = client.post("/reports/email", data={"report": "product", "range": "30d"})
         assert resp.status_code == 200
         assert "Could not send the email" in resp.text
+
+    def test_emails_method_report_with_csv_attachment(
+        self, client, wired, recorder, stub_mailer
+    ):
+        """Finding 3: report=method was entirely untested for the email
+        action -- seed two distinct raw method strings, email it, and
+        assert on the stubbed mailer's call (filename, CSV parsed back
+        against the amounts record_sale actually recorded)."""
+        cfg, _vmc, _inv, _store = wired
+        self._configure_gateway(cfg)
+        recorder.record_sale(
+            "A", "Alpha", 1, 1.00, {"cash_coin": 1.00}, ts=time.time() - 20
+        )
+        recorder.record_sale(
+            "B", "Beta", 2, 2.00, {"cash_bill": 2.00}, ts=time.time() - 10
+        )
+
+        resp = client.post("/reports/email", data={"report": "method", "range": "30d"})
+        assert resp.status_code == 200
+        assert "Report emailed to" in resp.text
+
+        assert len(stub_mailer) == 1
+        call = stub_mailer[0]
+        assert call["to"] == "ada@example.com"
+
+        filename, payload, mime = call["attachments"][0]
+        assert filename == f"{cfg.machine_id}-method-30d.csv"
+        assert mime == "text/csv"
+
+        reader = csv.DictReader(io.StringIO(payload.decode("utf-8")))
+        parsed = {row["method"]: row for row in reader}
+        assert set(parsed) == {"cash_coin", "cash_bill"}
+        assert float(parsed["cash_coin"]["amount"]) == pytest.approx(1.00)
+        assert float(parsed["cash_bill"]["amount"]) == pytest.approx(2.00)
+
+    def test_emails_product_sku_report_with_csv_attachment(
+        self, client, wired, recorder, stub_mailer
+    ):
+        """Finding 3: report=product_sku was entirely untested for the
+        email action. Also exercises the ?bucket=/form `bucket` plumbing
+        Finding 1 adds to this level -- an explicit bucket posted with the
+        form must be the one actually queried and rendered."""
+        cfg, _vmc, _inv, _store = wired
+        self._configure_gateway(cfg)
+        product = _add_product(cfg, sku="SKU-EMAIL", name="Email Product")
+        recorder.record_sale(
+            product.sku, product.name, 1, 3.25, {"cash": 3.25}, ts=time.time() - 10
+        )
+        # A different SKU's sale, same window -- must NOT leak into this
+        # SKU's total; proves the sku= filter is actually applied here,
+        # not merely that the route renders something.
+        recorder.record_sale(
+            "SKU-OTHER", "Other Product", 2, 99.00, {"cash": 99.00}, ts=time.time() - 5
+        )
+
+        resp = client.post(
+            "/reports/email",
+            data={
+                "report": "product_sku",
+                "range": "30d",
+                "bucket": "day",
+                "sku": product.sku,
+            },
+        )
+        assert resp.status_code == 200
+        assert "Report emailed to" in resp.text
+
+        assert len(stub_mailer) == 1
+        call = stub_mailer[0]
+        assert call["to"] == "ada@example.com"
+
+        filename, payload, mime = call["attachments"][0]
+        assert filename == f"{cfg.machine_id}-product-{product.sku}-30d.csv"
+        assert mime == "text/csv"
+
+        reader = csv.DictReader(io.StringIO(payload.decode("utf-8")))
+        parsed = list(reader)
+        # Positive half first: the sku's own revenue is present, in a real
+        # bucket row (not just the Total row) -- proof this isn't a hollow
+        # "no sales seeded" pass.
+        matching = [r for r in parsed if r["bucket_start"] != "Total"]
+        assert any(float(r["revenue"]) == pytest.approx(3.25) for r in matching)
+        assert parsed[-1]["bucket_start"] == "Total"
+        assert float(parsed[-1]["revenue"]) == pytest.approx(3.25)
+
+    def test_email_unknown_report_returns_400(self, client, wired):
+        """Finding 3: the `Unknown report` 400 branch was entirely
+        untested."""
+        cfg, _vmc, _inv, _store = wired
+        self._configure_gateway(cfg)
+
+        resp = client.post(
+            "/reports/email", data={"report": "not-a-real-report", "range": "30d"}
+        )
+        assert resp.status_code == 400

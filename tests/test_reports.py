@@ -523,6 +523,94 @@ class TestByPeriodFallBackTransition:
 
 
 # --------------------------------------------------------------------------
+# Finding 1 (Task 10 follow-up): by_period's optional sku= filter, added so
+# /reports/product/{sku} can show a per-product breakdown by period without
+# duplicating this module's DST-aware bucketing in the route.
+# --------------------------------------------------------------------------
+
+
+class TestByPeriodSkuFilter:
+    def test_filters_revenue_and_vends_to_one_sku_across_two_buckets(self, recorder):
+        # Two SKUs, two day-buckets each -- proves the filter narrows to
+        # one SKU's own revenue/vends AND that bucketing still works
+        # (each SKU's sales land in the correct, separate bucket).
+        day0 = _dt(2026, 4, 1)
+        day1 = _dt(2026, 4, 2)
+
+        recorder.record_sale("A", "Alpha", 1, 3.00, {"cash": 3.00}, ts=day0.timestamp())
+        recorder.record_sale("B", "Beta", 2, 5.00, {"cash": 5.00}, ts=day0.timestamp())
+        recorder.record_sale("A", "Alpha", 1, 4.00, {"cash": 4.00}, ts=day1.timestamp())
+        recorder.record_sale("B", "Beta", 2, 9.00, {"cash": 9.00}, ts=day1.timestamp())
+
+        window = (day0.timestamp() - 1, day1.timestamp() + 86400)
+        rows = reports.by_period(recorder, window, "day", tz=FIXED_TZ, sku="A")
+        by_start = {r["bucket_start"]: r for r in rows}
+
+        assert by_start[day0.isoformat()]["revenue"] == pytest.approx(3.00)
+        assert by_start[day0.isoformat()]["vends"] == 1
+        assert by_start[day1.isoformat()]["revenue"] == pytest.approx(4.00)
+        assert by_start[day1.isoformat()]["vends"] == 1
+
+        # Beta's revenue (5.00, 9.00) must never leak into Alpha's filtered
+        # rows -- the whole point of the filter.
+        assert sum(r["revenue"] for r in rows) == pytest.approx(7.00)
+        assert sum(r["vends"] for r in rows) == 2
+
+    def test_unfiltered_call_is_unaffected_by_the_new_parameter(self, recorder):
+        # sku defaults to None -- an existing caller (no sku= at all) must
+        # see totals across every SKU, unchanged by this parameter's
+        # addition.
+        now = time.time()
+        recorder.record_sale("A", "Alpha", 1, 3.00, {"cash": 3.00}, ts=now - 20)
+        recorder.record_sale("B", "Beta", 2, 5.00, {"cash": 5.00}, ts=now - 10)
+
+        window = (now - 3600, now + 1)
+        rows = reports.by_period(recorder, window, "day", tz=FIXED_TZ)
+
+        assert sum(r["revenue"] for r in rows) == pytest.approx(8.00)
+        assert sum(r["vends"] for r in rows) == 2
+
+    def test_failed_vends_filtered_to_sku_refunds_and_uptime_stay_none(self, recorder):
+        # failed_vends IS attributable per-sku (vend_failed's metadata
+        # carries one, per VMC.on_vend_failed) so it is filtered; refunds
+        # and uptime_pct are NOT attributable to one product, so they must
+        # render "-" (None) even inside retention, not a real number that
+        # would actually be machine-wide.
+        now = time.time()
+        recorder.record_sale("A", "Alpha", 1, 2.00, {"cash": 2.00}, ts=now - 20)
+
+        with sqlite3.connect(recorder._db_path) as conn:
+            conn.execute(
+                "INSERT INTO events (event_type, timestamp, value, metadata) "
+                "VALUES ('vend_failed', ?, 1.0, ?)",
+                (now - 15, '{"sku": "A"}'),
+            )
+            conn.execute(
+                "INSERT INTO events (event_type, timestamp, value, metadata) "
+                "VALUES ('vend_failed', ?, 1.0, ?)",
+                (now - 12, '{"sku": "B"}'),
+            )
+            conn.execute(
+                "INSERT INTO events (event_type, timestamp, value) "
+                "VALUES ('refund', ?, 1.0)",
+                (now - 10,),
+            )
+            conn.commit()
+
+        window = (now - 3600, now + 1)
+        rows = reports.by_period(recorder, window, "day", tz=FIXED_TZ, sku="A")
+
+        # Positive half first: the sku's own revenue is present and correct.
+        assert sum(r["revenue"] for r in rows) == pytest.approx(2.00)
+
+        # Only A's own vend_failed (1) is counted, not B's -- and refunds
+        # /uptime are None despite the window being fully inside retention.
+        assert sum(r["failed_vends"] for r in rows) == 1
+        assert all(r["refunds"] is None for r in rows)
+        assert all(r["uptime_pct"] is None for r in rows)
+
+
+# --------------------------------------------------------------------------
 # by_product
 # --------------------------------------------------------------------------
 
