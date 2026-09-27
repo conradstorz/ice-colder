@@ -910,3 +910,293 @@ class TestCorruptDatabaseRecovery:
         with sqlite3.connect(str(db_path)) as conn:
             count = conn.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
         assert count == 1
+
+    def test_wal_and_shm_sidecars_are_quarantined_too(self, tmp_path):
+        """A real corruption event (e.g. power loss) is exactly when
+        un-checkpointed -wal/-shm sidecars from the previous run are also
+        most likely present. They must move with the main file, not be left
+        sitting beside the fresh replacement database.
+
+        Calls _quarantine_corrupt_db directly on a bare instance (via
+        __new__, skipping __init__ entirely -- this suite already calls
+        private helpers directly elsewhere, e.g. TestUptimeComputation on
+        _compute_window), for two reasons: sqlite3's own WAL auto-recovery
+        on open would "heal" (checkpoint over) most hand-crafted corruption
+        that leaves a real, readable WAL file beside it, defeating the setup
+        rather than exercising it; and a fully-constructed EventRecorder's
+        own writer thread holds a long-lived open handle on db_path that
+        intermittently wins a race against renaming that same path out from
+        under it -- a race that cannot occur in real use, since
+        _quarantine_corrupt_db only ever runs from __init__, before the
+        writer thread exists. This still proves the sidecar rename genuinely
+        happens -- real files, real bytes, real new paths.
+        """
+        rec = EventRecorder.__new__(EventRecorder)
+        rec._db_path = str(tmp_path / "events.db")
+        rec.db_was_corrupt = False
+        rec.corrupt_backup_path = None
+        Path(rec._db_path).write_bytes(b"placeholder db bytes")
+        db_path = Path(rec._db_path)
+        wal_path = db_path.with_name(db_path.name + "-wal")
+        shm_path = db_path.with_name(db_path.name + "-shm")
+        wal_path.write_bytes(b"stale wal bytes")
+        shm_path.write_bytes(b"stale shm bytes")
+
+        rec._quarantine_corrupt_db()
+
+        assert rec.db_was_corrupt is True
+        backup = Path(rec.corrupt_backup_path)
+        assert backup.exists()
+
+        # The sidecars are gone from beside the fresh database...
+        assert not wal_path.exists()
+        assert not shm_path.exists()
+        # ...and their actual bytes reappear beside the quarantined main file,
+        # proving a real rename occurred rather than a delete or a no-op.
+        backup_wal = backup.with_name(backup.name + "-wal")
+        backup_shm = backup.with_name(backup.name + "-shm")
+        assert backup_wal.exists()
+        assert backup_shm.exists()
+        assert backup_wal.read_bytes() == b"stale wal bytes"
+        assert backup_shm.read_bytes() == b"stale shm bytes"
+
+
+class TestCorruptDatabaseRenameFailure:
+    def test_rename_failure_falls_back_to_new_path_and_constructor_does_not_raise(
+        self, tmp_path, monkeypatch
+    ):
+        """Reproduces the reviewer's finding directly: os.replace raising
+        (e.g. Windows PermissionError from another open handle) during
+        quarantine must not crash the constructor -- exactly the pre-task
+        behaviour §5 exists to eliminate."""
+        db_path = tmp_path / "events.db"
+        garbage = b"this is not a valid sqlite database, just garbage bytes"
+        db_path.write_bytes(garbage)
+
+        def fake_replace(_src, _dst):
+            raise PermissionError("simulated: another handle has this file open")
+
+        monkeypatch.setattr(os, "replace", fake_replace)
+
+        rec = EventRecorder(db_path=str(db_path))  # must not raise
+
+        # Proves the rename genuinely failed and was genuinely attempted --
+        # the corrupt bytes are still exactly where they were, byte for
+        # byte, rather than having been moved or the branch never entered.
+        assert db_path.read_bytes() == garbage
+
+        assert rec.db_was_corrupt is True
+        assert rec.corrupt_backup_path is None  # nothing was actually preserved aside
+
+        # The recorder fell back to a different, usable path in the same
+        # directory rather than retrying the same corrupt path.
+        assert rec._db_path != str(db_path)
+        assert Path(rec._db_path).parent == tmp_path
+        assert Path(rec._db_path).exists()
+        with sqlite3.connect(rec._db_path) as conn:
+            tables = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+        assert {"events", "sales", "cash_collections"} <= tables
+
+        # The recorder is fully usable afterward, against the fallback path.
+        rec.record("payment", value=1.0)
+        rec.flush()
+        assert rec.get_summary(24)["money_in"] == pytest.approx(1.0)
+
+
+class TestCorruptDetectionNarrowedToGenuineCorruption:
+    """A locked or otherwise-unreadable-but-not-corrupt database must never
+    be quarantined -- that would rename away a perfectly healthy database
+    and permanently lose its history."""
+
+    @staticmethod
+    def _make_failing_connect(db_path, message, real_connect):
+        """Return a sqlite3.connect replacement whose first .execute() call
+        on a connection to db_path raises sqlite3.OperationalError(message),
+        then delegates normally -- proving the specific branch (a genuine
+        OperationalError reaching __init__'s except clause) is entered,
+        rather than some other failure."""
+
+        class _RaiseOnFirstExecute:
+            def __init__(self, conn):
+                self._conn = conn
+                self._first = True
+
+            def execute(self, sql, *args, **kwargs):
+                if self._first:
+                    self._first = False
+                    raise sqlite3.OperationalError(message)
+                return self._conn.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._conn, name)
+
+        def fake_connect(path, *args, **kwargs):
+            conn = real_connect(path, *args, **kwargs)
+            if str(path) == str(db_path):
+                return _RaiseOnFirstExecute(conn)
+            return conn
+
+        return fake_connect
+
+    @pytest.mark.parametrize(
+        "message",
+        ["database is locked", "unable to open database file"],
+    )
+    def test_locked_or_permission_denied_db_is_not_quarantined(
+        self, tmp_path, monkeypatch, message
+    ):
+        db_path = tmp_path / "events.db"
+        # A normal, valid, already-initialized database.
+        EventRecorder(db_path=str(db_path))
+        original_bytes = db_path.read_bytes()
+
+        real_connect = sqlite3.connect
+        fake_connect = self._make_failing_connect(db_path, message, real_connect)
+        monkeypatch.setattr(sqlite3, "connect", fake_connect)
+
+        with pytest.raises(sqlite3.OperationalError):
+            EventRecorder(db_path=str(db_path))
+
+        # Proves the branch was truly entered as "not corruption": no
+        # quarantine sibling was created and the original file is untouched,
+        # byte for byte.
+        assert list(tmp_path.glob("events.db.corrupt-*")) == []
+        assert db_path.read_bytes() == original_bytes
+
+
+class TestSalesJournalIdempotency:
+    """Finding 1: replay_sales_journal must be safe to run twice against the
+    same already-committed line (e.g. a crash between the DB commit and the
+    journal truncation)."""
+
+    def test_replaying_same_line_twice_does_not_duplicate_the_sale(
+        self, tmp_path, journal_path
+    ):
+        db = str(tmp_path / "e.db")
+        rec = EventRecorder(db_path=db)
+        entry = {
+            "ts": 555.5,
+            "sku": "DUPTEST",
+            "name": "Dup",
+            "slot": 1,
+            "price": 1.25,
+            "methods": {"cash": 1.25},
+        }
+        journal_path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+
+        first_count = rec.replay_sales_journal()
+        assert first_count == 1
+
+        # Simulate the crash the reviewer demonstrated: the commit already
+        # landed, but the truncation step never ran (or the line reappears,
+        # e.g. from a backup) -- so replay runs again against a line whose
+        # sale is already durably on disk.
+        journal_path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+        second_count = rec.replay_sales_journal()
+
+        assert second_count == 0  # nothing new inserted
+        with sqlite3.connect(db) as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM sales WHERE ts = ? AND sku = ?",
+                (555.5, "DUPTEST"),
+            ).fetchone()[0]
+        assert count == 1  # exactly one row, not two
+
+    def test_two_distinct_sales_of_same_sku_both_land(self, tmp_path, journal_path):
+        db = str(tmp_path / "e.db")
+        rec = EventRecorder(db_path=db)
+        entries = [
+            {
+                "ts": 10.0,
+                "sku": "SAME",
+                "name": "Thing",
+                "slot": 1,
+                "price": 1.0,
+                "methods": {"cash": 1.0},
+            },
+            {
+                "ts": 20.0,
+                "sku": "SAME",
+                "name": "Thing",
+                "slot": 1,
+                "price": 1.0,
+                "methods": {"cash": 1.0},
+            },
+        ]
+        journal_path.write_text(
+            "\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8"
+        )
+
+        count = rec.replay_sales_journal()
+
+        assert count == 2
+        with sqlite3.connect(db) as conn:
+            rows = conn.execute(
+                "SELECT ts FROM sales WHERE sku = ? ORDER BY ts", ("SAME",)
+            ).fetchall()
+        assert [r[0] for r in rows] == [10.0, 20.0]
+
+
+class TestSalesJournalRejectedRows:
+    """Finding 5: one bad row must not block every good one, forever."""
+
+    def test_bad_row_is_set_aside_and_does_not_block_good_rows(
+        self, tmp_path, journal_path
+    ):
+        db = str(tmp_path / "e.db")
+        rec = EventRecorder(db_path=db)
+        good_before = {
+            "ts": 1.0,
+            "sku": "GOOD1",
+            "name": "One",
+            "slot": 1,
+            "price": 1.0,
+            "methods": {"cash": 1.0},
+        }
+        # sku=None violates the NOT NULL column -- well-formed JSON, but
+        # uninsertable.
+        bad = {
+            "ts": 2.0,
+            "sku": None,
+            "name": "Bad",
+            "slot": 2,
+            "price": 1.0,
+            "methods": {"cash": 1.0},
+        }
+        good_after = {
+            "ts": 3.0,
+            "sku": "GOOD2",
+            "name": "Two",
+            "slot": 3,
+            "price": 1.0,
+            "methods": {"cash": 1.0},
+        }
+        journal_path.write_text(
+            "\n".join(json.dumps(e) for e in (good_before, bad, good_after)) + "\n",
+            encoding="utf-8",
+        )
+
+        count = rec.replay_sales_journal()
+
+        assert count == 2  # both good rows, despite the bad one between them
+        with sqlite3.connect(db) as conn:
+            skus = {r[0] for r in conn.execute("SELECT sku FROM sales").fetchall()}
+        assert skus == {"GOOD1", "GOOD2"}
+
+        # The journal is fully drained -- the bad row is not retried forever,
+        # which would otherwise block DATA-101 from ever clearing.
+        assert journal_path.read_text(encoding="utf-8") == ""
+
+        # But it is not silently gone -- it is set aside as evidence.
+        rejected_path = journal_path.with_name(
+            f"{journal_path.stem}.rejected{journal_path.suffix}"
+        )
+        assert rejected_path.exists()
+        rejected_lines = rejected_path.read_text(encoding="utf-8").splitlines()
+        assert len(rejected_lines) == 1
+        assert json.loads(rejected_lines[0])["name"] == "Bad"

@@ -87,13 +87,65 @@ def is_cash(method: str) -> bool:
     )
 
 
-def _append_journal_line(payload: dict) -> None:
-    """Append one JSON line to JOURNAL_PATH, durably (flush + fsync)."""
-    JOURNAL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(JOURNAL_PATH, "a", encoding="utf-8") as f:
+def _append_line(path: Path, payload: dict) -> None:
+    """Append one JSON line to `path`, durably (flush + fsync)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(payload) + "\n")
         f.flush()
         os.fsync(f.fileno())
+
+
+def _append_journal_line(payload: dict) -> None:
+    """Append one JSON line to JOURNAL_PATH, durably (flush + fsync)."""
+    _append_line(JOURNAL_PATH, payload)
+
+
+def _rejected_sales_path() -> Path:
+    """Path for journalled sale rows that failed to insert during replay.
+
+    Computed from the current JOURNAL_PATH at call time (not cached at
+    import time) so tests that monkeypatch JOURNAL_PATH to a temp file get
+    a matching temp rejected-file path alongside it.
+    """
+    return JOURNAL_PATH.with_name(f"{JOURNAL_PATH.stem}.rejected{JOURNAL_PATH.suffix}")
+
+
+def _append_rejected_sale_line(payload: dict) -> None:
+    """Set aside one journalled sale row that could not be inserted.
+
+    A row that violates the schema (e.g. a null sku) would otherwise be
+    retried -- and fail -- on every future replay, forever. Moving it here
+    instead lets replay drain the rest of the journal and clear DATA-101,
+    while the operator still has the row as evidence (durably: flush +
+    fsync, same as the main journal).
+    """
+    _append_line(_rejected_sales_path(), payload)
+
+
+_CORRUPTION_MESSAGES = ("file is not a database", "database disk image is malformed")
+
+
+def _is_corruption_error(exc: sqlite3.DatabaseError) -> bool:
+    """True only for a genuine "the file is corrupt" signal from sqlite3.
+
+    ``sqlite3.OperationalError`` is a subclass of ``DatabaseError`` and also
+    covers "database is locked", "disk I/O error", and "unable to open
+    database file" (e.g. a permission problem) -- none of which mean the
+    file is corrupt. Quarantining on one of those would rename away a
+    perfectly healthy database and permanently lose its history.
+
+    Verified empirically against this project's Python/sqlite3 build:
+    genuine corruption (a garbage header, or a malformed page) raises a
+    plain ``sqlite3.DatabaseError`` -- NOT an ``OperationalError`` -- with
+    one of the two messages below. So: match those messages first (belt and
+    suspenders against a future sqlite3 that reclassifies them), and
+    otherwise treat any ``OperationalError`` as NOT corruption.
+    """
+    message = str(exc).lower()
+    if any(sig in message for sig in _CORRUPTION_MESSAGES):
+        return True
+    return not isinstance(exc, sqlite3.OperationalError)
 
 
 class EventRecorder:
@@ -141,10 +193,18 @@ class EventRecorder:
         try:
             self._init_db()
             self.prune()
-        except sqlite3.DatabaseError:
+        except sqlite3.DatabaseError as exc:
             # Either _init_db (schema creation reads the file header) or
             # prune (a DELETE) can be the first statement to actually touch
-            # a corrupt file and raise -- handle both here.
+            # a corrupt file and raise -- handle both here. But only genuine
+            # corruption is handled this way: a locked database or a
+            # transient I/O/permission error (both raise OperationalError,
+            # a DatabaseError subclass) must propagate unchanged rather than
+            # be treated as corruption -- see _is_corruption_error. Renaming
+            # a merely-locked, perfectly healthy database aside would
+            # permanently lose its history for no reason.
+            if not _is_corruption_error(exc):
+                raise
             self._quarantine_corrupt_db()
             self._init_db()
             self.prune()
@@ -156,30 +216,78 @@ class EventRecorder:
         )
         self._writer.start()
 
+    @staticmethod
+    def _try_rename_aside(source: str, dest: str) -> Optional[bool]:
+        """Best-effort rename of one file. Returns True if renamed, False if
+        the rename was attempted and failed, or None if there was nothing at
+        `source` to rename (the common case for -wal/-shm sidecars)."""
+        if not os.path.exists(source):
+            return None
+        try:
+            os.replace(source, dest)
+            return True
+        except OSError:
+            logger.exception(f"EventRecorder: could not rename {source} aside")
+            return False
+
     def _quarantine_corrupt_db(self) -> None:
-        """Rename an unreadable db file aside and expose the fact.
+        """Move an unreadable db file (and its WAL/SHM sidecars) aside.
 
         Renames to ``<db_path>.corrupt-<timestamp>`` (preserving whatever is
-        recoverable) rather than deleting it, then leaves a fresh, empty
-        database to be created at the original path by the caller's retry
-        of ``_init_db``/``prune``. Sets ``db_was_corrupt``/
-        ``corrupt_backup_path`` instead of raising, per §5: the machine must
-        still start and run; a later task raises DATA-102 from these.
+        recoverable) rather than deleting it, then leaves the original path
+        clear for the caller's retry of ``_init_db``/``prune`` to create a
+        fresh database there. The ``-wal``/``-shm`` sidecars (present
+        whenever a previous run's writer connection never got to checkpoint
+        and close cleanly -- exactly the scenario a real corruption event
+        like power loss produces) are moved the same way, best-effort, so
+        they never end up sitting beside the fresh replacement database.
+
+        Sets ``db_was_corrupt``/``corrupt_backup_path`` instead of raising,
+        per §5: the machine must still start and run; a later task raises
+        DATA-102 from these.
+
+        If the rename of the *main* file itself fails (e.g. on Windows,
+        another handle -- antivirus, a backup tool -- still open on it),
+        retrying _init_db/prune against that same, still-corrupt path would
+        just raise the same error again. Rather than let that crash the
+        constructor, fall back to a fresh database at a different path in
+        the same directory (``<db_path>.new-<timestamp>``) and switch
+        ``self._db_path`` to it for the rest of this process's life. The
+        corrupt original is left exactly where it was in that case (it
+        could not even be moved), and ``corrupt_backup_path`` is left None
+        since nothing was actually preserved aside.
         """
+        original_path = self._db_path
         timestamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
-        backup_path = f"{self._db_path}.corrupt-{timestamp}"
-        try:
-            os.replace(self._db_path, backup_path)
-        except OSError:
-            logger.exception(
-                f"EventRecorder: could not rename corrupt database {self._db_path}"
-            )
-            backup_path = None
+        backup_path = f"{original_path}.corrupt-{timestamp}"
+
+        main_renamed = self._try_rename_aside(original_path, backup_path)
+        for suffix in ("-wal", "-shm"):
+            # Best-effort: a sidecar that doesn't exist or can't be moved
+            # never blocks recovery of the main file -- there is no better
+            # fallback for a stray WAL/SHM file than leaving it in place.
+            self._try_rename_aside(f"{original_path}{suffix}", f"{backup_path}{suffix}")
+
         self.db_was_corrupt = True
-        self.corrupt_backup_path = backup_path
+
+        if main_renamed is not False:
+            # True: renamed. None: nothing was there to rename. Either way
+            # original_path is now clear for a fresh database.
+            self.corrupt_backup_path = backup_path if main_renamed else None
+            logger.error(
+                f"EventRecorder: {original_path} was unreadable; the previous "
+                f"file has been preserved at {backup_path} and a fresh "
+                f"database will now be created at {original_path}"
+            )
+            return
+
+        fallback_path = f"{original_path}.new-{timestamp}"
+        self.corrupt_backup_path = None
+        self._db_path = fallback_path
         logger.error(
-            f"EventRecorder: {self._db_path} was unreadable and has been reset "
-            f"to a fresh database (previous file preserved at {backup_path})"
+            f"EventRecorder: {original_path} was unreadable and could not be "
+            f"renamed aside (left in place); a fresh database will instead "
+            f"be created at {fallback_path} and used for this process"
         )
 
     def _init_db(self):
@@ -229,6 +337,55 @@ class EventRecorder:
             conn.commit()
         finally:
             conn.close()
+
+    @staticmethod
+    def _configure_sale_connection(conn: sqlite3.Connection) -> None:
+        """WAL + synchronous=NORMAL, shared by record_sale and replay_sales_journal."""
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+
+    @staticmethod
+    def _insert_sale_row(
+        conn: sqlite3.Connection,
+        ts: float,
+        sku: str,
+        name: str,
+        slot: Optional[int],
+        price: float,
+        methods: dict,
+        *,
+        idempotent: bool = False,
+    ) -> int:
+        """Insert one row into `sales`. Returns the number of rows inserted.
+
+        idempotent=False (record_sale: always a fresh sale) is a plain
+        insert -- it always inserts exactly one row.
+
+        idempotent=True (replay_sales_journal only) inserts a row only if
+        no row with the same (ts, sku) already exists, so replaying an
+        already-committed journal line a second time (e.g. after a crash
+        between the DB commit and the journal truncation) writes nothing
+        instead of a duplicate. (ts, sku) is safe as a natural key here
+        because ts comes from time.time() (sub-microsecond resolution) and
+        the FSM sells one item at a time -- record_sale is awaited before
+        the FSM returns to idle -- so two genuinely distinct sales can never
+        share both ts and sku. See replay_sales_journal for the full
+        argument.
+        """
+        if idempotent:
+            cur = conn.execute(
+                "INSERT INTO sales (ts, sku, name, slot, price, methods) "
+                "SELECT ?, ?, ?, ?, ?, ? WHERE NOT EXISTS ("
+                "SELECT 1 FROM sales WHERE ts = ? AND sku = ?)",
+                (ts, sku, name, slot, price, json.dumps(methods), ts, sku),
+            )
+        else:
+            cur = conn.execute(
+                "INSERT INTO sales (ts, sku, name, slot, price, methods) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (ts, sku, name, slot, price, json.dumps(methods)),
+            )
+        return cur.rowcount
 
     def record(
         self, event_type: str, value: float = 1.0, metadata: Optional[dict] = None
@@ -300,13 +457,8 @@ class EventRecorder:
         conn = None
         try:
             conn = sqlite3.connect(self._db_path, timeout=5.0)
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute(
-                "INSERT INTO sales (ts, sku, name, slot, price, methods) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (ts, sku, name, slot, price, json.dumps(methods)),
-            )
+            self._configure_sale_connection(conn)
+            self._insert_sale_row(conn, ts, sku, name, slot, price, methods)
             conn.commit()
         except Exception:
             logger.exception(
@@ -319,7 +471,8 @@ class EventRecorder:
                 conn.close()
 
     def replay_sales_journal(self) -> int:
-        """Insert any journalled sales, truncate the file, return the count.
+        """Insert any journalled sales, truncate the file, return the count
+        actually inserted.
 
         No-op (returns 0, file untouched) when the file is absent or empty.
         A well-formed line is inserted even when the file's final line is a
@@ -327,6 +480,27 @@ class EventRecorder:
         is dropped with a warning, but it never costs the earlier good
         lines, and the file is still truncated afterward since a
         partially-written line cannot be completed by any later retry.
+
+        Each row is inserted in its own transaction (commit or rollback per
+        row), for two reasons:
+
+        - Idempotency: the insert only happens if no row with the same
+          (ts, sku) already exists (see _insert_sale_row). This is what
+          makes replay safe to run twice against the same already-committed
+          line -- e.g. a crash between the DB commit and the journal
+          truncation below would otherwise leave the line to be replayed
+          again, writing a duplicate sale. (ts, sku) cannot collide between
+          two genuinely distinct sales: ts is time.time() (sub-microsecond
+          resolution) and the FSM sells one item at a time -- record_sale is
+          awaited before the FSM returns to idle.
+        - A row that cannot be inserted at all (e.g. a well-formed line
+          whose sku is null, violating the NOT NULL column) must not roll
+          back its neighbours, and must not be retried forever either --
+          that would silently block every later journalled sale from ever
+          reaching `sales` again, with no way for DATA-101 to clear. Instead
+          it is set aside (durably) in a `sales-journal.rejected.jsonl` file
+          beside the journal and logged, so an operator can find it, while
+          replay itself completes and the fault clears.
         """
         if not JOURNAL_PATH.exists():
             return 0
@@ -349,23 +523,31 @@ class EventRecorder:
         if rows:
             conn = sqlite3.connect(self._db_path, timeout=5.0)
             try:
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("PRAGMA synchronous=NORMAL")
+                self._configure_sale_connection(conn)
                 for row in rows:
-                    conn.execute(
-                        "INSERT INTO sales (ts, sku, name, slot, price, methods) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
-                        (
+                    try:
+                        inserted = self._insert_sale_row(
+                            conn,
                             row["ts"],
                             row["sku"],
                             row["name"],
                             row.get("slot"),
                             row["price"],
-                            json.dumps(row["methods"]),
-                        ),
-                    )
-                    count += 1
-                conn.commit()
+                            row["methods"],
+                            idempotent=True,
+                        )
+                        conn.commit()
+                    except Exception:
+                        conn.rollback()
+                        logger.exception(
+                            "EventRecorder: journalled sale row could not be "
+                            f"inserted (sku={row.get('sku')!r}); setting it "
+                            "aside as evidence rather than blocking replay"
+                        )
+                        _append_rejected_sale_line(row)
+                        continue
+                    count += inserted
+
             finally:
                 conn.close()
 
