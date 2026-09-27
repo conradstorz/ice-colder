@@ -19,8 +19,7 @@
    non-GET requests; the confirm/cancel buttons render as plain hx-get
    requests (partials/confirm_button.html), so the PIN is never serialized
    into their query strings. The PIN reaches only the POST request to
-   /users/codes/regenerate (in the body, never the URL), and the browser
-   history never exposes it. This is proved by
+   /users/codes/regenerate (in the body, never the URL). This is proved by
    tests/test_users_codes_pin_browser.py, which drives real headless Chrome
    and captures the outgoing request URLs.
 #}
