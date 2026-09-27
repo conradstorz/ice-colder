@@ -8,6 +8,11 @@ and heartbeat events. Provides time-windowed aggregate summaries.
 Also durably records sales (``record_sale``) and cash collections
 (``record_cash_collection``); see the class docstring below for the
 concurrency and durability contract each follows.
+
+Known limitation: ``sales-journal.rejected.jsonl`` (rows ``record_sale``
+journalled that ``replay_sales_journal`` could not insert) only ever
+grows -- nothing here rotates it, reads it back, or raises a fault from
+its existence. See ``_append_rejected_sale_line``'s docstring.
 """
 
 import json
@@ -119,6 +124,14 @@ def _append_rejected_sale_line(payload: dict) -> None:
     instead lets replay drain the rest of the journal and clear DATA-101,
     while the operator still has the row as evidence (durably: flush +
     fsync, same as the main journal).
+
+    Known limitation (deferred, accepted scope decision): this file only
+    ever grows. Nothing here rotates it, reads it back, or raises a fault
+    from its existence -- an operator can only discover it via a
+    filesystem check or a log grep (see replay_sales_journal's
+    logger.exception call for the matching log line). A rotation policy
+    or a dedicated alert is out of scope for this module and left to a
+    future task.
     """
     _append_line(_rejected_sales_path(), payload)
 
@@ -190,6 +203,11 @@ class EventRecorder:
         # fault DATA-102. See _quarantine_corrupt_db.
         self.db_was_corrupt: bool = False
         self.corrupt_backup_path: Optional[str] = None
+        # Set only on the guarded retry below failing (e.g. a disk-full or
+        # permission fault at the exact moment recovery is attempted --
+        # a plausible cause of the original corruption too). A later task
+        # (main.py) can inspect this the same way it inspects db_was_corrupt.
+        self.db_unavailable: bool = False
         try:
             self._init_db()
             self.prune()
@@ -206,8 +224,45 @@ class EventRecorder:
             if not _is_corruption_error(exc):
                 raise
             self._quarantine_corrupt_db()
-            self._init_db()
-            self.prune()
+            # This retry must not be allowed to raise out of the
+            # constructor: _quarantine_corrupt_db only clears the way for a
+            # fresh database, it does not guarantee one can actually be
+            # created. A full disk, a read-only directory, or a permission
+            # fault at this exact moment would otherwise crash startup --
+            # and a full disk is a realistic cause of the *original*
+            # corruption too, making this sequence a natural one rather
+            # than a hypothetical. If it happens, the machine must still
+            # start (§5): log it, leave db_was_corrupt/db_unavailable set
+            # for main.py to alert on, and let the constructor complete
+            # rather than raise.
+            #
+            # This is safe to leave broken rather than retried further,
+            # because every downstream user of self._db_path already
+            # tolerates a database that cannot be written:
+            # - _writer_loop's per-item try/except/finally: task_done()
+            #   swallows an insert failure (e.g. "no such table: events",
+            #   since _init_db never got to create one) without dying or
+            #   leaving the queue stuck, so flush() still returns promptly.
+            # - record_sale opens its own connection per call and already
+            #   journals-then-re-raises on any failure, so a sale is never
+            #   lost even though the DB insert failed -- the caller's own
+            #   try/except raises the alert-class fault DATA-101 and still
+            #   finishes the dispense, exactly per §5 and "the dashboard is
+            #   the last thing to go down".
+            try:
+                self._init_db()
+                self.prune()
+            except Exception:
+                logger.exception(
+                    f"EventRecorder: could not initialize a fresh database "
+                    f"at {self._db_path} after quarantining the corrupt "
+                    "one; the database is unavailable for this process. "
+                    "record_sale will journal every sale it is asked to "
+                    "record (and re-raise, so the caller can alert "
+                    "DATA-101); DATA-102 stays set from the quarantine "
+                    "above."
+                )
+                self.db_unavailable = True
         # All inserts go through one daemon thread with one connection so MQTT
         # handlers never block the event loop on SD-card writes.
         self._queue: queue.Queue = queue.Queue()
@@ -471,36 +526,71 @@ class EventRecorder:
                 conn.close()
 
     def replay_sales_journal(self) -> int:
-        """Insert any journalled sales, truncate the file, return the count
-        actually inserted.
+        """Insert any journalled sales; return the count actually inserted.
 
-        No-op (returns 0, file untouched) when the file is absent or empty.
+        Returns 0 with the journal file left completely untouched (absent
+        stays absent, an empty file stays empty) when there is nothing to
+        do. Otherwise the journal is rewritten to hold **exactly the rows
+        that remain unresolved**: a row that was inserted, that was
+        recognized as an already-committed duplicate (see idempotency
+        below), or that was successfully set aside as rejected evidence is
+        removed from the file; a row that could not be inserted *and*
+        could not even be written to the rejected-evidence file is kept,
+        verbatim, for a later retry.
+
+        The return value is always the count of rows this call genuinely
+        **inserted** into `sales` -- nothing else. It is deliberately
+        **not** the signal a caller should use to decide whether every
+        journalled sale is now durably accounted for: 0 is ambiguous by
+        itself (it means both "there was nothing to do" and "there was
+        content, but every row was a duplicate or a reject -- nothing new
+        landed"). The unambiguous signal is the journal's state *after*
+        this call returns: **a caller should clear DATA-101 when
+        `JOURNAL_PATH` is now absent or empty, not when this method's
+        return value is greater than zero.** A non-empty journal after
+        this call means at least one row is still stuck and DATA-101 must
+        stay set; an absent-or-empty one means every row that was in it is
+        now either in `sales` or durably preserved as rejected evidence.
+
         A well-formed line is inserted even when the file's final line is a
         partial write (no trailing newline, invalid JSON) -- that one line
-        is dropped with a warning, but it never costs the earlier good
-        lines, and the file is still truncated afterward since a
-        partially-written line cannot be completed by any later retry.
+        is dropped (logged, never kept) since a partially-written line can
+        never be completed by any later retry; it never costs the earlier
+        good lines.
 
-        Each row is inserted in its own transaction (commit or rollback per
-        row), for two reasons:
+        Each well-formed row is inserted in its own transaction (commit or
+        rollback per row), for two reasons:
 
         - Idempotency: the insert only happens if no row with the same
           (ts, sku) already exists (see _insert_sale_row). This is what
           makes replay safe to run twice against the same already-committed
           line -- e.g. a crash between the DB commit and the journal
-          truncation below would otherwise leave the line to be replayed
-          again, writing a duplicate sale. (ts, sku) cannot collide between
-          two genuinely distinct sales: ts is time.time() (sub-microsecond
-          resolution) and the FSM sells one item at a time -- record_sale is
-          awaited before the FSM returns to idle.
+          rewrite below would otherwise leave the line to be replayed
+          again. When this happens the insert affects 0 rows -- not an
+          error -- and is logged distinctly (naming ts and sku) so a
+          genuine skip is never silently indistinguishable from a sale
+          quietly dropped. (ts, sku) cannot collide between two genuinely
+          distinct sales: ts is time.time() (sub-microsecond resolution)
+          and the FSM sells one item at a time -- record_sale is awaited
+          before the FSM returns to idle.
         - A row that cannot be inserted at all (e.g. a well-formed line
           whose sku is null, violating the NOT NULL column) must not roll
           back its neighbours, and must not be retried forever either --
           that would silently block every later journalled sale from ever
-          reaching `sales` again, with no way for DATA-101 to clear. Instead
-          it is set aside (durably) in a `sales-journal.rejected.jsonl` file
-          beside the journal and logged, so an operator can find it, while
-          replay itself completes and the fault clears.
+          reaching `sales` again, with no way for DATA-101 to clear.
+          Instead it is set aside (durably) in a
+          `sales-journal.rejected.jsonl` file beside the journal and
+          logged, so an operator can find it, while replay itself
+          completes and the fault clears. If *that* write also fails (e.g.
+          the same full disk that caused the insert to fail in the first
+          place), the row is neither lost nor silently dropped: it is kept
+          in the journal, verbatim, for a later retry, and this method
+          still returns normally rather than raising -- see Finding B/C of
+          the round-3 review.
+
+        Known limitation (deferred, Finding E of the round-3 review): the
+        rejected-evidence file itself is unbounded -- see
+        _append_rejected_sale_line's docstring.
         """
         if not JOURNAL_PATH.exists():
             return 0
@@ -508,50 +598,75 @@ class EventRecorder:
         if not content.strip():
             return 0
 
-        rows = []
-        for line in content.splitlines():
-            if not line.strip():
-                continue
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError:
-                logger.warning(
-                    f"EventRecorder: dropping corrupt/partial journal line: {line!r}"
-                )
-
         count = 0
-        if rows:
-            conn = sqlite3.connect(self._db_path, timeout=5.0)
-            try:
-                self._configure_sale_connection(conn)
-                for row in rows:
+        remaining_lines: list[str] = []
+        conn = sqlite3.connect(self._db_path, timeout=5.0)
+        try:
+            self._configure_sale_connection(conn)
+            for line in content.splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    # A partial write (e.g. a crash mid-append) can never
+                    # be completed by a later retry -- drop it, it is not
+                    # kept in the rewritten journal.
+                    logger.warning(
+                        "EventRecorder: dropping corrupt/partial journal "
+                        f"line: {line!r}"
+                    )
+                    continue
+
+                try:
+                    inserted = self._insert_sale_row(
+                        conn,
+                        row["ts"],
+                        row["sku"],
+                        row["name"],
+                        row.get("slot"),
+                        row["price"],
+                        row["methods"],
+                        idempotent=True,
+                    )
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    logger.exception(
+                        "EventRecorder: journalled sale row could not be "
+                        f"inserted (sku={row.get('sku')!r}); setting it "
+                        "aside as evidence rather than blocking replay"
+                    )
                     try:
-                        inserted = self._insert_sale_row(
-                            conn,
-                            row["ts"],
-                            row["sku"],
-                            row["name"],
-                            row.get("slot"),
-                            row["price"],
-                            row["methods"],
-                            idempotent=True,
-                        )
-                        conn.commit()
-                    except Exception:
-                        conn.rollback()
-                        logger.exception(
-                            "EventRecorder: journalled sale row could not be "
-                            f"inserted (sku={row.get('sku')!r}); setting it "
-                            "aside as evidence rather than blocking replay"
-                        )
                         _append_rejected_sale_line(row)
-                        continue
+                    except Exception:
+                        logger.exception(
+                            "EventRecorder: could not write rejected-sale "
+                            f"evidence file for sku={row.get('sku')!r}; "
+                            "leaving this row in the journal for a later "
+                            "retry instead of losing it"
+                        )
+                        remaining_lines.append(line)
+                    continue
+
+                if inserted:
                     count += inserted
+                else:
+                    # rowcount 0: the idempotent WHERE NOT EXISTS matched
+                    # an already-committed row at this exact (ts, sku) --
+                    # a genuine replay of an already-durable sale, not an
+                    # error and not silently dropped (Finding D).
+                    logger.info(
+                        "EventRecorder: replay skipped an already-recorded "
+                        f"sale (duplicate) ts={row['ts']!r} sku={row['sku']!r}"
+                    )
+        finally:
+            conn.close()
 
-            finally:
-                conn.close()
-
-        JOURNAL_PATH.write_text("", encoding="utf-8")
+        if remaining_lines:
+            JOURNAL_PATH.write_text("\n".join(remaining_lines) + "\n", encoding="utf-8")
+        else:
+            JOURNAL_PATH.write_text("", encoding="utf-8")
         return count
 
     def flush(self, timeout: float = 5.0) -> None:

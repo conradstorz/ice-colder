@@ -1200,3 +1200,286 @@ class TestSalesJournalRejectedRows:
         rejected_lines = rejected_path.read_text(encoding="utf-8").splitlines()
         assert len(rejected_lines) == 1
         assert json.loads(rejected_lines[0])["name"] == "Bad"
+
+
+class TestCorruptRecoveryRetryFailure:
+    """Round 3, Finding A (CRITICAL): the post-quarantine retry of
+    _init_db()/prune() inside __init__ must not be allowed to raise --
+    a disk-full or permission fault at exactly that moment is realistic
+    (it is a plausible cause of the original corruption too), not
+    contrived."""
+
+    def test_retry_connect_failure_does_not_crash_constructor(
+        self, tmp_path, monkeypatch, journal_path
+    ):
+        db_path = tmp_path / "events.db"
+        garbage = b"this is not a valid sqlite database, just garbage bytes"
+        db_path.write_bytes(garbage)
+
+        real_connect = sqlite3.connect
+        call_count = {"n": 0}
+
+        def fake_connect(path, *args, **kwargs):
+            if str(path) == str(db_path):
+                call_count["n"] += 1
+                if call_count["n"] == 2:
+                    # Call #1 is the original attempt against the still-
+                    # corrupt file (real corruption raises later, from
+                    # conn.execute, not from connect() itself). Quarantine
+                    # renames the corrupt file away, clearing this path.
+                    # Call #2 is the retry's connect against that now-clear
+                    # path -- this is the exact moment we simulate a
+                    # transient fault (e.g. a full disk) failing.
+                    raise sqlite3.OperationalError("unable to open database file")
+            return real_connect(path, *args, **kwargs)
+
+        monkeypatch.setattr(sqlite3, "connect", fake_connect)
+
+        rec = EventRecorder(db_path=str(db_path))  # must not raise
+
+        # Proves the retry branch was genuinely entered and genuinely
+        # failed -- not skipped, not some other call miscounted.
+        assert call_count["n"] >= 2
+
+        assert rec.db_was_corrupt is True
+        assert rec.corrupt_backup_path is not None
+        assert rec.db_unavailable is True
+        # The original corrupt file really was quarantined -- this is a
+        # genuine "quarantine worked, the fresh-database retry didn't"
+        # case, not quarantine itself failing (that's Finding 2/round 2).
+        backup = Path(rec.corrupt_backup_path)
+        assert backup.read_bytes() == garbage
+
+        # --- Consequence chain: verified, not assumed. ---
+
+        # record() must not raise even though the database is unavailable.
+        rec.record("payment", value=1.0)
+
+        # flush() must return promptly (the writer thread's per-item
+        # try/except/finally: task_done() swallows the resulting insert
+        # failure) rather than hang to its timeout.
+        start = time.monotonic()
+        rec.flush(timeout=5.0)
+        elapsed = time.monotonic() - start
+        assert elapsed < 4.0, (
+            f"flush() took {elapsed:.2f}s -- looks like it hit the timeout "
+            "instead of the writer thread promptly calling task_done()"
+        )
+
+        # record_sale must still journal the sale (never lose it) and
+        # re-raise, exactly per its documented contract, so the caller can
+        # raise DATA-101 and still finish the dispense.
+        with pytest.raises(sqlite3.OperationalError):
+            rec.record_sale("SKU1", "Cola", 1, 1.50, {"cash": 1.50}, ts=12345.0)
+        assert journal_path.exists()
+        lines = journal_path.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1
+        assert json.loads(lines[0])["sku"] == "SKU1"
+
+
+class TestSalesJournalRejectedWriteFailure:
+    """Round 3, Finding B (IMPORTANT): a failure writing the rejected-row
+    evidence file must not escape replay_sales_journal as an unhandled
+    exception -- no data is lost either way, but the docstring's own claim
+    ("replay itself completes") must actually hold."""
+
+    def test_reject_write_failure_does_not_raise_and_keeps_row_for_retry(
+        self, tmp_path, journal_path, monkeypatch
+    ):
+        db = str(tmp_path / "e.db")
+        rec = EventRecorder(db_path=db)
+        good_before = {
+            "ts": 1.0,
+            "sku": "GOOD1",
+            "name": "One",
+            "slot": 1,
+            "price": 1.0,
+            "methods": {"cash": 1.0},
+        }
+        bad = {  # sku=None violates NOT NULL -- well-formed JSON, uninsertable
+            "ts": 2.0,
+            "sku": None,
+            "name": "Bad",
+            "slot": 2,
+            "price": 1.0,
+            "methods": {"cash": 1.0},
+        }
+        good_after = {
+            "ts": 3.0,
+            "sku": "GOOD2",
+            "name": "Two",
+            "slot": 3,
+            "price": 1.0,
+            "methods": {"cash": 1.0},
+        }
+        journal_path.write_text(
+            "\n".join(json.dumps(e) for e in (good_before, bad, good_after)) + "\n",
+            encoding="utf-8",
+        )
+
+        def failing_append(_payload):
+            raise OSError("simulated: disk full writing rejected-sale evidence")
+
+        monkeypatch.setattr(
+            event_recorder_module, "_append_rejected_sale_line", failing_append
+        )
+
+        count = rec.replay_sales_journal()  # must not raise
+
+        assert count == 2  # both good rows still landed
+        with sqlite3.connect(db) as conn:
+            skus = {r[0] for r in conn.execute("SELECT sku FROM sales").fetchall()}
+        assert skus == {"GOOD1", "GOOD2"}
+
+        # The bad row could not be inserted AND could not be set aside as
+        # evidence (the write failed) -- it must stay in the journal for a
+        # later retry rather than being silently discarded.
+        remaining = journal_path.read_text(encoding="utf-8")
+        remaining_rows = [json.loads(ln) for ln in remaining.splitlines() if ln.strip()]
+        assert len(remaining_rows) == 1
+        assert remaining_rows[0]["name"] == "Bad"
+
+        # Proves the failing branch was genuinely entered: the rejected
+        # file was never actually written (the append raised before
+        # anything landed there), not that it silently succeeded anyway.
+        rejected_path = journal_path.with_name(
+            f"{journal_path.stem}.rejected{journal_path.suffix}"
+        )
+        assert not rejected_path.exists()
+
+
+class TestJournalCountVsDrainSignal:
+    """Round 3, Finding C (IMPORTANT): the integer return value cannot
+    tell "nothing to do" apart from "fully drained, nothing landed" --
+    the journal's post-call state (absent/empty vs. non-empty) is the
+    signal a caller must use instead."""
+
+    def test_zero_return_does_not_imply_the_journal_is_resolved(
+        self, tmp_path, journal_path, monkeypatch
+    ):
+        """count == 0 in isolation is ambiguous: here it happens while one
+        row is genuinely still stuck (reject-write failed) -- proving a
+        caller must check journal drainage, not the count, before
+        clearing DATA-101."""
+        db = str(tmp_path / "e.db")
+        rec = EventRecorder(db_path=db)
+
+        # First, get one sale genuinely committed so we can replay an
+        # already-committed duplicate of it (idempotent insert -> 0 rows).
+        rec.record_sale("DUP", "Dup", 1, 1.0, {"cash": 1.0}, ts=500.0)
+        duplicate_of_committed = {
+            "ts": 500.0,
+            "sku": "DUP",
+            "name": "Dup",
+            "slot": 1,
+            "price": 1.0,
+            "methods": {"cash": 1.0},
+        }
+        bad = {  # uninsertable, and its rejected-evidence write will fail too
+            "ts": 600.0,
+            "sku": None,
+            "name": "StuckBad",
+            "slot": 2,
+            "price": 1.0,
+            "methods": {"cash": 1.0},
+        }
+        journal_path.write_text(
+            "\n".join(json.dumps(e) for e in (duplicate_of_committed, bad)) + "\n",
+            encoding="utf-8",
+        )
+
+        def failing_append(_payload):
+            raise OSError("simulated: disk full writing rejected-sale evidence")
+
+        monkeypatch.setattr(
+            event_recorder_module, "_append_rejected_sale_line", failing_append
+        )
+
+        count = rec.replay_sales_journal()  # must not raise
+
+        assert count == 0  # the duplicate inserted 0, the bad row inserted 0
+
+        # The ambiguous integer says "nothing happened" -- but the journal
+        # is NOT resolved: the bad row is still stuck in it. A caller that
+        # cleared DATA-101 on `count > 0` would be wrong here in the
+        # opposite direction too (0 does not mean safe); the journal state
+        # is what must gate the fault.
+        remaining = journal_path.read_text(encoding="utf-8")
+        remaining_rows = [json.loads(ln) for ln in remaining.splitlines() if ln.strip()]
+        assert len(remaining_rows) == 1
+        assert remaining_rows[0]["name"] == "StuckBad"
+
+    def test_all_resolved_returns_zero_but_journal_is_drained(
+        self, tmp_path, journal_path
+    ):
+        """The other half of Finding C: when everything in a non-empty
+        journal is fully resolved (here: entirely an already-committed
+        duplicate) the return value is still 0 -- indistinguishable by
+        itself from the no-op case -- but the journal is drained to
+        empty, which is what makes drainage (not the count) the correct
+        DATA-101 signal. Contrast with test_is_noop_when_file_absent,
+        where 0 leaves the file untouched/absent instead."""
+        db = str(tmp_path / "e.db")
+        rec = EventRecorder(db_path=db)
+        entry = {
+            "ts": 42.0,
+            "sku": "X",
+            "name": "Thing",
+            "slot": 1,
+            "price": 1.0,
+            "methods": {"cash": 1.0},
+        }
+        journal_path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+        first = rec.replay_sales_journal()
+        assert first == 1
+
+        # Recreate the crash-before-rewrite window: the already-committed
+        # line reappears in the journal.
+        journal_path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+
+        second = rec.replay_sales_journal()
+
+        assert second == 0  # the ambiguous integer, taken alone
+        assert journal_path.exists()
+        assert journal_path.read_text(encoding="utf-8") == ""
+
+
+class TestReplayDuplicateSkipIsLogged:
+    """Round 3, Finding D (IMPORTANT): a genuine (ts, sku) collision must
+    never be silently indistinguishable from a sale dropped without a
+    trace -- the idempotent skip (rowcount 0) must log a distinct,
+    recognisable message naming ts and sku."""
+
+    def test_duplicate_skip_logs_ts_and_sku_and_does_not_change_row_count(
+        self, tmp_path, journal_path, caplog
+    ):
+        db = str(tmp_path / "e.db")
+        rec = EventRecorder(db_path=db)
+        entry = {
+            "ts": 777.25,
+            "sku": "DUPLOG",
+            "name": "Thing",
+            "slot": 1,
+            "price": 1.0,
+            "methods": {"cash": 1.0},
+        }
+        journal_path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+        rec.replay_sales_journal()
+        with sqlite3.connect(db) as conn:
+            before = conn.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+
+        # Same already-committed line reappears (the crash-before-rewrite
+        # window).
+        journal_path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+
+        caplog.clear()
+        with caplog.at_level("INFO"):
+            second_count = rec.replay_sales_journal()
+
+        assert second_count == 0
+        with sqlite3.connect(db) as conn:
+            after = conn.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+        assert after == before  # behaviour, not just the log: nothing new landed
+
+        assert "777.25" in caplog.text
+        assert "DUPLOG" in caplog.text
