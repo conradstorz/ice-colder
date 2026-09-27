@@ -3,15 +3,39 @@
    Task 11: Result of a successful cash collection.
    Displays the recorded time and the expected cash amount
    for the collector to compare with the physical cash box.
-#}
 
-<div class="bg-green-50 border border-green-200 rounded-lg p-4">
-  <h3 class="font-semibold text-green-900 mb-2">Cash Collection Recorded</h3>
-  <div class="space-y-1 text-sm text-green-800">
-    <p><strong>Time:</strong> {{ recorded_time }}</p>
-    <p><strong>Expected Cash:</strong> ${{ "%.2f"|format(expected_cash) }}</p>
+   Review round, Finding 3: confirm_button.html always swaps its OWN
+   `<div id="{{ target }}">` via hx-swap="outerHTML" (confirm_button.html:
+   44,47,53). For this feature target="#collect-cash-confirm", and this
+   file used to render a bare `<div class="bg-green-50 ...">` with no id
+   at all -- once a successful POST swapped it in, `#collect-cash-confirm`
+   was permanently gone from the DOM and the Collect Cash control could
+   never be used again without a full page reload.
+
+   Fixed by following the same precedent as
+   partials/codes_regenerate.html (see its header comment): this file now
+   owns the `<div id="collect-cash-confirm">` itself, wraps a reset
+   (confirming=false) include of confirm_button.html inside it alongside
+   the result content, so the anchor id survives this render too and the
+   control is immediately usable again.
+#}
+<div id="collect-cash-confirm" class="flex flex-col items-start gap-2">
+  {% set label = "Collect Cash" %}
+  {% set confirm_label = "Confirm Collection" %}
+  {% set post_url = "/inventory/collect" %}
+  {% set target = "#collect-cash-confirm" %}
+  {% set confirm_url = "/inventory/collect/confirm" %}
+  {% set confirming = false %}
+  {% include "partials/confirm_button.html" with context %}
+
+  <div class="bg-green-50 border border-green-200 rounded-lg p-4">
+    <h3 class="font-semibold text-green-900 mb-2">Cash Collection Recorded</h3>
+    <div class="space-y-1 text-sm text-green-800">
+      <p><strong>Time:</strong> {{ recorded_time }}</p>
+      <p><strong>Expected Cash:</strong> ${{ "%.2f"|format(expected_cash) }}</p>
+    </div>
+    <p class="text-xs text-green-700 mt-3">
+      Compare this amount with the cash in the collection box.
+    </p>
   </div>
-  <p class="text-xs text-green-700 mt-3">
-    Compare this amount with the cash in the collection box.
-  </p>
 </div>

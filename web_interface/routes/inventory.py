@@ -37,6 +37,61 @@ from web_interface.levels import LEVEL_INVENTORY
 # anything else is refused with 400 rather than trusted from the form.
 _ALLOWED_DELTAS = frozenset({-10, -1, 1, 10})
 
+# Serializes the enqueue -> flush -> read-back sequence of POST
+# /inventory/collect (review round, Finding 1). `cash_collections` has no
+# tie-break column that record_cash_collection's own ts (time.time()) can
+# guarantee is unique -- back-to-back calls on this platform's timer
+# granularity can and do land on the exact same ts (verified by direct
+# probe: 1000/1000 identical). Ordering the read-back by `id` instead of
+# `ts` (below) fixes "which row is newest" in isolation, but does not by
+# itself stop one request's read from picking up a DIFFERENT request's
+# row: without serialization, request A's enqueue -> request B's enqueue
+# -> request B's read (sees the newest id, which is B's own, correctly)
+# -> request A's read (also sees B's row as the newest id, since it now
+# exists) is exactly the exec order that shows A the wrong figure. Holding
+# this lock for the whole enqueue+flush+read unit means no other request's
+# job can be enqueued while one request is still reading, so "the newest
+# row when I read it" and "the row my own call caused" are the same row.
+#
+# Single-process limitation: this is an in-process asyncio.Lock, which
+# only serializes coroutines sharing one event loop. main.py runs exactly
+# one uvicorn server on one event loop in one process, so that is
+# sufficient here -- it would NOT be if this deployment ever grew to
+# multiple worker processes (e.g. `uvicorn --workers N`), since each
+# worker has its own lock and none of them would see the others' requests.
+_collect_cash_lock = asyncio.Lock()
+
+
+def _max_cash_collection_id(db_path: str) -> int:
+    """The current highest `id` in `cash_collections`, or 0 if the table
+    is empty. Captured *before* enqueueing so the read-back can later
+    prove a specific new row was actually written (Finding 2) rather than
+    merely that *some* row exists."""
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute("SELECT MAX(id) FROM cash_collections").fetchone()
+        return row[0] if row and row[0] is not None else 0
+    finally:
+        conn.close()
+
+
+def _latest_cash_collection_row(db_path: str):
+    """The newest `cash_collections` row by `id` (unambiguous, unlike
+    `ts` -- see `_collect_cash_lock` above), or None if the table is
+    empty. Runs its connect+query synchronously; callers must run this
+    via `asyncio.to_thread` (Finding 4) -- a blocking disk read has no
+    business running directly in the coroutine body on this project's
+    SD-card target."""
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.execute(
+            "SELECT id, ts, expected_cash FROM cash_collections "
+            "ORDER BY id DESC LIMIT 1"
+        )
+        return cursor.fetchone()
+    finally:
+        conn.close()
+
 
 def _find_product(sku: str):
     return next((p for p in context.config.products if p.sku == sku), None)
@@ -173,36 +228,61 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         if not context.event_recorder:
             raise HTTPException(status_code=500, detail="Event recorder not configured")
 
+        # Depends(web_auth.require(Permission.collect_cash)) above has
+        # already guaranteed an authenticated principal; this re-derivation
+        # is defensive only (current_principal returning None here would
+        # mean the dependency itself is broken), kept as a belt-and-braces
+        # guard rather than trusted to never change.
         principal = web_auth.current_principal(request)
         if not principal:
             raise HTTPException(status_code=401, detail="Not authenticated")
 
         user_id = principal.user.id
         user_name = principal.user.name
+        db_path = context.event_recorder._db_path
 
-        # Record the cash collection, which enqueues it on the writer thread.
-        context.event_recorder.record_cash_collection(user_id, user_name)
+        async with _collect_cash_lock:
+            # Captured before enqueueing (Finding 2): proves, after the
+            # read-back below, whether a genuinely NEW row was written by
+            # THIS call, rather than trusting that any row present at all
+            # means this call's write landed.
+            baseline_id = await asyncio.to_thread(_max_cash_collection_id, db_path)
 
-        # Flush the queue to ensure the row is written.
-        await asyncio.to_thread(context.event_recorder.flush)
+            # Record the cash collection, which enqueues it on the writer
+            # thread.
+            context.event_recorder.record_cash_collection(user_id, user_name)
 
-        # Read the row back to get the expected_cash value that was computed
-        # in the writer thread at insert time (this ensures consistency with
-        # the recorded value, not a figure recomputed here in the route).
-        conn = sqlite3.connect(context.event_recorder._db_path)
-        try:
-            cursor = conn.execute(
-                "SELECT ts, expected_cash FROM cash_collections "
-                "ORDER BY ts DESC LIMIT 1"
+            # Flush the queue to ensure the row is written. If the writer
+            # thread has died, this returns immediately without waiting --
+            # see EventRecorder.flush's docstring -- which is exactly why
+            # the id captured above matters: nothing below may assume the
+            # enqueued job was actually processed.
+            await asyncio.to_thread(context.event_recorder.flush)
+
+            # Read the row back to get the expected_cash value that was
+            # computed in the writer thread at insert time (this ensures
+            # consistency with the recorded value, not a figure recomputed
+            # here in the route). Ordered by `id`, not `ts` -- see
+            # `_collect_cash_lock`'s comment for why `ts` alone cannot
+            # disambiguate the newest row. Runs in a thread (Finding 4):
+            # the connect+query is a blocking disk read like `flush()`
+            # itself, and must not run directly in the coroutine body on
+            # this project's SD-card target.
+            row = await asyncio.to_thread(_latest_cash_collection_row, db_path)
+
+        if row is None or row[0] <= baseline_id:
+            # Either the table is empty (nothing was ever written) or the
+            # newest row is no newer than what existed before this call
+            # enqueued its job -- the writer thread did not process it (a
+            # dead writer thread; see flush()'s docstring). Showing the
+            # collector *any* older row here would be showing them someone
+            # else's already-recorded collection as if it were their own.
+            raise HTTPException(
+                status_code=500,
+                detail="Cash collection was not recorded (writer thread not running)",
             )
-            row = cursor.fetchone()
-            if row is None:
-                raise HTTPException(
-                    status_code=500, detail="Cash collection row not found after insert"
-                )
-            ts, expected_cash = row
-        finally:
-            conn.close()
+
+        _row_id, ts, expected_cash = row
 
         # Format the recorded time as a human-readable string.
         recorded_time = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
