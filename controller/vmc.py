@@ -196,6 +196,13 @@ class VMC:
         self._event_recorder = None  # Set via set_event_recorder()
         self._availability: Availability | None = None  # Set via set_availability()
         self._session_store: SessionStore | None = None  # Set via set_session_store()
+        # In-memory record-once guard for PAY-104 recovery (Task 14 review
+        # finding 3): keys of pending sales this process has already
+        # committed via record_sale, checked (and populated) only when the
+        # durable marker (mark_pending_sale_recorded) fails to persist --
+        # see reserve_pending_sale/pending_sale_already_recorded below.
+        # Lost on restart by design; see those methods' docstrings.
+        self._recorded_pay104_keys: set[tuple] = set()
         self.subsystem_capabilities: dict[str, dict] = {}
         # Fault registry: product-scope faults by SKU, machine-scope faults by code.
         self._lockouts: dict[str, FaultCode] = {}
@@ -614,7 +621,62 @@ class VMC:
             "slot": snap.dispense_slot,
             "price": round(sum(snap.pending_sale_shares.values()), 2),
             "methods": dict(snap.pending_sale_shares),
+            # Not part of the row this recovers and not shown anywhere --
+            # carried only so reserve_pending_sale/pending_sale_already_
+            # recorded (Task 14 finding 3) can key the in-memory guard on
+            # something that distinguishes this particular pending sale
+            # from a later, different one. See those methods' docstrings.
+            "saved_at": snap.saved_at,
         }
+
+    def _pay104_sale_key(self, pending: dict) -> tuple:
+        """Identify one PAY-104 pending sale for the in-memory
+        record-once guard (Task 14 review finding 3).
+
+        Keyed on the SKU, the exact method shares (sorted so dict
+        ordering never matters), and the snapshot's `saved_at` --
+        `_process_payment` sets `saved_at` fresh (`time.time()`, via
+        `_snapshot()`) at the moment it wrote the escrow shares that
+        became this pending sale. A genuinely different pending sale --
+        even the same SKU, even a coincidentally identical share
+        breakdown -- was written at a different wall-clock instant and
+        so gets a different key; a replay of the SAME sale reads the
+        SAME on-disk snapshot (nothing rewrites `saved_at` in place
+        between reads) and therefore collapses to the same key.
+        """
+        return (
+            pending["sku"],
+            tuple(sorted(pending["methods"].items())),
+            pending["saved_at"],
+        )
+
+    def pending_sale_already_recorded(self, pending: dict) -> bool:
+        """True if `pending` (as returned by `pending_sale_for_recovery`)
+        has already been reserved via `reserve_pending_sale` in this
+        process (Task 14 review finding 3).
+
+        The durable marker (`mark_pending_sale_recorded`) is supposed to
+        be what makes a retry safe, but it can fail for the same
+        underlying I/O reason that made `clear_fault`'s snapshot removal
+        fail one line earlier -- when it does, `pending_sale_for_
+        recovery()` keeps (truthfully, per its own unchanged contract)
+        reporting the same sale as pending. This in-memory check is the
+        belt to that marker's suspenders: called by the route under the
+        same `_pay104_lock` as `pending_sale_for_recovery()`'s own read,
+        so the two decisions are made atomically. It closes the gap only
+        for this process -- a restart loses `_recorded_pay104_keys`
+        entirely, same as any other in-memory state, which is why the
+        route must also tell the operator the truth (part (a)) rather
+        than rely on this alone.
+        """
+        return self._pay104_sale_key(pending) in self._recorded_pay104_keys
+
+    def reserve_pending_sale(self, pending: dict) -> None:
+        """Record, in memory only, that `pending` has been written via
+        record_sale -- see `pending_sale_already_recorded` for why this
+        exists and what it does not cover. Never raises: this is a
+        best-effort belt-and-suspenders guard, not the source of truth."""
+        self._recorded_pay104_keys.add(self._pay104_sale_key(pending))
 
     def mark_pending_sale_recorded(self) -> bool:
         """Durably mark the on-disk PAY-104 snapshot's pending sale as

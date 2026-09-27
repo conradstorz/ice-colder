@@ -462,16 +462,46 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         later call to `pending_sale_for_recovery()` reports `None` (its
         own contract: no shares, no pending sale) even though PAY-104
         legitimately remains active for the operator to acknowledge.
+
+        Review finding 3: `mark_pending_sale_recorded()` can itself fail
+        -- it goes through the same `SessionStore` against the same disk
+        that just made `clear_fault`'s removal fail one line above, so
+        this is a realistic pairing, not a contrived one. When it does,
+        `pending_sale_for_recovery()` keeps (truthfully) reporting the
+        original sale, since the snapshot was never rewritten. Two things
+        close that gap: the message told to the operator becomes honest
+        (the sale WAS recorded; do not retry; fix the storage problem)
+        instead of the marker-succeeded message's "retrying will not
+        record the sale again", and `vmc.reserve_pending_sale`/
+        `pending_sale_already_recorded` add an in-memory guard, checked
+        under this same lock, so a retry *within this process* cannot
+        write a second row even though the disk-based idempotency token
+        is gone. That guard does not survive a process restart -- seeing
+        `DATA_101` (raised below) on the Faults page is what the operator
+        has instead, across a restart.
         """
         vmc = context.vmc_instance
         if vmc is None:
             raise HTTPException(status_code=404, detail="No VMC attached")
+        marker_unwritable_detail = (
+            "Sale recorded; the PAY-104 evidence snapshot could not be "
+            "updated -- do NOT retry (retrying would record the sale "
+            "again); resolve the storage problem, then clear PAY-104 "
+            "manually once it is fixed"
+        )
         async with _pay104_lock:
             pending = vmc.pending_sale_for_recovery()
             if pending is None:
                 # Already recorded/discarded/cleared by an earlier request
                 # -- nothing to do. Money-safe no-op, not an error.
                 return _render_fault_list_oob(request)
+            if vmc.pending_sale_already_recorded(pending):
+                # The durable marker failed to persist on an earlier
+                # request in this process (finding 3) -- the sale is
+                # already recorded, so this replay must not write it
+                # again, and the operator already needs the same "do not
+                # retry" message as the request that hit the failure.
+                raise HTTPException(status_code=500, detail=marker_unwritable_detail)
             if context.event_recorder is None:
                 raise HTTPException(
                     status_code=500,
@@ -503,18 +533,32 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
                 ) from None
             if not vmc.clear_fault(FaultCode.PAY_104.value, by="admin"):
                 # The sale is recorded and must never be recorded again --
-                # mark the snapshot before responding, still inside the
-                # lock, so no later request (concurrent or sequential)
-                # can find a pending sale here again.
-                vmc.mark_pending_sale_recorded()
-                raise HTTPException(
-                    status_code=500,
-                    detail=(
-                        "Sale recorded; PAY-104 needs operator attention "
-                        "(the snapshot could not be cleared automatically) "
-                        "-- retrying will not record the sale again"
+                # reserve it in memory (finding 3) before anything else,
+                # still inside the lock, so even if the durable marker
+                # below also fails, no later request in this process can
+                # find a pending sale here again.
+                vmc.reserve_pending_sale(pending)
+                if vmc.mark_pending_sale_recorded():
+                    raise HTTPException(
+                        status_code=500,
+                        detail=(
+                            "Sale recorded; PAY-104 needs operator attention "
+                            "(the snapshot could not be cleared automatically) "
+                            "-- retrying will not record the sale again"
+                        ),
+                    )
+                # The marker itself could not be persisted -- surface it
+                # as a fault that outlives this HTTP response (finding 3
+                # part (c)), then tell the operator the truth: retrying
+                # is not safe, unlike the branch above.
+                vmc.raise_data_fault(
+                    FaultCode.DATA_101,
+                    outcome=(
+                        f"sku={pending['sku']} price=${pending['price']:.2f}; "
+                        "PAY-104 recovery marker could not be written"
                     ),
                 )
+                raise HTTPException(status_code=500, detail=marker_unwritable_detail)
             return _render_fault_list_oob(request)
 
     @router.get(

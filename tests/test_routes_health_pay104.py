@@ -516,3 +516,109 @@ class TestRecordSaleExactlyOnce:
         second = client.post("/health/faults/PAY-104/record-sale")
         assert second.status_code == 200
         assert len(_sales_rows(pay104["db_path"])) == 1
+
+
+class TestMarkerFailureExactlyOnce:
+    """Part 3 review, finding 3: `mark_pending_sale_recorded()`'s own
+    `bool` return was discarded at health.py:504-517. It can fail for the
+    same underlying I/O reason that made `clear_fault`'s snapshot removal
+    fail one line earlier -- both go through the same `SessionStore`
+    against the same failing disk. When that happens the pre-fix code:
+
+    * told the operator "retrying will not record the sale again" even
+      though the marker was never written;
+    * left `pending_sale_for_recovery()` still reporting the original
+      sale, since the snapshot's `pending_sale_shares` was never
+      rewritten away;
+    * had nothing to stop a second POST finding that same pending sale
+      and writing a second `sales` row for money already recorded once.
+
+    These tests force *both* `SessionStore.clear()` and `SessionStore.save()`
+    to fail (the marker write goes through `save()`) and assert the fixed
+    three-part behaviour: an honest message, an in-memory guard that makes
+    a same-process retry a safe no-op, and a `DATA-101` alert raised
+    through the same fault registry the route already uses elsewhere.
+    """
+
+    def test_first_post_records_once_tells_the_truth_and_second_post_writes_no_second_row(
+        self, pay104, login_as, monkeypatch
+    ):
+        vmc = pay104["vmc"]
+        # Positive control, restated right before the write this test is
+        # actually about -- see task-14-brief.md's "beware the fixture
+        # that makes the asserted branch unreachable".
+        assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+        assert vmc.pending_sale_for_recovery() is not None
+        assert pay104["session_path"].exists()
+
+        # Both disk writes fail -- the realistic pairing: clear_fault's
+        # snapshot removal and the marker's rewrite go through the same
+        # SessionStore against the same failing disk.
+        monkeypatch.setattr(vmc._session_store, "clear", lambda: False)
+
+        def _save_fails(snap):
+            raise OSError("simulated disk failure: read-only filesystem")
+
+        monkeypatch.setattr(vmc._session_store, "save", _save_fails)
+
+        client = login_as(Role.tech)
+
+        first = client.post("/health/faults/PAY-104/record-sale")
+        assert first.status_code == 500
+        # The message must be honest: the sale WAS recorded, and retrying
+        # is NOT safe -- the old unconditional claim must not appear.
+        assert "retrying will not record the sale again" not in first.text
+        assert "do not retry" in first.text.lower()
+        assert "recorded" in first.text.lower()
+
+        rows = _sales_rows(pay104["db_path"])
+        assert len(rows) == 1, (
+            f"expected exactly one row after the first POST, got {len(rows)}"
+        )
+        sku, name, slot, price, methods_json = rows[0]
+        assert sku == "ICE-1"
+        assert price == pay104["price"]
+
+        # PAY-104 legitimately still active -- clear_fault's own removal
+        # failure left it in place, unchanged from finding 2.
+        assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+
+        # The marker itself could not be persisted -- the accessor still
+        # (truthfully, per its own unchanged semantics) reports the
+        # pending sale. This is exactly the danger the in-memory guard
+        # below must close, since the disk-based idempotency token is
+        # gone.
+        assert vmc.pending_sale_for_recovery() is not None
+
+        # A second POST in the same process must not write a second row,
+        # even though the disk still shows a pending sale.
+        second = client.post("/health/faults/PAY-104/record-sale")
+        rows_after = _sales_rows(pay104["db_path"])
+        assert len(rows_after) == 1, (
+            f"expected no second row from a same-process retry, got {len(rows_after)}"
+        )
+        assert second.status_code == 500
+        assert "retrying will not record the sale again" not in second.text
+
+    def test_marker_failure_raises_data_101_visible_through_active_faults(
+        self, pay104, login_as, monkeypatch
+    ):
+        vmc = pay104["vmc"]
+        assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+        assert vmc.pending_sale_for_recovery() is not None
+        assert "DATA-101" not in {
+            f["code"] for f in vmc.active_faults()
+        }  # positive control
+
+        monkeypatch.setattr(vmc._session_store, "clear", lambda: False)
+
+        def _save_fails(snap):
+            raise OSError("simulated disk failure")
+
+        monkeypatch.setattr(vmc._session_store, "save", _save_fails)
+
+        client = login_as(Role.tech)
+        resp = client.post("/health/faults/PAY-104/record-sale")
+        assert resp.status_code == 500
+
+        assert "DATA-101" in {f["code"] for f in vmc.active_faults()}
