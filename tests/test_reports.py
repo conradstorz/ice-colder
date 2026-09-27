@@ -3,7 +3,7 @@ import csv
 import io
 import sqlite3
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 
 import pytest
 
@@ -19,6 +19,73 @@ FIXED_TZ = timezone(timedelta(hours=-5))
 
 def _dt(year, month, day, hour=0, minute=0, second=0):
     return datetime(year, month, day, hour, minute, second, tzinfo=FIXED_TZ)
+
+
+class _SyntheticDstTz(tzinfo):
+    """Deterministic stand-in for a real DST spring-forward transition.
+
+    `zoneinfo.ZoneInfo` is not usable on this machine: there is no tzdata
+    installed, and `ZoneInfo("America/New_York")` raises
+    `ZoneInfoNotFoundError`. Adding the `tzdata` package is forbidden (no
+    new runtime dependency; `pyproject.toml`/`uv.lock` must not change).
+    This hard-codes ONE UTC transition instant -- UTC-5 before it, UTC-4
+    after, mirroring US Eastern's spring-forward -- using only the
+    standard library. That is arguably better than a real zone for a test
+    anyway: fully deterministic and immune to any future tz-database
+    change.
+
+    `fromutc` deliberately returns a datetime whose attached tzinfo is a
+    plain, FROZEN `datetime.timezone` snapshot -- exactly what
+    `datetime.astimezone(None)` returns in production (see
+    `services.reports._to_local`) -- rather than `self`. That is what
+    makes this class reproduce the *specific* bug under review: code that
+    calls `_to_local` once and then advances by `timedelta` alone carries
+    that stale, `dt`-independent snapshot forward and never re-derives the
+    true offset for a later date. (A "fully dynamic" tzinfo whose
+    `utcoffset()` genuinely reads its `dt` argument on every call would
+    self-correct even under the old, unfixed loop -- via Python's own
+    aware-datetime subtraction always re-deriving `.utcoffset()` from
+    each operand's own fields -- which would prove nothing about the bug
+    this class exists to catch. Verified empirically before writing this
+    class: a naively "dynamic" tzinfo passed explicitly does NOT reproduce
+    the merge: only a snapshot-per-call tzinfo, matching what
+    `astimezone(None)` actually returns, does.)
+    """
+
+    _TRANSITION_UTC = datetime(2026, 3, 8, 7, 0, 0)  # 02:00 EST == 03:00 EDT
+    _BEFORE = timedelta(hours=-5)  # EST
+    _AFTER = timedelta(hours=-4)  # EDT
+
+    def fromutc(self, dt):
+        naive_utc = dt.replace(tzinfo=None)
+        offset = self._BEFORE if naive_utc < self._TRANSITION_UTC else self._AFTER
+        return (dt + offset).replace(tzinfo=timezone(offset))
+
+    def utcoffset(self, dt):
+        # Reached only when this class is attached directly to a
+        # wall-clock datetime (as `_syn_midnight` below does, to build
+        # ground-truth "true local midnight" instants for the test) --
+        # never reached via `fromutc` above, which returns a frozen
+        # `datetime.timezone` instead of `self`.
+        if dt is None:
+            return self._BEFORE
+        naive_local = dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+        local_before_boundary = self._TRANSITION_UTC + self._BEFORE  # 02:00 local
+        return self._BEFORE if naive_local < local_before_boundary else self._AFTER
+
+    def dst(self, dt):
+        return timedelta(0)
+
+    def tzname(self, dt):
+        return "SYN"
+
+
+SYN_TZ = _SyntheticDstTz()
+
+
+def _syn_midnight(year, month, day):
+    """True local midnight on the given date, in `SYN_TZ`."""
+    return datetime(year, month, day, tzinfo=SYN_TZ)
 
 
 @pytest.fixture
@@ -149,6 +216,88 @@ class TestByPeriodBucketing:
 
 
 # --------------------------------------------------------------------------
+# Finding 1 (Critical): bucket by true local midnight across a DST
+# transition, not by adding a fixed timedelta to a stale offset snapshot.
+# --------------------------------------------------------------------------
+
+
+class TestByPeriodDstTransition:
+    def test_no_merge_true_midnight_starts_contiguous_and_sum_invariant(self, recorder):
+        # One $1 sale at each TRUE local midnight, 2026-03-05..2026-03-11 --
+        # spans the synthetic spring-forward transition on 2026-03-08.
+        days = list(range(5, 12))
+        sale_ts = {d: _syn_midnight(2026, 3, d).timestamp() for d in days}
+        for d in days:
+            recorder.record_sale(
+                f"D{d}", f"Day {d}", 1, 1.00, {"cash": 1.00}, ts=sale_ts[d]
+            )
+
+        window = (sale_ts[5], _syn_midnight(2026, 3, 12).timestamp())
+        rows = reports.by_period(recorder, window, "day", tz=SYN_TZ)
+
+        # Positive half first: exactly one bucket per true local day.
+        assert len(rows) == 7
+
+        # The specific failure this reproduces: a merged bucket would show
+        # revenue 2.0 / vends 2 for 2026-03-08 (swallowing 03-09's sale
+        # too) and drop the last bucket entirely. Every bucket here must
+        # instead show exactly its own one sale.
+        for row in rows:
+            assert row["revenue"] == pytest.approx(1.00)
+            assert row["vends"] == 1
+
+        # Bucket starts are each true local midnight -- not shifted by the
+        # DST offset -- with the correct per-side UTC offset attached.
+        expected_starts = [_syn_midnight(2026, 3, d) for d in days]
+        actual_starts = [datetime.fromisoformat(r["bucket_start"]) for r in rows]
+        assert actual_starts == expected_starts
+
+        # Contiguous and non-overlapping: consecutive bucket starts are
+        # exactly one real elapsed day apart -- 23h on the transition day
+        # (2026-03-08, which loses an hour to spring-forward), 24h on
+        # every other day. A gap or overlap bug would show up here as a
+        # wrong elapsed time; the one-hour-shift bug would make every gap
+        # after the transition still read 86400 (masking the true 23h
+        # short day) while the bucket_start values above would silently
+        # drift -- this catches either failure mode.
+        gaps = [
+            (actual_starts[i + 1] - actual_starts[i]).total_seconds()
+            for i in range(len(actual_starts) - 1)
+        ]
+        assert gaps == [86400.0, 86400.0, 86400.0, 82800.0, 86400.0, 86400.0]
+
+        # Sum invariant: nothing double-counted, nothing dropped.
+        assert sum(r["revenue"] for r in rows) == pytest.approx(7.00)
+        assert sum(r["vends"] for r in rows) == 7
+
+    def test_tz_none_production_path_contiguous_and_sum_invariant(self, recorder):
+        # The default path (tz=None) over an ordinary window -- no
+        # particular DST claim here (whatever this machine's own local
+        # timezone happens to be); this just proves the contiguity/sum
+        # invariant holds on the code path production actually calls,
+        # since every other test in this file pins `tz=` explicitly.
+        now = time.time()
+        day = 86400.0
+        sale_ts = [now - 9 * day + i * day for i in range(9)]
+        for i, ts in enumerate(sale_ts):
+            recorder.record_sale(f"N{i}", f"Item {i}", 1, 1.00, {"cash": 1.00}, ts=ts)
+
+        window = (now - 10 * day, now + day)
+        rows = reports.by_period(recorder, window, "day", tz=None)
+
+        assert sum(r["revenue"] for r in rows) == pytest.approx(9.00)
+        assert sum(r["vends"] for r in rows) == 9
+
+        starts = [datetime.fromisoformat(r["bucket_start"]) for r in rows]
+        for i in range(len(starts) - 1):
+            gap = (starts[i + 1] - starts[i]).total_seconds()
+            # A real local day is 23, 24 or 25 hours; never anything else
+            # -- and never zero or negative, which would mean an overlap
+            # or a non-advancing bucket.
+            assert gap in (23 * 3600.0, 24 * 3600.0, 25 * 3600.0)
+
+
+# --------------------------------------------------------------------------
 # by_product
 # --------------------------------------------------------------------------
 
@@ -182,6 +331,23 @@ class TestByProduct:
         assert rows[0]["name"] == "New Name"
         assert rows[0]["units"] == 2
         assert rows[0]["revenue"] == pytest.approx(2.00)
+
+    def test_latest_seen_name_tie_broken_by_id_on_identical_ts(self, recorder):
+        # record_sale's default ts=time.time() has finite resolution, so
+        # two rows genuinely can share an identical ts. Without an
+        # explicit tie-break, "latest seen" falls back to whatever order
+        # SQLite happens to return -- not any guarantee. Pin the later
+        # INSERT (higher id) as the winner regardless of ts ordering.
+        same_ts = time.time() - 500
+        recorder.record_sale("SKU1", "Old Name", 1, 1.00, {"cash": 1.00}, ts=same_ts)
+        recorder.record_sale("SKU1", "New Name", 1, 1.00, {"cash": 1.00}, ts=same_ts)
+
+        window = (same_ts - 3600, same_ts + 3600)
+        rows = reports.by_product(recorder, window)
+
+        assert len(rows) == 1
+        assert rows[0]["name"] == "New Name"
+        assert rows[0]["units"] == 2
 
 
 # --------------------------------------------------------------------------
@@ -277,6 +443,91 @@ class TestRetentionNoneVersusZero:
         assert old_bucket["failed_vends"] is None
         assert old_bucket["refunds"] is None
         assert old_bucket["uptime_pct"] is None
+
+
+# --------------------------------------------------------------------------
+# Finding 3 (Important): a bucket straddling the retention cutoff computes
+# event-derived columns normally, over its WHOLE range -- documented and
+# pinned, not withheld like a fully-outside-retention bucket.
+# --------------------------------------------------------------------------
+
+
+class TestRetentionStraddlingBucket:
+    def test_straddling_bucket_counts_both_sides_of_the_cutoff(self, recorder):
+        # by_period's docstring now says a straddling bucket's event-derived
+        # columns cover only the *retained* portion in production, because
+        # `_prune_with` has already deleted rows older than the cutoff
+        # elsewhere. This module itself applies no per-row cutoff filter
+        # inside a straddling bucket -- it only gates on the whole-bucket
+        # `q_end <= retention_cutoff` check -- so pin that mechanism
+        # directly: seed one event on EACH side of the cutoff, inside the
+        # SAME bucket, and show the query counts both. (In production the
+        # before-cutoff row would already be gone by the time this runs;
+        # it is that absence -- not a filter in this module -- that makes
+        # the real-world result partial.)
+        cutoff_ts = time.time() - reports.RETENTION_DAYS * 86400
+        bucket_start = reports._floor_to_bucket(
+            reports._to_local(cutoff_ts, FIXED_TZ), "day"
+        )
+        bucket_end = reports._next_bucket(bucket_start, "day")
+
+        before_ts = (
+            bucket_start.timestamp() + (cutoff_ts - bucket_start.timestamp()) / 2
+        )
+        after_ts = cutoff_ts + (bucket_end.timestamp() - cutoff_ts) / 2
+        assert (
+            bucket_start.timestamp()
+            < before_ts
+            < cutoff_ts
+            < after_ts
+            < bucket_end.timestamp()
+        )
+
+        recorder.record_sale("STR", "Straddler", 1, 5.00, {"cash": 5.00}, ts=after_ts)
+        with sqlite3.connect(recorder._db_path) as conn:
+            conn.execute(
+                "INSERT INTO events (event_type, timestamp, value, metadata) "
+                "VALUES ('vend_failed', ?, 1.0, ?)",
+                (before_ts, '{"sku": "STR"}'),
+            )
+            conn.execute(
+                "INSERT INTO events (event_type, timestamp, value, metadata) "
+                "VALUES ('vend_failed', ?, 1.0, ?)",
+                (after_ts, '{"sku": "STR"}'),
+            )
+            conn.execute(
+                "INSERT INTO events (event_type, timestamp, value) "
+                "VALUES ('refund', ?, 1.0)",
+                (before_ts,),
+            )
+            conn.execute(
+                "INSERT INTO events (event_type, timestamp, value) "
+                "VALUES ('refund', ?, 2.0)",
+                (after_ts,),
+            )
+            conn.commit()
+
+        window = (
+            bucket_start.timestamp() - 2 * 86400,
+            bucket_end.timestamp() + 2 * 86400,
+        )
+        rows = reports.by_period(recorder, window, "day", tz=FIXED_TZ)
+        matching = [r for r in rows if r["bucket_start"] == bucket_start.isoformat()]
+
+        assert len(matching) == 1
+        straddling = matching[0]
+
+        # Positive half: a straddling bucket is computed, not withheld --
+        # it is not None like a fully-outside-retention bucket would be.
+        assert straddling["failed_vends"] is not None
+        assert straddling["refunds"] is not None
+        assert straddling["uptime_pct"] is not None
+
+        # Pinned mechanism: BOTH the before- and after-cutoff rows are
+        # counted, because the query has no per-row cutoff filter of its
+        # own inside a straddling bucket.
+        assert straddling["failed_vends"] == 2
+        assert straddling["refunds"] == pytest.approx(3.0)
 
 
 # --------------------------------------------------------------------------

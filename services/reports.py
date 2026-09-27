@@ -24,6 +24,7 @@ Design notes / deliberate deviations (recorded here per the task brief):
   is outside this task's permitted files, so no property was added there.
 """
 
+import contextlib
 import csv
 import io
 import json
@@ -171,6 +172,22 @@ def by_period(
     whose entire range predates the retention cutoff, those three columns
     are `None` (rendered `—` by the template) rather than 0 -- a 0 would
     misreport "no failures" when the truth is "we no longer know".
+
+    For a bucket that *straddles* the cutoff (its start predates it but its
+    end does not), the three event-derived columns are computed normally
+    over the bucket's full range, not withheld -- but rows older than the
+    cutoff have already been deleted by pruning, so those numbers cover only
+    the retained (newer) portion of the bucket while looking like a
+    complete count. This is a deliberate choice (returning `None` for a
+    partially-covered bucket would discard otherwise-usable data) and is
+    pinned by a test; it is not a bug.
+
+    Bucket boundaries are derived from the local wall clock at each
+    boundary's own instant (via `_to_local`), not by adding a fixed
+    `timedelta` to a stale offset -- so a bucket always starts and ends at
+    true local midnight (or week/month start) even across a DST
+    transition, and a day that is locally 23 or 25 hours long is queried
+    over that true span rather than a naive 24.
     """
     recorder.flush()
     start_ts, end_ts = window
@@ -187,11 +204,32 @@ def by_period(
     end_local = _to_local(end_ts, tz)
 
     rows: list[dict] = []
-    with sqlite3.connect(db_path) as conn:
+    with contextlib.closing(sqlite3.connect(db_path)) as conn:
         while current < end_local:
-            nxt = _next_bucket(current, bucket)
+            # Re-derive the next boundary from its own epoch instant rather
+            # than carrying `current`'s tzinfo snapshot forward: `tz=None`
+            # (the production default) resolves to a *fixed*-offset
+            # snapshot for one instant (see `_to_local`), so advancing by
+            # `timedelta` alone and reusing that same offset would silently
+            # merge or split a day across a DST transition. Re-deriving on
+            # every iteration, then re-flooring, lands exactly on true
+            # local midnight/week/month-start regardless.
+            unfloored_next = _next_bucket(current, bucket)
+            next_start = _floor_to_bucket(
+                _to_local(unfloored_next.timestamp(), tz), bucket
+            )
+            if next_start <= current:
+                # Pathological non-advance guard (e.g. a degenerate tzinfo):
+                # force progress with the unfloored boundary so the loop
+                # cannot spin forever.
+                next_start = unfloored_next
+
             q_start = max(current.timestamp(), start_ts)
-            q_end = min(nxt.timestamp(), end_ts)
+            # `q_end` MUST come from the same re-floored `next_start` used
+            # to seed the next iteration's `current` -- not from
+            # `unfloored_next` -- or the two buckets would overlap by the
+            # DST offset and double-count the sales in that overlap.
+            q_end = min(next_start.timestamp(), end_ts)
 
             revenue = conn.execute(
                 "SELECT COALESCE(SUM(price), 0.0) FROM sales WHERE ts>=? AND ts<?",
@@ -242,7 +280,7 @@ def by_period(
                     "uptime_pct": uptime_pct,
                 }
             )
-            current = nxt
+            current = next_start
     return rows
 
 
@@ -250,16 +288,21 @@ def by_product(recorder, window: tuple[float, float]) -> list[dict]:
     """Rows per SKU: name (latest seen), units, revenue, failed vends.
 
     Sorted by revenue descending. Empty database (or empty window) returns
-    an empty list, never a raise.
+    an empty list, never a raise. "Latest seen" is ordered `ts ASC, id ASC`
+    -- the `id ASC` tie-break makes the later-inserted row win deterministic
+    even when two rows share an identical `ts` (finite `time.time()`
+    resolution makes that a real possibility), rather than falling back to
+    SQLite's incidental, unguaranteed row-scan order.
     """
     recorder.flush()
     start_ts, end_ts = window
     db_path = recorder._db_path
 
     entries: dict[str, dict] = {}
-    with sqlite3.connect(db_path) as conn:
+    with contextlib.closing(sqlite3.connect(db_path)) as conn:
         sale_rows = conn.execute(
-            "SELECT sku, name, price FROM sales WHERE ts>=? AND ts<? ORDER BY ts ASC",
+            "SELECT sku, name, price FROM sales WHERE ts>=? AND ts<? "
+            "ORDER BY ts ASC, id ASC",
             (start_ts, end_ts),
         ).fetchall()
         for sku, name, price in sale_rows:
@@ -324,7 +367,7 @@ def by_method(recorder, window: tuple[float, float]) -> list[dict]:
 
     totals: dict[str, dict] = {}
     total_revenue = 0.0
-    with sqlite3.connect(db_path) as conn:
+    with contextlib.closing(sqlite3.connect(db_path)) as conn:
         rows = conn.execute(
             "SELECT price, methods FROM sales WHERE ts>=? AND ts<?",
             (start_ts, end_ts),
@@ -366,7 +409,7 @@ def collections(recorder, limit: int = 50) -> list[dict]:
     db_path = recorder._db_path
 
     result: list[dict] = []
-    with sqlite3.connect(db_path) as conn:
+    with contextlib.closing(sqlite3.connect(db_path)) as conn:
         rows = conn.execute(
             "SELECT ts, user_id, user_name, expected_cash FROM cash_collections "
             "ORDER BY ts DESC LIMIT ?",
@@ -397,7 +440,7 @@ def summary(recorder, window: tuple[float, float]) -> dict:
     start_ts, end_ts = window
     db_path = recorder._db_path
 
-    with sqlite3.connect(db_path) as conn:
+    with contextlib.closing(sqlite3.connect(db_path)) as conn:
         revenue = conn.execute(
             "SELECT COALESCE(SUM(price), 0.0) FROM sales WHERE ts>=? AND ts<?",
             (start_ts, end_ts),
