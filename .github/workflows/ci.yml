@@ -33,8 +33,41 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv sync --locked
-      # e2e tests skip without a broker on localhost:1883; everything else runs.
-      - run: uv run pytest -q
+      # Pinned, explicit Chrome build for the three opt-in browser tests below —
+      # deliberately not whatever ubuntu-latest happens to ship, which changes
+      # without notice. Chrome for Testing has archived per-major downloads
+      # since ~113; 130 is a stable, comfortably-available pin.
+      - name: Set up Chrome (for the opt-in browser tests)
+        id: setup-chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          chrome-version: 130
+      # Node 24 is current Active LTS (22 is Maintenance LTS). The checker
+      # scripts under tests/browser/*.mjs need Node's built-in global fetch
+      # and WebSocket client (WebSocket ships unflagged from 22.4/24 on),
+      # so pin an LTS line that's comfortably past that floor.
+      - name: Set up Node (for the opt-in browser tests)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      # e2e tests skip without a broker on localhost:1883; everything else
+      # runs, including the 3 opt-in browser tests (enabled below) — a guard
+      # step immediately after this one fails CI if any of them skip instead
+      # of running, so a broken Chrome/Node discovery can't hide behind a
+      # green suite.
+      - name: Run tests (including the opt-in browser tests)
+        env:
+          ICE_COLDER_BROWSER_TESTS: "1"
+          CHROME_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
+        run: uv run pytest -q -rs | tee pytest-output.txt
+      - name: Guard against the opt-in browser tests silently skipping
+        run: |
+          if grep -q "ICE_COLDER_BROWSER_TESTS=1 to run" pytest-output.txt; then
+            echo "::error::One or more opt-in browser tests were skipped in CI (Chrome/Node discovery failed). A green suite must not hide this."
+            grep "ICE_COLDER_BROWSER_TESTS=1 to run" pytest-output.txt
+            exit 1
+          fi
+          echo "Guard OK: none of the three opt-in browser tests skipped."
 
   compose-config:
     runs-on: ubuntu-latest
