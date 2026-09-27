@@ -15,6 +15,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | Run all tests | `uv run pytest` |
 | Run a single test | `uv run pytest tests/test_file.py::test_name` |
 | Lint/format | `ruff check --fix .` then `ruff format .` |
+| Build Tailwind CSS | `.tailwind/tailwindcss.exe -c web_interface/tailwind.config.js -i web_interface/tailwind.input.css -o web_interface/static/app.css --minify` |
+| Run the opt-in browser tests locally | `ICE_COLDER_BROWSER_TESTS=1 uv run pytest tests/test_dashboard_v2_home_browser.py tests/test_dashboard_v2_boosted_nav_browser.py tests/test_users_codes_pin_browser.py` |
+
+**Browser tests:** `tests/test_dashboard_v2_home_browser.py`, `tests/test_dashboard_v2_boosted_nav_browser.py` and `tests/test_users_codes_pin_browser.py` drive real headless Chrome via `tests/browser/*.mjs` checker scripts (Node standard library only). They're skipped unless `ICE_COLDER_BROWSER_TESTS=1` is set **and** a Chrome/Chromium binary (honoring `CHROME_PATH` first) plus a `node` executable are both found, so a machine without Chrome still runs the rest of the suite clean. CI sets the flag and installs a pinned Chrome and Node so these three run on every push/PR; a guard step in `ci.yml` fails the build if any of them skip instead of passing.
+
+**Tailwind:** The binary is [v3.4.17 standalone CLI](https://github.com/tailwindlabs/tailwindcss/releases/download/v3.4.17/tailwindcss-windows-x64.exe); a Linux or macOS checkout needs the matching asset from the same release. The binary is gitignored (`.tailwind/`, ~40 MB); `web_interface/static/app.css` is **committed**. `tests/test_static_css.py` fails CI when a template uses a class the committed file lacks — but that test only checks that classes templates *use* are present, never that unused ones are *absent*. Rebuild and commit `app.css` by hand whenever templates change; a stale file (leftover classes from a deleted template, or a missing rebuild after one) passes CI silently and only a manual rebuild catches it.
 
 ## Architecture
 
@@ -49,7 +55,48 @@ logs a clear error and exits with code 1 rather than papering over it.
 
 ### Web Dashboard (`web_interface/`)
 
-FastAPI app (`server.py`) with Jinja2 templates and HTMX-driven partials. `routes.py` defines all endpoints and receives the `ConfigModel` and `VMC` instance via setter functions called from `main.py`. Templates live in `web_interface/templates/` with HTMX partial fragments in `templates/partials/`. Static assets in `web_interface/static/`.
+FastAPI app (`server.py`) with Jinja2 templates and HTMX-driven partials. `routes/` is a package with one module per area (`home.py`, `health.py`, `products.py`, `inventory.py`, `reports.py`, `controls.py`, `tests_level.py`, `users.py`, `settings.py`); `routes/__init__.py` wires them all with `attach_routes`. Templates live in `web_interface/templates/` with HTMX partial fragments in `templates/partials/`. Static assets in `web_interface/static/`.
+
+**The v2 shell** (`base.html` + `web_interface/levels.py`) replaces the tabbed dashboard. Every level is a real URL and every level has its own breadcrumb trail and Back button that goes to the parent, not through history. `base.html` defines three blocks: `title` (for `<title>`), `body` (the sole content of `<main>`, where your level goes), and `bar_variant` (the bar header, not to be overridden). The bar itself uses `hx-swap-oob="true"` to deliver an out-of-band swap on every response, so a boosted navigation updates it with no reload. The navigation tree is a hierarchy of 24 named levels plus three parameterized ones (a product SKU, a subsystem name, a user id). Each level is defined in `web_interface/levels.py` as a frozen dataclass with `title`, `url`, `parent`, and properties `crumbs`, `parent_url`, plus a classmethod `Level.child(parent, title, url)` for parameterized levels.
+
+The tree, every URL with the permission that gates it (`Permission.<x>` from `services/access.py`; "A or B" is `_require_any(A, B)`, a local OR-semantics dependency defined in `products.py` and `settings.py` — `web_auth.require()` itself is AND-only):
+
+| URL | Gate |
+|---|---|
+| `/` | `view_status` (held by every role) |
+| `/health` | `view_status` |
+| `/health/subsystems` | `view_status` |
+| `/health/subsystems/{name}` | `view_status` |
+| `/health/faults` | `view_status` |
+| `/health/availability` | `view_status` |
+| `/health/logs` | `view_logs` |
+| `/products` | `edit_catalog` **or** `edit_placement` |
+| `/products/new` | `edit_catalog` |
+| `/products/{sku}` | `edit_catalog` **or** `edit_placement` |
+| `/products/{sku}/catalog` | `edit_catalog` |
+| `/products/{sku}/placement` | `edit_placement` |
+| `/products/{sku}/copy` | `edit_catalog` |
+| `/inventory` | `edit_placement` |
+| `/reports` | `view_reports` |
+| `/controls` | `machine_controls` |
+| `/tests` | `run_tests` |
+| `/users` | `manage_users` |
+| `/users/new` | `manage_users` |
+| `/users/{id}` | `manage_users` |
+| `/devices` | `manage_users` |
+| `/users/codes` | `manage_ownership` |
+| `/users/ownership` | `manage_ownership` |
+| `/settings` | `edit_contacts` **or** `edit_secrets` |
+| `/settings/machine` | `edit_contacts` |
+| `/settings/contacts` | `edit_contacts` |
+| `/settings/payments` | `edit_secrets` |
+| `/settings/comms` | `edit_secrets` |
+| `/settings/mqtt` | `edit_secrets` |
+| `/settings/web` | `edit_secrets` |
+
+`/devices` sits under Users in this **navigation** tree (`LEVEL_DEVICES`'s `parent` is `LEVEL_USERS` in `web_interface/levels.py`) even though its URL is not under `/users/` — the tree is a navigation hierarchy, not a URL-prefix hierarchy. Every mutating route under these levels additionally requires `Depends(context.require_htmx)`.
+
+`web_interface/context.py` holds shared state (config, VMC, health monitor, access store, availability, inventory manager) and helpers: `template_context(request, level=None, **extra)` injects request, current_user and perms into every template, `require_htmx` guards all POST routes (the CSRF dependency), `tail(file_path, lines=50)` reads log tails, `health_snapshot()` is the single health predicate shared by `/status` and `/pill` (so the hero and pill never disagree), and `LOW_STOCK_THRESHOLD = 3` (a tracked product is "low" at or below this count; not configurable per-product yet).
 
 The dashboard uses cookie-based session auth via `services/access.py`'s `AccessStore`,
 persisted in `data/access.json` (mode 0600). Users have four roles (`owner`,
@@ -57,21 +104,23 @@ persisted in `data/access.json` (mode 0600). Users have four roles (`owner`,
 requires a second factor: a 6-digit OTP sent by email (when
 `communication.email_gateway` is configured) or an 8-digit emergency code,
 which works offline. On first boot, setup mode redirects every route to `/setup`
-behind a code that exists only at the machine. The `Backoff` class (replacing
-`LoginLimiter`) enforces exponential back-off per `(kind, subject, client)` tuple
-plus a per-user budget for untrusted clients — no hard caps, so a stranger can
-never lock a legitimate user out. Every route is gated by `require(Permission)`;
+behind a code that exists only at the machine. The `Backoff` class enforces
+exponential back-off per `(kind, subject, client)` tuple plus a per-user budget
+for untrusted clients — no hard caps. Every route is gated by `require(Permission)`;
 templates receive `perms` and `current_user` via `template_context` so the server
 does not render controls it would refuse. POST routes require the `HX-Request`
 header (HTMX's own requests set it), which blocks a plain cross-site form post
-as a CSRF guard.
+as a CSRF guard. The only fragment endpoints are `/status` (home hero, 1 s), `/kpi` (home KPIs, 60 s), and `/pill` (health indicator, 5 s); lists and forms load once and refresh on action.
 
-The System Health tab (`/health`) merges three sources: heartbeats (liveness,
-uptime), each subsystem's retained `capabilities/<subsystem>` document
-(`SubsystemCapabilities`: firmware, contract version, brand/model,
-hardware_id, ip), and the VMC's own build identity from
-`services/build_info.py` (image env vars set by CI, or `git` when run from a
-checkout). Subsystems in `EXPECTED_SUBSYSTEMS` are listed even before they speak.
+The Home level shows a status strip (hero showing the next scheduled event or the health summary) plus a tile grid of eight tiles: Health, Products, Inventory, Reports, Controls, Tests, Users, Settings. A tile is rendered only when `perms` intersects that tile's permission set; the grid adapts to screen width (4×2 on desktop, 2×4 on tablets, 1 column on phones). Each tile links to its level, and the pill in the top-right taps to `/health/faults`.
+
+Tailwind v3.4.17 and HTMX 1.9.10 are **vendored** in `static/app.css` and `static/htmx.min.js`, so the tablet operator's dashboard works with no internet — that claim covers the dashboard proper; the customer-facing `/screen` page (and `/screen/body`) is the one exception, keeps CDN references, stays byte-identical to `origin/main`, and is out of scope for part 2. Secrets on Settings pages are masked: a placeholder is rendered for a field that is already set, and posting the unchanged placeholder leaves the stored value alone. The MQTT page shows the effective value and disables the field when an env override is active, and never writes an env value into `config.json`. Machine id, web host and web port are displayed but not editable — the handlers accept and ignore those fields even if a direct POST supplies them.
+
+`partials/confirm_button.html` (Task 5) is the server-rendered two-tap confirm used by Controls, the Health fault Clear and the Users code Regenerate, with **no JavaScript state**. Parameters: `label`, `confirm_label`, `post_url`, `target` (an `#id` selector), `confirm_url`, and optional `confirming` (default false). The first tap `hx-get`s `confirm_url`, which the including route renders in its confirming state; the second tap `hx-post`s `post_url`. Cancel re-`hx-get`s `confirm_url` with `confirming=false` — so **any route backing a confirm button must honour that query parameter**: absent or anything but the literal string `"false"` renders the Confirm/Cancel pair, `"false"` renders the plain first-tap button.
+
+`POST /inventory/{sku}/adjust` (the Inventory restock level, `web_interface/routes/inventory.py`) takes one form field, `delta`, accepting exactly `-10`, `-1`, `1`, `10` (a loader tapping the four adjust buttons); anything else — including a non-integer string — returns **400** with the stored count unchanged. A valid delta **clamps the count at zero** rather than erroring, so tapping `-10` on a count of 3 lands on 0 — deliberately different from the Products placement form (`POST /products/{sku}/placement`), which *rejects* a typed negative count outright and leaves the stored value unchanged.
+
+The Health level is split across six sub-levels rather than one merged page. `/health` itself shows only a four-tile summary (Subsystems, Faults, Availability, Logs) plus the VMC's own build identity from `services/build_info.py` (image env vars set by CI, or `git` when run from a checkout). `/health/subsystems` and `/health/subsystems/{name}` show heartbeats (liveness, uptime) and each subsystem's retained `capabilities/<subsystem>` document (`SubsystemCapabilities`: firmware, contract version, brand/model, hardware_id, ip) — subsystems in `EXPECTED_SUBSYSTEMS` are listed even before they speak. `/health/faults` lists active faults with a Clear action (gated on `clear_faults`, the two-tap confirm above); `/health/availability` shows the permissive truth table and payment-blocking reasons; `/health/logs` (gated on `view_logs`) shows the last **50** lines of `LOGS/vmc.log` (`context.tail`), not the pre-v2 fragment's 10.
 
 ### Services (`services/`)
 
@@ -144,3 +193,27 @@ applied to the dashboard's login back-off via
 - **Logging**: Uses `loguru` throughout; logs rotate daily to `LOGS/vmc.log`. State changes are prefixed with `STATE_CHANGE_PREFIX`.
 - **Config mutation**: Product changes go through `services/config_store.py` which writes back to `config.json`. The in-memory `ConfigModel` is mutated directly (Pydantic models with mutable fields).
 - **Web UI updates**: The dashboard uses HTMX to swap HTML partials from FastAPI endpoints. No SPA framework.
+
+## Removed Routes (Dashboard v2)
+
+The v2 shell replaces all URLs from the old tabbed dashboard. Anyone holding a bookmark or an external script can find the replacement here:
+
+| Removed | Replacement |
+|---|---|
+| `GET /` (old tabbed dashboard body) | `GET /` (the v2 Home: status strip + tile grid) |
+| `GET /health` (fragment) | `GET /health` (a level) and its four sub-levels |
+| `GET /logs` | `GET /health/logs` (50 lines, was 10) |
+| `GET /activity` | `GET /reports?period=` |
+| `POST /action/{command}` | `POST /controls/{command}` |
+| `POST /faults/{key}/clear` | `POST /health/faults/{key}/clear` |
+| `GET /inventory` (table fragment) | `GET /inventory` (the restock level) |
+| `GET /inventory/new`, `POST /inventory/add` | `GET`/`POST /products/new` |
+| `GET /inventory/copy/{sku}` | `GET /products/{sku}/copy` |
+| `GET /inventory/edit/{sku}/catalog`, `POST /inventory/update/{sku}/catalog` | `GET`/`POST /products/{sku}/catalog` |
+| `GET /inventory/edit/{sku}/placement`, `POST /inventory/update/{sku}/placement` | `GET`/`POST /products/{sku}/placement` |
+| `POST /inventory/delete/{sku}` | `POST /products/{sku}/delete` |
+| `GET /config/machine` | `GET`/`POST /settings/machine` |
+| `GET /config/contacts` | `GET`/`POST /settings/contacts` |
+| `GET /config/payments` | `GET`/`POST /settings/payments` |
+| `GET /config/comms` | `GET`/`POST /settings/comms` |
+| the old `/users/*` and `/devices/*` forms | the `/users` and `/devices` levels |

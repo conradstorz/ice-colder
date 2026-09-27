@@ -1,0 +1,22 @@
+{# web_interface/templates/settings.html
+
+   GET /settings: the six sub-tiles, filtered by gate (brief resolution 7).
+   Reuses partials/tile.html exactly like Home and the product detail page
+   — a tile the viewer's role lacks is entirely absent from the rendered
+   HTML, not merely hidden, since the `{% if tile.enabled %}` guard skips
+   the {% include %} altogether.
+#}
+{% extends "base.html" %}
+{% block title %}Settings · Vending Machine{% endblock %}
+{% block body %}
+<div class="space-y-4">
+  <h1 class="text-hero font-semibold text-gray-900">Settings</h1>
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-touch">
+    {% for tile in tiles %}
+      {% if tile.enabled %}
+        {% include "partials/tile.html" %}
+      {% endif %}
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

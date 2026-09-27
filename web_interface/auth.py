@@ -175,19 +175,9 @@ def _template_user(user: User) -> TemplateUser:
     )
 
 
-def template_context(request: Request, **extra) -> dict:
-    """Every template gets current_user and perms, so it never renders a
-    button the server would refuse. Server-side checks remain the authority.
-
-    current_user is a TemplateUser, not the full User — see TemplateUser's
-    docstring. Code that needs the real User (pin_hash/pin_salt included)
-    should use current_principal(request).user instead.
-    """
-    principal = current_principal(request)
-    ctx = {
-        "request": request,
-        "current_user": _template_user(principal.user) if principal else None,
-        "perms": principal.perms if principal else frozenset(),
-    }
-    ctx.update(extra)
-    return ctx
+# template_context moved to web_interface/context.py (Task 1 of the
+# dashboard-v2-shell plan) — it needs config and the other route-package
+# globals that live there, and this module must not import context.py (that
+# would create the circular import context.py -> auth.py -> context.py).
+# _template_user stays here since template_context is its only caller and
+# context.py imports this module already.

@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}{{ name }} · Vending Machine{% endblock %}
+{% block body %}
+<div class="space-y-4">
+
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-4 space-y-3">
+    <div class="flex items-center gap-3">
+      <span class="w-2.5 h-2.5 rounded-full flex-shrink-0
+        {% if row.stale %}bg-red-500{% elif row.alive %}bg-green-500{% else %}bg-gray-300{% endif %}"></span>
+      <span class="text-tile-title font-semibold text-gray-900 font-mono">{{ name }}</span>
+      <span class="text-sm">
+        {% if row.stale %}<span class="text-red-600 font-medium">Stale</span>
+        {% elif row.alive %}<span class="text-green-600 font-medium">OK</span>
+        {% else %}<span class="text-gray-400">Never seen</span>{% endif %}
+      </span>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+      <div>
+        <div class="text-xs text-gray-400 uppercase tracking-wide">Brand / model</div>
+        <div class="text-gray-900">{{ row.brand or "—" }}{% if row.model %} {{ row.model }}{% endif %}</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400 uppercase tracking-wide">Hardware id</div>
+        <div class="font-mono text-gray-900">{{ row.hardware_id or "—" }}</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400 uppercase tracking-wide">IP</div>
+        <div class="font-mono text-gray-900">{{ row.ip or "—" }}</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400 uppercase tracking-wide">Firmware</div>
+        <div class="font-mono text-gray-900">{{ row.firmware or "—" }}</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400 uppercase tracking-wide">Contract</div>
+        <div class="font-mono text-gray-900">{{ row.contract_version or "—" }}</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400 uppercase tracking-wide">Heartbeat age</div>
+        <div class="text-gray-900">{% if row.alive %}{{ row.seconds_since_seen|humanize_seconds }} ago{% else %}—{% endif %}</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400 uppercase tracking-wide">Uptime</div>
+        <div class="text-gray-900">{{ row.uptime_seconds|humanize_seconds }}</div>
+      </div>
+    </div>
+  </div>
+
+  {% if temperatures %}
+  <div class="space-y-2">
+    <h2 class="text-xs font-medium text-gray-400 uppercase tracking-wide">Temperatures</h2>
+    {% for loc, temp in temperatures.items() %}
+    <div class="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+      <span class="text-sm text-gray-700">{{ loc }}</span>
+      <span class="text-sm font-medium text-gray-900">{{ temp.value }}°C</span>
+      <span class="text-sm font-medium {{ 'text-green-600' if temp.in_range else 'text-red-600' }}">
+        {{ 'OK' if temp.in_range else 'Out of range' }}
+      </span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

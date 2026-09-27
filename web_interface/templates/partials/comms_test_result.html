@@ -1,0 +1,23 @@
+{# web_interface/templates/partials/comms_test_result.html
+
+   POST /settings/comms/test's response, swapped into #test-email-result
+   (settings_comms.html). Rendered through Jinja instead of an f-string
+   HTMLResponse so `owner_email` -- config.physical.people.machine_owner.
+   email, which a contacts editor can set to arbitrary text -- is
+   auto-escaped rather than trusted verbatim (Copilot review, PR 20,
+   comments 4113241318 and 4113241335: the route used to build this HTML
+   with an f-string and the template used to mark the whole string `safe`,
+   so a stored machine-owner email containing markup would execute when an
+   owner triggered this test-email action).
+
+   `test_status` is one of "not_configured", "ok", "failed"; anything else
+   (including undefined, the GET /settings/comms case, which never has a
+   result to show) renders nothing.
+#}
+{% if test_status == "not_configured" %}
+<p class="text-red-600 text-sm">Test email failed: the email gateway is not configured.</p>
+{% elif test_status == "ok" %}
+<p class="text-green-700 text-sm">Test email sent to {{ owner_email }}.</p>
+{% elif test_status == "failed" %}
+<p class="text-red-600 text-sm">Test email failed to send. Check the gateway settings and try again.</p>
+{% endif %}

@@ -1,0 +1,25 @@
+{# web_interface/templates/partials/confirm_command.html
+
+   Fragment-only wrapper around partials/confirm_button.html for a single
+   Controls command. Exists so GET /controls/confirm/{command} (routes/
+   controls.py's get_confirm) can return just this button's markup instead
+   of a full page: controls.html {% extends "base.html" %}, so rendering it
+   for a single-command response would emit a whole <html> document (see
+   Task 10 review round 1) that htmx's fragment parser would then treat as
+   a document, swapping the entire <main> in.
+
+   controls.html's own `{% if command %}` branch includes this same file,
+   so the full-page render (were anything ever to hit it with a command
+   set) and the confirm endpoint's fragment render produce identical
+   markup for a given command/confirming pair.
+
+   Context required: `command` (str) and, from context.template_context,
+   `confirming` (bool) — everything confirm_button.html itself needs
+   (label, confirm_label, post_url, target, confirm_url) is derived here.
+#}
+{% set target = "#confirm-" + command %}
+{% set label = command.capitalize() %}
+{% set confirm_label = label + " Machine" %}
+{% set confirm_url = "/controls/confirm/" + command %}
+{% set post_url = "/controls/" + command %}
+{% include "partials/confirm_button.html" with context %}

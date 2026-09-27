@@ -1,0 +1,52 @@
+{# web_interface/templates/settings_machine.html
+
+   GET/POST /settings/machine (gate edit_contacts). Name, location address
+   and location notes are editable; machine id is read-only (spec §8) — a
+   disabled <input> only, since the handler ignores it even on a direct
+   POST (brief resolution 10). physical.serial_number and
+   dispense_timeout_seconds are deliberately absent: the spec's Machine row
+   names only name / location / machine id / notes, and adding fields
+   beyond that list is not this task's call to make (brief resolution 3).
+#}
+{% extends "base.html" %}
+{% block title %}Machine · Settings · Vending Machine{% endblock %}
+{% block body %}
+<form hx-post="/settings/machine" class="max-w-md space-y-4">
+  <h1 class="text-hero font-semibold text-gray-900">Machine</h1>
+
+  {% if error %}
+  <p class="text-sm text-red-600">{{ error }}</p>
+  {% endif %}
+
+  <div>
+    <label for="machine_id" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Machine ID</label>
+    <input type="text" id="machine_id" value="{{ machine_id }}" disabled
+           class="touch-target w-full px-3 bg-gray-100 border border-gray-200 rounded-lg text-sm text-gray-500 font-mono">
+  </div>
+
+  <div>
+    <label for="name" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Name</label>
+    <input type="text" id="name" name="name" value="{{ name }}"
+           class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+  </div>
+
+  <div>
+    <label for="address" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Location address</label>
+    <input type="text" id="address" name="address" value="{{ address }}"
+           class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+  </div>
+
+  <div>
+    <label for="notes" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Location notes</label>
+    <input type="text" id="notes" name="notes" value="{{ notes }}"
+           class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+  </div>
+
+  <div class="flex gap-touch pt-2">
+    <button type="submit"
+            class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">Save</button>
+    <a href="/settings"
+       class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Cancel</a>
+  </div>
+</form>
+{% endblock %}

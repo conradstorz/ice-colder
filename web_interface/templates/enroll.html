@@ -1,40 +1,56 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Trust this device — Vending Machine</title>
-  <script src="/static/htmx.min.js"></script>
-  <script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body class="bg-slate-50 text-gray-900 font-sans min-h-screen flex items-center justify-center">
-  <main class="w-full max-w-sm p-6 space-y-4">
-    <h1 class="text-xl font-semibold">Trust this device</h1>
-    <p class="text-sm text-gray-600">
-      Hello {{ user.name }}. This browser has not been used here before.
-      Enter a 6-digit emailed code or an 8-digit emergency code, once.
-    </p>
+{% extends "base.html" %}
 
-    {% if can_email %}
-      <button hx-post="/login/enroll/send" hx-target="body" hx-swap="outerHTML"
-              class="w-full py-3 border border-gray-300 rounded-xl text-sm">
-        Email me a code
-      </button>
-    {% endif %}
+{# Task 14: adopted onto the dashboard v2 shell — see login.html for the
+   variant-bar rationale (no Home/Back/Lock/pill on an unauthenticated
+   page).
 
-    <form hx-post="/login/enroll" hx-target="body" hx-swap="outerHTML" class="space-y-3">
-      <label for="code" class="block text-sm font-medium text-gray-700">Code</label>
-      <input type="text" id="code" name="code" inputmode="numeric" pattern="[0-9]*"
-             autocomplete="one-time-code" required
-             class="w-full px-4 py-4 text-2xl tracking-widest text-center border border-gray-300 rounded-xl">
-      <button type="submit" class="w-full py-4 bg-blue-600 text-white rounded-xl">Continue</button>
-    </form>
+   Fix round 1 (finding 1): every POST handler below re-renders this full
+   page (base.html and all), which now carries base.html's OOB
+   `<header id="bar">` on every response. hx-target="body" swaps the whole
+   live body's children for what's left of the parsed response after htmx's
+   OOB pass already patched the live #bar and *removed* the header node
+   from that response content (per htmx.min.js's Ce/Ee) — so the live #bar
+   itself gets cleared away in the same swap that just updated it. Fixed by
+   retargeting at "main", the shell's own convention, with hx-select="main"
+   so htmx pulls only the response's <main> out of the parsed body (the OOB
+   header is already spent by then) and hx-swap="outerHTML" so that
+   selected <main> replaces the live one outright instead of nesting inside
+   it (innerHTML would insert the response's whole <main> element as a
+   child of the live target <main>). #}
 
-    {% if notice %}<p class="text-green-700 text-sm">{{ notice }}</p>{% endif %}
-    {% if error %}<p class="text-red-600 text-sm" role="alert">{{ error }}</p>{% endif %}
-    {% if wait_seconds %}
-      <p class="text-amber-700 text-sm">Try again in {{ wait_seconds }} s.</p>
-    {% endif %}
-  </main>
-</body>
-</html>
+{% block title %}Trust this device — Vending Machine{% endblock %}
+
+{% block bar_variant %}
+  <span class="touch-target px-3 text-sm font-semibold text-white">Vending Machine</span>
+{% endblock %}
+
+{% block body %}
+<div class="max-w-sm mx-auto py-6 space-y-4">
+  <h1 class="text-hero font-semibold text-gray-900">Trust this device</h1>
+  <p class="text-sm text-gray-600">
+    Hello {{ user.name }}. This browser has not been used here before.
+    Enter a 6-digit emailed code or an 8-digit emergency code, once.
+  </p>
+
+  {% if can_email %}
+    <button hx-post="/login/enroll/send" hx-target="main" hx-select="main" hx-swap="outerHTML"
+            class="w-full py-3 border border-gray-300 rounded-xl text-sm">
+      Email me a code
+    </button>
+  {% endif %}
+
+  <form hx-post="/login/enroll" hx-target="main" hx-select="main" hx-swap="outerHTML" class="space-y-3">
+    <label for="code" class="block text-sm font-medium text-gray-700">Code</label>
+    <input type="text" id="code" name="code" inputmode="numeric" pattern="[0-9]*"
+           autocomplete="one-time-code" required
+           class="w-full px-4 py-4 text-2xl tracking-widest text-center border border-gray-300 rounded-xl">
+    <button type="submit" class="w-full py-4 bg-blue-600 text-white rounded-xl">Continue</button>
+  </form>
+
+  {% if notice %}<p class="text-green-700 text-sm">{{ notice }}</p>{% endif %}
+  {% if error %}<p class="text-red-600 text-sm" role="alert">{{ error }}</p>{% endif %}
+  {% if wait_seconds %}
+    <p class="text-amber-700 text-sm">Try again in {{ wait_seconds }} s.</p>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1366,7 +1366,24 @@ async def test_dispense_snapshot_persisted_before_dispense_command(tmp_path):
     vmc.credit_escrow = 2.50
 
     vmc._process_payment()
-    await asyncio.sleep(0.05)
+
+    # Bounded wait instead of a fixed sleep: this test failed once in CI and
+    # passed on an unchanged re-run, because 50ms is enough time for
+    # _process_payment's background task to publish cmd/dispense on a
+    # developer machine but not reliably enough on a loaded CI runner. Poll
+    # for the publish instead of gambling on a fixed delay; the assertions
+    # inside FakeMQTT.publish (snapshot persisted with state "dispensing"
+    # *before* the publish) still run for real on whichever iteration the
+    # publish actually lands, so this stays a wait for the real event, not a
+    # race that can pass without ever running them.
+    deadline = asyncio.get_running_loop().time() + 2.0
+    while not any(t == "cmd/dispense" for t, _ in published):
+        if asyncio.get_running_loop().time() >= deadline:
+            pytest.fail(
+                "cmd/dispense was never published within 2s of "
+                f"_process_payment(); published so far: {published!r}"
+            )
+        await asyncio.sleep(0.01)
 
     assert any(t == "cmd/dispense" for t, _ in published)
     vmc.cancel_pending_tasks()

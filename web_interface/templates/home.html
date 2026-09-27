@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Vending Machine{% endblock %}
+{% block body %}
+<div class="space-y-4">
+
+  {# Hero status (spec §1.3): polls /status every 1s. The skeleton below
+     is what a first paint shows before the first swap lands; the fragment
+     itself (partials/status_fragment.html) computes is_healthy from the
+     same context.health_snapshot() the bar's pill uses, so the two can
+     never disagree.
+
+     hx-target="this" is load-bearing: <body> carries hx-target="main" for
+     boosted navigation, and that is inherited by any descendant lacking
+     its own hx-target. Without this, every "load" poll below (this panel,
+     the KPI panel, and the bar's #pill) would target the page's <main>
+     instead of itself — the first response to land would wipe out all of
+     main's real content (innerHTML), and the next (the pill's outerHTML
+     swap) would replace <main> itself with a bare span, destroying it
+     outright. #}
+  <div id="status-panel" hx-get="/status" hx-trigger="load, every 1s" hx-swap="innerHTML" hx-target="this">
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div class="flex">
+        <div class="w-1 bg-gray-200 flex-shrink-0"></div>
+        <div class="p-5 text-hero text-gray-400">Loading status&hellip;</div>
+      </div>
+    </div>
+  </div>
+
+  {# KPI cards (spec §1.3): polls /kpi every 60s; four sibling cards land
+     inside this grid wrapper (partials/kpi_fragment.html). #}
+  <div id="kpi-panel" class="grid grid-cols-2 md:grid-cols-4 gap-touch"
+       hx-get="/kpi" hx-trigger="load, every 60s" hx-swap="innerHTML" hx-target="this">
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 h-28 animate-pulse"></div>
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 h-28 animate-pulse"></div>
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 h-28 animate-pulse"></div>
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 h-28 animate-pulse"></div>
+  </div>
+
+  {# The eight-tile grid (spec §2), filtered to the viewer's role by
+     `tile.enabled` (web_interface/routes/home.py's `_build_tiles`) — one
+     column below 600px, 2x4 at md (600-899px), 4x2 at lg (900px+). Tile
+     context lines are computed once per render in the route, never by
+     polling (spec §1.3). #}
+  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-touch">
+    {% for tile in tiles %}
+      {% if tile.enabled %}
+        {% include "partials/tile.html" %}
+      {% endif %}
+    {% endfor %}
+  </div>
+
+</div>
+{% endblock %}

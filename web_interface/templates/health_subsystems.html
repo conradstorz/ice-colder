@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Subsystems · Vending Machine{% endblock %}
+{% block body %}
+<div class="space-y-2">
+  {% for name, sub in subsystems.items() %}
+  <a href="/health/subsystems/{{ name }}"
+     class="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-gray-200 shadow-sm p-4 hover:bg-slate-50 touch-target">
+    <span class="w-2.5 h-2.5 rounded-full flex-shrink-0
+      {% if sub.stale %}bg-red-500{% elif sub.alive %}bg-green-500{% else %}bg-gray-300{% endif %}"></span>
+    <span class="font-mono text-sm text-gray-900">{{ name }}</span>
+    <span class="text-sm">
+      {% if sub.stale %}<span class="text-red-600 font-medium">Stale</span>
+      {% elif sub.alive %}<span class="text-green-600 font-medium">OK</span>
+      {% else %}<span class="text-gray-400">Never seen</span>{% endif %}
+    </span>
+    <span class="text-xs text-gray-400">Uptime {{ sub.uptime_seconds|humanize_seconds }}</span>
+    <span class="text-xs text-gray-400 font-mono ml-auto">{{ sub.firmware or "—" }} / {{ sub.contract_version or "—" }}</span>
+  </a>
+  {% endfor %}
+</div>
+{% endblock %}

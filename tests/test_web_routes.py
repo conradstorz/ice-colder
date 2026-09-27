@@ -1,22 +1,22 @@
 """Tests for web_interface routes using FastAPI TestClient."""
 
 import re
+import subprocess
 import uuid
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from config.config_model import ConfigModel
 from contracts.vending_machine import FaultCode
-from controller.vmc import VMC
 from services.access import ROLE_PERMISSIONS, AccessStore, Permission, Role, User
 from services.display_controller import DisplayController
-from services.inventory_manager import InventoryManager
+from tests.conftest import make_client, sign_in
+from tests.dom_utils import find_by_id, parse_elements
 from web_interface import auth as web_auth
+from web_interface import context
 from web_interface.server import app
 from web_interface import routes
-
-
-_ISSUED_CLIENTS: list[TestClient] = []
 
 # Emergency/transfer codes are 8 decimal digits, rendered by the templates
 # inside an element carrying the `code-value` hook class (see
@@ -36,134 +36,6 @@ def _codes_in(html: str) -> list[str]:
     return _CODE_VALUE_RE.findall(html)
 
 
-@pytest.fixture(autouse=True)
-def _close_issued_clients():
-    """Close every client `sign_in` handed out, whatever the test did.
-
-    `sign_in` returns its client to the caller, so it cannot use a `with`
-    block itself. Tests that go through the `login_as` fixture are covered
-    by its own teardown, but several call `make_client(...)` directly and
-    never close the result — an unconditional leak. Funnelling every
-    issued client through here closes them all, and a second `.close()`
-    from `login_as` is harmless.
-    """
-    yield
-    while _ISSUED_CLIENTS:
-        _ISSUED_CLIENTS.pop().close()
-
-
-def sign_in(store: AccessStore, user: User, *, shared: bool = False) -> TestClient:
-    """Mint a device, trust *user* on it, open a session, and return a
-    client that is fully logged in: it carries vmc_device, vmc_session and
-    the HX-Request: true header, the way a real enrolled browser would."""
-    device, token = store.create_device(f"{user.name}'s device", shared=shared)
-    store.trust_device(device.id, user.id)
-    session_id = store.create_session(user.id, device.id)
-    store.record_login(user.id)
-
-    client = TestClient(app)
-    client.headers["HX-Request"] = "true"
-    client.cookies.set(web_auth.DEVICE_COOKIE, token)
-    client.cookies.set(web_auth.SESSION_COOKIE, session_id)
-    _ISSUED_CLIENTS.append(client)
-    return client
-
-
-def make_client(
-    store: AccessStore,
-    role: Role = Role.owner,
-    *,
-    shared: bool = False,
-    name: str = "Ada",
-) -> tuple[TestClient, User]:
-    """Seed a fresh user of *role* and sign them in."""
-    email = f"{name.lower().replace(' ', '.')}@example.com"
-    user = store.create_user(name, email, role, "2468")
-    return sign_in(store, user, shared=shared), user
-
-
-@pytest.fixture
-def wired(tmp_path):
-    """A ConfigModel, VMC, InventoryManager and AccessStore, wired into
-    routes the way main() wires them. The owner "Ada" is already seeded
-    (email ada@example.com, PIN 1379) and setup is finalized, so route
-    tests are never in setup mode.
-
-    `web_auth.backoff` is a module-level singleton shared by every test in
-    the process, keyed on a real clock — a PIN or emergency-code failure
-    left behind by one test can trip a 429 in the next, and only for one
-    of them depending on run order. Reset it on both sides so this
-    fixture's tests are isolated from whatever ran immediately before or
-    after them.
-    """
-    web_auth.backoff.reset()
-
-    cfg = ConfigModel()
-    vmc = VMC(config=cfg)
-    inv = InventoryManager([], path=tmp_path / "inventory.json")
-    store = AccessStore(path=tmp_path / "access.json")
-    store.create_user("Ada", "ada@example.com", Role.owner, "1379")
-    store.finalize_setup()
-
-    routes.set_config_object(cfg)
-    routes.set_vmc_instance(vmc)
-    routes.set_inventory_manager(inv)
-    routes.set_access_store(store)
-
-    yield cfg, vmc, inv, store
-
-    routes.set_access_store(None)
-    for t in vmc._pending_tasks:
-        t.cancel()
-    web_auth.backoff.reset()
-    web_auth.backoff.set_trusted_proxies([])
-
-
-@pytest.fixture
-def login_as(wired):
-    """login_as(role=Role.owner, *, shared=False, name=None) -> TestClient.
-
-    Role.owner returns a client for the fixture's existing owner (the store
-    enforces one owner per machine); any other role seeds a fresh user.
-    Every client this makes is closed on teardown.
-    """
-    _cfg, _vmc, _inv, store = wired
-    clients: list[TestClient] = []
-
-    def _login_as(
-        role: Role = Role.owner, *, shared: bool = False, name: str | None = None
-    ) -> TestClient:
-        if role == Role.owner:
-            client = sign_in(store, store.owner(), shared=shared)
-        else:
-            client, _user = make_client(
-                store, role, shared=shared, name=name or role.value.capitalize()
-            )
-        clients.append(client)
-        return client
-
-    yield _login_as
-
-    for c in clients:
-        c.close()
-
-
-@pytest.fixture
-def client(login_as):
-    """Every pre-existing test in this file runs through this client,
-    authenticated as the owner."""
-    return login_as(Role.owner)
-
-
-@pytest.fixture
-def anonymous(wired):
-    """A client with no cookies at all, against a wired store that does
-    have an owner — for asserting what an unauthenticated visitor gets."""
-    c = TestClient(app, follow_redirects=False)
-    yield c
-    c.close()
-
-
 class TestDashboard:
     def test_dashboard_returns_html(self, client):
         resp = client.get("/")
@@ -175,6 +47,257 @@ class TestDashboard:
         assert "Vending Machine" in resp.text
 
 
+class TestShellBar:
+    """Task 4: base.html's out-of-band navigation bar (spec §1.1)."""
+
+    def test_home_has_bar_without_home_or_back_buttons(self, client):
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert '<header id="bar"' in resp.text
+        # The breadcrumb's own current-page entry legitimately reads
+        # "Home" (an unlinked <span>) — only the nav *button* (an <a>) is
+        # what must be absent here.
+        assert ">Home</a>" not in resp.text
+        assert ">Back</a>" not in resp.text
+
+    def test_boosted_child_request_returns_main_and_oob_bar(self, client):
+        """A boosted nav to a child level: HX-Request + HX-Boosted, as htmx
+        sends for a boosted link click."""
+        resp = client.get(
+            "/tests", headers={"HX-Request": "true", "HX-Boosted": "true"}
+        )
+        assert resp.status_code == 200
+        assert "<main" in resp.text
+        assert '<header id="bar"' in resp.text
+        assert "hx-swap-oob" in resp.text
+        assert "Tests" in resp.text
+
+    def test_full_page_child_request_also_has_bar(self, wired):
+        """The same URL, requested the way a reload or bookmark would (no
+        HX-Request/HX-Boosted headers), renders the same shell."""
+        _cfg, _vmc, _inv, store = wired
+        user = store.owner()
+        device, token = store.create_device("Kiosk", shared=False)
+        store.trust_device(device.id, user.id)
+        session_id = store.create_session(user.id, device.id)
+        page_client = TestClient(app)
+        page_client.cookies.set(web_auth.DEVICE_COOKIE, token)
+        page_client.cookies.set(web_auth.SESSION_COOKIE, session_id)
+        try:
+            resp = page_client.get("/tests")
+        finally:
+            page_client.close()
+        assert resp.status_code == 200
+        assert '<header id="bar"' in resp.text
+        assert "Tests" in resp.text
+
+    def test_no_cdn_references(self, client):
+        for path in ("/", "/tests"):
+            resp = client.get(path)
+            assert "unpkg" not in resp.text
+            assert "cdn.tailwindcss.com" not in resp.text
+
+    def test_pill_placeholder_polls_every_5s(self, client):
+        resp = client.get("/")
+        assert 'hx-get="/pill"' in resp.text
+        assert "every 5s" in resp.text
+
+
+class TestHomeSelfPollTargets:
+    """Regression test for the Dashboard v2 Home landing DOM-destruction
+    bug: a real browser, not TestClient, was the only thing that ever saw
+    it — the server's response was always well-formed. base.html's
+    `<body hx-boost="true" hx-target="main" ...>` means any descendant
+    that fires its own request but declares no hx-target of its own
+    inherits "main" (htmx walks up the DOM for it). Three elements fire an
+    `hx-trigger="load"` request the instant Home loads — #status-panel,
+    #kpi-panel (home.html) and #pill (base.html) — and none of them used
+    to declare an hx-target of their own, so each one's response landed on
+    the page's single <main> instead of on itself: the first to land (an
+    innerHTML swap) wiped out every real child of <main> (the tile grid
+    included), and the next (the pill's own outerHTML swap) went further
+    and replaced <main> itself with a bare <span>, destroying it outright
+    (after which every later pill re-poll fails to find a target at all).
+
+    A plain substring check (e.g. 'hx-get="/pill"' in resp.text, added by
+    the original Task 5 brief and still above as
+    test_pill_placeholder_polls_every_5s) cannot tell whether an element
+    also carries hx-target, because it never looks at *which* element an
+    attribute is on — only whether some byte sequence occurs anywhere in
+    the response. The assertions below parse the actual served HTML
+    (tests/dom_utils.py, html.parser-based) and inspect each element's own
+    attributes, which is what would have caught this before it shipped.
+
+    This is the CI-running half of the regression coverage — it can prove
+    the server-rendered self-target attribute is present, but it cannot by
+    itself prove a real browser's htmx runtime behaves correctly (the
+    served HTML was always fine; the destruction was 100% client-side).
+    tests/test_dashboard_v2_home_browser.py is the other half: an opt-in,
+    real-headless-Chrome end-to-end check of the actual DOM after a live
+    page load. That one does NOT run as part of `uv run pytest` / CI (no
+    Chrome there) — see its module docstring for how to run it.
+    """
+
+    def test_main_and_pill_are_singular(self, client):
+        resp = client.get("/")
+        elements = parse_elements(resp.text)
+
+        mains = [e for e in elements if e.tag == "main"]
+        assert len(mains) == 1
+
+        pills = find_by_id(elements, "pill")
+        assert len(pills) == 1
+
+        tile_anchors = [
+            e
+            for e in elements
+            if e.tag == "a" and e.is_within("main") and e.attrs.get("href")
+        ]
+        assert len(tile_anchors) > 0
+
+    @pytest.mark.parametrize(
+        "element_id",
+        ["status-panel", "kpi-panel", "pill"],
+    )
+    def test_self_polling_element_targets_itself(self, client, element_id):
+        """Each self-polling element must declare its own hx-target="this"
+        — without it, it inherits <body>'s hx-target="main" and its
+        periodic "load"/"every Ns" poll clobbers or destroys <main>
+        instead of updating itself."""
+        resp = client.get("/")
+        elements = find_by_id(parse_elements(resp.text), element_id)
+        assert len(elements) == 1, f"expected exactly one #{element_id}"
+        assert elements[0].attrs.get("hx-target") == "this", (
+            f'#{element_id} must carry hx-target="this" (it fires its own '
+            'hx-trigger="load" request and has no other explicit target; '
+            'without hx-target="this" it silently inherits <body>\'s '
+            'hx-target="main" — see this class\'s docstring)'
+        )
+
+    def test_pill_partial_rerender_also_targets_itself(self, client):
+        """partials/pill.html — the template /pill re-renders itself with
+        on every poll — must carry the same self-target as the copy
+        base.html ships in the initial page, or the *second* poll (using
+        this re-rendered markup) regresses even with the first fixed."""
+        resp = client.get("/pill")
+        elements = find_by_id(parse_elements(resp.text), "pill")
+        assert len(elements) == 1
+        assert elements[0].attrs.get("hx-target") == "this"
+
+
+class TestBoostedSwapDoesNotNestMain:
+    """Regression test for the *second* instance of the htmx
+    ambient-hx-target defect (TestHomeSelfPollTargets above is the first).
+
+    base.html's `<body hx-boost="true" hx-target="main" ...>` doesn't only
+    supply a default for self-polling widgets — it is the default
+    hx-target *and* hx-swap for every boosted link, form, or bare hx-get/
+    hx-post element on the whole shell that declares no target/swap of its
+    own: roughly two dozen elements (every Settings/Products/Users form,
+    health_logs.html's Refresh button) plus ordinary navigation itself —
+    every tile link, every breadcrumb, and base.html's own Home/Back links,
+    none of which carry an explicit hx-target.
+
+    Every one of those responses is a *full* HTML document (doctype, head,
+    the OOB `#bar`, and the level's own `<main>`), because every level
+    extends base.html. htmx's boosted-request handling parses that
+    document, peels off the OOB `#bar` (matched and swapped separately),
+    and is left with the child level's own `<main>` element as the
+    fragment to swap in. With `hx-swap="innerHTML"` (the literal text of
+    spec §1.1), that fragment — a whole `<main>` element, tag included —
+    is inserted as a *child* of the page's live `<main>` instead of
+    replacing it, nesting `<main><main>...</main></main>` on every one of
+    those interactions. Verified in a real browser (headless Chrome via
+    CDP): clicking a Home tile, clicking the Home/Back links, tapping
+    Health > Logs' Refresh button (twice, to confirm it doesn't clean up
+    after itself), and submitting a Settings/Products/Users form down a
+    path that re-renders the same level instead of issuing an HX-Redirect
+    (a validation error on Products > New's duplicate-SKU check or
+    Users > New's PIN-length check; the *success* path on most forms goes
+    through `HX-Redirect`, which is a real browser navigation, not a swap,
+    and was never affected) all left a stray nested `<main>` behind with
+    `hx-swap="innerHTML"`, and none did with `hx-swap="outerHTML"`.
+
+    As with the first defect, only a real browser executing htmx's JS can
+    observe the nesting itself — the served HTML string is, as always,
+    entirely well-formed, and TestClient never runs a browser. But which
+    swap style `<body>` declares is itself a server-visible fact, and
+    that's what the assertion below checks: outerHTML replaces the live
+    `<main>` element wholesale with the incoming one instead of grafting
+    it inside, so exactly one `<main>` survives every swap regardless of
+    which of the ~two-dozen ambient-target elements produced it.
+    """
+
+    def test_body_boost_swap_is_outer_html_not_inner_html(self, client):
+        resp = client.get("/")
+        elements = parse_elements(resp.text)
+        bodies = [e for e in elements if e.tag == "body"]
+        assert len(bodies) == 1, "expected exactly one <body>"
+
+        swap = (bodies[0].attrs.get("hx-swap") or "").split()
+        assert swap and swap[0] == "outerHTML", (
+            'base.html\'s <body> must declare hx-swap="outerHTML ..." — '
+            "every level response is a full document, and hx-swap="
+            '"innerHTML" would nest the incoming level\'s own <main> '
+            "inside the page's live <main> on every boosted navigation, "
+            "Refresh click, or form re-render that doesn't HX-Redirect "
+            "(see this class's docstring)."
+        )
+        assert bodies[0].attrs.get("hx-target") == "main"
+
+
+class TestShellErrorPages:
+    """Task 4: spec §5's in-shell 403/404 pages, and the exception handler
+    that must not swallow auth.py's 401/303 (executor resolution 4)."""
+
+    def test_404_renders_in_shell(self, client):
+        resp = client.get("/definitely-not-a-real-route")
+        assert resp.status_code == 404
+        assert "text/html" in resp.headers["content-type"]
+        assert '<header id="bar"' in resp.text
+        assert "Not found" in resp.text
+
+    def test_403_renders_in_shell(self, login_as):
+        client = login_as(Role.loader)  # loader has no run_tests permission
+        resp = client.get("/tests")
+        assert resp.status_code == 403
+        assert "text/html" in resp.headers["content-type"]
+        assert '<header id="bar"' in resp.text
+        # Jinja autoescapes the apostrophe (&#39;); match on the
+        # unambiguous, escaping-proof part of the phrase instead.
+        assert "have access to this" in resp.text
+
+    def test_csrf_403_also_renders_in_shell(self, wired):
+        """require_htmx's 403 (no HX-Request header on a mutating POST)
+        goes through the same handler as any other 403."""
+        _cfg, _vmc, _inv, store = wired
+        client = TestClient(app)
+        user = store.owner()
+        device, token = store.create_device("Kiosk", shared=False)
+        store.trust_device(device.id, user.id)
+        session_id = store.create_session(user.id, device.id)
+        client.cookies.set(web_auth.DEVICE_COOKIE, token)
+        client.cookies.set(web_auth.SESSION_COOKIE, session_id)
+        try:
+            resp = client.post("/logout")
+        finally:
+            client.close()
+        assert resp.status_code == 403
+        assert '<header id="bar"' in resp.text
+
+    def test_unauthenticated_htmx_request_still_gets_401_redirect(self, anonymous):
+        """The exception handler must delegate this, not render error.html."""
+        resp = anonymous.get("/status", headers={"HX-Request": "true"})
+        assert resp.status_code == 401
+        assert resp.headers["hx-redirect"] == "/login"
+        assert "<header" not in resp.text
+
+    def test_unauthenticated_page_request_still_redirects(self, anonymous):
+        resp = anonymous.get("/")
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/login"
+
+
 class TestStatusEndpoint:
     def test_status_returns_html(self, client):
         resp = client.get("/status")
@@ -182,450 +305,38 @@ class TestStatusEndpoint:
         assert "text/html" in resp.headers["content-type"]
 
 
-class TestInventoryEndpoints:
-    def test_inventory_list(self, client):
-        resp = client.get("/inventory")
-        assert resp.status_code == 200
-
-    def test_inventory_new_form(self, client):
-        resp = client.get("/inventory/new")
-        assert resp.status_code == 200
-
-    def test_add_product(self, client):
-        resp = client.post(
-            "/inventory/add",
-            data={
-                "sku": "TEST-001",
-                "name": "Test Ice",
-                "price": "2.50",
-            },
-        )
-        assert resp.status_code == 200
-        assert "Test Ice" in resp.text
-
-    def test_edit_form(self, client):
-        """Catalog edit form for a product created via the dashboard."""
-        client.post(
-            "/inventory/add",
-            data={"sku": "EDIT-1", "name": "Editable", "price": "1.50"},
-        )
-        resp = client.get("/inventory/edit/EDIT-1/catalog")
-        assert resp.status_code == 200
-        assert "Editable" in resp.text
-
-    def test_add_product_without_slot_auto_assigns(self, client):
-        resp = client.post(
-            "/inventory/add",
-            data={"sku": "AUTO-1", "name": "Auto Slot", "price": "1.00"},
-        )
-        assert resp.status_code == 200
-        added = next(p for p in routes.config.products if p.sku == "AUTO-1")
-        assert added.slot == 0  # first product added to an empty catalog
-
-    def test_add_product_with_explicit_slot(self, client):
-        resp = client.post(
-            "/inventory/add",
-            data={"sku": "SLOT-1", "name": "Slotted", "price": "1.00", "slot": "7"},
-        )
-        assert resp.status_code == 200
-        added = next(p for p in routes.config.products if p.sku == "SLOT-1")
-        assert added.slot == 7
-
-    def test_add_product_with_negative_slot_does_not_500(self, client):
-        resp = client.post(
-            "/inventory/add",
-            data={
-                "sku": "NEG-1",
-                "name": "Negative Slot",
-                "price": "1.00",
-                "slot": "-1",
-            },
-        )
-        assert resp.status_code == 200
-        assert not any(p.sku == "NEG-1" for p in routes.config.products)
-
-    def test_inventory_table_renders_slot_column(self, client):
-        client.post(
-            "/inventory/add",
-            data={"sku": "SLOT-2", "name": "Slotted Two", "price": "1.00", "slot": "3"},
-        )
-        resp = client.get("/inventory")
-        assert resp.status_code == 200
-        assert "3" in resp.text
-
-    def test_edit_form_shows_slot_input(self, client):
-        client.post(
-            "/inventory/add",
-            data={
-                "sku": "EDIT-2",
-                "name": "Editable Two",
-                "price": "1.50",
-                "slot": "9",
-            },
-        )
-        resp = client.get("/inventory/edit/EDIT-2/placement")
-        assert resp.status_code == 200
-        assert 'name="slot"' in resp.text
-        assert 'value="9"' in resp.text
-
-    def test_update_product_changes_slot(self, client):
-        client.post(
-            "/inventory/add",
-            data={"sku": "UPD-1", "name": "Updatable", "price": "1.50", "slot": "1"},
-        )
-        resp = client.post(
-            "/inventory/update/UPD-1/placement",
-            data={"slot": "6", "inventory_count": "0"},
-        )
-        assert resp.status_code == 200
-        updated = next(p for p in routes.config.products if p.sku == "UPD-1")
-        assert updated.slot == 6
-
-    def test_add_product_carries_kind(self, client):
-        resp = client.post(
-            "/inventory/add",
-            data={
-                "sku": "KIND-1",
-                "name": "Water Bottle",
-                "price": "1.25",
-                "kind": "water",
-            },
-        )
-        assert resp.status_code == 200
-        assert routes.config.products[-1].kind == "water"
-
-    def test_update_product_changes_kind(self, client):
-        client.post(
-            "/inventory/add",
-            data={"sku": "KIND-2", "name": "Flexible", "price": "1.00"},
-        )
-        resp = client.post(
-            "/inventory/update/KIND-2/catalog",
-            data={"name": "Flexible", "price": "1.00", "kind": "ice"},
-        )
-        assert resp.status_code == 200
-        updated = next(p for p in routes.config.products if p.sku == "KIND-2")
-        assert updated.kind == "ice"
-
-    def test_copy_form_preselects_source_product_kind(self, client):
-        client.post(
-            "/inventory/add",
-            data={
-                "sku": "KIND-3",
-                "name": "Sparkling Water",
-                "price": "1.50",
-                "kind": "water",
-            },
-        )
-        resp = client.get("/inventory/copy/KIND-3")
-        assert resp.status_code == 200
-        assert 'value="water" selected' in resp.text
-
-    def test_old_single_edit_form_route_404s(self, client):
-        client.post(
-            "/inventory/add",
-            data={"sku": "OLD-1", "name": "Old Form", "price": "1.00"},
-        )
-        resp = client.get("/inventory/edit/OLD-1")
-        assert resp.status_code == 404
-
-    def test_old_single_update_route_404s(self, client):
-        client.post(
-            "/inventory/add",
-            data={"sku": "OLD-2", "name": "Old Form", "price": "1.00"},
-        )
-        resp = client.post(
-            "/inventory/update/OLD-2",
-            data={"name": "Old Form", "price": "1.00", "slot": "0"},
-        )
-        assert resp.status_code == 404
-
-    def test_catalog_edit_form(self, client):
-        client.post(
-            "/inventory/add",
-            data={"sku": "CAT-1", "name": "Catalog Item", "price": "2.00"},
-        )
-        resp = client.get("/inventory/edit/CAT-1/catalog")
-        assert resp.status_code == 200
-        assert "Catalog Item" in resp.text
-
-    def test_catalog_post_changes_name_price_kind(self, client):
-        client.post(
-            "/inventory/add",
-            data={"sku": "CAT-2", "name": "Old Name", "price": "1.00"},
-        )
-        resp = client.post(
-            "/inventory/update/CAT-2/catalog",
-            data={"name": "New Name", "price": "3.50", "kind": "water"},
-        )
-        assert resp.status_code == 200
-        updated = next(p for p in routes.config.products if p.sku == "CAT-2")
-        assert updated.name == "New Name"
-        assert updated.price == 3.50
-        assert updated.kind == "water"
-
-    def test_placement_edit_form(self, client):
-        client.post(
-            "/inventory/add",
-            data={"sku": "PLC-1", "name": "Placed Item", "price": "2.00", "slot": "4"},
-        )
-        resp = client.get("/inventory/edit/PLC-1/placement")
-        assert resp.status_code == 200
-        assert 'name="slot"' in resp.text
-        assert 'value="4"' in resp.text
-
-    def test_placement_post_changes_slot_count_and_tracked(self, client, wired):
-        _cfg, _vmc, inv, _store = wired
-        client.post(
-            "/inventory/add",
-            data={"sku": "PLC-2", "name": "Placed Item", "price": "2.00", "slot": "1"},
-        )
-        resp = client.post(
-            "/inventory/update/PLC-2/placement",
-            data={
-                "slot": "8",
-                "inventory_count": "15",
-                "track_inventory": "on",
-            },
-        )
-        assert resp.status_code == 200
-        updated = next(p for p in routes.config.products if p.sku == "PLC-2")
-        assert updated.slot == 8
-        assert inv.get_count("PLC-2") == 15
-        assert inv.is_tracked("PLC-2") is True
-
-    def test_placement_post_returns_table_showing_stored_count(self, client, wired):
-        """The count a loader just stored (in InventoryManager, not on
-        Product) must appear in the table HTMX swaps back in — not the
-        stale/zero value still on Product.inventory_count."""
-        _cfg, _vmc, inv, _store = wired
-        client.post(
-            "/inventory/add",
-            data={"sku": "PLC-5", "name": "Placed Item", "price": "2.00", "slot": "1"},
-        )
-        resp = client.post(
-            "/inventory/update/PLC-5/placement",
-            data={"slot": "1", "inventory_count": "42", "track_inventory": "on"},
-        )
-        assert resp.status_code == 200
-        assert inv.get_count("PLC-5") == 42
-        product = next(p for p in routes.config.products if p.sku == "PLC-5")
-        assert product.inventory_count != 42
-        assert ">42<" in resp.text
-
-    def test_placement_post_unchecked_tracking_clears_flag(self, client, wired):
-        _cfg, _vmc, inv, _store = wired
-        client.post(
-            "/inventory/add",
-            data={"sku": "PLC-3", "name": "Placed Item", "price": "2.00", "slot": "2"},
-        )
-        client.post(
-            "/inventory/update/PLC-3/placement",
-            data={"slot": "2", "inventory_count": "5", "track_inventory": "on"},
-        )
-        assert inv.is_tracked("PLC-3") is True
-        resp = client.post(
-            "/inventory/update/PLC-3/placement",
-            data={"slot": "2", "inventory_count": "5"},
-        )
-        assert resp.status_code == 200
-        assert inv.is_tracked("PLC-3") is False
-
-    def test_placement_post_cannot_change_name_or_price(self, client, wired):
-        """The whole point of the split: a placement POST must not smuggle a
-        catalog change through, regardless of what an attacker's form body
-        contains — fields the placement form doesn't own are not applied."""
-        _cfg, _vmc, inv, _store = wired
-        client.post(
-            "/inventory/add",
-            data={"sku": "PLC-4", "name": "Original", "price": "9.99", "slot": "3"},
-        )
-        resp = client.post(
-            "/inventory/update/PLC-4/placement",
-            data={
-                "slot": "5",
-                "inventory_count": "2",
-                "name": "Hacked Name",
-                "price": "0.01",
-            },
-        )
-        assert resp.status_code == 200
-        updated = next(p for p in routes.config.products if p.sku == "PLC-4")
-        assert updated.slot == 5
-        assert updated.name == "Original"
-        assert updated.price == 9.99
-
-    def test_placement_post_negative_count_is_rejected(self, client, wired):
-        """A negative inventory_count is silent data corruption in the exact
-        workflow this part exists to enable — mirror config_store.py's
-        slot < 0 guard: reject the whole write and leave the stored count
-        unchanged (services/config_store.py add_product/update_product)."""
-        _cfg, _vmc, inv, _store = wired
-        client.post(
-            "/inventory/add",
-            data={"sku": "PLC-6", "name": "Placed Item", "price": "2.00", "slot": "1"},
-        )
-        client.post(
-            "/inventory/update/PLC-6/placement",
-            data={"slot": "1", "inventory_count": "9", "track_inventory": "on"},
-        )
-        assert inv.get_count("PLC-6") == 9
-
-        resp = client.post(
-            "/inventory/update/PLC-6/placement",
-            data={"slot": "6", "inventory_count": "-3", "track_inventory": "on"},
-        )
-        assert resp.status_code == 200
-        assert inv.get_count("PLC-6") == 9
-        updated = next(p for p in routes.config.products if p.sku == "PLC-6")
-        assert updated.slot == 1
-
-    def test_placement_post_with_slot_already_in_use_changes_nothing(
-        self, client, wired
-    ):
-        """update_product returns False when the requested slot already
-        belongs to another product; that return value used to be ignored,
-        so a rejected slot change still wrote the count/tracking flag,
-        leaving placement half-applied (Copilot review,
-        web_interface/routes.py:1202). A slot conflict must leave every
-        field — slot, count, and tracking — exactly as it was."""
-        _cfg, _vmc, inv, _store = wired
-        client.post(
-            "/inventory/add",
-            data={"sku": "PLC-7", "name": "Item A", "price": "2.00", "slot": "1"},
-        )
-        client.post(
-            "/inventory/add",
-            data={"sku": "PLC-8", "name": "Item B", "price": "3.00", "slot": "2"},
-        )
-        client.post(
-            "/inventory/update/PLC-8/placement",
-            data={"slot": "2", "inventory_count": "9", "track_inventory": "on"},
-        )
-        assert inv.get_count("PLC-8") == 9
-        assert inv.is_tracked("PLC-8") is True
-
-        resp = client.post(
-            "/inventory/update/PLC-8/placement",
-            data={"slot": "1", "inventory_count": "50"},  # slot 1 is PLC-7's
-        )
-        assert resp.status_code == 200
-        updated = next(p for p in routes.config.products if p.sku == "PLC-8")
-        assert updated.slot == 2
-        assert inv.get_count("PLC-8") == 9
-        assert inv.is_tracked("PLC-8") is True
+# TestInventoryEndpoints and TestCatalogPlacementPermissions removed
+# (Task 15): both classes covered the old /inventory/{new,add,edit,update,
+# copy}/* catalog and placement routes in routes/legacy.py, deleted by this
+# task. Every behavior they proved is covered by the new /products/* routes
+# (web_interface/routes/products.py, Task 7) in tests/test_routes_products.py:
+# TestCatalogWrites, TestPlacementWrites, TestCreateCopyDelete,
+# TestProductsListGating, TestCatalogGating and TestPlacementGating.
 
 
-class TestCatalogPlacementPermissions:
-    """A loader restocks (placement) but must never touch price/name/kind
-    (catalog). A tech behaves the same as a loader here."""
-
-    @pytest.mark.parametrize("role", [Role.loader, Role.tech])
-    def test_placement_form_and_post_allowed(self, login_as, wired, role):
-        _cfg, _vmc, inv, _store = wired
-        owner = login_as(Role.owner)
-        owner.post(
-            "/inventory/add",
-            data={
-                "sku": f"PERM-{role.value}",
-                "name": "Item",
-                "price": "5.00",
-                "slot": "1",
-            },
-        )
-
-        worker = login_as(role)
-        get_resp = worker.get(f"/inventory/edit/PERM-{role.value}/placement")
-        assert get_resp.status_code == 200
-
-        post_resp = worker.post(
-            f"/inventory/update/PERM-{role.value}/placement",
-            data={"slot": "2", "inventory_count": "3", "track_inventory": "on"},
-        )
-        assert post_resp.status_code == 200
-        updated = next(
-            p for p in routes.config.products if p.sku == f"PERM-{role.value}"
-        )
-        assert updated.slot == 2
-        assert updated.price == 5.00
-        assert inv.get_count(f"PERM-{role.value}") == 3
-
-    @pytest.mark.parametrize("role", [Role.loader, Role.tech])
-    def test_catalog_form_and_post_forbidden_price_unchanged(
-        self, login_as, wired, role
-    ):
-        _cfg, _vmc, _inv, _store = wired
-        owner = login_as(Role.owner)
-        owner.post(
-            "/inventory/add",
-            data={"sku": f"NOPE-{role.value}", "name": "Item", "price": "5.00"},
-        )
-
-        worker = login_as(role)
-        get_resp = worker.get(f"/inventory/edit/NOPE-{role.value}/catalog")
-        assert get_resp.status_code == 403
-
-        post_resp = worker.post(
-            f"/inventory/update/NOPE-{role.value}/catalog",
-            data={"name": "Hacked", "price": "0.01", "kind": "water"},
-        )
-        assert post_resp.status_code == 403
-
-        unchanged = next(
-            p for p in routes.config.products if p.sku == f"NOPE-{role.value}"
-        )
-        assert unchanged.price == 5.00
-        assert unchanged.name == "Item"
-
-
-class TestConfigEndpoints:
-    def test_machine_info(self, client):
-        resp = client.get("/config/machine")
-        assert resp.status_code == 200
-
-    def test_machine_info_shows_product_count(self, client):
-        client.post(
-            "/inventory/add",
-            data={"sku": "CNT-1", "name": "Counted", "price": "1.00"},
-        )
-        resp = client.get("/config/machine")
-        assert resp.status_code == 200
-        assert ">1</dd>" in resp.text.replace(" ", "").replace("\n", "")
-
-    def test_contacts(self, client):
-        resp = client.get("/config/contacts")
-        assert resp.status_code == 200
-
-    @pytest.mark.skip(reason="Template partials/payments.html not yet created")
-    def test_payments(self, client):
-        resp = client.get("/config/payments")
-        assert resp.status_code == 200
-
-    @pytest.mark.skip(reason="Template partials/comms.html not yet created")
-    def test_comms(self, client):
-        resp = client.get("/config/comms")
-        assert resp.status_code == 200
-
+# TestConfigEndpoints removed (Task 15): /config/machine and /config/contacts
+# are covered by tests/test_routes_settings.py's TestMachinePage and
+# TestContactsPage (both GET /settings/machine and /settings/contacts,
+# Task 13) — test_machine_info_shows_product_count's own claim (a product
+# count on the machine info page) has no replacement, since the new
+# /settings/machine page carries no such count; that display did not
+# survive the migration. The skipped test_payments and test_comms (for
+# /config/payments and /config/comms, whose templates never existed) are
+# deleted per this task's executor resolution 5: their routes are among the
+# fifteen this task deletes, and Task 13 built real, unskipped coverage of
+# their replacements in tests/test_routes_settings.py's TestPaymentsPage and
+# TestCommsPage (13 tests each). This drops the skip count from 13 to 11.
 
 # (method, path, permission) — the authoritative route -> permission table.
-# /config/payments and /config/comms are deliberately excluded: their
-# templates (partials/payments.html, partials/comms.html) don't exist yet —
-# their own TestConfigEndpoints tests above are @pytest.mark.skip'd for the
-# same reason — so a permitted role would get a 500 from the missing
-# template, not the 200 this matrix expects, and the matrix would lie.
 _MATRIX_ROUTES = [
     ("GET", "/", Permission.view_status),
     ("GET", "/status", Permission.view_status),
     ("GET", "/kpi", Permission.view_status),
-    ("GET", "/activity", Permission.view_status),
+    ("GET", "/pill", Permission.view_status),
     ("GET", "/health", Permission.view_status),
     ("GET", "/screen", Permission.view_status),
     ("GET", "/inventory", Permission.view_status),
-    ("GET", "/logs", Permission.view_logs),
-    ("GET", "/inventory/new", Permission.edit_catalog),
-    ("GET", "/config/machine", Permission.edit_contacts),
-    ("GET", "/config/contacts", Permission.edit_contacts),
-    ("POST", "/action/restart", Permission.machine_controls),
+    ("GET", "/health/logs", Permission.view_logs),
     ("GET", "/users", Permission.manage_users),
     ("GET", "/users/new", Permission.manage_users),
 ]
@@ -657,25 +368,46 @@ class TestPermissionMatrix:
         fault is raised before each role's attempt (clearing it consumes
         it), so a permitted role hits a real fault to clear rather than the
         404 an absent one would produce — that 404 would make the matrix
-        lie about the permission being exercised."""
+        lie about the permission being exercised.
+
+        Retargeted (Task 15) from the deleted POST /faults/{key}/clear to
+        its replacement, POST /health/faults/{key}/clear (Task 6) — kept
+        rather than deleted because tests/test_routes_health.py's own
+        clear-flow coverage (TestFaultClearFlow) never exercises the
+        secretary role, which lacks clear_faults and is the only role in
+        this sweep whose 403 isn't proven anywhere else."""
         _cfg, vmc, _inv, _store = wired
         vmc._raise_fault(FaultCode.PAY_103, outcome="permission matrix seed")
         client = login_as(role)
-        resp = client.post("/faults/PAY-103/clear")
+        resp = client.post("/health/faults/PAY-103/clear")
         if Permission.clear_faults in ROLE_PERMISSIONS[role]:
             assert resp.status_code == 200, (role, resp.status_code, resp.text[:300])
         else:
             assert resp.status_code == 403, (role, resp.status_code)
 
     @pytest.mark.parametrize("role", list(Role))
-    def test_matrix_edit_catalog_write(self, login_as, role):
-        """The only existing edit_catalog coverage is GET /inventory/new —
+    def test_matrix_edit_catalog_write(self, login_as, wired, role):
+        """The only existing edit_catalog coverage is GET /products/new —
         no row proves a *write* is refused. This posts to the catalog
         (name/price/kind) endpoint, which is gated on edit_catalog
-        separately from edit_placement (see TestCatalogPlacementPermissions)."""
+        separately from edit_placement (see
+        tests/test_routes_products.py's TestCatalogGating).
+
+        Retargeted (Task 15) from the deleted POST
+        /inventory/update/{sku}/catalog to its replacement, POST
+        /products/{sku}/catalog (Task 7) — kept rather than deleted because
+        no test in test_routes_products.py sweeps every role against
+        ROLE_PERMISSIONS the way this one does (its own coverage stops at
+        tech/loader 403). Unlike the old handler, the new one 404s on an
+        unknown SKU before the permission's 200/403 branch would ever show,
+        so a real product must exist first."""
+        from services.config_store import add_product
+
+        _cfg, _vmc, _inv, _store = wired
+        add_product(_cfg, "MATRIX-1", "Matrix Item", 1.00)
         client = login_as(role)
         resp = client.post(
-            "/inventory/update/MATRIX-1/catalog",
+            "/products/MATRIX-1/catalog",
             data={"name": "Matrix Item", "price": "1.00", "kind": "other"},
         )
         if Permission.edit_catalog in ROLE_PERMISSIONS[role]:
@@ -710,42 +442,34 @@ class TestUnauthenticatedAccess:
         assert htmx_resp.status_code == 401
 
 
+# TestActionEndpoint retargeted (Task 15): POST /action/{command} is one of
+# the fifteen legacy.py routes this task deletes, replaced by POST
+# /controls/{command} (Task 11). test_restart_action and test_unknown_action
+# are deleted as straight duplicates of tests/test_routes_controls.py's
+# TestPostCommands::test_post_restart_returns_200 and
+# ::test_post_unknown_command_does_not_500. test_reset_action_recovers_from_error
+# is kept and retargeted: no test in test_routes_controls.py drives the VMC
+# into an actual error state first (TestResetStateLogic only covers the
+# already-idle branch), so this is the only place proving perform_command's
+# reset-from-error path against the reset command's real target.
 class TestActionEndpoint:
-    def test_restart_action(self, client):
-        resp = client.post("/action/restart")
-        assert resp.status_code == 200
-        assert "Restart" in resp.text
-
-    def test_unknown_action(self, client):
-        resp = client.post("/action/foobar")
-        assert resp.status_code == 200
-        assert "Unknown" in resp.text
-
     def test_reset_action_recovers_from_error(self, client):
-        from web_interface import routes as r
+        from web_interface import context as r
 
         r.vmc_instance.error_occurred()
         assert r.vmc_instance.state == "error"
-        resp = client.post("/action/reset")
+        resp = client.post("/controls/reset")
         assert resp.status_code == 200
         assert "Reset complete" in resp.text
         assert r.vmc_instance.state == "idle"
 
 
-class TestLogsEndpoint:
-    def test_logs_returns_html(self, client):
-        resp = client.get("/logs")
-        assert resp.status_code == 200
-
-
-class TestActivityEndpoint:
-    def test_activity_returns_200(self, client):
-        response = client.get("/activity")
-        assert response.status_code == 200
-
-    def test_activity_without_recorder_returns_fallback(self, client):
-        response = client.get("/activity")
-        assert response.status_code == 200
+# TestActivityEndpoint removed (Task 15): GET /activity is one of the
+# fifteen legacy.py routes this task deletes, replaced by GET /reports
+# (Task 9). Both tests here are straight duplicates of
+# tests/test_routes_reports.py's TestReportsPermissionGate::test_reports_gate
+# (a 200 for a permitted role) and TestReportsNoRecorder::
+# test_no_recorder_renders_placeholder (the no-recorder fallback).
 
 
 class TestKpiEndpoint:
@@ -761,7 +485,7 @@ class TestKpiEndpoint:
 
     def test_kpi_with_recorder(self, client, tmp_path):
         from services.event_recorder import EventRecorder
-        from web_interface import routes as r
+        from web_interface import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
@@ -775,23 +499,10 @@ class TestKpiEndpoint:
             r.set_event_recorder(None)
 
 
-class TestActivityPeriodParam:
-    def test_activity_default_period(self, client):
-        response = client.get("/activity")
-        assert response.status_code == 200
-
-    def test_activity_period_168(self, client):
-        response = client.get("/activity?period=168")
-        assert response.status_code == 200
-
-    def test_activity_period_720(self, client):
-        response = client.get("/activity?period=720")
-        assert response.status_code == 200
-
-    def test_activity_invalid_period_falls_back_to_24(self, client):
-        # Invalid period values should fall back to 24 without error
-        response = client.get("/activity?period=99")
-        assert response.status_code == 200
+# TestActivityPeriodParam removed (Task 15): GET /activity is gone (see
+# above); its period-parameter behavior (24/168/720 valid, invalid falls
+# back to 24) is covered by tests/test_routes_reports.py's
+# TestReportsPeriodParameter against the replacement, GET /reports.
 
 
 class TestEventRecorderCallsOffloaded:
@@ -802,7 +513,7 @@ class TestEventRecorderCallsOffloaded:
 
     def test_status_offloads_get_summary_to_thread(self, client, tmp_path, monkeypatch):
         from services.event_recorder import EventRecorder
-        from web_interface import routes as r
+        from web_interface import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
@@ -826,7 +537,7 @@ class TestEventRecorderCallsOffloaded:
         self, client, tmp_path, monkeypatch
     ):
         from services.event_recorder import EventRecorder
-        from web_interface import routes as r
+        from web_interface import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
@@ -847,30 +558,11 @@ class TestEventRecorderCallsOffloaded:
         finally:
             r.set_event_recorder(None)
 
-    def test_activity_offloads_summary_and_average_to_thread(
-        self, client, tmp_path, monkeypatch
-    ):
-        from services.event_recorder import EventRecorder
-        from web_interface import routes as r
-
-        recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
-        r.set_event_recorder(recorder)
-
-        calls = []
-        real_to_thread = r.asyncio.to_thread
-
-        async def spying_to_thread(func, *args, **kwargs):
-            calls.append((func, args))
-            return await real_to_thread(func, *args, **kwargs)
-
-        monkeypatch.setattr(r.asyncio, "to_thread", spying_to_thread)
-        try:
-            resp = client.get("/activity?period=168")
-            assert resp.status_code == 200
-            assert (recorder.get_summary, (168,)) in calls
-            assert (recorder.get_historical_average, (168,)) in calls
-        finally:
-            r.set_event_recorder(None)
+    # test_activity_offloads_summary_and_average_to_thread removed (Task
+    # 15): GET /activity is gone; the identical offloading assertion against
+    # its replacement, GET /reports, is
+    # tests/test_routes_reports.py::TestReportsRecorderOffloading::
+    # test_reports_offloads_to_thread.
 
 
 class TestStatusHealthSignal:
@@ -880,9 +572,16 @@ class TestStatusHealthSignal:
         assert response.status_code == 200
         assert "All Systems OK" in response.text
 
+    def test_status_healthy_headline_uses_hero_token(self, client):
+        """Fix round 1 (Task 5 review): spec §3 sets the hero headline at
+        24px (`text-hero`); the fragment shipped it at `text-base` (16px)."""
+        response = client.get("/status")
+        assert 'text-hero font-semibold text-green-700">All Systems OK' in response.text
+        assert "text-base font-semibold" not in response.text
+
     def test_status_with_recorder_no_errors(self, client, tmp_path):
         from services.event_recorder import EventRecorder
-        from web_interface import routes as r
+        from web_interface import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
@@ -895,7 +594,7 @@ class TestStatusHealthSignal:
 
     def test_status_with_recorder_has_errors(self, client, tmp_path):
         from services.event_recorder import EventRecorder
-        from web_interface import routes as r
+        from web_interface import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         recorder.record("error")
@@ -908,79 +607,86 @@ class TestStatusHealthSignal:
             r.set_event_recorder(None)
 
 
-class TestDeleteAndEmptyState:
-    def test_empty_state_shown_when_no_products(self, client):
-        resp = client.get("/inventory")
-        assert resp.status_code == 200
-        assert "No products configured" in resp.text
-
-    def test_delete_product_removes_row(self, client):
-        client.post(
-            "/inventory/add",
-            data={"sku": "DEL-1", "name": "Doomed", "price": "1.00"},
-        )
-        resp = client.post("/inventory/delete/DEL-1")
-        assert resp.status_code == 200
-        assert "Doomed" not in resp.text
-        assert "No products configured" in resp.text
-
-    def test_delete_unknown_sku_is_harmless(self, client):
-        resp = client.post("/inventory/delete/NOPE")
-        assert resp.status_code == 200
-
-    def test_delete_requires_auth(self, anonymous):
-        resp = anonymous.post("/inventory/delete/X", headers={"HX-Request": "true"})
-        assert resp.status_code == 401
-        assert resp.headers["hx-redirect"] == "/login"
-
-    def test_add_registers_inventory_sku(self, client):
-        from web_interface import routes as r
-
-        client.post(
-            "/inventory/add",
-            data={"sku": "INV-1", "name": "Tracked Thing", "price": "1.00"},
-        )
-        assert "INV-1" in r.inventory_manager.get_all()
-
-    def test_delete_removes_inventory_sku(self, client):
-        from web_interface import routes as r
-
-        client.post(
-            "/inventory/add",
-            data={"sku": "INV-2", "name": "Gone Soon", "price": "1.00"},
-        )
-        client.post("/inventory/delete/INV-2")
-        assert "INV-2" not in r.inventory_manager.get_all()
+# TestDeleteAndEmptyState removed (Task 15): every test here hit
+# POST /inventory/add or POST /inventory/delete/{sku}, both among the
+# fifteen legacy.py routes this task deletes, replaced by POST /products/new
+# and POST /products/{sku}/delete (Task 7).
+#   - test_delete_product_removes_row and test_add_registers_inventory_sku /
+#     test_delete_removes_inventory_sku are straight duplicates of
+#     tests/test_routes_products.py's TestCreateCopyDelete::
+#     test_delete_works_for_owner_and_removes_inventory_sku and
+#     ::test_create_works_for_owner_and_registers_inventory_sku, plus
+#     TestProductsListGating::test_empty_state_shown_when_no_products for
+#     the "No products configured" empty state.
+#   - test_delete_unknown_sku_is_harmless asserted a 200 no-op that no
+#     longer exists by design: the new route 404s on an unknown SKU (rule
+#     4, "a missing object is a shell 404") before ever reaching a delete.
+#     That is exactly tests/test_routes_products.py's TestUnknownSku::
+#     test_unknown_sku_post_routes_are_shell_404 (parametrized over
+#     "/products/NOPE/delete" among others) — deleted here rather than
+#     retargeted, since retargeting would mean asserting the opposite
+#     status code from the original test's whole point.
+#   - test_delete_requires_auth (an anonymous POST getting 401 + hx-redirect
+#     to /login) is not itself repeated against /products/{sku}/delete
+#     anywhere, but the mechanism it proves — web_auth.require()'s
+#     unauthenticated response — is route-agnostic and already exercised
+#     against a mutating route by TestShellErrorPages::
+#     test_unauthenticated_htmx_request_still_gets_401_redirect and
+#     TestUnauthenticatedAccess::test_htmx_request_gets_401_with_hx_redirect.
 
 
 class TestFaultsUI:
     def _lock(self, client):
-        vmc = routes.vmc_instance
-        vmc._raise_fault(FaultCode.ICE_301, sku=routes.config.products[0].sku)
+        vmc = context.vmc_instance
+        vmc._raise_fault(FaultCode.ICE_301, sku=context.config.products[0].sku)
 
     def _add_product(self, client):
+        # Retargeted (Task 15): POST /inventory/add is gone; POST
+        # /products/new (Task 7) is its replacement.
         client.post(
-            "/inventory/add",
+            "/products/new",
             data={"sku": "ICE-1", "name": "Ice", "price": "2.5"},
             auth=client.auth,
         )
 
-    def test_status_lists_active_fault_with_clear_button(self, client):
+    def test_status_lists_active_fault(self, client):
+        """Renamed from test_status_lists_active_fault_with_clear_button
+        (Task 15): the per-fault Clear button on Home's hero is gone
+        (executor resolution 2 — clearing now lives entirely on
+        /health/faults), but the active fault list itself stays (spec
+        §1.3), so this keeps everything except the hx-post assertion."""
         self._add_product(client)
         self._lock(client)
         r = client.get("/status", auth=client.auth)
         assert r.status_code == 200
         assert "ICE-301" in r.text
         assert "Ice" in r.text
-        assert 'hx-post="/faults/ICE-1/clear"' in r.text
         assert "Issues Detected" in r.text
+
+    def test_status_issues_headline_uses_hero_token(self, client):
+        """Fix round 1 (Task 5 review): the "Issues Detected" / "Machine
+        Stopped" headline is the same hero as the healthy one and must
+        carry the same 24px token, not `text-base`."""
+        self._add_product(client)
+        self._lock(client)
+        r = client.get("/status", auth=client.auth)
+        assert "text-hero font-semibold" in r.text
+        assert "text-base font-semibold" not in r.text
+
+    # test_status_clear_button_is_a_touch_target_not_a_text_link removed
+    # (Task 15): it asserted on the markup of Home's per-fault Clear
+    # button, which executor resolution 2 removes outright (clearing moves
+    # entirely to /health/faults, two-tap-confirmed). There is nothing left
+    # to assert on Home, and its equivalent — health_faults.html's own
+    # Clear button — is a fresh row Task 6 already wrote, unrelated to this
+    # touch-target fix.
 
     def test_status_shows_fault_age_when_health_monitor_set(self, client):
         from services.health_monitor import HealthMonitor
 
         hm = HealthMonitor()
         routes.set_health_monitor(hm)
-        routes.vmc_instance.set_health_monitor(hm)
+        context.vmc_instance.set_health_monitor(hm)
         try:
             self._add_product(client)
             self._lock(client)
@@ -1019,24 +725,22 @@ class TestFaultsUI:
         assert "Machine Stopped" not in r.text
         assert "still selling" not in r.text
 
-    def test_clear_endpoint_clears_and_rerenders(self, client):
-        self._add_product(client)
-        self._lock(client)
-        r = client.post("/faults/ICE-1/clear", auth=client.auth)
-        assert r.status_code == 200
-        assert "ICE-301" not in r.text
-        assert routes.vmc_instance.active_faults() == []
+    # test_clear_endpoint_clears_and_rerenders and
+    # test_clear_unknown_key_returns_404 removed (Task 15): POST
+    # /faults/{key}/clear is one of the fifteen legacy.py routes this task
+    # deletes. Both are straight duplicates of
+    # tests/test_routes_health.py's TestFaultClearFlow::
+    # test_clear_confirm_then_post_clears_for_a_tech and
+    # ::test_post_clear_unknown_key_is_404 against the replacement, POST
+    # /health/faults/{key}/clear (Task 6).
 
-    def test_clear_unknown_key_returns_404(self, client):
-        r = client.post("/faults/NOPE/clear", auth=client.auth)
-        assert r.status_code == 404
-
-    def test_inventory_table_shows_locked_badge(self, client):
-        self._add_product(client)
-        self._lock(client)
-        r = client.get("/inventory", auth=client.auth)
-        assert "locked" in r.text.lower()
-        assert "ICE-301" in r.text
+    # test_inventory_table_shows_locked_badge removed: it asserted on the
+    # old /inventory fragment's lockout badge, a route task 8 replaced.
+    # Lockout badges are not part of the Inventory restock level's brief
+    # (web_interface/routes/inventory.py never reads active_faults());
+    # that coverage already lives on the Products level instead —
+    # tests/test_routes_products.py::TestLockBadge
+    # ::test_locked_badge_shown_on_list_and_detail.
 
     def test_kpi_shows_failed_vends(self, client, tmp_path):
         from services.event_recorder import EventRecorder
@@ -1050,7 +754,12 @@ class TestFaultsUI:
         finally:
             routes.set_event_recorder(None)
 
-    def test_activity_shows_failed_vends_and_refunds(self, client, tmp_path):
+    def test_reports_shows_failed_vends_and_refunds(self, client, tmp_path):
+        """Retargeted (Task 15) from GET /activity to its replacement, GET
+        /reports (Task 9) — kept rather than deleted because
+        tests/test_routes_reports.py never asserts on the table's actual
+        cell content (only its overflow-x-auto wrapper and that a <table>
+        exists), so this specific content check has no duplicate."""
         from services.event_recorder import EventRecorder
 
         rec = EventRecorder(db_path=str(tmp_path / "events.db"))
@@ -1058,7 +767,7 @@ class TestFaultsUI:
         rec.record("refund", value=2.5)
         routes.set_event_recorder(rec)
         try:
-            r = client.get("/activity", auth=client.auth)
+            r = client.get("/reports", auth=client.auth)
             assert "Failed Vends" in r.text
             assert "Refunds Paid" in r.text
             assert "$2.50" in r.text
@@ -1087,29 +796,28 @@ class TestHealthTabIdentity:
         finally:
             routes.set_health_monitor(None)
 
-    def test_expected_subsystems_listed_when_silent(self, client):
-        self._hm()
-        try:
-            r = client.get("/health", auth=client.auth)
-            for name in ("vending", "mdb", "ice_maker"):
-                assert name in r.text
-            assert r.text.count("Never seen") >= 3
-        finally:
-            routes.set_health_monitor(None)
-
     def test_heartbeat_only_row_shows_dashes(self, client):
+        # Retargeted (Task 6): the per-subsystem uptime/firmware/contract
+        # row this checks now lives on /health/subsystems, not /health
+        # (Task 6 splits the old single fragment across the six Health
+        # levels) -- listing every EXPECTED_SUBSYSTEMS name itself is
+        # covered by tests/test_routes_health.py now, so that half of the
+        # old test_expected_subsystems_listed_when_silent is not repeated
+        # here.
         hm = self._hm()
         try:
             hm.record_heartbeat(
                 "vending", {"subsystem": "vending", "uptime_seconds": 90}
             )
-            r = client.get("/health", auth=client.auth)
+            r = client.get("/health/subsystems", auth=client.auth)
             assert "1m" in r.text  # uptime humanized
             assert "—" in r.text  # firmware/contract/hardware unknown
         finally:
             routes.set_health_monitor(None)
 
     def test_capabilities_render(self, client):
+        # Retargeted (Task 6): identity fields (brand/model/hardware id/ip)
+        # now live on the per-subsystem detail page, not /health.
         hm = self._hm()
         try:
             hm.record_heartbeat("mdb", {"subsystem": "mdb", "uptime_seconds": 5})
@@ -1126,68 +834,43 @@ class TestHealthTabIdentity:
                     "commands": ["refund"],
                 },
             )
-            r = client.get("/health", auth=client.auth)
+            r = client.get("/health/subsystems/mdb", auth=client.auth)
             assert "abc1234" in r.text
             assert "0.3.0" in r.text
             assert "ice-colder mdb-sim" in r.text
             assert "02:11:22:33:44:55" in r.text
             assert "172.18.0.7" in r.text
-            assert "refund" in r.text  # in the row title
         finally:
             routes.set_health_monitor(None)
 
 
 class TestLogsContent:
-    def test_logs_tab_shows_written_line(self, client, tmp_path, monkeypatch):
-        from web_interface import routes as r
-
-        log_file = tmp_path / "LOGS" / "vmc.log"
-        log_file.parent.mkdir()
-        log_file.write_text(
-            "first line\nunique-marker-42;INFO 2026-09-21\n", encoding="utf-8"
-        )
-        monkeypatch.setattr(r, "LOG_PATH", log_file)
-
-        resp = client.get("/logs")
-        assert resp.status_code == 200
-        assert "unique-marker-42" in resp.text
+    # test_logs_tab_shows_written_line removed here (Task 6): GET /logs is
+    # gone (replaced by GET /health/logs) and
+    # tests/test_routes_health.py::...::test_shows_a_written_line covers
+    # the identical behavior against the new URL.
 
     def test_log_path_matches_logging_setup(self):
         from services.paths import LOG_FILE
-        from web_interface import routes as r
+        from web_interface import context as r
 
         assert r.LOG_PATH == LOG_FILE
         assert LOG_FILE.parts[-2:] == ("LOGS", "vmc.log")
 
 
+# TestCsrfGuard's own parametrized test_post_without_htmx_header_is_forbidden
+# is removed (Task 15): every one of its six paths (/inventory/add,
+# /faults/PAY-104/clear, /action/reset, /inventory/update/X/catalog,
+# /inventory/update/X/placement, /inventory/delete/X) is one of the fifteen
+# legacy.py routes this task deletes, and each has an equivalent
+# require_htmx 403 test against its replacement elsewhere:
+# tests/test_routes_products.py::TestCsrfGuard (new, delete, catalog,
+# placement), tests/test_routes_health.py::TestFaultClearFlow::
+# test_post_clear_without_htmx_header_is_403 (fault clear), and
+# tests/test_routes_controls.py::TestPostCommands::
+# test_post_requires_htmx_header (action/controls). Only the unrelated
+# GET-routes-are-exempt test below survives, so this is no longer a class.
 class TestCsrfGuard:
-    @pytest.mark.parametrize(
-        "path",
-        [
-            "/inventory/add",
-            "/faults/PAY-104/clear",
-            "/action/reset",
-            "/inventory/update/X/catalog",
-            "/inventory/update/X/placement",
-            "/inventory/delete/X",
-        ],
-    )
-    def test_post_without_htmx_header_is_forbidden(self, client, path):
-        resp = client.post(
-            path,
-            headers={"HX-Request": ""},
-            data={
-                "sku": "X",
-                "name": "n",
-                "price": "1",
-                "slot": "0",
-                "kind": "other",
-                "inventory_count": "0",
-            },
-        )
-        assert resp.status_code == 403
-        assert "HTMX" in resp.text
-
     def test_get_routes_do_not_need_header(self, client):
         resp = client.get("/status", headers={"HX-Request": ""})
         assert resp.status_code == 200
@@ -1200,7 +883,7 @@ class TestStillSellingBanner:
     def selling_client(self, client):
         from services.availability import Availability
         from services.health_monitor import HealthMonitor
-        from web_interface import routes as r
+        from web_interface import context as r
 
         avail = Availability()
         r.vmc_instance.set_availability(avail)
@@ -1212,7 +895,7 @@ class TestStillSellingBanner:
 
     def test_status_shows_still_selling_for_a_soft_fault(self, selling_client):
         client = selling_client
-        vmc_instance = routes.vmc_instance
+        vmc_instance = context.vmc_instance
         vmc_instance._raise_fault(FaultCode.PAY_104, outcome="restart")
         body = client.get("/status", headers={"HX-Request": "true"}).text
         assert "still selling" in body
@@ -1221,16 +904,17 @@ class TestStillSellingBanner:
 
     def test_status_shows_machine_stopped_for_a_hazard_fault(self, selling_client):
         client = selling_client
-        vmc_instance = routes.vmc_instance
+        vmc_instance = context.vmc_instance
         vmc_instance._raise_fault(FaultCode.WTR_104, outcome="leak")
         body = client.get("/status", headers={"HX-Request": "true"}).text
         assert "Machine Stopped" in body
         assert "still selling" not in body
 
     def test_health_permissives_table_shows_the_gate(self, selling_client):
+        # Retargeted (Task 6): the permissive table moved to
+        # /health/availability.
         client = selling_client
-        body = client.get("/health", headers={"HX-Request": "true"}).text
-        assert "Gate" in body
+        body = client.get("/health/availability", headers={"HX-Request": "true"}).text
         assert "fulfillment" in body
 
 
@@ -1239,7 +923,7 @@ class TestAvailabilityOnDashboard:
     def avail_client(self, client):
         from services.availability import Availability
         from services.health_monitor import HealthMonitor
-        from web_interface import routes as r
+        from web_interface import context as r
 
         avail = Availability()
         r.set_availability(avail)
@@ -1273,8 +957,10 @@ class TestAvailabilityOnDashboard:
         assert "Machine Stopped" in resp.text
 
     def test_health_lists_permissives_with_not_instrumented(self, avail_client):
+        # Retargeted (Task 6): the permissive table moved to
+        # /health/availability.
         client, _ = avail_client
-        resp = client.get("/health")
+        resp = client.get("/health/availability")
         assert "bag_present" in resp.text
         assert "not instrumented" in resp.text
         assert "vending_alive" in resp.text
@@ -1297,7 +983,7 @@ class TestAvailabilityOnDashboard:
         assert resp.headers["location"] == "/login"
 
     def test_screen_body_neutral_when_unwired(self, client):
-        from web_interface import routes as r
+        from web_interface import context as r
 
         r.set_availability(None)
         r.set_health_monitor(None)
@@ -1357,6 +1043,161 @@ class TestOfflineAssets:
         assert "unpkg.com" not in resp.text
         assert "/static/htmx.min.js" in resp.text
         routes.set_access_store(None)
+
+
+class TestAuthPagesShellHardening:
+    """Task 14 fix round 1, finding 2: the reviewer mutation-tested the two
+    assertions the original brief asked for and found both gaps live — a
+    reintroduced `cdn.tailwindcss.com` <script> in login.html's body block,
+    and reintroduced Home/Back/Lock markup in its bar_variant block — were
+    caught by nothing in the whole suite. TestOfflineAssets only checks
+    unpkg on two of the five auth pages; TestShellBar.test_no_cdn_references
+    only checks "/" and "/tests", neither an auth page. This class covers
+    both properties, plus the vendored-asset positive check, across all
+    five: /login, the "trust this device" enrollment page, /setup,
+    /setup/codes and the post-transfer setup-user-review page.
+
+    Every one of the five is built once by the `auth_pages` fixture below
+    (a GET render of each) and the three properties are then parametrised
+    over its keys, rather than five near-identical test bodies.
+    """
+
+    @pytest.fixture
+    def auth_pages(self, tmp_path):
+        web_auth.backoff.reset()
+        cfg = ConfigModel()
+        pages: dict[str, str] = {}
+
+        # /login — an ordinary sign-in page, no session, no device.
+        store_login = AccessStore(path=tmp_path / "login.json")
+        store_login.create_user("Ada", "ada@example.com", Role.owner, "1379")
+        routes.set_config_object(cfg)
+        routes.set_access_store(store_login)
+        with TestClient(app, follow_redirects=False) as c:
+            c.headers["HX-Request"] = "true"
+            pages["login"] = c.get("/login").text
+        routes.set_access_store(None)
+
+        # enroll.html — correct PIN, device the store has never trusted:
+        # login_submit's own path to "Trust this device" (see TestLogin
+        # .test_correct_pin_on_an_untrusted_browser_shows_enrollment).
+        web_auth.backoff.reset()
+        store_enroll = AccessStore(path=tmp_path / "enroll.json")
+        owner = store_enroll.create_user("Ada", "ada@example.com", Role.owner, "1379")
+        routes.set_access_store(store_enroll)
+        with TestClient(app, follow_redirects=False) as c:
+            c.headers["HX-Request"] = "true"
+            pages["enroll"] = c.post(
+                "/login", data={"user_id": owner.id, "pin": "1379"}
+            ).text
+        routes.set_access_store(None)
+
+        # setup.html — a fresh store, no owner yet (setup mode).
+        web_auth.backoff.reset()
+        store_setup = AccessStore(path=tmp_path / "setup.json")
+        display = DisplayController()
+        routes.set_access_store(store_setup)
+        routes.set_display_controller(display)
+        with TestClient(app, follow_redirects=False) as c:
+            c.headers["HX-Request"] = "true"
+            pages["setup"] = c.get("/setup").text
+
+            # setup_codes.html — walk step 1 to completion on the same
+            # client so its session cookie carries manage_ownership into
+            # the GET below (the pattern TestSetupWizard._create_owner uses).
+            code = store_setup.pending_setup_code
+            c.post(
+                "/setup",
+                data={
+                    "setup_code": code,
+                    "name": "Ada",
+                    "email": "ada@example.com",
+                    "pin": "2468",
+                    "pin_confirm": "2468",
+                },
+            )
+            pages["setup_codes"] = c.get("/setup/codes").text
+        routes.set_access_store(None)
+        routes.set_display_controller(None)
+
+        # setup_review_user.html — complete an ownership transfer with one
+        # retained user still waiting to be reviewed (TestOwnershipTransfer
+        # Completion's own pattern).
+        web_auth.backoff.reset()
+        store_review = AccessStore(path=tmp_path / "review.json")
+        routes.set_access_store(store_review)
+        old_owner = store_review.create_user(
+            "Ada", "ada@example.com", Role.owner, "1379"
+        )
+        store_review.finalize_setup()
+        store_review.create_user("Lee", "lee@example.com", Role.loader, "7890")
+        device, token = store_review.create_device("Kiosk", shared=False)
+        store_review.trust_device(device.id, old_owner.id)
+        session_id = store_review.create_session(old_owner.id, device.id)
+        with TestClient(app, follow_redirects=False) as c:
+            c.headers["HX-Request"] = "true"
+            c.cookies.set(web_auth.DEVICE_COOKIE, token)
+            c.cookies.set(web_auth.SESSION_COOKIE, session_id)
+            codes = store_review.generate_emergency_codes()
+            transfer_resp = c.post(
+                "/users/transfer", data={"pin": "1379", "emergency_code": codes[0]}
+            )
+            transfer_code = _codes_in(transfer_resp.text)[0]
+
+        with TestClient(app, follow_redirects=False) as c2:
+            c2.headers["HX-Request"] = "true"
+            c2.get("/setup")
+            c2.post(
+                "/setup",
+                data={
+                    "setup_code": transfer_code,
+                    "name": "Bea",
+                    "email": "bea@example.com",
+                    "pin": "9042",
+                    "pin_confirm": "9042",
+                },
+            )
+            pages["setup_review"] = c2.get("/setup/review").text
+        routes.set_access_store(None)
+        web_auth.backoff.reset()
+
+        yield pages
+
+        routes.set_access_store(None)
+        routes.set_display_controller(None)
+        web_auth.backoff.reset()
+        web_auth.backoff.set_trusted_proxies([])
+
+    _PAGES = ["login", "enroll", "setup", "setup_codes", "setup_review"]
+
+    @pytest.mark.parametrize("page", _PAGES)
+    def test_no_cdn_references_on_any_auth_page(self, auth_pages, page):
+        """Both the unpkg regression (part 1, Copilot review eefc1db) and
+        its Tailwind-CDN sibling — the exact defect the reviewer proved
+        nothing in the suite would catch — checked on every one of the
+        five, not just two."""
+        html = auth_pages[page]
+        assert "unpkg" not in html
+        assert "cdn.tailwindcss.com" not in html
+
+    @pytest.mark.parametrize("page", _PAGES)
+    def test_every_auth_page_loads_the_vendored_assets(self, auth_pages, page):
+        html = auth_pages[page]
+        assert "/static/app.css" in html
+        assert "/static/htmx.min.js" in html
+
+    @pytest.mark.parametrize("page", _PAGES)
+    def test_variant_bar_has_no_nav_lock_or_pill_on_any_auth_page(
+        self, auth_pages, page
+    ):
+        """The reintroduced-Home/Back/Lock regression the reviewer proved
+        nothing in the suite would catch, checked on every one of the five
+        pages whose bar_variant is meant to be nothing but a static label."""
+        html = auth_pages[page]
+        assert ">Home</a>" not in html
+        assert ">Back</a>" not in html
+        assert "Lock</button>" not in html
+        assert 'id="pill"' not in html
 
 
 class TestLogin:
@@ -1584,7 +1425,7 @@ class TestEnrollment:
             sent["body"] = body
             return True
 
-        monkeypatch.setattr(routes, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.auth, "send_email", fake_send_email)
         c.post("/login", data={"user_id": owner.id, "pin": "1379"})
         page = c.post("/login/enroll/send", data={})
         assert page.status_code == 200
@@ -1632,7 +1473,7 @@ class TestEnrollment:
         async def fake_send_email(gateway, to, subject, body):
             return False
 
-        monkeypatch.setattr(routes, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.auth, "send_email", fake_send_email)
         c.post("/login", data={"user_id": owner.id, "pin": "1379"})
         page = c.post("/login/enroll/send", data={})
         assert "emergency code" in page.text.lower()
@@ -1674,6 +1515,84 @@ class TestEnrollment:
         assert resp.headers["hx-redirect"] == "/"
         assert c.cookies.get("vmc_session")
 
+    def test_wrong_code_response_has_exactly_one_bar_and_main(self, public):
+        """Task 14 fix round 1, finding 1: POST /login/enroll's failure
+        path re-renders the full enroll.html page (base.html and all), so
+        the response must still carry exactly one shell `<header id="bar">`
+        alongside exactly one `<main>` — never zero (the OOB header
+        dropped) and never two (a nested `<main>`).
+
+        The header/main counts alone can't fail on a reversion: they come
+        from base.html regardless of the triggering form's own hx
+        attributes, which is what the fix actually changed (Task 14 fix
+        round 1 mutation proof 3) — so this also pins those attributes
+        directly: hx-target="body" must be gone from this response and
+        hx-select="main" must be present.
+        """
+        c, store, owner, _ = public
+        c.post("/login", data={"user_id": owner.id, "pin": "1379"})
+        resp = c.post("/login/enroll", data={"code": "00000000"})
+        assert resp.status_code == 200
+        assert resp.text.count('<header id="bar"') == 1
+        assert len(re.findall(r"<main[ >]", resp.text)) == 1
+        assert 'hx-target="body"' not in resp.text
+        assert 'hx-select="main"' in resp.text
+
+    def test_untrusted_device_login_response_swaps_cleanly(self, public):
+        """Task 14 fix round 2, finding A: a correct PIN on an untrusted
+        device — an ordinary first login on any new device, not an edge
+        case — is answered by POST /login with a full enroll.html render
+        (base.html and all), swapped into the *keypad's* #login-form
+        (hx-target="#login-form" hx-swap="outerHTML", no hx-select — see
+        partials/keypad.html). Left alone, htmx's OOB pass would patch the
+        live #bar and drop the header node from the response regardless of
+        target, then the outerHTML swap would nest the response's whole
+        <main> inside #login-form's own live <main> (login.html) instead
+        of replacing it.
+
+        This response must therefore carry HX-Retarget/HX-Reselect
+        headers overriding the keypad form's static target for this one
+        response, reproducing round 1's target="main" hx-select="main"
+        pattern per-response — the raw response itself, being a normal
+        base.html render, already has exactly one <header id="bar"> and
+        one <main> regardless of those headers, so counting them here
+        would not by itself catch a reversion (see the class's earlier
+        twin of this test for why); the headers are what's actually being
+        pinned.
+        """
+        c, store, owner, _ = public
+        resp = c.post("/login", data={"user_id": owner.id, "pin": "1379"})
+        assert resp.status_code == 200
+        assert resp.headers.get("hx-retarget") == "main"
+        assert resp.headers.get("hx-reselect") == "main"
+        assert resp.text.count('<header id="bar"') == 1
+        assert len(re.findall(r"<main[ >]", resp.text)) == 1
+
+    def test_untrusted_device_email_button_is_pinned(self, public):
+        """Task 14 fix round 1 changed enroll.html's "Email me a code"
+        button to hx-target="main" hx-select="main" hx-swap="outerHTML",
+        but every other test in this class configures no email_gateway,
+        so can_email is always false and the button never renders —
+        reverting its attributes leaves the whole suite green (Task 14
+        fix round 2, finding B). Configure the gateway and the owner's
+        email (already set by the `public` fixture) so the button
+        actually renders, and pin its own tag's attributes specifically
+        — not just that "hx-select=\"main\"" appears somewhere on the
+        page, which the page's own /login/enroll form (round 1's fix,
+        always present) would already satisfy regardless of this
+        button's attributes.
+        """
+        c, store, owner, cfg = public
+        cfg.communication.email_gateway.smtp_server = "smtp.real.local"
+        resp = c.post("/login", data={"user_id": owner.id, "pin": "1379"})
+        assert resp.status_code == 200
+        match = re.search(r'<button hx-post="/login/enroll/send"[^>]*>', resp.text)
+        assert match is not None, "Email me a code button did not render"
+        tag = match.group(0)
+        assert 'hx-target="main"' in tag
+        assert 'hx-select="main"' in tag
+        assert 'hx-swap="outerHTML"' in tag
+
 
 class TestSetupWizard:
     """Setup mode: a fresh store has no owner, so every route except /setup
@@ -1701,14 +1620,14 @@ class TestSetupWizard:
         routes.set_config_object(cfg)
         routes.set_access_store(store)
         routes.set_display_controller(display)
-        # routes._pending_codes is module-level state shared by every test in
+        # context._pending_codes is module-level state shared by every test in
         # this process (Task 15) — reset it on both sides so a test that
         # generates codes can never leak them into the next one.
-        routes._pending_codes = []
+        context._pending_codes = []
 
         yield cfg, store, display
 
-        routes._pending_codes = []
+        context._pending_codes = []
         routes.set_access_store(None)
         routes.set_display_controller(None)
         web_auth.backoff.reset()
@@ -1759,6 +1678,34 @@ class TestSetupWizard:
         assert resp.status_code == 200
         assert store.owner() is None
         assert "not accepted" in resp.text.lower()
+
+    def test_wrong_code_response_has_exactly_one_bar_and_main(self, anon, fresh_store):
+        """Task 14 fix round 1, finding 1: POST /setup's failure path
+        re-renders the full setup.html page, so it must still carry
+        exactly one shell `<header id="bar">` and exactly one `<main>` —
+        never zero (the OOB header dropped) and never two (a nested
+        `<main>`).
+
+        The header/main counts alone can't fail on a reversion (see
+        TestEnrollment's twin of this test for why) — this also pins the
+        form's own hx attributes directly.
+        """
+        anon.get("/setup")
+        resp = anon.post(
+            "/setup",
+            data={
+                "setup_code": "00000000",
+                "name": "Ada",
+                "email": "ada@example.com",
+                "pin": "2468",
+                "pin_confirm": "2468",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.text.count('<header id="bar"') == 1
+        assert len(re.findall(r"<main[ >]", resp.text)) == 1
+        assert 'hx-target="body"' not in resp.text
+        assert 'hx-select="main"' in resp.text
 
     def test_repeated_wrong_codes_reach_429(self, anon, fresh_store):
         anon.get("/setup")
@@ -2048,7 +1995,7 @@ class TestSetupWizard:
             sent["body"] = body
             return True
 
-        monkeypatch.setattr(routes, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.auth, "send_email", fake_send_email)
         page = anon.get("/setup/codes")
         codes = _codes_in(page.text)
         resp = anon.post("/setup/codes/email", data={})
@@ -2056,6 +2003,31 @@ class TestSetupWizard:
         assert sent["to"] == "ada@example.com"
         for code in codes:
             assert code in sent["body"]
+
+    def test_email_button_is_pinned(self, anon, fresh_store):
+        """Task 14 fix round 1 changed this "Email these to me" button to
+        hx-target="main" hx-select="main" hx-swap="outerHTML", but every
+        other test in this class configures no email_gateway, so
+        can_email is always false and the button never renders —
+        reverting its attributes leaves the whole suite green (Task 14
+        fix round 2, finding B). Configure the gateway so the button
+        actually renders, and pin its own tag's attributes specifically
+        — not just that "hx-select=\"main\"" appears somewhere on the
+        page, which the "Done" button (always present, already pinned by
+        test_codes_email_response_has_exactly_one_bar_and_main) would
+        already satisfy regardless of this button's attributes.
+        """
+        cfg, store, _display = fresh_store
+        self._create_owner(anon, store)
+        cfg.communication.email_gateway.smtp_server = "smtp.real.local"
+        page = anon.get("/setup/codes")
+        assert page.status_code == 200
+        match = re.search(r'<button hx-post="/setup/codes/email"[^>]*>', page.text)
+        assert match is not None, "Email these to me button did not render"
+        tag = match.group(0)
+        assert 'hx-target="main"' in tag
+        assert 'hx-select="main"' in tag
+        assert 'hx-swap="outerHTML"' in tag
 
     def test_email_button_errors_without_crashing_when_gateway_unconfigured(
         self, anon, fresh_store
@@ -2067,6 +2039,27 @@ class TestSetupWizard:
         assert resp.status_code == 200
         assert "not available" in resp.text.lower()
 
+    def test_codes_email_response_has_exactly_one_bar_and_main(self, anon, fresh_store):
+        """Task 14 fix round 1, finding 1: POST /setup/codes/email's error
+        path re-renders the full setup_codes.html page, so it must still
+        carry exactly one shell `<header id="bar">` and exactly one
+        `<main>` — never zero (the OOB header dropped) and never two (a
+        nested `<main>`).
+
+        The header/main counts alone can't fail on a reversion (see
+        TestEnrollment's twin of this test for why) — this also pins the
+        "Done" button's own hx attributes directly.
+        """
+        _cfg, store, _display = fresh_store
+        self._create_owner(anon, store)
+        anon.get("/setup/codes")
+        resp = anon.post("/setup/codes/email", data={})
+        assert resp.status_code == 200
+        assert resp.text.count('<header id="bar"') == 1
+        assert len(re.findall(r"<main[ >]", resp.text)) == 1
+        assert 'hx-target="body"' not in resp.text
+        assert 'hx-select="main"' in resp.text
+
     def test_email_send_failure_is_an_error_not_a_crash(
         self, anon, fresh_store, monkeypatch
     ):
@@ -2077,7 +2070,7 @@ class TestSetupWizard:
         async def fake_send_email(gateway, to, subject, body):
             return False
 
-        monkeypatch.setattr(routes, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.auth, "send_email", fake_send_email)
         anon.get("/setup/codes")
         resp = anon.post("/setup/codes/email", data={})
         assert resp.status_code == 200
@@ -2205,10 +2198,17 @@ class TestUserManagement:
     def test_users_list_hides_disable_and_delete_on_the_owners_own_row(
         self, login_as, wired
     ):
+        # Retargeted from GET /users to GET /users/{owner.id} (task-12
+        # brief resolution 3 / dashboard-v2-shell task 12): per-row action
+        # controls moved from the flat list onto the person's own detail
+        # page in the v2 shell (matching the products.html/product.html
+        # split) — GET /users is now a read-only list with no action
+        # controls on any row at all, so this guarantee's template half now
+        # lives on the page that actually renders them.
         _cfg, _vmc, _inv, store = wired
         owner_client = login_as(Role.owner)
         owner = store.owner()
-        html = owner_client.get("/users").text
+        html = owner_client.get(f"/users/{owner.id}").text
         assert f"/users/{owner.id}/disable" not in html
         assert f"/users/{owner.id}/delete" not in html
         assert f"/users/{owner.id}/reset-pin" in html
@@ -2318,12 +2318,21 @@ class TestOwnershipTransfer:
     ):
         """Regression test for Task 19d (the code-value hook): a uuid4's
         first hyphen-delimited group is occasionally eight decimal digits
-        (~2.3% of uuids — see the module docstring above `_codes_in`), and
-        the users-list partial this response is rendered from puts every
-        user's id into hx-post targets and a device-count lookup. Force
-        that collision on a real user and prove the code-value hook still
-        returns the real transfer code rather than the uuid fragment a
-        page-wide `\\b\\d{8}\\b` scrape used to be fooled by."""
+        (~2.3% of uuids — see the module docstring above `_codes_in`).
+
+        Retargeted for the v2 shell (task-12 brief resolution 3): part 1's
+        version asserted the collision was really on the page, because its
+        single users-list partial rendered the transfer code and every
+        user's id (in hx-post targets and a device-count lookup) in the
+        very same response. Task 12 splits that into separate pages —
+        POST /users/transfer now renders only users_ownership.html, which
+        contains no user ids at all — so that page-wide-scrape hazard the
+        original regression targeted cannot occur here regardless of any
+        uuid collision. The guarantee this test still owns (the code-value
+        hook returns the real transfer code, not a decoy) is unaffected and
+        stays covered by the assertions below and by
+        tests/test_routes_users.py's own no-store/twenty-codes coverage.
+        """
         _cfg, _vmc, _inv, store = wired
         collider = uuid.UUID("12345678-abcd-4abc-8abc-abcdefabcdef")
         monkeypatch.setattr("services.access.uuid.uuid4", lambda: collider)
@@ -2338,10 +2347,6 @@ class TestOwnershipTransfer:
             "/users/transfer", data={"pin": "1379", "emergency_code": codes[0]}
         )
         assert resp.status_code == 200
-        # Sanity check that the collision is really on the page: the naive
-        # page-wide scrape this replaces would have found this as a false
-        # extra candidate.
-        assert re.search(r"\b12345678\b", resp.text)
 
         found = _codes_in(resp.text)
         assert len(found) == 1
@@ -2611,6 +2616,29 @@ class TestOwnershipTransferCompletion:
         resp3 = new_owner_client.post(f"/setup/review/{tim.id}/remove")
         assert resp3.headers["hx-redirect"] == "/setup/codes"
         assert store.get_user(tim.id) is None
+
+    def test_keep_response_has_exactly_one_bar_and_main(self, client, wired):
+        """Task 14 fix round 1, finding 1: POST /setup/review/{id}/keep
+        re-renders the full setup_review_user.html page for the next
+        candidate, so that response must still carry exactly one shell
+        `<header id="bar">` and exactly one `<main>` — never zero (the OOB
+        header dropped) and never two (a nested `<main>`).
+
+        The header/main counts alone can't fail on a reversion (see
+        TestEnrollment's twin of this test for why) — this also pins the
+        Keep/Remove buttons' own hx attributes directly.
+        """
+        _cfg, _vmc, _inv, store = wired
+        lee = store.create_user("Lee", "lee@example.com", Role.loader, "7890")
+        store.create_user("Tim", "tim@example.com", Role.tech, "3456")
+        new_owner_client = self._complete_transfer(client, store)
+
+        resp = new_owner_client.post(f"/setup/review/{lee.id}/keep")
+        assert resp.status_code == 200
+        assert resp.text.count('<header id="bar"') == 1
+        assert len(re.findall(r"<main[ >]", resp.text)) == 1
+        assert 'hx-target="body"' not in resp.text
+        assert 'hx-select="main"' in resp.text
         assert store.get_user(lee.id) is not None
 
     def test_review_with_nobody_left_redirects_straight_to_codes(self, client, wired):
@@ -2708,7 +2736,7 @@ class TestMachineReport:
             sent["body"] = body
             return True
 
-        monkeypatch.setattr(routes, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.users, "send_email", fake_send_email)
         resp = client.post("/users/report", data={})
         assert resp.status_code == 200
         assert sent["to"] == "ada@example.com"
@@ -2724,7 +2752,7 @@ class TestMachineReport:
             sent["body"] = body
             return True
 
-        monkeypatch.setattr(routes, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.users, "send_email", fake_send_email)
         client.post("/users/report", data={})
         for user in store.users.values():
             assert user.pin_hash not in sent["body"]
@@ -2931,3 +2959,419 @@ class TestCorruptAccessFile:
         resp = corrupt.get(path)
         assert resp.status_code == 503
         assert "corrupt" in resp.text.lower()
+
+
+class TestHomePolling:
+    """Task 5: the hero (1s) and KPI (60s) polling attributes live on Home
+    itself, not on a fragment — the fragments they pull in stay untouched."""
+
+    def test_home_has_hero_with_1s_poll(self, client):
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert 'hx-get="/status"' in resp.text
+        assert 'id="status-panel"' in resp.text
+        assert "load, every 1s" in resp.text
+
+    def test_home_has_four_kpi_cards_with_60s_poll(self, client):
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert 'hx-get="/kpi"' in resp.text
+        assert 'id="kpi-panel"' in resp.text
+        assert "load, every 60s" in resp.text
+        # Four skeleton placeholder cards inside #kpi-panel before the first swap.
+        assert resp.text.count("animate-pulse") == 4
+
+    def test_activity_table_does_not_appear_on_home(self, client):
+        """The 24h/7d/30d table moves to Reports in Task 9 — Home must not
+        pull /activity at all."""
+        resp = client.get("/")
+        assert 'hx-get="/activity' not in resp.text
+
+
+class TestHomeTiles:
+    """Task 5: the eight-tile grid, gated per spec §2's permission table."""
+
+    def test_loader_sees_exactly_health_products_inventory(self, login_as):
+        client = login_as(Role.loader)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert ">Health<" in resp.text
+        assert ">Products<" in resp.text
+        assert ">Inventory<" in resp.text
+        for title in ("Reports", "Controls", "Tests", "Users", "Settings"):
+            assert f">{title}<" not in resp.text
+
+    def test_owner_sees_all_eight_tiles(self, client):
+        resp = client.get("/")
+        assert resp.status_code == 200
+        for title in (
+            "Health",
+            "Products",
+            "Inventory",
+            "Reports",
+            "Controls",
+            "Tests",
+            "Users",
+            "Settings",
+        ):
+            assert f">{title}<" in resp.text
+
+    def test_tech_sees_no_reports_users_settings(self, login_as):
+        client = login_as(Role.tech)
+        resp = client.get("/")
+        for title in ("Health", "Products", "Inventory", "Controls", "Tests"):
+            assert f">{title}<" in resp.text
+        for title in ("Reports", "Users", "Settings"):
+            assert f">{title}<" not in resp.text
+
+    def test_secretary_sees_no_controls_or_tests(self, login_as):
+        client = login_as(Role.secretary)
+        resp = client.get("/")
+        for title in (
+            "Health",
+            "Products",
+            "Inventory",
+            "Reports",
+            "Users",
+            "Settings",
+        ):
+            assert f">{title}<" in resp.text
+        for title in ("Controls", "Tests"):
+            assert f">{title}<" not in resp.text
+
+    def test_secretary_sees_reports_as_coming_soon(self, login_as):
+        client = login_as(Role.secretary)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "coming soon" in resp.text.lower()
+
+    def test_tiles_link_to_their_urls(self, client):
+        resp = client.get("/")
+        for url in (
+            "/health",
+            "/products",
+            "/inventory",
+            "/reports",
+            "/controls",
+            "/tests",
+            "/users",
+            "/settings",
+        ):
+            assert f'href="{url}"' in resp.text
+
+
+class TestHomeTileContext:
+    """Task 5: tile context lines are computed once per render, from the
+    live services — never from client-side polling."""
+
+    def test_health_tile_shows_zero_faults_on_a_clean_machine(self, client):
+        resp = client.get("/")
+        assert "0 active faults" in resp.text
+
+    def test_health_tile_shows_active_fault_count(self, client, wired):
+        _cfg, vmc, _inv, _store = wired
+        vmc._raise_fault(FaultCode.PAY_103, outcome="test")
+        resp = client.get("/")
+        assert "1 active fault" in resp.text
+
+    def test_products_tile_shows_product_count(self, client):
+        # Retargeted (Task 15): POST /inventory/add is gone; this only ever
+        # used it to seed a product, so it now goes through the
+        # replacement, POST /products/new (Task 7).
+        client.post(
+            "/products/new",
+            data={"sku": "TILE-1", "name": "Tile Product", "price": "1.00"},
+        )
+        resp = client.get("/")
+        assert "1 product" in resp.text
+
+    def test_users_tile_shows_user_count(self, client, wired):
+        _cfg, _vmc, _inv, store = wired
+        store.create_user("Bob", "bob@example.com", Role.tech, "4321")
+        resp = client.get("/")
+        assert "2 users" in resp.text
+
+    def test_inventory_tile_says_tracking_off_when_nothing_tracked(self, client):
+        # Retargeted (Task 15): POST /inventory/add -> POST /products/new.
+        client.post(
+            "/products/new",
+            data={"sku": "TRK-OFF", "name": "Untracked", "price": "1.00"},
+        )
+        resp = client.get("/")
+        assert "tracking off" in resp.text
+
+    def test_inventory_tile_shows_zero_low_when_tracked_and_well_stocked(self, client):
+        # Retargeted (Task 15): POST /inventory/add -> POST /products/new;
+        # POST /inventory/update/{sku}/placement -> POST
+        # /products/{sku}/placement (Task 7).
+        client.post(
+            "/products/new",
+            data={"sku": "TRK-OK", "name": "Tracked OK", "price": "1.00", "slot": "1"},
+        )
+        client.post(
+            "/products/TRK-OK/placement",
+            data={"slot": "1", "inventory_count": "10", "track_inventory": "on"},
+        )
+        resp = client.get("/")
+        assert "0 low" in resp.text
+        assert "tracking off" not in resp.text
+
+    def test_inventory_tile_counts_products_at_or_below_the_low_stock_line(
+        self, client
+    ):
+        # Retargeted (Task 15): same two routes as the test above.
+        client.post(
+            "/products/new",
+            data={
+                "sku": "TRK-LOW",
+                "name": "Tracked Low",
+                "price": "1.00",
+                "slot": "1",
+            },
+        )
+        client.post(
+            "/products/TRK-LOW/placement",
+            data={"slot": "1", "inventory_count": "3", "track_inventory": "on"},
+        )
+        resp = client.get("/")
+        assert "1 low" in resp.text
+
+    def test_home_tolerates_every_optional_service_being_none(self, login_as, wired):
+        """/ must render for a role with a live session even when
+        vmc_instance, health_monitor, event_recorder, availability,
+        inventory_manager or access_store is None (executor resolution 3)."""
+        _cfg, _vmc, _inv, _store = wired
+        routes.set_vmc_instance(None)
+        routes.set_inventory_manager(None)
+        try:
+            client = login_as(Role.owner)
+            resp = client.get("/")
+            assert resp.status_code == 200
+            assert "tracking off" in resp.text
+        finally:
+            routes.set_vmc_instance(_vmc)
+            routes.set_inventory_manager(_inv)
+
+
+class TestPillEndpoint:
+    """Task 5: GET /pill, sharing context.health_snapshot() with /status."""
+
+    def test_pill_is_green_ok_on_a_clean_machine(self, client):
+        resp = client.get("/pill")
+        assert resp.status_code == 200
+        assert 'id="pill"' in resp.text
+        assert ">OK<" in resp.text
+        assert "bg-green-600" in resp.text
+
+    def test_pill_response_still_carries_its_own_polling_attributes(self, client):
+        """hx-swap="outerHTML" replaces the whole <span id="pill">, so the
+        response itself must carry id, hx-get and hx-trigger or polling
+        stops after the first tick (executor resolution 4)."""
+        resp = client.get("/pill")
+        assert resp.status_code == 200
+        assert 'id="pill"' in resp.text
+        assert 'hx-get="/pill"' in resp.text
+        assert 'hx-trigger="load, every 5s"' in resp.text
+        assert 'hx-swap="outerHTML"' in resp.text
+
+    def test_pill_is_red_and_names_the_fault_code(self, client, wired):
+        _cfg, vmc, _inv, _store = wired
+        vmc._raise_fault(FaultCode.PAY_103, outcome="test")
+        resp = client.get("/pill")
+        assert resp.status_code == 200
+        assert "bg-red-600" in resp.text
+        assert "PAY-103" in resp.text
+
+    def test_pill_names_the_higher_severity_of_two_faults(self, client, wired):
+        """ICE-301 is `lockout`, COM-103 is `warning` — lockout outranks
+        warning, so the pill must name ICE-301."""
+        _cfg, vmc, _inv, _store = wired
+        vmc._raise_fault(FaultCode.COM_103, outcome="test")
+        vmc._raise_fault(FaultCode.ICE_301, sku="whatever-sku", outcome="test")
+        resp = client.get("/pill")
+        assert resp.status_code == 200
+        assert "ICE-301" in resp.text
+        assert "COM-103" not in resp.text
+
+    def test_pill_tie_break_favors_the_product_fault(self, client, wired):
+        """ICE-101 and PAY-101 are both `product_unavailable`; active_faults()
+        returns product faults (ICE-101) before machine faults (PAY-101), so
+        a tie must favor ICE-101."""
+        _cfg, vmc, _inv, _store = wired
+        vmc._raise_fault(FaultCode.PAY_101, outcome="test")
+        vmc._raise_fault(FaultCode.ICE_101, sku="whatever-sku", outcome="test")
+        resp = client.get("/pill")
+        assert resp.status_code == 200
+        assert "ICE-101" in resp.text
+        assert "PAY-101" not in resp.text
+
+    def test_pill_with_no_vmc_is_neutral_not_500(self, login_as, wired):
+        _cfg, _vmc, _inv, _store = wired
+        routes.set_vmc_instance(None)
+        try:
+            client = login_as(Role.owner)
+            resp = client.get("/pill")
+            assert resp.status_code == 200
+            assert 'id="pill"' in resp.text
+            assert "bg-slate-400" in resp.text
+            assert "OK" not in resp.text
+        finally:
+            routes.set_vmc_instance(_vmc)
+
+    def test_pill_requires_a_session(self, anonymous):
+        resp = anonymous.get("/pill", headers={"HX-Request": "true"})
+        assert resp.status_code == 401
+        assert resp.headers["hx-redirect"] == "/login"
+
+
+# --- Task 15: proving the demolition -----------------------------------
+#
+# Everything below is new coverage for the routes/templates this task
+# deletes: a 404 sweep over every route removed from routes/legacy.py, a
+# template-include integrity check, and a byte-identical check against
+# origin/main for the two /screen templates the Global Constraints require
+# stay untouched all through part 2.
+
+_TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "web_interface" / "templates"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# The fifteen routes deleted from web_interface/routes/legacy.py (task-15
+# brief, executor resolution 1), each with the real method it answered —
+# posting GET to a POST-only route (or vice versa) would 405, not 404, and
+# that would prove nothing about the route being gone.
+_REMOVED_ROUTES = [
+    ("POST", "/action/restart"),
+    ("GET", "/activity"),
+    ("GET", "/config/comms"),
+    ("GET", "/config/contacts"),
+    ("GET", "/config/machine"),
+    ("GET", "/config/payments"),
+    ("POST", "/faults/PAY-103/clear"),
+    ("POST", "/inventory/add"),
+    ("GET", "/inventory/copy/SKU-1"),
+    ("POST", "/inventory/delete/SKU-1"),
+    ("GET", "/inventory/edit/SKU-1/catalog"),
+    ("GET", "/inventory/edit/SKU-1/placement"),
+    ("POST", "/inventory/update/SKU-1/catalog"),
+    ("POST", "/inventory/update/SKU-1/placement"),
+    ("GET", "/inventory/new"),
+]
+
+
+class TestRemovedLegacyRoutesAre404:
+    """Task 15's own required coverage (brief resolution 9): every route
+    routes/legacy.py used to serve now 404s, and the routes that survive
+    the same deletion (in home.py, health.py, screen.py and
+    inventory.py) still answer 200.
+
+    `client` is the owner, who held every permission any of these routes
+    ever gated on, and carries the HX-Request header sign_in sets by
+    default — so a 404 here can only be the route itself being gone, never
+    a permission 403 or a CSRF 403 wearing a 404's clothes. See this
+    task's report for direct evidence that these assertions are not
+    vacuous (two of them were re-checked with the route temporarily
+    restored, and failed as expected)."""
+
+    @pytest.mark.parametrize("method, path", _REMOVED_ROUTES)
+    def test_removed_route_is_404(self, client, method, path):
+        resp = client.get(path) if method == "GET" else client.post(path, data={})
+        assert resp.status_code == 404, (method, path, resp.status_code)
+
+    @pytest.mark.parametrize(
+        "path", ["/status", "/kpi", "/pill", "/screen", "/screen/body", "/inventory"]
+    )
+    def test_surviving_fragment_route_is_still_200(self, client, path):
+        resp = client.get(path)
+        assert resp.status_code == 200, (path, resp.status_code)
+
+
+class TestTemplateIncludeIntegrity:
+    """Every {% include %} and {% extends %} target across
+    web_interface/templates/**/*.html must resolve to a real file — cheap
+    insurance against exactly the class of mistake this task risks
+    (deleting a partial something still includes, per brief resolution 6's
+    name-collision trap)."""
+
+    _TAG_RE = re.compile(r'{%-?\s*(?:include|extends)\s+"([^"]+)"')
+
+    def _all_targets(self):
+        for template_path in _TEMPLATES_DIR.rglob("*.html"):
+            text = template_path.read_text(encoding="utf-8")
+            for target in self._TAG_RE.findall(text):
+                yield template_path, target
+
+    def test_every_include_and_extends_target_exists(self):
+        missing = []
+        checked = 0
+        for template_path, target in self._all_targets():
+            checked += 1
+            if not (_TEMPLATES_DIR / target).exists():
+                missing.append((str(template_path.relative_to(_TEMPLATES_DIR)), target))
+        assert checked > 0, "no {% include %} / {% extends %} tags found at all"
+        assert missing == []
+
+    def test_deleted_partials_are_not_referenced_anywhere(self):
+        """The twelve partials this task deletes, named explicitly — a
+        second, independent check alongside the generic sweep above, so a
+        regex miss in _TAG_RE can't silently hide a real reference."""
+        deleted = {
+            "partials/activity_fragment.html",
+            "partials/health_fragment.html",
+            "partials/inventory_table.html",
+            "partials/inventory_add_form.html",
+            "partials/inventory_catalog_form.html",
+            "partials/inventory_placement_form.html",
+            "partials/logs_fragment.html",
+            "partials/machine_info.html",
+            "partials/contacts.html",
+            "partials/users_list.html",
+            "partials/user_form.html",
+            "partials/devices_list.html",
+        }
+        referenced = {target for _path, target in self._all_targets()}
+        assert deleted & referenced == set()
+
+    def test_survivor_partials_are_still_referenced(self):
+        """The flip side: partials/user_form.html's collision with the
+        top-level templates/user_form.html Task 12 created (brief
+        resolution 6) means a naive delete-by-name could take the wrong
+        file. This confirms the top-level survivor is untouched and still
+        a real, extending template — not proof by itself, but a second
+        signal alongside the app booting and the full suite passing."""
+        assert (_TEMPLATES_DIR / "user_form.html").exists()
+        text = (_TEMPLATES_DIR / "user_form.html").read_text(encoding="utf-8")
+        assert '{% extends "base.html" %}' in text
+        assert not (_TEMPLATES_DIR / "partials" / "user_form.html").exists()
+
+
+class TestScreenTemplatesUnchanged:
+    """Global Constraint: templates/screen.html and
+    partials/screen_body.html must stay byte-identical to origin/main for
+    the whole of part 2 (brief resolution 11) — verified by diff, not by
+    eye. Skipped, rather than failed, when origin/main isn't reachable (a
+    shallow clone/CI checkout with no origin remote) instead of reporting a
+    false defect for an environment problem."""
+
+    @pytest.mark.parametrize(
+        "relpath",
+        [
+            "web_interface/templates/screen.html",
+            "web_interface/templates/partials/screen_body.html",
+        ],
+    )
+    def test_matches_origin_main(self, relpath):
+        diff_command = ["git", "diff", "--quiet", "origin/main", "--", relpath]
+        result = subprocess.run(
+            diff_command,
+            cwd=_REPO_ROOT,
+            capture_output=True,
+        )
+        if result.returncode not in (0, 1):
+            pytest.skip(
+                f"git diff against origin/main failed (rc={result.returncode}): "
+                f"{result.stderr.decode(errors='replace')}"
+            )
+        assert result.returncode == 0, (
+            f"{relpath} differs from origin/main — this file must stay "
+            "byte-identical for the whole of part 2"
+        )

@@ -1,0 +1,56 @@
+{# web_interface/templates/partials/confirm_button.html
+
+   Two-tap confirm button, entirely server-rendered — no client-side JS
+   state. Created in Task 5; Tasks 6 (Controls), 10 (fault Clear) and 12
+   (code Regenerate) all `{% include %}` this file, so its parameter
+   contract is fixed here and must not change shape later without
+   revisiting all three.
+
+   Parameters (all required unless noted):
+     label         - str, the text on the initial (unconfirmed) button.
+     confirm_label - str, the text on the button that actually posts, once
+                     the user has tapped through to the confirming state.
+     post_url      - str, the URL the confirming tap POSTs to
+                     (hx-post="{{ post_url }}"). The caller's own route
+                     handles that POST; this file never adds one.
+     target        - str, an id CSS selector (e.g. "#restart-confirm")
+                     naming the element this partial's own root carries as
+                     its `id` (the leading "#" stripped) — every state this
+                     file renders swaps `target` via hx-swap="outerHTML",
+                     replacing that same wrapper with the next state.
+     confirm_url   - str, a GET endpoint — owned by the including feature,
+                     not by this file — that re-renders THIS partial. Task
+                     5 adds no route for it; Tasks 6/10/12 must each add
+                     their own confirm_url endpoint. That endpoint's
+                     contract:
+                       * called with no `confirming` query param (or
+                         `confirming=true`): render this same partial with
+                         confirming=True (the Confirm/Cancel pair).
+                       * called with `confirming=false`: render this same
+                         partial with confirming=False (back to the
+                         original single button) — this is what the
+                         Cancel tap below sends via hx-vals, since
+                         htmx appends GET hx-vals as query parameters.
+     confirming    - bool, optional, defaults to false. Selects which of
+                     the two states below to render; the including route
+                     is what flips it via the confirm_url contract above,
+                     never a template-side toggle.
+
+   Usage sketch, from a future task's route:
+     {% include "partials/confirm_button.html" with context %}
+     (with label, confirm_label, post_url, target, confirm_url and,
+     optionally, confirming already in the calling template's context)
+#}
+<div id="{{ target[1:] if target.startswith('#') else target }}" class="inline-flex">
+  {% if confirming %}
+  <div class="flex items-center gap-2">
+    <button hx-post="{{ post_url }}" hx-target="{{ target }}" hx-swap="outerHTML"
+            class="touch-target px-4 rounded-md bg-red-600 text-white text-sm font-semibold hover:bg-red-700">{{ confirm_label }}</button>
+    <button hx-get="{{ confirm_url }}" hx-vals='{"confirming": "false"}' hx-target="{{ target }}" hx-swap="outerHTML"
+            class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Cancel</button>
+  </div>
+  {% else %}
+  <button hx-get="{{ confirm_url }}" hx-target="{{ target }}" hx-swap="outerHTML"
+          class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">{{ label }}</button>
+  {% endif %}
+</div>

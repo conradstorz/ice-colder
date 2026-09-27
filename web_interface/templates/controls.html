@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Controls · Vending Machine{% endblock %}
+{% block body %}
+<div class="space-y-4">
+
+  {% if command %}
+  {# Confirm or cancel state: render just the requested command button.
+     The confirm endpoint itself renders partials/confirm_command.html
+     directly (a fragment, no <html>/<body>) rather than this page — this
+     branch stays only in case something ever renders the full page with
+     a command already set, and must produce identical markup. #}
+    {% include "partials/confirm_command.html" with context %}
+  {% else %}
+  {# Initial render: render all three buttons in their plain state #}
+  <div class="flex flex-col gap-touch">
+    {% for cmd in ["restart", "reset", "shutdown"] %}
+      {% set target = "#confirm-" + cmd %}
+      {% set label = cmd.capitalize() %}
+      {% set confirm_label = label + " Machine" %}
+      {% set confirm_url = "/controls/confirm/" + cmd %}
+      {% set post_url = "/controls/" + cmd %}
+      {% set confirming = false %}
+      {% include "partials/confirm_button.html" with context %}
+    {% endfor %}
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

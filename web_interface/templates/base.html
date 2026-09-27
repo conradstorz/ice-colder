@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Vending Machine{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js"></script>
+</head>
+<body class="bg-slate-50 text-gray-900 font-sans text-base min-h-screen"
+      hx-boost="true" hx-target="main" hx-swap="outerHTML show:top">
+
+  {# Ambient swap style is outerHTML, not innerHTML, because every level
+     response is a full document (this same base.html re-rendered): htmx's
+     boost handling parses that document, peels off the OOB #bar below,
+     and hands whatever is left of <body> -- the child level's OWN <main>
+     element, tag and all -- to the swap. An innerHTML swap into this
+     <main> would then graft that incoming <main> element inside this one
+     (main > main), on every boosted link click, breadcrumb tap, Refresh
+     button (health_logs.html) and form re-render that doesn't declare its
+     own hx-target (24+ elements across Settings/Products/Users forms plus
+     ordinary navigation) -- the second instance of the htmx
+     ambient-hx-target defect fixed for #status-panel/#kpi-panel/#pill
+     above. outerHTML instead replaces this <main> element wholesale with
+     the incoming one, so exactly one <main> survives every swap. #}
+
+  {# Rendered on every response (full page or boosted) so a boosted nav
+     swap updates the bar via the OOB match on #bar; a full page load just
+     renders it in place and ignores hx-swap-oob, per §1.1. #}
+  <header id="bar" hx-swap-oob="true"
+          class="h-14 bg-slate-800 text-white flex items-center gap-2 px-3 sticky top-0 z-20">
+    {% block bar_variant %}
+      {% set show_home = level and level.parent is not none %}
+      {% set show_back = (level is none) or show_home %}
+      {% set back_url = level.parent_url if level else "/" %}
+      {% set crumb_list = level.crumbs if level else [] %}
+
+      {% if show_home %}
+      <a href="/"
+         class="touch-target px-3 rounded-md text-sm font-medium text-white hover:bg-slate-700 shrink-0">Home</a>
+      {% endif %}
+      {% if show_back %}
+      <a href="{{ back_url }}"
+         class="touch-target px-3 rounded-md text-sm font-medium text-white hover:bg-slate-700 shrink-0">Back</a>
+      {% endif %}
+
+      <nav class="flex-1 min-w-0 flex items-center gap-1 overflow-hidden" aria-label="Breadcrumb">
+        {% for title, url in crumb_list %}
+          {% if not loop.last %}
+          <a href="{{ url }}"
+             class="shrink-0 text-sm text-slate-300 hover:text-white whitespace-nowrap{% if loop.revindex > 2 %} max-md:hidden{% endif %}">{{ title }}</a>
+          <span class="shrink-0 text-slate-500{% if loop.revindex > 2 %} max-md:hidden{% endif %}" aria-hidden="true">/</span>
+          {% else %}
+          <span class="shrink-0 text-sm font-semibold text-white truncate" aria-current="page">{{ title }}</span>
+          {% endif %}
+        {% endfor %}
+      </nav>
+
+      <a href="/health/faults" class="touch-target px-2 shrink-0" aria-label="System health">
+        {# hx-target="this" is load-bearing: <body> carries hx-target="main"
+           for boosted navigation, and that attribute is inherited by any
+           descendant that doesn't declare its own (htmx's ne() walks up the
+           tree). Without an explicit self-target here, this span's own
+           "load, every 5s" poll would target the page's <main> instead of
+           itself — its outerHTML swap would then replace <main> wholesale
+           with this bare span, destroying it (and, once gone,
+           document.querySelector("main") returns null forever after, so
+           the next poll fails with htmx:targetError and the pill never
+           updates again). See partials/pill.html, which this swaps into,
+           for the same fix on the re-rendered copy. #}
+        <span id="pill" hx-get="/pill" hx-trigger="load, every 5s" hx-swap="outerHTML" hx-target="this"
+              class="inline-flex items-center rounded-full bg-slate-400 text-white text-xs font-semibold uppercase tracking-wide px-2 py-1">…</span>
+      </a>
+
+      <button hx-post="/logout"
+              class="touch-target px-3 rounded-md text-sm font-medium text-white hover:bg-slate-700 shrink-0">Lock</button>
+    {% endblock %}
+  </header>
+
+  <main class="max-w-5xl mx-auto px-4 py-4">
+    {% block body %}{% endblock %}
+  </main>
+
+</body>
+</html>

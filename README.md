@@ -69,6 +69,10 @@ entrypoint has TLS; and Traefik runs without `forwardedHeaders.trustedIPs`
 or `insecure` set, so it discards any `X-Forwarded-For` a client supplies
 (the login back-off's trusted-proxy rule depends on that).
 
+### Using the Dashboard
+
+The operator's dashboard on the 7-inch tablet has no tabs. **Home** is a status strip and a grid of tiles — tap any tile to navigate. Every level (Health, Products, Inventory, Reports, Controls, Tests, Users, Settings) is a real URL you can bookmark. **Back** goes to the parent level, never through browser history. At the top right, the health pill is always live; tap it to jump to the Faults list. **Lock** on every screen returns to the PIN entry page. The tablet needs no internet — Tailwind and HTMX are vendored locally.
+
 ### Authentication and Access Control
 
 There is no default credential. On first boot, the dashboard enters **setup mode**:

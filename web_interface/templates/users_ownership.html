@@ -1,0 +1,71 @@
+{# web_interface/templates/users_ownership.html
+
+   GET /users/ownership (gate manage_ownership, owner only): the machine
+   report email button and the transfer form (PIN + emergency code) —
+   spec §3.3/§3.4. The transfer form stays PIN-gated (unlike Regenerate,
+   which moved to a two-tap confirm — task-12 brief resolution 8 only
+   names Regenerate) since the brief's own interface line keeps "PIN +
+   emergency code" for this one. Every response from this page's POSTs
+   carries Cache-Control: no-store (task-12 brief: "Responses rendering
+   plaintext codes... carry Cache-Control: no-store") since this is also
+   where a freshly-started transfer's plaintext code is shown, exactly
+   once.
+#}
+{% extends "base.html" %}
+{% block title %}Ownership · Vending Machine{% endblock %}
+{% block body %}
+<div class="space-y-4">
+  <h1 class="text-hero font-semibold text-gray-900">Ownership</h1>
+
+  {% if notice %}<p class="text-green-700 text-sm" role="status">{{ notice }}</p>{% endif %}
+  {% if error %}<p class="text-red-600 text-sm" role="alert">{{ error }}</p>{% endif %}
+
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-3">
+    <h2 class="text-base font-semibold text-gray-900">Machine report</h2>
+    <p class="text-sm text-gray-500">
+      {% if can_email %}Emailed to {{ owner_email }}.{% else %}Email is not available; check the email gateway settings.{% endif %}
+    </p>
+    <form hx-post="/users/report">
+      <button type="submit"
+              class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Email machine report</button>
+    </form>
+  </div>
+
+  {% if pending_transfer %}
+  <div class="bg-white rounded-xl border border-amber-200 shadow-sm p-5 space-y-3">
+    <h2 class="text-base font-semibold text-amber-800">Transfer pending</h2>
+    <p class="text-sm text-amber-700">
+      Started {{ pending_transfer.started_at }}, expires {{ pending_transfer.expires_at }}.
+    </p>
+    {% if transfer_code %}
+    <div class="p-3 border border-amber-200 bg-amber-50 rounded-lg">
+      <p class="font-medium text-amber-800 text-sm">Transfer code — write this down now, give it to the new owner, it will not be shown again</p>
+      <p class="mt-1 font-mono text-amber-700 code-value">{{ transfer_code }}</p>
+    </div>
+    {% endif %}
+    <form hx-post="/users/transfer/cancel" class="flex flex-wrap items-center gap-touch">
+      <input type="text" name="pin" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
+             placeholder="Your PIN" required
+             class="touch-target px-3 rounded-md border border-gray-300 text-sm w-40">
+      <button type="submit"
+              class="touch-target px-4 rounded-md border border-red-200 text-red-600 text-sm font-medium hover:bg-red-50">Cancel transfer</button>
+    </form>
+  </div>
+  {% else %}
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-3">
+    <h2 class="text-base font-semibold text-gray-900">Transfer ownership</h2>
+    <p class="text-sm text-gray-500">Requires your PIN and one unused emergency code.</p>
+    <form hx-post="/users/transfer" class="flex flex-wrap items-center gap-touch">
+      <input type="text" name="pin" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
+             placeholder="Your PIN" required
+             class="touch-target px-3 rounded-md border border-gray-300 text-sm w-40">
+      <input type="text" name="emergency_code" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
+             placeholder="Emergency code" required
+             class="touch-target px-3 rounded-md border border-gray-300 text-sm w-40">
+      <button type="submit"
+              class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">Start transfer</button>
+    </form>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

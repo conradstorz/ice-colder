@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Products · Vending Machine{% endblock %}
+{% block body %}
+<div class="space-y-4">
+  <div class="flex items-center justify-between gap-touch">
+    <h1 class="text-hero font-semibold text-gray-900">Products</h1>
+    {% if "edit_catalog" in perms %}
+    <a href="/products/new"
+       class="touch-target inline-flex items-center px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">Add Product</a>
+    {% endif %}
+  </div>
+
+  {% if products %}
+  <div class="space-y-2">
+    {% for p in products %}
+    <a href="/products/{{ p.sku }}"
+       class="touch-target justify-between rounded-xl border border-gray-200 bg-white p-4 shadow-sm hover:bg-slate-50">
+      <div class="min-w-0">
+        <div class="text-base font-semibold text-gray-900 truncate">
+          {{ p.name }}
+          {% if p.locked_code %}
+          <span class="ml-2 text-xs font-mono px-1.5 py-0.5 rounded bg-orange-100 text-orange-700"
+                title="Locked out">locked · {{ p.locked_code }}</span>
+          {% endif %}
+        </div>
+        <div class="text-sm text-gray-500 truncate">SKU {{ p.sku }} · Slot {{ p.slot }}</div>
+      </div>
+      <div class="text-right shrink-0">
+        <div class="text-base font-semibold text-gray-900">${{ "%.2f"|format(p.price) }}</div>
+        <div class="text-sm text-gray-500">{{ p.count }} in stock</div>
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 text-center text-sm text-gray-400">
+    No products configured
+    {%- if "edit_catalog" in perms %} — add your first product{% endif %}.
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
