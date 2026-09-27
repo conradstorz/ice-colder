@@ -1,0 +1,111 @@
+{# web_interface/templates/reports_period.html
+
+   GET /reports/period (gate view_reports): range selector plus bucket
+   selector (day/week/month), one row per bucket, a total row -- design §3.
+   `—` (never 0) for any of failed_vends/refunds/uptime_pct that is None,
+   per the design's retention rule (§5): a 0 there would misreport an old
+   bucket as fault-free.
+#}
+{% extends "base.html" %}
+{% block title %}By period · Vending Machine{% endblock %}
+{% block body %}
+<div class="space-y-4">
+
+  {% if email_notice %}<p class="text-green-700 text-sm" role="status">{{ email_notice }}</p>{% endif %}
+  {% if email_error %}<p class="text-red-600 text-sm" role="alert">{{ email_error }}</p>{% endif %}
+
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+
+    {# Range tabs #}
+    <div class="flex border-b border-gray-200 px-1 pt-1">
+      {% for r, label in [("7d", "7 Days"), ("30d", "30 Days"), ("90d", "90 Days"), ("12m", "12 Months"), ("all", "All Time")] %}
+      <a
+        href="/reports/period?range={{ r }}"
+        class="px-4 py-2.5 text-sm font-medium -mb-px transition-colors
+               {% if r == range %}border-b-2 border-blue-600 text-blue-600
+               {% else %}text-gray-500 hover:text-gray-700 border-b-2 border-transparent hover:border-gray-300{% endif %}">
+        {{ label }}
+      </a>
+      {% endfor %}
+    </div>
+
+    {# Bucket tabs #}
+    <div class="flex border-b border-gray-200 px-1 pt-1">
+      {% for b, label in [("day", "Day"), ("week", "Week"), ("month", "Month")] %}
+      <a
+        href="/reports/period?range={{ range }}&amp;bucket={{ b }}"
+        class="px-4 py-2.5 text-sm font-medium -mb-px transition-colors
+               {% if b == bucket %}border-b-2 border-blue-600 text-blue-600
+               {% else %}text-gray-500 hover:text-gray-700 border-b-2 border-transparent hover:border-gray-300{% endif %}">
+        {{ label }}
+      </a>
+      {% endfor %}
+    </div>
+
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-left text-gray-500 text-xs uppercase tracking-wide">
+            <th class="px-5 py-3">Bucket</th>
+            <th class="px-5 py-3 text-right">Revenue</th>
+            <th class="px-5 py-3 text-right">Vends</th>
+            <th class="px-5 py-3 text-right">Failed vends</th>
+            <th class="px-5 py-3 text-right">Refunds</th>
+            <th class="px-5 py-3 text-right">Uptime</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for row in rows %}
+          <tr>
+            <td class="px-5 py-3 text-gray-700 whitespace-nowrap">{{ row.bucket_start }}</td>
+            <td class="px-5 py-3 text-right whitespace-nowrap font-medium text-gray-900">${{ "%.2f"|format(row.revenue) }}</td>
+            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">{{ row.vends }}</td>
+            <td class="px-5 py-3 text-right whitespace-nowrap {{ 'text-red-600' if row.failed_vends else 'text-gray-900' }}">
+              {{ row.failed_vends if row.failed_vends is not none else "—" }}
+            </td>
+            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">
+              {{ "$%.2f"|format(row.refunds) if row.refunds is not none else "—" }}
+            </td>
+            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">
+              {{ "%.1f%%"|format(row.uptime_pct) if row.uptime_pct is not none else "—" }}
+            </td>
+          </tr>
+          {% else %}
+          <tr>
+            <td class="px-5 py-3 text-gray-400" colspan="6">No data in this range.</td>
+          </tr>
+          {% endfor %}
+          {% if rows %}
+          <tr class="border-t-2 border-gray-200 font-semibold">
+            <td class="px-5 py-3 text-gray-700">Total</td>
+            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">${{ "%.2f"|format(total.revenue) }}</td>
+            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">{{ total.vends }}</td>
+            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">
+              {{ total.failed_vends if total.failed_vends is not none else "—" }}
+            </td>
+            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">
+              {{ "$%.2f"|format(total.refunds) if total.refunds is not none else "—" }}
+            </td>
+            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">
+              {{ "%.1f%%"|format(total.uptime_pct) if total.uptime_pct is not none else "—" }}
+            </td>
+          </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+
+  <form hx-post="/reports/email">
+    <input type="hidden" name="report" value="period">
+    <input type="hidden" name="range" value="{{ range }}">
+    <input type="hidden" name="bucket" value="{{ bucket }}">
+    <button type="submit"
+            class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">
+      Email this report
+    </button>
+  </form>
+
+</div>
+{% endblock %}
