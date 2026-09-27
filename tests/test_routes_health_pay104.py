@@ -565,10 +565,18 @@ class TestMarkerFailureExactlyOnce:
 
         first = client.post("/health/faults/PAY-104/record-sale")
         assert first.status_code == 500
-        # The message must be honest: the sale WAS recorded, and retrying
-        # is NOT safe -- the old unconditional claim must not appear.
+        # Round 4 (part 3 review): the sale is now recorded with a
+        # deterministic, idempotent key (the snapshot's saved_at), so a
+        # retry is safe everywhere -- including here, where the marker
+        # itself could not be written. The message must say that plainly,
+        # not the earlier round's "do NOT retry" (which was wrong even
+        # within this same process, since the in-memory guard already
+        # made a same-process retry harmless -- see below -- and is now
+        # also wrong across a restart, since the database itself is the
+        # guarantee).
         assert "retrying will not record the sale again" not in first.text
-        assert "do not retry" in first.text.lower()
+        assert "do not retry" not in first.text.lower()
+        assert "retrying is safe" in first.text.lower()
         assert "recorded" in first.text.lower()
 
         rows = _sales_rows(pay104["db_path"])
@@ -622,3 +630,117 @@ class TestMarkerFailureExactlyOnce:
         assert resp.status_code == 500
 
         assert "DATA-101" in {f["code"] for f in vmc.active_faults()}
+
+
+class TestCrossRestartExactlyOnce:
+    """Part 3 review, round 4: the previous round's report argued that
+    `DATA-101` (raised when the durable marker write fails) was "the
+    operator's surviving signal" because it "outlives the process
+    boundary the in-memory guard cannot cross". That is false --
+    `main.py`'s `reconcile_sales_journal_faults` clears `DATA-101` on
+    *every* boot whenever the *sales journal* is drained, and it cannot
+    tell "drained because nothing needed recovering" apart from "drained
+    because a PAY-104 marker write failed" (recording a sale that
+    succeeds, as it does here, never touches the journal at all). So on
+    a real restart after this exact failure: `DATA-101` silently
+    auto-clears, `PAY-104` re-raises from the still-open snapshot exactly
+    as before, and `pending_sale_for_recovery()` still reports the same
+    pending sale -- an operator sees an ordinary-looking PAY-104 card
+    with a live Record-Sale button and *no* signal that pressing it
+    would double-write. The true residual was *any* restart after this
+    failure mode, not merely one where the disk stays broken.
+
+    The fix removes the residual at its root: `record_sale` is called
+    with a deterministic `ts` (the session snapshot's `saved_at`, fixed
+    once at dispense time) and `idempotent=True`, so the row's `(ts,
+    sku)` is derivable from the snapshot itself and a second attempt --
+    from any process, at any time -- inserts zero rows. This test proves
+    the residual was real (it is written to fail against the pre-fix
+    code) and proves the fix removes it, with a restart that is genuine:
+    a brand new `VMC` (its own, empty `_recorded_pay104_keys`) and a
+    brand new `EventRecorder`, both built fresh against the same config,
+    the same on-disk session snapshot, and the same sqlite file, then
+    wired into `web_interface.routes` exactly as `main.py` wires a
+    freshly booted process -- nothing from the pre-restart `VMC` is
+    reachable from the route handlers afterward.
+    """
+
+    def test_record_sale_after_marker_failure_then_restart_writes_no_second_row(
+        self, pay104, wired, login_as, monkeypatch
+    ):
+        cfg, _pre_wired_vmc, _inv, _store = wired
+        vmc = pay104["vmc"]
+        session_path = pay104["session_path"]
+        db_path = pay104["db_path"]
+
+        # Positive control, restated right before the write this test is
+        # actually about.
+        assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+        assert vmc.pending_sale_for_recovery() is not None
+        assert session_path.exists()
+
+        # Force the same realistic failure pairing as
+        # TestMarkerFailureExactlyOnce: the write succeeds, but neither
+        # the snapshot removal nor the marker rewrite can persist -- the
+        # storage problem that leaves PAY-104 active with a genuinely
+        # unresolved on-disk snapshot.
+        monkeypatch.setattr(vmc._session_store, "clear", lambda: False)
+
+        def _save_fails(snap):
+            raise OSError("simulated disk failure: read-only filesystem")
+
+        monkeypatch.setattr(vmc._session_store, "save", _save_fails)
+
+        client = login_as(Role.tech)
+        first = client.post("/health/faults/PAY-104/record-sale")
+        assert first.status_code == 500
+
+        rows = _sales_rows(db_path)
+        assert len(rows) == 1, (
+            f"expected exactly one row after the first POST, got {len(rows)}"
+        )
+
+        # --- Simulate a genuine process restart. ---
+        #
+        # Nothing from the pre-restart process is reused: a fresh VMC
+        # starts with an empty `_recorded_pay104_keys` (the in-memory
+        # guard) and an empty `_machine_faults` (DATA-101, raised above
+        # on the old VMC, does NOT carry over -- matching a real
+        # restart, where fault state lives only in memory). It is wired
+        # up the same way `_pay104_setup` builds `vmc2` from `vmc1`'s
+        # snapshot: a fresh `SessionStore` over the SAME session.json
+        # path, `set_session_store` re-loading the still-open snapshot
+        # and re-raising PAY-104 from it. A fresh `EventRecorder` opens
+        # the SAME sqlite file. `routes.set_vmc_instance` / `routes.
+        # set_event_recorder` replace the module-level state the route
+        # handlers actually read, so the route has no path back to the
+        # old `vmc` object at all from this point on.
+        vmc_after_restart = VMC(config=cfg)
+        vmc_after_restart.set_session_store(SessionStore(session_path))
+        assert "DATA-101" not in {
+            f["code"] for f in vmc_after_restart.active_faults()
+        }, "a fresh VMC must not inherit the pre-restart process's faults"
+        # Positive control on the "restarted" process: this is exactly
+        # what an operator's Faults page would show after a real
+        # restart in this failure mode -- PAY-104 active, a pending sale
+        # still reported, and (per this test's own docstring) no
+        # DATA-101 survives to warn that a retry needs care.
+        assert "PAY-104" in {f["code"] for f in vmc_after_restart.active_faults()}
+        assert vmc_after_restart.pending_sale_for_recovery() is not None
+
+        recorder_after_restart = EventRecorder(db_path=str(db_path))
+
+        routes.set_vmc_instance(vmc_after_restart)
+        routes.set_event_recorder(recorder_after_restart)
+        try:
+            second = client.post("/health/faults/PAY-104/record-sale")
+            assert second.status_code == 200
+
+            rows_after_restart = _sales_rows(db_path)
+            assert len(rows_after_restart) == 1, (
+                "expected exactly one row across a simulated restart, got "
+                f"{len(rows_after_restart)}"
+            )
+        finally:
+            routes.set_vmc_instance(vmc)
+            routes.set_event_recorder(pay104["recorder"])

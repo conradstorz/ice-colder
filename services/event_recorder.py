@@ -437,19 +437,26 @@ class EventRecorder:
     ) -> int:
         """Insert one row into `sales`. Returns the number of rows inserted.
 
-        idempotent=False (record_sale: always a fresh sale) is a plain
-        insert -- it always inserts exactly one row.
+        idempotent=False (record_sale's default, for a fresh live sale) is
+        a plain insert -- it always inserts exactly one row.
 
-        idempotent=True (replay_sales_journal only) inserts a row only if
-        no row with the same (ts, sku) already exists, so replaying an
-        already-committed journal line a second time (e.g. after a crash
-        between the DB commit and the journal truncation) writes nothing
-        instead of a duplicate. (ts, sku) is safe as a natural key here
-        because ts comes from time.time() (sub-microsecond resolution) and
-        the FSM sells one item at a time -- record_sale is awaited before
-        the FSM returns to idle -- so two genuinely distinct sales can never
-        share both ts and sku. See replay_sales_journal for the full
-        argument.
+        idempotent=True (replay_sales_journal always; record_sale only when
+        its caller opts in with a deterministic ts) inserts a row only if
+        no row with the same (ts, sku) already exists, so inserting an
+        already-committed (ts, sku) a second time (e.g. replay running
+        twice against the same journal line after a crash between the DB
+        commit and the journal truncation, or the PAY-104 recovery route
+        retrying against the same session snapshot) writes nothing instead
+        of a duplicate. (ts, sku) is safe as a natural key for both
+        callers: replay_sales_journal's ts comes from time.time()
+        (sub-microsecond resolution) and the FSM sells one item at a time
+        -- record_sale is awaited before the FSM returns to idle -- so two
+        genuinely distinct live sales can never share both ts and sku; the
+        PAY-104 route's ts is the session snapshot's saved_at, fixed once
+        at dispense time and never rewritten, so two attempts to record
+        the *same* pending sale share it while a genuinely *different*
+        pending sale (a different dispense) gets a different saved_at. See
+        replay_sales_journal for the full argument on its own case.
         """
         if idempotent:
             cur = conn.execute(
@@ -496,6 +503,7 @@ class EventRecorder:
         price: float,
         methods: dict[str, float],
         ts: Optional[float] = None,
+        idempotent: bool = False,
     ) -> None:
         """Durably record one sale; returns only once the row is committed.
 
@@ -512,6 +520,31 @@ class EventRecorder:
         not of this connection -- once set here it also applies to the
         writer thread's long-lived connection to the same file.
 
+        ``idempotent`` (default ``False``, last parameter, opt-in): when
+        ``True``, routes through ``_insert_sale_row``'s ``INSERT ... SELECT
+        ... WHERE NOT EXISTS`` form keyed on ``(ts, sku)`` instead of a
+        plain insert -- the same mechanism ``replay_sales_journal`` already
+        relies on so a crash between its insert and its journal truncation
+        cannot duplicate a row (see ``_insert_sale_row``'s docstring for
+        why ``(ts, sku)`` cannot collide between two genuinely distinct
+        sales). **Every existing caller keeps today's plain-insert
+        behaviour** -- a live sale from the FSM's dispense path must never
+        be deduplicated, because two genuine sales of the same SKU (two
+        different customers, back to back) are a normal thing and each
+        one is a real row. This flag exists for exactly one caller: the
+        PAY-104 recovery route (``web_interface/routes/health.py``), which
+        has a caller-supplied, deterministic ``ts`` (the session
+        snapshot's ``saved_at``, fixed at dispense time and never
+        rewritten) to key on, making a second attempt against the same
+        pending sale -- same process, a different process, after a
+        restart, disk fixed or not -- insert zero rows instead of a
+        duplicate. Callers that pass ``idempotent=True`` without also
+        pinning ``ts`` to something stable get no benefit from this (a
+        fresh ``time.time()`` default never repeats), so this is opt-in
+        precisely where a caller already has a natural, stable key and
+        opt-out (the default) everywhere a fresh sale's timestamp is
+        expected to differ from every other sale's.
+
         On failure: append one JSON line to ``JOURNAL_PATH`` (append +
         fsync) with the sale's fields, then re-raise the original
         exception. Re-raising (rather than returning a success flag) is the
@@ -523,6 +556,10 @@ class EventRecorder:
         sale complete" safe, since the sale is not lost even though the
         insert failed. A boolean return would require every caller to
         remember to check it; an exception cannot be silently ignored.
+        Journalling a row that was meant to be idempotent is still safe:
+        ``replay_sales_journal`` always inserts idempotently on
+        ``(ts, sku)`` regardless of how the row reached the journal, so a
+        later replay of this same row cannot duplicate it either.
         """
         ts = time.time() if ts is None else ts
         payload = {
@@ -537,7 +574,9 @@ class EventRecorder:
         try:
             conn = sqlite3.connect(self._db_path, timeout=5.0)
             self._configure_sale_connection(conn)
-            self._insert_sale_row(conn, ts, sku, name, slot, price, methods)
+            self._insert_sale_row(
+                conn, ts, sku, name, slot, price, methods, idempotent=idempotent
+            )
             conn.commit()
         except Exception:
             logger.exception(

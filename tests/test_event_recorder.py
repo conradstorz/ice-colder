@@ -701,6 +701,71 @@ class _FailingSalesInsertConn:
         return getattr(self._conn, name)
 
 
+class TestRecordSaleIdempotentParam:
+    """Part 3 review, round 4: record_sale gains an opt-in `idempotent`
+    parameter (last, default False) so a caller with a deterministic `ts`
+    (the PAY-104 recovery route's session-snapshot `saved_at`) can insert
+    through the same `INSERT ... WHERE NOT EXISTS` form
+    `replay_sales_journal` already relies on -- while every existing
+    caller (a live sale from the FSM's dispense path) keeps today's plain,
+    non-deduplicated insert by default, since two genuine sales of the
+    same SKU must never be silently merged into one row."""
+
+    def test_idempotent_true_same_ts_and_sku_twice_writes_one_row(self, tmp_path):
+        db = str(tmp_path / "e.db")
+        rec = EventRecorder(db_path=db)
+        methods = {"cash": 2.50}
+
+        rec.record_sale("ICE-1", "Ice", 1, 2.50, methods, ts=1000.0, idempotent=True)
+        rec.record_sale("ICE-1", "Ice", 1, 2.50, methods, ts=1000.0, idempotent=True)
+
+        with sqlite3.connect(db) as conn:
+            rows = conn.execute(
+                "SELECT ts, sku FROM sales WHERE ts = ? AND sku = ?",
+                (1000.0, "ICE-1"),
+            ).fetchall()
+        assert len(rows) == 1  # the second attempt inserted nothing
+
+    def test_idempotent_true_same_sku_different_ts_writes_two_rows(self, tmp_path):
+        """A genuine repeat sale of the same SKU (a second, distinct
+        dispense) must never be swallowed by the opt-in -- only an exact
+        (ts, sku) match is treated as a replay of the *same* sale."""
+        db = str(tmp_path / "e.db")
+        rec = EventRecorder(db_path=db)
+        methods = {"cash": 2.50}
+
+        rec.record_sale("ICE-1", "Ice", 1, 2.50, methods, ts=1000.0, idempotent=True)
+        rec.record_sale("ICE-1", "Ice", 1, 2.50, methods, ts=2000.0, idempotent=True)
+
+        with sqlite3.connect(db) as conn:
+            rows = conn.execute(
+                "SELECT ts FROM sales WHERE sku = ? ORDER BY ts", ("ICE-1",)
+            ).fetchall()
+        assert [r[0] for r in rows] == [1000.0, 2000.0]
+
+    def test_default_path_still_writes_two_rows_for_identical_looking_sales(
+        self, tmp_path
+    ):
+        """The default (idempotent unset, i.e. False) path is untouched:
+        two calls with the exact same ts and sku -- which would collapse
+        to one row if idempotent=True were somehow applied by default --
+        must still both land, proving the opt-in changes nothing for
+        every existing caller."""
+        db = str(tmp_path / "e.db")
+        rec = EventRecorder(db_path=db)
+        methods = {"cash": 2.50}
+
+        rec.record_sale("ICE-1", "Ice", 1, 2.50, methods, ts=1000.0)
+        rec.record_sale("ICE-1", "Ice", 1, 2.50, methods, ts=1000.0)
+
+        with sqlite3.connect(db) as conn:
+            rows = conn.execute(
+                "SELECT ts, sku FROM sales WHERE ts = ? AND sku = ?",
+                (1000.0, "ICE-1"),
+            ).fetchall()
+        assert len(rows) == 2  # both plain inserts landed, no deduplication
+
+
 class TestRecordSaleFailureJournal:
     def test_failed_insert_appends_exactly_one_fsynced_journal_line(
         self, tmp_path, monkeypatch, journal_path

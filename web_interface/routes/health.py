@@ -468,26 +468,39 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         that just made `clear_fault`'s removal fail one line above, so
         this is a realistic pairing, not a contrived one. When it does,
         `pending_sale_for_recovery()` keeps (truthfully) reporting the
-        original sale, since the snapshot was never rewritten. Two things
-        close that gap: the message told to the operator becomes honest
-        (the sale WAS recorded; do not retry; fix the storage problem)
-        instead of the marker-succeeded message's "retrying will not
-        record the sale again", and `vmc.reserve_pending_sale`/
-        `pending_sale_already_recorded` add an in-memory guard, checked
-        under this same lock, so a retry *within this process* cannot
-        write a second row even though the disk-based idempotency token
-        is gone. That guard does not survive a process restart -- seeing
-        `DATA_101` (raised below) on the Faults page is what the operator
-        has instead, across a restart.
+        original sale, since the snapshot was never rewritten.
+        `vmc.reserve_pending_sale`/`pending_sale_already_recorded` still
+        add an in-memory guard, checked under this same lock, so a retry
+        *within this process* short-circuits before `record_sale` is
+        called again at all -- but that guard is not what makes a retry
+        *safe*, only what makes it cheap. Safety across every retry,
+        including one after this process has restarted, comes from the
+        database itself (part 3 review, round 4): the call below passes
+        `ts=pending["saved_at"]` (the session snapshot's dispense-time
+        timestamp, stable across any number of reloads of the same
+        snapshot -- see `VMC._snapshot`/`SessionSnapshot.saved_at`) and
+        `idempotent=True`, so a second attempt at the same pending sale --
+        same process, a different process, after a restart, disk fixed or
+        not -- inserts zero rows because `(ts, sku)` is already present.
+        `DATA_101` (raised below when the marker write fails) is still
+        raised, because a storage problem is real and the operator should
+        see it, but it is an alert about that storage problem, not the
+        mechanism that prevents a duplicate row -- the earlier round's
+        report claimed the in-memory guard's absence after a restart left
+        `DATA_101` as "the operator's surviving signal" protecting against
+        a double-write; that was wrong (see the corrected report), and is
+        moot now regardless: the database's own idempotent insert protects
+        every retry, with or without any fault visible on the Faults page.
         """
         vmc = context.vmc_instance
         if vmc is None:
             raise HTTPException(status_code=404, detail="No VMC attached")
         marker_unwritable_detail = (
             "Sale recorded; the PAY-104 evidence snapshot could not be "
-            "updated -- do NOT retry (retrying would record the sale "
-            "again); resolve the storage problem, then clear PAY-104 "
-            "manually once it is fixed"
+            "updated -- retrying is safe (the recovered sale is keyed by "
+            "its dispense time, so a repeat write cannot record it twice) "
+            "-- resolve the storage problem, then clear PAY-104 manually "
+            "once it is fixed"
         )
         async with _pay104_lock:
             pending = vmc.pending_sale_for_recovery()
@@ -498,9 +511,10 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
             if vmc.pending_sale_already_recorded(pending):
                 # The durable marker failed to persist on an earlier
                 # request in this process (finding 3) -- the sale is
-                # already recorded, so this replay must not write it
-                # again, and the operator already needs the same "do not
-                # retry" message as the request that hit the failure.
+                # already recorded, so this in-memory short-circuit saves
+                # a redundant (harmless, per the idempotent insert below)
+                # trip to the database and gives the operator the same
+                # message as the request that hit the failure.
                 raise HTTPException(status_code=500, detail=marker_unwritable_detail)
             if context.event_recorder is None:
                 raise HTTPException(
@@ -508,6 +522,17 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
                     detail="No event recorder attached; cannot record sale",
                 )
             try:
+                # ts=pending["saved_at"] + idempotent=True (part 3 review,
+                # round 4): the session snapshot's dispense-time timestamp
+                # is a deterministic key for *this* pending sale (stable
+                # across any number of snapshot reloads -- see
+                # VMC._snapshot/SessionSnapshot.saved_at), so a second
+                # attempt at recording it -- from this process, another
+                # process, or after a restart -- inserts zero rows instead
+                # of a duplicate. Every other caller of record_sale (the
+                # live FSM dispense path) keeps passing neither argument,
+                # so a fresh sale is still always a plain, non-deduplicated
+                # insert.
                 await asyncio.to_thread(
                     context.event_recorder.record_sale,
                     pending["sku"],
@@ -515,6 +540,8 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
                     pending["slot"],
                     pending["price"],
                     pending["methods"],
+                    ts=pending["saved_at"],
+                    idempotent=True,
                 )
             except Exception:
                 logger.exception(
@@ -549,8 +576,11 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
                     )
                 # The marker itself could not be persisted -- surface it
                 # as a fault that outlives this HTTP response (finding 3
-                # part (c)), then tell the operator the truth: retrying
-                # is not safe, unlike the branch above.
+                # part (c)) so the storage problem is visible, then tell
+                # the operator the truth: unlike earlier rounds claimed,
+                # retrying here is safe too (the idempotent insert above
+                # is what guarantees that now, not this fault or the
+                # in-memory guard).
                 vmc.raise_data_fault(
                     FaultCode.DATA_101,
                     outcome=(
