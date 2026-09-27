@@ -59,11 +59,20 @@ async function main() {
   const bin = findChrome();
   const udd = mkdtempSync(join(tmpdir(), "cdp-home-check-"));
   const port = 9200 + Math.floor(Math.random() * 1000);
+  // --no-sandbox / --disable-dev-shm-usage: on GitHub's hosted Linux runners
+  // Chrome's own sandbox generally cannot start (no privileged setuid helper,
+  // restricted user namespaces) and exits before the DevTools port opens;
+  // /dev/shm on those runners is also small enough to crash Chrome on some
+  // pages. Both flags are harmless on a developer machine, so they stay in
+  // the one shared launch list rather than being conditioned on CI.
   const proc = spawn(bin, [
     "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
-    "--hide-scrollbars", `--remote-debugging-port=${port}`, `--user-data-dir=${udd}`,
+    "--hide-scrollbars", "--no-sandbox", "--disable-dev-shm-usage",
+    `--remote-debugging-port=${port}`, `--user-data-dir=${udd}`,
     "about:blank",
-  ], { stdio: "ignore" });
+  ], { stdio: ["ignore", "ignore", "pipe"] });
+  let chromeStderr = "";
+  proc.stderr.on("data", (d) => { chromeStderr += d.toString(); });
 
   try {
     let page = null;
@@ -76,7 +85,12 @@ async function main() {
       } catch { /* debugger not up yet */ }
       await sleep(150);
     }
-    if (!page) throw new Error("Chrome DevTools endpoint never came up");
+    if (!page) {
+      throw new Error(
+        "Chrome DevTools endpoint never came up" +
+        (chromeStderr.trim() ? `; Chrome stderr:\n${chromeStderr.trim()}` : " (Chrome produced no stderr)"),
+      );
+    }
 
     const ws = new WebSocket(page.webSocketDebuggerUrl);
     await new Promise((res, rej) => {

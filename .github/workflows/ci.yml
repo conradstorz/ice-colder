@@ -28,7 +28,15 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
+      # Full history (all branches/tags), not the default shallow single-branch
+      # checkout -- TestScreenTemplatesUnchanged::test_matches_origin_main
+      # diffs against origin/main and otherwise skips in CI with "bad revision
+      # 'origin/main'" because that ref is never fetched, silently disabling
+      # the /screen byte-identical guard. The extended guard step below fails
+      # the build if that happens again.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
@@ -50,14 +58,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "24"
-      # ubuntu-latest is Ubuntu 24.04, whose AppArmor profile blocks the
-      # unprivileged user namespace Chromium's sandbox needs, so headless
-      # Chrome dies at launch with "No usable sandbox!" / the DevTools port
-      # never comes up. This lifts that restriction for the runner (the
-      # documented fix for Chrome-for-Testing / Puppeteer on 24.04 runners)
-      # instead of passing --no-sandbox into the checker scripts.
-      - name: Allow Chromium's sandbox on the Ubuntu 24.04 runner
-        run: echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
       # e2e tests skip without a broker on localhost:1883; everything else
       # runs, including the 3 opt-in browser tests (enabled below) — a guard
       # step immediately after this one fails CI if any of them skip instead
@@ -70,14 +70,23 @@ jobs:
         run: |
           set -o pipefail
           uv run pytest -q -rs | tee pytest-output.txt
-      - name: Guard against the opt-in browser tests silently skipping
+      - name: Guard against known ways this suite can silently skip real coverage
         run: |
+          fail=0
           if grep -q "ICE_COLDER_BROWSER_TESTS=1 to run" pytest-output.txt; then
             echo "::error::One or more opt-in browser tests were skipped in CI (Chrome/Node discovery failed). A green suite must not hide this."
             grep "ICE_COLDER_BROWSER_TESTS=1 to run" pytest-output.txt
+            fail=1
+          fi
+          if grep -q "git diff against origin/main failed" pytest-output.txt; then
+            echo "::error::The /screen byte-identical-to-origin/main guard skipped instead of running (origin/main unresolvable in CI). A green suite must not hide this."
+            grep "git diff against origin/main failed" pytest-output.txt
+            fail=1
+          fi
+          if [ "$fail" -eq 1 ]; then
             exit 1
           fi
-          echo "Guard OK: none of the three opt-in browser tests skipped."
+          echo "Guard OK: none of the three opt-in browser tests skipped, and the /screen guard ran instead of skipping."
 
   compose-config:
     runs-on: ubuntu-latest
