@@ -41,6 +41,24 @@ with ``tz=None`` would ask the OS's real zone to reinterpret an instant built
 under a made-up one, which is incoherent. The two are always paired: this
 module never manufactures a ``tz`` independent of the ``now`` it receives.
 
+Nothing in the types enforces that pairing, so :func:`compute_next_due`
+also detects the one incoherent shape a future caller could plausibly
+introduce by accident -- precisely because this docstring explains that a
+dynamic ``tz`` fixes DST, someone could wire a real dynamic zone into
+``tz=`` while still feeding it a ``now`` built the production way (a
+frozen, date-invariant tzinfo) and believe that alone was enough.
+:func:`_warn_if_now_tz_incoherent` compares ``now.tzinfo``'s and ``tz``'s
+reported UTC offset six months apart to tell "frozen" from "date-varying"
+apart, and logs a ``logger.warning`` naming both tzinfos when ``now.tzinfo``
+looks frozen and ``tz`` looks genuinely dynamic -- never on ``tz=None``
+(production's own path) or on a dynamic ``now`` paired with the matching
+dynamic ``tz`` (a test's own path). It only ever logs; it never raises --
+see below for why neither this pure function nor ``run``'s loop may ever
+raise, and the failure mode here is silent bad data, not a crash, so a
+warning is the right severity: it makes the mistake visible in the logs
+without turning a previously-non-raising pure function into one that can
+now blow up ``run``'s loop on a bad but non-fatal argument combination.
+
 Sends are de-duplicated by period: before sending, the loop asks whether
 *any* ``report_sent`` event's ``metadata["period"]`` matches the period
 :func:`compute_next_due` says is currently due (:func:`_period_already_sent`)
@@ -104,7 +122,6 @@ suite instant.
 
 import asyncio
 import contextlib
-import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, tzinfo
@@ -227,10 +244,12 @@ def _shift_local_day(reference: datetime, days_before: int, tz) -> datetime:
     """The true local midnight ``days_before`` days before ``reference``.
 
     ``reference`` must already be a true local midnight (correctly resolved
-    for its OWN date); ``tz`` is the tzinfo to re-derive under -- callers
-    pass ``reference.tzinfo`` itself, or (for a second shift starting from
-    an already-shifted result) the ORIGINAL ``now.tzinfo``, never a prior
-    shift's own possibly-stale tzinfo -- see :func:`compute_next_due`.
+    for its OWN date); ``tz`` is the tzinfo to re-derive under -- every
+    caller passes the explicit ``tz`` PARAMETER threaded down from
+    :func:`compute_next_due` (``None`` in production), never
+    ``reference.tzinfo`` or ``now.tzinfo`` -- see :func:`compute_next_due`'s
+    own docstring for why the parameter, not either datetime's own tzinfo,
+    must govern every boundary derived here.
 
     Plain ``timedelta`` subtraction on an aware datetime keeps its existing
     tzinfo/offset attached to the shifted result without ever asking "is
@@ -274,6 +293,85 @@ def _shift_local_day(reference: datetime, days_before: int, tz) -> datetime:
         current = _advance_one_local_day(current, tz)
         steps += 1
     return current
+
+
+# Comfortably more than any real DST transition's magnitude, and -- paired
+# with the yearly cadence most real zones observe DST on -- virtually
+# guaranteed to straddle at least one transition when probing six months
+# either side of any `now` a real zone would produce. Used only by
+# `_tzinfo_offset_is_frozen` below, never by any actual boundary
+# computation.
+_FROZEN_TZ_PROBE_SPAN = timedelta(days=182)
+
+
+def _tzinfo_offset_is_frozen(tz: tzinfo, near: datetime) -> bool:
+    """Best-effort: True when ``tz`` reports the SAME UTC offset roughly six
+    months before and after ``near`` -- the signature of a frozen,
+    date-invariant tzinfo (exactly what ``datetime.now().astimezone()``
+    attaches -- see the module docstring) rather than a real zone, which
+    would show a different offset across an intervening DST transition for
+    almost any six-month span. Used only to decide whether
+    :func:`_warn_if_now_tz_incoherent` logs a warning -- never to change any
+    actual boundary computation -- so a ``tz`` this heuristic misjudges only
+    ever affects a log line, never a computed window.
+
+    Any exception during the probe (an unusual tzinfo that rejects a naive
+    datetime, say) is treated as "cannot tell" and answered as NOT frozen,
+    so a misbehaving tzinfo can never manufacture a false warning here --
+    only, at worst, miss a real one.
+    """
+    naive = near.replace(tzinfo=None)
+    try:
+        before = tz.utcoffset(naive - _FROZEN_TZ_PROBE_SPAN)
+        after = tz.utcoffset(naive + _FROZEN_TZ_PROBE_SPAN)
+    except Exception:
+        return False
+    return before == after
+
+
+def _warn_if_now_tz_incoherent(now: datetime, tz: Optional[tzinfo]) -> None:
+    """Log (never raise) when ``now.tzinfo`` looks frozen while ``tz`` is a
+    genuinely different, date-varying zone -- see the module docstring's
+    "now/tz incoherence" paragraph.
+
+    Silent on both legitimate pairings:
+
+    - production's frozen ``now`` (``datetime.now().astimezone()``) with
+      ``tz=None`` -- ``tz is None`` returns below before either tzinfo is
+      even probed, since ``None`` is itself the correct, DST-live choice
+      (see :func:`compute_next_due`'s docstring) and is never incoherent
+      with anything.
+    - a dynamic ``now`` (a real or synthetic DST-aware tzinfo) paired with
+      that SAME dynamic zone as ``tz`` -- ``now.tzinfo`` does not look
+      frozen, so the function returns before ``tz`` is even inspected.
+
+    Only warns when ``now.tzinfo`` looks frozen AND ``tz`` is given AND
+    ``tz`` itself does NOT look frozen -- exactly the shape of "a real
+    dynamic zone was wired into ``tz=`` while ``now`` is still built the
+    production way" the review flagged as the plausible future mistake.
+    Never raises: this is called from a pure function that must not raise,
+    feeding a loop that must not raise either (see the module docstring),
+    and the mistake being guarded against is silent bad data, not a crash
+    -- a warning makes it visible in the logs without turning either
+    contract into one that can blow up on a bad-but-non-fatal argument
+    combination.
+    """
+    now_tz = now.tzinfo
+    if now_tz is None or tz is None:
+        return
+    if not _tzinfo_offset_is_frozen(now_tz, now):
+        return
+    if _tzinfo_offset_is_frozen(tz, now):
+        return
+    logger.warning(
+        f"report scheduler: now.tzinfo ({now_tz!r}) looks like a frozen, "
+        f"date-invariant offset while tz= ({tz!r}) is date-varying -- tz "
+        "governs every boundary computed here (see compute_next_due's "
+        "docstring), so if `now` was built under a different, dynamic zone "
+        "than `tz` describes, the returned window can be silently wrong. "
+        "Pass a `now`/`tz` pair that agree, or omit `tz` to let each "
+        "boundary resolve through the OS."
+    )
 
 
 def compute_next_due(
@@ -320,12 +418,39 @@ def compute_next_due(
     reported window (see the module docstring's Finding 2 note and
     ``_shift_local_day``'s own docstring). ``due_at`` is intentionally left
     as same-day arithmetic on the (possibly re-derived) ``occurrence_day``
-    -- the send-timing safety of that was independently confirmed and is
-    unchanged here. ``period_key`` stays derived from the calendar
+    -- tagged with ``occurrence_day``'s own tzinfo rather than independently
+    re-resolved for its own hour-of-day -- and that is safe despite being
+    off, on the transition day itself, by up to the DST delta (a
+    backward-shifted ``weekly`` occurrence's ``due_at`` can carry an
+    hour-wrong UTC offset for that literal instant on a transition day)
+    because the ONLY thing callers ever do with ``due_at`` is compare
+    ``now >= due.due_at``, and that comparison's boolean outcome cannot
+    flip either way:
+
+    - For ``daily``, and for a ``weekly`` occurrence that falls on
+      ``now``'s own weekday, ``occurrence_day == today``, so ``due_at``
+      shares ``today``'s (i.e. ``now``'s) own live, continuously-refreshed
+      offset -- the comparison is self-consistent within the single
+      instant ``now`` already represents, the same reason ``today`` itself
+      needs no re-derivation above.
+    - For a backward-shifted ``weekly`` occurrence (``occurrence_day <
+      today``), ``now`` is, by construction, at least one full calendar
+      day after ``occurrence_day``; an hour-scale tagging error on
+      ``due_at`` cannot make ``now >= due_at`` disagree with the true
+      answer, since the true gap between them is measured in days, not
+      hours.
+
+    One consequence a future reader must not miss: ``due_at``'s literal
+    value is therefore NOT reliable as an audit or log timestamp on the
+    transition day itself (it can display the wrong UTC offset for that
+    instant) -- it is only guaranteed correct as a fire/don't-fire
+    *comparand* against ``now``. ``period_key`` stays derived from the calendar
     *date* of ``period_start``, never from an instant, which is what keeps
     the de-dup in :func:`run` immune to any of this DST re-derivation
     changing an already-recorded key's spelling.
     """
+    _warn_if_now_tz_incoherent(now, tz)
+
     schedule = config.reports.schedule
     if schedule == "off":
         return None
@@ -385,6 +510,20 @@ def _period_already_sent(recorder, period_key: str) -> bool:
     successful send -- so there is exactly one place that constructs this
     key, never two independently-built strings that could drift apart.
 
+    The query's bound is explicit, not merely implicit in the shared
+    ``events`` table's own 90-day pruning (``EventRecorder.prune``, driven
+    by every event type's writes, not this module -- see the module
+    docstring): it matches ``period_key`` in SQL via SQLite's JSON1
+    ``json_extract`` (guarded by ``json_valid``, so a malformed
+    ``metadata`` value -- which this module never itself writes, only
+    corruption could produce one -- is skipped rather than raising
+    ``OperationalError``, the SQL-side equivalent of the ``try/except``
+    this replaced) and stops at the first hit with ``LIMIT 1``: this
+    function only ever needs to know whether ANY matching row exists, never
+    how many there are or which one it finds. The retention window itself
+    is untouched -- this adds an explicit match-and-stop bound on TOP of
+    it, not a replacement for it.
+
     Reads ``recorder._db_path`` at call time, never cached: see
     ``services/reports.py``'s module docstring for why (corrupt-database
     recovery can reassign it mid-process).
@@ -392,19 +531,14 @@ def _period_already_sent(recorder, period_key: str) -> bool:
     recorder.flush()
     db_path = recorder._db_path
     with contextlib.closing(sqlite3.connect(db_path)) as conn:
-        rows = conn.execute(
-            "SELECT metadata FROM events WHERE event_type='report_sent'"
-        ).fetchall()
-    for (metadata_json,) in rows:
-        if not metadata_json:
-            continue
-        try:
-            meta = json.loads(metadata_json)
-        except (TypeError, ValueError):
-            continue
-        if meta.get("period") == period_key:
-            return True
-    return False
+        row = conn.execute(
+            "SELECT 1 FROM events WHERE event_type='report_sent' "
+            "AND metadata IS NOT NULL AND json_valid(metadata) "
+            "AND json_extract(metadata, '$.period')=? "
+            "LIMIT 1",
+            (period_key,),
+        ).fetchone()
+    return row is not None
 
 
 def _period_label(due: NextDue) -> str:

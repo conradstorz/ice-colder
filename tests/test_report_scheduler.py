@@ -426,6 +426,141 @@ def test_compute_next_due_daily_dst_window_controlled_by_tz_param_not_now_tzinfo
 
 
 # --------------------------------------------------------------------------
+# Item 1 (round-3 hardening): now/tz incoherence must warn, never raise, and
+# must stay silent on both legitimate pairings.
+# --------------------------------------------------------------------------
+
+
+def test_now_tz_incoherent_mismatch_warns(caplog):
+    """The mismatch case: `now.tzinfo` is a plain, frozen fixed offset (the
+    exact shape `datetime.now().astimezone()` produces) while `tz=` is a
+    genuinely dynamic zone -- the specific future mistake Item 1 guards
+    against. Must log exactly one WARNING naming both tzinfos, and must NOT
+    raise (compute_next_due still returns a NextDue)."""
+    config = _config(schedule="daily", hour=7)
+    now = datetime(2026, 3, 9, 9, 0, 0, tzinfo=timezone(timedelta(hours=-4)))
+
+    with caplog.at_level("WARNING"):
+        due = report_scheduler.compute_next_due(config, now, tz=SPRING_FORWARD_TZ)
+
+    assert due is not None  # never raises
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    message = warnings[0].message
+    assert "now.tzinfo" in message
+    assert "tz=" in message
+    # Names both tzinfo reprs so an operator can tell which is which.
+    assert repr(now.tzinfo) in message
+    assert repr(SPRING_FORWARD_TZ) in message
+
+
+def test_now_tz_incoherent_silent_on_production_frozen_now_with_tz_none(caplog):
+    """Legitimate pairing 1: production's own shape -- a frozen `now.tzinfo`
+    with `tz=None`. Must NOT warn: `tz=None` is itself the correct, DST-live
+    choice, never incoherent with anything."""
+    config = _config(schedule="daily", hour=7)
+    now = _dt(2026, 9, 20, 9, 0, 0)  # FIXED_TZ -- a frozen fixed offset
+
+    with caplog.at_level("WARNING"):
+        due = report_scheduler.compute_next_due(config, now)  # tz defaults to None
+
+    assert due is not None
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_now_tz_incoherent_silent_on_dynamic_now_with_matching_dynamic_tz(caplog):
+    """Legitimate pairing 2: a test's dynamic `now` (a DST-aware synthetic
+    zone) paired with that SAME dynamic zone as `tz=` -- exactly how the
+    Finding-2 DST tests above call `compute_next_due`. Must NOT warn."""
+    config = _config(schedule="daily", hour=7)
+    now = datetime(2026, 3, 9, 9, 0, 0, tzinfo=SPRING_FORWARD_TZ)
+
+    with caplog.at_level("WARNING"):
+        due = report_scheduler.compute_next_due(config, now, tz=SPRING_FORWARD_TZ)
+
+    assert due is not None
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_tzinfo_offset_is_frozen_classifies_fixed_and_dynamic_zones():
+    """Direct unit test of the frozen/dynamic detector itself: a plain fixed
+    offset (frozen) vs. the synthetic DST zones (dynamic), each probed
+    around an instant that actually straddles ITS OWN hard-coded
+    transition (the two synthetic zones transition on different dates, so
+    each needs its own `now` for the +/-182-day probe to see it)."""
+    assert (
+        report_scheduler._tzinfo_offset_is_frozen(
+            FIXED_TZ, datetime(2026, 3, 9, 9, 0, 0)
+        )
+        is True
+    )
+    assert (
+        report_scheduler._tzinfo_offset_is_frozen(
+            SPRING_FORWARD_TZ, datetime(2026, 3, 9, 9, 0, 0)
+        )
+        is False
+    )
+    assert (
+        report_scheduler._tzinfo_offset_is_frozen(
+            FALL_BACK_TZ, datetime(2026, 11, 2, 9, 0, 0)
+        )
+        is False
+    )
+
+
+# --------------------------------------------------------------------------
+# Item 4 (round-3 hardening): the dedup query's bound is now explicit
+# (LIMIT 1 + an in-SQL period match), not merely implicit in the shared
+# table's pruning -- behaviour must be unchanged.
+# --------------------------------------------------------------------------
+
+
+def test_period_already_sent_true_for_a_matching_row(recorder):
+    recorder.record(
+        "report_sent",
+        metadata={
+            "period": "daily:2026-09-19",
+            "schedule": "daily",
+            "period_start": "2026-09-19",
+            "period_end": "2026-09-20",
+        },
+    )
+    recorder.flush()
+    assert report_scheduler._period_already_sent(recorder, "daily:2026-09-19") is True
+    assert report_scheduler._period_already_sent(recorder, "daily:2026-09-20") is False
+
+
+def test_period_already_sent_tolerates_malformed_metadata_row(recorder):
+    """A malformed `metadata` value (corruption, never this module's own
+    write) must be skipped, not raise -- proving `json_valid` actually
+    guards `json_extract` rather than merely looking like it should."""
+    conn = sqlite3.connect(recorder._db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO events (event_type, timestamp, value, metadata) "
+            "VALUES ('report_sent', 0, 1.0, ?)",
+            ("not json",),
+        )
+    conn.close()
+
+    assert report_scheduler._period_already_sent(recorder, "daily:2026-09-19") is False
+
+    # A genuine match alongside the malformed row is still found.
+    recorder.record(
+        "report_sent",
+        metadata={
+            "period": "daily:2026-09-19",
+            "schedule": "daily",
+            "period_start": "2026-09-19",
+            "period_end": "2026-09-20",
+        },
+    )
+    recorder.flush()
+    assert report_scheduler._period_already_sent(recorder, "daily:2026-09-19") is True
+
+
+# --------------------------------------------------------------------------
 # run() -- the supervised loop
 # --------------------------------------------------------------------------
 
