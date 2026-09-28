@@ -154,6 +154,30 @@ class MaintenanceHold:
     release_requested: bool = False
 
 
+@dataclass
+class TestSaleResult:
+    """Outcome of one ``VMC.run_test_sale()`` run (system-tests design §2.3).
+
+    ``path`` is the sequence of FSM states visited, in order, from the
+    state the machine was in when the run started through to the state it
+    settled in -- captured live via ``_after_state_change`` while
+    ``_test_sale_path`` is not ``None``, not reconstructed after the fact.
+
+    ``outcome`` is one of ``"dispensed"``, ``"vend_failed"``, ``"timeout"``.
+    ``fault_code`` (a ``FaultCode.value`` string, e.g. ``"ICE-401"``) is set
+    only when ``outcome == "vend_failed"`` -- it is always ``None`` for
+    ``"dispensed"`` and for ``"timeout"``. A dispense timeout *internally*
+    still runs the same ``vend_failed`` FSM transition with code
+    ``PAY-102`` (see ``_dispense_timed_out``), but is kept as its own,
+    distinct outcome here rather than folded into ``"vend_failed"``.
+    """
+
+    sku: str
+    path: list[str]
+    outcome: str
+    fault_code: str | None = None
+
+
 class VMC:
     states = ["idle", "interacting_with_user", "dispensing", "error"]
 
@@ -203,6 +227,17 @@ class VMC:
         # deducted; consumed (and reset to None) by on_vend_failed. None
         # whenever no sale is in flight.
         self.pending_sale_shares: dict[str, float] | None = None
+        # is_test lives on the in-flight sale context (system-tests design
+        # §2.3), alongside selected_product/pending_sale_shares above --
+        # NOT a VMC-global mode flag. Set True only by run_test_sale, just
+        # before it selects the product; read (never inferred from
+        # self._maintenance_hold) by _handle_mqtt_dispenser and
+        # _dispense_timed_out to decide sale vs. test_run recording, and
+        # by _fail_vend to decide whether a failed vend may issue a real
+        # refund. Reset to False only by run_test_sale itself once the
+        # sale has settled, so a lease release or idle-timeout mid-run
+        # cannot flip this sale from test to production.
+        self._sale_is_test: bool = False
         self.last_insufficient_message = ""
         self.last_payment_method = "Simulated Payment"
 
@@ -233,6 +268,13 @@ class VMC:
         # part of any persisted snapshot -- see MaintenanceHold's docstring.
         self._maintenance_hold: MaintenanceHold | None = None
         self._maintenance_idle_task: asyncio.Task | None = None
+        # run_test_sale's own bookkeeping (system-tests design §2.3): the
+        # Future its completion-handling call sites resolve with
+        # (outcome, fault_code) once the sale settles, and the FSM states
+        # visited while a test sale is in flight (appended by
+        # _after_state_change). Both None whenever no test sale is running.
+        self._test_sale_waiter: asyncio.Future | None = None
+        self._test_sale_path: list[str] | None = None
         # In-memory record-once guard for PAY-104 recovery (Task 14 review
         # finding 3): keys of pending sales this process has already
         # committed via record_sale, checked (and populated) only when the
@@ -939,11 +981,25 @@ class VMC:
         if outcome is DispenserOutcome.complete:
             txn_log.info(f"DISPENSE SUCCESS: slot {slot}, product '{product_name}'")
             vend_log.info(f"DISPENSE COMPLETE: slot {slot}, product '{product_name}'")
-            if self._event_recorder and self.selected_product:
-                self._event_recorder.record(
-                    "dispense", value=float(self.selected_product.slot)
-                )
-            await self._record_sale()
+            if self._sale_is_test:
+                # is_test lives on the sale (self._sale_is_test, set only
+                # by run_test_sale), not on the lease -- consulted here
+                # instead of self._maintenance_hold so a lease release or
+                # idle-timeout mid-run cannot flip this sale to production
+                # (system-tests design §2.3). Neither a `sale` row nor a
+                # `dispense` event is written; run_test_sale itself writes
+                # the `test_run` event once it observes this outcome.
+                # record_sale's own bookkeeping (clearing
+                # pending_sale_shares) is replicated here since
+                # _record_sale is skipped entirely for a test sale.
+                self.pending_sale_shares = None
+                self._resolve_test_sale_waiter("dispensed", None)
+            else:
+                if self._event_recorder and self.selected_product:
+                    self._event_recorder.record(
+                        "dispense", value=float(self.selected_product.slot)
+                    )
+                await self._record_sale()
             self._finish_dispensing()
             return
 
@@ -960,6 +1016,8 @@ class VMC:
         )
         self._raise_fault(code, sku=sku, outcome=outcome.value)
         self._fail_vend(code, outcome=outcome.value)
+        if self._sale_is_test:
+            self._resolve_test_sale_waiter("vend_failed", code.value)
 
     async def _handle_mqtt_sensor(self, topic: str, data: dict):
         """Handle temperature/sensor reading from ESP32."""
@@ -1148,6 +1206,8 @@ class VMC:
         including ``after_state_change``.
         """
         self._publish_status()
+        if self._test_sale_path is not None:
+            self._test_sale_path.append(self.state)
 
     @logger.catch()
     def on_start_interaction(self):
@@ -1338,7 +1398,15 @@ class VMC:
         self.vend_failed(code=code, outcome=outcome)
         if not self._sellable_products():
             txn_log.info("No sellable products remain; refunding and returning to idle")
-            self.request_refund(reason=code.value)
+            # A test sale's price, just restored to escrow by on_vend_failed
+            # above, is not real money and must never leave via a real
+            # refund command (system-tests design §2.3: "escrow is cleared
+            # without a refund command"). run_test_sale clears it directly
+            # once the run's outcome is known. is_test lives on the sale
+            # (self._sale_is_test), not the lease, so this still reads
+            # correctly even if the lease has since been released.
+            if not self._sale_is_test:
+                self.request_refund(reason=code.value)
             self._cancel_session_timeout()
             self.machine.set_state("idle")
             self._publish_status()
@@ -1363,6 +1431,20 @@ class VMC:
         )
         self._raise_fault(FaultCode.PAY_102, sku=sku, outcome="no_report")
         self._fail_vend(FaultCode.PAY_102, outcome="no_report")
+        if self._sale_is_test:
+            # Kept as its own outcome ("timeout"), distinct from
+            # "vend_failed", even though it runs through the same
+            # vend_failed/PAY-102 transition above (system-tests design
+            # §2.3; see TestSaleResult's docstring).
+            self._resolve_test_sale_waiter("timeout", None)
+
+    def _resolve_test_sale_waiter(self, outcome: str, fault_code: str | None) -> None:
+        """Wake ``run_test_sale``'s waiter, if one is pending, with this
+        outcome. A no-op if no test sale is in flight (waiter is ``None``)
+        or it has already been resolved."""
+        waiter = self._test_sale_waiter
+        if waiter is not None and not waiter.done():
+            waiter.set_result((outcome, fault_code))
 
     @logger.catch()
     def on_error(self):
@@ -1392,17 +1474,18 @@ class VMC:
         if amount <= 0:
             logger.warning(f"Ignoring non-positive deposit: {amount}")
             return
-        if self._maintenance_hold is not None:
+        if self._maintenance_hold is not None and payment_method != "test":
             # Payment is disabled for the whole lease (SVC-102 blocks it via
             # availability), so this only covers the race between the
             # disable command and a coin already in the mechanism -- still
             # a customer's money, so it goes straight back out rather than
             # into escrow, where it could otherwise become spendable after
-            # the hold ends. A later task adds the one exception:
-            # `run_test_sale`'s own credit, deposited with method "test" --
-            # that will need a `and payment_method != "test"` guard on the
-            # condition above so it falls through to the normal escrow path
-            # below instead of being refunded.
+            # the hold ends. The one exception is `run_test_sale`'s own
+            # credit, deposited with method "test" -- the `and
+            # payment_method != "test"` guard above lets it fall through to
+            # the normal escrow path below instead of being refunded; it is
+            # the only credit accepted during a lease (system-tests design
+            # §2.3).
             logger.warning(
                 f"Credit ${amount:.2f} arrived during a maintenance lease; "
                 "refunding rather than escrowing"
@@ -1781,6 +1864,119 @@ class VMC:
             yield
         finally:
             self._maintenance_run_finished()
+
+    def _find_product_by_sku(self, sku: str) -> tuple[int | None, object | None]:
+        """Return ``(button_index, product)`` for `sku` in the live catalog,
+        or ``(None, None)``. Looked up by identity match against
+        ``self.products`` (not ``list.index``, which compares by value and
+        could pick the wrong entry for two otherwise-identical products)."""
+        for index, product in enumerate(self.products):
+            if product.sku == sku:
+                return index, product
+        return None, None
+
+    async def run_test_sale(self, sku: str) -> TestSaleResult:
+        """Run one simulated sale through the real FSM without ever
+        recording it as a production sale (system-tests design §2.3).
+
+        Requires the maintenance lease: wrapping the whole run in
+        ``maintenance_test_run()`` is what enforces this -- its
+        ``_maintenance_run_started`` raises ``RuntimeError`` when no lease
+        is held, which is this method's refusal path. That also increments
+        ``runs_in_flight`` for the duration, which is what stops the lease
+        from being released out from under this run (system-tests design
+        §2.2/§2.3).
+
+        ``is_test`` is set on the sale itself (``self._sale_is_test``) here,
+        not derived from the lease, and is what ``_handle_mqtt_dispenser``,
+        ``_dispense_timed_out`` and ``_fail_vend`` consult to keep this run
+        out of the production sales ledger and away from a real refund
+        command -- so releasing or losing the lease mid-run cannot flip
+        this sale to a production one. Task 10's rule that the lease
+        cannot be released while a run is in flight is the belt to this
+        braces.
+
+        Deposits the product's price as one credit with method ``"test"``
+        -- the only credit ``deposit_funds`` accepts during a lease, see
+        its lease branch above -- then selects the product and lets the
+        *normal* dispense path run unmodified: the real FSM transitions,
+        the real ``cmd/dispense`` publish, and the real dispense-completion
+        / dispense-timeout handling. Awaits whichever of the three
+        terminal outcomes settles the sale via a one-shot ``Future``
+        (``self._test_sale_waiter``) that those call sites resolve.
+
+        Whatever the outcome, escrow is cleared directly at the end --
+        never through ``request_refund``, which would publish a real
+        ``cmd/payment/refund``: test money is not real money and this is
+        not a refund (system-tests design §2.3).
+        """
+        product_index, product = self._find_product_by_sku(sku)
+        if product is None:
+            raise ValueError(f"run_test_sale: unknown product sku {sku!r}")
+
+        with self.maintenance_test_run():
+            self._sale_is_test = True
+            self._test_sale_path = [self.state]
+            loop = self._loop or asyncio.get_running_loop()
+            waiter: asyncio.Future = loop.create_future()
+            self._test_sale_waiter = waiter
+            started_at = time.time()
+            try:
+                self.deposit_funds(round(product.price, 2), payment_method="test")
+                self.select_product(product_index)
+                if (
+                    self.selected_product is not product
+                    or self.state != "interacting_with_user"
+                ):
+                    raise RuntimeError(
+                        f"run_test_sale: could not select {sku!r} for a "
+                        f"test sale (locked out, unavailable, or sold "
+                        f"out; state={self.state!r})"
+                    )
+                outcome, fault_code = await waiter
+                # _fail_vend's "no sellable products" branch forces idle
+                # via machine.set_state(), which (like _expire_session's
+                # own use of it elsewhere) bypasses after_state_change --
+                # so the settled state is appended explicitly here rather
+                # than trusted to have already landed in the path via that
+                # callback alone.
+                if not self._test_sale_path or self._test_sale_path[-1] != self.state:
+                    self._test_sale_path.append(self.state)
+                path = list(self._test_sale_path)
+                if self._event_recorder is not None:
+                    # The seam a later task's recorder-side work fills in
+                    # (system-tests design §4): this already lands in the
+                    # existing `events` table via the same generic
+                    # `record()` every other event type uses (`dispense`,
+                    # `vend_failed`, `refund`, ...); nothing in
+                    # services/event_recorder.py needed changing for that.
+                    self._event_recorder.record(
+                        "test_run",
+                        value=round(time.time() - started_at, 3),
+                        metadata={
+                            "sku": sku,
+                            "outcome": outcome,
+                            "fault_code": fault_code,
+                            "path": path,
+                        },
+                    )
+            finally:
+                self._test_sale_path = None
+                self._test_sale_waiter = None
+                self._sale_is_test = False
+                # Test money is never real money and must never leave via
+                # a refund command (system-tests design §2.3) -- clear it
+                # directly rather than through request_refund. Whether the
+                # sale dispensed (escrow already at 0 -- the deposit was
+                # exactly the price) or failed/timed out (on_vend_failed
+                # restored the price to escrow), this is a no-op in the
+                # former case and the actual clear in the latter.
+                self.credit_escrow = 0.0
+                self.escrow_credits = []
+
+        return TestSaleResult(
+            sku=sku, path=path, outcome=outcome, fault_code=fault_code
+        )
 
     @logger.catch()
     def initiate_virtual_payment(self, amount):
