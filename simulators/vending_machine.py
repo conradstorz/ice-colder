@@ -20,8 +20,9 @@ from datetime import datetime
 import aiomqtt
 from loguru import logger
 
+from contracts.common import COMMAND_PARAM_VALIDATORS, SubsystemCommand
 from contracts.vending_machine import DispenserOutcome
-from simulators.base import ESP32Simulator, FaultDef
+from simulators.base import CommandOutcome, ESP32Simulator, FaultDef
 from services.mqtt_messages import (
     ButtonPress,
     DispenserStatus,
@@ -66,12 +67,14 @@ class VendingMachineSimulator(ESP32Simulator):
     IDLE_MIN = 30.0  # min seconds between customers
     IDLE_MAX = 90.0  # max seconds between customers
     DISPENSE_TIMEOUT = 60.0  # seconds to wait for dispense command
-    SUPPORTED_COMMANDS = ["dispense", "payment/enable"]
+    SUPPORTED_COMMANDS = ["dispense", "water_valve", "payment/enable"]
     BRAND = "ice-colder"
     MODEL = "vending-sim"
 
     def __init__(self, **kwargs):
         super().__init__(subsystem_name="vending", **kwargs)
+        self.register_command("dispense", self._handle_dispense)
+        self.register_command("water_valve", self._handle_water_valve)
         self._apply_products(self.config.products)
         logger.info(f"[vending] {self.num_buttons} products: {self._slot_types}")
         self._dispense_command: asyncio.Queue = asyncio.Queue()
@@ -463,6 +466,62 @@ class VendingMachineSimulator(ESP32Simulator):
         )
         logger.info(f"[vending] Slot {slot}: water dispense complete")
 
+    async def _dispense_slot(self, client: aiomqtt.Client, slot: int) -> None:
+        """Run the correct motor sequence for `slot`.
+
+        The single place that decides ice vs. water and runs it — both the
+        production `cmd/dispense` topic (via `_customer_loop`) and the
+        command channel's `dispense` handler (`_handle_dispense`) call this
+        instead of each carrying their own copy, so the two paths cannot
+        drift apart.
+        """
+        if self.slot_type(slot) == "water":
+            await self._run_water_dispense(client, slot)
+        else:
+            await self._run_ice_dispense(client, slot)
+
+    async def _handle_dispense(
+        self, client: aiomqtt.Client, cmd: SubsystemCommand
+    ) -> dict:
+        """Command-channel `dispense`: same motor code as production `cmd/dispense`.
+
+        Reached through `_handle_command`, so it is acked and covered by the
+        base class's idempotency cache (a duplicate `request_id` replays the
+        cached ack instead of running the motor again).
+        """
+        slot = cmd.params["slot"]
+        await self._dispense_slot(client, slot)
+        return {"slot": slot}
+
+    async def _handle_water_valve(
+        self, client: aiomqtt.Client, cmd: SubsystemCommand
+    ) -> CommandOutcome | dict:
+        """Command-channel `water_valve`: open the valve for `seconds` (1-10).
+
+        `SubsystemCommand`'s own model validator already runs
+        `COMMAND_PARAM_VALIDATORS["water_valve"]` at construction time, so a
+        command built the normal way (including the real MQTT wire path
+        through `_command_loop`, via `SubsystemCommand.model_validate`)
+        can never reach this handler with an out-of-range `seconds` — see
+        the task report for the adjacent issue this uncovers in
+        `simulators/base.py`. This call re-runs that exact same validator
+        (never a second copy of the 1-10 range) as defense-in-depth for any
+        other construction path, and is what makes an out-of-range value
+        ack "rejected" here rather than silently doing nothing.
+        """
+        try:
+            COMMAND_PARAM_VALIDATORS["water_valve"](cmd.params)
+        except ValueError as e:
+            return CommandOutcome(status="rejected", detail=str(e))
+
+        seconds = cmd.params["seconds"]
+        await self._set_hw(client, "water_valve_solenoid", True)
+        await self._set_hw(client, "water_flow_sensor", True)
+        await asyncio.sleep(seconds)
+        await self._set_hw(client, "water_valve_solenoid", False)
+        await self._set_hw(client, "water_flow_sensor", False)
+        return {"seconds": seconds}
+
     async def _listen_for_commands(self, client: aiomqtt.Client):
         """Read dispense commands from the subscription queue."""
         topic = f"{self.topic_prefix}/cmd/dispense"
@@ -533,11 +592,9 @@ class VendingMachineSimulator(ESP32Simulator):
                 logger.info("[vending] Customer walked away")
                 continue
 
-            # Run the appropriate dispense sequence
-            if self.slot_type(slot) == "water":
-                await self._run_water_dispense(client, slot)
-            else:
-                await self._run_ice_dispense(client, slot)
+            # Run the appropriate dispense sequence (shared with the command
+            # channel's `dispense` handler via `_dispense_slot`).
+            await self._dispense_slot(client, slot)
 
             # Repeat customer (10%): buys again immediately
             if random.random() < 0.10:
@@ -552,10 +609,7 @@ class VendingMachineSimulator(ESP32Simulator):
                         self._dispense_command.get(),
                         timeout=self.DISPENSE_TIMEOUT,
                     )
-                    if self.slot_type(slot) == "water":
-                        await self._run_water_dispense(client, slot)
-                    else:
-                        await self._run_ice_dispense(client, slot)
+                    await self._dispense_slot(client, slot)
                 except asyncio.TimeoutError:
                     logger.info("[vending] Repeat customer walked away")
 
@@ -566,6 +620,7 @@ class VendingMachineSimulator(ESP32Simulator):
             tg.create_task(self._listen_for_commands(client))
             tg.create_task(self._customer_loop(client))
             tg.create_task(self._publish_sensors(client))
+            tg.create_task(self._command_loop(client))
 
 
 if __name__ == "__main__":
