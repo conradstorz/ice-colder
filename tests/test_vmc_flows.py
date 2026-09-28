@@ -2777,3 +2777,171 @@ class TestRunTestSale:
         assert pending["methods"] == {"cash_bill": 2.00, "card": 0.50}
         assert pending["price"] == 2.50
         vmc2.cancel_pending_tasks()
+
+
+class TestRunTestSaleRunContext:
+    """Task 13b: run_test_sale's test_run row now carries run_id/user_id/
+    user_name/subsystem/command/params/status/checks/verdict/note (spec
+    §4's metadata shape) instead of the bare sku/outcome/fault_code/path
+    the pre-13b row had, and TestSaleResult carries the same run_id back
+    to the caller -- both are what make a simulated sale's row
+    verdictable via POST /tests/runs/{run_id}/verdict at all.
+    """
+
+    async def test_result_and_row_share_one_run_id_and_ok_status(self):
+        """Reaches run_test_sale's dispensed-outcome path and its metadata
+        dict construction directly (FakeEventRecorder, `rec.events`).
+
+        Mutation proof: reverted the metadata dict to the pre-13b shape
+        (`{"sku": sku, "outcome": outcome, "fault_code": fault_code,
+        "path": path}`, dropping run_id/user_id/user_name/status/etc) and
+        also dropped `run_id=run_id` from the returned TestSaleResult.
+        Result: this test failed with `AttributeError: 'TestSaleResult'
+        object has no attribute 'run_id'` at `result.run_id` -- a real
+        AttributeError, not a wrong-value assertion. Restored both edits
+        -- passed again, and test_dispensed_test_sale_records_test_run_
+        not_sale_or_dispense (unrelated to run_id) kept passing throughout
+        (mutation proof for THAT test lives on it already, above).
+        """
+        vmc, rec, client = _test_run_vmc()
+        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        assert granted is True
+
+        task = asyncio.get_running_loop().create_task(
+            vmc.run_test_sale("ICE-1", user_id="user-1", user_name="Ada Owner")
+        )
+        await asyncio.sleep(0)
+        vmc._process_payment()
+        await vmc._handle_mqtt_dispenser(
+            "hardware/dispenser", {"slot": 0, "state": "complete"}
+        )
+        result = await asyncio.wait_for(task, timeout=5)
+
+        assert result.run_id
+        test_run_events = [e for e in rec.events if e[0] == "test_run"]
+        assert len(test_run_events) == 1
+        meta = test_run_events[0][2]
+        assert meta["run_id"] == result.run_id
+        assert meta["user_id"] == "user-1"
+        assert meta["user_name"] == "Ada Owner"
+        assert meta["command"] == "simulated_sale"
+        assert meta["subsystem"] is None
+        assert meta["params"] == {"sku": "ICE-1"}
+        assert meta["status"] == "ok"
+        assert meta["verdict"] is None
+        assert meta["note"] is None
+
+    async def test_status_is_failed_for_a_non_dispensed_outcome(self):
+        """outcome != "dispensed" -> status "failed" (run_test_sale's own
+        derivation) -- reaches the timeout outcome path, a real one (not a
+        mock), via vmc._dispense_timed_out()."""
+        vmc, rec, client = _test_run_vmc()
+        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        assert granted is True
+
+        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        await asyncio.sleep(0)
+        vmc._process_payment()
+        vmc._dispense_timed_out()
+        result = await asyncio.wait_for(task, timeout=5)
+
+        assert result.outcome == "timeout"
+        test_run_events = [e for e in rec.events if e[0] == "test_run"]
+        assert len(test_run_events) == 1
+        assert test_run_events[0][2]["status"] == "failed"
+        assert test_run_events[0][2]["run_id"] == result.run_id
+
+    async def test_user_id_and_name_default_to_none_for_a_bare_call(self):
+        """Backward compatibility: every pre-13b caller (this file's own
+        TestRunTestSale class above, which never passes user_id/user_name)
+        must keep working unchanged -- reaches run_test_sale's keyword-only
+        defaults directly."""
+        vmc, rec, client = _test_run_vmc()
+        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        assert granted is True
+
+        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        await asyncio.sleep(0)
+        vmc._process_payment()
+        await vmc._handle_mqtt_dispenser(
+            "hardware/dispenser", {"slot": 0, "state": "complete"}
+        )
+        result = await asyncio.wait_for(task, timeout=5)
+
+        test_run_events = [e for e in rec.events if e[0] == "test_run"]
+        assert test_run_events[0][2]["user_id"] is None
+        assert test_run_events[0][2]["user_name"] is None
+        assert result.run_id  # still minted even with no caller identity
+
+    async def test_run_id_is_genuinely_verdictable_via_real_event_recorder(
+        self, tmp_path
+    ):
+        """End-to-end through a REAL EventRecorder (not FakeEventRecorder):
+        proves a simulated sale's row can actually be located and updated
+        by EventRecorder.update_metadata(run_id, ...) -- the same
+        mechanism POST /tests/runs/{run_id}/verdict uses -- and that
+        exactly one test_run row exists for the one call made.
+
+        Mutation proof: changed run_test_sale's `run_id = uuid4().hex` to
+        `run_id = "not-unique"` (a constant). This test still passed on
+        its own (a single call has no collision to expose), but is
+        exactly the row-uniqueness hazard EventRecorder._update_metadata's
+        own docstring calls out ("more than one row matching run_id...
+        updating all of them") -- restored `uuid4().hex` since a constant
+        run_id would silently merge verdicts across unrelated runs the
+        moment two simulated sales ever happened. The genuine failure
+        this test DOES catch: dropping `run_id=run_id` from the returned
+        TestSaleResult (see the class's first test's mutation proof,
+        which reaches that same line) breaks `result.run_id` here too
+        with the same AttributeError.
+        """
+        cfg = ConfigModel()
+        cfg.physical.products = [
+            Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0)
+        ]
+        vmc = VMC(config=cfg)
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc.set_mqtt_client(RecordingClient())
+        recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
+        vmc.set_event_recorder(recorder)
+
+        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        assert granted is True
+
+        task = asyncio.get_running_loop().create_task(
+            vmc.run_test_sale("ICE-1", user_id="user-1", user_name="Ada")
+        )
+        await asyncio.sleep(0)
+        vmc._process_payment()
+        await vmc._handle_mqtt_dispenser(
+            "hardware/dispenser", {"slot": 0, "state": "complete"}
+        )
+        result = await asyncio.wait_for(task, timeout=5)
+        recorder.flush()
+
+        conn = sqlite3.connect(str(tmp_path / "events.db"))
+        try:
+            rows = conn.execute(
+                "SELECT metadata FROM events WHERE event_type='test_run'"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert len(rows) == 1  # exactly one row for this one simulated sale
+        meta = json.loads(rows[0][0])
+        assert meta["run_id"] == result.run_id
+        assert meta["verdict"] is None
+
+        recorder.update_metadata(result.run_id, verdict="pass", note="tasted fine")
+        recorder.flush()
+
+        conn = sqlite3.connect(str(tmp_path / "events.db"))
+        try:
+            rows = conn.execute(
+                "SELECT metadata FROM events WHERE event_type='test_run'"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert len(rows) == 1  # verdict updated IN PLACE, not a second row
+        meta = json.loads(rows[0][0])
+        assert meta["verdict"] == "pass"
+        assert meta["note"] == "tasted fine"

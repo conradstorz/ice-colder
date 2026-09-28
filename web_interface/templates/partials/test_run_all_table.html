@@ -1,0 +1,43 @@
+{# POST /tests/run-all's response: one row per (alive subsystem, command)
+   pair, `ping` then `self_test` in sequence. `refusal` (a lease refusal --
+   the whole run never started) and `rows` (the table) are mutually
+   exclusive: `refusal` is set only when the request never dispatched
+   anything, `rows` otherwise ([] renders the empty-state row, never both
+   states rendered at once). #}
+{% if refusal %}
+<div class="bg-amber-50 rounded-xl border border-amber-200 shadow-sm p-4 text-sm text-amber-800">
+  Refused: {{ refusal }}
+</div>
+{% else %}
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-left text-gray-500 text-xs uppercase tracking-wide">
+        <th class="px-5 py-3">Subsystem</th>
+        <th class="px-5 py-3">Command</th>
+        <th class="px-5 py-3">Status</th>
+        <th class="px-5 py-3">Detail</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-gray-100">
+      {% for row in rows %}
+      <tr>
+        <td class="px-5 py-3 font-mono text-gray-900">{{ row.subsystem }}</td>
+        <td class="px-5 py-3 font-mono text-gray-900">{{ row.command }}</td>
+        <td class="px-5 py-3 font-medium
+          {% if row.status == 'ok' %}text-green-600
+          {% elif row.status == 'timeout' %}text-amber-600
+          {% else %}text-red-600{% endif %}">
+          {{ row.status }}
+        </td>
+        <td class="px-5 py-3 text-gray-500">{{ row.detail or "—" }}</td>
+      </tr>
+      {% else %}
+      <tr>
+        <td class="px-5 py-3 text-gray-400" colspan="4">No alive subsystems to test.</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}

@@ -83,6 +83,10 @@ LEVEL_TESTS = Level(title="Tests", url="/tests", parent=LEVEL_HOME)
 # see web_interface/routes/health.py's subsystem_detail). Task 13b adds its
 # own static sub-level constant(s) here for GET /tests/sale the same way.
 LEVEL_TESTS_LOG = Level(title="Test log", url="/tests/log", parent=LEVEL_TESTS)
+# Task 13b: the simulated-sale SKU picker (GET /tests/sale). No {sku}
+# segment exists under it -- the SKU is a POST form field, never a URL
+# segment (see web_interface/routes/tests_level.py's tests_sale_run).
+LEVEL_TESTS_SALE = Level(title="Simulated sale", url="/tests/sale", parent=LEVEL_TESTS)
 
 LEVEL_USERS = Level(title="Users", url="/users", parent=LEVEL_HOME)
 LEVEL_USERS_NEW = Level(title="New", url="/users/new", parent=LEVEL_USERS)

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Simulated sale · Vending Machine{% endblock %}
+
+{# GET /tests/sale (this page) never takes the maintenance lease -- only
+   POST /tests/sale (submitted below) does, via web_interface/routes/
+   tests_level.py's _acquire_lease_or_refusal. The SKU travels as a plain
+   POST form field (name="sku"), never a URL segment -- see
+   tests_sale_run's own docstring for why that makes a SKU containing "/"
+   need no sku_url_segment/{sku:path} handling here. #}
+{% block body %}
+<div class="space-y-4">
+  <h1 class="text-hero font-semibold text-gray-900">Simulated sale</h1>
+  <p class="text-sm text-gray-500">
+    Runs a full sale through the FSM without recording a production sale.
+  </p>
+
+  {% if not products %}
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-6 text-center">
+    <p class="text-sm text-gray-500">No products in the catalog.</p>
+  </div>
+  {% else %}
+  <form hx-post="/tests/sale" hx-target="#sale-result" hx-swap="innerHTML"
+        class="bg-white rounded-xl border border-gray-200 shadow-sm p-4 space-y-3">
+    <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide"
+           for="sale-sku">Product</label>
+    <select id="sale-sku" name="sku"
+            class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900">
+      {% for product in products %}
+      <option value="{{ product.sku }}">{{ product.slot }} — {{ product.name }} ({{ product.sku }})</option>
+      {% endfor %}
+    </select>
+    <button type="submit"
+            class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">
+      Run sale
+    </button>
+  </form>
+  {% endif %}
+
+  <div id="sale-result"></div>
+</div>
+{% endblock %}

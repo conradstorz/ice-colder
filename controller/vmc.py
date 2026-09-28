@@ -170,12 +170,21 @@ class TestSaleResult:
     still runs the same ``vend_failed`` FSM transition with code
     ``PAY-102`` (see ``_dispense_timed_out``), but is kept as its own,
     distinct outcome here rather than folded into ``"vend_failed"``.
+
+    ``run_id`` (Task 13b, system-tests design §4/§3) is the same id written
+    onto the ``test_run`` log row's metadata below -- carrying it back on
+    the result is what lets the Tests level's ``/tests/sale`` route render
+    a Pass/Fail form that posts to ``/tests/runs/{run_id}/verdict`` without
+    a second query, and is why a simulated sale's log row is verdictable at
+    all (the pre-13b shape had no ``run_id``, so no verdict could ever be
+    recorded against it).
     """
 
     sku: str
     path: list[str]
     outcome: str
     fault_code: str | None = None
+    run_id: str | None = None
 
 
 class VMC:
@@ -1918,9 +1927,24 @@ class VMC:
                 return index, product
         return None, None
 
-    async def run_test_sale(self, sku: str) -> TestSaleResult:
+    async def run_test_sale(
+        self,
+        sku: str,
+        *,
+        user_id: str | None = None,
+        user_name: str | None = None,
+    ) -> TestSaleResult:
         """Run one simulated sale through the real FSM without ever
         recording it as a production sale (system-tests design §2.3).
+
+        ``user_id``/``user_name`` (Task 13b, keyword-only, both default
+        ``None`` so every pre-13b caller -- including tests/test_vmc_flows.py's
+        TestRunTestSale, which calls this with only ``sku`` -- keeps working
+        unchanged) identify who started the run for the ``test_run`` log row
+        below and for the returned ``TestSaleResult.run_id``'s eventual
+        verdict. The web route (``web_interface/routes/tests_level.py``'s
+        ``POST /tests/sale``) is the only production caller that supplies
+        them, from the authenticated ``Principal``.
 
         Requires the maintenance lease: wrapping the whole run in
         ``maintenance_test_run()`` is what enforces this -- its
@@ -1956,6 +1980,12 @@ class VMC:
         product_index, product = self._find_product_by_sku(sku)
         if product is None:
             raise ValueError(f"run_test_sale: unknown product sku {sku!r}")
+
+        # Minted once per call, up front, so both the test_run row below and
+        # the returned TestSaleResult carry the SAME id -- exactly one
+        # run_id per simulated sale, generated here rather than by the
+        # caller, so two concurrent run_test_sale calls can never collide.
+        run_id = uuid4().hex
 
         with self.maintenance_test_run():
             self._sale_is_test = True
@@ -1993,10 +2023,35 @@ class VMC:
                     # `record()` every other event type uses (`dispense`,
                     # `vend_failed`, `refund`, ...); nothing in
                     # services/event_recorder.py needed changing for that.
+                    #
+                    # Task 13b extended this metadata dict (originally just
+                    # sku/outcome/fault_code/path) with run_id/user_id/
+                    # user_name/subsystem/command/params/status/checks/
+                    # verdict/note so this row renders through the SAME
+                    # tests_log.html branch and is reachable by
+                    # POST /tests/runs/{run_id}/verdict -- the pre-13b shape
+                    # had no run_id, so a simulated sale's row could never
+                    # be verdicted at all (see TestSaleResult's docstring
+                    # and this method's own docstring). This is the ONLY
+                    # place a simulated sale writes a test_run row -- one
+                    # row per call, never a second write from the route
+                    # side (web_interface/routes/tests_level.py's
+                    # POST /tests/sale reuses this result's `run_id`
+                    # rather than writing its own row).
                     self._event_recorder.record(
                         "test_run",
                         value=round(time.time() - started_at, 3),
                         metadata={
+                            "run_id": run_id,
+                            "user_id": user_id,
+                            "user_name": user_name,
+                            "subsystem": None,
+                            "command": "simulated_sale",
+                            "params": {"sku": sku},
+                            "status": "ok" if outcome == "dispensed" else "failed",
+                            "checks": None,
+                            "verdict": None,
+                            "note": None,
                             "sku": sku,
                             "outcome": outcome,
                             "fault_code": fault_code,
@@ -2018,7 +2073,7 @@ class VMC:
                 self.escrow_credits = []
 
         return TestSaleResult(
-            sku=sku, path=path, outcome=outcome, fault_code=fault_code
+            sku=sku, path=path, outcome=outcome, fault_code=fault_code, run_id=run_id
         )
 
     @logger.catch()

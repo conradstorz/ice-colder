@@ -1,0 +1,8 @@
+{# A maintenance-lease refusal, rendered inline in place of a result card
+   (task brief: "takes the lease or returns the refusal inline") -- never
+   a 403/error status, since the request itself was well-formed; the
+   dispatcher was simply never reached. Shared by the single-command run,
+   the simulated sale, and (via its own table partial) run-all. #}
+<div class="bg-amber-50 rounded-xl border border-amber-200 shadow-sm p-4 text-sm text-amber-800">
+  Refused: {{ reason }}
+</div>
