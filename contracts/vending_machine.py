@@ -1,5 +1,5 @@
 """
-Shared contract models for the vending-machine ESP32 interface (v0.4.0).
+Shared contract models for the vending-machine ESP32 interface (v0.5.0).
 
 Terminal dispenser outcomes, the fault-code registry, the refund
 command/ack, and the general subsystem-capabilities self-description
@@ -19,7 +19,13 @@ from pydantic import BaseModel, Field
 
 from contracts.common import ChannelDescriptor, _utc_now
 
-CONTRACT_VERSION = "0.4.0"
+# 0.4.0 -> 0.5.0: minor bump, absorbing two additive changes. (1) SVC-102
+# (new FaultCode + FAULT_TABLE entry + PAYMENT_BLOCKING_FAULTS member,
+# six -> seven). (2) Part 3's DATA-101 description wording fix
+# ("Sale journal in use; sales are being written to a fallback file" ->
+# "Sale write failed; held in fallback file") shipped without its own bump
+# at the time; that deferred bump is absorbed here too.
+CONTRACT_VERSION = "0.5.0"
 
 
 class DispenserOutcome(str, Enum):
@@ -64,6 +70,7 @@ class FaultCode(str, Enum):
     COM_102 = "COM-102"
     COM_103 = "COM-103"
     SVC_101 = "SVC-101"
+    SVC_102 = "SVC-102"
     DATA_101 = "DATA-101"
     DATA_102 = "DATA-102"
 
@@ -214,6 +221,11 @@ FAULT_TABLE: dict[FaultCode, FaultSpec] = {
         scope=Scope.machine,
         description="Service door open / service mode",
     ),
+    FaultCode.SVC_102: FaultSpec(
+        severity=Severity.warning,
+        scope=Scope.machine,
+        description="Maintenance test in progress",
+    ),
     FaultCode.DATA_101: FaultSpec(
         severity=Severity.warning,
         scope=Scope.machine,
@@ -235,6 +247,15 @@ FAULT_TABLE: dict[FaultCode, FaultSpec] = {
 # money. Membership here, not severity, is the gate: adding a fault code can
 # never silently stop the machine, because stopping it requires editing this
 # frozenset on purpose.
+#
+# SVC-102 is the one member here that is not `critical`: it is a deliberate
+# operator-held maintenance lease (services/availability.py's `safety` gate),
+# not a hardware failure, and it clears itself the moment the lease is
+# released — the opposite of `critical`'s "never auto-clears". `warning` is
+# the closest fit of the existing severities (it already covers every other
+# machine-scope condition that "alerts the operator" without implying a
+# lockout or an unclearable state); its membership here, not its severity,
+# is what makes it block payment.
 PAYMENT_BLOCKING_FAULTS: frozenset[FaultCode] = frozenset(
     {
         FaultCode.ICE_402,  # trap door failed to close
@@ -243,6 +264,7 @@ PAYMENT_BLOCKING_FAULTS: frozenset[FaultCode] = frozenset(
         FaultCode.ENV_102,  # heater ineffective
         FaultCode.ENV_103,  # heater high-limit tripped
         FaultCode.PWR_102,  # 24 V control supply bad
+        FaultCode.SVC_102,  # maintenance test in progress (operator lease)
     }
 )
 

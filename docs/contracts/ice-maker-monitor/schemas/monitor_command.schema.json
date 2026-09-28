@@ -1,5 +1,5 @@
 {
-  "description": "VMC -> monitor command on cmd/ice_maker.",
+  "description": "VMC -> subsystem command on `vmc/<machine_id>/cmd/<subsystem>`.\n\nWire-identical to the ice-maker monitor's original `MonitorCommand`\n(that name is now an alias for this class): `command` widens from a\nthree-value `Literal` to `str` so every subsystem can share one model,\nand `params` widens from `dict[str, float]` to a plain `dict`. Per-command\nvalidation moves to `COMMAND_PARAM_VALIDATORS` above so widening the type\ndoes not lose `power_cycle`'s or `set_interval`'s existing rules.",
   "properties": {
     "request_id": {
       "maxLength": 64,
@@ -8,18 +8,11 @@
       "type": "string"
     },
     "command": {
-      "enum": [
-        "power_cycle",
-        "force_report",
-        "set_interval"
-      ],
+      "minLength": 1,
       "title": "Command",
       "type": "string"
     },
     "params": {
-      "additionalProperties": {
-        "type": "number"
-      },
       "title": "Params",
       "type": "object"
     },
@@ -33,6 +26,6 @@
     "request_id",
     "command"
   ],
-  "title": "MonitorCommand",
+  "title": "SubsystemCommand",
   "type": "object"
 }

@@ -1,5 +1,5 @@
 {
-  "description": "Monitor -> VMC acknowledgement on cmd/ice_maker/ack.",
+  "description": "Subsystem -> VMC acknowledgement on `.../cmd/<subsystem>/ack`.\n\nEvery field present in the original ice-maker `CommandAck` is unchanged;\n`result` is the only addition (optional, default None), so a present-day\nack payload with no `result` key still validates.",
   "properties": {
     "request_id": {
       "description": "Echoed from the command",
@@ -31,6 +31,18 @@
       ],
       "default": null,
       "title": "Detail"
+    },
+    "result": {
+      "anyOf": [
+        {
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Result"
     },
     "timestamp": {
       "format": "date-time",
