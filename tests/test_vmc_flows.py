@@ -2136,14 +2136,21 @@ class TestMaintenanceLease:
         assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
 
     async def test_idle_timer_never_releases_with_run_in_flight(self):
+        # Deterministic like the take-over tests below: backdate
+        # last_activity_at past the deadline and invoke the real timer
+        # callback directly, instead of overriding
+        # MAINTENANCE_IDLE_TIMEOUT_SECONDS and waiting on a real
+        # asyncio.sleep for the scheduled task to fire.
         vmc = make_vmc2()
         vmc.attach_to_loop(asyncio.get_running_loop())
-        vmc.MAINTENANCE_IDLE_TIMEOUT_SECONDS = 0.01
         granted, _ = vmc.begin_maintenance("user-1", "sess-a")
         assert granted is True
         vmc._maintenance_run_started()
+        vmc.maintenance_hold.last_activity_at -= (
+            vmc.MAINTENANCE_IDLE_TIMEOUT_SECONDS + 1
+        )
 
-        await asyncio.sleep(0.05)
+        vmc._maintenance_idle_expired()
 
         # The timer fired, but a run is in flight: it must defer, not release.
         assert vmc.maintenance_hold is not None
@@ -2153,6 +2160,142 @@ class TestMaintenanceLease:
         vmc._maintenance_run_finished()
 
         assert vmc.maintenance_hold is None
+
+    async def test_idle_timer_releases_lease_when_no_runs_in_flight(self):
+        # Same deterministic mechanism, but the positive case: idle past the
+        # deadline with zero runs in flight must actually release the lease
+        # -- not just flip release_requested. Reaches VMC._maintenance_idle_expired's
+        # zero-runs branch -> _release_maintenance_hold -> clear_fault ->
+        # real Availability._recompute -> VMC.publish_payment_enable -> the
+        # fake MQTT client's publish, via _wired_vmc()'s real Availability.
+        vmc, monitor, avail, published = _wired_vmc()
+        await asyncio.sleep(0)  # let any initial publish settle
+
+        granted, _ = vmc.begin_maintenance("user-1", "sess-a")
+        assert granted is True
+        await asyncio.sleep(0)
+        assert avail.payment_enabled is False
+        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+
+        vmc.maintenance_hold.last_activity_at -= (
+            vmc.MAINTENANCE_IDLE_TIMEOUT_SECONDS + 1
+        )
+
+        vmc._maintenance_idle_expired()
+        await asyncio.sleep(0)  # let the fire-and-forget publish task run
+
+        assert vmc.maintenance_hold is None
+        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        assert avail.payment_enabled is True
+        enable_cmds = [p for t, p in published if t == "cmd/payment/enable"]
+        assert enable_cmds, "expected cmd/payment/enable to have been published"
+        assert enable_cmds[-1].accept is True
+
+    async def test_cancelled_run_still_decrements_runs_in_flight(self):
+        # Reaches maintenance_test_run's `finally` via a real
+        # asyncio.CancelledError propagating out of the `with` body --
+        # Python's context-manager protocol runs `finally` on any exception,
+        # CancelledError (a BaseException) included, but nothing proved that
+        # until now.
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        granted, _ = vmc.begin_maintenance("user-1", "sess-a")
+        assert granted is True
+
+        entered = asyncio.Event()
+
+        async def run():
+            with vmc.maintenance_test_run():
+                assert vmc.maintenance_hold.runs_in_flight == 1
+                entered.set()
+                await asyncio.sleep(3600)  # never elapses; cancelled below
+
+        task = asyncio.get_running_loop().create_task(run())
+        await entered.wait()
+        assert vmc.maintenance_hold.runs_in_flight == 1
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert vmc.maintenance_hold.runs_in_flight == 0
+
+    async def test_concurrent_runs_release_once_on_last_settle(self):
+        # Two genuinely overlapping runs (two tasks both suspended inside
+        # maintenance_test_run, woken via a shared Event) prove the
+        # 0->1->2->1->0 accounting and that release-on-last-settle fires
+        # exactly once -- not when the first of two in-flight runs settles.
+        # The mutation below (dropping the runs_in_flight == 0 guard in
+        # _maintenance_run_finished) makes the first settle release early;
+        # this test's mid-point assertion (still held, still disabled) is
+        # what catches that. It also proves _release_maintenance_hold's
+        # idempotence (via clear_fault's own "already cleared" guard) is
+        # what makes a stray extra release call harmless.
+        vmc, monitor, avail, published = _wired_vmc()
+        await asyncio.sleep(0)
+        granted, _ = vmc.begin_maintenance("user-1", "sess-a")
+        assert granted is True
+        await asyncio.sleep(0)
+        assert avail.payment_enabled is False
+
+        # Two separate gates so the two runs can be settled one at a time,
+        # deterministically -- releasing a single shared Event wakes both
+        # waiters' continuations in the same event-loop pass, which would
+        # let t2 race ahead to completion before the test observes the
+        # mid-point (runs_in_flight == 1, still held) at all.
+        gate1 = asyncio.Event()
+        gate2 = asyncio.Event()
+
+        async def run(gate):
+            with vmc.maintenance_test_run():
+                await gate.wait()
+
+        t1 = asyncio.get_running_loop().create_task(run(gate1))
+        await asyncio.sleep(0)
+        assert vmc.maintenance_hold.runs_in_flight == 1
+
+        t2 = asyncio.get_running_loop().create_task(run(gate2))
+        await asyncio.sleep(0)
+        assert vmc.maintenance_hold.runs_in_flight == 2
+
+        # Request release while both runs are in flight: must defer.
+        result = vmc.end_maintenance("sess-a")
+        assert result is True
+        assert vmc.maintenance_hold is not None
+        assert vmc.maintenance_hold.release_requested is True
+
+        gate1.set()
+        await t1
+        # Only one of the two runs has settled: the lease must still be
+        # held and payment must still be disabled.
+        assert vmc.maintenance_hold is not None
+        assert vmc.maintenance_hold.runs_in_flight == 1
+        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        assert avail.payment_enabled is False
+
+        gate2.set()
+        await t2
+        await asyncio.sleep(0)  # let the release's fire-and-forget publish run
+
+        assert vmc.maintenance_hold is None
+        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        assert avail.payment_enabled is True
+        enable_true = [
+            p for t, p in published if t == "cmd/payment/enable" and p.accept is True
+        ]
+        assert len(enable_true) == 1, (
+            "expected exactly one re-enable, not a double release"
+        )
+
+        # A stray extra release call must be a no-op: clear_fault's own
+        # "already cleared" guard stops it from re-pushing availability, so
+        # no second enable is published.
+        vmc._release_maintenance_hold(by="stray")
+        await asyncio.sleep(0)
+        enable_true_after = [
+            p for t, p in published if t == "cmd/payment/enable" and p.accept is True
+        ]
+        assert len(enable_true_after) == 1
 
     async def test_takeover_refused_with_run_in_flight(self):
         vmc = make_vmc2()
