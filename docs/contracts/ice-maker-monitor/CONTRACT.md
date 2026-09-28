@@ -64,8 +64,10 @@ All topics below are relative to the `vmc/{machine_id}/` prefix.
 | `heartbeat/ice_maker` | monitor → VMC | [`SubsystemHeartbeat`](schemas/subsystem_heartbeat.schema.json) | every 10 s; also the LWT target |
 | `capabilities/ice_maker` | monitor → VMC | [`MonitorCapabilities`](schemas/monitor_capabilities.schema.json) | retained; published on connect and on any channel change |
 | `telemetry/ice_maker/<channel_id>` | monitor → VMC | [`ChannelReading`](schemas/channel_reading.schema.json) | one topic per channel declared in capabilities |
-| `cmd/ice_maker` | VMC → monitor | [`SubsystemCommand`](schemas/subsystem_command.schema.json) (aliased as `MonitorCommand`) | test and control commands with parameters; **answer deadline 10 seconds** |
+| `cmd/ice_maker` | VMC → monitor | [`SubsystemCommand`](schemas/monitor_command.schema.json) (aliased as `MonitorCommand`) | test and control commands with parameters; **answer deadline 10 seconds** |
 | `cmd/ice_maker/ack` | monitor → VMC | [`CommandAck`](schemas/command_ack.schema.json) | exactly one per command, correlated by `request_id`; idempotency: monitor keeps the last 32 `request_id`s and replays cached acks on duplicates |
+
+**Production topics are unchanged.** `sensors/temp/<location>`, `ice_maker/event`, `heartbeat/ice_maker`, `capabilities/ice_maker`, and `telemetry/ice_maker/<channel_id>` all keep working exactly as before, whether or not a monitor implements the command channel. `cmd/ice_maker` / `cmd/ice_maker/ack` are purely additive: a monitor that ignores the command channel keeps making ice and simply advertises no tests (`MonitorCapabilities.commands` stays empty).
 
 ## Message schemas
 
@@ -148,7 +150,7 @@ Retained self-description, published on `capabilities/ice_maker`.
 | `hardware_id` | string \| null | default `null`; added in 1.1.0 | MAC address or serial number of the monitor board |
 | `ip` | string \| null | default `null`; added in 1.1.0 | The monitor's LAN address |
 | `channels` | array of `ChannelDescriptor` | default `[]` | Declared telemetry channels |
-| `commands` | array of string | default `[]` | Which of the contract commands (`power_cycle`, `force_report`, `set_interval`) this monitor supports |
+| `commands` | array of string | default `[]` | Every command this monitor supports: the three standard commands every subsystem answers (`ping`, `self_test`, `force_report`) plus its ice-maker-specific commands (`power_cycle`, `set_interval`) |
 | `timestamp` | string (date-time) | ISO-8601 UTC | Producer-side timestamp |
 
 ### ChannelReading
@@ -165,14 +167,14 @@ One reading on `telemetry/ice_maker/<channel_id>`.
 
 ### SubsystemCommand (formerly MonitorCommand)
 
-Schema: [`schemas/subsystem_command.schema.json`](schemas/subsystem_command.schema.json)
+Schema: [`schemas/monitor_command.schema.json`](schemas/monitor_command.schema.json)
 
 VMC → monitor command, published on `cmd/ice_maker`. The model is shared by all subsystems (see the vending-machine contract's Command channel section); this section documents the ice-maker-specific commands and validation rules.
 
 | Field | Type | Constraints | Description |
 |---|---|---|---|
 | `request_id` | string | required; length 8–64 | Opaque correlation key, unique per command; UUID4 recommended but not enforced. Echoed in the matching `CommandAck` |
-| `command` | string | required | Command name; ice-maker accepts `power_cycle`, `force_report`, `set_interval`, plus the three standard commands (`ping`, `self_test`) |
+| `command` | string | required | Command name; ice-maker accepts `power_cycle` and `set_interval`, plus the three standard commands every subsystem answers (`ping`, `self_test`, `force_report`) |
 | `params` | object | default `{}` | Per-command parameters — see below |
 | `timestamp` | string (date-time) | ISO-8601 UTC | Producer-side timestamp |
 
@@ -185,6 +187,8 @@ VMC → monitor command, published on `cmd/ice_maker`. The model is shared by al
 | `force_report` | *(none)* | — | Standard command; ack status `ok` with no result; monitor republishes all sensors, channels, and heartbeat immediately |
 | `power_cycle` | `dwell_seconds` | `>= 5`, `<= 300` | Power-off duration in seconds. Validation failure returns ack status `rejected` with message `"power_cycle requires dwell_seconds in [5, 300]"`. The monitor also enforces a 300-second lockout: a second `power_cycle` within 300 s of the last one is answered `rejected` with detail `"lockout"` |
 | `set_interval` | `interval_seconds` | `>= 1`, `<= 3600` | Sensor and telemetry publish cadence in seconds (does not apply to the 10 s heartbeat). Validation failure returns ack status `rejected` with message `"set_interval requires interval_seconds in [1, 3600]"`. After a successful `set_interval`, the monitor MUST republish its capabilities with the new interval |
+
+**Both validation-failure outcomes matter.** A `SubsystemCommand` whose `params` fail the bounds above is answered with status `rejected` and the validation message **only when the raw payload carries a usable `request_id`** (a non-empty string) to correlate the ack to. When the raw payload has no usable `request_id` — missing, empty, or not a string — there is nothing to correlate an ack to, so the monitor drops the command with **no ack at all**; the VMC will see this as a timeout after `ACK_TIMEOUT_SECONDS`. A firmware author who implements only the `rejected` half will find some malformed commands never get an answer.
 
 ### CommandAck
 

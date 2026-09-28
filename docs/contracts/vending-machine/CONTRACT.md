@@ -23,6 +23,8 @@ All topics are relative to `vmc/{machine_id}/`.
 | `cmd/payment/enable` | VMC → gateway | `PaymentEnableCommand {accept: bool}` | QoS 1; not retained; the VMC republishes on connect and whenever the `mdb` subsystem returns |
 | `cmd/vending` | VMC → ESP32 | [`SubsystemCommand`](schemas/subsystem_command.schema.json) | QoS 1; test and control commands with per-subsystem params; **answer deadline 10 seconds** |
 | `cmd/vending/ack` | ESP32 → VMC | [`CommandAck`](schemas/command_ack.schema.json) | QoS 1; exactly one per command, correlated by `request_id`; idempotency: ESP32 keeps the last 32 `request_id`s and replays cached acks on duplicates |
+| `cmd/mdb` | VMC → gateway | [`SubsystemCommand`](schemas/subsystem_command.schema.json) | QoS 1; test and control commands; **answer deadline 10 seconds** |
+| `cmd/mdb/ack` | gateway → VMC | [`CommandAck`](schemas/command_ack.schema.json) | QoS 1; exactly one per command, correlated by `request_id`; idempotency: gateway keeps the last 32 `request_id`s and replays cached acks on duplicates |
 | `alerts` | VMC → world | `VMCAlert` (`services/mqtt_messages.py`) | carries a [`FaultCode`](schemas/fault_code.schema.json) when one applies |
 | `capabilities/<subsystem>` | subsystem → VMC | [`SubsystemCapabilities`](schemas/subsystem_capabilities.schema.json) | retained; MUST be published on connect and re-published on any change; `firmware`, `hardware_id`, `ip` identify the board; `commands` lists all commands the firmware supports (test, control, and production together) |
 
@@ -31,6 +33,10 @@ All topics are relative to `vmc/{machine_id}/`.
 Every subsystem (vending, mdb, ice_maker) subscribes to `vmc/<machine_id>/cmd/<subsystem>` and acknowledges on `vmc/<machine_id>/cmd/<subsystem>/ack`. The request and ack payloads are defined by the shared models [`SubsystemCommand`](schemas/subsystem_command.schema.json) and [`CommandAck`](schemas/command_ack.schema.json).
 
 A subsystem **must answer within 10 seconds** (`ACK_TIMEOUT_SECONDS` in `contracts/common.py`), or the VMC treats it as a timeout and may retry with the same `request_id`.
+
+### Production topics are unchanged
+
+**This is the sentence to read first.** The VMC keeps publishing `cmd/dispense` for real sales and `cmd/payment/enable` / `cmd/payment/refund` exactly as before. The command channel is purely additive: firmware that ignores it keeps vending and simply advertises no tests (`SubsystemCapabilities.commands` stays empty).
 
 ### Idempotency requirement on real firmware
 
@@ -48,20 +54,22 @@ An unknown command answered with status `unsupported`.
 
 ### Vending-specific commands
 
-- **`dispense`** — parameters: `{slot: int}`. Runs the slot's motor one cycle, publishing `hardware/dispenser` with the outcome, identical to a production `cmd/dispense` sale. Test mode makes this acked and idempotent.
+- **`dispense`** — parameters: `{slot: int}`. Runs the slot's motor one cycle, publishing `hardware/dispenser` with the outcome, identical to a production `cmd/dispense` sale. Reached through the command channel so it is acked and idempotent, unlike the bare production `cmd/dispense` topic.
 - **`water_valve`** — parameters: `{seconds: int, range 1–10}`. Opens the water valve for the specified duration. Validation failure (`seconds` outside [1, 10]) returns ack status `rejected` with detail message.
+
+### MDB-specific commands
+
+- **`bill_acceptor_test`** — no parameters. Cycles the bill acceptor's stacker motor; ack status `ok` with no result.
+- **`coin_return_test`** — no parameters. Actuates the coin return; ack status `ok` with no result.
+- **`card_reader_test`** — no parameters. Asks the card reader to run its own diagnostic; ack status `ok` with **`result`** carrying the reader's status text as a dict (e.g. `{"status": "reader OK, firmware 3.2"}`) — the only MDB command whose ack carries a `result`.
 
 ### Validation failures
 
-A command whose parameters fail the contract's bounds (e.g., `water_valve` with `seconds: 0` or `11`, or `power_cycle` with `dwell_seconds` outside [5, 300]) is answered with status `rejected` and a detail message—never silence. A payload with no usable `request_id` (e.g., empty or oversized) is dropped because no ack can be correlated.
-
-### Production topics unchanged
-
-The VMC keeps publishing `cmd/dispense` for real sales and `cmd/payment/enable` / `cmd/payment/refund` exactly as before. The command channel is purely additive: firmware that does not implement it simply continues vending and advertises no tests (`SubsystemCapabilities.commands` stays empty).
+A command whose parameters fail the contract's bounds (e.g., `water_valve` with `seconds: 0` or `11`, or `power_cycle` with `dwell_seconds` outside [5, 300]) is answered with status `rejected` and a detail message — never silently. A payload with no usable `request_id` (e.g., empty, missing, or not a string) is dropped with **no ack at all**, because no ack can be correlated to it.
 
 ### Capabilities advertisement
 
-`SubsystemCapabilities.commands` lists **every** command the firmware supports, including the three standard commands (`ping`, `self_test`, `force_report`), the actuator commands (`dispense`, `water_valve`), and any control commands (`set_interval` for the ice maker). The VMC maintains a server-side allowlist, `TESTABLE_COMMANDS` in `contracts/common.py`, containing exactly the standard commands and the test-mode actuator commands; this allowlist is separate from what firmware advertises. A test button in the dashboard appears only for a command that is both allowlisted and advertised by the subsystem, ensuring firmware that ignores the command channel remains unaffected and a crafted request cannot invoke a control command through the test UI.
+`SubsystemCapabilities.commands` lists **every** command the firmware supports, including the three standard commands (`ping`, `self_test`, `force_report`), the actuator commands (`dispense`, `water_valve`, `bill_acceptor_test`, `coin_return_test`, `card_reader_test`), and any control commands (`set_interval` for the ice maker). The VMC maintains a server-side allowlist, `TESTABLE_COMMANDS` in `contracts/common.py`, containing exactly the standard commands and the test-mode actuator commands; this allowlist is separate from what firmware advertises. A test button in the dashboard appears only for a command that is both allowlisted and advertised by the subsystem, ensuring firmware that ignores the command channel remains unaffected and a crafted request cannot invoke a control command through the test UI.
 
 ## Semantics fixed in 0.5.0
 
