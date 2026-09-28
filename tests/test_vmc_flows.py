@@ -2948,33 +2948,22 @@ class TestRunTestSaleRunContext:
 
 
 def _test_run_vmc_with_availability(products=None):
-    """Like `_test_run_vmc`, but with a REAL `services.availability.
-    Availability` wired in -- not a stub -- so `avail.payment_enabled` and
-    the `SVC-102` clear-on-release path are genuine production code, not
-    stand-ins (whole-branch-fix verification rule 4: "Use a VMC with a
-    real Availability attached, or the payment assertions are
-    unreachable").
+    """Like `_test_run_vmc`, but with a REAL, UNMODIFIED
+    `services.availability.Availability` wired in -- not a stub, and with
+    no method overridden -- so `avail.payment_enabled`, `sale_available`/
+    `product_sellable`/`test_sale_sellable`, and the `SVC-102`
+    clear-on-release path are all genuine production code, exactly as
+    `main.py` wires it (whole-branch-fix-2 verification rule 1: "Use a
+    real Availability, wired as main.py wires it. A stub, or an overridden
+    method, makes the branch unreachable and is how this bug survived.").
 
-    Adjacent-bug workaround, reported but NOT fixed here (out of scope --
-    see `.superpowers/sdd/whole-branch-fix-report.md`): a real
-    `Availability`'s `no_critical_fault` row is a Gate.safety row, and
-    `Availability._rows_for` only excludes Gate.alert rows from
-    `sale_available`/`product_sellable` -- so it is scope-blind and folds
-    the maintenance lease's OWN `SVC-102` fault into `product_sellable`
-    exactly like a hardware fault, not just into `payment_enabled`. That
-    means `run_test_sale`'s own `select_product` call can never succeed
-    while ANY lease is held, in a production VMC with a real Availability
-    attached (`main.py` always attaches one) -- a genuine, separate defect
-    unrelated to the concurrency bug these tests target (confirmed against
-    this checkout: `begin_maintenance` followed by `avail.product_sellable
-    (product)` returns `(False, [..., "no_critical_fault"])` even with
-    every other row passing). `product_sellable` is overridden on this ONE
-    instance (not monkeypatched at the class level) purely so these tests
-    can reach `select_product`'s success path and thus the concurrency
-    code path at all; `payment_enabled`/`payment_blocking_reasons` --
-    driven only by the safety rows via `_recompute`, never by this
-    override -- are left completely real, which is what makes the
-    `SVC-102`/`payment_enabled` assertions below trustworthy.
+    `VMC.select_product` calls `Availability.test_sale_sellable` (never
+    `product_sellable`) whenever `self._sale_is_test` is True -- set only
+    inside `run_test_sale`, before it calls `select_product` -- which
+    exempts the maintenance lease's OWN `SVC-102` fault (and only that
+    code) from blocking the sale, so `run_test_sale`'s `select_product`
+    call succeeds against this real, unmodified `Availability` exactly
+    like it must in production.
     """
     cfg = ConfigModel()
     cfg.physical.products = products or [
@@ -2989,8 +2978,146 @@ def _test_run_vmc_with_availability(products=None):
     vmc.set_event_recorder(rec)
     avail = Availability()
     vmc.set_availability(avail)
-    avail.product_sellable = lambda product: (True, [])
+    # Every OTHER row a real Availability starts UNKNOWN (no heartbeats, no
+    # payment device, no bin report have been reported yet) fails a sale
+    # just as hard as a raised fault would -- bring them all to PASS so the
+    # only row left able to block a test sale is the one these tests are
+    # actually about: "no_critical_fault" (SVC-102). Mirrors test_
+    # availability.py's `_all_good`.
+    avail.set_mqtt_connected(True)
+    avail.set_subsystem_alive("vending", True)
+    avail.set_subsystem_alive("mdb", True)
+    avail.set_subsystem_alive("ice_maker", True)
+    avail.set_payment_device("coin_acceptor", "ready")
+    avail.set_hardware_io("bin_half_full", True)
     return vmc, rec, client, avail
+
+
+class TestTestSaleAvailabilityExemption:
+    """whole-branch-fix-2: a maintenance test sale is not blocked by its
+    own SVC-102 fault, while every OTHER payment-blocking fault -- and any
+    CUSTOMER (non-test) sale -- is still blocked exactly as before. Every
+    test here wires a REAL, unmodified `services.availability.Availability`
+    via `_test_run_vmc_with_availability`, wired the way `main.py` wires
+    it -- never a stub, never an overridden method.
+    """
+
+    async def test_run_test_sale_succeeds_with_real_availability_during_lease(self):
+        """THE headline defect. Reaches: VMC.begin_maintenance -> SVC-102
+        raised -> the real Availability.set_active_faults -> run_test_sale
+        -> maintenance_test_run -> select_product -> Availability.
+        test_sale_sellable (the fix) -> the real FSM transition, the real
+        cmd/dispense publish, and _handle_mqtt_dispenser's completion
+        handler. Pre-fix, `select_product` called the unexempted
+        `product_sellable`, hit the lease's own SVC-102 row, and this whole
+        method raised `RuntimeError("...could not select 'ICE-1'... blocked
+        by no_critical_fault...")` -- captured verbatim, along with the
+        every-other-fault and customer-sale tests below, in
+        .superpowers/sdd/whole-branch-fix-2-report.md.
+        """
+        vmc, rec, client, avail = _test_run_vmc_with_availability()
+        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        assert granted is True
+        await asyncio.sleep(0)
+        assert avail.payment_enabled is False
+
+        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        await asyncio.sleep(0)
+        # The assertion that raised pre-fix: selection must have succeeded
+        # against the real, unmodified Availability.
+        assert vmc.state == "interacting_with_user"
+        assert vmc.selected_product is not None
+        assert vmc.selected_product.sku == "ICE-1"
+
+        vmc._process_payment()
+        assert vmc.state == "dispensing"
+        await vmc._handle_mqtt_dispenser(
+            "hardware/dispenser", {"slot": 0, "state": "complete"}
+        )
+        result = await asyncio.wait_for(task, timeout=5)
+        assert result.sku == "ICE-1"
+        assert result.outcome == "dispensed"
+
+    async def test_test_sale_still_blocked_by_another_safety_fault_during_lease(self):
+        """Requirement 3: a genuinely unsafe fault alongside the lease must
+        still refuse a test sale -- proves the exemption is scoped to
+        SVC-102 alone, not to "any fault active during a lease". Reaches
+        VMC._raise_fault(WTR_104) -> Availability.set_active_faults (both
+        SVC-102 and WTR-104 now in the row's blocking set) ->
+        run_test_sale -> select_product -> test_sale_sellable, whose
+        `ignore_faults - active_blocking_codes` is still non-empty, so the
+        row still fails and select_product's post-condition check raises.
+        """
+        vmc, rec, client, avail = _test_run_vmc_with_availability()
+        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        assert granted is True
+        vmc._raise_fault(FaultCode.WTR_104, outcome="leak")
+        await asyncio.sleep(0)
+        assert avail.payment_enabled is False
+        assert set(avail.payment_blocking_reasons()) == {"no_critical_fault"}
+
+        with pytest.raises(RuntimeError, match="could not select"):
+            await vmc.run_test_sale("ICE-1")
+
+        assert vmc.state == "idle"
+        assert vmc.selected_product is None
+
+    async def test_payment_stays_inhibited_and_disable_published_throughout_lease(
+        self,
+    ):
+        """Requirement 4: payment_enabled is False for the WHOLE lease --
+        before, during, and after a test sale runs inside it -- and
+        cmd/payment/enable(accept=False) was actually published. The
+        exemption is about the sale gate only; Availability.
+        test_sale_sellable never touches payment_enabled/
+        payment_blocking_reasons."""
+        vmc, rec, client, avail = _test_run_vmc_with_availability()
+        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        assert granted is True
+        await asyncio.sleep(0)
+        assert avail.payment_enabled is False
+        disables = [
+            p
+            for t, p in client.published
+            if t == "cmd/payment/enable" and p.accept is False
+        ]
+        assert len(disables) >= 1
+
+        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        await asyncio.sleep(0)
+        assert avail.payment_enabled is False  # still inhibited mid-run
+
+        vmc._process_payment()
+        await vmc._handle_mqtt_dispenser(
+            "hardware/dispenser", {"slot": 0, "state": "complete"}
+        )
+        await asyncio.wait_for(task, timeout=5)
+        assert avail.payment_enabled is False  # lease not released yet
+
+        released = vmc.end_maintenance("sess-1")
+        assert released is True
+        await asyncio.sleep(0)
+        assert avail.payment_enabled is True
+
+    async def test_customer_sale_still_blocked_by_lease_is_test_false(self):
+        """Requirement 5: the exemption keys on the SALE's own `is_test`
+        flag (`VMC._sale_is_test`), not on the lease. A plain
+        `select_product` call -- a real customer button press, never going
+        through `run_test_sale`, so `_sale_is_test` stays False -- during
+        an active lease must still be refused by the sale gate exactly as
+        it was before this fix. Reaches `VMC.select_product`'s
+        `else: self._availability.product_sellable(candidate)` branch.
+        """
+        vmc, rec, client, avail = _test_run_vmc_with_availability()
+        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        assert granted is True
+        await asyncio.sleep(0)
+        assert vmc._sale_is_test is False
+
+        vmc.select_product(0)  # a real customer button press, index 0 = ICE-1
+
+        assert vmc.selected_product is None
+        assert vmc.state == "idle"
 
 
 class TestConcurrentTestSaleGuard:

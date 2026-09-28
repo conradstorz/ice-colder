@@ -15,7 +15,7 @@ from typing import Callable, Optional
 
 from loguru import logger
 
-from contracts.vending_machine import PAYMENT_BLOCKING_FAULTS
+from contracts.vending_machine import PAYMENT_BLOCKING_FAULTS, FaultCode
 
 
 class PermissiveState(str, Enum):
@@ -76,6 +76,17 @@ LIVENESS_INPUTS = {
 _PAYMENT_BLOCKING_CODES = {code.value for code in PAYMENT_BLOCKING_FAULTS}
 _BAD_DEVICE_STATES = {"error", "offline"}
 
+# A maintenance TEST sale (VMC.run_test_sale, system-tests design §2.3) is
+# exempt from the sale-blocking effect of the maintenance lease's OWN
+# SVC-102 fault -- and of SVC-102 alone. Program plan §2 goal 8: "A tech can
+# prove a subsystem works without making a sale, and the machine cannot sell
+# while they do it" -- the sale the lease exists to block is a CUSTOMER's;
+# the tech's own simulated sale is the entire point of holding it. No other
+# payment-blocking code is exempted: a leak, a stuck trap door, a bad 24 V
+# supply or a tripped high-limit must still stop a test sale exactly like it
+# would a real one. See `test_sale_sellable`.
+_TEST_SALE_EXEMPT_FAULTS: frozenset[str] = frozenset({FaultCode.SVC_102.value})
+
 
 def _inst(
     name: str,
@@ -111,6 +122,12 @@ class Availability:
         self._bin_half_full: Optional[bool] = None
         self._ice_101_active = False
         self._last_published: Optional[bool] = None
+        # The exact set of PAYMENT_BLOCKING_FAULTS codes currently active,
+        # kept alongside the aggregate "no_critical_fault" row's PASS/FAIL
+        # state so `sale_available`/`product_sellable` can tell "only
+        # SVC-102 is blocking" from "something else is too" without
+        # re-deriving it from the fault list (see `ignore_faults` below).
+        self._active_blocking_codes: frozenset[str] = frozenset()
         rows = [
             _inst("mqtt_connected", Applies.both),
             _inst("vending_alive", Applies.both),
@@ -204,6 +221,7 @@ class Availability:
             for f in faults
             if f.get("scope") == "machine" and f.get("code") in _PAYMENT_BLOCKING_CODES
         )
+        self._active_blocking_codes = frozenset(blocking)
         self._rows["no_critical_fault"].state = (
             PermissiveState.FAIL if blocking else PermissiveState.PASS
         )
@@ -242,19 +260,62 @@ class Availability:
             return [r for r in rows if r.applies_to in (Applies.both, Applies(kind))]
         return rows
 
-    def sale_available(self, kind: str) -> tuple[bool, list[str]]:
-        failing = [
-            r.name for r in self._rows_for(kind) if r.state is not PermissiveState.PASS
-        ]
+    def sale_available(
+        self, kind: str, *, ignore_faults: frozenset[str] = frozenset()
+    ) -> tuple[bool, list[str]]:
+        """Whether a sale of *kind* may proceed right now.
+
+        ``ignore_faults`` exempts specific `PAYMENT_BLOCKING_FAULTS` codes
+        from the aggregate "no_critical_fault" row *only* -- every other
+        row (including every OTHER code bundled into "no_critical_fault")
+        still blocks normally. The row still fails, and still blocks the
+        sale, if any active blocking code is not in ``ignore_faults``. This
+        never touches `payment_enabled`/`payment_blocking_reasons`, which
+        always see the row's real state -- callers that need payment
+        inhibited regardless (every one, today) get that for free. Default
+        empty: existing callers are unaffected. See `test_sale_sellable`,
+        the one production caller that passes anything here.
+        """
+        failing = []
+        for r in self._rows_for(kind):
+            if r.state is PermissiveState.PASS:
+                continue
+            if (
+                r.name == "no_critical_fault"
+                and ignore_faults
+                and not (self._active_blocking_codes - ignore_faults)
+            ):
+                # Every currently-active blocking code is exempted -- this
+                # row would not fail if not for the exempted code(s).
+                continue
+            failing.append(r.name)
         return (not failing, failing)
 
-    def product_sellable(self, product) -> tuple[bool, list[str]]:
-        ok, failing = self.sale_available(getattr(product, "kind", "other"))
+    def product_sellable(
+        self, product, *, ignore_faults: frozenset[str] = frozenset()
+    ) -> tuple[bool, list[str]]:
+        ok, failing = self.sale_available(
+            getattr(product, "kind", "other"), ignore_faults=ignore_faults
+        )
         code = self._lockouts.get(product.sku)
         if code:
             failing = failing + [f"lockout:{code}"]
             ok = False
         return ok, failing
+
+    def test_sale_sellable(self, product) -> tuple[bool, list[str]]:
+        """`product_sellable`, except a maintenance TEST sale is exempt from
+        the sale-blocking effect of the maintenance lease's OWN SVC-102
+        fault -- and of SVC-102 alone (see `_TEST_SALE_EXEMPT_FAULTS`).
+
+        Call this ONLY for a sale with `VMC._sale_is_test` True -- test-ness
+        is a property of the sale being attempted, not of the lease, so a
+        customer sale reached during a lease must keep calling
+        `product_sellable` and be refused normally. `payment_enabled` is
+        never affected by this method: payment stays inhibited for the
+        whole lease regardless of which sale is tried.
+        """
+        return self.product_sellable(product, ignore_faults=_TEST_SALE_EXEMPT_FAULTS)
 
     def payment_blocking_reasons(self) -> list[str]:
         """Failing safety rows — the only reasons payment may be inhibited.

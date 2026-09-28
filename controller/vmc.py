@@ -2194,7 +2194,17 @@ class VMC:
             return
 
         if self._availability:
-            sellable, failing = self._availability.product_sellable(candidate)
+            # A maintenance test sale is exempt from the sale-blocking
+            # effect of its OWN SVC-102 lease fault -- and of SVC-102
+            # alone -- because test-ness lives on the sale
+            # (self._sale_is_test, set only by run_test_sale), not on the
+            # lease: a real customer press reaching this method during a
+            # lease has self._sale_is_test False and is still refused by
+            # product_sellable like any other safety-blocked sale.
+            if self._sale_is_test:
+                sellable, failing = self._availability.test_sale_sellable(candidate)
+            else:
+                sellable, failing = self._availability.product_sellable(candidate)
             if not sellable:
                 reason = failing[0]
                 txn_log.info(
