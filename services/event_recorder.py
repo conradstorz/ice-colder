@@ -84,6 +84,12 @@ class SaleRecordingFailed(Exception):
 # changing at all.
 _CashCollectionJob = namedtuple("_CashCollectionJob", "user_id user_name ts")
 
+# Tags a writer-queue item as an update_metadata job (system-tests design
+# §4): a `test_run` row's JSON metadata blob is merged with `fields` and
+# located by the `run_id` field inside that blob, not by a dedicated
+# column -- see `_update_metadata`.
+_UpdateMetadataJob = namedtuple("_UpdateMetadataJob", "run_id fields")
+
 
 def is_cash(method: str) -> bool:
     """Classify a raw payment-method string as cash or not.
@@ -509,6 +515,28 @@ class EventRecorder:
         )
         logger.debug(f"EventRecorder: cash collection queued for user={user_id}")
 
+    def update_metadata(self, run_id: str, **fields) -> None:
+        """Queue an in-place merge-update of one `test_run` row's metadata,
+        located by `run_id` (system-tests design §4).
+
+        Rides the same writer queue as `record()` and
+        `record_cash_collection()` -- it is executed by the single writer
+        thread against its existing long-lived connection, never a
+        competing one, exactly like every other write here. Returns as
+        soon as the update is queued; call `flush()` first if the caller
+        needs to know it has landed (e.g. before reading it back).
+
+        `fields` is merged into the row's existing metadata dict (e.g.
+        `update_metadata(run_id, verdict="pass", note="ok")` sets those two
+        keys and leaves `checks`, `params`, and everything else the row
+        already carries untouched) -- a wholesale replace would discard the
+        `checks`/`params` the Tests-level log renders. See
+        `_update_metadata` for how the row is located and what happens if
+        `run_id` matches zero or more than one row.
+        """
+        self._queue.put(_UpdateMetadataJob(run_id=run_id, fields=dict(fields)))
+        logger.debug(f"EventRecorder: update_metadata queued for run_id={run_id!r}")
+
     def record_sale(
         self,
         sku: str,
@@ -814,6 +842,8 @@ class EventRecorder:
             try:
                 if isinstance(row, _CashCollectionJob):
                     self._insert_cash_collection(conn, row)
+                elif isinstance(row, _UpdateMetadataJob):
+                    self._update_metadata(conn, row)
                 else:
                     conn.execute(
                         "INSERT INTO events (event_type, timestamp, value, metadata) VALUES (?, ?, ?, ?)",
@@ -826,6 +856,10 @@ class EventRecorder:
                 if isinstance(row, _CashCollectionJob):
                     logger.exception(
                         f"EventRecorder: failed to write cash collection for user={row.user_id}"
+                    )
+                elif isinstance(row, _UpdateMetadataJob):
+                    logger.exception(
+                        f"EventRecorder: failed to update metadata for run_id={row.run_id!r}"
                     )
                 else:
                     logger.exception(f"EventRecorder: failed to write {row[0]}")
@@ -871,6 +905,70 @@ class EventRecorder:
             "VALUES (?, ?, ?, ?)",
             (job.ts, job.user_id, job.user_name, expected_cash),
         )
+        conn.commit()
+
+    def _update_metadata(
+        self, conn: sqlite3.Connection, job: "_UpdateMetadataJob"
+    ) -> None:
+        """Merge `job.fields` into the metadata of the `test_run` row(s)
+        whose metadata's `run_id` key equals `job.run_id`.
+
+        `run_id` lives inside the JSON `metadata` column, not a dedicated
+        column, so the row is located by scanning every `test_run` row and
+        parsing its metadata in Python -- consistent with how the rest of
+        this module treats `metadata`/`methods` as opaque JSON blobs
+        (`_insert_cash_collection` does the same for `sales.methods`)
+        rather than relying on SQLite's optional JSON1 functions.
+
+        No row matching `run_id`: logged as a warning and this is a no-op,
+        never an exception -- the run may simply have aged out of the
+        90-day retention window (behaviour to get right #2), and a verdict
+        POST arriving for a pruned run must not crash the writer thread.
+
+        More than one row matching `run_id`: this should not happen (the
+        Tests level is expected to mint a fresh, unique `run_id` per test
+        run), but if it ever does, every matching row is updated -- the
+        same merge, applied independently by row -- rather than silently
+        updating only one of them and leaving the other stale, and a
+        warning is logged naming the count so the collision itself is
+        visible in the logs rather than only its symptom.
+
+        Merge, not replace: each matched row's existing metadata dict is
+        loaded, updated in place with `job.fields`, and written back --
+        so `update_metadata(run_id, verdict="pass")` leaves `checks`,
+        `params`, and every other key the row already carried untouched.
+        """
+        rows = conn.execute(
+            "SELECT id, metadata FROM events WHERE event_type = 'test_run'"
+        ).fetchall()
+        matches = []
+        for row_id, meta_str in rows:
+            if not meta_str:
+                continue
+            metadata = json.loads(meta_str)
+            if metadata.get("run_id") == job.run_id:
+                matches.append((row_id, metadata))
+
+        if not matches:
+            logger.warning(
+                f"EventRecorder: update_metadata found no test_run row for "
+                f"run_id={job.run_id!r}; the run may have been pruned"
+            )
+            return
+
+        if len(matches) > 1:
+            logger.warning(
+                f"EventRecorder: update_metadata found {len(matches)} "
+                f"test_run rows sharing run_id={job.run_id!r}; updating all "
+                "of them"
+            )
+
+        for row_id, metadata in matches:
+            metadata.update(job.fields)
+            conn.execute(
+                "UPDATE events SET metadata = ? WHERE id = ?",
+                (json.dumps(metadata), row_id),
+            )
         conn.commit()
 
     def prune(self):
@@ -943,7 +1041,18 @@ class EventRecorder:
             }
 
     def get_summary(self, period_hours: int) -> dict:
-        """Return aggregate metrics for the last period_hours."""
+        """Return aggregate metrics for the last period_hours.
+
+        `test_run` rows (system-tests design §4) never affect this: every
+        key `_compute_window` returns is built from a `count()`/`total()`
+        call (or the `heartbeat`-only uptime query) naming one specific
+        `event_type` -- `payment`, `dispense`, `ice_cycle`, `error`,
+        `service_door`, `temp_exceedance`, `heartbeat`, `vend_failed`,
+        `refund` -- never "every event_type" or "everything but heartbeat".
+        `test_run` is simply never one of those names, so a test session's
+        rows (and their `value`, the run's duration) cannot move a KPI no
+        matter how many are written -- there is no filter to bypass.
+        """
         now = time.time()
         # Add 1 ms so events inserted at exactly `now` are included by the
         # half-open interval [start, end) used in _compute_window.
