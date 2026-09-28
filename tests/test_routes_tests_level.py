@@ -1,8 +1,17 @@
-"""Tests for the Tests placeholder level (Task 11): GET /tests.
+"""Tests for the Tests level's shell rendering: GET /tests.
 
-Tests cover: permission gates (run_tests for owner/tech, 403 for secretary/loader),
-rendering inside the shell with the correct breadcrumb (Home › Tests), no forms
-or test actions in the body, and placeholder copy describing future subsystem tests.
+Originally written for Task 11's placeholder body ("Subsystem tests will
+arrive in a later release", no forms or hx-post anywhere in <main>). Task
+13a replaced that placeholder with the real discovery UI (subsystem cards,
+a Run-all button, Simulated sale/Test log tiles, an End/Take-over lease
+banner) -- exactly what this file's own docstring said would eventually
+happen. The permission gate, shell-rendering, breadcrumb and title-tag
+tests below are unaffected by that and still hold; the placeholder-content
+and no-hx-post assertions that described the OLD, intentionally-empty body
+have been updated to describe the new one instead (see
+tests/test_routes_tests.py for the full, detailed coverage of Task 13a's
+actual content -- this file stays focused on the shell-level concerns its
+docstring originally promised).
 
 Fixtures come from tests/conftest.py.
 """
@@ -67,13 +76,18 @@ class TestTestsShellRendering:
 
 
 class TestTestsBodyContent:
-    """GET /tests renders placeholder text about future subsystem tests."""
+    """GET /tests renders the real discovery content (Task 13a)."""
 
-    def test_placeholder_text_present(self, client):
-        """Body contains the placeholder message."""
+    def test_real_content_present(self, client):
+        """Body contains the Run-all action and the Test log tile -- the
+        placeholder copy ("Subsystem tests will arrive in a later
+        release") this test used to check for is gone, superseded by
+        Task 13a per this file's own module docstring."""
         response = client.get("/tests")
         assert response.status_code == 200
-        assert "Subsystem tests will arrive in a later release" in response.text
+        assert "Run all" in response.text
+        assert "Test log" in response.text
+        assert "Subsystem tests will arrive in a later release" not in response.text
 
     def test_heading_present(self, client):
         """Body contains Tests heading."""
@@ -84,9 +98,18 @@ class TestTestsBodyContent:
 
 
 class TestTestsNoActionsMixin:
-    """GET /tests must contain no test actions: no forms, no hx-post in the body.
+    """GET /tests scoped to <main>, excluding shell bar elements (pill
+    hx-get, Lock hx-post) that every level's body legitimately renders
+    around.
 
-    Scoped to <main> body to exclude shell bar elements (pill hx-get, Lock hx-post).
+    Originally asserted the body had NO hx-post/hx-get/form at all, back
+    when /tests was Task 11's inert placeholder. Task 13a gives it real
+    actions (Run-all, End, Take over all POST; the subsystem cards and
+    the Simulated sale/Test log tiles are plain <a> links, and no <form>
+    lives on THIS page -- per-command forms are on /tests/{subsystem}) --
+    see tests/test_routes_tests.py for the detailed coverage of what
+    those actions point at and who may reach them. What still holds here
+    unconditionally: no <form> and no hx-get on /tests itself.
     """
 
     def _extract_main_body(self, html: str) -> str:
@@ -113,16 +136,16 @@ class TestTestsNoActionsMixin:
         """Positive case: the helper must return the real body, not "".
 
         Guards directly against the regression described above: proves
-        the extraction spans the newlines between the placeholder
-        heading and the closing </main> tag and yields non-empty,
-        recognizable content, rather than merely being exercised
-        indirectly through assertions that would also pass on "".
+        the extraction spans the newlines between the body's heading
+        and the closing </main> tag and yields non-empty, recognizable
+        content, rather than merely being exercised indirectly through
+        assertions that would also pass on "".
         """
         response = client.get("/tests")
         assert response.status_code == 200
         body = self._extract_main_body(response.text)
         assert body != "", "Extracted main body must not be empty"
-        assert "Subsystem tests will arrive in a later release" in body
+        assert "Run all" in body
         assert "<h1" in body
 
     def test_no_form_in_body(self, client):
@@ -132,12 +155,15 @@ class TestTestsNoActionsMixin:
         body = self._extract_main_body(response.text)
         assert "<form" not in body, "Tests level must contain no forms"
 
-    def test_no_hx_post_in_body(self, client):
-        """Body contains no hx-post attributes."""
+    def test_run_all_hx_post_in_body(self, client):
+        """Body contains the Run-all button's hx-post -- Task 13a's real
+        actions, unlike Task 11's placeholder this test used to guard
+        the total absence of. The button POSTs to a route Task 13b adds;
+        this only proves the markup points at it."""
         response = client.get("/tests")
         assert response.status_code == 200
         body = self._extract_main_body(response.text)
-        assert "hx-post" not in body, "Tests level must contain no hx-post in body"
+        assert 'hx-post="/tests/run-all"' in body
 
     def test_no_hx_get_in_body(self, client):
         """Body contains no hx-get attributes (the shell bar has one for the pill)."""

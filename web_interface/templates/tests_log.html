@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Test log · Vending Machine{% endblock %}
+{% block body %}
+<div class="space-y-2">
+  <h1 class="text-hero font-semibold text-gray-900">Test log</h1>
+
+  {% if not runs %}
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-6 text-center">
+    <p class="text-sm text-gray-500">No test runs yet.</p>
+  </div>
+  {% endif %}
+
+  {% for run in runs %}
+  {# Each `test_run` event's metadata comes in one of two shapes (see
+     web_interface/routes/tests_level.py's module docstring):
+       - a subsystem command run: subsystem/command/params/run_id/verdict/note
+       - controller/vmc.py's run_test_sale: sku/outcome/fault_code/path,
+         no run_id, no subsystem/command/params at all.
+     Every field is read with a truthiness check before use, never a bare
+     attribute access assumed present, so a row missing subsystem/command/
+     params/run_id (either shape, or a future/malformed third one) renders
+     gracefully instead of raising. #}
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-4 space-y-1">
+    <div class="flex flex-wrap items-center gap-2 text-sm">
+      {% if run.subsystem %}
+        <span class="font-mono text-gray-900">{{ run.subsystem }}</span>
+        <span class="text-gray-300" aria-hidden="true">/</span>
+        <span class="font-mono text-gray-900">{{ run.command or "—" }}</span>
+        {% if run.params %}
+        <span class="text-xs text-gray-400 font-mono">{{ run.params }}</span>
+        {% endif %}
+      {% elif run.sku %}
+        <span class="text-gray-900">Simulated sale</span>
+        <span class="font-mono text-gray-700">{{ run.sku }}</span>
+        {% if run.outcome %}<span class="text-gray-500">{{ run.outcome }}</span>{% endif %}
+        {% if run.fault_code %}<span class="text-red-600 font-mono">{{ run.fault_code }}</span>{% endif %}
+      {% else %}
+        <span class="text-gray-400">Unrecognized test run</span>
+      {% endif %}
+      <span class="text-xs text-gray-400 ml-auto">{{ run.elapsed_seconds|humanize_seconds }} ago</span>
+    </div>
+    <div class="text-sm">
+      <span class="font-medium
+        {% if run.verdict == 'pass' %}text-green-600{% elif run.verdict == 'fail' %}text-red-600{% else %}text-gray-400{% endif %}">
+        verdict: {{ run.verdict if run.verdict else "none" }}
+      </span>
+      {% if run.note %}<span class="text-gray-500">— {{ run.note }}</span>{% endif %}
+    </div>
+  </div>
+  {% endfor %}
+
+</div>
+{% endblock %}
