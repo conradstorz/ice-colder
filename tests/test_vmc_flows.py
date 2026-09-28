@@ -2945,3 +2945,238 @@ class TestRunTestSaleRunContext:
         meta = json.loads(rows[0][0])
         assert meta["verdict"] == "pass"
         assert meta["note"] == "tasted fine"
+
+
+def _test_run_vmc_with_availability(products=None):
+    """Like `_test_run_vmc`, but with a REAL `services.availability.
+    Availability` wired in -- not a stub -- so `avail.payment_enabled` and
+    the `SVC-102` clear-on-release path are genuine production code, not
+    stand-ins (whole-branch-fix verification rule 4: "Use a VMC with a
+    real Availability attached, or the payment assertions are
+    unreachable").
+
+    Adjacent-bug workaround, reported but NOT fixed here (out of scope --
+    see `.superpowers/sdd/whole-branch-fix-report.md`): a real
+    `Availability`'s `no_critical_fault` row is a Gate.safety row, and
+    `Availability._rows_for` only excludes Gate.alert rows from
+    `sale_available`/`product_sellable` -- so it is scope-blind and folds
+    the maintenance lease's OWN `SVC-102` fault into `product_sellable`
+    exactly like a hardware fault, not just into `payment_enabled`. That
+    means `run_test_sale`'s own `select_product` call can never succeed
+    while ANY lease is held, in a production VMC with a real Availability
+    attached (`main.py` always attaches one) -- a genuine, separate defect
+    unrelated to the concurrency bug these tests target (confirmed against
+    this checkout: `begin_maintenance` followed by `avail.product_sellable
+    (product)` returns `(False, [..., "no_critical_fault"])` even with
+    every other row passing). `product_sellable` is overridden on this ONE
+    instance (not monkeypatched at the class level) purely so these tests
+    can reach `select_product`'s success path and thus the concurrency
+    code path at all; `payment_enabled`/`payment_blocking_reasons` --
+    driven only by the safety rows via `_recompute`, never by this
+    override -- are left completely real, which is what makes the
+    `SVC-102`/`payment_enabled` assertions below trustworthy.
+    """
+    cfg = ConfigModel()
+    cfg.physical.products = products or [
+        Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0),
+        Product(sku="WATER-1", name="Water", price=1.00, slot=1),
+    ]
+    vmc = VMC(config=cfg)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    client = RecordingClient()
+    vmc.set_mqtt_client(client)
+    rec = FakeEventRecorder()
+    vmc.set_event_recorder(rec)
+    avail = Availability()
+    vmc.set_availability(avail)
+    avail.product_sellable = lambda product: (True, [])
+    return vmc, rec, client, avail
+
+
+class TestConcurrentTestSaleGuard:
+    """Whole-branch-review Critical defect: a second, overlapping
+    `run_test_sale` call from the same session -- reachable via
+    `web_interface/routes/tests_level.py`'s `_acquire_lease_or_refusal`,
+    which deliberately proceeds WITHOUT reacquiring the lease for a
+    session that already holds it ("a second command run in the same
+    maintenance visit") -- used to silently overwrite the single instance
+    attributes `self._test_sale_waiter` and `self._test_sale_path`
+    (`controller/vmc.py`). That left the FIRST call's `await waiter`
+    suspended forever on a Future nothing would ever resolve again, while
+    its `with self.maintenance_test_run():` was still on the stack --
+    `runs_in_flight` never decremented, pinning the maintenance lease out
+    of service until process restart.
+
+    Every test below drives two `run_test_sale` calls so they GENUINELY
+    overlap -- both reach their own `await waiter` suspension (proved via
+    `task.done() is False`, not merely `task.done()` never checked) before
+    either is settled -- exactly the reachable production shape: neither
+    call has been processed into `dispensing` yet, so `select_product`
+    (called synchronously, no `await` in between) succeeds for BOTH calls,
+    the second silently overwriting `self.selected_product` too, on
+    unfixed code. `_test_run_vmc_with_availability` wires a real
+    `Availability` so `avail.payment_enabled` and the `SVC-102` clear on
+    lease release are real production paths, not stand-ins.
+    """
+
+    async def test_second_overlapping_call_is_refused_first_completes_normally(self):
+        """THE decisive test for the Critical defect. Reaches:
+        `VMC.run_test_sale`'s `_test_sale_in_progress` guard (the new
+        refusal, for call #2) and, end to end for call #1, the ordinary
+        success path -- `maintenance_test_run`, `select_product`, the real
+        `cmd/dispense`-driven `_handle_mqtt_dispenser` completion handler,
+        `end_maintenance`, `_release_maintenance_hold`, `clear_fault`, and
+        `Availability._recompute` (a real `Availability`, not a stub).
+
+        Call #2 asks for a DIFFERENT sku (WATER-1) than call #1 (ICE-1),
+        so this also proves the guard is not accidentally scoped to "same
+        sku only".
+
+        Fail-then-pass evidence (captured against 69d7549's behaviour,
+        before this fix, and reported verbatim in
+        .superpowers/sdd/whole-branch-fix-report.md): call #2 is awaited
+        directly (not as a background task) inside `asyncio.wait_for(...,
+        timeout=5)` specifically so that if it reaches its own `await
+        waiter` and hangs -- which is exactly what happened pre-fix, once
+        call #2's `select_product` succeeded (state was still
+        `interacting_with_user`, not yet `dispensing`) and silently
+        overwrote `self._test_sale_waiter`/`self._test_sale_path` out from
+        under call #1 -- the failure surfaces as a bounded
+        `TimeoutError`/`asyncio.TimeoutError` after 5s, not a stuck test
+        process. `pytest.raises(RuntimeError, match="already in
+        progress")` additionally failed to match on that pre-fix
+        `TimeoutError` at all (it isn't even a `RuntimeError`), so the
+        pre-fix run failed loudly on two independent counts.
+        """
+        vmc, rec, client, avail = _test_run_vmc_with_availability()
+        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        assert granted is True
+        await asyncio.sleep(0)
+        assert avail.payment_enabled is False
+        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+
+        task1 = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        await asyncio.sleep(0)
+        assert vmc.state == "interacting_with_user"
+        assert vmc.selected_product is not None
+        assert vmc.selected_product.sku == "ICE-1"
+        # Genuinely suspended inside `await waiter` -- not merely created,
+        # and not yet processed into `dispensing`.
+        assert task1.done() is False
+        assert vmc.maintenance_hold is not None
+        assert vmc.maintenance_hold.runs_in_flight == 1
+
+        with pytest.raises(RuntimeError, match="already in progress"):
+            await asyncio.wait_for(vmc.run_test_sale("WATER-1"), timeout=5)
+
+        # The refusal must not have perturbed call #1's in-flight state:
+        # still ICE-1 selected, still suspended, still exactly one run
+        # counted.
+        assert task1.done() is False
+        assert vmc.selected_product.sku == "ICE-1"
+        assert vmc.maintenance_hold.runs_in_flight == 1
+
+        vmc._process_payment()
+        assert vmc.state == "dispensing"
+        await vmc._handle_mqtt_dispenser(
+            "hardware/dispenser", {"slot": 0, "state": "complete"}
+        )
+        result = await asyncio.wait_for(task1, timeout=5)
+        assert result.sku == "ICE-1"
+        assert result.outcome == "dispensed"
+
+        assert vmc.maintenance_hold.runs_in_flight == 0
+        assert vmc._test_sale_in_progress is False
+
+        released = vmc.end_maintenance("sess-1")
+        assert released is True
+        assert vmc.maintenance_hold is None
+        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        await asyncio.sleep(0)  # let the release's fire-and-forget publish run
+        assert avail.payment_enabled is True
+
+    async def test_second_overlapping_call_refused_then_first_cancelled(self):
+        """Rule 3's "one being cancelled": call #1 is genuinely suspended
+        in `await waiter` (proved the same way as above), call #2 overlaps
+        and is refused, and THEN call #1's own task is cancelled
+        (simulating a request timeout, a dropped connection, or app
+        shutdown while a simulated sale is mid-flight) -- reaches
+        `maintenance_test_run`'s `finally` and `run_test_sale`'s own new
+        outer `finally` via a real `asyncio.CancelledError` (a
+        `BaseException`) propagating out of `await waiter`, not a mock.
+        """
+        vmc, rec, client, avail = _test_run_vmc_with_availability()
+        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        assert granted is True
+        await asyncio.sleep(0)
+
+        task1 = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        await asyncio.sleep(0)
+        assert task1.done() is False
+        assert vmc.maintenance_hold.runs_in_flight == 1
+
+        with pytest.raises(RuntimeError, match="already in progress"):
+            await asyncio.wait_for(vmc.run_test_sale("WATER-1"), timeout=5)
+        assert task1.done() is False
+        assert vmc.maintenance_hold.runs_in_flight == 1
+
+        task1.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task1
+
+        assert vmc.maintenance_hold.runs_in_flight == 0
+        assert vmc._test_sale_in_progress is False
+        # Cancellation still clears escrow directly (never a real refund
+        # command) and the per-sale flags, same as any other exit path.
+        assert vmc.credit_escrow == 0.0
+        assert vmc._sale_is_test is False
+
+        released = vmc.end_maintenance("sess-1")
+        assert released is True
+        assert vmc.maintenance_hold is None
+        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        await asyncio.sleep(0)
+        assert avail.payment_enabled is True
+
+    async def test_run_raising_before_await_still_clears_guard_for_next_call(self):
+        """Extra guard-safety coverage beyond rule 3's minimum: a plain
+        raised `RuntimeError` from a DIFFERENT `run_test_sale` code path
+        than the guard's own refusal -- the pre-existing "could not
+        select" refusal (locked out), reached before `await waiter` is
+        ever created -- still runs the new outer `finally` and clears
+        `_test_sale_in_progress`. Proven by immediately making a second,
+        real call for a different product and driving it to completion:
+        if the guard had leaked, that second call would be incorrectly
+        refused too, even though the first is fully finished and the
+        calls do not overlap at all.
+        """
+        vmc, rec, client, avail = _test_run_vmc_with_availability()
+        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        assert granted is True
+        vmc._lockouts["ICE-1"] = FaultCode.ICE_401  # forces "could not select"
+
+        with pytest.raises(RuntimeError, match="could not select"):
+            await vmc.run_test_sale("ICE-1")
+
+        assert vmc._test_sale_in_progress is False
+        assert vmc.maintenance_hold.runs_in_flight == 0
+
+        task2 = asyncio.get_running_loop().create_task(vmc.run_test_sale("WATER-1"))
+        await asyncio.sleep(0)
+        assert vmc.state == "interacting_with_user"
+        vmc._process_payment()
+        assert vmc.state == "dispensing"
+        await vmc._handle_mqtt_dispenser(
+            "hardware/dispenser", {"slot": 1, "state": "complete"}
+        )
+        result = await asyncio.wait_for(task2, timeout=5)
+        assert result.sku == "WATER-1"
+        assert result.outcome == "dispensed"
+        assert vmc.maintenance_hold.runs_in_flight == 0
+
+        released = vmc.end_maintenance("sess-1")
+        assert released is True
+        assert vmc.maintenance_hold is None
+        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        await asyncio.sleep(0)
+        assert avail.payment_enabled is True

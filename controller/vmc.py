@@ -284,6 +284,13 @@ class VMC:
         # _after_state_change). Both None whenever no test sale is running.
         self._test_sale_waiter: asyncio.Future | None = None
         self._test_sale_path: list[str] | None = None
+        # True for the duration of exactly one run_test_sale call (set
+        # before maintenance_test_run() is entered, cleared in that call's
+        # own outer `finally`) -- the guard that refuses a second,
+        # overlapping run_test_sale call from ever clobbering the single
+        # _test_sale_waiter/_test_sale_path above. See run_test_sale's own
+        # comments for why run_id uniqueness alone does not do this.
+        self._test_sale_in_progress: bool = False
         # In-memory record-once guard for PAY-104 recovery (Task 14 review
         # finding 3): keys of pending sales this process has already
         # committed via record_sale, checked (and populated) only when the
@@ -1982,99 +1989,153 @@ class VMC:
             raise ValueError(f"run_test_sale: unknown product sku {sku!r}")
 
         # Minted once per call, up front, so both the test_run row below and
-        # the returned TestSaleResult carry the SAME id -- exactly one
-        # run_id per simulated sale, generated here rather than by the
-        # caller, so two concurrent run_test_sale calls can never collide.
+        # the returned TestSaleResult carry the SAME id -- one run_id per
+        # simulated sale, generated here rather than by the caller.
+        #
+        # This id being unique per call does NOT make two concurrent
+        # run_test_sale calls safe on its own: self._test_sale_waiter and
+        # self._test_sale_path (just below) are single instance attributes,
+        # so a second overlapping call would silently overwrite the first
+        # call's waiter, stranding the first `await waiter` on a Future
+        # nothing will ever resolve -- a leaked runs_in_flight that pins
+        # the maintenance lease until process restart. A prior version of
+        # this comment claimed run_id uniqueness ruled that out; it did
+        # not. The `_test_sale_in_progress` guard immediately below is what
+        # actually prevents it, by refusing a second call outright while
+        # one is already running.
         run_id = uuid4().hex
 
-        with self.maintenance_test_run():
-            self._sale_is_test = True
-            self._test_sale_path = [self.state]
-            loop = self._loop or asyncio.get_running_loop()
-            waiter: asyncio.Future = loop.create_future()
-            self._test_sale_waiter = waiter
-            started_at = time.time()
-            try:
-                self.deposit_funds(round(product.price, 2), payment_method="test")
-                self.select_product(product_index)
-                if (
-                    self.selected_product is not product
-                    or self.state != "interacting_with_user"
-                ):
-                    raise RuntimeError(
-                        f"run_test_sale: could not select {sku!r} for a "
-                        f"test sale (locked out, unavailable, or sold "
-                        f"out; state={self.state!r})"
-                    )
-                outcome, fault_code = await waiter
-                # _fail_vend's "no sellable products" branch forces idle
-                # via machine.set_state(), which (like _expire_session's
-                # own use of it elsewhere) bypasses after_state_change --
-                # so the settled state is appended explicitly here rather
-                # than trusted to have already landed in the path via that
-                # callback alone.
-                if not self._test_sale_path or self._test_sale_path[-1] != self.state:
-                    self._test_sale_path.append(self.state)
-                path = list(self._test_sale_path)
-                if self._event_recorder is not None:
-                    # The seam a later task's recorder-side work fills in
-                    # (system-tests design §4): this already lands in the
-                    # existing `events` table via the same generic
-                    # `record()` every other event type uses (`dispense`,
-                    # `vend_failed`, `refund`, ...); nothing in
-                    # services/event_recorder.py needed changing for that.
-                    #
-                    # Task 13b extended this metadata dict (originally just
-                    # sku/outcome/fault_code/path) with run_id/user_id/
-                    # user_name/subsystem/command/params/status/checks/
-                    # verdict/note so this row renders through the SAME
-                    # tests_log.html branch and is reachable by
-                    # POST /tests/runs/{run_id}/verdict -- the pre-13b shape
-                    # had no run_id, so a simulated sale's row could never
-                    # be verdicted at all (see TestSaleResult's docstring
-                    # and this method's own docstring). This is the ONLY
-                    # place a simulated sale writes a test_run row -- one
-                    # row per call, never a second write from the route
-                    # side (web_interface/routes/tests_level.py's
-                    # POST /tests/sale reuses this result's `run_id`
-                    # rather than writing its own row).
-                    self._event_recorder.record(
-                        "test_run",
-                        value=round(time.time() - started_at, 3),
-                        metadata={
-                            "run_id": run_id,
-                            "user_id": user_id,
-                            "user_name": user_name,
-                            "subsystem": None,
-                            "command": "simulated_sale",
-                            "params": {"sku": sku},
-                            "status": "ok" if outcome == "dispensed" else "failed",
-                            "checks": None,
-                            "verdict": None,
-                            "note": None,
-                            "sku": sku,
-                            "outcome": outcome,
-                            "fault_code": fault_code,
-                            "path": path,
-                        },
-                    )
-            finally:
-                self._test_sale_path = None
-                self._test_sale_waiter = None
-                self._sale_is_test = False
-                # Test money is never real money and must never leave via
-                # a refund command (system-tests design §2.3) -- clear it
-                # directly rather than through request_refund. Whether the
-                # sale dispensed (escrow already at 0 -- the deposit was
-                # exactly the price) or failed/timed out (on_vend_failed
-                # restored the price to escrow), this is a no-op in the
-                # former case and the actual clear in the latter.
-                self.credit_escrow = 0.0
-                self.escrow_credits = []
+        # A single machine can only ever be mid one sale anyway -- the FSM
+        # itself is single-sale by construction -- so a second, concurrent
+        # simulated sale (a double-submit, or two browser tabs on the same
+        # session; web_interface/routes/tests_level.py's
+        # `_acquire_lease_or_refusal` deliberately lets a second command
+        # through for a session that already holds the lease) is refused
+        # outright here rather than accommodated. There is no `await`
+        # between the check and the set, so under asyncio's single-threaded
+        # event loop this check-and-set is atomic -- no other coroutine can
+        # run between them and slip past the guard. This MUST happen
+        # before `maintenance_test_run()` is entered below: refusing here
+        # touches neither the lease nor `runs_in_flight`, so a refused
+        # second call can never leak the counter it exists to protect.
+        # Cleared in the `finally` below on every exit path -- success,
+        # a raised exception, or cancellation.
+        if self._test_sale_in_progress:
+            raise RuntimeError(
+                "run_test_sale: a simulated sale is already in progress; "
+                "wait for it to finish (or time out) before starting "
+                "another"
+            )
+        self._test_sale_in_progress = True
+        try:
+            with self.maintenance_test_run():
+                self._sale_is_test = True
+                self._test_sale_path = [self.state]
+                loop = self._loop or asyncio.get_running_loop()
+                waiter: asyncio.Future = loop.create_future()
+                self._test_sale_waiter = waiter
+                started_at = time.time()
+                try:
+                    self.deposit_funds(round(product.price, 2), payment_method="test")
+                    self.select_product(product_index)
+                    if (
+                        self.selected_product is not product
+                        or self.state != "interacting_with_user"
+                    ):
+                        raise RuntimeError(
+                            f"run_test_sale: could not select {sku!r} for a "
+                            f"test sale (locked out, unavailable, or sold "
+                            f"out; state={self.state!r})"
+                        )
+                    outcome, fault_code = await waiter
+                    # _fail_vend's "no sellable products" branch forces idle
+                    # via machine.set_state(), which (like _expire_session's
+                    # own use of it elsewhere) bypasses after_state_change --
+                    # so the settled state is appended explicitly here rather
+                    # than trusted to have already landed in the path via
+                    # that callback alone.
+                    if (
+                        not self._test_sale_path
+                        or self._test_sale_path[-1] != self.state
+                    ):
+                        self._test_sale_path.append(self.state)
+                    path = list(self._test_sale_path)
+                    if self._event_recorder is not None:
+                        # The seam a later task's recorder-side work fills in
+                        # (system-tests design §4): this already lands in
+                        # the existing `events` table via the same generic
+                        # `record()` every other event type uses (`dispense`,
+                        # `vend_failed`, `refund`, ...); nothing in
+                        # services/event_recorder.py needed changing for
+                        # that.
+                        #
+                        # Task 13b extended this metadata dict (originally
+                        # just sku/outcome/fault_code/path) with run_id/
+                        # user_id/user_name/subsystem/command/params/status/
+                        # checks/verdict/note so this row renders through
+                        # the SAME tests_log.html branch and is reachable by
+                        # POST /tests/runs/{run_id}/verdict -- the pre-13b
+                        # shape had no run_id, so a simulated sale's row
+                        # could never be verdicted at all (see
+                        # TestSaleResult's docstring and this method's own
+                        # docstring). This is the ONLY place a simulated
+                        # sale writes a test_run row -- one row per call,
+                        # never a second write from the route side
+                        # (web_interface/routes/tests_level.py's
+                        # POST /tests/sale reuses this result's `run_id`
+                        # rather than writing its own row).
+                        self._event_recorder.record(
+                            "test_run",
+                            value=round(time.time() - started_at, 3),
+                            metadata={
+                                "run_id": run_id,
+                                "user_id": user_id,
+                                "user_name": user_name,
+                                "subsystem": None,
+                                "command": "simulated_sale",
+                                "params": {"sku": sku},
+                                "status": "ok" if outcome == "dispensed" else "failed",
+                                "checks": None,
+                                "verdict": None,
+                                "note": None,
+                                "sku": sku,
+                                "outcome": outcome,
+                                "fault_code": fault_code,
+                                "path": path,
+                            },
+                        )
+                finally:
+                    self._test_sale_path = None
+                    self._test_sale_waiter = None
+                    self._sale_is_test = False
+                    # Test money is never real money and must never leave
+                    # via a refund command (system-tests design §2.3) --
+                    # clear it directly rather than through request_refund.
+                    # Whether the sale dispensed (escrow already at 0 -- the
+                    # deposit was exactly the price) or failed/timed out
+                    # (on_vend_failed restored the price to escrow), this is
+                    # a no-op in the former case and the actual clear in the
+                    # latter.
+                    self.credit_escrow = 0.0
+                    self.escrow_credits = []
 
-        return TestSaleResult(
-            sku=sku, path=path, outcome=outcome, fault_code=fault_code, run_id=run_id
-        )
+            return TestSaleResult(
+                sku=sku,
+                path=path,
+                outcome=outcome,
+                fault_code=fault_code,
+                run_id=run_id,
+            )
+        finally:
+            # Reached on every exit from the guarded body above -- a clean
+            # return, a raised exception (including the "could not select"
+            # RuntimeError before `await waiter` is ever reached), or a
+            # CancelledError from this call's own task being cancelled
+            # while suspended in `await waiter`. Symmetric with the guard
+            # set just above: the next call (from this session, once the
+            # lease is still held, or a future one) sees a clean slate
+            # regardless of how this one ended.
+            self._test_sale_in_progress = False
 
     @logger.catch()
     def initiate_virtual_payment(self, amount):
