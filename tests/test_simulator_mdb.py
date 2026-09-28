@@ -5,6 +5,7 @@ import pytest
 from simulators.mdb_gateway import MDBGatewaySimulator, PaymentStrategy
 from unittest.mock import AsyncMock
 
+from contracts.common import SubsystemCommand, TESTABLE_COMMANDS
 from contracts.vending_machine import PaymentRefundCommand, RefundStatus
 
 
@@ -305,7 +306,13 @@ class TestMDBCapabilities:
     def test_commands_and_contract(self):
         caps = MDBGatewaySimulator().build_capabilities()
         assert caps.subsystem == "mdb"
-        assert caps.commands == ["payment/enable", "refund"]
+        assert caps.commands == [
+            "payment/enable",
+            "refund",
+            "bill_acceptor_test",
+            "coin_return_test",
+            "card_reader_test",
+        ]
         assert caps.contract_version == "0.5.0"
 
 
@@ -355,3 +362,102 @@ class TestPaymentEnable:
         assert sim._vmc_status.get_nowait()["state"] == "interacting_with_user"
         await sim._apply_enable({"accept": True})
         assert sim._vmc_status.empty()
+
+
+class TestActuatorCommands:
+    """§1.3: bill_acceptor_test, coin_return_test, card_reader_test."""
+
+    def _sim(self):
+        sim = MDBGatewaySimulator()
+        sim.publish = AsyncMock()
+        return sim
+
+    def _acks(self, sim, ack_topic="cmd/mdb/ack"):
+        return [
+            call.args[2]
+            for call in sim.publish.await_args_list
+            if call.args[1] == ack_topic
+        ]
+
+    async def _send(self, sim, client, command, request_id):
+        cmd = SubsystemCommand(request_id=request_id, command=command, params={})
+        await sim._handle_command(client, cmd)
+
+    async def test_bill_acceptor_test_acks_ok(self):
+        sim = self._sim()
+        await self._send(sim, AsyncMock(), "bill_acceptor_test", "a" * 16)
+        acks = self._acks(sim)
+        assert len(acks) == 1
+        assert acks[0].status == "ok"
+
+    async def test_coin_return_test_acks_ok(self):
+        sim = self._sim()
+        await self._send(sim, AsyncMock(), "coin_return_test", "b" * 16)
+        acks = self._acks(sim)
+        assert len(acks) == 1
+        assert acks[0].status == "ok"
+
+    async def test_card_reader_test_acks_ok_with_nonempty_result(self):
+        sim = self._sim()
+        await self._send(sim, AsyncMock(), "card_reader_test", "c" * 16)
+        acks = self._acks(sim)
+        assert len(acks) == 1
+        assert acks[0].status == "ok"
+        assert acks[0].result
+        assert isinstance(acks[0].result, dict)
+        assert acks[0].result.get("status_text")
+
+    async def test_card_reader_test_result_reflects_fault_state(self):
+        sim = self._sim()
+        sim._fault_state["card_reader_error"] = {"active": True, "recover_at": 9e9}
+        await sim._on_card_reader_error_activate(AsyncMock())
+        await self._send(sim, AsyncMock(), "card_reader_test", "e" * 16)
+        acks = self._acks(sim)
+        assert "error" in acks[0].result["status_text"]
+
+    async def test_bill_acceptor_duplicate_request_id_does_not_re_actuate(self):
+        sim = self._sim()
+        client = AsyncMock()
+        cmd = SubsystemCommand(
+            request_id="d" * 16, command="bill_acceptor_test", params={}
+        )
+        await sim._handle_command(client, cmd)
+        await sim._handle_command(client, cmd)
+        assert sim.bill_acceptor_test_count == 1
+        assert len(self._acks(sim)) == 2  # cached ack still republished
+
+    async def test_coin_return_duplicate_request_id_does_not_re_actuate(self):
+        sim = self._sim()
+        client = AsyncMock()
+        cmd = SubsystemCommand(
+            request_id="f" * 16, command="coin_return_test", params={}
+        )
+        await sim._handle_command(client, cmd)
+        await sim._handle_command(client, cmd)
+        assert sim.coin_return_test_count == 1
+
+    async def test_card_reader_duplicate_request_id_does_not_re_actuate(self):
+        sim = self._sim()
+        client = AsyncMock()
+        cmd = SubsystemCommand(
+            request_id="g" * 16, command="card_reader_test", params={}
+        )
+        await sim._handle_command(client, cmd)
+        await sim._handle_command(client, cmd)
+        assert sim.card_reader_test_count == 1
+
+    def test_all_three_advertised_in_capabilities(self):
+        caps = MDBGatewaySimulator().build_capabilities()
+        for name in ("bill_acceptor_test", "coin_return_test", "card_reader_test"):
+            assert name in caps.commands
+
+    def test_actuator_names_match_testable_commands_exactly(self):
+        assert {
+            "bill_acceptor_test",
+            "coin_return_test",
+            "card_reader_test",
+        } <= TESTABLE_COMMANDS["mdb"]
+
+    def test_payment_topics_absent_from_testable_commands(self):
+        assert "payment/enable" not in TESTABLE_COMMANDS["mdb"]
+        assert "refund" not in TESTABLE_COMMANDS["mdb"]
