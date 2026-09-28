@@ -1332,3 +1332,151 @@ class TestCommandLoop:
         with pytest.raises(asyncio.CancelledError):
             await task
         client.publish.assert_not_called()
+
+
+class TestCommandLoopValidationRejection:
+    """Defect 1 fix: a raw payload that fails `SubsystemCommand`'s param
+    validator (out-of-range `water_valve`/`power_cycle` params) must not be
+    silently dropped when it carries a usable `request_id` — the loop now
+    acks it "rejected" itself, from inside `_command_loop`'s decode-and-
+    validate, with no handler ever invoked. Uses `ConcreteSimulator`
+    directly (not a real subsystem's handler): `COMMAND_PARAM_VALIDATORS`
+    is enforced by `SubsystemCommand` itself, so this is genuinely shared,
+    generic base-class behaviour, not something specific to any one
+    simulator.
+    """
+
+    @staticmethod
+    async def _start_loop(sim, client):
+        task = asyncio.create_task(sim._command_loop(client))
+        await asyncio.sleep(0.02)
+        topic, queue = next(
+            (t, q)
+            for t, q in sim._subscriptions
+            if t == f"{sim.topic_prefix}/cmd/{sim.subsystem_name}"
+        )
+        return task, topic, queue
+
+    @staticmethod
+    async def _stop_loop(task):
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_out_of_range_water_valve_over_wire_acks_rejected(self):
+        sim = ConcreteSimulator(machine_id="vmc-1")
+        client = AsyncMock()
+        task, topic, queue = await self._start_loop(sim, client)
+
+        queue.put_nowait(
+            (
+                topic,
+                {
+                    "request_id": "req-wv-out01",
+                    "command": "water_valve",
+                    "params": {"seconds": 11},
+                },
+            )
+        )
+        await asyncio.sleep(0.02)
+        await self._stop_loop(task)
+
+        ack_calls = [
+            c for c in client.publish.call_args_list if c[0][0].endswith("/ack")
+        ]
+        assert len(ack_calls) == 1
+        payload = json.loads(ack_calls[0][0][1])
+        assert payload["request_id"] == "req-wv-out01"
+        assert payload["command"] == "water_valve"
+        assert payload["status"] == "rejected"
+        assert "seconds" in payload["detail"]
+
+    @pytest.mark.asyncio
+    async def test_out_of_range_power_cycle_over_wire_acks_rejected(self):
+        """Same fix, a different command — proves it is generic, not
+        water_valve-specific."""
+        sim = ConcreteSimulator(machine_id="vmc-1")
+        client = AsyncMock()
+        task, topic, queue = await self._start_loop(sim, client)
+
+        queue.put_nowait(
+            (
+                topic,
+                {
+                    "request_id": "req-pc-out01",
+                    "command": "power_cycle",
+                    "params": {"dwell_seconds": 4},
+                },
+            )
+        )
+        await asyncio.sleep(0.02)
+        await self._stop_loop(task)
+
+        ack_calls = [
+            c for c in client.publish.call_args_list if c[0][0].endswith("/ack")
+        ]
+        assert len(ack_calls) == 1
+        payload = json.loads(ack_calls[0][0][1])
+        assert payload["request_id"] == "req-pc-out01"
+        assert payload["command"] == "power_cycle"
+        assert payload["status"] == "rejected"
+        assert "dwell_seconds" in payload["detail"]
+
+    @pytest.mark.asyncio
+    async def test_no_usable_request_id_is_dropped_without_an_ack(self):
+        """Documents the deliberate limit: with nothing in the raw payload
+        to correlate an ack to, the loop still just logs and drops."""
+        sim = ConcreteSimulator(machine_id="vmc-1")
+        client = AsyncMock()
+        task, topic, queue = await self._start_loop(sim, client)
+
+        queue.put_nowait((topic, {"command": "water_valve", "params": {"seconds": 11}}))
+        await asyncio.sleep(0.02)
+        assert not task.done()  # still alive
+        await self._stop_loop(task)
+        client.publish.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_loop_survives_bad_commands_and_still_serves_the_next_valid_one(
+        self,
+    ):
+        sim = ConcreteSimulator(machine_id="vmc-1")
+        client = AsyncMock()
+        task, topic, queue = await self._start_loop(sim, client)
+
+        queue.put_nowait(
+            (
+                topic,
+                {
+                    "request_id": "req-wv-out02",
+                    "command": "water_valve",
+                    "params": {"seconds": 11},
+                },
+            )
+        )
+        queue.put_nowait(
+            (
+                topic,
+                {
+                    "request_id": "req-pc-out02",
+                    "command": "power_cycle",
+                    "params": {"dwell_seconds": 4},
+                },
+            )
+        )
+        queue.put_nowait((topic, {"command": "water_valve", "params": {"seconds": 11}}))
+        queue.put_nowait(
+            (topic, {"request_id": "req-ping9999", "command": "ping", "params": {}})
+        )
+        await asyncio.sleep(0.05)
+        await self._stop_loop(task)
+
+        ack_calls = [
+            c for c in client.publish.call_args_list if c[0][0].endswith("/ack")
+        ]
+        # Two rejections + the final ping; the request_id-less payload
+        # produced no ack at all.
+        assert len(ack_calls) == 3
+        statuses = [json.loads(c[0][1])["status"] for c in ack_calls]
+        assert statuses == ["rejected", "rejected", "ok"]

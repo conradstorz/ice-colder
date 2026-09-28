@@ -3,6 +3,7 @@
 
 import asyncio
 import contextlib
+import json
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
@@ -756,17 +757,85 @@ class TestProductionDispenseTopicUnaffected:
         assert dispenser_states == ["motor_active", "fill_complete", "complete"]
 
 
-class TestWaterValveCommand:
-    """`water_valve` acks ok in [1, 10] and rejected outside it.
+class TestCustomerLoopDrivesProductionDispense:
+    """Coverage gap this fix closes: `TestProductionDispenseTopicUnaffected`
+    above calls `_dispense_slot` directly and never actually runs
+    `_customer_loop` — the one function Task 7's refactor changed on the
+    production path real sales use. This drives `_customer_loop` for real,
+    together with `_listen_for_commands` (the same pairing
+    `run_simulation`'s TaskGroup wires up), and feeds a slot through the
+    genuine `cmd/dispense` subscription queue, the way the VMC's real
+    response would arrive over MQTT."""
 
-    Rejection is implemented in the handler (`CommandOutcome(status=
-    "rejected", ...)`), not left to the contract's registry alone: see
-    `_handle_water_valve`'s docstring and the task report for why the
-    registry's own enforcement (`SubsystemCommand`'s model validator)
-    cannot, by itself, produce a "rejected" ack over the real command loop —
-    it raises during `SubsystemCommand.model_validate` inside
-    `_command_loop`, which is caught and the message silently dropped
-    before any handler runs.
+    @pytest.mark.asyncio
+    async def test_customer_loop_dispenses_a_real_cmd_dispense_message(
+        self, monkeypatch
+    ):
+        sim = _make_sim()
+        client = AsyncMock()
+        dispenser_states = []
+
+        async def capture_publish(c, topic, payload):
+            if topic == "hardware/dispenser":
+                dispenser_states.append(payload.state)
+
+        sim.publish = capture_publish
+
+        # Keep the customer deterministic: no indecisive detour and no
+        # repeat buy — both gated on random.random() in _customer_loop —
+        # so the loop reaches exactly one _dispense_slot call.
+        monkeypatch.setattr("simulators.vending_machine.random.random", lambda: 0.99)
+
+        real_sleep = asyncio.sleep
+
+        async def fast_sleep(_seconds):
+            await real_sleep(0)  # still yields, just doesn't wait for real
+
+        with patch("simulators.vending_machine.asyncio.sleep", new=fast_sleep):
+            listener = asyncio.create_task(sim._listen_for_commands(client))
+            customer = asyncio.create_task(sim._customer_loop(client))
+            try:
+                dispense_topic = f"{sim.topic_prefix}/cmd/dispense"
+                queue = None
+                for _ in range(500):
+                    queue = next(
+                        (q for t, q in sim._subscriptions if t == dispense_topic),
+                        None,
+                    )
+                    if queue is not None:
+                        break
+                    await asyncio.sleep(0)
+                assert queue is not None, "listener never subscribed to cmd/dispense"
+
+                # The VMC's real dispense response, arriving on the
+                # production topic exactly as the broker would deliver it.
+                await queue.put((dispense_topic, {"slot": 0}))
+
+                for _ in range(2000):
+                    if dispenser_states[-1:] == ["complete"]:
+                        break
+                    await asyncio.sleep(0)
+            finally:
+                listener.cancel()
+                customer.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await listener
+                with contextlib.suppress(asyncio.CancelledError):
+                    await customer
+
+        # Slot 0 is the ice product in _make_config.
+        assert dispenser_states == ["motor_active", "fill_complete", "complete"]
+
+
+class TestWaterValveCommand:
+    """`water_valve` acks ok in [1, 10]; outside it, `_command_loop`
+    (`simulators/base.py`) now acks "rejected" itself from the raw wire
+    payload before a `SubsystemCommand` — and therefore `_handle_water_valve`
+    — ever exists. `_handle_water_valve` has no defense-in-depth check of
+    its own any more (see its docstring); the out-of-range cases below are
+    proven over the real wire path (`_command_loop`), not by constructing an
+    out-of-range command directly, since that construction now fails before
+    reaching this simulator at all.
     """
 
     @pytest.mark.asyncio
@@ -794,41 +863,111 @@ class TestWaterValveCommand:
         ack = sim.publish.await_args_list[-1].args[2]
         assert ack.status == "ok"
 
+    @staticmethod
+    async def _start_command_loop(sim, client):
+        task = asyncio.create_task(sim._command_loop(client))
+        await asyncio.sleep(0.02)
+        topic, queue = next(
+            (t, q)
+            for t, q in sim._subscriptions
+            if t == f"{sim.topic_prefix}/cmd/vending"
+        )
+        return task, topic, queue
+
     @pytest.mark.asyncio
-    async def test_seconds_zero_acks_rejected(self):
+    async def test_seconds_zero_over_the_wire_acks_rejected_by_the_loop(self):
+        """Out-of-range `seconds` reaches this simulator only as a raw wire
+        payload now — `_command_loop` (`simulators/base.py`) acks
+        "rejected" itself before a `SubsystemCommand`, and therefore
+        `_handle_water_valve`, ever exists."""
         sim = _make_sim()
         client = AsyncMock()
-        sim.publish = AsyncMock()
-        cmd = _make_command("water_valve", {"seconds": 0})
-        await sim._handle_command(client, cmd)
+        handler = AsyncMock(wraps=sim._handle_water_valve)
+        sim._commands["water_valve"] = handler
 
-        ack = sim.publish.await_args_list[-1].args[2]
-        assert ack.status == "rejected"
+        task, topic, queue = await self._start_command_loop(sim, client)
+        queue.put_nowait(
+            (
+                topic,
+                {
+                    "request_id": "req-wv-wire01",
+                    "command": "water_valve",
+                    "params": {"seconds": 0},
+                },
+            )
+        )
+        await asyncio.sleep(0.02)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        handler.assert_not_awaited()  # the loop rejected it; the handler never ran
+        ack_calls = [
+            c for c in client.publish.call_args_list if c[0][0].endswith("/ack")
+        ]
+        assert len(ack_calls) == 1
+        payload = json.loads(ack_calls[0][0][1])
+        assert payload["status"] == "rejected"
+        assert payload["request_id"] == "req-wv-wire01"
 
     @pytest.mark.asyncio
-    async def test_seconds_eleven_acks_rejected(self):
+    async def test_seconds_eleven_over_the_wire_acks_rejected_by_the_loop(self):
         sim = _make_sim()
         client = AsyncMock()
-        sim.publish = AsyncMock()
-        cmd = _make_command("water_valve", {"seconds": 11})
-        await sim._handle_command(client, cmd)
+        handler = AsyncMock(wraps=sim._handle_water_valve)
+        sim._commands["water_valve"] = handler
 
-        ack = sim.publish.await_args_list[-1].args[2]
-        assert ack.status == "rejected"
+        task, topic, queue = await self._start_command_loop(sim, client)
+        queue.put_nowait(
+            (
+                topic,
+                {
+                    "request_id": "req-wv-wire02",
+                    "command": "water_valve",
+                    "params": {"seconds": 11},
+                },
+            )
+        )
+        await asyncio.sleep(0.02)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        handler.assert_not_awaited()
+        ack_calls = [
+            c for c in client.publish.call_args_list if c[0][0].endswith("/ack")
+        ]
+        assert len(ack_calls) == 1
+        payload = json.loads(ack_calls[0][0][1])
+        assert payload["status"] == "rejected"
+        assert payload["request_id"] == "req-wv-wire02"
 
     @pytest.mark.asyncio
     async def test_rejected_seconds_never_opens_the_valve(self):
         """Guard against a fixture that makes the rejection branch vacuous:
         prove the hardware was never touched, not just that the ack says
-        'rejected'."""
+        'rejected' — over the real wire path, since the handler itself no
+        longer has a rejection branch to exercise directly."""
         sim = _make_sim()
         client = AsyncMock()
-        sim.publish = AsyncMock()
         set_hw = AsyncMock(wraps=sim._set_hw)
         sim._set_hw = set_hw
 
-        cmd = _make_command("water_valve", {"seconds": 0})
-        await sim._handle_command(client, cmd)
+        task, topic, queue = await self._start_command_loop(sim, client)
+        queue.put_nowait(
+            (
+                topic,
+                {
+                    "request_id": "req-wv-wire03",
+                    "command": "water_valve",
+                    "params": {"seconds": 0},
+                },
+            )
+        )
+        await asyncio.sleep(0.02)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
         set_hw.assert_not_awaited()
 

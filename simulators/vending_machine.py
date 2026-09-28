@@ -20,9 +20,9 @@ from datetime import datetime
 import aiomqtt
 from loguru import logger
 
-from contracts.common import COMMAND_PARAM_VALIDATORS, SubsystemCommand
+from contracts.common import SubsystemCommand
 from contracts.vending_machine import DispenserOutcome
-from simulators.base import CommandOutcome, ESP32Simulator, FaultDef
+from simulators.base import ESP32Simulator, FaultDef
 from services.mqtt_messages import (
     ButtonPress,
     DispenserStatus,
@@ -495,25 +495,21 @@ class VendingMachineSimulator(ESP32Simulator):
 
     async def _handle_water_valve(
         self, client: aiomqtt.Client, cmd: SubsystemCommand
-    ) -> CommandOutcome | dict:
+    ) -> dict:
         """Command-channel `water_valve`: open the valve for `seconds` (1-10).
 
-        `SubsystemCommand`'s own model validator already runs
+        `SubsystemCommand`'s own model validator runs
         `COMMAND_PARAM_VALIDATORS["water_valve"]` at construction time, so a
-        command built the normal way (including the real MQTT wire path
-        through `_command_loop`, via `SubsystemCommand.model_validate`)
-        can never reach this handler with an out-of-range `seconds` — see
-        the task report for the adjacent issue this uncovers in
-        `simulators/base.py`. This call re-runs that exact same validator
-        (never a second copy of the 1-10 range) as defense-in-depth for any
-        other construction path, and is what makes an out-of-range value
-        ack "rejected" here rather than silently doing nothing.
+        command reaching this handler through the real wire path
+        (`_command_loop` -> `SubsystemCommand.model_validate` ->
+        `_handle_command`) always has `seconds` in [1, 10] already. An
+        out-of-range value never gets this far any more: `_command_loop`
+        (`simulators/base.py`) now acks it "rejected" itself, from the raw
+        payload, before a `SubsystemCommand` instance — and therefore this
+        handler — ever exists. This handler no longer re-checks the range;
+        doing so would only re-validate something the loop has already
+        guaranteed.
         """
-        try:
-            COMMAND_PARAM_VALIDATORS["water_valve"](cmd.params)
-        except ValueError as e:
-            return CommandOutcome(status="rejected", detail=str(e))
-
         seconds = cmd.params["seconds"]
         await self._set_hw(client, "water_valve_solenoid", True)
         await self._set_hw(client, "water_flow_sensor", True)

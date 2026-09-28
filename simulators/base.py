@@ -585,6 +585,59 @@ class ESP32Simulator(ABC):
             f"{ack.status}"
         )
 
+    async def _handle_invalid_command(
+        self, client: aiomqtt.Client, data, error: ValidationError
+    ) -> None:
+        """A raw payload that failed `SubsystemCommand.model_validate` — most
+        commonly an out-of-range param such as `water_valve`'s `seconds` or
+        `power_cycle`'s `dwell_seconds` (`COMMAND_PARAM_VALIDATORS`, enforced
+        by the model's own `model_validator` *before* an instance exists).
+
+        Previously this was a silent drop: the dispatcher would wait out the
+        full `ACK_TIMEOUT_SECONDS`, retry, wait again, then raise
+        `CommandTimeout` — where the operator should have seen an immediate
+        "rejected" with the validation message (spec §6, §1.1).
+
+        Publishing that ack requires a `request_id` to correlate it to —
+        which lives only in the raw, not-yet-validated payload. When the
+        payload gives us a usable one (a non-empty string under
+        `"request_id"`), we ack "rejected" with the validation message as
+        `detail`, using the payload's own `"command"` value when present
+        (falling back to `"unknown"` when it is missing or not a string —
+        there is no other reasonable label). When there is nothing usable
+        to correlate to — unparseable JSON reaching here as a non-dict,
+        no `"request_id"` key, or a `"request_id"` that is not a non-empty
+        string — there is no ack to address, so this falls back to the
+        original log-and-drop.
+
+        Deliberately *not* written into `self._acked`: that cache exists so
+        a dispatcher retry (same `request_id`) replays a handler's *side
+        effect* instead of repeating it. A validation rejection never ran a
+        handler and has no side effect to protect against — it is a pure
+        function of the payload, so a retry with the same `request_id` just
+        re-validates (cheap) and gets the same "rejected" ack again. Caching
+        it would only add bookkeeping (and cross-command `request_id` cache
+        pressure) for no behavioural benefit.
+        """
+        logger.warning(f"[{self.subsystem_name}] Invalid command dropped: {error}")
+        request_id = data.get("request_id") if isinstance(data, dict) else None
+        if not isinstance(request_id, str) or not request_id:
+            return
+        command = data.get("command") if isinstance(data, dict) else None
+        if not isinstance(command, str) or not command:
+            command = "unknown"
+        ack = CommandAck(
+            request_id=request_id,
+            command=command,
+            status="rejected",
+            detail=str(error),
+        )
+        await self.publish(client, f"cmd/{self.subsystem_name}/ack", ack)
+        logger.info(
+            f"[{self.subsystem_name}] Command {command} ({request_id}): "
+            "rejected (validation)"
+        )
+
     async def _command_loop(self, client: aiomqtt.Client) -> None:
         """Subscribe to cmd/<subsystem> and dispatch each command as it arrives.
 
@@ -603,7 +656,7 @@ class ESP32Simulator(ABC):
             try:
                 cmd = SubsystemCommand.model_validate(data)
             except ValidationError as e:
-                logger.warning(f"[{self.subsystem_name}] Invalid command dropped: {e}")
+                await self._handle_invalid_command(client, data, e)
                 continue
             await self._handle_command(client, cmd)
 
