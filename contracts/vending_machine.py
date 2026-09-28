@@ -217,7 +217,7 @@ FAULT_TABLE: dict[FaultCode, FaultSpec] = {
     FaultCode.DATA_101: FaultSpec(
         severity=Severity.warning,
         scope=Scope.machine,
-        description="Sale journal in use; sales are being written to a fallback file",
+        description="Sale write failed; held in fallback file",
     ),
     FaultCode.DATA_102: FaultSpec(
         severity=Severity.warning,

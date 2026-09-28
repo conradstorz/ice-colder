@@ -197,10 +197,7 @@ def test_data_101_is_an_alert_class_machine_warning_for_the_sale_journal():
     assert FaultCode.DATA_101.value == "DATA-101"
     assert spec.severity is Severity.warning
     assert spec.scope is Scope.machine
-    assert (
-        spec.description
-        == "Sale journal in use; sales are being written to a fallback file"
-    )
+    assert spec.description == "Sale write failed; held in fallback file"
 
 
 def test_data_102_is_an_alert_class_machine_warning_for_the_event_db_reset():
