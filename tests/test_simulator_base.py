@@ -13,9 +13,12 @@ from config.config_model import ConfigModel
 from contracts.vending_machine import SubsystemCapabilities
 from services.build_info import BUILD_INFO
 from services.mqtt_client import PROTOCOL_VERSIONS
+from contracts.common import SubsystemCommand
 from simulators.base import (
+    CommandOutcome,
     ESP32Simulator,
     FaultDef,
+    IDEMPOTENCY_CACHE_SIZE,
     RECOVERY_RANGES,
     RECOVERY_RETRY_SECONDS,
 )
@@ -981,3 +984,351 @@ class TestSimulatorProtocolVersion:
             cfg.mqtt.protocol_version = version
             captured = await self._connect_kwargs(monkeypatch, cfg)
             assert captured["protocol"] is expected
+
+
+def _cmd(request_id: str, command: str, params: dict | None = None) -> SubsystemCommand:
+    return SubsystemCommand(request_id=request_id, command=command, params=params or {})
+
+
+class TestStandardCommands:
+    @pytest.mark.asyncio
+    async def test_ping_acks_ok(self):
+        sim = ConcreteSimulator(machine_id="vmc-1")
+        client = AsyncMock()
+        await sim._handle_command(client, _cmd("req-ping001", "ping"))
+        client.publish.assert_called_once()
+        topic, payload_str = client.publish.call_args[0]
+        assert topic == "vmc/vmc-1/cmd/test_subsystem/ack"
+        payload = json.loads(payload_str)
+        assert payload["status"] == "ok"
+        assert payload["result"] is None
+
+    @pytest.mark.asyncio
+    async def test_unknown_command_acks_unsupported(self):
+        sim = ConcreteSimulator()
+        client = AsyncMock()
+        await sim._handle_command(client, _cmd("req-unk0001", "not_a_real_command"))
+        payload = json.loads(client.publish.call_args[0][1])
+        assert payload["status"] == "unsupported"
+
+
+class TestSelfTest:
+    def _register_two_faults(self, sim):
+        for name in ("fault_a", "fault_b"):
+            sim.register_fault(
+                FaultDef(
+                    name=name,
+                    category="short",
+                    probability=0.0,
+                    on_activate=AsyncMock(),
+                    on_recover=AsyncMock(),
+                    message=f"{name} message",
+                )
+            )
+
+    @pytest.mark.asyncio
+    async def test_one_check_per_fault_none_active(self):
+        sim = ConcreteSimulator()
+        self._register_two_faults(sim)
+        client = AsyncMock()
+        await sim._handle_command(client, _cmd("req-st000001", "self_test"))
+        payload = json.loads(client.publish.call_args[0][1])
+        checks = payload["result"]["checks"]
+        assert len(checks) == 2  # guard: the assertion below must not be vacuous
+        assert all(c["pass"] for c in checks)
+
+    @pytest.mark.asyncio
+    async def test_fails_exactly_the_injected_fault(self):
+        sim = ConcreteSimulator()
+        self._register_two_faults(sim)
+        sim._fault_state["fault_a"]["active"] = True
+        client = AsyncMock()
+        await sim._handle_command(client, _cmd("req-st000002", "self_test"))
+        checks = json.loads(client.publish.call_args[0][1])["result"]["checks"]
+        assert len(checks) == 2
+        by_name = {c["name"]: c for c in checks}
+        assert by_name["fault_a"]["pass"] is False
+        assert by_name["fault_b"]["pass"] is True
+
+    @pytest.mark.asyncio
+    async def test_injecting_different_fault_changes_which_check_fails(self):
+        sim = ConcreteSimulator()
+        self._register_two_faults(sim)
+        client = AsyncMock()
+
+        sim._fault_state["fault_a"]["active"] = True
+        await sim._handle_command(client, _cmd("req-st000003", "self_test"))
+        first = {
+            c["name"]: c["pass"]
+            for c in json.loads(client.publish.call_args[0][1])["result"]["checks"]
+        }
+        assert first == {"fault_a": False, "fault_b": True}
+
+        sim._fault_state["fault_a"]["active"] = False
+        sim._fault_state["fault_b"]["active"] = True
+        await sim._handle_command(client, _cmd("req-st000004", "self_test"))
+        second = {
+            c["name"]: c["pass"]
+            for c in json.loads(client.publish.call_args[0][1])["result"]["checks"]
+        }
+        assert second == {"fault_a": True, "fault_b": False}
+        assert first != second  # proves the check reflects *current* state
+
+
+class TestForceReport:
+    @pytest.mark.asyncio
+    async def test_republishes_heartbeat_and_acks_ok(self):
+        sim = ConcreteSimulator(machine_id="vmc-1")
+        client = AsyncMock()
+        await sim._handle_command(client, _cmd("req-fr000001", "force_report"))
+        topics = [call[0][0] for call in client.publish.call_args_list]
+        assert "vmc/vmc-1/heartbeat/test_subsystem" in topics
+        assert "vmc/vmc-1/cmd/test_subsystem/ack" in topics
+        ack_payload = json.loads(client.publish.call_args_list[-1][0][1])
+        assert ack_payload["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_calls_subclass_republish_hook(self):
+        sim = ConcreteSimulator()
+        sim._force_report_extra = AsyncMock()
+        client = AsyncMock()
+        await sim._handle_command(client, _cmd("req-fr000002", "force_report"))
+        sim._force_report_extra.assert_awaited_once_with(client)
+
+
+class TestIdempotencyCache:
+    @pytest.mark.asyncio
+    async def test_duplicate_request_id_runs_side_effect_once(self):
+        sim = ConcreteSimulator()
+        calls = []
+
+        async def handler(client, cmd):
+            calls.append(cmd.request_id)
+            return {"n": len(calls)}
+
+        sim.register_command("bump", handler)
+        client = AsyncMock()
+
+        cmd = _cmd("req-dup00001", "bump")
+        await sim._handle_command(client, cmd)
+        await sim._handle_command(client, cmd)
+        await sim._handle_command(client, cmd)
+
+        assert len(calls) == 1  # the observable side effect ran exactly once
+
+    @pytest.mark.asyncio
+    async def test_duplicate_request_id_republishes_identical_ack(self):
+        sim = ConcreteSimulator()
+
+        async def handler(client, cmd):
+            return {"token": "first-and-only"}
+
+        sim.register_command("bump", handler)
+        client = AsyncMock()
+        cmd = _cmd("req-dup00002", "bump")
+
+        await sim._handle_command(client, cmd)
+        first_payload = json.loads(client.publish.call_args[0][1])
+
+        await sim._handle_command(client, cmd)
+        second_payload = json.loads(client.publish.call_args[0][1])
+
+        assert first_payload == second_payload
+
+    @pytest.mark.asyncio
+    async def test_cache_evicts_beyond_32_and_treats_old_id_as_new(self):
+        sim = ConcreteSimulator()
+        calls = []
+
+        async def handler(client, cmd):
+            calls.append(cmd.request_id)
+            return None
+
+        sim.register_command("bump", handler)
+        client = AsyncMock()
+
+        assert IDEMPOTENCY_CACHE_SIZE == 32
+        request_ids = [f"req-evict{i:03d}" for i in range(IDEMPOTENCY_CACHE_SIZE + 1)]
+        for rid in request_ids:
+            await sim._handle_command(client, _cmd(rid, "bump"))
+
+        assert len(calls) == IDEMPOTENCY_CACHE_SIZE + 1
+        # The very first id was pushed out by the 33rd; it's no longer cached.
+        oldest = request_ids[0]
+        assert oldest not in sim._acked
+
+        # Resending the evicted id must be treated as new: the handler runs
+        # again (a second, observable call for that same request_id).
+        await sim._handle_command(client, _cmd(oldest, "bump"))
+        assert calls.count(oldest) == 2
+        assert len(calls) == IDEMPOTENCY_CACHE_SIZE + 2
+
+    @pytest.mark.asyncio
+    async def test_still_in_window_id_is_not_treated_as_new(self):
+        """Control for the eviction test: an id that hasn't fallen out of
+        the last 32 must still be replayed from cache, not re-run."""
+        sim = ConcreteSimulator()
+        calls = []
+
+        async def handler(client, cmd):
+            calls.append(cmd.request_id)
+            return None
+
+        sim.register_command("bump", handler)
+        client = AsyncMock()
+
+        request_ids = [f"req-window{i:03d}" for i in range(IDEMPOTENCY_CACHE_SIZE)]
+        for rid in request_ids:
+            await sim._handle_command(client, _cmd(rid, "bump"))
+
+        await sim._handle_command(client, _cmd(request_ids[0], "bump"))
+        assert calls.count(request_ids[0]) == 1
+
+
+class TestHandlerExceptions:
+    @pytest.mark.asyncio
+    async def test_raising_handler_acks_failed_with_detail(self):
+        sim = ConcreteSimulator()
+
+        async def handler(client, cmd):
+            raise RuntimeError("motor jammed")
+
+        sim.register_command("jam", handler)
+        client = AsyncMock()
+        await sim._handle_command(client, _cmd("req-jam00001", "jam"))
+
+        payload = json.loads(client.publish.call_args[0][1])
+        assert payload["status"] == "failed"
+        assert payload["detail"] == "motor jammed"
+
+    @pytest.mark.asyncio
+    async def test_raising_handler_still_publishes_promptly_not_a_timeout(self):
+        """A broken handler must ack immediately, never hang the loop."""
+        sim = ConcreteSimulator()
+
+        async def handler(client, cmd):
+            raise ValueError("boom")
+
+        sim.register_command("jam", handler)
+        client = AsyncMock()
+        await asyncio.wait_for(
+            sim._handle_command(client, _cmd("req-jam00002", "jam")), timeout=1.0
+        )
+        client.publish.assert_called_once()
+
+
+class TestCommandOutcome:
+    @pytest.mark.asyncio
+    async def test_handler_returning_command_outcome_controls_status(self):
+        sim = ConcreteSimulator()
+
+        async def handler(client, cmd):
+            return CommandOutcome(status="rejected", detail="lockout")
+
+        sim.register_command("locked", handler)
+        client = AsyncMock()
+        await sim._handle_command(client, _cmd("req-lock0001", "locked"))
+        payload = json.loads(client.publish.call_args[0][1])
+        assert payload["status"] == "rejected"
+        assert payload["detail"] == "lockout"
+
+    @pytest.mark.asyncio
+    async def test_handler_returning_plain_dict_is_result_with_ok_status(self):
+        sim = ConcreteSimulator()
+
+        async def handler(client, cmd):
+            return {"reading": 42}
+
+        sim.register_command("read", handler)
+        client = AsyncMock()
+        await sim._handle_command(client, _cmd("req-read0001", "read"))
+        payload = json.loads(client.publish.call_args[0][1])
+        assert payload["status"] == "ok"
+        assert payload["result"] == {"reading": 42}
+
+
+class TestRegisterCommandHook:
+    def test_register_command_does_not_require_editing_base(self):
+        """The whole point of the hook: a subclass adds a command from its
+        own __init__ with no change to simulators/base.py."""
+        sim = ConcreteSimulator()
+        assert "brew" not in sim._commands
+        sim.register_command("brew", AsyncMock(return_value=None))
+        assert "brew" in sim._commands
+
+    def test_re_registering_a_name_replaces_the_handler(self):
+        sim = ConcreteSimulator()
+        first = AsyncMock(return_value=None)
+        second = AsyncMock(return_value=None)
+        sim.register_command("brew", first)
+        sim.register_command("brew", second)
+        assert sim._commands["brew"] is second
+
+    @pytest.mark.asyncio
+    async def test_registered_handler_receives_client_and_command(self):
+        sim = ConcreteSimulator()
+        received = {}
+
+        async def handler(client, cmd):
+            received["client"] = client
+            received["cmd"] = cmd
+            return None
+
+        sim.register_command("brew", handler)
+        client = AsyncMock()
+        cmd = _cmd("req-brew0001", "brew", {"strength": "strong"})
+        await sim._handle_command(client, cmd)
+        assert received["client"] is client
+        assert received["cmd"] is cmd
+
+
+class TestCommandLoop:
+    @pytest.mark.asyncio
+    async def test_subscribes_to_cmd_subsystem_topic(self):
+        sim = ConcreteSimulator(machine_id="vmc-1")
+        client = AsyncMock()
+        task = asyncio.create_task(sim._command_loop(client))
+        await asyncio.sleep(0.02)
+        client.subscribe.assert_any_call("vmc/vmc-1/cmd/test_subsystem")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_dispatches_a_queued_command_and_acks(self):
+        sim = ConcreteSimulator(machine_id="vmc-1")
+        client = AsyncMock()
+        task = asyncio.create_task(sim._command_loop(client))
+        await asyncio.sleep(0.02)
+        topic, queue = next(
+            (t, q) for t, q in sim._subscriptions if t == "vmc/vmc-1/cmd/test_subsystem"
+        )
+        queue.put_nowait(
+            (topic, {"request_id": "req-loop0001", "command": "ping", "params": {}})
+        )
+        await asyncio.sleep(0.02)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        ack_calls = [
+            c for c in client.publish.call_args_list if c[0][0].endswith("/ack")
+        ]
+        assert len(ack_calls) == 1
+        assert json.loads(ack_calls[0][0][1])["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_invalid_payload_is_dropped_not_raised(self):
+        sim = ConcreteSimulator(machine_id="vmc-1")
+        client = AsyncMock()
+        task = asyncio.create_task(sim._command_loop(client))
+        await asyncio.sleep(0.02)
+        topic, queue = next(
+            (t, q) for t, q in sim._subscriptions if t == "vmc/vmc-1/cmd/test_subsystem"
+        )
+        queue.put_nowait((topic, {"not": "a valid command"}))
+        await asyncio.sleep(0.02)
+        assert not task.done()  # the loop is still alive, not crashed
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        client.publish.assert_not_called()
