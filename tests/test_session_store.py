@@ -143,3 +143,91 @@ async def test_save_async_writes_in_order(tmp_path):
     assert json.loads((tmp_path / "session.json").read_text())["credit_escrow"] == 2.0
     await store.clear_async()
     assert store.load() is None
+
+
+def test_saved_at_survives_round_trip_across_a_process_boundary(tmp_path):
+    """PAY-104 recovery (controller/vmc.py's _pay104_sale_key) keys on the
+    exact saved_at value read back from disk being the same instant that was
+    written -- not a value rewritten in place on reload. Reload with a
+    freshly constructed SessionStore (not the one that wrote it) to prove
+    this holds across a process boundary, not just in the same instance."""
+    path = tmp_path / "session.json"
+    writer = SessionStore(path)
+    snap = SessionSnapshot(
+        state="interacting_with_user", credit_escrow=1.25, saved_at=1_700_000_000.5
+    )
+    writer.save(snap)
+
+    reader = SessionStore(path)
+    loaded = reader.load()
+
+    assert loaded.saved_at == 1_700_000_000.5
+
+
+def test_missing_saved_at_is_reported_as_unreadable_not_defaulted_to_now(tmp_path):
+    """A snapshot file written without a saved_at key must not silently pick
+    up field(default_factory=time.time) as if it were saved just now -- that
+    would hand PAY-104 recovery a fabricated timestamp for real, on-disk
+    credit. It must instead route through the same 'error' channel as an
+    unparseable file, so credit_escrow from the file is NOT trusted either."""
+    path = tmp_path / "session.json"
+    path.write_text(
+        json.dumps({"state": "dispensing", "credit_escrow": 5.0}), encoding="utf-8"
+    )
+
+    loaded = SessionStore(path).load()
+
+    assert loaded is not None
+    assert loaded.error is not None
+    assert loaded.credit_escrow == 0.0  # the fabricated 5.0 was not trusted
+    assert loaded.is_open() is True
+
+
+def test_non_finite_saved_at_is_reported_as_unreadable(tmp_path):
+    """NaN/Infinity are valid JSON under Python's parser but are not a
+    sensible 'moment' for PAY-104 recovery to reason about; they must be
+    detected, not accepted as-is."""
+    path = tmp_path / "session.json"
+    path.write_text(
+        '{"state": "dispensing", "credit_escrow": 5.0, "saved_at": NaN}',
+        encoding="utf-8",
+    )
+
+    loaded = SessionStore(path).load()
+
+    assert loaded is not None
+    assert loaded.error is not None
+    assert loaded.credit_escrow == 0.0
+    assert loaded.is_open() is True
+
+
+def test_negative_saved_at_is_reported_as_unreadable(tmp_path):
+    path = tmp_path / "session.json"
+    path.write_text(
+        '{"state": "dispensing", "credit_escrow": 5.0, "saved_at": -1.0}',
+        encoding="utf-8",
+    )
+
+    loaded = SessionStore(path).load()
+
+    assert loaded is not None
+    assert loaded.error is not None
+    assert loaded.credit_escrow == 0.0
+    assert loaded.is_open() is True
+
+
+def test_is_open_unchanged_for_open_and_cleared_snapshot_after_guard(tmp_path):
+    """The saved_at guard must not change is_open()'s semantics: a snapshot
+    with real credit in escrow is still open, and an idle/no-credit snapshot
+    is still not, once round-tripped through save/load."""
+    store = SessionStore(tmp_path / "session.json")
+
+    open_snap = SessionSnapshot(
+        state="interacting_with_user", credit_escrow=0.75, saved_at=100.0
+    )
+    store.save(open_snap)
+    assert store.load().is_open() is True
+
+    cleared_snap = SessionSnapshot(state="idle", credit_escrow=0.0, saved_at=200.0)
+    store.save(cleared_snap)
+    assert store.load().is_open() is False

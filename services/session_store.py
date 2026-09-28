@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -93,6 +94,27 @@ class SessionStore:
             raw_credits = raw.get("credits")
             if raw_credits is not None:
                 raw["credits"] = [Credit(**c) for c in raw_credits]
+            # saved_at is money-load-bearing (PAY-104 recovery keys on the
+            # exact instant a pending sale's escrow shares were written) so
+            # it must never be allowed to silently re-default to "now" via
+            # SessionSnapshot's field(default_factory=time.time) -- an
+            # absent, non-numeric, non-finite, or negative value on disk is
+            # rejected here and folds into the same unreadable-snapshot
+            # "error" channel used below for a JSON parse failure, rather
+            # than inventing a second signalling mechanism. That channel
+            # already reports is_open() == True (see SessionSnapshot.error),
+            # which is the correct, fail-safe answer for a snapshot we
+            # cannot actually trust.
+            if "saved_at" not in raw:
+                raise ValueError("saved_at missing from session snapshot")
+            saved_at = raw["saved_at"]
+            if (
+                isinstance(saved_at, bool)
+                or not isinstance(saved_at, (int, float))
+                or not math.isfinite(saved_at)
+                or saved_at < 0
+            ):
+                raise ValueError(f"saved_at is not a valid timestamp: {saved_at!r}")
             return SessionSnapshot(**raw)
         except Exception as e:
             logger.error(f"SessionStore: unreadable {self._path}: {e}")
