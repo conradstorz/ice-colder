@@ -5,6 +5,8 @@ which skips without a live MQTT broker.
 """
 
 import asyncio
+import json
+import sqlite3
 
 import pytest
 from loguru import logger
@@ -18,9 +20,10 @@ from contracts.vending_machine import (
 )
 from controller.vmc import VMC
 from services.availability import Availability
+from services.event_recorder import EventRecorder, SaleRecordingFailed
 from services.health_monitor import HealthMonitor
 from services.mqtt_messages import PaymentEnableCommand
-from services.session_store import SessionSnapshot, SessionStore
+from services.session_store import Credit, SessionSnapshot, SessionStore
 
 
 def make_vmc(price: float = 2.50) -> VMC:
@@ -32,9 +35,13 @@ def make_vmc(price: float = 2.50) -> VMC:
 class FakeEventRecorder:
     def __init__(self):
         self.events: list[tuple] = []
+        self.sales: list[tuple] = []
 
     def record(self, event_type, value=1.0, metadata=None):
         self.events.append((event_type, value, metadata))
+
+    def record_sale(self, sku, name, slot, price, methods, ts=None):
+        self.sales.append((sku, name, slot, price, methods))
 
 
 class FakeSoldOutInventory:
@@ -208,6 +215,377 @@ async def test_dispense_timeout_fallback_does_not_record_event():
     assert vmc.state == "idle"
     assert recorder.events == []
     vmc.cancel_pending_tasks()
+
+
+async def test_dispense_complete_records_sale_durably_before_fsm_returns_to_idle(
+    tmp_path,
+):
+    """The sale row must be committed to the real database before the FSM
+    leaves 'dispensing' -- not merely by the time this test's own
+    assertions happen to run afterward. A recorder stub captures
+    `vmc.state` from *inside* `record_sale`, at the instant the durable
+    write is invoked via `asyncio.to_thread` (while the coroutine awaiting
+    it has not yet resumed) -- that is the ordering property under test,
+    not mere co-occurrence.
+    """
+    real_recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
+    vmc = make_vmc(price=2.50)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+
+    captured_state = {}
+
+    class OrderCapturingRecorder:
+        def record(self, event_type, value=1.0, metadata=None):
+            pass  # the "dispense" event itself isn't under test here
+
+        def record_sale(self, sku, name, slot, price, methods, ts=None):
+            captured_state["state"] = vmc.state
+            return real_recorder.record_sale(sku, name, slot, price, methods, ts=ts)
+
+    vmc.set_event_recorder(OrderCapturingRecorder())
+    vmc.machine.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    # Real deposits through deposit_funds, not a direct credit_escrow
+    # assignment -- bypassing the ledger trips the divergence guard and
+    # _consume_credits_fifo returns {"unknown": price}, which would prove
+    # nothing about the FIFO split under test here.
+    vmc.deposit_funds(1.50, payment_method="cash_bill")
+    vmc.deposit_funds(1.00, payment_method="card")
+
+    vmc._process_payment()
+    assert vmc.state == "dispensing"
+    assert vmc.pending_sale_shares == {"cash_bill": 1.50, "card": 1.00}
+
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser",
+        {"slot": vmc.products[0].slot, "state": "complete"},
+    )
+
+    # The write happened while the FSM was still in 'dispensing' -- proven
+    # from inside the call, not reconstructed afterward.
+    assert captured_state["state"] == "dispensing"
+    assert vmc.state == "idle"  # ...and only *afterward* did it return to idle
+    assert vmc.pending_sale_shares is None  # cleared on the success path
+
+    with sqlite3.connect(str(tmp_path / "events.db")) as conn:
+        rows = conn.execute(
+            "SELECT sku, name, slot, price, methods FROM sales"
+        ).fetchall()
+    assert len(rows) == 1  # exactly one row
+    sku, name, slot, price, methods_json = rows[0]
+    assert sku == "ICE-1"
+    assert name == "Ice Bag"
+    assert slot == vmc.products[0].slot
+    assert price == pytest.approx(2.50)
+    assert json.loads(methods_json) == {"cash_bill": 1.50, "card": 1.00}
+    vmc.cancel_pending_tasks()
+
+
+async def test_dispense_complete_sale_record_failure_raises_data_101_but_completes_vend():
+    """record_sale already journals the row and re-raises on failure
+    (services/event_recorder.py) -- the VMC must not journal it a second
+    time, only catch the exception, raise the alert-class DATA-101, and let
+    the vend finish regardless. A storage problem must never fail the vend
+    or stop the machine."""
+    vmc = make_vmc(price=2.50)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+
+    class FailingRecorder:
+        def __init__(self):
+            self.record_sale_calls = 0
+
+        def record(self, event_type, value=1.0, metadata=None):
+            pass
+
+        def record_sale(self, sku, name, slot, price, methods, ts=None):
+            # Simulates record_sale's own contract: it journals internally
+            # and re-raises -- the VMC is never asked to journal on top.
+            self.record_sale_calls += 1
+            raise sqlite3.OperationalError("disk I/O error")
+
+    recorder = FailingRecorder()
+    vmc.set_event_recorder(recorder)
+    vmc.machine.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    vmc.deposit_funds(2.50, payment_method="cash_coin")
+
+    vmc._process_payment()
+    assert vmc.state == "dispensing"
+
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser",
+        {"slot": vmc.products[0].slot, "state": "complete"},
+    )
+
+    # Proves the failure branch was genuinely entered, not skipped.
+    assert recorder.record_sale_calls == 1
+    assert vmc.state == "idle"  # the vend still completed
+    assert vmc.selected_product is None
+    assert vmc.pending_sale_shares is None  # cleared even on the failure path
+    assert "DATA-101" in {f["code"] for f in vmc.active_faults()}
+    vmc.cancel_pending_tasks()
+
+
+async def test_record_sale_totally_lost_preserves_pay104_recovery_not_data_101(
+    tmp_path,
+):
+    """Third rung of the durability ladder: the sales insert can fail AND
+    the journal fallback can also fail (a full or read-only data volume) --
+    services.event_recorder.SaleRecordingFailed signals exactly that. The
+    vend must still complete (a storage problem must never fail the vend),
+    but the sale must not simply vanish: this must raise PAY-104 (not the
+    ordinary DATA-101) and must NOT clear pending_sale_shares, so the
+    'dispensing' snapshot _process_payment already wrote to disk survives
+    untouched (_persist_session refuses to touch the file once PAY-104 is
+    active) as the sale's only remaining record -- recoverable through the
+    existing Health > Faults record/discard flow with no reboot required.
+    """
+    store_path = tmp_path / "session.json"
+    vmc = make_vmc(price=2.50)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    vmc.set_session_store(SessionStore(store_path))
+    vmc.set_availability(Availability())
+
+    class TotallyFailingRecorder:
+        def __init__(self):
+            self.record_sale_calls = 0
+
+        def record(self, event_type, value=1.0, metadata=None):
+            pass
+
+        def record_sale(self, sku, name, slot, price, methods, ts=None):
+            self.record_sale_calls += 1
+            raise SaleRecordingFailed("db insert and journal fallback both failed")
+
+    recorder = TotallyFailingRecorder()
+    vmc.set_event_recorder(recorder)
+    vmc.machine.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    vmc.deposit_funds(2.50, payment_method="cash_bill")
+
+    vmc._process_payment()
+    assert vmc.state == "dispensing"
+    await vmc.drain_persistence()  # the 'dispensing' snapshot is now on disk
+
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser",
+        {"slot": vmc.products[0].slot, "state": "complete"},
+    )
+
+    assert recorder.record_sale_calls == 1  # the failure branch was entered
+    assert vmc.state == "idle"  # the vend still completed regardless
+    assert vmc.selected_product is None
+
+    faults = {f["code"] for f in vmc.active_faults()}
+    assert "PAY-104" in faults
+    assert "DATA-101" not in faults  # not treated as the ordinary path
+
+    # The sale must be recoverable through the existing PAY-104 flow, in
+    # this same process, with no reboot -- proving the on-disk snapshot
+    # genuinely survived, not merely that some in-memory flag is set.
+    pending = vmc.pending_sale_for_recovery()
+    assert pending is not None, "sale evidence was lost -- nothing to recover"
+    assert pending["sku"] == "ICE-1"
+    assert pending["price"] == pytest.approx(2.50)
+    assert pending["methods"] == {"cash_bill": 2.50}
+
+    # And the on-disk file itself, read on a separate SessionStore/second
+    # connection to the same path -- not vmc's own in-memory state.
+    reloaded = SessionStore(store_path).load()
+    assert reloaded is not None
+    assert reloaded.pending_sale_shares == {"cash_bill": 2.50}
+    vmc.cancel_pending_tasks()
+
+
+async def test_dispense_complete_records_price_from_shares_not_live_catalog_price(
+    tmp_path,
+):
+    """`selected_product` is the *live* catalog ``Product`` object -- the
+    same one `services/config_store.update_product` mutates in place. If an
+    operator edits the price while a sale is mid-dispense, `product.price`
+    at record time reflects the *new* price, not what the customer actually
+    paid. The stored row must reflect `pending_sale_shares` (the money
+    actually deducted), matching `methods`, not a live catalog re-read.
+    """
+    real_recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
+    vmc = make_vmc(price=2.50)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+
+    class SaleOnlyRecorder:
+        """Forwards only record_sale to the real recorder -- mirrors
+        test_dispense_complete_records_sale_durably_before_fsm_returns_to_idle's
+        OrderCapturingRecorder above. The "dispense" event this test doesn't
+        care about is otherwise queued to the real recorder's background
+        writer thread, which can race record_sale's own fresh WAL
+        connection for the same db file; that race is a pre-existing,
+        unrelated timing issue outside the scope of this fix.
+        """
+
+        def record(self, event_type, value=1.0, metadata=None):
+            pass
+
+        def record_sale(self, sku, name, slot, price, methods, ts=None):
+            return real_recorder.record_sale(sku, name, slot, price, methods, ts=ts)
+
+    vmc.set_event_recorder(SaleOnlyRecorder())
+    vmc.machine.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    vmc.deposit_funds(2.50, payment_method="cash_bill")
+
+    vmc._process_payment()
+    assert vmc.state == "dispensing"
+    assert vmc.pending_sale_shares == {"cash_bill": 2.50}
+
+    # Operator edits the catalog price mid-flight, in place -- exactly what
+    # services/config_store.update_product does to the same live object.
+    vmc.selected_product.price = 9.99
+
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser",
+        {"slot": vmc.products[0].slot, "state": "complete"},
+    )
+    assert vmc.state == "idle"
+
+    with sqlite3.connect(str(tmp_path / "events.db")) as conn:
+        rows = conn.execute("SELECT price, methods FROM sales").fetchall()
+    assert len(rows) == 1
+    price, methods_json = rows[0]
+    methods = json.loads(methods_json)
+    assert methods == {"cash_bill": 2.50}
+    # The row must record what was actually charged, not the edited price.
+    assert price == pytest.approx(2.50)
+    vmc.cancel_pending_tasks()
+
+
+async def test_vend_failed_after_deduction_writes_no_sale_row_and_restores_credits(
+    tmp_path,
+):
+    """A failed vend must never turn into a sale row: the money already
+    deducted from escrow is restored as credits, not spent. Checked against
+    the real database through a second connection -- not a log line -- so
+    this guards against double-counting a failed vend."""
+    real_recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
+    vmc = make_vmc2()  # two products: WATER-1 stays sellable after ICE-1 locks
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    vmc.set_event_recorder(real_recorder)
+    vmc.machine.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]  # ICE-1, price 2.50
+    vmc.deposit_funds(2.50, payment_method="cash_bill")
+
+    vmc._process_payment()
+    assert vmc.state == "dispensing"
+    # Proves the deduction genuinely happened before the failure.
+    assert vmc.pending_sale_shares == {"cash_bill": 2.50}
+
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser", {"slot": vmc.products[0].slot, "state": "jam"}
+    )
+
+    assert vmc.state == "interacting_with_user"  # vend_failed, WATER-1 still sellable
+    assert vmc.pending_sale_shares is None
+    assert vmc.credit_escrow == 2.50  # restored, not spent
+    assert len(vmc.escrow_credits) == 1
+    assert vmc.escrow_credits[0].method == "cash_bill"
+    assert vmc.escrow_credits[0].amount == 2.50
+
+    with sqlite3.connect(str(tmp_path / "events.db")) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+    assert count == 0  # no sale row for a vend that never completed
+    vmc.cancel_pending_tasks()
+
+
+async def test_vend_failed_restores_shares_total_not_live_catalog_price(tmp_path):
+    """Same live-object hazard as the record_sale test above, on the other
+    branch: `on_vend_failed` must restore exactly what `pending_sale_shares`
+    says was deducted, not re-read `product.price` after an operator edited
+    it mid-flight. Otherwise escrow is re-credited a different total than
+    was taken, and the failure event/log/customer message all report the
+    wrong amount too.
+    """
+    real_recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
+    vmc = make_vmc2()  # two products: WATER-1 stays sellable after ICE-1 locks
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    vmc.set_event_recorder(real_recorder)
+    messages: list[str] = []
+    vmc.set_message_callback(messages.append)
+    vmc.machine.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]  # ICE-1, price 2.50
+    vmc.deposit_funds(2.50, payment_method="cash_bill")
+
+    vmc._process_payment()
+    assert vmc.state == "dispensing"
+    assert vmc.pending_sale_shares == {"cash_bill": 2.50}
+
+    # Operator edits the catalog price mid-flight, in place.
+    vmc.selected_product.price = 9.99
+
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser", {"slot": vmc.products[0].slot, "state": "jam"}
+    )
+
+    assert vmc.state == "interacting_with_user"
+    assert vmc.pending_sale_shares is None
+    # Restored total must match what was actually deducted, not the edited
+    # catalog price.
+    assert vmc.credit_escrow == pytest.approx(2.50)
+    assert len(vmc.escrow_credits) == 1
+    assert vmc.escrow_credits[0].method == "cash_bill"
+    assert vmc.escrow_credits[0].amount == pytest.approx(2.50)
+
+    # The customer message must also report what was actually taken, not
+    # the edited catalog price.
+    assert any("$2.50" in m for m in messages)
+    assert not any("$9.99" in m for m in messages)
+
+    real_recorder.flush()
+    with sqlite3.connect(str(tmp_path / "events.db")) as conn:
+        row = conn.execute(
+            "SELECT value FROM events WHERE event_type = 'vend_failed'"
+        ).fetchone()
+    assert row is not None
+    assert row[0] == pytest.approx(2.50)
+    vmc.cancel_pending_tasks()
+
+
+async def test_pay_104_snapshot_exposes_pending_sale_after_crash_mid_dispense(
+    tmp_path,
+):
+    """Simulates a real crash right after the dispense command is sent but
+    before the FSM ever hears back: the live `_process_payment` path (Task
+    4) already persists a 'dispensing' snapshot carrying
+    `pending_sale_shares`. This task's job is only to make sure that data
+    survives to a reboot and is exposed on the resulting PAY-104 -- Task 14
+    builds the record/discard recovery routes on top of it, not this task.
+
+    Driven entirely through the real deposit/process-payment/reboot
+    pipeline (not a hand-built SessionSnapshot), so a regression in
+    `_snapshot()` dropping `pending_sale_shares` would be caught here.
+    """
+    store_path = tmp_path / "session.json"
+    vmc = make_vmc(price=2.50)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    vmc.set_session_store(SessionStore(store_path))
+    vmc.machine.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    vmc.deposit_funds(2.00, payment_method="cash_bill")
+    vmc.deposit_funds(0.50, payment_method="card")
+
+    vmc._process_payment()  # persists the 'dispensing' snapshot (Task 4)
+    assert vmc.state == "dispensing"
+    await vmc.drain_persistence()  # the save is fire-and-forget -- wait for it
+    vmc.cancel_pending_tasks()  # simulate the crash: nothing else ever runs
+
+    # A fresh VMC instance boots against the same evidence file.
+    vmc2 = make_vmc(price=2.50)
+    vmc2.attach_to_loop(asyncio.get_running_loop())
+    vmc2.set_session_store(SessionStore(store_path))  # loads open snap -> PAY-104
+
+    assert "PAY-104" in {f["code"] for f in vmc2.active_faults()}
+    reloaded = SessionStore(store_path).load()
+    assert reloaded.pending_sale_shares == {"cash_bill": 2.00, "card": 0.50}
+    assert reloaded.selected_sku == "ICE-1"
+    assert reloaded.dispense_slot == vmc.products[0].slot
+    vmc2.cancel_pending_tasks()
 
 
 async def test_session_timeout_refunds_and_returns_to_idle():
@@ -620,6 +998,193 @@ class TestVendOutcomes:
         assert not any(e[0] == "dispense" for e in rec.events)
 
 
+class TestCreditLedger:
+    """The FIFO escrow credit ledger (§1.1): deposit -> deduct -> restore/refund."""
+
+    async def test_fifo_worked_example_splits_and_leaves_remainder(self):
+        """The spec's own acceptance example: $2.00 cash then $1.00 card,
+        a $2.50 sale, must yield {"cash": 2.00, "card": 0.50} and leave
+        exactly one $0.50 card credit — not just a total that happens to
+        add up."""
+        vmc = make_vmc(price=2.50)
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc.machine.set_state("interacting_with_user")
+        vmc.selected_product = vmc.products[0]
+        vmc.deposit_funds(2.00, payment_method="cash_bill")
+        vmc.deposit_funds(1.00, payment_method="card")
+
+        vmc._process_payment()
+
+        # Confirms the deduction branch (credit_escrow >= price) actually ran,
+        # rather than the insufficient-funds branch silently passing.
+        assert vmc.state == "dispensing"
+        assert vmc.pending_sale_shares == {"cash_bill": 2.00, "card": 0.50}
+        assert vmc.credit_escrow == 0.50
+        assert len(vmc.escrow_credits) == 1
+        assert vmc.escrow_credits[0].method == "card"
+        assert vmc.escrow_credits[0].amount == 0.50
+        vmc.cancel_pending_tasks()
+
+    async def test_exact_match_consumes_one_credit_entirely(self):
+        vmc = make_vmc(price=2.50)
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc.machine.set_state("interacting_with_user")
+        vmc.selected_product = vmc.products[0]
+        vmc.deposit_funds(2.50, payment_method="cash_coin")
+
+        vmc._process_payment()
+
+        assert vmc.state == "dispensing"
+        assert vmc.pending_sale_shares == {"cash_coin": 2.50}
+        assert vmc.escrow_credits == []
+        assert vmc.credit_escrow == 0.0
+        vmc.cancel_pending_tasks()
+
+    async def test_sale_spanning_three_credits(self):
+        vmc = make_vmc(price=2.50)
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc.machine.set_state("interacting_with_user")
+        vmc.selected_product = vmc.products[0]
+        vmc.deposit_funds(1.00, payment_method="cash_coin")
+        vmc.deposit_funds(1.00, payment_method="cash_coin")
+        vmc.deposit_funds(1.00, payment_method="card")
+
+        vmc._process_payment()
+
+        assert vmc.state == "dispensing"
+        assert vmc.pending_sale_shares == {"cash_coin": 2.00, "card": 0.50}
+        assert len(vmc.escrow_credits) == 1
+        assert vmc.escrow_credits[0].method == "card"
+        assert vmc.escrow_credits[0].amount == 0.50
+        vmc.cancel_pending_tasks()
+
+    async def test_vend_failed_restores_separate_credits_with_original_methods(self):
+        """vend_failed must re-credit the exact per-method shares that were
+        consumed, as separate Credits — not one blob under the default/last
+        payment method. This is the property that stops the ledger
+        laundering cash into card."""
+        vmc = make_vmc(price=2.50)
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc.machine.set_state("interacting_with_user")
+        vmc.selected_product = vmc.products[0]
+        vmc.deposit_funds(2.00, payment_method="cash_bill")
+        vmc.deposit_funds(0.50, payment_method="card")
+        vmc._process_payment()
+        assert vmc.state == "dispensing"  # sale actually in flight
+        assert vmc.pending_sale_shares == {"cash_bill": 2.00, "card": 0.50}
+        assert vmc.escrow_credits == []  # both credits fully consumed
+
+        vmc.vend_failed(code=FaultCode.PAY_102, outcome="no_report")
+
+        assert vmc.state == "interacting_with_user"
+        assert vmc.credit_escrow == 2.50
+        assert vmc.pending_sale_shares is None
+        assert len(vmc.escrow_credits) == 2
+        assert vmc.escrow_credits[0].method == "cash_bill"
+        assert vmc.escrow_credits[0].amount == 2.00
+        assert vmc.escrow_credits[1].method == "card"
+        assert vmc.escrow_credits[1].amount == 0.50
+        vmc.cancel_pending_tasks()
+
+    async def test_rejected_deposit_appends_no_credit(self):
+        vmc = make_vmc(price=2.50)
+        vmc.attach_to_loop(asyncio.get_running_loop())
+
+        vmc.deposit_funds(0.0, payment_method="cash_coin")
+        vmc.deposit_funds(-1.0, payment_method="cash_coin")
+
+        assert vmc.escrow_credits == []
+        assert vmc.credit_escrow == 0.0
+
+    async def test_divergence_guard_books_unknown_and_warns(self):
+        """credit_escrow mutated directly (bypassing deposit_funds, as many
+        pre-existing tests in this file do) leaves escrow_credits empty
+        while credit_escrow is nonzero. _consume_credits_fifo must not
+        guess a method in that case: it books the whole price to 'unknown'
+        and logs a warning, rather than attributing real money to the
+        wrong (or no) method."""
+        vmc = make_vmc(price=2.50)
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc.machine.set_state("interacting_with_user")
+        vmc.selected_product = vmc.products[0]
+        vmc.credit_escrow = 5.00  # escrow_credits stays [] -> diverges
+
+        records: list[tuple[str, str]] = []
+        handle = logger.add(
+            lambda m: records.append((m.record["level"].name, m.record["message"])),
+            level="DEBUG",
+            format="{message}",
+        )
+        try:
+            vmc._process_payment()
+        finally:
+            logger.remove(handle)
+
+        assert vmc.state == "dispensing"  # deduction branch ran
+        assert vmc.pending_sale_shares == {"unknown": 2.50}
+        assert vmc.credit_escrow == 2.50
+        assert any(lvl == "WARNING" and "diverged" in msg for lvl, msg in records)
+        vmc.cancel_pending_tasks()
+
+    async def test_float_boundary_tolerance(self):
+        """CREDIT_TOLERANCE (0.005, half a cent) is used in two places; both
+        boundaries are tested here.
+
+        1. The leftover-credit decision: a genuine one-cent overshoot is
+           real money and must survive as its own credit — the tolerance
+           must never be generous enough to eat an actual cent.
+        2. The divergence guard: escrow_credits and credit_escrow rounded to
+           the cent agreeing exactly is trusted; even the smallest real
+           disagreement once both sides are cent-quantized — one cent — must
+           trip the guard rather than silently attribute real money to
+           whatever methods happen to be sitting in an untrustworthy list.
+        """
+        # (1) $2.51 deposited, $2.50 charged -> a real $0.01 remains.
+        vmc = make_vmc(price=2.50)
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc.machine.set_state("interacting_with_user")
+        vmc.selected_product = vmc.products[0]
+        vmc.deposit_funds(2.51, payment_method="cash_coin")
+
+        vmc._process_payment()
+
+        assert vmc.state == "dispensing"
+        assert vmc.pending_sale_shares == {"cash_coin": 2.50}
+        assert len(vmc.escrow_credits) == 1
+        assert vmc.escrow_credits[0].amount == 0.01
+        vmc.cancel_pending_tasks()
+
+        # (2a) Ledger and total agree exactly -> trusted, FIFO shares returned.
+        vmc2 = make_vmc(price=1.00)
+        vmc2.attach_to_loop(asyncio.get_running_loop())
+        vmc2.machine.set_state("interacting_with_user")
+        vmc2.selected_product = vmc2.products[0]
+        vmc2.escrow_credits = [Credit(method="cash_coin", amount=1.00, ts=0.0)]
+        vmc2.credit_escrow = 1.00
+
+        vmc2._process_payment()
+
+        assert vmc2.state == "dispensing"
+        assert vmc2.pending_sale_shares == {"cash_coin": 1.00}
+        vmc2.cancel_pending_tasks()
+
+        # (2b) One cent off -> the guard trips; escrow_credits is left
+        # untouched (not consumed, not merged) and the share is "unknown".
+        vmc3 = make_vmc(price=1.00)
+        vmc3.attach_to_loop(asyncio.get_running_loop())
+        vmc3.machine.set_state("interacting_with_user")
+        vmc3.selected_product = vmc3.products[0]
+        vmc3.escrow_credits = [Credit(method="cash_coin", amount=1.00, ts=0.0)]
+        vmc3.credit_escrow = 1.01
+
+        vmc3._process_payment()
+
+        assert vmc3.state == "dispensing"
+        assert vmc3.pending_sale_shares == {"unknown": 1.00}
+        assert vmc3.escrow_credits == [Credit(method="cash_coin", amount=1.00, ts=0.0)]
+        vmc3.cancel_pending_tasks()
+
+
 class RecordingClient:
     def __init__(self):
         self.published: list[tuple[str, object]] = []
@@ -657,6 +1222,20 @@ class TestRefunds:
         # customer it's "issued" before that happens.
         assert "requested" in messages[-1]
         assert "issued" not in messages[-1]
+
+    async def test_refund_clears_credit_list_as_well_as_total(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        client = RecordingClient()
+        vmc.set_mqtt_client(client)
+        vmc.deposit_funds(1.00, payment_method="cash_coin")
+        vmc.deposit_funds(0.75, payment_method="card")
+        assert len(vmc.escrow_credits) == 2  # confirms deposit_funds populated it
+
+        vmc.request_refund(reason="cancel")
+
+        assert vmc.credit_escrow == 0.0
+        assert vmc.escrow_credits == []
 
     async def test_ack_ok_records_refund(self):
         vmc = make_vmc2()

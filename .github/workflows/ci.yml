@@ -69,24 +69,10 @@ jobs:
           CHROME_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
         run: |
           set -o pipefail
-          uv run pytest -q -rs | tee pytest-output.txt
-      - name: Guard against known ways this suite can silently skip real coverage
+          uv run pytest -q -rs
+      - name: Guard against unrecognised skips via the skip policy
         run: |
-          fail=0
-          if grep -q "ICE_COLDER_BROWSER_TESTS=1 to run" pytest-output.txt; then
-            echo "::error::One or more opt-in browser tests were skipped in CI (Chrome/Node discovery failed). A green suite must not hide this."
-            grep "ICE_COLDER_BROWSER_TESTS=1 to run" pytest-output.txt
-            fail=1
-          fi
-          if grep -q "git diff against origin/main failed" pytest-output.txt; then
-            echo "::error::The /screen byte-identical-to-origin/main guard skipped instead of running (origin/main unresolvable in CI). A green suite must not hide this."
-            grep "git diff against origin/main failed" pytest-output.txt
-            fail=1
-          fi
-          if [ "$fail" -eq 1 ]; then
-            exit 1
-          fi
-          echo "Guard OK: none of the three opt-in browser tests skipped, and the /screen guard ran instead of skipping."
+          uv run python tests/run_skip_guard.py skip-report.json
 
   compose-config:
     runs-on: ubuntu-latest

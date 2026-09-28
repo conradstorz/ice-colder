@@ -25,7 +25,9 @@
     "COM-101",
     "COM-102",
     "COM-103",
-    "SVC-101"
+    "SVC-101",
+    "DATA-101",
+    "DATA-102"
   ],
   "title": "FaultCode",
   "type": "string"

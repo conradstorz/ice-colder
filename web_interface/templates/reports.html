@@ -164,5 +164,16 @@
   </div>
   {% endif %}
 
+  {# The four report levels (Task 10, design §3), below the unchanged
+     activity table above. Reuses partials/tile.html verbatim (health.html's
+     own tiles), so no new Tailwind class is introduced here. #}
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-touch">
+    {% for tile in tiles %}
+      {% if tile.enabled %}
+        {% include "partials/tile.html" %}
+      {% endif %}
+    {% endfor %}
+  </div>
+
 </div>
 {% endblock %}

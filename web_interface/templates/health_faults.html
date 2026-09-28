@@ -26,8 +26,40 @@
         {% if f.since_seconds >= 60 %}{{ (f.since_seconds // 60)|int }}m{% else %}{{ f.since_seconds|int }}s{% endif %} ago
       </span>
       {% endif %}
+      {% if f.pending_sale %}
+      {# Task 14: PAY-104's snapshot carries a pending sale -- show what it
+         recorded (SKU, price, method shares) so the operator can decide
+         whether to record it or discard it, rather than clearing blind. #}
+      <div class="w-full flex flex-wrap items-center gap-3 text-xs text-gray-500">
+        <span class="font-mono">{{ f.pending_sale.sku }}</span>
+        <span>${{ "%.2f"|format(f.pending_sale.price) }}</span>
+        {% for method, amount in f.pending_sale.methods.items() %}
+        <span>{{ method }}: ${{ "%.2f"|format(amount) }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
       {% if can_clear %}
-      <div class="ml-auto">
+      <div class="ml-auto flex gap-2">
+        {% if f.pending_sale %}
+        <div>
+          {% set target = "#record-sale-" ~ f.dom_key %}
+          {% set confirm_url = "/health/faults/PAY-104/record-sale/confirm" %}
+          {% set post_url = "/health/faults/PAY-104/record-sale" %}
+          {% set label = "Record sale" %}
+          {% set confirm_label = "Confirm" %}
+          {% set confirming = false %}
+          {% include "partials/confirm_button.html" with context %}
+        </div>
+        <div>
+          {% set target = "#discard-" ~ f.dom_key %}
+          {% set confirm_url = "/health/faults/PAY-104/discard/confirm" %}
+          {% set post_url = "/health/faults/PAY-104/discard" %}
+          {% set label = "Discard" %}
+          {% set confirm_label = "Confirm" %}
+          {% set confirming = false %}
+          {% include "partials/confirm_button.html" with context %}
+        </div>
+        {% else %}
         {% set target = "#clear-" ~ f.dom_key %}
         {% set confirm_url = "/health/faults/" ~ f.key ~ "/clear/confirm" %}
         {% set post_url = "/health/faults/" ~ f.key ~ "/clear" %}
@@ -35,6 +67,7 @@
         {% set confirm_label = "Confirm" %}
         {% set confirming = false %}
         {% include "partials/confirm_button.html" with context %}
+        {% endif %}
       </div>
       {% endif %}
     </div>

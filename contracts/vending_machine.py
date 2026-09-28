@@ -64,6 +64,8 @@ class FaultCode(str, Enum):
     COM_102 = "COM-102"
     COM_103 = "COM-103"
     SVC_101 = "SVC-101"
+    DATA_101 = "DATA-101"
+    DATA_102 = "DATA-102"
 
 
 class Severity(str, Enum):
@@ -211,6 +213,19 @@ FAULT_TABLE: dict[FaultCode, FaultSpec] = {
         severity=Severity.info,
         scope=Scope.machine,
         description="Service door open / service mode",
+    ),
+    FaultCode.DATA_101: FaultSpec(
+        severity=Severity.warning,
+        scope=Scope.machine,
+        description="Sale journal in use; sales are being written to a fallback file",
+    ),
+    FaultCode.DATA_102: FaultSpec(
+        severity=Severity.warning,
+        scope=Scope.machine,
+        description=(
+            "Event database was reset after corruption; history before the "
+            "reset is lost"
+        ),
     ),
 }
 

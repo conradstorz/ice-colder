@@ -1,5 +1,8 @@
 """Tests for config/config_model.py — Pydantic configuration model."""
 
+import json
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -11,6 +14,7 @@ from config.config_model import (
     CommunicationConfig,
     Person,
     Channel,
+    ReportsConfig,
 )
 
 
@@ -199,3 +203,75 @@ def test_product_kind_defaults_to_other_and_validates():
     assert Product(kind="ice").kind == "ice"
     with pytest.raises(ValidationError):
         Product(kind="soda")
+
+
+class TestReportsConfig:
+    def test_default_config_model_exposes_reports_with_documented_defaults(self):
+        cfg = ConfigModel()
+        assert isinstance(cfg.reports, ReportsConfig)
+        assert cfg.reports.schedule == "off"
+        assert cfg.reports.hour == 7
+        assert cfg.reports.weekday == 0
+        assert cfg.reports.extra_recipients == []
+
+    def test_extra_recipients_default_is_not_a_shared_mutable_list(self):
+        a = ConfigModel()
+        b = ConfigModel()
+        a.reports.extra_recipients.append("someone@example.com")
+        assert b.reports.extra_recipients == []
+
+    def test_schedule_accepts_daily_and_weekly(self):
+        cfg = ConfigModel.model_validate({"reports": {"schedule": "daily"}})
+        assert cfg.reports.schedule == "daily"
+        cfg = ConfigModel.model_validate({"reports": {"schedule": "weekly"}})
+        assert cfg.reports.schedule == "weekly"
+
+    def test_schedule_rejects_unknown_value(self):
+        with pytest.raises(ValidationError):
+            ConfigModel.model_validate({"reports": {"schedule": "monthly"}})
+
+    def test_hour_rejects_24_and_negative_one(self):
+        with pytest.raises(ValidationError):
+            ReportsConfig(hour=24)
+        with pytest.raises(ValidationError):
+            ReportsConfig(hour=-1)
+        # boundary values remain valid
+        assert ReportsConfig(hour=0).hour == 0
+        assert ReportsConfig(hour=23).hour == 23
+
+    def test_weekday_rejects_7_and_negative_one(self):
+        with pytest.raises(ValidationError):
+            ReportsConfig(weekday=7)
+        with pytest.raises(ValidationError):
+            ReportsConfig(weekday=-1)
+        assert ReportsConfig(weekday=0).weekday == 0
+        assert ReportsConfig(weekday=6).weekday == 6
+
+    def test_config_missing_reports_key_loads_with_defaults(self):
+        raw = json.loads(Path("config.example.json").read_text(encoding="utf-8"))
+        assert "reports" not in raw
+        cfg = ConfigModel.model_validate(raw)
+        assert cfg.reports == ReportsConfig()
+
+    def test_reports_section_round_trips_through_save_config(self, tmp_path):
+        from services.config_store import save_config
+
+        cfg = ConfigModel()
+        cfg.reports.schedule = "weekly"
+        cfg.reports.hour = 9
+        cfg.reports.weekday = 3
+        cfg.reports.extra_recipients = ["ops@example.com", "owner2@example.com"]
+
+        target = tmp_path / "config.json"
+        save_config(cfg, target)
+
+        reloaded = ConfigModel.model_validate(
+            json.loads(target.read_text(encoding="utf-8"))
+        )
+        assert reloaded.reports.schedule == "weekly"
+        assert reloaded.reports.hour == 9
+        assert reloaded.reports.weekday == 3
+        assert reloaded.reports.extra_recipients == [
+            "ops@example.com",
+            "owner2@example.com",
+        ]

@@ -1,0 +1,72 @@
+{# web_interface/templates/reports_product.html
+
+   GET /reports/product (gate view_reports): range selector, rows sorted by
+   revenue (services.reports.by_product's own order), tapping a row opens
+   /reports/product/{sku} -- design §3.
+#}
+{% extends "base.html" %}
+{% block title %}By product · Vending Machine{% endblock %}
+{% block body %}
+<div class="space-y-4">
+
+  {% if email_notice %}<p class="text-green-700 text-sm" role="status">{{ email_notice }}</p>{% endif %}
+  {% if email_error %}<p class="text-red-600 text-sm" role="alert">{{ email_error }}</p>{% endif %}
+
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+
+    <div class="flex border-b border-gray-200 px-1 pt-1">
+      {% for r, label in [("7d", "7 Days"), ("30d", "30 Days"), ("90d", "90 Days"), ("12m", "12 Months"), ("all", "All Time")] %}
+      <a
+        href="/reports/product?range={{ r }}"
+        class="px-4 py-2.5 text-sm font-medium -mb-px transition-colors
+               {% if r == range %}border-b-2 border-blue-600 text-blue-600
+               {% else %}text-gray-500 hover:text-gray-700 border-b-2 border-transparent hover:border-gray-300{% endif %}">
+        {{ label }}
+      </a>
+      {% endfor %}
+    </div>
+
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-left text-gray-500 text-xs uppercase tracking-wide">
+            <th class="px-5 py-3">Product</th>
+            <th class="px-5 py-3 text-right">Units</th>
+            <th class="px-5 py-3 text-right">Revenue</th>
+            <th class="px-5 py-3 text-right">Failed vends</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for row in rows %}
+          <tr class="hover:bg-gray-50">
+            <td class="px-5 py-3">
+              <a href="/reports/product/{{ row.sku|sku_url_segment }}?range={{ range }}"
+                 class="text-blue-600 hover:text-blue-700 font-medium">{{ row.name }}</a>
+              <span class="text-gray-400 text-xs ml-2">{{ row.sku }}</span>
+            </td>
+            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">{{ row.units }}</td>
+            <td class="px-5 py-3 text-right whitespace-nowrap font-medium text-gray-900">${{ "%.2f"|format(row.revenue) }}</td>
+            <td class="px-5 py-3 text-right whitespace-nowrap {{ 'text-red-600' if row.failed_vends else 'text-gray-900' }}">{{ row.failed_vends }}</td>
+          </tr>
+          {% else %}
+          <tr>
+            <td class="px-5 py-3 text-gray-400" colspan="4">No sales in this range.</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+
+  <form hx-post="/reports/email">
+    <input type="hidden" name="report" value="product">
+    <input type="hidden" name="range" value="{{ range }}">
+    <button type="submit"
+            class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">
+      Email this report
+    </button>
+  </form>
+
+</div>
+{% endblock %}

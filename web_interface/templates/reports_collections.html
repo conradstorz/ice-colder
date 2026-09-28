@@ -1,0 +1,59 @@
+{# web_interface/templates/reports_collections.html
+
+   GET /reports/collections (gate view_reports): last 50 cash collections
+   newest first; the top row's "expected cash" is computed live by
+   services.reports.collections itself (cash-class sales since that
+   collection, as of now) -- design §3. No range selector: design §3's own
+   table gives this report no range column, and services.reports.
+   collections takes no window argument (see routes/reports.py's module
+   docstring for the accepted-but-unused `?range=` on this route).
+#}
+{% extends "base.html" %}
+{% block title %}Cash collections · Vending Machine{% endblock %}
+{% block body %}
+<div class="space-y-4">
+
+  {% if email_notice %}<p class="text-green-700 text-sm" role="status">{{ email_notice }}</p>{% endif %}
+  {% if email_error %}<p class="text-red-600 text-sm" role="alert">{{ email_error }}</p>{% endif %}
+
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-left text-gray-500 text-xs uppercase tracking-wide">
+            <th class="px-5 py-3">Collected</th>
+            <th class="px-5 py-3">By</th>
+            <th class="px-5 py-3 text-right">Expected cash</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for row in rows %}
+          <tr>
+            <td class="px-5 py-3 text-gray-700 whitespace-nowrap">{{ row.ts_display }}</td>
+            <td class="px-5 py-3 text-gray-700">{{ row.user_name }}</td>
+            <td class="px-5 py-3 text-right whitespace-nowrap font-medium text-gray-900">
+              ${{ "%.2f"|format(row.expected_cash) }}
+              {% if loop.first %}<span class="text-xs text-gray-400 ml-2">(live)</span>{% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr>
+            <td class="px-5 py-3 text-gray-400" colspan="3">No collections recorded.</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <form hx-post="/reports/email">
+    <input type="hidden" name="report" value="collections">
+    <input type="hidden" name="range" value="{{ range }}">
+    <button type="submit"
+            class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">
+      Email this report
+    </button>
+  </form>
+
+</div>
+{% endblock %}

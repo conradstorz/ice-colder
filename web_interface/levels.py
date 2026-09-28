@@ -3,7 +3,7 @@
 This is a pure data module: no FastAPI, no Jinja, no `web_interface.context`
 import. It defines `Level`, a frozen dataclass describing one node of the
 navigation hierarchy (a title, a URL, and a reference to its parent), plus a
-module-level constant for each of the 24 named levels in spec §2.
+module-level constant for each of the 29 named levels in spec §2.
 
 Parameterized levels (a specific product, subsystem or user) have no module
 constant here; routes build them at request time with `Level.child`.
@@ -63,6 +63,18 @@ LEVEL_PRODUCTS_NEW = Level(title="New", url="/products/new", parent=LEVEL_PRODUC
 
 LEVEL_INVENTORY = Level(title="Inventory", url="/inventory", parent=LEVEL_HOME)
 LEVEL_REPORTS = Level(title="Reports", url="/reports", parent=LEVEL_HOME)
+LEVEL_REPORTS_PERIOD = Level(
+    title="By period", url="/reports/period", parent=LEVEL_REPORTS
+)
+LEVEL_REPORTS_PRODUCT = Level(
+    title="By product", url="/reports/product", parent=LEVEL_REPORTS
+)
+LEVEL_REPORTS_METHOD = Level(
+    title="By method", url="/reports/method", parent=LEVEL_REPORTS
+)
+LEVEL_REPORTS_COLLECTIONS = Level(
+    title="Cash collections", url="/reports/collections", parent=LEVEL_REPORTS
+)
 LEVEL_CONTROLS = Level(title="Controls", url="/controls", parent=LEVEL_HOME)
 LEVEL_TESTS = Level(title="Tests", url="/tests", parent=LEVEL_HOME)
 
@@ -94,3 +106,6 @@ LEVEL_SETTINGS_COMMS = Level(
 )
 LEVEL_SETTINGS_MQTT = Level(title="MQTT", url="/settings/mqtt", parent=LEVEL_SETTINGS)
 LEVEL_SETTINGS_WEB = Level(title="Web", url="/settings/web", parent=LEVEL_SETTINGS)
+LEVEL_SETTINGS_REPORTS = Level(
+    title="Reports", url="/settings/reports", parent=LEVEL_SETTINGS
+)

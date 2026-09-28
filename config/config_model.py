@@ -344,6 +344,27 @@ class WebConfig(BaseModel):
     )
 
 
+class ReportsConfig(BaseModel):
+    """Scheduled sales-summary email settings (`config.reports`)."""
+
+    schedule: Literal["off", "daily", "weekly"] = Field(
+        "off", description="off, daily, or weekly scheduled summary email"
+    )
+    hour: int = Field(
+        7, ge=0, le=23, description="Local hour (0-23) to send the summary"
+    )
+    weekday: int = Field(
+        0,
+        ge=0,
+        le=6,
+        description="Monday-based weekday (0=Monday .. 6=Sunday) for weekly",
+    )
+    extra_recipients: List[str] = Field(
+        default_factory=list,
+        description="Additional email addresses beyond the owner",
+    )
+
+
 class ConfigModel(BaseModel):
     """
     Top-level configuration for the Vending Machine Controller
@@ -368,6 +389,10 @@ class ConfigModel(BaseModel):
     )
     web: WebConfig = Field(
         default_factory=WebConfig, description="Web dashboard configuration"
+    )
+    reports: ReportsConfig = Field(
+        default_factory=ReportsConfig,
+        description="Scheduled sales-summary email settings",
     )
 
     model_config = ConfigDict(extra="ignore")

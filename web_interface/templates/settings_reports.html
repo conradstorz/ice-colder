@@ -1,0 +1,66 @@
+{# web_interface/templates/settings_reports.html
+
+   GET/POST /settings/reports (gate edit_contacts, per spec §4.1 — not
+   edit_secrets). Edits config.reports (config_model.ReportsConfig): the
+   scheduled sales-summary email sent by services/report_scheduler.py.
+   None of these fields is a secret, so no masking applies here.
+
+   extra_recipients is one address per line (commas also accepted on
+   submit, matching /settings/web's trusted_proxies textarea in this same
+   module) and always renders back joined by "\n" — the same separator
+   the route parses on, so a save-then-reload round-trips unchanged.
+#}
+{% extends "base.html" %}
+{% block title %}Reports · Settings · Vending Machine{% endblock %}
+{% block body %}
+<form hx-post="/settings/reports" class="max-w-md space-y-4">
+  <h1 class="text-hero font-semibold text-gray-900">Reports</h1>
+
+  {% if error %}
+  <p class="text-sm text-red-600">{{ error }}</p>
+  {% endif %}
+
+  <div>
+    <label for="schedule" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Schedule</label>
+    <select id="schedule" name="schedule"
+            class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+      <option value="off" {{ "selected" if schedule == "off" }}>Off</option>
+      <option value="daily" {{ "selected" if schedule == "daily" }}>Daily</option>
+      <option value="weekly" {{ "selected" if schedule == "weekly" }}>Weekly</option>
+    </select>
+  </div>
+
+  <div>
+    <label for="hour" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Hour (0–23, local time)</label>
+    <input type="number" id="hour" name="hour" value="{{ hour }}" min="0" max="23" step="1"
+           class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+  </div>
+
+  <div>
+    <label for="weekday" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Weekday (for weekly)</label>
+    <select id="weekday" name="weekday"
+            class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+      <option value="0" {{ "selected" if weekday == 0 }}>Monday</option>
+      <option value="1" {{ "selected" if weekday == 1 }}>Tuesday</option>
+      <option value="2" {{ "selected" if weekday == 2 }}>Wednesday</option>
+      <option value="3" {{ "selected" if weekday == 3 }}>Thursday</option>
+      <option value="4" {{ "selected" if weekday == 4 }}>Friday</option>
+      <option value="5" {{ "selected" if weekday == 5 }}>Saturday</option>
+      <option value="6" {{ "selected" if weekday == 6 }}>Sunday</option>
+    </select>
+  </div>
+
+  <div>
+    <label for="extra_recipients" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Extra recipients (one email per line, beyond the owner)</label>
+    <textarea id="extra_recipients" name="extra_recipients" rows="4"
+              class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">{{ extra_recipients }}</textarea>
+  </div>
+
+  <div class="flex gap-touch pt-2">
+    <button type="submit"
+            class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">Save</button>
+    <a href="/settings"
+       class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Cancel</a>
+  </div>
+</form>
+{% endblock %}

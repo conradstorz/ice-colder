@@ -36,7 +36,8 @@ from services.availability import Availability
 from services.health_monitor import HealthMonitor
 from services.display_controller import DisplayController
 from services.inventory_manager import InventoryManager
-from services.session_store import SessionSnapshot, SessionStore
+from services.session_store import Credit, SessionSnapshot, SessionStore
+from services.event_recorder import SaleRecordingFailed
 
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
 
@@ -134,6 +135,17 @@ class VMC:
     REFUND_ACK_TIMEOUT = 10.0  # seconds to wait for cmd/payment/refund/ack
     REFUND_MAX_ATTEMPTS = 2  # one retry with the same request_id, then PAY-103
 
+    # Amounts within this many dollars of each other are the same money for
+    # ledger purposes. Every amount in this system is meaningful only to the
+    # cent (round(x, 2) is used throughout, e.g. request_refund below), so a
+    # residue smaller than half a cent can only be float noise — 0.1 + 0.2
+    # deposited as two credits and then spent as one 0.3 sale leaves a
+    # remainder around 4e-17, many orders of magnitude under this — and can
+    # never be a real, distinguishable amount of money. Half a cent is also
+    # the largest tolerance that can never itself be mistaken for a whole
+    # cent: an actual one-cent credit ($0.01) is always kept.
+    CREDIT_TOLERANCE = 0.005
+
     @logger.catch()
     def __init__(self, config: ConfigModel):
         global txn_log, ice_log, vend_log
@@ -150,6 +162,16 @@ class VMC:
 
         self.selected_product = None
         self.credit_escrow = 0.0
+        # escrow_credits is the FIFO ledger behind credit_escrow: every deposit
+        # appends one Credit in its raw method, and credit_escrow must always
+        # equal round(sum(c.amount for c in escrow_credits), 2) — the two are
+        # never allowed to diverge (see _consume_credits_fifo's bug guard).
+        self.escrow_credits: list[Credit] = []
+        # Shares consumed by the sale currently in dispensing, keyed by raw
+        # method string. Set by _consume_credits_fifo when a sale's price is
+        # deducted; consumed (and reset to None) by on_vend_failed. None
+        # whenever no sale is in flight.
+        self.pending_sale_shares: dict[str, float] | None = None
         self.last_insufficient_message = ""
         self.last_payment_method = "Simulated Payment"
 
@@ -175,6 +197,13 @@ class VMC:
         self._event_recorder = None  # Set via set_event_recorder()
         self._availability: Availability | None = None  # Set via set_availability()
         self._session_store: SessionStore | None = None  # Set via set_session_store()
+        # In-memory record-once guard for PAY-104 recovery (Task 14 review
+        # finding 3): keys of pending sales this process has already
+        # committed via record_sale, checked (and populated) only when the
+        # durable marker (mark_pending_sale_recorded) fails to persist --
+        # see reserve_pending_sale/pending_sale_already_recorded below.
+        # Lost on restart by design; see those methods' docstrings.
+        self._recorded_pay104_keys: set[tuple] = set()
         self.subsystem_capabilities: dict[str, dict] = {}
         # Fault registry: product-scope faults by SKU, machine-scope faults by code.
         self._lockouts: dict[str, FaultCode] = {}
@@ -361,6 +390,10 @@ class VMC:
             if (state or self.state) == "dispensing"
             else None,
             pending_refund_request_id=pending,
+            credits=list(self.escrow_credits),
+            pending_sale_shares=dict(self.pending_sale_shares)
+            if self.pending_sale_shares is not None
+            else None,
         )
 
     def _persist_session(self, state: str | None = None) -> None:
@@ -501,6 +534,15 @@ class VMC:
             )
         self._push_active_faults()
 
+    def raise_data_fault(self, code: FaultCode, outcome: str | None = None) -> None:
+        """Public entry point for a caller outside the FSM (main.py, at
+        startup) to raise a machine-scope data fault (``DATA-101``/
+        ``DATA-102``) without reaching into the fault registry directly —
+        every in-FSM caller uses ``_raise_fault``; this is the one seam for
+        the one caller that isn't one.
+        """
+        self._raise_fault(code, outcome=outcome)
+
     def clear_fault(self, key: str, by: str = "admin") -> bool:
         """Clear a fault by key (SKU for product faults, code string for machine faults)."""
         code = self._lockouts.pop(key, None)
@@ -537,6 +579,144 @@ class VMC:
             logger.info(f"Machine fault {code.value} cleared ({by})")
         self._push_active_faults()
         self._publish_status()
+        return True
+
+    def pending_sale_for_recovery(self) -> dict | None:
+        """Read-only: the pending sale recorded in the session snapshot, if
+        any -- feeds the Health > Faults PAY-104 card's "record this sale"
+        / "discard" choice (Task 14).
+
+        Returns ``None`` unless ``PAY-104`` is currently an active machine
+        fault *and* the on-disk snapshot carries a non-empty
+        ``pending_sale_shares``; a card whose snapshot carries no pending
+        sale (or whose fault has already been cleared, including by a
+        replayed record/discard) keeps the plain Clear button instead of
+        the two recovery actions. Never mutates fault state or the
+        snapshot -- the caller decides what to do next.
+
+        The price is the sum of the shares, not a fresh catalog lookup:
+        the shares are the money actually taken for this sale, whereas the
+        catalog price may have been edited (or the product removed from
+        the catalog entirely) since the crash, and the row this recovers
+        must record what was actually collected, not today's price. The
+        product name is still looked up from the catalog by SKU for
+        display, falling back to the SKU itself when the product no
+        longer exists (`_product_name` already does this).
+        """
+        if FaultCode.PAY_104 not in self._machine_faults:
+            return None
+        if self._session_store is None:
+            return None
+        try:
+            snap = self._session_store.load()
+        except Exception:
+            return None
+        if snap is None or not snap.pending_sale_shares:
+            return None
+        sku = snap.selected_sku
+        if sku is None:
+            return None
+        return {
+            "sku": sku,
+            "name": self._product_name(sku),
+            "slot": snap.dispense_slot,
+            "price": round(sum(snap.pending_sale_shares.values()), 2),
+            "methods": dict(snap.pending_sale_shares),
+            # Not part of the row this recovers and not shown anywhere --
+            # carried only so reserve_pending_sale/pending_sale_already_
+            # recorded (Task 14 finding 3) can key the in-memory guard on
+            # something that distinguishes this particular pending sale
+            # from a later, different one. See those methods' docstrings.
+            "saved_at": snap.saved_at,
+        }
+
+    def _pay104_sale_key(self, pending: dict) -> tuple:
+        """Identify one PAY-104 pending sale for the in-memory
+        record-once guard (Task 14 review finding 3).
+
+        Keyed on the SKU, the exact method shares (sorted so dict
+        ordering never matters), and the snapshot's `saved_at` --
+        `_process_payment` sets `saved_at` fresh (`time.time()`, via
+        `_snapshot()`) at the moment it wrote the escrow shares that
+        became this pending sale. A genuinely different pending sale --
+        even the same SKU, even a coincidentally identical share
+        breakdown -- was written at a different wall-clock instant and
+        so gets a different key; a replay of the SAME sale reads the
+        SAME on-disk snapshot (nothing rewrites `saved_at` in place
+        between reads) and therefore collapses to the same key.
+        """
+        return (
+            pending["sku"],
+            tuple(sorted(pending["methods"].items())),
+            pending["saved_at"],
+        )
+
+    def pending_sale_already_recorded(self, pending: dict) -> bool:
+        """True if `pending` (as returned by `pending_sale_for_recovery`)
+        has already been reserved via `reserve_pending_sale` in this
+        process (Task 14 review finding 3).
+
+        The durable marker (`mark_pending_sale_recorded`) is supposed to
+        be what makes a retry safe, but it can fail for the same
+        underlying I/O reason that made `clear_fault`'s snapshot removal
+        fail one line earlier -- when it does, `pending_sale_for_
+        recovery()` keeps (truthfully, per its own unchanged contract)
+        reporting the same sale as pending. This in-memory check is the
+        belt to that marker's suspenders: called by the route under the
+        same `_pay104_lock` as `pending_sale_for_recovery()`'s own read,
+        so the two decisions are made atomically. It closes the gap only
+        for this process -- a restart loses `_recorded_pay104_keys`
+        entirely, same as any other in-memory state, which is why the
+        route must also tell the operator the truth (part (a)) rather
+        than rely on this alone.
+        """
+        return self._pay104_sale_key(pending) in self._recorded_pay104_keys
+
+    def reserve_pending_sale(self, pending: dict) -> None:
+        """Record, in memory only, that `pending` has been written via
+        record_sale -- see `pending_sale_already_recorded` for why this
+        exists and what it does not cover. Never raises: this is a
+        best-effort belt-and-suspenders guard, not the source of truth."""
+        self._recorded_pay104_keys.add(self._pay104_sale_key(pending))
+
+    def mark_pending_sale_recorded(self) -> bool:
+        """Durably mark the on-disk PAY-104 snapshot's pending sale as
+        already recorded, without touching fault state (Task 14 finding 2).
+
+        Used only from the record-sale route, only after `record_sale` has
+        already succeeded but `clear_fault` then failed to remove the
+        snapshot (e.g. the file could not be unlinked) -- PAY-104
+        legitimately stays active so the operator still has evidence to
+        acknowledge, but the sale itself must never be written a second
+        time. Rewriting the snapshot with `pending_sale_shares` cleared
+        makes `pending_sale_for_recovery()` return ``None`` on any later
+        call (its own contract: only non-``None`` when the shares are
+        non-empty), regardless of whether the fault is still active, so a
+        follow-up record-sale request finds nothing pending and a
+        follow-up faults-list render falls back to the plain Clear button.
+
+        Narrow by design: never clears the fault, never writes a sale,
+        never raises -- a failure here (no session store attached, the
+        snapshot unreadable, or the rewrite itself failing) is logged and
+        reported back as ``False`` rather than propagated, since the
+        caller already has a sale recorded and a 500 in flight and must
+        not lose either to a secondary I/O problem here.
+        """
+        if self._session_store is None:
+            return False
+        try:
+            snap = self._session_store.load()
+        except Exception as e:
+            logger.error(f"PAY-104: could not load snapshot to mark recorded: {e}")
+            return False
+        if snap is None:
+            return False
+        snap.pending_sale_shares = None
+        try:
+            self._session_store.save(snap)
+        except Exception as e:
+            logger.error(f"PAY-104: could not save snapshot marked recorded: {e}")
+            return False
         return True
 
     async def _handle_mqtt_hardware_io(self, topic: str, data: dict):
@@ -590,6 +770,95 @@ class VMC:
             return False
         return reported_slot != self.selected_product.slot
 
+    async def _record_sale(self) -> None:
+        """Durably record the just-completed sale before `_finish_dispensing`.
+
+        Runs the recorder's synchronous, own-connection ``record_sale``
+        (services/event_recorder.py) off the event loop via
+        ``asyncio.to_thread``, so the loop is never blocked on the disk
+        write — the row is on disk before the FSM returns to idle (spec
+        §1.2). ``record_sale`` already appends the same record to the sales
+        journal (append + fsync) and re-raises on any insert failure; this
+        only needs to catch that, raise the alert-class ``DATA-101``, and
+        let the vend finish regardless — a storage problem must never fail
+        the vend or stop the machine. It must not journal the record itself
+        on top of that: ``record_sale`` already did.
+
+        ``pending_sale_shares`` is cleared here on the success path (DB
+        insert succeeded) and on the ordinary failure path (DB insert
+        failed but the journal fallback caught it — ``DATA-101``).
+        ``on_vend_failed`` already clears it (and restores the exact shares
+        as credits) on a *dispense* failure path — clearing it here too is
+        what stops the session snapshot from ever advertising an already-
+        recorded sale as still pending; leaving it set would let a later
+        "record this sale" PAY-104 recovery (Task 14) write the same money
+        a second time.
+
+        If the DB insert *and* the journal fallback both fail
+        (``SaleRecordingFailed`` — e.g. a full or read-only data volume),
+        the sale is recorded nowhere durable at all, so this deliberately
+        does **not** clear ``pending_sale_shares`` and raises ``PAY-104``
+        instead of ``DATA-101``. ``PAY-104`` is the fault
+        ``pending_sale_for_recovery()`` already keys its Health › Faults
+        "record this sale" / "discard" recovery on, and ``_persist_session``
+        already refuses to touch the on-disk snapshot once ``PAY-104`` is
+        active — so the "dispensing" snapshot already written at deduction
+        time (``_process_payment``) survives untouched as the sale's only
+        remaining record, in this same running process, with no reboot
+        required. Reusing this existing recovery path (rather than
+        inventing a second one) is deliberate: it is exactly the situation
+        that path already exists to handle — a sale whose completion is
+        uncertain and must be reconciled by an operator.
+        """
+        product = self.selected_product
+        if self._event_recorder is None or product is None:
+            self.pending_sale_shares = None
+            return
+        methods = self.pending_sale_shares or {"unknown": round(product.price, 2)}
+        # Price comes from the consumed shares, not `product.price`:
+        # `selected_product` is the *live* catalog object
+        # (services/config_store.update_product mutates it in place), so an
+        # operator can edit the price while this sale is mid-dispense. The
+        # shares are what was actually deducted from escrow and must be
+        # what gets recorded — matches the convention already used by
+        # `pending_sale_for_recovery` for the PAY-104 recovery path.
+        price = round(sum(methods.values()), 2)
+        try:
+            await asyncio.to_thread(
+                self._event_recorder.record_sale,
+                product.sku,
+                product.name,
+                product.slot,
+                price,
+                methods,
+            )
+        except SaleRecordingFailed:
+            logger.exception(
+                f"record_sale AND its journal fallback both failed for "
+                f"sku={product.sku!r}; the sale is recorded nowhere durable. "
+                "Raising PAY-104 and preserving pending_sale_shares so the "
+                "on-disk session snapshot is not cleared — it is the only "
+                "remaining record of this sale."
+            )
+            if self._availability:
+                self._availability.set_transaction_certain(False)
+            self._raise_fault(
+                FaultCode.PAY_104,
+                outcome=f"sku={product.sku} price=${price:.2f} unrecorded",
+            )
+            return  # do not clear pending_sale_shares — see docstring
+        except Exception:
+            logger.exception(
+                f"record_sale failed for sku={product.sku!r}; already journaled "
+                "as fallback by record_sale itself — raising DATA-101 and "
+                "finishing the vend regardless"
+            )
+            self._raise_fault(
+                FaultCode.DATA_101,
+                outcome=f"sku={product.sku} price=${price:.2f}",
+            )
+        self.pending_sale_shares = None
+
     async def _handle_mqtt_dispenser(self, topic: str, data: dict):
         """Handle dispenser status from ESP32.
 
@@ -628,6 +897,7 @@ class VMC:
                 self._event_recorder.record(
                     "dispense", value=float(self.selected_product.slot)
                 )
+            await self._record_sale()
             self._finish_dispensing()
             return
 
@@ -956,13 +1226,47 @@ class VMC:
         Restores the price to escrow (it was deducted in _process_payment),
         records the failure, and clears the selection. Whether the customer
         stays to choose again or is paid out is decided in _fail_vend.
+
+        The restore must never reclassify money: it re-credits exactly the
+        per-method shares _consume_credits_fifo consumed for this sale
+        (pending_sale_shares), as separate Credits, not one blob of the
+        current/default method. That is what stops a failed vend laundering
+        cash into card (or any other method) in the sales ledger.
+
+        The restored total is likewise derived from those shares, not a
+        fresh `product.price` read: `selected_product` is the *live*
+        catalog object (services/config_store.update_product mutates it in
+        place), so an operator can edit the price while this sale is
+        mid-dispense. Re-crediting the edited price here would both credit
+        the wrong amount to escrow and report it in the failure event, the
+        transaction log and the customer message below.
         """
         product = self.selected_product
-        price = product.price if product else 0.0
         name = product.name if product else "Unknown"
         sku = product.sku if product else None
         self._cancel_dispense_timeout()
+        shares = self.pending_sale_shares
+        self.pending_sale_shares = None
+        if shares is None:
+            # Should be unreachable: on_vend_failed only runs from
+            # dispensing, which is only entered right after
+            # _consume_credits_fifo sets pending_sale_shares. Guard, not a
+            # path — attribute to "unknown" rather than guess a method.
+            price = product.price if product else 0.0
+            logger.warning(
+                "on_vend_failed: no pending_sale_shares recorded; crediting "
+                f"${price:.2f} back to escrow as 'unknown'"
+            )
+            shares = {"unknown": round(price, 2)}
+        else:
+            price = round(sum(shares.values()), 2)
         self.credit_escrow += price
+        now = time.time()
+        for share_method, share_amount in shares.items():
+            if share_amount > 0:
+                self.escrow_credits.append(
+                    Credit(method=share_method, amount=share_amount, ts=now)
+                )
         logger.error(
             f"{STATE_CHANGE_PREFIX} Vend failed for '{name}' ({code.value}, {outcome}); "
             f"${price:.2f} returned to escrow"
@@ -1049,6 +1353,9 @@ class VMC:
                 "escrowed"
             )
         self.credit_escrow += amount
+        self.escrow_credits.append(
+            Credit(method=payment_method, amount=amount, ts=time.time())
+        )
         self.last_payment_method = payment_method
         logger.info(
             f"Deposited ${amount:.2f} via {payment_method}. New escrow: ${self.credit_escrow:.2f}"
@@ -1068,6 +1375,52 @@ class VMC:
             f"${amount:.2f} deposited. Current balance: ${self.credit_escrow:.2f}."
         )
 
+    def _consume_credits_fifo(self, price: float) -> dict[str, float]:
+        """Consume escrow_credits FIFO for `price`, returning consumed shares.
+
+        Mutates escrow_credits in place: fully-consumed credits are removed,
+        a partially-consumed credit shrinks in place (same method, reduced
+        amount), and untouched credits are left exactly as they were. The
+        returned dict sums each raw method string to the amount of it that
+        was spent on this sale — this is the method breakdown a later task
+        records for the sale, and it is also what on_vend_failed re-credits
+        if the vend does not complete, so it must never be re-derived from
+        anything but the credits actually consumed here.
+
+        Divergence guard: escrow_credits is supposed to sum to credit_escrow
+        at all times (every path that changes one changes the other). If it
+        does not — a bug elsewhere, e.g. credit_escrow mutated directly
+        without going through deposit_funds — the ledger cannot be trusted
+        to attribute this sale correctly, so no credit is touched and the
+        whole price is booked to the single method "unknown" instead of
+        silently mis-attributing it to whatever methods happen to be in the
+        (wrong) list. This is a bug guard, not an expected path.
+        """
+        ledger_total = round(sum(c.amount for c in self.escrow_credits), 2)
+        if abs(ledger_total - round(self.credit_escrow, 2)) > self.CREDIT_TOLERANCE:
+            logger.warning(
+                f"escrow_credits total (${ledger_total:.2f}) diverged from "
+                f"credit_escrow (${self.credit_escrow:.2f}); booking "
+                f"${price:.2f} to 'unknown' rather than misattribute it"
+            )
+            return {"unknown": round(price, 2)}
+
+        remaining = round(price, 2)
+        shares: dict[str, float] = {}
+        kept: list[Credit] = []
+        for credit in self.escrow_credits:
+            if remaining <= self.CREDIT_TOLERANCE:
+                kept.append(credit)
+                continue
+            take = round(min(credit.amount, remaining), 2)
+            shares[credit.method] = round(shares.get(credit.method, 0.0) + take, 2)
+            remaining = round(remaining - take, 2)
+            leftover = round(credit.amount - take, 2)
+            if leftover > self.CREDIT_TOLERANCE:
+                kept.append(Credit(method=credit.method, amount=leftover, ts=credit.ts))
+        self.escrow_credits = kept
+        return shares
+
     @logger.catch()
     def request_refund(self, reason: str = "admin"):
         """Pay the customer back: publish a refund command and await its ack.
@@ -1081,6 +1434,7 @@ class VMC:
             return
         amount = round(self.credit_escrow, 2)
         self.credit_escrow = 0.0
+        self.escrow_credits = []
         pending = PendingRefund(request_id=uuid4().hex, amount=amount, reason=reason)
         self._pending_refunds[pending.request_id] = pending
         self._send_refund_command(pending)
@@ -1325,9 +1679,11 @@ class VMC:
             self.send_customer_message(
                 "Sufficient funds received. Processing your payment..."
             )
+            self.pending_sale_shares = self._consume_credits_fifo(price)
             self.credit_escrow -= price
             logger.debug(
-                f"Deducted price from escrow. New escrow: {self.credit_escrow:.2f}"
+                f"Deducted price from escrow. New escrow: {self.credit_escrow:.2f} "
+                f"(shares: {self.pending_sale_shares})"
             )
             self.dispense_product()
             self._persist_session("dispensing")
