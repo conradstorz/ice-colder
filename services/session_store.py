@@ -24,6 +24,16 @@ from services.paths import DATA_DIR
 
 SESSION_PATH = DATA_DIR / "session.json"
 
+# How far ahead of the wall clock a loaded saved_at may sit before it is
+# treated as corrupt rather than as ordinary clock jitter. A snapshot is
+# written and read back on the same machine within the same call, so any
+# genuine skew is sub-second; this is deliberately generous (two orders of
+# magnitude above that) to absorb coarse or slightly-adjusted system clocks
+# without ever accepting a value that is meaningfully "in the future" --
+# e.g. a hand-edited or tampered file, or a snapshot from a machine whose
+# clock is wrong by minutes or more.
+SAVED_AT_FUTURE_SKEW_SECONDS = 5.0
+
 
 @dataclass
 class Credit:
@@ -98,13 +108,13 @@ class SessionStore:
             # exact instant a pending sale's escrow shares were written) so
             # it must never be allowed to silently re-default to "now" via
             # SessionSnapshot's field(default_factory=time.time) -- an
-            # absent, non-numeric, non-finite, or negative value on disk is
-            # rejected here and folds into the same unreadable-snapshot
-            # "error" channel used below for a JSON parse failure, rather
-            # than inventing a second signalling mechanism. That channel
-            # already reports is_open() == True (see SessionSnapshot.error),
-            # which is the correct, fail-safe answer for a snapshot we
-            # cannot actually trust.
+            # absent, non-numeric, non-finite, non-positive, or future value
+            # on disk is rejected here and folds into the same
+            # unreadable-snapshot "error" channel used below for a JSON
+            # parse failure, rather than inventing a second signalling
+            # mechanism. That channel already reports is_open() == True
+            # (see SessionSnapshot.error), which is the correct, fail-safe
+            # answer for a snapshot we cannot actually trust.
             if "saved_at" not in raw:
                 raise ValueError("saved_at missing from session snapshot")
             saved_at = raw["saved_at"]
@@ -112,9 +122,11 @@ class SessionStore:
                 isinstance(saved_at, bool)
                 or not isinstance(saved_at, (int, float))
                 or not math.isfinite(saved_at)
-                or saved_at < 0
+                or saved_at <= 0
             ):
                 raise ValueError(f"saved_at is not a valid timestamp: {saved_at!r}")
+            if saved_at > time.time() + SAVED_AT_FUTURE_SKEW_SECONDS:
+                raise ValueError(f"saved_at is in the future: {saved_at!r}")
             return SessionSnapshot(**raw)
         except Exception as e:
             logger.error(f"SessionStore: unreadable {self._path}: {e}")

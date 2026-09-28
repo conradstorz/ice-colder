@@ -1,7 +1,13 @@
 import json
+import time
 from pathlib import Path
 
-from services.session_store import Credit, SessionSnapshot, SessionStore
+from services.session_store import (
+    SAVED_AT_FUTURE_SKEW_SECONDS,
+    Credit,
+    SessionSnapshot,
+    SessionStore,
+)
 
 
 def test_round_trip(tmp_path):
@@ -231,3 +237,66 @@ def test_is_open_unchanged_for_open_and_cleared_snapshot_after_guard(tmp_path):
     cleared_snap = SessionSnapshot(state="idle", credit_escrow=0.0, saved_at=200.0)
     store.save(cleared_snap)
     assert store.load().is_open() is False
+
+
+def test_future_saved_at_beyond_skew_is_reported_as_unreadable(tmp_path):
+    """A saved_at meaningfully ahead of the wall clock (clock skew, or a
+    tampered/hand-edited file) is exactly as corrupt as a missing or
+    negative one -- PAY-104 recovery must not reason about a moment that
+    hasn't happened yet. Comfortably clear the allowed skew so the branch
+    under test is actually reached, not just close to the boundary."""
+    path = tmp_path / "session.json"
+    future = time.time() + SAVED_AT_FUTURE_SKEW_SECONDS + 3600.0
+    path.write_text(
+        json.dumps({"state": "dispensing", "credit_escrow": 5.0, "saved_at": future}),
+        encoding="utf-8",
+    )
+
+    loaded = SessionStore(path).load()
+
+    assert loaded is not None
+    assert loaded.error is not None
+    assert loaded.credit_escrow == 0.0  # the fabricated 5.0 was not trusted
+    assert loaded.is_open() is True
+
+
+def test_saved_at_just_within_future_skew_is_accepted(tmp_path):
+    """The allowed skew must not be so tight that an ordinary write/read
+    round trip (or a slightly fast system clock) gets rejected -- a
+    saved_at a little ahead of "now" but still inside the tolerance is a
+    valid snapshot, not a corrupt one."""
+    path = tmp_path / "session.json"
+    within_skew = time.time() + (SAVED_AT_FUTURE_SKEW_SECONDS / 2)
+    path.write_text(
+        json.dumps(
+            {"state": "dispensing", "credit_escrow": 5.0, "saved_at": within_skew}
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = SessionStore(path).load()
+
+    assert loaded is not None
+    assert loaded.error is None
+    assert loaded.credit_escrow == 5.0
+    assert loaded.saved_at == within_skew
+
+
+def test_zero_saved_at_is_reported_as_unreadable(tmp_path):
+    """The brief's rationale lists a saved_at of zero alongside missing,
+    future, and silently-re-defaulted values as corrupt. The Unix epoch is
+    not a plausible "moment a live sale's escrow was written" on a machine
+    whose clock has ever been set, so it is rejected the same way a
+    negative value is -- not treated as a legitimate (if odd) timestamp."""
+    path = tmp_path / "session.json"
+    path.write_text(
+        '{"state": "dispensing", "credit_escrow": 5.0, "saved_at": 0.0}',
+        encoding="utf-8",
+    )
+
+    loaded = SessionStore(path).load()
+
+    assert loaded is not None
+    assert loaded.error is not None
+    assert loaded.credit_escrow == 0.0
+    assert loaded.is_open() is True
