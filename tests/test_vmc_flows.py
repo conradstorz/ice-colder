@@ -2591,3 +2591,189 @@ class TestRunTestSale:
         assert methods == {"cash_coin": 1.00}
         assert vmc.credit_escrow == 1.50
         assert [c.method for c in vmc.escrow_credits] == ["card"]
+
+    async def test_run_test_sale_publishes_real_cmd_dispense(self):
+        """Round-1 fix, minor finding 1: spec §2.3's whole point is that a
+        test sale exercises the production command path, but nothing
+        previously asserted that `cmd/dispense` was actually published --
+        only that the FSM reached `dispensing`. Reaches the same
+        `dispense_product` -> `cmd/dispense` publish a real sale uses,
+        checked against the actual recorded MQTT command, not inferred
+        from state."""
+        vmc, rec, client = _test_run_vmc()
+        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        assert granted is True
+
+        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        await asyncio.sleep(0)
+        vmc._process_payment()
+        assert vmc.state == "dispensing"
+
+        # dispense_product's cmd/dispense publish is fire-and-forget (see
+        # test_dispense_snapshot_persisted_before_dispense_command's own
+        # note on this); drain_persistence() awaits that same tracked task
+        # to completion, which only happens after the publish call inside
+        # it, so this is a wait for the real event rather than a guess.
+        await vmc.drain_persistence()
+
+        dispense_cmds = [p for t, p in client.published if t == "cmd/dispense"]
+        assert len(dispense_cmds) == 1
+        assert dispense_cmds[0].slot == 0  # ICE-1's slot
+
+        await vmc._handle_mqtt_dispenser(
+            "hardware/dispenser", {"slot": 0, "state": "complete"}
+        )
+        result = await asyncio.wait_for(task, timeout=5)
+        assert result.outcome == "dispensed"
+        # Still exactly one cmd/dispense -- completion must not re-publish.
+        assert len([p for t, p in client.published if t == "cmd/dispense"]) == 1
+
+    async def test_crashed_test_sale_offers_no_recovery_and_raises_no_pay104_after_restart(
+        self, tmp_path
+    ):
+        """Round-1 fix for the Critical defect: a test sale that crashes
+        mid-dispense must never be offered for PAY-104 recovery and must
+        never raise PAY-104 at all -- a test sale risked no real money, so
+        nagging the operator about one is a false alarm.
+
+        Drives run_test_sale for real up to the exact point _process_
+        payment persists the 'dispensing' snapshot (Task 4's unmodified
+        persistence path -- unchanged by this fix), which now carries
+        is_test=True because VMC._snapshot() reads self._sale_is_test.
+        Then, rather than reading any flag off the live vmc1 object, this
+        constructs a FRESH SessionStore and a FRESH VMC from the same
+        on-disk file -- a real process boundary, exactly the shape
+        test_pay_104_snapshot_exposes_pending_sale_after_crash_mid_dispense
+        uses for the production case -- and asserts recovery finds nothing
+        and no PAY-104 fires.
+
+        Production paths reached: VMC._process_payment (unmodified),
+        VMC._snapshot (this fix's `is_test=self._sale_is_test`),
+        VMC.set_session_store (this fix's is_test boot branch), and
+        VMC.pending_sale_for_recovery (this fix's is_test guard).
+        """
+        store_path = tmp_path / "session.json"
+        vmc, rec, client = _test_run_vmc()
+        vmc.set_session_store(SessionStore(store_path))
+        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        assert granted is True
+
+        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        await asyncio.sleep(0)
+        vmc._process_payment()  # persists the 'dispensing' snapshot
+        assert vmc.state == "dispensing"
+        await vmc.drain_persistence()  # the save is fire-and-forget -- wait for it
+
+        # Positive control: the snapshot really is on disk, open, and
+        # test-flagged -- before asserting anything about recovery from it.
+        raw = SessionStore(store_path).load()
+        assert raw is not None
+        assert raw.error is None
+        assert raw.is_test is True
+        assert raw.pending_sale_shares == {"test": 2.50}
+        assert raw.is_open() is True
+
+        # Simulate the crash: nothing else on vmc1 (including run_test_sale's
+        # own `finally`) ever runs.
+        vmc.cancel_pending_tasks()
+
+        # A fresh process boundary: a brand-new SessionStore and VMC loading
+        # the same file, exactly as a real restart-after-crash would.
+        vmc2, rec2, client2 = _test_run_vmc()
+        vmc2.set_session_store(SessionStore(store_path))
+
+        assert "PAY-104" not in {f["code"] for f in vmc2.active_faults()}
+        assert vmc2.pending_sale_for_recovery() is None
+        vmc2.cancel_pending_tasks()
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    async def test_pending_sale_for_recovery_refuses_test_snapshot_even_with_pay104_forced(
+        self, tmp_path
+    ):
+        """Defence-in-depth unit test for pending_sale_for_recovery()'s own
+        is_test guard, independent of the boot-time gate exercised by the
+        crash test above: forces PAY-104 active and a test-flagged
+        snapshot onto disk directly, bypassing set_session_store's own
+        gate entirely (attaching the store via `_session_store` directly,
+        never through `set_session_store()`), to prove this second
+        chokepoint refuses on its own merits -- not only because the boot
+        gate already keeps the two states from ever coexisting in
+        practice. This is exactly the scenario the report's rationale
+        describes: some future call site raises PAY-104 while a stale
+        test-sale snapshot happens to still be on disk.
+
+        Production path reached: VMC.pending_sale_for_recovery (this
+        fix's is_test guard), independent of VMC.set_session_store.
+        """
+        store_path = tmp_path / "session.json"
+        vmc, rec, client = _test_run_vmc()
+        session_store = SessionStore(store_path)
+        vmc._session_store = session_store  # bypass set_session_store's own gate
+        session_store.save(
+            SessionSnapshot(
+                state="dispensing",
+                credit_escrow=0.0,
+                selected_sku="ICE-1",
+                dispense_slot=0,
+                pending_sale_shares={"test": 2.50},
+                is_test=True,
+            )
+        )
+        vmc._raise_fault(FaultCode.PAY_104, outcome="test, forced directly")
+
+        # Positive control: the fault really is active before asserting
+        # what the accessor does about it.
+        assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+        assert vmc.pending_sale_for_recovery() is None
+
+    async def test_crashed_production_sale_is_still_offered_for_recovery_with_fifo_shares(
+        self, tmp_path
+    ):
+        """Mirror image of the test above (verification rule 4): a fix that
+        protects the ledger by breaking PAY-104 for real sales would be
+        worse than the defect it fixes. A genuine production sale crashing
+        mid-dispense on the same VMC/session-store plumbing used throughout
+        this class must still raise PAY-104 and still be offered for
+        recovery with its real FIFO method shares, across the same fresh
+        SessionStore/VMC process boundary as the test-sale case.
+
+        Production paths reached: VMC.deposit_funds, VMC.select_product,
+        VMC._process_payment/_consume_credits_fifo (all unmodified),
+        VMC._snapshot (is_test=False for a real sale), VMC.set_session_store
+        (the pre-existing is_open() branch, untouched by this fix), and
+        VMC.pending_sale_for_recovery (returns the pending sale as before).
+        """
+        store_path = tmp_path / "session.json"
+        vmc, rec, client = _test_run_vmc()
+        vmc.set_session_store(SessionStore(store_path))
+
+        vmc.machine.set_state("interacting_with_user")
+        product = vmc.products[0]  # ICE-1, price 2.50
+        vmc.selected_product = product
+        vmc.deposit_funds(2.00, payment_method="cash_bill")
+        vmc.deposit_funds(0.50, payment_method="card")
+
+        vmc._process_payment()
+        assert vmc.state == "dispensing"
+        await vmc.drain_persistence()
+
+        raw = SessionStore(store_path).load()
+        assert raw is not None
+        assert raw.is_test is False
+        assert raw.pending_sale_shares == {"cash_bill": 2.00, "card": 0.50}
+
+        vmc.cancel_pending_tasks()  # simulate the crash
+
+        vmc2, rec2, client2 = _test_run_vmc()
+        vmc2.set_session_store(SessionStore(store_path))
+
+        assert "PAY-104" in {f["code"] for f in vmc2.active_faults()}
+        pending = vmc2.pending_sale_for_recovery()
+        assert pending is not None
+        assert pending["sku"] == "ICE-1"
+        assert pending["methods"] == {"cash_bill": 2.00, "card": 0.50}
+        assert pending["price"] == 2.50
+        vmc2.cancel_pending_tasks()

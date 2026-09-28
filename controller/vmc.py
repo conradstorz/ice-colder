@@ -426,7 +426,22 @@ class VMC:
         """
         self._session_store = store
         snap = store.load()
-        if snap is not None and snap.is_open():
+        if snap is not None and snap.is_test:
+            # A crashed run_test_sale left this behind. is_test is read
+            # straight off the snapshot (not the lease, which spec §6 never
+            # persists) so this is the one chokepoint that keeps a crashed
+            # test sale from ever raising PAY-104: PAY-104 means "real
+            # money may be unaccounted for and an admin must decide", and a
+            # test sale risked no real money, so raising it here would be a
+            # false alarm. Nothing recoverable was lost -- the file is
+            # simply discarded, same as an ordinary closed session below.
+            logger.warning(
+                "SessionStore: discarding a test-sale snapshot found at "
+                f"boot (sku={snap.selected_sku!r}, state={snap.state!r}); "
+                "a test sale risks no real money, so no PAY-104 is raised."
+            )
+            store.clear()
+        elif snap is not None and snap.is_open():
             self._flag_uncertain_session(snap)
         elif snap is not None:
             store.clear()
@@ -482,6 +497,7 @@ class VMC:
             pending_sale_shares=dict(self.pending_sale_shares)
             if self.pending_sale_shares is not None
             else None,
+            is_test=self._sale_is_test,
         )
 
     def _persist_session(self, state: str | None = None) -> None:
@@ -700,6 +716,17 @@ class VMC:
         except Exception:
             return None
         if snap is None or not snap.pending_sale_shares:
+            return None
+        if snap.is_test:
+            # Defence in depth: set_session_store() already keeps a
+            # test-flagged snapshot from ever raising PAY-104 at boot, so
+            # this branch should be unreachable in practice. It stays here
+            # anyway so that a *second* future persistence path (or a
+            # PAY-104 raised through some other call site while a stale
+            # test-sale snapshot happens to still be on disk) still cannot
+            # make a test sale recordable through the Health tab -- the
+            # never-pruned `sales` ledger must never see a test sale by any
+            # route, not just the one this task happened to find.
             return None
         sku = snap.selected_sku
         if sku is None:
@@ -1486,6 +1513,22 @@ class VMC:
             # the normal escrow path below instead of being refunded; it is
             # the only credit accepted during a lease (system-tests design
             # §2.3).
+            #
+            # Trust boundary (round-1 review, minor finding 2): payment_method
+            # here is `PaymentEvent.method`, a raw string arriving over MQTT
+            # from the trusted payment subsystem -- not authenticated
+            # end-to-end. Anyone who can already publish on that broker could
+            # spoof method="test" during a lease and have their credit sit in
+            # escrow instead of being auto-refunded. This is deliberately
+            # NOT a free-product path: whether a sale gets recorded to the
+            # ledger is gated on `self._sale_is_test` (set only inside
+            # run_test_sale, never by this string) and `pending_sale_for_
+            # recovery()`'s own `is_test` check -- a spoofed "test" deposit
+            # can sit unrefunded in escrow, but it cannot make a real sale
+            # skip the sales table, and it cannot make a test sale post to
+            # it either. Exploiting it already requires control of the
+            # trusted MQTT bus, at which point far worse is possible, so
+            # this is intentionally left as-is rather than redesigned.
             logger.warning(
                 f"Credit ${amount:.2f} arrived during a maintenance lease; "
                 "refunding rather than escrowing"

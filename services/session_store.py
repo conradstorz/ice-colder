@@ -59,6 +59,21 @@ class SessionSnapshot:
     pending_refund_request_id: Optional[str] = None
     credits: list[Credit] = field(default_factory=list)
     pending_sale_shares: Optional[dict[str, float]] = None
+    # True only for VMC.run_test_sale's simulated sale (system-tests design
+    # §2.3/§6), set from the sale's own self._sale_is_test at the moment
+    # VMC._snapshot() is built -- never derived from the maintenance lease,
+    # which (per spec §6) is never persisted and so has nothing to consult
+    # after a restart. Defaults False so a snapshot written before this
+    # field existed -- which has no "is_test" key at all -- loads as a
+    # PRODUCTION sale, the fail-safe direction: an old real pending sale
+    # must keep raising PAY-104 and stay recoverable, never silently
+    # dropped because an absent flag was misread as "test". Consulted at
+    # two chokepoints so a crashed test sale can never reach the sales
+    # ledger even if a second persistence path is added later: VMC.
+    # set_session_store() (boot) skips raising PAY-104 for it at all, and
+    # VMC.pending_sale_for_recovery() refuses to surface it even if some
+    # future path leaves PAY-104 active anyway.
+    is_test: bool = False
     saved_at: float = field(default_factory=time.time)
     error: Optional[str] = None  # set when the file could not be parsed
 

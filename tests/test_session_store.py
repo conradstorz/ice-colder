@@ -90,6 +90,35 @@ def test_old_file_with_no_credits_key_still_loads_with_defaults(tmp_path):
     assert loaded.pending_sale_shares is None
 
 
+def test_old_file_with_no_is_test_key_defaults_to_production(tmp_path):
+    """A session.json written before the is_test field existed (round-1 fix
+    for task 11's critical defect) has no "is_test" key at all --
+    SessionSnapshot(**raw) must fill it in as False (production), the
+    fail-safe default, rather than raising or silently treating an old real
+    pending sale as a test sale that must never reach PAY-104 recovery."""
+    path = tmp_path / "session.json"
+    old_style = {
+        "state": "dispensing",
+        "credit_escrow": 0.0,
+        "selected_sku": "ICE-1",
+        "dispense_slot": 2,
+        "dispense_started_at": 123.0,
+        "pending_refund_request_id": None,
+        "credits": [],
+        "pending_sale_shares": {"cash_bill": 2.50},
+        "saved_at": 100.0,
+        "error": None,
+    }
+    path.write_text(json.dumps(old_style), encoding="utf-8")
+
+    loaded = SessionStore(path).load()
+
+    assert loaded.error is None
+    assert loaded.is_test is False
+    assert loaded.pending_sale_shares == {"cash_bill": 2.50}
+    assert loaded.is_open() is True
+
+
 def test_load_missing_returns_none(tmp_path):
     assert SessionStore(tmp_path / "session.json").load() is None
 
