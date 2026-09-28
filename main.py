@@ -424,17 +424,13 @@ async def main():
 
     # Subsystem command channel (system-tests design §2.1): registers its
     # `cmd/+/ack` handler on `mqtt` right away, well before mqtt.run() (in
-    # the supervised tasks below) ever connects and subscribes. Task 5's
-    # scope is limited to main.py, contracts/common.py (already landed) and
-    # services/command_dispatcher.py — handing this instance to the VMC or
-    # to the routes needs a new setter on each (e.g. `VMC.
-    # set_command_dispatcher` / `web_interface.context.
-    # set_command_dispatcher`), and neither exists yet. Adding one would
-    # mean editing controller/vmc.py or a web_interface/routes module,
-    # both out of this task's file scope, so that hookup is left to the
-    # task that adds the maintenance-hold/Tests-level wiring — see
-    # .superpowers/sdd/task-5-report.md.
-    CommandDispatcher(mqtt)
+    # the supervised tasks below) ever connects and subscribes. Handed to
+    # the VMC via `VMC.set_command_dispatcher` (added alongside the
+    # maintenance-hold wiring; see .superpowers/sdd/task-5-report.md for
+    # why this was split from the dispatcher's own construction). The web
+    # routes get their own setter in a later task.
+    dispatcher = CommandDispatcher(mqtt)
+    vmc.set_command_dispatcher(dispatcher)
     logger.info("Command dispatcher created and registered on cmd/+/ack")
 
     # Create event recorder and wire to MQTT, VMC, and routes

@@ -1,6 +1,7 @@
 # controller/vmc.py
 import asyncio
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from uuid import uuid4
 from transitions import Machine
@@ -129,6 +130,30 @@ class PendingRefund:
     deadline_task: asyncio.Task | None = None
 
 
+@dataclass
+class MaintenanceHold:
+    """A lease that takes the machine out of service for operator testing
+    (system-tests design §2.2).
+
+    Never persisted (§6): it lives only on the live VMC instance, so a
+    restart clears it, matching the FSM's own reset semantics. It is not
+    part of SessionSnapshot / services/session_store.py and must stay that
+    way.
+
+    ``runs_in_flight`` and ``release_requested`` are what keep a release
+    (explicit, or from the idle timer) from happening out from under an
+    in-progress test run: see VMC.end_maintenance, _maintenance_idle_expired
+    and _maintenance_run_finished.
+    """
+
+    holder_user_id: str
+    holder_session_id: str
+    started_at: float
+    last_activity_at: float
+    runs_in_flight: int = 0
+    release_requested: bool = False
+
+
 class VMC:
     states = ["idle", "interacting_with_user", "dispensing", "error"]
 
@@ -145,6 +170,12 @@ class VMC:
     # the largest tolerance that can never itself be mistaken for a whole
     # cent: an actual one-cent credit ($0.01) is always kept.
     CREDIT_TOLERANCE = 0.005
+
+    # Maintenance lease (system-tests design §2.2).
+    MAINTENANCE_IDLE_TIMEOUT_SECONDS = 300.0  # 5 minutes since last_activity_at
+    MAINTENANCE_TAKEOVER_IDLE_SECONDS = (
+        60.0  # lease must be idle this long to take over
+    )
 
     @logger.catch()
     def __init__(self, config: ConfigModel):
@@ -197,6 +228,11 @@ class VMC:
         self._event_recorder = None  # Set via set_event_recorder()
         self._availability: Availability | None = None  # Set via set_availability()
         self._session_store: SessionStore | None = None  # Set via set_session_store()
+        self._command_dispatcher = None  # Set via set_command_dispatcher()
+        # Maintenance lease (system-tests design §2.2). Deliberately not
+        # part of any persisted snapshot -- see MaintenanceHold's docstring.
+        self._maintenance_hold: MaintenanceHold | None = None
+        self._maintenance_idle_task: asyncio.Task | None = None
         # In-memory record-once guard for PAY-104 recovery (Task 14 review
         # finding 3): keys of pending sales this process has already
         # committed via record_sale, checked (and populated) only when the
@@ -353,6 +389,16 @@ class VMC:
         elif snap is not None:
             store.clear()
         logger.debug("VMC attached session store.")
+
+    def set_command_dispatcher(self, dispatcher) -> None:
+        """Attach the subsystem CommandDispatcher (system-tests design §2.1).
+
+        A later task's `run_test_sale` and the Tests level routes use this
+        to send actuator/automatic commands through the same dispatcher
+        `main.py` registers on `cmd/+/ack`.
+        """
+        self._command_dispatcher = dispatcher
+        logger.debug("VMC attached command dispatcher.")
 
     def _flag_uncertain_session(self, snap: SessionSnapshot) -> None:
         detail = snap.error or (
@@ -1346,6 +1392,28 @@ class VMC:
         if amount <= 0:
             logger.warning(f"Ignoring non-positive deposit: {amount}")
             return
+        if self._maintenance_hold is not None:
+            # Payment is disabled for the whole lease (SVC-102 blocks it via
+            # availability), so this only covers the race between the
+            # disable command and a coin already in the mechanism -- still
+            # a customer's money, so it goes straight back out rather than
+            # into escrow, where it could otherwise become spendable after
+            # the hold ends. A later task adds the one exception:
+            # `run_test_sale`'s own credit, deposited with method "test" --
+            # that will need a `and payment_method != "test"` guard on the
+            # condition above so it falls through to the normal escrow path
+            # below instead of being refunded.
+            logger.warning(
+                f"Credit ${amount:.2f} arrived during a maintenance lease; "
+                "refunding rather than escrowing"
+            )
+            self.credit_escrow += amount
+            self.escrow_credits.append(
+                Credit(method=payment_method, amount=amount, ts=time.time())
+            )
+            self.last_payment_method = payment_method
+            self.request_refund(reason="maintenance")
+            return
         if self._availability and not self._availability.payment_enabled:
             logger.warning(
                 f"Credit ${amount:.2f} arrived while payment is disabled "
@@ -1538,6 +1606,181 @@ class VMC:
             f"Please contact support and quote {pending.request_id[:8]}."
         )
         self._raise_fault(FaultCode.PAY_103, outcome=detail)
+
+    # --- Maintenance Lease (system-tests design §2.2) ---
+
+    @property
+    def maintenance_hold(self) -> MaintenanceHold | None:
+        """Read-only view of the current lease, if any. Never persisted."""
+        return self._maintenance_hold
+
+    def _release_maintenance_hold(self, by: str) -> None:
+        """Actually drop the lease: cancel its idle timer and clear SVC-102.
+
+        Every caller (`end_maintenance`, the idle timer,
+        `_maintenance_run_finished`) has already confirmed
+        ``runs_in_flight == 0`` before reaching here; this does not check
+        it again.
+        """
+        if self._maintenance_idle_task and not self._maintenance_idle_task.done():
+            self._maintenance_idle_task.cancel()
+        self._maintenance_idle_task = None
+        self._maintenance_hold = None
+        self.clear_fault(FaultCode.SVC_102.value, by=by)
+        logger.info(f"Maintenance lease released ({by})")
+
+    def _arm_maintenance_idle_timer(self) -> None:
+        if self._maintenance_idle_task and not self._maintenance_idle_task.done():
+            self._maintenance_idle_task.cancel()
+        self._maintenance_idle_task = self._schedule(
+            self.MAINTENANCE_IDLE_TIMEOUT_SECONDS, self._maintenance_idle_expired
+        )
+
+    def _maintenance_idle_expired(self) -> None:
+        """5 minutes since ``last_activity_at``: behaves exactly like a
+        release request. Never clears the lease while a run is in flight --
+        it only sets ``release_requested`` for that run's own completion
+        to act on.
+        """
+        hold = self._maintenance_hold
+        if hold is None:
+            return
+        if hold.runs_in_flight > 0:
+            hold.release_requested = True
+            logger.info("Maintenance lease idle timeout with a run in flight; deferred")
+            return
+        logger.info("Maintenance lease idle for 5 minutes; releasing")
+        self._release_maintenance_hold(by="idle_timeout")
+
+    def begin_maintenance(
+        self, user_id: str, session_id: str
+    ) -> tuple[bool, str | None]:
+        """Grant the maintenance lease.
+
+        Returns ``(granted, reason)``: ``reason`` is ``None`` when granted,
+        and a short human-readable refusal ("machine is mid-sale", "held by
+        <id>") otherwise -- so a caller (the Tests level route, added by a
+        later task) can tell the operator why without re-deriving it from
+        VMC state. Granting requires the FSM to be idle, escrow to be zero
+        (a mid-sale credit is a refusal even while idle -- the sale just
+        hasn't been selected/dispensed yet), and no lease already held.
+        """
+        if self.state != "idle":
+            return False, "machine is mid-sale"
+        if self.credit_escrow > self.CREDIT_TOLERANCE:
+            return False, "credit is still on the machine"
+        if self._maintenance_hold is not None:
+            return False, f"held by {self._maintenance_hold.holder_user_id}"
+        now = time.time()
+        self._maintenance_hold = MaintenanceHold(
+            holder_user_id=user_id,
+            holder_session_id=session_id,
+            started_at=now,
+            last_activity_at=now,
+        )
+        self._raise_fault(FaultCode.SVC_102, outcome="maintenance_lease_granted")
+        self._arm_maintenance_idle_timer()
+        logger.info(f"Maintenance lease granted to user={user_id} session={session_id}")
+        return True, None
+
+    def end_maintenance(self, session_id: str) -> bool:
+        """Release the lease for its holder's session only.
+
+        Returns False when there is no lease, or ``session_id`` is not its
+        holder (refused either way). Returns True whenever the request is
+        accepted -- either released immediately (``runs_in_flight == 0``),
+        or deferred via ``release_requested`` for the last in-flight run to
+        perform (`_maintenance_run_finished`).
+        """
+        hold = self._maintenance_hold
+        if hold is None or hold.holder_session_id != session_id:
+            return False
+        if hold.runs_in_flight > 0:
+            hold.release_requested = True
+            logger.info(
+                f"Maintenance release requested by session={session_id}; "
+                f"deferred, {hold.runs_in_flight} run(s) in flight"
+            )
+            return True
+        self._release_maintenance_hold(by="admin")
+        return True
+
+    def take_over_maintenance(
+        self, user_id: str, session_id: str
+    ) -> tuple[bool, str | None]:
+        """Transfer an idle, run-free lease to a new holder.
+
+        Permitted only when no run is in flight and the lease has been idle
+        (since ``last_activity_at``) for at least
+        ``MAINTENANCE_TAKEOVER_IDLE_SECONDS``; records who took it over by
+        overwriting the hold's holder fields in place.
+        """
+        hold = self._maintenance_hold
+        if hold is None:
+            return False, "no lease held"
+        if hold.runs_in_flight > 0:
+            return False, "a test is in flight"
+        idle_for = time.time() - hold.last_activity_at
+        if idle_for < self.MAINTENANCE_TAKEOVER_IDLE_SECONDS:
+            return False, "lease not yet idle"
+        now = time.time()
+        hold.holder_user_id = user_id
+        hold.holder_session_id = session_id
+        hold.started_at = now
+        hold.last_activity_at = now
+        hold.release_requested = False
+        self._arm_maintenance_idle_timer()
+        logger.info(
+            f"Maintenance lease taken over by user={user_id} session={session_id}"
+        )
+        return True, None
+
+    def _maintenance_run_started(self) -> None:
+        """Run accounting, start: increments ``runs_in_flight`` and
+        refreshes ``last_activity_at``. Raises if no lease is held -- a run
+        cannot exist outside a lease. Called from `maintenance_test_run`'s
+        entry; a later task's ``run_test_sale`` goes through that context
+        manager rather than calling this directly.
+        """
+        hold = self._maintenance_hold
+        if hold is None:
+            raise RuntimeError("no maintenance lease held")
+        hold.runs_in_flight += 1
+        hold.last_activity_at = time.time()
+        self._arm_maintenance_idle_timer()
+
+    def _maintenance_run_finished(self) -> None:
+        """Run accounting, end: decrements ``runs_in_flight`` and, once it
+        reaches zero, performs a deferred release if one was requested
+        (`end_maintenance` or the idle timer). Always reached from
+        `maintenance_test_run`'s ``finally`` so a failing or timed-out run
+        still decrements -- a leak here pins the machine out of service
+        until restart.
+        """
+        hold = self._maintenance_hold
+        if hold is None:
+            return
+        hold.runs_in_flight = max(0, hold.runs_in_flight - 1)
+        if hold.runs_in_flight == 0 and hold.release_requested:
+            logger.info("Last in-flight maintenance run settled; releasing lease")
+            self._release_maintenance_hold(by="admin")
+
+    @contextmanager
+    def maintenance_test_run(self):
+        """Bracket one test run against the lease.
+
+        Increments ``runs_in_flight`` and refreshes ``last_activity_at`` on
+        entry; decrements on exit via ``finally`` regardless of success,
+        failure, or a timeout raised through the body -- so a run that
+        fails still frees the lease's run count. A later task's
+        ``run_test_sale`` wraps its dispatcher call and dispense-completion
+        wait in this.
+        """
+        self._maintenance_run_started()
+        try:
+            yield
+        finally:
+            self._maintenance_run_finished()
 
     @logger.catch()
     def initiate_virtual_payment(self, amount):

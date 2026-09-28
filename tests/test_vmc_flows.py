@@ -1980,3 +1980,226 @@ async def test_status_republished_on_mqtt_connect():
     assert statuses
     assert statuses[-1].state == "idle"
     vmc.cancel_pending_tasks()
+
+
+# --- Task 10: the maintenance lease (system-tests design §2.2) ---
+
+
+class TestMaintenanceLease:
+    async def test_granted_when_idle_with_zero_escrow(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+
+        granted, reason = vmc.begin_maintenance("user-1", "sess-1")
+
+        assert granted is True
+        assert reason is None
+        assert vmc.maintenance_hold is not None
+        assert vmc.maintenance_hold.holder_user_id == "user-1"
+        assert vmc.maintenance_hold.holder_session_id == "sess-1"
+        assert vmc.maintenance_hold.runs_in_flight == 0
+        assert vmc.maintenance_hold.release_requested is False
+
+    async def test_refused_when_fsm_not_idle(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc.machine.set_state("interacting_with_user")
+
+        granted, reason = vmc.begin_maintenance("user-1", "sess-1")
+
+        assert granted is False
+        assert reason == "machine is mid-sale"
+        assert vmc.maintenance_hold is None
+
+    async def test_refused_when_escrow_nonzero_even_while_idle(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        assert vmc.state == "idle"
+        vmc.credit_escrow = 1.00
+
+        granted, reason = vmc.begin_maintenance("user-1", "sess-1")
+
+        assert granted is False
+        assert "credit" in reason
+        assert vmc.maintenance_hold is None
+
+    async def test_refused_when_lease_exists_names_holder(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        granted1, _ = vmc.begin_maintenance("owner-1", "sess-a")
+        assert granted1 is True
+
+        granted2, reason2 = vmc.begin_maintenance("tech-2", "sess-b")
+
+        assert granted2 is False
+        assert "owner-1" in reason2
+        assert vmc.maintenance_hold.holder_user_id == "owner-1"
+
+    async def test_svc_102_raised_on_grant_and_cleared_on_release(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+
+        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        assert granted is True
+        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+
+        released = vmc.end_maintenance("sess-1")
+        assert released is True
+        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        assert vmc.maintenance_hold is None
+
+    async def test_payment_disabled_while_held_and_restored_after_release(self):
+        vmc, monitor, avail, published = _wired_vmc()
+        await asyncio.sleep(0)  # let any initial publish settle
+
+        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        assert granted is True
+        await asyncio.sleep(0)  # let the fire-and-forget publish task run
+
+        assert avail.payment_enabled is False
+        enable_cmds = [p for t, p in published if t == "cmd/payment/enable"]
+        assert enable_cmds, "expected cmd/payment/enable to have been published"
+        assert enable_cmds[-1].accept is False
+
+        released = vmc.end_maintenance("sess-1")
+        assert released is True
+        await asyncio.sleep(0)
+
+        assert avail.payment_enabled is True
+        enable_cmds_after = [p for t, p in published if t == "cmd/payment/enable"]
+        assert enable_cmds_after[-1].accept is True
+
+    async def test_credit_during_lease_is_refunded_and_escrow_stays_zero(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        client = RecordingClient()
+        vmc.set_mqtt_client(client)
+        rec = FakeEventRecorder()
+        vmc.set_event_recorder(rec)
+        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        assert granted is True
+
+        vmc.deposit_funds(1.00, payment_method="cash_coin")
+        await asyncio.sleep(0)
+
+        assert vmc.credit_escrow == 0.0
+        assert vmc.escrow_credits == []
+        refund_cmds = client.refund_commands()
+        assert len(refund_cmds) == 1
+        assert refund_cmds[0].amount == 1.00
+        assert refund_cmds[0].reason == "maintenance"
+
+        rid = refund_cmds[0].request_id
+        await vmc._handle_mqtt_refund_ack(
+            "cmd/payment/refund/ack",
+            {"request_id": rid, "status": "ok", "amount_returned": 1.00},
+        )
+
+        assert (
+            "refund",
+            1.00,
+            {"request_id": rid, "reason": "maintenance"},
+        ) in rec.events
+        # The money must never become spendable escrow after the hold ends.
+        assert vmc.credit_escrow == 0.0
+        assert vmc.escrow_credits == []
+
+    async def test_end_maintenance_by_non_holder_is_refused(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        granted, _ = vmc.begin_maintenance("user-1", "sess-a")
+        assert granted is True
+
+        result = vmc.end_maintenance("sess-b")
+
+        assert result is False
+        assert vmc.maintenance_hold is not None
+        assert vmc.maintenance_hold.holder_session_id == "sess-a"
+
+    async def test_release_with_run_in_flight_defers_then_settles(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        granted, _ = vmc.begin_maintenance("user-1", "sess-a")
+        assert granted is True
+        vmc._maintenance_run_started()
+        assert vmc.maintenance_hold.runs_in_flight == 1
+
+        result = vmc.end_maintenance("sess-a")
+
+        assert result is True
+        assert vmc.maintenance_hold is not None  # not released yet
+        assert vmc.maintenance_hold.release_requested is True
+
+        vmc._maintenance_run_finished()
+
+        assert vmc.maintenance_hold is None
+        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+
+    async def test_idle_timer_never_releases_with_run_in_flight(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc.MAINTENANCE_IDLE_TIMEOUT_SECONDS = 0.01
+        granted, _ = vmc.begin_maintenance("user-1", "sess-a")
+        assert granted is True
+        vmc._maintenance_run_started()
+
+        await asyncio.sleep(0.05)
+
+        # The timer fired, but a run is in flight: it must defer, not release.
+        assert vmc.maintenance_hold is not None
+        assert vmc.maintenance_hold.release_requested is True
+        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+
+        vmc._maintenance_run_finished()
+
+        assert vmc.maintenance_hold is None
+
+    async def test_takeover_refused_with_run_in_flight(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc.begin_maintenance("user-1", "sess-a")
+        vmc._maintenance_run_started()
+
+        granted, reason = vmc.take_over_maintenance("user-2", "sess-b")
+
+        assert granted is False
+        assert vmc.maintenance_hold.holder_user_id == "user-1"
+        vmc._maintenance_run_finished()
+
+    async def test_takeover_refused_before_60s_idle(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc.begin_maintenance("user-1", "sess-a")
+
+        granted, reason = vmc.take_over_maintenance("user-2", "sess-b")
+
+        assert granted is False
+        assert "idle" in reason
+        assert vmc.maintenance_hold.holder_user_id == "user-1"
+
+    async def test_takeover_permitted_after_60s_idle_records_who(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc.begin_maintenance("user-1", "sess-a")
+        vmc.maintenance_hold.last_activity_at -= (
+            vmc.MAINTENANCE_TAKEOVER_IDLE_SECONDS + 1
+        )
+
+        granted, reason = vmc.take_over_maintenance("user-2", "sess-b")
+
+        assert granted is True
+        assert reason is None
+        assert vmc.maintenance_hold.holder_user_id == "user-2"
+        assert vmc.maintenance_hold.holder_session_id == "sess-b"
+
+    async def test_failed_run_still_decrements_runs_in_flight(self):
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        vmc.begin_maintenance("user-1", "sess-a")
+
+        with pytest.raises(ValueError):
+            with vmc.maintenance_test_run():
+                assert vmc.maintenance_hold.runs_in_flight == 1
+                raise ValueError("simulated run failure")
+
+        assert vmc.maintenance_hold.runs_in_flight == 0
