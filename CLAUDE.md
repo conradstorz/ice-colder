@@ -53,6 +53,10 @@ logs a clear error and exits with code 1 rather than papering over it.
 
 `VMC` is a finite state machine built on the `transitions` library. States: `idle` -> `interacting_with_user` -> `dispensing` -> back to `idle` (or `error` from any state). Extra transitions: `cancel_sale` (interacting → idle, catalog edit removed the selection) and `vend_failed` (dispensing → interacting, price restored to escrow, product locked out per `contracts/vending_machine.py` `FAULT_TABLE`). Refunds are real: `request_refund` publishes `cmd/payment/refund` and tracks the ack. The transition table is defined as a list of dicts (`TRANSITIONS`) at module level. Business logic (deposit funds, select product, dispense, refund) lives as methods on `VMC`. The VMC holds a reference to the live `ConfigModel` and a `PaymentGatewayManager`. Heartbeat loss raises `COM-101` (vending), `COM-102` (ice maker), `PAY-101` (MDB) and `COM-103` (broker) through the fault registry and auto-clears on recovery.
 
+**Maintenance lease (`MaintenanceHold`, system-tests design §2.2):** `VMC.begin_maintenance(user_id, session_id)` grants a lease to take the machine out of service for operator testing — refused unless the FSM is `idle`, escrow is zero, and no lease is already held. Granting it raises `SVC-102`, which `services/availability.py` treats as a **safety** row (built generically off `PAYMENT_BLOCKING_FAULTS`, not a special case), so `cmd/payment/enable` is withdrawn machine-wide for the whole lease. The lease is **`MaintenanceHold`, a dataclass with `runs_in_flight`** (an in-progress-run counter, not a boolean) plus `release_requested`: `end_maintenance` and the 5-minute idle timer (`_maintenance_idle_expired`) only defer a release while `runs_in_flight > 0`, and `maintenance_test_run()` (a context manager `run_test_sale` uses) increments on entry and decrements in a `finally`, so a failing or timed-out run still frees the lease. The lease is **never persisted** — it lives only on the live `VMC` instance and is not part of `SessionSnapshot`/`services/session_store.py`, so a restart clears it, matching the FSM's own reset semantics. Credit arriving during a lease is **refunded, not escrowed**: `deposit_funds` detects `self._maintenance_hold is not None` and, unless the deposit's `payment_method == "test"` (the one credit `run_test_sale` itself deposits), adds it to escrow only long enough to call `request_refund(reason="maintenance")` immediately.
+
+**Test-ness lives on the sale, not the hold:** `VMC._sale_is_test` is set only by `run_test_sale`, on the in-flight sale context, and is read (never inferred from the maintenance lease) by the dispense-completion and timeout handlers to decide whether to call `_record_sale()` (skipped entirely for a test) or record a `test_run` event instead — so a test sale writes neither a `sale` nor a `dispense` row, and releasing the lease mid-run cannot reclassify it, because nothing about the recording path consults the lease. `SessionSnapshot.is_test` carries the same flag into the on-disk crash snapshot (`services/session_store.py`), set from `self._sale_is_test` at the moment the snapshot is built. This is the money-safety consequence a review in this part caught: without it, a test sale that crashed mid-dispense would leave an open snapshot that looks exactly like a real uncertain sale, and the `PAY-104` recovery flow would let an operator "Record as sale" it into the never-pruned `sales` table. `is_test` is checked at two chokepoints so that can never happen — `VMC.set_session_store()` discards a test-flagged snapshot found at boot instead of raising `PAY-104` for it at all (`controller/vmc.py:438`), and `pending_sale_for_recovery()` refuses to surface one as a recoverable card even if some future path left `PAY-104` active anyway (`controller/vmc.py:729`), as defence in depth. A future contributor adding a second persistence path for pending sales must carry `is_test` through it too, or this guarantee breaks silently.
+
 **FIFO method attribution:** `escrow_credits` is a FIFO ledger of `Credit(method, amount, ts)` that backs `credit_escrow`, which remains the authoritative total. Deducting a sale's price consumes credits first-in-first-out and records the per-method shares on `pending_sale_shares`; `vend_failed` restores **exactly those shares as separate credits with their original methods**, so money is never reclassified when a sale fails. Method strings are stored raw from `PaymentEvent.method` and classified only at query time. If the ledger and the total ever disagree the sale is booked to `{"unknown": price}` with a warning — a bug guard, not a path.
 
 **Sales recording durability:** A sale is inserted **synchronously on its own WAL connection** (`synchronous=NORMAL`) and **awaited via `asyncio.to_thread` before the FSM returns to idle** — the write sits at `_record_sale`, immediately before `_finish_dispensing`, and the `dispense` event stays because the existing KPIs read it. On failure the record goes to `data/sales-journal.jsonl` (append + fsync) and the VMC raises **`DATA-101`** while letting the vend complete — a storage problem must never fail a sale. At startup the journal is replayed: the replay insert is **idempotent on `(ts, sku)`** so a crash between the insert and the truncate cannot duplicate a row, each row commits in its **own transaction** so one bad row cannot block the others, and a row that can be neither inserted nor set aside stays in the journal. `main.py` clears `DATA-101` on the **journal being drained** (absent or empty after the call), **never** on the replay function's integer return — that integer is the count inserted and is `0` both for "nothing to do" and for "fully drained, all duplicates or rejects". A corrupt `events.db` is renamed aside to `events.db.corrupt-<timestamp>`, a fresh database is created, and **`DATA-102`** is raised so the machine keeps running; the constructor never raises on a corrupt file.
@@ -90,6 +94,15 @@ The tree, every URL with the permission that gates it (`Permission.<x>` from `se
 | `/reports/collections` | `view_reports` |
 | `/controls` | `machine_controls` |
 | `/tests` | `run_tests` |
+| `/tests/log` | `run_tests` |
+| `/tests/sale` | `run_tests` |
+| `/tests/{subsystem}` | `run_tests` |
+| `POST /tests/sale` | `run_tests` |
+| `POST /tests/run-all` | `run_tests` |
+| `POST /tests/end` | `run_tests` |
+| `POST /tests/takeover` | `run_tests` |
+| `POST /tests/runs/{run_id}/verdict` | `run_tests` |
+| `POST /tests/{subsystem}/{command}` | `run_tests` (re-checks `TESTABLE_COMMANDS`, 403 if not allowlisted) |
 | `/users` | `manage_users` |
 | `/users/new` | `manage_users` |
 | `/users/{id}` | `manage_users` |
@@ -135,6 +148,8 @@ Tailwind v3.4.17 and HTMX 1.9.10 are **vendored** in `static/app.css` and `stati
 
 The Health level is split across six sub-levels rather than one merged page. `/health` itself shows only a four-tile summary (Subsystems, Faults, Availability, Logs) plus the VMC's own build identity from `services/build_info.py` (image env vars set by CI, or `git` when run from a checkout). `/health/subsystems` and `/health/subsystems/{name}` show heartbeats (liveness, uptime) and each subsystem's retained `capabilities/<subsystem>` document (`SubsystemCapabilities`: firmware, contract version, brand/model, hardware_id, ip) — subsystems in `EXPECTED_SUBSYSTEMS` are listed even before they speak. `/health/faults` lists active faults with a Clear action (gated on `clear_faults`, the two-tap confirm above); `/health/availability` shows the permissive truth table and payment-blocking reasons; `/health/logs` (gated on `view_logs`) shows the last **50** lines of `LOGS/vmc.log` (`context.tail`), not the pre-v2 fragment's 10.
 
+The Tests level (`web_interface/routes/tests_level.py`) lets a tech prove a subsystem works without making a real sale, and the machine cannot sell while they do it. `/tests` shows one card per `EXPECTED_SUBSYSTEMS` entry plus the lease banner, but is itself read-only — the GET routes (`/tests`, `/tests/log`, `/tests/sale`, `/tests/{subsystem}`) never call `VMC.begin_maintenance`; only a POST action acquires the lease. `POST /tests/{subsystem}/{command:path}` runs one command test after re-checking `command in testable_commands(subsystem, row["commands"])` — the intersection of `contracts.common.TESTABLE_COMMANDS` (below) with what that subsystem's live capabilities doc advertises — against a **freshly re-read** `_subsystem_summary()`, never trusting which buttons the client was shown; an unlisted command (`refund`, `payment/enable`, `set_interval`) is refused with **403** before the lease is ever touched or the dispatcher ever called. `POST /tests/run-all` runs `ping` then `self_test` against every alive subsystem **in sequence** (one `await` at a time, never `asyncio.gather`, so two subsystems' commands can never interleave on the wire). `POST /tests/sale` runs `VMC.run_test_sale` for a form-submitted SKU; `POST /tests/end` and `POST /tests/takeover` release or transfer the caller's lease; `POST /tests/runs/{run_id}/verdict` records pass/fail plus a note on a `test_run` log row via `EventRecorder.update_metadata`. `TESTABLE_COMMANDS` (`contracts/common.py`) is a **server-side allowlist**, per subsystem, of exactly the standard commands (`ping`, `self_test`, `force_report`) plus that subsystem's actuator commands — it is deliberately narrower than what a subsystem's capabilities document may advertise, so a control command like `refund` or `payment/enable` can never be invoked from the Tests tile even if it shows up in capabilities. The allowlist re-check on POST is the actual security boundary here, not which buttons the template renders — a crafted request to an unlisted command still gets 403 from the server, never a silent 404 that would look like the command doesn't exist.
+
 ### Services (`services/`)
 
 - `payment_gateway_manager.py` - manages Stripe/PayPal/Square gateways, generates QR codes via `qrcode` library
@@ -146,11 +161,22 @@ The Health level is split across six sub-levels rather than one merged page. `/h
   gates: `safety` rows block payment and sales, `fulfillment` rows block only
   the individual sale, `alert` rows block nothing. Publishes
   `cmd/payment/enable` on change; feeds the health tab and `/screen`. Only the
-  six codes in `contracts.vending_machine.PAYMENT_BLOCKING_FAULTS` can inhibit
-  payment.
+  seven codes in `contracts.vending_machine.PAYMENT_BLOCKING_FAULTS` can
+  inhibit payment.
 - `session_store.py` - atomic snapshot of the live sale in `data/session.json`;
   an open snapshot at boot raises `PAY-104`, which alerts the operator and
   holds the evidence file until an admin clears it, but never inhibits payment
+- `command_dispatcher.py` - one `CommandDispatcher`, constructed in `main.py`
+  and handed to both the VMC (`VMC.set_command_dispatcher`) and the routes
+  (`routes.set_command_dispatcher`); it registers `cmd/+/ack` **once** and
+  correlates each ack to its command by `request_id`. A timeout retries
+  **exactly once, with the same `request_id`** — never a fresh one — because
+  every subsystem (`simulators/base.py`) caches its last 32 acked
+  `request_id`s and replays the cached ack instead of re-running the
+  handler, so a retry with a new id would repeat a real-world side effect
+  (a second `dispense` cycle) instead of just asking again. Raises
+  `CommandTimeout(subsystem, command)` immediately when the broker is
+  disconnected, without waiting out the timeout first.
 - `paths.py` - `LOG_DIR`, `LOG_FILE`, `DATA_DIR` shared by main, routes and services
 - `auth_policy.py` - PIN policy (`pin_problem`); validates 4–8 digits with no repeats or runs; identifies loopback hosts (`is_loopback`)
 - `event_recorder.py` - records heartbeats, refunds, vend failures, and sales to a durable SQLite schema; `sales` and `cash_collections` are never pruned, while `events` keeps a 90-day retention window via `_prune_with` (which touches only the `events` table)
@@ -206,7 +232,11 @@ applied to the dashboard's login back-off via
 
 ## Fault Codes and Severity
 
-`DATA-101` (sale journal in use; sales are being written to a fallback file) and `DATA-102` (event database was reset after corruption; history before the reset is lost) are both **alert-class** (`Severity.warning`, `Scope.machine`) and are **deliberately absent from `PAYMENT_BLOCKING_FAULTS`**, which still holds exactly six codes. Neither fault can ever stop the machine taking money. Both are registered in `contracts/vending_machine.py`.
+`DATA-101` (sale write failed; held in fallback file) and `DATA-102` (event database was reset after corruption; history before the reset is lost) are both **alert-class** (`Severity.warning`, `Scope.machine`) and are **deliberately absent from `PAYMENT_BLOCKING_FAULTS`**. Neither fault can ever stop the machine taking money. Both are registered in `contracts/vending_machine.py`.
+
+`PAYMENT_BLOCKING_FAULTS` holds **seven** codes: `ICE-402`, `WTR-103`, `WTR-104`, `ENV-102`, `ENV-103`, `PWR-102`, and `SVC-102` (the maintenance lease, above). `SVC-102` is the one member that is not `critical` severity — it is a deliberate operator-held lease rather than a hardware failure, and it clears itself the moment the lease is released; membership in the frozenset, not severity, is what gates payment.
+
+Both contracts bumped their `CONTRACT_VERSION` for this part: `contracts/vending_machine.py` **0.4.0 → 0.5.0** and `contracts/ice_maker_monitor.py` **1.1.0 → 1.2.0**. The vending-machine bump is a minor version absorbing two additive changes: adding `SVC-102` (new `FaultCode` + `FAULT_TABLE` entry + `PAYMENT_BLOCKING_FAULTS` member, six → seven), and the `DATA-101` description wording fix above ("sale journal in use; sales are being written to a fallback file" → "sale write failed; held in fallback file") — a part 3 change that shipped without its own version bump at the time; that deferred bump is absorbed here too.
 
 ## Key Patterns
 
