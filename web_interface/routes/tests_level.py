@@ -185,13 +185,17 @@ def _parse_command_params(
     slot: str | None,
     seconds: str | None,
     dwell_seconds: str | None,
+    valid_slots: frozenset[int] = frozenset(),
 ) -> dict:
     """Build the params dict for *command* from its raw form fields,
     validated against the SAME bounds the widget renders
-    (WATER_VALVE_SECONDS_RANGE / POWER_CYCLE_DWELL_RANGE, above) -- so a
-    crafted POST outside those bounds is refused here rather than reaching
-    the dispatcher. Every other testable command (ping, self_test,
-    force_report, the three bare mdb actuator commands) takes no params.
+    (WATER_VALVE_SECONDS_RANGE / POWER_CYCLE_DWELL_RANGE, above, and --
+    Copilot review, PR 22, id=4128088598 -- *valid_slots* for `dispense`,
+    the current catalog's `Product.slot` values, matching the `<select>`
+    the widget renders) -- so a crafted POST outside those bounds is
+    refused here rather than reaching the dispatcher. Every other
+    testable command (ping, self_test, force_report, the three bare mdb
+    actuator commands) takes no params.
 
     Raises ValueError, with a message safe to show the operator, for a
     missing/non-integer/out-of-range value; the caller (post_test_command)
@@ -199,9 +203,12 @@ def _parse_command_params(
     """
     if command == "dispense":
         try:
-            return {"slot": int(slot)}
+            value = int(slot)
         except (TypeError, ValueError) as exc:
             raise ValueError("slot must be an integer") from exc
+        if value not in valid_slots:
+            raise ValueError(f"slot {value} is not in the current catalog")
+        return {"slot": value}
     if command == "water_valve":
         lo, hi = WATER_VALVE_SECONDS_RANGE
         try:
@@ -767,9 +774,18 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
                 detail=f"{command!r} is not a testable command for {subsystem!r}",
             )
 
+        valid_slots = (
+            frozenset(p.slot for p in context.config.products)
+            if context.config
+            else frozenset()
+        )
         try:
             params = _parse_command_params(
-                command, slot=slot, seconds=seconds, dwell_seconds=dwell_seconds
+                command,
+                slot=slot,
+                seconds=seconds,
+                dwell_seconds=dwell_seconds,
+                valid_slots=valid_slots,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

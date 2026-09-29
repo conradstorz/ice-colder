@@ -1169,6 +1169,42 @@ class TestParamValidation:
         resp = client.post("/tests/vending/dispense", data={"slot": "not-a-number"})
         assert resp.status_code == 400
 
+    def test_dispense_slot_not_in_catalog_is_400(
+        self, client, wired, wire_subsystem, wire_dispatcher
+    ):
+        """Copilot review (PR 22, id=4128088598): a crafted POST with a
+        syntactically valid but nonexistent slot must be refused before
+        the lease is taken or the dispatcher is called -- the simulator
+        maps an unknown slot to ice by default, so this would otherwise
+        still actuate hardware. The fixture's catalog is empty (no
+        add_product call), so any integer slot is "not in the catalog"."""
+        cfg, vmc, _inv, _store = wired
+        assert cfg.products == []  # guards the fixture assumption above
+        wire_subsystem("vending", ["dispense"])
+        dispatcher = wire_dispatcher(FakeAckDispatcher())
+
+        resp = client.post("/tests/vending/dispense", data={"slot": "0"})
+
+        assert resp.status_code == 400
+        assert vmc.maintenance_hold is None
+        assert dispatcher.calls == []
+
+    def test_dispense_slot_in_catalog_is_accepted(
+        self, client, wired, wire_subsystem, wire_dispatcher
+    ):
+        """Same crafted-request path, proving the fix doesn't also refuse
+        a legitimate slot: once the SKU is on the catalog at slot 3, that
+        exact slot is accepted and reaches the dispatcher."""
+        cfg, _vmc, _inv, _store = wired
+        add_product(cfg, "ICE-1", "Ice", 2.5, slot=3)
+        wire_subsystem("vending", ["dispense"])
+        dispatcher = wire_dispatcher(FakeAckDispatcher())
+
+        resp = client.post("/tests/vending/dispense", data={"slot": "3"})
+
+        assert resp.status_code == 200
+        assert dispatcher.calls == [("vending", "dispense", {"slot": 3})]
+
     def test_water_valve_seconds_out_of_range_is_400(
         self, client, wired, wire_subsystem
     ):
