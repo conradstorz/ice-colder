@@ -1,4 +1,4 @@
-# Vending Machine Contract — v0.5.0
+# Vending Machine Contract — v0.6.0
 
 This document and the JSON Schema files in `schemas/` define the interface
 between the ice-colder VMC and the vending ESP32 firmware plus the MDB
@@ -16,7 +16,7 @@ All topics are relative to `vmc/{machine_id}/`.
 
 | Topic | Direction | Payload | Notes |
 |---|---|---|---|
-| `hardware/dispenser` | ESP32 → VMC | `DispenserStatus` (`services/mqtt_messages.py`) | `state` is a [`DispenserOutcome`](schemas/dispenser_outcome.schema.json) for terminal states; any other string is an intermediate step |
+| `hardware/dispenser` | ESP32 → VMC | `DispenserStatus` (`services/mqtt_messages.py`) | `state` is a [`DispenserOutcome`](schemas/dispenser_outcome.schema.json) for terminal states; any other string is an intermediate step. `request_id` (v0.6.0, optional) echoes the command-channel `dispense` request this run answers — always `null`/absent for a production `cmd/dispense` sale, which has no `request_id` to carry |
 | `cmd/dispense` | VMC → ESP32 | as production, for real sales | unchanged; each dispense publishes `hardware/dispenser` with the outcome |
 | `cmd/payment/refund` | VMC → gateway | [`PaymentRefundCommand`](schemas/payment_refund_command.schema.json) | QoS 1; `request_id` unique per refund |
 | `cmd/payment/refund/ack` | gateway → VMC | [`PaymentRefundResult`](schemas/payment_refund_result.schema.json) | QoS 1; exactly one per command; repeated `request_id` re-sends the stored result, never pays twice |
@@ -32,7 +32,44 @@ All topics are relative to `vmc/{machine_id}/`.
 
 Every subsystem (vending, mdb, ice_maker) subscribes to `vmc/<machine_id>/cmd/<subsystem>` and acknowledges on `vmc/<machine_id>/cmd/<subsystem>/ack`. The request and ack payloads are defined by the shared models [`SubsystemCommand`](schemas/subsystem_command.schema.json) and [`CommandAck`](schemas/command_ack.schema.json).
 
-A subsystem **must answer within 10 seconds** (`ACK_TIMEOUT_SECONDS` in `contracts/common.py`), or the VMC treats it as a timeout and may retry with the same `request_id`.
+A subsystem **must answer within 10 seconds** (`ACK_TIMEOUT_SECONDS` in `contracts/common.py`), or the VMC treats it as a timeout and may retry with the same `request_id`. **This 10-second deadline is for the ACK only.** Read "Two timeouts: accept vs. complete" below — as of v0.6.0 the ack for a long-running command means "I started this," not "I finished this."
+
+### Two timeouts: accept vs. complete (v0.6.0)
+
+A previous review of the Tests level (the operator-facing dashboard tile that runs these commands against a real machine, `POST /tests/{subsystem}/{command}`) proved a real bug: `dispense`'s handler used to await the entire motor cycle — which can legitimately run past 20 seconds, and up to 90 seconds on a jam — before sending any ack at all. The VMC's 10-second × 2-attempt ack budget ran out and gave up long before the actuator actually stopped, and the operator's safety lease (which is supposed to keep the machine out of service for the whole test) released while the motor was still running.
+
+The fix adds a **second, independent timeout**, and a field on the ack that says which phase you are in:
+
+- **`CommandAck.phase`** — `"accepted"` or `"completed"`, default `"completed"`. Every ack a present-day (pre-v0.6.0) implementation sends is implicitly `"completed"`, so a payload with no `phase` key at all still validates and still means exactly what it always meant.
+- **The 10-second ack deadline above governs ONLY the first ack** — whichever phase it is in. It is unchanged.
+- **A second, per-command "completion timeout" governs how long the VMC will wait, after an `"accepted"` ack, for that command to actually finish.** It is much longer than 10 seconds, and — where the command takes a duration parameter — it is derived from that parameter, not a fixed constant. See the completion table below.
+
+**What firmware must do for each command is in the table below.** The short version:
+
+- If your handler finishes the real work before it acks at all — the three standard commands, and (verify this against your own hardware; do not assume) any actuator command that truly completes synchronously — send ONE ack, `phase="completed"` (the default; you don't have to set it explicitly). Nothing else changes for you.
+- If your handler only STARTS the real work before acking — because finishing takes longer than is reasonable to hold the VMC waiting for a single ack — send an ack immediately with `phase="accepted"` as soon as the command is accepted and the actuator has actually started moving, then report completion separately once the real work is done, using whichever completion signal the table below specifies for that command. **Never ack `"accepted"` for something you have not actually started** — an accepted-but-not-yet-started ack would let the VMC believe the actuator lease is protecting real hardware movement when it is not yet.
+
+#### Completion table
+
+| Subsystem | Command | Kind | Completion signal | Completion timeout |
+|---|---|---|---|---|
+| vending | `ping` | immediate | the ack itself | — (10 s ack deadline only) |
+| vending | `self_test` | immediate | the ack itself | — |
+| vending | `force_report` | immediate | the ack itself | — |
+| vending | `dispense` | **long-running** | the existing terminal `hardware/dispenser` report (`DispenserStatus`, `state` one of `complete`/`bin_empty`/`timeout`/`jam`/`error`), now carrying this command's `request_id` | **fixed 120 s** — no duration parameter to derive from; a fixed margin over the worst case (the 90 s auger-jam path) |
+| vending | `water_valve` | **long-running** | a SECOND ack on `cmd/vending/ack`, same `request_id`, `phase="completed"` | `seconds` (param, 1–10) **+ 5 s margin** → 6–15 s |
+| mdb | `ping` | immediate | the ack itself | — |
+| mdb | `self_test` | immediate | the ack itself | — |
+| mdb | `force_report` | immediate | the ack itself | — |
+| mdb | `bill_acceptor_test` | immediate | the ack itself | — |
+| mdb | `coin_return_test` | immediate | the ack itself | — |
+| mdb | `card_reader_test` | immediate | the ack itself | — |
+| ice_maker | `power_cycle` | **long-running** | a SECOND ack on `cmd/ice_maker/ack`, same `request_id`, `phase="completed"` | `dwell_seconds` (param, 5–300) **+ 30 s margin** → 35–330 s (see [ice-maker-monitor CONTRACT.md](../ice-maker-monitor/CONTRACT.md)) |
+| ice_maker | `ping` / `self_test` / `force_report` | immediate | the ack itself | — |
+
+`dispense`'s completion channel was deliberately kept as the existing `hardware/dispenser` report — spec-mandated, and already exactly what a production `cmd/dispense` sale publishes ("as in a sale") — rather than inventing a second ack, since that report already IS the ground truth for whether the motor finished. `water_valve` and `power_cycle` instead use a second ack on the same topic and `request_id` they already ack on: no new topic or payload shape is needed, and the existing idempotency cache (below) already keys on `request_id`, so a subsystem only has to re-cache the newer (completed) ack over the accepted one it cached first — a duplicate `request_id` arriving after completion then correctly replays the FINAL outcome, not "accepted" forever.
+
+**Why `water_valve`'s and `power_cycle`'s completion timeouts scale with their own parameter, not a fixed constant:** `power_cycle`'s `dwell_seconds` can legitimately be as long as 300 seconds (the monitor's own re-trigger lockout window) — a fixed 120-second completion timeout would spuriously fail a completely legitimate 300-second dwell. The same reasoning applies to `water_valve`'s `seconds` (1–10): the timeout must always exceed the longest legitimate real duration of the command by a comfortable margin, or a slow-but-correct actuator gets flagged as failed.
 
 ### Production topics are unchanged
 
@@ -54,8 +91,8 @@ An unknown command answered with status `unsupported`.
 
 ### Vending-specific commands
 
-- **`dispense`** — parameters: `{slot: int}`. Runs the slot's motor one cycle, publishing `hardware/dispenser` with the outcome, identical to a production `cmd/dispense` sale. Reached through the command channel so it is acked and idempotent, unlike the bare production `cmd/dispense` topic.
-- **`water_valve`** — parameters: `{seconds: int, range 1–10}`. Opens the water valve for the specified duration. Validation failure (`seconds` outside [1, 10]) returns ack status `rejected` with detail message.
+- **`dispense`** — parameters: `{slot: int}`. Runs the slot's motor one cycle, publishing `hardware/dispenser` with the outcome, identical to a production `cmd/dispense` sale. Reached through the command channel so it is acked and idempotent, unlike the bare production `cmd/dispense` topic. **Long-running (v0.6.0): acks `phase="accepted"` as soon as the motor cycle actually starts, then runs it; completion is the terminal `hardware/dispenser` report — see the completion table above.**
+- **`water_valve`** — parameters: `{seconds: int, range 1–10}`. Opens the water valve for the specified duration. Validation failure (`seconds` outside [1, 10]) returns ack status `rejected` with detail message. **Long-running (v0.6.0): acks `phase="accepted"` once the valve has actually opened, then a second, `phase="completed"` ack once it has closed again — see the completion table above.**
 
 ### MDB-specific commands
 
@@ -70,6 +107,19 @@ A command whose parameters fail the contract's bounds (e.g., `water_valve` with 
 ### Capabilities advertisement
 
 `SubsystemCapabilities.commands` lists **every** command the firmware supports, including the three standard commands (`ping`, `self_test`, `force_report`), the actuator commands (`dispense`, `water_valve`, `bill_acceptor_test`, `coin_return_test`, `card_reader_test`), and any control commands (`set_interval` for the ice maker). The VMC maintains a server-side allowlist, `TESTABLE_COMMANDS` in `contracts/common.py`, containing exactly the standard commands and the test-mode actuator commands; this allowlist is separate from what firmware advertises. A test button in the dashboard appears only for a command that is both allowlisted and advertised by the subsystem, ensuring firmware that ignores the command channel remains unaffected and a crafted request cannot invoke a control command through the test UI.
+
+## Semantics fixed in 0.6.0
+
+- `CommandAck.phase` (`"accepted"` | `"completed"`, default `"completed"`)
+  distinguishes "started" from "finished" for a long-running command
+  (`dispense`, `water_valve`). See "Two timeouts: accept vs. complete"
+  above for the full completion table and both timeouts.
+- The ack deadline (`ACK_TIMEOUT_SECONDS`, 10 s) is unchanged and governs
+  only the first ack. A command's own completion timeout is separate,
+  longer, and — for `water_valve` — derived from its own duration
+  parameter.
+- No wire shape changed for any existing field; every present-day
+  `SubsystemCommand`/`CommandAck` payload still validates unchanged.
 
 ## Semantics fixed in 0.5.0
 
