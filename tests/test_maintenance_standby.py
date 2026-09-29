@@ -246,6 +246,12 @@ async def test_standby_falls_back_to_idle_timer_when_no_predicate_wired(loud_log
     assert vmc._maintenance_sweep_task is None
     assert vmc._maintenance_idle_task is not None
     assert any("no session-liveness predicate" in msg.lower() for msg in loud_log)
+
+    # With no predicate the idle timer is the only automatic release, so
+    # it must still act on a standby lease (the "degrades to the
+    # opportunistic lease" half of plan Task 1).
+    vmc._maintenance_idle_expired()
+    assert vmc.maintenance_hold is None
     vmc.cancel_pending_tasks()
 
 

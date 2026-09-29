@@ -1838,15 +1838,18 @@ class VMC:
         it only sets ``release_requested`` for that run's own completion
         to act on.
 
-        A standby lease is never released by this timer -- the idle timer
-        should never even be armed for one (``begin_standby`` arms the
-        sweep instead), but this checks ``hold.standby`` too, belt and
-        braces, in case a future caller re-arms it by mistake.
+        A standby lease is never released by this timer while a liveness
+        predicate is wired -- the sweep owns its lifetime and the idle
+        timer is never armed for it (``begin_standby`` arms the sweep
+        instead); this checks ``hold.standby`` too, belt and braces, in
+        case a future caller re-arms it by mistake. With NO predicate wired
+        (``_arm_maintenance_sweep``'s fallback), the idle timer IS the
+        standby lease's only automatic release, so it must act.
         """
         hold = self._maintenance_hold
         if hold is None:
             return
-        if hold.standby:
+        if hold.standby and self._session_liveness is not None:
             return
         if hold.runs_in_flight > 0:
             hold.release_requested = True
