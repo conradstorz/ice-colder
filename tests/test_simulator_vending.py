@@ -593,9 +593,21 @@ class TestTerminalOutcomesFollowContract:
 
 class TestVendingCapabilities:
     def test_commands_and_contract(self):
+        """Copilot review (PR 22, id=4128088689): ping/self_test/force_report
+        are registered (base ESP32Simulator.__init__) and must be
+        advertised -- prepended by build_capabilities, ahead of this
+        subclass's own SUPPORTED_COMMANDS -- or the Tests routes'
+        advertised-∩-allowlist intersection drops the automatic tests."""
         caps = _make_sim().build_capabilities()
         assert caps.subsystem == "vending"
-        assert caps.commands == ["dispense", "water_valve", "payment/enable"]
+        assert caps.commands == [
+            "ping",
+            "self_test",
+            "force_report",
+            "dispense",
+            "water_valve",
+            "payment/enable",
+        ]
         assert caps.contract_version == "0.5.0"
 
 

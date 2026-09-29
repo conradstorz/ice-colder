@@ -27,7 +27,7 @@ from loguru import logger
 from pydantic import BaseModel, ValidationError
 
 from config.config_model import ConfigModel
-from contracts.common import CommandAck, SubsystemCommand
+from contracts.common import STANDARD_COMMANDS, CommandAck, SubsystemCommand
 from contracts.vending_machine import (
     CONTRACT_VERSION as VENDING_CONTRACT_VERSION,
     SubsystemCapabilities,
@@ -186,7 +186,16 @@ class ESP32Simulator(ABC):
             return None
 
     def build_capabilities(self) -> SubsystemCapabilities:
-        """Retained self-description; subclasses override to add channels etc."""
+        """Retained self-description; subclasses override to add channels etc.
+
+        Copilot review (PR 22, id=4128088689): the three standard handlers
+        (`ping`, `self_test`, `force_report`) are registered on every
+        subsystem in `__init__` above, not just the ones that happen to
+        list them in `SUPPORTED_COMMANDS` -- so they are always advertised
+        here too, never left for each subclass to remember to add. A
+        subclass's `SUPPORTED_COMMANDS` lists only its own actuator/control
+        commands (`dispense`, `water_valve`, `payment/enable`, ...).
+        """
         return SubsystemCapabilities(
             subsystem=self.subsystem_name,
             firmware=BUILD_INFO.commit_short,
@@ -195,7 +204,7 @@ class ESP32Simulator(ABC):
             model=self.MODEL,
             hardware_id=self.fake_hardware_id(),
             ip=self.container_ip(),
-            commands=list(self.SUPPORTED_COMMANDS),
+            commands=[*STANDARD_COMMANDS, *self.SUPPORTED_COMMANDS],
         )
 
     async def _publish_capabilities(self, client: aiomqtt.Client) -> None:

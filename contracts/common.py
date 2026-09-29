@@ -117,8 +117,24 @@ class CommandAck(BaseModel):
     timestamp: datetime = Field(default_factory=_utc_now)
 
 
-# Standard commands every subsystem answers (§1.2).
-_STANDARD_COMMANDS: frozenset[str] = frozenset({"ping", "self_test", "force_report"})
+# Standard commands every subsystem answers (§1.2). Public (not
+# underscore-prefixed): simulators/base.py imports this directly so the
+# three standard handlers it registers on every subsystem
+# (register_command("ping", ...) etc. in ESP32Simulator.__init__) and the
+# commands a subsystem's capabilities document actually *advertises* can
+# never drift apart the way TESTABLE_COMMANDS and
+# SubsystemCapabilities.commands did before (Copilot review, PR 22,
+# id=4128088689): the three handlers were registered and answered on the
+# wire, but the advertised commands list omitted them, so the Tests
+# routes' advertised-∩-allowlist intersection silently dropped every
+# automatic test.
+#
+# A tuple (not a frozenset): simulators/base.py splices this, in order,
+# into the front of every SubsystemCapabilities.commands list, and
+# capabilities tests assert on that list's exact contents; a set's
+# iteration order is not a contract to build a wire payload from.
+STANDARD_COMMANDS: tuple[str, ...] = ("ping", "self_test", "force_report")
+_STANDARD_COMMANDS_SET: frozenset[str] = frozenset(STANDARD_COMMANDS)
 
 # Server-side allowlist for the Tests level (§1.3): exactly the standard
 # commands plus each subsystem's actuator commands, and nothing else —
@@ -128,8 +144,8 @@ _STANDARD_COMMANDS: frozenset[str] = frozenset({"ping", "self_test", "force_repo
 # {command}` re-checks this allowlist so a crafted request cannot reach a
 # control command through the test tile.
 TESTABLE_COMMANDS: dict[str, frozenset[str]] = {
-    "vending": _STANDARD_COMMANDS | frozenset({"dispense", "water_valve"}),
-    "ice_maker": _STANDARD_COMMANDS | frozenset({"power_cycle"}),
-    "mdb": _STANDARD_COMMANDS
+    "vending": _STANDARD_COMMANDS_SET | frozenset({"dispense", "water_valve"}),
+    "ice_maker": _STANDARD_COMMANDS_SET | frozenset({"power_cycle"}),
+    "mdb": _STANDARD_COMMANDS_SET
     | frozenset({"bill_acceptor_test", "coin_return_test", "card_reader_test"}),
 }

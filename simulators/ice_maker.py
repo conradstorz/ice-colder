@@ -15,7 +15,7 @@ import time
 import aiomqtt
 from loguru import logger
 
-from contracts.common import SubsystemCommand
+from contracts.common import STANDARD_COMMANDS, SubsystemCommand
 from contracts.ice_maker_monitor import (
     CONTRACT_VERSION,
     ChannelDescriptor,
@@ -444,6 +444,16 @@ class IceMakerSimulator(ESP32Simulator):
                 )
 
     def build_capabilities(self) -> MonitorCapabilities:
+        """Copilot review (PR 22, id=4128088689): this override (a
+        MonitorCapabilities, not the base's SubsystemCapabilities) listed
+        its commands by hand and omitted `ping`/`self_test` even though
+        the base class registers both handlers for every subsystem,
+        including this one. Prepend STANDARD_COMMANDS the same way
+        ESP32Simulator.build_capabilities does, so this list can't drift
+        from what is actually registered and answered on the wire.
+        `force_report` used to be listed by hand too; it now arrives via
+        STANDARD_COMMANDS instead of being duplicated.
+        """
         temp_channels = [
             ChannelDescriptor(
                 channel_id=s.name,
@@ -462,7 +472,7 @@ class IceMakerSimulator(ESP32Simulator):
             hardware_id=self.fake_hardware_id(),
             ip=self.container_ip(),
             channels=temp_channels + TELEMETRY_CHANNELS,
-            commands=["power_cycle", "force_report", "set_interval"],
+            commands=[*STANDARD_COMMANDS, "power_cycle", "set_interval"],
         )
 
     def _compressor_current(self) -> float:

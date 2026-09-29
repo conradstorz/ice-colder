@@ -304,9 +304,16 @@ class TestRefunds:
 
 class TestMDBCapabilities:
     def test_commands_and_contract(self):
+        """Copilot review (PR 22, id=4128088689): ping/self_test/
+        force_report are registered for every subsystem and must be
+        advertised, prepended ahead of this subclass's own
+        SUPPORTED_COMMANDS."""
         caps = MDBGatewaySimulator().build_capabilities()
         assert caps.subsystem == "mdb"
         assert caps.commands == [
+            "ping",
+            "self_test",
+            "force_report",
             "payment/enable",
             "refund",
             "bill_acceptor_test",

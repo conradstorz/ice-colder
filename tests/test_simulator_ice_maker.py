@@ -497,7 +497,18 @@ class TestMonitorContract:
         assert "hot_gas_valve_1" in ids
         assert "compressor_current" in ids
         assert "bin_level" in ids
-        assert caps.commands == ["power_cycle", "force_report", "set_interval"]
+        # Copilot review (PR 22, id=4128088689): ping/self_test were
+        # missing from this hand-written list even though both handlers
+        # are registered for every subsystem -- now prepended, and
+        # force_report comes along with them instead of being listed
+        # twice.
+        assert caps.commands == [
+            "ping",
+            "self_test",
+            "force_report",
+            "power_cycle",
+            "set_interval",
+        ]
 
     @pytest.mark.asyncio
     async def test_power_cycle_ok_then_lockout(self):
@@ -643,7 +654,13 @@ class TestIceMakerCapabilitiesIdentity:
         assert caps.contract_version == CONTRACT_VERSION == "1.2.0"
         assert caps.firmware == BUILD_INFO.commit_short
         assert caps.hardware_id is not None
-        assert caps.commands == ["power_cycle", "force_report", "set_interval"]
+        assert caps.commands == [
+            "ping",
+            "self_test",
+            "force_report",
+            "power_cycle",
+            "set_interval",
+        ]
 
 
 class TestStandardCommandsFromSharedLoop:

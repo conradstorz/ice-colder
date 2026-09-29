@@ -877,6 +877,22 @@ class TestCapabilities:
         assert a.fake_hardware_id().startswith("02:")
         assert len(a.fake_hardware_id()) == 17
 
+    def test_standard_commands_always_advertised_even_with_none_of_its_own(self):
+        """Copilot review (PR 22, id=4128088689): ping/self_test/
+        force_report are registered on every subsystem in __init__
+        (self._commands), independent of whatever a subclass's own
+        SUPPORTED_COMMANDS lists -- ConcreteSimulator here declares no
+        SUPPORTED_COMMANDS of its own at all, so an unfixed
+        build_capabilities (commands=list(self.SUPPORTED_COMMANDS)) would
+        advertise an empty list despite three real, registered handlers
+        answering on the wire."""
+        sim = ConcreteSimulator(subsystem_name="test", machine_id="vmc-t")
+        caps = sim.build_capabilities()
+        assert caps.commands == ["ping", "self_test", "force_report"]
+        # And every advertised command is actually registered -- not just
+        # a name in the list with no handler behind it.
+        assert set(caps.commands) <= set(sim._commands)
+
     async def test_publish_capabilities_is_retained(self):
         sim = ConcreteSimulator(subsystem_name="test", machine_id="vmc-t")
         sim.publish = AsyncMock()

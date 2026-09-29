@@ -1096,6 +1096,53 @@ class TestRunAll:
         assert "held by" in resp.text
         assert dispatcher.calls == []
 
+    def test_run_all_dispatches_on_the_real_simulator_stack(
+        self, client, wired, wire_subsystem, wire_dispatcher
+    ):
+        """Copilot review (PR 22, id=4128088689): the two tests above wire
+        wire_subsystem("vending", ["ping", "self_test"]) directly -- a
+        hand-picked commands list that would pass whether or not the real
+        simulators actually advertise ping/self_test, exactly the
+        "fixture that makes the branch unreachable" shape the review
+        warns about. This test instead advertises each subsystem's REAL
+        `build_capabilities().commands` (vending, mdb: the base class's
+        list; ice_maker: its own MonitorCapabilities override) -- the
+        actual output that would reach the VMC over MQTT on the compose
+        simulator stack, which nothing here can run directly. Before the
+        fix this failed with dispatcher.calls == [] (Run all executed
+        nothing), because the advertised-∩-allowlist intersection was
+        empty for the three automatic commands.
+        """
+        from simulators.ice_maker import IceMakerSimulator
+        from simulators.mdb_gateway import MDBGatewaySimulator
+        from simulators.vending_machine import VendingMachineSimulator
+
+        wire_subsystem(
+            "vending",
+            VendingMachineSimulator(machine_id="vmc-t").build_capabilities().commands,
+        )
+        wire_subsystem(
+            "mdb", MDBGatewaySimulator(machine_id="vmc-t").build_capabilities().commands
+        )
+        wire_subsystem(
+            "ice_maker",
+            IceMakerSimulator(machine_id="vmc-t").build_capabilities().commands,
+        )
+        dispatcher = wire_dispatcher(ConcurrencyCheckingDispatcher())
+
+        resp = client.post("/tests/run-all")
+
+        assert resp.status_code == 200
+        assert set(dispatcher.calls) == {
+            ("vending", "ping"),
+            ("vending", "self_test"),
+            ("mdb", "ping"),
+            ("mdb", "self_test"),
+            ("ice_maker", "ping"),
+            ("ice_maker", "self_test"),
+        }
+        assert len(dispatcher.calls) == 6
+
 
 # --- A failing run still frees the lease's run count -----------------------
 
