@@ -3039,11 +3039,13 @@ class TestHomeTiles:
         for title in ("Controls", "Tests"):
             assert f">{title}<" not in resp.text
 
-    def test_secretary_sees_reports_as_coming_soon(self, login_as):
-        client = login_as(Role.secretary)
-        resp = client.get("/")
-        assert resp.status_code == 200
-        assert "coming soon" in resp.text.lower()
+    def test_no_tile_is_coming_soon(self, login_as):
+        # Parts 3 and 4 shipped the Reports and Tests levels; the placeholder
+        # style must be gone for every role that can see those tiles.
+        for role in (Role.owner, Role.secretary, Role.tech):
+            resp = login_as(role).get("/")
+            assert resp.status_code == 200
+            assert "coming soon" not in resp.text.lower()
 
     def test_tiles_link_to_their_urls(self, client):
         resp = client.get("/")
