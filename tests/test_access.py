@@ -728,6 +728,49 @@ class TestSessions:
         store.end_all_sessions()
         assert store.resolve_session(s2) is None
 
+    def test_session_is_live_true_for_a_live_session(self, tmp_path):
+        clock = FakeClock()
+        s = AccessStore(
+            path=tmp_path / "access.json", clock=clock, wall_clock=FakeWallClock()
+        )
+        u = s.create_user("Ada", None, Role.owner, "1379")
+        d, _ = s.create_device("Phone", shared=False)
+        sid = s.create_session(u.id, d.id)
+        clock.advance(100)
+        before = s._sessions[sid].last_active_at
+        assert s.session_is_live(sid) is True
+        assert s._sessions[sid].last_active_at == before
+
+    def test_session_is_live_false_when_idled_out_but_entry_remains(self, tmp_path):
+        clock = FakeClock()
+        s = AccessStore(
+            path=tmp_path / "access.json", clock=clock, wall_clock=FakeWallClock()
+        )
+        u = s.create_user("Ada", None, Role.owner, "1379")
+        d, _ = s.create_device("Tablet", shared=True)
+        sid = s.create_session(u.id, d.id)
+        clock.advance(301)
+        assert s.session_is_live(sid) is False
+        assert sid in s._sessions
+
+    def test_session_is_live_false_for_ended_session(self, store):
+        u = store.create_user("Ada", None, Role.owner, "1379")
+        d, _ = store.create_device("Phone", shared=False)
+        sid = store.create_session(u.id, d.id)
+        store.end_session(sid)
+        assert store.session_is_live(sid) is False
+
+    def test_session_is_live_false_for_disabled_user(self, store):
+        u = store.create_user("Ada", None, Role.owner, "1379")
+        d, _ = store.create_device("Phone", shared=False)
+        sid = store.create_session(u.id, d.id)
+        store.set_user_disabled(u.id, True)
+        assert store.session_is_live(sid) is False
+
+    def test_session_is_live_false_for_none_and_unknown_ids(self, store):
+        assert store.session_is_live(None) is False
+        assert store.session_is_live("nope") is False
+
 
 class TestOtps:
     def test_otp_round_trip(self, store):
