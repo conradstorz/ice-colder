@@ -138,8 +138,10 @@ def _params_widget(command: str, products: list) -> dict | None:
 
 def _recent_test_runs(limit: int = 100) -> list[dict]:
     """The last *limit* `test_run` events, newest first, metadata merged
-    into the row and `elapsed_seconds` (for the `humanize_seconds` filter)
-    added.
+    into the row, `elapsed_seconds` (for the `humanize_seconds` filter,
+    "N ago") added, and `duration_seconds` (system-tests design §4: the
+    event's own `value` column, how LONG the run took, not how long ago it
+    happened) added.
 
     Reads `context.event_recorder._db_path` directly rather than caching
     it or adding a public query method to services/event_recorder.py --
@@ -159,18 +161,23 @@ def _recent_test_runs(limit: int = 100) -> list[dict]:
     rows: list[dict] = []
     with contextlib.closing(sqlite3.connect(db_path)) as conn:
         cursor = conn.execute(
-            "SELECT id, timestamp, metadata FROM events "
+            "SELECT id, timestamp, value, metadata FROM events "
             "WHERE event_type = 'test_run' ORDER BY id DESC, timestamp DESC LIMIT ?",
             (limit,),
         )
-        for row_id, ts, meta_str in cursor.fetchall():
+        for row_id, ts, value, meta_str in cursor.fetchall():
             try:
                 meta = json.loads(meta_str) if meta_str else {}
             except (TypeError, ValueError):
                 meta = {}
             if not isinstance(meta, dict):
                 meta = {}
-            row = {"id": row_id, "timestamp": ts, "elapsed_seconds": max(now - ts, 0.0)}
+            row = {
+                "id": row_id,
+                "timestamp": ts,
+                "elapsed_seconds": max(now - ts, 0.0),
+                "duration_seconds": value,
+            }
             row.update(meta)
             rows.append(row)
     return rows

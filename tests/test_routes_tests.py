@@ -493,6 +493,64 @@ class TestLog:
         assert "sounded right" in resp.text
         assert "no click" in resp.text
 
+    def test_user_status_and_duration_render(self, client, wire_event_recorder):
+        """Copilot review (PR 22, id=4128088722): spec §3 requires the log
+        to show who ran it, the status, and the duration -- the card
+        previously rendered none of the three, and _recent_test_runs
+        didn't even select the event `value` column that holds the
+        duration. `value=12.5` here is the run's actual DURATION (how
+        long the command took), not "time ago" -- distinct from
+        elapsed_seconds, which the card already rendered before this fix
+        and which this test doesn't touch."""
+        wire_event_recorder.record(
+            "test_run",
+            value=12.5,
+            metadata={
+                "run_id": "r-status",
+                "user_id": "user-1",
+                "user_name": "Ada Owner",
+                "subsystem": "mdb",
+                "command": "self_test",
+                "params": {},
+                "status": "ok",
+                "verdict": None,
+                "note": None,
+            },
+        )
+        wire_event_recorder.flush()
+        resp = client.get("/tests/log")
+        assert resp.status_code == 200
+        assert "Ada Owner" in resp.text
+        assert "status: ok" in resp.text
+        assert "12" in resp.text  # humanize_seconds(12.5) == "12s"
+
+    def test_simulated_sale_user_status_and_duration_render(
+        self, client, wire_event_recorder
+    ):
+        """Same guarantee for run_test_sale's row shape (sku/outcome/
+        fault_code/path, no subsystem/command) -- user_name and status are
+        present in that metadata shape too (controller/vmc.py's
+        run_test_sale)."""
+        wire_event_recorder.record(
+            "test_run",
+            value=3.25,
+            metadata={
+                "sku": "ICE-1",
+                "user_id": "user-1",
+                "user_name": "Tara Tech",
+                "outcome": "dispensed",
+                "fault_code": None,
+                "status": "ok",
+                "path": ["idle", "interacting_with_user", "dispensing", "idle"],
+            },
+        )
+        wire_event_recorder.flush()
+        resp = client.get("/tests/log")
+        assert resp.status_code == 200
+        assert "Tara Tech" in resp.text
+        assert "status: ok" in resp.text
+        assert "3s" in resp.text  # humanize_seconds(3.25) == "3s"
+
     def test_no_recorder_renders_empty_state(self, client):
         assert context.event_recorder is None
         resp = client.get("/tests/log")
