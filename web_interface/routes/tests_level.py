@@ -38,7 +38,7 @@ from contracts.ice_maker_monitor import CONTRACT_VERSION as ICE_MAKER_CONTRACT_V
 from contracts.vending_machine import CONTRACT_VERSION as VENDING_CONTRACT_VERSION
 from contracts.vending_machine import EXPECTED_SUBSYSTEMS
 from services.access import Permission
-from services.command_dispatcher import CommandTimeout
+from services.command_dispatcher import CommandTimeout, CompletionTimeout
 from web_interface import auth as web_auth
 from web_interface import context
 from web_interface.levels import LEVEL_TESTS, LEVEL_TESTS_LOG, LEVEL_TESTS_SALE, Level
@@ -298,6 +298,25 @@ async def _run_command(
     attempt count read from the dispatcher's own `_retries` (defaulting to
     1, i.e. 2 attempts, when no dispatcher is wired) rather than a second
     hardcoded literal.
+
+    Dispatches via `send_and_await_completion` (completion-table amendment,
+    2026-09-29), not the older `send` -- for an immediate command (ping,
+    self_test, force_report, the three mdb actuator tests) this behaves
+    exactly like `send` always did (the ack IS completion). For a
+    long-running actuator (dispense, water_valve, power_cycle) the awaited
+    call does not return until the command's own completion signal arrives,
+    so `vmc.maintenance_test_run()`'s `runs_in_flight` -- and therefore the
+    maintenance lease and its SVC-102 fault -- stays held for the
+    actuator's REAL lifetime, not just until it starts. This is the fix for
+    Copilot review PR 22 id=4128088504: a previous agent proved the lease
+    released while a simulated motor was still running because the old
+    `send()` call here returned (or timed out) long before the motor
+    actually stopped.
+
+    `CompletionTimeout` (accepted but never finished) is handled as its own
+    branch, distinct from `CommandTimeout` (never even accepted) -- both
+    render as `status="timeout"` in the result card, but with different
+    detail text, since they mean different things to the tech reading it.
     """
     run_id = uuid4().hex
     started = time.time()
@@ -307,7 +326,7 @@ async def _run_command(
         try:
             if dispatcher is None:
                 raise CommandTimeout(subsystem, command)
-            ack = await dispatcher.send(subsystem, command, params)
+            ack = await dispatcher.send_and_await_completion(subsystem, command, params)
             status = ack.status
             detail = ack.detail
             if isinstance(ack.result, dict):
@@ -318,6 +337,9 @@ async def _run_command(
             )
             status = "timeout"
             detail = f"no answer from {subsystem} after {retries + 1} attempts"
+        except CompletionTimeout:
+            status = "timeout"
+            detail = f"{subsystem} accepted {command} but never reported completion"
     elapsed = round(time.time() - started, 3)
 
     metadata = {

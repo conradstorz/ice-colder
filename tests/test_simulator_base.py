@@ -865,7 +865,7 @@ class TestCapabilities:
         assert isinstance(caps, SubsystemCapabilities)
         assert caps.subsystem == "test"
         assert caps.firmware == BUILD_INFO.commit_short
-        assert caps.contract_version == "0.5.0"
+        assert caps.contract_version == "0.6.0"
         assert caps.hardware_id is not None
 
     def test_hardware_id_is_stable_and_distinct(self):

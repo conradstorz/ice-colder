@@ -76,6 +76,17 @@ class DispenserStatus(BaseModel):
 
     slot: int = Field(..., description="Dispenser slot number")
     state: str = Field(..., description="Status (e.g., 'complete', 'jammed', 'error')")
+    request_id: Optional[str] = Field(
+        None,
+        description=(
+            "Echoed from the command-channel `dispense` request that "
+            "triggered this run (contracts/common.py COMPLETION_TIMEOUTS, "
+            "2026-09-29 amendment), so services/command_dispatcher.py can "
+            "correlate its terminal report to the command it is waiting on. "
+            "Always None for a production `cmd/dispense` sale, which has no "
+            "request_id to carry -- that path is unaffected."
+        ),
+    )
     timestamp: datetime = Field(default_factory=_utc_now)
 
 

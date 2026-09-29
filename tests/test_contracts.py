@@ -11,7 +11,11 @@ from contracts.ice_maker_monitor import (
     MonitorCapabilities,
     MonitorCommand,
 )
-from contracts.common import ACK_TIMEOUT_SECONDS, TESTABLE_COMMANDS
+from contracts.common import (
+    ACK_TIMEOUT_SECONDS,
+    COMPLETION_TIMEOUTS,
+    TESTABLE_COMMANDS,
+)
 from contracts.common import CommandAck as CommonCommandAck
 from contracts.common import SubsystemCommand
 
@@ -58,7 +62,7 @@ class TestMonitorCapabilities:
         # 1.1.0 -> 1.2.0: the command/ack models moved to contracts/common.py
         # (SubsystemCommand/CommandAck) and the ack gained an optional
         # `result` field — additive, minor bump.
-        assert CONTRACT_VERSION == "1.2.0"
+        assert CONTRACT_VERSION == "1.3.0"
 
 
 class TestChannelReading:
@@ -151,6 +155,10 @@ class TestWireCompatibility:
         assert ack.status == "ok"
         assert ack.detail == "dwell 30s"
         assert ack.result is None
+        # 2026-09-29 completion-table amendment: a present-day payload with
+        # no "phase" key at all must still validate, and mean exactly what
+        # it always meant -- this ack IS the command's outcome.
+        assert ack.phase == "completed"
 
     def test_literal_ack_with_result_also_validates(self):
         payload = {
@@ -292,4 +300,73 @@ class TestMonitorCapabilitiesIdentity:
     def test_contract_version_is_1_2_0(self):
         from contracts.ice_maker_monitor import CONTRACT_VERSION
 
-        assert CONTRACT_VERSION == "1.2.0"
+        assert CONTRACT_VERSION == "1.3.0"
+
+
+class TestCompletionTimeouts:
+    """2026-09-29 completion-table amendment: every long-running command
+    must have a COMPLETION_TIMEOUTS entry, and every entry must actually be
+    a testable command — the two tables cannot drift apart the way
+    TESTABLE_COMMANDS and SubsystemCapabilities.commands did before
+    (Copilot review, PR 22, id=4128088689)."""
+
+    # Verified against each simulator handler (not assumed): the three
+    # standard commands and the three mdb actuator commands all finish
+    # within their single ack — no `await asyncio.sleep`, no background
+    # task — so they carry no completion-timeout entry at all.
+    _IMMEDIATE = {
+        ("vending", "ping"),
+        ("vending", "self_test"),
+        ("vending", "force_report"),
+        ("mdb", "ping"),
+        ("mdb", "self_test"),
+        ("mdb", "force_report"),
+        ("mdb", "bill_acceptor_test"),
+        ("mdb", "coin_return_test"),
+        ("mdb", "card_reader_test"),
+        ("ice_maker", "ping"),
+        ("ice_maker", "self_test"),
+        ("ice_maker", "force_report"),
+    }
+    _LONG_RUNNING = {
+        ("vending", "dispense"),
+        ("vending", "water_valve"),
+        ("ice_maker", "power_cycle"),
+    }
+
+    def test_every_testable_command_is_classified(self):
+        all_testable = {
+            (subsystem, command)
+            for subsystem, commands in TESTABLE_COMMANDS.items()
+            for command in commands
+        }
+        assert all_testable == self._IMMEDIATE | self._LONG_RUNNING
+
+    def test_long_running_commands_have_completion_timeouts(self):
+        assert set(COMPLETION_TIMEOUTS) == self._LONG_RUNNING
+
+    def test_immediate_commands_have_no_completion_timeout(self):
+        assert self._IMMEDIATE.isdisjoint(COMPLETION_TIMEOUTS)
+
+    def test_dispense_completion_timeout_is_fixed_120s(self):
+        timeout_fn = COMPLETION_TIMEOUTS[("vending", "dispense")]
+        # No caller-chosen duration to derive from — same value regardless
+        # of params, and well above the 90s worst case (auger jam) in
+        # simulators/vending_machine.py today.
+        assert timeout_fn({}) == 120.0
+        assert timeout_fn({"slot": 3}) == 120.0
+
+    @pytest.mark.parametrize("seconds,expected", [(1, 6.0), (10, 15.0)])
+    def test_water_valve_completion_timeout_derived_from_seconds(
+        self, seconds, expected
+    ):
+        timeout_fn = COMPLETION_TIMEOUTS[("vending", "water_valve")]
+        assert timeout_fn({"seconds": seconds}) == expected
+
+    @pytest.mark.parametrize("dwell,expected", [(5, 35.0), (300, 330.0)])
+    def test_power_cycle_completion_timeout_derived_from_dwell(self, dwell, expected):
+        # power_cycle's dwell_seconds can legitimately be 300s (the
+        # ice-maker's own lockout window) -- a fixed 120s timeout would
+        # spuriously fail that legitimate case. This must scale with it.
+        timeout_fn = COMPLETION_TIMEOUTS[("ice_maker", "power_cycle")]
+        assert timeout_fn({"dwell_seconds": dwell}) == expected

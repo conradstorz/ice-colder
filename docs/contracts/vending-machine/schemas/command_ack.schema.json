@@ -1,5 +1,5 @@
 {
-  "description": "Subsystem -> VMC acknowledgement on `.../cmd/<subsystem>/ack`.\n\nEvery field present in the original ice-maker `CommandAck` is unchanged;\n`result` is the only addition (optional, default None), so a present-day\nack payload with no `result` key still validates.",
+  "description": "Subsystem -> VMC acknowledgement on `.../cmd/<subsystem>/ack`.\n\nEvery field present in the original ice-maker `CommandAck` is unchanged;\n`result` was the first addition (optional, default None). `phase` is the\nsecond (completion-table amendment, 2026-09-29): \"completed\" (the\ndefault) means this ack IS the command's outcome -- true for every\ncommand whose handler finishes within the ack, and the only value a\npresent-day subsystem that has never heard of `phase` will ever\nimplicitly send, so an old ack payload with no `phase` key still\nvalidates and still means what it always meant. \"accepted\" means the\nopposite: the command was only *started*, not finished -- a long-running\nactuator command (`dispense`, `water_valve`, `power_cycle`) sends this\nfirst, then reports completion separately (its own terminal event, for\n`dispense`, or a second \"completed\"-phase ack on this same topic and\n`request_id` for `water_valve`/`power_cycle`) once the real work is\ndone. See `COMPLETION_TIMEOUTS` below and both CONTRACT.md files'\ncompletion tables.",
   "properties": {
     "request_id": {
       "description": "Echoed from the command",
@@ -43,6 +43,15 @@
       ],
       "default": null,
       "title": "Result"
+    },
+    "phase": {
+      "default": "completed",
+      "enum": [
+        "accepted",
+        "completed"
+      ],
+      "title": "Phase",
+      "type": "string"
     },
     "timestamp": {
       "format": "date-time",

@@ -17,6 +17,40 @@ from services.mqtt_messages import DispenserStatus
 from simulators.vending_machine import VendingMachineSimulator, _classify_product
 
 
+_REAL_SLEEP = asyncio.sleep  # captured before any test patches asyncio.sleep
+
+
+async def _drain_background(sim, timeout: float = 2.0) -> None:
+    """Wait for every task `sim._spawn_background` currently holds to
+    finish (completion-table amendment, 2026-09-29): `_handle_dispense` and
+    `_handle_water_valve` now ack "accepted" and return before their real
+    work is done, spawning it as a background task instead — a test that
+    wants to observe the work's outcome (hardware state, publish calls,
+    mock call counts) must let that task actually run first. Tasks remove
+    themselves from `sim._background_tasks` on completion (see
+    `_on_background_task_done`), so an empty set means every spawned task
+    up to this point has settled.
+
+    Uses `_REAL_SLEEP`, not `asyncio.sleep`, to yield control: most callers
+    use this from inside `patch("simulators.vending_machine.asyncio.sleep",
+    new=AsyncMock())` (that patch is process-wide — `simulators.vending_
+    machine.asyncio` is the same `asyncio` module object, not a private
+    copy). An `AsyncMock()` call returns a coroutine with no real
+    suspension point of its own, so `await`ing it does not hand control
+    back to the event loop the way a genuine `asyncio.sleep` does — under
+    that patch, `await asyncio.sleep(0)` here would spin this coroutine
+    forever without the background task (which needs the SAME scheduler
+    round trip to ever get its first turn) ever progressing, hanging the
+    test. Confirmed by reproducing exactly that hang before adding this
+    real-sleep workaround (the loop below run with the mocked `asyncio.
+    sleep` executed hundreds of thousands of iterations in 3 real seconds
+    while the background task never advanced past its own first `await`).
+    """
+    async with asyncio.timeout(timeout):
+        while sim._background_tasks:
+            await _REAL_SLEEP(0)
+
+
 def _make_config() -> ConfigModel:
     """Build a 3-product config matching the real machine layout."""
     return ConfigModel.model_validate(
@@ -608,7 +642,7 @@ class TestVendingCapabilities:
             "water_valve",
             "payment/enable",
         ]
-        assert caps.contract_version == "0.5.0"
+        assert caps.contract_version == "0.6.0"
 
 
 def _make_command(command: str, params: dict, request_id: str = "req-00000001"):
@@ -635,6 +669,12 @@ class TestDispenseCommand:
 
     @pytest.mark.asyncio
     async def test_runs_motor_once_and_publishes_hardware_dispenser(self):
+        """Completion-table amendment (2026-09-29): `_handle_command`
+        itself now returns as soon as the "accepted" ack is published —
+        the real motor sequence runs in a background task
+        (`_spawn_background`), so this drains it (`_drain_background`)
+        before checking the motor ran and the terminal report went out.
+        """
         sim = _make_sim()
         client = AsyncMock()
         dispenser_states = []
@@ -650,6 +690,7 @@ class TestDispenseCommand:
         cmd = _make_command("dispense", {"slot": 0})
         with patch("simulators.vending_machine.asyncio.sleep", new=AsyncMock()):
             ack = await sim._handle_command(client, cmd)
+            await _drain_background(sim)
 
         assert run_ice.await_count == 1
         assert dispenser_states == ["motor_active", "fill_complete", "complete"]
@@ -657,6 +698,11 @@ class TestDispenseCommand:
 
     @pytest.mark.asyncio
     async def test_publishes_ok_ack_with_slot_result(self):
+        """This ack is the "accepted" one (published synchronously, before
+        `_handle_command` returns) — the command's own completion is the
+        terminal `hardware/dispenser` report, not a second ack; see
+        `test_runs_motor_once_and_publishes_hardware_dispenser` above.
+        """
         sim = _make_sim()
         client = AsyncMock()
         published_acks = []
@@ -670,14 +716,23 @@ class TestDispenseCommand:
         with patch("simulators.vending_machine.asyncio.sleep", new=AsyncMock()):
             await sim._handle_command(client, cmd)
 
-        assert len(published_acks) == 1
-        assert published_acks[0].status == "ok"
-        assert published_acks[0].result == {"slot": 0}
+            assert len(published_acks) == 1
+            assert published_acks[0].status == "ok"
+            assert published_acks[0].result == {"slot": 0}
+            assert published_acks[0].phase == "accepted"
+
+            await _drain_background(sim)
 
     @pytest.mark.asyncio
     async def test_duplicate_request_id_runs_motor_only_once(self):
         """The most consequential duplicate in the system: a retried
-        request_id must not run the dispense motor a second time."""
+        request_id must not run the dispense motor a second time. The
+        "accepted" ack is cached synchronously before `_handle_command`
+        returns, so the second (duplicate) call replays it without ever
+        touching the handler — no draining needed between the two calls —
+        but the motor itself runs in the background, so this drains once
+        at the end before counting `run_ice.await_count`.
+        """
         sim = _make_sim()
         client = AsyncMock()
         sim.publish = AsyncMock()
@@ -688,6 +743,7 @@ class TestDispenseCommand:
         with patch("simulators.vending_machine.asyncio.sleep", new=AsyncMock()):
             await sim._handle_command(client, cmd)
             await sim._handle_command(client, cmd)  # same request_id, sent again
+            await _drain_background(sim)
 
         assert run_ice.await_count == 1
 
@@ -711,6 +767,7 @@ class TestDispenseCommand:
         cmd = _make_command("dispense", {"slot": 1})  # slot 1 is water in _make_config
         with patch("simulators.vending_machine.asyncio.sleep", new=AsyncMock()):
             await sim._handle_command(client, cmd)
+            await _drain_background(sim)
 
         assert run_water.await_count == 1
 
@@ -852,6 +909,15 @@ class TestWaterValveCommand:
 
     @pytest.mark.asyncio
     async def test_seconds_one_acks_ok(self):
+        """This is the "accepted" ack -- published synchronously before
+        `_handle_command` returns, before the background task that
+        actually opens the valve has had any chance to run (nothing here
+        yields control). Draining afterward (inside the patched-sleep
+        `with` block) lets that background task finish and publish its own
+        "completed" ack too, rather than leaking a pending task that would
+        otherwise resume against the REAL `asyncio.sleep` once this `with`
+        block exits.
+        """
         sim = _make_sim()
         client = AsyncMock()
         sim.publish = AsyncMock()
@@ -859,9 +925,16 @@ class TestWaterValveCommand:
         with patch("simulators.vending_machine.asyncio.sleep", new=AsyncMock()):
             await sim._handle_command(client, cmd)
 
-        ack = sim.publish.await_args_list[-1].args[2]
-        assert ack.status == "ok"
-        assert ack.result == {"seconds": 1}
+            ack = sim.publish.await_args_list[-1].args[2]
+            assert ack.status == "ok"
+            assert ack.result == {"seconds": 1}
+            assert ack.phase == "accepted"
+
+            await _drain_background(sim)
+
+        completed_ack = sim.publish.await_args_list[-1].args[2]
+        assert completed_ack.phase == "completed"
+        assert completed_ack.result == {"seconds": 1}
 
     @pytest.mark.asyncio
     async def test_seconds_ten_acks_ok(self):
@@ -872,8 +945,10 @@ class TestWaterValveCommand:
         with patch("simulators.vending_machine.asyncio.sleep", new=AsyncMock()):
             await sim._handle_command(client, cmd)
 
-        ack = sim.publish.await_args_list[-1].args[2]
-        assert ack.status == "ok"
+            ack = sim.publish.await_args_list[-1].args[2]
+            assert ack.status == "ok"
+
+            await _drain_background(sim)  # see test_seconds_one_acks_ok
 
     @staticmethod
     async def _start_command_loop(sim, client):
@@ -989,13 +1064,24 @@ class TestWaterValveCommand:
         during the sleep (e.g. an MQTT disconnect), the valve/flow states
         must not remain enabled indefinitely. Proved by actually cancelling
         a running handler task and reading hardware state back, not by
-        reasoning about the code."""
+        reasoning about the code.
+
+        Completion-table amendment (2026-09-29): `_handle_water_valve`
+        itself now acks "accepted" and returns almost immediately — the
+        actual open/sleep/close sequence is a background task
+        (`_spawn_background`). This cancels THAT task (the one whose
+        `finally` actually does the closing), not the now-fast call to
+        `_handle_water_valve`.
+        """
         sim = _make_sim()
         client = AsyncMock()
         sim.publish = AsyncMock()
         cmd = _make_command("water_valve", {"seconds": 10})
 
-        task = asyncio.create_task(sim._handle_water_valve(client, cmd))
+        await sim._handle_water_valve(client, cmd)
+        assert len(sim._background_tasks) == 1
+        task = next(iter(sim._background_tasks))
+
         await asyncio.sleep(0.02)  # let it open the valve and reach the sleep
         assert sim._hw["water_valve_solenoid"] is True
         assert sim._hw["water_flow_sensor"] is True
@@ -1012,7 +1098,16 @@ class TestWaterValveCommand:
         """Copilot review (PR 22, id=4128088539): 'either awaited hardware
         update raises' -- here the flow-sensor-on update raises after the
         valve solenoid was already opened; the valve must still end up
-        closed rather than stuck open."""
+        closed rather than stuck open.
+
+        Completion-table amendment (2026-09-29): the raise now happens
+        inside the background task `_handle_water_valve` spawns (see
+        `test_cancelled_mid_sleep_still_closes_valve` above) rather than
+        propagating out of `_handle_water_valve` itself — proved here by
+        awaiting that background task directly and observing the exception
+        there, plus confirming `_on_background_task_done` logs it instead
+        of losing it silently.
+        """
         sim = _make_sim()
         client = AsyncMock()
         sim.publish = AsyncMock()
@@ -1030,8 +1125,12 @@ class TestWaterValveCommand:
 
         sim._set_hw = _flaky_set_hw
 
+        await sim._handle_water_valve(client, cmd)
+        assert len(sim._background_tasks) == 1
+        task = next(iter(sim._background_tasks))
+
         with pytest.raises(RuntimeError, match="simulated MQTT publish failure"):
-            await sim._handle_water_valve(client, cmd)
+            await task
 
         assert sim._hw["water_valve_solenoid"] is False
         assert sim._hw["water_flow_sensor"] is False

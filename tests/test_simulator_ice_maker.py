@@ -651,7 +651,7 @@ class TestIceMakerCapabilitiesIdentity:
 
         caps = IceMakerSimulator(machine_id="vmc-t").build_capabilities()
         assert isinstance(caps, MonitorCapabilities)
-        assert caps.contract_version == CONTRACT_VERSION == "1.2.0"
+        assert caps.contract_version == CONTRACT_VERSION == "1.3.0"
         assert caps.firmware == BUILD_INFO.commit_short
         assert caps.hardware_id is not None
         assert caps.commands == [

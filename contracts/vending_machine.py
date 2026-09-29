@@ -1,5 +1,5 @@
 """
-Shared contract models for the vending-machine ESP32 interface (v0.5.0).
+Shared contract models for the vending-machine ESP32 interface (v0.6.0).
 
 Terminal dispenser outcomes, the fault-code registry, the refund
 command/ack, and the general subsystem-capabilities self-description
@@ -25,7 +25,17 @@ from contracts.common import ChannelDescriptor, _utc_now
 # ("Sale journal in use; sales are being written to a fallback file" ->
 # "Sale write failed; held in fallback file") shipped without its own bump
 # at the time; that deferred bump is absorbed here too.
-CONTRACT_VERSION = "0.5.0"
+#
+# 0.5.0 -> 0.6.0 (2026-09-29): minor bump, additive. `CommandAck` gains
+# `phase` ("accepted" | "completed", default "completed" -- a present-day
+# ack payload with no `phase` key still validates and means exactly what
+# it always meant). A long-running actuator command (`dispense`,
+# `water_valve`) now acks "accepted" as soon as it starts, and reports
+# completion separately -- see `contracts/common.py`'s COMPLETION_TIMEOUTS
+# and docs/contracts/vending-machine/CONTRACT.md's completion table. No
+# existing field changed shape or meaning; every present-day ack and
+# command payload still validates unchanged.
+CONTRACT_VERSION = "0.6.0"
 
 
 class DispenserOutcome(str, Enum):

@@ -502,7 +502,21 @@ class IceMakerSimulator(ESP32Simulator):
     async def _handle_power_cycle(
         self, client: aiomqtt.Client, cmd: SubsystemCommand
     ) -> CommandOutcome:
-        """dwell_seconds is already validated (5-300) by COMMAND_PARAM_VALIDATORS."""
+        """dwell_seconds is already validated (5-300) by COMMAND_PARAM_VALIDATORS.
+
+        Completion-table amendment (2026-09-29): a lockout rejection is
+        immediate (nothing was started, so `phase` stays "completed", the
+        default) — but an accepted power cycle now acks `phase="accepted"`:
+        `dwell_seconds` can be up to 300 s, and a tech's maintenance lease
+        must stay held for the whole dwell, not just until it starts.
+        Completion is a SECOND, `phase="completed"` ack on this same
+        `cmd/ice_maker/ack` topic and `request_id`
+        (`publish_completion_ack`), published once `_finish_power_cycle`'s
+        sleep elapses — alongside the existing `power_cycled`
+        `ice_maker/event`, which stays as real telemetry for any other
+        listener; the ack is what `services/command_dispatcher.py`'s
+        completion-wait actually keys on.
+        """
         now = time.monotonic()
         if now - self._last_power_cycle < POWER_CYCLE_LOCKOUT_SECONDS:
             return CommandOutcome(status="rejected", detail="lockout")
@@ -514,10 +528,12 @@ class IceMakerSimulator(ESP32Simulator):
         self._pending_events.append(
             IceMakerEvent(event="power_off", detail="commanded power_cycle")
         )
-        self._power_cycle_task = asyncio.get_running_loop().create_task(
-            self._finish_power_cycle(dwell)
+        self._power_cycle_task = self._spawn_background(
+            self._finish_power_cycle(client, cmd, dwell)
         )
-        return CommandOutcome(status="ok", detail=f"dwell {dwell:.0f}s")
+        return CommandOutcome(
+            status="ok", detail=f"dwell {dwell:.0f}s", phase="accepted"
+        )
 
     async def _handle_set_interval(
         self, client: aiomqtt.Client, cmd: SubsystemCommand
@@ -536,12 +552,15 @@ class IceMakerSimulator(ESP32Simulator):
         """force_report republishes sensors + telemetry, on top of the heartbeat."""
         await self._publish_snapshot(client)
 
-    async def _finish_power_cycle(self, dwell: float):
+    async def _finish_power_cycle(
+        self, client: aiomqtt.Client, cmd: SubsystemCommand, dwell: float
+    ):
         await asyncio.sleep(dwell)
         self._pending_events.append(
             IceMakerEvent(event="power_cycled", detail="power restored")
         )
         logger.info("[ice_maker] Power cycle complete")
+        await self.publish_completion_ack(client, cmd, {"dwell_seconds": dwell})
 
     async def run_simulation(self, client: aiomqtt.Client):
         """Publish startup event, then readings/events; handle contract commands.

@@ -1,6 +1,6 @@
 # contracts/ice_maker_monitor.py
 """
-Shared contract models for the ice-maker monitor interface (v1.2.0).
+Shared contract models for the ice-maker monitor interface (v1.3.0).
 
 These models are the machine-readable source of truth for the interface
 between ice-colder (the VMC) and the external brand-specific monitor
@@ -25,7 +25,17 @@ from contracts.vending_machine import SubsystemCapabilities
 # format unchanged except the ack's new optional `result` field. Additive,
 # so today's ice-maker firmware and the VMC's current ack handler still
 # validate.
-CONTRACT_VERSION = "1.2.0"
+#
+# 1.2.0 -> 1.3.0 (2026-09-29): minor bump, additive. `CommandAck` gains
+# `phase` ("accepted" | "completed", default "completed" -- a present-day
+# ack with no `phase` key still validates unchanged). `power_cycle` now
+# acks "accepted" as soon as it starts (unchanged: still within the 10 s
+# ack deadline, still enforcing the 300 s lockout) and sends a SECOND,
+# `phase="completed"` ack, same topic and `request_id`, once the dwell
+# actually elapses -- see docs/contracts/ice-maker-monitor/CONTRACT.md's
+# completion table. `set_interval`, `ping`, `self_test` and `force_report`
+# are unaffected; their single ack is still both accept and completion.
+CONTRACT_VERSION = "1.3.0"
 
 _CHANNEL_ID_PATTERN = CHANNEL_ID_PATTERN  # kept for ChannelReading
 

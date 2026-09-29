@@ -53,7 +53,7 @@ def wire_subsystem():
     hm = HealthMonitor()
     routes.set_health_monitor(hm)
 
-    def _wire(name, commands, *, alive=True, contract_version="0.5.0"):
+    def _wire(name, commands, *, alive=True, contract_version="0.6.0"):
         if alive:
             hm.record_heartbeat(name, {"subsystem": name, "uptime_seconds": 5})
         hm.record_capabilities(
@@ -112,6 +112,19 @@ class FakeAckDispatcher:
             request_id="a" * 8, command=command, status=self.status, detail=self.detail
         )
 
+    async def send_and_await_completion(self, subsystem, command, params=None):
+        """`_run_command` (web_interface/routes/tests_level.py) now calls
+        this instead of `send` (completion-table amendment, 2026-09-29).
+        This fake's ack always defaults `phase="completed"` (see `send`
+        above), so delegating to `send` reproduces exactly what the real
+        `CommandDispatcher.send_and_await_completion` does for an immediate
+        command: the ack IS completion, nothing more to wait for. None of
+        the commands this fake stands in for in this file are long-running
+        ones -- that behaviour is covered by tests/test_command_dispatcher.py
+        and TestLongRunningCompletionInLease below instead.
+        """
+        return await self.send(subsystem, command, params)
+
 
 class ConcurrencyCheckingDispatcher:
     """Records the highest number of `send()` calls ever in flight at once,
@@ -136,6 +149,13 @@ class ConcurrencyCheckingDispatcher:
         self.calls.append((subsystem, command))
         self._current -= 1
         return CommandAck(request_id="a" * 8, command=command, status="ok")
+
+    async def send_and_await_completion(self, subsystem, command, params=None):
+        """See FakeAckDispatcher's identical method above: this ack is
+        also always `phase="completed"` (the default), so `run-all`'s two
+        automatic commands (ping, self_test) behave exactly as before.
+        """
+        return await self.send(subsystem, command, params)
 
 
 @pytest.fixture
@@ -1242,6 +1262,9 @@ class TestFailingRunStillDecrements:
                 self.observed_in_flight = hold.runs_in_flight if hold else None
                 raise RuntimeError("simulated dispatcher bug")
 
+            async def send_and_await_completion(self, subsystem, command, params=None):
+                return await self.send(subsystem, command, params)
+
         dispatcher = ExplodingDispatcher(vmc)
         wire_dispatcher(dispatcher)
 
@@ -1436,3 +1459,247 @@ class TestSimulatedSaleFlow:
         assert "dispensed" in resp.text
         assert "idle" in resp.text and "dispensing" in resp.text
         assert 'hx-post="/tests/runs/fixed-run-id/verdict"' in resp.text
+
+
+# --- Regression: the lease is held for the actuator's REAL lifetime --------
+#
+# Copilot review, PR 22, id=4128088504: a previous agent proved, with a
+# real VMC and a real maintenance lease, that SVC-102 cleared while a
+# simulated motor was still running -- `_run_ice_dispense` can exceed 20s
+# (and reach 90s on the jam path) while the old `dispatcher.send()` call in
+# `_run_command` gave up after two 10s ack attempts, decremented
+# `runs_in_flight`, and let the lease release. The fix: the ack now means
+# "accepted", not "done" (`CommandAck.phase`), and `_run_command` calls
+# `dispatcher.send_and_await_completion`, which does not return until the
+# command's own completion signal arrives -- so `vmc.maintenance_test_run()`
+# (which brackets that call) keeps `runs_in_flight` elevated for the whole
+# real actuation, not just until it starts.
+#
+# Drives the REAL `CommandDispatcher` and the REAL `_run_command` against a
+# fake MQTT transport (never the real vending simulator, which needs a
+# broker) so this test controls exactly when the accept ack and the
+# completion signal are delivered -- the same window the bug lost.
+
+
+class _FakeDispatcherMQTT:
+    """Minimal services.mqtt_client.MQTTClient stand-in, shaped like
+    tests/test_command_dispatcher.py's own fake: register() records a
+    handler by topic_suffix, publish() records the call, deliver_ack() and
+    deliver_dispenser_report() simulate an inbound message on each of the
+    two topics CommandDispatcher.__init__ registers.
+    """
+
+    def __init__(self):
+        self.connected = True
+        self.published: list[tuple[str, object]] = []
+        self._handlers: dict[str, callable] = {}
+
+    def register(self, topic_suffix, handler):
+        self._handlers[topic_suffix] = handler
+
+    async def publish(self, topic_suffix, payload, qos: int = 1, retain: bool = False):
+        self.published.append((topic_suffix, payload))
+
+    async def deliver_ack(self, subsystem: str, payload: dict) -> None:
+        await self._handlers["cmd/+/ack"](f"cmd/{subsystem}/ack", payload)
+
+    async def deliver_dispenser_report(self, payload: dict) -> None:
+        await self._handlers["hardware/dispenser"]("hardware/dispenser", payload)
+
+
+async def _wait_until(predicate, *, timeout: float = 2.0) -> None:
+    async with asyncio.timeout(timeout):
+        while not predicate():
+            await asyncio.sleep(0)
+
+
+def _direct_principal(store, user) -> web_auth.Principal:
+    """Build a real, resolvable Principal without going through HTTP/cookies
+    -- this test drives `_run_command` directly (not through the route) so
+    it can interleave message delivery with the in-flight call, which a
+    synchronous TestClient.post(...) cannot do (it only returns once the
+    whole request, completion wait included, is over)."""
+    device, _token = store.create_device(f"{user.name}'s device", shared=False)
+    store.trust_device(device.id, user.id)
+    session_id = store.create_session(user.id, device.id)
+    session = store.resolve_session(session_id)
+    return web_auth.Principal(
+        user=user, session=session, perms=ROLE_PERMISSIONS[user.role]
+    )
+
+
+class TestActuatorLeaseHeldForRealLifetime:
+    async def test_svc102_and_runs_in_flight_stay_up_until_completion_signal(
+        self, wired
+    ):
+        from services.command_dispatcher import CommandDispatcher
+        from web_interface.routes.tests_level import _run_command
+
+        _cfg, vmc, _inv, store = wired
+        principal = _direct_principal(store, store.owner())
+
+        mqtt = _FakeDispatcherMQTT()
+        dispatcher = CommandDispatcher(mqtt)
+        routes.set_command_dispatcher(dispatcher)
+        try:
+            granted, reason = vmc.begin_maintenance(
+                principal.user.id, principal.session.id
+            )
+            assert granted is True, reason
+
+            task = asyncio.ensure_future(
+                _run_command(vmc, "vending", "dispense", {"slot": 0}, principal)
+            )
+
+            # The lease is taken, and the run counted in-flight, as soon as
+            # _run_command enters maintenance_test_run() -- before any ack
+            # has even arrived.
+            await _wait_until(lambda: len(mqtt.published) == 1)
+            request_id = mqtt.published[0][1].request_id
+            assert vmc.maintenance_hold is not None
+            assert vmc.maintenance_hold.runs_in_flight == 1
+            assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+
+            # The subsystem ACCEPTS the command (phase="accepted" -- the
+            # fix). Under the pre-fix design this single ack was already
+            # the whole story and the run would end right here.
+            await mqtt.deliver_ack(
+                "vending",
+                {
+                    "request_id": request_id,
+                    "command": "dispense",
+                    "status": "ok",
+                    "detail": None,
+                    "result": {"slot": 0},
+                    "phase": "accepted",
+                    "timestamp": "2026-09-29T00:00:00+00:00",
+                },
+            )
+            await _wait_until(lambda: request_id in dispatcher._pending_completions)
+
+            # THE PROOF: accepted is not completed. Everything that was
+            # true the instant the lease was granted must STILL be true —
+            # simulating the real motor still running.
+            assert not task.done()
+            assert vmc.maintenance_hold is not None
+            assert vmc.maintenance_hold.runs_in_flight == 1
+            assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+
+            # A tech tapping "End Test Mode" mid-actuation is accepted but
+            # DEFERRED -- exactly what VMC.end_maintenance already
+            # guarantees at the lease level (test_vmc_flows.py's
+            # test_release_with_run_in_flight_defers_then_settles); this
+            # proves _run_command's dispatch keeps that guarantee true
+            # against a realistic accept/complete timing gap, which is
+            # exactly what the pre-fix code did not do.
+            released = vmc.end_maintenance(principal.session.id)
+            assert released is True  # request accepted...
+            assert vmc.maintenance_hold is not None  # ...but not released yet
+            assert vmc.maintenance_hold.release_requested is True
+            assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+
+            # NOW the motor actually finishes: the terminal
+            # hardware/dispenser report, carrying the same request_id.
+            await mqtt.deliver_dispenser_report(
+                {
+                    "slot": 0,
+                    "state": "complete",
+                    "request_id": request_id,
+                    "timestamp": "2026-09-29T00:00:01+00:00",
+                }
+            )
+
+            result = await asyncio.wait_for(task, timeout=2.0)
+            assert result["status"] == "ok"
+
+            # Completion is what frees the run, and — since a release was
+            # already requested — releases the lease and clears SVC-102.
+            assert vmc.maintenance_hold is None
+            assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+        finally:
+            routes.set_command_dispatcher(None)
+
+    async def test_ack_timeout_still_fires_independently_of_completion_timeout(
+        self, wired
+    ):
+        """The regression this design most easily introduces (proof
+        standard): a subsystem that never even acks a long-running command
+        must still fail in ~ack_timeout per attempt, not wait out the much
+        longer completion timeout. Uses a real CommandDispatcher with a
+        short ack timeout and zero retries so this runs in real time
+        without waiting a real 10s."""
+        from services.command_dispatcher import CommandDispatcher, CommandTimeout
+
+        _cfg, vmc, _inv, store = wired
+        principal = _direct_principal(store, store.owner())
+
+        mqtt = _FakeDispatcherMQTT()
+        dispatcher = CommandDispatcher(mqtt, timeout=0.05, retries=0)
+        routes.set_command_dispatcher(dispatcher)
+        try:
+            granted, reason = vmc.begin_maintenance(
+                principal.user.id, principal.session.id
+            )
+            assert granted is True, reason
+
+            import time
+
+            started = time.monotonic()
+            with pytest.raises(CommandTimeout):
+                await asyncio.wait_for(
+                    dispatcher.send_and_await_completion(
+                        "vending", "dispense", {"slot": 0}
+                    ),
+                    timeout=2.0,
+                )
+            elapsed = time.monotonic() - started
+            assert elapsed < 1.0  # nowhere near the 120s completion timeout
+        finally:
+            routes.set_command_dispatcher(None)
+
+    async def test_ping_via_run_command_is_unaffected(self, wired):
+        """An immediate command (ping) through the REAL `_run_command` +
+        REAL dispatcher path behaves exactly as before this change: the
+        accept ack IS completion, so runs_in_flight goes back to 0 and the
+        lease can be released as soon as the single ack arrives -- no
+        second wait, no behavioural change at all."""
+        from services.command_dispatcher import CommandDispatcher
+        from web_interface.routes.tests_level import _run_command
+
+        _cfg, vmc, _inv, store = wired
+        principal = _direct_principal(store, store.owner())
+
+        mqtt = _FakeDispatcherMQTT()
+        dispatcher = CommandDispatcher(mqtt)
+        routes.set_command_dispatcher(dispatcher)
+        try:
+            granted, reason = vmc.begin_maintenance(
+                principal.user.id, principal.session.id
+            )
+            assert granted is True, reason
+
+            task = asyncio.ensure_future(
+                _run_command(vmc, "vending", "ping", {}, principal)
+            )
+            await _wait_until(lambda: len(mqtt.published) == 1)
+            request_id = mqtt.published[0][1].request_id
+
+            await mqtt.deliver_ack(
+                "vending",
+                {
+                    "request_id": request_id,
+                    "command": "ping",
+                    "status": "ok",
+                    "detail": None,
+                    "result": None,
+                    "phase": "completed",
+                    "timestamp": "2026-09-29T00:00:00+00:00",
+                },
+            )
+            result = await asyncio.wait_for(task, timeout=2.0)
+
+            assert result["status"] == "ok"
+            assert vmc.maintenance_hold is not None
+            assert vmc.maintenance_hold.runs_in_flight == 0  # freed immediately
+        finally:
+            routes.set_command_dispatcher(None)

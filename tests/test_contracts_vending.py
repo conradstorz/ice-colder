@@ -21,7 +21,7 @@ from contracts.vending_machine import EXPECTED_SUBSYSTEMS, SubsystemCapabilities
 def test_contract_version():
     # 0.4.0 -> 0.5.0: SVC-102 (new FaultCode, seven-member
     # PAYMENT_BLOCKING_FAULTS) plus part 3's deferred DATA-101 wording bump.
-    assert CONTRACT_VERSION == "0.5.0"
+    assert CONTRACT_VERSION == "0.6.0"
 
 
 def test_every_fault_code_has_a_table_entry():
@@ -139,7 +139,7 @@ class TestSubsystemCapabilities:
             )
 
     def test_contract_version_bumped(self):
-        assert CONTRACT_VERSION == "0.5.0"
+        assert CONTRACT_VERSION == "0.6.0"
 
     def test_expected_subsystems(self):
         assert EXPECTED_SUBSYSTEMS == ("vending", "mdb", "ice_maker")
@@ -158,7 +158,7 @@ def test_pay_104_is_a_machine_warning():
 def test_contract_version_bumped_for_new_code():
     from contracts.vending_machine import CONTRACT_VERSION
 
-    assert CONTRACT_VERSION == "0.5.0"
+    assert CONTRACT_VERSION == "0.6.0"
 
 
 def test_payment_blocking_faults_is_exactly_the_six_hazards_plus_svc_102():

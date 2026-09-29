@@ -74,11 +74,21 @@ class CommandOutcome:
     a handler that *raises* is already caught by the command loop and
     acked "failed" with the exception text, so there is no need to catch
     your own exceptions just to report a failure.
+
+    ``phase`` (completion-table amendment, 2026-09-29) defaults to
+    "completed" — the ack this shapes IS the command's outcome, true for
+    every immediate handler and unchanged from before this field existed.
+    A long-running handler (``_handle_dispense``, ``_handle_water_valve``,
+    ``_handle_power_cycle``) that has only just STARTED the real work
+    returns ``phase="accepted"`` instead, and reports completion later —
+    see ``ESP32Simulator.publish_completion_ack`` and each contract's
+    completion table.
     """
 
     status: Literal["ok", "rejected", "failed", "unsupported"] = "ok"
     detail: str | None = None
     result: dict | None = None
+    phase: Literal["accepted", "completed"] = "completed"
 
 
 # The registration-hook contract Tasks 7-9 build on: a command handler is an
@@ -131,6 +141,12 @@ class ESP32Simulator(ABC):
         self._recovery_tasks: set[asyncio.Task] = set()
         self._commands: dict[str, CommandHandler] = {}
         self._acked: OrderedDict[str, CommandAck] = OrderedDict()
+        # Long-running command handlers (dispense, water_valve, power_cycle)
+        # ack "accepted" and hand their real work to _spawn_background
+        # instead of awaiting it inline — this set keeps those tasks alive
+        # (a bare asyncio.create_task result with nothing holding a
+        # reference is eligible for GC mid-flight) until they finish.
+        self._background_tasks: set[asyncio.Task] = set()
         self.register_command("ping", self._handle_ping)
         self.register_command("self_test", self._handle_self_test)
         self.register_command("force_report", self._handle_force_report)
@@ -527,6 +543,7 @@ class ESP32Simulator(ABC):
                 status=outcome.status,
                 detail=outcome.detail,
                 result=outcome.result,
+                phase=outcome.phase,
             )
         if isinstance(outcome, dict):
             return CommandAck(
@@ -593,6 +610,80 @@ class ESP32Simulator(ABC):
             f"[{self.subsystem_name}] Command {cmd.command} ({cmd.request_id}): "
             f"{ack.status}"
         )
+
+    # --- Long-running commands: accept now, complete later (2026-09-29) ----
+    #
+    # A handler for dispense/water_valve/power_cycle returns a
+    # CommandOutcome(..., phase="accepted") *without* awaiting the real
+    # actuation inline, and instead hands it to _spawn_background — exactly
+    # the pattern `_handle_power_cycle` already used before this amendment
+    # existed. _handle_command above acks that "accepted" outcome completely
+    # normally (no special-casing needed there): the only new behaviour is
+    # what happens once the background work finishes.
+
+    def _spawn_background(self, coro) -> asyncio.Task:
+        """Run *coro* as a tracked background task.
+
+        A bare `asyncio.create_task(coro)` with nothing holding a reference
+        to the returned Task is eligible for garbage collection mid-flight,
+        and any exception it raises is silently swallowed forever (nothing
+        ever awaits it to surface one). `self._background_tasks` keeps a
+        reference until the task finishes; `_on_background_task_done` logs
+        an exception instead of losing it.
+        """
+        task = asyncio.get_running_loop().create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._on_background_task_done)
+        return task
+
+    def _on_background_task_done(self, task: asyncio.Task) -> None:
+        self._background_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(
+                f"[{self.subsystem_name}] Background command task failed: {exc!r}"
+            )
+
+    async def publish_completion_ack(
+        self,
+        client: aiomqtt.Client,
+        cmd: SubsystemCommand,
+        outcome: CommandOutcome | dict | None = None,
+    ) -> CommandAck:
+        """Publish the SECOND, phase="completed" ack a long-running
+        command's background work sends once it actually finishes
+        (`water_valve` and `power_cycle` both use this as their completion
+        signal — `dispense` does not: its completion is the existing
+        terminal `hardware/dispenser` report, see
+        `VendingMachineSimulator._dispense_slot`).
+
+        Re-caches the ack under `cmd.request_id`, overwriting the
+        "accepted" entry that was cached when `_handle_command` first acked
+        this command, so a very late duplicate (an ack-timeout retry whose
+        original "accepted" ack was itself lost in transit, arriving after
+        the command has since finished) replays the real, final outcome
+        instead of "accepted" forever — the idempotency cache always holds
+        the *latest* truth about a request_id, not just the first.
+
+        Forces `phase="completed"` regardless of what *outcome* carries:
+        callers pass a plain result dict or a bare `CommandOutcome()` here
+        and never need to remember the phase themselves.
+        """
+        ack = self._build_ack(cmd, outcome)
+        if ack.phase != "completed":
+            ack = ack.model_copy(update={"phase": "completed"})
+        self._acked[cmd.request_id] = ack
+        if len(self._acked) > IDEMPOTENCY_CACHE_SIZE:
+            self._acked.popitem(last=False)
+        ack_topic = f"cmd/{self.subsystem_name}/ack"
+        await self.publish(client, ack_topic, ack)
+        logger.info(
+            f"[{self.subsystem_name}] Command {cmd.command} ({cmd.request_id}): "
+            f"{ack.status} (completed)"
+        )
+        return ack
 
     async def _handle_invalid_command(
         self, client: aiomqtt.Client, data, error: ValidationError
