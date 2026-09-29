@@ -4,31 +4,13 @@
 <div class="space-y-4">
   <h1 class="text-hero font-semibold text-gray-900">Tests</h1>
 
-  {# The maintenance lease banner (system-tests design §2.2). Entering
-     this level never takes the lease (context.vmc_instance.maintenance_hold
-     is read-only here) -- this only ever reflects a lease someone already
-     holds. The End/Take over buttons post to Task 13b's routes; this
-     level renders no form or button that itself takes or releases the
-     lease. #}
-  {% if hold %}
-  <div id="tests-hold"
-       class="bg-amber-50 rounded-xl border border-amber-200 shadow-sm p-4 flex flex-wrap items-center gap-3">
-    <span class="text-sm text-amber-800">
-      Maintenance lease held by <span class="font-mono">{{ hold.holder_user_id }}</span>
-    </span>
-    {% if held_by_me %}
-    <button hx-post="/tests/end" hx-target="#tests-hold" hx-swap="outerHTML"
-            class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">
-      End
-    </button>
-    {% else %}
-    <button hx-post="/tests/takeover" hx-target="#tests-hold" hx-swap="outerHTML"
-            class="touch-target px-4 rounded-md border border-amber-300 text-sm font-medium text-amber-800 hover:bg-amber-100">
-      Take over
-    </button>
-    {% endif %}
-  </div>
-  {% endif %}
+  {# The service-state card (Task 3, system-tests design §2.2a): always
+     rendered, whether or not a lease is held -- "Take out of service" when
+     the machine is free, "Out of service since HH:MM, held by <name>" once
+     it isn't. Entering this level never takes the lease itself (only a
+     POST does); this include only ever reflects the lease's current state
+     via _service_state()'s context. #}
+  {% include "partials/tests_hold_banner.html" with context %}
 
   <div class="space-y-2">
     {% for card in cards %}

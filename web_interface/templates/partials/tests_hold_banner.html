@@ -1,22 +1,42 @@
-{# The maintenance-lease banner, re-rendered by POST /tests/end and
-   POST /tests/takeover to replace #tests-hold (hx-swap="outerHTML") --
-   markup matches tests.html's own inline `{% if hold %}` block exactly
-   (that file is outside this task's file list to edit into an
-   `{% include %}`, see task-13b-report.md), so a round trip through
-   either route leaves the same DOM either version would have rendered on
-   a fresh GET /tests. Empty (no div at all) when `hold` is None, which is
-   what removes the banner entirely on outerHTML swap -- matching
-   tests.html never rendering one when there is no lease. #}
-{% if hold %}
+{# web_interface/templates/partials/tests_hold_banner.html
+
+   Task 3 (system-tests design §2.2a): the service-state card. Always
+   rendered on /tests now (tests.html no longer wraps it in `{% if hold %}`)
+   and re-rendered, outerHTML, by every route that changes what it shows --
+   GET /tests/standby/confirm, POST /tests/standby, POST /tests/end and
+   POST /tests/takeover -- via web_interface/routes/tests_level.py's shared
+   `_service_state()` context builder, so none of them can render a
+   different shape for the same VMC state.
+
+   In service (hold is None): the two-tap "Take out of service" button,
+   `partials/confirm_button.html` included with target="#tests-hold" --
+   the SAME id this file's own outer div below already owns, deliberately
+   nested (the precedent is partials/cash_collection_result.html's own
+   header comment: owning the id here keeps the anchor alive across a
+   swap, and confirm_button.html's internal Confirm/Cancel taps replace
+   the outer element, which document order makes htmx resolve to first).
+   A refusal from POST /tests/standby (Task 3 requirement: "begin_standby
+   refusal reasons are rendered verbatim inside the card") renders next to
+   the button, inside the same div, and resets back to the plain
+   (non-confirming) button underneath it.
+
+   Out of service (hold is not None): "Out of service since HH:MM, held by
+   <name>" -- holder_name already resolved through
+   context.holder_display_name (falls back to the raw id) -- plus, for the
+   opportunistic (non-standby) lease only, "(releases after 5 min idle)".
+   Return to service (POST /tests/end) for the holder, Take over (POST
+   /tests/takeover) otherwise.
+#}
 <div id="tests-hold"
      class="bg-amber-50 rounded-xl border border-amber-200 shadow-sm p-4 flex flex-wrap items-center gap-3">
+  {% if hold %}
   <span class="text-sm text-amber-800">
-    Maintenance lease held by <span class="font-mono">{{ hold.holder_user_id }}</span>
+    Out of service since {{ started_at_hhmm }}, held by <span class="font-mono">{{ holder_name }}</span>{% if not hold.standby %} (releases after 5 min idle){% endif %}
   </span>
   {% if held_by_me %}
   <button hx-post="/tests/end" hx-target="#tests-hold" hx-swap="outerHTML"
           class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">
-    End
+    Return to service
   </button>
   {% else %}
   <button hx-post="/tests/takeover" hx-target="#tests-hold" hx-swap="outerHTML"
@@ -24,5 +44,15 @@
     Take over
   </button>
   {% endif %}
+  {% else %}
+  {% if refusal %}
+  <span class="text-sm text-red-700">{{ refusal }}</span>
+  {% endif %}
+  {% set label = "Take out of service" %}
+  {% set confirm_label = "Confirm" %}
+  {% set post_url = "/tests/standby" %}
+  {% set target = "#tests-hold" %}
+  {% set confirm_url = "/tests/standby/confirm" %}
+  {% include "partials/confirm_button.html" with context %}
+  {% endif %}
 </div>
-{% endif %}

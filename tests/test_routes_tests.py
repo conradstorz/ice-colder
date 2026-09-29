@@ -335,10 +335,10 @@ class TestLeaseNotTaken:
 
 
 class TestLeaseHolderDisplay:
-    """/tests shows the current lease holder, and offers End when the
-    viewer is the holder or Take over when they are not -- reaches
-    `tests_level`'s `hold`/`held_by_me` computation and tests.html's
-    banner.
+    """/tests shows the current lease holder, and offers Return to service
+    when the viewer is the holder or Take over when they are not -- reaches
+    `tests_level`'s `_service_state()` computation and the service-state
+    card (`partials/tests_hold_banner.html`, Task 3).
     """
 
     def test_shows_holder_and_take_over_for_a_different_session(self, client, wired):
@@ -363,11 +363,95 @@ class TestLeaseHolderDisplay:
         assert 'hx-post="/tests/end"' in resp.text
         assert 'hx-post="/tests/takeover"' not in resp.text
 
-    def test_no_banner_when_no_lease_held(self, client, wired):
+    def test_shows_take_out_of_service_when_no_lease_held(self, client, wired):
+        """Task 3: the service-state card is always rendered now (no more
+        `{% if hold %}` around it in tests.html) -- #tests-hold is present
+        even with no lease, showing the "Take out of service" button
+        rather than disappearing entirely as the old banner did.
+        """
         _cfg, vmc, _inv, _store = wired
         assert vmc.maintenance_hold is None
         resp = client.get("/tests")
-        assert 'id="tests-hold"' not in resp.text
+        assert 'id="tests-hold"' in resp.text
+        assert "Take out of service" in resp.text
+        assert 'hx-post="/tests/end"' not in resp.text
+        assert 'hx-post="/tests/takeover"' not in resp.text
+
+
+# --- Standby (Task 3, system-tests design §2.2a) ------------------------
+
+
+class TestStandby:
+    """GET /tests/standby/confirm and POST /tests/standby: the two-tap
+    "Take out of service" control that grants a session-bound standby
+    lease via VMC.begin_standby (controller/vmc.py). Reaches
+    web_interface/routes/tests_level.py's tests_standby_confirm and
+    tests_standby handlers, and the service-state card
+    (partials/tests_hold_banner.html) both re-render.
+    """
+
+    def test_confirm_renders_confirm_cancel_pair(self, client, wired):
+        resp = client.get("/tests/standby/confirm")
+        assert resp.status_code == 200
+        assert 'hx-post="/tests/standby"' in resp.text
+        assert "Cancel" in resp.text
+
+    def test_confirm_false_renders_plain_button(self, client, wired):
+        resp = client.get("/tests/standby/confirm", params={"confirming": "false"})
+        assert resp.status_code == 200
+        assert "Cancel" not in resp.text
+        assert "Take out of service" in resp.text
+
+    def test_post_standby_grants_lease_and_shows_return_to_service(self, client, wired):
+        _cfg, vmc, _inv, store = wired
+        session_id = client.cookies.get(web_auth.SESSION_COOKIE)
+        resp = client.post("/tests/standby")
+        assert resp.status_code == 200
+        assert vmc.maintenance_hold is not None
+        assert vmc.maintenance_hold.holder_user_id == store.owner().id
+        assert vmc.maintenance_hold.holder_session_id == session_id
+        assert vmc.maintenance_hold.standby is True
+        assert "Out of service" in resp.text
+        assert "Return to service" in resp.text
+
+    def test_post_standby_refusal_rendered_verbatim(self, client, wired):
+        """begin_standby's own refusal wording (e.g. "vend finishing, tap
+        again" while dispensing) is shown verbatim, not remapped -- unlike
+        _acquire_lease_or_refusal's busy-wording remap for the
+        OPPORTUNISTIC lease's callers below, which exists specifically to
+        point them AT this button; this route IS that button, so its own
+        refusal needs no further translation.
+        """
+        _cfg, vmc, _inv, _store = wired
+        vmc.begin_standby = lambda user_id, session_id: (
+            False,
+            "vend finishing, tap again",
+        )
+        resp = client.post("/tests/standby")
+        assert resp.status_code == 200
+        assert "vend finishing, tap again" in resp.text
+        assert 'id="tests-hold"' in resp.text
+
+    def test_run_all_busy_refusal_points_at_standby(self, client, wired):
+        """A run refused for one of begin_maintenance's two busy reasons
+        (here "machine is mid-sale") is remapped, so the operator is
+        pointed at Take out of service instead of left with VMC-internal
+        wording. Reaches _acquire_lease_or_refusal via POST /tests/run-all.
+        """
+        _cfg, vmc, _inv, _store = wired
+        vmc.begin_maintenance = lambda user_id, session_id: (
+            False,
+            "machine is mid-sale",
+        )
+        resp = client.post("/tests/run-all")
+        assert resp.status_code == 200
+        assert "take it out of service first" in resp.text
+        assert "machine is mid-sale" not in resp.text
+
+    def test_loader_gets_403_on_both_standby_routes(self, login_as):
+        loader_client = login_as(Role.loader)
+        assert loader_client.get("/tests/standby/confirm").status_code == 403
+        assert loader_client.post("/tests/standby").status_code == 403
 
 
 # --- Contract match -------------------------------------------------

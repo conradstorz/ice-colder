@@ -918,6 +918,35 @@ class TestStillSellingBanner:
         assert "fulfillment" in body
 
 
+class TestMaintenanceHero:
+    """Task 3 (system-tests design §2.2a): while SVC-102 is active AND a
+    MaintenanceHold exists, the /status hero swaps its title for "Out of
+    service — maintenance by <name>" in place of the raw fault wording --
+    reaching web_interface.context.health_snapshot()'s `maintenance` field
+    and partials/status_fragment.html's own override block.
+    """
+
+    @pytest.fixture
+    def maintenance_client(self, client):
+        from services.availability import Availability
+
+        avail = Availability()
+        context.vmc_instance.set_availability(avail)
+        context.set_availability(avail)
+        yield client
+        context.set_availability(None)
+
+    def test_status_shows_out_of_service_with_holder_name(self, maintenance_client):
+        vmc = context.vmc_instance
+        owner = context.access_store.owner()
+        granted, reason = vmc.begin_maintenance(owner.id, "some-other-session")
+        assert granted, reason
+
+        resp = maintenance_client.get("/status")
+        assert f"Out of service — maintenance by {owner.name}" in resp.text
+        assert "Machine Stopped" not in resp.text
+
+
 class TestAvailabilityOnDashboard:
     @pytest.fixture
     def avail_client(self, client):

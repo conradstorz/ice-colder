@@ -26,6 +26,7 @@ from fastapi.responses import HTMLResponse
 from config.config_model import ConfigModel
 from loguru import logger
 
+from contracts.vending_machine import FaultCode
 from services.access import AccessStore
 from services.paths import LOG_FILE
 from web_interface import auth as web_auth
@@ -245,20 +246,56 @@ def _can_email_owner(owner) -> bool:
 LOW_STOCK_THRESHOLD = 3
 
 
+def holder_display_name(hold) -> str | None:
+    """The maintenance lease holder's display name (Task 3, system-tests
+    design §2.2a): resolves ``hold.holder_user_id`` through
+    ``access_store.users`` (a dict of ``User`` records with a ``name``
+    field) and returns that name, falling back to the raw id when the
+    store has no such user (a test-only id, or a user deleted since) or
+    ``access_store`` isn't wired at all (None in most route tests). Shared
+    by `health_snapshot`'s `maintenance` field and the Tests level's
+    service-state card (`web_interface/routes/tests_level.py`) so both
+    agree on the same name for the same hold rather than growing two
+    copies of this lookup. Returns None when *hold* itself is None.
+    """
+    if hold is None:
+        return None
+    if access_store is not None:
+        user = access_store.users.get(hold.holder_user_id)
+        if user is not None:
+            return user.name
+    return hold.holder_user_id
+
+
 async def health_snapshot() -> dict:
     """The single health computation shared by /status's hero banner and
     /pill's bar indicator (Task 5).
 
     Returns a dict with keys `vmc_missing`, `status`, `is_healthy`,
-    `issues`, `active_faults`, `payment_enabled`, `payment_reasons` and
-    `machine_stopped` — exactly the pieces `_render_status` used to compute
-    inline and `partials/status_fragment.html` still receives unchanged.
-    `is_healthy` is the one predicate both the hero and the pill must agree
-    on: `len(issues) == 0 and payment_enabled is not False`. `issues`
-    accumulates, in order: one line per active fault, an "errors in last
-    24h" line when the event recorder has any, a stale-subsystems line,
-    and an out-of-range-temperature line — see the inline comments below
-    for why each one is folded in rather than computed separately.
+    `issues`, `active_faults`, `payment_enabled`, `payment_reasons`,
+    `machine_stopped` and `maintenance` — exactly the pieces
+    `_render_status` used to compute inline and
+    `partials/status_fragment.html` still receives unchanged. `is_healthy`
+    is the one predicate both the hero and the pill must agree on:
+    `len(issues) == 0 and payment_enabled is not False`, computed BEFORE
+    `maintenance` filters SVC-102's line out of `issues` below, so a
+    standby lease still shows amber/red exactly as it did before Task 3
+    (SVC-102 is a PAYMENT_BLOCKING_FAULTS member; it still disables
+    payment and still fails `is_healthy` — only its own line's wording is
+    replaced by the friendlier `maintenance` banner). `issues` accumulates,
+    in order: one line per active fault, an "errors in last 24h" line when
+    the event recorder has any, a stale-subsystems line, and an
+    out-of-range-temperature line — see the inline comments below for why
+    each one is folded in rather than computed separately.
+
+    `maintenance` (Task 3, system-tests design §2.2a) is the lease
+    holder's display name (`holder_display_name`, above) when SVC-102 is
+    both an active fault and a `MaintenanceHold` actually exists, else
+    None — both conditions, not just the fault, because a fault whose
+    hold has already released (a narrow race on the read) must not show a
+    stale holder name. `partials/status_fragment.html` reads this to swap
+    its title for "Out of service — maintenance by <name>" and drops the
+    SVC-102 line from `issues` so it isn't shown twice.
 
     When no VMC is wired, `vmc_missing` is True and every other key is a
     neutral placeholder (`is_healthy` None, empty lists) — callers must
@@ -276,6 +313,7 @@ async def health_snapshot() -> dict:
             "payment_enabled": None,
             "payment_reasons": [],
             "machine_stopped": None,
+            "maintenance": None,
         }
 
     status = vmc_instance.get_status()
@@ -321,6 +359,19 @@ async def health_snapshot() -> dict:
     # attached) is unknown, not unhealthy, so it must not flip this.
     is_healthy = len(issues) == 0 and payment_enabled is not False
 
+    # Task 3 (system-tests design §2.2a): fold SVC-102's line into a
+    # friendlier "who's holding it" banner instead of the raw fault
+    # description — but only after is_healthy above has already counted
+    # it, so the pill's amber/red state is unaffected.
+    maintenance = None
+    hold = vmc_instance.maintenance_hold
+    if hold is not None and any(
+        f["code"] == FaultCode.SVC_102.value for f in active_faults
+    ):
+        maintenance = holder_display_name(hold)
+        svc102_prefix = f"{FaultCode.SVC_102.value} "
+        issues = [line for line in issues if not line.startswith(svc102_prefix)]
+
     return {
         "vmc_missing": False,
         "status": status,
@@ -330,6 +381,7 @@ async def health_snapshot() -> dict:
         "payment_enabled": payment_enabled,
         "payment_reasons": payment_reasons,
         "machine_stopped": (None if payment_enabled is None else not payment_enabled),
+        "maintenance": maintenance,
     }
 
 
@@ -369,5 +421,6 @@ async def _render_status(templates, request: Request):
             payment_enabled=snap["payment_enabled"],
             payment_reasons=snap["payment_reasons"],
             machine_stopped=snap["machine_stopped"],
+            maintenance=snap["maintenance"],
         ),
     )
