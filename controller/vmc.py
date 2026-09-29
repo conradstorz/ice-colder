@@ -683,6 +683,21 @@ class VMC:
                 return False
             if code not in self._machine_faults:
                 return False
+            if code is FaultCode.SVC_102 and self._maintenance_hold is not None:
+                # Copilot review (PR 22): a generic clear must not bypass
+                # the maintenance lease invariant, the same class of bug
+                # fixed twice already for PAY-104 in part 3. Only lease
+                # release (end_maintenance / idle timeout / the last
+                # in-flight run settling, all via
+                # _release_maintenance_hold) may clear SVC-102; by the
+                # time that path calls clear_fault it has already set
+                # self._maintenance_hold = None, so this check cannot
+                # block the real release.
+                logger.warning(
+                    "Refused generic clear of SVC-102: maintenance lease "
+                    f"still held by {self._maintenance_hold.holder_user_id}"
+                )
+                return False
             if code is FaultCode.PAY_104 and self._session_store:
                 if not self._session_store.clear():
                     logger.error(

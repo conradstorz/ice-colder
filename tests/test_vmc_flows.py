@@ -2048,6 +2048,35 @@ class TestMaintenanceLease:
         assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
         assert vmc.maintenance_hold is None
 
+    async def test_generic_clear_fault_cannot_clear_svc_102_while_lease_held(self):
+        """Copilot review (PR 22): the generic Health > Faults clear route
+        calls VMC.clear_fault(key) directly with no knowledge of the
+        maintenance lease. Sibling of the PAY-104 fix (part 3): a
+        *generic* clear must not bypass a *specific* invariant -- here,
+        that only lease release (end_maintenance / idle timer /
+        last-run-settling) may clear SVC-102. Clearing it out from under a
+        live lease would republish payment enabled while a tech is
+        mid-test.
+        """
+        vmc = make_vmc2()
+        vmc.attach_to_loop(asyncio.get_running_loop())
+
+        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        assert granted is True
+        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+
+        cleared = vmc.clear_fault("SVC-102", by="admin")
+
+        assert cleared is False
+        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        assert vmc.maintenance_hold is not None
+        assert vmc.maintenance_hold.holder_session_id == "sess-1"
+
+        # The real release path still works once the lease itself is ended.
+        released = vmc.end_maintenance("sess-1")
+        assert released is True
+        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
+
     async def test_payment_disabled_while_held_and_restored_after_release(self):
         vmc, monitor, avail, published = _wired_vmc()
         await asyncio.sleep(0)  # let any initial publish settle

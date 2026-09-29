@@ -411,6 +411,21 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
                     "silently dropped."
                 ),
             )
+        if key == FaultCode.SVC_102.value and vmc.maintenance_hold is not None:
+            # Copilot review (PR 22): sibling of the PAY-104 guard above --
+            # a generic Clear must not bypass the maintenance lease
+            # invariant. VMC.clear_fault also refuses this (defense in
+            # depth for any other caller), but this route raises the more
+            # informative 409 rather than surfacing that refusal as a
+            # misleading 404 "no active fault".
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "SVC-102 is held by an active maintenance lease -- "
+                    "use the Tests level's End/Take over instead of Clear, "
+                    "so payment cannot be silently re-enabled mid-test."
+                ),
+            )
         if not vmc.clear_fault(key, by="admin"):
             raise HTTPException(
                 status_code=404, detail=f"No active fault with key {key}"
