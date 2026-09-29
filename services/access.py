@@ -766,11 +766,21 @@ class AccessStore:
             return False
         return True
 
-    def resolve_session(self, session_id: str | None) -> Session | None:
+    def resolve_session(
+        self, session_id: str | None, *, touch: bool = True
+    ) -> Session | None:
         """The live session for this cookie, refreshing its idle clock.
 
         Returns None — and forgets the session — when it has idled out, hit
         the absolute cap, or lost its user or device (spec §6).
+
+        ``touch=False`` applies the exact same validity rules (and still
+        forgets an expired session) but does not update ``last_active_at``.
+        Dashboard v2's polling fragments (``/status``, ``/kpi``, ``/pill`` —
+        see ``web_interface/auth.POLLING_PATHS``) resolve sessions with
+        ``touch=False`` so an open tab merely polling for updates does not
+        count as activity and cannot keep a session — or a standby
+        maintenance lease bound to it — alive indefinitely.
         """
         if not session_id:
             return None
@@ -780,7 +790,8 @@ class AccessStore:
         if not self._session_still_valid(session):
             del self._sessions[session_id]
             return None
-        session.last_active_at = self._clock()
+        if touch:
+            session.last_active_at = self._clock()
         return session
 
     def session_is_live(self, session_id: str | None) -> bool:

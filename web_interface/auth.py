@@ -29,6 +29,19 @@ ENROLL_COOKIE = "vmc_enroll"
 DEVICE_COOKIE_MAX_AGE = 365 * 24 * 3600
 ENROLL_COOKIE_MAX_AGE = 600
 
+# The three fragment endpoints the v2 shell polls on a timer rather than in
+# response to a person doing anything: base.html's bar polls /pill every
+# 5s, and the home level's status.html/kpi.html partials poll /status every
+# 1s and /kpi every 60s. A session resolved for one of these must not have
+# its idle clock refreshed (current_principal passes touch=False) — an open
+# but unattended tab would otherwise keep a shared-device session, and any
+# standby maintenance lease bound to it (system-tests design §2.2a), alive
+# forever. /screen/body also polls on a timer and does resolve a session
+# (Permission.view_status, held by every role), but it is deliberately not
+# listed here: CLAUDE.md keeps /screen and /screen/body byte-identical to
+# origin/main and out of scope for this part.
+POLLING_PATHS = frozenset({"/status", "/kpi", "/pill"})
+
 backoff = Backoff()
 
 _store: Optional[AccessStore] = None
@@ -86,7 +99,8 @@ def current_principal(request: Request) -> Principal | None:
     store = _store
     if store is None or store.corrupt:
         return None
-    session = store.resolve_session(request.cookies.get(SESSION_COOKIE))
+    touch = request.url.path not in POLLING_PATHS
+    session = store.resolve_session(request.cookies.get(SESSION_COOKIE), touch=touch)
     if session is None:
         return None
     user = store.get_user(session.user_id)

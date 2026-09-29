@@ -690,6 +690,31 @@ class TestSessions:
             clock.advance(200)
             assert s.resolve_session(sid) is not None
 
+    def test_touch_false_leaves_last_active_at_unchanged_but_still_forgets_expired(
+        self, tmp_path
+    ):
+        clock = FakeClock()
+        s = AccessStore(
+            path=tmp_path / "access.json", clock=clock, wall_clock=FakeWallClock()
+        )
+        u = s.create_user("Ada", None, Role.owner, "1379")
+        d, _ = s.create_device("Tablet", shared=True)
+        sid = s.create_session(u.id, d.id)
+        clock.advance(100)
+        before = s._sessions[sid].last_active_at
+
+        session = s.resolve_session(sid, touch=False)
+
+        assert session is not None
+        assert session.last_active_at == before
+        assert s._sessions[sid].last_active_at == before
+
+        # Still applies the same idle-limit rule, and still forgets an
+        # expired session, exactly like touch=True.
+        clock.advance(301)
+        assert s.resolve_session(sid, touch=False) is None
+        assert sid not in s._sessions
+
     def test_absolute_cap_ends_a_busy_session_at_a_day(self, tmp_path):
         clock = FakeClock()
         s = AccessStore(
