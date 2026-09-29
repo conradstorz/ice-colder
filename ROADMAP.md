@@ -192,15 +192,20 @@ published; new codes are added, never renumbered.
 | `COM-102` | Ice-maker monitor heartbeat lost / LWT | warning | Ice availability becomes `UNKNOWN` |
 | `COM-103` | MQTT broker unreachable | warning | Dashboard stays up, alert when reconnected |
 | `SVC-101` | Service door open / service mode | info | Inhibit both products |
-| `DATA-101` | Sale journal in use (durable insert failed) | warning | Append sale to fallback journal, alert; recorder replays and truncates the journal at startup, clearing the fault |
+| `SVC-102` | Maintenance test in progress (operator-held lease, §6) | warning | Inhibit both products and payment machine-wide (`PAYMENT_BLOCKING_FAULTS`, §3); clears itself the moment the lease is released |
+| `DATA-101` | Sale write failed; held in fallback file | warning | Append sale to fallback journal, alert; recorder replays and truncates the journal at startup, clearing the fault |
 | `DATA-102` | Event database was reset after corruption | warning | Rename `events.db` aside, create a fresh database, alert; clears on admin acknowledgement |
 
-Only the six machine-scope codes in `PAYMENT_BLOCKING_FAULTS` (§3) —
-`ICE-402`, `WTR-103`, `WTR-104`, `ENV-102`, `ENV-103`, `PWR-102` — inhibit
-`cmd/payment/enable`. Every other fault here, including a `critical` one not
-on that list, blocks the affected product (or triggers its listed response)
-without ever withdrawing payment; membership in the frozenset decides this,
-not severity.
+Only the seven machine-scope codes in `PAYMENT_BLOCKING_FAULTS` (§3) —
+`ICE-402`, `WTR-103`, `WTR-104`, `ENV-102`, `ENV-103`, `PWR-102`, `SVC-102` —
+inhibit `cmd/payment/enable`. Every other fault here, including a `critical`
+one not on that list, blocks the affected product (or triggers its listed
+response) without ever withdrawing payment; membership in the frozenset
+decides this, not severity. `SVC-102` is the one member that is not
+`critical` severity: it is a deliberate operator-held maintenance lease
+(`controller/vmc.py`'s `begin_maintenance`/`end_maintenance`), not a
+hardware failure, and it auto-clears on release rather than staying latched
+like every other member here.
 
 Severity meanings: *info* logs only; *warning* alerts; *product unavailable*
 disables one or both products until the condition clears on its own;
@@ -344,7 +349,7 @@ generated schemas.
 - Startup self-test state: after boot or `PWR-101`, run a self-test and raise
   the specific fault for anything it finds. Per §3, payment stays enabled
   throughout — self-test running is never itself a reason to withhold it, and
-  it is inhibited only if the self-test raises one of the six
+  it is inhibited only if the self-test raises one of the seven
   `PAYMENT_BLOCKING_FAULTS` codes.
 
 ### Phase D — Vending ESP32 firmware
@@ -365,7 +370,7 @@ generated schemas.
 - Run the real VMC against the bench ESP32 and against the simulators with
   fault injection; every fault in §5 must be reproducible on demand.
 - Verify for each: outputs go safe immediately, correct code recorded, payment
-  inhibited only for the six `PAYMENT_BLOCKING_FAULTS` codes (§3) and stays
+  inhibited only for the seven `PAYMENT_BLOCKING_FAULTS` codes (§3) and stays
   enabled through every other fault, alert delivered, recovery requires the
   right condition, nothing restarts on its own after a reboot.
 

@@ -1,4 +1,4 @@
-# Ice Maker Monitor Contract — v1.1.0
+# Ice Maker Monitor Contract — v1.3.0
 
 This document, together with the JSON Schema files in `schemas/`, defines the
 interface between the ice-colder VMC (this repo) and the separate,
@@ -27,6 +27,21 @@ schema files are regenerated from source and are always current.
 - **1.1.0** (2026-09-18): `MonitorCapabilities` gains optional `hardware_id`
   and `ip`; the model is now the shared `SubsystemCapabilities` with
   `subsystem` fixed to `ice_maker`.
+- **1.2.0** (2026-09-25): The `MonitorCommand` and `CommandAck` models move
+  to `contracts/common.py` as `SubsystemCommand` and `CommandAck` and are
+  re-exported here under their original names (same classes, wire format
+  unchanged). The ack gains an optional `result` field for command-specific
+  return data. This enables the shared subsystem command channel (see below).
+- **1.3.0** (2026-09-29): `CommandAck` gains `phase` (`"accepted"` |
+  `"completed"`, default `"completed"`). `power_cycle` now acks
+  `"accepted"` as soon as it starts (still within the unchanged 10 s ack
+  deadline, still enforcing the 300 s lockout) and sends a SECOND,
+  `phase="completed"` ack — same topic, same `request_id` — once the dwell
+  actually elapses. This closes a real bug: the VMC's operator-facing
+  Tests level used to treat the single ack as "the command is done," so a
+  maintenance lease could release while `power_cycle`'s dwell (up to 300 s)
+  was still running. `ping`, `self_test`, `force_report` and `set_interval`
+  are unaffected — see "Command semantics" and the completion table below.
 
 ## Transport rules
 
@@ -59,8 +74,10 @@ All topics below are relative to the `vmc/{machine_id}/` prefix.
 | `heartbeat/ice_maker` | monitor → VMC | [`SubsystemHeartbeat`](schemas/subsystem_heartbeat.schema.json) | every 10 s; also the LWT target |
 | `capabilities/ice_maker` | monitor → VMC | [`MonitorCapabilities`](schemas/monitor_capabilities.schema.json) | retained; published on connect and on any channel change |
 | `telemetry/ice_maker/<channel_id>` | monitor → VMC | [`ChannelReading`](schemas/channel_reading.schema.json) | one topic per channel declared in capabilities |
-| `cmd/ice_maker` | VMC → monitor | [`MonitorCommand`](schemas/monitor_command.schema.json) | the three contract commands |
-| `cmd/ice_maker/ack` | monitor → VMC | [`CommandAck`](schemas/command_ack.schema.json) | exactly one per command, correlated by `request_id` |
+| `cmd/ice_maker` | VMC → monitor | [`SubsystemCommand`](schemas/monitor_command.schema.json) (aliased as `MonitorCommand`) | test and control commands with parameters; **answer deadline 10 seconds** |
+| `cmd/ice_maker/ack` | monitor → VMC | [`CommandAck`](schemas/command_ack.schema.json) | exactly one per command, correlated by `request_id`; idempotency: monitor keeps the last 32 `request_id`s and replays cached acks on duplicates |
+
+**Production topics are unchanged.** `sensors/temp/<location>`, `ice_maker/event`, `heartbeat/ice_maker`, `capabilities/ice_maker`, and `telemetry/ice_maker/<channel_id>` all keep working exactly as before, whether or not a monitor implements the command channel. `cmd/ice_maker` / `cmd/ice_maker/ack` are purely additive: a monitor that ignores the command channel keeps making ice and simply advertises no tests (`MonitorCapabilities.commands` stays empty).
 
 ## Message schemas
 
@@ -143,7 +160,7 @@ Retained self-description, published on `capabilities/ice_maker`.
 | `hardware_id` | string \| null | default `null`; added in 1.1.0 | MAC address or serial number of the monitor board |
 | `ip` | string \| null | default `null`; added in 1.1.0 | The monitor's LAN address |
 | `channels` | array of `ChannelDescriptor` | default `[]` | Declared telemetry channels |
-| `commands` | array of string | default `[]` | Which of the contract commands (`power_cycle`, `force_report`, `set_interval`) this monitor supports |
+| `commands` | array of string | default `[]` | Every command this monitor supports: the three standard commands every subsystem answers (`ping`, `self_test`, `force_report`) plus its ice-maker-specific commands (`power_cycle`, `set_interval`) |
 | `timestamp` | string (date-time) | ISO-8601 UTC | Producer-side timestamp |
 
 ### ChannelReading
@@ -158,29 +175,30 @@ One reading on `telemetry/ice_maker/<channel_id>`.
 | `value` | number | required | Reading value; binary channels use `0.0`/`1.0` |
 | `timestamp` | string (date-time) | ISO-8601 UTC | Producer-side timestamp |
 
-### MonitorCommand
+### SubsystemCommand (formerly MonitorCommand)
 
 Schema: [`schemas/monitor_command.schema.json`](schemas/monitor_command.schema.json)
 
-VMC → monitor command, published on `cmd/ice_maker`.
+VMC → monitor command, published on `cmd/ice_maker`. The model is shared by all subsystems (see the vending-machine contract's Command channel section); this section documents the ice-maker-specific commands and validation rules.
 
 | Field | Type | Constraints | Description |
 |---|---|---|---|
 | `request_id` | string | required; length 8–64 | Opaque correlation key, unique per command; UUID4 recommended but not enforced. Echoed in the matching `CommandAck` |
-| `command` | enum | required; one of `power_cycle`, `force_report`, `set_interval` | Command to execute |
-| `params` | object (string → number) | default `{}` | Per-command parameters — see below |
+| `command` | string | required | Command name; ice-maker accepts `power_cycle` and `set_interval`, plus the three standard commands every subsystem answers (`ping`, `self_test`, `force_report`) |
+| `params` | object | default `{}` | Per-command parameters — see below |
 | `timestamp` | string (date-time) | ISO-8601 UTC | Producer-side timestamp |
 
-The JSON Schema for `params` only constrains it to a `string -> number`
-map — it cannot express per-command bounds. **The following bounds are
-enforced by validators in this repo, not by the JSON Schema file, and this
-table plus this prose are the normative source for them:**
+**Per-command parameter validation** (enforced at the VMC layer, not in the JSON Schema):
 
 | Command | `params` key | Bounds | Notes |
 |---|---|---|---|
-| `power_cycle` | `dwell_seconds` | `>= 5`, `<= 300` | How long to hold power off before restoring it |
-| `force_report` | *(none)* | — | Requests an immediate full snapshot; `params` is empty |
-| `set_interval` | `interval_seconds` | `>= 1`, `<= 3600` | Applies to sensor and telemetry publish cadence, not to the 10 s heartbeat |
+| `ping` | *(none)* | — | Standard command; ack status `ok` with no result |
+| `self_test` | *(none)* | — | Standard command; ack status `ok` with result `{checks: [...]}`; one check per declared telemetry channel and internal self-test |
+| `force_report` | *(none)* | — | Standard command; ack status `ok` with no result; monitor republishes all sensors, channels, and heartbeat immediately |
+| `power_cycle` | `dwell_seconds` | `>= 5`, `<= 300` | Power-off duration in seconds. Validation failure returns ack status `rejected` with message `"power_cycle requires dwell_seconds in [5, 300]"`. The monitor also enforces a 300-second lockout: a second `power_cycle` within 300 s of the last one is answered `rejected` with detail `"lockout"` |
+| `set_interval` | `interval_seconds` | `>= 1`, `<= 3600` | Sensor and telemetry publish cadence in seconds (does not apply to the 10 s heartbeat). Validation failure returns ack status `rejected` with message `"set_interval requires interval_seconds in [1, 3600]"`. After a successful `set_interval`, the monitor MUST republish its capabilities with the new interval |
+
+**Both validation-failure outcomes matter.** A `SubsystemCommand` whose `params` fail the bounds above is answered with status `rejected` and the validation message **only when the raw payload carries a usable `request_id`** (a non-empty string) to correlate the ack to. When the raw payload has no usable `request_id` — missing, empty, or not a string — there is nothing to correlate an ack to, so the monitor drops the command with **no ack at all**; the VMC will see this as a timeout after `ACK_TIMEOUT_SECONDS`. A firmware author who implements only the `rejected` half will find some malformed commands never get an answer.
 
 ### CommandAck
 
@@ -190,11 +208,34 @@ Monitor → VMC acknowledgement, published on `cmd/ice_maker/ack`.
 
 | Field | Type | Constraints | Description |
 |---|---|---|---|
-| `request_id` | string | required | Echoed from the originating `MonitorCommand` |
-| `command` | string | required | Echoed from the originating `MonitorCommand` |
+| `request_id` | string | required | Echoed from the originating `SubsystemCommand` |
+| `command` | string | required | Echoed from the originating `SubsystemCommand` |
 | `status` | enum | required; one of `ok`, `rejected`, `failed`, `unsupported` | Outcome of the command |
-| `detail` | string \| null | default `null` | Human-readable detail, e.g. `"lockout"` |
+| `detail` | string \| null | default `null` | Human-readable detail, e.g. `"lockout"`, `"power_cycle requires dwell_seconds in [5, 300]"` |
+| `result` | object \| null | optional; default `null` | Command-specific return data (v1.2.0 addition); e.g. `self_test` returns `{checks: [...]}` |
+| `phase` | enum | optional; one of `accepted`, `completed`; default `completed` (v1.3.0 addition) | `"completed"` (the default) means this ack IS the command's outcome — true for `ping`/`self_test`/`force_report`/`set_interval`, and the only value an ack with no `phase` key at all can mean. `"accepted"` means `power_cycle` has only just STARTED; see "Two timeouts: accept vs. complete" below |
 | `timestamp` | string (date-time) | ISO-8601 UTC | Producer-side timestamp |
+
+## Two timeouts: accept vs. complete (v1.3.0)
+
+`power_cycle`'s `dwell_seconds` can be as long as 300 seconds — far longer than the 10-second ack deadline below. Before v1.3.0, the ack was the ONLY signal the VMC had for "this command is done," which meant the VMC's operator-facing Tests level (`POST /tests/ice_maker/power_cycle`, a maintenance lease that is supposed to keep the machine out of service for the whole test) could release its lease long before the dwell actually finished — the ack timeout budget (10 s × up to 2 attempts) is nowhere close to 300 s.
+
+**As of v1.3.0, `power_cycle` acks in two phases:**
+
+1. As soon as the monitor has validated the command, enforced the lockout check, and actually begun powering off, it acks immediately with `status: "ok"`, `phase: "accepted"`. This must still happen within the unchanged 10-second ack deadline.
+2. Once `dwell_seconds` has actually elapsed and power is restored, the monitor sends a SECOND ack on the same topic (`cmd/ice_maker/ack`) with the SAME `request_id`, `phase: "completed"`. (The existing `power_cycled` `ice_maker/event` — event registry above — is unaffected and still fires too; the ack is the machine-readable completion signal the VMC's dispatcher actually waits on, and the event remains free-standing telemetry.)
+
+The VMC's own completion timeout for `power_cycle` is **`dwell_seconds` + a 30-second margin** (35–330 s) — derived from the parameter, never a fixed constant, specifically so a legitimate 300-second dwell is never flagged as a failure.
+
+`ping`, `self_test`, `force_report` and `set_interval` are all unaffected: each finishes within its single ack, so that ack keeps `phase: "completed"` (the default) and the VMC treats it exactly as it always has.
+
+| Command | Kind | Completion signal | Completion timeout |
+|---|---|---|---|
+| `ping` | immediate | the ack itself | — (10 s ack deadline only) |
+| `self_test` | immediate | the ack itself | — |
+| `force_report` | immediate | the ack itself | — |
+| `set_interval` | immediate | the ack itself | — |
+| `power_cycle` | **long-running** | a SECOND ack, same topic and `request_id`, `phase: "completed"` | `dwell_seconds` (5–300) **+ 30 s margin** → 35–330 s |
 
 ## Cadence & liveness
 
@@ -217,25 +258,38 @@ Monitor → VMC acknowledgement, published on `cmd/ice_maker/ack`.
 
 ## Command semantics
 
-- Commands are **idempotent per `request_id`**. A monitor that receives a
-  `MonitorCommand` whose `request_id` it has already processed MUST re-send
-  its previously computed `CommandAck` rather than re-executing the
-  command.
-- **Ack deadline: 10 seconds.** If the VMC does not receive a `CommandAck`
-  within 10 seconds of publishing a `MonitorCommand`, it treats the command
-  as lost and may retry it using the same `request_id` (which the
-  idempotency rule above makes safe).
+- **Idempotency is a contract requirement on real firmware.** A monitor that
+  receives a `SubsystemCommand` whose `request_id` it has already processed
+  MUST keep that `request_id` (up to 32 recent ones) and re-send the cached
+  `CommandAck` rather than re-executing the command. This is essential: if a
+  timeout and retry re-ran the action, two power cycles, two dispenses, or
+  two motor tests would occur.
+- **Ack deadline: 10 seconds.** (`ACK_TIMEOUT_SECONDS` in `contracts/common.py`.)
+  If the VMC does not receive a `CommandAck` within 10 seconds of publishing
+  a `SubsystemCommand`, it treats the command as lost and may retry it using
+  the same `request_id` (which the idempotency rule above makes safe). This
+  governs ONLY the first ack — see "Two timeouts: accept vs. complete" above
+  for `power_cycle`'s separate, much longer completion timeout.
 - **`power_cycle` safety:**
   - Minimum dwell is 5 seconds and maximum is 300 seconds
-    (`dwell_seconds`, `>= 5, <= 300` — see Message schemas above; this
-    bound is validator-enforced, not present in the JSON Schema file).
+    (`dwell_seconds`, `>= 5, <= 300` — enforced by validators in the VMC layer).
   - The monitor MUST enforce a **300-second (5-minute) lockout**: a second
     `power_cycle` command received within 300 seconds of the last one it
     executed is answered with `status: "rejected"` and `detail: "lockout"`,
-    and MUST NOT be executed.
-- A monitor that does not implement a given command (i.e., the command is
-  absent from its own `MonitorCapabilities.commands` list) answers with
-  `status: "unsupported"`.
+    and MUST NOT be executed. A rejected `power_cycle` is answered with a
+    single, immediate ack (`phase: "completed"`, the default) — nothing was
+    started, so there is no second phase to report.
+  - As of v1.3.0, an ACCEPTED `power_cycle` acks twice: `phase: "accepted"`
+    immediately, then `phase: "completed"` once the dwell elapses — see
+    "Two timeouts: accept vs. complete" above.
+- Unknown commands (commands not listed in `MonitorCapabilities.commands`)
+  are answered with `status: "unsupported"`.
+- The monitor's `commands` list (published in `MonitorCapabilities`) includes
+  all commands it supports: the three standard ones (`ping`, `self_test`,
+  `force_report`), the test commands (`power_cycle`), and any control commands
+  (`set_interval`). The VMC maintains a server-side allowlist so a test button
+  appears only for standard and test commands, ensuring control commands cannot
+  be invoked through the test UI.
 - Consumers MUST tolerate unknown fields on incoming commands (forward
   compatibility with minor version bumps).
 
@@ -268,6 +322,9 @@ A monitor implementation is conformant with contract v1.x when it:
 - [ ] Enforces the `power_cycle` 300-second lockout, rejecting a second
       `power_cycle` within that window with `status: "rejected"`,
       `detail: "lockout"`.
+- [ ] Acks an ACCEPTED `power_cycle` twice: `phase: "accepted"` within the
+      10 s ack deadline, then a second ack with the same `request_id` and
+      `phase: "completed"` once `dwell_seconds` has actually elapsed.
 - [ ] Re-sends the previous ack (without re-executing) for a duplicate
       `request_id`.
 - [ ] Answers `status: "unsupported"` for any command not listed in its own

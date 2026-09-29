@@ -1,6 +1,6 @@
 # contracts/ice_maker_monitor.py
 """
-Shared contract models for the ice-maker monitor interface (v1.1.0).
+Shared contract models for the ice-maker monitor interface (v1.3.0).
 
 These models are the machine-readable source of truth for the interface
 between ice-colder (the VMC) and the external brand-specific monitor
@@ -10,14 +10,32 @@ Breaking changes require a major CONTRACT_VERSION bump.
 """
 
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from contracts.common import CHANNEL_ID_PATTERN, ChannelDescriptor, _utc_now
+from contracts.common import CommandAck as CommandAck
+from contracts.common import SubsystemCommand as MonitorCommand
 from contracts.vending_machine import SubsystemCapabilities
 
-CONTRACT_VERSION = "1.1.0"
+# 1.1.0 -> 1.2.0: minor bump. The command/ack models (MonitorCommand,
+# CommandAck) move to contracts/common.py as SubsystemCommand/CommandAck and
+# are re-exported here under their original names — same classes, wire
+# format unchanged except the ack's new optional `result` field. Additive,
+# so today's ice-maker firmware and the VMC's current ack handler still
+# validate.
+#
+# 1.2.0 -> 1.3.0 (2026-09-29): minor bump, additive. `CommandAck` gains
+# `phase` ("accepted" | "completed", default "completed" -- a present-day
+# ack with no `phase` key still validates unchanged). `power_cycle` now
+# acks "accepted" as soon as it starts (unchanged: still within the 10 s
+# ack deadline, still enforcing the 300 s lockout) and sends a SECOND,
+# `phase="completed"` ack, same topic and `request_id`, once the dwell
+# actually elapses -- see docs/contracts/ice-maker-monitor/CONTRACT.md's
+# completion table. `set_interval`, `ping`, `self_test` and `force_report`
+# are unaffected; their single ack is still both accept and completion.
+CONTRACT_VERSION = "1.3.0"
 
 _CHANNEL_ID_PATTERN = CHANNEL_ID_PATTERN  # kept for ChannelReading
 
@@ -51,32 +69,10 @@ class ChannelReading(BaseModel):
     timestamp: datetime = Field(default_factory=_utc_now)
 
 
-class MonitorCommand(BaseModel):
-    """VMC -> monitor command on cmd/ice_maker."""
-
-    request_id: str = Field(..., min_length=8, max_length=64)
-    command: Literal["power_cycle", "force_report", "set_interval"]
-    params: dict[str, float] = Field(default_factory=dict)
-    timestamp: datetime = Field(default_factory=_utc_now)
-
-    @model_validator(mode="after")
-    def _check_params(self):
-        if self.command == "power_cycle":
-            dwell = self.params.get("dwell_seconds")
-            if dwell is None or not (5 <= dwell <= 300):
-                raise ValueError("power_cycle requires dwell_seconds in [5, 300]")
-        elif self.command == "set_interval":
-            interval = self.params.get("interval_seconds")
-            if interval is None or not (1 <= interval <= 3600):
-                raise ValueError("set_interval requires interval_seconds in [1, 3600]")
-        return self
-
-
-class CommandAck(BaseModel):
-    """Monitor -> VMC acknowledgement on cmd/ice_maker/ack."""
-
-    request_id: str = Field(..., description="Echoed from the command")
-    command: str
-    status: Literal["ok", "rejected", "failed", "unsupported"]
-    detail: Optional[str] = None
-    timestamp: datetime = Field(default_factory=_utc_now)
+# MonitorCommand and CommandAck are no longer defined here: they are
+# contracts.common.SubsystemCommand and contracts.common.CommandAck,
+# imported and re-exported above under their original names so every
+# existing `from contracts.ice_maker_monitor import MonitorCommand` (and
+# `CommandAck`) keeps working — they are the same class objects, not
+# subclasses or copies. See contracts/common.py for the shared subsystem
+# command channel (§1.1 of the system-tests design) and its param registry.

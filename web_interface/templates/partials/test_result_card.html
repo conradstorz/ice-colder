@@ -1,0 +1,54 @@
+{# One command run's result (POST /tests/{subsystem}/{command} and, one row
+   at a time, POST /tests/run-all). `run_id` is a fresh uuid4().hex minted
+   server-side (never client input), safe to use bare in a CSS id selector.
+   `automatic` (command in {ping, self_test, force_report}) decides the
+   split the design spec's Run row describes: automatic tests show the ack
+   status/round-trip time/checks only; actuator tests additionally show
+   "Watch the machine" and a Pass/Fail verdict form -- automatic commands
+   never get one, since firmware already judged them (self_test's own
+   `checks`; ping/force_report have nothing an operator could Pass/Fail). #}
+<div class="space-y-2">
+  <div class="flex flex-wrap items-center gap-2 text-sm">
+    <span class="font-medium
+      {% if status == 'ok' %}text-green-600
+      {% elif status == 'timeout' %}text-amber-600
+      {% else %}text-red-600{% endif %}">
+      {{ status }}
+    </span>
+    <span class="text-xs text-gray-400">{{ elapsed }}s</span>
+  </div>
+  {% if detail %}<p class="text-xs text-gray-600">{{ detail }}</p>{% endif %}
+  {% if checks %}
+  <ul class="text-xs text-gray-600 space-y-1">
+    {% for check in checks %}
+    <li>
+      <span class="{{ 'text-green-600' if check.pass else 'text-red-600' }}">
+        {{ "pass" if check.pass else "fail" }}
+      </span>
+      {{ check.name }}{% if check.detail %} — {{ check.detail }}{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if not automatic %}
+  <p class="text-xs text-gray-500">Watch the machine.</p>
+  <div id="verdict-{{ run_id }}">
+    <form hx-post="/tests/runs/{{ run_id }}/verdict" hx-target="#verdict-{{ run_id }}"
+          hx-swap="outerHTML" class="space-y-2">
+      <input type="text" name="note" placeholder="Optional note"
+             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900">
+      <div class="flex gap-2">
+        <button type="submit" name="verdict" value="pass"
+                class="touch-target px-4 rounded-md bg-green-600 text-white text-sm font-medium hover:bg-green-700">
+          Pass
+        </button>
+        <button type="submit" name="verdict" value="fail"
+                class="touch-target px-4 rounded-md bg-red-600 text-white text-sm font-medium hover:bg-red-700">
+          Fail
+        </button>
+      </div>
+    </form>
+  </div>
+  {% endif %}
+</div>

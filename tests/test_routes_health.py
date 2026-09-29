@@ -352,6 +352,30 @@ class TestFaultClearFlow:
         resp = client.post("/health/faults/NOPE/clear")
         assert resp.status_code == 404
 
+    def test_post_clear_svc_102_rejected_while_maintenance_lease_held(
+        self, wired, login_as
+    ):
+        """Copilot review (PR 22, id=4128088457): the generic Health >
+        Faults clear route must not be able to clear SVC-102 out from
+        under a live maintenance lease -- sibling of the PAY-104 guard
+        above. A direct POST (bypassing the Tests level UI entirely) gets
+        409, the fault stays active, and the lease is untouched."""
+        _cfg, vmc, _inv, _store = wired
+        granted, _reason = vmc.begin_maintenance("user-1", "sess-1")
+        assert granted is True
+        client = login_as(Role.tech)
+
+        resp = client.post(f"/health/faults/{FaultCode.SVC_102.value}/clear")
+
+        assert resp.status_code == 409
+        assert FaultCode.SVC_102.value in [f["code"] for f in vmc.active_faults()]
+        assert vmc.maintenance_hold is not None
+        assert vmc.maintenance_hold.holder_session_id == "sess-1"
+
+        # The real release path still works afterwards.
+        assert vmc.end_maintenance("sess-1") is True
+        assert FaultCode.SVC_102.value not in [f["code"] for f in vmc.active_faults()]
+
     def test_confirm_endpoint_requires_clear_faults(self, wired, login_as):
         _cfg, vmc, _inv, _store = wired
         key = _seed_product(_cfg)

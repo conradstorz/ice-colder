@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -22,6 +23,16 @@ from loguru import logger
 from services.paths import DATA_DIR
 
 SESSION_PATH = DATA_DIR / "session.json"
+
+# How far ahead of the wall clock a loaded saved_at may sit before it is
+# treated as corrupt rather than as ordinary clock jitter. A snapshot is
+# written and read back on the same machine within the same call, so any
+# genuine skew is sub-second; this is deliberately generous (two orders of
+# magnitude above that) to absorb coarse or slightly-adjusted system clocks
+# without ever accepting a value that is meaningfully "in the future" --
+# e.g. a hand-edited or tampered file, or a snapshot from a machine whose
+# clock is wrong by minutes or more.
+SAVED_AT_FUTURE_SKEW_SECONDS = 5.0
 
 
 @dataclass
@@ -48,6 +59,21 @@ class SessionSnapshot:
     pending_refund_request_id: Optional[str] = None
     credits: list[Credit] = field(default_factory=list)
     pending_sale_shares: Optional[dict[str, float]] = None
+    # True only for VMC.run_test_sale's simulated sale (system-tests design
+    # §2.3/§6), set from the sale's own self._sale_is_test at the moment
+    # VMC._snapshot() is built -- never derived from the maintenance lease,
+    # which (per spec §6) is never persisted and so has nothing to consult
+    # after a restart. Defaults False so a snapshot written before this
+    # field existed -- which has no "is_test" key at all -- loads as a
+    # PRODUCTION sale, the fail-safe direction: an old real pending sale
+    # must keep raising PAY-104 and stay recoverable, never silently
+    # dropped because an absent flag was misread as "test". Consulted at
+    # two chokepoints so a crashed test sale can never reach the sales
+    # ledger even if a second persistence path is added later: VMC.
+    # set_session_store() (boot) skips raising PAY-104 for it at all, and
+    # VMC.pending_sale_for_recovery() refuses to surface it even if some
+    # future path leaves PAY-104 active anyway.
+    is_test: bool = False
     saved_at: float = field(default_factory=time.time)
     error: Optional[str] = None  # set when the file could not be parsed
 
@@ -93,6 +119,29 @@ class SessionStore:
             raw_credits = raw.get("credits")
             if raw_credits is not None:
                 raw["credits"] = [Credit(**c) for c in raw_credits]
+            # saved_at is money-load-bearing (PAY-104 recovery keys on the
+            # exact instant a pending sale's escrow shares were written) so
+            # it must never be allowed to silently re-default to "now" via
+            # SessionSnapshot's field(default_factory=time.time) -- an
+            # absent, non-numeric, non-finite, non-positive, or future value
+            # on disk is rejected here and folds into the same
+            # unreadable-snapshot "error" channel used below for a JSON
+            # parse failure, rather than inventing a second signalling
+            # mechanism. That channel already reports is_open() == True
+            # (see SessionSnapshot.error), which is the correct, fail-safe
+            # answer for a snapshot we cannot actually trust.
+            if "saved_at" not in raw:
+                raise ValueError("saved_at missing from session snapshot")
+            saved_at = raw["saved_at"]
+            if (
+                isinstance(saved_at, bool)
+                or not isinstance(saved_at, (int, float))
+                or not math.isfinite(saved_at)
+                or saved_at <= 0
+            ):
+                raise ValueError(f"saved_at is not a valid timestamp: {saved_at!r}")
+            if saved_at > time.time() + SAVED_AT_FUTURE_SKEW_SECONDS:
+                raise ValueError(f"saved_at is in the future: {saved_at!r}")
             return SessionSnapshot(**raw)
         except Exception as e:
             logger.error(f"SessionStore: unreadable {self._path}: {e}")

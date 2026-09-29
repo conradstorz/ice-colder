@@ -1,7 +1,13 @@
 import json
+import time
 from pathlib import Path
 
-from services.session_store import Credit, SessionSnapshot, SessionStore
+from services.session_store import (
+    SAVED_AT_FUTURE_SKEW_SECONDS,
+    Credit,
+    SessionSnapshot,
+    SessionStore,
+)
 
 
 def test_round_trip(tmp_path):
@@ -84,6 +90,35 @@ def test_old_file_with_no_credits_key_still_loads_with_defaults(tmp_path):
     assert loaded.pending_sale_shares is None
 
 
+def test_old_file_with_no_is_test_key_defaults_to_production(tmp_path):
+    """A session.json written before the is_test field existed (round-1 fix
+    for task 11's critical defect) has no "is_test" key at all --
+    SessionSnapshot(**raw) must fill it in as False (production), the
+    fail-safe default, rather than raising or silently treating an old real
+    pending sale as a test sale that must never reach PAY-104 recovery."""
+    path = tmp_path / "session.json"
+    old_style = {
+        "state": "dispensing",
+        "credit_escrow": 0.0,
+        "selected_sku": "ICE-1",
+        "dispense_slot": 2,
+        "dispense_started_at": 123.0,
+        "pending_refund_request_id": None,
+        "credits": [],
+        "pending_sale_shares": {"cash_bill": 2.50},
+        "saved_at": 100.0,
+        "error": None,
+    }
+    path.write_text(json.dumps(old_style), encoding="utf-8")
+
+    loaded = SessionStore(path).load()
+
+    assert loaded.error is None
+    assert loaded.is_test is False
+    assert loaded.pending_sale_shares == {"cash_bill": 2.50}
+    assert loaded.is_open() is True
+
+
 def test_load_missing_returns_none(tmp_path):
     assert SessionStore(tmp_path / "session.json").load() is None
 
@@ -143,3 +178,154 @@ async def test_save_async_writes_in_order(tmp_path):
     assert json.loads((tmp_path / "session.json").read_text())["credit_escrow"] == 2.0
     await store.clear_async()
     assert store.load() is None
+
+
+def test_saved_at_survives_round_trip_across_a_process_boundary(tmp_path):
+    """PAY-104 recovery (controller/vmc.py's _pay104_sale_key) keys on the
+    exact saved_at value read back from disk being the same instant that was
+    written -- not a value rewritten in place on reload. Reload with a
+    freshly constructed SessionStore (not the one that wrote it) to prove
+    this holds across a process boundary, not just in the same instance."""
+    path = tmp_path / "session.json"
+    writer = SessionStore(path)
+    snap = SessionSnapshot(
+        state="interacting_with_user", credit_escrow=1.25, saved_at=1_700_000_000.5
+    )
+    writer.save(snap)
+
+    reader = SessionStore(path)
+    loaded = reader.load()
+
+    assert loaded.saved_at == 1_700_000_000.5
+
+
+def test_missing_saved_at_is_reported_as_unreadable_not_defaulted_to_now(tmp_path):
+    """A snapshot file written without a saved_at key must not silently pick
+    up field(default_factory=time.time) as if it were saved just now -- that
+    would hand PAY-104 recovery a fabricated timestamp for real, on-disk
+    credit. It must instead route through the same 'error' channel as an
+    unparseable file, so credit_escrow from the file is NOT trusted either."""
+    path = tmp_path / "session.json"
+    path.write_text(
+        json.dumps({"state": "dispensing", "credit_escrow": 5.0}), encoding="utf-8"
+    )
+
+    loaded = SessionStore(path).load()
+
+    assert loaded is not None
+    assert loaded.error is not None
+    assert loaded.credit_escrow == 0.0  # the fabricated 5.0 was not trusted
+    assert loaded.is_open() is True
+
+
+def test_non_finite_saved_at_is_reported_as_unreadable(tmp_path):
+    """NaN/Infinity are valid JSON under Python's parser but are not a
+    sensible 'moment' for PAY-104 recovery to reason about; they must be
+    detected, not accepted as-is."""
+    path = tmp_path / "session.json"
+    path.write_text(
+        '{"state": "dispensing", "credit_escrow": 5.0, "saved_at": NaN}',
+        encoding="utf-8",
+    )
+
+    loaded = SessionStore(path).load()
+
+    assert loaded is not None
+    assert loaded.error is not None
+    assert loaded.credit_escrow == 0.0
+    assert loaded.is_open() is True
+
+
+def test_negative_saved_at_is_reported_as_unreadable(tmp_path):
+    path = tmp_path / "session.json"
+    path.write_text(
+        '{"state": "dispensing", "credit_escrow": 5.0, "saved_at": -1.0}',
+        encoding="utf-8",
+    )
+
+    loaded = SessionStore(path).load()
+
+    assert loaded is not None
+    assert loaded.error is not None
+    assert loaded.credit_escrow == 0.0
+    assert loaded.is_open() is True
+
+
+def test_is_open_unchanged_for_open_and_cleared_snapshot_after_guard(tmp_path):
+    """The saved_at guard must not change is_open()'s semantics: a snapshot
+    with real credit in escrow is still open, and an idle/no-credit snapshot
+    is still not, once round-tripped through save/load."""
+    store = SessionStore(tmp_path / "session.json")
+
+    open_snap = SessionSnapshot(
+        state="interacting_with_user", credit_escrow=0.75, saved_at=100.0
+    )
+    store.save(open_snap)
+    assert store.load().is_open() is True
+
+    cleared_snap = SessionSnapshot(state="idle", credit_escrow=0.0, saved_at=200.0)
+    store.save(cleared_snap)
+    assert store.load().is_open() is False
+
+
+def test_future_saved_at_beyond_skew_is_reported_as_unreadable(tmp_path):
+    """A saved_at meaningfully ahead of the wall clock (clock skew, or a
+    tampered/hand-edited file) is exactly as corrupt as a missing or
+    negative one -- PAY-104 recovery must not reason about a moment that
+    hasn't happened yet. Comfortably clear the allowed skew so the branch
+    under test is actually reached, not just close to the boundary."""
+    path = tmp_path / "session.json"
+    future = time.time() + SAVED_AT_FUTURE_SKEW_SECONDS + 3600.0
+    path.write_text(
+        json.dumps({"state": "dispensing", "credit_escrow": 5.0, "saved_at": future}),
+        encoding="utf-8",
+    )
+
+    loaded = SessionStore(path).load()
+
+    assert loaded is not None
+    assert loaded.error is not None
+    assert loaded.credit_escrow == 0.0  # the fabricated 5.0 was not trusted
+    assert loaded.is_open() is True
+
+
+def test_saved_at_just_within_future_skew_is_accepted(tmp_path):
+    """The allowed skew must not be so tight that an ordinary write/read
+    round trip (or a slightly fast system clock) gets rejected -- a
+    saved_at a little ahead of "now" but still inside the tolerance is a
+    valid snapshot, not a corrupt one."""
+    path = tmp_path / "session.json"
+    within_skew = time.time() + (SAVED_AT_FUTURE_SKEW_SECONDS / 2)
+    path.write_text(
+        json.dumps(
+            {"state": "dispensing", "credit_escrow": 5.0, "saved_at": within_skew}
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = SessionStore(path).load()
+
+    assert loaded is not None
+    assert loaded.error is None
+    assert loaded.credit_escrow == 5.0
+    assert loaded.saved_at == within_skew
+
+
+def test_zero_saved_at_is_reported_as_unreadable(tmp_path):
+    """The brief's rationale lists a saved_at of zero alongside missing,
+    future, and silently-re-defaulted values as corrupt. The Unix epoch is
+    not a plausible "moment a live sale's escrow was written" on a machine
+    whose clock has ever been set, so it is rejected the same way a
+    negative value is -- not treated as a legitimate (if odd) timestamp."""
+    path = tmp_path / "session.json"
+    path.write_text(
+        '{"state": "dispensing", "credit_escrow": 5.0, "saved_at": 0.0}',
+        encoding="utf-8",
+    )
+
+    loaded = SessionStore(path).load()
+
+    assert loaded is not None
+    assert loaded.error is not None
+    assert loaded.credit_escrow == 0.0
+    assert loaded.is_open() is True

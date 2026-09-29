@@ -24,9 +24,14 @@ def _level_constants():
     }
 
 
-def test_discovers_all_29_levels():
+def test_discovers_all_31_levels():
+    """29 (spec §2) + LEVEL_TESTS_LOG (Task 13a, /tests/log) +
+    LEVEL_TESTS_SALE (Task 13b, /tests/sale's SKU picker) -- the Tests
+    level's two static sub-levels besides the parameterized per-subsystem
+    page (built at request time via Level.child, not a module constant).
+    """
     constants = _level_constants()
-    assert len(constants) == 29
+    assert len(constants) == 31
 
 
 def test_home_has_one_crumb_and_root_parent_url():

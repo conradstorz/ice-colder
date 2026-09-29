@@ -19,7 +19,9 @@ from contracts.vending_machine import EXPECTED_SUBSYSTEMS, SubsystemCapabilities
 
 
 def test_contract_version():
-    assert CONTRACT_VERSION == "0.4.0"
+    # 0.4.0 -> 0.5.0: SVC-102 (new FaultCode, seven-member
+    # PAYMENT_BLOCKING_FAULTS) plus part 3's deferred DATA-101 wording bump.
+    assert CONTRACT_VERSION == "0.6.0"
 
 
 def test_every_fault_code_has_a_table_entry():
@@ -137,7 +139,7 @@ class TestSubsystemCapabilities:
             )
 
     def test_contract_version_bumped(self):
-        assert CONTRACT_VERSION == "0.4.0"
+        assert CONTRACT_VERSION == "0.6.0"
 
     def test_expected_subsystems(self):
         assert EXPECTED_SUBSYSTEMS == ("vending", "mdb", "ice_maker")
@@ -156,10 +158,10 @@ def test_pay_104_is_a_machine_warning():
 def test_contract_version_bumped_for_new_code():
     from contracts.vending_machine import CONTRACT_VERSION
 
-    assert CONTRACT_VERSION == "0.4.0"
+    assert CONTRACT_VERSION == "0.6.0"
 
 
-def test_payment_blocking_faults_is_exactly_the_six_hazards():
+def test_payment_blocking_faults_is_exactly_the_six_hazards_plus_svc_102():
     from contracts.vending_machine import PAYMENT_BLOCKING_FAULTS
 
     assert PAYMENT_BLOCKING_FAULTS == frozenset(
@@ -170,17 +172,44 @@ def test_payment_blocking_faults_is_exactly_the_six_hazards():
             FaultCode.ENV_102,
             FaultCode.ENV_103,
             FaultCode.PWR_102,
+            FaultCode.SVC_102,
         }
     )
+    assert len(PAYMENT_BLOCKING_FAULTS) == 7
 
 
-def test_every_payment_blocking_fault_is_a_machine_scope_critical():
+def test_every_payment_blocking_fault_is_machine_scope_and_critical_except_svc_102():
     from contracts.vending_machine import PAYMENT_BLOCKING_FAULTS
 
     for code in PAYMENT_BLOCKING_FAULTS:
         spec = FAULT_TABLE[code]
         assert spec.scope is Scope.machine, code
-        assert spec.severity is Severity.critical, code
+        if code is FaultCode.SVC_102:
+            # Deliberately not `critical`: SVC-102 is an operator-held
+            # maintenance lease, not a hardware failure, and clears itself
+            # when the lease is released — the opposite of `critical`'s
+            # "never auto-clears". See contracts/vending_machine.py.
+            assert spec.severity is Severity.warning, code
+        else:
+            assert spec.severity is Severity.critical, code
+
+
+class TestSvc102:
+    def test_exists_with_expected_spec(self):
+        spec = FAULT_TABLE[FaultCode.SVC_102]
+        assert FaultCode.SVC_102.value == "SVC-102"
+        assert spec.scope is Scope.machine
+        assert spec.description == "Maintenance test in progress"
+
+    def test_blocks_payment(self):
+        from contracts.vending_machine import PAYMENT_BLOCKING_FAULTS
+
+        assert FaultCode.SVC_102 in PAYMENT_BLOCKING_FAULTS
+
+    def test_payment_blocking_faults_now_has_seven_members(self):
+        from contracts.vending_machine import PAYMENT_BLOCKING_FAULTS
+
+        assert len(PAYMENT_BLOCKING_FAULTS) == 7
 
 
 def test_pay_104_is_a_warning_and_never_blocks_payment():
@@ -197,10 +226,7 @@ def test_data_101_is_an_alert_class_machine_warning_for_the_sale_journal():
     assert FaultCode.DATA_101.value == "DATA-101"
     assert spec.severity is Severity.warning
     assert spec.scope is Scope.machine
-    assert (
-        spec.description
-        == "Sale journal in use; sales are being written to a fallback file"
-    )
+    assert spec.description == "Sale write failed; held in fallback file"
 
 
 def test_data_102_is_an_alert_class_machine_warning_for_the_event_db_reset():
@@ -214,9 +240,19 @@ def test_data_102_is_an_alert_class_machine_warning_for_the_event_db_reset():
     )
 
 
-def test_data_faults_never_block_payment_and_the_six_hazards_are_unchanged():
+def test_data_faults_never_block_payment_and_the_original_six_hazards_are_unchanged():
     from contracts.vending_machine import PAYMENT_BLOCKING_FAULTS
 
     assert FaultCode.DATA_101 not in PAYMENT_BLOCKING_FAULTS
     assert FaultCode.DATA_102 not in PAYMENT_BLOCKING_FAULTS
-    assert len(PAYMENT_BLOCKING_FAULTS) == 6
+    original_six = {
+        FaultCode.ICE_402,
+        FaultCode.WTR_103,
+        FaultCode.WTR_104,
+        FaultCode.ENV_102,
+        FaultCode.ENV_103,
+        FaultCode.PWR_102,
+    }
+    assert original_six <= PAYMENT_BLOCKING_FAULTS
+    # SVC-102 is the one new member this task adds (six -> seven).
+    assert len(PAYMENT_BLOCKING_FAULTS) == 7

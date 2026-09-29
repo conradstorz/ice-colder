@@ -1,4 +1,5 @@
 from controller.vmc import VMC
+from services.command_dispatcher import CommandDispatcher
 from services.mqtt_client import MQTTClient
 from services.health_monitor import HealthMonitor
 from services.notifier import Notifier
@@ -420,6 +421,20 @@ async def main():
     vmc.set_mqtt_client(mqtt)
     vmc.set_health_monitor(health)
     logger.info("MQTT client created and linked to VMC and health monitor")
+
+    # Subsystem command channel (system-tests design §2.1): registers its
+    # `cmd/+/ack` handler on `mqtt` right away, well before mqtt.run() (in
+    # the supervised tasks below) ever connects and subscribes. Handed to
+    # the VMC via `VMC.set_command_dispatcher` (added alongside the
+    # maintenance-hold wiring; see .superpowers/sdd/task-5-report.md for
+    # why this was split from the dispatcher's own construction), and to
+    # the routes module via its own setter (Task 13a) -- the Tests level's
+    # POST /tests/{subsystem}/{command} (Task 13b) is the first reader on
+    # that side.
+    dispatcher = CommandDispatcher(mqtt)
+    vmc.set_command_dispatcher(dispatcher)
+    routes.set_command_dispatcher(dispatcher)
+    logger.info("Command dispatcher created and registered on cmd/+/ack")
 
     # Create event recorder and wire to MQTT, VMC, and routes
     recorder = EventRecorder(db_path="data/events.db")

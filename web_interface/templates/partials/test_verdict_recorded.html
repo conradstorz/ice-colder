@@ -1,0 +1,8 @@
+{# Replaces the Pass/Fail form (outerHTML) once POST /tests/runs/{run_id}/
+   verdict succeeds -- same id so it lands exactly where the form was. #}
+<div id="verdict-{{ run_id }}" class="text-sm">
+  <span class="font-medium {{ 'text-green-600' if verdict == 'pass' else 'text-red-600' }}">
+    Verdict recorded: {{ verdict }}
+  </span>
+  {% if note %}<span class="text-gray-500"> — {{ note }}</span>{% endif %}
+</div>

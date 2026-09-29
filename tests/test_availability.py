@@ -305,3 +305,185 @@ def test_ice_maker_loss_blocks_only_ice_and_never_payment():
     assert a.payment_enabled is True
     assert a.sale_available("ice")[0] is False
     assert a.sale_available("water")[0] is True
+
+
+# --- SVC-102: maintenance lease is a safety row -----------------------------
+#
+# SVC-102 carries no bespoke code in services/availability.py. Membership in
+# contracts.vending_machine.PAYMENT_BLOCKING_FAULTS is the whole gate: raising
+# it fails the existing "no_critical_fault" permissive, which is already
+# wired with gate=Gate.safety, exactly like the six pre-existing codes. These
+# tests exercise that specific code end to end rather than relying only on
+# the generic sweep in test_each_payment_blocking_fault_disables_payment.
+
+
+def test_svc_102_disables_payment_and_publishes_exactly_once():
+    a, published = _avail()
+    _all_good(a)
+    assert published == [True]
+    a.set_active_faults([_machine_fault("SVC-102", severity="warning")])
+    assert a.payment_enabled is False
+    # exactly one new publish: [True] (startup) -> [True, False] (SVC-102 raised)
+    assert published == [True, False]
+
+
+def test_svc_102_clearing_republishes_enable_when_nothing_else_blocks():
+    a, published = _avail()
+    _all_good(a)
+    a.set_active_faults([_machine_fault("SVC-102", severity="warning")])
+    assert published == [True, False]
+    a.set_active_faults([])
+    assert a.payment_enabled is True
+    # exactly one further publish on clear: back to True
+    assert published == [True, False, True]
+
+
+def test_svc_102_clear_alone_does_not_reenable_with_second_blocking_fault():
+    a, published = _avail()
+    _all_good(a)
+    a.set_active_faults([_machine_fault("SVC-102", severity="warning")])
+    # SVC-102 alone already blocks (also covered by the "exactly once" test
+    # above; asserted again here so the next step is meaningful).
+    assert a.payment_enabled is False
+    assert published == [True, False]
+    a.set_active_faults(
+        [_machine_fault("SVC-102", severity="warning"), _machine_fault("WTR-104")]
+    )
+    assert a.payment_enabled is False
+    assert published == [True, False]  # already False; no new publish
+    # clear SVC-102 alone; WTR-104 is still active
+    a.set_active_faults([_machine_fault("WTR-104")])
+    assert a.payment_enabled is False
+    assert "no_critical_fault" in a.payment_blocking_reasons()
+    # payment_enabled was already False and stays False: no new publish
+    assert published == [True, False]
+
+
+def test_svc_102_row_is_safety_gated_when_active():
+    a, _ = _avail()
+    _all_good(a)
+    a.set_active_faults([_machine_fault("SVC-102", severity="warning")])
+    rows = {r["name"]: r for r in a.table()}
+    assert rows["no_critical_fault"]["gate"] == "safety"
+    assert rows["no_critical_fault"]["state"] == "fail"
+    assert "SVC-102" in rows["no_critical_fault"]["detail"]
+    assert "no_critical_fault" in a.payment_blocking_reasons()
+
+
+def test_payment_blocking_faults_has_seven_members_including_svc_102():
+    from contracts.vending_machine import FaultCode, PAYMENT_BLOCKING_FAULTS
+
+    assert len(PAYMENT_BLOCKING_FAULTS) == 7
+    assert FaultCode.SVC_102 in PAYMENT_BLOCKING_FAULTS
+
+
+def test_pre_existing_six_blocking_codes_are_unchanged_by_svc_102():
+    """SVC-102's presence must not alter the other six codes' behaviour.
+
+    Same expectations as test_each_payment_blocking_fault_disables_payment,
+    scoped to exactly the six codes that predate SVC-102 (i.e. every member
+    of PAYMENT_BLOCKING_FAULTS except SVC-102).
+    """
+    from contracts.vending_machine import FaultCode, PAYMENT_BLOCKING_FAULTS
+
+    pre_existing = PAYMENT_BLOCKING_FAULTS - {FaultCode.SVC_102}
+    assert len(pre_existing) == 6
+
+    for fault in pre_existing:
+        a, _ = _avail()
+        _all_good(a)
+        assert a.payment_enabled is True
+        a.set_active_faults([_machine_fault(fault.value)])
+        assert a.payment_enabled is False, fault
+        assert a.payment_blocking_reasons() == ["no_critical_fault"]
+        a.set_active_faults([])
+        assert a.payment_enabled is True, fault
+
+
+# --- test_sale_sellable: SVC-102 is exempt for a TEST sale, and ONLY -------
+#
+# whole-branch-fix-2: a maintenance test sale's own SVC-102 fault must not
+# block it, but every other payment-blocking code must still stop it exactly
+# like a real sale, and payment_enabled must never be affected either way.
+# Production path reached: services/availability.py's Availability.
+# test_sale_sellable / product_sellable(ignore_faults=...) / sale_available
+# (ignore_faults=...) -- the same methods controller/vmc.py's
+# VMC.select_product calls when self._sale_is_test is True.
+
+
+def test_test_sale_sellable_ignores_svc_102_alone():
+    a, _ = _avail()
+    _all_good(a)
+    a.set_active_faults([_machine_fault("SVC-102", severity="warning")])
+    # payment_enabled reflects the real, unexempted row: still inhibited.
+    assert a.payment_enabled is False
+    assert a.payment_blocking_reasons() == ["no_critical_fault"]
+
+    product = Product(sku="ICE-1", kind="ice")
+    ok, failing = a.product_sellable(product)
+    assert ok is False
+    assert "no_critical_fault" in failing
+
+    ok, failing = a.test_sale_sellable(product)
+    assert ok is True
+    assert failing == []
+
+
+def test_test_sale_sellable_still_blocked_by_a_genuinely_unsafe_fault():
+    """SVC-102 plus a real hazard: the exemption must not paper over the
+    hazard just because a lease also happens to be held."""
+    a, _ = _avail()
+    _all_good(a)
+    a.set_active_faults(
+        [
+            _machine_fault("SVC-102", severity="warning"),
+            _machine_fault("WTR-104"),
+        ]
+    )
+    assert a.payment_enabled is False
+
+    product = Product(sku="WATER-1", kind="water")
+    ok, failing = a.test_sale_sellable(product)
+    assert ok is False
+    assert "no_critical_fault" in failing
+
+
+def test_test_sale_sellable_each_non_svc_102_blocking_fault_still_blocks_alone():
+    """Every OTHER payment-blocking code, on its own (no SVC-102 at all),
+    still blocks a test sale -- the exemption is scoped to SVC-102, not to
+    "any sale requested through test_sale_sellable"."""
+    from contracts.vending_machine import FaultCode, PAYMENT_BLOCKING_FAULTS
+
+    pre_existing = PAYMENT_BLOCKING_FAULTS - {FaultCode.SVC_102}
+    assert len(pre_existing) > 0
+    product = Product(sku="ICE-1", kind="ice")
+    for fault in pre_existing:
+        a, _ = _avail()
+        _all_good(a)
+        a.set_active_faults([_machine_fault(fault.value)])
+        ok, failing = a.test_sale_sellable(product)
+        assert ok is False, fault
+        assert "no_critical_fault" in failing, fault
+
+
+def test_svc_102_exemption_does_not_leak_into_ignoreless_calls():
+    """sale_available/product_sellable called with the default empty
+    ignore_faults (every existing caller, and product_sellable's own
+    production use for a non-test sale) are completely unaffected by
+    test_sale_sellable existing at all."""
+    a, _ = _avail()
+    _all_good(a)
+    a.set_active_faults([_machine_fault("SVC-102", severity="warning")])
+    assert a.sale_available("ice") == (False, ["no_critical_fault"])
+    ok, failing = a.product_sellable(Product(sku="ICE-1", kind="ice"))
+    assert ok is False
+    assert "no_critical_fault" in failing
+
+
+def test_no_active_faults_ignore_faults_is_a_no_op():
+    """ignore_faults with nothing active to ignore changes nothing."""
+    a, _ = _avail()
+    _all_good(a)
+    product = Product(sku="ICE-1", kind="ice")
+    assert a.test_sale_sellable(product) == (True, [])
+    assert a.product_sellable(product) == (True, [])

@@ -4,10 +4,68 @@
 <div class="space-y-4">
   <h1 class="text-hero font-semibold text-gray-900">Tests</h1>
 
-  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-6 text-center">
-    <p class="text-base text-gray-600">
-      Subsystem tests will arrive in a later release.
-    </p>
+  {# The maintenance lease banner (system-tests design §2.2). Entering
+     this level never takes the lease (context.vmc_instance.maintenance_hold
+     is read-only here) -- this only ever reflects a lease someone already
+     holds. The End/Take over buttons post to Task 13b's routes; this
+     level renders no form or button that itself takes or releases the
+     lease. #}
+  {% if hold %}
+  <div id="tests-hold"
+       class="bg-amber-50 rounded-xl border border-amber-200 shadow-sm p-4 flex flex-wrap items-center gap-3">
+    <span class="text-sm text-amber-800">
+      Maintenance lease held by <span class="font-mono">{{ hold.holder_user_id }}</span>
+    </span>
+    {% if held_by_me %}
+    <button hx-post="/tests/end" hx-target="#tests-hold" hx-swap="outerHTML"
+            class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">
+      End
+    </button>
+    {% else %}
+    <button hx-post="/tests/takeover" hx-target="#tests-hold" hx-swap="outerHTML"
+            class="touch-target px-4 rounded-md border border-amber-300 text-sm font-medium text-amber-800 hover:bg-amber-100">
+      Take over
+    </button>
+    {% endif %}
   </div>
+  {% endif %}
+
+  <div class="space-y-2">
+    {% for card in cards %}
+    <a href="/tests/{{ card.name }}"
+       class="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-gray-200 shadow-sm p-4 hover:bg-slate-50 touch-target">
+      <span class="w-2.5 h-2.5 rounded-full flex-shrink-0
+        {% if card.row.stale %}bg-red-500{% elif card.row.alive %}bg-green-500{% else %}bg-gray-300{% endif %}"></span>
+      <span class="font-mono text-sm text-gray-900">{{ card.name }}</span>
+      <span class="text-xs text-gray-400 font-mono">{{ card.row.firmware or "—" }}</span>
+      <span class="text-xs
+        {% if card.match is none %}text-gray-400{% elif card.match %}text-green-600{% else %}text-red-600{% endif %}">
+        {% if card.match is none %}Contract unknown{% elif card.match %}Contract OK{% else %}Contract mismatch{% endif %}
+      </span>
+      <span class="text-xs text-gray-500 ml-auto">
+        {{ card.testable_count }} testable command{{ "s" if card.testable_count != 1 else "" }}
+      </span>
+    </a>
+    {% endfor %}
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-touch">
+    <button hx-post="/tests/run-all" hx-target="#run-all-result" hx-swap="innerHTML"
+            class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700 w-full">
+      Run all
+    </button>
+    <a href="/tests/sale"
+       class="flex flex-col items-start gap-2 rounded-xl border p-4 bg-white border-gray-200 shadow-sm hover:bg-slate-50 touch-target">
+      <div class="text-tile-title font-semibold text-gray-900">Simulated sale</div>
+      <div class="text-sm text-gray-500">Run a full sale through the FSM without recording it</div>
+    </a>
+    <a href="/tests/log"
+       class="flex flex-col items-start gap-2 rounded-xl border p-4 bg-white border-gray-200 shadow-sm hover:bg-slate-50 touch-target">
+      <div class="text-tile-title font-semibold text-gray-900">Test log</div>
+      <div class="text-sm text-gray-500">Last 100 test runs</div>
+    </a>
+  </div>
+  <div id="run-all-result"></div>
+
 </div>
 {% endblock %}

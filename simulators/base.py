@@ -16,16 +16,18 @@ import socket
 import sys
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections import OrderedDict
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Union
 
 import aiomqtt
 from loguru import logger
 from pydantic import BaseModel, ValidationError
 
 from config.config_model import ConfigModel
+from contracts.common import STANDARD_COMMANDS, CommandAck, SubsystemCommand
 from contracts.vending_machine import (
     CONTRACT_VERSION as VENDING_CONTRACT_VERSION,
     SubsystemCapabilities,
@@ -43,6 +45,11 @@ RECOVERY_RANGES: dict[str, tuple[float, float]] = {
 FAULT_LOOP_INTERVAL = 30.0  # seconds between fault probability rolls
 RECOVERY_RETRY_SECONDS = 30.0  # delay before retrying a failed recovery
 
+# §1.1: every subsystem keeps the last 32 acked request_ids so a dispatcher
+# retry (same request_id) replays the cached ack instead of repeating the
+# handler's side effect.
+IDEMPOTENCY_CACHE_SIZE = 32
+
 
 @dataclass
 class FaultDef:
@@ -53,6 +60,44 @@ class FaultDef:
     on_recover: Callable  # async fn(client) — restore normal state
     message: str  # human-readable alert text
     severity: str = "warning"  # "warning" | "critical"
+
+
+@dataclass
+class CommandOutcome:
+    """What a registered command handler returns to shape its ack.
+
+    Returning ``None`` from a handler is shorthand for ``CommandOutcome()``
+    (status "ok", no result); returning a plain ``dict`` is shorthand for
+    ``CommandOutcome(result=that_dict)``. Return a ``CommandOutcome``
+    directly when the handler needs a non-"ok" status for an expected,
+    non-exceptional outcome (e.g. a lockout window answering "rejected") —
+    a handler that *raises* is already caught by the command loop and
+    acked "failed" with the exception text, so there is no need to catch
+    your own exceptions just to report a failure.
+
+    ``phase`` (completion-table amendment, 2026-09-29) defaults to
+    "completed" — the ack this shapes IS the command's outcome, true for
+    every immediate handler and unchanged from before this field existed.
+    A long-running handler (``_handle_dispense``, ``_handle_water_valve``,
+    ``_handle_power_cycle``) that has only just STARTED the real work
+    returns ``phase="accepted"`` instead, and reports completion later —
+    see ``ESP32Simulator.publish_completion_ack`` and each contract's
+    completion table.
+    """
+
+    status: Literal["ok", "rejected", "failed", "unsupported"] = "ok"
+    detail: str | None = None
+    result: dict | None = None
+    phase: Literal["accepted", "completed"] = "completed"
+
+
+# The registration-hook contract Tasks 7-9 build on: a command handler is an
+# async callable taking the connected client and the validated inbound
+# command, returning None / a plain result dict / or a CommandOutcome.
+CommandHandler = Callable[
+    [aiomqtt.Client, SubsystemCommand],
+    Awaitable[Union[CommandOutcome, dict, None]],
+]
 
 
 class ESP32Simulator(ABC):
@@ -94,6 +139,17 @@ class ESP32Simulator(ABC):
         self._fault_defs: list[FaultDef] = []
         self._fault_state: dict[str, dict] = {}
         self._recovery_tasks: set[asyncio.Task] = set()
+        self._commands: dict[str, CommandHandler] = {}
+        self._acked: OrderedDict[str, CommandAck] = OrderedDict()
+        # Long-running command handlers (dispense, water_valve, power_cycle)
+        # ack "accepted" and hand their real work to _spawn_background
+        # instead of awaiting it inline — this set keeps those tasks alive
+        # (a bare asyncio.create_task result with nothing holding a
+        # reference is eligible for GC mid-flight) until they finish.
+        self._background_tasks: set[asyncio.Task] = set()
+        self.register_command("ping", self._handle_ping)
+        self.register_command("self_test", self._handle_self_test)
+        self.register_command("force_report", self._handle_force_report)
 
     @property
     def topic_prefix(self) -> str:
@@ -106,15 +162,19 @@ class ESP32Simulator(ABC):
             "uptime_seconds": uptime,
         }
 
+    async def _publish_heartbeat(self, client: aiomqtt.Client) -> None:
+        """Publish one heartbeat immediately (shared by the loop and force_report)."""
+        topic = f"{self.topic_prefix}/heartbeat/{self.subsystem_name}"
+        payload = self._build_heartbeat()
+        await client.publish(topic, json.dumps(payload), qos=1)
+        logger.debug(
+            f"[{self.subsystem_name}] heartbeat: uptime={payload['uptime_seconds']}s"
+        )
+
     async def _heartbeat_loop(self, client: aiomqtt.Client):
         """Publish heartbeat every HEARTBEAT_INTERVAL seconds."""
-        topic = f"{self.topic_prefix}/heartbeat/{self.subsystem_name}"
         while True:
-            payload = self._build_heartbeat()
-            await client.publish(topic, json.dumps(payload), qos=1)
-            logger.debug(
-                f"[{self.subsystem_name}] heartbeat: uptime={payload['uptime_seconds']}s"
-            )
+            await self._publish_heartbeat(client)
             await asyncio.sleep(self.HEARTBEAT_INTERVAL)
 
     def _build_will(self) -> aiomqtt.Will:
@@ -142,7 +202,16 @@ class ESP32Simulator(ABC):
             return None
 
     def build_capabilities(self) -> SubsystemCapabilities:
-        """Retained self-description; subclasses override to add channels etc."""
+        """Retained self-description; subclasses override to add channels etc.
+
+        Copilot review (PR 22, id=4128088689): the three standard handlers
+        (`ping`, `self_test`, `force_report`) are registered on every
+        subsystem in `__init__` above, not just the ones that happen to
+        list them in `SUPPORTED_COMMANDS` -- so they are always advertised
+        here too, never left for each subclass to remember to add. A
+        subclass's `SUPPORTED_COMMANDS` lists only its own actuator/control
+        commands (`dispense`, `water_valve`, `payment/enable`, ...).
+        """
         return SubsystemCapabilities(
             subsystem=self.subsystem_name,
             firmware=BUILD_INFO.commit_short,
@@ -151,7 +220,7 @@ class ESP32Simulator(ABC):
             model=self.MODEL,
             hardware_id=self.fake_hardware_id(),
             ip=self.container_ip(),
-            commands=list(self.SUPPORTED_COMMANDS),
+            commands=[*STANDARD_COMMANDS, *self.SUPPORTED_COMMANDS],
         )
 
     async def _publish_capabilities(self, client: aiomqtt.Client) -> None:
@@ -380,6 +449,316 @@ class ESP32Simulator(ABC):
             await self._check_recoveries(client)
             # Roll for new faults
             await self._try_roll_faults(client)
+
+    # --- Shared command loop (§1.1, §1.2) -----------------------------------
+    #
+    # Generic command channel: subscribe to cmd/<subsystem>, dispatch to a
+    # registered handler, ack on cmd/<subsystem>/ack. `ping`, `self_test`
+    # and `force_report` are registered as ordinary handlers in __init__ —
+    # there is nothing special about a "built-in" command versus one a
+    # subclass adds with `register_command`; they share one dispatch path,
+    # one idempotency cache, and one exception-to-"failed" translation.
+
+    def register_command(self, name: str, handler: CommandHandler) -> None:
+        """Register a handler for command `name` on the shared command loop.
+
+        Call from a subclass's __init__ (after `super().__init__()`) to add
+        a command beyond the built-in ping/self_test/force_report — this is
+        the only extension point subclasses need; `simulators/base.py`
+        itself never has to change for a new command.
+
+        `handler` is an async callable ``(client, cmd) -> CommandOutcome |
+        dict | None``:
+          - `None` acks "ok" with no result;
+          - a plain `dict` acks "ok" with that dict as the ack's `result`;
+          - a `CommandOutcome` gives full control (a non-"ok" status such as
+            "rejected", plus optional `detail`/`result`).
+        A handler that raises is caught by the command loop and acked
+        "failed" with `str(exception)` as `detail` — handlers never need to
+        catch their own exceptions just to report a failure.
+
+        Registering the same `name` twice replaces the earlier handler
+        (last registration wins); nothing stops a subclass from overriding
+        a built-in this way, though none currently do.
+        """
+        self._commands[name] = handler
+
+    async def _handle_ping(self, client: aiomqtt.Client, cmd: SubsystemCommand) -> None:
+        """§1.2: round trip only — the ack itself is the proof."""
+        return None
+
+    async def _handle_self_test(
+        self, client: aiomqtt.Client, cmd: SubsystemCommand
+    ) -> dict:
+        """§1.2: one check per registered FaultDef, failing the injected one.
+
+        Reads `_active_fault_names` fresh on every call, so the result
+        always reflects the fault state *at the moment of the call* — never
+        a snapshot taken when the fault was registered or the simulator
+        started.
+        """
+        active = self._active_fault_names
+        checks = [
+            {
+                "name": fault.name,
+                "pass": fault.name not in active,
+                "detail": fault.message if fault.name in active else "ok",
+            }
+            for fault in self._fault_defs
+        ]
+        return {"checks": checks}
+
+    async def _force_report_extra(self, client: aiomqtt.Client) -> None:
+        """Override to republish this subsystem's own sensors/channels.
+
+        Part of the `force_report` hook contract (§1.2): the base handler
+        republishes the heartbeat itself, then awaits this. Default is a
+        no-op — a subsystem with no telemetry of its own needs nothing
+        here. A subclass overrides this method directly (it is not a
+        `register_command` registration) since it augments the base's own
+        `force_report` handler rather than replacing it.
+        """
+        return None
+
+    async def _handle_force_report(
+        self, client: aiomqtt.Client, cmd: SubsystemCommand
+    ) -> None:
+        """§1.2: republish the heartbeat, then the subclass's own telemetry."""
+        await self._publish_heartbeat(client)
+        await self._force_report_extra(client)
+        return None
+
+    def _build_ack(
+        self, cmd: SubsystemCommand, outcome: CommandOutcome | dict | None
+    ) -> CommandAck:
+        """Turn a handler's return value into a CommandAck. See CommandOutcome."""
+        if outcome is None:
+            return CommandAck(
+                request_id=cmd.request_id, command=cmd.command, status="ok"
+            )
+        if isinstance(outcome, CommandOutcome):
+            return CommandAck(
+                request_id=cmd.request_id,
+                command=cmd.command,
+                status=outcome.status,
+                detail=outcome.detail,
+                result=outcome.result,
+                phase=outcome.phase,
+            )
+        if isinstance(outcome, dict):
+            return CommandAck(
+                request_id=cmd.request_id,
+                command=cmd.command,
+                status="ok",
+                result=outcome,
+            )
+        raise TypeError(
+            f"command handler for {cmd.command!r} returned {type(outcome)!r}; "
+            "expected CommandOutcome, dict, or None"
+        )
+
+    async def _handle_command(
+        self, client: aiomqtt.Client, cmd: SubsystemCommand
+    ) -> None:
+        """Dispatch one validated command: idempotency cache, handler, ack.
+
+        A duplicate `request_id` (still in the last IDEMPOTENCY_CACHE_SIZE
+        acked) republishes the cached ack verbatim and returns *without*
+        looking up or calling the handler — the side effect runs at most
+        once per request_id. A handler exception is caught here and turned
+        into a "failed" ack instead of propagating (which would otherwise
+        silently kill this loop and read to the dispatcher as a 10s
+        timeout rather than an immediate, informative failure).
+        """
+        ack_topic = f"cmd/{self.subsystem_name}/ack"
+
+        cached = self._acked.get(cmd.request_id)
+        if cached is not None:
+            await self.publish(client, ack_topic, cached)
+            logger.info(
+                f"[{self.subsystem_name}] Duplicate request_id {cmd.request_id} "
+                f"for {cmd.command}: replaying cached ack ({cached.status})"
+            )
+            return
+
+        handler = self._commands.get(cmd.command)
+        if handler is None:
+            ack = CommandAck(
+                request_id=cmd.request_id, command=cmd.command, status="unsupported"
+            )
+        else:
+            try:
+                outcome = await handler(client, cmd)
+                ack = self._build_ack(cmd, outcome)
+            except Exception as e:
+                logger.error(
+                    f"[{self.subsystem_name}] Command {cmd.command} "
+                    f"({cmd.request_id}) raised: {e}"
+                )
+                ack = CommandAck(
+                    request_id=cmd.request_id,
+                    command=cmd.command,
+                    status="failed",
+                    detail=str(e),
+                )
+
+        self._acked[cmd.request_id] = ack
+        if len(self._acked) > IDEMPOTENCY_CACHE_SIZE:
+            self._acked.popitem(last=False)  # evict oldest, keep most recent N
+        await self.publish(client, ack_topic, ack)
+        logger.info(
+            f"[{self.subsystem_name}] Command {cmd.command} ({cmd.request_id}): "
+            f"{ack.status}"
+        )
+
+    # --- Long-running commands: accept now, complete later (2026-09-29) ----
+    #
+    # A handler for dispense/water_valve/power_cycle returns a
+    # CommandOutcome(..., phase="accepted") *without* awaiting the real
+    # actuation inline, and instead hands it to _spawn_background — exactly
+    # the pattern `_handle_power_cycle` already used before this amendment
+    # existed. _handle_command above acks that "accepted" outcome completely
+    # normally (no special-casing needed there): the only new behaviour is
+    # what happens once the background work finishes.
+
+    def _spawn_background(self, coro) -> asyncio.Task:
+        """Run *coro* as a tracked background task.
+
+        A bare `asyncio.create_task(coro)` with nothing holding a reference
+        to the returned Task is eligible for garbage collection mid-flight,
+        and any exception it raises is silently swallowed forever (nothing
+        ever awaits it to surface one). `self._background_tasks` keeps a
+        reference until the task finishes; `_on_background_task_done` logs
+        an exception instead of losing it.
+        """
+        task = asyncio.get_running_loop().create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._on_background_task_done)
+        return task
+
+    def _on_background_task_done(self, task: asyncio.Task) -> None:
+        self._background_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(
+                f"[{self.subsystem_name}] Background command task failed: {exc!r}"
+            )
+
+    async def publish_completion_ack(
+        self,
+        client: aiomqtt.Client,
+        cmd: SubsystemCommand,
+        outcome: CommandOutcome | dict | None = None,
+    ) -> CommandAck:
+        """Publish the SECOND, phase="completed" ack a long-running
+        command's background work sends once it actually finishes
+        (`water_valve` and `power_cycle` both use this as their completion
+        signal — `dispense` does not: its completion is the existing
+        terminal `hardware/dispenser` report, see
+        `VendingMachineSimulator._dispense_slot`).
+
+        Re-caches the ack under `cmd.request_id`, overwriting the
+        "accepted" entry that was cached when `_handle_command` first acked
+        this command, so a very late duplicate (an ack-timeout retry whose
+        original "accepted" ack was itself lost in transit, arriving after
+        the command has since finished) replays the real, final outcome
+        instead of "accepted" forever — the idempotency cache always holds
+        the *latest* truth about a request_id, not just the first.
+
+        Forces `phase="completed"` regardless of what *outcome* carries:
+        callers pass a plain result dict or a bare `CommandOutcome()` here
+        and never need to remember the phase themselves.
+        """
+        ack = self._build_ack(cmd, outcome)
+        if ack.phase != "completed":
+            ack = ack.model_copy(update={"phase": "completed"})
+        self._acked[cmd.request_id] = ack
+        if len(self._acked) > IDEMPOTENCY_CACHE_SIZE:
+            self._acked.popitem(last=False)
+        ack_topic = f"cmd/{self.subsystem_name}/ack"
+        await self.publish(client, ack_topic, ack)
+        logger.info(
+            f"[{self.subsystem_name}] Command {cmd.command} ({cmd.request_id}): "
+            f"{ack.status} (completed)"
+        )
+        return ack
+
+    async def _handle_invalid_command(
+        self, client: aiomqtt.Client, data, error: ValidationError
+    ) -> None:
+        """A raw payload that failed `SubsystemCommand.model_validate` — most
+        commonly an out-of-range param such as `water_valve`'s `seconds` or
+        `power_cycle`'s `dwell_seconds` (`COMMAND_PARAM_VALIDATORS`, enforced
+        by the model's own `model_validator` *before* an instance exists).
+
+        Previously this was a silent drop: the dispatcher would wait out the
+        full `ACK_TIMEOUT_SECONDS`, retry, wait again, then raise
+        `CommandTimeout` — where the operator should have seen an immediate
+        "rejected" with the validation message (spec §6, §1.1).
+
+        Publishing that ack requires a `request_id` to correlate it to —
+        which lives only in the raw, not-yet-validated payload. When the
+        payload gives us a usable one (a non-empty string under
+        `"request_id"`), we ack "rejected" with the validation message as
+        `detail`, using the payload's own `"command"` value when present
+        (falling back to `"unknown"` when it is missing or not a string —
+        there is no other reasonable label). When there is nothing usable
+        to correlate to — unparseable JSON reaching here as a non-dict,
+        no `"request_id"` key, or a `"request_id"` that is not a non-empty
+        string — there is no ack to address, so this falls back to the
+        original log-and-drop.
+
+        Deliberately *not* written into `self._acked`: that cache exists so
+        a dispatcher retry (same `request_id`) replays a handler's *side
+        effect* instead of repeating it. A validation rejection never ran a
+        handler and has no side effect to protect against — it is a pure
+        function of the payload, so a retry with the same `request_id` just
+        re-validates (cheap) and gets the same "rejected" ack again. Caching
+        it would only add bookkeeping (and cross-command `request_id` cache
+        pressure) for no behavioural benefit.
+        """
+        logger.warning(f"[{self.subsystem_name}] Invalid command dropped: {error}")
+        request_id = data.get("request_id") if isinstance(data, dict) else None
+        if not isinstance(request_id, str) or not request_id:
+            return
+        command = data.get("command") if isinstance(data, dict) else None
+        if not isinstance(command, str) or not command:
+            command = "unknown"
+        ack = CommandAck(
+            request_id=request_id,
+            command=command,
+            status="rejected",
+            detail=str(error),
+        )
+        await self.publish(client, f"cmd/{self.subsystem_name}/ack", ack)
+        logger.info(
+            f"[{self.subsystem_name}] Command {command} ({request_id}): "
+            "rejected (validation)"
+        )
+
+    async def _command_loop(self, client: aiomqtt.Client) -> None:
+        """Subscribe to cmd/<subsystem> and dispatch each command as it arrives.
+
+        Call this from a subclass's `run_simulation` (inside its
+        TaskGroup) — the same way the ice-maker simulator wires its own
+        command loop today. It is not started automatically from `run()`:
+        a subclass registers its own commands via `register_command`
+        during `__init__`, and not every simulator has a command channel
+        (yet), so `run()` staying agnostic keeps this additive.
+        """
+        topic = f"{self.topic_prefix}/cmd/{self.subsystem_name}"
+        queue = await self.subscribe(client, topic)
+        logger.info(f"[{self.subsystem_name}] Command loop started: {topic}")
+        while True:
+            _, data = await queue.get()
+            try:
+                cmd = SubsystemCommand.model_validate(data)
+            except ValidationError as e:
+                await self._handle_invalid_command(client, data, e)
+                continue
+            await self._handle_command(client, cmd)
 
     def ha_discovery_entities(self) -> list[dict]:
         """Override in subclasses to return HA discovery entity definitions.

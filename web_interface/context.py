@@ -60,6 +60,20 @@ def set_event_recorder(recorder):
     event_recorder = recorder
 
 
+# The Tests level's routes-side handle on the subsystem command channel
+# (system-tests design §2.1). main.py already builds a CommandDispatcher and
+# hands it to the VMC via VMC.set_command_dispatcher; this is the matching
+# setter on the routes side (Task 13a closes the gap main.py's own comment
+# next to that call names: "The web routes get their own setter in a later
+# task"). Task 13b's POST /tests/{subsystem}/{command} is the first reader.
+command_dispatcher = None
+
+
+def set_command_dispatcher(dispatcher) -> None:
+    global command_dispatcher
+    command_dispatcher = dispatcher
+
+
 availability = None
 
 

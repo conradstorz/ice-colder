@@ -440,14 +440,19 @@ class TestDefrostStuckPerValve:
 
 
 class TestAckedBounded:
+    """`_acked` and its size cap are now the base class's (Task 6):
+    `IDEMPOTENCY_CACHE_SIZE` (32), not the ice maker's former private
+    `_ACKED_MAX` (256, deleted along with `_acked` itself)."""
+
     @pytest.mark.asyncio
     async def test_acked_stays_bounded(self):
         from contracts.ice_maker_monitor import MonitorCommand
+        from simulators.base import IDEMPOTENCY_CACHE_SIZE
 
         sim = IceMakerSimulator(machine_id="vmc-test")
         sim.publish = AsyncMock()
         client = AsyncMock()
-        limit = getattr(sim, "_ACKED_MAX", 256)
+        limit = IDEMPOTENCY_CACHE_SIZE
         for i in range(limit + 50):
             cmd = MonitorCommand(
                 request_id=f"req-{i:08d}",
@@ -459,11 +464,12 @@ class TestAckedBounded:
     @pytest.mark.asyncio
     async def test_acked_keeps_most_recent_entries(self):
         from contracts.ice_maker_monitor import MonitorCommand
+        from simulators.base import IDEMPOTENCY_CACHE_SIZE
 
         sim = IceMakerSimulator(machine_id="vmc-test")
         sim.publish = AsyncMock()
         client = AsyncMock()
-        limit = getattr(sim, "_ACKED_MAX", 256)
+        limit = IDEMPOTENCY_CACHE_SIZE
         total = limit + 50
         for i in range(total):
             cmd = MonitorCommand(
@@ -491,7 +497,18 @@ class TestMonitorContract:
         assert "hot_gas_valve_1" in ids
         assert "compressor_current" in ids
         assert "bin_level" in ids
-        assert caps.commands == ["power_cycle", "force_report", "set_interval"]
+        # Copilot review (PR 22, id=4128088689): ping/self_test were
+        # missing from this hand-written list even though both handlers
+        # are registered for every subsystem -- now prepended, and
+        # force_report comes along with them instead of being listed
+        # twice.
+        assert caps.commands == [
+            "ping",
+            "self_test",
+            "force_report",
+            "power_cycle",
+            "set_interval",
+        ]
 
     @pytest.mark.asyncio
     async def test_power_cycle_ok_then_lockout(self):
@@ -634,7 +651,147 @@ class TestIceMakerCapabilitiesIdentity:
 
         caps = IceMakerSimulator(machine_id="vmc-t").build_capabilities()
         assert isinstance(caps, MonitorCapabilities)
-        assert caps.contract_version == CONTRACT_VERSION == "1.1.0"
+        assert caps.contract_version == CONTRACT_VERSION == "1.3.0"
         assert caps.firmware == BUILD_INFO.commit_short
         assert caps.hardware_id is not None
-        assert caps.commands == ["power_cycle", "force_report", "set_interval"]
+        assert caps.commands == [
+            "ping",
+            "self_test",
+            "force_report",
+            "power_cycle",
+            "set_interval",
+        ]
+
+
+class TestStandardCommandsFromSharedLoop:
+    """ping/self_test/force_report come free from simulators.base (Task 6) and
+    did not exist as distinct ice-maker behaviour before Task 8 — the old
+    `_handle_command`'s `else` branch treated *any* unrecognised command
+    (including a hypothetical "ping") as `force_report`, so these tests are
+    written to fail against that fallback, not just to fail on import."""
+
+    @pytest.mark.asyncio
+    async def test_ping_acks_ok_with_no_snapshot_side_effect(self):
+        """A real ping is a round trip only — no sensor snapshot published.
+
+        Against the pre-Task-8 ice maker, an unrecognised command such as
+        "ping" fell into the `else` branch and was treated as force_report,
+        which *does* publish the 12-topic sensor/telemetry snapshot — so
+        this assertion distinguishes a genuine ping from that fallback.
+        """
+        from contracts.ice_maker_monitor import MonitorCommand
+
+        sim = IceMakerSimulator(machine_id="vmc-test")
+        published = []
+
+        async def capture(client, suffix, payload, retain=False, qos=1):
+            published.append((suffix, payload))
+
+        sim.publish = capture
+        client = AsyncMock()
+        await sim._handle_command(
+            client, MonitorCommand(request_id="req-ping00001", command="ping")
+        )
+        suffixes = [s for s, _ in published]
+        assert suffixes[-1] == "cmd/ice_maker/ack"
+        assert not any(s.startswith("sensors/temp/") for s in suffixes)
+        assert not any(s.startswith("telemetry/ice_maker/") for s in suffixes)
+        ack = published[-1][1]
+        assert ack.status == "ok"
+        assert ack.result is None
+
+    @pytest.mark.asyncio
+    async def test_self_test_result_has_checks_for_all_five_faults(self):
+        """Against the pre-Task-8 fallback, `ack.result` is always None
+        (the old `else` branch's CommandAck never set `result`), so
+        `ack.result is not None` alone already fails there."""
+        from contracts.ice_maker_monitor import MonitorCommand
+
+        sim = IceMakerSimulator(machine_id="vmc-test")
+        sim.publish = AsyncMock()
+        client = AsyncMock()
+        await sim._handle_command(
+            client, MonitorCommand(request_id="req-selftest01", command="self_test")
+        )
+        ack = sim.publish.call_args_list[-1].args[2]
+        assert ack.result is not None
+        checks = ack.result["checks"]
+        assert {c["name"] for c in checks} == {
+            "compressor_overtemp",
+            "low_refrigerant",
+            "water_inlet_blocked",
+            "defrost_stuck_1",
+            "defrost_stuck_2",
+        }
+        assert all(c["pass"] for c in checks)
+
+    @pytest.mark.asyncio
+    async def test_self_test_fails_exactly_the_injected_fault(self):
+        """Guards against a stale snapshot: activate a fault mid-flight and
+        confirm the check that fails is the one just activated, not a fixed
+        or empty set (the vacuous-fixture risk the brief warns about)."""
+        from contracts.ice_maker_monitor import MonitorCommand
+
+        sim = IceMakerSimulator(machine_id="vmc-test")
+        sim._fault_state["low_refrigerant"]["active"] = True
+        sim.publish = AsyncMock()
+        client = AsyncMock()
+        await sim._handle_command(
+            client, MonitorCommand(request_id="req-selftest02", command="self_test")
+        )
+        ack = sim.publish.call_args_list[-1].args[2]
+        failing = {c["name"] for c in ack.result["checks"] if not c["pass"]}
+        assert failing == {"low_refrigerant"}
+
+    @pytest.mark.asyncio
+    async def test_force_report_now_also_republishes_the_heartbeat(self):
+        """New in the base class's force_report (Task 6): the heartbeat is
+        republished via `client.publish` directly, ahead of the subclass's
+        own telemetry. The pre-Task-8 ice maker's `_handle_command` never
+        touched `client.publish` on a force_report — only `self.publish`
+        (for the sensor/telemetry snapshot and the ack) — so this assertion
+        is false against the old implementation."""
+        from contracts.ice_maker_monitor import MonitorCommand
+
+        sim = IceMakerSimulator(machine_id="vmc-test")
+        sim.publish = AsyncMock()
+        client = AsyncMock()
+        await sim._handle_command(
+            client,
+            MonitorCommand(request_id="req-forcerep01", command="force_report"),
+        )
+        heartbeat_calls = [
+            c
+            for c in client.publish.call_args_list
+            if "heartbeat/ice_maker" in c.args[0]
+        ]
+        assert len(heartbeat_calls) == 1
+
+
+class TestPowerCycleIdempotency:
+    @pytest.mark.asyncio
+    async def test_duplicate_request_id_does_not_power_cycle_twice(self):
+        """Counts the observable side effect (the commanded power_off event
+        appended to `_pending_events`) rather than just comparing two acks:
+        three identical requests must produce that side effect exactly
+        once."""
+        from contracts.ice_maker_monitor import MonitorCommand
+
+        sim = IceMakerSimulator(machine_id="vmc-test")
+        sim.publish = AsyncMock()
+        client = AsyncMock()
+        cmd = MonitorCommand(
+            request_id="req-duppc0001",
+            command="power_cycle",
+            params={"dwell_seconds": 5},
+        )
+        await sim._handle_command(client, cmd)
+        await sim._handle_command(client, cmd)
+        await sim._handle_command(client, cmd)
+
+        power_off_events = [
+            e
+            for e in sim._pending_events
+            if e.event == "power_off" and e.detail == "commanded power_cycle"
+        ]
+        assert len(power_off_events) == 1

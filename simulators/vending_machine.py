@@ -20,8 +20,9 @@ from datetime import datetime
 import aiomqtt
 from loguru import logger
 
+from contracts.common import SubsystemCommand
 from contracts.vending_machine import DispenserOutcome
-from simulators.base import ESP32Simulator, FaultDef
+from simulators.base import CommandOutcome, ESP32Simulator, FaultDef
 from services.mqtt_messages import (
     ButtonPress,
     DispenserStatus,
@@ -66,12 +67,14 @@ class VendingMachineSimulator(ESP32Simulator):
     IDLE_MIN = 30.0  # min seconds between customers
     IDLE_MAX = 90.0  # max seconds between customers
     DISPENSE_TIMEOUT = 60.0  # seconds to wait for dispense command
-    SUPPORTED_COMMANDS = ["dispense", "payment/enable"]
+    SUPPORTED_COMMANDS = ["dispense", "water_valve", "payment/enable"]
     BRAND = "ice-colder"
     MODEL = "vending-sim"
 
     def __init__(self, **kwargs):
         super().__init__(subsystem_name="vending", **kwargs)
+        self.register_command("dispense", self._handle_dispense)
+        self.register_command("water_valve", self._handle_water_valve)
         self._apply_products(self.config.products)
         logger.info(f"[vending] {self.num_buttons} products: {self._slot_types}")
         self._dispense_command: asyncio.Queue = asyncio.Queue()
@@ -321,14 +324,25 @@ class VendingMachineSimulator(ESP32Simulator):
         factor = self._arrival_factor(hour=hour)
         return random.uniform(self.IDLE_MIN, self.IDLE_MAX) * factor
 
-    async def _run_ice_dispense(self, client: aiomqtt.Client, slot: int):
-        """Run ice dispense sequence with realistic hardware transitions."""
+    async def _run_ice_dispense(
+        self, client: aiomqtt.Client, slot: int, request_id: str | None = None
+    ):
+        """Run ice dispense sequence with realistic hardware transitions.
+
+        `request_id` (2026-09-29 completion-table amendment) is echoed on
+        every `hardware/dispenser` report when this run was reached through
+        the command channel (`_handle_dispense`), so
+        `services/command_dispatcher.py` can correlate the terminal one to
+        the command it is waiting on. A production `cmd/dispense` sale
+        (`_customer_loop` -> `_dispense_slot`) never passes one, so it stays
+        `None` there — exactly the default before this field existed.
+        """
         active = self._active_fault_names
 
         await self.publish(
             client,
             "hardware/dispenser",
-            DispenserStatus(slot=slot, state="motor_active"),
+            DispenserStatus(slot=slot, state="motor_active", request_id=request_id),
         )
 
         # Ice bin empty: report immediately and abort
@@ -338,7 +352,11 @@ class VendingMachineSimulator(ESP32Simulator):
             await self.publish(
                 client,
                 "hardware/dispenser",
-                DispenserStatus(slot=slot, state=DispenserOutcome.bin_empty.value),
+                DispenserStatus(
+                    slot=slot,
+                    state=DispenserOutcome.bin_empty.value,
+                    request_id=request_id,
+                ),
             )
             logger.warning(f"[vending] Slot {slot}: ice bin empty")
             return
@@ -361,7 +379,11 @@ class VendingMachineSimulator(ESP32Simulator):
             await self.publish(
                 client,
                 "hardware/dispenser",
-                DispenserStatus(slot=slot, state=DispenserOutcome.timeout.value),
+                DispenserStatus(
+                    slot=slot,
+                    state=DispenserOutcome.timeout.value,
+                    request_id=request_id,
+                ),
             )
             logger.warning(f"[vending] Slot {slot}: auger jam — dispense timed out")
             return
@@ -378,7 +400,7 @@ class VendingMachineSimulator(ESP32Simulator):
         await self.publish(
             client,
             "hardware/dispenser",
-            DispenserStatus(slot=slot, state="fill_complete"),
+            DispenserStatus(slot=slot, state="fill_complete", request_id=request_id),
         )
 
         await asyncio.sleep(0.5)
@@ -393,7 +415,9 @@ class VendingMachineSimulator(ESP32Simulator):
             await self.publish(
                 client,
                 "hardware/dispenser",
-                DispenserStatus(slot=slot, state=DispenserOutcome.jam.value),
+                DispenserStatus(
+                    slot=slot, state=DispenserOutcome.jam.value, request_id=request_id
+                ),
             )
             logger.warning(f"[vending] Slot {slot}: bag drop solenoid stuck")
             return
@@ -412,16 +436,23 @@ class VendingMachineSimulator(ESP32Simulator):
         await self.publish(
             client,
             "hardware/dispenser",
-            DispenserStatus(slot=slot, state=DispenserOutcome.complete.value),
+            DispenserStatus(
+                slot=slot, state=DispenserOutcome.complete.value, request_id=request_id
+            ),
         )
         logger.info(f"[vending] Slot {slot}: ice dispense complete")
 
-    async def _run_water_dispense(self, client: aiomqtt.Client, slot: int):
-        """Run water dispense sequence with valve and flow sensor."""
+    async def _run_water_dispense(
+        self, client: aiomqtt.Client, slot: int, request_id: str | None = None
+    ):
+        """Run water dispense sequence with valve and flow sensor.
+
+        See `_run_ice_dispense`'s docstring for what `request_id` is for.
+        """
         await self.publish(
             client,
             "hardware/dispenser",
-            DispenserStatus(slot=slot, state="solenoid_open"),
+            DispenserStatus(slot=slot, state="solenoid_open", request_id=request_id),
         )
 
         # Open valve
@@ -448,7 +479,11 @@ class VendingMachineSimulator(ESP32Simulator):
             await self.publish(
                 client,
                 "hardware/dispenser",
-                DispenserStatus(slot=slot, state=DispenserOutcome.complete.value),
+                DispenserStatus(
+                    slot=slot,
+                    state=DispenserOutcome.complete.value,
+                    request_id=request_id,
+                ),
             )
             return
 
@@ -459,9 +494,106 @@ class VendingMachineSimulator(ESP32Simulator):
         await self.publish(
             client,
             "hardware/dispenser",
-            DispenserStatus(slot=slot, state=DispenserOutcome.complete.value),
+            DispenserStatus(
+                slot=slot, state=DispenserOutcome.complete.value, request_id=request_id
+            ),
         )
         logger.info(f"[vending] Slot {slot}: water dispense complete")
+
+    async def _dispense_slot(
+        self, client: aiomqtt.Client, slot: int, request_id: str | None = None
+    ) -> None:
+        """Run the correct motor sequence for `slot`.
+
+        The single place that decides ice vs. water and runs it — both the
+        production `cmd/dispense` topic (via `_customer_loop`) and the
+        command channel's `dispense` handler (`_handle_dispense`) call this
+        instead of each carrying their own copy, so the two paths cannot
+        drift apart. `request_id` (see `_run_ice_dispense`'s docstring) is
+        `None` for the production path.
+        """
+        if self.slot_type(slot) == "water":
+            await self._run_water_dispense(client, slot, request_id=request_id)
+        else:
+            await self._run_ice_dispense(client, slot, request_id=request_id)
+
+    async def _handle_dispense(
+        self, client: aiomqtt.Client, cmd: SubsystemCommand
+    ) -> CommandOutcome:
+        """Command-channel `dispense`: same motor code as production `cmd/dispense`.
+
+        Completion-table amendment (2026-09-29): the ack means "accepted",
+        not "done" — `_dispense_slot` can legitimately run past
+        `ACK_TIMEOUT_SECONDS` (up to 90 s on the jam path), and a tech's
+        maintenance lease must stay held for the actuator's real lifetime,
+        not just until the motor starts. Acks `phase="accepted"`
+        immediately and runs the real motor sequence in the background
+        (`_spawn_background`); its own completion is the terminal
+        `hardware/dispenser` report `_dispense_slot` already publishes, now
+        carrying this `request_id` so
+        `services/command_dispatcher.py`'s `send_and_await_completion` can
+        correlate it — there is no second ack for this command (contrast
+        `_handle_water_valve`/`_handle_power_cycle`, which do use one).
+
+        Reached through `_handle_command`, so the "accepted" ack is cached
+        the same way any other ack is: a dispatcher retry (its own ack
+        lost, same request_id) replays the cached "accepted" ack instead of
+        starting a second motor cycle.
+        """
+        slot = cmd.params["slot"]
+        self._spawn_background(
+            self._dispense_slot(client, slot, request_id=cmd.request_id)
+        )
+        return CommandOutcome(status="ok", result={"slot": slot}, phase="accepted")
+
+    async def _handle_water_valve(
+        self, client: aiomqtt.Client, cmd: SubsystemCommand
+    ) -> CommandOutcome:
+        """Command-channel `water_valve`: open the valve for `seconds` (1-10).
+
+        `SubsystemCommand`'s own model validator runs
+        `COMMAND_PARAM_VALIDATORS["water_valve"]` at construction time, so a
+        command reaching this handler through the real wire path
+        (`_command_loop` -> `SubsystemCommand.model_validate` ->
+        `_handle_command`) always has `seconds` in [1, 10] already. An
+        out-of-range value never gets this far any more: `_command_loop`
+        (`simulators/base.py`) now acks it "rejected" itself, from the raw
+        payload, before a `SubsystemCommand` instance — and therefore this
+        handler — ever exists. This handler no longer re-checks the range;
+        doing so would only re-validate something the loop has already
+        guaranteed.
+
+        Completion-table amendment (2026-09-29): acks `phase="accepted"`
+        immediately (matching `_handle_dispense`/`_handle_power_cycle`);
+        the valve actually opens/closes in the background. Completion is a
+        SECOND, `phase="completed"` ack on this same `cmd/vending/ack`
+        topic and `request_id` (`publish_completion_ack`) — chosen over a
+        new topic/event because the ack channel and its idempotency cache
+        already exist and already correlate by `request_id`; nothing new
+        needs to be invented on the wire to carry it.
+        """
+        seconds = cmd.params["seconds"]
+
+        async def _run() -> None:
+            try:
+                await self._set_hw(client, "water_valve_solenoid", True)
+                await self._set_hw(client, "water_flow_sensor", True)
+                await asyncio.sleep(seconds)
+            finally:
+                # Copilot review (PR 22): the shutdown belongs here, not
+                # after the sleep, so a cancelled task (MQTT disconnect) or
+                # either hardware update raising still closes the valve and
+                # clears the flow sensor instead of leaving them enabled
+                # indefinitely. Idempotent to call even when the opening
+                # updates never completed (or never ran at all).
+                await self._set_hw(client, "water_valve_solenoid", False)
+                await self._set_hw(client, "water_flow_sensor", False)
+            await self.publish_completion_ack(client, cmd, {"seconds": seconds})
+
+        self._spawn_background(_run())
+        return CommandOutcome(
+            status="ok", result={"seconds": seconds}, phase="accepted"
+        )
 
     async def _listen_for_commands(self, client: aiomqtt.Client):
         """Read dispense commands from the subscription queue."""
@@ -533,11 +665,9 @@ class VendingMachineSimulator(ESP32Simulator):
                 logger.info("[vending] Customer walked away")
                 continue
 
-            # Run the appropriate dispense sequence
-            if self.slot_type(slot) == "water":
-                await self._run_water_dispense(client, slot)
-            else:
-                await self._run_ice_dispense(client, slot)
+            # Run the appropriate dispense sequence (shared with the command
+            # channel's `dispense` handler via `_dispense_slot`).
+            await self._dispense_slot(client, slot)
 
             # Repeat customer (10%): buys again immediately
             if random.random() < 0.10:
@@ -552,10 +682,7 @@ class VendingMachineSimulator(ESP32Simulator):
                         self._dispense_command.get(),
                         timeout=self.DISPENSE_TIMEOUT,
                     )
-                    if self.slot_type(slot) == "water":
-                        await self._run_water_dispense(client, slot)
-                    else:
-                        await self._run_ice_dispense(client, slot)
+                    await self._dispense_slot(client, slot)
                 except asyncio.TimeoutError:
                     logger.info("[vending] Repeat customer walked away")
 
@@ -566,6 +693,7 @@ class VendingMachineSimulator(ESP32Simulator):
             tg.create_task(self._listen_for_commands(client))
             tg.create_task(self._customer_loop(client))
             tg.create_task(self._publish_sensors(client))
+            tg.create_task(self._command_loop(client))
 
 
 if __name__ == "__main__":

@@ -1815,3 +1815,222 @@ class TestWriterThreadDeadGuard:
         assert elapsed >= 0.4  # actually waited for the slow insert (some slack)
         with sqlite3.connect(db) as conn:
             assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+
+
+def _documented_test_run_metadata(run_id: str, **overrides) -> dict:
+    """One `test_run` row's metadata, per system-tests design §4:
+    `{run_id, user_id, user_name, subsystem, command, params, status,
+    checks, verdict, note}`."""
+    meta = {
+        "run_id": run_id,
+        "user_id": "u1",
+        "user_name": "Alex",
+        "subsystem": "vending_machine",
+        "command": "ping",
+        "params": {"slot": 3},
+        "status": "ok",
+        "checks": [{"name": "reachable", "passed": True}],
+        "verdict": None,
+        "note": None,
+    }
+    meta.update(overrides)
+    return meta
+
+
+class TestTestRunEvents:
+    """A `test_run` row is written with the documented metadata shape and
+    its duration in `value` -- reaches `EventRecorder.record`, the same
+    generic writer-queue path every other event type already uses (no new
+    production code beyond what TestUpdateMetadata/TestGetSummary below
+    cover), landing in `events` (90-day retention), not `sales`."""
+
+    def test_writes_documented_shape_with_duration_as_value(self, tmp_path):
+        db = str(tmp_path / "events.db")
+        rec = EventRecorder(db_path=db)
+        metadata = _documented_test_run_metadata("run-abc123")
+
+        rec.record("test_run", value=4.75, metadata=metadata)
+        rec.flush()
+
+        # Second connection: proves the row is really on disk, not merely
+        # buffered on the connection that wrote it (part 3's rule).
+        conn2 = sqlite3.connect(db)
+        try:
+            row = conn2.execute(
+                "SELECT event_type, value, metadata FROM events WHERE event_type = 'test_run'"
+            ).fetchone()
+        finally:
+            conn2.close()
+
+        assert row is not None
+        event_type, value, meta_str = row
+        assert event_type == "test_run"
+        assert value == pytest.approx(4.75)
+        stored = json.loads(meta_str)
+        assert stored == metadata
+        # Every documented key is present, not just a subset.
+        for key in (
+            "run_id",
+            "user_id",
+            "user_name",
+            "subsystem",
+            "command",
+            "params",
+            "status",
+            "checks",
+            "verdict",
+            "note",
+        ):
+            assert key in stored
+
+        # Landed in `events`, never `sales`.
+        with sqlite3.connect(db) as conn:
+            sales_count = conn.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+        assert sales_count == 0
+
+
+class TestGetSummaryIgnoresTestRun:
+    """`get_summary` must be unaffected by `test_run` rows -- proven
+    behaviourally by comparing a summary taken with the row present against
+    one taken without it, not by inspecting the implementation."""
+
+    def test_summary_unchanged_by_test_run_presence(self, tmp_path):
+        db = str(tmp_path / "events.db")
+        rec = EventRecorder(db_path=db)
+
+        # A realistic KPI-affecting event mix, recorded once.
+        rec.record("payment", value=3.25)
+        rec.record("dispense", value=0)
+        rec.record("vend_failed", value=2.5, metadata={"code": "ICE-301"})
+        rec.record("refund", value=1.0, metadata={"request_id": "r1"})
+        rec.flush()
+
+        baseline = rec.get_summary(24)
+
+        # Add test_run rows only -- large value, and metadata containing
+        # a "status": "fail" / "verdict": "fail" that a careless summary
+        # implementation might mistake for a vend failure or an error.
+        rec.record(
+            "test_run",
+            value=999.0,
+            metadata=_documented_test_run_metadata(
+                "run-xyz789", status="fail", verdict="fail", note="blew up"
+            ),
+        )
+        rec.record(
+            "test_run",
+            value=1234.0,
+            metadata=_documented_test_run_metadata("run-second", command="self_test"),
+        )
+        rec.flush()
+
+        with_test_runs = rec.get_summary(24)
+
+        assert with_test_runs == baseline
+
+
+class TestUpdateMetadata:
+    """`update_metadata(run_id, **fields) -> None` merges into the row
+    located by `run_id`, executed on the writer thread against its
+    existing connection."""
+
+    def test_sets_verdict_and_note_leaving_checks_and_params_intact(self, tmp_path):
+        db = str(tmp_path / "events.db")
+        rec = EventRecorder(db_path=db)
+        original = _documented_test_run_metadata(
+            "run-merge-1",
+            checks=[
+                {"name": "reachable", "passed": True},
+                {"name": "ack", "passed": True},
+            ],
+            params={"slot": 7, "seconds": 2},
+            status="ok",
+            verdict=None,
+            note=None,
+        )
+        rec.record("test_run", value=1.1, metadata=original)
+        rec.flush()
+
+        rec.update_metadata("run-merge-1", verdict="pass", note="checked by hand")
+        rec.flush()
+
+        conn2 = sqlite3.connect(db)
+        try:
+            (meta_str,) = conn2.execute(
+                "SELECT metadata FROM events WHERE event_type = 'test_run'"
+            ).fetchone()
+        finally:
+            conn2.close()
+        updated = json.loads(meta_str)
+
+        assert updated["verdict"] == "pass"
+        assert updated["note"] == "checked by hand"
+        # Untouched keys survive a partial update -- a wholesale replace
+        # would have discarded these.
+        assert updated["checks"] == original["checks"]
+        assert updated["params"] == original["params"]
+        assert updated["run_id"] == "run-merge-1"
+        assert updated["subsystem"] == original["subsystem"]
+        assert updated["command"] == original["command"]
+
+    def test_unknown_run_id_is_noop_with_warning_not_exception(self, recorder, caplog):
+        recorder.record(
+            "test_run", value=2.0, metadata=_documented_test_run_metadata("run-real")
+        )
+        recorder.flush()
+
+        with caplog.at_level("WARNING"):
+            recorder.update_metadata("run-does-not-exist", verdict="pass")
+            recorder.flush()  # no exception raised by the line above or this one
+
+        # A no-op WARNING, not an exception caught (and logged at ERROR)
+        # by the writer loop's own try/except -- an implementation that
+        # raises instead of returning would still leave the process alive
+        # (the writer loop swallows it), but at ERROR, not WARNING.
+        assert not any(r.levelname == "ERROR" for r in caplog.records)
+        warning_texts = [r.message for r in caplog.records if r.levelname == "WARNING"]
+        assert any("run-does-not-exist" in msg for msg in warning_texts)
+
+        # The real row is untouched.
+        conn2 = sqlite3.connect(recorder._db_path)
+        try:
+            (meta_str,) = conn2.execute(
+                "SELECT metadata FROM events WHERE event_type = 'test_run'"
+            ).fetchone()
+        finally:
+            conn2.close()
+        assert json.loads(meta_str)["verdict"] is None
+
+
+class TestTestRunRetentionScope:
+    """`test_run` rows are pruned with `events` at 90 days -- not added to
+    the never-pruned set alongside `sales`."""
+
+    def test_old_test_run_is_pruned_but_same_age_sale_is_not(self, tmp_path):
+        db = str(tmp_path / "e.db")
+        rec = EventRecorder(db_path=db, retention_days=1)
+        old_ts = time.time() - 2 * 86400  # well outside the 1-day retention
+
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO events (event_type, timestamp, value, metadata) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    "test_run",
+                    old_ts,
+                    3.0,
+                    json.dumps(_documented_test_run_metadata("run-old")),
+                ),
+            )
+            conn.commit()
+        rec.record_sale("SKU1", "Cola", 1, 1.50, {"cash": 1.50}, ts=old_ts)
+
+        rec.prune()
+
+        with sqlite3.connect(db) as conn:
+            test_run_count = conn.execute(
+                "SELECT COUNT(*) FROM events WHERE event_type = 'test_run'"
+            ).fetchone()[0]
+            sales_count = conn.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+        assert test_run_count == 0
+        assert sales_count == 1

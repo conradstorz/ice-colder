@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}{{ subsystem }} tests · Vending Machine{% endblock %}
+
+{# One command's card: a Run form (POSTs to Task 13b's
+   POST /tests/{subsystem}/{command}, not added by this task) plus its
+   params widget, if the command takes one. A local macro rather than a
+   separate partial file, since this task's file list does not include one
+   -- see web_interface/routes/tests_level.py's module docstring. #}
+{% macro command_card(subsystem, post_base, cmd) %}
+{# id/target keyed on `subsystem` + `cmd.name` -- both drawn from a fixed,
+   slash-free vocabulary (EXPECTED_SUBSYSTEMS and
+   contracts.common.TESTABLE_COMMANDS), never from arbitrary catalog text
+   such as a SKU, so no sku_url_segment-style escaping is needed here. #}
+<div id="test-{{ subsystem }}-{{ cmd.name }}"
+     class="bg-white rounded-xl border border-gray-200 shadow-sm p-4 space-y-3">
+  <div class="font-mono text-sm text-gray-900">{{ cmd.name }}</div>
+  <form hx-post="{{ post_base }}/{{ cmd.name }}"
+        hx-target="#result-{{ subsystem }}-{{ cmd.name }}"
+        hx-swap="innerHTML" class="space-y-2">
+    {% if cmd.widget %}
+      {% if cmd.widget.kind == "slot" %}
+      <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide"
+             for="slot-{{ cmd.name }}">Slot</label>
+      <select id="slot-{{ cmd.name }}" name="slot"
+              class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900">
+        {% for product in cmd.widget.products %}
+        <option value="{{ product.slot }}">{{ product.slot }} — {{ product.name }} ({{ product.sku }})</option>
+        {% endfor %}
+      </select>
+      {% elif cmd.widget.kind == "seconds" %}
+      <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide"
+             for="seconds-{{ cmd.name }}">Seconds</label>
+      <input type="number" id="seconds-{{ cmd.name }}" name="seconds"
+             min="{{ cmd.widget.min }}" max="{{ cmd.widget.max }}" value="{{ cmd.widget.min }}"
+             step="1" inputmode="numeric"
+             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+      {% elif cmd.widget.kind == "dwell_seconds" %}
+      <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide"
+             for="dwell-{{ cmd.name }}">Dwell seconds</label>
+      <input type="number" id="dwell-{{ cmd.name }}" name="dwell_seconds"
+             min="{{ cmd.widget.min }}" max="{{ cmd.widget.max }}" value="{{ cmd.widget.default }}"
+             step="1" inputmode="numeric"
+             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+      {% endif %}
+    {% endif %}
+    <button type="submit"
+            class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">
+      Run
+    </button>
+  </form>
+  <div id="result-{{ subsystem }}-{{ cmd.name }}"></div>
+</div>
+{% endmacro %}
+
+{% block body %}
+<div class="space-y-4">
+
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-4 flex flex-wrap items-center gap-3">
+    <span class="w-2.5 h-2.5 rounded-full flex-shrink-0
+      {% if row.stale %}bg-red-500{% elif row.alive %}bg-green-500{% else %}bg-gray-300{% endif %}"></span>
+    <span class="font-mono text-sm text-gray-900">{{ subsystem }}</span>
+    <span class="text-xs text-gray-400 font-mono ml-auto">{{ row.firmware or "—" }} / {{ row.contract_version or "—" }}</span>
+  </div>
+
+  {% if not automatic and not actuator %}
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-6 text-center">
+    <p class="text-sm text-gray-500">No tests advertised.</p>
+  </div>
+  {% else %}
+
+    {% if automatic %}
+    <div class="space-y-2">
+      <h2 class="text-xs font-medium text-gray-400 uppercase tracking-wide">Automatic</h2>
+      {% for cmd in automatic %}
+        {{ command_card(subsystem, post_base, cmd) }}
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if actuator %}
+    <div class="space-y-2">
+      <h2 class="text-xs font-medium text-gray-400 uppercase tracking-wide">Actuator</h2>
+      {% for cmd in actuator %}
+        {{ command_card(subsystem, post_base, cmd) }}
+      {% endfor %}
+    </div>
+    {% endif %}
+
+  {% endif %}
+
+</div>
+{% endblock %}

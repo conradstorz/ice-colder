@@ -173,6 +173,27 @@ wrong or out of scope. Prior parts of this project resolved Copilot rounds
 this way (`fix: Copilot review — …` commits); the same convention holds.
 The owner merges.
 
+**Whole-branch review before the pull request opens (from part 4).** Per-task
+reviewers see one task's diff and therefore cannot see a defect class that was
+fixed in one file and left standing in another. That is not hypothetical: part
+3's Copilot round found a DST bug in the scheduler of exactly the class already
+fixed in `reports.py` earlier in the same branch, and a SKU-is-not-URL-safe bug
+of the class part 2 had already fixed on a different axis (a SKU containing `.`
+breaking a CSS selector). Both survived every per-task gate and were caught only
+by a reader looking at the whole diff at once.
+
+So before step D opens the pull request, the orchestrator dispatches one fresh
+**Sonnet** reviewer over the entire branch diff against `origin/main` in a
+single pass. Its brief is not a second general review: it looks specifically for
+**repeats of a class already fixed elsewhere in this branch or in an earlier
+part** — the same wrong assumption applied to a second file, a fix that did not
+reach its siblings, a guard enforced in a template but not on the server. It
+receives the branch's deviations ledger and the list of defects already fixed,
+so it knows which classes to hunt. Its findings go through the normal fix loop —
+implementer, fresh reviewer, test that fails first — before the pull request
+opens, and the pull-request description records what it found, including
+"nothing", which is itself a result worth stating.
+
 ### 3.5 When an agent stops and asks
 
 - The spec is silent on something that changes behavior (not naming or

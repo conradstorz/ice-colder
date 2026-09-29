@@ -62,6 +62,50 @@ the ice maker's `power_cycle` rule (`dwell_seconds` in 5–300) is preserved.
 Unknown commands answer `unsupported`. A subsystem answers within 10 s or
 the VMC treats it as a timeout.
 
+**2026-09-29 amendment — the ack means "accepted", not "done", for a
+long-running command.** The sentence above ("a subsystem answers within
+10 s or the VMC treats it as a timeout") is now only true of the FIRST
+ack. A Copilot review on PR 22 (id=4128088504) proved, with a real VMC and
+a real maintenance lease, that `SVC-102` cleared — and the lease released
+— while a simulated dispense motor was still running: `dispense`'s handler
+awaited the whole motor cycle (which can legitimately exceed 20 s, and
+reach 90 s on the jam path) before acking at all, so the dispatcher's 10 s
+× 2-attempt ack budget ran out and gave up long before the actuator
+actually stopped.
+
+The fix adds a second phase, `CommandAck.phase` (`"accepted"` |
+`"completed"`, default `"completed"`):
+
+- **Immediate commands** — the three standard commands (§1.2) and, per
+  subsystem, every actuator command whose handler finishes within the ack
+  (verified against each simulator handler, not assumed: the three MDB
+  actuator tests) — are unaffected. `phase` stays `"completed"`, the
+  default, so a present-day ack payload with no `phase` key at all still
+  validates and still means exactly what it always meant: the ack IS the
+  outcome. The 10 s ack deadline above is unchanged and is the WHOLE
+  timeout for these.
+- **Long-running commands** (`dispense`, `water_valve`, `power_cycle`) ack
+  `phase="accepted"` as soon as the subsystem has started the real work —
+  still within the same 10 s ack deadline, unchanged — and report
+  completion separately, later: `dispense`'s completion is its existing
+  terminal `hardware/dispenser` report (now carrying the command's
+  `request_id` for correlation); `water_valve` and `power_cycle` each send
+  a SECOND, `phase="completed"` ack on the same topic and `request_id`.
+  Each has its own, separate, much more generous completion timeout,
+  derived from the command's own duration where one is parameterized
+  (`services/command_dispatcher.py`'s `send_and_await_completion`,
+  `contracts/common.py`'s `COMPLETION_TIMEOUTS`) — see the completion
+  table in both `docs/contracts/*/CONTRACT.md` files for the exact values.
+  `services/command_dispatcher.py`'s `send()` keeps its original,
+  unchanged meaning (resolve on the first ack, whatever its phase) so
+  every existing caller — and the ack-timeout retry behaviour itself — is
+  untouched; only `send_and_await_completion()` (used by the Tests level's
+  `_run_command`) additionally waits for the second, completion phase.
+  `VMC.maintenance_test_run()` brackets that whole call, so
+  `runs_in_flight` — and therefore the maintenance lease and `SVC-102` —
+  now stays held for the actuator's REAL lifetime, not just until it
+  starts.
+
 **Idempotency is part of the contract.** Every subsystem keeps the last 32
 `request_id`s it has acked with their acks and, on a duplicate, republishes
 the cached ack without repeating the side effect. The ice-maker simulator
@@ -114,6 +158,7 @@ that has not been updated, and such a subsystem shows "no tests advertised".
 class CommandDispatcher:
     def __init__(self, mqtt_client, timeout: float = 10.0, retries: int = 1, clock=...)
     async def send(self, subsystem: str, command: str, params: dict | None = None) -> CommandAck
+    async def send_and_await_completion(self, subsystem: str, command: str, params: dict | None = None) -> CommandAck  # 2026-09-29
 ```
 
 Registers `cmd/+/ack` once, correlates by `request_id`, retries once on
@@ -121,6 +166,16 @@ timeout **with the same `request_id`** so the subsystem's idempotency cache
 (§1.1) replays the ack instead of repeating the action, and raises
 `CommandTimeout(subsystem, command)` after the last attempt. Refunds keep
 their own path in this spec; migrating them is a follow-up.
+
+**2026-09-29 amendment.** `send()` is unchanged: it still resolves on the
+first ack for a `request_id`, whatever its `phase` (§1.1). `send_and_await_
+completion()` is new: it calls `send()` unchanged for the accept phase,
+then — only for a command listed in `contracts.common.COMPLETION_TIMEOUTS`
+— additionally waits for that command's own completion signal, with its
+own separate, params-derived timeout, raising `CompletionTimeout(subsystem,
+command)` if it never arrives. The Tests level's `_run_command` (§3) is the
+one caller that uses it; every other consumer of `CommandDispatcher` is
+unaffected.
 
 ### 2.2 Maintenance hold
 

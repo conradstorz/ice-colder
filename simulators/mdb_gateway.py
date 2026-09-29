@@ -19,6 +19,7 @@ from pydantic import ValidationError
 
 from simulators.base import ESP32Simulator, FaultDef
 from services.mqtt_messages import PaymentEnableCommand, PaymentEvent, PaymentStatus
+from contracts.common import SubsystemCommand
 from contracts.vending_machine import (
     PaymentRefundCommand,
     PaymentRefundResult,
@@ -67,7 +68,13 @@ class MDBGatewaySimulator(ESP32Simulator):
     MAX_CASH_ATTEMPTS = 3
     REFUND_DELAY_RANGE = (0.5, 2.0)  # seconds the changer takes to pay out
     REFUND_RESULTS_MAX = 256  # idempotency cache bound, oldest evicted first
-    SUPPORTED_COMMANDS = ["payment/enable", "refund"]
+    SUPPORTED_COMMANDS = [
+        "payment/enable",
+        "refund",
+        "bill_acceptor_test",
+        "coin_return_test",
+        "card_reader_test",
+    ]
     BRAND = "ice-colder"
     MODEL = "mdb-sim"
 
@@ -87,6 +94,24 @@ class MDBGatewaySimulator(ESP32Simulator):
         self._vmc_status: asyncio.Queue = asyncio.Queue()
         # request_id -> result, so a repeated refund command is never paid twice
         self._refund_results: OrderedDict[str, PaymentRefundResult] = OrderedDict()
+
+        # §1.3 actuator test counters — observable proof that a handler's
+        # side effect ran exactly once per new request_id (the idempotency
+        # cache in ESP32Simulator._handle_command stops a duplicate
+        # request_id from reaching the handler at all).
+        self.bill_acceptor_test_count = 0
+        self.coin_return_test_count = 0
+        self.card_reader_test_count = 0
+
+        # §1.3 actuator commands — real hardware moves on a real machine,
+        # so these go through the base's register_command/idempotency path
+        # like every other command. Not the payment topics
+        # (cmd/payment/enable, cmd/payment/refund): those stay on their own
+        # dedicated production-control subscriptions above and are
+        # deliberately not part of this command channel.
+        self.register_command("bill_acceptor_test", self._handle_bill_acceptor_test)
+        self.register_command("coin_return_test", self._handle_coin_return_test)
+        self.register_command("card_reader_test", self._handle_card_reader_test)
 
         # Register faults
         self.register_fault(
@@ -443,6 +468,48 @@ class MDBGatewaySimulator(ESP32Simulator):
             self._refund_results.popitem(last=False)
         await self.publish(client, "cmd/payment/refund/ack", result)
 
+    async def _handle_bill_acceptor_test(
+        self, client: aiomqtt.Client, cmd: SubsystemCommand
+    ) -> None:
+        """§1.3: cycle the acceptor's stacker motor."""
+        self.bill_acceptor_test_count += 1
+        logger.info(
+            f"[mdb] Bill acceptor test: cycling stacker motor "
+            f"(count={self.bill_acceptor_test_count})"
+        )
+        return None
+
+    async def _handle_coin_return_test(
+        self, client: aiomqtt.Client, cmd: SubsystemCommand
+    ) -> None:
+        """§1.3: actuate the coin return."""
+        self.coin_return_test_count += 1
+        logger.info(
+            f"[mdb] Coin return test: actuating coin return "
+            f"(count={self.coin_return_test_count})"
+        )
+        return None
+
+    async def _handle_card_reader_test(
+        self, client: aiomqtt.Client, cmd: SubsystemCommand
+    ) -> dict:
+        """§1.3: ask the reader to run its own diagnostic.
+
+        The only one of the three actuator commands with a `result`
+        payload; it carries the reader's status text, reflecting the
+        device's current state so a card_reader_error fault shows up here
+        too.
+        """
+        self.card_reader_test_count += 1
+        device = self._device_by_name("card_reader")
+        status_text = (
+            "card reader self-diagnostic: OK"
+            if device["state"] == "ready"
+            else f"card reader self-diagnostic: {device['state']}"
+        )
+        logger.info(f"[mdb] Card reader test: {status_text}")
+        return {"status_text": status_text}
+
     async def run_simulation(self, client: aiomqtt.Client):
         """Run the MDB gateway simulation."""
         logger.info("[mdb] Starting MDB gateway simulation")
@@ -452,6 +519,7 @@ class MDBGatewaySimulator(ESP32Simulator):
             tg.create_task(self._payment_loop(client))
             tg.create_task(self._refund_loop(client))
             tg.create_task(self._enable_loop(client))
+            tg.create_task(self._command_loop(client))
 
 
 if __name__ == "__main__":

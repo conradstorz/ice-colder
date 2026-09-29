@@ -1,0 +1,48 @@
+{# The simulated-sale result (POST /tests/sale). `result` is a
+   controller.vmc.TestSaleResult: sku, path (FSM states visited, in
+   order), outcome, fault_code, run_id. `result.sku` is plain text content
+   here, not a URL or CSS-id, so it needs no sku_url_segment-style
+   escaping -- Jinja2's default autoescaping already makes any catalog
+   string (a "/" included) safe as text content. `run_id` (a fresh
+   uuid4().hex minted by VMC.run_test_sale) is what makes this card's
+   Pass/Fail form -- otherwise identical to test_result_card.html's -- and
+   is why a simulated sale's test_run row is verdictable at all. #}
+<div id="sale-result" class="space-y-2 bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+  <div class="text-sm text-gray-900">
+    SKU: <span class="font-mono">{{ result.sku }}</span>
+  </div>
+  <div class="text-sm">
+    Outcome:
+    <span class="font-medium
+      {% if result.outcome == 'dispensed' %}text-green-600
+      {% elif result.outcome == 'timeout' %}text-amber-600
+      {% else %}text-red-600{% endif %}">
+      {{ result.outcome }}
+    </span>
+    {% if result.fault_code %}
+    <span class="text-xs font-mono text-red-600">{{ result.fault_code }}</span>
+    {% endif %}
+  </div>
+  <div class="text-xs text-gray-500">
+    Path: {{ result.path | join(" → ") }}
+  </div>
+
+  <p class="text-xs text-gray-500">Watch the machine.</p>
+  <div id="verdict-{{ result.run_id }}">
+    <form hx-post="/tests/runs/{{ result.run_id }}/verdict" hx-target="#verdict-{{ result.run_id }}"
+          hx-swap="outerHTML" class="space-y-2">
+      <input type="text" name="note" placeholder="Optional note"
+             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900">
+      <div class="flex gap-2">
+        <button type="submit" name="verdict" value="pass"
+                class="touch-target px-4 rounded-md bg-green-600 text-white text-sm font-medium hover:bg-green-700">
+          Pass
+        </button>
+        <button type="submit" name="verdict" value="fail"
+                class="touch-target px-4 rounded-md bg-red-600 text-white text-sm font-medium hover:bg-red-700">
+          Fail
+        </button>
+      </div>
+    </form>
+  </div>
+</div>

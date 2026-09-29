@@ -12,12 +12,11 @@ from pydantic import BaseModel, TypeAdapter
 
 from services.mqtt_messages import IceMakerEvent, SensorReading, SubsystemHeartbeat
 
+from contracts.common import CommandAck, SubsystemCommand
 from contracts.ice_maker_monitor import (
     ChannelDescriptor,
     ChannelReading,
-    CommandAck,
     MonitorCapabilities,
-    MonitorCommand,
 )
 from contracts.vending_machine import (
     DispenserOutcome,
@@ -36,7 +35,13 @@ MODELS = {
     "channel_descriptor": ChannelDescriptor,
     "monitor_capabilities": MonitorCapabilities,
     "channel_reading": ChannelReading,
-    "monitor_command": MonitorCommand,
+    # Key stays "monitor_command" (not renamed to "subsystem_command"): the
+    # generated file is docs/contracts/ice-maker-monitor/schemas/
+    # monitor_command.schema.json, which real ice-maker firmware may already
+    # reference. MonitorCommand is an alias for SubsystemCommand (the same
+    # class object, contracts/ice_maker_monitor.py), so this generates the
+    # identical schema either way.
+    "monitor_command": SubsystemCommand,
     "command_ack": CommandAck,
 }
 
@@ -48,6 +53,8 @@ VENDING_MODELS = {
     "payment_refund_command": PaymentRefundCommand,
     "payment_refund_result": PaymentRefundResult,
     "subsystem_capabilities": SubsystemCapabilities,
+    "subsystem_command": SubsystemCommand,
+    "command_ack": CommandAck,
 }
 
 CONTRACTS: dict[str, tuple[Path, dict]] = {

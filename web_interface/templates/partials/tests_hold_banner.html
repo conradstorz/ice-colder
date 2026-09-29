@@ -1,0 +1,28 @@
+{# The maintenance-lease banner, re-rendered by POST /tests/end and
+   POST /tests/takeover to replace #tests-hold (hx-swap="outerHTML") --
+   markup matches tests.html's own inline `{% if hold %}` block exactly
+   (that file is outside this task's file list to edit into an
+   `{% include %}`, see task-13b-report.md), so a round trip through
+   either route leaves the same DOM either version would have rendered on
+   a fresh GET /tests. Empty (no div at all) when `hold` is None, which is
+   what removes the banner entirely on outerHTML swap -- matching
+   tests.html never rendering one when there is no lease. #}
+{% if hold %}
+<div id="tests-hold"
+     class="bg-amber-50 rounded-xl border border-amber-200 shadow-sm p-4 flex flex-wrap items-center gap-3">
+  <span class="text-sm text-amber-800">
+    Maintenance lease held by <span class="font-mono">{{ hold.holder_user_id }}</span>
+  </span>
+  {% if held_by_me %}
+  <button hx-post="/tests/end" hx-target="#tests-hold" hx-swap="outerHTML"
+          class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">
+    End
+  </button>
+  {% else %}
+  <button hx-post="/tests/takeover" hx-target="#tests-hold" hx-swap="outerHTML"
+          class="touch-target px-4 rounded-md border border-amber-300 text-sm font-medium text-amber-800 hover:bg-amber-100">
+    Take over
+  </button>
+  {% endif %}
+</div>
+{% endif %}
