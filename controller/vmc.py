@@ -1438,7 +1438,21 @@ class VMC:
         txn_log.error(
             f"VEND FAILED: '{name}' {code.value} ({outcome}); ${price:.2f} returned to escrow"
         )
-        if self._event_recorder:
+        if self._event_recorder and not self._sale_is_test:
+            # Copilot review (PR 22, id=4128088653): on_vend_failed is the
+            # one place that runs for every failed/timed-out vend,
+            # production or test (both _handle_mqtt_dispenser's failure
+            # branch and _dispense_timed_out reach it through _fail_vend ->
+            # the vend_failed transition -> this hook). Recording
+            # unconditionally here counted a failed or timed-out simulated
+            # sale in EventRecorder.get_summary()'s vends_failed KPI,
+            # contradicting the guarantee that a test sale moves nothing.
+            # run_test_sale's own test_run row (system-tests design §4) is
+            # what should represent this run, not a second, KPI-visible
+            # vend_failed row -- so this is skipped for a test sale while
+            # everything else in this method (restoring escrow, the
+            # customer message) still runs exactly as it does for a real
+            # vend.
             self._event_recorder.record(
                 "vend_failed",
                 value=price,

@@ -2549,6 +2549,63 @@ class TestRunTestSale:
         assert vmc.credit_escrow == 0.0
         assert vmc.escrow_credits == []
         assert any(t == "test_run" for t, *_ in rec.events)
+        # Copilot review (PR 22, id=4128088653): on_vend_failed must not
+        # write its own vend_failed row for a test sale -- that row is
+        # what EventRecorder.get_summary() counts into vends_failed. Only
+        # the test_run row above should exist for this failed run.
+        assert not any(t == "vend_failed" for t, *_ in rec.events)
+
+    async def test_vend_failed_test_sale_does_not_move_vends_failed_kpi(self, tmp_path):
+        """Same scenario as the test above, but against the REAL
+        EventRecorder and its real get_summary(), the actual KPI the
+        review comment and the PR description both promise is untouched
+        by a test sale -- not the FakeEventRecorder's event list, which
+        only proves what got *recorded*, not what the KPI query computes
+        from it. A second, real (non-test) failed vend on a different SKU
+        afterwards still moves vends_failed, proving the fix didn't
+        silently disable the KPI altogether.
+        """
+        cfg = ConfigModel()
+        cfg.physical.products = [
+            Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0),
+            Product(sku="WATER-1", name="Water", price=1.00, slot=1),
+        ]
+        vmc = VMC(config=cfg)
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        client = RecordingClient()
+        vmc.set_mqtt_client(client)
+        recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
+        vmc.set_event_recorder(recorder)
+
+        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        assert granted is True
+        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        await asyncio.sleep(0)
+        vmc._process_payment()
+        assert vmc.state == "dispensing"
+        await vmc._handle_mqtt_dispenser(
+            "hardware/dispenser", {"slot": 0, "state": "jam"}
+        )
+        result = await asyncio.wait_for(task, timeout=5)
+        assert result.outcome == "vend_failed"
+
+        recorder.flush()
+        assert recorder.get_summary(24)["vends_failed"] == 0
+
+        released = vmc.end_maintenance("sess-1")
+        assert released is True
+
+        # A real (non-test) failed vend on the other SKU still moves it.
+        vmc.machine.set_state("interacting_with_user")
+        vmc.selected_product = vmc.products[1]
+        vmc.deposit_funds(1.00, payment_method="cash_bill")
+        vmc._process_payment()
+        assert vmc.state == "dispensing"
+        await vmc._handle_mqtt_dispenser(
+            "hardware/dispenser", {"slot": 1, "state": "jam"}
+        )
+        recorder.flush()
+        assert recorder.get_summary(24)["vends_failed"] == 1
 
     async def test_timeout_test_sale_returns_timeout_distinct_from_vend_failed(self):
         """Reaches _dispense_timed_out (the real timeout callback the
@@ -2578,6 +2635,10 @@ class TestRunTestSale:
         test_run_events = [e for e in rec.events if e[0] == "test_run"]
         assert len(test_run_events) == 1
         assert test_run_events[0][2]["outcome"] == "timeout"
+        # Copilot review (PR 22, id=4128088653): _dispense_timed_out also
+        # reaches on_vend_failed via _fail_vend -- must not write its own
+        # vend_failed row for a test sale either.
+        assert not any(t == "vend_failed" for t, *_ in rec.events)
 
     async def test_production_sale_immediately_after_test_sale_records_normally(self):
         """Part 3's guarantee still holds right after a test sale on the
