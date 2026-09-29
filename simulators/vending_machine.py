@@ -511,11 +511,19 @@ class VendingMachineSimulator(ESP32Simulator):
         guaranteed.
         """
         seconds = cmd.params["seconds"]
-        await self._set_hw(client, "water_valve_solenoid", True)
-        await self._set_hw(client, "water_flow_sensor", True)
-        await asyncio.sleep(seconds)
-        await self._set_hw(client, "water_valve_solenoid", False)
-        await self._set_hw(client, "water_flow_sensor", False)
+        try:
+            await self._set_hw(client, "water_valve_solenoid", True)
+            await self._set_hw(client, "water_flow_sensor", True)
+            await asyncio.sleep(seconds)
+        finally:
+            # Copilot review (PR 22): the shutdown belongs here, not after
+            # the sleep, so a cancelled task (MQTT disconnect) or either
+            # hardware update raising still closes the valve and clears
+            # the flow sensor instead of leaving them enabled indefinitely.
+            # Idempotent to call even when the opening updates never
+            # completed (or never ran at all).
+            await self._set_hw(client, "water_valve_solenoid", False)
+            await self._set_hw(client, "water_flow_sensor", False)
         return {"seconds": seconds}
 
     async def _listen_for_commands(self, client: aiomqtt.Client):

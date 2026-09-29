@@ -971,6 +971,59 @@ class TestWaterValveCommand:
 
         set_hw.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_cancelled_mid_sleep_still_closes_valve(self):
+        """Copilot review (PR 22, id=4128088539): if this task is cancelled
+        during the sleep (e.g. an MQTT disconnect), the valve/flow states
+        must not remain enabled indefinitely. Proved by actually cancelling
+        a running handler task and reading hardware state back, not by
+        reasoning about the code."""
+        sim = _make_sim()
+        client = AsyncMock()
+        sim.publish = AsyncMock()
+        cmd = _make_command("water_valve", {"seconds": 10})
+
+        task = asyncio.create_task(sim._handle_water_valve(client, cmd))
+        await asyncio.sleep(0.02)  # let it open the valve and reach the sleep
+        assert sim._hw["water_valve_solenoid"] is True
+        assert sim._hw["water_flow_sensor"] is True
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert sim._hw["water_valve_solenoid"] is False
+        assert sim._hw["water_flow_sensor"] is False
+
+    @pytest.mark.asyncio
+    async def test_hardware_update_raising_still_closes_valve(self):
+        """Copilot review (PR 22, id=4128088539): 'either awaited hardware
+        update raises' -- here the flow-sensor-on update raises after the
+        valve solenoid was already opened; the valve must still end up
+        closed rather than stuck open."""
+        sim = _make_sim()
+        client = AsyncMock()
+        sim.publish = AsyncMock()
+        cmd = _make_command("water_valve", {"seconds": 1})
+
+        real_set_hw = sim._set_hw
+        call_count = 0
+
+        async def _flaky_set_hw(client, device, state):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:  # the water_flow_sensor True update
+                raise RuntimeError("simulated MQTT publish failure")
+            await real_set_hw(client, device, state)
+
+        sim._set_hw = _flaky_set_hw
+
+        with pytest.raises(RuntimeError, match="simulated MQTT publish failure"):
+            await sim._handle_water_valve(client, cmd)
+
+        assert sim._hw["water_valve_solenoid"] is False
+        assert sim._hw["water_flow_sensor"] is False
+
     def test_real_wire_construction_rejects_before_reaching_the_handler(self):
         """Documents the adjacent base.py behaviour (see class docstring):
         going through the real `SubsystemCommand.model_validate` path (what
