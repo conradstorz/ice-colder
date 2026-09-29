@@ -213,7 +213,7 @@ async def test_sweep_releases_lease_once_holder_session_is_gone(loud_log):
     vmc.cancel_pending_tasks()
 
 
-async def test_sweep_defers_release_while_a_run_is_in_flight():
+async def test_sweep_defers_release_while_a_run_is_in_flight(loud_log):
     vmc = make_vmc2()
     vmc.attach_to_loop(asyncio.get_running_loop())
     vmc.set_session_liveness(lambda session_id: False)  # already gone
@@ -227,11 +227,56 @@ async def test_sweep_defers_release_while_a_run_is_in_flight():
 
         assert vmc.maintenance_hold is not None
         assert vmc.maintenance_hold.release_requested is True
+        assert vmc.maintenance_hold.release_reason == "session_ended"
 
     # The run's own `finally` (_maintenance_run_finished) performs the
-    # deferred release once runs_in_flight settles back to zero.
+    # deferred release once runs_in_flight settles back to zero, and must
+    # attribute it to "session_ended" (the sweep's own reason), not the
+    # generic "admin" _maintenance_run_finished falls back to.
     assert vmc.maintenance_hold is None
     assert "SVC-102" not in _active_fault_codes(vmc)
+    assert any(
+        "released (session_ended)" in msg or "cleared (session_ended)" in msg
+        for msg in loud_log
+    )
+    vmc.cancel_pending_tasks()
+
+
+async def test_idle_timer_defers_release_while_a_run_is_in_flight_and_is_attributed(
+    loud_log,
+):
+    # Standby leases are normally released via the session-liveness sweep,
+    # not the idle timer -- but with no predicate wired (begin_standby's
+    # fallback), the idle timer is the lease's only automatic release path
+    # (see _maintenance_idle_expired's docstring), so its own in-flight
+    # deferral must be attributed to "idle_timeout", not misreported as
+    # "admin" once the run settles.
+    vmc = make_vmc2()
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    granted, _ = vmc.begin_standby("user-1", "sess-1")
+    assert granted is True
+    assert vmc._maintenance_idle_task is not None  # no predicate: idle-timer fallback
+
+    with vmc.maintenance_test_run():
+        assert vmc.maintenance_hold.runs_in_flight == 1
+        vmc.maintenance_hold.last_activity_at -= (
+            vmc.MAINTENANCE_IDLE_TIMEOUT_SECONDS + 1
+        )
+
+        vmc._maintenance_idle_expired()
+
+        assert vmc.maintenance_hold is not None
+        assert vmc.maintenance_hold.release_requested is True
+        assert vmc.maintenance_hold.release_reason == "idle_timeout"
+
+    # The run's own `finally` performs the deferred release once
+    # runs_in_flight settles back to zero, attributed to "idle_timeout".
+    assert vmc.maintenance_hold is None
+    assert "SVC-102" not in _active_fault_codes(vmc)
+    assert any(
+        "released (idle_timeout)" in msg or "cleared (idle_timeout)" in msg
+        for msg in loud_log
+    )
     vmc.cancel_pending_tasks()
 
 

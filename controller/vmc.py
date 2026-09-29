@@ -153,6 +153,15 @@ class MaintenanceHold:
     last_activity_at: float
     runs_in_flight: int = 0
     release_requested: bool = False
+    #: The ``by`` reason a deferred release should ultimately be logged and
+    #: cleared with -- set alongside ``release_requested`` at every site
+    #: that defers ("admin" from end_maintenance, "idle_timeout" from
+    #: _maintenance_idle_expired, "session_ended" from
+    #: _maintenance_sweep_tick) and read by _maintenance_run_finished so a
+    #: session-ended or idle-timeout release isn't misattributed to
+    #: "admin" once the in-flight run settles. Reset to None wherever
+    #: release_requested is reset to False (take_over_maintenance).
+    release_reason: str | None = None
     #: A standby lease (system-tests design §2.2a) is taken explicitly by a
     #: tech to make a busy machine idle and hold it out of service for the
     #: whole of their login. It differs from the opportunistic lease in
@@ -1853,6 +1862,7 @@ class VMC:
             return
         if hold.runs_in_flight > 0:
             hold.release_requested = True
+            hold.release_reason = "idle_timeout"
             logger.info("Maintenance lease idle timeout with a run in flight; deferred")
             return
         logger.info("Maintenance lease idle for 5 minutes; releasing")
@@ -1918,6 +1928,7 @@ class VMC:
             return
         if hold.runs_in_flight > 0:
             hold.release_requested = True
+            hold.release_reason = "session_ended"
             logger.info(
                 "Standby sweep found holder session gone with a run in flight; deferred"
             )
@@ -2036,6 +2047,7 @@ class VMC:
             return False
         if hold.runs_in_flight > 0:
             hold.release_requested = True
+            hold.release_reason = "admin"
             logger.info(
                 f"Maintenance release requested by session={session_id}; "
                 f"deferred, {hold.runs_in_flight} run(s) in flight"
@@ -2070,6 +2082,7 @@ class VMC:
         hold.started_at = now
         hold.last_activity_at = now
         hold.release_requested = False
+        hold.release_reason = None
         if hold.standby:
             self._arm_maintenance_sweep()
         else:
@@ -2107,7 +2120,7 @@ class VMC:
         hold.runs_in_flight = max(0, hold.runs_in_flight - 1)
         if hold.runs_in_flight == 0 and hold.release_requested:
             logger.info("Last in-flight maintenance run settled; releasing lease")
-            self._release_maintenance_hold(by="admin")
+            self._release_maintenance_hold(by=hold.release_reason or "admin")
 
     @contextmanager
     def maintenance_test_run(self):
