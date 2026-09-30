@@ -65,7 +65,9 @@
            for boosted navigation, and that attribute is inherited by any
            descendant that doesn't declare its own (htmx's ne() walks up the
            tree). Without an explicit self-target here, this span's own
-           "load, every 5s" poll would target the page's <main> instead of
+           "load, every 5s" poll (the swapped-in partials/pill.html copy
+           carries "every 5s" alone — see its comment) would target the
+           page's <main> instead of
            itself — its outerHTML swap would then replace <main> wholesale
            with this bare span, destroying it (and, once gone,
            document.querySelector("main") returns null forever after, so

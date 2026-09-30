@@ -98,9 +98,14 @@ class TestShellBar:
             assert "cdn.tailwindcss.com" not in resp.text
 
     def test_pill_placeholder_polls_every_5s(self, client):
+        """base.html's initial placeholder is the one copy that carries
+        `load` — it must fetch the pill's real state immediately on a full
+        page load, before any swap has happened."""
         resp = client.get("/")
-        assert 'hx-get="/pill"' in resp.text
-        assert "every 5s" in resp.text
+        elements = find_by_id(parse_elements(resp.text), "pill")
+        assert len(elements) == 1
+        assert elements[0].attrs.get("hx-get") == "/pill"
+        assert elements[0].attrs.get("hx-trigger") == "load, every 5s"
 
 
 class TestPollingDoesNotTouchSessionIdle:
@@ -3228,13 +3233,18 @@ class TestPillEndpoint:
     def test_pill_response_still_carries_its_own_polling_attributes(self, client):
         """hx-swap="outerHTML" replaces the whole <span id="pill">, so the
         response itself must carry id, hx-get and hx-trigger or polling
-        stops after the first tick (executor resolution 4)."""
+        stops after the first tick (executor resolution 4). The trigger is
+        `every 5s` WITHOUT `load`: htmx fires `load` on every freshly
+        swapped-in element, so a `load` here would re-poll immediately
+        after each swap instead of waiting 5 s (Task 5 brief)."""
         resp = client.get("/pill")
         assert resp.status_code == 200
-        assert 'id="pill"' in resp.text
-        assert 'hx-get="/pill"' in resp.text
-        assert 'hx-trigger="load, every 5s"' in resp.text
-        assert 'hx-swap="outerHTML"' in resp.text
+        elements = find_by_id(parse_elements(resp.text), "pill")
+        assert len(elements) == 1
+        attrs = elements[0].attrs
+        assert attrs.get("hx-get") == "/pill"
+        assert attrs.get("hx-trigger") == "every 5s"
+        assert attrs.get("hx-swap") == "outerHTML"
 
     def test_pill_is_red_and_names_the_fault_code(self, client, wired):
         _cfg, vmc, _inv, _store = wired

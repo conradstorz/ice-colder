@@ -13,6 +13,13 @@
    (Task 5 brief, executor resolution 4) — do not drop any of the three
    attributes below when touching this file.
 
+   The trigger here is `every 5s` WITHOUT `load`: htmx fires `load` on
+   every freshly swapped-in element, so a `load` here would re-poll
+   immediately after each outerHTML swap instead of waiting the 5 s
+   interval, defeating it entirely. Only base.html's initial placeholder
+   carries `load` (it must fetch immediately on page load, before any
+   swap has happened).
+
    Context (from routes/home.py's `pill()`):
      pill_state - "ok" | "fault" | "neutral" (missing VMC)
      pill_text  - "OK", a fault code (e.g. "ICE-301"), or an em dash
@@ -21,5 +28,5 @@
 {# hx-target="this": see base.html's copy of this span for why an explicit
    self-target is required — without it, this span inherits <body>'s
    hx-target="main" and its outerHTML swap replaces <main> itself. #}
-<span id="pill" hx-get="/pill" hx-trigger="load, every 5s" hx-swap="outerHTML" hx-target="this"
+<span id="pill" hx-get="/pill" hx-trigger="every 5s" hx-swap="outerHTML" hx-target="this"
       class="inline-flex items-center rounded-full {{ pill_colors.get(pill_state, 'bg-slate-400') }} text-white text-xs font-semibold uppercase tracking-wide px-2 py-1">{{ pill_text }}</span>
