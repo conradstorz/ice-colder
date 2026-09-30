@@ -41,7 +41,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv sync --locked
-      # Pinned, explicit Chrome build for the three opt-in browser tests below —
+      # Pinned, explicit Chrome build for the four opt-in browser tests below —
       # deliberately not whatever ubuntu-latest happens to ship, which changes
       # without notice. Chrome for Testing has archived per-major downloads
       # since ~113; 130 is a stable, comfortably-available pin.
@@ -59,7 +59,7 @@ jobs:
         with:
           node-version: "24"
       # e2e tests skip without a broker on localhost:1883; everything else
-      # runs, including the 3 opt-in browser tests (enabled below) — a guard
+      # runs, including the 4 opt-in browser tests (enabled below) — a guard
       # step immediately after this one fails CI if any of them skip instead
       # of running, so a broken Chrome/Node discovery can't hide behind a
       # green suite.

@@ -147,3 +147,22 @@ def test_extractor_skips_only_jinja_fragments():
     )
     classes = extract_classes(html)
     assert classes == {"p-2", "rounded-xl", "border", "shadow-sm"}
+
+
+def test_app_css_carries_touch_feedback_rules():
+    """The touch-feedback rules live in @layer base of tailwind.input.css
+    (spec 2026-09-30 §4.1). They are element selectors, not classes, so the
+    coverage test above cannot see them; this catches a source edit that
+    was never rebuilt into the committed app.css."""
+    css = APP_CSS_PATH.read_text(encoding="utf-8")
+    for needle in (
+        ":active",
+        ".htmx-request",
+        ":focus-visible",
+        "accent-color:",
+        "-webkit-tap-highlight-color:transparent",
+        "touch-action:manipulation",
+        "@keyframes spin",
+        "@media (hover:hover)",
+    ):
+        assert needle in css, f"{needle!r} missing from app.css — rebuild it"
