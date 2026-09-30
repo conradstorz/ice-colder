@@ -54,7 +54,7 @@ _TILE_DEFS: list[tuple[str, str, str, frozenset, bool]] = [
         LEVEL_REPORTS.url,
         "reports",
         frozenset({Permission.view_reports}),
-        True,
+        False,
     ),
     (
         "Controls",
@@ -63,7 +63,7 @@ _TILE_DEFS: list[tuple[str, str, str, frozenset, bool]] = [
         frozenset({Permission.machine_controls}),
         False,
     ),
-    ("Tests", LEVEL_TESTS.url, "tests", frozenset({Permission.run_tests}), True),
+    ("Tests", LEVEL_TESTS.url, "tests", frozenset({Permission.run_tests}), False),
     (
         "Users",
         LEVEL_USERS.url,
