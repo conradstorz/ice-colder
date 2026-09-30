@@ -206,8 +206,13 @@ async function main() {
     if (pausedRequestId) {
       await cmd("Fetch.continueRequest", { requestId: pausedRequestId });
     }
-    await sleep(1500);
-    out.landedOnHealth = (await evalJs("location.pathname")) === "/health";
+    let landedPath = await evalJs("location.pathname");
+    const landDeadline = Date.now() + 5000;
+    while (landedPath !== "/health" && Date.now() < landDeadline) {
+      await sleep(100);
+      landedPath = await evalJs("location.pathname");
+    }
+    out.landedOnHealth = landedPath === "/health";
     // #pill excluded -- see the header comment: it re-emits its own
     // hx-trigger="load" on every self-swap and is perpetually
     // mid-request/settle on any live page, unrelated to this click. Every
