@@ -10,8 +10,10 @@ swap target by walking up the DOM for an *inherited* hx-target when the
 element declares none of its own, and base.html's
 `<body hx-boost="true" hx-target="main" ...>` means any self-polling
 element that omits its own hx-target inherits "main". #status-panel,
-#kpi-panel (home.html) and #pill (base.html / partials/pill.html) each
-fire an `hx-trigger="load"` request the instant the Home page loads;
+#kpi-panel (home.html) and #pill (base.html's placeholder) each fire an
+`hx-trigger="load"` request the instant the Home page loads (the
+swapped-in partials/pill.html fragment then re-polls on `every 5s` alone,
+so the checker re-samples <main> after that first self-swap too);
 without an explicit `hx-target="this"` on each, their responses landed on
 the page's <main> instead of on themselves — the first to land (an
 innerHTML swap) wiped out main's real content (the tile grid included),
@@ -196,5 +198,7 @@ def test_home_dom_is_intact_in_a_real_browser(live_server):
     )
     assert payload["mains"] == 1
     assert payload["pills"] == 1
+    assert payload["mainsAfterFragmentPoll"] == 1
+    assert payload["pillsAfterFragmentPoll"] == 1
     assert payload["tileAnchors"] > 0
     assert payload["pillResolved"] is True

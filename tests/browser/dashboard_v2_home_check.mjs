@@ -9,8 +9,9 @@
 // hx-target when the element declares none of its own — and base.html's
 // <body hx-boost="true" hx-target="main" ...> means any self-polling
 // element that omits its own hx-target inherits "main". #status-panel,
-// #kpi-panel and #pill (partials/pill.html, base.html) all fire an
-// hx-trigger="load" request the instant the page loads; without an
+// #kpi-panel and #pill (base.html's placeholder) all fire an
+// hx-trigger="load" request the instant the page loads (the swapped-in
+// partials/pill.html fragment then re-polls on "every 5s" alone); without an
 // explicit hx-target="this" on each, their responses land on the page's
 // <main> instead of themselves — the first to land (an innerHTML swap)
 // wipes out main's real content, and the next (the pill's outerHTML swap)
@@ -146,7 +147,15 @@ async function main() {
     }
     out.pillTextSamples = samples;
     out.pillResolved = samples.some((s) => s !== "…" && s !== "MISSING");
-    out.ok = out.mains === 1 && out.pills === 1 && out.tileAnchors > 0 && out.pillResolved;
+    // Re-sample after ~8s: the swapped-in /pill fragment (partials/pill.html)
+    // carries only "every 5s" — no "load" — so its first *own* self-swap
+    // happens ~5s after the placeholder's load-triggered fetch, well after
+    // the 2s snapshot above. Only this late read proves the fragment's
+    // hx-target="this" (not just the placeholder's) keeps <main> intact.
+    out.mainsAfterFragmentPoll = await evalJs(`document.querySelectorAll('main').length`);
+    out.pillsAfterFragmentPoll = await evalJs(`document.querySelectorAll('#pill').length`);
+    out.ok = out.mains === 1 && out.pills === 1 && out.tileAnchors > 0 && out.pillResolved
+      && out.mainsAfterFragmentPoll === 1 && out.pillsAfterFragmentPoll === 1;
 
     try { ws.close(); } catch { /* already closing */ }
   } finally {

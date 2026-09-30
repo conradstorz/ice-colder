@@ -15,25 +15,16 @@
 //   {ok, pressFilter, busyDuringFlight, busyAfterSwap, landedOnHealth, plays, error?}
 // `ok` is true iff: pressFilter is not "none" (the :active brightness
 // filter applied), the Health tile carries .htmx-request while its
-// boosted GET is deliberately held in flight, no element other than #pill
-// carries .htmx-request after the swap completes, the boosted navigation
-// landed on /health, and the click-sound play() spy was invoked at least
-// once. #pill is excluded from the after-swap busy check because it is a
-// known, pre-existing, unrelated defect (not introduced by this feature):
-// partials/pill.html re-emits hx-get/hx-trigger="load, every 5s"/hx-target
-// on every outerHTML swap of itself, so each swap's freshly inserted
-// element immediately fires its own "load" trigger and starts a new
-// request -- #pill is *always* mid-request-or-settle on a live page, even
-// at baseline with no interaction at all. Confirmed by hand: right after
-// the very first page load (before any click), #pill already carries
-// "htmx-request"; a snapshot mid-cycle shows "htmx-request htmx-swapping
-// htmx-added htmx-settling" together while its text already reads the
-// resolved value ("OK"), i.e. it is perpetually re-triggering, not stuck.
+// boosted GET is deliberately held in flight, no element at all carries
+// .htmx-request once the swap has settled, the boosted navigation landed
+// on /health, and the click-sound play() spy was invoked at least once.
 // busyDuringFlight (read from the specific Health-tile anchor) is the
-// positive control proving the class-presence check itself works; this
-// after-swap check stays a real regression guard for every *other*
-// element (the tile itself, any form) by excluding only the one element
-// known to loop.
+// positive control proving the class-presence check itself works. The
+// after-swap check is document-wide on purpose: the OOB-swapped bar
+// re-delivers #pill's placeholder with a "load" trigger, so one /pill
+// round-trip is legitimately in flight right after landing, and the
+// short settle loop below absorbs it — anything still busy after that is
+// a real regression (an element that never clears its busy state).
 import { spawn } from "node:child_process";
 import { mkdtempSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -213,16 +204,15 @@ async function main() {
       landedPath = await evalJs("location.pathname");
     }
     out.landedOnHealth = landedPath === "/health";
-    // #pill excluded -- see the header comment: it re-emits its own
-    // hx-trigger="load" on every self-swap and is perpetually
-    // mid-request/settle on any live page, unrelated to this click. Every
-    // other element is a real regression guard. Poll briefly rather than
-    // trust a single fixed-delay snapshot, since settling is async.
-    out.busyAfterSwap = await evalJs(`!!document.querySelector(".htmx-request:not(#pill)")`);
+    // Document-wide: nothing may stay busy once the swap has settled. Poll
+    // briefly rather than trust a single fixed-delay snapshot — settling
+    // is async, and the OOB bar's re-delivered #pill placeholder fires one
+    // legitimate /pill request on landing (see the header comment).
+    out.busyAfterSwap = await evalJs(`!!document.querySelector(".htmx-request")`);
     const clearDeadline = Date.now() + 1000;
     while (out.busyAfterSwap && Date.now() < clearDeadline) {
       await sleep(100);
-      out.busyAfterSwap = await evalJs(`!!document.querySelector(".htmx-request:not(#pill)")`);
+      out.busyAfterSwap = await evalJs(`!!document.querySelector(".htmx-request")`);
     }
     out.debugBusyElements = await evalJs(
       `Array.from(document.querySelectorAll(".htmx-request")).map(e => e.id || e.className)`,
