@@ -1,6 +1,6 @@
 """Opt-in, real-browser regression test for touch feedback: the CSS
 :active press state, htmx's `.htmx-request` busy indicator during a
-boosted navigation, and the tap-sound `play()` call.
+boosted navigation, and the click-sound `play()` call.
 
 Every other test in this suite drives the app through FastAPI's
 TestClient, which only ever asserts on the HTML *string* a route handler
@@ -9,11 +9,12 @@ boosted GET, and whether `HTMLMediaElement.play()` was invoked are all
 client-side, browser-executed facts invisible to TestClient — only a real
 browser proves them.
 
-This test is NOT part of the normal `uv run pytest` / CI run (ci.yml has
-no Chrome, and this suite must stay green without one). It is skipped
-unless ICE_COLDER_BROWSER_TESTS=1 is set in the environment AND a Chrome/
-Chromium binary plus a `node` executable can both be found; run it
-explicitly with:
+Opt-in locally: skipped unless ICE_COLDER_BROWSER_TESTS=1 is set in the
+environment AND a Chrome/Chromium binary plus a `node` executable can both
+be found. Mandatory in CI: `.github/workflows/ci.yml` sets the flag and
+installs both Chrome and Node, and `tests/skip_policy.py` deliberately
+excludes browser tests from the set allowed to skip, so a skip here fails
+CI's guard. Run it explicitly with:
 
     ICE_COLDER_BROWSER_TESTS=1 uv run pytest tests/test_touch_feedback_browser.py -v
 """

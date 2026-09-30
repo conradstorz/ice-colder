@@ -1,6 +1,6 @@
 // Real-headless-Chrome check for touch feedback: the CSS :active press
 // state, htmx's `.htmx-request` busy indicator during a boosted GET, and
-// the tap-sound `play()` call. Used by
+// the click-sound `play()` call. Used by
 // tests/test_touch_feedback_browser.py — see that file's docstring for
 // why a browser is required here and why this is opt-in.
 //
@@ -17,7 +17,7 @@
 // filter applied), the Health tile carries .htmx-request while its
 // boosted GET is deliberately held in flight, no element other than #pill
 // carries .htmx-request after the swap completes, the boosted navigation
-// landed on /health, and the tap-sound play() spy was invoked at least
+// landed on /health, and the click-sound play() spy was invoked at least
 // once. #pill is excluded from the after-swap busy check because it is a
 // known, pre-existing, unrelated defect (not introduced by this feature):
 // partials/pill.html re-emits hx-get/hx-trigger="load, every 5s"/hx-target
@@ -143,7 +143,7 @@ async function main() {
     await cmd("Page.navigate", { url: `${baseUrl}/` });
     await sleep(2000); // let the load-triggered polls land and settle
 
-    // 1. Spy on play() so we can prove the tap-sound handler fired.
+    // 1. Spy on play() so we can prove the click-sound handler fired.
     await evalJs(`
       window.__plays = 0;
       HTMLMediaElement.prototype.play = function () {

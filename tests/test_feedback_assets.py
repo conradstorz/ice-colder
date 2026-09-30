@@ -57,9 +57,9 @@ def test_generator_is_reproducible(tmp_path):
     assert mod.render_click() == mod.render_click()
     out = tmp_path / "click.wav"
     mod.main(out)
-    assert (
-        out.read_bytes() == CLICK_WAV.read_bytes()
-    ), "committed click.wav differs from the generator's output; regenerate it"
+    assert out.read_bytes() == CLICK_WAV.read_bytes(), (
+        "committed click.wav differs from the generator's output; regenerate it"
+    )
 
 
 FEEDBACK_JS = STATIC / "feedback.js"
@@ -70,19 +70,28 @@ def test_feedback_js_exists_and_registers_pointerdown():
     src = FEEDBACK_JS.read_text(encoding="utf-8")
     assert "pointerdown" in src
     assert "touchstart" in src
-    assert "tap-sound" in src
+    assert 'new Audio("/static/click.wav")' in src
+    assert 'preload = "auto"' in src
     assert ".play()" in src
 
 
-def test_base_html_wires_audio_and_script():
+def test_base_html_loads_feedback_script_in_head():
     html = BASE_HTML.read_text(encoding="utf-8")
-    assert 'id="tap-sound"' in html
-    assert 'src="/static/click.wav"' in html
-    assert 'preload="auto"' in html
     assert '<script src="/static/feedback.js" defer></script>' in html
     # the script must load after htmx so htmx-request styling and the sound
     # both exist by the time the first swap can happen
     assert html.index("htmx.min.js") < html.index("feedback.js")
+    assert "<audio" not in html
+    assert html.index("feedback.js") < html.index("</head>")
+
+
+def test_boosted_swap_cannot_duplicate_audio():
+    # No <audio> markup anywhere in base.html: the script creates its own
+    # Audio object once, so a boosted outerHTML swap of <main> can never
+    # insert a second one.
+    html = BASE_HTML.read_text(encoding="utf-8")
+    assert "tap-sound" not in html
+    assert "<audio" not in html
 
 
 def test_static_feedback_files_are_served():

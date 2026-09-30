@@ -1,14 +1,20 @@
 /* Touch feedback: play a short click sound on tap for every tappable
  * element. See docs/superpowers/specs/2026-09-30-touch-feedback-design.md
- * §4.3. The TAPPABLE selector below must match, token for token, the
- * selector list used in web_interface/tailwind.input.css for the :active
- * press-state CSS (Task 3).
+ * §4.3-4.4 -- the script owns a single Audio object it creates itself
+ * (no <audio> markup in base.html), so a boosted navigation's outerHTML
+ * swap of <main> can never duplicate it. The TAPPABLE selector below must
+ * match, token for token, the selector list used in
+ * web_interface/tailwind.input.css for the :active press-state CSS
+ * (Task 3).
  *
  * ES5 syntax, no dependencies -- vendored alongside htmx for the offline
  * tablet dashboard.
  */
 (function () {
   "use strict";
+
+  var audio = new Audio("/static/click.wav");
+  audio.preload = "auto";
 
   // iOS Safari only applies :active styling to an element when a
   // touchstart listener exists somewhere on the page.
@@ -24,10 +30,6 @@
   document.addEventListener(
     "pointerdown",
     function (event) {
-      var audio = document.getElementById("tap-sound");
-      if (!audio) {
-        return;
-      }
       if (!(event.target instanceof Element) || !event.target.closest(TAPPABLE)) {
         return;
       }
