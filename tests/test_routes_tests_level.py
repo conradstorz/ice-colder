@@ -17,7 +17,7 @@ Fixtures come from tests/conftest.py.
 """
 
 import pytest
-from re import DOTALL, search as re_search
+from re import DOTALL, findall as re_findall, search as re_search
 from services.access import Role
 
 
@@ -165,12 +165,26 @@ class TestTestsNoActionsMixin:
         body = self._extract_main_body(response.text)
         assert 'hx-post="/tests/run-all"' in body
 
-    def test_no_hx_get_in_body(self, client):
-        """Body contains no hx-get attributes (the shell bar has one for the pill)."""
+    def test_only_hx_get_in_body_is_the_standby_confirm(self, client):
+        """Body's only hx-get is the always-rendered service-state card's
+        own confirm_url (Task 3, system-tests design §2.2a): the standard
+        confirm_button.html two-tap pattern already used elsewhere (e.g.
+        health_faults.html's Clear button) for "Take out of service".
+
+        Before Task 3 the body had no hx-get at all -- Task 13a's
+        discovery-only content used hx-post for its one action (Run all)
+        and plain `<a href>` links for navigation. This narrows that
+        absolute assertion rather than dropping it outright, so a stray
+        hx-get anywhere else in the body (a polling trigger, say) still
+        fails loudly.
+        """
         response = client.get("/tests")
         assert response.status_code == 200
         body = self._extract_main_body(response.text)
-        assert "hx-get" not in body, "Tests level must contain no hx-get in body"
+        assert 'hx-get="/tests/standby/confirm"' in body
+        assert re_findall(r'hx-get="[^"]*"', body) == [
+            'hx-get="/tests/standby/confirm"'
+        ]
 
     def test_bar_still_has_expected_attributes(self, client):
         """Verify bar (outside main) has its expected HTMX attributes.

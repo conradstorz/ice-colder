@@ -213,6 +213,72 @@ the credit never enters escrow and cannot be spent after the hold ends.
 Payment is disabled for the whole lease, so this covers only the race
 between the disable command and a coin already in the mechanism.
 
+### 2.2a Standby: taking the machine out of service
+
+The lease in §2.2 is *opportunistic*: it is granted only when the machine
+happens to be idle with no credit, and it releases itself after five idle
+minutes. On a busy machine (a customer walking away with credit on the
+display, or a simulator that never stops pressing buttons) that lease can
+never be taken, so every test refuses with "machine is mid-sale". A tech at
+the machine needs the opposite: an explicit way to *make* it idle and keep
+it out of service for as long as they are logged in.
+
+**Standby** is the same `MaintenanceHold` with `standby: bool = True`,
+granted by `VMC.begin_standby(user_id, session_id) -> (bool, reason)`:
+
+- From `interacting_with_user`, or `idle` with credit on the machine: any
+  escrow is refunded through the existing `request_refund(reason="maintenance")`
+  path, the customer session timer is cancelled, the selection is cleared
+  and the FSM is forced to `idle` (the `cancel_sale` transition for
+  `interacting_with_user`). Then the lease is granted.
+- From `error`: escrow is refunded the same way and the lease is granted
+  with the FSM left in `error` — the fault that parked it there is still
+  the operator's to clear. Command tests work in this state; a test sale
+  refuses as it does for any non-idle FSM.
+- From `dispensing`: refused with "vend finishing, tap again" — a running
+  motor is never aborted, and a vend lasts seconds.
+- When a lease already exists: refused with "held by <id>" unless the caller's
+  own session holds it, in which case the existing lease is *upgraded* to
+  standby in place (its idle timer is cancelled).
+
+A standby lease differs from the opportunistic one in exactly two ways:
+
+1. **No idle release.** The five-minute idle timer is never armed for it,
+   and `_maintenance_idle_expired` ignores it. The machine stays out of
+   service until the holder presses **Return to service** (`/tests/end`)
+   or their web session ends.
+2. **Bound to the holder's web session.** Lock (which posts `/logout`), the
+   shared-device idle lock, the absolute session cap, and the user being
+   disabled all end the session; the lease follows within 30 s. Because
+   `AccessStore` expires sessions lazily (only when the cookie is next
+   presented), the VMC sweeps: while a standby lease exists it asks a
+   liveness predicate every 30 s and releases with reason `session_ended`
+   when the holder's session is gone. The predicate is
+   `AccessStore.session_is_live(session_id) -> bool`, which applies the
+   same idle-limit and absolute-cap rules as `resolve_session` **without
+   refreshing `last_active_at`** — the sweep must never keep the session
+   alive that it is checking. It is wired in `main.py` via
+   `VMC.set_session_liveness(predicate)`; with no predicate wired, a
+   standby lease behaves like the opportunistic one (idle timer armed).
+
+Both kinds of lease share everything else: `runs_in_flight` deferral of a
+release, credit refunded on arrival, `SVC-102` raised for the whole lease,
+takeover after 60 s idle with no run in flight, never persisted.
+
+**Tests level.** A card at the top of `/tests` shows the machine's service
+state. In service: a two-tap **Take out of service** button (the shared
+`partials/confirm_button.html`) posting `/tests/standby`. Out of service:
+"Out of service since HH:MM, held by <name>" and **Return to service**
+(`/tests/end`) for the holder, **Take over** for anyone else. When a test
+is refused because the machine is busy, the refusal reads "machine is busy
+— take it out of service first" and sits next to that button. Run all,
+single commands and test sales still take the opportunistic lease on an
+idle machine exactly as before, so a quick test needs no extra tap.
+
+**Home hero.** While `SVC-102` is active the hero reads "Out of service —
+maintenance by <name>" in place of the fault line. The pill already shows
+it through the fault.
+
 ### 2.3 Test sales
 
 Test-ness is a property of the sale, not of the global hold. The VMC's
@@ -285,7 +351,7 @@ the writer thread). `get_summary` ignores `test_run`.
   stays until the operator leaves or the timer expires.
 - `rejected` / `failed` / `unsupported` acks show the message verbatim.
 - A test started while the FSM is not idle is refused before anything is
-  sent.
+  sent, with a pointer to **Take out of service** (§2.2a).
 - Broker down: the dispatcher raises immediately with the broker fault code;
   the Tests level shows every subsystem as unreachable.
 - The maintenance lease is never persisted: a restart clears it, matching

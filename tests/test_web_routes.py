@@ -103,6 +103,37 @@ class TestShellBar:
         assert "every 5s" in resp.text
 
 
+class TestPollingDoesNotTouchSessionIdle:
+    """A GET against one of the three fragments the v2 shell polls on a
+    timer (web_auth.POLLING_PATHS) must not refresh the session's idle
+    clock, or an unattended-but-open tab could keep a shared-device
+    session -- and any standby maintenance lease bound to it -- alive
+    forever (system-tests design §2.2a). An ordinary navigation (GET /)
+    must still refresh it as before.
+    """
+
+    def test_pill_leaves_last_active_at_unchanged(self, wired, client):
+        _cfg, _vmc, _inv, store = wired
+        session_id = client.cookies.get(web_auth.SESSION_COOKIE)
+        before = store._sessions[session_id].last_active_at
+
+        resp = client.get("/pill")
+
+        assert resp.status_code == 200
+        assert store._sessions[session_id].last_active_at == before
+
+    def test_home_refreshes_last_active_at(self, wired, client):
+        _cfg, _vmc, _inv, store = wired
+        session_id = client.cookies.get(web_auth.SESSION_COOKIE)
+        store._sessions[session_id].last_active_at -= 1.0
+        before = store._sessions[session_id].last_active_at
+
+        resp = client.get("/")
+
+        assert resp.status_code == 200
+        assert store._sessions[session_id].last_active_at != before
+
+
 class TestHomeSelfPollTargets:
     """Regression test for the Dashboard v2 Home landing DOM-destruction
     bug: a real browser, not TestClient, was the only thing that ever saw
@@ -916,6 +947,35 @@ class TestStillSellingBanner:
         client = selling_client
         body = client.get("/health/availability", headers={"HX-Request": "true"}).text
         assert "fulfillment" in body
+
+
+class TestMaintenanceHero:
+    """Task 3 (system-tests design §2.2a): while SVC-102 is active AND a
+    MaintenanceHold exists, the /status hero swaps its title for "Out of
+    service — maintenance by <name>" in place of the raw fault wording --
+    reaching web_interface.context.health_snapshot()'s `maintenance` field
+    and partials/status_fragment.html's own override block.
+    """
+
+    @pytest.fixture
+    def maintenance_client(self, client):
+        from services.availability import Availability
+
+        avail = Availability()
+        context.vmc_instance.set_availability(avail)
+        context.set_availability(avail)
+        yield client
+        context.set_availability(None)
+
+    def test_status_shows_out_of_service_with_holder_name(self, maintenance_client):
+        vmc = context.vmc_instance
+        owner = context.access_store.owner()
+        granted, reason = vmc.begin_maintenance(owner.id, "some-other-session")
+        assert granted, reason
+
+        resp = maintenance_client.get("/status")
+        assert f"Out of service — maintenance by {owner.name}" in resp.text
+        assert "Machine Stopped" not in resp.text
 
 
 class TestAvailabilityOnDashboard:

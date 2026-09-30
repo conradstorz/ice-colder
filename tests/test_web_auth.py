@@ -122,8 +122,9 @@ class TestTemplateContext:
 
 
 class _FakeUrl:
-    def __init__(self, scheme):
+    def __init__(self, scheme, path="/"):
         self.scheme = scheme
+        self.path = path
 
 
 class _FakeClient:

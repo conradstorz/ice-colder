@@ -1,6 +1,7 @@
 # controller/vmc.py
 import asyncio
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from uuid import uuid4
@@ -152,6 +153,23 @@ class MaintenanceHold:
     last_activity_at: float
     runs_in_flight: int = 0
     release_requested: bool = False
+    #: The ``by`` reason a deferred release should ultimately be logged and
+    #: cleared with -- set alongside ``release_requested`` at every site
+    #: that defers ("admin" from end_maintenance, "idle_timeout" from
+    #: _maintenance_idle_expired, "session_ended" from
+    #: _maintenance_sweep_tick) and read by _maintenance_run_finished so a
+    #: session-ended or idle-timeout release isn't misattributed to
+    #: "admin" once the in-flight run settles. Reset to None wherever
+    #: release_requested is reset to False (take_over_maintenance).
+    release_reason: str | None = None
+    #: A standby lease (system-tests design §2.2a) is taken explicitly by a
+    #: tech to make a busy machine idle and hold it out of service for the
+    #: whole of their login. It differs from the opportunistic lease in
+    #: exactly two ways: no idle-timer release (VMC._maintenance_idle_expired
+    #: is a no-op for it), and it is swept every VMC.STANDBY_SWEEP_SECONDS
+    #: against the holder's own session liveness instead. See
+    #: VMC.begin_standby.
+    standby: bool = False
 
 
 @dataclass
@@ -209,6 +227,10 @@ class VMC:
     MAINTENANCE_TAKEOVER_IDLE_SECONDS = (
         60.0  # lease must be idle this long to take over
     )
+    # Standby lease (system-tests design §2.2a): how often the session
+    # sweep re-checks the holder's web session liveness. A class attribute
+    # so tests can shrink it rather than waiting out a real 30s interval.
+    STANDBY_SWEEP_SECONDS = 30.0
 
     @logger.catch()
     def __init__(self, config: ConfigModel):
@@ -277,6 +299,15 @@ class VMC:
         # part of any persisted snapshot -- see MaintenanceHold's docstring.
         self._maintenance_hold: MaintenanceHold | None = None
         self._maintenance_idle_task: asyncio.Task | None = None
+        # Standby lease (system-tests design §2.2a): the repeating sweep
+        # task and the liveness predicate it calls. Wired via
+        # set_session_liveness; None means "not wired", in which case a
+        # standby lease falls back to the ordinary idle timer above (see
+        # _arm_maintenance_sweep). _standby_no_predicate_warned logs that
+        # fallback once rather than on every standby grant.
+        self._maintenance_sweep_task: asyncio.Task | None = None
+        self._session_liveness: Callable[[str], bool] | None = None
+        self._standby_no_predicate_warned = False
         # run_test_sale's own bookkeeping (system-tests design §2.3): the
         # Future its completion-handling call sites resolve with
         # (outcome, fault_code) once the sale settles, and the FSM states
@@ -1796,6 +1827,9 @@ class VMC:
         if self._maintenance_idle_task and not self._maintenance_idle_task.done():
             self._maintenance_idle_task.cancel()
         self._maintenance_idle_task = None
+        if self._maintenance_sweep_task and not self._maintenance_sweep_task.done():
+            self._maintenance_sweep_task.cancel()
+        self._maintenance_sweep_task = None
         self._maintenance_hold = None
         self.clear_fault(FaultCode.SVC_102.value, by=by)
         logger.info(f"Maintenance lease released ({by})")
@@ -1812,16 +1846,95 @@ class VMC:
         release request. Never clears the lease while a run is in flight --
         it only sets ``release_requested`` for that run's own completion
         to act on.
+
+        A standby lease is never released by this timer while a liveness
+        predicate is wired -- the sweep owns its lifetime and the idle
+        timer is never armed for it (``begin_standby`` arms the sweep
+        instead); this checks ``hold.standby`` too, belt and braces, in
+        case a future caller re-arms it by mistake. With NO predicate wired
+        (``_arm_maintenance_sweep``'s fallback), the idle timer IS the
+        standby lease's only automatic release, so it must act.
         """
         hold = self._maintenance_hold
         if hold is None:
             return
+        if hold.standby and self._session_liveness is not None:
+            return
         if hold.runs_in_flight > 0:
             hold.release_requested = True
+            hold.release_reason = "idle_timeout"
             logger.info("Maintenance lease idle timeout with a run in flight; deferred")
             return
         logger.info("Maintenance lease idle for 5 minutes; releasing")
         self._release_maintenance_hold(by="idle_timeout")
+
+    def set_session_liveness(self, predicate: Callable[[str], bool] | None) -> None:
+        """Wire (or clear) the predicate the standby sweep uses to check the
+        holder's web session (system-tests design §2.2a).
+
+        ``predicate(session_id) -> bool`` should apply the same rules
+        ``AccessStore.resolve_session`` would, without refreshing the
+        session's own activity -- ``AccessStore.session_is_live`` is the
+        intended implementation, wired in main.py. With no predicate wired
+        (the default), a standby lease falls back to the ordinary idle
+        timer instead of the sweep -- see ``_arm_maintenance_sweep``.
+        """
+        self._session_liveness = predicate
+
+    def _arm_maintenance_sweep(self) -> None:
+        """Arm (or re-arm) the standby lease's session-liveness sweep.
+
+        With no liveness predicate wired, degrades to the ordinary idle
+        timer instead (an opportunistic-style release) and logs the
+        fallback once, not on every standby grant/takeover.
+        """
+        if self._maintenance_sweep_task and not self._maintenance_sweep_task.done():
+            self._maintenance_sweep_task.cancel()
+        self._maintenance_sweep_task = None
+        if self._session_liveness is None:
+            if not self._standby_no_predicate_warned:
+                logger.warning(
+                    "Standby lease granted with no session-liveness predicate "
+                    "wired; falling back to the idle timer (see "
+                    "VMC.set_session_liveness)"
+                )
+                self._standby_no_predicate_warned = True
+            self._arm_maintenance_idle_timer()
+            return
+        self._maintenance_sweep_task = self._schedule(
+            self.STANDBY_SWEEP_SECONDS, self._maintenance_sweep_tick
+        )
+
+    def _maintenance_sweep_tick(self) -> None:
+        """One tick of the standby sweep: re-arms itself (a repeating chain
+        via ``_schedule``) as long as a standby lease exists and its
+        holder's session is still live.
+
+        Mirrors ``_maintenance_idle_expired``'s in-flight deferral: when
+        the session is gone but a run is in flight, this sets
+        ``release_requested`` for that run's own completion to act on
+        (``_maintenance_run_finished``) rather than releasing here, and does
+        not keep chaining -- the run's completion is what releases it.
+        """
+        hold = self._maintenance_hold
+        if hold is None or not hold.standby:
+            return
+        if self._session_liveness is not None and self._session_liveness(
+            hold.holder_session_id
+        ):
+            self._maintenance_sweep_task = self._schedule(
+                self.STANDBY_SWEEP_SECONDS, self._maintenance_sweep_tick
+            )
+            return
+        if hold.runs_in_flight > 0:
+            hold.release_requested = True
+            hold.release_reason = "session_ended"
+            logger.info(
+                "Standby sweep found holder session gone with a run in flight; deferred"
+            )
+            return
+        logger.info("Standby sweep found holder session gone; releasing")
+        self._release_maintenance_hold(by="session_ended")
 
     def begin_maintenance(
         self, user_id: str, session_id: str
@@ -1854,6 +1967,72 @@ class VMC:
         logger.info(f"Maintenance lease granted to user={user_id} session={session_id}")
         return True, None
 
+    def begin_standby(self, user_id: str, session_id: str) -> tuple[bool, str | None]:
+        """Take the machine out of service, making it idle first if needed
+        (system-tests design §2.2a).
+
+        Unlike ``begin_maintenance``, standby does not require the machine
+        to already be idle with zero escrow -- it gets there itself:
+        whatever credit is on the machine is refunded (``reason=
+        "maintenance"``) and any live customer session is cancelled before
+        the lease is granted with ``standby=True`` (no idle timer; the
+        session sweep is armed instead).
+
+        Refused exactly like ``begin_maintenance``'s two busy cases --
+        ``"vend finishing, tap again"`` while ``dispensing`` (a running
+        motor is never aborted), and ``"held by <id>"`` when another
+        session already holds the lease. If the caller's own session
+        already holds an (opportunistic) lease it is upgraded to standby
+        in place rather than replaced.
+        """
+        if self.state == "dispensing":
+            return False, "vend finishing, tap again"
+        hold = self._maintenance_hold
+        if hold is not None and hold.holder_session_id != session_id:
+            return False, f"held by {hold.holder_user_id}"
+        if hold is not None:
+            hold.standby = True
+            if self._maintenance_idle_task and not self._maintenance_idle_task.done():
+                self._maintenance_idle_task.cancel()
+            self._maintenance_idle_task = None
+            self._arm_maintenance_sweep()
+            logger.info(
+                f"Maintenance lease upgraded to standby by user={user_id} "
+                f"session={session_id}"
+            )
+            return True, None
+
+        if self.state == "interacting_with_user":
+            # request_refund is a no-op at zero escrow (just a customer
+            # message), so this is safe to call unconditionally; it also
+            # means on_cancel_sale's own request_refund(reason="cancel")
+            # call below finds nothing left to refund -- exactly one
+            # refund happens, with reason="maintenance".
+            self.request_refund(reason="maintenance")
+            self.cancel_sale()
+        elif self.state == "idle":
+            if self.credit_escrow > self.CREDIT_TOLERANCE:
+                self.request_refund(reason="maintenance")
+            self._cancel_session_timeout()
+        elif self.state == "error":
+            if self.credit_escrow > self.CREDIT_TOLERANCE:
+                self.request_refund(reason="maintenance")
+
+        now = time.time()
+        self._maintenance_hold = MaintenanceHold(
+            holder_user_id=user_id,
+            holder_session_id=session_id,
+            started_at=now,
+            last_activity_at=now,
+            standby=True,
+        )
+        self._raise_fault(FaultCode.SVC_102, outcome="maintenance_lease_granted")
+        self._arm_maintenance_sweep()
+        logger.info(
+            f"Maintenance standby lease granted to user={user_id} session={session_id}"
+        )
+        return True, None
+
     def end_maintenance(self, session_id: str) -> bool:
         """Release the lease for its holder's session only.
 
@@ -1868,6 +2047,7 @@ class VMC:
             return False
         if hold.runs_in_flight > 0:
             hold.release_requested = True
+            hold.release_reason = "admin"
             logger.info(
                 f"Maintenance release requested by session={session_id}; "
                 f"deferred, {hold.runs_in_flight} run(s) in flight"
@@ -1884,7 +2064,9 @@ class VMC:
         Permitted only when no run is in flight and the lease has been idle
         (since ``last_activity_at``) for at least
         ``MAINTENANCE_TAKEOVER_IDLE_SECONDS``; records who took it over by
-        overwriting the hold's holder fields in place.
+        overwriting the hold's holder fields in place. A standby lease
+        (§2.2a) stays standby across the takeover -- the sweep is re-armed
+        for the new holder's session rather than the idle timer.
         """
         hold = self._maintenance_hold
         if hold is None:
@@ -1900,7 +2082,11 @@ class VMC:
         hold.started_at = now
         hold.last_activity_at = now
         hold.release_requested = False
-        self._arm_maintenance_idle_timer()
+        hold.release_reason = None
+        if hold.standby:
+            self._arm_maintenance_sweep()
+        else:
+            self._arm_maintenance_idle_timer()
         logger.info(
             f"Maintenance lease taken over by user={user_id} session={session_id}"
         )
@@ -1934,7 +2120,7 @@ class VMC:
         hold.runs_in_flight = max(0, hold.runs_in_flight - 1)
         if hold.runs_in_flight == 0 and hold.release_requested:
             logger.info("Last in-flight maintenance run settled; releasing lease")
-            self._release_maintenance_hold(by="admin")
+            self._release_maintenance_hold(by=hold.release_reason or "admin")
 
     @contextmanager
     def maintenance_test_run(self):

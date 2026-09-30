@@ -78,6 +78,18 @@
   {% set banner_bg, banner_accent, banner_title_cls, banner_title, issue_text_cls =
      'bg-amber-50 border-amber-200', 'bg-amber-500', 'text-amber-700', 'Issues Detected — still selling', 'text-amber-700' %}
 {% endif %}
+{# Task 3 (system-tests design §2.2a): a maintenance lease (SVC-102)
+   replaces whichever title/color the branches above chose with the
+   friendlier "who's holding it" banner -- is_healthy (and therefore which
+   branch above ran) was already computed with SVC-102 counted, in
+   context.health_snapshot(), so the pill/hero still go amber/red exactly
+   as before; only the title text and color change here. Amber, not red,
+   since SVC-102 is a deliberate operator lease, not a hardware failure
+   (CLAUDE.md: "SVC-102 ... is not `critical` severity"). #}
+{% if maintenance %}
+  {% set banner_bg, banner_accent, banner_title_cls, banner_title =
+     'bg-amber-50 border-amber-200', 'bg-amber-500', 'text-amber-700', 'Out of service — maintenance by ' ~ maintenance %}
+{% endif %}
 <div class="{{ banner_bg }} rounded-xl border shadow-sm overflow-hidden">
   <div class="flex">
     <div class="w-1 {{ banner_accent }} flex-shrink-0"></div>

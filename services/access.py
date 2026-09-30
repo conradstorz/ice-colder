@@ -744,32 +744,72 @@ class AccessStore:
         self._sessions[session.id] = session
         return session.id
 
-    def resolve_session(self, session_id: str | None) -> Session | None:
-        """The live session for this cookie, refreshing its idle clock.
+    def _session_still_valid(self, session: Session) -> bool:
+        """Whether ``session`` is still live right now, per spec §6.
 
-        Returns None — and forgets the session — when it has idled out, hit
-        the absolute cap, or lost its user or device (spec §6).
+        Checks user/device existence, the user's disabled flag, the
+        device-kind idle limit and the absolute session cap. Reads
+        ``self._clock()`` but never mutates ``session`` or ``self._sessions``
+        — callers decide what to do with an invalid session (forget it, or
+        just report it as not live).
         """
-        if not session_id:
-            return None
-        session = self._sessions.get(session_id)
-        if session is None:
-            return None
         device = self.devices.get(session.device_id)
         user = self.users.get(session.user_id)
         if device is None or user is None or user.disabled:
-            del self._sessions[session_id]
-            return None
+            return False
         now = self._clock()
         idle_limit = SHARED_IDLE_SECONDS if device.shared else PERSONAL_IDLE_SECONDS
         if (
             now - session.last_active_at > idle_limit
             or now - session.created_at > SESSION_MAX_SECONDS
         ):
+            return False
+        return True
+
+    def resolve_session(
+        self, session_id: str | None, *, touch: bool = True
+    ) -> Session | None:
+        """The live session for this cookie, refreshing its idle clock.
+
+        Returns None — and forgets the session — when it has idled out, hit
+        the absolute cap, or lost its user or device (spec §6).
+
+        ``touch=False`` applies the exact same validity rules (and still
+        forgets an expired session) but does not update ``last_active_at``.
+        Dashboard v2's polling fragments (``/status``, ``/kpi``, ``/pill`` —
+        see ``web_interface/auth.POLLING_PATHS``) resolve sessions with
+        ``touch=False`` so an open tab merely polling for updates does not
+        count as activity and cannot keep a session — or a standby
+        maintenance lease bound to it — alive indefinitely.
+        """
+        if not session_id:
+            return None
+        session = self._sessions.get(session_id)
+        if session is None:
+            return None
+        if not self._session_still_valid(session):
             del self._sessions[session_id]
             return None
-        session.last_active_at = now
+        if touch:
+            session.last_active_at = self._clock()
         return session
+
+    def session_is_live(self, session_id: str | None) -> bool:
+        """Whether ``session_id`` would resolve right now, without side effects.
+
+        Applies the same rules as ``resolve_session`` (unknown id, missing
+        user or device, disabled user, idle limit, absolute cap) but never
+        touches ``last_active_at`` and never deletes an expired entry —
+        ``resolve_session`` remains the one place a session is forgotten.
+        Used by the VMC's standby-lease sweep (spec §2.2a) to check whether
+        the lease holder's session is still around without refreshing it.
+        """
+        if not session_id:
+            return False
+        session = self._sessions.get(session_id)
+        if session is None:
+            return False
+        return self._session_still_valid(session)
 
     def end_session(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)
