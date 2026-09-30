@@ -6,6 +6,10 @@
   <title>{% block title %}Vending Machine{% endblock %}</title>
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/htmx.min.js"></script>
+  {# Touch feedback: sound element + vendored script, per
+     docs/superpowers/specs/2026-09-30-touch-feedback-design.md §4.3-4.4. #}
+  <audio id="tap-sound" src="/static/click.wav" preload="auto" aria-hidden="true"></audio>
+  <script src="/static/feedback.js" defer></script>
 </head>
 <body class="bg-slate-50 text-gray-900 font-sans text-base min-h-screen"
       hx-boost="true" hx-target="main" hx-swap="outerHTML show:top">

@@ -8,6 +8,10 @@ import io
 import wave
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
+from web_interface.server import app
+
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "web_interface" / "static"
 CLICK_WAV = STATIC / "click.wav"
@@ -56,3 +60,36 @@ def test_generator_is_reproducible(tmp_path):
     assert (
         out.read_bytes() == CLICK_WAV.read_bytes()
     ), "committed click.wav differs from the generator's output; regenerate it"
+
+
+FEEDBACK_JS = STATIC / "feedback.js"
+BASE_HTML = ROOT / "web_interface" / "templates" / "base.html"
+
+
+def test_feedback_js_exists_and_registers_pointerdown():
+    src = FEEDBACK_JS.read_text(encoding="utf-8")
+    assert "pointerdown" in src
+    assert "touchstart" in src
+    assert "tap-sound" in src
+    assert ".play()" in src
+
+
+def test_base_html_wires_audio_and_script():
+    html = BASE_HTML.read_text(encoding="utf-8")
+    assert 'id="tap-sound"' in html
+    assert 'src="/static/click.wav"' in html
+    assert 'preload="auto"' in html
+    assert '<script src="/static/feedback.js" defer></script>' in html
+    # the script must load after htmx so htmx-request styling and the sound
+    # both exist by the time the first swap can happen
+    assert html.index("htmx.min.js") < html.index("feedback.js")
+
+
+def test_static_feedback_files_are_served():
+    client = TestClient(app)
+    wav = client.get("/static/click.wav")
+    assert wav.status_code == 200
+    assert wav.headers["content-type"].startswith("audio/")
+    js = client.get("/static/feedback.js")
+    assert js.status_code == 200
+    assert "javascript" in js.headers["content-type"]
