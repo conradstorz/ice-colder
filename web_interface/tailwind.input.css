@@ -2,6 +2,84 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  /* Touch feedback for every tappable and field on pages that extend
+     base.html — spec docs/superpowers/specs/2026-09-30-touch-feedback-design.md
+     §4.1. Element selectors in @layer base are never tree-shaken, so no
+     template needs a class for any of this. The selector list must match
+     TAPPABLE in web_interface/static/feedback.js. */
+
+  button, [type="submit"], [type="button"], a[href], label[for], summary,
+  input:not([type="hidden"]), select, textarea {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+
+  /* Press: immediate on :active, 60ms ease back on release. Colour-agnostic
+     so it reads on white tiles, slate bar buttons, red confirms and grey
+     keypad keys alike. */
+  button, [type="submit"], [type="button"], a[href], label[for], summary {
+    transition: filter 60ms ease-out, transform 60ms ease-out;
+  }
+  button:active, [type="submit"]:active, [type="button"]:active,
+  a[href]:active, label[for]:active, summary:active {
+    filter: brightness(0.85);
+    transform: scale(0.97);
+  }
+  input:not([type="hidden"]):active, select:active, textarea:active {
+    filter: brightness(0.97);
+  }
+
+  /* Busy: htmx adds .htmx-request to the element that issued the request
+     (the <form> for a submitted form, the <a> for a boosted link). */
+  button.htmx-request, [type="submit"].htmx-request, [type="button"].htmx-request,
+  form.htmx-request [type="submit"], form.htmx-request button:not([type="button"]),
+  a[href].htmx-request {
+    opacity: 0.6;
+    cursor: progress;
+    pointer-events: none;
+  }
+  button.htmx-request::after, [type="submit"].htmx-request::after,
+  [type="button"].htmx-request::after,
+  form.htmx-request [type="submit"]::after,
+  form.htmx-request button:not([type="button"])::after {
+    content: "";
+    display: inline-block;
+    width: 1em;
+    height: 1em;
+    margin-left: 0.5em;
+    border: 2px solid;
+    border-color: currentColor transparent currentColor transparent;
+    border-radius: 9999px;
+    animation: spin 0.8s linear infinite;
+    vertical-align: -0.15em;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  /* Focus: keyboard focus and a tap into a field; mouse clicks stay quiet.
+     Per-element focus:ring-* utilities in templates still apply on top. */
+  button:focus-visible, [type="submit"]:focus-visible, [type="button"]:focus-visible,
+  a[href]:focus-visible, summary:focus-visible,
+  input:not([type="hidden"]):focus-visible, select:focus-visible, textarea:focus-visible {
+    outline: 2px solid theme(colors.blue.500);
+    outline-offset: 2px;
+  }
+
+  /* Checked / chosen: native controls, brand colour, finger-sized boxes.
+     Existing checkbox markup carries h-5 w-5 utilities; utilities beat
+     base, so those boxes stay 20px — this 24px default applies only to
+     any future checkbox without explicit size utilities. */
+  input[type="checkbox"], input[type="radio"], select {
+    accent-color: theme(colors.blue.600);
+  }
+  input[type="checkbox"], input[type="radio"] {
+    width: 1.5rem;
+    height: 1.5rem;
+  }
+}
+
 @layer components {
   /* 48px-tall touch target with 8px internal gap, per spec §3. Buttons and
      rows across the shell compose this with color/spacing utilities rather

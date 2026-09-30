@@ -13,6 +13,10 @@
  * grid) and `lg` at 900px (landscape tablet and desktop, 4x2 tile grid).
  */
 module.exports = {
+  // Wrap every generated `hover:` variant in @media (hover: hover) so a tap
+  // on the tablet never leaves a sticky hover state behind; mouse users see
+  // no change. Spec 2026-09-30 §4.1.
+  future: { hoverOnlyWhenSupported: true },
   content: ["./web_interface/templates/**/*.html"],
   theme: {
     extend: {
@@ -44,12 +48,16 @@ module.exports = {
       },
     },
   },
-  // Tailwind's JIT purge drops any @layer components/utilities selector
-  // that isn't found literally in a scanned template — `.touch-target`
-  // (web_interface/tailwind.input.css) is intentionally defined ahead of
-  // any template using it (Task 4+ wires it into the shell), so it is
-  // safelisted here to ship in the compiled app.css now rather than
-  // silently disappearing until a future rebuild.
-  safelist: ["touch-target"],
+  // Tailwind's JIT purge drops any @layer base/components/utilities
+  // selector that isn't found literally in a scanned template —
+  // `.touch-target` (web_interface/tailwind.input.css) is intentionally
+  // defined ahead of any template using it (Task 4+ wires it into the
+  // shell), so it is safelisted here to ship in the compiled app.css now
+  // rather than silently disappearing until a future rebuild.
+  // `.htmx-request` is the same failure mode from the other direction: htmx
+  // adds that class at runtime (never in template source), so the scan
+  // never finds it and both the busy-state opacity rule and its ::after
+  // spinner in @layer base would be purged without this entry.
+  safelist: ["touch-target", "htmx-request"],
   plugins: [],
 };
