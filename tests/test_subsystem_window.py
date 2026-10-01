@@ -125,6 +125,11 @@ def test_state_none_when_not_alive_even_with_fresh_signal():
     )
     assert window["inputs"][0]["state"] == "none"
     assert window["outputs"][0]["state"] == "none"
+    # `in_range` is derived from the stale value alone, per the brief's rule
+    # ("in_range only for kind == temperature with a value"); it is NOT
+    # forced to None by a dead board. A template must gate the OK/Out of
+    # range badge on `state != "none"` itself if it wants to hide this.
+    assert window["inputs"][0]["in_range"] is True
 
 
 def test_state_none_when_no_signal():
