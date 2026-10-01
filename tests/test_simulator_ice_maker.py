@@ -493,10 +493,34 @@ class TestMonitorContract:
         caps = self._sim().build_capabilities()
         assert caps.contract_version == CONTRACT_VERSION
         ids = [c.channel_id for c in caps.channels]
-        assert len(ids) == 12  # 10 temps + compressor_current + bin_level
+        # 10 temps + compressor_current + bin_level + the new binary
+        # `compressor` output (spec §4.2). One of the ten temperature
+        # sensors is also named "compressor" (compressor discharge temp),
+        # so the id "compressor" is declared twice -- once as a
+        # temperature input, once as the new binary output -- a collision
+        # the spec's own arithmetic (13 = 10 + 2 + 1) confirms is
+        # deliberate, not an oversight. len(ids) counts both; len(set) is
+        # one less because of the shared id.
+        assert len(ids) == 13
+        assert len(set(ids)) == 12
         assert "hot_gas_valve_1" in ids
         assert "compressor_current" in ids
         assert "bin_level" in ids
+
+        temp_channels = [c for c in caps.channels if c.kind == "temperature"]
+        assert len(temp_channels) == 10
+        assert all(c.direction == "input" for c in temp_channels)
+
+        compressor_channels = [c for c in caps.channels if c.channel_id == "compressor"]
+        assert len(compressor_channels) == 2
+        compressor_temp = next(
+            c for c in compressor_channels if c.kind == "temperature"
+        )
+        assert compressor_temp.direction == "input"
+        compressor_binary = next(c for c in compressor_channels if c.kind == "binary")
+        assert compressor_binary.direction == "output"
+        assert compressor_binary.driven_by is None
+
         # Copilot review (PR 22, id=4128088689): ping/self_test were
         # missing from this hand-written list even though both handlers
         # are registered for every subsystem -- now prepended, and

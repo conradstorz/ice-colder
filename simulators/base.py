@@ -27,7 +27,12 @@ from loguru import logger
 from pydantic import BaseModel, ValidationError
 
 from config.config_model import ConfigModel
-from contracts.common import STANDARD_COMMANDS, CommandAck, SubsystemCommand
+from contracts.common import (
+    STANDARD_COMMANDS,
+    ChannelDescriptor,
+    CommandAck,
+    SubsystemCommand,
+)
 from contracts.vending_machine import (
     CONTRACT_VERSION as VENDING_CONTRACT_VERSION,
     SubsystemCapabilities,
@@ -112,6 +117,7 @@ class ESP32Simulator(ABC):
     HEARTBEAT_INTERVAL = 10.0  # seconds
     CONTRACT_VERSION = VENDING_CONTRACT_VERSION  # ice maker overrides
     SUPPORTED_COMMANDS: list[str] = []
+    CHANNELS: list[ChannelDescriptor] = []
     BRAND = ""
     MODEL = ""
 
@@ -220,6 +226,7 @@ class ESP32Simulator(ABC):
             model=self.MODEL,
             hardware_id=self.fake_hardware_id(),
             ip=self.container_ip(),
+            channels=list(self.CHANNELS),
             commands=[*STANDARD_COMMANDS, *self.SUPPORTED_COMMANDS],
         )
 

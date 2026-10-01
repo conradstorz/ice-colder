@@ -464,6 +464,17 @@ class IceMakerSimulator(ESP32Simulator):
             )
             for s in self.sensors
         ]
+        compressor_channel = ChannelDescriptor(
+            channel_id="compressor",
+            kind="binary",
+            description="Compressor on/off state",
+            # Not on a publish timer -- the power_on/power_off events ARE
+            # the signal (spec §4.2) -- so this is a nominal cadence, not a
+            # real polling interval; 5.0 matches TELEMETRY_CHANNELS.
+            interval_seconds=5.0,
+            direction="output",
+            driven_by=None,
+        )
         return MonitorCapabilities(
             contract_version=CONTRACT_VERSION,
             brand="ice-colder",
@@ -471,7 +482,7 @@ class IceMakerSimulator(ESP32Simulator):
             firmware=BUILD_INFO.commit_short,
             hardware_id=self.fake_hardware_id(),
             ip=self.container_ip(),
-            channels=temp_channels + TELEMETRY_CHANNELS,
+            channels=temp_channels + TELEMETRY_CHANNELS + [compressor_channel],
             commands=[*STANDARD_COMMANDS, "power_cycle", "set_interval"],
         )
 

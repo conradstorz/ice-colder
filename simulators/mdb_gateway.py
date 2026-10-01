@@ -19,7 +19,7 @@ from pydantic import ValidationError
 
 from simulators.base import ESP32Simulator, FaultDef
 from services.mqtt_messages import PaymentEnableCommand, PaymentEvent, PaymentStatus
-from contracts.common import SubsystemCommand
+from contracts.common import ChannelDescriptor, SubsystemCommand
 from contracts.vending_machine import (
     PaymentRefundCommand,
     PaymentRefundResult,
@@ -61,10 +61,30 @@ class PaymentStrategy:
             return round(price * random.uniform(1.5, 3.0), 2)
 
 
+_DEVICE_STATUS_INTERVAL = 30.0  # seconds between device status publishes
+
+# Device names, in declaration order -- the single source backing both
+# self.devices (instance state) and CHANNELS (the capabilities doc) so the
+# two can never drift apart (spec §4.2).
+DEVICE_NAMES = ["coin_acceptor", "bill_validator", "card_reader"]
+
+_MDB_CHANNELS: list[ChannelDescriptor] = [
+    ChannelDescriptor(
+        channel_id=name,
+        kind="binary",
+        description=f"{name.replace('_', ' ')} readiness",
+        interval_seconds=_DEVICE_STATUS_INTERVAL,
+        direction="input",
+        driven_by="payment/enable",
+    )
+    for name in DEVICE_NAMES
+]
+
+
 class MDBGatewaySimulator(ESP32Simulator):
     """Simulates MDB payment devices reacting to VMC state."""
 
-    DEVICE_STATUS_INTERVAL = 30.0  # seconds between device status publishes
+    DEVICE_STATUS_INTERVAL = _DEVICE_STATUS_INTERVAL
     MAX_CASH_ATTEMPTS = 3
     REFUND_DELAY_RANGE = (0.5, 2.0)  # seconds the changer takes to pay out
     REFUND_RESULTS_MAX = 256  # idempotency cache bound, oldest evicted first
@@ -75,6 +95,7 @@ class MDBGatewaySimulator(ESP32Simulator):
         "coin_return_test",
         "card_reader_test",
     ]
+    CHANNELS = _MDB_CHANNELS
     BRAND = "ice-colder"
     MODEL = "mdb-sim"
 
@@ -84,11 +105,7 @@ class MDBGatewaySimulator(ESP32Simulator):
         # Real MDB peripherals stay inhibited until the VMC enables them.
         self.accepting = False
         self._last_status: dict | None = None
-        self.devices = [
-            {"name": "coin_acceptor", "state": "ready"},
-            {"name": "bill_validator", "state": "ready"},
-            {"name": "card_reader", "state": "ready"},
-        ]
+        self.devices = [{"name": name, "state": "ready"} for name in DEVICE_NAMES]
         # Build a lookup of product name -> price from config
         self._product_prices = {p.name: p.price for p in self.config.products}
         self._vmc_status: asyncio.Queue = asyncio.Queue()

@@ -20,7 +20,7 @@ from datetime import datetime
 import aiomqtt
 from loguru import logger
 
-from contracts.common import SubsystemCommand
+from contracts.common import ChannelDescriptor, SubsystemCommand
 from contracts.vending_machine import DispenserOutcome
 from simulators.base import CommandOutcome, ESP32Simulator, FaultDef
 from services.mqtt_messages import (
@@ -60,6 +60,91 @@ HARDWARE_DEVICES = {
 
 SENSOR_PUBLISH_INTERVAL = 10.0  # seconds between periodic sensor publishes
 
+# Spec §4.2's vending channel table, copied exactly, declaration order
+# matching the table top to bottom.
+_BINARY_CHANNEL_INTERVAL = 1.0
+
+_VENDING_CHANNELS: list[ChannelDescriptor] = [
+    ChannelDescriptor(
+        channel_id="cabinet",
+        kind="temperature",
+        unit="C",
+        description="Cabinet temperature",
+        interval_seconds=SENSOR_PUBLISH_INTERVAL,
+    ),
+    ChannelDescriptor(
+        channel_id="water_flow",
+        kind="counter",
+        unit="gal",
+        description="Cumulative water dispensed",
+        interval_seconds=SENSOR_PUBLISH_INTERVAL,
+    ),
+    ChannelDescriptor(
+        channel_id="bag_full_sensor",
+        kind="binary",
+        description="Ice bag full sensor",
+        interval_seconds=_BINARY_CHANNEL_INTERVAL,
+    ),
+    ChannelDescriptor(
+        channel_id="water_flow_sensor",
+        kind="binary",
+        description="Water flow sensor",
+        interval_seconds=_BINARY_CHANNEL_INTERVAL,
+    ),
+    ChannelDescriptor(
+        channel_id="bin_half_full",
+        kind="binary",
+        description="Ice bin half-full detector",
+        interval_seconds=_BINARY_CHANNEL_INTERVAL,
+    ),
+    ChannelDescriptor(
+        channel_id="auger_motor",
+        kind="binary",
+        description="Ice auger motor",
+        interval_seconds=_BINARY_CHANNEL_INTERVAL,
+        direction="output",
+        driven_by="dispense",
+    ),
+    ChannelDescriptor(
+        channel_id="agitator_motor",
+        kind="binary",
+        description="Ice agitator motor",
+        interval_seconds=_BINARY_CHANNEL_INTERVAL,
+        direction="output",
+        driven_by="dispense",
+    ),
+    ChannelDescriptor(
+        channel_id="bag_drop_solenoid",
+        kind="binary",
+        description="Bag drop solenoid",
+        interval_seconds=_BINARY_CHANNEL_INTERVAL,
+        direction="output",
+        driven_by="dispense",
+    ),
+    ChannelDescriptor(
+        channel_id="water_valve_solenoid",
+        kind="binary",
+        description="Water valve solenoid",
+        interval_seconds=_BINARY_CHANNEL_INTERVAL,
+        direction="output",
+        driven_by="water_valve",
+    ),
+    ChannelDescriptor(
+        channel_id="fan",
+        kind="binary",
+        description="Cabinet fan (autonomous)",
+        interval_seconds=_BINARY_CHANNEL_INTERVAL,
+        direction="output",
+    ),
+    ChannelDescriptor(
+        channel_id="heater_relay",
+        kind="binary",
+        description="Cabinet heater relay (autonomous)",
+        interval_seconds=_BINARY_CHANNEL_INTERVAL,
+        direction="output",
+    ),
+]
+
 
 class VendingMachineSimulator(ESP32Simulator):
     """Simulates the vending machine button panel and dispenser hardware."""
@@ -68,6 +153,7 @@ class VendingMachineSimulator(ESP32Simulator):
     IDLE_MAX = 90.0  # max seconds between customers
     DISPENSE_TIMEOUT = 60.0  # seconds to wait for dispense command
     SUPPORTED_COMMANDS = ["dispense", "water_valve", "payment/enable"]
+    CHANNELS = _VENDING_CHANNELS
     BRAND = "ice-colder"
     MODEL = "vending-sim"
 
