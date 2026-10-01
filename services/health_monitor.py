@@ -344,12 +344,21 @@ class HealthMonitor:
     def _channel_rows(channels) -> list[dict]:
         """Declared channel descriptors in order, or [] when capabilities are
         missing or malformed (non-list, or an entry that isn't a dict with a
-        channel_id)."""
+        non-empty-str channel_id).
+
+        Copilot review (PR 27, finding 3): a schema-invalid payload is
+        stored raw, so a descriptor's channel_id could be e.g. a list;
+        unchecked, that later reaches `signals.get(channel_id)` in
+        build_window and raises TypeError (unhashable type). Treating a
+        non-str (or empty-str) channel_id as malformed -- the same
+        fail-safe path as a non-dict entry -- keeps that lookup safe."""
         if not isinstance(channels, list):
             return []
         rows: list[dict] = []
         for entry in channels:
             if not isinstance(entry, dict) or "channel_id" not in entry:
+                return []
+            if not isinstance(entry.get("channel_id"), str) or not entry["channel_id"]:
                 return []
             rows.append(dict(entry))
         return rows

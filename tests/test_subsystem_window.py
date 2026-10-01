@@ -252,3 +252,45 @@ def test_empty_row_yields_empty_sections_no_exception():
     assert window["outputs"] == []
     assert window["controls"] == {"actuators": [], "standard": []}
     assert window["alive"] is False
+
+
+def test_state_none_when_alive_but_stale():
+    """Copilot review (PR 27, finding 1): `row["alive"]` only means a
+    heartbeat was ever seen; HealthMonitor.get_summary() sets `stale`
+    True while `alive` stays True once the heartbeat has timed out.
+    Spec §4.6: state is "none" whenever the board is not alive (stale or
+    never seen) -- a timed-out board's cached signals must render gray,
+    not keep showing their last live reading."""
+    row = _ice_maker_row(alive=True)
+    row["stale"] = True
+    signals = {
+        "compressor": _signal(5.0),
+        "compressor_run": _signal(1.0),
+        "fan": _signal(0.0),
+    }
+    window = build_window(
+        row, signals, None, temp_range=(0.0, 10.0), now=1000.0, tz=timezone.utc
+    )
+    assert window["inputs"][0]["state"] == "none"
+    assert window["outputs"][0]["state"] == "none"
+    assert window["outputs"][1]["state"] == "none"
+    assert window["alive"] is False
+
+
+def test_clock_strings_use_os_local_time_when_tz_is_none():
+    """Copilot review (PR 27, finding 2): the route must pass tz=None so
+    datetime.fromtimestamp(ts, None) does the OS-local, DST-aware
+    conversion per timestamp -- this exercises that path directly rather
+    than through a fixed-offset tzinfo."""
+    row = _ice_maker_row()
+    epoch = 1_700_000_123.0
+    signals = {
+        "compressor": _signal(5.0, updated_at=epoch, transition_at=epoch),
+        "compressor_run": _signal(1.0, updated_at=epoch, transition_at=epoch),
+        "fan": _signal(0.0, updated_at=epoch, transition_at=epoch),
+    }
+    window = build_window(
+        row, signals, None, temp_range=(0.0, 10.0), now=epoch, tz=None
+    )
+    expected = datetime.fromtimestamp(epoch).strftime("%H:%M:%S")
+    assert window["inputs"][0]["updated_clock"] == expected

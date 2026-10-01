@@ -13,7 +13,6 @@ import asyncio
 import hashlib
 import re
 import time
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
@@ -149,7 +148,13 @@ def _window_context(name: str) -> dict:
         context.availability,
         temp_range=temp_range,
         now=time.time(),
-        tz=datetime.now().astimezone().tzinfo,
+        # Copilot review (PR 27, finding 2): datetime.now().astimezone().tzinfo
+        # is a fixed offset for the current instant, so a timestamp on the
+        # other side of a DST transition rendered an hour off. tz=None makes
+        # build_window's datetime.fromtimestamp(ts, None) do the OS-local
+        # conversion per timestamp instead -- the project convention
+        # ("Production code uses the OS's real timezone resolver").
+        tz=None,
     )
 
 

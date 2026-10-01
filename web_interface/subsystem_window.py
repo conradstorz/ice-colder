@@ -21,7 +21,7 @@ def _clock(ts: float | None, tz) -> str | None:
 def _signal_view(
     channel: dict,
     signals: dict,
-    alive: bool,
+    live: bool,
     availability,
     temp_range: tuple[float, float],
     now: float,
@@ -39,7 +39,7 @@ def _signal_view(
     transition_at = sig.get("transition_at") if sig is not None else None
     transitions_seen = sig.get("transitions_seen") if sig is not None else None
 
-    if not alive or sig is None:
+    if not live or sig is None:
         state = "none"
     else:
         state = "on" if value >= 0.5 else "off"
@@ -85,15 +85,22 @@ def build_window(
 ) -> dict:
     """Turn one board's health-summary row plus its signals into the
     template's view model. `row` is `get_summary()["subsystems"][name]`;
-    `signals` is `get_summary()["signals"].get(name, {})`."""
-    alive = bool(row.get("alive", False))
+    `signals` is `get_summary()["signals"].get(name, {})`.
+
+    `row["alive"]` only means a heartbeat was ever seen; `stale` (set by
+    HealthMonitor.get_summary() once the heartbeat has timed out) can be
+    True while `alive` stays True. Spec §4.6: state is "none" whenever the
+    board is not alive (stale or never seen), so liveness for rendering is
+    `alive and not stale`, not `alive` alone -- otherwise a timed-out
+    board's cached signals keep rendering as if live."""
+    live = bool(row.get("alive", False)) and not bool(row.get("stale", False))
     channels = row.get("channels") or []
     commands = row.get("commands") or []
 
     inputs = []
     outputs = []
     for channel in channels:
-        view = _signal_view(channel, signals, alive, availability, temp_range, now, tz)
+        view = _signal_view(channel, signals, live, availability, temp_range, now, tz)
         if channel.get("direction") == "output":
             outputs.append(view)
         else:
@@ -111,7 +118,7 @@ def build_window(
     standard = [command for command in STANDARD_COMMANDS if command in commands]
 
     return {
-        "alive": alive,
+        "alive": live,
         "inputs": inputs,
         "outputs": outputs,
         "controls": {"actuators": actuators, "standard": standard},

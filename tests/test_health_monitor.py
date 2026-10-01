@@ -768,5 +768,18 @@ class TestSignals:
         row = hm.get_summary()["subsystems"]["vending"]
         assert row["channels"] == []
 
+    def test_non_string_channel_id_is_malformed(self):
+        """Copilot review (PR 27, finding 3): a descriptor whose channel_id
+        is not a non-empty str (e.g. a list from a schema-invalid payload)
+        must take the same fail-safe path as a non-dict entry, or it later
+        reaches signals.get(channel_id) in build_window and raises
+        TypeError (unhashable type: 'list')."""
+        hm = HealthMonitor()
+        hm.record_capabilities(
+            "mdb", {"channels": [{"channel_id": ["x"], "kind": "binary"}]}
+        )
+        row = hm.get_summary()["subsystems"]["mdb"]
+        assert row["channels"] == []
+
     def test_empty_subsystem_row_has_empty_channels(self):
         assert HealthMonitor.empty_subsystem_row()["channels"] == []

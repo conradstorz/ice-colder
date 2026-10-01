@@ -347,6 +347,97 @@ class TestSubsystemDetailLevel:
             assert "inhibited" not in _row("fan")
         finally:
             routes.set_health_monitor(None)
+
+    def test_stale_board_shows_gray_not_last_live_reading(self, client):
+        """Copilot review (PR 27, finding 1): a board that heartbeat-timed-out
+        (alive stays True, stale goes True -- see
+        tests/test_health_monitor.py's TestCapabilitiesOnlyLiveness/stale
+        tests for the mechanism) must render its cached signal as gray, not
+        as the green/red it last reported."""
+        from services.health_monitor import HealthMonitor
+
+        hm = HealthMonitor(subsystem_timeout=-1.0)
+        hm.record_capabilities(
+            "mdb",
+            {
+                "channels": [
+                    {
+                        "channel_id": "card_reader",
+                        "kind": "binary",
+                        "unit": "",
+                        "description": "",
+                        "direction": "input",
+                        "driven_by": None,
+                    }
+                ],
+                "commands": ["ping", "self_test", "force_report"],
+            },
+        )
+        hm.record_heartbeat("mdb")
+        hm.record_signal("mdb", "card_reader", 1.0)
+        assert hm.get_summary()["subsystems"]["mdb"]["alive"] is True
+        assert hm.get_summary()["subsystems"]["mdb"]["stale"] is True
+        routes.set_health_monitor(hm)
+        try:
+            resp = client.get("/health/subsystems/mdb")
+            assert resp.status_code == 200
+            assert "bg-gray-200" in resp.text
+            assert "bg-green-600" not in resp.text
+            assert "bg-red-600" not in resp.text
+        finally:
+            routes.set_health_monitor(None)
+
+    def test_updated_clock_is_os_local_time_string(self, client):
+        """Copilot review (PR 27, finding 2): the route must pass tz=None
+        (OS-local, DST-aware per timestamp) rather than a fixed offset --
+        checked here only as a well-formed local clock string, with no
+        assumption about which offset is in effect."""
+        from services.health_monitor import HealthMonitor
+
+        hm = HealthMonitor()
+        hm.record_capabilities(
+            "vending",
+            {
+                "channels": [
+                    {
+                        "channel_id": "bag_full_sensor",
+                        "kind": "binary",
+                        "unit": "",
+                        "description": "",
+                        "direction": "input",
+                        "driven_by": None,
+                    }
+                ],
+                "commands": ["ping", "self_test", "force_report"],
+            },
+        )
+        hm.record_heartbeat("vending")
+        hm.record_signal("vending", "bag_full_sensor", 1.0)
+        routes.set_health_monitor(hm)
+        try:
+            resp = client.get("/health/subsystems/vending")
+            assert resp.status_code == 200
+            assert re.search(r"\d\d:\d\d:\d\d", resp.text)
+        finally:
+            routes.set_health_monitor(None)
+
+    def test_non_string_channel_id_does_not_500(self, client):
+        """Copilot review (PR 27, finding 3): a schema-invalid capabilities
+        payload with a non-string channel_id must be treated as malformed
+        (same fail-safe path as a non-dict entry), not reach
+        signals.get(channel_id) and raise TypeError."""
+        from services.health_monitor import HealthMonitor
+
+        hm = HealthMonitor()
+        hm.record_capabilities(
+            "mdb", {"channels": [{"channel_id": ["x"], "kind": "binary"}]}
+        )
+        routes.set_health_monitor(hm)
+        try:
+            resp = client.get("/health/subsystems/mdb")
+            assert resp.status_code == 200
+        finally:
+            routes.set_health_monitor(None)
             routes.set_availability(None)
 
     def test_live_wrapper_hx_attributes_and_single_extra_trigger(self, client):
