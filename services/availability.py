@@ -333,6 +333,22 @@ class Availability:
     def payment_enabled(self) -> bool:
         return not self.payment_blocking_reasons()
 
+    def command_inhibited(self, command: str) -> bool:
+        """Whether the VMC would currently refuse *command* (subsystem-windows
+        design §4.5). Pure read of the already-computed rows: no recompute,
+        no publish, no state change. A signal whose `driven_by` names a
+        command is inhibited iff this returns True for that command.
+        """
+        if command == "dispense":
+            return not (
+                self.sale_available("ice")[0] or self.sale_available("water")[0]
+            )
+        if command == "water_valve":
+            return not self.sale_available("water")[0]
+        if command == "payment/enable":
+            return not self.payment_enabled
+        return False
+
     def table(self) -> list[dict]:
         rows = sorted(self._rows.values(), key=lambda r: (not r.instrumented, r.name))
         return [r.as_row() for r in rows]
