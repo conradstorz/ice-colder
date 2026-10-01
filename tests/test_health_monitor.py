@@ -688,10 +688,11 @@ class TestSignals:
         assert summary["signals"] == {}
 
     def test_declaring_subsystem_discriminates_by_kind(self):
-        """Two boards declare the same channel_id under different kinds (the
-        ice maker's own compressor/compressor_run situation); the kind
-        argument must pick the one that actually matches, not merely the
-        first board that mentions the id."""
+        """Two different boards declare the same literal channel_id under
+        different kinds; the kind argument must pick the one that actually
+        matches, not merely the first board that mentions the id. (Within one
+        board ids are unique -- the ice maker's binary output is compressor_run
+        for that reason -- so this is the cross-board case.)"""
         hm = HealthMonitor()
         hm.record_capabilities(
             "vending",

@@ -253,6 +253,7 @@ class TestSubsystemDetailLevel:
         try:
             resp = client.get("/health/subsystems/mdb")
             assert "card_reader" in resp.text
+            assert "card reader" in resp.text  # label: underscores spaced
             assert "error" in resp.text
             assert "bg-red-600" in resp.text
         finally:
