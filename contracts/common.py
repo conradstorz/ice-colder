@@ -41,6 +41,17 @@ class ChannelDescriptor(BaseModel):
     interval_seconds: float = Field(
         ..., gt=0, le=3600, description="Declared publish cadence"
     )
+    direction: Literal["input", "output"] = Field(
+        "input",
+        description=(
+            "Output = something the board drives (motor, solenoid, relay, "
+            "compressor). Input = something it senses."
+        ),
+    )
+    driven_by: str | None = Field(
+        None,
+        description="Command whose refusal by the VMC inhibits this signal",
+    )
 
 
 # --- Subsystem command channel (§1.1) ---------------------------------------

@@ -1,6 +1,6 @@
 # contracts/ice_maker_monitor.py
 """
-Shared contract models for the ice-maker monitor interface (v1.3.0).
+Shared contract models for the ice-maker monitor interface (v1.4.0).
 
 These models are the machine-readable source of truth for the interface
 between ice-colder (the VMC) and the external brand-specific monitor
@@ -35,7 +35,15 @@ from contracts.vending_machine import SubsystemCapabilities
 # actually elapses -- see docs/contracts/ice-maker-monitor/CONTRACT.md's
 # completion table. `set_interval`, `ping`, `self_test` and `force_report`
 # are unaffected; their single ack is still both accept and completion.
-CONTRACT_VERSION = "1.3.0"
+#
+# 1.3.0 -> 1.4.0 (2026-09-30): minor bump, additive. `ChannelDescriptor`
+# (contracts/common.py) gains `direction` ("input" | "output", default
+# "input") and `driven_by` (str | None, default None) so a board's
+# capabilities document can say which channels it drives versus senses,
+# and which command's refusal inhibits an output. Both fields are
+# optional with defaults, so every present-day channel descriptor still
+# validates unchanged.
+CONTRACT_VERSION = "1.4.0"
 
 _CHANNEL_ID_PATTERN = CHANNEL_ID_PATTERN  # kept for ChannelReading
 

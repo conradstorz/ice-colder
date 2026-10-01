@@ -642,7 +642,7 @@ class TestVendingCapabilities:
             "water_valve",
             "payment/enable",
         ]
-        assert caps.contract_version == "0.6.0"
+        assert caps.contract_version == "0.7.0"
 
 
 def _make_command(command: str, params: dict, request_id: str = "req-00000001"):

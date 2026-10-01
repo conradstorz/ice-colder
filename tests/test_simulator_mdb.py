@@ -320,7 +320,7 @@ class TestMDBCapabilities:
             "coin_return_test",
             "card_reader_test",
         ]
-        assert caps.contract_version == "0.6.0"
+        assert caps.contract_version == "0.7.0"
 
 
 class TestPaymentEnable:

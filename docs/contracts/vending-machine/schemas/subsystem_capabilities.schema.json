@@ -39,6 +39,29 @@
           "maximum": 3600.0,
           "title": "Interval Seconds",
           "type": "number"
+        },
+        "direction": {
+          "default": "input",
+          "description": "Output = something the board drives (motor, solenoid, relay, compressor). Input = something it senses.",
+          "enum": [
+            "input",
+            "output"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "driven_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Command whose refusal by the VMC inhibits this signal",
+          "title": "Driven By"
         }
       },
       "required": [

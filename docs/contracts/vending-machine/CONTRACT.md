@@ -1,4 +1,4 @@
-# Vending Machine Contract — v0.6.0
+# Vending Machine Contract — v0.7.0
 
 This document and the JSON Schema files in `schemas/` define the interface
 between the ice-colder VMC and the vending ESP32 firmware plus the MDB
@@ -107,6 +107,22 @@ A command whose parameters fail the contract's bounds (e.g., `water_valve` with 
 ### Capabilities advertisement
 
 `SubsystemCapabilities.commands` lists **every** command the firmware supports, including the three standard commands (`ping`, `self_test`, `force_report`), the actuator commands (`dispense`, `water_valve`, `bill_acceptor_test`, `coin_return_test`, `card_reader_test`), and any control commands (`set_interval` for the ice maker). The VMC maintains a server-side allowlist, `TESTABLE_COMMANDS` in `contracts/common.py`, containing exactly the standard commands and the test-mode actuator commands; this allowlist is separate from what firmware advertises. A test button in the dashboard appears only for a command that is both allowlisted and advertised by the subsystem, ensuring firmware that ignores the command channel remains unaffected and a crafted request cannot invoke a control command through the test UI.
+
+## Semantics fixed in 0.7.0
+
+- `ChannelDescriptor` (`contracts/common.py`) gains two optional fields:
+  `direction` (`"input"` | `"output"`, default `"input"`) — output means
+  something the board drives (motor, solenoid, relay, compressor), input
+  means something it senses — and `driven_by` (`str | None`, default
+  `None`) — for an output (or a payment device), the command name whose
+  refusal by the VMC inhibits that signal.
+- `driven_by`, when set, names a command present in the same board's own
+  `SubsystemCapabilities.commands` list.
+- Both fields are additive with defaults; every present-day
+  `ChannelDescriptor` payload still validates unchanged.
+- The dashboard renders only channels a board actually declares in its
+  capabilities document — a reading for an undeclared channel is still
+  consumed by the VMC for control but never shown on any window.
 
 ## Semantics fixed in 0.6.0
 

@@ -1,4 +1,4 @@
-# Ice Maker Monitor Contract — v1.3.0
+# Ice Maker Monitor Contract — v1.4.0
 
 This document, together with the JSON Schema files in `schemas/`, defines the
 interface between the ice-colder VMC (this repo) and the separate,
@@ -42,6 +42,16 @@ schema files are regenerated from source and are always current.
   maintenance lease could release while `power_cycle`'s dwell (up to 300 s)
   was still running. `ping`, `self_test`, `force_report` and `set_interval`
   are unaffected — see "Command semantics" and the completion table below.
+- **1.4.0** (2026-09-30): Semantics fixed in 1.4.0 — `ChannelDescriptor`
+  gains `direction` (`"input"` | `"output"`, default `"input"`) and
+  `driven_by` (string or null, default `null`). Output means something the
+  board drives (motor, solenoid, relay, compressor); input means something
+  it senses. `driven_by`, when set, names a command present in the same
+  board's own `MonitorCapabilities.commands` list — it is the command
+  whose refusal by the VMC inhibits that signal. Both fields are additive
+  with defaults, so every present-day `ChannelDescriptor` payload still
+  validates unchanged. The dashboard renders only channels a board
+  actually declares in its capabilities document.
 
 ## Transport rules
 
@@ -143,6 +153,8 @@ One telemetry channel the monitor declares, nested inside
 | `unit` | string | default `""` | Unit, e.g. `"C"`, `"A"`, `"%"`; empty string for binary channels |
 | `description` | string | default `""` | Human-readable channel description |
 | `interval_seconds` | number | required; `> 0`, `<= 3600` | Declared publish cadence for this channel |
+| `direction` | enum | default `"input"`; one of `input`, `output`; added in 1.4.0 | Output = something the board drives (motor, solenoid, relay, compressor); input = something it senses |
+| `driven_by` | string \| null | default `null`; added in 1.4.0 | For an output (or a payment device): the command name whose refusal by the VMC inhibits this signal |
 
 ### MonitorCapabilities
 
