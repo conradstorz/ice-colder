@@ -1,0 +1,83 @@
+{#
+  Subsystem-windows design §4.7. Rendered both as the first paint (included
+  directly by health_subsystem.html) and as the GET /health/subsystems/
+  {name}/live response body -- it carries no hx- attribute of its own; the
+  #live wrapper in health_subsystem.html owns all of those.
+
+  `window` is the dict built by web_interface/subsystem_window.py's
+  build_window(): {"alive", "inputs", "outputs", "controls": {"actuators",
+  "standard"}}. Each entry in inputs/outputs is a SignalView; see that
+  module's docstring for the exact shape.
+#}
+{% macro digital_row(signal, is_input) %}
+<div id="signal-{{ signal.id }}" class="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+  <span class="inline-flex items-center justify-center px-3 py-1 text-sm font-medium
+    {% if is_input %}rounded-full{% else %}rounded-md{% endif %}
+    {% if signal.state == 'on' %}bg-green-600 text-white{% elif signal.state == 'off' %}bg-red-600 text-white{% else %}bg-gray-200 text-gray-500{% endif %}
+    {% if signal.inhibited %}ring-dashed{% endif %}">{{ signal.label }}</span>
+  <span class="text-sm text-gray-700">
+    {% if signal.state == "none" %}—{% else -%}
+      {{ signal.state }}{% if signal.text %} ({{ signal.text }}){% endif -%}
+      {% if signal.dwell_since_start %} since VMC start{% else %} for {{ signal.dwell_seconds|humanize_seconds }}{% endif -%}
+      {% if signal.transition_clock %} · {{ signal.transition_clock }}{% endif -%}
+    {%- endif %}
+    {%- if signal.inhibited %} · inhibited{% endif %}
+  </span>
+</div>
+{% endmacro %}
+{% macro analog_row(signal) %}
+<div id="signal-{{ signal.id }}" class="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+  <span class="text-sm text-gray-700">{{ signal.label }}</span>
+  {% if signal.state == "none" %}
+  <span class="text-sm text-gray-400">—</span>
+  {% else %}
+  <span class="text-sm font-medium text-gray-900">{{ signal.value }} {{ signal.unit }}</span>
+  {% if signal.kind == "temperature" %}
+  <span class="text-sm font-medium {% if signal.in_range %}text-green-600{% else %}text-red-600{% endif %}">{% if signal.in_range %}OK{% else %}Out of range{% endif %}</span>
+  {% endif %}
+  <span class="text-xs text-gray-400">{{ signal.updated_clock }} · {{ signal.age_seconds|humanize_seconds }} ago</span>
+  {% endif %}
+</div>
+{% endmacro %}
+<div class="space-y-4">
+
+  <div class="space-y-2">
+    <h2 class="text-xs font-medium text-gray-400 uppercase tracking-wide">Inputs</h2>
+    {% if window.inputs %}
+      {% for signal in window.inputs %}
+        {% if signal.digital %}{{ digital_row(signal, true) }}{% else %}{{ analog_row(signal) }}{% endif %}
+      {% endfor %}
+    {% else %}
+    <div class="text-sm text-gray-400">Nothing declared by this board.</div>
+    {% endif %}
+  </div>
+
+  <div class="space-y-2">
+    <h2 class="text-xs font-medium text-gray-400 uppercase tracking-wide">Outputs</h2>
+    {% if window.outputs %}
+      {% for signal in window.outputs %}
+        {% if signal.digital %}{{ digital_row(signal, false) }}{% else %}{{ analog_row(signal) }}{% endif %}
+      {% endfor %}
+    {% else %}
+    <div class="text-sm text-gray-400">Nothing declared by this board.</div>
+    {% endif %}
+  </div>
+
+  <div class="space-y-2">
+    <h2 class="text-xs font-medium text-gray-400 uppercase tracking-wide">Controls</h2>
+    {% if window.controls.actuators or window.controls.standard %}
+      <div class="flex flex-wrap gap-2">
+        {% for cmd in window.controls.actuators %}
+        <span class="rounded-md bg-slate-800 text-white text-sm font-medium px-3 py-1
+          {% if cmd.inhibited %}ring-dashed{% endif %}">{{ cmd.name }}{% if cmd.inhibited %} · inhibited{% endif %}</span>
+        {% endfor %}
+      </div>
+      {% if window.controls.standard %}
+      <div class="text-xs text-gray-400">{{ window.controls.standard|join(", ") }}</div>
+      {% endif %}
+    {% else %}
+    <div class="text-sm text-gray-400">Nothing declared by this board.</div>
+    {% endif %}
+  </div>
+
+</div>

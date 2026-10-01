@@ -129,6 +129,13 @@ class HealthMonitor:
         # Active faults pushed by the VMC: key -> fault dict (+ "since" monotonic)
         self._active_faults: dict[str, dict] = {}
 
+    @property
+    def temp_range(self) -> tuple[float, float]:
+        """The configured (min, max) C range used for in-range coloring
+        (subsystem-windows design §4.6) -- the same bounds `record_temperature`
+        already alerts against."""
+        return (self._temp_min, self._temp_max)
+
     def set_alert_callback(self, callback: AlertCallback):
         """Register a coroutine to be called when an alert fires."""
         self._alert_callback = callback
