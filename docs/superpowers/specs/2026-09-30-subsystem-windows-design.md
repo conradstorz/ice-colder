@@ -93,7 +93,7 @@ Their readiness text (`ready`/`disabled`/`error`) is carried as the signal's
 
 **Ice maker** (`simulators/ice_maker.py`): the existing ten temperature
 channels and two telemetry channels keep `direction="input"`; add
-`compressor` — kind binary, direction output, `driven_by=None` — whose value
+`compressor_run` — kind binary, direction output (the board already has a `compressor` temperature input, so the output needs its own id; channel ids are unique per board), `driven_by=None` — whose value
 is derived by the VMC from the board's `power_on`/`power_off` events. The
 simulator does not publish a new topic for it; the events are the signal.
 
@@ -156,7 +156,7 @@ driven_by), in declaration order — next to the existing `channel_count`.
 | `hardware/io/+` | vending | existing handler additionally calls `record_signal("vending", device, 1.0 if state else 0.0)` |
 | `payment/status` | mdb | existing handler additionally calls `record_signal("mdb", device, 1.0 if state == "ready" else 0.0, text=state)` |
 | `telemetry/ice_maker/+` | ice_maker | existing `record_channel` (unchanged) |
-| `ice_maker/event` `power_on`/`power_off` | ice_maker | existing handler additionally calls `record_signal("ice_maker", "compressor", 1.0/0.0)` |
+| `ice_maker/event` `power_on`/`power_off` | ice_maker | existing handler additionally calls `record_signal("ice_maker", "compressor_run", 1.0/0.0)` |
 
 Every call is guarded by `if self._health_monitor`, as today. No control
 logic changes.
