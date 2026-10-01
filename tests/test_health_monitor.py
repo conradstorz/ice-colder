@@ -621,3 +621,151 @@ class TestLivenessCallback:
 
         m.set_liveness_callback(boom)
         m.record_heartbeat("vending")  # must not raise
+
+
+class TestSignals:
+    def test_record_signal_appears_in_summary(self, monkeypatch):
+        import time as _time
+
+        hm = HealthMonitor()
+        monkeypatch.setattr(_time, "time", lambda: 1_700_000_000.0)
+        hm.record_signal("vending", "fan", 1.0)
+        sig = hm.get_summary()["signals"]["vending"]["fan"]
+        assert sig["value"] == 1.0
+        assert sig["text"] is None
+        assert sig["transitions_seen"] == 0
+        assert sig["dwell_seconds"] >= 0
+        assert sig["updated_at"] == 1_700_000_000.0
+
+    def test_binary_transition_tracked_once_per_change(self, monkeypatch):
+        import time as _time
+
+        hm = HealthMonitor()
+        t = [100.0]
+        monkeypatch.setattr(_time, "monotonic", lambda: t[0])
+        monkeypatch.setattr(_time, "time", lambda: t[0])
+
+        hm.record_signal("vending", "fan", 1.0)
+        t[0] = 105.0
+        hm.record_signal("vending", "fan", 0.0)
+        sig = hm.get_summary()["signals"]["vending"]["fan"]
+        assert sig["transition_at"] == 105.0
+        assert sig["transitions_seen"] == 1
+
+        t[0] = 110.0
+        hm.record_signal("vending", "fan", 0.0)
+        sig = hm.get_summary()["signals"]["vending"]["fan"]
+        assert sig["transition_at"] == 105.0
+        assert sig["transitions_seen"] == 1
+
+    def test_text_stored_and_echoed(self):
+        hm = HealthMonitor()
+        hm.record_signal("mdb", "coin_acceptor", 1.0, text="ready")
+        sig = hm.get_summary()["signals"]["mdb"]["coin_acceptor"]
+        assert sig["text"] == "ready"
+
+    def test_record_temperature_attributes_to_declaring_board(self):
+        hm = HealthMonitor()
+        hm.record_capabilities(
+            "ice_maker",
+            {
+                "channels": [
+                    {"channel_id": "evaporator", "kind": "temperature"},
+                ],
+            },
+        )
+        hm.record_temperature("evaporator", -12.0)
+        sig = hm.get_summary()["signals"]["ice_maker"]["evaporator"]
+        assert sig["value"] == -12.0
+        # Still kept in the flat temperatures dict for /screen and alerting.
+        assert hm.get_summary()["temperatures"]["evaporator"]["value"] == -12.0
+
+    def test_record_temperature_without_declarer_is_not_attributed(self):
+        hm = HealthMonitor()
+        hm.record_temperature("cabinet", 4.0)
+        summary = hm.get_summary()
+        assert summary["temperatures"]["cabinet"]["value"] == 4.0
+        assert summary["signals"] == {}
+
+    def test_declaring_subsystem_discriminates_by_kind(self):
+        """Two boards declare the same channel_id under different kinds (the
+        ice maker's own compressor/compressor_run situation); the kind
+        argument must pick the one that actually matches, not merely the
+        first board that mentions the id."""
+        hm = HealthMonitor()
+        hm.record_capabilities(
+            "vending",
+            {"channels": [{"channel_id": "compressor", "kind": "binary"}]},
+        )
+        hm.record_capabilities(
+            "ice_maker",
+            {"channels": [{"channel_id": "compressor", "kind": "temperature"}]},
+        )
+        assert hm.declaring_subsystem("compressor", kind="temperature") == "ice_maker"
+        assert hm.declaring_subsystem("compressor", kind="binary") == "vending"
+        assert hm.declaring_subsystem("compressor") in {"vending", "ice_maker"}
+
+    def test_record_temperature_kind_mismatch_is_not_attributed(self):
+        """A board declaring the same channel_id under a different kind must
+        not attract a temperature reading meant for someone else."""
+        hm = HealthMonitor()
+        hm.record_capabilities(
+            "vending",
+            {"channels": [{"channel_id": "cabinet", "kind": "binary"}]},
+        )
+        hm.record_temperature("cabinet", 4.0)
+        summary = hm.get_summary()
+        assert summary["temperatures"]["cabinet"]["value"] == 4.0
+        assert summary["signals"] == {}
+
+    def test_declaring_subsystem_prefers_expected_subsystems_order(self):
+        """Brief: scan EXPECTED_SUBSYSTEMS order first, then any others."""
+        hm = HealthMonitor()
+        hm.record_capabilities(
+            "extra", {"channels": [{"channel_id": "shared", "kind": "binary"}]}
+        )
+        hm.record_capabilities(
+            "ice_maker", {"channels": [{"channel_id": "shared", "kind": "binary"}]}
+        )
+        assert hm.declaring_subsystem("shared", kind="binary") == "ice_maker"
+
+    def test_record_channel_without_declarer_is_not_attributed(self):
+        hm = HealthMonitor()
+        hm.record_channel("mystery", 3.0)
+        summary = hm.get_summary()
+        assert summary["channels"]["mystery"]["value"] == 3.0
+        assert summary["signals"] == {}
+
+    def test_capabilities_channels_in_summary_row_in_order(self):
+        hm = HealthMonitor()
+        caps_channels = [
+            {
+                "channel_id": "fan",
+                "kind": "binary",
+                "unit": "",
+                "description": "Fan",
+                "direction": "output",
+                "driven_by": None,
+            },
+            {
+                "channel_id": "cabinet",
+                "kind": "temperature",
+                "unit": "C",
+                "description": "Cabinet",
+                "direction": "input",
+                "driven_by": None,
+            },
+        ]
+        hm.record_capabilities("vending", {"channels": caps_channels})
+        row = hm.get_summary()["subsystems"]["vending"]
+        assert row["channels"] == caps_channels
+        assert row["channel_count"] == 2
+
+    def test_malformed_channels_summary_row_is_empty_list(self):
+        hm = HealthMonitor()
+        hm.record_capabilities("vending", {"channels": "x"})
+        row = hm.get_summary()["subsystems"]["vending"]
+        assert row["channels"] == []
+
+    def test_empty_subsystem_row_has_empty_channels(self):
+        assert HealthMonitor.empty_subsystem_row()["channels"] == []

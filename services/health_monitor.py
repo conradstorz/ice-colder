@@ -15,6 +15,7 @@ from typing import Optional, Callable, Awaitable
 
 from loguru import logger
 
+from contracts.vending_machine import EXPECTED_SUBSYSTEMS
 from services.build_info import BUILD_INFO
 
 
@@ -53,6 +54,19 @@ class TemperatureReading:
     location: str
     value: float
     timestamp: float  # monotonic
+
+
+@dataclass
+class Signal:
+    """Latest reading of one declared channel, attributed to its board."""
+
+    value: float
+    text: Optional[str] = None  # MDB readiness word; None otherwise
+    updated_mono: float = 0.0  # time.monotonic() of the last reading
+    updated_wall: float = 0.0  # time.time() of the last reading
+    transition_mono: float = 0.0  # monotonic of the last value change
+    transition_wall: float = 0.0  # wall clock of the last value change
+    transitions_seen: int = 0  # 0 until the first change after VMC start
 
 
 @dataclass
@@ -104,6 +118,7 @@ class HealthMonitor:
         self._subsystems: dict[str, SubsystemStatus] = {}
         self._temperatures: dict[str, TemperatureReading] = {}
         self._channels: dict[str, TemperatureReading] = {}
+        self._signals: dict[str, dict[str, Signal]] = {}
         self._mqtt_connected: bool = False
         self._vmc_state: str = "unknown"
 
@@ -174,6 +189,7 @@ class HealthMonitor:
             "hardware_id": None,
             "ip": None,
             "channel_count": 0,
+            "channels": [],
             "commands": [],
             "capabilities_age_seconds": None,
         }
@@ -186,12 +202,79 @@ class HealthMonitor:
         # Clear out-of-range alert if back in range
         if self._temp_min <= value <= self._temp_max:
             self._fired_alerts.discard(f"temp_range:{location}")
+        subsystem = self.declaring_subsystem(location, kind="temperature")
+        if subsystem is not None:
+            self.record_signal(subsystem, location, value)
 
     def record_channel(self, channel_id: str, value: float):
         """Record a generic telemetry channel reading (analog or binary)."""
         self._channels[channel_id] = TemperatureReading(
             location=channel_id, value=value, timestamp=time.monotonic()
         )
+        subsystem = self.declaring_subsystem(channel_id)
+        if subsystem is not None:
+            self.record_signal(subsystem, channel_id, value)
+
+    def declaring_subsystem(
+        self, channel_id: str, kind: str | None = None
+    ) -> str | None:
+        """The first board (EXPECTED_SUBSYSTEMS order, then any others) whose
+        stored capabilities declare a channel with this id (and kind, when
+        given). None if no board declares it."""
+        ordered = list(EXPECTED_SUBSYSTEMS) + [
+            name for name in self._subsystems if name not in EXPECTED_SUBSYSTEMS
+        ]
+        for name in ordered:
+            sub = self._subsystems.get(name)
+            if sub is None:
+                continue
+            channels = sub.capabilities.get("channels")
+            if not isinstance(channels, list):
+                continue
+            for descriptor in channels:
+                if not isinstance(descriptor, dict):
+                    continue
+                if descriptor.get("channel_id") != channel_id:
+                    continue
+                if kind is not None and descriptor.get("kind") != kind:
+                    continue
+                return name
+        return None
+
+    def record_signal(
+        self, subsystem: str, channel_id: str, value: float, *, text: str | None = None
+    ) -> None:
+        """Store or update the latest reading of one board's declared channel.
+
+        The first reading sets transition_* to the reading time with
+        transitions_seen == 0, so dwell reads "since VMC start" until a real
+        change is observed. A later reading whose value differs from the
+        previous one bumps transition_* and transitions_seen; an unchanged
+        value leaves the transition fields alone.
+        """
+        now_mono = time.monotonic()
+        now_wall = time.time()
+        bucket = self._signals.setdefault(subsystem, {})
+        existing = bucket.get(channel_id)
+        if existing is None:
+            bucket[channel_id] = Signal(
+                value=value,
+                text=text,
+                updated_mono=now_mono,
+                updated_wall=now_wall,
+                transition_mono=now_mono,
+                transition_wall=now_wall,
+                transitions_seen=0,
+            )
+            return
+        if value != existing.value:
+            existing.transition_mono = now_mono
+            existing.transition_wall = now_wall
+            existing.transitions_seen += 1
+        existing.value = value
+        existing.text = text
+        existing.updated_mono = now_mono
+        existing.updated_wall = now_wall
 
     def mark_offline(self, subsystem: str):
         """Force a subsystem to stale/offline (e.g., MQTT Last-Will received).
@@ -250,6 +333,20 @@ class HealthMonitor:
         if prev == "error" and state != "error":
             self._fired_alerts.discard("vmc_error")
 
+    @staticmethod
+    def _channel_rows(channels) -> list[dict]:
+        """Declared channel descriptors in order, or [] when capabilities are
+        missing or malformed (non-list, or an entry that isn't a dict with a
+        channel_id)."""
+        if not isinstance(channels, list):
+            return []
+        rows: list[dict] = []
+        for entry in channels:
+            if not isinstance(entry, dict) or "channel_id" not in entry:
+                return []
+            rows.append(dict(entry))
+        return rows
+
     # --- Health summary (for dashboard) ---
 
     def get_summary(self) -> dict:
@@ -283,6 +380,7 @@ class HealthMonitor:
                     "ip": caps.get("ip"),
                     # Raw (schema-failed) payloads are stored too; never trust shapes.
                     "channel_count": len(channels) if isinstance(channels, list) else 0,
+                    "channels": self._channel_rows(channels),
                     "commands": list(commands) if isinstance(commands, list) else [],
                     "capabilities_age_seconds": (
                         round(now - sub.capabilities_at, 1)
@@ -317,12 +415,28 @@ class HealthMonitor:
             for f in self._active_faults.values()
         ]
 
+        signals = {}
+        for subsystem, bucket in self._signals.items():
+            board = {}
+            for channel_id, sig in bucket.items():
+                board[channel_id] = {
+                    "value": sig.value,
+                    "text": sig.text,
+                    "age_seconds": round(now - sig.updated_mono, 1),
+                    "updated_at": sig.updated_wall,
+                    "dwell_seconds": round(now - sig.transition_mono, 1),
+                    "transition_at": sig.transition_wall,
+                    "transitions_seen": sig.transitions_seen,
+                }
+            signals[subsystem] = board
+
         return {
             "mqtt_connected": self._mqtt_connected,
             "vmc_state": self._vmc_state,
             "subsystems": subsystems,
             "temperatures": temperatures,
             "channels": channels,
+            "signals": signals,
             "check_interval": self._check_interval,
             "subsystem_timeout": self._subsystem_timeout,
             "active_faults": active_faults,
