@@ -703,7 +703,7 @@ class TestSignals:
         )
         assert hm.declaring_subsystem("compressor", kind="temperature") == "ice_maker"
         assert hm.declaring_subsystem("compressor", kind="binary") == "vending"
-        assert hm.declaring_subsystem("compressor") in {"vending", "ice_maker"}
+        assert hm.declaring_subsystem("compressor") == "vending"
 
     def test_record_temperature_kind_mismatch_is_not_attributed(self):
         """A board declaring the same channel_id under a different kind must
