@@ -465,7 +465,11 @@ class IceMakerSimulator(ESP32Simulator):
             for s in self.sensors
         ]
         compressor_channel = ChannelDescriptor(
-            channel_id="compressor",
+            # Named distinctly from the "compressor" temperature sensor
+            # above -- channel ids must be unique per board (coordinator
+            # decision, 2026-09-30) -- this is the binary run state, not a
+            # reading off that sensor.
+            channel_id="compressor_run",
             kind="binary",
             description="Compressor on/off state",
             # Not on a publish timer -- the power_on/power_off events ARE
