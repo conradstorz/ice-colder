@@ -12,6 +12,7 @@ content across the six levels; see .superpowers/sdd/part2/task-6-brief.md.
 import asyncio
 import hashlib
 import re
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
@@ -35,6 +36,7 @@ from web_interface.levels import (
     LEVEL_HEALTH_SUBSYSTEMS,
     Level,
 )
+from web_interface.subsystem_window import build_window
 
 # active_faults() reports fault codes as strings (FaultCode.value); compare
 # against the contract's enum set once, here, rather than in _fault_gate.
@@ -128,6 +130,32 @@ def _subsystem_summary() -> dict[str, dict]:
         name: live.get(name, HealthMonitor.empty_subsystem_row())
         for name in EXPECTED_SUBSYSTEMS
     }
+
+
+def _window_context(name: str) -> dict:
+    """One board's live view model (subsystem-windows design §4.6): the
+    row from `_subsystem_summary()`, its signals, the live `Availability`
+    (may be `None`), and the machine's local tz. Shared by the page route
+    and the `/live` fragment route so they can never disagree. `name` must
+    already be validated against EXPECTED_SUBSYSTEMS by the caller."""
+    row = _subsystem_summary()[name]
+    monitor = context.health_monitor
+    signals = monitor.get_summary()["signals"].get(name, {}) if monitor else {}
+    temp_range = monitor.temp_range if monitor else (-20.0, 80.0)
+    return build_window(
+        row,
+        signals,
+        context.availability,
+        temp_range=temp_range,
+        now=time.time(),
+        # Copilot review (PR 27, finding 2): datetime.now().astimezone().tzinfo
+        # is a fixed offset for the current instant, so a timestamp on the
+        # other side of a DST transition rendered an hour off. tz=None makes
+        # build_window's datetime.fromtimestamp(ts, None) do the OS-local
+        # conversion per timestamp instead -- the project convention
+        # ("Production code uses the OS's real timezone resolver").
+        tz=None,
+    )
 
 
 def _faults_with_age() -> list[dict]:
@@ -298,28 +326,35 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         if name not in EXPECTED_SUBSYSTEMS:
             raise HTTPException(status_code=404, detail=f"Unknown subsystem '{name}'")
         row = _subsystem_summary()[name]
-
-        # health_monitor.get_summary()["temperatures"] is keyed by sensor
-        # location (e.g. "evaporator", "cabinet"), with no field anywhere
-        # linking a location back to the EXPECTED_SUBSYSTEMS name that
-        # reported it -- the spec asks for "temperature ranges where the
-        # subsystem reports them", but there is no subsystem -> location
-        # mapping in the data model to filter by, and adding one is out of
-        # this task's scope (services/health_monitor.py is not ours to
-        # touch). Reversible part-2 stand-in: show every known reading on
-        # every subsystem's detail page rather than fabricate an
-        # attribution the codebase doesn't support.
-        summary = (
-            context.health_monitor.get_summary() if context.health_monitor else None
-        )
-        temperatures = summary["temperatures"] if summary else {}
-
         level = Level.child(LEVEL_HEALTH_SUBSYSTEMS, name, f"/health/subsystems/{name}")
         return templates.TemplateResponse(
             "health_subsystem.html",
             context.template_context(
-                request, level=level, name=name, row=row, temperatures=temperatures
+                request,
+                level=level,
+                name=name,
+                row=row,
+                window=_window_context(name),
             ),
+        )
+
+    @router.get(
+        "/health/subsystems/{name}/live",
+        response_class=HTMLResponse,
+        dependencies=[Depends(web_auth.require(Permission.view_status))],
+    )
+    async def subsystem_live(request: Request, name: str):
+        """The `#live` wrapper's poll target (subsystem-windows design
+        §4.6): renders only `partials/subsystem_live.html`, with no page
+        chrome and no `hx-` attribute of its own -- the wrapper in
+        health_subsystem.html owns every htmx attribute. Listed in
+        web_auth.POLLING_PATHS (via `is_polling_path`) so a 2s poll never
+        refreshes the session's idle clock."""
+        if name not in EXPECTED_SUBSYSTEMS:
+            raise HTTPException(status_code=404, detail=f"Unknown subsystem '{name}'")
+        return templates.TemplateResponse(
+            "partials/subsystem_live.html",
+            context.template_context(request, name=name, window=_window_context(name)),
         )
 
     @router.get(

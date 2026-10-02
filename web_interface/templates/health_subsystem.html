@@ -47,20 +47,10 @@
     </div>
   </div>
 
-  {% if temperatures %}
-  <div class="space-y-2">
-    <h2 class="text-xs font-medium text-gray-400 uppercase tracking-wide">Temperatures</h2>
-    {% for loc, temp in temperatures.items() %}
-    <div class="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-gray-200 shadow-sm p-4">
-      <span class="text-sm text-gray-700">{{ loc }}</span>
-      <span class="text-sm font-medium text-gray-900">{{ temp.value }}°C</span>
-      <span class="text-sm font-medium {{ 'text-green-600' if temp.in_range else 'text-red-600' }}">
-        {{ 'OK' if temp.in_range else 'Out of range' }}
-      </span>
-    </div>
-    {% endfor %}
+  <div id="live" hx-get="/health/subsystems/{{ name }}/live"
+       hx-trigger="load, every 2s" hx-swap="innerHTML" hx-target="this">
+    {% include "partials/subsystem_live.html" %}
   </div>
-  {% endif %}
 
 </div>
 {% endblock %}

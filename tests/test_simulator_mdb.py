@@ -320,7 +320,19 @@ class TestMDBCapabilities:
             "coin_return_test",
             "card_reader_test",
         ]
-        assert caps.contract_version == "0.6.0"
+        assert caps.contract_version == "0.7.0"
+
+    def test_channels_are_binary_inputs_driven_by_payment_enable(self):
+        sim = MDBGatewaySimulator()
+        caps = sim.build_capabilities()
+        ids = [c.channel_id for c in caps.channels]
+        assert ids == [d["name"] for d in sim.devices]
+        interval = MDBGatewaySimulator.DEVICE_STATUS_INTERVAL
+        for channel in caps.channels:
+            assert channel.kind == "binary"
+            assert channel.direction == "input"
+            assert channel.driven_by == "payment/enable"
+            assert channel.interval_seconds == interval
 
 
 class TestPaymentEnable:

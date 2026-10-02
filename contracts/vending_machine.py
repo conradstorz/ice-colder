@@ -1,5 +1,5 @@
 """
-Shared contract models for the vending-machine ESP32 interface (v0.6.0).
+Shared contract models for the vending-machine ESP32 interface (v0.7.0).
 
 Terminal dispenser outcomes, the fault-code registry, the refund
 command/ack, and the general subsystem-capabilities self-description
@@ -35,7 +35,15 @@ from contracts.common import ChannelDescriptor, _utc_now
 # and docs/contracts/vending-machine/CONTRACT.md's completion table. No
 # existing field changed shape or meaning; every present-day ack and
 # command payload still validates unchanged.
-CONTRACT_VERSION = "0.6.0"
+#
+# 0.6.0 -> 0.7.0 (2026-09-30): minor bump, additive. `ChannelDescriptor`
+# (contracts/common.py) gains `direction` ("input" | "output", default
+# "input") and `driven_by` (str | None, default None) so a board's
+# capabilities document can say which channels it drives versus senses,
+# and which command's refusal inhibits an output. Both fields are
+# optional with defaults, so every present-day channel descriptor still
+# validates unchanged.
+CONTRACT_VERSION = "0.7.0"
 
 
 class DispenserOutcome(str, Enum):

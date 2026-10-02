@@ -642,7 +642,88 @@ class TestVendingCapabilities:
             "water_valve",
             "payment/enable",
         ]
-        assert caps.contract_version == "0.6.0"
+        assert caps.contract_version == "0.7.0"
+
+    def test_channels_match_spec_table_in_order(self):
+        """Spec §4.2's eleven-row vending table, copied exactly, in
+        declaration order -- the dashboard renders channels in whatever
+        order build_capabilities lists them."""
+        caps = _make_sim().build_capabilities()
+        ids = [c.channel_id for c in caps.channels]
+        assert ids == [
+            "cabinet",
+            "water_flow",
+            "bag_full_sensor",
+            "water_flow_sensor",
+            "bin_half_full",
+            "auger_motor",
+            "agitator_motor",
+            "bag_drop_solenoid",
+            "water_valve_solenoid",
+            "fan",
+            "heater_relay",
+        ]
+
+    def test_channel_directions_match_hardware_role(self):
+        """Every HARDWARE_DEVICES key must be a declared binary channel
+        (guards a device added to the sim but never declared), and the
+        output set is exactly the six actuators -- never the sensors."""
+        from simulators.vending_machine import HARDWARE_DEVICES
+
+        caps = _make_sim().build_capabilities()
+        by_id = {c.channel_id: c for c in caps.channels}
+        assert set(HARDWARE_DEVICES) <= set(by_id)
+        for device in HARDWARE_DEVICES:
+            assert by_id[device].kind == "binary"
+
+        outputs = {c.channel_id for c in caps.channels if c.direction == "output"}
+        assert outputs == {
+            "auger_motor",
+            "agitator_motor",
+            "bag_drop_solenoid",
+            "water_valve_solenoid",
+            "fan",
+            "heater_relay",
+        }
+
+    def test_driven_by_matches_spec_table(self):
+        caps = _make_sim().build_capabilities()
+        driven_by = {c.channel_id: c.driven_by for c in caps.channels}
+        assert driven_by == {
+            "cabinet": None,
+            "water_flow": None,
+            "bag_full_sensor": None,
+            "water_flow_sensor": None,
+            "bin_half_full": None,
+            "auger_motor": "dispense",
+            "agitator_motor": "dispense",
+            "bag_drop_solenoid": "dispense",
+            "water_valve_solenoid": "water_valve",
+            "fan": None,
+            "heater_relay": None,
+        }
+
+    def test_channel_intervals(self):
+        """Analog channels publish on SENSOR_PUBLISH_INTERVAL; every binary
+        channel is declared at 1.0s per the brief."""
+        from simulators.vending_machine import SENSOR_PUBLISH_INTERVAL
+
+        caps = _make_sim().build_capabilities()
+        by_id = {c.channel_id: c for c in caps.channels}
+        assert by_id["cabinet"].interval_seconds == SENSOR_PUBLISH_INTERVAL
+        assert by_id["water_flow"].interval_seconds == SENSOR_PUBLISH_INTERVAL
+        for channel_id in (
+            "bag_full_sensor",
+            "water_flow_sensor",
+            "bin_half_full",
+            "auger_motor",
+            "agitator_motor",
+            "bag_drop_solenoid",
+            "water_valve_solenoid",
+            "fan",
+            "heater_relay",
+        ):
+            assert by_id[channel_id].interval_seconds == 1.0
 
 
 def _make_command(command: str, params: dict, request_id: str = "req-00000001"):

@@ -168,6 +168,325 @@ class TestSubsystemDetailLevel:
         assert ">Health<" in resp.text or 'href="/health"' in resp.text
         assert ">vending<" in resp.text
 
+    def test_temperature_attributed_only_to_declaring_board(self, client):
+        """Task 7 brief, test (a): a vending-declared channel never appears
+        on the ice-maker page and vice versa -- the whole point of the
+        board's own capabilities document being the only source of what
+        its window shows (spec §3)."""
+        from services.health_monitor import HealthMonitor
+
+        hm = HealthMonitor()
+        hm.record_capabilities(
+            "vending",
+            {
+                "channels": [
+                    {
+                        "channel_id": "cabinet",
+                        "kind": "temperature",
+                        "unit": "C",
+                        "description": "Cabinet temperature",
+                        "direction": "input",
+                        "driven_by": None,
+                    }
+                ],
+                "commands": ["ping", "self_test", "force_report"],
+            },
+        )
+        hm.record_capabilities(
+            "ice_maker",
+            {
+                "channels": [
+                    {
+                        "channel_id": "evaporator",
+                        "kind": "temperature",
+                        "unit": "C",
+                        "description": "Evaporator temperature",
+                        "direction": "input",
+                        "driven_by": None,
+                    }
+                ],
+                "commands": ["ping", "self_test", "force_report"],
+            },
+        )
+        hm.record_heartbeat("vending")
+        hm.record_heartbeat("ice_maker")
+        hm.record_temperature("cabinet", 5.0)
+        hm.record_temperature("evaporator", -10.0)
+        routes.set_health_monitor(hm)
+        try:
+            vending_resp = client.get("/health/subsystems/vending")
+            assert "cabinet" in vending_resp.text
+            assert "evaporator" not in vending_resp.text
+
+            ice_resp = client.get("/health/subsystems/ice_maker")
+            assert "evaporator" in ice_resp.text
+            assert "cabinet" not in ice_resp.text
+        finally:
+            routes.set_health_monitor(None)
+
+    def test_digital_signal_with_text_shows_label_text_and_red(self, client):
+        """Task 7 brief, test (b): an MDB device declares a binary channel
+        whose readiness word is carried as `text`; off (value 0.0) renders
+        the red fill."""
+        from services.health_monitor import HealthMonitor
+
+        hm = HealthMonitor()
+        hm.record_capabilities(
+            "mdb",
+            {
+                "channels": [
+                    {
+                        "channel_id": "card_reader",
+                        "kind": "binary",
+                        "unit": "",
+                        "description": "",
+                        "direction": "input",
+                        "driven_by": "payment/enable",
+                    }
+                ],
+                "commands": ["ping", "self_test", "force_report"],
+            },
+        )
+        hm.record_heartbeat("mdb")
+        hm.record_signal("mdb", "card_reader", 0.0, text="error")
+        routes.set_health_monitor(hm)
+        try:
+            resp = client.get("/health/subsystems/mdb")
+            assert "card_reader" in resp.text
+            assert "card reader" in resp.text  # label: underscores spaced
+            assert "error" in resp.text
+            assert "bg-red-600" in resp.text
+        finally:
+            routes.set_health_monitor(None)
+
+    def test_never_seen_board_shows_gray_not_green(self, client):
+        """Task 7 brief, test (c): a signal recorded with no heartbeat ever
+        is not alive -- state must be "none" (gray), never rendered as if
+        live, even though a reading exists."""
+        from services.health_monitor import HealthMonitor
+
+        hm = HealthMonitor()
+        hm.record_capabilities(
+            "vending",
+            {
+                "channels": [
+                    {
+                        "channel_id": "bag_full_sensor",
+                        "kind": "binary",
+                        "unit": "",
+                        "description": "",
+                        "direction": "input",
+                        "driven_by": None,
+                    }
+                ],
+                "commands": ["ping", "self_test", "force_report"],
+            },
+        )
+        hm.record_signal("vending", "bag_full_sensor", 1.0)
+        routes.set_health_monitor(hm)
+        try:
+            resp = client.get("/health/subsystems/vending")
+            assert "bg-gray-200" in resp.text
+            assert "bg-green-600" not in resp.text
+        finally:
+            routes.set_health_monitor(None)
+
+    def test_inhibited_output_marked_fan_is_not(self, client):
+        """Task 7 brief, test (d): with Availability wired and vending's
+        heartbeat lost, dispense is inhibited -- an output driven by
+        dispense renders ring-dashed and the word "inhibited"; a fan row
+        with no driven_by (autonomous) does not."""
+        from services.availability import Availability
+        from services.health_monitor import HealthMonitor
+
+        hm = HealthMonitor()
+        hm.record_capabilities(
+            "vending",
+            {
+                "channels": [
+                    {
+                        "channel_id": "auger_motor",
+                        "kind": "binary",
+                        "unit": "",
+                        "description": "",
+                        "direction": "output",
+                        "driven_by": "dispense",
+                    },
+                    {
+                        "channel_id": "fan",
+                        "kind": "binary",
+                        "unit": "",
+                        "description": "",
+                        "direction": "output",
+                        "driven_by": None,
+                    },
+                ],
+                "commands": ["ping", "self_test", "force_report", "dispense"],
+            },
+        )
+        hm.record_heartbeat("vending")
+        hm.record_signal("vending", "auger_motor", 0.0)
+        hm.record_signal("vending", "fan", 1.0)
+        routes.set_health_monitor(hm)
+
+        avail = Availability()
+        avail.set_subsystem_alive("vending", False)
+        routes.set_availability(avail)
+        try:
+            resp = client.get("/health/subsystems/vending")
+            text = resp.text
+            assert "ring-dashed" in text
+            assert "inhibited" in text
+
+            def _row(signal_id: str) -> str:
+                start = text.index(f'id="signal-{signal_id}"')
+                end = text.index("</div>", start)
+                return text[start:end]
+
+            assert "inhibited" in _row("auger_motor")
+            assert "inhibited" not in _row("fan")
+        finally:
+            routes.set_health_monitor(None)
+
+    def test_stale_board_shows_gray_not_last_live_reading(self, client):
+        """Copilot review (PR 27, finding 1): a board that heartbeat-timed-out
+        (alive stays True, stale goes True -- see
+        tests/test_health_monitor.py's TestCapabilitiesOnlyLiveness/stale
+        tests for the mechanism) must render its cached signal as gray, not
+        as the green/red it last reported."""
+        from services.health_monitor import HealthMonitor
+
+        hm = HealthMonitor(subsystem_timeout=-1.0)
+        hm.record_capabilities(
+            "mdb",
+            {
+                "channels": [
+                    {
+                        "channel_id": "card_reader",
+                        "kind": "binary",
+                        "unit": "",
+                        "description": "",
+                        "direction": "input",
+                        "driven_by": None,
+                    }
+                ],
+                "commands": ["ping", "self_test", "force_report"],
+            },
+        )
+        hm.record_heartbeat("mdb")
+        hm.record_signal("mdb", "card_reader", 1.0)
+        assert hm.get_summary()["subsystems"]["mdb"]["alive"] is True
+        assert hm.get_summary()["subsystems"]["mdb"]["stale"] is True
+        routes.set_health_monitor(hm)
+        try:
+            resp = client.get("/health/subsystems/mdb")
+            assert resp.status_code == 200
+            assert "bg-gray-200" in resp.text
+            assert "bg-green-600" not in resp.text
+            assert "bg-red-600" not in resp.text
+        finally:
+            routes.set_health_monitor(None)
+
+    def test_updated_clock_is_os_local_time_string(self, client):
+        """Copilot review (PR 27, finding 2): the route must pass tz=None
+        (OS-local, DST-aware per timestamp) rather than a fixed offset --
+        checked here only as a well-formed local clock string, with no
+        assumption about which offset is in effect."""
+        from services.health_monitor import HealthMonitor
+
+        hm = HealthMonitor()
+        hm.record_capabilities(
+            "vending",
+            {
+                "channels": [
+                    {
+                        "channel_id": "bag_full_sensor",
+                        "kind": "binary",
+                        "unit": "",
+                        "description": "",
+                        "direction": "input",
+                        "driven_by": None,
+                    }
+                ],
+                "commands": ["ping", "self_test", "force_report"],
+            },
+        )
+        hm.record_heartbeat("vending")
+        hm.record_signal("vending", "bag_full_sensor", 1.0)
+        routes.set_health_monitor(hm)
+        try:
+            resp = client.get("/health/subsystems/vending")
+            assert resp.status_code == 200
+            assert re.search(r"\d\d:\d\d:\d\d", resp.text)
+        finally:
+            routes.set_health_monitor(None)
+
+    def test_non_string_channel_id_does_not_500(self, client):
+        """Copilot review (PR 27, finding 3): a schema-invalid capabilities
+        payload with a non-string channel_id must be treated as malformed
+        (same fail-safe path as a non-dict entry), not reach
+        signals.get(channel_id) and raise TypeError."""
+        from services.health_monitor import HealthMonitor
+
+        hm = HealthMonitor()
+        hm.record_capabilities(
+            "mdb", {"channels": [{"channel_id": ["x"], "kind": "binary"}]}
+        )
+        routes.set_health_monitor(hm)
+        try:
+            resp = client.get("/health/subsystems/mdb")
+            assert resp.status_code == 200
+        finally:
+            routes.set_health_monitor(None)
+            routes.set_availability(None)
+
+    def test_live_wrapper_hx_attributes_and_single_extra_trigger(self, client):
+        """Task 7 brief, test (e): the full page carries exactly one
+        hx-trigger besides the pill's (i.e. exactly 2 total), and #live
+        self-targets."""
+        from tests.dom_utils import find_by_id, parse_elements
+
+        resp = client.get("/health/subsystems/vending")
+        elements = parse_elements(resp.text)
+        triggers = [e for e in elements if "hx-trigger" in e.attrs]
+        assert len(triggers) == 2
+
+        live = find_by_id(elements, "live")
+        assert len(live) == 1
+        assert live[0].attrs["hx-get"] == "/health/subsystems/vending/live"
+        assert live[0].attrs["hx-trigger"] == "load, every 2s"
+        assert live[0].attrs["hx-swap"] == "innerHTML"
+        assert live[0].attrs["hx-target"] == "this"
+
+
+class TestSubsystemLiveFragment:
+    """Task 7 brief: GET /health/subsystems/{name}/live renders only the
+    partial, with no hx- attribute of its own (base.html's #live wrapper
+    owns every htmx attribute)."""
+
+    @pytest.mark.parametrize("name", ["vending", "mdb", "ice_maker"])
+    def test_known_name_is_200_with_no_hx_attribute(self, client, name):
+        resp = client.get(f"/health/subsystems/{name}/live")
+        assert resp.status_code == 200
+        assert "hx-" not in resp.text
+
+    def test_unknown_name_is_404(self, client):
+        resp = client.get("/health/subsystems/nope/live")
+        assert resp.status_code == 404
+
+    def test_renders_three_section_headings(self, client):
+        resp = client.get("/health/subsystems/vending/live")
+        assert "Inputs" in resp.text
+        assert "Outputs" in resp.text
+        assert "Controls" in resp.text
+
+    def test_requires_view_status(self, login_as):
+        from services.access import Role
+
+        client = login_as(Role.loader)
+        resp = client.get("/health/subsystems/vending/live")
+        assert resp.status_code == 200
+
 
 class TestFaultsLevel:
     def test_breadcrumb_reads_home_health_faults(self, client):

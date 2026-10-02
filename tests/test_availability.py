@@ -370,6 +370,55 @@ def test_svc_102_row_is_safety_gated_when_active():
     assert "no_critical_fault" in a.payment_blocking_reasons()
 
 
+# --- command_inhibited: subsystem-windows design §4.5 -----------------------
+
+
+def test_command_inhibited_all_good_nothing_is_inhibited():
+    a, _ = _avail()
+    _all_good(a)
+    assert a.command_inhibited("dispense") is False
+    assert a.command_inhibited("water_valve") is False
+    assert a.command_inhibited("payment/enable") is False
+    assert a.command_inhibited("ping") is False
+    assert a.command_inhibited("refund") is False
+
+
+def test_command_inhibited_ice_maker_loss_leaves_dispense_and_water_valve_open():
+    # Water can still sell, so dispense (which only needs ONE kind sellable)
+    # and water_valve (which only cares about water) are both not inhibited.
+    a, _ = _avail()
+    _all_good(a)
+    a.set_subsystem_alive("ice_maker", False)
+    assert a.command_inhibited("dispense") is False
+    assert a.command_inhibited("water_valve") is False
+
+
+def test_command_inhibited_vending_loss_blocks_sales_but_not_payment():
+    a, _ = _avail()
+    _all_good(a)
+    a.set_subsystem_alive("vending", False)
+    assert a.command_inhibited("dispense") is True
+    assert a.command_inhibited("water_valve") is True
+    assert a.command_inhibited("payment/enable") is False
+
+
+def test_command_inhibited_machine_critical_fault_inhibits_all_three():
+    a, _ = _avail()
+    _all_good(a)
+    a.set_active_faults([_machine_fault("WTR-103")])
+    assert a.command_inhibited("dispense") is True
+    assert a.command_inhibited("water_valve") is True
+    assert a.command_inhibited("payment/enable") is True
+
+
+def test_command_inhibited_payment_device_error_blocks_sale_not_payment():
+    a, _ = _avail()
+    _all_good(a)
+    a.set_payment_device("card_reader", "error")
+    assert a.command_inhibited("dispense") is True
+    assert a.command_inhibited("payment/enable") is False
+
+
 def test_payment_blocking_faults_has_seven_members_including_svc_102():
     from contracts.vending_machine import FaultCode, PAYMENT_BLOCKING_FAULTS
 

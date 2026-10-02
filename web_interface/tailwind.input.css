@@ -108,4 +108,14 @@
   .code-value {
     --code-value-hook: 1;
   }
+
+  /* Subsystem-windows design §4.7: the dashed-amber "inhibited" marker on a
+     digital IO shape or a Controls chip. An `outline` (not a Tailwind
+     `ring-*` box-shadow) so it reads distinctly from the IO shape's own
+     green/red/gray fill and from focus-visible's solid blue outline
+     (@layer base above) at a glance. */
+  .ring-dashed {
+    outline: 2px dashed theme(colors.amber.500);
+    outline-offset: 2px;
+  }
 }

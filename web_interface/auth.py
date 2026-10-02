@@ -8,6 +8,7 @@ budget for untrusted clients, and main.py hands it the trusted proxies.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -41,6 +42,20 @@ ENROLL_COOKIE_MAX_AGE = 600
 # listed here: CLAUDE.md keeps /screen and /screen/body byte-identical to
 # origin/main and out of scope for this part.
 POLLING_PATHS = frozenset({"/status", "/kpi", "/pill"})
+
+# The per-board live window (subsystem-windows design §4.6/4.7) polls every
+# 2s the same way -- a fourth fixed path would work too, but there are three
+# boards today and more may be added, so this matches on shape instead of
+# naming each one in POLLING_PATHS.
+_LIVE_SUBSYSTEM_PATH_RE = re.compile(r"^/health/subsystems/[a-z0-9_]+/live$")
+
+
+def is_polling_path(path: str) -> bool:
+    """True for a fixed POLLING_PATHS member or a per-board live fragment
+    (`/health/subsystems/<name>/live`) -- see current_principal's `touch`
+    computation below."""
+    return path in POLLING_PATHS or bool(_LIVE_SUBSYSTEM_PATH_RE.match(path))
+
 
 backoff = Backoff()
 
@@ -99,7 +114,7 @@ def current_principal(request: Request) -> Principal | None:
     store = _store
     if store is None or store.corrupt:
         return None
-    touch = request.url.path not in POLLING_PATHS
+    touch = not is_polling_path(request.url.path)
     session = store.resolve_session(request.cookies.get(SESSION_COOKIE), touch=touch)
     if session is None:
         return None

@@ -58,6 +58,12 @@ module.exports = {
   // adds that class at runtime (never in template source), so the scan
   // never finds it and both the busy-state opacity rule and its ::after
   // spinner in @layer base would be purged without this entry.
-  safelist: ["touch-target", "htmx-request"],
+  // `.ring-dashed` (web_interface/tailwind.input.css, subsystem-windows
+  // design §4.7) is the same failure mode as `.touch-target` above: a
+  // hand-written @layer components selector that no template literally
+  // spells inside a scanned class="..." attribute wholesale (it's always
+  // assembled with an `{% if %}`), so it needs the same safelist entry to
+  // ship in the compiled app.css.
+  safelist: ["touch-target", "htmx-request", "ring-dashed"],
   plugins: [],
 };

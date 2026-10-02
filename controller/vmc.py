@@ -18,6 +18,7 @@ from services.mqtt_messages import (
     DispenseCommand,
     IceMakerEvent,
     HardwareIO,
+    SensorReading,
     VMCAlert,
 )
 from contracts.ice_maker_monitor import ChannelReading, CommandAck
@@ -399,6 +400,7 @@ class VMC:
         client.register("hardware/io/+", self._handle_mqtt_hardware_io)
         client.register("cmd/payment/refund/ack", self._handle_mqtt_refund_ack)
         client.register("payment/status", self._handle_mqtt_payment_status)
+        client.register("sensors/water_flow", self._handle_mqtt_water_flow)
         logger.debug("VMC registered MQTT handlers.")
 
     def set_health_monitor(self, monitor: HealthMonitor):
@@ -901,6 +903,10 @@ class VMC:
         hw = HardwareIO.model_validate(data)
         if self._availability:
             self._availability.set_hardware_io(hw.device, hw.state)
+        if self._health_monitor:
+            self._health_monitor.record_signal(
+                "vending", hw.device, 1.0 if hw.state else 0.0
+            )
         if hw.device == "bin_half_full" and hw.state:
             for sku, code in list(self._lockouts.items()):
                 if code is FaultCode.ICE_101:
@@ -923,6 +929,13 @@ class VMC:
         logger.debug(f"MQTT payment status: {status.device}={status.state}")
         if self._availability:
             self._availability.set_payment_device(status.device, status.state)
+        if self._health_monitor:
+            self._health_monitor.record_signal(
+                "mdb",
+                status.device,
+                1.0 if status.state == "ready" else 0.0,
+                text=status.state,
+            )
 
     async def _handle_mqtt_button(self, topic: str, data: dict):
         """Handle button press from ESP32."""
@@ -1119,6 +1132,13 @@ class VMC:
             if value is not None:
                 self._health_monitor.record_temperature(location, float(value))
 
+    async def _handle_mqtt_water_flow(self, topic: str, data: dict):
+        """Handle water flow sensor readings from the vending ESP32."""
+        reading = SensorReading.model_validate(data)
+        logger.debug(f"MQTT water flow [{topic}]: {reading.value}{reading.unit}")
+        if self._health_monitor:
+            self._health_monitor.record_channel("water_flow", reading.value)
+
     async def _handle_mqtt_heartbeat(self, topic: str, data: dict):
         """Handle heartbeat from ESP32 subsystem."""
         logger.debug(f"MQTT heartbeat [{topic}]: {data}")
@@ -1151,6 +1171,12 @@ class VMC:
         if event.event in self._ICE_LOG_EVENTS:
             detail = f" ({event.detail})" if event.detail else ""
             ice_log.info(f"{event.event.upper()}{detail}")
+        if self._health_monitor and event.event in ("power_on", "power_off"):
+            self._health_monitor.record_signal(
+                "ice_maker",
+                "compressor_run",
+                1.0 if event.event == "power_on" else 0.0,
+            )
 
     async def _handle_mqtt_capabilities(self, topic: str, data: dict):
         """Store a subsystem's retained self-description and hand it to health."""

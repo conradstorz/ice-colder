@@ -493,10 +493,28 @@ class TestMonitorContract:
         caps = self._sim().build_capabilities()
         assert caps.contract_version == CONTRACT_VERSION
         ids = [c.channel_id for c in caps.channels]
-        assert len(ids) == 12  # 10 temps + compressor_current + bin_level
+        # 10 temps + compressor_current + bin_level + the new binary
+        # `compressor_run` output (spec §4.2). Named distinctly from the
+        # pre-existing "compressor" temperature sensor (coordinator
+        # decision, 2026-09-30: channel ids must be unique per board) --
+        # see test_channel_ids_are_unique below.
+        assert len(ids) == 13
         assert "hot_gas_valve_1" in ids
         assert "compressor_current" in ids
         assert "bin_level" in ids
+
+        temp_channels = [c for c in caps.channels if c.kind == "temperature"]
+        assert len(temp_channels) == 10
+        assert all(c.direction == "input" for c in temp_channels)
+        assert "compressor" in {c.channel_id for c in temp_channels}
+
+        compressor_run = next(
+            c for c in caps.channels if c.channel_id == "compressor_run"
+        )
+        assert compressor_run.kind == "binary"
+        assert compressor_run.direction == "output"
+        assert compressor_run.driven_by is None
+
         # Copilot review (PR 22, id=4128088689): ping/self_test were
         # missing from this hand-written list even though both handlers
         # are registered for every subsystem -- now prepended, and
@@ -509,6 +527,10 @@ class TestMonitorContract:
             "power_cycle",
             "set_interval",
         ]
+
+    def test_channel_ids_are_unique(self):
+        ids = [c.channel_id for c in self._sim().build_capabilities().channels]
+        assert len(ids) == len(set(ids))
 
     @pytest.mark.asyncio
     async def test_power_cycle_ok_then_lockout(self):
@@ -651,7 +673,7 @@ class TestIceMakerCapabilitiesIdentity:
 
         caps = IceMakerSimulator(machine_id="vmc-t").build_capabilities()
         assert isinstance(caps, MonitorCapabilities)
-        assert caps.contract_version == CONTRACT_VERSION == "1.3.0"
+        assert caps.contract_version == CONTRACT_VERSION == "1.4.0"
         assert caps.firmware == BUILD_INFO.commit_short
         assert caps.hardware_id is not None
         assert caps.commands == [

@@ -45,6 +45,32 @@ class TestChannelDescriptor:
         with pytest.raises(ValidationError):
             ChannelDescriptor(channel_id="x", kind="binary", interval_seconds=3601)
 
+    def test_direction_and_driven_by_default(self):
+        d = ChannelDescriptor(channel_id="x", kind="binary", interval_seconds=5.0)
+        assert d.direction == "input"
+        assert d.driven_by is None
+
+    def test_direction_and_driven_by_round_trip(self):
+        d = ChannelDescriptor(
+            channel_id="auger_motor",
+            kind="binary",
+            interval_seconds=5.0,
+            direction="output",
+            driven_by="dispense",
+        )
+        data = d.model_dump()
+        assert data["direction"] == "output"
+        assert data["driven_by"] == "dispense"
+
+    def test_rejects_bad_direction(self):
+        with pytest.raises(ValidationError):
+            ChannelDescriptor(
+                channel_id="x",
+                kind="binary",
+                interval_seconds=5.0,
+                direction="sideways",
+            )
+
 
 class TestMonitorCapabilities:
     def test_valid_with_defaults(self):
@@ -62,7 +88,9 @@ class TestMonitorCapabilities:
         # 1.1.0 -> 1.2.0: the command/ack models moved to contracts/common.py
         # (SubsystemCommand/CommandAck) and the ack gained an optional
         # `result` field — additive, minor bump.
-        assert CONTRACT_VERSION == "1.3.0"
+        # 1.3.0 -> 1.4.0: ChannelDescriptor gains direction/driven_by
+        # (additive).
+        assert CONTRACT_VERSION == "1.4.0"
 
 
 class TestChannelReading:
@@ -297,10 +325,10 @@ class TestMonitorCapabilitiesIdentity:
         )
         assert caps.hardware_id == "02:aa:bb:cc:dd:ee"
 
-    def test_contract_version_is_1_2_0(self):
+    def test_contract_version_is_1_4_0(self):
         from contracts.ice_maker_monitor import CONTRACT_VERSION
 
-        assert CONTRACT_VERSION == "1.3.0"
+        assert CONTRACT_VERSION == "1.4.0"
 
 
 class TestCompletionTimeouts:

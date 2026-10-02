@@ -138,6 +138,57 @@ class TestPollingDoesNotTouchSessionIdle:
         assert resp.status_code == 200
         assert store._sessions[session_id].last_active_at != before
 
+    def test_subsystem_live_leaves_last_active_at_unchanged(self, wired, client):
+        """Task 7: the per-board live fragment polls every 2s and must be
+        exempted the same way /pill, /status and /kpi already are."""
+        _cfg, _vmc, _inv, store = wired
+        session_id = client.cookies.get(web_auth.SESSION_COOKIE)
+        before = store._sessions[session_id].last_active_at
+
+        resp = client.get("/health/subsystems/vending/live")
+
+        assert resp.status_code == 200
+        assert store._sessions[session_id].last_active_at == before
+
+    def test_subsystem_detail_page_refreshes_last_active_at(self, wired, client):
+        """The page itself (not its polled fragment) is a real navigation
+        and must still refresh the idle clock."""
+        _cfg, _vmc, _inv, store = wired
+        session_id = client.cookies.get(web_auth.SESSION_COOKIE)
+        store._sessions[session_id].last_active_at -= 1.0
+        before = store._sessions[session_id].last_active_at
+
+        resp = client.get("/health/subsystems/vending")
+
+        assert resp.status_code == 200
+        assert store._sessions[session_id].last_active_at != before
+
+
+class TestIsPollingPath:
+    """Direct unit coverage of the regex predicate, alongside the
+    route-level idle-clock assertions above which prove it's actually
+    wired in."""
+
+    def test_accepts_the_three_fixed_polling_paths(self):
+        for path in ("/status", "/kpi", "/pill"):
+            assert web_auth.is_polling_path(path) is True
+
+    def test_accepts_subsystem_live_paths(self):
+        assert web_auth.is_polling_path("/health/subsystems/vending/live") is True
+        assert web_auth.is_polling_path("/health/subsystems/ice_maker/live") is True
+
+    def test_rejects_the_subsystem_detail_page_itself(self):
+        assert web_auth.is_polling_path("/health/subsystems/vending") is False
+
+    def test_rejects_a_trailing_segment_past_live(self):
+        assert (
+            web_auth.is_polling_path("/health/subsystems/vending/live/extra") is False
+        )
+
+    def test_rejects_unrelated_paths(self):
+        assert web_auth.is_polling_path("/health/subsystems") is False
+        assert web_auth.is_polling_path("/") is False
+
 
 class TestHomeSelfPollTargets:
     """Regression test for the Dashboard v2 Home landing DOM-destruction

@@ -899,6 +899,20 @@ class TestFaultRegistry:
         vmc.set_mqtt_client(client)
         assert "hardware/io/+" in client.topics
 
+    def test_water_flow_handler_is_registered(self):
+        vmc = make_vmc2()
+
+        class FakeClient:
+            def __init__(self):
+                self.topics = []
+
+            def register(self, topic, handler):
+                self.topics.append(topic)
+
+        client = FakeClient()
+        vmc.set_mqtt_client(client)
+        assert "sensors/water_flow" in client.topics
+
 
 def _start_dispensing(vmc: VMC, index: int = 0):
     vmc.machine.set_state("interacting_with_user")
@@ -1547,6 +1561,88 @@ async def test_payment_status_error_feeds_availability():
         "payment/status", {"device": "card_reader", "state": "error"}
     )
     assert "payment_devices_ready" in avail.sale_available("ice")[1]
+    signal = monitor.get_summary()["signals"]["mdb"]["card_reader"]
+    assert signal["value"] == 0.0
+    assert signal["text"] == "error"
+    vmc.cancel_pending_tasks()
+
+
+async def test_hardware_io_feeds_health_signal():
+    vmc, monitor, avail, _ = _wired_vmc()
+    _all_alive(monitor, vmc)
+    await vmc._handle_mqtt_hardware_io(
+        "hardware/io/fan", {"device": "fan", "state": True}
+    )
+    signal = monitor.get_summary()["signals"]["vending"]["fan"]
+    assert signal["value"] == 1.0
+    vmc.cancel_pending_tasks()
+
+
+async def test_ice_maker_power_event_feeds_health_signal():
+    vmc, monitor, avail, _ = _wired_vmc()
+    _all_alive(monitor, vmc)
+    await vmc._handle_mqtt_ice_maker_event("ice_maker/event", {"event": "power_on"})
+    signal = monitor.get_summary()["signals"]["ice_maker"]["compressor_run"]
+    assert signal["value"] == 1.0
+
+    await vmc._handle_mqtt_ice_maker_event("ice_maker/event", {"event": "power_off"})
+    signal = monitor.get_summary()["signals"]["ice_maker"]["compressor_run"]
+    assert signal["value"] == 0.0
+    vmc.cancel_pending_tasks()
+
+
+async def test_ice_maker_non_power_event_does_not_feed_compressor_signal():
+    vmc, monitor, avail, _ = _wired_vmc()
+    _all_alive(monitor, vmc)
+    await vmc._handle_mqtt_ice_maker_event(
+        "ice_maker/event", {"event": "needs_cleaning"}
+    )
+    assert "compressor_run" not in monitor.get_summary()["signals"].get("ice_maker", {})
+    vmc.cancel_pending_tasks()
+
+
+async def test_water_flow_feeds_health_channel():
+    vmc, monitor, avail, _ = _wired_vmc()
+    _all_alive(monitor, vmc)
+    await vmc._handle_mqtt_water_flow(
+        "sensors/water_flow", {"location": "water_flow", "value": 12.5, "unit": "gal"}
+    )
+    channel = monitor.get_summary()["channels"]["water_flow"]
+    assert channel["value"] == 12.5
+    vmc.cancel_pending_tasks()
+
+
+async def test_signal_feeding_handlers_tolerate_missing_health_monitor():
+    cfg = ConfigModel()
+    cfg.physical.products = [
+        Product(sku="ICE-1", name="Ice Bag", price=2.5, kind="ice"),
+        Product(sku="WTR-1", name="Water", price=1.0, kind="water"),
+    ]
+    vmc = VMC(config=cfg)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    avail = Availability()
+    vmc.set_availability(avail)
+
+    class FakeMQTT:
+        def register(self, *a, **k):
+            pass
+
+        async def publish(self, topic, payload, qos=1, retain=False):
+            pass
+
+    vmc.set_mqtt_client(FakeMQTT())
+    assert vmc._health_monitor is None
+
+    await vmc._handle_mqtt_hardware_io(
+        "hardware/io/fan", {"device": "fan", "state": True}
+    )
+    await vmc._handle_mqtt_payment_status(
+        "payment/status", {"device": "card_reader", "state": "ready"}
+    )
+    await vmc._handle_mqtt_ice_maker_event("ice_maker/event", {"event": "power_on"})
+    await vmc._handle_mqtt_water_flow(
+        "sensors/water_flow", {"location": "water_flow", "value": 5.0, "unit": "gal"}
+    )
     vmc.cancel_pending_tasks()
 
 
@@ -2312,9 +2408,9 @@ class TestMaintenanceLease:
         enable_true = [
             p for t, p in published if t == "cmd/payment/enable" and p.accept is True
         ]
-        assert len(enable_true) == 1, (
-            "expected exactly one re-enable, not a double release"
-        )
+        assert (
+            len(enable_true) == 1
+        ), "expected exactly one re-enable, not a double release"
 
         # A stray extra release call must be a no-op: clear_fault's own
         # "already cleared" guard stops it from re-pushing availability, so
