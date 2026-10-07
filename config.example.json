@@ -41,7 +41,8 @@
         "price": 3.0,
         "track_inventory": false,
         "inventory_count": 0,
-        "slot": 0
+        "slot": 0,
+        "kind": "ice"
       },
       {
         "sku": "SAMPLE-WATER-SM",
@@ -51,7 +52,8 @@
         "price": 0.5,
         "track_inventory": false,
         "inventory_count": 0,
-        "slot": 1
+        "slot": 1,
+        "kind": "water"
       },
       {
         "sku": "SAMPLE-WATER-LG",
@@ -61,7 +63,8 @@
         "price": 2.0,
         "track_inventory": false,
         "inventory_count": 0,
-        "slot": 2
+        "slot": 2,
+        "kind": "water"
       }
     ]
   },

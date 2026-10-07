@@ -10,6 +10,12 @@ from services import event_recorder as event_recorder_module
 from services.availability import Availability
 from services.session_store import SessionStore
 from services.config_store import save_config
+from services.dispensers import (
+    DispenserProfiles,
+    Finding,
+    ValidationReport,
+    dispensers_path,
+)
 from services.build_info import BUILD_INFO
 from services.paths import LOG_DIR, LOG_FILE
 from services.mailer import send_email
@@ -156,6 +162,85 @@ def load_config() -> ConfigModel:
         sys.exit(1)
 
     return config_model
+
+
+# Plan 1 (this task) only loads `dispensers.toml` and logs its validation
+# report; plan 2 hands this instance to the VMC and routes (CFG-101/CFG-102
+# reconciliation, product gating). Kept module-level so plan 2's wiring can
+# reach it without a second load.
+dispenser_profiles: DispenserProfiles | None = None
+
+
+def load_dispenser_profiles(config: ConfigModel) -> DispenserProfiles:
+    """
+    Load `dispensers.toml` (path from `ICE_COLDER_DISPENSERS`, default
+    `dispensers.toml`) against `config`'s product catalog and log the
+    resulting `ValidationReport`: each finding at `warning` or `error`
+    per its own severity, then the report's verdict line at `info`.
+
+    A missing file is a single warning finding (dispensers.py already
+    turns it into one) — logged and swallowed, since no product gating
+    happens here yet (plan 2). A directory at that path mirrors
+    `load_config`'s own directory check: log a clear error and
+    `sys.exit(1)` rather than paper over it.
+
+    Extracted from `main()` so it can be exercised in a test without an
+    event loop; stores the result on the module-level `dispenser_profiles`
+    for plan 2 to pick up.
+    """
+    global dispenser_profiles
+    path = dispensers_path()
+    logger.info(f"Loading dispenser profiles from '{path}'")
+
+    profiles = DispenserProfiles(config, path=path)
+    try:
+        report = profiles.load()
+    except IsADirectoryError:
+        logger.error(
+            f"Dispensers path '{path}' is a directory, not a file. This "
+            "typically happens when a Docker bind-mount targets a file "
+            "path that doesn't exist yet on the host, so Docker creates a "
+            "directory there instead. Remove the directory and fix the "
+            "bind-mount/ICE_COLDER_DISPENSERS setting, then retry."
+        )
+        sys.exit(1)
+    except Exception as exc:
+        # Anything else out of load() (a pathological TOML file blowing
+        # the recursion limit, an unreadable file slipping past
+        # DispenserProfiles' own OSError handling, ...) must never crash
+        # startup -- a bad dispensers.toml should cost dispenser profiles,
+        # never the whole machine.
+        logger.error(f"dispensers.toml could not be loaded: {exc}")
+        first_line = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+        profiles.report = ValidationReport(
+            findings=[
+                Finding(
+                    slot=None,
+                    path="",
+                    line=None,
+                    severity="error",
+                    message=f"dispensers.toml could not be loaded: {first_line}",
+                )
+            ],
+            file_error=True,
+        )
+        dispenser_profiles = profiles
+        return profiles
+
+    for finding in report.findings:
+        prefix = "File" if finding.slot is None else f"Slot {finding.slot}"
+        path_part = f" › {finding.path}" if finding.path else ""
+        line_part = f" (line {finding.line})" if finding.line is not None else ""
+        text = f"{prefix}{path_part}{line_part}: {finding.message}"
+        if finding.severity == "warning":
+            logger.warning(text)
+        else:
+            logger.error(text)
+
+    logger.info(f"Dispenser profiles: {report.render_text().splitlines()[-1]}")
+
+    dispenser_profiles = profiles
+    return profiles
 
 
 @dataclass
@@ -366,6 +451,7 @@ async def main():
     )
 
     live_config = load_config()
+    load_dispenser_profiles(live_config)
     overrides = apply_env_overrides(live_config)
     logger.debug(f"Configuration model: {live_config}")
     logger.info(

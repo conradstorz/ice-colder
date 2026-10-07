@@ -1,5 +1,5 @@
 """
-Shared contract models for the vending-machine ESP32 interface (v0.7.0).
+Shared contract models for the vending-machine ESP32 interface (v0.8.0).
 
 Terminal dispenser outcomes, the fault-code registry, the refund
 command/ack, and the general subsystem-capabilities self-description
@@ -43,7 +43,13 @@ from contracts.common import ChannelDescriptor, _utc_now
 # and which command's refusal inhibits an output. Both fields are
 # optional with defaults, so every present-day channel descriptor still
 # validates unchanged.
-CONTRACT_VERSION = "0.7.0"
+#
+# 0.7.0 -> 0.8.0 (plan 1): minor bump, additive. FaultCode gains CFG-101
+# (no valid dispenser profile for a slot, product-scope) and CFG-102
+# (dispensers.toml could not be read, machine-scope). Neither blocks
+# payment. Plan 2 adds DispenseCommand/DispenseStep under the same
+# version.
+CONTRACT_VERSION = "0.8.0"
 
 
 class DispenserOutcome(str, Enum):
@@ -91,6 +97,8 @@ class FaultCode(str, Enum):
     SVC_102 = "SVC-102"
     DATA_101 = "DATA-101"
     DATA_102 = "DATA-102"
+    CFG_101 = "CFG-101"
+    CFG_102 = "CFG-102"
 
 
 class Severity(str, Enum):
@@ -256,6 +264,16 @@ FAULT_TABLE: dict[FaultCode, FaultSpec] = {
             "Event database was reset after corruption; history before the "
             "reset is lost"
         ),
+    ),
+    FaultCode.CFG_101: FaultSpec(
+        severity=Severity.product_unavailable,
+        scope=Scope.product,
+        description="No valid dispenser profile for this slot (see dispensers.toml)",
+    ),
+    FaultCode.CFG_102: FaultSpec(
+        severity=Severity.warning,
+        scope=Scope.machine,
+        description="dispensers.toml could not be read (missing or syntax error)",
     ),
 }
 

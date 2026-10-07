@@ -11,10 +11,14 @@ from loguru import logger as _loguru
 
 import services.access as access
 import services.config_store as config_store
-from config.config_model import ConfigModel
+from config.config_model import ConfigModel, PhysicalDetails
 from controller.vmc import VMC
 from services.access import AccessStore, Role, User
+from services.dispensers import DispenserProfiles
 from services.inventory_manager import InventoryManager
+from tests.dispenser_fixtures import GOOD as DISPENSER_GOOD
+from tests.dispenser_fixtures import ICE as DISPENSER_ICE
+from tests.dispenser_fixtures import WATER as DISPENSER_WATER
 from tests.skip_policy import MISSING_TERMINALREPORTER_MARKER, build_skip_report
 from web_interface import auth as web_auth
 from web_interface import routes
@@ -199,6 +203,24 @@ def anonymous(wired):
     c = TestClient(app, follow_redirects=False)
     yield c
     c.close()
+
+
+@pytest.fixture
+def dispenser_profiles(tmp_path, monkeypatch):
+    """A loaded `DispenserProfiles` backed by the Task 3 `GOOD` two-slot
+    text (slot 1 bagged ice, slot 2 water fill) and a `ConfigModel` whose
+    catalog matches it -- for tests that need a ready profile set without
+    rebuilding the fixture text and config themselves."""
+    path = tmp_path / "dispensers.toml"
+    path.write_text(DISPENSER_GOOD, encoding="utf-8")
+    monkeypatch.setenv("ICE_COLDER_DISPENSERS", str(path))
+
+    config = ConfigModel(
+        physical=PhysicalDetails(products=[DISPENSER_ICE, DISPENSER_WATER])
+    )
+    profiles = DispenserProfiles(config)
+    profiles.load()
+    return profiles
 
 
 def pytest_sessionfinish(session):
