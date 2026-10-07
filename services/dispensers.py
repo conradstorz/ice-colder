@@ -404,6 +404,10 @@ def humanize(err: dict, slot: int) -> Finding:
     path = ".".join(str(part) for part in nav_loc if part not in _DISCRIMINATOR_TAGS)
     err_type = err.get("type")
     message = err.get("msg", "")
+    if err_type == "value_error":
+        # Pydantic prefixes a model/field validator's own ValueError text
+        # with "Value error, "; the validator already wrote operator prose.
+        message = message.removeprefix("Value error, ")
 
     if err_type == "extra_forbidden":
         field_name = str(loc[-1]) if loc else ""
