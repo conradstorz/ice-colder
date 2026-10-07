@@ -28,7 +28,9 @@
     "SVC-101",
     "SVC-102",
     "DATA-101",
-    "DATA-102"
+    "DATA-102",
+    "CFG-101",
+    "CFG-102"
   ],
   "title": "FaultCode",
   "type": "string"

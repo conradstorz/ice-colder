@@ -642,7 +642,7 @@ class TestVendingCapabilities:
             "water_valve",
             "payment/enable",
         ]
-        assert caps.contract_version == "0.7.0"
+        assert caps.contract_version == "0.8.0"
 
     def test_channels_match_spec_table_in_order(self):
         """Spec §4.2's eleven-row vending table, copied exactly, in

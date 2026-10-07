@@ -1,4 +1,4 @@
-# Vending Machine Contract — v0.7.0
+# Vending Machine Contract — v0.8.0
 
 This document and the JSON Schema files in `schemas/` define the interface
 between the ice-colder VMC and the vending ESP32 firmware plus the MDB
@@ -107,6 +107,17 @@ A command whose parameters fail the contract's bounds (e.g., `water_valve` with 
 ### Capabilities advertisement
 
 `SubsystemCapabilities.commands` lists **every** command the firmware supports, including the three standard commands (`ping`, `self_test`, `force_report`), the actuator commands (`dispense`, `water_valve`, `bill_acceptor_test`, `coin_return_test`, `card_reader_test`), and any control commands (`set_interval` for the ice maker). The VMC maintains a server-side allowlist, `TESTABLE_COMMANDS` in `contracts/common.py`, containing exactly the standard commands and the test-mode actuator commands; this allowlist is separate from what firmware advertises. A test button in the dashboard appears only for a command that is both allowlisted and advertised by the subsystem, ensuring firmware that ignores the command channel remains unaffected and a crafted request cannot invoke a control command through the test UI.
+
+## Semantics fixed in 0.8.0
+
+- `FaultCode` gains `CFG-101` (no valid dispenser profile for a slot;
+  product-scope, `product_unavailable` severity) and `CFG-102`
+  (dispensers.toml could not be read; machine-scope, `warning` severity).
+- Neither `CFG-101` nor `CFG-102` appears in `PAYMENT_BLOCKING_FAULTS`, so
+  a missing or bad-profile slot locks only that product, never payment
+  machine-wide.
+- Plan 2 adds `DispenseCommand` and `DispenseStep` models (and possibly more
+  fault codes) under the same version.
 
 ## Semantics fixed in 0.7.0
 
