@@ -7,13 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from config.config_model import Product
 from services.dispensers import main
 
-
-# Test helpers copied from test_dispensers_validation.py
-ICE = Product(sku="ICE-10LB", slot=1, kind="ice")
-WATER = Product(sku="WATER-1GAL", slot=2, kind="water")
 
 GOOD = """\
 # dispensers.toml — physical dispense parameters, one table per slot.
@@ -271,3 +266,66 @@ def test_directory_exit_2(temp_config, monkeypatch, capsys):
 
     _, err = capsys.readouterr()
     assert "directory" in err
+
+
+def test_bad_config_exits_2_with_one_stderr_line(temp_config, monkeypatch, capsys):
+    """Bad config JSON validation error exits 2 with exactly one line to stderr."""
+    tmpdir, config_path = temp_config
+    dispensers_path = Path(tmpdir) / "dispensers.toml"
+    dispensers_path.write_text(GOOD, encoding="utf-8")
+
+    # Write invalid config (missing required field)
+    bad_cfg = Path(tmpdir) / "bad_config.json"
+    bad_cfg.write_text('{"physical": "not_a_dict"}', encoding="utf-8")
+
+    monkeypatch.setenv("ICE_COLDER_DISPENSERS", str(dispensers_path))
+
+    result = main(["--check", "--config", str(bad_cfg)])
+    assert result == 2
+
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.strip().count("\n") == 0  # exactly one line (no newlines)
+    assert "validation error" in err.lower() or "error reading config" in err.lower()
+
+
+def test_bad_capabilities_file_exits_2(temp_config, monkeypatch, capsys):
+    """Bad capabilities JSON validation error exits 2 with exactly one line to stderr."""
+    tmpdir, config_path = temp_config
+    dispensers_path = Path(tmpdir) / "dispensers.toml"
+    dispensers_path.write_text(GOOD, encoding="utf-8")
+
+    # Write invalid capabilities (missing required fields)
+    bad_caps = Path(tmpdir) / "bad_capabilities.json"
+    bad_caps.write_text('{"nope": 1}', encoding="utf-8")
+
+    monkeypatch.setenv("ICE_COLDER_CONFIG", str(config_path))
+    monkeypatch.setenv("ICE_COLDER_DISPENSERS", str(dispensers_path))
+
+    result = main(["--check", "--capabilities", str(bad_caps)])
+    assert result == 2
+
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.strip().count("\n") == 0  # exactly one line (no newlines)
+    assert (
+        "validation error" in err.lower() or "error reading capabilities" in err.lower()
+    )
+
+
+def test_check_is_default_when_no_flag_given(temp_config, monkeypatch, capsys):
+    """When no --check or --example flag is given, --check is the default action."""
+    tmpdir, config_path = temp_config
+    dispensers_path = Path(tmpdir) / "dispensers.toml"
+    dispensers_path.write_text(GOOD, encoding="utf-8")
+
+    monkeypatch.setenv("ICE_COLDER_CONFIG", str(config_path))
+    monkeypatch.setenv("ICE_COLDER_DISPENSERS", str(dispensers_path))
+
+    # Call with just the path and config, no --check flag
+    result = main([str(dispensers_path), "--config", str(config_path)])
+    assert result == 0
+
+    output = capsys.readouterr().out
+    # Output should end with the counts line (same as --check behavior)
+    assert "0 error(s), 2 warning(s)" in output

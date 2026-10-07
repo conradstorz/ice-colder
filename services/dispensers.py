@@ -788,12 +788,14 @@ def main(argv: list[str] | None = None) -> int:
         metavar="FILE",
         help="Path to JSON file with SubsystemCapabilities",
     )
-    parser.add_argument(
+
+    action_group = parser.add_mutually_exclusive_group()
+    action_group.add_argument(
         "--example",
         action="store_true",
         help="Print example dispensers.toml and exit",
     )
-    parser.add_argument(
+    action_group.add_argument(
         "--check",
         action="store_true",
         help="Check dispensers.toml (default action)",
@@ -818,16 +820,22 @@ def main(argv: list[str] | None = None) -> int:
         with open(config_path_str, "r", encoding="utf-8") as f:
             config_data = json.load(f)
         config = ConfigModel.model_validate(config_data)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        print(f"Error reading config: {exc}", file=sys.stderr)
+    except ValidationError as exc:
+        error_msg = f"{exc.error_count()} validation error(s) in {config_path_str}"
+        print(f"Error reading config: {error_msg}", file=sys.stderr)
+        return 2
+    except (OSError, ValueError) as exc:
+        error_msg = str(exc).splitlines()[0]
+        print(f"Error reading config: {error_msg}", file=sys.stderr)
         return 2
 
     # Load dispensers file and check for directory
     profiles = DispenserProfiles(config, dispensers_file_path)
     try:
         report = profiles.load()
-    except IsADirectoryError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+    except OSError as exc:
+        error_msg = str(exc).splitlines()[0]
+        print(f"Error reading dispensers file: {error_msg}", file=sys.stderr)
         return 2
 
     # Load capabilities if provided
@@ -837,8 +845,15 @@ def main(argv: list[str] | None = None) -> int:
                 caps_data = json.load(f)
             caps = SubsystemCapabilities.model_validate(caps_data)
             report = profiles.set_capabilities(caps)
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            print(f"Error reading capabilities: {exc}", file=sys.stderr)
+        except ValidationError as exc:
+            error_msg = (
+                f"{exc.error_count()} validation error(s) in {args.capabilities}"
+            )
+            print(f"Error reading capabilities: {error_msg}", file=sys.stderr)
+            return 2
+        except (OSError, ValueError) as exc:
+            error_msg = str(exc).splitlines()[0]
+            print(f"Error reading capabilities: {error_msg}", file=sys.stderr)
             return 2
 
     # Print report and return status
