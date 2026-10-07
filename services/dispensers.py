@@ -8,9 +8,9 @@ catalog, channel roles, the dispense time budget and (optionally) the
 vending board's declared capabilities -- and returns a `ValidationReport`
 that never lets one bad slot sink the others.
 
-This module is validation primitives only -- no file I/O. Task 4 adds a
-`DispenserProfiles` service object (load/save/watch) on top of this; Task 6
-adds the `--check` CLI.
+Primitives: `validate_document`, `humanize`, `find_line`. Task 4 adds
+`DispenserProfiles` (load/validate/save) on top of this; Task 6 adds the
+`--check` CLI.
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from config.config_model import ConfigModel, Product
 from contracts.vending_machine import SubsystemCapabilities
+from services.config_store import _fsync_dir
 from services.dispenser_schema import (
     MECHANISM_FOR_KIND,
     SlotProfile,
@@ -151,6 +152,11 @@ class ValidationReport:
             )
 
         return "\n".join(lines)
+
+
+def _file_finding(severity: Literal["error", "warning"], message: str) -> Finding:
+    """Helper to construct a file-level `Finding` (no slot, path, or line)."""
+    return Finding(slot=None, path="", line=None, severity=severity, message=message)
 
 
 def _unwrap_annotated(tp: object) -> tuple[object, tuple]:
@@ -392,13 +398,7 @@ def validate_document(
         doc = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         report.findings.append(
-            Finding(
-                slot=None,
-                path="",
-                line=_line_for_toml_error(exc),
-                severity="error",
-                message=str(exc),
-            )
+            replace(_file_finding("error", str(exc)), line=_line_for_toml_error(exc))
         )
         report.file_error = True
         return report
@@ -406,41 +406,19 @@ def validate_document(
     schema_version = doc.get("schema_version")
     if schema_version != 1:
         report.findings.append(
-            Finding(
-                slot=None,
-                path="",
-                line=None,
-                severity="error",
-                message=f"schema_version must be 1, got {schema_version!r}",
-            )
+            _file_finding("error", f"schema_version must be 1, got {schema_version!r}")
         )
 
     slot_table = doc.get("slot")
     if not isinstance(slot_table, dict):
-        report.findings.append(
-            Finding(
-                slot=None,
-                path="",
-                line=None,
-                severity="error",
-                message="no [slot.N] tables found",
-            )
-        )
+        report.findings.append(_file_finding("error", "no [slot.N] tables found"))
         report.file_error = True
         return report
 
     slot_tables: dict[int, dict] = {}
     for key, table in slot_table.items():
         if not _SLOT_KEY_RE.match(key):
-            report.findings.append(
-                Finding(
-                    slot=None,
-                    path="",
-                    line=None,
-                    severity="error",
-                    message=f'invalid slot key "{key}"',
-                )
-            )
+            report.findings.append(_file_finding("error", f'invalid slot key "{key}"'))
             continue
         slot_tables[int(key)] = table
 
@@ -684,12 +662,9 @@ class DispenserProfiles:
             self.digest = None
             self.report = ValidationReport(
                 findings=[
-                    Finding(
-                        slot=None,
-                        path="",
-                        line=None,
-                        severity="warning",
-                        message=(
+                    _file_finding(
+                        "warning",
+                        (
                             f"dispensers.toml not found at {self.path}; no "
                             "products have a dispenser profile"
                         ),
@@ -701,9 +676,25 @@ class DispenserProfiles:
             return self.report
 
         raw = self.path.read_bytes()
-        text = raw.decode("utf-8")
-        self._text = text
         self.digest = hashlib.sha256(raw).hexdigest()
+
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            self._text = None
+            self.report = ValidationReport(
+                findings=[
+                    _file_finding(
+                        "error",
+                        f"dispensers.toml is not valid UTF-8 text (byte {exc.start}): {exc.reason}",
+                    )
+                ],
+                profiles={},
+                file_error=True,
+            )
+            return self.report
+
+        self._text = text
         self.report = self.validate_text(text)
         return self.report
 
@@ -725,14 +716,9 @@ class DispenserProfiles:
         if expected_digest != self.digest:
             return ValidationReport(
                 findings=[
-                    Finding(
-                        slot=None,
-                        path="",
-                        line=None,
-                        severity="error",
-                        message=(
-                            "file changed on disk since you opened it; reload the page"
-                        ),
+                    _file_finding(
+                        "error",
+                        "file changed on disk since you opened it; reload the page",
                     )
                 ]
             )
@@ -754,6 +740,7 @@ class DispenserProfiles:
         if self.path.exists():
             os.replace(self.path, bak)
         os.replace(tmp, self.path)
+        _fsync_dir(self.path.parent)
 
         return self.load()
 

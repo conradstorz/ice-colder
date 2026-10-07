@@ -191,3 +191,45 @@ def test_set_capabilities_clears_warnings(tmp_path):
     assert profiles.capabilities is not None
     # The file on disk and self.report reflect the new, warning-free report.
     assert profiles.report is report
+
+
+def test_load_non_utf8_file_is_a_file_error(tmp_path):
+    path = tmp_path / "dispensers.toml"
+    bad_bytes = b"schema_version = 1\n\xff\xfe"
+    path.write_bytes(bad_bytes)
+
+    profiles = DispenserProfiles(_config(), path=path)
+    report = profiles.load()
+
+    assert report.file_error
+    assert report.profiles == {}
+    assert len(report.errors) == 1
+    error = report.errors[0]
+    assert error.slot is None
+    assert "not valid UTF-8" in error.message
+    assert profiles._text is None
+    assert profiles.digest == hashlib.sha256(bad_bytes).hexdigest()
+
+
+def test_save_fsyncs_directory(tmp_path, monkeypatch):
+    path = tmp_path / "dispensers.toml"
+    path.write_text(GOOD, encoding="utf-8")
+
+    profiles = DispenserProfiles(_config(), path=path)
+    profiles.load()
+    digest = profiles.digest
+
+    # Monkeypatch _fsync_dir to record calls
+    fsync_calls = []
+
+    def mock_fsync_dir(directory):
+        fsync_calls.append(directory)
+
+    monkeypatch.setattr("services.dispensers._fsync_dir", mock_fsync_dir)
+
+    new_text = GOOD.replace("run_seconds        = 4.0", "run_seconds        = 5.0")
+    report = profiles.save_text(new_text, expected_digest=digest)
+
+    assert report.ok
+    assert len(fsync_calls) == 1
+    assert fsync_calls[0] == path.parent
