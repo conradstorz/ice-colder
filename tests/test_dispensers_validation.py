@@ -248,6 +248,27 @@ def test_capabilities_checked():
     assert any("declared as output" in f.message for f in matches)
 
 
+def test_accessory_range_error_is_humanized():
+    bad = GOOD.replace("lead_seconds = 2.0", "lead_seconds = 999.0")
+    report = validate_document(bad, [ICE, WATER])
+    matches = [
+        f
+        for f in report.findings
+        if f.slot == 1 and f.path == "accessories.bag_fan.lead_seconds"
+    ]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert "must be between 0 and 30" in finding.message
+    assert "999" in finding.message
+
+
+def test_accessory_unknown_field_suggests():
+    bad = GOOD.replace("lead_seconds = 2.0", "lead_second = 2.0")
+    report = validate_document(bad, [ICE, WATER])
+    matches = [f for f in report.findings if f.slot == 1]
+    assert any("did you mean lead_seconds" in f.message for f in matches)
+
+
 def test_render_text_format():
     report = validate_document(GOOD, [ICE, WATER])
     text = report.render_text()

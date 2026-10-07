@@ -191,6 +191,20 @@ def _navigate(loc: Sequence) -> tuple[type[BaseModel] | None, object | None]:
     field_info = None
 
     for token in loc:
+        origin = typing.get_origin(current)
+        if origin is dict:
+            args = typing.get_args(current)
+            if len(args) != 2:
+                return parent_model, None
+            # The loc token is the dict key itself (e.g. an accessory
+            # name, as in `dict[str, Accessory]`), not a field name --
+            # consume it and continue navigating into the value type.
+            current, _ = _unwrap_annotated(args[1])
+            if isinstance(current, type) and issubclass(current, BaseModel):
+                parent_model = current
+            field_info = None
+            continue
+
         variants = _union_variants(current)
         if variants is not None:
             matched = None
@@ -270,6 +284,9 @@ def humanize(err: dict, slot: int) -> Finding:
     it has the source text."""
 
     loc = tuple(err.get("loc", ()))
+    # Strips by literal value, not position -- a table key that happens to
+    # equal one of the tag strings (e.g. an accessory named "timed") would
+    # be dropped from the reported path too. Deliberate per the plan.
     path = ".".join(str(part) for part in loc if part not in _DISCRIMINATOR_TAGS)
     err_type = err.get("type")
     message = err.get("msg", "")
