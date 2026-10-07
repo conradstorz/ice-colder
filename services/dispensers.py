@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import tomllib
 import types
 import typing
@@ -32,7 +33,6 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from config.config_model import ConfigModel, Product
 from contracts.vending_machine import SubsystemCapabilities
-from services.config_store import _fsync_dir
 from services.dispenser_schema import (
     MECHANISM_FOR_KIND,
     SlotProfile,
@@ -40,6 +40,7 @@ from services.dispenser_schema import (
     sense_channels,
     worst_case_seconds,
 )
+from services.paths import fsync_dir
 
 _SLOT_PROFILE_ADAPTER = TypeAdapter(SlotProfile)
 
@@ -402,6 +403,18 @@ def validate_document(
         )
         report.file_error = True
         return report
+    except (RecursionError, ValueError) as exc:
+        # tomllib's parser recurses per nesting level; a pathologically
+        # deep structure (thousands of `[[[...]]]`) can blow the
+        # interpreter's recursion limit instead of raising
+        # TOMLDecodeError. Never let that escape -- it's still just a bad
+        # file, not a reason to crash the machine.
+        first_line = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+        report.findings.append(
+            _file_finding("error", f"dispensers.toml could not be parsed: {first_line}")
+        )
+        report.file_error = True
+        return report
 
     schema_version = doc.get("schema_version")
     if schema_version != 1:
@@ -647,6 +660,7 @@ class DispenserProfiles:
         self.capabilities: SubsystemCapabilities | None = None
         self.digest: str | None = None
         self._text: str | None = None
+        self._loaded: bool = False
 
     def load(self) -> ValidationReport:
         """Read `self.path` and validate it, storing `report` and
@@ -660,6 +674,7 @@ class DispenserProfiles:
         if not self.path.exists():
             self._text = None
             self.digest = None
+            self._loaded = True
             self.report = ValidationReport(
                 findings=[
                     _file_finding(
@@ -675,8 +690,34 @@ class DispenserProfiles:
             )
             return self.report
 
-        raw = self.path.read_bytes()
+        try:
+            raw = self.path.read_bytes()
+        except IsADirectoryError:
+            raise
+        except OSError as exc:
+            # A permission error or other OS-level read failure must
+            # never crash startup -- fold it into a file-level finding
+            # like any other bad dispensers.toml. Deliberately leaves
+            # `_loaded` False: we never actually saw the file's bytes,
+            # so there is nothing to compute a digest from, and a later
+            # `save_text` must refuse rather than treat this as "loaded
+            # with no changes since".
+            first_line = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+            self._text = None
+            self.digest = None
+            self.report = ValidationReport(
+                findings=[
+                    _file_finding(
+                        "error", f"dispensers.toml could not be read: {first_line}"
+                    )
+                ],
+                profiles={},
+                file_error=True,
+            )
+            return self.report
+
         self.digest = hashlib.sha256(raw).hexdigest()
+        self._loaded = True
 
         try:
             text = raw.decode("utf-8")
@@ -711,7 +752,18 @@ class DispenserProfiles:
 
     def save_text(self, text: str, expected_digest: str | None) -> ValidationReport:
         """Validate and atomically persist `text`, refusing (file
-        untouched) if `expected_digest` is stale or the text has errors."""
+        untouched) if the profiles were never loaded, `expected_digest` is
+        stale, or the text has errors."""
+
+        if not self._loaded:
+            return ValidationReport(
+                findings=[
+                    _file_finding(
+                        "error",
+                        "profiles were never loaded; call load() before saving",
+                    )
+                ]
+            )
 
         if expected_digest != self.digest:
             return ValidationReport(
@@ -729,18 +781,26 @@ class DispenserProfiles:
 
         tmp = self.path.with_suffix(".toml.tmp")
         bak = self.path.with_suffix(".toml.bak")
-        # Binary mode: a text-mode write translates "\n" to the platform
-        # line ending (CRLF on Windows), which would make the on-disk
-        # digest depend on the OS the save ran on. Writing the exact UTF-8
-        # bytes keeps `digest` predictable across platforms.
-        with open(tmp, "wb") as f:
-            f.write(text.encode("utf-8"))
-            f.flush()
-            os.fsync(f.fileno())
-        if self.path.exists():
-            os.replace(self.path, bak)
-        os.replace(tmp, self.path)
-        _fsync_dir(self.path.parent)
+        try:
+            # Binary mode: a text-mode write translates "\n" to the
+            # platform line ending (CRLF on Windows), which would make the
+            # on-disk digest depend on the OS the save ran on. Writing the
+            # exact UTF-8 bytes keeps `digest` predictable across
+            # platforms.
+            with open(tmp, "wb") as f:
+                f.write(text.encode("utf-8"))
+                f.flush()
+                os.fsync(f.fileno())
+            # Copy (not rename) the live file to .bak *before* the single
+            # replace below, so the live path is never briefly absent --
+            # matching services/config_store.py's save_config.
+            if self.path.exists():
+                shutil.copy2(self.path, bak)
+            os.replace(tmp, self.path)
+            fsync_dir(self.path.parent)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
 
         return self.load()
 

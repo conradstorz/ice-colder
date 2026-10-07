@@ -7,11 +7,13 @@ pipeline (tests/test_dispensers_validation.py).
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from config.config_model import ConfigModel, PhysicalDetails
 from contracts.vending_machine import SubsystemCapabilities
 from contracts.common import ChannelDescriptor
 from services.dispensers import DispenserProfiles, dispensers_path
-from tests.test_dispensers_validation import GOOD, ICE, WATER
+from tests.dispenser_fixtures import GOOD, ICE, WATER
 
 
 def _config() -> ConfigModel:
@@ -77,12 +79,27 @@ def test_load_directory_raises(monkeypatch, tmp_path):
     monkeypatch.setenv("ICE_COLDER_DISPENSERS", str(path))
 
     profiles = DispenserProfiles(_config())
-    try:
+    with pytest.raises(IsADirectoryError):
         profiles.load()
-    except IsADirectoryError:
-        pass
-    else:
-        raise AssertionError("expected IsADirectoryError")
+
+
+def test_load_unreadable_file_is_a_file_error(tmp_path, monkeypatch):
+    path = tmp_path / "dispensers.toml"
+    path.write_text(GOOD, encoding="utf-8")
+
+    def raise_permission_error(self):
+        raise PermissionError("Permission denied")
+
+    monkeypatch.setattr(Path, "read_bytes", raise_permission_error)
+
+    profiles = DispenserProfiles(_config(), path=path)
+    report = profiles.load()
+
+    assert report.file_error
+    assert report.profiles == {}
+    assert len(report.errors) == 1
+    assert "could not be read" in report.errors[0].message
+    assert profiles.digest is None
 
 
 def test_load_good_file_populates_profiles_and_digest(tmp_path):
@@ -176,6 +193,57 @@ def test_save_writes_atomically_and_rotates_bak(tmp_path):
     assert profiles.profile_for_slot(1).agitate.run_seconds == 5.0
 
 
+def test_save_before_load_is_refused(tmp_path):
+    path = tmp_path / "dispensers.toml"
+    path.write_text(GOOD, encoding="utf-8")
+
+    profiles = DispenserProfiles(_config(), path=path)
+    report = profiles.save_text(GOOD, expected_digest=None)
+
+    assert not report.ok
+    assert len(report.errors) == 1
+    assert "never loaded" in report.errors[0].message
+    assert path.read_text(encoding="utf-8") == GOOD
+    assert not (tmp_path / "dispensers.toml.tmp").exists()
+
+
+def test_save_none_digest_after_load_is_refused_as_stale(tmp_path):
+    path = tmp_path / "dispensers.toml"
+    path.write_text(GOOD, encoding="utf-8")
+
+    profiles = DispenserProfiles(_config(), path=path)
+    profiles.load()
+
+    report = profiles.save_text(GOOD, expected_digest=None)
+
+    assert not report.ok
+    assert len(report.errors) == 1
+    assert "changed on disk" in report.errors[0].message
+    assert path.read_text(encoding="utf-8") == GOOD
+
+
+def test_save_never_leaves_live_file_absent(tmp_path, monkeypatch):
+    path = tmp_path / "dispensers.toml"
+    path.write_text(GOOD, encoding="utf-8")
+
+    profiles = DispenserProfiles(_config(), path=path)
+    profiles.load()
+    digest = profiles.digest
+
+    def raise_on_replace(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("services.dispensers.os.replace", raise_on_replace)
+
+    new_text = GOOD.replace("run_seconds        = 4.0", "run_seconds        = 5.0")
+    with pytest.raises(OSError):
+        profiles.save_text(new_text, expected_digest=digest)
+
+    assert path.exists()
+    assert path.read_text(encoding="utf-8") == GOOD
+    assert not (tmp_path / "dispensers.toml.tmp").exists()
+
+
 def test_set_capabilities_clears_warnings(tmp_path):
     path = tmp_path / "dispensers.toml"
     path.write_text(GOOD, encoding="utf-8")
@@ -219,13 +287,13 @@ def test_save_fsyncs_directory(tmp_path, monkeypatch):
     profiles.load()
     digest = profiles.digest
 
-    # Monkeypatch _fsync_dir to record calls
+    # Monkeypatch fsync_dir to record calls
     fsync_calls = []
 
     def mock_fsync_dir(directory):
         fsync_calls.append(directory)
 
-    monkeypatch.setattr("services.dispensers._fsync_dir", mock_fsync_dir)
+    monkeypatch.setattr("services.dispensers.fsync_dir", mock_fsync_dir)
 
     new_text = GOOD.replace("run_seconds        = 4.0", "run_seconds        = 5.0")
     report = profiles.save_text(new_text, expected_digest=digest)

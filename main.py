@@ -199,6 +199,15 @@ def load_dispenser_profiles(config: ConfigModel) -> DispenserProfiles:
             "bind-mount/ICE_COLDER_DISPENSERS setting, then retry."
         )
         sys.exit(1)
+    except Exception as exc:
+        # Anything else out of load() (a pathological TOML file blowing
+        # the recursion limit, an unreadable file slipping past
+        # DispenserProfiles' own OSError handling, ...) must never crash
+        # startup -- a bad dispensers.toml should cost dispenser profiles,
+        # never the whole machine.
+        logger.error(f"dispensers.toml could not be loaded: {exc}")
+        dispenser_profiles = profiles
+        return profiles
 
     for finding in report.findings:
         prefix = "File" if finding.slot is None else f"Slot {finding.slot}"

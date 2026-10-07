@@ -19,6 +19,7 @@ from loguru import logger
 from pydantic import SecretStr
 
 from config.config_model import ConfigModel, Product
+from services.paths import fsync_dir
 
 CONFIG_PATH = Path("config.json")
 
@@ -73,23 +74,7 @@ def save_config(config: ConfigModel, path: Path | None = None):
     if path.exists():
         shutil.copy2(path, path.with_name(path.name + ".bak"))
     os.replace(tmp, path)
-    _fsync_dir(path.parent)
-
-
-def _fsync_dir(directory: Path) -> None:
-    """Flush the directory entry after a rename (no-op on Windows)."""
-    if os.name != "posix":
-        return
-    try:
-        fd = os.open(directory, os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(fd)
-    except OSError as e:
-        logger.warning(f"config_store: directory fsync failed for {directory}: {e}")
-    finally:
-        os.close(fd)
+    fsync_dir(path.parent)
 
 
 def _lowest_free_slot(products) -> int:

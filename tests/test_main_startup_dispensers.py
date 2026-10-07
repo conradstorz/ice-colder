@@ -46,6 +46,25 @@ def test_startup_missing_file_warns_and_continues(tmp_path, monkeypatch, caplog)
     assert "not found" in warnings[0]
 
 
+def test_startup_survives_load_exception(tmp_path, monkeypatch, caplog):
+    """An unexpected exception out of `DispenserProfiles.load()` (not
+    `IsADirectoryError`, which already exits cleanly) must never crash
+    startup -- it is logged at error and the machine keeps running."""
+    monkeypatch.setenv("ICE_COLDER_DISPENSERS", str(tmp_path / "dispensers.toml"))
+    caplog.set_level("ERROR")
+
+    def raise_runtime_error(self):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(DispenserProfiles, "load", raise_runtime_error)
+
+    result = main_mod.load_dispenser_profiles(ConfigModel())
+
+    assert isinstance(result, DispenserProfiles)
+    errors = [r.message for r in caplog.records if r.levelname == "ERROR"]
+    assert any("dispensers.toml could not be loaded" in m for m in errors)
+
+
 def test_startup_exits_when_path_is_directory(tmp_path, monkeypatch):
     bogus = tmp_path / "dispensers.toml"
     bogus.mkdir()

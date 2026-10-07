@@ -229,3 +229,14 @@ def test_render_text_invalid_verdict_wording():
     lines = report.render_text().splitlines()
     assert any(line.startswith("Slot 1") and "INVALID (" in line for line in lines)
     assert not any("error(s)" in line and line.startswith("Slot") for line in lines)
+
+
+def test_deeply_nested_toml_is_a_file_error():
+    bad = "x = " + "[" * 2000 + "]" * 2000 + "\n"
+    report = validate_document(bad, [ICE, WATER])
+    assert report.file_error
+    assert len(report.findings) == 1
+    finding = report.findings[0]
+    assert finding.severity == "error"
+    assert finding.slot is None
+    assert "could not be parsed" in finding.message
