@@ -76,10 +76,16 @@ _DISCRIMINATOR_FIELDS = ("mechanism", "proof")
 # Pydantic's own synthetic labels for the arm of an *untagged* union that
 # failed (e.g. the `float | Literal["unmonitored"]` current-sense fields) --
 # not a real field name, so `humanize` strips these from the reported path
-# exactly like a discriminator tag. Unlike discriminator tags these are
-# never real identifiers in this schema, so matching by prefix is safe.
+# exactly like a discriminator tag. The hyphen/bracket forms are safe to
+# match by prefix (never a real identifier anywhere in this schema), but
+# the bare type names ("int", "float", "str") must be matched as *whole*
+# tokens -- a loc part can be an operator-chosen accessory table key (free
+# text), and prefix-matching "str" would also catch "strobe" or
+# "string_lights", silently dropping that accessory's name from the
+# reported path.
 _UNTAGGED_UNION_LABEL_RE = re.compile(
-    r"^(constrained-|literal\[|function-|is-instance|json-or-python|int|float|str)"
+    r"^(?:constrained-|literal\[|function-|is-instance|json-or-python)"
+    r"|^(?:int|float|str|bool|bytes|none)$"
 )
 
 

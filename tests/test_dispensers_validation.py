@@ -303,6 +303,27 @@ def test_missing_proof_is_humanized_with_line():
     assert finding.line == expected_line
 
 
+def test_accessory_named_like_a_union_label_keeps_its_path():
+    # An accessory table key is free text and flows through the same
+    # loc-noise filter used to strip Pydantic's synthetic untagged-union
+    # labels ("constrained-float", ...) -- a key that happens to start
+    # with "str"/"int"/"float" (a real-sounding device name: "strobe",
+    # "intake_fan") must not be mistaken for one of those labels and
+    # silently dropped from the reported path.
+    bad = GOOD.replace("[slot.1.accessories.bag_fan]", "[slot.1.accessories.strobe]")
+    bad = bad.replace("lead_seconds = 2.0", "lead_seconds = 999.0")
+    report = validate_document(bad, [ICE, WATER])
+    matches = [
+        f
+        for f in report.findings
+        if f.slot == 1 and f.path == "accessories.strobe.lead_seconds"
+    ]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert "must be between 0 and 30" in finding.message
+    assert finding.line is not None
+
+
 def test_bad_channel_id_is_humanized():
     bad = GOOD.replace(
         'motor_channel      = "agitator_motor"',
