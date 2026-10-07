@@ -31,6 +31,21 @@ def test_startup_loads_and_logs_report(tmp_path, monkeypatch, caplog):
     assert any("no [slot.N] tables found" in m for m in messages), messages
 
 
+def test_startup_missing_file_warns_and_continues(tmp_path, monkeypatch, caplog):
+    """No `dispensers.toml` at all (the fresh-clone/first-boot default,
+    since the file is gitignored and only its .example is shipped) must
+    log exactly one warning finding and return normally -- never exit."""
+    monkeypatch.setenv("ICE_COLDER_DISPENSERS", str(tmp_path / "dispensers.toml"))
+    caplog.set_level("INFO")
+
+    result = main_mod.load_dispenser_profiles(ConfigModel())
+
+    assert isinstance(result, DispenserProfiles)
+    warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "not found" in warnings[0]
+
+
 def test_startup_exits_when_path_is_directory(tmp_path, monkeypatch):
     bogus = tmp_path / "dispensers.toml"
     bogus.mkdir()

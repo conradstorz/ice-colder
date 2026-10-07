@@ -187,7 +187,7 @@ def load_dispenser_profiles(config: ConfigModel) -> DispenserProfiles:
     path = dispensers_path()
     logger.info(f"Loading dispenser profiles from '{path}'")
 
-    profiles = DispenserProfiles(config)
+    profiles = DispenserProfiles(config, path=path)
     try:
         report = profiles.load()
     except IsADirectoryError:
