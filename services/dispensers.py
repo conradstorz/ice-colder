@@ -15,6 +15,7 @@ Primitives: `validate_document`, `humanize`, `find_line`. Task 4 adds
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import re
@@ -76,16 +77,23 @@ _DISCRIMINATOR_FIELDS = ("mechanism", "proof")
 # Pydantic's own synthetic labels for the arm of an *untagged* union that
 # failed (e.g. the `float | Literal["unmonitored"]` current-sense fields) --
 # not a real field name, so `humanize` strips these from the reported path
-# exactly like a discriminator tag. The hyphen/bracket forms are safe to
-# match by prefix (never a real identifier anywhere in this schema), but
-# the bare type names ("int", "float", "str") must be matched as *whole*
-# tokens -- a loc part can be an operator-chosen accessory table key (free
-# text), and prefix-matching "str" would also catch "strobe" or
-# "string_lights", silently dropping that accessory's name from the
-# reported path.
+# exactly like a discriminator tag. Every alternative is anchored as a
+# *whole* token (verified empirically against this schema: provoking the
+# untagged unions yields exactly "constrained-float", "constrained-str" and
+# "literal['unmonitored']") -- a loc part can be an operator-chosen
+# accessory table key (free text), and TOML bare keys allow hyphens, so
+# even "constrained-" must not match by prefix, or by an open-ended suffix
+# like `\w+`: an accessory named "constrained-fan" would collide. The
+# "constrained-" suffix is therefore restricted to the same closed set of
+# real type names as the bare-type alternatives below, not an arbitrary
+# word. "function-*"/"is-instance"/"json-or-python" are kept defensively
+# for untagged unions elsewhere in Pydantic's error model (not currently
+# produced by this schema) but are themselves fixed, closed labels, so
+# whole-token anchoring is exact for them too.
 _UNTAGGED_UNION_LABEL_RE = re.compile(
-    r"^(?:constrained-|literal\[|function-|is-instance|json-or-python)"
-    r"|^(?:int|float|str|bool|bytes|none)$"
+    r"^(?:constrained-(?:int|float|str|bool|bytes)|literal\[.*\]"
+    r"|function-(?:before|after|wrap|plain)|is-instance|json-or-python"
+    r"|int|float|str|bool|bytes|none)$"
 )
 
 
@@ -364,12 +372,24 @@ def humanize(err: dict, slot: int) -> Finding:
     it has the source text."""
 
     loc = tuple(err.get("loc", ()))
-    # `nav_loc` keeps discriminator tags (`_navigate` needs them to pick
-    # the right union branch) but drops Pydantic's synthetic untagged-
-    # union labels (`"constrained-float"`, `"literal['unmonitored']"`,
-    # ...), which aren't real fields and break navigation one token past
-    # where the real field was already found.
-    nav_loc = tuple(part for part in loc if not _is_union_noise(part))
+    # Pydantic appends a synthetic label describing which arm of an
+    # *untagged* union failed (e.g. `"constrained-float"`, the float arm
+    # of the `float | Literal["unmonitored"]` current-sense fields) as
+    # the very last element of `loc`, immediately after the real field
+    # name -- never anywhere else. `nav_loc` keeps discriminator tags
+    # (`_navigate` needs them to pick the right union branch) but drops
+    # that trailing synthetic label, which isn't a real field and would
+    # break navigation one token past where the real field was already
+    # found. Checking *position*, not just content, matters: an
+    # operator-chosen table key is free text (e.g. an accessory literally
+    # named "constrained-fan" or "is-instance") and can collide with a
+    # synthetic label's exact text, but it is never the trailing element
+    # Pydantic reserves for one -- it is always followed by at least the
+    # real field name within that key's own table.
+    if loc and _is_union_noise(loc[-1]):
+        nav_loc = loc[:-1]
+    else:
+        nav_loc = loc
     # The reported path strips both: a table key that happens to equal a
     # discriminator tag string (e.g. an accessory named "timed") would be
     # dropped too -- deliberate, per the plan.
@@ -449,32 +469,44 @@ def humanize(err: dict, slot: int) -> Finding:
 
 
 def _dedupe_union_findings(
-    findings_with_raw: list[tuple[Finding, bool]],
+    findings_with_meta: list[tuple[Finding, bool, bool]],
 ) -> list[Finding]:
-    """Collapse findings that share `(slot, path)` -- produced when an
-    untagged union field (the `"unmonitored"` fields) fails validation on
-    more than one arm at once -- into one, keeping the first finding whose
-    message was actually humanized (not Pydantic's raw `msg`), else just
-    the first."""
+    """Collapse findings produced when an untagged union field (the
+    `"unmonitored"` fields) fails validation on more than one arm at once
+    -- each arm's error shares the same `(slot, path)` only because
+    `humanize` stripped the same trailing union-noise token from each.
+    `findings_with_meta` is `(finding, is_raw, had_noise)`; only findings
+    whose original Pydantic `loc` actually had a noise token stripped
+    participate in dedup -- grouping on `(slot, path)` alone, with no
+    regard for *why* they share it, would also collapse two genuinely
+    different errors that happen to land on the same path (a `CurrentSense`
+    both-or-neither violation and an unrelated error on the same step, for
+    instance). Every other finding is always kept, even if its `(slot,
+    path)` coincides with another's. Within a noise group, keeps the first
+    finding whose message was actually humanized (not Pydantic's raw
+    `msg`), else just the first."""
 
-    order: list[tuple[int | None, str]] = []
+    result: list[Finding | None] = []
+    group_index: dict[tuple[int | None, str], int] = {}
     groups: dict[tuple[int | None, str], list[tuple[Finding, bool]]] = {}
-    for finding, is_raw in findings_with_raw:
+
+    for finding, is_raw, had_noise in findings_with_meta:
+        if not had_noise:
+            result.append(finding)
+            continue
         key = (finding.slot, finding.path)
-        if key not in groups:
+        if key not in group_index:
+            group_index[key] = len(result)
+            result.append(None)
             groups[key] = []
-            order.append(key)
         groups[key].append((finding, is_raw))
 
-    result: list[Finding] = []
-    for key in order:
+    for key, idx in group_index.items():
         group = groups[key]
-        if len(group) == 1:
-            result.append(group[0][0])
-            continue
         humanized = [f for f, is_raw in group if not is_raw]
-        result.append(humanized[0] if humanized else group[0][0])
-    return result
+        result[idx] = humanized[0] if humanized else group[0][0]
+
+    return [f for f in result if f is not None]
 
 
 def _header_line_index(lines: list[str], header: str) -> int | None:
@@ -587,14 +619,16 @@ def validate_document(
         try:
             profile = _SLOT_PROFILE_ADAPTER.validate_python(table)
         except ValidationError as exc:
-            raw_msgs_and_findings: list[tuple[Finding, bool]] = []
+            findings_with_meta: list[tuple[Finding, bool, bool]] = []
             for err in exc.errors():
                 finding = humanize(err, slot_num)
                 line = find_line(text, slot_num, finding.path)
                 finding = replace(finding, line=line)
                 is_raw = finding.message == err.get("msg", "")
-                raw_msgs_and_findings.append((finding, is_raw))
-            report.findings.extend(_dedupe_union_findings(raw_msgs_and_findings))
+                loc = err.get("loc", ())
+                had_noise = bool(loc) and _is_union_noise(loc[-1])
+                findings_with_meta.append((finding, is_raw, had_noise))
+            report.findings.extend(_dedupe_union_findings(findings_with_meta))
             continue
         report.profiles[slot_num] = profile
 
@@ -625,7 +659,7 @@ def _cross_check(
             Finding(
                 slot=slot,
                 path=path,
-                line=find_line(text, slot, path) if path else None,
+                line=find_line(text, slot, path),
                 severity="error",
                 message=message,
             )
@@ -643,7 +677,7 @@ def _cross_check(
                 Finding(
                     slot=product.slot,
                     path="",
-                    line=None,
+                    line=find_line(text, product.slot, ""),
                     severity="error",
                     message=(
                         f'product "{product.sku}" (kind {product.kind}, '
@@ -951,8 +985,12 @@ class DispenserProfiles:
             os.replace(tmp, self.path)
             fsync_dir(self.path.parent)
         finally:
-            if tmp.exists():
-                tmp.unlink()
+            # Cleanup must never mask whatever exception (if any) is
+            # already propagating out of the `try` above -- a failure
+            # here (e.g. the tmp file is also gone, or another process
+            # holds it) is strictly secondary to that.
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
 
         return self.load()
 

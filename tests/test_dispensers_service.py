@@ -244,6 +244,35 @@ def test_save_never_leaves_live_file_absent(tmp_path, monkeypatch):
     assert not (tmp_path / "dispensers.toml.tmp").exists()
 
 
+def test_save_cleanup_failure_never_masks_the_original_error(tmp_path, monkeypatch):
+    # os.replace fails ("disk full"); the `finally` block's own tmp-file
+    # cleanup must not raise a second exception that replaces the first
+    # in the traceback seen by the caller -- the original failure is the
+    # one that matters and must be what propagates.
+    path = tmp_path / "dispensers.toml"
+    path.write_text(GOOD, encoding="utf-8")
+
+    profiles = DispenserProfiles(_config(), path=path)
+    profiles.load()
+    digest = profiles.digest
+
+    def raise_on_replace(src, dst):
+        raise OSError("disk full")
+
+    def raise_on_unlink(self, *args, **kwargs):
+        raise OSError("cannot delete tmp file")
+
+    monkeypatch.setattr("services.dispensers.os.replace", raise_on_replace)
+    monkeypatch.setattr(Path, "unlink", raise_on_unlink)
+
+    new_text = GOOD.replace("run_seconds        = 4.0", "run_seconds        = 5.0")
+    with pytest.raises(OSError) as exc_info:
+        profiles.save_text(new_text, expected_digest=digest)
+
+    assert "disk full" in str(exc_info.value)
+    assert path.read_text(encoding="utf-8") == GOOD
+
+
 def test_set_capabilities_clears_warnings(tmp_path):
     path = tmp_path / "dispensers.toml"
     path.write_text(GOOD, encoding="utf-8")

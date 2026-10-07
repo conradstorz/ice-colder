@@ -10,7 +10,12 @@ from services import event_recorder as event_recorder_module
 from services.availability import Availability
 from services.session_store import SessionStore
 from services.config_store import save_config
-from services.dispensers import DispenserProfiles, dispensers_path
+from services.dispensers import (
+    DispenserProfiles,
+    Finding,
+    ValidationReport,
+    dispensers_path,
+)
 from services.build_info import BUILD_INFO
 from services.paths import LOG_DIR, LOG_FILE
 from services.mailer import send_email
@@ -206,6 +211,19 @@ def load_dispenser_profiles(config: ConfigModel) -> DispenserProfiles:
         # startup -- a bad dispensers.toml should cost dispenser profiles,
         # never the whole machine.
         logger.error(f"dispensers.toml could not be loaded: {exc}")
+        first_line = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+        profiles.report = ValidationReport(
+            findings=[
+                Finding(
+                    slot=None,
+                    path="",
+                    line=None,
+                    severity="error",
+                    message=f"dispensers.toml could not be loaded: {first_line}",
+                )
+            ],
+            file_error=True,
+        )
         dispenser_profiles = profiles
         return profiles
 

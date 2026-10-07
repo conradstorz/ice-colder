@@ -9,7 +9,12 @@ board's declared capabilities.
 from config.config_model import Product
 from contracts.vending_machine import SubsystemCapabilities
 from contracts.common import ChannelDescriptor
-from services.dispensers import Finding, ValidationReport, validate_document
+from services.dispensers import (
+    Finding,
+    ValidationReport,
+    _dedupe_union_findings,
+    validate_document,
+)
 from tests.dispenser_fixtures import GOOD, ICE, WATER
 
 
@@ -110,6 +115,31 @@ def test_missing_profile_for_catalog_product():
     report = validate_document(bad, [ICE, WATER])
     matches = [f for f in report.findings if f.slot == 2]
     assert any("WATER-1GAL" in f.message for f in matches)
+    # The table is entirely absent -- no [slot.2] header exists to point
+    # at, so the finding has no line.
+    no_table_finding = next(
+        f for f in matches if "has no valid [slot.2] table" in f.message
+    )
+    assert no_table_finding.line is None
+
+
+def test_invalid_profile_for_catalog_product_has_a_line():
+    # The [slot.2] table exists (and so does its header line) but fails
+    # schema validation, so it never becomes a candidate profile -- the
+    # cross-check's "has no valid [slot.N] table" finding must still
+    # resolve a line pointing at that existing header, not fall back to
+    # `None` just because this finding's own `path` is empty.
+    bad = GOOD.replace('proof                  = "flow_volume"   # or "timed"\n', "")
+    report = validate_document(bad, [ICE, WATER])
+    matches = [
+        f
+        for f in report.findings
+        if f.slot == 2 and "has no valid [slot.2] table" in f.message
+    ]
+    assert len(matches) == 1
+    finding = matches[0]
+    expected_line = bad.splitlines().index("[slot.2]") + 1
+    assert finding.line == expected_line
 
 
 def test_sku_slot_mismatch():
@@ -273,6 +303,64 @@ def test_union_field_range_error_is_one_humanized_finding():
     assert finding.line is not None
 
 
+def test_dedupe_only_collapses_findings_whose_loc_had_union_noise():
+    # Grouping on `(slot, path)` alone -- with no regard for *why* two
+    # findings share it -- would wrongly collapse two genuinely different
+    # errors that happen to land on the same path by coincidence, not
+    # because they're split arms of the same untagged union. A `CurrentSense`
+    # both-or-neither violation (a plain `value_error` from a model
+    # validator, reported at path "agitate" as a whole) can't itself be
+    # reproduced alongside a second, unrelated error at that exact path
+    # through real schema validation -- Pydantic's "after" validator never
+    # runs once a sibling field has already failed -- so this exercises
+    # `_dedupe_union_findings` directly with two hand-built findings that
+    # share a path without either coming from a stripped union-noise token.
+    both_or_neither = Finding(
+        slot=1,
+        path="agitate",
+        line=10,
+        severity="error",
+        message=(
+            "stall_current_amps and current_channel must both be set or "
+            'both be "unmonitored"'
+        ),
+    )
+    other_agitate_error = Finding(
+        slot=1,
+        path="agitate",
+        line=12,
+        severity="error",
+        message="some other, unrelated agitate-level problem",
+    )
+    result = _dedupe_union_findings(
+        [(both_or_neither, True, False), (other_agitate_error, True, False)]
+    )
+    assert result == [both_or_neither, other_agitate_error]
+
+
+def test_dedupe_still_collapses_real_union_noise_split():
+    # The actual case this function exists for: one untagged union field
+    # failing on two arms at once produces two findings sharing `(slot,
+    # path)` because `humanize` stripped the same trailing noise token
+    # from each -- those must still collapse to one.
+    raw = Finding(
+        slot=1,
+        path="agitate.stall_current_amps",
+        line=5,
+        severity="error",
+        message="Input should be a valid number",
+    )
+    humanized = Finding(
+        slot=1,
+        path="agitate.stall_current_amps",
+        line=5,
+        severity="error",
+        message="must be between 0.1 and 50 A, got 'oops'",
+    )
+    result = _dedupe_union_findings([(raw, True, True), (humanized, False, True)])
+    assert result == [humanized]
+
+
 def test_missing_mechanism_is_humanized_with_line():
     bad = GOOD.replace('mechanism   = "bagged_ice"\n', "")
     report = validate_document(bad, [ICE, WATER])
@@ -322,6 +410,41 @@ def test_accessory_named_like_a_union_label_keeps_its_path():
     finding = matches[0]
     assert "must be between 0 and 30" in finding.message
     assert finding.line is not None
+
+
+def test_accessory_named_like_a_pydantic_label_keeps_its_path():
+    # Pydantic's own synthetic union-arm labels include hyphenated and
+    # bracketed forms ("constrained-float", "function-before", ...) and
+    # even a form with no distinguishing punctuation at all
+    # ("is-instance") -- TOML bare keys allow hyphens, so an operator
+    # could legitimately name an accessory any of these. None may be
+    # mistaken for the real synthetic label and dropped from the
+    # reported path: the noise filter must key off *position* (the
+    # trailing element Pydantic reserves for a union-arm tag), not just
+    # content, since these accessory names are never in that position --
+    # each is a dict key followed by its own "lead_seconds" field.
+    # Rebuild explicitly rather than chaining fragile string surgery: one
+    # accessory per name, each with its own out-of-range lead_seconds.
+    header = GOOD[: GOOD.index("[slot.1.accessories.bag_fan]")]
+    footer = GOOD[GOOD.index("[slot.2]") :]
+    accessories = "".join(
+        f"[slot.1.accessories.{name}]\n"
+        f'channel      = "bag_fan"\n'
+        f'on_during    = ["fill"]\n'
+        f"lead_seconds = 999.0\n"
+        f"lag_seconds  = 0.5\n\n"
+        for name in ("constrained-fan", "function-light", "is-instance")
+    )
+    bad = header + accessories + footer
+
+    report = validate_document(bad, [ICE, WATER])
+    for name in ("constrained-fan", "function-light", "is-instance"):
+        path = f"accessories.{name}.lead_seconds"
+        matches = [f for f in report.findings if f.slot == 1 and f.path == path]
+        assert len(matches) == 1, (name, [f.path for f in report.findings])
+        finding = matches[0]
+        assert "must be between 0 and 30" in finding.message
+        assert finding.line is not None
 
 
 def test_bad_channel_id_is_humanized():

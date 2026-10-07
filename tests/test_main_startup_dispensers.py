@@ -63,6 +63,12 @@ def test_startup_survives_load_exception(tmp_path, monkeypatch, caplog):
     assert isinstance(result, DispenserProfiles)
     errors = [r.message for r in caplog.records if r.levelname == "ERROR"]
     assert any("dispensers.toml could not be loaded" in m for m in errors)
+    # A consumer must be able to tell "load blew up" from "loaded fine" by
+    # looking at the report alone, not just the log.
+    assert result.report.file_error
+    assert len(result.report.errors) == 1
+    assert "dispensers.toml could not be loaded" in result.report.errors[0].message
+    assert "boom" in result.report.errors[0].message
 
 
 def test_startup_exits_when_path_is_directory(tmp_path, monkeypatch):
