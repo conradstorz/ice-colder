@@ -15,6 +15,8 @@ adds the `--check` CLI.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
 import tomllib
 import types
@@ -22,12 +24,13 @@ import typing
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from difflib import get_close_matches
+from pathlib import Path
 from typing import Literal
 
 import annotated_types
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from config.config_model import Product
+from config.config_model import ConfigModel, Product
 from contracts.vending_machine import SubsystemCapabilities
 from services.dispenser_schema import (
     MECHANISM_FOR_KIND,
@@ -638,3 +641,131 @@ def _check_declared_direction(
             f'channel "{channel_id}" is declared as {direction}, but this profile '
             f"uses it as {role}",
         )
+
+
+def dispensers_path() -> Path:
+    """Resolve the active `dispensers.toml` path from
+    `ICE_COLDER_DISPENSERS` (read at call time, mirroring
+    `main._config_path`), defaulting to `dispensers.toml` in the current
+    working directory."""
+
+    return Path(os.environ.get("ICE_COLDER_DISPENSERS", "dispensers.toml"))
+
+
+class DispenserProfiles:
+    """Load/validate/save service for the hand-edited `dispensers.toml`.
+
+    Wraps `validate_document` with the live product catalog and dispense
+    timeout read off `config` on every validation (so a catalog edit is
+    picked up on the next `load()`), plus an atomic, digest-guarded save.
+    This class does no TOML/schema validation of its own -- that is
+    `validate_document`'s job; this is file I/O and state.
+    """
+
+    def __init__(self, config: ConfigModel, path: Path | None = None) -> None:
+        self.config = config
+        self.path = path or dispensers_path()
+        self.report: ValidationReport = ValidationReport()
+        self.capabilities: SubsystemCapabilities | None = None
+        self.digest: str | None = None
+        self._text: str | None = None
+
+    def load(self) -> ValidationReport:
+        """Read `self.path` and validate it, storing `report` and
+        `digest`. A missing file is a single file-level warning (not an
+        exception); a directory at that path raises `IsADirectoryError`
+        for the caller (`main.py`) to turn into a clean exit."""
+
+        if self.path.is_dir():
+            raise IsADirectoryError(f"{self.path} is a directory, not a file")
+
+        if not self.path.exists():
+            self._text = None
+            self.digest = None
+            self.report = ValidationReport(
+                findings=[
+                    Finding(
+                        slot=None,
+                        path="",
+                        line=None,
+                        severity="warning",
+                        message=(
+                            f"dispensers.toml not found at {self.path}; no "
+                            "products have a dispenser profile"
+                        ),
+                    )
+                ],
+                profiles={},
+                file_error=True,
+            )
+            return self.report
+
+        raw = self.path.read_bytes()
+        text = raw.decode("utf-8")
+        self._text = text
+        self.digest = hashlib.sha256(raw).hexdigest()
+        self.report = self.validate_text(text)
+        return self.report
+
+    def validate_text(self, text: str) -> ValidationReport:
+        """Pure validation of `text` against the live catalog/timeout/
+        capabilities -- writes nothing, and does not touch `self.report`."""
+
+        return validate_document(
+            text,
+            self.config.products,
+            capabilities=self.capabilities,
+            dispense_timeout_seconds=self.config.physical.dispense_timeout_seconds,
+        )
+
+    def save_text(self, text: str, expected_digest: str | None) -> ValidationReport:
+        """Validate and atomically persist `text`, refusing (file
+        untouched) if `expected_digest` is stale or the text has errors."""
+
+        if expected_digest != self.digest:
+            return ValidationReport(
+                findings=[
+                    Finding(
+                        slot=None,
+                        path="",
+                        line=None,
+                        severity="error",
+                        message=(
+                            "file changed on disk since you opened it; reload the page"
+                        ),
+                    )
+                ]
+            )
+
+        report = self.validate_text(text)
+        if not report.ok:
+            return report
+
+        tmp = self.path.with_suffix(".toml.tmp")
+        bak = self.path.with_suffix(".toml.bak")
+        # Binary mode: a text-mode write translates "\n" to the platform
+        # line ending (CRLF on Windows), which would make the on-disk
+        # digest depend on the OS the save ran on. Writing the exact UTF-8
+        # bytes keeps `digest` predictable across platforms.
+        with open(tmp, "wb") as f:
+            f.write(text.encode("utf-8"))
+            f.flush()
+            os.fsync(f.fileno())
+        if self.path.exists():
+            os.replace(self.path, bak)
+        os.replace(tmp, self.path)
+
+        return self.load()
+
+    def profile_for_slot(self, slot: int) -> SlotProfile | None:
+        return self.report.profiles.get(slot)
+
+    def set_capabilities(self, doc: SubsystemCapabilities | None) -> ValidationReport:
+        """Store `doc` and re-run validation on the last-loaded text (not
+        the file on disk) so capability warnings resolve without a save."""
+
+        self.capabilities = doc
+        if self._text is None:
+            return self.report
+        self.report = self.validate_text(self._text)
+        return self.report
