@@ -1,6 +1,8 @@
-# Machine-specific config (copy config.example.json to config.json)
+# Machine-specific config (copy config.example.json to config.json,
+# dispensers.example.toml to dispensers.toml)
 config.json
 inventory.json
+dispensers.toml
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

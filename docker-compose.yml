@@ -30,6 +30,7 @@ services:
       - MQTT_USERNAME=${MQTT_USERNAME}
       - MQTT_PASSWORD=${MQTT_PASSWORD}
       - ICE_COLDER_CONFIG=/app/data/config.json
+      - ICE_COLDER_DISPENSERS=/app/data/dispensers.toml
       - ICE_COLDER_TRUSTED_PROXIES=${ICE_COLDER_TRUSTED_PROXIES:-}
     networks:
       - broker
@@ -51,6 +52,7 @@ services:
       - ./data:/app/data:ro
     environment:
       - ICE_COLDER_CONFIG=/app/data/config.json
+      - ICE_COLDER_DISPENSERS=/app/data/dispensers.toml
       - MQTT_USERNAME=${MQTT_USERNAME}
       - MQTT_PASSWORD=${MQTT_PASSWORD}
     networks:
@@ -74,6 +76,7 @@ services:
       - ./data:/app/data:ro
     environment:
       - ICE_COLDER_CONFIG=/app/data/config.json
+      - ICE_COLDER_DISPENSERS=/app/data/dispensers.toml
       - MQTT_USERNAME=${MQTT_USERNAME}
       - MQTT_PASSWORD=${MQTT_PASSWORD}
     networks:
@@ -97,6 +100,7 @@ services:
       - ./data:/app/data:ro
     environment:
       - ICE_COLDER_CONFIG=/app/data/config.json
+      - ICE_COLDER_DISPENSERS=/app/data/dispensers.toml
       - MQTT_USERNAME=${MQTT_USERNAME}
       - MQTT_PASSWORD=${MQTT_PASSWORD}
     networks:
