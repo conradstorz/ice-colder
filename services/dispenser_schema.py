@@ -43,11 +43,23 @@ UNMONITORED_VALUE = "unmonitored"
 # system (contracts/common.py).
 ChannelId = Annotated[str, StringConstraints(pattern=CHANNEL_ID_PATTERN)]
 
+# The one place this wording is spelled out -- both the generated example's
+# comments (services/dispensers_doc.py) and the humanized validation error
+# for a bad channel id (services/dispensers.py) read it from here, so they
+# can never drift apart.
+CHANNEL_ID_DESCRIPTION = "lowercase letters, digits and underscores, 1–64 characters"
+
 
 class _StrictModel(BaseModel):
-    """Shared base: every dispenser-profile model forbids unknown keys."""
+    """Shared base: every dispenser-profile model forbids unknown keys and
+    validates in Pydantic's strict mode, so a quoted number
+    (`run_seconds = "4.0"`) is rejected instead of silently coerced -- a
+    hand-edited TOML file should say what it means. A plain TOML int for a
+    float field (`run_seconds = 4`) still validates: Pydantic's strict
+    mode explicitly keeps the int-to-float widening, since TOML has no
+    separate "this is a float" syntax for a whole number."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class CurrentSense(_StrictModel):

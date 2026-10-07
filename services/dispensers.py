@@ -33,8 +33,10 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from pydantic.fields import FieldInfo
 
 from config.config_model import ConfigModel, Product
+from contracts.common import CHANNEL_ID_PATTERN
 from contracts.vending_machine import SubsystemCapabilities
 from services.dispenser_schema import (
+    CHANNEL_ID_DESCRIPTION,
     MECHANISM_FOR_KIND,
     SlotProfile,
     drive_channels,
@@ -46,8 +48,10 @@ from services.paths import fsync_dir
 _SLOT_PROFILE_ADAPTER = TypeAdapter(SlotProfile)
 
 # tomllib already delivers `[slot.1]` as the string key "1"; this matches
-# a bare, unsigned, non-zero-padded integer string exactly.
-_SLOT_KEY_RE = re.compile(r"^(0|[1-9][0-9]*)$")
+# a bare, unsigned, non-zero-padded integer string exactly, capped at 6
+# digits (no real machine has a million slots) so a pathological key can't
+# be used to build an absurdly large `int()`.
+_SLOT_KEY_RE = re.compile(r"^(0|[1-9][0-9]{0,5})$")
 
 # tomllib's TOMLDecodeError message always ends in "(at line N, column M)".
 _SYNTAX_LOCATION_RE = re.compile(r"at line (\d+), column (\d+)")
@@ -137,7 +141,21 @@ class ValidationReport:
 
     def render_text(self) -> str:
         lines: list[str] = []
-        for f in self.findings:
+        # File-level findings first, then by ascending slot, then path --
+        # a stable, deterministic order independent of append order (a
+        # cross-check can add findings out of slot order, and a slot's
+        # own table may not appear in ascending order in the source
+        # text). Sorts a local copy; `self.findings` (read by `errors`,
+        # `warnings`, `for_slot`, ...) is never reordered.
+        ordered = sorted(
+            self.findings,
+            key=lambda f: (
+                f.slot is not None,
+                f.slot if f.slot is not None else -1,
+                f.path,
+            ),
+        )
+        for f in ordered:
             prefix = "File" if f.slot is None else f"Slot {f.slot}"
             path_part = f" › {f.path}" if f.path else ""
             line_part = f" (line {f.line})" if f.line is not None else ""
@@ -377,6 +395,12 @@ def humanize(err: dict, slot: int) -> Finding:
             message = (
                 f"must be between {lo} and {hi}{unit_part}, got {err.get('input')}"
             )
+        # else: fall back to Pydantic's own message, already set above.
+
+    elif err_type == "string_pattern_mismatch":
+        pattern = err.get("ctx", {}).get("pattern", "")
+        if pattern == CHANNEL_ID_PATTERN:
+            message = f'must be {CHANNEL_ID_DESCRIPTION}, got "{err.get("input")}"'
         # else: fall back to Pydantic's own message, already set above.
 
     elif err_type == "literal_error":

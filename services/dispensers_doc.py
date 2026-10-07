@@ -35,6 +35,7 @@ from pydantic.fields import FieldInfo
 
 from contracts.common import CHANNEL_ID_PATTERN
 from services.dispenser_schema import (
+    CHANNEL_ID_DESCRIPTION,
     Accessory,
     AgitateStep,
     BaggedIceProfile,
@@ -42,6 +43,7 @@ from services.dispenser_schema import (
     IceFillBySensor,
     IceFillStep,
     IceFillTimed,
+    MECHANISM_FOR_KIND,
     ReleaseBySensor,
     ReleaseStep,
     ReleaseTimed,
@@ -198,8 +200,12 @@ def _join_sentence(description: str, extra: str) -> str:
     """Join a field's description with one trailing clause, adding the
     separating period only when the description does not already end
     with one -- so a description that was hand-written without a
-    trailing period never ends up with a clause mashed onto it."""
+    trailing period never ends up with a clause mashed onto it. An empty
+    description is treated as absent, so `extra` never gets a leading
+    ". " glued onto nothing."""
 
+    if not description:
+        return extra
     if not extra:
         return description
     sep = " " if description.endswith(".") else ". "
@@ -240,10 +246,7 @@ def _string_constraint_clause(
 ) -> str:
     if pattern is not None:
         if pattern == CHANNEL_ID_PATTERN:
-            return (
-                "Allowed: lowercase letters, digits and underscores, "
-                f"1{_EN_DASH}64 characters."
-            )
+            return f"Allowed: {CHANNEL_ID_DESCRIPTION}."
         return f"Must match: {pattern}."
 
     if typing.get_origin(annotation) is list:
@@ -251,13 +254,22 @@ def _string_constraint_clause(
     return "Must not be empty."
 
 
-def _comment_for(field_info: Any, variant_tags: list[str] | None = None) -> str:
+def _comment_for(
+    field_info: Any,
+    variant_tags: list[str] | None = None,
+    accessory_context: tuple[str, tuple[str, ...]] | None = None,
+) -> str:
     """`# <description>. Unit: <unit>. Range: <lo>-<hi>.` for a bounded
     numeric field, `# <description>. One of: a, b.` for a discriminator
     field (every tag in its union, via `variant_tags` when given), `#
     <description>. Allowed: ...`/`Must match: ...`/`Must not be empty.`/
     `At least one entry.` for a string-constrained field, else just `#
-    <description>`."""
+    <description>`.
+
+    `accessory_context`, when given, is `(mechanism, step_names)` for the
+    owning slot's mechanism -- appended as `Steps for <mechanism>: a, b.`
+    to `on_during`'s comment, since `Accessory` itself has no idea which
+    mechanism (and therefore which step names) owns it."""
 
     description = (field_info.description or "").strip()
 
@@ -273,6 +285,9 @@ def _comment_for(field_info: Any, variant_tags: list[str] | None = None) -> str:
     pattern, min_length = _string_constraints(field_info)
     if pattern is not None or min_length is not None:
         extra = _string_constraint_clause(field_info.annotation, pattern, min_length)
+        if accessory_context is not None:
+            mechanism, step_names = accessory_context
+            extra = f"{extra} Steps for {mechanism}: {', '.join(step_names)}."
         return f"# {_join_sentence(description, extra)}"
 
     lo, lo_exclusive, hi, hi_exclusive, unit = _bounds_and_unit(field_info)
@@ -373,6 +388,7 @@ def _render_table(
     lines: list[str],
     path: list[str],
     discriminator_tags: list[str] | None = None,
+    accessory_context: tuple[str, tuple[str, ...]] | None = None,
 ) -> None:
     """Render one `[path]` TOML table for `cls` using `values`. Emits every
     scalar field of `cls` first (required by TOML -- a table's own keys
@@ -382,7 +398,13 @@ def _render_table(
     `discriminator_tags`, when given, is the full, declaration-ordered tag
     list for `cls`'s own `mechanism`/`proof` field (see
     `_variant_tags_for`) -- supplied by the caller, which alone knows
-    which discriminated union `cls` belongs to."""
+    which discriminated union `cls` belongs to.
+
+    `accessory_context`, when given, is `(mechanism, step_names)` for the
+    slot whose `accessories` dict we are inside of -- threaded down into
+    each `Accessory` table's own `_render_table` call so its `on_during`
+    comment can name that mechanism's valid step names (see
+    `_comment_for`)."""
 
     lines.append(f"[{'.'.join(path)}]")
     deferred: list[tuple[str, Any, Any]] = []
@@ -408,6 +430,8 @@ def _render_table(
 
         if name in ("mechanism", "proof") and discriminator_tags is not None:
             lines.append(_comment_for(field_info, variant_tags=discriminator_tags))
+        elif name == "on_during" and accessory_context is not None:
+            lines.append(_comment_for(field_info, accessory_context=accessory_context))
         else:
             lines.append(_comment_for(field_info))
         if name == "mechanism":
@@ -457,11 +481,25 @@ def _render_table(
             lines.append("")
             lines.append(_comment_for(field_info))
             if not value:
-                lines.append(f"# {name}: none for this slot.")
+                lines.append("# (this slot has no accessories)")
+            new_context = accessory_context
+            if name == "accessories" and hasattr(cls, "STEP_NAMES"):
+                mechanism = _literal_values(cls.model_fields["mechanism"].annotation)[0]
+                new_context = (mechanism, cls.STEP_NAMES)
             for i, (key, entry) in enumerate(value.items()):
                 if i > 0:
                     lines.append("")
-                _render_table(entry.cls, entry.values, lines, path + [name, key])
+                lines.append(
+                    f'# "{key}" is this slot\'s own name for this accessory -- '
+                    "call it whatever you like."
+                )
+                _render_table(
+                    entry.cls,
+                    entry.values,
+                    lines,
+                    path + [name, key],
+                    accessory_context=new_context,
+                )
 
 
 # --------------------------------------------------------------------------
@@ -631,6 +669,17 @@ _SLOT_2 = {
 # variant has no no_flow_grace_seconds field).
 
 
+# Derived from MECHANISM_FOR_KIND (never hand-typed) so the header can
+# never fall out of sync with which mechanism goes with which product kind.
+_KIND_REQUIREMENT_LINE = (
+    "# "
+    + "; ".join(
+        f'{mechanism} requires a product with kind = "{kind}"'
+        for kind, mechanism in MECHANISM_FOR_KIND.items()
+    )
+    + "."
+)
+
 _HEADER_LINES = [
     "# dispensers.example.toml",
     "#",
@@ -644,6 +693,7 @@ _HEADER_LINES = [
     "# ICE_COLDER_DISPENSERS points), next to config.json. Each [slot.N]",
     "# table's product_sku must name a product in the catalog (config.json's",
     '# physical.products), and N must equal that product\'s own "slot" number.',
+    _KIND_REQUIREMENT_LINE,
     "#",
     "# Validate any dispensers.toml with:",
     "#     uv run python -m services.dispensers --check",

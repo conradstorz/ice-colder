@@ -22,7 +22,12 @@ import pytest
 from config.config_model import ConfigModel
 from services.dispenser_schema import AgitateStep
 from services.dispensers import validate_document
-from services.dispensers_doc import _render_table, render_example
+from services.dispensers_doc import (
+    _Table,
+    _join_sentence,
+    _render_table,
+    render_example,
+)
 
 EXAMPLE_PATH = Path("dispensers.example.toml")
 CONFIG_EXAMPLE_PATH = Path("config.example.json")
@@ -134,8 +139,8 @@ def test_channel_fields_state_allowed_characters():
 
 def test_every_assignment_is_immediately_preceded_by_a_comment():
     """Every non-comment, non-blank `key = value` line (not a `[...]`
-    table header) must have a comment line (`#...`) directly above it,
-    with no blank line in between."""
+    table header) must have a comment line (`#...`) as its previous
+    non-blank line."""
 
     text = EXAMPLE_PATH.read_text(encoding="utf-8")
     lines = text.splitlines()
@@ -179,6 +184,70 @@ def test_stall_current_amps_comment_states_unit_and_range():
     for comment in comment_lines:
         assert "Unit: A" in comment
         assert "Range: 0.1–50" in comment
+
+
+def test_join_sentence_empty_description_has_no_leading_period():
+    """An empty description is treated as absent -- the extra clause must
+    stand alone, never prefixed with ". "."""
+    assert _join_sentence("", "Range: 0-1.") == "Range: 0-1."
+    assert _join_sentence("", "") == ""
+
+
+def test_on_during_comment_lists_owning_mechanism_steps():
+    # The committed example's only live accessories are on the bagged-ice
+    # slot (both water slots have none), so that is the one case the file
+    # itself exercises -- the water_fill case is exercised directly below
+    # via `_render_table`, since `Accessory` alone has no idea which
+    # mechanism owns it.
+    text = EXAMPLE_PATH.read_text(encoding="utf-8")
+    assert "Steps for bagged_ice: agitate, fill, release." in text
+
+    from services.dispenser_schema import Accessory, WaterFillProfile
+
+    lines: list[str] = []
+    _render_table(
+        WaterFillProfile,
+        {
+            "mechanism": "water_fill",
+            "product_sku": "X",
+            "fill": "placeholder",
+            "accessories": {
+                "label_light": _Table(
+                    Accessory,
+                    {
+                        "channel": "label_light",
+                        "on_during": ["fill"],
+                        "lead_seconds": 0.0,
+                        "lag_seconds": 0.0,
+                    },
+                )
+            },
+        },
+        lines,
+        ["slot", "9"],
+    )
+    rendered = "\n".join(lines)
+    assert "Steps for water_fill: fill." in rendered
+
+
+def test_accessory_table_name_is_operators_own_label():
+    text = EXAMPLE_PATH.read_text(encoding="utf-8")
+    assert (
+        '# "bag_fan" is this slot\'s own name for this accessory -- call it '
+        "whatever you like." in text
+    )
+
+
+def test_header_states_kind_requirement_per_mechanism():
+    text = EXAMPLE_PATH.read_text(encoding="utf-8")
+    assert 'bagged_ice requires a product with kind = "ice"' in text
+    assert 'water_fill requires a product with kind = "water"' in text
+
+
+def test_empty_accessories_comment_wording():
+    text = EXAMPLE_PATH.read_text(encoding="utf-8")
+    assert "# (this slot has no accessories)" in text
+    assert "none for this slot" not in text
 
 
 def test_missing_sample_value_fails_loudly():

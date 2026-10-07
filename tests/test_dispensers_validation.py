@@ -9,7 +9,7 @@ board's declared capabilities.
 from config.config_model import Product
 from contracts.vending_machine import SubsystemCapabilities
 from contracts.common import ChannelDescriptor
-from services.dispensers import validate_document
+from services.dispensers import Finding, ValidationReport, validate_document
 from tests.dispenser_fixtures import GOOD, ICE, WATER
 
 
@@ -223,6 +223,30 @@ def test_render_text_format():
     assert lines[-1] == "0 error(s), 2 warning(s)"
 
 
+def test_render_text_sorts_file_level_findings_first():
+    # Findings deliberately out of order (slot 2, then file-level, then
+    # slot 1) -- render_text must sort them file-level first, then by
+    # ascending slot, regardless of the order they were appended in.
+    report = ValidationReport(
+        findings=[
+            Finding(
+                slot=2, path="", line=None, severity="error", message="slot2 problem"
+            ),
+            Finding(
+                slot=None, path="", line=None, severity="error", message="file problem"
+            ),
+            Finding(
+                slot=1, path="", line=None, severity="error", message="slot1 problem"
+            ),
+        ]
+    )
+    text = report.render_text()
+    file_idx = text.index("file problem")
+    slot1_idx = text.index("slot1 problem")
+    slot2_idx = text.index("slot2 problem")
+    assert file_idx < slot1_idx < slot2_idx
+
+
 def test_render_text_invalid_verdict_wording():
     bad = GOOD.replace("max_run_seconds    = 25.0", "max_run_seconds    = 500")
     report = validate_document(bad, [ICE, WATER])
@@ -277,6 +301,32 @@ def test_missing_proof_is_humanized_with_line():
     assert "timed" in finding.message
     expected_line = bad.splitlines().index("[slot.1.fill]") + 1
     assert finding.line == expected_line
+
+
+def test_bad_channel_id_is_humanized():
+    bad = GOOD.replace(
+        'motor_channel      = "agitator_motor"',
+        'motor_channel      = "Agitator Motor!"',
+    )
+    report = validate_document(bad, [ICE, WATER])
+    matches = [
+        f for f in report.findings if f.slot == 1 and f.path == "agitate.motor_channel"
+    ]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert "lowercase letters, digits and underscores" in finding.message
+    assert "1–64 characters" in finding.message
+    assert "Agitator Motor!" in finding.message
+    assert "pattern" not in finding.message.lower()
+
+
+def test_slot_key_length_capped():
+    bad = GOOD.replace("[slot.1]", "[slot.1000000]").replace(
+        "[slot.1.", "[slot.1000000."
+    )
+    report = validate_document(bad, [ICE, WATER])
+    file_findings = [f for f in report.findings if f.slot is None]
+    assert any("1000000" in f.message for f in file_findings)
 
 
 def test_deeply_nested_toml_is_a_file_error():

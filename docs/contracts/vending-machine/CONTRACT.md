@@ -116,8 +116,9 @@ A command whose parameters fail the contract's bounds (e.g., `water_valve` with 
 - Neither `CFG-101` nor `CFG-102` appears in `PAYMENT_BLOCKING_FAULTS`, so
   a missing or bad-profile slot locks only that product, never payment
   machine-wide.
-- Plan 2 adds `DispenseCommand` and `DispenseStep` models (and possibly more
-  fault codes) under the same version.
+- This section (`0.8.0`) is reserved for additive extensions of the
+  dispenser-profiles feature -- further message types or fault codes added
+  under the same version, never a breaking change.
 
 ## Semantics fixed in 0.7.0
 

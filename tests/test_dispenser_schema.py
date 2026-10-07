@@ -109,6 +109,16 @@ def test_bagged_ice_minimal_valid():
     assert profile.accessories == {}
 
 
+def test_quoted_number_rejected():
+    """Strict mode (M4) rejects a TOML string standing in for a number
+    (`run_seconds = "4.0"`) even though a plain TOML int for a float field
+    (`run_seconds = 4`, used throughout this schema's own samples) must
+    keep validating."""
+    data = _bagged_ice(**{"agitate.run_seconds": "4.0"})
+    with pytest.raises(ValidationError):
+        _SLOT_PROFILE.validate_python(data)
+
+
 def test_unknown_field_rejected():
     data = _water_fill_by_volume()
     del data["fill"]["pulses_per_liter"]

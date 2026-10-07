@@ -10,6 +10,7 @@
 # ICE_COLDER_DISPENSERS points), next to config.json. Each [slot.N]
 # table's product_sku must name a product in the catalog (config.json's
 # physical.products), and N must equal that product's own "slot" number.
+# bagged_ice requires a product with kind = "ice"; water_fill requires a product with kind = "water".
 #
 # Validate any dispensers.toml with:
 #     uv run python -m services.dispensers --check
@@ -96,20 +97,22 @@ close_timeout_seconds = 5
 # pulse_seconds = 1
 
 # Devices that run alongside this slot's steps, by name.
+# "bag_fan" is this slot's own name for this accessory -- call it whatever you like.
 [slot.0.accessories.bag_fan]
 # The channel that drives this accessory. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 channel = "bag_fan"
-# Which steps this accessory runs during, by name, or ["all"] to run for the whole slot cycle. At least one entry.
+# Which steps this accessory runs during, by name, or ["all"] to run for the whole slot cycle. At least one entry. Steps for bagged_ice: agitate, fill, release.
 on_during = ["agitate", "fill"]
 # How long before its step(s) start this accessory turns on. Unit: s. Range: 0–30.
 lead_seconds = 0
 # How long after its step(s) end this accessory stays on. Unit: s. Range: 0–30.
 lag_seconds = 2
 
+# "vending_now_light" is this slot's own name for this accessory -- call it whatever you like.
 [slot.0.accessories.vending_now_light]
 # The channel that drives this accessory. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 channel = "vending_now_light"
-# Which steps this accessory runs during, by name, or ["all"] to run for the whole slot cycle. At least one entry.
+# Which steps this accessory runs during, by name, or ["all"] to run for the whole slot cycle. At least one entry. Steps for bagged_ice: agitate, fill, release.
 on_during = ["all"]
 # How long before its step(s) start this accessory turns on. Unit: s. Range: 0–30.
 lead_seconds = 0
@@ -156,7 +159,7 @@ max_fill_seconds = 90
 # max_fill_seconds = 90
 
 # Devices that run alongside this slot's steps, by name.
-# accessories: none for this slot.
+# (this slot has no accessories)
 
 # ----------------------------------------------------------------------
 # Slot 2 -- water, fill proven by elapsed time (SAMPLE-WATER-LG)
@@ -198,4 +201,4 @@ max_fill_seconds = 90
 # max_fill_seconds = 90
 
 # Devices that run alongside this slot's steps, by name.
-# accessories: none for this slot.
+# (this slot has no accessories)
