@@ -23,6 +23,7 @@ can't report the signal.
 from typing import Annotated, ClassVar, Literal
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -38,10 +39,37 @@ from contracts.common import CHANNEL_ID_PATTERN
 UNMONITORED = Literal["unmonitored"]
 UNMONITORED_VALUE = "unmonitored"
 
+
+def _reject_unmonitored(value: str) -> str:
+    """`"unmonitored"` matches `CHANNEL_ID_PATTERN` (it's just lowercase
+    letters and underscores), so without this check it would silently
+    validate for a channel field that is actually required -- skipping
+    the capabilities and drive/sense cross-checks for a sensor the
+    profile claims to have. Only `current_channel` (paired with
+    `stall_current_amps` in `CurrentSense`) is allowed to say it has no
+    sensor, via the separate `ChannelId | UNMONITORED` union below -- that
+    union's `UNMONITORED` arm matches the sentinel directly and never
+    reaches this validator."""
+
+    if value == UNMONITORED_VALUE:
+        raise ValueError(
+            '"unmonitored" is only allowed for stall_current_amps/current_channel; '
+            "this channel is required"
+        )
+    return value
+
+
 # Every MQTT channel id referenced by a dispenser profile (motor, solenoid,
 # valve, sensor, accessory) reuses the same slug pattern as the rest of the
-# system (contracts/common.py).
-ChannelId = Annotated[str, StringConstraints(pattern=CHANNEL_ID_PATTERN)]
+# system (contracts/common.py). The literal "unmonitored" is syntactically a
+# valid channel id under that pattern, so it's rejected separately here --
+# `current_channel`'s `ChannelId | UNMONITORED` union still accepts it
+# through the `UNMONITORED` arm, which never calls this validator.
+ChannelId = Annotated[
+    str,
+    StringConstraints(pattern=CHANNEL_ID_PATTERN),
+    AfterValidator(_reject_unmonitored),
+]
 
 # The one place this wording is spelled out -- both the generated example's
 # comments (services/dispensers_doc.py) and the humanized validation error
@@ -480,23 +508,26 @@ def drive_channels(profile: SlotProfile) -> set[str]:
 
 def sense_channels(profile: SlotProfile) -> set[str]:
     """Every channel this slot reads: sensors, flow meters, and current
-    sensors -- excluding any field set to `"unmonitored"`."""
+    sensors. `current_channel` is the only sense field that can be
+    `"unmonitored"` (the schema now rejects that sentinel for every other
+    sensor field, since they're required), so it's the only one that
+    needs to skip it here."""
 
     channels: set[str] = set()
 
-    def _add(value: str) -> None:
+    def _add_current(value: str) -> None:
         if value != UNMONITORED_VALUE:
             channels.add(value)
 
     if isinstance(profile, BaggedIceProfile):
-        _add(profile.agitate.current_channel)
-        _add(profile.fill.current_channel)
+        _add_current(profile.agitate.current_channel)
+        _add_current(profile.fill.current_channel)
         if isinstance(profile.fill, IceFillBySensor):
-            _add(profile.fill.sensor_channel)
+            channels.add(profile.fill.sensor_channel)
         if isinstance(profile.release, ReleaseBySensor):
-            _add(profile.release.sensor_channel)
+            channels.add(profile.release.sensor_channel)
     else:
         if isinstance(profile.fill, WaterFillByVolume):
-            _add(profile.fill.flow_sensor_channel)
+            channels.add(profile.fill.flow_sensor_channel)
 
     return channels

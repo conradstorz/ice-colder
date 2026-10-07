@@ -222,6 +222,51 @@ def test_save_none_digest_after_load_is_refused_as_stale(tmp_path):
     assert path.read_text(encoding="utf-8") == GOOD
 
 
+def test_save_refuses_when_file_changed_after_load(tmp_path):
+    path = tmp_path / "dispensers.toml"
+    bak = tmp_path / "dispensers.toml.bak"
+    path.write_text(GOOD, encoding="utf-8")
+
+    profiles = DispenserProfiles(_config(), path=path)
+    profiles.load()
+    old_digest = profiles.digest
+
+    # The file changes on disk (another editor, a second tab) after load()
+    # cached its digest -- a direct write, bypassing the service entirely.
+    direct_write = GOOD.replace("run_seconds        = 4.0", "run_seconds        = 9.0")
+    path.write_text(direct_write, encoding="utf-8")
+
+    report = profiles.save_text(GOOD, expected_digest=old_digest)
+
+    assert not report.ok
+    assert len(report.errors) == 1
+    assert "changed on disk" in report.errors[0].message
+    assert path.read_text(encoding="utf-8") == direct_write
+    assert not bak.exists()
+    assert not (tmp_path / "dispensers.toml.tmp").exists()
+
+
+def test_save_refuses_when_file_appeared_after_missing_load(tmp_path, monkeypatch):
+    path = tmp_path / "dispensers.toml"
+    monkeypatch.setenv("ICE_COLDER_DISPENSERS", str(path))
+
+    profiles = DispenserProfiles(_config())
+    profiles.load()
+    assert profiles.digest is None
+
+    # The file appears on disk after the missing-file load().
+    path.write_text(GOOD, encoding="utf-8")
+
+    report = profiles.save_text(GOOD, expected_digest=None)
+
+    assert not report.ok
+    assert len(report.errors) == 1
+    assert "changed on disk" in report.errors[0].message
+    assert path.read_text(encoding="utf-8") == GOOD
+    assert not (tmp_path / "dispensers.toml.bak").exists()
+    assert not (tmp_path / "dispensers.toml.tmp").exists()
+
+
 def test_save_never_leaves_live_file_absent(tmp_path, monkeypatch):
     path = tmp_path / "dispensers.toml"
     path.write_text(GOOD, encoding="utf-8")

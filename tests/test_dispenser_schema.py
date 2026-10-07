@@ -165,6 +165,39 @@ def test_current_sense_requires_both():
     assert 'both be set or both be "unmonitored"' in str(exc_info.value)
 
 
+def test_unmonitored_rejected_for_required_sensor():
+    expected_msg = (
+        '"unmonitored" is only allowed for stall_current_amps/current_channel; '
+        "this channel is required"
+    )
+
+    ice_fill = _bagged_ice(**{"fill.sensor_channel": "unmonitored"})
+    with pytest.raises(ValidationError) as exc_info:
+        _SLOT_PROFILE.validate_python(ice_fill)
+    assert expected_msg in str(exc_info.value)
+
+    water_fill = _water_fill_by_volume(**{"fill.flow_sensor_channel": "unmonitored"})
+    with pytest.raises(ValidationError) as exc_info:
+        _SLOT_PROFILE.validate_python(water_fill)
+    assert expected_msg in str(exc_info.value)
+
+    release = _bagged_ice(**{"release.sensor_channel": "unmonitored"})
+    with pytest.raises(ValidationError) as exc_info:
+        _SLOT_PROFILE.validate_python(release)
+    assert expected_msg in str(exc_info.value)
+
+    drive = _bagged_ice(**{"agitate.motor_channel": "unmonitored"})
+    with pytest.raises(ValidationError) as exc_info:
+        _SLOT_PROFILE.validate_python(drive)
+    assert expected_msg in str(exc_info.value)
+
+
+def test_unmonitored_still_accepted_for_current_sense():
+    profile = _SLOT_PROFILE.validate_python(_bagged_ice())
+    assert profile.agitate.current_channel == "unmonitored"
+    assert profile.agitate.stall_current_amps == "unmonitored"
+
+
 def test_accessory_on_during_must_name_mechanism_steps():
     data = _water_fill_timed()
     data["accessories"] = {

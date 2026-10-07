@@ -79,20 +79,28 @@ _DISCRIMINATOR_FIELDS = ("mechanism", "proof")
 # not a real field name, so `humanize` strips these from the reported path
 # exactly like a discriminator tag. Every alternative is anchored as a
 # *whole* token (verified empirically against this schema: provoking the
-# untagged unions yields exactly "constrained-float", "constrained-str" and
-# "literal['unmonitored']") -- a loc part can be an operator-chosen
-# accessory table key (free text), and TOML bare keys allow hyphens, so
-# even "constrained-" must not match by prefix, or by an open-ended suffix
-# like `\w+`: an accessory named "constrained-fan" would collide. The
-# "constrained-" suffix is therefore restricted to the same closed set of
-# real type names as the bare-type alternatives below, not an arbitrary
-# word. "function-*"/"is-instance"/"json-or-python" are kept defensively
-# for untagged unions elsewhere in Pydantic's error model (not currently
+# untagged unions yields exactly "constrained-float", "constrained-str",
+# "literal['unmonitored']" and -- since `ChannelId` grew an `AfterValidator`
+# rejecting that same sentinel for every other channel field --
+# "function-after[_reject_unmonitored(), constrained-str]" for the
+# `current_channel` union's `ChannelId` arm) -- a loc part can be an
+# operator-chosen accessory table key (free text), and TOML bare keys allow
+# hyphens, so even "constrained-" must not match by prefix, or by an
+# open-ended suffix like `\w+`: an accessory named "constrained-fan" would
+# collide. The "constrained-" suffix is therefore restricted to the same
+# closed set of real type names as the bare-type alternatives below, not an
+# arbitrary word. "function-*" labels carry a bracketed
+# "[<validator repr>, <inner type>]" suffix naming the validator function
+# and are matched with a non-greedy `\[.*\]` for the same reason "literal[...]"
+# is: the validator's own repr is free text chosen by whoever wrote it, not
+# a closed set, so only the "function-after" (etc.) prefix is anchored, not
+# its contents. "is-instance"/"json-or-python" are kept defensively for
+# untagged unions elsewhere in Pydantic's error model (not currently
 # produced by this schema) but are themselves fixed, closed labels, so
 # whole-token anchoring is exact for them too.
 _UNTAGGED_UNION_LABEL_RE = re.compile(
     r"^(?:constrained-(?:int|float|str|bool|bytes)|literal\[.*\]"
-    r"|function-(?:before|after|wrap|plain)|is-instance|json-or-python"
+    r"|function-(?:before|after|wrap|plain)(?:\[.*\])?|is-instance|json-or-python"
     r"|int|float|str|bool|bytes|none)$"
 )
 
@@ -516,6 +524,28 @@ def _header_line_index(lines: list[str], header: str) -> int | None:
     return None
 
 
+def _root_key_line(text: str, key: str) -> int | None:
+    """Best-effort source line for an unrecognized top-level key: its own
+    `[key]` table header if it's a table, else the first bare `key = ...`
+    assignment line. `None` when nothing can be found."""
+
+    lines = text.splitlines()
+
+    header_idx = _header_line_index(lines, f"[{key}]")
+    if header_idx is not None:
+        return header_idx + 1
+
+    for i, line in enumerate(lines):
+        stripped = line.split("#", 1)[0].strip()
+        if not stripped.startswith(key):
+            continue
+        rest = stripped[len(key) :].lstrip()
+        if rest.startswith("="):
+            return i + 1
+
+    return None
+
+
 def find_line(text: str, slot: int, path: str) -> int | None:
     """Best-effort source line for a `(slot, path)` finding: locate the
     `[slot.N...]` header for the deepest table named in `path`, then the
@@ -596,10 +626,29 @@ def validate_document(
         report.file_error = True
         return report
 
+    _ROOT_KEYS = ("schema_version", "slot")
+    for key in doc:
+        if key not in _ROOT_KEYS:
+            suggestion = ""
+            matches = get_close_matches(key, _ROOT_KEYS)
+            if matches:
+                suggestion = f" (did you mean {matches[0]}?)"
+            report.findings.append(
+                replace(
+                    _file_finding(
+                        "error", f'unknown top-level key "{key}"{suggestion}'
+                    ),
+                    line=_root_key_line(text, key),
+                )
+            )
+
     schema_version = doc.get("schema_version")
-    if schema_version != 1:
+    if type(schema_version) is not int or schema_version != 1:
         report.findings.append(
-            _file_finding("error", f"schema_version must be 1, got {schema_version!r}")
+            _file_finding(
+                "error",
+                f"schema_version must be the integer 1, got {schema_version!r}",
+            )
         )
 
     slot_table = doc.get("slot")
@@ -951,7 +1000,14 @@ class DispenserProfiles:
                 ]
             )
 
-        if expected_digest != self.digest:
+        try:
+            on_disk = self.path.read_bytes()
+        except FileNotFoundError:
+            on_disk = None
+        current_digest = (
+            hashlib.sha256(on_disk).hexdigest() if on_disk is not None else None
+        )
+        if expected_digest != current_digest:
             return ValidationReport(
                 findings=[
                     _file_finding(

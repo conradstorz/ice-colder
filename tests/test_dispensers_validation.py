@@ -6,6 +6,8 @@ channel roles, the dispense time budget, and (optionally) the vending
 board's declared capabilities.
 """
 
+import pytest
+
 from config.config_model import Product
 from contracts.vending_machine import SubsystemCapabilities
 from contracts.common import ChannelDescriptor
@@ -464,6 +466,53 @@ def test_bad_channel_id_is_humanized():
     assert "pattern" not in finding.message.lower()
 
 
+def test_unmonitored_rejected_for_required_sensor_is_humanized():
+    bad = GOOD.replace(
+        'sensor_channel     = "bag_full_sensor"   # bag_full_sensor proof only',
+        'sensor_channel     = "unmonitored"   # bag_full_sensor proof only',
+    )
+    report = validate_document(bad, [ICE, WATER])
+    matches = [
+        f for f in report.findings if f.slot == 1 and f.path == "fill.sensor_channel"
+    ]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert '"unmonitored" is only allowed for stall_current_amps/current_channel' in (
+        finding.message
+    )
+    assert finding.line is not None
+    # the path must be the plain dotted field path -- no leaked Pydantic
+    # synthetic union-arm label ("function-after[...]", ...)
+    assert "function-after" not in finding.path
+    assert "[" not in finding.path
+
+
+def test_bad_current_channel_keeps_its_path_not_the_after_validator_label():
+    # current_channel's `ChannelId | UNMONITORED` union now carries an
+    # AfterValidator on the ChannelId arm (it rejects "unmonitored" there
+    # too, since the union's Literal arm is the one that's actually
+    # supposed to accept the sentinel). An invalid, non-"unmonitored"
+    # value fails both arms, and Pydantic tags the ChannelId arm's error
+    # with a synthetic "function-after[...]" label -- this must still be
+    # stripped from the reported path exactly like any other union-arm
+    # noise token.
+    bad = GOOD.replace(
+        'current_channel    = "unmonitored"\n\n[slot.1.fill]',
+        'current_channel    = "Not Valid!"\n\n[slot.1.fill]',
+    )
+    report = validate_document(bad, [ICE, WATER])
+    matches = [
+        f
+        for f in report.findings
+        if f.slot == 1 and f.path == "agitate.current_channel"
+    ]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert "lowercase letters, digits and underscores" in finding.message
+    assert "function-after" not in finding.path
+    assert "[" not in finding.path
+
+
 def test_slot_key_length_capped():
     bad = GOOD.replace("[slot.1]", "[slot.1000000]").replace(
         "[slot.1.", "[slot.1000000."
@@ -482,3 +531,45 @@ def test_deeply_nested_toml_is_a_file_error():
     assert finding.severity == "error"
     assert finding.slot is None
     assert "could not be parsed" in finding.message
+
+
+@pytest.mark.parametrize("bad_value", ["true", "1.0", '"1"', "2"])
+def test_schema_version_must_be_integer_one(bad_value):
+    bad = GOOD.replace("schema_version = 1", f"schema_version = {bad_value}")
+    report = validate_document(bad, [ICE, WATER])
+    file_findings = [f for f in report.findings if f.slot is None]
+    assert any(
+        "schema_version must be the integer 1" in f.message for f in file_findings
+    ), file_findings
+    # still examines the rest of the file rather than bailing out
+    assert set(report.profiles.keys()) == {1, 2}
+
+
+def test_unknown_root_key_is_an_error():
+    # A bare root key must land before any `[slot.N]` header -- once a
+    # table header has been opened, TOML attributes later bare keys to
+    # that table, not the root.
+    lines = GOOD.splitlines()
+    insert_at = lines.index("schema_version = 1") + 1
+    lines.insert(insert_at, "foo = 1")
+    bad = "\n".join(lines) + "\n"
+
+    report = validate_document(bad, [ICE, WATER])
+    file_findings = [f for f in report.findings if f.slot is None]
+    matches = [f for f in file_findings if 'unknown top-level key "foo"' in f.message]
+    assert len(matches) == 1
+    assert matches[0].line == insert_at + 1
+    # other slots are still examined
+    assert set(report.profiles.keys()) == {1, 2}
+
+
+def test_unknown_root_key_table_form_suggests_slot():
+    bad = GOOD + "[slots]\nbar = 2\n"
+    report = validate_document(bad, [ICE, WATER])
+    file_findings = [f for f in report.findings if f.slot is None]
+    matches = [f for f in file_findings if 'unknown top-level key "slots"' in f.message]
+    assert len(matches) == 1
+    assert "did you mean slot?" in matches[0].message
+    assert matches[0].line == len(GOOD.splitlines()) + 1
+    # other slots are still examined
+    assert set(report.profiles.keys()) == {1, 2}
