@@ -1,10 +1,14 @@
 # services/dispensers_doc.py
 """Generates the self-documenting `dispensers.example.toml` from the Task 2
 schema models (`services/dispenser_schema.py`), so the shipped
-documentation can never drift from the schema it illustrates: every
+documentation can never drift from the schema it illustrates: nearly every
 comment line in the output is rendered from a model field's own
-`description`, `json_schema_extra["unit"]`, and `ge`/`le`/`gt` metadata --
-never hand-typed prose that could fall out of sync.
+`description`, `json_schema_extra["unit"]`, `ge`/`le`/`gt` metadata,
+discriminator `Literal` tags (every tag in the union, not just the live
+variant's own), or `StringConstraints`/`min_length` metadata. The two
+exceptions are hand-typed prose, kept deliberately short: the
+`schema_version` comment and `_OTHER_MECHANISM_NOTE` (the sentence
+pointing a reader at the slot where the other `mechanism` is shown live).
 
 Sample *values* are the one thing not derived from the schema -- they are
 hand-authored below (`_SLOT_0`/`_SLOT_1`/`_SLOT_2`) and chosen so the whole
@@ -26,17 +30,24 @@ from dataclasses import dataclass
 from typing import Any
 
 import annotated_types
+from pydantic import StringConstraints
 
+from contracts.common import CHANNEL_ID_PATTERN
 from services.dispenser_schema import (
     Accessory,
     AgitateStep,
     BaggedIceProfile,
+    CurrentSense,
     IceFillBySensor,
+    IceFillStep,
     IceFillTimed,
     ReleaseBySensor,
+    ReleaseStep,
     ReleaseTimed,
+    SlotProfile,
     WaterFillByVolume,
     WaterFillProfile,
+    WaterFillStep,
     WaterFillTimed,
 )
 
@@ -62,6 +73,62 @@ def _literal_values(annotation: object) -> list[str] | None:
     if typing.get_origin(unwrapped) is typing.Literal:
         return [str(v) for v in typing.get_args(unwrapped)]
     return None
+
+
+def _discriminator_name(cls: type) -> str:
+    for name in ("mechanism", "proof"):
+        if name in cls.model_fields:
+            return name
+    raise ValueError(f"{cls.__name__} has no discriminator field")
+
+
+def _union_members_and_tags(union_alias: object) -> tuple[tuple[type, ...], list[str]]:
+    """A discriminated union's member model classes, in declaration order,
+    plus every tag those members' own discriminator fields carry (also in
+    declaration order) -- so the "One of:" comment for a discriminator
+    field can honestly list every variant, not just the one that happens
+    to be live in a given sample slot."""
+
+    unwrapped, _ = _unwrap_annotated(union_alias)
+    members = typing.get_args(unwrapped)
+    tags: list[str] = []
+    for member in members:
+        disc_name = _discriminator_name(member)
+        values = _literal_values(member.model_fields[disc_name].annotation)
+        if values is None:
+            raise ValueError(f"{member.__name__}.{disc_name} has no Literal values")
+        tags.extend(values)
+    return members, tags
+
+
+# Every discriminated union in the Task 2 schema. Built once from the
+# schema's own union aliases (never a hard-coded tag list) so a future
+# variant added to any of these unions is picked up automatically.
+_UNION_TAG_TABLE: list[tuple[frozenset[type], list[str]]] = [
+    (frozenset(members), tags)
+    for members, tags in (
+        _union_members_and_tags(SlotProfile),
+        _union_members_and_tags(IceFillStep),
+        _union_members_and_tags(ReleaseStep),
+        _union_members_and_tags(WaterFillStep),
+    )
+]
+
+_SLOT_PROFILE_TAGS = _UNION_TAG_TABLE[0][1]
+
+
+def _variant_tags_for(cls_a: type, cls_b: type) -> list[str]:
+    """The full, declaration-ordered tag list for the one discriminated
+    union whose members are exactly `{cls_a, cls_b}`."""
+
+    key = frozenset((cls_a, cls_b))
+    for members, tags in _UNION_TAG_TABLE:
+        if members == key:
+            return tags
+    raise ValueError(
+        f"no known discriminated union has exactly {{{cls_a.__name__}, "
+        f"{cls_b.__name__}}} as its members"
+    )
 
 
 def _scan_bounds(
@@ -117,16 +184,86 @@ def _format_number(n: float) -> str:
     return str(n)
 
 
-def _comment_for(field_info: Any) -> str:
+def _join_sentence(description: str, extra: str) -> str:
+    """Join a field's description with one trailing clause, adding the
+    separating period only when the description does not already end
+    with one -- so a description that was hand-written without a
+    trailing period never ends up with a clause mashed onto it."""
+
+    if not extra:
+        return description
+    sep = " " if description.endswith(".") else ". "
+    return f"{description}{sep}{extra}"
+
+
+def _scan_string_constraints(metadata: tuple) -> tuple[str | None, int | None]:
+    """One metadata tuple's `StringConstraints.pattern` and
+    `annotated_types.MinLen.min_length`, if present."""
+
+    pattern: str | None = None
+    min_length: int | None = None
+    for m in metadata:
+        if isinstance(m, StringConstraints) and m.pattern:
+            pattern = m.pattern
+        elif isinstance(m, annotated_types.MinLen):
+            min_length = m.min_length
+    return pattern, min_length
+
+
+def _string_constraints(field_info: Any) -> tuple[str | None, int | None]:
+    """`(pattern, min_length)`, digging into the `Annotated` arm of a
+    `ChannelId | Literal["unmonitored"]` union (e.g. `current_channel`)
+    when the field itself carries no string constraints."""
+
+    pattern, min_length = _scan_string_constraints(field_info.metadata)
+    if pattern is None and min_length is None:
+        for arg in typing.get_args(field_info.annotation):
+            _, metadata = _unwrap_annotated(arg)
+            pattern, min_length = _scan_string_constraints(metadata)
+            if pattern is not None or min_length is not None:
+                break
+    return pattern, min_length
+
+
+def _string_constraint_clause(
+    annotation: object, pattern: str | None, min_length: int | None
+) -> str:
+    if pattern is not None:
+        if pattern == CHANNEL_ID_PATTERN:
+            return (
+                "Allowed: lowercase letters, digits and underscores, "
+                f"1{_EN_DASH}64 characters."
+            )
+        return f"Must match: {pattern}."
+
+    if typing.get_origin(annotation) is list:
+        return "At least one entry."
+    return "Must not be empty."
+
+
+def _comment_for(field_info: Any, variant_tags: list[str] | None = None) -> str:
     """`# <description>. Unit: <unit>. Range: <lo>-<hi>.` for a bounded
-    numeric field, `# <description>. One of: a, b.` for a `Literal` field,
-    else just `# <description>`."""
+    numeric field, `# <description>. One of: a, b.` for a discriminator
+    field (every tag in its union, via `variant_tags` when given), `#
+    <description>. Allowed: ...`/`Must match: ...`/`Must not be empty.`/
+    `At least one entry.` for a string-constrained field, else just `#
+    <description>`."""
 
     description = (field_info.description or "").strip()
 
-    literal_values = _literal_values(field_info.annotation)
+    literal_values = (
+        variant_tags
+        if variant_tags is not None
+        else _literal_values(field_info.annotation)
+    )
     if literal_values is not None:
-        return f"# {description} One of: {', '.join(literal_values)}."
+        extra = f"One of: {', '.join(literal_values)}."
+        return f"# {_join_sentence(description, extra)}"
+
+    pattern, min_length = _string_constraints(field_info)
+    if pattern is not None or min_length is not None:
+        extra = _string_constraint_clause(field_info.annotation, pattern, min_length)
+        return f"# {_join_sentence(description, extra)}"
 
     lo, lo_exclusive, hi, hi_exclusive, unit = _bounds_and_unit(field_info)
     if lo is None and hi is None:
@@ -147,8 +284,9 @@ def _comment_for(field_info: Any) -> str:
             else f"{_LE} {_format_number(hi)}"
         )
 
-    unit_part = f" Unit: {unit}." if unit else ""
-    return f"# {description}{unit_part} Range: {range_text}."
+    unit_part = f"Unit: {unit}. " if unit else ""
+    extra = f"{unit_part}Range: {range_text}."
+    return f"# {_join_sentence(description, extra)}"
 
 
 def _toml_scalar(value: Any) -> str:
@@ -164,13 +302,6 @@ def _toml_scalar(value: Any) -> str:
     if isinstance(value, list):
         return "[" + ", ".join(_toml_scalar(v) for v in value) + "]"
     raise TypeError(f"unsupported sample value: {value!r}")
-
-
-def _discriminator_name(cls: type) -> str:
-    for name in ("mechanism", "proof"):
-        if name in cls.model_fields:
-            return name
-    raise ValueError(f"{cls.__name__} has no discriminator field")
 
 
 # --------------------------------------------------------------------------
@@ -193,18 +324,61 @@ class _UnionTable:
     other: _Table
 
 
+# The "mechanism" field's other tag is never shown inline (unlike "proof",
+# whose other variant is a small step model rendered as a trailing
+# commented block) -- the two mechanisms are whole different profile
+# shapes. This points the reader at the slot that shows the other one
+# live instead.
+_OTHER_MECHANISM_NOTE: dict[str, str] = {
+    "bagged_ice": (
+        "# The other mechanism's fields are shown under a slot that uses "
+        "it (see slot 1 for water_fill)."
+    ),
+    "water_fill": (
+        "# The other mechanism's fields are shown under a slot that uses "
+        "it (see slot 0 for bagged_ice)."
+    ),
+}
+
+
+def _ordered_field_names(cls: type) -> list[str]:
+    """`cls.model_fields`, but with any fields inherited from the
+    `CurrentSense` mixin moved to the end (kept adjacent, in their own
+    declared order) -- Pydantic's `model_fields` otherwise lists inherited
+    fields first, which would render a motor table as current-sense
+    fields, then motor channel, then timing, instead of motor channel,
+    timing, then the current-sense pair last."""
+
+    field_names = list(cls.model_fields.keys())
+    if issubclass(cls, CurrentSense) and cls is not CurrentSense:
+        mixin_names = [n for n in field_names if n in CurrentSense.model_fields]
+        own_names = [n for n in field_names if n not in CurrentSense.model_fields]
+        return own_names + mixin_names
+    return field_names
+
+
 def _render_table(
-    cls: type, values: dict[str, Any], lines: list[str], path: list[str]
+    cls: type,
+    values: dict[str, Any],
+    lines: list[str],
+    path: list[str],
+    discriminator_tags: list[str] | None = None,
 ) -> None:
     """Render one `[path]` TOML table for `cls` using `values`. Emits every
     scalar field of `cls` first (required by TOML -- a table's own keys
     must precede any of its sub-tables), then recurses into nested
-    `_Table`/`_UnionTable`/dict-of-`_Table` fields in declaration order."""
+    `_Table`/`_UnionTable`/dict-of-`_Table` fields in declaration order.
+
+    `discriminator_tags`, when given, is the full, declaration-ordered tag
+    list for `cls`'s own `mechanism`/`proof` field (see
+    `_variant_tags_for`) -- supplied by the caller, which alone knows
+    which discriminated union `cls` belongs to."""
 
     lines.append(f"[{'.'.join(path)}]")
     deferred: list[tuple[str, Any, Any]] = []
 
-    for name, field_info in cls.model_fields.items():
+    for name in _ordered_field_names(cls):
+        field_info = cls.model_fields[name]
         if name not in values:
             raise KeyError(
                 f"{cls.__name__}.{name} has no sample value in dispensers_doc.py"
@@ -222,7 +396,12 @@ def _render_table(
             deferred.append((name, field_info, value))
             continue
 
-        lines.append(_comment_for(field_info))
+        if name in ("mechanism", "proof") and discriminator_tags is not None:
+            lines.append(_comment_for(field_info, variant_tags=discriminator_tags))
+        else:
+            lines.append(_comment_for(field_info))
+        if name == "mechanism":
+            lines.append(_OTHER_MECHANISM_NOTE[value])
         lines.append(f"{name} = {_toml_scalar(value)}")
 
     for name, field_info, value in deferred:
@@ -234,20 +413,34 @@ def _render_table(
         elif isinstance(value, _UnionTable):
             lines.append("")
             lines.append(_comment_for(field_info))
-            _render_table(value.live.cls, value.live.values, lines, path + [name])
+            tags = _variant_tags_for(value.live.cls, value.other.cls)
+            _render_table(
+                value.live.cls,
+                value.live.values,
+                lines,
+                path + [name],
+                discriminator_tags=tags,
+            )
 
             other_cls = value.other.cls
             disc = _discriminator_name(other_cls)
-            other_tag = _literal_values(other_cls.model_fields[disc].annotation)[0]
+            other_tag_values = _literal_values(other_cls.model_fields[disc].annotation)
+            if other_tag_values is None:
+                raise ValueError(f"{other_cls.__name__}.{disc} has no Literal values")
+            other_tag = other_tag_values[0]
             lines.append("")
             lines.append(f'# If {disc} = "{other_tag}" instead, the fields are:')
-            for fname, finfo in other_cls.model_fields.items():
+            for fname in _ordered_field_names(other_cls):
+                finfo = other_cls.model_fields[fname]
                 if fname not in value.other.values:
                     raise KeyError(
                         f"{other_cls.__name__}.{fname} has no sample value "
                         "in dispensers_doc.py"
                     )
-                lines.append(_comment_for(finfo))
+                if fname in ("mechanism", "proof"):
+                    lines.append(_comment_for(finfo, variant_tags=tags))
+                else:
+                    lines.append(_comment_for(finfo))
                 lines.append(f"# {fname} = {_toml_scalar(value.other.values[fname])}")
 
         else:  # dict[str, _Table]
@@ -462,8 +655,7 @@ def render_example() -> str:
     lines: list[str] = list(_HEADER_LINES)
     lines.append("")
     lines.append(
-        "# Version of this file's own schema (distinct from the product "
-        "catalog's). Must be 1 -- validate_document refuses any other value."
+        "# Format version of this file. Must be 1; the VMC refuses any other value."
     )
     lines.append("schema_version = 1")
 
@@ -489,6 +681,12 @@ def render_example() -> str:
         lines.append(rule)
         lines.append(f"# Slot {slot_num} -- {label}")
         lines.append(rule)
-        _render_table(cls, values, lines, ["slot", slot_num])
+        _render_table(
+            cls,
+            values,
+            lines,
+            ["slot", slot_num],
+            discriminator_tags=_SLOT_PROFILE_TAGS,
+        )
 
     return "\n".join(lines) + "\n"

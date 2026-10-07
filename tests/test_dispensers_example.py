@@ -5,51 +5,27 @@ produces the example from the Task 2 schema models
 (`services/dispenser_schema.py`) so the shipped documentation cannot drift
 from the schema it illustrates; these tests guard byte-identity with the
 committed file, that the example validates cleanly against the example
-catalog, and that every schema field is documented somewhere in the file.
+catalog, that every generated comment reads like operator language rather
+than Python internals, that discriminator fields honestly list every tag in
+their union, that every channel field states its allowed characters, that
+every assignment is immediately preceded by a comment, and that a schema
+field with no sample value fails the generator loudly instead of silently
+vanishing from the example.
 """
 
 import json
 import re
 from pathlib import Path
 
+import pytest
+
 from config.config_model import ConfigModel
-from services.dispenser_schema import (
-    Accessory,
-    AgitateStep,
-    BaggedIceProfile,
-    CurrentSense,
-    IceFillBySensor,
-    IceFillTimed,
-    ReleaseBySensor,
-    ReleaseTimed,
-    WaterFillByVolume,
-    WaterFillProfile,
-    WaterFillTimed,
-)
+from services.dispenser_schema import AgitateStep
 from services.dispensers import validate_document
-from services.dispensers_doc import render_example
+from services.dispensers_doc import _render_table, render_example
 
 EXAMPLE_PATH = Path("dispensers.example.toml")
 CONFIG_EXAMPLE_PATH = Path("config.example.json")
-
-# "Every model in Task 2" (services/dispenser_schema.py): every BaseModel
-# subclass that describes a slice of a dispensers.toml table. SlotProfile,
-# IceFillStep, ReleaseStep and WaterFillStep are type aliases (discriminated
-# unions), not models, so they are not listed here -- their member models
-# (IceFillBySensor/IceFillTimed etc.) are.
-_TASK_2_MODELS = (
-    CurrentSense,
-    AgitateStep,
-    IceFillBySensor,
-    IceFillTimed,
-    ReleaseBySensor,
-    ReleaseTimed,
-    WaterFillByVolume,
-    WaterFillTimed,
-    Accessory,
-    BaggedIceProfile,
-    WaterFillProfile,
-)
 
 
 def test_example_is_byte_identical_to_generator():
@@ -82,47 +58,123 @@ def test_example_config_products_have_kinds():
     }
 
 
-def test_every_schema_field_is_documented():
-    """Every field name declared on any Task 2 model must appear in the
-    example text -- either as a (possibly commented-out) `name = value`
-    assignment, or as a dotted component of a `[slot...]` table header --
-    with a `#` comment somewhere in the up-to-3 lines immediately before
-    it (or on the line itself, for a commented assignment)."""
+def test_no_python_identifiers_in_comments():
+    """No comment line may leak a Python/Pydantic internal name at a
+    machine technician who does not read Python: no `validate_document`,
+    no `_`-prefixed identifier, no `.py`, no `Pydantic`. The header block
+    (above `schema_version`) is exempt from the `.py` check alone -- it
+    legitimately names `scripts/gen_dispensers_example.py` and
+    `services/dispenser_schema.py` as the regeneration instructions."""
 
     text = EXAMPLE_PATH.read_text(encoding="utf-8")
     lines = text.splitlines()
+    underscore_prefixed_re = re.compile(r"(?<!\w)_\w+")
 
-    assign_re_cache: dict[str, re.Pattern] = {}
+    in_header = True
+    for i, line in enumerate(lines):
+        if in_header and line.strip() == "":
+            in_header = False
 
-    def assign_pattern(name: str) -> re.Pattern:
-        if name not in assign_re_cache:
-            assign_re_cache[name] = re.compile(rf"^\s*#?\s*{re.escape(name)}\s*=")
-        return assign_re_cache[name]
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            continue
 
-    header_re = re.compile(r"^\[([\w.]+)\]\s*$")
+        assert "validate_document" not in line, f"line {i}: {line!r}"
+        assert "Pydantic" not in line, f"line {i}: {line!r}"
+        assert not underscore_prefixed_re.search(line), f"line {i}: {line!r}"
+        if not in_header:
+            assert ".py" not in line, f"line {i}: {line!r}"
 
-    def has_preceding_comment(index: int) -> bool:
-        window = lines[max(0, index - 3) : index]
-        return any("#" in w for w in window) or lines[index].lstrip().startswith("#")
 
-    def field_is_documented(name: str) -> bool:
-        pattern = assign_pattern(name)
-        for i, line in enumerate(lines):
-            if pattern.match(line) and has_preceding_comment(i):
-                return True
-            header_match = header_re.match(line.strip())
-            if (
-                header_match
-                and name in header_match.group(1).split(".")
-                and has_preceding_comment(i)
-            ):
-                return True
-        return False
+def test_discriminator_comments_list_every_variant():
+    """A discriminator field's comment must name every tag in its union,
+    not just the live variant's own tag -- `mechanism`, ice `fill.proof`,
+    `release.proof`, and water `fill.proof` each have exactly two."""
 
-    missing: list[str] = []
-    for model in _TASK_2_MODELS:
-        for field_name in model.model_fields:
-            if not field_is_documented(field_name):
-                missing.append(f"{model.__name__}.{field_name}")
+    text = EXAMPLE_PATH.read_text(encoding="utf-8")
 
-    assert missing == []
+    for expected in (
+        "One of: bagged_ice, water_fill.",
+        "One of: bag_full_sensor, timed.",
+        "One of: door_sensor, timed.",
+        "One of: flow_volume, timed.",
+    ):
+        assert expected in text, f"missing {expected!r}"
+
+
+def test_channel_fields_state_allowed_characters():
+    """Every line assigning a `*_channel` key (live or shown as the
+    commented alternate-variant block) is immediately preceded by a
+    comment stating the allowed characters."""
+
+    text = EXAMPLE_PATH.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    assign_re = re.compile(r"^\s*#?\s*([A-Za-z_][A-Za-z0-9_]*)\s*=")
+
+    found_any = False
+    for i, line in enumerate(lines):
+        match = assign_re.match(line)
+        if not match:
+            continue
+        name = match.group(1)
+        if not name.endswith("_channel"):
+            continue
+        found_any = True
+
+        j = i - 1
+        while j >= 0 and not lines[j].strip():
+            j -= 1
+        assert j >= 0, f"no preceding content for line {i}: {line!r}"
+        assert "lowercase letters, digits and underscores" in lines[j], (
+            f"line {i} ({line!r}) immediately preceded by {lines[j]!r}"
+        )
+
+    assert found_any, "no *_channel assignment found in the example"
+
+
+def test_every_assignment_is_immediately_preceded_by_a_comment():
+    """Every non-comment, non-blank `key = value` line (not a `[...]`
+    table header) must have a comment line (`#...`) directly above it,
+    with no blank line in between."""
+
+    text = EXAMPLE_PATH.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    assign_re = re.compile(r"^\s*[A-Za-z_][A-Za-z0-9_]*\s*=")
+
+    checked_any = False
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("#"):
+            continue
+        if not line.strip():
+            continue
+        if not assign_re.match(line):
+            continue
+        checked_any = True
+
+        j = i - 1
+        while j >= 0 and not lines[j].strip():
+            j -= 1
+        assert j >= 0, f"no preceding content for line {i}: {line!r}"
+        assert lines[j].lstrip().startswith("#"), (
+            f"line {i} ({line!r}) not immediately preceded by a comment; "
+            f"got {lines[j]!r}"
+        )
+
+    assert checked_any, "no assignment line found in the example"
+
+
+def test_missing_sample_value_fails_loudly():
+    """A schema field with no hand-authored sample value must fail the
+    generator loudly (`KeyError` naming both the model and the field),
+    never silently vanish from the example."""
+
+    sample_without_run_seconds = {
+        "stall_current_amps": "unmonitored",
+        "current_channel": "unmonitored",
+        "motor_channel": "agitator_motor",
+    }
+
+    with pytest.raises(KeyError) as exc_info:
+        _render_table(AgitateStep, sample_without_run_seconds, [], ["x"])
+
+    assert "AgitateStep.run_seconds" in str(exc_info.value)

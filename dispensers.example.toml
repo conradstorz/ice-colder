@@ -21,63 +21,64 @@
 # regenerate:
 #     uv run python scripts/gen_dispensers_example.py
 
-# Version of this file's own schema (distinct from the product catalog's). Must be 1 -- validate_document refuses any other value.
+# Format version of this file. Must be 1; the VMC refuses any other value.
 schema_version = 1
 
 # ----------------------------------------------------------------------
 # Slot 0 -- bagged ice (SAMPLE-ICE)
 # ----------------------------------------------------------------------
 [slot.0]
-# This slot dispenses pre-bagged ice. One of: bagged_ice.
+# This slot dispenses pre-bagged ice. One of: bagged_ice, water_fill.
+# The other mechanism's fields are shown under a slot that uses it (see slot 1 for water_fill).
 mechanism = "bagged_ice"
-# The product SKU this slot dispenses.
+# The product SKU this slot dispenses. Must not be empty.
 product_sku = "SAMPLE-ICE"
 
 # How this slot breaks up clumped ice before filling.
 [slot.0.agitate]
-# Motor current above which the board should treat the motor as stalled and stop driving it, or "unmonitored" if this board has no current sensor.
-stall_current_amps = "unmonitored"
-# The telemetry channel that reports this motor's current draw, or "unmonitored" if this board has no current sensor.
-current_channel = "unmonitored"
-# The channel that drives the agitator motor.
+# The channel that drives the agitator motor. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 motor_channel = "agitator_motor"
 # How long the agitator motor runs for this step. Unit: s. Range: 0.5–60.
 run_seconds = 8
+# Motor current above which the board should treat the motor as stalled and stop driving it, or "unmonitored" if this board has no current sensor.
+stall_current_amps = "unmonitored"
+# The telemetry channel that reports this motor's current draw, or "unmonitored" if this board has no current sensor. Allowed: lowercase letters, digits and underscores, 1–64 characters.
+current_channel = "unmonitored"
 
 # How this slot feeds ice toward the release gate.
 [slot.0.fill]
-# Motor current above which the board should treat the motor as stalled and stop driving it, or "unmonitored" if this board has no current sensor.
-stall_current_amps = "unmonitored"
-# The telemetry channel that reports this motor's current draw, or "unmonitored" if this board has no current sensor.
-current_channel = "unmonitored"
-# This fill step is proven complete by a sensor. One of: bag_full_sensor.
+# This fill step is proven complete by a sensor. One of: bag_full_sensor, timed.
 proof = "bag_full_sensor"
-# The channel that drives the auger/fill motor.
+# The channel that drives the auger/fill motor. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 motor_channel = "auger_motor"
-# The channel that reports the bag as full.
+# The channel that reports the bag as full. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 sensor_channel = "bag_full_sensor"
 # The longest the fill motor is allowed to run before the VMC gives up on this step even if the bag-full sensor never fires. Unit: s. Range: 1–120.
 max_run_seconds = 45
+# Motor current above which the board should treat the motor as stalled and stop driving it, or "unmonitored" if this board has no current sensor.
+stall_current_amps = "unmonitored"
+# The telemetry channel that reports this motor's current draw, or "unmonitored" if this board has no current sensor. Allowed: lowercase letters, digits and underscores, 1–64 characters.
+current_channel = "unmonitored"
 
 # If proof = "timed" instead, the fields are:
-# Motor current above which the board should treat the motor as stalled and stop driving it, or "unmonitored" if this board has no current sensor.
-# stall_current_amps = "unmonitored"
-# The telemetry channel that reports this motor's current draw, or "unmonitored" if this board has no current sensor.
-# current_channel = "unmonitored"
-# This fill step is proven complete by elapsed time. One of: timed.
+# This fill step is proven complete by elapsed time. One of: bag_full_sensor, timed.
 # proof = "timed"
-# The channel that drives the auger/fill motor.
+# The channel that drives the auger/fill motor. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 # motor_channel = "auger_motor"
 # How long the fill motor runs for this step. Unit: s. Range: 1–120.
 # max_run_seconds = 45
+# Motor current above which the board should treat the motor as stalled and stop driving it, or "unmonitored" if this board has no current sensor.
+# stall_current_amps = "unmonitored"
+# The telemetry channel that reports this motor's current draw, or "unmonitored" if this board has no current sensor. Allowed: lowercase letters, digits and underscores, 1–64 characters.
+# current_channel = "unmonitored"
 
 # How this slot opens and closes its release gate.
 [slot.0.release]
-# This release step is proven open/closed by a sensor. One of: door_sensor.
+# This release step is proven open/closed by a sensor. One of: door_sensor, timed.
 proof = "door_sensor"
-# The channel that drives the release-gate solenoid.
+# The channel that drives the release-gate solenoid. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 solenoid_channel = "bag_drop_solenoid"
-# The channel that reports the release gate's state.
+# The channel that reports the release gate's state. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 sensor_channel = "door_sensor"
 # How long the solenoid is pulsed to open the gate. Unit: s. Range: 0.1–10.
 pulse_seconds = 1
@@ -87,18 +88,18 @@ open_timeout_seconds = 5
 close_timeout_seconds = 5
 
 # If proof = "timed" instead, the fields are:
-# This release step is proven open/closed by elapsed time. One of: timed.
+# This release step is proven open/closed by elapsed time. One of: door_sensor, timed.
 # proof = "timed"
-# The channel that drives the release-gate solenoid.
+# The channel that drives the release-gate solenoid. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 # solenoid_channel = "bag_drop_solenoid"
 # How long the solenoid is pulsed to open the gate. Unit: s. Range: 0.1–10.
 # pulse_seconds = 1
 
 # Devices that run alongside this slot's steps, by name.
 [slot.0.accessories.bag_fan]
-# The channel that drives this accessory.
+# The channel that drives this accessory. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 channel = "bag_fan"
-# Which steps this accessory runs during, by name, or ["all"] to run for the whole slot cycle.
+# Which steps this accessory runs during, by name, or ["all"] to run for the whole slot cycle. At least one entry.
 on_during = ["agitate", "fill"]
 # How long before its step(s) start this accessory turns on. Unit: s. Range: 0–30.
 lead_seconds = 0
@@ -106,9 +107,9 @@ lead_seconds = 0
 lag_seconds = 2
 
 [slot.0.accessories.vending_now_light]
-# The channel that drives this accessory.
+# The channel that drives this accessory. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 channel = "vending_now_light"
-# Which steps this accessory runs during, by name, or ["all"] to run for the whole slot cycle.
+# Which steps this accessory runs during, by name, or ["all"] to run for the whole slot cycle. At least one entry.
 on_during = ["all"]
 # How long before its step(s) start this accessory turns on. Unit: s. Range: 0–30.
 lead_seconds = 0
@@ -119,18 +120,19 @@ lag_seconds = 0
 # Slot 1 -- water, fill proven by a flow meter (SAMPLE-WATER-SM)
 # ----------------------------------------------------------------------
 [slot.1]
-# This slot dispenses water. One of: water_fill.
+# This slot dispenses water. One of: bagged_ice, water_fill.
+# The other mechanism's fields are shown under a slot that uses it (see slot 0 for bagged_ice).
 mechanism = "water_fill"
-# The product SKU this slot dispenses.
+# The product SKU this slot dispenses. Must not be empty.
 product_sku = "SAMPLE-WATER-SM"
 
 # How this slot fills the cup/bottle.
 [slot.1.fill]
-# This fill step is proven complete by a flow meter. One of: flow_volume.
+# This fill step is proven complete by a flow meter. One of: flow_volume, timed.
 proof = "flow_volume"
-# The channel that drives the fill valve.
+# The channel that drives the fill valve. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 valve_channel = "water_valve_solenoid"
-# The channel that reports flow-meter pulses.
+# The channel that reports flow-meter pulses. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 flow_sensor_channel = "water_flow_sensor"
 # The volume this slot dispenses on a successful fill. Unit: ml. Range: 50–50000.
 target_volume_ml = 3785
@@ -146,9 +148,9 @@ over_dispense_percent = 5
 max_fill_seconds = 90
 
 # If proof = "timed" instead, the fields are:
-# This fill step is proven complete by elapsed time. One of: timed.
+# This fill step is proven complete by elapsed time. One of: flow_volume, timed.
 # proof = "timed"
-# The channel that drives the fill valve.
+# The channel that drives the fill valve. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 # valve_channel = "water_valve_solenoid"
 # How long the fill valve stays open for this step. Unit: s. Range: 1–600.
 # max_fill_seconds = 90
@@ -160,26 +162,27 @@ max_fill_seconds = 90
 # Slot 2 -- water, fill proven by elapsed time (SAMPLE-WATER-LG)
 # ----------------------------------------------------------------------
 [slot.2]
-# This slot dispenses water. One of: water_fill.
+# This slot dispenses water. One of: bagged_ice, water_fill.
+# The other mechanism's fields are shown under a slot that uses it (see slot 0 for bagged_ice).
 mechanism = "water_fill"
-# The product SKU this slot dispenses.
+# The product SKU this slot dispenses. Must not be empty.
 product_sku = "SAMPLE-WATER-LG"
 
 # How this slot fills the cup/bottle.
 [slot.2.fill]
-# This fill step is proven complete by elapsed time. One of: timed.
+# This fill step is proven complete by elapsed time. One of: flow_volume, timed.
 proof = "timed"
-# The channel that drives the fill valve.
+# The channel that drives the fill valve. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 valve_channel = "water_valve_solenoid"
 # How long the fill valve stays open for this step. Unit: s. Range: 1–600.
 max_fill_seconds = 90
 
 # If proof = "flow_volume" instead, the fields are:
-# This fill step is proven complete by a flow meter. One of: flow_volume.
+# This fill step is proven complete by a flow meter. One of: flow_volume, timed.
 # proof = "flow_volume"
-# The channel that drives the fill valve.
+# The channel that drives the fill valve. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 # valve_channel = "water_valve_solenoid"
-# The channel that reports flow-meter pulses.
+# The channel that reports flow-meter pulses. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 # flow_sensor_channel = "water_flow_sensor"
 # The volume this slot dispenses on a successful fill. Unit: ml. Range: 50–50000.
 # target_volume_ml = 18927
