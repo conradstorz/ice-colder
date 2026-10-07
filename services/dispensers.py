@@ -756,3 +756,97 @@ class DispenserProfiles:
             return self.report
         self.report = self.validate_text(self._text)
         return self.report
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point for dispensers validation.
+
+    Returns:
+        0: validation ok (or --example)
+        1: validation has errors
+        2: directory path or unreadable config
+    """
+    import argparse
+    import json
+    import sys
+
+    parser = argparse.ArgumentParser(
+        prog="python -m services.dispensers",
+        description="Validate dispensers.toml against the product catalog",
+    )
+    parser.add_argument(
+        "path",
+        nargs="?",
+        help="Path to dispensers.toml (default: $ICE_COLDER_DISPENSERS or dispensers.toml)",
+    )
+    parser.add_argument(
+        "--config",
+        help="Path to config.json (default: $ICE_COLDER_CONFIG or config.json)",
+    )
+    parser.add_argument(
+        "--capabilities",
+        metavar="FILE",
+        help="Path to JSON file with SubsystemCapabilities",
+    )
+    parser.add_argument(
+        "--example",
+        action="store_true",
+        help="Print example dispensers.toml and exit",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Check dispensers.toml (default action)",
+    )
+
+    args = parser.parse_args(argv)
+
+    # Handle --example first (no file I/O needed)
+    if args.example:
+        from services.dispensers_doc import render_example
+
+        example_text = render_example()
+        sys.stdout.write(example_text)
+        return 0
+
+    # Resolve paths
+    dispensers_file_path = dispensers_path() if args.path is None else Path(args.path)
+    config_path_str = args.config or os.environ.get("ICE_COLDER_CONFIG", "config.json")
+
+    # Load config (try block for config errors)
+    try:
+        with open(config_path_str, "r", encoding="utf-8") as f:
+            config_data = json.load(f)
+        config = ConfigModel.model_validate(config_data)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"Error reading config: {exc}", file=sys.stderr)
+        return 2
+
+    # Load dispensers file and check for directory
+    profiles = DispenserProfiles(config, dispensers_file_path)
+    try:
+        report = profiles.load()
+    except IsADirectoryError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+    # Load capabilities if provided
+    if args.capabilities:
+        try:
+            with open(args.capabilities, "r", encoding="utf-8") as f:
+                caps_data = json.load(f)
+            caps = SubsystemCapabilities.model_validate(caps_data)
+            report = profiles.set_capabilities(caps)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"Error reading capabilities: {exc}", file=sys.stderr)
+            return 2
+
+    # Print report and return status
+    output = report.render_text()
+    print(output)
+
+    return 0 if report.ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
