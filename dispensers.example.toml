@@ -40,7 +40,7 @@ product_sku = "SAMPLE-ICE"
 motor_channel = "agitator_motor"
 # How long the agitator motor runs for this step. Unit: s. Range: 0.5–60.
 run_seconds = 8
-# Motor current above which the board should treat the motor as stalled and stop driving it, or "unmonitored" if this board has no current sensor.
+# Motor current above which the board should treat the motor as stalled and stop driving it, or "unmonitored" if this board has no current sensor. Unit: A. Range: 0.1–50.
 stall_current_amps = "unmonitored"
 # The telemetry channel that reports this motor's current draw, or "unmonitored" if this board has no current sensor. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 current_channel = "unmonitored"
@@ -55,7 +55,7 @@ motor_channel = "auger_motor"
 sensor_channel = "bag_full_sensor"
 # The longest the fill motor is allowed to run before the VMC gives up on this step even if the bag-full sensor never fires. Unit: s. Range: 1–120.
 max_run_seconds = 45
-# Motor current above which the board should treat the motor as stalled and stop driving it, or "unmonitored" if this board has no current sensor.
+# Motor current above which the board should treat the motor as stalled and stop driving it, or "unmonitored" if this board has no current sensor. Unit: A. Range: 0.1–50.
 stall_current_amps = "unmonitored"
 # The telemetry channel that reports this motor's current draw, or "unmonitored" if this board has no current sensor. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 current_channel = "unmonitored"
@@ -67,7 +67,7 @@ current_channel = "unmonitored"
 # motor_channel = "auger_motor"
 # How long the fill motor runs for this step. Unit: s. Range: 1–120.
 # max_run_seconds = 45
-# Motor current above which the board should treat the motor as stalled and stop driving it, or "unmonitored" if this board has no current sensor.
+# Motor current above which the board should treat the motor as stalled and stop driving it, or "unmonitored" if this board has no current sensor. Unit: A. Range: 0.1–50.
 # stall_current_amps = "unmonitored"
 # The telemetry channel that reports this motor's current draw, or "unmonitored" if this board has no current sensor. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 # current_channel = "unmonitored"

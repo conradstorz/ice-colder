@@ -30,6 +30,7 @@ from typing import Literal
 
 import annotated_types
 from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic.fields import FieldInfo
 
 from config.config_model import ConfigModel, Product
 from contracts.vending_machine import SubsystemCapabilities
@@ -67,6 +68,20 @@ _DISCRIMINATOR_TAGS = frozenset(
 
 # The two discriminator field names used anywhere in the SlotProfile tree.
 _DISCRIMINATOR_FIELDS = ("mechanism", "proof")
+
+# Pydantic's own synthetic labels for the arm of an *untagged* union that
+# failed (e.g. the `float | Literal["unmonitored"]` current-sense fields) --
+# not a real field name, so `humanize` strips these from the reported path
+# exactly like a discriminator tag. Unlike discriminator tags these are
+# never real identifiers in this schema, so matching by prefix is safe.
+_UNTAGGED_UNION_LABEL_RE = re.compile(
+    r"^(constrained-|literal\[|function-|is-instance|json-or-python|int|float|str)"
+)
+
+
+def _is_union_noise(part: object) -> bool:
+    return bool(_UNTAGGED_UNION_LABEL_RE.match(str(part)))
+
 
 _MECHANISM_LABELS = {
     "bagged_ice": "bagged ice",
@@ -269,6 +284,13 @@ def _range_from_field_info(field_info) -> tuple[object | None, object | None, st
     def _scan(metadata) -> None:
         nonlocal lo, hi
         for m in metadata:
+            # `Field(ge=..., le=...)` used *inside* an `Annotated[...]` arm
+            # (the current-sense fields' `float | Literal["unmonitored"]`
+            # shape) stores its bounds on a nested FieldInfo, not as bare
+            # annotated_types instances -- recurse into it.
+            if isinstance(m, FieldInfo):
+                _scan(m.metadata)
+                continue
             if isinstance(m, annotated_types.Ge):
                 lo = m.ge
             elif isinstance(m, annotated_types.Gt):
@@ -283,8 +305,32 @@ def _range_from_field_info(field_info) -> tuple[object | None, object | None, st
         for arg in typing.get_args(field_info.annotation):
             _, metadata = _unwrap_annotated(arg)
             _scan(metadata)
+            if lo is not None or hi is not None:
+                break
 
     return lo, hi, unit
+
+
+def _expected_tags_for_annotation(annotation: object) -> list[str]:
+    """Every discriminator tag declared by a discriminated union's member
+    models, in declaration order -- the fallback used when Pydantic's own
+    `union_tag_not_found` error has no `ctx["expected_tags"]` to read."""
+
+    unwrapped, _ = _unwrap_annotated(annotation)
+    variants = _union_variants(unwrapped)
+    if variants is None:
+        return []
+
+    tags: list[str] = []
+    for variant in variants:
+        variant_type, _ = _unwrap_annotated(variant)
+        if not (isinstance(variant_type, type) and issubclass(variant_type, BaseModel)):
+            continue
+        disc = _discriminator_field(variant_type)
+        if disc is None:
+            continue
+        tags.extend(str(v) for v in typing.get_args(disc.annotation))
+    return tags
 
 
 def humanize(err: dict, slot: int) -> Finding:
@@ -294,16 +340,22 @@ def humanize(err: dict, slot: int) -> Finding:
     it has the source text."""
 
     loc = tuple(err.get("loc", ()))
-    # Strips by literal value, not position -- a table key that happens to
-    # equal one of the tag strings (e.g. an accessory named "timed") would
-    # be dropped from the reported path too. Deliberate per the plan.
-    path = ".".join(str(part) for part in loc if part not in _DISCRIMINATOR_TAGS)
+    # `nav_loc` keeps discriminator tags (`_navigate` needs them to pick
+    # the right union branch) but drops Pydantic's synthetic untagged-
+    # union labels (`"constrained-float"`, `"literal['unmonitored']"`,
+    # ...), which aren't real fields and break navigation one token past
+    # where the real field was already found.
+    nav_loc = tuple(part for part in loc if not _is_union_noise(part))
+    # The reported path strips both: a table key that happens to equal a
+    # discriminator tag string (e.g. an accessory named "timed") would be
+    # dropped too -- deliberate, per the plan.
+    path = ".".join(str(part) for part in nav_loc if part not in _DISCRIMINATOR_TAGS)
     err_type = err.get("type")
     message = err.get("msg", "")
 
     if err_type == "extra_forbidden":
         field_name = str(loc[-1]) if loc else ""
-        parent_model, _ = _navigate(loc[:-1])
+        parent_model, _ = _navigate(nav_loc[:-1])
         suggestion = ""
         if parent_model is not None:
             matches = get_close_matches(
@@ -318,7 +370,7 @@ def humanize(err: dict, slot: int) -> Finding:
         message = f'missing required field "{field_name}"'
 
     elif err_type in ("greater_than_equal", "less_than_equal"):
-        _, field_info = _navigate(loc)
+        _, field_info = _navigate(nav_loc)
         lo, hi, unit = _range_from_field_info(field_info)
         if lo is not None and hi is not None:
             unit_part = f" {unit}" if unit else ""
@@ -339,32 +391,98 @@ def humanize(err: dict, slot: int) -> Finding:
             f'{discriminator} must be one of {expected_tags}, got "{ctx.get("tag")}"'
         )
 
+    elif err_type == "union_tag_not_found":
+        ctx = err.get("ctx", {})
+        discriminator = str(ctx.get("discriminator", "")).strip("'\"")
+        expected_tags = ctx.get("expected_tags")
+        if expected_tags is None:
+            # Pydantic does not populate `expected_tags` for this error
+            # type (verified empirically) -- derive the tag list straight
+            # from the union the missing discriminator belongs to: the
+            # whole `SlotProfile` tree when `loc` is empty (a slot table
+            # missing `mechanism` entirely), else the field `nav_loc`
+            # resolves to (e.g. `fill` missing `proof`).
+            if nav_loc:
+                _, field_info = _navigate(nav_loc)
+                annotation = field_info.annotation if field_info is not None else None
+            else:
+                annotation = SlotProfile
+            tags = _expected_tags_for_annotation(annotation) if annotation else []
+            expected_tags = ", ".join(tags)
+        message = (
+            f'missing required field "{discriminator}"; must be one of {expected_tags}'
+        )
+
     # else: every other error type keeps Pydantic's own `msg` verbatim.
 
     return Finding(slot=slot, path=path, line=None, severity="error", message=message)
 
 
+def _dedupe_union_findings(
+    findings_with_raw: list[tuple[Finding, bool]],
+) -> list[Finding]:
+    """Collapse findings that share `(slot, path)` -- produced when an
+    untagged union field (the `"unmonitored"` fields) fails validation on
+    more than one arm at once -- into one, keeping the first finding whose
+    message was actually humanized (not Pydantic's raw `msg`), else just
+    the first."""
+
+    order: list[tuple[int | None, str]] = []
+    groups: dict[tuple[int | None, str], list[tuple[Finding, bool]]] = {}
+    for finding, is_raw in findings_with_raw:
+        key = (finding.slot, finding.path)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append((finding, is_raw))
+
+    result: list[Finding] = []
+    for key in order:
+        group = groups[key]
+        if len(group) == 1:
+            result.append(group[0][0])
+            continue
+        humanized = [f for f, is_raw in group if not is_raw]
+        result.append(humanized[0] if humanized else group[0][0])
+    return result
+
+
+def _header_line_index(lines: list[str], header: str) -> int | None:
+    for i, line in enumerate(lines):
+        if line.split("#", 1)[0].strip() == header:
+            return i
+    return None
+
+
 def find_line(text: str, slot: int, path: str) -> int | None:
     """Best-effort source line for a `(slot, path)` finding: locate the
     `[slot.N...]` header for the deepest table named in `path`, then the
-    first `key = ...` line after it. `None` when either can't be found."""
+    first `key = ...` line after it. When `path` names only a table (e.g.
+    `"fill"`, for a finding about that whole step) or is empty (a finding
+    about the slot as a whole, e.g. a missing `mechanism`), falls back to
+    that table's own `[slot.N...]` header line. `None` when nothing can be
+    found."""
+
+    lines = text.splitlines()
 
     if not path:
-        return None
+        header_idx = _header_line_index(lines, f"[slot.{slot}]")
+        return header_idx + 1 if header_idx is not None else None
 
     parts = path.split(".")
+
+    table_header = f"[slot.{slot}." + ".".join(parts) + "]"
+    table_header_idx = _header_line_index(lines, table_header)
+    if table_header_idx is not None:
+        return table_header_idx + 1
+
     key = parts[-1]
     table_parts = parts[:-1]
     header = (
         f"[slot.{slot}" + ("." + ".".join(table_parts) if table_parts else "") + "]"
     )
 
-    lines = text.splitlines()
-    header_idx = None
-    for i, line in enumerate(lines):
-        if line.split("#", 1)[0].strip() == header:
-            header_idx = i
-            break
+    header_idx = _header_line_index(lines, header)
     if header_idx is None:
         return None
 
@@ -439,10 +557,14 @@ def validate_document(
         try:
             profile = _SLOT_PROFILE_ADAPTER.validate_python(table)
         except ValidationError as exc:
+            raw_msgs_and_findings: list[tuple[Finding, bool]] = []
             for err in exc.errors():
                 finding = humanize(err, slot_num)
                 line = find_line(text, slot_num, finding.path)
-                report.findings.append(replace(finding, line=line))
+                finding = replace(finding, line=line)
+                is_raw = finding.message == err.get("msg", "")
+                raw_msgs_and_findings.append((finding, is_raw))
+            report.findings.extend(_dedupe_union_findings(raw_msgs_and_findings))
             continue
         report.profiles[slot_num] = profile
 

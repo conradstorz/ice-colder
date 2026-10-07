@@ -31,6 +31,7 @@ from typing import Any
 
 import annotated_types
 from pydantic import StringConstraints
+from pydantic.fields import FieldInfo
 
 from contracts.common import CHANNEL_ID_PATTERN
 from services.dispenser_schema import (
@@ -145,6 +146,15 @@ def _scan_bounds(
     hi: float | None = None
     hi_exclusive = False
     for m in metadata:
+        # `Field(ge=..., le=...)` used *inside* an `Annotated[...]` arm
+        # (the current-sense fields' `float | Literal["unmonitored"]`
+        # shape) stores its bounds on a nested FieldInfo, not as bare
+        # annotated_types instances -- recurse into it.
+        if isinstance(m, FieldInfo):
+            nested = _scan_bounds(m.metadata)
+            if nested[0] is not None or nested[2] is not None:
+                lo, lo_exclusive, hi, hi_exclusive = nested
+            continue
         if isinstance(m, annotated_types.Ge):
             lo, lo_exclusive = m.ge, False
         elif isinstance(m, annotated_types.Gt):

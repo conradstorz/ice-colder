@@ -231,6 +231,54 @@ def test_render_text_invalid_verdict_wording():
     assert not any("error(s)" in line and line.startswith("Slot") for line in lines)
 
 
+def test_union_field_range_error_is_one_humanized_finding():
+    bad = GOOD.replace(
+        'stall_current_amps = "unmonitored"   # a number here requires current_channel\n'
+        'current_channel    = "unmonitored"',
+        'stall_current_amps = 0.01\ncurrent_channel    = "agitator_current_sense"',
+    )
+    report = validate_document(bad, [ICE, WATER])
+    matches = [
+        f
+        for f in report.findings
+        if f.slot == 1 and f.path == "agitate.stall_current_amps"
+    ]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.message == "must be between 0.1 and 50 A, got 0.01"
+    assert finding.line is not None
+
+
+def test_missing_mechanism_is_humanized_with_line():
+    bad = GOOD.replace('mechanism   = "bagged_ice"\n', "")
+    report = validate_document(bad, [ICE, WATER])
+    matches = [
+        f
+        for f in report.findings
+        if f.slot == 1 and 'missing required field "mechanism"' in f.message
+    ]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.path == ""
+    assert "bagged_ice" in finding.message
+    assert "water_fill" in finding.message
+    expected_line = bad.splitlines().index("[slot.1]") + 1
+    assert finding.line == expected_line
+
+
+def test_missing_proof_is_humanized_with_line():
+    bad = GOOD.replace('proof              = "bag_full_sensor"   # or "timed"\n', "")
+    report = validate_document(bad, [ICE, WATER])
+    matches = [f for f in report.findings if f.slot == 1 and f.path == "fill"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert 'missing required field "proof"' in finding.message
+    assert "bag_full_sensor" in finding.message
+    assert "timed" in finding.message
+    expected_line = bad.splitlines().index("[slot.1.fill]") + 1
+    assert finding.line == expected_line
+
+
 def test_deeply_nested_toml_is_a_file_error():
     bad = "x = " + "[" * 2000 + "]" * 2000 + "\n"
     report = validate_document(bad, [ICE, WATER])

@@ -195,6 +195,7 @@ def test_accessory_all_alone():
         (_bagged_ice, "fill.max_run_seconds", 121),
         (_bagged_ice, "release.pulse_seconds", 0),
         (_water_fill_by_volume, "fill.target_volume_ml", 49),
+        (_bagged_ice, "agitate.stall_current_amps", 0.05),
     ],
 )
 def test_ranges(factory, path, value):

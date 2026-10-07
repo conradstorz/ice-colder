@@ -163,6 +163,24 @@ def test_every_assignment_is_immediately_preceded_by_a_comment():
     assert checked_any, "no assignment line found in the example"
 
 
+def test_stall_current_amps_comment_states_unit_and_range():
+    """The current-sense pair's bound lives on a nested `FieldInfo` inside
+    the `float | Literal["unmonitored"]` union arm; the generated comment
+    must still state it rather than silently omitting Unit/Range."""
+
+    text = EXAMPLE_PATH.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    comment_lines = [
+        lines[i - 1]
+        for i, line in enumerate(lines)
+        if line.strip().lstrip("#").strip().startswith("stall_current_amps =")
+    ]
+    assert comment_lines, "no stall_current_amps assignment found in the example"
+    for comment in comment_lines:
+        assert "Unit: A" in comment
+        assert "Range: 0.1–50" in comment
+
+
 def test_missing_sample_value_fails_loudly():
     """A schema field with no hand-authored sample value must fail the
     generator loudly (`KeyError` naming both the model and the field),
