@@ -479,7 +479,7 @@ class TestVendingCapabilities:
 
     def test_channels_match_spec_table_in_order(self):
         """Spec §4.2's eleven-row vending table, copied exactly, in
-        declaration order, plus the five dispenser-profile channels (plan:
+        declaration order, plus the six dispenser-profile channels (plan:
         dispenser profiles, Task 5) appended at the end -- the dashboard
         renders channels in whatever order build_capabilities lists them."""
         caps = _make_sim().build_capabilities()
@@ -501,6 +501,7 @@ class TestVendingCapabilities:
             "door_sensor",
             "agitator_current",
             "auger_current",
+            "fill_pulses",
         ]
 
     def test_channel_directions_match_hardware_role(self):
@@ -547,6 +548,7 @@ class TestVendingCapabilities:
             "door_sensor": None,
             "agitator_current": None,
             "auger_current": None,
+            "fill_pulses": None,
         }
 
     def test_channel_intervals(self):
@@ -574,6 +576,7 @@ class TestVendingCapabilities:
             "door_sensor",
             "agitator_current",
             "auger_current",
+            "fill_pulses",
         ):
             assert by_id[channel_id].interval_seconds == 1.0
 
@@ -722,7 +725,7 @@ class TestExecuteProfile:
         async def capture_publish(c, topic, payload):
             if topic == "hardware/dispenser" and hasattr(payload, "state"):
                 terminal.append(payload.state)
-            elif topic == "telemetry/vending/water_flow":
+            elif topic == "telemetry/vending/fill_pulses":
                 flow_readings.append(payload.value)
 
         sim.publish = capture_publish

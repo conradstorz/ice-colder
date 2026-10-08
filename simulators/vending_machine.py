@@ -88,11 +88,8 @@ _VENDING_CHANNELS: list[ChannelDescriptor] = [
     ChannelDescriptor(
         channel_id="water_flow",
         kind="counter",
-        unit="pulses",
-        description=(
-            "Flow-meter pulses during the current fill; divide by the slot "
-            "profile's pulses_per_liter for litres"
-        ),
+        unit="gal",
+        description="Cumulative water dispensed",
         interval_seconds=SENSOR_PUBLISH_INTERVAL,
     ),
     ChannelDescriptor(
@@ -194,6 +191,16 @@ _VENDING_CHANNELS: list[ChannelDescriptor] = [
         kind="current",
         unit="A",
         description="Auger motor current draw",
+        interval_seconds=_BINARY_CHANNEL_INTERVAL,
+    ),
+    ChannelDescriptor(
+        channel_id="fill_pulses",
+        kind="counter",
+        unit="pulses",
+        description=(
+            "Flow-meter pulses during the current fill; divide by the slot "
+            "profile's pulses_per_liter for litres"
+        ),
         interval_seconds=_BINARY_CHANNEL_INTERVAL,
     ),
 ]
@@ -873,28 +880,30 @@ class VendingMachineSimulator(ESP32Simulator):
         ctx.exit_step(DispenseStep.release.value)
         return DispenserOutcome.complete, None
 
-    async def _publish_water_flow(self, client: aiomqtt.Client, pulses: float) -> None:
+    async def _publish_fill_pulses(self, client: aiomqtt.Client, pulses: float) -> None:
         """Publish the flow meter's cumulative pulse count for one
         `flow_volume` fill on the generic telemetry path (same convention
-        as `_publish_current`). Published in raw pulses, matching the
-        declared `water_flow` channel descriptor (`unit="pulses"`);
-        converting to a volume is a `pulses_per_liter` division away for
-        anything that needs it. The Home Assistant `water_flow_total`
-        entity on `sensors/water_flow` is a separate cumulative-gallons
-        reading.
+        as `_publish_current`), on the dedicated `fill_pulses` channel --
+        distinct from `water_flow`, which is cumulative gallons published
+        by `_publish_sensors` on `sensors/water_flow` (the Home Assistant
+        `water_flow_total` entity) and is the only vending telemetry the
+        VMC actually subscribes to today (`controller/vmc.py`). Nothing
+        subscribes to `telemetry/vending/+` yet (review finding I1), so a
+        subsystem window shows "never reported" for this channel until
+        that per-slot telemetry work (spec §11) happens.
         `self._water_flow_total` is `_publish_sensors`' own state and is
         deliberately left untouched here."""
         await self.publish(
             client,
-            f"telemetry/{self.subsystem_name}/water_flow",
-            ChannelReading(channel_id="water_flow", value=pulses),
+            f"telemetry/{self.subsystem_name}/fill_pulses",
+            ChannelReading(channel_id="fill_pulses", value=pulses),
         )
 
     async def _pump_water_pulses(
         self, client: aiomqtt.Client, fill: WaterFillByVolume, mode: str
     ) -> tuple[float, float, float]:
         """Simulate flow-meter pulses for one `flow_volume` fill (review
-        finding I3), publishing the running count on the `water_flow`
+        finding I3), publishing the running count on the `fill_pulses`
         telemetry channel in at least `_WATER_FLOW_INCREMENTS` steps.
 
         `mode="normal"` stops exactly at the slot's `target_volume_ml`
@@ -929,7 +938,7 @@ class VendingMachineSimulator(ESP32Simulator):
             await self._sleep(dt)
             pulses += step_pulses
             elapsed += dt
-            await self._publish_water_flow(client, pulses)
+            await self._publish_fill_pulses(client, pulses)
 
             if mode == "normal" and pulses >= target_pulses:
                 pulses = target_pulses

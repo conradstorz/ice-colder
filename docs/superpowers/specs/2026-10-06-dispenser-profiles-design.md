@@ -555,9 +555,17 @@ documents silently drift apart.
   "ok" and "failed" to express "succeeded, but also faulted," so a
   `/tests` operator reading the ack sees "failed" for what the customer
   path treats as a completed vend.
-- **`water_flow` telemetry is declared in pulses**, not liters or another
-  volume unit, matching what the simulator actually publishes on that
-  channel.
+- **Flow-meter pulses are declared on their own `fill_pulses` channel, not
+  on `water_flow`.** `water_flow` stays `unit="gal"`, matching the
+  cumulative-gallons reading `_publish_sensors` already publishes on
+  `sensors/water_flow` (the Home Assistant `water_flow_total` entity);
+  the per-fill pulse count the water-fill mechanism simulates (`unit=
+  "pulses"`) is a distinct channel so a subsystem window never shows
+  gallons under a "pulses" label or vice versa (review finding I1,
+  whole-branch review). `fill_pulses`, `agitator_current` and
+  `auger_current` are all published on `telemetry/vending/<id>`, which the
+  VMC does not yet subscribe to (§11 defers per-slot telemetry) — their
+  subsystem-window rows show "never reported" for now.
 - **`slow_flow` is an added simulator fault**, beyond the outcomes §6.4
   enumerates: it halves the flow rate so only half the target volume is
   reached by `max_fill_seconds`, which is the only path by which
@@ -567,3 +575,26 @@ documents silently drift apart.
   what this spec asked for, so a crash-recovery snapshot records which
   mechanism was mid-dispense without the recovery flow having to
   re-derive it from the (possibly since-changed) dispenser profile.
+- **`clear_fault` re-asserts `CFG-101`.** Popping any lockout for a sku
+  (not only `CFG-101` itself) re-checks `dispenser_profile_for` and
+  re-raises `CFG-101` immediately if the product still has no valid
+  profile, so clearing an unrelated fault (e.g. `ICE-301`) on a
+  profile-less product can never leave it sellable — `CFG-101` is a
+  standing invariant, not a one-shot check at reconciliation time.
+- **A board reporting an outcome unmapped for its own mechanism** (e.g. a
+  water board sending `jam`) is caught as `KeyError` from
+  `fault_for_outcome` in `_handle_mqtt_dispenser` and falls back to that
+  mechanism's `error` mapping instead of crashing the MQTT handler.
+- **`_sale_seq`, a monotonically increasing counter bumped once per
+  `on_dispense_product` call, guards every async dispatch-failure path**
+  (`_fail_dispense_async` compares its captured `seq` against the live
+  counter and the FSM's current state before acting), and
+  `_persist_then_dispense`'s "no dispatcher"/`send()`/ack-status checks
+  were collapsed into one `try`/`except` so any failure there — not only
+  a `CommandTimeout` — fails the vend immediately instead of waiting out
+  the full dispense-timeout fallback.
+- **`_customer_loop` lost its impatient-customer timeout and
+  repeat-customer purchase.** Both depended on the legacy dispense queue
+  removed by this plan; the loop now only generates button-press traffic
+  (plus the occasional change-of-mind second press) and never itself
+  waits on or runs a dispense.
