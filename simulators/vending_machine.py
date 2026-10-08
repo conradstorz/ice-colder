@@ -88,8 +88,11 @@ _VENDING_CHANNELS: list[ChannelDescriptor] = [
     ChannelDescriptor(
         channel_id="water_flow",
         kind="counter",
-        unit="gal",
-        description="Cumulative water dispensed",
+        unit="pulses",
+        description=(
+            "Flow-meter pulses during the current fill; divide by the slot "
+            "profile's pulses_per_liter for litres"
+        ),
         interval_seconds=SENSOR_PUBLISH_INTERVAL,
     ),
     ChannelDescriptor(
