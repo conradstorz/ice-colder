@@ -580,6 +580,22 @@ class TestVendingCapabilities:
         ):
             assert by_id[channel_id].interval_seconds == 1.0
 
+    def test_water_flow_stays_gallons_pulses_move_to_fill_pulses(self):
+        """Review finding I1 (whole-branch review): `water_flow` must stay
+        declared in gallons -- the only vending telemetry `sensors/
+        water_flow` actually carries, and the only one the VMC subscribes
+        to (`controller/vmc.py`) -- while the per-fill flow-meter pulse
+        count the water-fill mechanism simulates lives on its own
+        `fill_pulses` channel. A regression that moves pulses back onto
+        `water_flow` (as commit 69c5fe7 briefly did) would make a
+        subsystem window show gallons under a "pulses" label."""
+        caps = _make_sim().build_capabilities()
+        by_id = {c.channel_id: c for c in caps.channels}
+        assert by_id["water_flow"].unit == "gal"
+        assert by_id["water_flow"].kind == "counter"
+        assert by_id["fill_pulses"].unit == "pulses"
+        assert by_id["fill_pulses"].kind == "counter"
+
 
 class TestExecuteProfile:
     """`_execute_profile` -- the profile-driven replacement for
