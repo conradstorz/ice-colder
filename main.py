@@ -243,6 +243,19 @@ def load_dispenser_profiles(config: ConfigModel) -> DispenserProfiles:
     return profiles
 
 
+def wire_dispenser_profiles(vmc: VMC, profiles: DispenserProfiles) -> None:
+    """Hand the loaded dispenser profiles to the VMC (CFG-101/CFG-102
+    reconciliation) and to the routes module (plan 2). Extracted out of
+    `main()` so this step can be exercised in a test without an event
+    loop -- `main()` itself is an infinite event loop under
+    `@logger.catch()`, so it cannot be run partially; this is the same
+    two calls `main()` makes, just moved into a function, and changes
+    none of `main()`'s own behaviour.
+    """
+    vmc.set_dispenser_profiles(profiles)
+    routes.set_dispenser_profiles(profiles)
+
+
 @dataclass
 class EnvOverrides:
     """Env-derived values that must not be written back to config.json.
@@ -508,6 +521,13 @@ async def main():
     vmc.set_mqtt_client(mqtt)
     vmc.set_health_monitor(health)
     logger.info("MQTT client created and linked to VMC and health monitor")
+
+    # dispenser_profiles is the module global load_dispenser_profiles set
+    # above (~line 454), before overrides/VMC construction -- it is never
+    # None by this point.
+    assert dispenser_profiles is not None
+    wire_dispenser_profiles(vmc, dispenser_profiles)
+    logger.info("Dispenser profiles wired to VMC and routes")
 
     # Subsystem command channel (system-tests design §2.1): registers its
     # `cmd/+/ack` handler on `mqtt` right away, well before mqtt.run() (in

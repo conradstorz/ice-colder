@@ -34,13 +34,15 @@ from contracts.vending_machine import (
     Severity,
     SubsystemCapabilities,
 )
-from config.config_model import ConfigModel
+from config.config_model import ConfigModel, Product
 from services.availability import Availability
 from services.health_monitor import HealthMonitor
 from services.display_controller import DisplayController
 from services.inventory_manager import InventoryManager
 from services.session_store import Credit, SessionSnapshot, SessionStore
 from services.event_recorder import SaleRecordingFailed
+from services.dispensers import DispenserProfiles
+from services.dispenser_schema import MECHANISM_FOR_KIND, SlotProfile
 
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
 
@@ -331,6 +333,13 @@ class VMC:
         # Lost on restart by design; see those methods' docstrings.
         self._recorded_pay104_keys: set[tuple] = set()
         self.subsystem_capabilities: dict[str, dict] = {}
+        # Dispenser profiles (plan: dispenser profiles, Task 2). Set via
+        # set_dispenser_profiles(); None means "not wired" -- every method
+        # below that reads it (reconcile_dispenser_profiles,
+        # dispenser_profile_for, the run_test_sale guard) is a no-op/None
+        # in that case, so a VMC built without profiles (every pre-plan-2
+        # test fixture) behaves exactly as before.
+        self._dispenser_profiles: DispenserProfiles | None = None
         # Fault registry: product-scope faults by SKU, machine-scope faults by code.
         self._lockouts: dict[str, FaultCode] = {}
         self._machine_faults: dict[FaultCode, float] = {}
@@ -505,6 +514,65 @@ class VMC:
         """
         self._command_dispatcher = dispatcher
         logger.debug("VMC attached command dispatcher.")
+
+    def set_dispenser_profiles(self, profiles: DispenserProfiles) -> None:
+        """Attach the loaded `DispenserProfiles` (plan: dispenser
+        profiles, Task 2) and immediately reconcile CFG-101/CFG-102
+        against it, so a product with no valid profile is locked before
+        this VMC ever accepts a selection for it.
+        """
+        self._dispenser_profiles = profiles
+        logger.debug("VMC attached dispenser profiles.")
+        self.reconcile_dispenser_profiles()
+
+    def dispenser_profile_for(self, product: Product) -> SlotProfile | None:
+        """The one lookup every later task (dispense, Tests level, ...)
+        uses: the product's own valid `SlotProfile`, or `None` when no
+        profiles are wired, the product's `kind` has no mechanism (e.g.
+        `"other"`), no table exists for its slot, or that table's
+        `product_sku` doesn't match this product -- the same validity
+        check `reconcile_dispenser_profiles` locks products on, so the
+        two can never disagree.
+        """
+        if self._dispenser_profiles is None:
+            return None
+        if product.kind not in MECHANISM_FOR_KIND:
+            return None
+        profile = self._dispenser_profiles.profile_for_slot(product.slot)
+        if profile is None or profile.product_sku != product.sku:
+            return None
+        return profile
+
+    def reconcile_dispenser_profiles(self) -> None:
+        """Re-derive every product's CFG-101 lockout, and the machine's
+        CFG-102 fault, from the currently loaded dispenser profiles.
+        No-op when no profiles object is set.
+
+        Idempotent, and never touches a lockout held by a different code:
+        a sku already in `self._lockouts` (for any reason) is left alone
+        here -- CFG-101 is raised only for a sku not locked at all, and
+        cleared only when the existing lockout is CFG-101 itself. See the
+        plan's resolution (3).
+        """
+        profiles = self._dispenser_profiles
+        if profiles is None:
+            return
+
+        for product in self.config_model.products:
+            sku = product.sku
+            valid = self.dispenser_profile_for(product) is not None
+            if not valid:
+                if sku not in self._lockouts:
+                    self._raise_fault(FaultCode.CFG_101, sku=sku)
+            elif self._lockouts.get(sku) is FaultCode.CFG_101:
+                self.clear_fault(sku, by="auto")
+
+        file_error = profiles.report.file_error
+        cfg102_active = FaultCode.CFG_102 in self._machine_faults
+        if file_error and not cfg102_active:
+            self._raise_fault(FaultCode.CFG_102)
+        elif cfg102_active and not file_error:
+            self.clear_fault(FaultCode.CFG_102.value, by="auto")
 
     def _flag_uncertain_session(self, snap: SessionSnapshot) -> None:
         detail = snap.error or (
@@ -1188,6 +1256,18 @@ class VMC:
                 f"(firmware {caps.firmware}, contract {caps.contract_version}, "
                 f"{len(caps.channels)} channels)"
             )
+            # Dispenser profiles (plan: dispenser profiles, Task 2): the
+            # vending board's declared channel directions feed the
+            # profiles' own capabilities cross-check (drive channels must
+            # be outputs, sensors inputs) -- re-run it, and re-reconcile
+            # CFG-101, every time this doc changes. Only on a
+            # successfully validated doc: `caps` is never bound in the
+            # except branch below, and a malformed doc must never
+            # overwrite previously-good capabilities with something that
+            # would wrongly downgrade real slot errors back to warnings.
+            if subsystem == "vending" and self._dispenser_profiles is not None:
+                self._dispenser_profiles.set_capabilities(caps)
+                self.reconcile_dispenser_profiles()
         except ValidationError:
             logger.warning(
                 f"Capabilities for '{subsystem}' don't match the known schema; "
@@ -2228,6 +2308,21 @@ class VMC:
         product_index, product = self._find_product_by_sku(sku)
         if product is None:
             raise ValueError(f"run_test_sale: unknown product sku {sku!r}")
+
+        # Dispenser profiles (plan: dispenser profiles, Task 2): refuse a
+        # test sale for a product with no valid profile before touching
+        # anything else -- no deposit, no lease, no runs_in_flight. Gated
+        # on profiles actually being wired, like every other dispenser-
+        # profiles check here, so a VMC with none set (every pre-plan-2
+        # test and fixture) behaves exactly as before.
+        if (
+            self._dispenser_profiles is not None
+            and self.dispenser_profile_for(product) is None
+        ):
+            raise RuntimeError(
+                f"{product.sku} has no valid dispenser profile (CFG-101); "
+                "fix dispensers.toml"
+            )
 
         # Minted once per call, up front, so both the test_run row below and
         # the returned TestSaleResult carry the SAME id -- one run_id per

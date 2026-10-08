@@ -86,6 +86,37 @@ def test_fixture_provides_two_profiles(dispenser_profiles):
     assert dispenser_profiles.profile_for_slot(2).mechanism == "water_fill"
 
 
+def test_main_wires_profiles_into_vmc_and_routes(monkeypatch):
+    """`main()` hands the module-level `dispenser_profiles` (set by
+    `load_dispenser_profiles`) to both the VMC and the routes module,
+    right after `vmc.set_health_monitor(health)` -- extracted into
+    `main.wire_dispenser_profiles(vmc, profiles)` since `main()` itself is
+    an infinite event loop wrapped in `@logger.catch()` and cannot be
+    exercised partially in a test. `main()`'s own behaviour is unchanged:
+    this helper is just the same two calls `main()` makes, moved so they
+    can be tested without an event loop. This test proves one load
+    reaches both consumers with the SAME object.
+    """
+    from controller.vmc import VMC
+    from web_interface import routes
+
+    vmc_calls = []
+    routes_calls = []
+    monkeypatch.setattr(
+        VMC, "set_dispenser_profiles", lambda self, p: vmc_calls.append(p)
+    )
+    monkeypatch.setattr(routes, "set_dispenser_profiles", routes_calls.append)
+
+    cfg = ConfigModel()
+    vmc = VMC(config=cfg)
+    sentinel = DispenserProfiles(cfg)
+
+    main_mod.wire_dispenser_profiles(vmc, sentinel)
+
+    assert vmc_calls == [sentinel]
+    assert routes_calls == [sentinel]
+
+
 def test_compose_sets_dispensers_env():
     text = COMPOSE_PATH.read_text(encoding="utf-8")
     config_count = text.count("ICE_COLDER_CONFIG=/app/data/config.json")
