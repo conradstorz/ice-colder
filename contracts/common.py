@@ -90,7 +90,39 @@ def _validate_dispense_params(params: dict) -> None:
     try:
         DispenseCommand.model_validate(params)
     except ValidationError as exc:
-        raise ValueError(str(exc)) from exc
+        errors = exc.errors()
+
+        # Check if all errors are missing fields at the top level
+        missing_fields = [
+            e["loc"][0] for e in errors if e["type"] == "missing" and len(e["loc"]) == 1
+        ]
+        if missing_fields and len(missing_fields) == len(errors):
+            # All errors are missing top-level fields
+            required_fields = ["slot", "mechanism", "profile"]
+            missing_str = ", ".join(str(f) for f in missing_fields)
+            msg = f"dispense requires: {', '.join(required_fields)} (missing: {missing_str})"
+            raise ValueError(msg) from exc
+
+        # Check for value_error (from model validator)
+        for e in errors:
+            if e["type"] == "value_error":
+                msg = str(e.get("ctx", {}).get("error", ""))
+                # Strip "Value error, " prefix if present
+                if msg.startswith("Value error, "):
+                    msg = msg[len("Value error, ") :]
+                if msg:
+                    raise ValueError(msg) from exc
+
+        # Fallback for other error types
+        if errors:
+            e = errors[0]
+            loc_str = ".".join(str(x) for x in e.get("loc", []))
+            msg_str = e.get("msg", "validation error")
+            msg = f"dispense params invalid: {loc_str} — {msg_str}"
+            raise ValueError(msg) from exc
+
+        # Should not reach here, but fallback just in case
+        raise ValueError("dispense params invalid") from exc
 
 
 COMMAND_PARAM_VALIDATORS: dict[str, Callable[[dict], None]] = {

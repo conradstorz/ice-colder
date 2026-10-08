@@ -268,6 +268,38 @@ class TestDispenseParamsValidator:
         )
         assert cmd.command == "dispense"
 
+    def test_dispense_params_bare_slot_message_is_one_line(self):
+        """Missing fields produce one-line operator-readable message."""
+        from contracts.common import _validate_dispense_params
+
+        with pytest.raises(ValueError) as exc_info:
+            _validate_dispense_params({"slot": 1})
+        msg = str(exc_info.value)
+        assert "\n" not in msg, f"Message should be one line, got: {msg}"
+        assert "dispense requires:" in msg
+        assert "mechanism" in msg
+        assert "profile" in msg
+        assert "missing:" in msg
+
+    def test_dispense_params_mismatch_message_is_one_line(self):
+        """Mechanism/profile mismatch produces one-line operator-readable message."""
+        from contracts.common import _validate_dispense_params
+
+        report = validate_document(GOOD, [ICE, WATER])
+        profile = report.profiles[1]  # bagged_ice
+
+        with pytest.raises(ValueError) as exc_info:
+            _validate_dispense_params(
+                {
+                    "slot": 1,
+                    "mechanism": "water_fill",  # Mismatch! Profile is bagged_ice
+                    "profile": profile.model_dump(mode="json"),
+                }
+            )
+        msg = str(exc_info.value)
+        assert "\n" not in msg, f"Message should be one line, got: {msg}"
+        assert "does not match command mechanism" in msg
+
 
 class TestTestableCommands:
     def test_standard_commands_present_for_every_subsystem(self):
