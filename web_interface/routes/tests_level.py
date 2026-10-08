@@ -267,6 +267,20 @@ def _parse_command_params(
     Raises ValueError, with a message safe to show the operator, for a
     missing/non-integer/out-of-range value; the caller (post_test_command)
     turns that into a 400 before the maintenance lease is ever touched.
+
+    For "dispense" specifically (Task 4, dispenser-profiles plan 2):
+    `contracts.common.COMMAND_PARAM_VALIDATORS["dispense"]` now requires a
+    full `DispenseCommand(slot, mechanism, profile)` on the wire, so once
+    the slot itself is known-good (in the current catalog) this also
+    looks up that slot's product and its `dispenser_profile_for` result.
+    A slot with no valid profile (profiles not wired, a `kind="other"`
+    product no profile ever covers, a missing/mismatched table) raises
+    RuntimeError -- not ValueError -- with the exact CFG-101 wording, so
+    the caller renders it through partials/test_refusal.html like every
+    other maintenance-lease refusal (never a 500) rather than a plain
+    400; this runs BEFORE post_test_command ever calls
+    _acquire_lease_or_refusal, so no lease is taken (and none needs
+    releasing) on this path.
     """
     if command == "dispense":
         try:
@@ -275,7 +289,21 @@ def _parse_command_params(
             raise ValueError("slot must be an integer") from exc
         if value not in valid_slots:
             raise ValueError(f"slot {value} is not in the current catalog")
-        return {"slot": value}
+        product = next(p for p in context.config.products if p.slot == value)
+        profile = (
+            context.vmc_instance.dispenser_profile_for(product)
+            if context.vmc_instance is not None
+            else None
+        )
+        if profile is None:
+            raise RuntimeError(
+                f"slot {value} ({product.sku}) has no valid dispenser profile (CFG-101)"
+            )
+        return {
+            "slot": value,
+            "mechanism": profile.mechanism,
+            "profile": profile.model_dump(mode="json"),
+        }
     if command == "water_valve":
         lo, hi = WATER_VALVE_SECONDS_RANGE
         try:
@@ -422,6 +450,12 @@ async def _run_command(
         "verdict": None,
         "note": None,
     }
+    if "mechanism" in params:
+        # Only a dispense run's params carry "mechanism" (Task 4,
+        # dispenser-profiles plan 2) -- every other testable command's
+        # params never do, so this key is absent for them rather than
+        # present-but-None.
+        metadata["mechanism"] = params["mechanism"]
     if context.event_recorder is not None:
         context.event_recorder.record("test_run", value=elapsed, metadata=metadata)
 
@@ -947,6 +981,15 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            # A slot with no valid dispenser profile (CFG-101) -- a
+            # refusal, not a 400/500, and raised before any lease is ever
+            # taken (see _parse_command_params's docstring), so there is
+            # nothing to release here.
+            return templates.TemplateResponse(
+                "partials/test_refusal.html",
+                context.template_context(request, reason=str(exc)),
+            )
 
         principal = web_auth.current_principal(request)
         vmc = context.vmc_instance
