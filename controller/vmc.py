@@ -279,10 +279,20 @@ class VMC:
         # request_id (set by _persist_then_dispense once the dispatcher
         # answers). Both live alongside selected_product/pending_sale_shares
         # above -- per-sale context, not VMC-global state -- and are reset
-        # to None in both _finish_dispensing (success) and _fail_vend
-        # (failure).
+        # to None in _finish_dispensing (success), _fail_vend (failure),
+        # and on_reset/on_error (abnormal exit).
         self._sale_mechanism: str | None = None
         self._dispense_request_id: str | None = None
+        # Review finding I2: a monotonically increasing counter identifying
+        # the *current* in-flight dispense dispatch. Incremented once per
+        # on_dispense_product call (one dispatch attempt per entry into
+        # 'dispensing'). _persist_then_dispense captures its value before
+        # any await; a late failure (e.g. a delayed CommandTimeout from a
+        # dispatch whose sale has already settled and been superseded by a
+        # new one) is detected by comparing the captured value against the
+        # live counter in _fail_dispense_async, so it can never fail a
+        # different, later sale than the one that actually dispatched.
+        self._sale_seq: int = 0
         self.last_insufficient_message = ""
         self.last_payment_method = "Simulated Payment"
 
@@ -1502,6 +1512,12 @@ class VMC:
         logger.info(
             f"{STATE_CHANGE_PREFIX} Transitioning to dispensing for product: {self.selected_product}"
         )
+        # Review finding I2: a fresh sequence number for this dispatch
+        # attempt, captured by whichever path below ends up firing a
+        # _fail_dispense_async for it (see _sale_seq's docstring in
+        # __init__).
+        self._sale_seq += 1
+        seq = self._sale_seq
         self._cancel_session_timeout()
         self._update_display("dispensing")
         self._refresh_ui()
@@ -1538,7 +1554,7 @@ class VMC:
                     f"slot={product.slot} at dispense time; failing the vend"
                 )
                 self._fire_and_forget(
-                    self._fail_dispense_async(FaultCode.CFG_101, "no_profile"),
+                    self._fail_dispense_async(FaultCode.CFG_101, "no_profile", seq),
                     persistent=True,
                 )
                 return
@@ -1556,12 +1572,28 @@ class VMC:
                 persistent=True,
             )
 
-    async def _fail_dispense_async(self, code: FaultCode, outcome: str) -> None:
-        """Fail an in-flight dispense, but only if the FSM is still in
-        'dispensing' when this actually runs: by the time it does, the sale
-        may already have settled through the real hardware report (a
+    async def _fail_dispense_async(
+        self, code: FaultCode, outcome: str, seq: int
+    ) -> None:
+        """Fail an in-flight dispense, but only if `seq` still names the
+        *current* dispatch and the FSM is still in 'dispensing' when this
+        actually runs.
+
+        `seq` (review finding I2) guards against a late failure from an
+        *earlier* sale's dispatch reaching here after that sale has
+        already settled and a new sale has since reached 'dispensing':
+        without this check, a delayed `CommandTimeout` for sale A (the
+        dispatcher's own timeout window, not the 120s dispense-timeout
+        fallback) could cancel sale B's dispense timer, raise PAY-102 on
+        B's sku, and refund B's price while B's product is actually being
+        dispensed. `seq` is compared against the live `self._sale_seq`
+        (bumped once per `on_dispense_product` call), so only the dispatch
+        that is still current may fail the vend.
+
+        The state check below additionally covers the case where the
+        *same* sale already settled through the real hardware report (a
         fire-and-forget dispatch task can race the terminal
-        `hardware/dispenser` report), and a settled sale must never be
+        `hardware/dispenser` report), so a settled sale must never be
         double-failed.
 
         `on_dispense_product` schedules this via `_fire_and_forget` rather
@@ -1571,9 +1603,16 @@ class VMC:
         vend_failed trigger synchronously there would be refused by the
         FSM. `_persist_then_dispense` -- itself a separate task that only
         ever runs after that transition has committed -- awaits this
-        directly instead; either call path is safe because of the state
-        check below.
+        directly instead; either call path is safe because of the checks
+        below.
         """
+        if seq != self._sale_seq:
+            logger.warning(
+                f"late dispatch failure for an earlier sale ignored "
+                f"(code={code.value}, outcome={outcome!r}, seq={seq}, "
+                f"current={self._sale_seq})"
+            )
+            return
         if self.state != "dispensing":
             logger.debug(
                 "Dispense failed after the sale already left 'dispensing'; "
@@ -1593,39 +1632,60 @@ class VMC:
         A crash between the snapshot save and the dispatch leaves an open
         session on disk, so boot raises PAY-104 instead of forgetting that
         credit was taken and a vend was in flight.
+
+        Review finding I1: everything from here on (the "no dispatcher"
+        wiring-error branch, `send()` itself, and the ack-status check) is
+        wrapped in one try/except. Originally only `send()`'s
+        `CommandTimeout` was guarded; any other exception raised while
+        dispatching -- bad `SubsystemCommand`/`model_dump` validation, a
+        broken MQTT publish, anything -- escaped this task entirely,
+        landed in `_log_task_failure`, and left the FSM stuck in
+        'dispensing' with the price already deducted until the full 120s
+        dispense-timeout fallback. Every failure path here now fails the
+        vend immediately instead, exactly like a `CommandTimeout` does.
         """
+        # Review finding I2: captured before any await, so this always
+        # names the dispatch this call is actually performing, even if a
+        # later sale bumps self._sale_seq again before this one resolves.
+        seq = self._sale_seq
         if snap is not None and self._session_store is not None:
             if FaultCode.PAY_104 not in self._machine_faults:
                 await self._session_store.save_async(snap)
 
-        if self._command_dispatcher is None:
-            logger.error(
-                "VMC: no command dispatcher attached; cannot send dispense "
-                "command (wiring error)"
-            )
-            await self._fail_dispense_async(FaultCode.PAY_102, "no_ack")
-            return
-
         try:
+            if self._command_dispatcher is None:
+                logger.error(
+                    "VMC: no command dispatcher attached; cannot send "
+                    "dispense command (wiring error)"
+                )
+                await self._fail_dispense_async(FaultCode.PAY_102, "no_ack", seq)
+                return
+
             ack = await self._command_dispatcher.send(
                 "vending", "dispense", cmd.model_dump(mode="json")
             )
+
+            if ack.status != "ok":
+                logger.error(
+                    f"VMC: dispense ack for slot {cmd.slot} status={ack.status!r} "
+                    f"detail={ack.detail!r}"
+                )
+                await self._fail_dispense_async(FaultCode.PAY_102, "no_ack", seq)
+                return
         except CommandTimeout:
             logger.error(
                 f"VMC: dispatcher timed out sending dispense for slot {cmd.slot}"
             )
-            await self._fail_dispense_async(FaultCode.PAY_102, "no_ack")
+            await self._fail_dispense_async(FaultCode.PAY_102, "no_ack", seq)
             return
-
-        if ack.status != "ok":
-            logger.error(
-                f"VMC: dispense ack for slot {cmd.slot} status={ack.status!r} "
-                f"detail={ack.detail!r}"
+        except Exception as exc:
+            logger.exception(
+                f"VMC: unexpected error dispatching dispense for slot {cmd.slot}: {exc}"
             )
-            await self._fail_dispense_async(FaultCode.PAY_102, "no_ack")
+            await self._fail_dispense_async(FaultCode.PAY_102, "no_ack", seq)
             return
 
-        if self.state == "dispensing":
+        if self.state == "dispensing" and seq == self._sale_seq:
             self._dispense_request_id = ack.request_id
 
     def _post_dispense_dest(self) -> str:
@@ -1664,6 +1724,13 @@ class VMC:
         )
         self.selected_product = None
         self.last_insufficient_message = ""
+        # Minor fix M3: an abnormal exit from 'dispensing' (reset/error)
+        # must clear per-sale dispatch context the same way a normal
+        # finish or a failed vend does, so a stray late hardware report or
+        # dispatch failure for the sale that was in flight can't act on
+        # stale mechanism/request_id state after the reset.
+        self._sale_mechanism = None
+        self._dispense_request_id = None
         self._update_display("idle")
         self._refresh_ui()
 
@@ -1838,6 +1905,9 @@ class VMC:
         )
         if self._event_recorder:
             self._event_recorder.record("error", value=1.0)
+        # Minor fix M3: see on_reset's comment above -- same reasoning.
+        self._sale_mechanism = None
+        self._dispense_request_id = None
         # Pay out any remaining credit through the gateway
         had_credit = self.credit_escrow > 0
         if had_credit:

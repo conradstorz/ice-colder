@@ -30,13 +30,37 @@ from services.session_store import Credit, SessionSnapshot, SessionStore
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
 
 
+_profiles_tmp_base: Path | None = None
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _profiles_tmp_base_dir(tmp_path_factory):
+    """Minor fix M1: a single module-scoped base directory, minted via
+    pytest's own `tmp_path_factory`, that `_tmp_profiles_dir` mints
+    per-call subdirectories under instead of calling `tempfile.mkdtemp()`
+    directly with no cleanup -- that leaked 100+ directories into the
+    system temp dir per test run on Windows. `tmp_path_factory`'s own base
+    directory is managed/cleaned by pytest, so everything minted under it
+    is too."""
+    global _profiles_tmp_base
+    _profiles_tmp_base = tmp_path_factory.mktemp("dispenser_profiles")
+    yield
+    _profiles_tmp_base = None
+
+
 def _tmp_profiles_dir(tmp_path: Path | None) -> Path:
     """A directory to write `dispensers.toml` into. Pass pytest's own
     `tmp_path` fixture when the test needs to reach the loaded
     `DispenserProfiles` afterward (e.g. to rewrite the file and reload);
-    otherwise a private, per-call temp directory is minted so callers that
-    don't care about the sweep need not thread a fixture through."""
-    return tmp_path if tmp_path is not None else Path(tempfile.mkdtemp())
+    otherwise a private, per-call subdirectory of `_profiles_tmp_base` is
+    minted so callers that don't care about the sweep need not thread a
+    fixture through."""
+    if tmp_path is not None:
+        return tmp_path
+    assert _profiles_tmp_base is not None, (
+        "_profiles_tmp_base_dir fixture (module-scoped, autouse) did not run"
+    )
+    return Path(tempfile.mkdtemp(dir=_profiles_tmp_base))
 
 
 def make_vmc(price: float = 2.50, tmp_path: Path | None = None) -> VMC:
@@ -2096,7 +2120,6 @@ async def test_dispense_snapshot_persisted_before_dispense_command(tmp_path):
         await asyncio.sleep(0.01)
 
     assert any(c == "dispense" for _, c, _ in sent)
-    vmc.cancel_pending_tasks()
     vmc.cancel_pending_tasks()
 
 

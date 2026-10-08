@@ -312,6 +312,17 @@ def _start_sale(vmc, product) -> None:
 
 async def test_sale_dispatches_full_profile_on_command_channel(tmp_path):
     vmc, dispatcher = _vmc_with_profiles(tmp_path)
+
+    published: list[tuple[str, object]] = []
+
+    class FakeMQTT:
+        def register(self, *a, **k):
+            pass
+
+        async def publish(self, topic, payload, **kwargs):
+            published.append((topic, payload))
+
+    vmc.set_mqtt_client(FakeMQTT())
     _start_sale(vmc, vmc.products[0])  # ICE-1, bagged_ice
 
     await asyncio.sleep(0)
@@ -322,6 +333,11 @@ async def test_sale_dispatches_full_profile_on_command_channel(tmp_path):
     assert params["slot"] == ICE_1.slot
     assert params["mechanism"] == "bagged_ice"
     assert params["profile"]["agitate"]["motor_channel"] == "agitator_motor"
+    # The dispense command travels only through the command dispatcher
+    # (cmd_dispatcher.send -> cmd/vending/dispense under the hood) -- the
+    # VMC must never also publish it directly on a bare "cmd/dispense"
+    # topic via the MQTT client.
+    assert not any(topic == "cmd/dispense" for topic, _ in published)
     vmc.cancel_pending_tasks()
 
 
@@ -507,4 +523,74 @@ async def test_mid_vend_profile_save_does_not_change_inflight_command(tmp_path):
     vmc._dispenser_profiles.load()
 
     assert dispatcher.sent[-1] == sent_before
+    vmc.cancel_pending_tasks()
+
+
+# --- Review findings I1/I2: dispatch-failure robustness ---
+
+
+async def test_unexpected_dispatch_error_fails_vend_immediately(tmp_path):
+    """A non-`CommandTimeout` exception raised while dispatching (e.g. bad
+    `SubsystemCommand` validation, a `model_dump` error, a broken MQTT
+    publish) must fail the vend right away, exactly like a `CommandTimeout`
+    does -- not leave the FSM stuck in `dispensing` for the full 120s
+    dispense-timeout fallback."""
+    vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    rec = FakeEventRecorder()
+    vmc.set_event_recorder(rec)
+    dispatcher.fail_with = ValueError("boom")
+    product = vmc.products[0]
+    price = product.price
+    _start_sale(vmc, product)
+
+    await asyncio.sleep(0)
+
+    assert vmc.state == "interacting_with_user"
+    assert vmc.credit_escrow == price
+    assert any(e[0] == "vend_failed" and e[2]["code"] == "PAY-102" for e in rec.events)
+    assert vmc._dispense_timeout_task is None
+    vmc.cancel_pending_tasks()
+
+
+async def test_late_no_ack_from_previous_sale_does_not_fail_current_sale(tmp_path):
+    """A `CommandTimeout` that finally lands for sale A's dispatch, after A
+    already settled through the real hardware report and sale B has since
+    reached `dispensing`, must be ignored -- never cancel B's dispense
+    timer, raise PAY-102 on B's sku, or refund B's price out from under a
+    product that is actually being dispensed."""
+    vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    rec = FakeEventRecorder()
+    vmc.set_event_recorder(rec)
+    gate = asyncio.Event()
+    dispatcher.gate = gate
+    dispatcher.fail_with = CommandTimeout("vending", "dispense")
+
+    product_a = vmc.products[0]  # ICE-1
+    _start_sale(vmc, product_a)
+    await asyncio.sleep(0)  # sale A's dispatch reaches send() and blocks on the gate
+
+    # Sale A completes through the real hardware report while its own
+    # dispatch call is still pending behind the gate.
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser", {"slot": product_a.slot, "state": "complete"}
+    )
+    assert vmc.state == "idle"
+
+    # Sale B starts and reaches dispensing while A's blocked send() is
+    # still pending -- B's own dispatch must succeed normally.
+    dispatcher.fail_with = None
+    product_b = vmc.products[1]  # W-1
+    _start_sale(vmc, product_b)
+    await asyncio.sleep(0)  # let B's own dispatch run (and succeed)
+    escrow_before = vmc.credit_escrow
+
+    # A's delayed CommandTimeout finally arrives.
+    gate.set()
+    await asyncio.sleep(0)
+
+    assert vmc.state == "dispensing"
+    assert vmc.credit_escrow == escrow_before
+    assert not any(
+        e[0] == "vend_failed" and e[2]["code"] == "PAY-102" for e in rec.events
+    )
     vmc.cancel_pending_tasks()

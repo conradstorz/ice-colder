@@ -10,6 +10,7 @@ Plain module -- no pytest import -- so it can be imported from anywhere
 without pytest collecting it as a test module.
 """
 
+import asyncio
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
@@ -158,7 +159,18 @@ class FakeDispatcher:
     `fail_with`, when set, is raised by the *next* `send()` call instead of
     returning an ack -- set it to a `CommandTimeout` to simulate a dead
     broker/subsystem, the one failure mode a production sale must survive
-    by failing the vend with PAY-102.
+    by failing the vend with PAY-102. The outcome (`fail_with` or a
+    successful ack) is decided when `send()` is *called*, not when it
+    returns -- so a caller may change `fail_with` for a later sale while an
+    earlier call is still suspended on `gate` below, without retroactively
+    changing that earlier call's outcome.
+
+    `gate`, when set to an `asyncio.Event`, is awaited by the *next*
+    `send()` call that finds it set, which then clears it back to `None`
+    (one-shot) so later calls are not also blocked by it -- used to hold a
+    sale's dispatch in flight while a different, real event (e.g. a
+    terminal `hardware/dispenser` report for that same sale, or a second
+    sale starting) happens around it.
 
     `send_and_await_completion` always raises `AssertionError`: a
     production sale must await only the accepted ack via `send()`, never
@@ -169,14 +181,20 @@ class FakeDispatcher:
     def __init__(self):
         self.sent: list[tuple[str, str, dict]] = []
         self.fail_with: Exception | None = None
+        self.gate: asyncio.Event | None = None
         self._last_request_id: str | None = None
 
     async def send(
         self, subsystem: str, command: str, params: dict | None = None
     ) -> CommandAck:
         self.sent.append((subsystem, command, params or {}))
-        if self.fail_with is not None:
-            raise self.fail_with
+        outcome_exc = self.fail_with
+        gate = self.gate
+        if gate is not None:
+            self.gate = None
+            await gate.wait()
+        if outcome_exc is not None:
+            raise outcome_exc
         ack = CommandAck(
             request_id=uuid.uuid4().hex,
             command=command,

@@ -14,7 +14,11 @@ import asyncio
 import pytest
 from loguru import logger
 
-from tests.test_vmc_flows import RecordingClient, make_vmc2
+from tests.test_vmc_flows import (
+    RecordingClient,
+    _profiles_tmp_base_dir,  # noqa: F401 -- pytest picks this up as an autouse fixture
+    make_vmc2,
+)
 
 
 @pytest.fixture
