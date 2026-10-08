@@ -5,6 +5,7 @@ import time
 import pytest
 
 import main as main_mod
+from services import startup_config
 from config.config_model import ConfigModel, WebConfig
 from contracts.vending_machine import FaultCode
 from controller.vmc import VMC
@@ -20,7 +21,7 @@ def test_env_overrides_mqtt_credentials_and_trusted_proxies(monkeypatch):
     monkeypatch.setenv("MQTT_PASSWORD", "s3cret-value")
     monkeypatch.setenv("ICE_COLDER_TRUSTED_PROXIES", "172.25.0.0/16, 10.0.0.0/8")
     cfg = ConfigModel()
-    overrides = main_mod.apply_env_overrides(cfg)
+    overrides = startup_config.apply_env_overrides(cfg)
 
     # Returned overrides carry the env values...
     assert overrides.mqtt.broker_host == "mosquitto"
@@ -44,7 +45,7 @@ def test_env_overrides_absent_leave_config_alone(monkeypatch):
     ):
         monkeypatch.delenv(k, raising=False)
     cfg = ConfigModel()
-    overrides = main_mod.apply_env_overrides(cfg)
+    overrides = startup_config.apply_env_overrides(cfg)
 
     # No env set: overrides fall back to the config's own (default) values...
     assert overrides.mqtt.username is None
@@ -56,13 +57,25 @@ def test_env_overrides_absent_leave_config_alone(monkeypatch):
     assert cfg.web.trusted_proxies == []
 
 
+def test_mqtt_env_overrides_reports_only_configured_values(monkeypatch):
+    monkeypatch.setenv("MQTT_BROKER_HOST", "mosquitto")
+    monkeypatch.setenv("MQTT_USERNAME", "vmc")
+    monkeypatch.setenv("MQTT_PASSWORD", "secret")
+
+    assert startup_config.mqtt_env_overrides() == {
+        "broker_host": "mosquitto",
+        "username": "vmc",
+        "password": "secret",
+    }
+
+
 def test_env_password_never_reaches_saved_config(tmp_path, monkeypatch):
     monkeypatch.setenv("MQTT_PASSWORD", "env-only-secret-value")
     for k in ("MQTT_BROKER_HOST", "MQTT_USERNAME", "ICE_COLDER_TRUSTED_PROXIES"):
         monkeypatch.delenv(k, raising=False)
 
     cfg = ConfigModel()
-    main_mod.apply_env_overrides(cfg)
+    startup_config.apply_env_overrides(cfg)
 
     save_config(cfg, tmp_path / "config.json")
     assert "env-only-secret-value" not in (tmp_path / "config.json").read_text()
