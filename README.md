@@ -38,6 +38,32 @@ docker compose up -d
 ```
 The real machine should pin a `sha-<commit>` tag instead of `latest`.
 
+### Reusable async helpers
+
+The startup lifecycle helpers can be imported without loading the VMC,
+configuration, or web application:
+
+```python
+from services.task_lifecycle import run_until_primary_exits
+from services.task_supervisor import supervise
+
+async def run():
+    await run_until_primary_exits(
+        server.serve(),
+        supervise("worker", worker.run),
+    )
+```
+
+Here `server` and `worker` are components supplied by the calling application.
+`supervise` accepts a factory that creates a fresh awaitable each time; it logs
+crashes or unexpected returns and restarts after five seconds (configurable with
+the keyword-only `restart_delay`). Cancellation is propagated, not retried.
+`run_until_primary_exits` cancels and awaits background tasks when the primary
+finishes, fails, or is cancelled, then returns its result or propagates the
+exception. Background tasks should handle their failures, usually via
+`supervise`. The lifecycle module uses only the standard library; the supervisor
+also requires Loguru and leaves logging configuration to the caller.
+
 ### Credentials
 
 Copy `.env.example` to `.env` before bringing up either compose stack (the

@@ -26,13 +26,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Entry Point & Startup (`main.py`)
 
-`main()` loads `config.json` into a Pydantic `ConfigModel`, then runs three
+`main()` loads `config.json` into a Pydantic `ConfigModel`, then runs four
 concurrent asyncio tasks on a single event loop: a uvicorn web server (host/port
 from `config.web`, default `0.0.0.0:26123`, with sessions persisted in
-`data/access.json`), the MQTT client, and the health monitor. The MQTT client
-and health monitor are wrapped in a supervisor that restarts them on crash; if
-uvicorn exits, the process exits (Docker's `restart: unless-stopped` handles
-process-level restarts).
+`data/access.json`), the MQTT client, the health monitor, and the report
+scheduler. `services/task_supervisor.py` provides the reusable
+`supervise(name, coro_factory, restart_delay=5.0)` helper: background components
+restart after a crash or unexpected return, but cancellation propagates.
+`services/task_lifecycle.py` provides `run_until_primary_exits(primary,
+*background)`: when uvicorn finishes or fails, background tasks are cancelled
+and awaited before application cleanup (Docker's `restart: unless-stopped`
+handles process-level restarts). Neither helper imports application components.
 
 ### Configuration (`config/config_model.py`, `config.json`)
 
