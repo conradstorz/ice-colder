@@ -20,7 +20,9 @@ import pytest
 from pydantic import SecretStr
 
 from config.config_model import ConfigModel, Product
+from contracts.common import CommandAck
 from controller.vmc import VMC
+from services.command_dispatcher import CommandDispatcher
 from services.health_monitor import HealthMonitor
 from services.mqtt_client import MQTTClient
 from services.mqtt_messages import (
@@ -29,6 +31,7 @@ from services.mqtt_messages import (
     PaymentEvent,
     SensorReading,
 )
+from tests.dispenser_fixtures import profiles_for
 
 # Windows needs SelectorEventLoop for aiomqtt
 if sys.platform == "win32":
@@ -71,16 +74,43 @@ pytestmark = [
 
 
 def _make_config() -> ConfigModel:
-    """Create a minimal config for testing with known products."""
+    """Create a minimal config for testing with known products.
+
+    `kind`/`slot` are set (and match each product's button index) so a
+    dispense actually reaches the vending simulator through the real
+    `DispenseCommand`/`DispenserProfiles` path (review finding I2) rather
+    than taking the `CFG-101` "no valid profile" branch -- `select_product`
+    refuses a `kind="other"` product the moment a `DispenserProfiles` is
+    wired, and `on_dispense_product` would otherwise never dispatch
+    anything onto `cmd/vending` at all.
+    """
     config = ConfigModel(
         machine_id="test-e2e",
         physical={
             "common_name": "E2E Test Machine",
             "serial_number": "test-e2e",
             "products": [
-                {"sku": "ICE-SM", "name": "Small Ice", "price": 2.00},
-                {"sku": "ICE-LG", "name": "Large Ice", "price": 3.50},
-                {"sku": "WATER", "name": "Purified Water", "price": 1.50},
+                {
+                    "sku": "ICE-SM",
+                    "name": "Small Ice",
+                    "price": 2.00,
+                    "kind": "ice",
+                    "slot": 0,
+                },
+                {
+                    "sku": "ICE-LG",
+                    "name": "Large Ice",
+                    "price": 3.50,
+                    "kind": "ice",
+                    "slot": 1,
+                },
+                {
+                    "sku": "WATER",
+                    "name": "Purified Water",
+                    "price": 1.50,
+                    "kind": "water",
+                    "slot": 2,
+                },
             ],
         },
         mqtt={
@@ -109,10 +139,49 @@ async def _wait_for_state(vmc: VMC, target_state: str, timeout: float = 10.0):
     )
 
 
+def _wire_dispenser_runtime(
+    vmc: VMC, mqtt_client: MQTTClient, config: ConfigModel, tmp_path
+) -> CommandDispatcher:
+    """Attach a loaded `DispenserProfiles` and a real `CommandDispatcher` --
+    constructed exactly as `main.py` does (`CommandDispatcher(mqtt_client)`,
+    registering its `cmd/+/ack` handler before `mqtt_client.run()` ever
+    subscribes) -- so a production dispense actually reaches `cmd/vending`
+    instead of taking the `CFG-101` "no valid profile" branch (review
+    finding I2). Must be called before the caller creates the
+    `mqtt_client.run()` task."""
+    profiles = profiles_for(config.physical.products, tmp_path)
+    vmc.set_dispenser_profiles(profiles)
+    dispatcher = CommandDispatcher(mqtt_client)
+    vmc.set_command_dispatcher(dispatcher)
+    return dispatcher
+
+
+async def _ack_dispense(sim_client: "aiomqtt.Client", prefix: str, request_id: str):
+    """Publish the "accepted" `CommandAck` a real vending board sends back
+    on `cmd/vending/ack`, echoing *request_id* -- unblocking the VMC's
+    `CommandDispatcher.send()` call, which is what actually sends the
+    dispense command and is awaited before the dispense timer starts.
+    Callers must publish this before the terminal `hardware/dispenser`
+    report, matching the real accept-then-complete sequence."""
+    await sim_client.publish(
+        f"{prefix}/cmd/vending/ack",
+        CommandAck(
+            request_id=request_id,
+            command="dispense",
+            status="ok",
+            phase="accepted",
+        ).model_dump_json(),
+    )
+    # Give the dispatcher's cmd/+/ack handler and _persist_then_dispense a
+    # moment to actually process the ack before the terminal report (sent
+    # by the caller right after this returns) arrives.
+    await asyncio.sleep(0.3)
+
+
 class TestFullTransactionLoop:
     """Test the complete vend cycle through real MQTT."""
 
-    async def test_button_payment_dispense_complete(self):
+    async def test_button_payment_dispense_complete(self, tmp_path):
         """Full happy path: button → payment → dispense → complete → idle."""
         config = _make_config()
         prefix = f"vmc/{config.machine_id}"
@@ -138,6 +207,11 @@ class TestFullTransactionLoop:
             vmc.attach_to_loop(loop)
             vmc.set_mqtt_client(mqtt_client)
             vmc.set_health_monitor(health)
+            # Review finding I2: without a loaded DispenserProfiles and a
+            # real CommandDispatcher, on_dispense_product takes the
+            # CFG-101 "no valid profile" branch and never publishes
+            # anything on cmd/vending at all.
+            _wire_dispenser_runtime(vmc, mqtt_client, config, tmp_path)
 
             mqtt_task = asyncio.create_task(mqtt_client.run())
 
@@ -184,11 +258,17 @@ class TestFullTransactionLoop:
                 # {"slot": ...} on its own topic.
                 assert dispense_msg["command"] == "dispense"
                 assert dispense_msg["params"]["slot"] == 0
+                assert dispense_msg["params"]["mechanism"] == "bagged_ice"
 
-                # 4. Simulate dispenser completing
+                # 4. Accept the command (the real board's first ack), then
+                # report completion, both correlated by request_id.
+                request_id = dispense_msg["request_id"]
+                await _ack_dispense(sim_client, prefix, request_id)
                 await sim_client.publish(
                     f"{prefix}/hardware/dispenser",
-                    DispenserStatus(slot=0, state="complete").model_dump_json(),
+                    DispenserStatus(
+                        slot=0, state="complete", request_id=request_id
+                    ).model_dump_json(),
                 )
 
                 # VMC should return to idle (no remaining credit)
@@ -202,7 +282,7 @@ class TestFullTransactionLoop:
                 except (asyncio.CancelledError, Exception):
                     pass
 
-    async def test_overpayment_returns_to_idle_with_change(self):
+    async def test_overpayment_returns_to_idle_with_change(self, tmp_path):
         """Overpayment: VMC dispenses and remaining credit is consumed or idle."""
         config = _make_config()
         prefix = f"vmc/{config.machine_id}"
@@ -213,9 +293,11 @@ class TestFullTransactionLoop:
         async with aiomqtt.Client(
             hostname="localhost", port=1883, identifier="e2e-sim-overpay", **_MQTT_AUTH
         ) as sim_client:
+            await sim_client.subscribe(f"{prefix}/cmd/vending")
             loop = asyncio.get_running_loop()
             vmc.attach_to_loop(loop)
             vmc.set_mqtt_client(mqtt_client)
+            _wire_dispenser_runtime(vmc, mqtt_client, config, tmp_path)
 
             mqtt_task = asyncio.create_task(mqtt_client.run())
 
@@ -242,10 +324,28 @@ class TestFullTransactionLoop:
                 # Credit should be $5.00 - $1.50 = $3.50
                 assert abs(vmc.credit_escrow - 3.50) < 0.01
 
-                # Dispenser completes
+                dispense_msg = None
+                try:
+                    msg = await asyncio.wait_for(
+                        sim_client.messages.__anext__(), timeout=5.0
+                    )
+                    dispense_msg = json.loads(msg.payload)
+                except (asyncio.TimeoutError, StopAsyncIteration):
+                    pass
+                assert dispense_msg is not None, "No dispense command received"
+                assert dispense_msg["command"] == "dispense"
+                assert dispense_msg["params"]["slot"] == 2
+                assert dispense_msg["params"]["mechanism"] == "water_fill"
+
+                # Accept, then report completion, both correlated by
+                # request_id.
+                request_id = dispense_msg["request_id"]
+                await _ack_dispense(sim_client, prefix, request_id)
                 await sim_client.publish(
                     f"{prefix}/hardware/dispenser",
-                    DispenserStatus(slot=2, state="complete").model_dump_json(),
+                    DispenserStatus(
+                        slot=2, state="complete", request_id=request_id
+                    ).model_dump_json(),
                 )
 
                 # With remaining credit, VMC goes back to interacting_with_user
@@ -325,7 +425,7 @@ class TestFullTransactionLoop:
                 except (asyncio.CancelledError, Exception):
                     pass
 
-    async def test_dispenser_fault_fails_vend_and_locks_product(self):
+    async def test_dispenser_fault_fails_vend_and_locks_product(self, tmp_path):
         """Dispenser jam during vend runs vend_failed: escrow restored, product locked."""
         config = _make_config()
         prefix = f"vmc/{config.machine_id}"
@@ -336,9 +436,11 @@ class TestFullTransactionLoop:
         async with aiomqtt.Client(
             hostname="localhost", port=1883, identifier="e2e-sim-error", **_MQTT_AUTH
         ) as sim_client:
+            await sim_client.subscribe(f"{prefix}/cmd/vending")
             loop = asyncio.get_running_loop()
             vmc.attach_to_loop(loop)
             vmc.set_mqtt_client(mqtt_client)
+            _wire_dispenser_runtime(vmc, mqtt_client, config, tmp_path)
 
             mqtt_task = asyncio.create_task(mqtt_client.run())
 
@@ -361,10 +463,28 @@ class TestFullTransactionLoop:
                 )
                 await _wait_for_state(vmc, "dispensing", timeout=5.0)
 
-                # Dispenser reports a jam instead of complete
+                dispense_msg = None
+                try:
+                    msg = await asyncio.wait_for(
+                        sim_client.messages.__anext__(), timeout=5.0
+                    )
+                    dispense_msg = json.loads(msg.payload)
+                except (asyncio.TimeoutError, StopAsyncIteration):
+                    pass
+                assert dispense_msg is not None, "No dispense command received"
+                assert dispense_msg["command"] == "dispense"
+                assert dispense_msg["params"]["slot"] == 0
+                assert dispense_msg["params"]["mechanism"] == "bagged_ice"
+
+                # Accept, then the dispenser reports a jam instead of
+                # complete -- both correlated by request_id.
+                request_id = dispense_msg["request_id"]
+                await _ack_dispense(sim_client, prefix, request_id)
                 await sim_client.publish(
                     f"{prefix}/hardware/dispenser",
-                    DispenserStatus(slot=0, state="jam").model_dump_json(),
+                    DispenserStatus(
+                        slot=0, state="jam", request_id=request_id
+                    ).model_dump_json(),
                 )
                 await _wait_for_state(vmc, "interacting_with_user", timeout=5.0)
                 assert vmc.credit_escrow == 2.00
