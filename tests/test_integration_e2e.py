@@ -126,8 +126,12 @@ class TestFullTransactionLoop:
         async with aiomqtt.Client(
             hostname="localhost", port=1883, identifier="e2e-simulator", **_MQTT_AUTH
         ) as sim_client:
-            # Subscribe to dispense commands so we can react
-            await sim_client.subscribe(f"{prefix}/cmd/dispense")
+            # Subscribe to dispense commands so we can react. Dispensing
+            # now travels over the generic command channel (`cmd/vending`,
+            # command "dispense") rather than a dedicated topic -- plan 2
+            # moved every production sale onto the same channel the Tests
+            # tile already used.
+            await sim_client.subscribe(f"{prefix}/cmd/vending")
 
             # Start the VMC MQTT client in background
             loop = asyncio.get_running_loop()
@@ -175,7 +179,11 @@ class TestFullTransactionLoop:
                 except (asyncio.TimeoutError, StopAsyncIteration):
                     pass
                 assert dispense_msg is not None, "No dispense command received"
-                assert dispense_msg["slot"] == 0
+                # The payload is now a SubsystemCommand (command="dispense"),
+                # carrying the slot inside its validated params, not a bare
+                # {"slot": ...} on its own topic.
+                assert dispense_msg["command"] == "dispense"
+                assert dispense_msg["params"]["slot"] == 0
 
                 # 4. Simulate dispenser completing
                 await sim_client.publish(
@@ -471,7 +479,7 @@ class TestFailedVendLoop:
         async with aiomqtt.Client(
             hostname="localhost", port=1883, identifier="e2e-fault-sim", **_MQTT_AUTH
         ) as sim_client:
-            await sim_client.subscribe(f"{prefix}/cmd/dispense")
+            await sim_client.subscribe(f"{prefix}/cmd/vending")
             await sim_client.subscribe(f"{prefix}/cmd/payment/refund")
             loop = asyncio.get_running_loop()
             vmc.attach_to_loop(loop)

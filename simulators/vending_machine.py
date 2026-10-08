@@ -7,38 +7,45 @@ Simulates the physical vending hardware: product buttons, ice dispense
 water dispense (water valve solenoid, water flow sensor), ice bin half-full
 detector, cabinet temperature sensor, and cabinet heater relay.
 
-Subscribes to dispense commands from the RPi and runs the appropriate
-dispense sequence with realistic hardware state transitions.
+Dispensing itself (plan: dispenser profiles, Task 5) is driven entirely by
+the command channel: the VMC sends a `dispense` command on
+`cmd/vending` carrying the slot's full, validated `DispenseCommand`
+(slot, mechanism, profile), and `_handle_dispense` runs it via
+`_execute_profile`, which plays out the profile's own agitate/fill/release
+(bagged ice) or fill (water) steps against the hardware. There is no
+longer a separate, legacy dispense topic or a board-side notion of "ice
+vs. water by product name" -- the profile says exactly which channels to
+drive and how.
 
 Run: uv run python -m simulators.vending_machine [--broker HOST] [--port PORT] [--machine-id ID]
 """
 
 import asyncio
+import contextlib
 import random
 from datetime import datetime
 
 import aiomqtt
 from loguru import logger
+from pydantic import ValidationError
 
 from contracts.common import ChannelDescriptor, SubsystemCommand
-from contracts.vending_machine import DispenserOutcome
+from contracts.ice_maker_monitor import ChannelReading
+from contracts.vending_machine import DispenserOutcome, DispenseStep
 from simulators.base import CommandOutcome, ESP32Simulator, FaultDef
+from services.dispenser_schema import (
+    Accessory,
+    IceFillBySensor,
+    ReleaseBySensor,
+    WaterFillByVolume,
+)
 from services.mqtt_messages import (
     ButtonPress,
+    DispenseCommand,
     DispenserStatus,
     HardwareIO,
     SensorReading,
 )
-
-
-# Keywords that identify a product as water (case-insensitive check on name/sku)
-_WATER_KEYWORDS = {"water", "gallon"}
-
-
-def _classify_product(name: str, sku: str) -> str:
-    """Classify a product as 'ice' or 'water' based on its name/sku."""
-    lower = f"{name} {sku}".lower()
-    return "water" if any(kw in lower for kw in _WATER_KEYWORDS) else "ice"
 
 
 # All binary hardware devices and their default states
@@ -56,12 +63,17 @@ HARDWARE_DEVICES = {
     "bin_half_full": True,  # assume bin starts with ice
     # Cabinet
     "heater_relay": False,
+    # Dispense profile accessories and sensors (plan: dispenser profiles)
+    "bag_fan": False,
+    "vending_now_light": False,
+    "door_sensor": False,  # True = door open
 }
 
 SENSOR_PUBLISH_INTERVAL = 10.0  # seconds between periodic sensor publishes
 
 # Spec §4.2's vending channel table, copied exactly, declaration order
-# matching the table top to bottom.
+# matching the table top to bottom, plus the dispenser-profile channels
+# (plan: dispenser profiles, Task 5) appended at the end.
 _BINARY_CHANNEL_INTERVAL = 1.0
 
 _VENDING_CHANNELS: list[ChannelDescriptor] = [
@@ -143,7 +155,61 @@ _VENDING_CHANNELS: list[ChannelDescriptor] = [
         interval_seconds=_BINARY_CHANNEL_INTERVAL,
         direction="output",
     ),
+    # --- Dispenser-profile channels (plan: dispenser profiles, Task 5) ---
+    ChannelDescriptor(
+        channel_id="bag_fan",
+        kind="binary",
+        description="Ice-bag cooling fan accessory",
+        interval_seconds=_BINARY_CHANNEL_INTERVAL,
+        direction="output",
+        driven_by="dispense",
+    ),
+    ChannelDescriptor(
+        channel_id="vending_now_light",
+        kind="binary",
+        description="Vending-in-progress indicator light",
+        interval_seconds=_BINARY_CHANNEL_INTERVAL,
+        direction="output",
+        driven_by="dispense",
+    ),
+    ChannelDescriptor(
+        channel_id="door_sensor",
+        kind="binary",
+        description="Release-gate door sensor",
+        interval_seconds=_BINARY_CHANNEL_INTERVAL,
+    ),
+    ChannelDescriptor(
+        channel_id="agitator_current",
+        kind="current",
+        unit="A",
+        description="Agitator motor current draw",
+        interval_seconds=_BINARY_CHANNEL_INTERVAL,
+    ),
+    ChannelDescriptor(
+        channel_id="auger_current",
+        kind="current",
+        unit="A",
+        description="Auger motor current draw",
+        interval_seconds=_BINARY_CHANNEL_INTERVAL,
+    ),
 ]
+
+# Bagged ice runs all three steps in order; water only ever runs "fill".
+_BAGGED_ICE_STEPS: tuple[str, ...] = (
+    DispenseStep.agitate.value,
+    DispenseStep.fill.value,
+    DispenseStep.release.value,
+)
+_WATER_STEPS: tuple[str, ...] = (DispenseStep.fill.value,)
+
+# A plausible steady-state current reading for a monitored, healthy motor.
+_DEFAULT_CURRENT_AMPS = 2.0
+# Fallback stall-current reading when `motor_stall` is injected on a motor
+# whose profile says its current sense is "unmonitored" -- the fault is a
+# simulator-level test injection, independent of whether this particular
+# profile claims to monitor current, so there is always a plausible number
+# to put in the terminal report's `detail`.
+_DEFAULT_STALL_AMPS = 10.0
 
 
 class VendingMachineSimulator(ESP32Simulator):
@@ -151,7 +217,6 @@ class VendingMachineSimulator(ESP32Simulator):
 
     IDLE_MIN = 30.0  # min seconds between customers
     IDLE_MAX = 90.0  # max seconds between customers
-    DISPENSE_TIMEOUT = 60.0  # seconds to wait for dispense command
     SUPPORTED_COMMANDS = ["dispense", "water_valve", "payment/enable"]
     CHANNELS = _VENDING_CHANNELS
     BRAND = "ice-colder"
@@ -161,9 +226,8 @@ class VendingMachineSimulator(ESP32Simulator):
         super().__init__(subsystem_name="vending", **kwargs)
         self.register_command("dispense", self._handle_dispense)
         self.register_command("water_valve", self._handle_water_valve)
-        self._apply_products(self.config.products)
-        logger.info(f"[vending] {self.num_buttons} products: {self._slot_types}")
-        self._dispense_command: asyncio.Queue = asyncio.Queue()
+        self.num_buttons = len(self.config.products)
+        logger.info(f"[vending] {self.num_buttons} products")
         # Hardware state
         self._hw: dict[str, bool] = dict(HARDWARE_DEVICES)
         self._cabinet_temp: float = 22.0  # starting cabinet temperature °C
@@ -214,6 +278,50 @@ class VendingMachineSimulator(ESP32Simulator):
                 severity="warning",
             )
         )
+        self.register_fault(
+            FaultDef(
+                name="motor_stall",
+                category="medium",
+                probability=0.0006,
+                on_activate=self._on_motor_stall_activate,
+                on_recover=self._on_motor_stall_recover,
+                message="Dispense motor stalled",
+                severity="warning",
+            )
+        )
+        self.register_fault(
+            FaultDef(
+                name="no_water_flow",
+                category="short",
+                probability=0.0008,
+                on_activate=self._on_no_water_flow_activate,
+                on_recover=self._on_no_water_flow_recover,
+                message="No water flow detected after valve opened",
+                severity="warning",
+            )
+        )
+        self.register_fault(
+            FaultDef(
+                name="door_stuck_open",
+                category="medium",
+                probability=0.0006,
+                on_activate=self._on_door_stuck_open_activate,
+                on_recover=self._on_door_stuck_open_recover,
+                message="Release gate door stuck open",
+                severity="critical",
+            )
+        )
+        self.register_fault(
+            FaultDef(
+                name="flow_runaway",
+                category="short",
+                probability=0.0006,
+                on_activate=self._on_flow_runaway_activate,
+                on_recover=self._on_flow_runaway_recover,
+                message="Water flow continued well past target volume",
+                severity="warning",
+            )
+        )
 
     def ha_discovery_entities(self) -> list[dict]:
         """Return HA discovery definitions for vending machine hardware."""
@@ -254,7 +362,7 @@ class VendingMachineSimulator(ESP32Simulator):
                 "state_topic_suffix": "sensors/temp/cabinet",
                 "value_template": "{{ value_json.value }}",
                 "device_class": "temperature",
-                "unit_of_measurement": "\u00b0C",
+                "unit_of_measurement": "°C",
                 "state_class": "measurement",
                 "expire_after": 30,
             }
@@ -290,25 +398,36 @@ class VendingMachineSimulator(ESP32Simulator):
 
         return entities
 
-    def _apply_products(self, products) -> None:
-        """(Re)build num_buttons and the slot->type map from a product list."""
-        self.num_buttons = len(products)
-        # Keyed by each product's stable `slot`, not its list position — the
-        # real ESP32's motor wiring is fixed per slot, and list order can
-        # change independently (e.g. a product deleted from the catalog).
-        self._slot_types = {p.slot: _classify_product(p.name, p.sku) for p in products}
-
-    def slot_type(self, slot: int) -> str:
-        return self._slot_types.get(slot, "ice")
-
     def _pick_button(self) -> int:
         return random.randint(0, self.num_buttons - 1)
+
+    async def _sleep(self, seconds: float) -> None:
+        """The single seam every wait in `_execute_profile` goes through,
+        so a test can patch one instance attribute (`sim._sleep`) instead
+        of the module-global `asyncio.sleep` (which other tests in this
+        file still patch directly for the pre-existing command-channel
+        tests -- both seams coexist because this is a thin, real wrapper,
+        not an internal fake clock)."""
+        await asyncio.sleep(seconds)
 
     async def _set_hw(self, client: aiomqtt.Client, device: str, state: bool):
         """Update hardware state and publish to MQTT."""
         self._hw[device] = state
         await self.publish(
             client, f"hardware/io/{device}", HardwareIO(device=device, state=state)
+        )
+
+    async def _publish_current(
+        self, client: aiomqtt.Client, channel: str, amps: float
+    ) -> None:
+        """Publish one current-sense reading on the generic telemetry path
+        (matching simulators/ice_maker.py's own `telemetry/<subsystem>/
+        <channel_id>` convention) -- there is no per-slot current topic of
+        its own."""
+        await self.publish(
+            client,
+            f"telemetry/{self.subsystem_name}/{channel}",
+            ChannelReading(channel_id=channel, value=amps),
         )
 
     async def _publish_sensors(self, client: aiomqtt.Client):
@@ -384,6 +503,30 @@ class VendingMachineSimulator(ESP32Simulator):
         await self._set_hw(client, "bin_half_full", True)
         logger.info("[vending] Fault cleared: ice_bin_empty")
 
+    async def _on_motor_stall_activate(self, client: aiomqtt.Client) -> None:
+        logger.warning("[vending] FAULT: motor stall")
+
+    async def _on_motor_stall_recover(self, client: aiomqtt.Client) -> None:
+        logger.info("[vending] Fault cleared: motor_stall")
+
+    async def _on_no_water_flow_activate(self, client: aiomqtt.Client) -> None:
+        logger.warning("[vending] FAULT: no water flow detected")
+
+    async def _on_no_water_flow_recover(self, client: aiomqtt.Client) -> None:
+        logger.info("[vending] Fault cleared: no_water_flow")
+
+    async def _on_door_stuck_open_activate(self, client: aiomqtt.Client) -> None:
+        logger.warning("[vending] FAULT: release gate door stuck open")
+
+    async def _on_door_stuck_open_recover(self, client: aiomqtt.Client) -> None:
+        logger.info("[vending] Fault cleared: door_stuck_open")
+
+    async def _on_flow_runaway_activate(self, client: aiomqtt.Client) -> None:
+        logger.warning("[vending] FAULT: water flow runaway past target volume")
+
+    async def _on_flow_runaway_recover(self, client: aiomqtt.Client) -> None:
+        logger.info("[vending] Fault cleared: flow_runaway")
+
     def _arrival_factor(self, hour: int | None = None) -> float:
         """Return an idle-time multiplier based on time of day.
 
@@ -410,227 +553,333 @@ class VendingMachineSimulator(ESP32Simulator):
         factor = self._arrival_factor(hour=hour)
         return random.uniform(self.IDLE_MIN, self.IDLE_MAX) * factor
 
-    async def _run_ice_dispense(
-        self, client: aiomqtt.Client, slot: int, request_id: str | None = None
-    ):
-        """Run ice dispense sequence with realistic hardware transitions.
+    # --- Profile execution (plan: dispenser profiles, Task 5) ---------------
 
-        `request_id` (2026-09-29 completion-table amendment) is echoed on
-        every `hardware/dispenser` report when this run was reached through
-        the command channel (`_handle_dispense`), so
-        `services/command_dispatcher.py` can correlate the terminal one to
-        the command it is waiting on. A production `cmd/dispense` sale
-        (`_customer_loop` -> `_dispense_slot`) never passes one, so it stays
-        `None` there — exactly the default before this field existed.
+    @staticmethod
+    def _accessory_span(
+        accessory: Accessory, step_names: tuple[str, ...]
+    ) -> tuple[str, str]:
+        """The (first, last) step name this accessory is active for --
+        `["all"]` spans the whole run; otherwise the earliest and latest
+        of its own `on_during` entries in step order."""
+        if accessory.on_during == ["all"]:
+            return step_names[0], step_names[-1]
+        present = [s for s in step_names if s in accessory.on_during]
+        return present[0], present[-1]
+
+    async def _execute_profile(
+        self,
+        client: aiomqtt.Client,
+        cmd: DispenseCommand,
+        request_id: str | None = None,
+    ) -> None:
+        """Run the slot's full dispense profile and publish every step and
+        the terminal outcome on `hardware/dispenser`.
+
+        Replaces `_dispense_slot`/`_run_ice_dispense`/`_run_water_dispense`
+        now that the VMC sends the slot's whole validated profile on the
+        command channel instead of a bare slot number on the old,
+        now-deleted dedicated dispense topic.
+        `request_id` is the triggering `SubsystemCommand`'s own id (passed
+        separately from `cmd`, a `DispenseCommand`, which has no such
+        field of its own) so `DispenserStatus.request_id` can echo it, the
+        same role it played for `_run_ice_dispense`/`_run_water_dispense`.
+
+        Accessory handling: each accessory turns on, blocking this
+        sequence for its own `lead_seconds`, the moment this run first
+        reaches a step in its `on_during` (or immediately, for `["all"]`)
+        -- that keeps "fan on before fill starts" a deterministic
+        ordering, rather than a race against a concurrent task. Turning an
+        accessory back off after its last relevant step is a background
+        task (its `lag_seconds` delay must not hold up the rest of the
+        sequence); every such task is cancelled and every accessory
+        channel this run turned on is forced off in the `finally` below,
+        so a failed or short-circuited run never leaves a fan or light on.
         """
+        profile = cmd.profile
+        slot = cmd.slot
         active = self._active_fault_names
 
+        step_names = (
+            _BAGGED_ICE_STEPS if profile.mechanism == "bagged_ice" else _WATER_STEPS
+        )
+        spans = {
+            name: self._accessory_span(accessory, step_names)
+            for name, accessory in profile.accessories.items()
+        }
+        accessory_on: set[str] = set()
+        accessory_tasks: list[asyncio.Task] = []
+        driven_on: set[str] = set()
+
+        async def _drive_on(channel: str) -> None:
+            await self._set_hw(client, channel, True)
+            driven_on.add(channel)
+
+        async def _drive_off(channel: str) -> None:
+            await self._set_hw(client, channel, False)
+            driven_on.discard(channel)
+
+        async def _turn_off_later(channel: str, lag_seconds: float) -> None:
+            await self._sleep(lag_seconds)
+            await self._set_hw(client, channel, False)
+            accessory_on.discard(channel)
+
+        async def _enter_step(step: str) -> None:
+            for name, accessory in profile.accessories.items():
+                first, _last = spans[name]
+                if first == step and accessory.channel not in accessory_on:
+                    await self._set_hw(client, accessory.channel, True)
+                    accessory_on.add(accessory.channel)
+                    await self._sleep(accessory.lead_seconds)
+
+        def _exit_step(step: str) -> None:
+            for name, accessory in profile.accessories.items():
+                _first, last = spans[name]
+                if last == step and accessory.channel in accessory_on:
+                    task = asyncio.get_running_loop().create_task(
+                        _turn_off_later(accessory.channel, accessory.lag_seconds)
+                    )
+                    accessory_tasks.append(task)
+
+        async def _publish_step(step: str) -> None:
+            await self.publish(
+                client,
+                "hardware/dispenser",
+                DispenserStatus(slot=slot, state=step, request_id=request_id),
+            )
+
+        outcome: DispenserOutcome
+        detail: str | None
+
+        try:
+            if profile.mechanism == "bagged_ice":
+                outcome, detail = await self._run_bagged_ice(
+                    client,
+                    profile,
+                    active,
+                    _enter_step,
+                    _exit_step,
+                    _drive_on,
+                    _drive_off,
+                    _publish_step,
+                )
+            else:
+                outcome, detail = await self._run_water_fill(
+                    client,
+                    profile,
+                    active,
+                    _enter_step,
+                    _exit_step,
+                    _drive_on,
+                    _drive_off,
+                    _publish_step,
+                )
+        finally:
+            # `water_valve_stuck_open` deliberately leaves the valve/flow
+            # sensor energised (its own on_activate already did this,
+            # independent of any particular run) -- every other output
+            # this run drove gets turned off, including on a failed run.
+            if "water_valve_stuck_open" not in active:
+                for channel in list(driven_on):
+                    await self._set_hw(client, channel, False)
+            for task in accessory_tasks:
+                task.cancel()
+            for task in accessory_tasks:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            for channel in list(accessory_on):
+                await self._set_hw(client, channel, False)
+
         await self.publish(
             client,
             "hardware/dispenser",
-            DispenserStatus(slot=slot, state="motor_active", request_id=request_id),
+            DispenserStatus(
+                slot=slot, state=outcome.value, request_id=request_id, detail=detail
+            ),
         )
 
-        # Ice bin empty: report immediately and abort
+    async def _run_bagged_ice(
+        self,
+        client: aiomqtt.Client,
+        profile,
+        active: set[str],
+        enter_step,
+        exit_step,
+        drive_on,
+        drive_off,
+        publish_step,
+    ) -> tuple[DispenserOutcome, str | None]:
+        """agitate -> fill -> release. Returns (outcome, detail)."""
         if "ice_bin_empty" in active:
-            await self._set_hw(client, "agitator_motor", False)
-            await self._set_hw(client, "fan", False)
-            await self.publish(
-                client,
-                "hardware/dispenser",
-                DispenserStatus(
-                    slot=slot,
-                    state=DispenserOutcome.bin_empty.value,
-                    request_id=request_id,
-                ),
+            # Checked before anything else is touched -- no accessory,
+            # motor, or publish happens on this path (plan resolution 2).
+            return DispenserOutcome.bin_empty, None
+
+        # --- agitate ---
+        await enter_step(DispenseStep.agitate.value)
+        await publish_step(DispenseStep.agitate.value)
+        agitate = profile.agitate
+        await drive_on(agitate.motor_channel)
+        if agitate.current_channel != "unmonitored":
+            await self._publish_current(
+                client, agitate.current_channel, _DEFAULT_CURRENT_AMPS
             )
-            logger.warning(f"[vending] Slot {slot}: ice bin empty")
-            return
-
-        # Start agitator and fan first
-        await self._set_hw(client, "agitator_motor", True)
-        await self._set_hw(client, "fan", True)
-        await asyncio.sleep(1.0)
-
-        # Start auger to fill bag
-        await self._set_hw(client, "auger_motor", True)
-        logger.info(f"[vending] Slot {slot}: auger running, filling bag")
-
-        if "auger_jam" in active:
-            # Auger runs but bag never fills — time out after 90 seconds
-            await asyncio.sleep(90.0)
-            await self._set_hw(client, "auger_motor", False)
-            await self._set_hw(client, "agitator_motor", False)
-            await self._set_hw(client, "fan", False)
-            await self.publish(
-                client,
-                "hardware/dispenser",
-                DispenserStatus(
-                    slot=slot,
-                    state=DispenserOutcome.timeout.value,
-                    request_id=request_id,
-                ),
+        if "motor_stall" in active:
+            amps = (
+                agitate.stall_current_amps + 1.0
+                if agitate.stall_current_amps != "unmonitored"
+                else _DEFAULT_STALL_AMPS
             )
-            logger.warning(f"[vending] Slot {slot}: auger jam — dispense timed out")
-            return
+            await drive_off(agitate.motor_channel)
+            exit_step(DispenseStep.agitate.value)
+            return DispenserOutcome.error, f"stall {amps:.1f} A"
+        await self._sleep(agitate.run_seconds)
+        await drive_off(agitate.motor_channel)
+        exit_step(DispenseStep.agitate.value)
 
-        # Wait for bag to fill (simulated)
-        fill_time = random.uniform(5.0, 12.0)
-        await asyncio.sleep(fill_time)
-
-        # Bag full sensor triggers
-        await self._set_hw(client, "bag_full_sensor", True)
-        await self._set_hw(client, "auger_motor", False)
-        logger.info(f"[vending] Slot {slot}: bag full")
-
-        await self.publish(
-            client,
-            "hardware/dispenser",
-            DispenserStatus(slot=slot, state="fill_complete", request_id=request_id),
-        )
-
-        await asyncio.sleep(0.5)
-
-        if "bag_drop_solenoid_stuck" in active:
-            # Solenoid fires but bag doesn't drop — bag_full_sensor stays True
-            await self._set_hw(client, "bag_drop_solenoid", True)
-            await asyncio.sleep(0.5)
-            # bag_full_sensor intentionally NOT cleared
-            await self._set_hw(client, "agitator_motor", False)
-            await self._set_hw(client, "fan", False)
-            await self.publish(
-                client,
-                "hardware/dispenser",
-                DispenserStatus(
-                    slot=slot, state=DispenserOutcome.jam.value, request_id=request_id
-                ),
-            )
-            logger.warning(f"[vending] Slot {slot}: bag drop solenoid stuck")
-            return
-
-        # Drop the bag normally
-        await self._set_hw(client, "bag_drop_solenoid", True)
-        await asyncio.sleep(0.5)
-        await self._set_hw(client, "bag_drop_solenoid", False)
-        await self._set_hw(client, "bag_full_sensor", False)
-        logger.info(f"[vending] Slot {slot}: bag dropped")
-
-        # Stop agitator and fan
-        await self._set_hw(client, "agitator_motor", False)
-        await self._set_hw(client, "fan", False)
-
-        await self.publish(
-            client,
-            "hardware/dispenser",
-            DispenserStatus(
-                slot=slot, state=DispenserOutcome.complete.value, request_id=request_id
-            ),
-        )
-        logger.info(f"[vending] Slot {slot}: ice dispense complete")
-
-    async def _run_water_dispense(
-        self, client: aiomqtt.Client, slot: int, request_id: str | None = None
-    ):
-        """Run water dispense sequence with valve and flow sensor.
-
-        See `_run_ice_dispense`'s docstring for what `request_id` is for.
-        """
-        await self.publish(
-            client,
-            "hardware/dispenser",
-            DispenserStatus(slot=slot, state="solenoid_open", request_id=request_id),
-        )
-
-        # Open valve
-        await self._set_hw(client, "water_valve_solenoid", True)
-        await self._set_hw(client, "water_flow_sensor", True)
-        logger.info(f"[vending] Slot {slot}: water valve open, dispensing")
-
-        # Simulate flow pulses
-        pulse_seconds = random.randint(5, 10)
-        for i in range(pulse_seconds):
-            await asyncio.sleep(1.0)
-            gallons_per_pulse = 0.1
-            self._water_flow_total += gallons_per_pulse
-            logger.debug(
-                f"[vending] Slot {slot}: flow total {self._water_flow_total:.1f} gal"
+        # --- fill ---
+        await enter_step(DispenseStep.fill.value)
+        await publish_step(DispenseStep.fill.value)
+        fill = profile.fill
+        await drive_on(fill.motor_channel)
+        if fill.current_channel != "unmonitored":
+            await self._publish_current(
+                client, fill.current_channel, _DEFAULT_CURRENT_AMPS
             )
 
-        if "water_valve_stuck_open" in self._active_fault_names:
-            # Valve does not close — hardware io already set to True in on_activate
-            # flow incrementing continues in _publish_sensors
-            logger.warning(
-                f"[vending] Slot {slot}: water valve stuck open after dispense"
-            )
-            await self.publish(
-                client,
-                "hardware/dispenser",
-                DispenserStatus(
-                    slot=slot,
-                    state=DispenserOutcome.complete.value,
-                    request_id=request_id,
-                ),
-            )
-            return
+        if isinstance(fill, IceFillBySensor):
+            if "auger_jam" in active:
+                await self._sleep(fill.max_run_seconds)
+                await drive_off(fill.motor_channel)
+                exit_step(DispenseStep.fill.value)
+                return DispenserOutcome.timeout, None
+            duration = min(6.0, fill.max_run_seconds / 2)
+            await self._sleep(duration)
+            await self._set_hw(client, fill.sensor_channel, True)
+        else:  # IceFillTimed
+            await self._sleep(fill.max_run_seconds)
+        await drive_off(fill.motor_channel)
+        exit_step(DispenseStep.fill.value)
 
-        # Close valve normally
-        await self._set_hw(client, "water_valve_solenoid", False)
-        await self._set_hw(client, "water_flow_sensor", False)
+        # --- release ---
+        await enter_step(DispenseStep.release.value)
+        await publish_step(DispenseStep.release.value)
+        release = profile.release
+        await drive_on(release.solenoid_channel)
+        await self._sleep(release.pulse_seconds)
+        await drive_off(release.solenoid_channel)
 
-        await self.publish(
-            client,
-            "hardware/dispenser",
-            DispenserStatus(
-                slot=slot, state=DispenserOutcome.complete.value, request_id=request_id
-            ),
-        )
-        logger.info(f"[vending] Slot {slot}: water dispense complete")
+        if isinstance(release, ReleaseBySensor):
+            if "bag_drop_solenoid_stuck" in active:
+                exit_step(DispenseStep.release.value)
+                return DispenserOutcome.jam, None
+            if "door_stuck_open" in active:
+                await self._set_hw(client, release.sensor_channel, True)
+                await self._sleep(release.close_timeout_seconds)
+                exit_step(DispenseStep.release.value)
+                return DispenserOutcome.door_open, None
+            await self._set_hw(client, release.sensor_channel, True)
+            await self._sleep(1.0)
+            await self._set_hw(client, release.sensor_channel, False)
+            if isinstance(fill, IceFillBySensor):
+                await self._set_hw(client, fill.sensor_channel, False)
 
-    async def _dispense_slot(
-        self, client: aiomqtt.Client, slot: int, request_id: str | None = None
-    ) -> None:
-        """Run the correct motor sequence for `slot`.
+        exit_step(DispenseStep.release.value)
+        return DispenserOutcome.complete, None
 
-        The single place that decides ice vs. water and runs it — both the
-        production `cmd/dispense` topic (via `_customer_loop`) and the
-        command channel's `dispense` handler (`_handle_dispense`) call this
-        instead of each carrying their own copy, so the two paths cannot
-        drift apart. `request_id` (see `_run_ice_dispense`'s docstring) is
-        `None` for the production path.
-        """
-        if self.slot_type(slot) == "water":
-            await self._run_water_dispense(client, slot, request_id=request_id)
-        else:
-            await self._run_ice_dispense(client, slot, request_id=request_id)
+    async def _run_water_fill(
+        self,
+        client: aiomqtt.Client,
+        profile,
+        active: set[str],
+        enter_step,
+        exit_step,
+        drive_on,
+        drive_off,
+        publish_step,
+    ) -> tuple[DispenserOutcome, str | None]:
+        """fill only. Returns (outcome, detail)."""
+        await enter_step(DispenseStep.fill.value)
+        await publish_step(DispenseStep.fill.value)
+        fill = profile.fill
+        await drive_on(fill.valve_channel)
+
+        if isinstance(fill, WaterFillByVolume):
+            await self._set_hw(client, fill.flow_sensor_channel, True)
+            if "no_water_flow" in active:
+                await self._set_hw(client, fill.flow_sensor_channel, False)
+                await self._sleep(fill.no_flow_grace_seconds)
+                await drive_off(fill.valve_channel)
+                exit_step(DispenseStep.fill.value)
+                return DispenserOutcome.no_flow, None
+            if "flow_runaway" in active:
+                await self._sleep(
+                    min(fill.max_fill_seconds, fill.no_flow_grace_seconds + 2.0)
+                )
+                await self._set_hw(client, fill.flow_sensor_channel, False)
+                await drive_off(fill.valve_channel)
+                exit_step(DispenseStep.fill.value)
+                return DispenserOutcome.over_dispense, None
+            duration = min(8.0, fill.max_fill_seconds / 2)
+            await self._sleep(duration)
+        else:  # WaterFillTimed
+            await self._sleep(fill.max_fill_seconds)
+
+        if "water_valve_stuck_open" in active:
+            # Valve/flow sensor stay energised (see _execute_profile's
+            # finally) -- matches the fault's existing effect.
+            exit_step(DispenseStep.fill.value)
+            return DispenserOutcome.complete, None
+
+        if isinstance(fill, WaterFillByVolume):
+            await self._set_hw(client, fill.flow_sensor_channel, False)
+        await drive_off(fill.valve_channel)
+        exit_step(DispenseStep.fill.value)
+        return DispenserOutcome.complete, None
 
     async def _handle_dispense(
         self, client: aiomqtt.Client, cmd: SubsystemCommand
     ) -> CommandOutcome:
-        """Command-channel `dispense`: same motor code as production `cmd/dispense`.
+        """Command-channel `dispense`: validate the slot's full profile and
+        run it via `_execute_profile`.
 
-        Completion-table amendment (2026-09-29): the ack means "accepted",
-        not "done" — `_dispense_slot` can legitimately run past
-        `ACK_TIMEOUT_SECONDS` (up to 90 s on the jam path), and a tech's
-        maintenance lease must stay held for the actuator's real lifetime,
-        not just until the motor starts. Acks `phase="accepted"`
-        immediately and runs the real motor sequence in the background
-        (`_spawn_background`); its own completion is the terminal
-        `hardware/dispenser` report `_dispense_slot` already publishes, now
-        carrying this `request_id` so
-        `services/command_dispatcher.py`'s `send_and_await_completion` can
-        correlate it — there is no second ack for this command (contrast
-        `_handle_water_valve`/`_handle_power_cycle`, which do use one).
+        Completion-table amendment (2026-09-29, carried over from the
+        pre-profile design): the ack means "accepted", not "done" --
+        `_execute_profile` can legitimately run well past
+        `ACK_TIMEOUT_SECONDS`. Acks `phase="accepted"` immediately and
+        runs the real sequence in the background (`_spawn_background`);
+        its own completion is the terminal `hardware/dispenser` report
+        `_execute_profile` already publishes, carrying this command's
+        `request_id` so `services/command_dispatcher.py` can correlate
+        it -- there is no second ack for this command.
 
-        Reached through `_handle_command`, so the "accepted" ack is cached
-        the same way any other ack is: a dispatcher retry (its own ack
-        lost, same request_id) replays the cached "accepted" ack instead of
-        starting a second motor cycle.
+        `COMMAND_PARAM_VALIDATORS["dispense"]` (contracts/common.py)
+        already validates `cmd.params` as a `DispenseCommand` before a
+        `SubsystemCommand` built through the real wire path
+        (`_command_loop`) can even exist, so a `ValidationError` here only
+        happens for a command built around that check (as the duplicate-
+        request-id and rejection tests in this file do, via
+        `SubsystemCommand.model_construct`) -- handled the same way
+        `_handle_water_valve`'s docstring describes for its own
+        defense-in-depth check: ack "rejected" with the validation
+        message, never raise.
         """
-        slot = cmd.params["slot"]
+        try:
+            dispense_cmd = DispenseCommand.model_validate(cmd.params)
+        except ValidationError as exc:
+            first_line = (
+                str(exc).splitlines()[0] if str(exc) else "invalid dispense params"
+            )
+            return CommandOutcome(status="rejected", detail=first_line)
+
         self._spawn_background(
-            self._dispense_slot(client, slot, request_id=cmd.request_id)
+            self._execute_profile(client, dispense_cmd, request_id=cmd.request_id)
         )
-        return CommandOutcome(status="ok", result={"slot": slot}, phase="accepted")
+        return CommandOutcome(
+            status="ok",
+            result={"slot": dispense_cmd.slot, "mechanism": dispense_cmd.mechanism},
+            phase="accepted",
+        )
 
     async def _handle_water_valve(
         self, client: aiomqtt.Client, cmd: SubsystemCommand
@@ -681,20 +930,20 @@ class VendingMachineSimulator(ESP32Simulator):
             status="ok", result={"seconds": seconds}, phase="accepted"
         )
 
-    async def _listen_for_commands(self, client: aiomqtt.Client):
-        """Read dispense commands from the subscription queue."""
-        topic = f"{self.topic_prefix}/cmd/dispense"
-        cmd_queue = await self.subscribe(client, topic)
-        logger.info(f"[vending] Listening for dispense commands on {topic}")
-        while True:
-            _topic, data = await cmd_queue.get()
-            slot = data.get("slot")
-            if slot is not None:
-                logger.info(f"[vending] Received dispense command for slot {slot}")
-                await self._dispense_command.put(slot)
-
     async def _customer_loop(self, client: aiomqtt.Client):
-        """Simulate customers pressing buttons and waiting for dispense."""
+        """Simulate customers pressing buttons.
+
+        Production dispensing now arrives entirely through the command
+        channel (`cmd/vending`, `_handle_command` -> `_handle_dispense` ->
+        `_execute_profile`), running concurrently via `_command_loop` --
+        this loop no longer waits for, or itself runs, a dispense. It only
+        generates the button-press traffic a real customer would (plus the
+        occasional change-of-mind second press); the old "wait on the
+        legacy dispense topic, then vend, maybe vend again" tail -- the
+        impatient-customer timeout and the repeat-customer purchase --
+        depended entirely on that now-deleted topic/queue and is gone
+        with it.
+        """
         warned_no_products = False
         while True:
             if self.num_buttons == 0:
@@ -705,10 +954,9 @@ class VendingMachineSimulator(ESP32Simulator):
                     warned_no_products = True
                 self.config = self.load_config(self._config_path)
                 if self.config.products:
-                    self._apply_products(self.config.products)
+                    self.num_buttons = len(self.config.products)
                     logger.info(
-                        f"[vending] Products loaded: {self.num_buttons} products: "
-                        f"{self._slot_types}"
+                        f"[vending] Products loaded: {self.num_buttons} products"
                     )
                 await asyncio.sleep(self.IDLE_MIN)
                 continue
@@ -735,48 +983,10 @@ class VendingMachineSimulator(ESP32Simulator):
                         f"[vending] Indecisive customer changed to button {button}"
                     )
 
-            # Impatient customer (15%): shorter timeout
-            timeout = (
-                random.uniform(10.0, 20.0)
-                if random.random() < 0.15
-                else self.DISPENSE_TIMEOUT
-            )
-
-            try:
-                slot = await asyncio.wait_for(
-                    self._dispense_command.get(),
-                    timeout=timeout,
-                )
-            except asyncio.TimeoutError:
-                logger.info("[vending] Customer walked away")
-                continue
-
-            # Run the appropriate dispense sequence (shared with the command
-            # channel's `dispense` handler via `_dispense_slot`).
-            await self._dispense_slot(client, slot)
-
-            # Repeat customer (10%): buys again immediately
-            if random.random() < 0.10:
-                logger.info("[vending] Repeat customer buying again")
-                repeat_button = self._pick_button()
-                await self.publish(
-                    client, "hardware/buttons", ButtonPress(button=repeat_button)
-                )
-                logger.info(f"[vending] Repeat customer pressed button {repeat_button}")
-                try:
-                    slot = await asyncio.wait_for(
-                        self._dispense_command.get(),
-                        timeout=self.DISPENSE_TIMEOUT,
-                    )
-                    await self._dispense_slot(client, slot)
-                except asyncio.TimeoutError:
-                    logger.info("[vending] Repeat customer walked away")
-
     async def run_simulation(self, client: aiomqtt.Client):
         """Run the button press, sensor monitoring, and dispense simulation."""
         logger.info("[vending] Starting vending machine simulation")
         async with asyncio.TaskGroup() as tg:
-            tg.create_task(self._listen_for_commands(client))
             tg.create_task(self._customer_loop(client))
             tg.create_task(self._publish_sensors(client))
             tg.create_task(self._command_loop(client))
