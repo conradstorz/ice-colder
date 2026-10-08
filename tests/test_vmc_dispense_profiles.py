@@ -552,6 +552,38 @@ async def test_unexpected_dispatch_error_fails_vend_immediately(tmp_path):
     vmc.cancel_pending_tasks()
 
 
+class FakeSessionStore:
+    """Stub session store that raises an error on save_async."""
+
+    def load(self):
+        return None
+
+    async def save_async(self, snap):
+        raise OSError("disk full")
+
+
+async def test_snapshot_save_failure_fails_vend_immediately(tmp_path):
+    """A disk-full or permission error during snapshot save must fail the vend
+    right away with PAY-102, not leave the FSM stuck in `dispensing` for the
+    full 120s dispense-timeout fallback."""
+    vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    rec = FakeEventRecorder()
+    vmc.set_event_recorder(rec)
+    vmc.set_session_store(FakeSessionStore())
+    product = vmc.products[0]
+    price = product.price
+    _start_sale(vmc, product)
+
+    await asyncio.sleep(0)
+
+    assert vmc.state == "interacting_with_user"
+    assert vmc.credit_escrow == price
+    assert any(e[0] == "vend_failed" and e[2]["code"] == "PAY-102" for e in rec.events)
+    assert vmc._dispense_timeout_task is None
+    assert dispatcher.sent == []
+    vmc.cancel_pending_tasks()
+
+
 async def test_late_no_ack_from_previous_sale_does_not_fail_current_sale(tmp_path):
     """A `CommandTimeout` that finally lands for sale A's dispatch, after A
     already settled through the real hardware report and sale B has since
@@ -593,4 +625,5 @@ async def test_late_no_ack_from_previous_sale_does_not_fail_current_sale(tmp_pat
     assert not any(
         e[0] == "vend_failed" and e[2]["code"] == "PAY-102" for e in rec.events
     )
+    assert vmc._dispense_timeout_task is not None
     vmc.cancel_pending_tasks()

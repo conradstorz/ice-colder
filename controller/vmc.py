@@ -1648,11 +1648,12 @@ class VMC:
         # names the dispatch this call is actually performing, even if a
         # later sale bumps self._sale_seq again before this one resolves.
         seq = self._sale_seq
-        if snap is not None and self._session_store is not None:
-            if FaultCode.PAY_104 not in self._machine_faults:
-                await self._session_store.save_async(snap)
 
         try:
+            if snap is not None and self._session_store is not None:
+                if FaultCode.PAY_104 not in self._machine_faults:
+                    await self._session_store.save_async(snap)
+
             if self._command_dispatcher is None:
                 logger.error(
                     "VMC: no command dispatcher attached; cannot send "
