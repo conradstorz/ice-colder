@@ -1,0 +1,10 @@
+{
+  "description": "Intermediate steps a board reports mid-dispense, published as\nDispenserStatus.state before the terminal DispenserOutcome. A\nwater-fill slot only ever emits `fill`; a bagged-ice slot emits all\nthree, in order.",
+  "enum": [
+    "agitate",
+    "fill",
+    "release"
+  ],
+  "title": "DispenseStep",
+  "type": "string"
+}

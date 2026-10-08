@@ -16,8 +16,7 @@ All topics are relative to `vmc/{machine_id}/`.
 
 | Topic | Direction | Payload | Notes |
 |---|---|---|---|
-| `hardware/dispenser` | ESP32 → VMC | `DispenserStatus` (`services/mqtt_messages.py`) | `state` is a [`DispenserOutcome`](schemas/dispenser_outcome.schema.json) for terminal states; any other string is an intermediate step. `request_id` (v0.6.0, optional) echoes the command-channel `dispense` request this run answers — always `null`/absent for a production `cmd/dispense` sale, which has no `request_id` to carry |
-| `cmd/dispense` | VMC → ESP32 | as production, for real sales | unchanged; each dispense publishes `hardware/dispenser` with the outcome |
+| `hardware/dispenser` | ESP32 → VMC | `DispenserStatus` (`services/mqtt_messages.py`) | `state` is a [`DispenserOutcome`](schemas/dispenser_outcome.schema.json) for terminal states, or a [`DispenseStep`](schemas/dispense_step.schema.json) (`agitate`/`fill`/`release`) for an intermediate step. `request_id` (v0.6.0) echoes the command-channel `dispense` request for both test runs and production sales (v0.8.0: production sales moved onto the command channel too — see `cmd/vending` below). `detail` (v0.8.0, optional) carries board-supplied text, e.g. `"stall 4.2 A"` or `"412 pulses"` |
 | `cmd/payment/refund` | VMC → gateway | [`PaymentRefundCommand`](schemas/payment_refund_command.schema.json) | QoS 1; `request_id` unique per refund |
 | `cmd/payment/refund/ack` | gateway → VMC | [`PaymentRefundResult`](schemas/payment_refund_result.schema.json) | QoS 1; exactly one per command; repeated `request_id` re-sends the stored result, never pays twice |
 | `cmd/payment/enable` | VMC → gateway | `PaymentEnableCommand {accept: bool}` | QoS 1; not retained; the VMC republishes on connect and whenever the `mdb` subsystem returns |
@@ -56,7 +55,7 @@ The fix adds a **second, independent timeout**, and a field on the ack that says
 | vending | `ping` | immediate | the ack itself | — (10 s ack deadline only) |
 | vending | `self_test` | immediate | the ack itself | — |
 | vending | `force_report` | immediate | the ack itself | — |
-| vending | `dispense` | **long-running** | the existing terminal `hardware/dispenser` report (`DispenserStatus`, `state` one of `complete`/`bin_empty`/`timeout`/`jam`/`error`), now carrying this command's `request_id` | **fixed 120 s** — no duration parameter to derive from; a fixed margin over the worst case (the 90 s auger-jam path) |
+| vending | `dispense` | **long-running** | the existing terminal `hardware/dispenser` report (`DispenserStatus`, `state` a `DispenserOutcome`: `complete`/`bin_empty`/`timeout`/`jam`/`error`/`door_open`/`no_flow`/`over_dispense`), now carrying this command's `request_id` | **fixed 120 s** — no duration parameter to derive from; a fixed margin over the worst case (the 90 s auger-jam path) |
 | vending | `water_valve` | **long-running** | a SECOND ack on `cmd/vending/ack`, same `request_id`, `phase="completed"` | `seconds` (param, 1–10) **+ 5 s margin** → 6–15 s |
 | mdb | `ping` | immediate | the ack itself | — |
 | mdb | `self_test` | immediate | the ack itself | — |
@@ -67,13 +66,13 @@ The fix adds a **second, independent timeout**, and a field on the ack that says
 | ice_maker | `power_cycle` | **long-running** | a SECOND ack on `cmd/ice_maker/ack`, same `request_id`, `phase="completed"` | `dwell_seconds` (param, 5–300) **+ 30 s margin** → 35–330 s (see [ice-maker-monitor CONTRACT.md](../ice-maker-monitor/CONTRACT.md)) |
 | ice_maker | `ping` / `self_test` / `force_report` | immediate | the ack itself | — |
 
-`dispense`'s completion channel was deliberately kept as the existing `hardware/dispenser` report — spec-mandated, and already exactly what a production `cmd/dispense` sale publishes ("as in a sale") — rather than inventing a second ack, since that report already IS the ground truth for whether the motor finished. `water_valve` and `power_cycle` instead use a second ack on the same topic and `request_id` they already ack on: no new topic or payload shape is needed, and the existing idempotency cache (below) already keys on `request_id`, so a subsystem only has to re-cache the newer (completed) ack over the accepted one it cached first — a duplicate `request_id` arriving after completion then correctly replays the FINAL outcome, not "accepted" forever.
+`dispense`'s completion channel was deliberately kept as the existing `hardware/dispenser` report — spec-mandated, and already exactly what a production sale publishes, test run or not (v0.8.0: there is no longer a separate production path) — rather than inventing a second ack, since that report already IS the ground truth for whether the motor finished. `water_valve` and `power_cycle` instead use a second ack on the same topic and `request_id` they already ack on: no new topic or payload shape is needed, and the existing idempotency cache (below) already keys on `request_id`, so a subsystem only has to re-cache the newer (completed) ack over the accepted one it cached first — a duplicate `request_id` arriving after completion then correctly replays the FINAL outcome, not "accepted" forever.
 
 **Why `water_valve`'s and `power_cycle`'s completion timeouts scale with their own parameter, not a fixed constant:** `power_cycle`'s `dwell_seconds` can legitimately be as long as 300 seconds (the monitor's own re-trigger lockout window) — a fixed 120-second completion timeout would spuriously fail a completely legitimate 300-second dwell. The same reasoning applies to `water_valve`'s `seconds` (1–10): the timeout must always exceed the longest legitimate real duration of the command by a comfortable margin, or a slow-but-correct actuator gets flagged as failed.
 
-### Production topics are unchanged
+### Production sales use the command channel (v0.8.0)
 
-**This is the sentence to read first.** The VMC keeps publishing `cmd/dispense` for real sales and `cmd/payment/enable` / `cmd/payment/refund` exactly as before. The command channel is purely additive: firmware that ignores it keeps vending and simply advertises no tests (`SubsystemCapabilities.commands` stays empty).
+**This is the sentence to read first.** A production sale is sent on the command channel (`cmd/vending`, command `dispense`) exactly like a test run; `cmd/dispense` is no longer published. `cmd/payment/enable` / `cmd/payment/refund` are unchanged. A board that only ever answered the legacy bare `cmd/dispense` topic must be updated to the command channel to keep selling ice or water.
 
 ### Idempotency requirement on real firmware
 
@@ -91,7 +90,7 @@ An unknown command answered with status `unsupported`.
 
 ### Vending-specific commands
 
-- **`dispense`** — parameters: `{slot: int}`. Runs the slot's motor one cycle, publishing `hardware/dispenser` with the outcome, identical to a production `cmd/dispense` sale. Reached through the command channel so it is acked and idempotent, unlike the bare production `cmd/dispense` topic. **Long-running (v0.6.0): acks `phase="accepted"` as soon as the motor cycle actually starts, then runs it; completion is the terminal `hardware/dispenser` report — see the completion table above.**
+- **`dispense`** — parameters: [`DispenseCommand`](schemas/dispense_command.schema.json): `{slot: int, mechanism: "bagged_ice" | "water_fill", profile: <SlotProfile>}` — all three required, no defaults; `profile` is the slot's whole validated [`SlotProfile`](schemas/slot_profile.schema.json) (`services/dispenser_schema.py`), carried with every dispense so the board is stateless about configuration. `profile.mechanism` must equal `mechanism` or the payload is rejected. Runs the slot's mechanism one cycle, publishing `hardware/dispenser` with the outcome — identical whether this is a test run or a production sale (v0.8.0: there is no longer a separate production path). Acked and idempotent, like every other command channel command. **Long-running (v0.6.0): acks `phase="accepted"` as soon as the mechanism actually starts, then runs it; completion is the terminal `hardware/dispenser` report — see the completion table above.**
 - **`water_valve`** — parameters: `{seconds: int, range 1–10}`. Opens the water valve for the specified duration. Validation failure (`seconds` outside [1, 10]) returns ack status `rejected` with detail message. **Long-running (v0.6.0): acks `phase="accepted"` once the valve has actually opened, then a second, `phase="completed"` ack once it has closed again — see the completion table above.**
 
 ### MDB-specific commands
@@ -116,9 +115,57 @@ A command whose parameters fail the contract's bounds (e.g., `water_valve` with 
 - Neither `CFG-101` nor `CFG-102` appears in `PAYMENT_BLOCKING_FAULTS`, so
   a missing or bad-profile slot locks only that product, never payment
   machine-wide.
-- This section (`0.8.0`) is reserved for additive extensions of the
-  dispenser-profiles feature -- further message types or fault codes added
-  under the same version, never a breaking change.
+- **`DispenseCommand`** (`services/mqtt_messages.py`) is the `dispense`
+  command's params: `{slot: int (ge=0), mechanism: "bagged_ice" |
+  "water_fill", profile: SlotProfile}` — all three required, no defaults.
+  `profile` is the slot's whole validated `SlotProfile`
+  (`services/dispenser_schema.py`, plan 1), so the board is stateless
+  about configuration and a `dispensers.toml` save mid-vend cannot affect
+  an in-flight command. A payload whose `profile.mechanism` does not
+  match `mechanism` is rejected.
+- **`DispenseStep`** (`agitate`, `fill`, `release`) lists the intermediate
+  `hardware/dispenser` states this contract's boards emit before a
+  terminal `DispenserOutcome`. Water-fill slots only ever emit `fill`.
+- **`DispenserOutcome`** gains three terminal states: `door_open`
+  (release completed but the door sensor never reported closed within
+  `close_timeout_seconds` — this is a **successful vend for the
+  customer**, since the bag did drop, but raises the critical, never
+  auto-clearing `ICE-402`), `no_flow` (water: no flow after the valve
+  opened), and `over_dispense` (water: flow continued past the target
+  volume by more than `over_dispense_percent`).
+- **`OUTCOME_FAULTS`** is now keyed by `(mechanism, outcome)`, and
+  `fault_for_outcome(mechanism, outcome)` is the only reader — it raises
+  `KeyError` naming both when the pair has no mapping (`complete` is
+  never mapped):
+
+  | mechanism | outcome | fault |
+  |---|---|---|
+  | bagged_ice | timeout | ICE-301 |
+  | bagged_ice | error | ICE-302 |
+  | bagged_ice | jam | ICE-401 |
+  | bagged_ice | door_open | ICE-402 |
+  | water_fill | no_flow | WTR-101 |
+  | water_fill | over_dispense | WTR-102 |
+  | water_fill | timeout | WTR-101 |
+  | water_fill | error | ICE-302 |
+  | bagged_ice | bin_empty | ICE-101 |
+  | water_fill | bin_empty | ICE-101 |
+
+  `ICE-302` is reused for a water-fill `error` because the board reports
+  a generic actuator fault either way; its description is now mechanism-
+  agnostic: "Dispense actuator fault reported by the board (motor stall,
+  valve driver, over-current)" (was "Dispense/agitator motor fault").
+  Severity and scope are unchanged.
+- **`DispenserStatus.detail`** (optional) carries board-supplied text for
+  a terminal report, e.g. `"stall 4.2 A"` or `"412 pulses"`.
+  **`DispenserStatus.request_id`** now echoes the command-channel
+  `dispense` request for both test runs and production sales — not test
+  runs only, as before 0.8.0 — because production sales move onto the
+  command channel in this version (next bullet). The VMC logs a mismatch
+  but keys completion on `slot` and FSM state, never on this field.
+- A production sale is sent on the command channel (`cmd/vending`,
+  command `dispense`) exactly like a test run; `cmd/dispense` is no
+  longer published.
 
 ## Semantics fixed in 0.7.0
 
@@ -151,9 +198,12 @@ A command whose parameters fail the contract's bounds (e.g., `water_valve` with 
 
 ## Semantics fixed in 0.5.0
 
-- The VMC finishes a sale only on `DispenserOutcome.complete` for the slot
-  it commanded. `bin_empty`, `timeout`, `jam`, `error` end the sale as a
-  failed vend and raise the fault in `OUTCOME_FAULTS`.
+- The VMC finishes a sale on `DispenserOutcome.complete` or `door_open`
+  for the slot it commanded (v0.8.0: `door_open` is also a successful
+  vend, see above). `bin_empty`, `timeout`, `jam`, `error`, `no_flow`,
+  `over_dispense` end the sale as a failed vend and raise the fault from
+  `fault_for_outcome(mechanism, outcome)` (v0.8.0: mechanism-aware; see
+  the "Semantics fixed in 0.8.0" table).
 - No terminal report within the VMC's configured dispense timeout is a
   failed vend (`PAY-102`).
 - Refund ack deadline is 10 s; the VMC retries once with the same

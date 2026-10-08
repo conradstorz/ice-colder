@@ -14,7 +14,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 CHANNEL_ID_PATTERN = r"^[a-z0-9_]{1,64}$"
 
@@ -81,10 +81,23 @@ def _validate_water_valve(params: dict) -> None:
         raise ValueError("water_valve requires seconds in [1, 10]")
 
 
+def _validate_dispense_params(params: dict) -> None:
+    # Lazy import: services/mqtt_messages.py imports contracts.vending_machine
+    # (and, through services.dispenser_schema, contracts.common), so a
+    # module-level import here would be a contracts -> services cycle.
+    from services.mqtt_messages import DispenseCommand
+
+    try:
+        DispenseCommand.model_validate(params)
+    except ValidationError as exc:
+        raise ValueError(str(exc)) from exc
+
+
 COMMAND_PARAM_VALIDATORS: dict[str, Callable[[dict], None]] = {
     "power_cycle": _validate_power_cycle,
     "set_interval": _validate_set_interval,
     "water_valve": _validate_water_valve,
+    "dispense": _validate_dispense_params,
 }
 
 

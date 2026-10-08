@@ -1,0 +1,624 @@
+{
+  "$defs": {
+    "Accessory": {
+      "additionalProperties": false,
+      "description": "A device that runs alongside a slot's main steps -- a cooling fan,\nan indicator light, an auger-clearing blower -- rather than performing\nthe dispense itself.\n\n`on_during` names which of the owning mechanism's steps this accessory\nshould be active for; this class only checks that the list makes sense\non its own (no duplicates, and `\"all\"` never mixed with named steps) --\nchecking the names against the owning mechanism's actual step names\nhappens in that profile's own model validator, since `Accessory` alone\ndoes not know which mechanism it belongs to.",
+      "properties": {
+        "channel": {
+          "description": "The channel that drives this accessory.",
+          "pattern": "^[a-z0-9_]{1,64}$",
+          "title": "Channel",
+          "type": "string"
+        },
+        "on_during": {
+          "description": "Which steps this accessory runs during, by name, or [\"all\"] to run for the whole slot cycle.",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "On During",
+          "type": "array"
+        },
+        "lead_seconds": {
+          "description": "How long before its step(s) start this accessory turns on.",
+          "maximum": 30.0,
+          "minimum": 0.0,
+          "title": "Lead Seconds",
+          "type": "number",
+          "unit": "s"
+        },
+        "lag_seconds": {
+          "description": "How long after its step(s) end this accessory stays on.",
+          "maximum": 30.0,
+          "minimum": 0.0,
+          "title": "Lag Seconds",
+          "type": "number",
+          "unit": "s"
+        }
+      },
+      "required": [
+        "channel",
+        "on_during",
+        "lead_seconds",
+        "lag_seconds"
+      ],
+      "title": "Accessory",
+      "type": "object"
+    },
+    "AgitateStep": {
+      "additionalProperties": false,
+      "description": "The agitate step of a bagged-ice slot: breaks up clumped ice before\nit is fed toward the release gate.",
+      "properties": {
+        "stall_current_amps": {
+          "anyOf": [
+            {
+              "maximum": 50.0,
+              "minimum": 0.1,
+              "type": "number"
+            },
+            {
+              "const": "unmonitored",
+              "type": "string"
+            }
+          ],
+          "description": "Motor current above which the board should treat the motor as stalled and stop driving it, or \"unmonitored\" if this board has no current sensor.",
+          "title": "Stall Current Amps",
+          "unit": "A"
+        },
+        "current_channel": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9_]{1,64}$",
+              "type": "string"
+            },
+            {
+              "const": "unmonitored",
+              "type": "string"
+            }
+          ],
+          "description": "The telemetry channel that reports this motor's current draw, or \"unmonitored\" if this board has no current sensor.",
+          "title": "Current Channel"
+        },
+        "motor_channel": {
+          "description": "The channel that drives the agitator motor.",
+          "pattern": "^[a-z0-9_]{1,64}$",
+          "title": "Motor Channel",
+          "type": "string"
+        },
+        "run_seconds": {
+          "description": "How long the agitator motor runs for this step.",
+          "maximum": 60.0,
+          "minimum": 0.5,
+          "title": "Run Seconds",
+          "type": "number",
+          "unit": "s"
+        }
+      },
+      "required": [
+        "stall_current_amps",
+        "current_channel",
+        "motor_channel",
+        "run_seconds"
+      ],
+      "title": "AgitateStep",
+      "type": "object"
+    },
+    "BaggedIceProfile": {
+      "additionalProperties": false,
+      "description": "A bagged-ice dispense slot: agitate, then fill, then release.",
+      "properties": {
+        "mechanism": {
+          "const": "bagged_ice",
+          "description": "This slot dispenses pre-bagged ice.",
+          "title": "Mechanism",
+          "type": "string"
+        },
+        "product_sku": {
+          "description": "The product SKU this slot dispenses.",
+          "minLength": 1,
+          "title": "Product Sku",
+          "type": "string"
+        },
+        "agitate": {
+          "$ref": "#/$defs/AgitateStep",
+          "description": "How this slot breaks up clumped ice before filling."
+        },
+        "fill": {
+          "description": "How this slot feeds ice toward the release gate.",
+          "discriminator": {
+            "mapping": {
+              "bag_full_sensor": "#/$defs/IceFillBySensor",
+              "timed": "#/$defs/IceFillTimed"
+            },
+            "propertyName": "proof"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/IceFillBySensor"
+            },
+            {
+              "$ref": "#/$defs/IceFillTimed"
+            }
+          ],
+          "title": "Fill"
+        },
+        "release": {
+          "description": "How this slot opens and closes its release gate.",
+          "discriminator": {
+            "mapping": {
+              "door_sensor": "#/$defs/ReleaseBySensor",
+              "timed": "#/$defs/ReleaseTimed"
+            },
+            "propertyName": "proof"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ReleaseBySensor"
+            },
+            {
+              "$ref": "#/$defs/ReleaseTimed"
+            }
+          ],
+          "title": "Release"
+        },
+        "accessories": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Accessory"
+          },
+          "description": "Devices that run alongside this slot's steps, by name.",
+          "title": "Accessories",
+          "type": "object"
+        }
+      },
+      "required": [
+        "mechanism",
+        "product_sku",
+        "agitate",
+        "fill",
+        "release"
+      ],
+      "title": "BaggedIceProfile",
+      "type": "object"
+    },
+    "IceFillBySensor": {
+      "additionalProperties": false,
+      "description": "The fill step of a bagged-ice slot, proven complete by a bag-full\nsensor rather than by elapsed time alone.",
+      "properties": {
+        "stall_current_amps": {
+          "anyOf": [
+            {
+              "maximum": 50.0,
+              "minimum": 0.1,
+              "type": "number"
+            },
+            {
+              "const": "unmonitored",
+              "type": "string"
+            }
+          ],
+          "description": "Motor current above which the board should treat the motor as stalled and stop driving it, or \"unmonitored\" if this board has no current sensor.",
+          "title": "Stall Current Amps",
+          "unit": "A"
+        },
+        "current_channel": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9_]{1,64}$",
+              "type": "string"
+            },
+            {
+              "const": "unmonitored",
+              "type": "string"
+            }
+          ],
+          "description": "The telemetry channel that reports this motor's current draw, or \"unmonitored\" if this board has no current sensor.",
+          "title": "Current Channel"
+        },
+        "proof": {
+          "const": "bag_full_sensor",
+          "description": "This fill step is proven complete by a sensor.",
+          "title": "Proof",
+          "type": "string"
+        },
+        "motor_channel": {
+          "description": "The channel that drives the auger/fill motor.",
+          "pattern": "^[a-z0-9_]{1,64}$",
+          "title": "Motor Channel",
+          "type": "string"
+        },
+        "sensor_channel": {
+          "description": "The channel that reports the bag as full.",
+          "pattern": "^[a-z0-9_]{1,64}$",
+          "title": "Sensor Channel",
+          "type": "string"
+        },
+        "max_run_seconds": {
+          "description": "The longest the fill motor is allowed to run before the VMC gives up on this step even if the bag-full sensor never fires.",
+          "maximum": 120.0,
+          "minimum": 1.0,
+          "title": "Max Run Seconds",
+          "type": "number",
+          "unit": "s"
+        }
+      },
+      "required": [
+        "stall_current_amps",
+        "current_channel",
+        "proof",
+        "motor_channel",
+        "sensor_channel",
+        "max_run_seconds"
+      ],
+      "title": "IceFillBySensor",
+      "type": "object"
+    },
+    "IceFillTimed": {
+      "additionalProperties": false,
+      "description": "The fill step of a bagged-ice slot, proven complete by elapsed time\nalone -- used when the slot has no bag-full sensor.",
+      "properties": {
+        "stall_current_amps": {
+          "anyOf": [
+            {
+              "maximum": 50.0,
+              "minimum": 0.1,
+              "type": "number"
+            },
+            {
+              "const": "unmonitored",
+              "type": "string"
+            }
+          ],
+          "description": "Motor current above which the board should treat the motor as stalled and stop driving it, or \"unmonitored\" if this board has no current sensor.",
+          "title": "Stall Current Amps",
+          "unit": "A"
+        },
+        "current_channel": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9_]{1,64}$",
+              "type": "string"
+            },
+            {
+              "const": "unmonitored",
+              "type": "string"
+            }
+          ],
+          "description": "The telemetry channel that reports this motor's current draw, or \"unmonitored\" if this board has no current sensor.",
+          "title": "Current Channel"
+        },
+        "proof": {
+          "const": "timed",
+          "description": "This fill step is proven complete by elapsed time.",
+          "title": "Proof",
+          "type": "string"
+        },
+        "motor_channel": {
+          "description": "The channel that drives the auger/fill motor.",
+          "pattern": "^[a-z0-9_]{1,64}$",
+          "title": "Motor Channel",
+          "type": "string"
+        },
+        "max_run_seconds": {
+          "description": "How long the fill motor runs for this step.",
+          "maximum": 120.0,
+          "minimum": 1.0,
+          "title": "Max Run Seconds",
+          "type": "number",
+          "unit": "s"
+        }
+      },
+      "required": [
+        "stall_current_amps",
+        "current_channel",
+        "proof",
+        "motor_channel",
+        "max_run_seconds"
+      ],
+      "title": "IceFillTimed",
+      "type": "object"
+    },
+    "ReleaseBySensor": {
+      "additionalProperties": false,
+      "description": "The release step of a bagged-ice slot, proven open and closed again\nby a door sensor rather than by elapsed time alone.",
+      "properties": {
+        "proof": {
+          "const": "door_sensor",
+          "description": "This release step is proven open/closed by a sensor.",
+          "title": "Proof",
+          "type": "string"
+        },
+        "solenoid_channel": {
+          "description": "The channel that drives the release-gate solenoid.",
+          "pattern": "^[a-z0-9_]{1,64}$",
+          "title": "Solenoid Channel",
+          "type": "string"
+        },
+        "sensor_channel": {
+          "description": "The channel that reports the release gate's state.",
+          "pattern": "^[a-z0-9_]{1,64}$",
+          "title": "Sensor Channel",
+          "type": "string"
+        },
+        "pulse_seconds": {
+          "description": "How long the solenoid is pulsed to open the gate.",
+          "maximum": 10.0,
+          "minimum": 0.1,
+          "title": "Pulse Seconds",
+          "type": "number",
+          "unit": "s"
+        },
+        "open_timeout_seconds": {
+          "description": "The longest the VMC waits for the door sensor to report open before treating the release as failed.",
+          "maximum": 30.0,
+          "minimum": 0.5,
+          "title": "Open Timeout Seconds",
+          "type": "number",
+          "unit": "s"
+        },
+        "close_timeout_seconds": {
+          "description": "The longest the VMC waits for the door sensor to report closed again before treating the release as failed.",
+          "maximum": 60.0,
+          "minimum": 0.5,
+          "title": "Close Timeout Seconds",
+          "type": "number",
+          "unit": "s"
+        }
+      },
+      "required": [
+        "proof",
+        "solenoid_channel",
+        "sensor_channel",
+        "pulse_seconds",
+        "open_timeout_seconds",
+        "close_timeout_seconds"
+      ],
+      "title": "ReleaseBySensor",
+      "type": "object"
+    },
+    "ReleaseTimed": {
+      "additionalProperties": false,
+      "description": "The release step of a bagged-ice slot, proven open and closed again\nby elapsed time alone -- used when the slot has no door sensor.",
+      "properties": {
+        "proof": {
+          "const": "timed",
+          "description": "This release step is proven open/closed by elapsed time.",
+          "title": "Proof",
+          "type": "string"
+        },
+        "solenoid_channel": {
+          "description": "The channel that drives the release-gate solenoid.",
+          "pattern": "^[a-z0-9_]{1,64}$",
+          "title": "Solenoid Channel",
+          "type": "string"
+        },
+        "pulse_seconds": {
+          "description": "How long the solenoid is pulsed to open the gate.",
+          "maximum": 10.0,
+          "minimum": 0.1,
+          "title": "Pulse Seconds",
+          "type": "number",
+          "unit": "s"
+        }
+      },
+      "required": [
+        "proof",
+        "solenoid_channel",
+        "pulse_seconds"
+      ],
+      "title": "ReleaseTimed",
+      "type": "object"
+    },
+    "WaterFillByVolume": {
+      "additionalProperties": false,
+      "description": "The fill step of a water slot, proven complete by a flow meter that\nmeasures the actual volume dispensed.",
+      "properties": {
+        "proof": {
+          "const": "flow_volume",
+          "description": "This fill step is proven complete by a flow meter.",
+          "title": "Proof",
+          "type": "string"
+        },
+        "valve_channel": {
+          "description": "The channel that drives the fill valve.",
+          "pattern": "^[a-z0-9_]{1,64}$",
+          "title": "Valve Channel",
+          "type": "string"
+        },
+        "flow_sensor_channel": {
+          "description": "The channel that reports flow-meter pulses.",
+          "pattern": "^[a-z0-9_]{1,64}$",
+          "title": "Flow Sensor Channel",
+          "type": "string"
+        },
+        "target_volume_ml": {
+          "description": "The volume this slot dispenses on a successful fill.",
+          "maximum": 50000.0,
+          "minimum": 50.0,
+          "title": "Target Volume Ml",
+          "type": "number",
+          "unit": "ml"
+        },
+        "pulses_per_liter": {
+          "description": "The flow meter's calibration constant.",
+          "exclusiveMinimum": 0.0,
+          "title": "Pulses Per Liter",
+          "type": "number",
+          "unit": "pulses/L"
+        },
+        "min_flow_ml_per_second": {
+          "description": "The slowest flow rate still considered \"flowing\"; below this, the no-flow grace timer starts.",
+          "exclusiveMinimum": 0.0,
+          "title": "Min Flow Ml Per Second",
+          "type": "number",
+          "unit": "ml/s"
+        },
+        "no_flow_grace_seconds": {
+          "description": "How long flow may stay below the minimum rate (a clogged valve, an empty supply) before the VMC treats the fill as failed.",
+          "maximum": 30.0,
+          "minimum": 0.5,
+          "title": "No Flow Grace Seconds",
+          "type": "number",
+          "unit": "s"
+        },
+        "over_dispense_percent": {
+          "description": "How far past the target volume the VMC tolerates (a sticking valve closing late) before treating the fill as a fault rather than a successful dispense.",
+          "maximum": 50.0,
+          "minimum": 0.0,
+          "title": "Over Dispense Percent",
+          "type": "number",
+          "unit": "%"
+        },
+        "max_fill_seconds": {
+          "description": "The longest the fill valve is allowed to stay open before the VMC gives up on this step even if the target volume was never reached.",
+          "maximum": 600.0,
+          "minimum": 1.0,
+          "title": "Max Fill Seconds",
+          "type": "number",
+          "unit": "s"
+        }
+      },
+      "required": [
+        "proof",
+        "valve_channel",
+        "flow_sensor_channel",
+        "target_volume_ml",
+        "pulses_per_liter",
+        "min_flow_ml_per_second",
+        "no_flow_grace_seconds",
+        "over_dispense_percent",
+        "max_fill_seconds"
+      ],
+      "title": "WaterFillByVolume",
+      "type": "object"
+    },
+    "WaterFillProfile": {
+      "additionalProperties": false,
+      "description": "A water dispense slot: fill, and nothing else.",
+      "properties": {
+        "mechanism": {
+          "const": "water_fill",
+          "description": "This slot dispenses water.",
+          "title": "Mechanism",
+          "type": "string"
+        },
+        "product_sku": {
+          "description": "The product SKU this slot dispenses.",
+          "minLength": 1,
+          "title": "Product Sku",
+          "type": "string"
+        },
+        "fill": {
+          "description": "How this slot fills the cup/bottle.",
+          "discriminator": {
+            "mapping": {
+              "flow_volume": "#/$defs/WaterFillByVolume",
+              "timed": "#/$defs/WaterFillTimed"
+            },
+            "propertyName": "proof"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/WaterFillByVolume"
+            },
+            {
+              "$ref": "#/$defs/WaterFillTimed"
+            }
+          ],
+          "title": "Fill"
+        },
+        "accessories": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Accessory"
+          },
+          "description": "Devices that run alongside this slot's steps, by name.",
+          "title": "Accessories",
+          "type": "object"
+        }
+      },
+      "required": [
+        "mechanism",
+        "product_sku",
+        "fill"
+      ],
+      "title": "WaterFillProfile",
+      "type": "object"
+    },
+    "WaterFillTimed": {
+      "additionalProperties": false,
+      "description": "The fill step of a water slot, proven complete by elapsed time alone\n-- used when the slot has no flow meter.",
+      "properties": {
+        "proof": {
+          "const": "timed",
+          "description": "This fill step is proven complete by elapsed time.",
+          "title": "Proof",
+          "type": "string"
+        },
+        "valve_channel": {
+          "description": "The channel that drives the fill valve.",
+          "pattern": "^[a-z0-9_]{1,64}$",
+          "title": "Valve Channel",
+          "type": "string"
+        },
+        "max_fill_seconds": {
+          "description": "How long the fill valve stays open for this step.",
+          "maximum": 600.0,
+          "minimum": 1.0,
+          "title": "Max Fill Seconds",
+          "type": "number",
+          "unit": "s"
+        }
+      },
+      "required": [
+        "proof",
+        "valve_channel",
+        "max_fill_seconds"
+      ],
+      "title": "WaterFillTimed",
+      "type": "object"
+    }
+  },
+  "description": "Command to dispense product from a slot, carrying the slot's whole\nvalidated profile so the board is stateless about configuration -- a\n`dispensers.toml` save mid-vend cannot affect an in-flight command.",
+  "properties": {
+    "slot": {
+      "description": "Slot to dispense from",
+      "minimum": 0,
+      "title": "Slot",
+      "type": "integer"
+    },
+    "mechanism": {
+      "description": "Dispense mechanism for this slot",
+      "enum": [
+        "bagged_ice",
+        "water_fill"
+      ],
+      "title": "Mechanism",
+      "type": "string"
+    },
+    "profile": {
+      "description": "The slot's full validated dispenser profile",
+      "discriminator": {
+        "mapping": {
+          "bagged_ice": "#/$defs/BaggedIceProfile",
+          "water_fill": "#/$defs/WaterFillProfile"
+        },
+        "propertyName": "mechanism"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/BaggedIceProfile"
+        },
+        {
+          "$ref": "#/$defs/WaterFillProfile"
+        }
+      ],
+      "title": "Profile"
+    }
+  },
+  "required": [
+    "slot",
+    "mechanism",
+    "profile"
+  ],
+  "title": "DispenseCommand",
+  "type": "object"
+}

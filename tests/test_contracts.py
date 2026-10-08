@@ -18,6 +18,8 @@ from contracts.common import (
 )
 from contracts.common import CommandAck as CommonCommandAck
 from contracts.common import SubsystemCommand
+from services.dispensers import validate_document
+from tests.dispenser_fixtures import GOOD, ICE, WATER
 
 
 class TestChannelDescriptor:
@@ -239,6 +241,32 @@ class TestSharedCommandChannelIdentity:
 
         assert ImportedCommand is SubsystemCommand
         assert ImportedAck is CommonCommandAck
+
+
+class TestDispenseParamsValidator:
+    """COMMAND_PARAM_VALIDATORS["dispense"] rejects a params dict that
+    doesn't carry a full DispenseCommand (mechanism, profile) and accepts
+    one that does."""
+
+    def test_rejects_bare_slot(self):
+        with pytest.raises(ValidationError):
+            SubsystemCommand(
+                request_id="req-12345678", command="dispense", params={"slot": 1}
+            )
+
+    def test_accepts_full_payload(self):
+        report = validate_document(GOOD, [ICE, WATER])
+        profile = report.profiles[1]
+        cmd = SubsystemCommand(
+            request_id="req-12345678",
+            command="dispense",
+            params={
+                "slot": 1,
+                "mechanism": "bagged_ice",
+                "profile": profile.model_dump(mode="json"),
+            },
+        )
+        assert cmd.command == "dispense"
 
 
 class TestTestableCommands:

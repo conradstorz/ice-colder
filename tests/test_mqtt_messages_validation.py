@@ -5,7 +5,9 @@ from pydantic import ValidationError
 
 from config.config_model import ConfigModel
 from controller.vmc import VMC
+from services.dispensers import validate_document
 from services.mqtt_messages import ButtonPress, DispenseCommand, PaymentEvent, VMCStatus
+from tests.dispenser_fixtures import GOOD, ICE, WATER
 
 
 class TestPaymentEventBounds:
@@ -30,9 +32,29 @@ class TestOtherMessageBounds:
         with pytest.raises(ValidationError):
             ButtonPress(button=-1)
 
-    def test_dispense_command_rejects_negative_slot(self):
+    def test_dispense_command_requires_mechanism_and_profile(self):
+        report = validate_document(GOOD, [ICE, WATER])
+        profile = report.profiles[1]
         with pytest.raises(ValidationError):
-            DispenseCommand(slot=-1)
+            DispenseCommand(slot=1)
+        with pytest.raises(ValidationError):
+            DispenseCommand(slot=1, mechanism="bagged_ice")
+        with pytest.raises(ValidationError):
+            DispenseCommand(slot=1, profile=profile)
+
+    def test_dispense_command_rejects_mechanism_profile_mismatch(self):
+        report = validate_document(GOOD, [ICE, WATER])
+        profile = report.profiles[1]  # bagged_ice
+        with pytest.raises(ValidationError):
+            DispenseCommand(slot=1, mechanism="water_fill", profile=profile)
+
+    def test_dispense_command_round_trips_profile(self):
+        report = validate_document(GOOD, [ICE, WATER])
+        profile = report.profiles[1]
+        cmd = DispenseCommand(slot=1, mechanism="bagged_ice", profile=profile)
+        dumped = cmd.model_dump(mode="json")
+        again = DispenseCommand.model_validate(dumped)
+        assert again == cmd
 
     def test_vmc_status_has_version(self):
         assert isinstance(VMCStatus(state="idle").version, str)

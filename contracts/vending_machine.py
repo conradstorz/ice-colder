@@ -13,7 +13,7 @@ bump; adding a FaultCode or an enum member is a minor bump.
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -55,8 +55,9 @@ CONTRACT_VERSION = "0.8.0"
 class DispenserOutcome(str, Enum):
     """Terminal states a dispense can end in, published as DispenserStatus.state.
 
-    Any other DispenserStatus.state string is an intermediate step
-    (motor_active, fill_complete, solenoid_open, ...) and never ends a sale.
+    Any other DispenserStatus.state string is an intermediate step --
+    DispenseStep (below) lists the ones this contract's boards emit
+    (agitate, fill, release) -- and never ends a sale.
     """
 
     complete = "complete"
@@ -64,6 +65,20 @@ class DispenserOutcome(str, Enum):
     timeout = "timeout"
     jam = "jam"
     error = "error"
+    door_open = "door_open"
+    no_flow = "no_flow"
+    over_dispense = "over_dispense"
+
+
+class DispenseStep(str, Enum):
+    """Intermediate steps a board reports mid-dispense, published as
+    DispenserStatus.state before the terminal DispenserOutcome. A
+    water-fill slot only ever emits `fill`; a bagged-ice slot emits all
+    three, in order."""
+
+    agitate = "agitate"
+    fill = "fill"
+    release = "release"
 
 
 class FaultCode(str, Enum):
@@ -145,7 +160,10 @@ FAULT_TABLE: dict[FaultCode, FaultSpec] = {
     FaultCode.ICE_302: FaultSpec(
         severity=Severity.lockout,
         scope=Scope.product,
-        description="Dispense/agitator motor fault",
+        description=(
+            "Dispense actuator fault reported by the board "
+            "(motor stall, valve driver, over-current)"
+        ),
     ),
     FaultCode.ICE_401: FaultSpec(
         severity=Severity.lockout,
@@ -304,13 +322,46 @@ PAYMENT_BLOCKING_FAULTS: frozenset[FaultCode] = frozenset(
     }
 )
 
-# Which fault a terminal dispenser outcome raises. `complete` is not a fault.
-OUTCOME_FAULTS: dict[DispenserOutcome, FaultCode] = {
-    DispenserOutcome.bin_empty: FaultCode.ICE_101,
-    DispenserOutcome.timeout: FaultCode.ICE_301,
-    DispenserOutcome.jam: FaultCode.ICE_401,
-    DispenserOutcome.error: FaultCode.ICE_302,
+# The two dispense mechanisms a slot profile can declare (plan 1,
+# services/dispenser_schema.py's SlotProfile discriminator). Kept here,
+# not imported from services, so contracts never depends on services.
+Mechanism = Literal["bagged_ice", "water_fill"]
+MECHANISMS: tuple[str, ...] = ("bagged_ice", "water_fill")
+
+# Which fault a terminal dispenser outcome raises, keyed by (mechanism,
+# outcome). `complete` is never a key -- fault_for_outcome raises KeyError
+# if asked for it. Not every (mechanism, outcome) combination appears:
+# `no_flow`/`over_dispense` are water-only outcomes and `jam`/`door_open`
+# are bagged-ice-only outcomes, matching what each mechanism's board can
+# actually report (spec §6.4). `bin_empty` maps to ICE-101 for both.
+OUTCOME_FAULTS: dict[tuple[str, DispenserOutcome], FaultCode] = {
+    ("bagged_ice", DispenserOutcome.timeout): FaultCode.ICE_301,
+    ("bagged_ice", DispenserOutcome.error): FaultCode.ICE_302,
+    ("bagged_ice", DispenserOutcome.jam): FaultCode.ICE_401,
+    ("bagged_ice", DispenserOutcome.door_open): FaultCode.ICE_402,
+    ("water_fill", DispenserOutcome.no_flow): FaultCode.WTR_101,
+    ("water_fill", DispenserOutcome.over_dispense): FaultCode.WTR_102,
+    ("water_fill", DispenserOutcome.timeout): FaultCode.WTR_101,
+    ("water_fill", DispenserOutcome.error): FaultCode.ICE_302,
+    ("bagged_ice", DispenserOutcome.bin_empty): FaultCode.ICE_101,
+    ("water_fill", DispenserOutcome.bin_empty): FaultCode.ICE_101,
 }
+
+
+def fault_for_outcome(mechanism: str, outcome: DispenserOutcome) -> FaultCode:
+    """Which fault a terminal dispenser outcome raises for one mechanism.
+
+    The only reader of OUTCOME_FAULTS -- callers must not index that dict
+    directly. `complete` is never mapped; raises KeyError naming both the
+    mechanism and the outcome when the pair has no mapping.
+    """
+
+    try:
+        return OUTCOME_FAULTS[(mechanism, outcome)]
+    except KeyError:
+        raise KeyError(
+            f"no fault mapped for mechanism {mechanism!r}, outcome {outcome!r}"
+        ) from None
 
 
 class RefundStatus(str, Enum):

@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from config.config_model import ConfigModel, MQTTConfig, Product
 from controller.vmc import VMC
+from services.dispensers import validate_document
 from services.mqtt_client import (
     MQTTClient,
     PROTOCOL_VERSIONS,
@@ -32,6 +33,7 @@ from services.mqtt_messages import (
     VMCStatus,
     AlertLevel,
 )
+from tests.dispenser_fixtures import GOOD, ICE, WATER
 
 
 # ── Message schema tests ─────────────────────────────────────
@@ -68,8 +70,11 @@ class TestInboundSchemas:
 
 class TestOutboundSchemas:
     def test_dispense_command(self):
-        c = DispenseCommand(slot=3)
+        report = validate_document(GOOD, [ICE, WATER])
+        profile = report.profiles[1]
+        c = DispenseCommand(slot=3, mechanism="bagged_ice", profile=profile)
         assert c.slot == 3
+        assert c.mechanism == "bagged_ice"
 
     def test_payment_enable_command(self):
         c = PaymentEnableCommand(accept=True)

@@ -8,12 +8,14 @@ from contracts.vending_machine import (
     FAULT_TABLE,
     OUTCOME_FAULTS,
     DispenserOutcome,
+    DispenseStep,
     FaultCode,
     PaymentRefundCommand,
     PaymentRefundResult,
     RefundStatus,
     Scope,
     Severity,
+    fault_for_outcome,
 )
 from contracts.vending_machine import EXPECTED_SUBSYSTEMS, SubsystemCapabilities
 
@@ -32,18 +34,57 @@ def test_every_fault_code_has_a_table_entry():
 
 
 def test_every_failure_outcome_maps_to_a_fault_code():
-    for outcome in DispenserOutcome:
-        if outcome is DispenserOutcome.complete:
-            assert outcome not in OUTCOME_FAULTS
-        else:
-            assert isinstance(OUTCOME_FAULTS[outcome], FaultCode)
+    # Every (mechanism, outcome) pair registered in OUTCOME_FAULTS is for a
+    # non-complete outcome, and fault_for_outcome returns exactly what the
+    # table says -- the helper must never silently diverge from its data.
+    for (mechanism, outcome), expected_fault in OUTCOME_FAULTS.items():
+        assert outcome is not DispenserOutcome.complete
+        assert fault_for_outcome(mechanism, outcome) is expected_fault
 
 
 def test_outcome_mapping_matches_spec():
-    assert OUTCOME_FAULTS[DispenserOutcome.bin_empty] is FaultCode.ICE_101
-    assert OUTCOME_FAULTS[DispenserOutcome.timeout] is FaultCode.ICE_301
-    assert OUTCOME_FAULTS[DispenserOutcome.jam] is FaultCode.ICE_401
-    assert OUTCOME_FAULTS[DispenserOutcome.error] is FaultCode.ICE_302
+    assert OUTCOME_FAULTS[("bagged_ice", DispenserOutcome.timeout)] is FaultCode.ICE_301
+    assert OUTCOME_FAULTS[("bagged_ice", DispenserOutcome.error)] is FaultCode.ICE_302
+    assert OUTCOME_FAULTS[("bagged_ice", DispenserOutcome.jam)] is FaultCode.ICE_401
+    assert (
+        OUTCOME_FAULTS[("bagged_ice", DispenserOutcome.door_open)] is FaultCode.ICE_402
+    )
+    assert OUTCOME_FAULTS[("water_fill", DispenserOutcome.no_flow)] is FaultCode.WTR_101
+    assert (
+        OUTCOME_FAULTS[("water_fill", DispenserOutcome.over_dispense)]
+        is FaultCode.WTR_102
+    )
+    assert OUTCOME_FAULTS[("water_fill", DispenserOutcome.timeout)] is FaultCode.WTR_101
+    assert OUTCOME_FAULTS[("water_fill", DispenserOutcome.error)] is FaultCode.ICE_302
+    assert (
+        OUTCOME_FAULTS[("bagged_ice", DispenserOutcome.bin_empty)] is FaultCode.ICE_101
+    )
+    assert (
+        OUTCOME_FAULTS[("water_fill", DispenserOutcome.bin_empty)] is FaultCode.ICE_101
+    )
+    assert len(OUTCOME_FAULTS) == 10
+
+
+def test_dispense_step_values():
+    assert DispenseStep.agitate == "agitate"
+    assert DispenseStep.fill == "fill"
+    assert DispenseStep.release == "release"
+    assert {s.value for s in DispenseStep} == {"agitate", "fill", "release"}
+
+
+def test_ice_302_description_is_mechanism_agnostic():
+    assert FAULT_TABLE[FaultCode.ICE_302].description == (
+        "Dispense actuator fault reported by the board "
+        "(motor stall, valve driver, over-current)"
+    )
+
+
+def test_fault_for_outcome_unmapped_raises_keyerror():
+    with pytest.raises(KeyError) as exc_info:
+        fault_for_outcome("bagged_ice", DispenserOutcome.complete)
+    message = str(exc_info.value)
+    assert "bagged_ice" in message
+    assert "complete" in message
 
 
 def test_fault_code_values_are_stable_strings():
