@@ -384,7 +384,7 @@ Both clear themselves; neither needs an operator.
 - Executes the received `profile` literally: accessories lead/lag around
   their steps, agitate for `run_seconds`, fill until the sensor trips or
   `max_run_seconds`, pulse the solenoid, read the door; water opens the
-  valve and emits `water_flow` pulses at a configurable rate until
+  valve and emits `fill_pulses` flow-meter counts at a configurable rate until
   `target_volume_ml`. Every output toggle still goes to
   `hardware/io/<device>`; every step publishes a `DispenserStatus` with the
   `DispenseStep`.
@@ -590,7 +590,7 @@ documents silently drift apart.
   (`_fail_dispense_async` compares its captured `seq` against the live
   counter and the FSM's current state before acting), and
   `_persist_then_dispense`'s "no dispatcher"/`send()`/ack-status checks
-  were collapsed into one `try`/`except` so any failure there — not only
+  are each guarded (the snapshot save under its own `snapshot_failed` outcome, the dispatch under `no_ack`) so any failure there — not only
   a `CommandTimeout` — fails the vend immediately instead of waiting out
   the full dispense-timeout fallback.
 - **`_customer_loop` lost its impatient-customer timeout and
