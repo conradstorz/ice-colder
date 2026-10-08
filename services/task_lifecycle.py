@@ -15,6 +15,8 @@ async def run_until_primary_exits(
     Cancel and await background tasks before returning the primary's result or
     propagating an exception. Background tasks should handle their own failures
     (for example, with ``task_supervisor.supervise``); they do not end the run.
+    Exceptions from background tasks during cleanup do not replace the primary
+    task's outcome.
     """
     primary_task = asyncio.ensure_future(primary)
     background_tasks = [asyncio.ensure_future(c) for c in background]
@@ -23,8 +25,4 @@ async def run_until_primary_exits(
     finally:
         for task in background_tasks:
             task.cancel()
-        for task in background_tasks:
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        await asyncio.gather(*background_tasks, return_exceptions=True)

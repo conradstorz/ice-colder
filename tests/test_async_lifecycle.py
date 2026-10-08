@@ -147,3 +147,40 @@ class TestRunUntilPrimaryExits:
             with pytest.raises(asyncio.CancelledError):
                 await task
         assert sorted(cleaned_up) == ["first", "primary", "second"]
+
+    async def test_background_cleanup_failure_does_not_mask_primary_or_skip_cleanup(
+        self,
+    ):
+        background_started = [asyncio.Event(), asyncio.Event()]
+        later_cleanup_started = asyncio.Event()
+        finish_later_cleanup = asyncio.Event()
+        later_cleanup_finished = asyncio.Event()
+
+        async def failing_background():
+            background_started[0].set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                raise RuntimeError("cleanup failed")
+
+        async def later_background():
+            background_started[1].set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                later_cleanup_started.set()
+                await finish_later_cleanup.wait()
+                later_cleanup_finished.set()
+
+        async def primary():
+            await asyncio.gather(*(started.wait() for started in background_started))
+            return "served"
+
+        task = asyncio.create_task(
+            run_until_primary_exits(primary(), failing_background(), later_background())
+        )
+        await asyncio.wait_for(later_cleanup_started.wait(), timeout=5.0)
+        finish_later_cleanup.set()
+
+        assert await task == "served"
+        assert later_cleanup_finished.is_set()
