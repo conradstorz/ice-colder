@@ -19,20 +19,13 @@ placeholder / a blank left untouched (leave the stored value alone).
 Repeating that comparison inline per field is exactly how one field would
 end up missing the check, so every page below calls this same function.
 
-MQTT env overrides (brief resolution 6): main.apply_env_overrides() returns
-a *copy* of config.mqtt with env values layered on top, precisely so an
-env-only MQTT_PASSWORD is never written back into config.json by a later
-save_config. This module cannot import main.py to reuse that function
-directly — main.py imports web_interface.server, which imports this
-routes package (via web_interface/routes/__init__.py), so `import main`
-here would be circular (main.py's `from web_interface.server import app`
-would run while server.py is still mid-import, before `app` exists).
-`_mqtt_env_overrides` below reads the same three environment variables
-directly instead, at request time, so the MQTT page shows the same
-effective values apply_env_overrides computes without ever importing it.
+MQTT env overrides (brief resolution 6): the shared
+`services.startup_config.mqtt_env_overrides()` helper identifies active
+fields at request time. The startup loader separately applies those values
+to a copy of `config.mqtt`, so an env-only MQTT_PASSWORD is never written
+back into config.json by a later save. Keeping this helper in a service
+module avoids importing main.py and creating a cycle through the web app.
 """
-
-import os
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -44,6 +37,7 @@ from config.config_model import Channel, ReportsConfig
 from services import config_store
 from services.access import Permission
 from services.mailer import send_email
+from services.startup_config import mqtt_env_overrides
 from web_interface import auth as web_auth
 from web_interface import context
 from web_interface.levels import (
@@ -61,14 +55,6 @@ from web_interface.levels import (
 # or dummy default alike — never the actual secret text (brief resolution
 # 4). A constant length that does not hint at the real secret's length.
 SECRET_MASK = "********"
-
-# main.apply_env_overrides' own env-var set (see module docstring for why
-# this module reads them directly rather than importing that function).
-_MQTT_ENV_VARS = {
-    "broker_host": "MQTT_BROKER_HOST",
-    "username": "MQTT_USERNAME",
-    "password": "MQTT_PASSWORD",
-}
 
 
 def _secret_placeholder(secret) -> str:
@@ -90,17 +76,6 @@ def _secret_changed(submitted: str) -> bool:
     rule exists to prevent.
     """
     return submitted != SECRET_MASK and submitted != ""
-
-
-def _mqtt_env_overrides() -> dict[str, str]:
-    """Which MQTT fields have a live environment override active, mapped
-    to the override's current value. Read at request time (not import
-    time) so a test's `monkeypatch.setenv` takes effect immediately."""
-    return {
-        field: value
-        for field, env_name in _MQTT_ENV_VARS.items()
-        if (value := os.environ.get(env_name))
-    }
 
 
 def _require_any(*permissions: Permission):
@@ -537,7 +512,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
 
     def _render_mqtt_form(request: Request, *, error: str | None):
         mqtt = context.config.mqtt
-        overrides = _mqtt_env_overrides()
+        overrides = mqtt_env_overrides()
         return templates.TemplateResponse(
             "settings_mqtt.html",
             context.template_context(
@@ -577,7 +552,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         username: str = Form(""),
         password: str = Form(SECRET_MASK),
     ):
-        overrides = _mqtt_env_overrides()
+        overrides = mqtt_env_overrides()
         mqtt = context.config.mqtt
 
         # A field with a live env override is read-only on this page (its

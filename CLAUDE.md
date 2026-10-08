@@ -44,8 +44,10 @@ All configuration is a single Pydantic `ConfigModel` loaded from `config.json`. 
 `services/config_store.py` are atomic (tmp + rename), write real secret values,
 and keep a rolling `config.json.bak`.
 
-The config file path is configurable via the `ICE_COLDER_CONFIG` environment
-variable (read at call time by both `main.py` and `services/config_store.py`),
+`services/startup_config.py` owns config loading, first-run creation, and
+environment overrides; `main.py` calls it during startup. The config file path
+is configurable via the `ICE_COLDER_CONFIG` environment variable (read at call
+time by both `services/startup_config.py` and `services/config_store.py`),
 defaulting to `config.json` in the current working directory when unset. This
 lets Docker point the app at a writable, bind-mounted location instead of
 relying on a bind-mount targeting `config.json` directly (which would let
@@ -260,9 +262,9 @@ discarded on the next `up`; the optional `HA_MQTT_USERNAME`/`HA_MQTT_PASSWORD`
 pair adds a second account for Home Assistant and is skipped when the password
 is empty. `MQTT_USERNAME`/`MQTT_PASSWORD` from
 `.env` are passed into the VMC and simulators and read by
-`main.apply_env_overrides`, which returns an `EnvOverrides` (a `model_copy`
-of `config.mqtt` with env values applied, plus the resolved trusted-proxies
-list) without mutating the live `ConfigModel` — so an env-only
+`services.startup_config.apply_env_overrides`, which returns an `EnvOverrides`
+(a `model_copy` of `config.mqtt` with env values applied, plus the resolved
+trusted-proxies list) without mutating the live `ConfigModel` — so an env-only
 `MQTT_PASSWORD` can never be written back to `config.json` by a later
 `save_config`. `ICE_COLDER_TRUSTED_PROXIES` is resolved the same way and
 applied to the dashboard's login back-off via
