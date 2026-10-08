@@ -7,16 +7,19 @@ which skips without a live MQTT broker.
 import asyncio
 import json
 import sqlite3
+import tempfile
+from pathlib import Path
 
 import pytest
 from loguru import logger
 
 from config.config_model import ConfigModel, Product
+from contracts.common import CommandAck
 from contracts.vending_machine import (
     DispenserOutcome,
     FaultCode,
-    OUTCOME_FAULTS,
     PaymentRefundCommand,
+    fault_for_outcome,
 )
 from controller.vmc import VMC
 from services.availability import Availability
@@ -24,12 +27,33 @@ from services.event_recorder import EventRecorder, SaleRecordingFailed
 from services.health_monitor import HealthMonitor
 from services.mqtt_messages import PaymentEnableCommand
 from services.session_store import Credit, SessionSnapshot, SessionStore
+from tests.dispenser_fixtures import FakeDispatcher, profiles_for
 
 
-def make_vmc(price: float = 2.50) -> VMC:
+def _tmp_profiles_dir(tmp_path: Path | None) -> Path:
+    """A directory to write `dispensers.toml` into. Pass pytest's own
+    `tmp_path` fixture when the test needs to reach the loaded
+    `DispenserProfiles` afterward (e.g. to rewrite the file and reload);
+    otherwise a private, per-call temp directory is minted so callers that
+    don't care about the sweep need not thread a fixture through."""
+    return tmp_path if tmp_path is not None else Path(tempfile.mkdtemp())
+
+
+def make_vmc(price: float = 2.50, tmp_path: Path | None = None) -> VMC:
+    """A VMC with one product (ICE-1, kind="ice") plus a loaded
+    `DispenserProfiles` and a `FakeDispatcher` already attached -- the
+    minimum wiring a production sale now needs to actually dispatch
+    (plan: dispenser profiles, Task 3). Pass `tmp_path` (pytest's fixture)
+    when a test needs to reach `vmc._dispenser_profiles.path` afterward."""
     cfg = ConfigModel()
-    cfg.physical.products = [Product(sku="ICE-1", name="Ice Bag", price=price)]
-    return VMC(config=cfg)
+    cfg.physical.products = [
+        Product(sku="ICE-1", name="Ice Bag", price=price, kind="ice")
+    ]
+    vmc = VMC(config=cfg)
+    profiles = profiles_for(cfg.physical.products, _tmp_profiles_dir(tmp_path))
+    vmc.set_dispenser_profiles(profiles)
+    vmc.set_command_dispatcher(FakeDispatcher())
+    return vmc
 
 
 class FakeEventRecorder:
@@ -713,10 +737,10 @@ async def test_product_deleted_mid_session_cancels_sale_without_error():
     vmc.cancel_pending_tasks()
 
 
-async def test_sale_cancelled_then_new_sale_succeeds():
+async def test_sale_cancelled_then_new_sale_succeeds(tmp_path):
     """After a cancelled sale, the VMC should be immediately usable again — no
     admin reset required, unlike a hardware fault that goes through error_occurred."""
-    vmc = make_vmc(price=2.50)
+    vmc = make_vmc(price=2.50, tmp_path=tmp_path)
     vmc.attach_to_loop(asyncio.get_running_loop())
     vmc.machine.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
@@ -726,8 +750,13 @@ async def test_sale_cancelled_then_new_sale_succeeds():
     vmc._process_payment()
     assert vmc.state == "idle"
 
-    # A new product is configured; a normal sale should work with no admin reset.
-    new_product = Product(sku="ICE-2", name="Ice Bag 2", price=2.50)
+    # A new product is configured; a normal sale should work with no admin
+    # reset. Reuses sku "ICE-1" (the just-deleted product's) so the
+    # dispenser profile make_vmc already loaded for slot 0 still matches --
+    # a real admin re-adding a product would go through
+    # reconcile_dispenser_profiles too, but this test predates dispenser
+    # profiles and isn't about that.
+    new_product = Product(sku="ICE-1", name="Ice Bag 2", price=2.50, kind="ice")
     vmc.products.append(new_product)
     vmc.select_product(0)
     assert vmc.state == "interacting_with_user"
@@ -739,27 +768,21 @@ async def test_sale_cancelled_then_new_sale_succeeds():
     vmc.cancel_pending_tasks()
 
 
-async def test_dispense_uses_product_slot_not_list_index():
+async def test_dispense_uses_product_slot_not_list_index(tmp_path):
     """Regression: deleting product 0 must not shift the slot used to dispense
-    the remaining products. The MQTT dispense command must carry the product's
+    the remaining products. The dispense command must carry the product's
     stable `slot` field, not its current position in the list."""
     cfg = ConfigModel()
     cfg.physical.products = [
-        Product(sku="ICE-1", name="Ice", price=1.0, slot=0),
-        Product(sku="WATER-1", name="Water", price=1.0, slot=1),
+        Product(sku="ICE-1", name="Ice", price=1.0, slot=0, kind="ice"),
+        Product(sku="WATER-1", name="Water", price=1.0, slot=1, kind="water"),
     ]
     vmc = VMC(config=cfg)
     vmc.attach_to_loop(asyncio.get_running_loop())
-    published = []
-
-    class FakeMqtt:
-        def register(self, *args, **kwargs):
-            pass
-
-        async def publish(self, topic, payload, **kwargs):
-            published.append((topic, payload))
-
-    vmc.set_mqtt_client(FakeMqtt())
+    profiles = profiles_for(cfg.physical.products, tmp_path)
+    vmc.set_dispenser_profiles(profiles)
+    dispatcher = FakeDispatcher()
+    vmc.set_command_dispatcher(dispatcher)
 
     # Admin deletes the first product from the catalog via the dashboard.
     del vmc.products[0]
@@ -767,20 +790,29 @@ async def test_dispense_uses_product_slot_not_list_index():
 
     vmc.selected_product = vmc.products[0]
     vmc.on_dispense_product()
-    await asyncio.sleep(0)  # let the fire-and-forget publish task run
+    await asyncio.sleep(0)  # let the fire-and-forget dispatch task run
 
-    topic, payload = published[-1]
-    assert topic == "cmd/dispense"
-    assert payload.slot == 1  # WATER-1's stable slot, not its new list index (0)
+    subsystem, command, params = dispatcher.sent[-1]
+    assert subsystem == "vending"
+    assert command == "dispense"
+    assert params["slot"] == 1  # WATER-1's stable slot, not its new list index (0)
+    assert params["mechanism"] == "water_fill"
 
 
-def make_vmc2() -> VMC:
+def make_vmc2(tmp_path: Path | None = None) -> VMC:
+    """Two products (ICE-1 kind="ice" slot 0, WATER-1 kind="water" slot 1)
+    plus a loaded `DispenserProfiles` and a `FakeDispatcher` already
+    attached -- see `make_vmc`'s docstring."""
     cfg = ConfigModel()
     cfg.physical.products = [
-        Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0),
-        Product(sku="WATER-1", name="Water", price=1.00, slot=1),
+        Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0, kind="ice"),
+        Product(sku="WATER-1", name="Water", price=1.00, slot=1, kind="water"),
     ]
-    return VMC(config=cfg)
+    vmc = VMC(config=cfg)
+    profiles = profiles_for(cfg.physical.products, _tmp_profiles_dir(tmp_path))
+    vmc.set_dispenser_profiles(profiles)
+    vmc.set_command_dispatcher(FakeDispatcher())
+    return vmc
 
 
 class TestFaultRegistry:
@@ -947,7 +979,7 @@ class TestVendOutcomes:
         )
         await asyncio.sleep(0)
 
-        code = OUTCOME_FAULTS[DispenserOutcome(outcome)]
+        code = fault_for_outcome("bagged_ice", DispenserOutcome(outcome))
         assert vmc.state == "interacting_with_user"
         assert vmc.credit_escrow == price
         assert vmc.selected_product is None
@@ -1459,11 +1491,14 @@ class TestFireAndForget:
 def _wired_vmc(products=None):
     cfg = ConfigModel()
     cfg.physical.products = products or [
-        Product(sku="ICE-1", name="Ice Bag", price=2.5, kind="ice"),
-        Product(sku="WTR-1", name="Water", price=1.0, kind="water"),
+        Product(sku="ICE-1", name="Ice Bag", price=2.5, slot=0, kind="ice"),
+        Product(sku="WTR-1", name="Water", price=1.0, slot=1, kind="water"),
     ]
     vmc = VMC(config=cfg)
     vmc.attach_to_loop(asyncio.get_running_loop())
+    profiles = profiles_for(cfg.physical.products, _tmp_profiles_dir(None))
+    vmc.set_dispenser_profiles(profiles)
+    vmc.set_command_dispatcher(FakeDispatcher())
     monitor = HealthMonitor()
     vmc.set_health_monitor(monitor)
     avail = Availability()
@@ -2018,24 +2053,24 @@ async def test_cancel_pending_tasks_never_cancels_persistence(tmp_path):
 
 async def test_dispense_snapshot_persisted_before_dispense_command(tmp_path):
     store = SessionStore(tmp_path / "session.json")
-    vmc = make_vmc(price=2.50)
+    vmc = make_vmc(price=2.50, tmp_path=tmp_path)
     vmc.attach_to_loop(asyncio.get_running_loop())
     vmc.set_session_store(store)
 
-    published: list = []
+    sent: list = []
+    dispatcher = vmc._command_dispatcher
 
-    class FakeMQTT:
-        def register(self, *a, **k):
-            pass
+    async def send_and_check(subsystem, command, params=None):
+        if command == "dispense":
+            snap = store.load()
+            assert snap is not None
+            assert snap.state == "dispensing"
+        sent.append((subsystem, command, params or {}))
+        return CommandAck(
+            request_id="snapshot-check", command=command, status="ok", phase="accepted"
+        )
 
-        async def publish(self, topic, payload, qos=1, retain=False):
-            if topic == "cmd/dispense":
-                snap = store.load()
-                assert snap is not None
-                assert snap.state == "dispensing"
-            published.append((topic, payload))
-
-    vmc.set_mqtt_client(FakeMQTT())
+    dispatcher.send = send_and_check
     vmc.machine.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 2.50
@@ -2044,23 +2079,24 @@ async def test_dispense_snapshot_persisted_before_dispense_command(tmp_path):
 
     # Bounded wait instead of a fixed sleep: this test failed once in CI and
     # passed on an unchanged re-run, because 50ms is enough time for
-    # _process_payment's background task to publish cmd/dispense on a
+    # _process_payment's background task to dispatch dispense on a
     # developer machine but not reliably enough on a loaded CI runner. Poll
-    # for the publish instead of gambling on a fixed delay; the assertions
-    # inside FakeMQTT.publish (snapshot persisted with state "dispensing"
-    # *before* the publish) still run for real on whichever iteration the
-    # publish actually lands, so this stays a wait for the real event, not a
-    # race that can pass without ever running them.
+    # for the dispatch instead of gambling on a fixed delay; the assertions
+    # inside send_and_check (snapshot persisted with state "dispensing"
+    # *before* the dispatch) still run for real on whichever iteration the
+    # dispatch actually lands, so this stays a wait for the real event, not
+    # a race that can pass without ever running them.
     deadline = asyncio.get_running_loop().time() + 2.0
-    while not any(t == "cmd/dispense" for t, _ in published):
+    while not any(c == "dispense" for _, c, _ in sent):
         if asyncio.get_running_loop().time() >= deadline:
             pytest.fail(
-                "cmd/dispense was never published within 2s of "
-                f"_process_payment(); published so far: {published!r}"
+                "dispense was never dispatched within 2s of "
+                f"_process_payment(); sent so far: {sent!r}"
             )
         await asyncio.sleep(0.01)
 
-    assert any(t == "cmd/dispense" for t, _ in published)
+    assert any(c == "dispense" for _, c, _ in sent)
+    vmc.cancel_pending_tasks()
     vmc.cancel_pending_tasks()
 
 
@@ -2408,9 +2444,9 @@ class TestMaintenanceLease:
         enable_true = [
             p for t, p in published if t == "cmd/payment/enable" and p.accept is True
         ]
-        assert (
-            len(enable_true) == 1
-        ), "expected exactly one re-enable, not a double release"
+        assert len(enable_true) == 1, (
+            "expected exactly one re-enable, not a double release"
+        )
 
         # A stray extra release call must be a no-op: clear_fault's own
         # "already cleared" guard stops it from re-pushing availability, so
@@ -2473,17 +2509,24 @@ class TestMaintenanceLease:
         assert vmc.maintenance_hold.runs_in_flight == 0
 
 
-def _test_run_vmc(products=None):
+def _test_run_vmc(products=None, tmp_path: Path | None = None):
     """A wired-up VMC plus a FakeEventRecorder and RecordingClient, for
     VMC.run_test_sale tests. Mirrors make_vmc2()'s default two-product
-    catalog (ICE-1 $2.50 slot 0, WATER-1 $1.00 slot 1) unless overridden."""
+    catalog (ICE-1 $2.50 slot 0, WATER-1 $1.00 slot 1) unless overridden.
+    Also carries a loaded `DispenserProfiles` and a `FakeDispatcher`
+    (plan: dispenser profiles, Task 3) -- every production/test sale now
+    dispatches `dispense` through the command dispatcher, which needs a
+    valid profile for the product being sold."""
     cfg = ConfigModel()
     cfg.physical.products = products or [
-        Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0),
-        Product(sku="WATER-1", name="Water", price=1.00, slot=1),
+        Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0, kind="ice"),
+        Product(sku="WATER-1", name="Water", price=1.00, slot=1, kind="water"),
     ]
     vmc = VMC(config=cfg)
     vmc.attach_to_loop(asyncio.get_running_loop())
+    profiles = profiles_for(cfg.physical.products, _tmp_profiles_dir(tmp_path))
+    vmc.set_dispenser_profiles(profiles)
+    vmc.set_command_dispatcher(FakeDispatcher())
     client = RecordingClient()
     vmc.set_mqtt_client(client)
     rec = FakeEventRecorder()
@@ -2619,7 +2662,9 @@ class TestRunTestSale:
         products remain" branch -- the one that would otherwise call
         request_refund and publish a real cmd/payment/refund."""
         vmc, rec, client = _test_run_vmc(
-            products=[Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0)]
+            products=[
+                Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0, kind="ice")
+            ]
         )
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
@@ -2781,11 +2826,11 @@ class TestRunTestSale:
     async def test_run_test_sale_publishes_real_cmd_dispense(self):
         """Round-1 fix, minor finding 1: spec §2.3's whole point is that a
         test sale exercises the production command path, but nothing
-        previously asserted that `cmd/dispense` was actually published --
+        previously asserted that the dispense command was actually sent --
         only that the FSM reached `dispensing`. Reaches the same
-        `dispense_product` -> `cmd/dispense` publish a real sale uses,
-        checked against the actual recorded MQTT command, not inferred
-        from state."""
+        `dispense_product` -> dispatcher.send("vending", "dispense", ...)
+        path a real sale uses, checked against the actual recorded
+        dispatcher call, not inferred from state."""
         vmc, rec, client = _test_run_vmc()
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
@@ -2795,24 +2840,35 @@ class TestRunTestSale:
         vmc._process_payment()
         assert vmc.state == "dispensing"
 
-        # dispense_product's cmd/dispense publish is fire-and-forget (see
+        # dispense_product's dispatch is fire-and-forget (see
         # test_dispense_snapshot_persisted_before_dispense_command's own
         # note on this); drain_persistence() awaits that same tracked task
-        # to completion, which only happens after the publish call inside
-        # it, so this is a wait for the real event rather than a guess.
+        # to completion, which only happens after the dispatcher.send() call
+        # inside it, so this is a wait for the real event rather than a
+        # guess.
         await vmc.drain_persistence()
 
-        dispense_cmds = [p for t, p in client.published if t == "cmd/dispense"]
-        assert len(dispense_cmds) == 1
-        assert dispense_cmds[0].slot == 0  # ICE-1's slot
+        dispatcher = vmc._command_dispatcher
+        dispense_calls = [
+            params
+            for subsystem, command, params in dispatcher.sent
+            if subsystem == "vending" and command == "dispense"
+        ]
+        assert len(dispense_calls) == 1
+        assert dispense_calls[0]["slot"] == 0  # ICE-1's slot
 
         await vmc._handle_mqtt_dispenser(
             "hardware/dispenser", {"slot": 0, "state": "complete"}
         )
         result = await asyncio.wait_for(task, timeout=5)
         assert result.outcome == "dispensed"
-        # Still exactly one cmd/dispense -- completion must not re-publish.
-        assert len([p for t, p in client.published if t == "cmd/dispense"]) == 1
+        # Still exactly one dispense dispatch -- completion must not re-send.
+        dispense_calls = [
+            params
+            for subsystem, command, params in dispatcher.sent
+            if subsystem == "vending" and command == "dispense"
+        ]
+        assert len(dispense_calls) == 1
 
     async def test_crashed_test_sale_offers_no_recovery_and_raises_no_pay104_after_restart(
         self, tmp_path
