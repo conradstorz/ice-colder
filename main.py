@@ -20,6 +20,8 @@ from services.build_info import BUILD_INFO
 from services.paths import LOG_DIR, LOG_FILE
 from services.mailer import send_email
 from services import report_scheduler
+from services.task_lifecycle import run_until_primary_exits
+from services.task_supervisor import supervise
 
 import asyncio
 import json
@@ -387,35 +389,6 @@ def reconcile_sales_journal_faults(vmc: VMC, recorder: EventRecorder) -> None:
         )
 
 
-_SUPERVISE_RESTART_DELAY = 5.0
-
-
-async def _run_until_server_exits(server_coro, *supervised):
-    """Run ``server_coro`` (uvicorn's ``server.serve()``) alongside long-running
-    ``supervised`` background coroutines (the MQTT client / health monitor
-    supervisors). Returns (or raises) as soon as ``server_coro`` completes,
-    cancelling the still-running supervised tasks first.
-
-    Without this, ``asyncio.gather`` over the server plus supervisors that loop
-    forever never returns when uvicorn exits (SIGTERM/SIGINT, or a startup
-    failure) — ``main()`` never reaches its ``finally`` block and the process
-    never exits, so Docker's ``restart: unless-stopped`` never gets a chance to
-    restart it.
-    """
-    server_task = asyncio.ensure_future(server_coro)
-    supervised_tasks = [asyncio.ensure_future(c) for c in supervised]
-    try:
-        return await server_task
-    finally:
-        for task in supervised_tasks:
-            task.cancel()
-        for task in supervised_tasks:
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-
 def _local_now() -> datetime:
     """Clock for the report scheduler: an aware, local-timezone `datetime`.
 
@@ -423,23 +396,6 @@ def _local_now() -> datetime:
     raises, matching report_scheduler.run's contract (see its docstring).
     """
     return datetime.now().astimezone()
-
-
-async def _supervise(name: str, coro_factory):
-    """Keep a long-running component alive: log a crash and restart it after 5s.
-
-    Prevents one component's unhandled exception from unwinding asyncio.gather
-    and taking down the whole VMC process.
-    """
-    while True:
-        try:
-            await coro_factory()
-            logger.warning(f"{name} exited unexpectedly; restarting in 5s")
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception(f"{name} crashed; restarting in 5s")
-        await asyncio.sleep(_SUPERVISE_RESTART_DELAY)
 
 
 @logger.catch()
@@ -564,11 +520,11 @@ async def main():
         "Entering main event loop with web server, MQTT client, and health monitor"
     )
     try:
-        await _run_until_server_exits(
+        await run_until_primary_exits(
             server.serve(),
-            _supervise("MQTT client", mqtt.run),
-            _supervise("health monitor", health.run),
-            _supervise(
+            supervise("MQTT client", mqtt.run),
+            supervise("health monitor", health.run),
+            supervise(
                 "report scheduler",
                 lambda: report_scheduler.run(
                     live_config, recorder, send_email, _local_now

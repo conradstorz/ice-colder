@@ -6,7 +6,7 @@ See ``docs/superpowers/specs/2026-09-25-sales-reports-design.md`` §4.1 (the
 authoritative spec.
 
 ``run(config, recorder, mailer, clock, tz=None)`` is started by ``main.py``
-under ``_supervise("report scheduler", ...)``, alongside the MQTT client and
+under ``supervise("report scheduler", ...)``, alongside the MQTT client and
 health monitor. It loops forever on a bounded sleep of at most 60 s,
 re-reading the *live* ``config`` object every pass and recomputing the next
 due time from scratch via :func:`compute_next_due` -- a pure, module-level
@@ -121,7 +121,7 @@ The loop never raises out of its own body: the whole per-pass workload (the
 de-dup query, ``summary()``, the send, the ``report_sent`` write) is wrapped
 in a single broad ``except Exception`` so one bad pass -- a query error, a
 mailer that raises instead of returning ``False``, anything -- logs and is
-retried next pass rather than taking the scheduler down (``_supervise``
+retried next pass rather than taking the scheduler down (``supervise``
 would restart it, but a scheduler that crashes every pass sends nothing and
 hides the fault). The one deliberate exception to "never raises" is the
 ``clock`` callable itself, read *outside* that guard at the top of each
