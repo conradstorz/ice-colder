@@ -14,10 +14,13 @@ from config.config_model import ConfigModel
 from contracts.common import SubsystemCommand
 from contracts.vending_machine import DispenserOutcome, SubsystemCapabilities
 from services.dispenser_schema import (
+    Accessory,
     AgitateStep,
     BaggedIceProfile,
     IceFillTimed,
     ReleaseTimed,
+    WaterFillProfile,
+    WaterFillTimed,
 )
 from services.dispensers import validate_document
 from services.mqtt_messages import DispenseCommand
@@ -26,6 +29,22 @@ from tests.dispenser_fixtures import GOOD, ICE, WATER
 
 
 _REAL_SLEEP = asyncio.sleep  # captured before any test patches asyncio.sleep
+
+
+class FakeClock:
+    """A fake `sim._sleep` that advances a cumulative `now` by exactly the
+    requested duration on every call, synchronously, instead of actually
+    waiting -- lets a test assert *when* within a run something happened
+    (e.g. "the terminal report went out at t=1.0, the lagged accessory
+    turned off at t=3.0") without real wall-clock delay. Assign an
+    instance directly to `sim._sleep` the same way other tests here
+    assign a plain async function or an `AsyncMock`."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    async def __call__(self, seconds: float) -> None:
+        self.now += seconds
 
 
 async def _drain_background(sim, timeout: float = 2.0) -> None:
@@ -231,9 +250,9 @@ class TestHADiscovery:
 
 
 class TestVendingFaultRegistration:
-    def test_eight_faults_registered(self):
+    def test_nine_faults_registered(self):
         sim = VendingMachineSimulator()
-        assert len(sim._fault_defs) == 8
+        assert len(sim._fault_defs) == 9
 
     def test_fault_names(self):
         sim = VendingMachineSimulator()
@@ -247,6 +266,7 @@ class TestVendingFaultRegistration:
             "no_water_flow",
             "door_stuck_open",
             "flow_runaway",
+            "slow_flow",
         }
 
 
@@ -652,6 +672,7 @@ class TestExecuteProfile:
             ("door_stuck_open", DispenserOutcome.door_open),
             ("no_water_flow", DispenserOutcome.no_flow),
             ("flow_runaway", DispenserOutcome.over_dispense),
+            ("slow_flow", DispenserOutcome.timeout),
             ("ice_bin_empty", DispenserOutcome.bin_empty),
         ],
     )
@@ -682,6 +703,11 @@ class TestExecuteProfile:
 
     @pytest.mark.asyncio
     async def test_water_fill_by_volume_stops_within_over_dispense_percent(self):
+        """I3: the pulse model -- the flow meter's cumulative pulse count,
+        converted back to a volume via `pulses_per_liter`, must land
+        within `over_dispense_percent` of `target_volume_ml`, published
+        in at least four increments, and the run must finish well short
+        of `max_fill_seconds`."""
         sim = _make_sim()
         durations = []
 
@@ -691,10 +717,13 @@ class TestExecuteProfile:
         sim._sleep = fake_sleep
         client = AsyncMock()
         terminal = []
+        flow_readings = []
 
         async def capture_publish(c, topic, payload):
             if topic == "hardware/dispenser" and hasattr(payload, "state"):
                 terminal.append(payload.state)
+            elif topic == "telemetry/vending/water_flow":
+                flow_readings.append(payload.value)
 
         sim.publish = capture_publish
         cmd = DispenseCommand(slot=2, mechanism="water_fill", profile=WATER_PROFILE)
@@ -702,17 +731,192 @@ class TestExecuteProfile:
         await sim._execute_profile(client, cmd)
 
         assert DispenserOutcome(terminal[-1]) is DispenserOutcome.complete
-        expected = min(8.0, WATER_PROFILE.fill.max_fill_seconds / 2)
-        assert expected in durations
+        assert len(flow_readings) >= 4
+
+        fill = WATER_PROFILE.fill
+        final_volume_ml = flow_readings[-1] / fill.pulses_per_liter * 1000.0
+        tolerance_ml = fill.target_volume_ml * (1 + fill.over_dispense_percent / 100.0)
+        assert final_volume_ml == pytest.approx(fill.target_volume_ml, rel=0.01)
+        assert final_volume_ml <= tolerance_ml
+
         # It stopped well short of the max timeout -- i.e. within the
         # over_dispense tolerance rather than running the full window.
-        assert sum(durations) < WATER_PROFILE.fill.max_fill_seconds
+        assert sum(durations) < fill.max_fill_seconds
+
+    @pytest.mark.asyncio
+    async def test_flow_runaway_exceeds_over_dispense_percent(self):
+        """I3: with `flow_runaway` injected, the simulated flow meter
+        keeps pulsing past the target until the dispensed volume exceeds
+        `over_dispense_percent`'s tolerance -- proved from the terminal
+        report's own `detail`, not just the outcome name."""
+        sim = _make_sim()
+        sim._sleep = AsyncMock()
+        client = AsyncMock()
+        terminal = []
+
+        async def capture_publish(c, topic, payload):
+            if topic == "hardware/dispenser" and hasattr(payload, "state"):
+                terminal.append((payload.state, payload.detail))
+
+        sim.publish = capture_publish
+        sim._fault_state["flow_runaway"]["active"] = True
+        cmd = DispenseCommand(slot=2, mechanism="water_fill", profile=WATER_PROFILE)
+
+        await sim._execute_profile(client, cmd)
+
+        state, detail = terminal[-1]
+        assert state == "over_dispense"
+        dispensed_ml = float(detail.split()[0])
+
+        fill = WATER_PROFILE.fill
+        tolerance_ml = fill.target_volume_ml * (1 + fill.over_dispense_percent / 100.0)
+        assert dispensed_ml > tolerance_ml
+
+    @pytest.mark.asyncio
+    async def test_accessory_lag_runs_after_last_step_on_success(self):
+        """I1: `lag_seconds` must not be defeated by an unconditional
+        cancellation of every pending accessory-off task -- an accessory
+        spanning the whole run (`["all"]`) turns off `lag_seconds` after
+        the run completes, while the terminal `complete` report goes out
+        the moment the fill step itself finishes, not after the lag."""
+        sim = _make_sim()
+        clock = FakeClock()
+        sim._sleep = clock
+        client = AsyncMock()
+        events: list[tuple[str, object, float]] = []
+
+        async def capture_publish(c, topic, payload):
+            if topic == "hardware/dispenser" and hasattr(payload, "state"):
+                events.append(("state", payload.state, clock.now))
+            elif topic.startswith("hardware/io/"):
+                events.append(("io", (payload.device, payload.state), clock.now))
+
+        sim.publish = capture_publish
+
+        fill = WaterFillTimed(
+            proof="timed", valve_channel="water_valve_solenoid", max_fill_seconds=1.0
+        )
+        profile = WaterFillProfile(
+            mechanism="water_fill",
+            product_sku="WATER-LAG",
+            fill=fill,
+            accessories={
+                "light": Accessory(
+                    channel="vending_now_light",
+                    on_during=["all"],
+                    lead_seconds=0.0,
+                    lag_seconds=2.0,
+                )
+            },
+        )
+        cmd = DispenseCommand(slot=9, mechanism="water_fill", profile=profile)
+
+        await sim._execute_profile(client, cmd)
+
+        complete_time = next(
+            t for kind, val, t in events if kind == "state" and val == "complete"
+        )
+        light_off_time = next(
+            t
+            for kind, val, t in events
+            if kind == "io" and val == ("vending_now_light", False)
+        )
+
+        assert complete_time == pytest.approx(1.0)
+        assert light_off_time == pytest.approx(3.0)
+
+    @pytest.mark.asyncio
+    async def test_concurrent_accessory_leads_overlap(self):
+        """M1: two accessories leading the same step overlap (one wait for
+        the longer lead) instead of stacking (a wait per accessory)."""
+        sim = _make_sim()
+        clock = FakeClock()
+        sim._sleep = clock
+        client = AsyncMock()
+        events: list[tuple[str, float]] = []
+
+        async def capture_publish(c, topic, payload):
+            if topic == "hardware/dispenser" and hasattr(payload, "state"):
+                events.append((payload.state, clock.now))
+
+        sim.publish = capture_publish
+
+        fill = WaterFillTimed(
+            proof="timed", valve_channel="water_valve_solenoid", max_fill_seconds=1.0
+        )
+        profile = WaterFillProfile(
+            mechanism="water_fill",
+            product_sku="WATER-LEADS",
+            fill=fill,
+            accessories={
+                "a": Accessory(
+                    channel="bag_fan",
+                    on_during=["fill"],
+                    lead_seconds=3.0,
+                    lag_seconds=0.0,
+                ),
+                "b": Accessory(
+                    channel="vending_now_light",
+                    on_during=["fill"],
+                    lead_seconds=2.0,
+                    lag_seconds=0.0,
+                ),
+            },
+        )
+        cmd = DispenseCommand(slot=9, mechanism="water_fill", profile=profile)
+
+        await sim._execute_profile(client, cmd)
+
+        fill_time = next(t for state, t in events if state == "fill")
+        assert fill_time == pytest.approx(3.0)
+
+    @pytest.mark.asyncio
+    async def test_bag_drop_solenoid_stuck_leaves_solenoid_on(self):
+        """I2: `drive_off` used to run unconditionally before the fault
+        check, so the IO sequence on `bag_drop_solenoid` was identical to
+        a successful release. With the fault active, the solenoid must
+        stay driven on (the last IO event for that channel is `True`) and
+        the outcome must be `jam` with a detail describing the stuck
+        solenoid; recovering the fault then publishes the solenoid off."""
+        sim = _make_sim()
+        sim._sleep = AsyncMock()
+        client = AsyncMock()
+        io_events = []
+        terminal = []
+
+        async def capture_publish(c, topic, payload):
+            if topic == "hardware/dispenser" and hasattr(payload, "state"):
+                terminal.append((payload.state, payload.detail))
+            elif topic.startswith("hardware/io/"):
+                io_events.append((payload.device, payload.state))
+
+        sim.publish = capture_publish
+        sim._fault_state["bag_drop_solenoid_stuck"]["active"] = True
+        cmd = DispenseCommand(slot=1, mechanism="bagged_ice", profile=ICE_PROFILE)
+
+        await sim._execute_profile(client, cmd)
+
+        assert terminal[-1] == ("jam", "bag release solenoid stuck on")
+        solenoid_events = [
+            state for device, state in io_events if device == "bag_drop_solenoid"
+        ]
+        assert solenoid_events, "bag_drop_solenoid never drove on"
+        assert solenoid_events[-1] is True
+
+        io_events.clear()
+        await sim._on_bag_drop_solenoid_stuck_recover(client)
+        assert ("bag_drop_solenoid", False) in io_events
 
     @pytest.mark.asyncio
     async def test_failed_run_turns_every_accessory_off(self):
         """motor_stall aborts mid-agitate, before fill is ever reached --
         vending_now_light (on_during=["all"]) still turned on at the very
-        start, and must still end up off."""
+        start, and must still end up off immediately (no lag wait, since
+        this run never reached a `complete` outcome). The two documented
+        exceptions to "every accessory/output off" are `water_valve_stuck_open`
+        (valve/flow sensor) and `bag_drop_solenoid_stuck` (release solenoid,
+        see test_bag_drop_solenoid_stuck_leaves_solenoid_on) -- neither
+        fault is active here, so they don't apply to this run."""
         sim = _make_sim()
         sim._sleep = AsyncMock()
         client = AsyncMock()

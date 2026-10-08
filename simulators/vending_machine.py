@@ -21,8 +21,9 @@ Run: uv run python -m simulators.vending_machine [--broker HOST] [--port PORT] [
 """
 
 import asyncio
-import contextlib
 import random
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime
 
 import aiomqtt
@@ -211,6 +212,39 @@ _DEFAULT_CURRENT_AMPS = 2.0
 # to put in the terminal report's `detail`.
 _DEFAULT_STALL_AMPS = 10.0
 
+# Number of pulse increments a `flow_volume` water fill publishes over its
+# nominal run (review finding I3) -- at least 4, per the brief.
+_WATER_FLOW_INCREMENTS = 4
+
+
+@dataclass
+class _RunContext:
+    """Bundles everything `_run_bagged_ice`/`_run_water_fill` need from
+    `_execute_profile` so each helper takes exactly one argument instead
+    of a long positional list (review finding M2): the triggering
+    `DispenseCommand` (`profile`/`slot` below are read straight off it),
+    this run's active-fault snapshot, and the io/publish closures
+    `_execute_profile` builds around its own per-run state (`driven_on`,
+    `accessory_on`, the pending lag-off tasks)."""
+
+    client: aiomqtt.Client
+    cmd: DispenseCommand
+    active: set[str]
+    drive_on: Callable[[str], Awaitable[None]]
+    drive_off: Callable[[str], Awaitable[None]]
+    leave_on: Callable[[str], None]
+    enter_step: Callable[[str], Awaitable[None]]
+    exit_step: Callable[[str], None]
+    publish_step: Callable[[str], Awaitable[None]]
+
+    @property
+    def profile(self):
+        return self.cmd.profile
+
+    @property
+    def slot(self) -> int:
+        return self.cmd.slot
+
 
 class VendingMachineSimulator(ESP32Simulator):
     """Simulates the vending machine button panel and dispenser hardware."""
@@ -319,6 +353,17 @@ class VendingMachineSimulator(ESP32Simulator):
                 on_activate=self._on_flow_runaway_activate,
                 on_recover=self._on_flow_runaway_recover,
                 message="Water flow continued well past target volume",
+                severity="warning",
+            )
+        )
+        self.register_fault(
+            FaultDef(
+                name="slow_flow",
+                category="short",
+                probability=0.0006,
+                on_activate=self._on_slow_flow_activate,
+                on_recover=self._on_slow_flow_recover,
+                message="Water flow much slower than expected — fill will time out",
                 severity="warning",
             )
         )
@@ -527,6 +572,12 @@ class VendingMachineSimulator(ESP32Simulator):
     async def _on_flow_runaway_recover(self, client: aiomqtt.Client) -> None:
         logger.info("[vending] Fault cleared: flow_runaway")
 
+    async def _on_slow_flow_activate(self, client: aiomqtt.Client) -> None:
+        logger.warning("[vending] FAULT: water flow much slower than expected")
+
+    async def _on_slow_flow_recover(self, client: aiomqtt.Client) -> None:
+        logger.info("[vending] Fault cleared: slow_flow")
+
     def _arrival_factor(self, hour: int | None = None) -> float:
         """Return an idle-time multiplier based on time of day.
 
@@ -585,16 +636,35 @@ class VendingMachineSimulator(ESP32Simulator):
         field of its own) so `DispenserStatus.request_id` can echo it, the
         same role it played for `_run_ice_dispense`/`_run_water_dispense`.
 
-        Accessory handling: each accessory turns on, blocking this
-        sequence for its own `lead_seconds`, the moment this run first
-        reaches a step in its `on_during` (or immediately, for `["all"]`)
-        -- that keeps "fan on before fill starts" a deterministic
-        ordering, rather than a race against a concurrent task. Turning an
-        accessory back off after its last relevant step is a background
-        task (its `lag_seconds` delay must not hold up the rest of the
-        sequence); every such task is cancelled and every accessory
-        channel this run turned on is forced off in the `finally` below,
-        so a failed or short-circuited run never leaves a fan or light on.
+        Accessory handling: each accessory turns on the moment this run
+        first reaches a step in its `on_during` (or immediately, for
+        `["all"]`); when two or more accessories lead the *same* step they
+        turn on concurrently and this sequence blocks once for the
+        *longest* of their `lead_seconds` (review finding M1 -- they used
+        to stack). Turning an accessory back off after its last relevant
+        step is a background task (its `lag_seconds` delay must not hold
+        up the rest of the sequence).
+
+        Review finding I1: on a normal return (success or a fault
+        outcome) those lag-off tasks are awaited, not cancelled, *after*
+        the terminal report is published -- so a run reports `complete`
+        the moment its last real step finishes, while `_execute_profile`
+        itself only returns once every accessory it turned on is actually
+        off, lag included. Only a genuine exception or cancellation
+        short-circuits that: then every pending lag-off task is cancelled
+        and every output this run touched is forced off immediately,
+        before the exception propagates -- there is no terminal report to
+        publish in that case. Either way, any accessory still sitting in
+        `accessory_on` with no task of its own (a run that aborted before
+        reaching that accessory's last step) is swept off directly.
+
+        `water_valve_stuck_open` deliberately leaves the valve/flow sensor
+        energised (its own `on_activate` already did this, independent of
+        any particular run); `bag_drop_solenoid_stuck` does the same for
+        the release solenoid (review finding I2) by calling `_leave_on`
+        instead of `_drive_off` the moment the fault is detected, which
+        quietly drops that channel out of `driven_on` -- so neither needs
+        special-casing in the sweep below.
         """
         profile = cmd.profile
         slot = cmd.slot
@@ -619,18 +689,30 @@ class VendingMachineSimulator(ESP32Simulator):
             await self._set_hw(client, channel, False)
             driven_on.discard(channel)
 
+        def _leave_on(channel: str) -> None:
+            """Stop tracking `channel` for the end-of-run sweep without
+            touching hardware -- used when a fault deliberately keeps an
+            output energised past this run (review finding I2)."""
+            driven_on.discard(channel)
+
         async def _turn_off_later(channel: str, lag_seconds: float) -> None:
             await self._sleep(lag_seconds)
             await self._set_hw(client, channel, False)
             accessory_on.discard(channel)
 
         async def _enter_step(step: str) -> None:
+            leads: list[float] = []
             for name, accessory in profile.accessories.items():
                 first, _last = spans[name]
                 if first == step and accessory.channel not in accessory_on:
                     await self._set_hw(client, accessory.channel, True)
                     accessory_on.add(accessory.channel)
-                    await self._sleep(accessory.lead_seconds)
+                    leads.append(accessory.lead_seconds)
+            if leads:
+                # Review finding M1: two accessories leading the same step
+                # overlap (one wait for the longest lead) instead of
+                # stacking (a wait per accessory).
+                await self._sleep(max(leads))
 
         def _exit_step(step: str) -> None:
             for name, accessory in profile.accessories.items():
@@ -648,46 +730,40 @@ class VendingMachineSimulator(ESP32Simulator):
                 DispenserStatus(slot=slot, state=step, request_id=request_id),
             )
 
+        ctx = _RunContext(
+            client=client,
+            cmd=cmd,
+            active=active,
+            drive_on=_drive_on,
+            drive_off=_drive_off,
+            leave_on=_leave_on,
+            enter_step=_enter_step,
+            exit_step=_exit_step,
+            publish_step=_publish_step,
+        )
+
         outcome: DispenserOutcome
         detail: str | None
 
         try:
             if profile.mechanism == "bagged_ice":
-                outcome, detail = await self._run_bagged_ice(
-                    client,
-                    profile,
-                    active,
-                    _enter_step,
-                    _exit_step,
-                    _drive_on,
-                    _drive_off,
-                    _publish_step,
-                )
+                outcome, detail = await self._run_bagged_ice(ctx)
             else:
-                outcome, detail = await self._run_water_fill(
-                    client,
-                    profile,
-                    active,
-                    _enter_step,
-                    _exit_step,
-                    _drive_on,
-                    _drive_off,
-                    _publish_step,
-                )
-        finally:
-            # `water_valve_stuck_open` deliberately leaves the valve/flow
-            # sensor energised (its own on_activate already did this,
-            # independent of any particular run) -- every other output
-            # this run drove gets turned off, including on a failed run.
+                outcome, detail = await self._run_water_fill(ctx)
+        except BaseException:
+            for task in accessory_tasks:
+                task.cancel()
+            if accessory_tasks:
+                await asyncio.gather(*accessory_tasks, return_exceptions=True)
             if "water_valve_stuck_open" not in active:
                 for channel in list(driven_on):
                     await self._set_hw(client, channel, False)
-            for task in accessory_tasks:
-                task.cancel()
-            for task in accessory_tasks:
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
             for channel in list(accessory_on):
+                await self._set_hw(client, channel, False)
+            raise
+
+        if "water_valve_stuck_open" not in active:
+            for channel in list(driven_on):
                 await self._set_hw(client, channel, False)
 
         await self.publish(
@@ -698,31 +774,30 @@ class VendingMachineSimulator(ESP32Simulator):
             ),
         )
 
+        if accessory_tasks:
+            await asyncio.gather(*accessory_tasks, return_exceptions=True)
+        for channel in list(accessory_on):
+            await self._set_hw(client, channel, False)
+
     async def _run_bagged_ice(
-        self,
-        client: aiomqtt.Client,
-        profile,
-        active: set[str],
-        enter_step,
-        exit_step,
-        drive_on,
-        drive_off,
-        publish_step,
+        self, ctx: "_RunContext"
     ) -> tuple[DispenserOutcome, str | None]:
         """agitate -> fill -> release. Returns (outcome, detail)."""
+        profile = ctx.profile
+        active = ctx.active
         if "ice_bin_empty" in active:
             # Checked before anything else is touched -- no accessory,
             # motor, or publish happens on this path (plan resolution 2).
             return DispenserOutcome.bin_empty, None
 
         # --- agitate ---
-        await enter_step(DispenseStep.agitate.value)
-        await publish_step(DispenseStep.agitate.value)
+        await ctx.enter_step(DispenseStep.agitate.value)
+        await ctx.publish_step(DispenseStep.agitate.value)
         agitate = profile.agitate
-        await drive_on(agitate.motor_channel)
+        await ctx.drive_on(agitate.motor_channel)
         if agitate.current_channel != "unmonitored":
             await self._publish_current(
-                client, agitate.current_channel, _DEFAULT_CURRENT_AMPS
+                ctx.client, agitate.current_channel, _DEFAULT_CURRENT_AMPS
             )
         if "motor_stall" in active:
             amps = (
@@ -730,111 +805,201 @@ class VendingMachineSimulator(ESP32Simulator):
                 if agitate.stall_current_amps != "unmonitored"
                 else _DEFAULT_STALL_AMPS
             )
-            await drive_off(agitate.motor_channel)
-            exit_step(DispenseStep.agitate.value)
+            await ctx.drive_off(agitate.motor_channel)
+            ctx.exit_step(DispenseStep.agitate.value)
             return DispenserOutcome.error, f"stall {amps:.1f} A"
         await self._sleep(agitate.run_seconds)
-        await drive_off(agitate.motor_channel)
-        exit_step(DispenseStep.agitate.value)
+        await ctx.drive_off(agitate.motor_channel)
+        ctx.exit_step(DispenseStep.agitate.value)
 
         # --- fill ---
-        await enter_step(DispenseStep.fill.value)
-        await publish_step(DispenseStep.fill.value)
+        await ctx.enter_step(DispenseStep.fill.value)
+        await ctx.publish_step(DispenseStep.fill.value)
         fill = profile.fill
-        await drive_on(fill.motor_channel)
+        await ctx.drive_on(fill.motor_channel)
         if fill.current_channel != "unmonitored":
             await self._publish_current(
-                client, fill.current_channel, _DEFAULT_CURRENT_AMPS
+                ctx.client, fill.current_channel, _DEFAULT_CURRENT_AMPS
             )
 
         if isinstance(fill, IceFillBySensor):
             if "auger_jam" in active:
                 await self._sleep(fill.max_run_seconds)
-                await drive_off(fill.motor_channel)
-                exit_step(DispenseStep.fill.value)
+                await ctx.drive_off(fill.motor_channel)
+                ctx.exit_step(DispenseStep.fill.value)
                 return DispenserOutcome.timeout, None
             duration = min(6.0, fill.max_run_seconds / 2)
             await self._sleep(duration)
-            await self._set_hw(client, fill.sensor_channel, True)
+            await self._set_hw(ctx.client, fill.sensor_channel, True)
         else:  # IceFillTimed
             await self._sleep(fill.max_run_seconds)
-        await drive_off(fill.motor_channel)
-        exit_step(DispenseStep.fill.value)
+        await ctx.drive_off(fill.motor_channel)
+        ctx.exit_step(DispenseStep.fill.value)
 
         # --- release ---
-        await enter_step(DispenseStep.release.value)
-        await publish_step(DispenseStep.release.value)
+        await ctx.enter_step(DispenseStep.release.value)
+        await ctx.publish_step(DispenseStep.release.value)
         release = profile.release
-        await drive_on(release.solenoid_channel)
+        await ctx.drive_on(release.solenoid_channel)
         await self._sleep(release.pulse_seconds)
-        await drive_off(release.solenoid_channel)
+
+        if isinstance(release, ReleaseBySensor) and "bag_drop_solenoid_stuck" in active:
+            # The release solenoid stays energised -- it's stuck, not
+            # released (review finding I2) -- so it is left out of the
+            # end-of-run sweep rather than driven off.
+            ctx.leave_on(release.solenoid_channel)
+            ctx.exit_step(DispenseStep.release.value)
+            return DispenserOutcome.jam, "bag release solenoid stuck on"
+
+        await ctx.drive_off(release.solenoid_channel)
 
         if isinstance(release, ReleaseBySensor):
-            if "bag_drop_solenoid_stuck" in active:
-                exit_step(DispenseStep.release.value)
-                return DispenserOutcome.jam, None
             if "door_stuck_open" in active:
-                await self._set_hw(client, release.sensor_channel, True)
+                await self._set_hw(ctx.client, release.sensor_channel, True)
                 await self._sleep(release.close_timeout_seconds)
-                exit_step(DispenseStep.release.value)
+                ctx.exit_step(DispenseStep.release.value)
                 return DispenserOutcome.door_open, None
-            await self._set_hw(client, release.sensor_channel, True)
+            await self._set_hw(ctx.client, release.sensor_channel, True)
             await self._sleep(1.0)
-            await self._set_hw(client, release.sensor_channel, False)
+            await self._set_hw(ctx.client, release.sensor_channel, False)
             if isinstance(fill, IceFillBySensor):
-                await self._set_hw(client, fill.sensor_channel, False)
+                await self._set_hw(ctx.client, fill.sensor_channel, False)
 
-        exit_step(DispenseStep.release.value)
+        ctx.exit_step(DispenseStep.release.value)
         return DispenserOutcome.complete, None
 
+    async def _publish_water_flow(self, client: aiomqtt.Client, pulses: float) -> None:
+        """Publish the flow meter's cumulative pulse count for one
+        `flow_volume` fill on the generic telemetry path (same convention
+        as `_publish_current`). Published in raw pulses, not gallons --
+        the declared `water_flow` channel descriptor says `unit="gal"`
+        (that one is `_publish_sensors`' own periodic cumulative-gallons
+        reading on a different topic); converting to a volume is a
+        `pulses_per_liter` division away for anything that needs it.
+        `self._water_flow_total` is `_publish_sensors`' own state and is
+        deliberately left untouched here."""
+        await self.publish(
+            client,
+            f"telemetry/{self.subsystem_name}/water_flow",
+            ChannelReading(channel_id="water_flow", value=pulses),
+        )
+
+    async def _pump_water_pulses(
+        self, client: aiomqtt.Client, fill: WaterFillByVolume, mode: str
+    ) -> tuple[float, float, float]:
+        """Simulate flow-meter pulses for one `flow_volume` fill (review
+        finding I3), publishing the running count on the `water_flow`
+        telemetry channel in at least `_WATER_FLOW_INCREMENTS` steps.
+
+        `mode="normal"` stops exactly at the slot's `target_volume_ml`
+        (converted to pulses via `pulses_per_liter`), reached in
+        `min(8.0, max_fill_seconds / 2)` seconds of simulated flow.
+        `mode="runaway"` keeps pulsing past that target, at the same
+        nominal rate, until the volume exceeds `over_dispense_percent`'s
+        tolerance. `mode="slow"` simulates a flow rate so far below
+        nominal that only half the target volume is reached by
+        `max_fill_seconds` -- the `slow_flow` fault's effect, and the
+        only way `_run_water_fill` can return `timeout` (no fault
+        currently drives a bag-full-sensor-style "ran out the clock
+        right at the target" case, so this is deliberately the one path
+        there).
+
+        Returns `(pulses, elapsed_seconds, target_pulses)`.
+        """
+        target_pulses = fill.target_volume_ml / 1000.0 * fill.pulses_per_liter
+        tolerance_pulses = target_pulses * (1 + fill.over_dispense_percent / 100.0)
+
+        if mode == "slow":
+            dt = fill.max_fill_seconds / _WATER_FLOW_INCREMENTS
+            step_pulses = (target_pulses * 0.5) / _WATER_FLOW_INCREMENTS
+        else:
+            nominal_seconds = min(8.0, fill.max_fill_seconds / 2.0)
+            dt = nominal_seconds / _WATER_FLOW_INCREMENTS
+            step_pulses = target_pulses / _WATER_FLOW_INCREMENTS
+
+        pulses = 0.0
+        elapsed = 0.0
+        while elapsed < fill.max_fill_seconds:
+            await self._sleep(dt)
+            pulses += step_pulses
+            elapsed += dt
+            await self._publish_water_flow(client, pulses)
+
+            if mode == "normal" and pulses >= target_pulses:
+                pulses = target_pulses
+                break
+            if mode == "runaway" and pulses > tolerance_pulses:
+                break
+            if mode == "slow" and elapsed >= fill.max_fill_seconds:
+                break
+
+        return pulses, elapsed, target_pulses
+
     async def _run_water_fill(
-        self,
-        client: aiomqtt.Client,
-        profile,
-        active: set[str],
-        enter_step,
-        exit_step,
-        drive_on,
-        drive_off,
-        publish_step,
+        self, ctx: "_RunContext"
     ) -> tuple[DispenserOutcome, str | None]:
         """fill only. Returns (outcome, detail)."""
-        await enter_step(DispenseStep.fill.value)
-        await publish_step(DispenseStep.fill.value)
+        profile = ctx.profile
+        active = ctx.active
+        await ctx.enter_step(DispenseStep.fill.value)
+        await ctx.publish_step(DispenseStep.fill.value)
         fill = profile.fill
-        await drive_on(fill.valve_channel)
+        await ctx.drive_on(fill.valve_channel)
 
         if isinstance(fill, WaterFillByVolume):
-            await self._set_hw(client, fill.flow_sensor_channel, True)
-            if "no_water_flow" in active:
-                await self._set_hw(client, fill.flow_sensor_channel, False)
-                await self._sleep(fill.no_flow_grace_seconds)
-                await drive_off(fill.valve_channel)
-                exit_step(DispenseStep.fill.value)
-                return DispenserOutcome.no_flow, None
-            if "flow_runaway" in active:
-                await self._sleep(
-                    min(fill.max_fill_seconds, fill.no_flow_grace_seconds + 2.0)
-                )
-                await self._set_hw(client, fill.flow_sensor_channel, False)
-                await drive_off(fill.valve_channel)
-                exit_step(DispenseStep.fill.value)
-                return DispenserOutcome.over_dispense, None
-            duration = min(8.0, fill.max_fill_seconds / 2)
-            await self._sleep(duration)
-        else:  # WaterFillTimed
-            await self._sleep(fill.max_fill_seconds)
+            await self._set_hw(ctx.client, fill.flow_sensor_channel, True)
 
-        if "water_valve_stuck_open" in active:
-            # Valve/flow sensor stay energised (see _execute_profile's
-            # finally) -- matches the fault's existing effect.
-            exit_step(DispenseStep.fill.value)
+            if "no_water_flow" in active:
+                await self._set_hw(ctx.client, fill.flow_sensor_channel, False)
+                await self._sleep(fill.no_flow_grace_seconds)
+                await ctx.drive_off(fill.valve_channel)
+                ctx.exit_step(DispenseStep.fill.value)
+                return (
+                    DispenserOutcome.no_flow,
+                    f"no flow after {fill.no_flow_grace_seconds} s",
+                )
+
+            if "flow_runaway" in active:
+                mode = "runaway"
+            elif "slow_flow" in active:
+                mode = "slow"
+            else:
+                mode = "normal"
+
+            pulses, elapsed, target_pulses = await self._pump_water_pulses(
+                ctx.client, fill, mode
+            )
+            tolerance_pulses = target_pulses * (1 + fill.over_dispense_percent / 100.0)
+            volume_ml = pulses / fill.pulses_per_liter * 1000.0
+
+            if "water_valve_stuck_open" in active:
+                # Valve/flow sensor stay energised (see _execute_profile's
+                # docstring) -- matches the fault's existing effect.
+                ctx.exit_step(DispenseStep.fill.value)
+                return DispenserOutcome.complete, None
+
+            await self._set_hw(ctx.client, fill.flow_sensor_channel, False)
+            await ctx.drive_off(fill.valve_channel)
+            ctx.exit_step(DispenseStep.fill.value)
+
+            if mode == "runaway" and pulses > tolerance_pulses:
+                return (
+                    DispenserOutcome.over_dispense,
+                    f"{volume_ml:.0f} ml dispensed, target {fill.target_volume_ml:.0f} ml",
+                )
+            if elapsed >= fill.max_fill_seconds and pulses < target_pulses:
+                return DispenserOutcome.timeout, None
             return DispenserOutcome.complete, None
 
-        if isinstance(fill, WaterFillByVolume):
-            await self._set_hw(client, fill.flow_sensor_channel, False)
-        await drive_off(fill.valve_channel)
-        exit_step(DispenseStep.fill.value)
+        # WaterFillTimed -- unchanged.
+        await self._sleep(fill.max_fill_seconds)
+
+        if "water_valve_stuck_open" in active:
+            ctx.exit_step(DispenseStep.fill.value)
+            return DispenserOutcome.complete, None
+
+        await ctx.drive_off(fill.valve_channel)
+        ctx.exit_step(DispenseStep.fill.value)
         return DispenserOutcome.complete, None
 
     async def _handle_dispense(
