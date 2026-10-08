@@ -268,7 +268,9 @@ class VendingMachineSimulator(ESP32Simulator):
         # Hardware state
         self._hw: dict[str, bool] = dict(HARDWARE_DEVICES)
         self._cabinet_temp: float = 22.0  # starting cabinet temperature °C
-        self._water_flow_total: float = 0.0  # cumulative gallons
+        self._water_flow_total: float = (
+            0.0  # cumulative gallons (HA water_flow_total entity on sensors/water_flow)
+        )
 
         # Register faults
         self.register_fault(
@@ -874,11 +876,12 @@ class VendingMachineSimulator(ESP32Simulator):
     async def _publish_water_flow(self, client: aiomqtt.Client, pulses: float) -> None:
         """Publish the flow meter's cumulative pulse count for one
         `flow_volume` fill on the generic telemetry path (same convention
-        as `_publish_current`). Published in raw pulses, not gallons --
-        the declared `water_flow` channel descriptor says `unit="gal"`
-        (that one is `_publish_sensors`' own periodic cumulative-gallons
-        reading on a different topic); converting to a volume is a
-        `pulses_per_liter` division away for anything that needs it.
+        as `_publish_current`). Published in raw pulses, matching the
+        declared `water_flow` channel descriptor (`unit="pulses"`);
+        converting to a volume is a `pulses_per_liter` division away for
+        anything that needs it. The Home Assistant `water_flow_total`
+        entity on `sensors/water_flow` is a separate cumulative-gallons
+        reading.
         `self._water_flow_total` is `_publish_sensors`' own state and is
         deliberately left untouched here."""
         await self.publish(
