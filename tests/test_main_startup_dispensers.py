@@ -118,9 +118,15 @@ def test_main_wires_profiles_into_vmc_and_routes(monkeypatch):
 
 
 def test_compose_sets_dispensers_env():
+    """Only the `vmc` service wires ICE_COLDER_DISPENSERS -- the three
+    simulators never read dispensers.toml (the VMC sends the whole slot
+    profile in the dispense command, plan 2), so their copy of the env var
+    was vestigial. Assert it appears exactly once, inside the vmc service
+    block, rather than once per ICE_COLDER_CONFIG line."""
     text = COMPOSE_PATH.read_text(encoding="utf-8")
-    config_count = text.count("ICE_COLDER_CONFIG=/app/data/config.json")
     dispensers_count = text.count("ICE_COLDER_DISPENSERS=/app/data/dispensers.toml")
+    assert dispensers_count == 1
 
-    assert config_count > 0
-    assert dispensers_count == config_count
+    assert "\n  sim-ice-maker:" in text
+    vmc_block = text.split("\n  sim-ice-maker:", 1)[0]
+    assert vmc_block.count("ICE_COLDER_DISPENSERS=/app/data/dispensers.toml") == 1

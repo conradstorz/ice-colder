@@ -524,3 +524,46 @@ independently mergeable and leaves the suite green.
 - Raw motor jog / run-for-N-seconds / reverse from the Tests level.
 - Per-slot run-count, run-seconds and peak-current telemetry and reports.
 - Mechanisms other than bagged ice and water fill.
+
+## 12. Implementation notes (plan 2)
+
+Plan 2 shipped §6 in full (VMC runtime, contract additions, simulator
+execution). This spec stays the design of record; the notes below record
+where plan 2 shipped differently, and why, rather than letting the two
+documents silently drift apart.
+
+- **No contract version bump.** `CFG-101`/`CFG-102` (plan 1) and
+  `DispenseCommand`/`DispenseStep`/the new `DispenserOutcome` members/
+  `fault_for_outcome` (plan 2) all shipped under the same
+  `contracts/vending_machine.py` 0.8.0 — the plan-2 additions are
+  additive wiring on top of plan 1's schema, not a schema break, so they
+  reuse its minor bump instead of taking their own.
+- **`DispenserStatus.state` stays `str`, not an enum.** The same field
+  carries both intermediate `DispenseStep` strings (`agitate`, `fill`,
+  `release`) and the terminal `DispenserOutcome` strings over one sale's
+  lifetime; typing it as either enum alone would make the other half of
+  its values invalid against the schema.
+- **The simulator's legacy `cmd/dispense` subscription was removed now,
+  not kept for a deprecation window.** No physical ESP32 board exists yet
+  (Phase D unstarted per §11), so there was no deployed consumer that
+  could be broken by removing it immediately.
+- **The command dispatcher reports a `door_open` completion as
+  `status="failed"`**, with a `detail` of "bag released but door did not
+  close", even though the VMC itself treats `door_open` as a customer
+  success plus a fault (it records the sale and raises `ICE-402`). The
+  dispatcher's `CommandAck.status` vocabulary has no third state between
+  "ok" and "failed" to express "succeeded, but also faulted," so a
+  `/tests` operator reading the ack sees "failed" for what the customer
+  path treats as a completed vend.
+- **`water_flow` telemetry is declared in pulses**, not liters or another
+  volume unit, matching what the simulator actually publishes on that
+  channel.
+- **`slow_flow` is an added simulator fault**, beyond the outcomes §6.4
+  enumerates: it halves the flow rate so only half the target volume is
+  reached by `max_fill_seconds`, which is the only path by which
+  `_run_water_fill` returns `timeout` — no other fault drives that
+  outcome for the water-fill mechanism.
+- **`SessionSnapshot.dispense_mechanism` was added**, additive beyond
+  what this spec asked for, so a crash-recovery snapshot records which
+  mechanism was mid-dispense without the recovery flow having to
+  re-derive it from the (possibly since-changed) dispenser profile.
