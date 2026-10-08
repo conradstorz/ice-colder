@@ -359,7 +359,7 @@ class TestFullTransactionLoop:
                 except (asyncio.CancelledError, Exception):
                     pass
 
-    async def test_insufficient_funds_waits_for_more(self):
+    async def test_insufficient_funds_waits_for_more(self, tmp_path):
         """Underpayment: VMC stays in interacting_with_user until enough is deposited."""
         config = _make_config()
         prefix = f"vmc/{config.machine_id}"
@@ -370,9 +370,11 @@ class TestFullTransactionLoop:
         async with aiomqtt.Client(
             hostname="localhost", port=1883, identifier="e2e-sim-underpay", **_MQTT_AUTH
         ) as sim_client:
+            await sim_client.subscribe(f"{prefix}/cmd/vending")
             loop = asyncio.get_running_loop()
             vmc.attach_to_loop(loop)
             vmc.set_mqtt_client(mqtt_client)
+            _wire_dispenser_runtime(vmc, mqtt_client, config, tmp_path)
 
             mqtt_task = asyncio.create_task(mqtt_client.run())
 
@@ -410,10 +412,24 @@ class TestFullTransactionLoop:
                 # Credit should be $4.00 - $3.50 = $0.50
                 assert abs(vmc.credit_escrow - 0.50) < 0.01
 
+                dispense_msg = None
+                try:
+                    msg = await asyncio.wait_for(
+                        sim_client.messages.__anext__(), timeout=5.0
+                    )
+                    dispense_msg = json.loads(msg.payload)
+                except (asyncio.TimeoutError, StopAsyncIteration):
+                    pass
+                assert dispense_msg is not None, "No dispense command received"
+                request_id = dispense_msg["request_id"]
+                await _ack_dispense(sim_client, prefix, request_id)
+
                 # Complete the dispense
                 await sim_client.publish(
                     f"{prefix}/hardware/dispenser",
-                    DispenserStatus(slot=1, state="complete").model_dump_json(),
+                    DispenserStatus(
+                        slot=1, state="complete", request_id=request_id
+                    ).model_dump_json(),
                 )
                 # With $0.50 remaining, goes back to interacting
                 await _wait_for_state(vmc, "interacting_with_user", timeout=5.0)
@@ -589,7 +605,7 @@ class TestSensorAndHeartbeatRouting:
 class TestFailedVendLoop:
     """jam → vend_failed → lockout → clear → sell again, through a real broker."""
 
-    async def test_jam_locks_product_then_clear_sells_again(self):
+    async def test_jam_locks_product_then_clear_sells_again(self, tmp_path):
         config = _make_config()
         prefix = f"vmc/{config.machine_id}"
         mqtt_client = MQTTClient(config=config.mqtt, machine_id=config.machine_id)
@@ -605,6 +621,9 @@ class TestFailedVendLoop:
             vmc.attach_to_loop(loop)
             vmc.set_mqtt_client(mqtt_client)
             vmc.set_health_monitor(health)
+            # Review finding I2: without this, on_dispense_product takes
+            # the CFG-101 branch and the lockout below is never ICE-401.
+            _wire_dispenser_runtime(vmc, mqtt_client, config, tmp_path)
             mqtt_task = asyncio.create_task(mqtt_client.run())
             try:
                 for _ in range(50):
@@ -622,9 +641,24 @@ class TestFailedVendLoop:
                         json.dumps({"amount": 2.00, "method": "cash_bill"}),
                     )
                     await _wait_for_state(vmc, "dispensing")
+
+                    dispense_msg = None
+                    try:
+                        msg = await asyncio.wait_for(
+                            sim_client.messages.__anext__(), timeout=5.0
+                        )
+                        dispense_msg = json.loads(msg.payload)
+                    except (asyncio.TimeoutError, StopAsyncIteration):
+                        pass
+                    assert dispense_msg is not None, "No dispense command received"
+                    assert dispense_msg["command"] == "dispense"
+                    request_id = dispense_msg["request_id"]
+                    await _ack_dispense(sim_client, prefix, request_id)
                     await sim_client.publish(
                         f"{prefix}/hardware/dispenser",
-                        json.dumps({"slot": 0, "state": outcome}),
+                        json.dumps(
+                            {"slot": 0, "state": outcome, "request_id": request_id}
+                        ),
                     )
 
                 await sale("jam")
