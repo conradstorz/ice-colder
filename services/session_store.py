@@ -55,6 +55,12 @@ class SessionSnapshot:
     credit_escrow: float
     selected_sku: Optional[str] = None
     dispense_slot: Optional[int] = None
+    # The dispense mechanism in flight ("bagged_ice"/"water_fill"), set from
+    # VMC._sale_mechanism at the moment _snapshot() is built (plan: dispenser
+    # profiles, Task 3). Additive and defaults to None, so a snapshot written
+    # before this field existed -- which has no "dispense_mechanism" key at
+    # all -- still loads via SessionSnapshot(**raw).
+    dispense_mechanism: Optional[str] = None
     dispense_started_at: Optional[float] = None
     pending_refund_request_id: Optional[str] = None
     credits: list[Credit] = field(default_factory=list)

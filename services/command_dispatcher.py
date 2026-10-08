@@ -202,12 +202,23 @@ class CommandDispatcher:
         state = payload.get("state")
         if not request_id or state not in _DISPENSE_TERMINAL_STATES:
             return
-        status = "ok" if state == DispenserOutcome.complete.value else "failed"
+        is_complete = state == DispenserOutcome.complete.value
+        status = "ok" if is_complete else "failed"
+        if is_complete:
+            detail = None
+        else:
+            board_detail = payload.get("detail")
+            if board_detail:
+                detail = board_detail
+            elif state == DispenserOutcome.door_open.value:
+                detail = "bag released but door did not close"
+            else:
+                detail = f"outcome {state}"
         ack = CommandAck(
             request_id=request_id,
             command="dispense",
             status=status,
-            detail=None if status == "ok" else state,
+            detail=detail,
             phase="completed",
         )
         self._resolve_completion(request_id, ack)

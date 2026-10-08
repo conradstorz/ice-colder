@@ -10,9 +10,11 @@ Plain module -- no pytest import -- so it can be imported from anywhere
 without pytest collecting it as a test module.
 """
 
+import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
+from contracts.common import CommandAck
 from config.config_model import ConfigModel, PhysicalDetails, Product
 from services.dispensers import DispenserProfiles
 
@@ -144,6 +146,52 @@ def render_profiles_toml(products: Sequence[Product]) -> str:
         elif product.kind == "water":
             parts.append(_water_table(product.slot, product.sku))
     return "\n".join(parts) + "\n"
+
+
+class FakeDispatcher:
+    """Fake `services.command_dispatcher.CommandDispatcher` for VMC-level
+    dispense tests (plan: dispenser profiles, Task 3). Records every
+    `send()` call (subsystem, command, params) in `sent` -- never the
+    pydantic `DispenseCommand`, matching what a production sale actually
+    hands the real dispatcher (`cmd.model_dump(mode="json")`).
+
+    `fail_with`, when set, is raised by the *next* `send()` call instead of
+    returning an ack -- set it to a `CommandTimeout` to simulate a dead
+    broker/subsystem, the one failure mode a production sale must survive
+    by failing the vend with PAY-102.
+
+    `send_and_await_completion` always raises `AssertionError`: a
+    production sale must await only the accepted ack via `send()`, never
+    completion -- completion is signalled by the real `hardware/dispenser`
+    report, handled by `VMC._handle_mqtt_dispenser`, not the dispatcher.
+    """
+
+    def __init__(self):
+        self.sent: list[tuple[str, str, dict]] = []
+        self.fail_with: Exception | None = None
+        self._last_request_id: str | None = None
+
+    async def send(
+        self, subsystem: str, command: str, params: dict | None = None
+    ) -> CommandAck:
+        self.sent.append((subsystem, command, params or {}))
+        if self.fail_with is not None:
+            raise self.fail_with
+        ack = CommandAck(
+            request_id=uuid.uuid4().hex,
+            command=command,
+            status="ok",
+            phase="accepted",
+        )
+        self._last_request_id = ack.request_id
+        return ack
+
+    async def send_and_await_completion(self, *args, **kwargs) -> CommandAck:
+        raise AssertionError("a sale must not await completion")
+
+    @property
+    def last_request_id(self) -> str | None:
+        return self._last_request_id
 
 
 def profiles_for(products: Sequence[Product], directory: Path) -> DispenserProfiles:

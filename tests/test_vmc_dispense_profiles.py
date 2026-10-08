@@ -9,14 +9,18 @@ Three products: `ICE_1` (slot 0, kind "ice"), `WATER_1` (slot 1, kind
 always CFG-101 like a product with no table at all).
 """
 
+import asyncio
+
 import pytest
 
 from config.config_model import ConfigModel, PhysicalDetails, Product
-from contracts.common import ChannelDescriptor
+from contracts.common import ChannelDescriptor, CommandAck
 from contracts.vending_machine import FaultCode, SubsystemCapabilities
 from controller.vmc import VMC
+from services.availability import Availability
+from services.command_dispatcher import CommandTimeout
 from services.dispensers import DispenserProfiles
-from tests.dispenser_fixtures import profiles_for, render_profiles_toml
+from tests.dispenser_fixtures import FakeDispatcher, profiles_for, render_profiles_toml
 
 ICE_1 = Product(sku="ICE-1", slot=0, kind="ice")
 WATER_1 = Product(sku="W-1", slot=1, kind="water")
@@ -267,3 +271,240 @@ def test_reconcile_never_raises_cfg101_over_another_lockout(tmp_path):
     vmc.set_dispenser_profiles(profiles)
 
     assert vmc._lockouts["W-1"] is FaultCode.ICE_301
+
+
+# --- Task 3: the sale dispenses through the dispatcher with the profile ---
+
+
+class FakeEventRecorder:
+    def __init__(self):
+        self.events: list[tuple] = []
+        self.sales: list[tuple] = []
+
+    def record(self, event_type, value=1.0, metadata=None):
+        self.events.append((event_type, value, metadata))
+
+    def record_sale(self, sku, name, slot, price, methods, ts=None):
+        self.sales.append((sku, name, slot, price, methods))
+
+
+def _vmc_with_profiles(tmp_path, products=(ICE_1, WATER_1)):
+    """A VMC wired exactly like `make_vmc()` but with a loaded
+    `DispenserProfiles` for *products* and a `FakeDispatcher` attached --
+    the minimum wiring a production sale needs to actually dispatch."""
+    cfg = ConfigModel(physical=PhysicalDetails(products=list(products)))
+    vmc = VMC(config=cfg)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    profiles = profiles_for(list(products), tmp_path)
+    vmc.set_dispenser_profiles(profiles)
+    dispatcher = FakeDispatcher()
+    vmc.set_command_dispatcher(dispatcher)
+    return vmc, dispatcher
+
+
+def _start_sale(vmc, product) -> None:
+    vmc.machine.set_state("interacting_with_user")
+    vmc.selected_product = product
+    vmc.credit_escrow = product.price
+    vmc._process_payment()
+    assert vmc.state == "dispensing"
+
+
+async def test_sale_dispatches_full_profile_on_command_channel(tmp_path):
+    vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    _start_sale(vmc, vmc.products[0])  # ICE-1, bagged_ice
+
+    await asyncio.sleep(0)
+
+    subsystem, command, params = dispatcher.sent[-1]
+    assert subsystem == "vending"
+    assert command == "dispense"
+    assert params["slot"] == ICE_1.slot
+    assert params["mechanism"] == "bagged_ice"
+    assert params["profile"]["agitate"]["motor_channel"] == "agitator_motor"
+    vmc.cancel_pending_tasks()
+
+
+async def test_no_ack_fails_vend_immediately_with_pay102(tmp_path):
+    vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    rec = FakeEventRecorder()
+    vmc.set_event_recorder(rec)
+    dispatcher.fail_with = CommandTimeout("vending", "dispense")
+    product = vmc.products[0]
+    price = product.price
+    _start_sale(vmc, product)
+
+    await asyncio.sleep(0)
+
+    assert vmc.state == "interacting_with_user"
+    assert vmc.credit_escrow == price
+    # PAY-102 is vend_failed severity (never a lockout or a persisted
+    # machine fault, so it never shows in active_faults()) -- proven here
+    # via the vend_failed event it drives, matching the convention already
+    # used throughout tests/test_vmc_flows.py.
+    assert any(e[0] == "vend_failed" and e[2]["code"] == "PAY-102" for e in rec.events)
+    assert vmc._dispense_timeout_task is None
+    vmc.cancel_pending_tasks()
+
+
+async def test_rejected_ack_fails_vend(tmp_path):
+    vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    rec = FakeEventRecorder()
+    vmc.set_event_recorder(rec)
+    product = vmc.products[0]
+    price = product.price
+
+    async def send_rejected(subsystem, command, params=None):
+        dispatcher.sent.append((subsystem, command, params or {}))
+        return CommandAck(request_id="rejected-1", command=command, status="rejected")
+
+    dispatcher.send = send_rejected
+    _start_sale(vmc, product)
+
+    await asyncio.sleep(0)
+
+    assert vmc.state == "interacting_with_user"
+    assert vmc.credit_escrow == price
+    assert any(e[0] == "vend_failed" and e[2]["code"] == "PAY-102" for e in rec.events)
+    vmc.cancel_pending_tasks()
+
+
+async def test_request_id_mismatch_is_logged_not_fatal(tmp_path, caplog):
+    vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    product = vmc.products[0]
+    _start_sale(vmc, product)
+    await asyncio.sleep(0)  # let _persist_then_dispense record the ack's request_id
+
+    assert vmc._dispense_request_id == dispatcher.last_request_id
+
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser",
+        {
+            "slot": product.slot,
+            "state": "complete",
+            "request_id": "not-the-real-one",
+        },
+    )
+
+    assert vmc.state == "idle"  # the sale still completed
+    assert any("request_id" in r.message for r in caplog.records)
+    vmc.cancel_pending_tasks()
+
+
+async def test_door_open_completes_sale_and_raises_ice402(tmp_path):
+    vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    rec = FakeEventRecorder()
+    vmc.set_event_recorder(rec)
+    avail = Availability()
+    vmc.set_availability(avail)
+    product = vmc.products[0]
+    _start_sale(vmc, product)
+    await asyncio.sleep(0)
+
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser", {"slot": product.slot, "state": "door_open"}
+    )
+
+    assert vmc.state == "idle"
+    assert len(rec.sales) == 1
+    assert rec.sales[0][0] == "ICE-1"
+    assert "ICE-402" in {f["code"] for f in vmc.active_faults()}
+    assert avail.payment_enabled is False
+    vmc.cancel_pending_tasks()
+
+
+@pytest.mark.parametrize(
+    "outcome,expected",
+    [
+        ("no_flow", "WTR-101"),
+        ("over_dispense", "WTR-102"),
+        ("timeout", "WTR-101"),
+        ("error", "ICE-302"),
+    ],
+)
+async def test_water_outcomes_map_by_mechanism(tmp_path, outcome, expected):
+    vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    rec = FakeEventRecorder()
+    vmc.set_event_recorder(rec)
+    product = vmc.products[1]  # W-1, water_fill
+    _start_sale(vmc, product)
+    await asyncio.sleep(0)
+
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser", {"slot": product.slot, "state": outcome}
+    )
+
+    assert any(e[0] == "vend_failed" and e[2]["code"] == expected for e in rec.events)
+    vmc.cancel_pending_tasks()
+
+
+async def test_ice_timeout_maps_to_ice301(tmp_path):
+    vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    rec = FakeEventRecorder()
+    vmc.set_event_recorder(rec)
+    product = vmc.products[0]  # ICE-1, bagged_ice
+    _start_sale(vmc, product)
+    await asyncio.sleep(0)
+
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser", {"slot": product.slot, "state": "timeout"}
+    )
+
+    assert any(e[0] == "vend_failed" and e[2]["code"] == "ICE-301" for e in rec.events)
+    vmc.cancel_pending_tasks()
+
+
+async def test_mis_reporting_board_falls_back_to_generic_error(tmp_path, caplog):
+    """A water board that reports `jam` (a bagged-ice-only outcome) has no
+    (mechanism, outcome) mapping -- fault_for_outcome raises KeyError, and
+    the VMC must fall back to a generic error for that mechanism rather
+    than crash the MQTT handler."""
+    vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    rec = FakeEventRecorder()
+    vmc.set_event_recorder(rec)
+    product = vmc.products[1]  # W-1, water_fill -- has no (water_fill, jam) entry
+    _start_sale(vmc, product)
+    await asyncio.sleep(0)
+
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser", {"slot": product.slot, "state": "jam"}
+    )
+
+    assert vmc.state == "interacting_with_user"
+    assert any(e[0] == "vend_failed" and e[2]["code"] == "ICE-302" for e in rec.events)
+    assert any("no fault mapped" in r.message.lower() for r in caplog.records)
+    vmc.cancel_pending_tasks()
+
+
+async def test_snapshot_records_mechanism(tmp_path):
+    vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    product = vmc.products[0]
+    _start_sale(vmc, product)
+    await asyncio.sleep(0)
+
+    snap = vmc._snapshot()
+
+    assert snap.dispense_mechanism == "bagged_ice"
+    vmc.cancel_pending_tasks()
+
+
+async def test_mid_vend_profile_save_does_not_change_inflight_command(tmp_path):
+    vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    product = vmc.products[0]
+    _start_sale(vmc, product)
+    await asyncio.sleep(0)
+
+    sent_before = dispatcher.sent[-1]
+
+    # Reload profiles with a different run_seconds mid-vend -- the
+    # already-dispatched command must not change.
+    (tmp_path / "dispensers.toml").write_text(
+        render_profiles_toml([ICE_1, WATER_1]).replace(
+            "run_seconds        = 4.0", "run_seconds        = 9.0"
+        ),
+        encoding="utf-8",
+    )
+    vmc._dispenser_profiles.load()
+
+    assert dispatcher.sent[-1] == sent_before
+    vmc.cancel_pending_tasks()

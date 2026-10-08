@@ -24,7 +24,6 @@ from services.mqtt_messages import (
 from contracts.ice_maker_monitor import ChannelReading, CommandAck
 from contracts.vending_machine import (
     FAULT_TABLE,
-    OUTCOME_FAULTS,
     DispenserOutcome,
     FaultCode,
     PaymentRefundCommand,
@@ -33,9 +32,11 @@ from contracts.vending_machine import (
     Scope,
     Severity,
     SubsystemCapabilities,
+    fault_for_outcome,
 )
 from config.config_model import ConfigModel, Product
 from services.availability import Availability
+from services.command_dispatcher import CommandTimeout
 from services.health_monitor import HealthMonitor
 from services.display_controller import DisplayController
 from services.inventory_manager import InventoryManager
@@ -272,6 +273,16 @@ class VMC:
         # sale has settled, so a lease release or idle-timeout mid-run
         # cannot flip this sale from test to production.
         self._sale_is_test: bool = False
+        # Dispenser profiles (plan: dispenser profiles, Task 3): the
+        # in-flight sale's mechanism ("bagged_ice"/"water_fill", set by
+        # on_dispense_product before it dispatches) and the accepted ack's
+        # request_id (set by _persist_then_dispense once the dispatcher
+        # answers). Both live alongside selected_product/pending_sale_shares
+        # above -- per-sale context, not VMC-global state -- and are reset
+        # to None in both _finish_dispensing (success) and _fail_vend
+        # (failure).
+        self._sale_mechanism: str | None = None
+        self._dispense_request_id: str | None = None
         self.last_insufficient_message = ""
         self.last_payment_method = "Simulated Payment"
 
@@ -604,15 +615,19 @@ class VMC:
     def _snapshot(self, state: str | None = None) -> SessionSnapshot:
         pending = next(iter(self._pending_refunds), None)
         product = self.selected_product
+        effective_state = state or self.state
         return SessionSnapshot(
-            state=state or self.state,
+            state=effective_state,
             credit_escrow=round(self.credit_escrow, 2),
             selected_sku=product.sku if product else None,
             dispense_slot=product.slot
-            if product and (state or self.state) == "dispensing"
+            if product and effective_state == "dispensing"
+            else None,
+            dispense_mechanism=self._sale_mechanism
+            if effective_state == "dispensing"
             else None,
             dispense_started_at=time.time()
-            if (state or self.state) == "dispensing"
+            if effective_state == "dispensing"
             else None,
             pending_refund_request_id=pending,
             credits=list(self.escrow_credits),
@@ -1172,10 +1187,22 @@ class VMC:
             )
             return
 
+        reported_request_id = data.get("request_id")
+        if (
+            reported_request_id
+            and self._dispense_request_id
+            and reported_request_id != self._dispense_request_id
+        ):
+            logger.warning(
+                f"Dispenser report request_id={reported_request_id!r} does not "
+                f"match in-flight request_id={self._dispense_request_id!r}; "
+                "processing anyway (completion is keyed on slot and FSM state)"
+            )
+
         product_name = (
             self.selected_product.name if self.selected_product else "Unknown"
         )
-        if outcome is DispenserOutcome.complete:
+        if outcome in (DispenserOutcome.complete, DispenserOutcome.door_open):
             txn_log.info(f"DISPENSE SUCCESS: slot {slot}, product '{product_name}'")
             vend_log.info(f"DISPENSE COMPLETE: slot {slot}, product '{product_name}'")
             if self._sale_is_test:
@@ -1197,11 +1224,38 @@ class VMC:
                         "dispense", value=float(self.selected_product.slot)
                     )
                 await self._record_sale()
+            if outcome is DispenserOutcome.door_open:
+                # door_open is a customer success (the ice/water was
+                # released) but a hardware fault in its own right -- the
+                # trap door failed to close, which is why ICE-402 is a
+                # PAYMENT_BLOCKING_FAULTS member. Raised after recording the
+                # sale (the customer did get their product) and before
+                # _finish_dispensing, matching the "success path plus a
+                # fault" shape the brief calls for.
+                sku = self.selected_product.sku if self.selected_product else None
+                self._raise_fault(FaultCode.ICE_402, sku=sku, outcome=outcome.value)
             self._finish_dispensing()
             return
 
         self._cancel_dispense_timeout()
-        code = OUTCOME_FAULTS[outcome]
+        try:
+            code = fault_for_outcome(self._sale_mechanism, outcome)
+        except KeyError:
+            # A board mis-reporting for its own mechanism (e.g. a water
+            # board sending `jam`, which only a bagged-ice slot can report)
+            # -- fail safely with a generic error rather than let the
+            # unmapped pair crash this MQTT handler. If the mechanism
+            # itself is unknown (should not happen once on_dispense_product
+            # always sets it), default to bagged_ice so this fallback
+            # lookup can never itself KeyError.
+            logger.error(
+                f"No fault mapped for mechanism={self._sale_mechanism!r} "
+                f"outcome={outcome.value!r}; board may be mis-reporting for "
+                "this mechanism -- falling back to a generic error"
+            )
+            code = fault_for_outcome(
+                self._sale_mechanism or "bagged_ice", DispenserOutcome.error
+            )
         sku = self.selected_product.sku if self.selected_product else None
         txn_log.error(
             f"DISPENSE FAILED: slot {slot}, product '{product_name}', "
@@ -1454,32 +1508,125 @@ class VMC:
         self.send_customer_message(
             "Processing your payment and dispensing your product..."
         )
-        # Tell the vending ESP32 which slot to dispense. Use the product's own
-        # stable `slot` field, NOT its position in self.products — deleting an
-        # earlier product from the catalog shifts list indices but must not
-        # change which physical motor/slot a remaining product dispenses from.
-        if self._mqtt_client and self._loop and self.selected_product:
-            slot = self.selected_product.slot
+        # Tell the vending ESP32 which slot to dispense, through the command
+        # dispatcher, carrying the slot's whole validated profile so a
+        # dispensers.toml save mid-vend cannot affect this in-flight
+        # command. Use the product's own stable `slot` field, NOT its
+        # position in self.products — deleting an earlier product from the
+        # catalog shifts list indices but must not change which physical
+        # motor/slot a remaining product dispenses from.
+        if self._loop and self.selected_product:
+            product = self.selected_product
+            profile = self.dispenser_profile_for(product)
+            if profile is None:
+                # Cannot happen after Task 2's CFG-101 lockout (select_product
+                # already refuses a profile-less product) -- a defensive
+                # fallback for the pathological case where the profile
+                # vanished between selection and dispense (e.g. a concurrent
+                # dispensers.toml reload racing the sale).
+                #
+                # on_dispense_product is the `before` callback for the
+                # dispense_product transition (TRANSITIONS table above): the
+                # FSM has not yet actually committed the move into
+                # 'dispensing' while this callback is running, so firing the
+                # vend_failed trigger synchronously here would be refused
+                # ("Can't trigger event vend_failed from state
+                # interacting_with_user!"). Deferred via _fire_and_forget so
+                # it runs after this transition has actually completed.
+                logger.error(
+                    f"No valid dispenser profile for sku={product.sku!r} "
+                    f"slot={product.slot} at dispense time; failing the vend"
+                )
+                self._fire_and_forget(
+                    self._fail_dispense_async(FaultCode.CFG_101, "no_profile"),
+                    persistent=True,
+                )
+                return
+            self._sale_mechanism = profile.mechanism
+            cmd = DispenseCommand(
+                slot=product.slot, mechanism=profile.mechanism, profile=profile
+            )
             vend_log.info(
-                f"DISPENSE CMD: slot {slot}, product '{self.selected_product.name}'"
+                f"DISPENSE CMD: slot {product.slot}, product '{product.name}', "
+                f"mechanism {profile.mechanism}"
             )
             snap = self._snapshot("dispensing") if self._session_store else None
             self._fire_and_forget(
-                self._persist_then_dispense(snap, DispenseCommand(slot=slot)),
+                self._persist_then_dispense(snap, cmd),
                 persistent=True,
             )
 
-    async def _persist_then_dispense(self, snap, cmd: DispenseCommand) -> None:
-        """Write the dispensing snapshot to disk before the ESP32 is told to move.
+    async def _fail_dispense_async(self, code: FaultCode, outcome: str) -> None:
+        """Fail an in-flight dispense, but only if the FSM is still in
+        'dispensing' when this actually runs: by the time it does, the sale
+        may already have settled through the real hardware report (a
+        fire-and-forget dispatch task can race the terminal
+        `hardware/dispenser` report), and a settled sale must never be
+        double-failed.
 
-        A crash between the two leaves an open session on disk, so boot raises
-        PAY-104 instead of forgetting that credit was taken and a vend was
-        in flight.
+        `on_dispense_product` schedules this via `_fire_and_forget` rather
+        than awaiting it inline: it runs as the dispense_product
+        transition's `before` callback, before the FSM has actually
+        committed the move into 'dispensing', so firing the nested
+        vend_failed trigger synchronously there would be refused by the
+        FSM. `_persist_then_dispense` -- itself a separate task that only
+        ever runs after that transition has committed -- awaits this
+        directly instead; either call path is safe because of the state
+        check below.
+        """
+        if self.state != "dispensing":
+            logger.debug(
+                "Dispense failed after the sale already left 'dispensing'; "
+                "ignoring (not double-failing a settled sale)."
+            )
+            return
+        self._cancel_dispense_timeout()
+        sku = self.selected_product.sku if self.selected_product else None
+        self._raise_fault(code, sku=sku, outcome=outcome)
+        self._fail_vend(code, outcome=outcome)
+
+    async def _persist_then_dispense(self, snap, cmd: DispenseCommand) -> None:
+        """Write the dispensing snapshot to disk before the ESP32 is told to
+        move, then send the dispense command through the command dispatcher
+        and await only its accepted ack -- never completion.
+
+        A crash between the snapshot save and the dispatch leaves an open
+        session on disk, so boot raises PAY-104 instead of forgetting that
+        credit was taken and a vend was in flight.
         """
         if snap is not None and self._session_store is not None:
             if FaultCode.PAY_104 not in self._machine_faults:
                 await self._session_store.save_async(snap)
-        await self._mqtt_client.publish("cmd/dispense", cmd)
+
+        if self._command_dispatcher is None:
+            logger.error(
+                "VMC: no command dispatcher attached; cannot send dispense "
+                "command (wiring error)"
+            )
+            await self._fail_dispense_async(FaultCode.PAY_102, "no_ack")
+            return
+
+        try:
+            ack = await self._command_dispatcher.send(
+                "vending", "dispense", cmd.model_dump(mode="json")
+            )
+        except CommandTimeout:
+            logger.error(
+                f"VMC: dispatcher timed out sending dispense for slot {cmd.slot}"
+            )
+            await self._fail_dispense_async(FaultCode.PAY_102, "no_ack")
+            return
+
+        if ack.status != "ok":
+            logger.error(
+                f"VMC: dispense ack for slot {cmd.slot} status={ack.status!r} "
+                f"detail={ack.detail!r}"
+            )
+            await self._fail_dispense_async(FaultCode.PAY_102, "no_ack")
+            return
+
+        if self.state == "dispensing":
+            self._dispense_request_id = ack.request_id
 
     def _post_dispense_dest(self) -> str:
         """Return the FSM destination after dispensing: continue if credit remains, else idle."""
@@ -1631,6 +1778,8 @@ class VMC:
 
     def _fail_vend(self, code: FaultCode, outcome: str) -> None:
         """Run the vend_failed transition, then decide: choose again, or pay out."""
+        self._sale_mechanism = None
+        self._dispense_request_id = None
         self.vend_failed(code=code, outcome=outcome)
         if not self._sellable_products():
             txn_log.info("No sellable products remain; refunding and returning to idle")
@@ -2322,8 +2471,9 @@ class VMC:
         -- the only credit ``deposit_funds`` accepts during a lease, see
         its lease branch above -- then selects the product and lets the
         *normal* dispense path run unmodified: the real FSM transitions,
-        the real ``cmd/dispense`` publish, and the real dispense-completion
-        / dispense-timeout handling. Awaits whichever of the three
+        the real dispatch of ``dispense`` through the command dispatcher,
+        and the real dispense-completion / dispense-timeout handling.
+        Awaits whichever of the three
         terminal outcomes settles the sale via a one-shot ``Future``
         (``self._test_sale_waiter``) that those call sites resolve.
 
@@ -2788,6 +2938,8 @@ class VMC:
         if self.state != "dispensing":
             logger.debug("State is not dispensing; cannot finish dispensing.")
             return
+        self._sale_mechanism = None
+        self._dispense_request_id = None
         product_name = (
             self.selected_product.name if self.selected_product else "Unknown"
         )
