@@ -178,3 +178,92 @@ async def test_run_test_sale_refuses_without_profile(tmp_path):
         await vmc.run_test_sale("X")
 
     assert vmc.credit_escrow == 0
+
+
+def test_clearing_another_fault_relocks_profileless_product_with_cfg101(tmp_path):
+    """Review finding: CFG-101 is a standing invariant. A profile-less
+    product locked by some *other* fault (ICE-301 here) must not become
+    sellable just because that other fault was cleared -- clear_fault must
+    re-check the profile and re-raise CFG-101 immediately."""
+    vmc = make_vmc()
+    profiles = profiles_for([ICE_1, WATER_1, OTHER_X], tmp_path)
+    # Remove slot 1's table -- W-1 (water) has no profile.
+    (tmp_path / "dispensers.toml").write_text(
+        render_profiles_toml([ICE_1]), encoding="utf-8"
+    )
+    profiles.load()
+
+    # Lock W-1 with ICE-301 *before* profiles are attached, so reconcile
+    # finds it already locked and leaves it alone (per its own docstring).
+    vmc._raise_fault(FaultCode.ICE_301, sku="W-1")
+    assert vmc._lockouts["W-1"] is FaultCode.ICE_301
+
+    vmc.set_dispenser_profiles(profiles)
+    assert vmc._lockouts["W-1"] is FaultCode.ICE_301
+
+    assert vmc.clear_fault("W-1", by="admin") is True
+
+    assert vmc._lockouts["W-1"] is FaultCode.CFG_101
+
+
+def test_admin_clear_of_cfg101_is_reasserted_without_a_profile(tmp_path):
+    """An admin "clearing" CFG-101 by hand gets it re-raised at once unless
+    the underlying file was actually fixed -- the fix is the file, not the
+    button."""
+    vmc = make_vmc()
+    profiles = profiles_for([ICE_1, WATER_1, OTHER_X], tmp_path)
+    (tmp_path / "dispensers.toml").write_text(
+        render_profiles_toml([ICE_1]), encoding="utf-8"
+    )
+    profiles.load()
+    vmc.set_dispenser_profiles(profiles)
+    assert vmc._lockouts["W-1"] is FaultCode.CFG_101
+
+    assert vmc.clear_fault("W-1", by="admin") is True
+    assert vmc._lockouts["W-1"] is FaultCode.CFG_101
+
+    # Now actually fix the file -- the real clear path.
+    (tmp_path / "dispensers.toml").write_text(
+        render_profiles_toml([ICE_1, WATER_1]), encoding="utf-8"
+    )
+    report = profiles.load()
+    assert report.ok
+
+    vmc.reconcile_dispenser_profiles()
+
+    assert "W-1" not in vmc._lockouts
+
+
+def test_clearing_a_fault_on_a_profiled_product_does_not_relock(tmp_path):
+    """A product with a valid profile must never be re-locked by the new
+    re-check -- clearing an unrelated fault on it just clears it."""
+    vmc = make_vmc()
+    profiles = profiles_for([ICE_1, WATER_1, OTHER_X], tmp_path)
+    vmc.set_dispenser_profiles(profiles)
+    assert "ICE-1" not in vmc._lockouts
+
+    vmc._raise_fault(FaultCode.ICE_301, sku="ICE-1")
+    assert vmc._lockouts["ICE-1"] is FaultCode.ICE_301
+
+    assert vmc.clear_fault("ICE-1", by="admin") is True
+
+    assert "ICE-1" not in vmc._lockouts
+
+
+def test_reconcile_never_raises_cfg101_over_another_lockout(tmp_path):
+    """The raise-side guard in reconcile_dispenser_profiles: a profile-less
+    product already locked by another fault before profiles are attached
+    keeps that fault, not CFG-101."""
+    vmc = make_vmc()
+    profiles = profiles_for([ICE_1, WATER_1, OTHER_X], tmp_path)
+    (tmp_path / "dispensers.toml").write_text(
+        render_profiles_toml([ICE_1]), encoding="utf-8"
+    )
+    profiles.load()
+
+    vmc._raise_fault(FaultCode.ICE_301, sku="W-1")
+    assert vmc._lockouts["W-1"] is FaultCode.ICE_301
+
+    vmc.set_dispenser_profiles(profiles)
+
+    assert vmc._lockouts["W-1"] is FaultCode.ICE_301

@@ -565,6 +565,11 @@ class VMC:
                 if sku not in self._lockouts:
                     self._raise_fault(FaultCode.CFG_101, sku=sku)
             elif self._lockouts.get(sku) is FaultCode.CFG_101:
+                # clear_fault's own re-check (review fix, Task 2) re-raises
+                # CFG-101 immediately if dispenser_profile_for still finds
+                # no valid profile. Here `valid` is already True, so that
+                # re-check finds a profile too and is a no-op -- this call
+                # really does clear CFG-101 rather than bouncing it back.
                 self.clear_fault(sku, by="auto")
 
         file_error = profiles.report.file_error
@@ -777,6 +782,28 @@ class VMC:
             if self._health_monitor:
                 self._health_monitor.clear_alert(f"{code.value}:{sku}")
             logger.info(f"Fault {code.value} cleared for product {sku} ({by})")
+            # Dispenser profiles (plan 2, Task 2 review fix): CFG-101 is a
+            # standing invariant -- a product with no valid dispenser
+            # profile is never sellable. Popping *any* lockout here (not
+            # just CFG-101 itself, e.g. an operator clearing ICE-301 on a
+            # profile-less product) can leave such a product unlocked with
+            # no profile, since nothing else re-runs reconciliation on
+            # this path. Re-check immediately and re-raise CFG-101 if no
+            # valid profile exists. reconcile_dispenser_profiles's own
+            # CFG-101 clears are unaffected: they only clear CFG-101 when
+            # dispenser_profile_for already found a valid profile, so this
+            # re-check finds one too and does nothing. No recursion is
+            # possible: _raise_fault never calls clear_fault.
+            profiles = self._dispenser_profiles
+            if profiles is not None:
+                product = next(
+                    (p for p in self.config_model.products if p.sku == sku), None
+                )
+                if product is not None and self.dispenser_profile_for(product) is None:
+                    logger.info(
+                        f"{sku} re-locked: no valid dispenser profile (CFG-101)"
+                    )
+                    self._raise_fault(FaultCode.CFG_101, sku=sku)
         else:
             try:
                 code = FaultCode(key)
