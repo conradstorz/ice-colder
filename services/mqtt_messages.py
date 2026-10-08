@@ -76,7 +76,15 @@ class DispenserStatus(BaseModel):
     """Dispenser motor/mechanism status from ESP32."""
 
     slot: int = Field(..., description="Dispenser slot number")
-    state: str = Field(..., description="Status (e.g., 'complete', 'jammed', 'error')")
+    state: str = Field(
+        ...,
+        description=(
+            "An intermediate DispenseStep ('agitate', 'fill', 'release') or "
+            "a terminal DispenserOutcome ('complete', 'bin_empty', "
+            "'timeout', 'jam', 'error', 'door_open', 'no_flow', "
+            "'over_dispense')"
+        ),
+    )
     request_id: Optional[str] = Field(
         None,
         description=(

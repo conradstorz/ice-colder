@@ -40,6 +40,12 @@ def test_every_failure_outcome_maps_to_a_fault_code():
     for (mechanism, outcome), expected_fault in OUTCOME_FAULTS.items():
         assert outcome is not DispenserOutcome.complete
         assert fault_for_outcome(mechanism, outcome) is expected_fault
+    # M1 (whole-branch review): every non-complete outcome is reachable
+    # through OUTCOME_FAULTS by *some* mechanism -- none was left
+    # unmapped for every mechanism that could report it.
+    assert {o for _, o in OUTCOME_FAULTS} == set(DispenserOutcome) - {
+        DispenserOutcome.complete
+    }
 
 
 def test_outcome_mapping_matches_spec():

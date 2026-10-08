@@ -113,16 +113,15 @@ def _validate_dispense_params(params: dict) -> None:
                 if msg:
                     raise ValueError(msg) from exc
 
-        # Fallback for other error types
-        if errors:
-            e = errors[0]
-            loc_str = ".".join(str(x) for x in e.get("loc", []))
-            msg_str = e.get("msg", "validation error")
-            msg = f"dispense params invalid: {loc_str} — {msg_str}"
-            raise ValueError(msg) from exc
-
-        # Should not reach here, but fallback just in case
-        raise ValueError("dispense params invalid") from exc
+        # Fallback for other error types. `errors` is always non-empty here
+        # (a ValidationError never has an empty errors() list), so this
+        # always raises -- there is no further, unreachable fallback below
+        # it (M6, whole-branch review).
+        e = errors[0]
+        loc_str = ".".join(str(x) for x in e.get("loc", []))
+        msg_str = e.get("msg", "validation error")
+        msg = f"dispense params invalid: {loc_str} — {msg_str}"
+        raise ValueError(msg) from exc
 
 
 COMMAND_PARAM_VALIDATORS: dict[str, Callable[[dict], None]] = {

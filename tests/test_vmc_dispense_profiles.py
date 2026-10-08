@@ -579,6 +579,12 @@ async def test_snapshot_save_failure_fails_vend_immediately(tmp_path):
     assert vmc.state == "interacting_with_user"
     assert vmc.credit_escrow == price
     assert any(e[0] == "vend_failed" and e[2]["code"] == "PAY-102" for e in rec.events)
+    # M5 (whole-branch review): a snapshot-save failure is reported with
+    # its own outcome string, distinct from a dispatch failure's "no_ack".
+    assert any(
+        e[0] == "vend_failed" and e[2]["outcome"] == "snapshot_failed"
+        for e in rec.events
+    )
     assert vmc._dispense_timeout_task is None
     assert dispatcher.sent == []
     vmc.cancel_pending_tasks()

@@ -189,14 +189,20 @@ class CommandDispatcher:
         """Completion signal for the command-channel `dispense` (completion
         table): the vending simulator's terminal `hardware/dispenser`
         report, correlated by the `request_id` it carries when the dispense
-        was reached through this command channel. A production `cmd/dispense`
-        sale's reports carry no `request_id` (see
-        `services/mqtt_messages.py`'s `DispenserStatus`) and never match
-        anything pending here — this handler is a pure addition alongside
-        the VMC's own, pre-existing `hardware/dispenser` listener
-        (`controller/vmc.py`'s `_handle_mqtt_dispenser`), which keeps
-        working unchanged since both are registered on the same MQTT client
-        and both simply receive every message on the topic.
+        was reached through this command channel. A production sale now
+        carries a `request_id` too (dispenser-profiles plan 2 moved every
+        sale onto `cmd/vending`), but a production sale calls
+        `CommandDispatcher.send()`, never `send_and_await_completion()` --
+        it never awaits completion, only the accepted ack -- so nothing is
+        ever listening in `self._pending_completions` for that
+        `request_id` when its terminal report arrives. `_resolve_completion`
+        stashes it in `self._early_completions` (bounded, oldest evicted
+        first) instead, where it simply ages out unread; this handler is a
+        pure addition alongside the VMC's own, pre-existing
+        `hardware/dispenser` listener (`controller/vmc.py`'s
+        `_handle_mqtt_dispenser`), which keeps working unchanged since both
+        are registered on the same MQTT client and both simply receive
+        every message on the topic.
         """
         request_id = payload.get("request_id")
         state = payload.get("state")

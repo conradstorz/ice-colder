@@ -286,12 +286,14 @@ class VMC:
         # Review finding I2: a monotonically increasing counter identifying
         # the *current* in-flight dispense dispatch. Incremented once per
         # on_dispense_product call (one dispatch attempt per entry into
-        # 'dispensing'). _persist_then_dispense captures its value before
-        # any await; a late failure (e.g. a delayed CommandTimeout from a
-        # dispatch whose sale has already settled and been superseded by a
-        # new one) is detected by comparing the captured value against the
-        # live counter in _fail_dispense_async, so it can never fail a
-        # different, later sale than the one that actually dispatched.
+        # 'dispensing'), which passes its own local `seq` straight into
+        # `_persist_then_dispense` as a parameter (review finding M4) rather
+        # than having that task re-read the live counter itself. A late
+        # failure (e.g. a delayed CommandTimeout from a dispatch whose sale
+        # has already settled and been superseded by a new one) is detected
+        # by comparing that passed-in value against the live counter in
+        # _fail_dispense_async, so it can never fail a different, later
+        # sale than the one that actually dispatched.
         self._sale_seq: int = 0
         self.last_insufficient_message = ""
         self.last_payment_method = "Simulated Payment"
@@ -1568,7 +1570,7 @@ class VMC:
             )
             snap = self._snapshot("dispensing") if self._session_store else None
             self._fire_and_forget(
-                self._persist_then_dispense(snap, cmd),
+                self._persist_then_dispense(snap, cmd, seq),
                 persistent=True,
             )
 
@@ -1624,7 +1626,9 @@ class VMC:
         self._raise_fault(code, sku=sku, outcome=outcome)
         self._fail_vend(code, outcome=outcome)
 
-    async def _persist_then_dispense(self, snap, cmd: DispenseCommand) -> None:
+    async def _persist_then_dispense(
+        self, snap, cmd: DispenseCommand, seq: int
+    ) -> None:
         """Write the dispensing snapshot to disk before the ESP32 is told to
         move, then send the dispense command through the command dispatcher
         and await only its accepted ack -- never completion.
@@ -1633,27 +1637,40 @@ class VMC:
         session on disk, so boot raises PAY-104 instead of forgetting that
         credit was taken and a vend was in flight.
 
-        Review finding I1: everything from here on (the "no dispatcher"
-        wiring-error branch, `send()` itself, and the ack-status check) is
-        wrapped in one try/except. Originally only `send()`'s
-        `CommandTimeout` was guarded; any other exception raised while
-        dispatching -- bad `SubsystemCommand`/`model_dump` validation, a
-        broken MQTT publish, anything -- escaped this task entirely,
-        landed in `_log_task_failure`, and left the FSM stuck in
-        'dispensing' with the price already deducted until the full 120s
-        dispense-timeout fallback. Every failure path here now fails the
-        vend immediately instead, exactly like a `CommandTimeout` does.
-        """
-        # Review finding I2: captured before any await, so this always
-        # names the dispatch this call is actually performing, even if a
-        # later sale bumps self._sale_seq again before this one resolves.
-        seq = self._sale_seq
+        `seq` (review finding M4) is `on_dispense_product`'s own
+        `self._sale_seq` snapshot, taken there and passed in rather than
+        re-read from `self._sale_seq` here -- this task always names the
+        dispatch it is actually performing, with no dependence on exactly
+        when the event loop gets around to starting it relative to a later
+        sale bumping the live counter.
 
+        Review finding I1: everything from the dispatcher-wiring check
+        onward (the "no dispatcher" branch, `send()` itself, and the
+        ack-status check) is wrapped in one try/except, separate from the
+        snapshot save above it. Originally only `send()`'s `CommandTimeout`
+        was guarded; any other exception raised while dispatching -- bad
+        `SubsystemCommand`/`model_dump` validation, a broken MQTT publish,
+        anything -- escaped this task entirely, landed in
+        `_log_task_failure`, and left the FSM stuck in 'dispensing' with
+        the price already deducted until the full 120s dispense-timeout
+        fallback. Every failure path here now fails the vend immediately
+        instead, exactly like a `CommandTimeout` does.
+        """
         try:
             if snap is not None and self._session_store is not None:
                 if FaultCode.PAY_104 not in self._machine_faults:
                     await self._session_store.save_async(snap)
+        except Exception as exc:
+            # Review finding M5: a snapshot-save failure gets its own
+            # outcome string, distinct from a dispatch failure's "no_ack" --
+            # the fault code is the same PAY-102 either way.
+            logger.exception(
+                f"VMC: failed to save dispensing snapshot for slot {cmd.slot}: {exc}"
+            )
+            await self._fail_dispense_async(FaultCode.PAY_102, "snapshot_failed", seq)
+            return
 
+        try:
             if self._command_dispatcher is None:
                 logger.error(
                     "VMC: no command dispatcher attached; cannot send "

@@ -326,7 +326,6 @@ PAYMENT_BLOCKING_FAULTS: frozenset[FaultCode] = frozenset(
 # services/dispenser_schema.py's SlotProfile discriminator). Kept here,
 # not imported from services, so contracts never depends on services.
 Mechanism = Literal["bagged_ice", "water_fill"]
-MECHANISMS: tuple[str, ...] = ("bagged_ice", "water_fill")
 
 # Which fault a terminal dispenser outcome raises, keyed by (mechanism,
 # outcome). `complete` is never a key -- fault_for_outcome raises KeyError
