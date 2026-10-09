@@ -189,25 +189,42 @@ class CommandDispatcher:
         """Completion signal for the command-channel `dispense` (completion
         table): the vending simulator's terminal `hardware/dispenser`
         report, correlated by the `request_id` it carries when the dispense
-        was reached through this command channel. A production `cmd/dispense`
-        sale's reports carry no `request_id` (see
-        `services/mqtt_messages.py`'s `DispenserStatus`) and never match
-        anything pending here — this handler is a pure addition alongside
-        the VMC's own, pre-existing `hardware/dispenser` listener
-        (`controller/vmc.py`'s `_handle_mqtt_dispenser`), which keeps
-        working unchanged since both are registered on the same MQTT client
-        and both simply receive every message on the topic.
+        was reached through this command channel. A production sale now
+        carries a `request_id` too (dispenser-profiles plan 2 moved every
+        sale onto `cmd/vending`), but a production sale calls
+        `CommandDispatcher.send()`, never `send_and_await_completion()` --
+        it never awaits completion, only the accepted ack -- so nothing is
+        ever listening in `self._pending_completions` for that
+        `request_id` when its terminal report arrives. `_resolve_completion`
+        stashes it in `self._early_completions` (bounded, oldest evicted
+        first) instead, where it simply ages out unread; this handler is a
+        pure addition alongside the VMC's own, pre-existing
+        `hardware/dispenser` listener (`controller/vmc.py`'s
+        `_handle_mqtt_dispenser`), which keeps working unchanged since both
+        are registered on the same MQTT client and both simply receive
+        every message on the topic.
         """
         request_id = payload.get("request_id")
         state = payload.get("state")
         if not request_id or state not in _DISPENSE_TERMINAL_STATES:
             return
-        status = "ok" if state == DispenserOutcome.complete.value else "failed"
+        is_complete = state == DispenserOutcome.complete.value
+        status = "ok" if is_complete else "failed"
+        if is_complete:
+            detail = None
+        else:
+            board_detail = payload.get("detail")
+            if board_detail:
+                detail = board_detail
+            elif state == DispenserOutcome.door_open.value:
+                detail = "bag released but door did not close"
+            else:
+                detail = f"outcome {state}"
         ack = CommandAck(
             request_id=request_id,
             command="dispense",
             status=status,
-            detail=None if status == "ok" else state,
+            detail=detail,
             phase="completed",
         )
         self._resolve_completion(request_id, ack)
@@ -226,7 +243,11 @@ class CommandDispatcher:
             self._early_completions.popitem(last=False)
 
     async def send(
-        self, subsystem: str, command: str, params: dict | None = None
+        self,
+        subsystem: str,
+        command: str,
+        params: dict | None = None,
+        request_id: str | None = None,
     ) -> CommandAck:
         """Send *command* to *subsystem* and await its ack.
 
@@ -235,6 +256,15 @@ class CommandDispatcher:
         wait out the timeout when there is no chance of an answer) or if no
         ack arrives after the initial attempt plus ``retries`` retries, each
         using the same ``request_id``.
+
+        ``request_id`` (Copilot review, PR #32, finding C2): optional.
+        When a caller supplies one, it is used as-is (and validated by
+        ``SubsystemCommand`` the same 8-64 char bound as any other
+        request_id) rather than minting a fresh one -- the VMC uses this
+        so it can record the dispense's expected id *before* this call
+        even starts, so a terminal report racing the ack can still be
+        correlated correctly. When omitted, a fresh id is generated, same
+        as before this parameter existed.
         """
         if not self._mqtt.connected:
             logger.warning(
@@ -243,7 +273,7 @@ class CommandDispatcher:
             )
             raise CommandTimeout(subsystem, command)
 
-        request_id = uuid.uuid4().hex
+        request_id = request_id or uuid.uuid4().hex
         cmd = SubsystemCommand(
             request_id=request_id, command=command, params=params or {}
         )
@@ -282,10 +312,16 @@ class CommandDispatcher:
             self._pending.pop(request_id, None)
 
     async def send_and_await_completion(
-        self, subsystem: str, command: str, params: dict | None = None
+        self,
+        subsystem: str,
+        command: str,
+        params: dict | None = None,
+        request_id: str | None = None,
     ) -> CommandAck:
         """Send *command* and wait for it to actually FINISH, not merely to
         be accepted (2026-09-29 completion-table amendment).
+
+        ``request_id`` (finding C2) passes through to ``send()`` unchanged.
 
         For an immediate command (its ack's `phase` is "completed" — every
         command NOT in `contracts.common.COMPLETION_TIMEOUTS`) this is
@@ -304,7 +340,7 @@ class CommandDispatcher:
         call); raises `CompletionTimeout` if accepted but no completion
         signal arrives within its own timeout.
         """
-        accept_ack = await self.send(subsystem, command, params)
+        accept_ack = await self.send(subsystem, command, params, request_id=request_id)
         if accept_ack.phase != "accepted":
             return accept_ack
 

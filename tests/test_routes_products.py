@@ -535,6 +535,122 @@ class TestCsrfGuard:
         assert "HTMX" in resp.text
 
 
+class TestCatalogChangedCalled:
+    """Copilot review (PR #32) finding C1: every mutating products route
+    must tell the VMC a catalog save happened, so CFG-101 reconciliation
+    runs for a newly added product or a product whose kind changed --
+    not just on VMC.set_dispenser_profiles() and the vending capabilities
+    hook, which is all that ran reconciliation before this fix."""
+
+    def test_create_calls_catalog_changed_once_on_success_not_on_rejection(
+        self, client, wired, monkeypatch
+    ):
+        _cfg, vmc, _inv, _store = wired
+        calls = []
+        monkeypatch.setattr(
+            vmc.__class__, "catalog_changed", lambda self: calls.append(1)
+        )
+
+        resp = client.post(
+            "/products/new",
+            data={
+                "sku": "CC-NEW",
+                "name": "X",
+                "price": "1.00",
+                "inventory_count": "-1",
+            },
+        )
+        assert resp.status_code == 200
+        assert calls == []  # rejected form (negative inventory_count)
+
+        resp = client.post(
+            "/products/new",
+            data={"sku": "CC-NEW", "name": "X", "price": "1.00"},
+        )
+        assert resp.status_code == 200
+        assert calls == [1]
+
+    def test_catalog_update_calls_catalog_changed_once_on_success_not_on_rejection(
+        self, client, wired, monkeypatch
+    ):
+        _cfg, vmc, _inv, _store = wired
+        _add(client, "CC-CAT", name="Old", price="1.00")
+        calls = []
+        monkeypatch.setattr(
+            vmc.__class__, "catalog_changed", lambda self: calls.append(1)
+        )
+
+        resp = client.post(
+            "/products/NOPE-CC/catalog",
+            data={"name": "x", "price": "1", "kind": "other"},
+        )
+        assert resp.status_code == 404
+        assert calls == []
+
+        resp = client.post(
+            "/products/CC-CAT/catalog",
+            data={"name": "New", "price": "2.00", "kind": "water"},
+        )
+        assert resp.status_code == 200
+        assert calls == [1]
+
+    def test_placement_update_calls_catalog_changed_once_on_success_not_on_rejection(
+        self, client, wired, monkeypatch
+    ):
+        _cfg, vmc, _inv, _store = wired
+        _add(client, "CC-PLC-A", name="A", price="1.00", slot="1")
+        _add(client, "CC-PLC-B", name="B", price="1.00", slot="2")
+        calls = []
+        monkeypatch.setattr(
+            vmc.__class__, "catalog_changed", lambda self: calls.append(1)
+        )
+
+        # slot 1 is already CC-PLC-A's -- rejected.
+        resp = client.post(
+            "/products/CC-PLC-B/placement",
+            data={"slot": "1", "inventory_count": "5"},
+        )
+        assert resp.status_code == 200
+        assert calls == []
+
+        resp = client.post(
+            "/products/CC-PLC-B/placement",
+            data={"slot": "9", "inventory_count": "5"},
+        )
+        assert resp.status_code == 200
+        assert calls == [1]
+
+    def test_delete_calls_catalog_changed_once_on_success_not_on_unknown_sku(
+        self, client, wired, monkeypatch
+    ):
+        _cfg, vmc, _inv, _store = wired
+        _add(client, "CC-DEL", name="Doomed", price="1.00")
+        calls = []
+        monkeypatch.setattr(
+            vmc.__class__, "catalog_changed", lambda self: calls.append(1)
+        )
+
+        resp = client.post("/products/NOPE-DEL/delete")
+        assert resp.status_code == 404
+        assert calls == []
+
+        resp = client.post("/products/CC-DEL/delete")
+        assert resp.status_code == 200
+        assert calls == [1]
+
+    def test_route_tolerates_no_vmc_instance(self, client, wired, monkeypatch):
+        """A test harness with no VMC wired at all must not crash the
+        route -- context.vmc_instance can be None."""
+        from web_interface import context
+
+        monkeypatch.setattr(context, "vmc_instance", None)
+        resp = client.post(
+            "/products/new",
+            data={"sku": "CC-NOVMC", "name": "X", "price": "1.00"},
+        )
+        assert resp.status_code == 200
+
+
 class TestLockBadge:
     def test_locked_badge_shown_on_list_and_detail(self, client, wired):
         from contracts.vending_machine import FaultCode

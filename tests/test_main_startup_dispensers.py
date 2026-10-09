@@ -86,10 +86,47 @@ def test_fixture_provides_two_profiles(dispenser_profiles):
     assert dispenser_profiles.profile_for_slot(2).mechanism == "water_fill"
 
 
-def test_compose_sets_dispensers_env():
-    text = COMPOSE_PATH.read_text(encoding="utf-8")
-    config_count = text.count("ICE_COLDER_CONFIG=/app/data/config.json")
-    dispensers_count = text.count("ICE_COLDER_DISPENSERS=/app/data/dispensers.toml")
+def test_main_wires_profiles_into_vmc_and_routes(monkeypatch):
+    """`main()` hands the module-level `dispenser_profiles` (set by
+    `load_dispenser_profiles`) to both the VMC and the routes module,
+    right after `vmc.set_health_monitor(health)` -- extracted into
+    `main.wire_dispenser_profiles(vmc, profiles)` since `main()` itself is
+    an infinite event loop wrapped in `@logger.catch()` and cannot be
+    exercised partially in a test. `main()`'s own behaviour is unchanged:
+    this helper is just the same two calls `main()` makes, moved so they
+    can be tested without an event loop. This test proves one load
+    reaches both consumers with the SAME object.
+    """
+    from controller.vmc import VMC
+    from web_interface import routes
 
-    assert config_count > 0
-    assert dispensers_count == config_count
+    vmc_calls = []
+    routes_calls = []
+    monkeypatch.setattr(
+        VMC, "set_dispenser_profiles", lambda self, p: vmc_calls.append(p)
+    )
+    monkeypatch.setattr(routes, "set_dispenser_profiles", routes_calls.append)
+
+    cfg = ConfigModel()
+    vmc = VMC(config=cfg)
+    sentinel = DispenserProfiles(cfg)
+
+    main_mod.wire_dispenser_profiles(vmc, sentinel)
+
+    assert vmc_calls == [sentinel]
+    assert routes_calls == [sentinel]
+
+
+def test_compose_sets_dispensers_env():
+    """Only the `vmc` service wires ICE_COLDER_DISPENSERS -- the three
+    simulators never read dispensers.toml (the VMC sends the whole slot
+    profile in the dispense command, plan 2), so their copy of the env var
+    was vestigial. Assert it appears exactly once, inside the vmc service
+    block, rather than once per ICE_COLDER_CONFIG line."""
+    text = COMPOSE_PATH.read_text(encoding="utf-8")
+    dispensers_count = text.count("ICE_COLDER_DISPENSERS=/app/data/dispensers.toml")
+    assert dispensers_count == 1
+
+    assert "\n  sim-ice-maker:" in text
+    vmc_block = text.split("\n  sim-ice-maker:", 1)[0]
+    assert vmc_block.count("ICE_COLDER_DISPENSERS=/app/data/dispensers.toml") == 1

@@ -86,6 +86,45 @@ class FakeMQTTClient:
         await handler("hardware/dispenser", payload)
 
 
+def _dispense_params(slot: int) -> dict:
+    """A valid `DispenseCommand.model_dump(mode="json")`-shaped params dict
+    for *slot* -- `contracts.common._validate_dispense_params` (plan:
+    dispenser profiles, Task 1) now requires the full slot/mechanism/
+    profile shape for any `dispense` SubsystemCommand, so a bare
+    `{"slot": N}` no longer validates."""
+    return {
+        "slot": slot,
+        "mechanism": "bagged_ice",
+        "profile": {
+            "mechanism": "bagged_ice",
+            "product_sku": "ICE-1",
+            "agitate": {
+                "motor_channel": "agitator_motor",
+                "run_seconds": 4.0,
+                "stall_current_amps": "unmonitored",
+                "current_channel": "unmonitored",
+            },
+            "fill": {
+                "proof": "bag_full_sensor",
+                "motor_channel": "auger_motor",
+                "sensor_channel": "bag_full_sensor",
+                "max_run_seconds": 25.0,
+                "stall_current_amps": "unmonitored",
+                "current_channel": "unmonitored",
+            },
+            "release": {
+                "proof": "door_sensor",
+                "solenoid_channel": "bag_drop_solenoid",
+                "sensor_channel": "door_sensor",
+                "pulse_seconds": 1.5,
+                "open_timeout_seconds": 3.0,
+                "close_timeout_seconds": 5.0,
+            },
+            "accessories": {},
+        },
+    }
+
+
 def _ack_payload(request_id: str, command: str, status: str = "ok", **extra) -> dict:
     payload = {
         "request_id": request_id,
@@ -135,6 +174,44 @@ async def test_ack_for_sent_request_id_resolves_send():
     assert ack.status == "ok"
     # No timeout wait was ever satisfied — the ack won the race outright.
     assert clock.calls == [5.0]  # sleep() was scheduled but never fired
+
+
+async def test_send_uses_caller_request_id():
+    """Copilot review (PR #32) finding C2: a caller (the VMC, so it can
+    know the id before any dispatch even starts) may supply its own
+    request_id -- send() must publish with exactly that id rather than
+    minting a fresh one, and the resolved ack still correlates by it."""
+    mqtt = FakeMQTTClient()
+    clock = FakeClock()
+    dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
+    caller_id = "caller-supplied-id-1"
+
+    task = asyncio.ensure_future(
+        dispatcher.send(
+            "vending", "dispense", _dispense_params(0), request_id=caller_id
+        )
+    )
+    await _wait_until(lambda: len(mqtt.published) == 1)
+
+    assert mqtt.published[0][1].request_id == caller_id
+
+    await mqtt.deliver_ack("vending", _ack_payload(caller_id, "dispense"))
+    ack = await asyncio.wait_for(task, timeout=2.0)
+    assert ack.request_id == caller_id
+
+
+async def test_send_generates_request_id_when_caller_supplies_none():
+    mqtt = FakeMQTTClient()
+    clock = FakeClock()
+    dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
+
+    task = asyncio.ensure_future(dispatcher.send("ice_maker", "ping"))
+    await _wait_until(lambda: len(mqtt.published) == 1)
+
+    request_id = mqtt.published[0][1].request_id
+    assert request_id  # minted, non-empty
+    await mqtt.deliver_ack("ice_maker", _ack_payload(request_id, "ping"))
+    await asyncio.wait_for(task, timeout=2.0)
 
 
 async def test_foreign_request_id_is_ignored_and_original_still_times_out():
@@ -302,7 +379,7 @@ async def test_dispense_completion_awaits_terminal_hardware_dispenser_report():
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
 
     task = asyncio.ensure_future(
-        dispatcher.send_and_await_completion("vending", "dispense", {"slot": 3})
+        dispatcher.send_and_await_completion("vending", "dispense", _dispense_params(3))
     )
     await _wait_until(lambda: len(mqtt.published) == 1)
     request_id = mqtt.published[0][1].request_id
@@ -353,7 +430,7 @@ async def test_dispense_non_complete_terminal_state_resolves_as_failed():
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
 
     task = asyncio.ensure_future(
-        dispatcher.send_and_await_completion("vending", "dispense", {"slot": 1})
+        dispatcher.send_and_await_completion("vending", "dispense", _dispense_params(1))
     )
     await _wait_until(lambda: len(mqtt.published) == 1)
     request_id = mqtt.published[0][1].request_id
@@ -373,7 +450,9 @@ async def test_dispense_non_complete_terminal_state_resolves_as_failed():
     ack = await asyncio.wait_for(task, timeout=2.0)
 
     assert ack.status == "failed"
-    assert ack.detail == "jam"
+    # No board-supplied detail -- the generated fallback (plan: dispenser
+    # profiles, Task 3), not the bare state string.
+    assert ack.detail == "outcome jam"
 
 
 async def test_water_valve_completion_awaits_second_completed_ack():
@@ -477,7 +556,7 @@ async def test_ack_timeout_still_fires_for_long_running_command_that_never_accep
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, retries=1, clock=clock)
 
     task = asyncio.ensure_future(
-        dispatcher.send_and_await_completion("vending", "dispense", {"slot": 0})
+        dispatcher.send_and_await_completion("vending", "dispense", _dispense_params(0))
     )
     await _wait_for_attempt(clock, 1)
     clock.fire_next()  # attempt 1 (ack) times out -> retry
@@ -503,7 +582,7 @@ async def test_completion_timeout_raised_when_accepted_but_never_completes():
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
 
     task = asyncio.ensure_future(
-        dispatcher.send_and_await_completion("vending", "dispense", {"slot": 0})
+        dispatcher.send_and_await_completion("vending", "dispense", _dispense_params(0))
     )
     await _wait_until(lambda: len(mqtt.published) == 1)
     request_id = mqtt.published[0][1].request_id
@@ -529,6 +608,71 @@ async def test_completion_timeout_raised_when_accepted_but_never_completes():
     assert excinfo.value.command == "dispense"
 
 
+async def test_door_open_report_is_failed_with_detail():
+    """door_open is a terminal, non-complete outcome -- status "failed" --
+    and when the board gives no detail of its own, the dispatcher fills in
+    a specific default rather than the generic "outcome door_open" (plan:
+    dispenser profiles, Task 3)."""
+    mqtt = FakeMQTTClient()
+    clock = FakeClock()
+    dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
+
+    task = asyncio.ensure_future(
+        dispatcher.send_and_await_completion("vending", "dispense", _dispense_params(2))
+    )
+    await _wait_until(lambda: len(mqtt.published) == 1)
+    request_id = mqtt.published[0][1].request_id
+    await mqtt.deliver_ack(
+        "vending", _ack_payload(request_id, "dispense", status="ok", phase="accepted")
+    )
+    await asyncio.sleep(0)
+
+    await mqtt.deliver_dispenser_report(
+        {
+            "slot": 2,
+            "state": "door_open",
+            "request_id": request_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    ack = await asyncio.wait_for(task, timeout=2.0)
+
+    assert ack.status == "failed"
+    assert ack.detail == "bag released but door did not close"
+
+
+async def test_detail_passthrough():
+    """When the board supplies its own `detail`, the dispatcher passes it
+    through verbatim instead of generating one."""
+    mqtt = FakeMQTTClient()
+    clock = FakeClock()
+    dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
+
+    task = asyncio.ensure_future(
+        dispatcher.send_and_await_completion("vending", "dispense", _dispense_params(1))
+    )
+    await _wait_until(lambda: len(mqtt.published) == 1)
+    request_id = mqtt.published[0][1].request_id
+    await mqtt.deliver_ack(
+        "vending", _ack_payload(request_id, "dispense", status="ok", phase="accepted")
+    )
+    await asyncio.sleep(0)
+
+    await mqtt.deliver_dispenser_report(
+        {
+            "slot": 1,
+            "state": "error",
+            "detail": "stall 4.2 A",
+            "request_id": request_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    ack = await asyncio.wait_for(task, timeout=2.0)
+
+    assert ack.status == "failed"
+    assert ack.detail == "stall 4.2 A"
+
+
 async def test_early_completion_signal_is_not_lost():
     """Reproduces the registration-gap race documented in
     CommandDispatcher._resolve_completion: both the accept ack and the
@@ -543,7 +687,7 @@ async def test_early_completion_signal_is_not_lost():
     dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
 
     task = asyncio.ensure_future(
-        dispatcher.send_and_await_completion("vending", "dispense", {"slot": 0})
+        dispatcher.send_and_await_completion("vending", "dispense", _dispense_params(0))
     )
     await _wait_until(lambda: len(mqtt.published) == 1)
     request_id = mqtt.published[0][1].request_id

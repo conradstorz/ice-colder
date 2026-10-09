@@ -119,6 +119,49 @@ def test_old_file_with_no_is_test_key_defaults_to_production(tmp_path):
     assert loaded.is_open() is True
 
 
+def test_old_file_with_no_dispense_mechanism_key_still_loads(tmp_path):
+    """A session.json written before dispense_mechanism existed (plan:
+    dispenser profiles, Task 3) has no such key at all -- SessionSnapshot(
+    **raw) must fill it in as None rather than raising."""
+    path = tmp_path / "session.json"
+    old_style = {
+        "state": "dispensing",
+        "credit_escrow": 0.0,
+        "selected_sku": "ICE-1",
+        "dispense_slot": 2,
+        "dispense_started_at": 123.0,
+        "pending_refund_request_id": None,
+        "credits": [],
+        "pending_sale_shares": {"cash_bill": 2.50},
+        "is_test": False,
+        "saved_at": 100.0,
+        "error": None,
+    }
+    path.write_text(json.dumps(old_style), encoding="utf-8")
+
+    loaded = SessionStore(path).load()
+
+    assert loaded.error is None
+    assert loaded.dispense_mechanism is None
+    assert loaded.is_open() is True
+
+
+def test_dispense_mechanism_round_trips(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    snap = SessionSnapshot(
+        state="dispensing",
+        credit_escrow=0.0,
+        selected_sku="ICE-1",
+        dispense_slot=2,
+        dispense_mechanism="bagged_ice",
+        dispense_started_at=123.0,
+    )
+    store.save(snap)
+    loaded = store.load()
+    assert loaded == snap
+    assert loaded.dispense_mechanism == "bagged_ice"
+
+
 def test_load_missing_returns_none(tmp_path):
     assert SessionStore(tmp_path / "session.json").load() is None
 

@@ -384,7 +384,7 @@ Both clear themselves; neither needs an operator.
 - Executes the received `profile` literally: accessories lead/lag around
   their steps, agitate for `run_seconds`, fill until the sensor trips or
   `max_run_seconds`, pulse the solenoid, read the door; water opens the
-  valve and emits `water_flow` pulses at a configurable rate until
+  valve and emits `fill_pulses` flow-meter counts at a configurable rate until
   `target_volume_ml`. Every output toggle still goes to
   `hardware/io/<device>`; every step publishes a `DispenserStatus` with the
   `DispenseStep`.
@@ -524,3 +524,83 @@ independently mergeable and leaves the suite green.
 - Raw motor jog / run-for-N-seconds / reverse from the Tests level.
 - Per-slot run-count, run-seconds and peak-current telemetry and reports.
 - Mechanisms other than bagged ice and water fill.
+
+## 12. Implementation notes (plan 2)
+
+Plan 2 shipped §6 in full (VMC runtime, contract additions, simulator
+execution). This spec stays the design of record; the notes below record
+where plan 2 shipped differently, and why, rather than letting the two
+documents silently drift apart.
+
+- **Bumped to 1.0.0 per the contract's breaking-change rule, on Copilot
+  review.** `CFG-101`/`CFG-102` (plan 1) shipped as an additive minor bump
+  to `contracts/vending_machine.py` 0.8.0, same as planned. Plan 2's
+  additions — `DispenseCommand`/`DispenseStep`/the new `DispenserOutcome`
+  members/`fault_for_outcome` — were originally shipped under that same
+  0.8.0 on the theory that they were additive wiring, not a schema break;
+  Copilot's PR #32 review correctly identified that `dispense`'s params
+  changed shape (from `{slot}` to requiring `mechanism`+`profile`) and
+  `cmd/dispense` was removed outright, which is wire-breaking by the
+  module docstring's own rule ("Breaking changes require a major
+  CONTRACT_VERSION bump"). The fix bumps `CONTRACT_VERSION` to `1.0.0`
+  rather than reusing 0.8.0.
+- **`DispenserStatus.state` stays `str`, not an enum.** The same field
+  carries both intermediate `DispenseStep` strings (`agitate`, `fill`,
+  `release`) and the terminal `DispenserOutcome` strings over one sale's
+  lifetime; typing it as either enum alone would make the other half of
+  its values invalid against the schema.
+- **The simulator's legacy `cmd/dispense` subscription was removed now,
+  not kept for a deprecation window.** No physical ESP32 board exists yet
+  (Phase D unstarted per §11), so there was no deployed consumer that
+  could be broken by removing it immediately.
+- **The command dispatcher reports a `door_open` completion as
+  `status="failed"`**, with a `detail` of "bag released but door did not
+  close", even though the VMC itself treats `door_open` as a customer
+  success plus a fault (it records the sale and raises `ICE-402`). The
+  dispatcher's `CommandAck.status` vocabulary has no third state between
+  "ok" and "failed" to express "succeeded, but also faulted," so a
+  `/tests` operator reading the ack sees "failed" for what the customer
+  path treats as a completed vend.
+- **Flow-meter pulses are declared on their own `fill_pulses` channel, not
+  on `water_flow`.** `water_flow` stays `unit="gal"`, matching the
+  cumulative-gallons reading `_publish_sensors` already publishes on
+  `sensors/water_flow` (the Home Assistant `water_flow_total` entity);
+  the per-fill pulse count the water-fill mechanism simulates (`unit=
+  "pulses"`) is a distinct channel so a subsystem window never shows
+  gallons under a "pulses" label or vice versa (review finding I1,
+  whole-branch review). `fill_pulses`, `agitator_current` and
+  `auger_current` are all published on `telemetry/vending/<id>`, which the
+  VMC does not yet subscribe to (§11 defers per-slot telemetry) — their
+  subsystem-window rows show "never reported" for now.
+- **`slow_flow` is an added simulator fault**, beyond the outcomes §6.4
+  enumerates: it halves the flow rate so only half the target volume is
+  reached by `max_fill_seconds`, which is the only path by which
+  `_run_water_fill` returns `timeout` — no other fault drives that
+  outcome for the water-fill mechanism.
+- **`SessionSnapshot.dispense_mechanism` was added**, additive beyond
+  what this spec asked for, so a crash-recovery snapshot records which
+  mechanism was mid-dispense without the recovery flow having to
+  re-derive it from the (possibly since-changed) dispenser profile.
+- **`clear_fault` re-asserts `CFG-101`.** Popping any lockout for a sku
+  (not only `CFG-101` itself) re-checks `dispenser_profile_for` and
+  re-raises `CFG-101` immediately if the product still has no valid
+  profile, so clearing an unrelated fault (e.g. `ICE-301`) on a
+  profile-less product can never leave it sellable — `CFG-101` is a
+  standing invariant, not a one-shot check at reconciliation time.
+- **A board reporting an outcome unmapped for its own mechanism** (e.g. a
+  water board sending `jam`) is caught as `KeyError` from
+  `fault_for_outcome` in `_handle_mqtt_dispenser` and falls back to that
+  mechanism's `error` mapping instead of crashing the MQTT handler.
+- **`_sale_seq`, a monotonically increasing counter bumped once per
+  `on_dispense_product` call, guards every async dispatch-failure path**
+  (`_fail_dispense_async` compares its captured `seq` against the live
+  counter and the FSM's current state before acting), and
+  `_persist_then_dispense`'s "no dispatcher"/`send()`/ack-status checks
+  are each guarded (the snapshot save under its own `snapshot_failed` outcome, the dispatch under `no_ack`) so any failure there — not only
+  a `CommandTimeout` — fails the vend immediately instead of waiting out
+  the full dispense-timeout fallback.
+- **`_customer_loop` lost its impatient-customer timeout and
+  repeat-customer purchase.** Both depended on the legacy dispense queue
+  removed by this plan; the loop now only generates button-press traffic
+  (plus the occasional change-of-mind second press) and never itself
+  waits on or runs a dispense.

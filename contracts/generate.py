@@ -10,7 +10,13 @@ from pathlib import Path
 
 from pydantic import BaseModel, TypeAdapter
 
-from services.mqtt_messages import IceMakerEvent, SensorReading, SubsystemHeartbeat
+from services.dispenser_schema import SlotProfile
+from services.mqtt_messages import (
+    DispenseCommand,
+    IceMakerEvent,
+    SensorReading,
+    SubsystemHeartbeat,
+)
 
 from contracts.common import CommandAck, SubsystemCommand
 from contracts.ice_maker_monitor import (
@@ -20,6 +26,7 @@ from contracts.ice_maker_monitor import (
 )
 from contracts.vending_machine import (
     DispenserOutcome,
+    DispenseStep,
     FaultCode,
     PaymentRefundCommand,
     PaymentRefundResult,
@@ -48,10 +55,13 @@ MODELS = {
 VENDING_SCHEMA_DIR = Path("docs/contracts/vending-machine/schemas")
 
 VENDING_MODELS = {
+    "dispense_command": DispenseCommand,
+    "dispense_step": DispenseStep,
     "dispenser_outcome": DispenserOutcome,
     "fault_code": FaultCode,
     "payment_refund_command": PaymentRefundCommand,
     "payment_refund_result": PaymentRefundResult,
+    "slot_profile": SlotProfile,
     "subsystem_capabilities": SubsystemCapabilities,
     "subsystem_command": SubsystemCommand,
     "command_ack": CommandAck,

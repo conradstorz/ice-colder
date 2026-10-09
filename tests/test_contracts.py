@@ -18,6 +18,8 @@ from contracts.common import (
 )
 from contracts.common import CommandAck as CommonCommandAck
 from contracts.common import SubsystemCommand
+from services.dispensers import validate_document
+from tests.dispenser_fixtures import GOOD, ICE, WATER
 
 
 class TestChannelDescriptor:
@@ -239,6 +241,64 @@ class TestSharedCommandChannelIdentity:
 
         assert ImportedCommand is SubsystemCommand
         assert ImportedAck is CommonCommandAck
+
+
+class TestDispenseParamsValidator:
+    """COMMAND_PARAM_VALIDATORS["dispense"] rejects a params dict that
+    doesn't carry a full DispenseCommand (mechanism, profile) and accepts
+    one that does."""
+
+    def test_rejects_bare_slot(self):
+        with pytest.raises(ValidationError):
+            SubsystemCommand(
+                request_id="req-12345678", command="dispense", params={"slot": 1}
+            )
+
+    def test_accepts_full_payload(self):
+        report = validate_document(GOOD, [ICE, WATER])
+        profile = report.profiles[1]
+        cmd = SubsystemCommand(
+            request_id="req-12345678",
+            command="dispense",
+            params={
+                "slot": 1,
+                "mechanism": "bagged_ice",
+                "profile": profile.model_dump(mode="json"),
+            },
+        )
+        assert cmd.command == "dispense"
+
+    def test_dispense_params_bare_slot_message_is_one_line(self):
+        """Missing fields produce one-line operator-readable message."""
+        from contracts.common import _validate_dispense_params
+
+        with pytest.raises(ValueError) as exc_info:
+            _validate_dispense_params({"slot": 1})
+        msg = str(exc_info.value)
+        assert "\n" not in msg, f"Message should be one line, got: {msg}"
+        assert "dispense requires:" in msg
+        assert "mechanism" in msg
+        assert "profile" in msg
+        assert "missing:" in msg
+
+    def test_dispense_params_mismatch_message_is_one_line(self):
+        """Mechanism/profile mismatch produces one-line operator-readable message."""
+        from contracts.common import _validate_dispense_params
+
+        report = validate_document(GOOD, [ICE, WATER])
+        profile = report.profiles[1]  # bagged_ice
+
+        with pytest.raises(ValueError) as exc_info:
+            _validate_dispense_params(
+                {
+                    "slot": 1,
+                    "mechanism": "water_fill",  # Mismatch! Profile is bagged_ice
+                    "profile": profile.model_dump(mode="json"),
+                }
+            )
+        msg = str(exc_info.value)
+        assert "\n" not in msg, f"Message should be one line, got: {msg}"
+        assert "does not match command mechanism" in msg
 
 
 class TestTestableCommands:

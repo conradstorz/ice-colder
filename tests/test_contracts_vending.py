@@ -8,12 +8,14 @@ from contracts.vending_machine import (
     FAULT_TABLE,
     OUTCOME_FAULTS,
     DispenserOutcome,
+    DispenseStep,
     FaultCode,
     PaymentRefundCommand,
     PaymentRefundResult,
     RefundStatus,
     Scope,
     Severity,
+    fault_for_outcome,
 )
 from contracts.vending_machine import EXPECTED_SUBSYSTEMS, SubsystemCapabilities
 
@@ -22,8 +24,11 @@ def test_contract_version():
     # 0.4.0 -> 0.5.0: SVC-102 (new FaultCode, seven-member
     # PAYMENT_BLOCKING_FAULTS) plus part 3's deferred DATA-101 wording bump.
     # 0.6.0 -> 0.7.0: ChannelDescriptor gains direction/driven_by (additive).
-    # 0.7.0 -> 0.8.0: CFG-101/CFG-102 (dispenser profiles); plan 2 adds DispenseCommand/DispenseStep under the same version.
-    assert CONTRACT_VERSION == "0.8.0"
+    # 0.7.0 -> 0.8.0: CFG-101/CFG-102 (dispenser profiles), additive.
+    # 0.8.0 -> 1.0.0: major bump (Copilot review, PR #32) -- wire-breaking:
+    # `dispense` params now require mechanism+profile, `cmd/dispense` is
+    # removed, and DispenserStatus.request_id is now always set for sales.
+    assert CONTRACT_VERSION == "1.0.0"
 
 
 def test_every_fault_code_has_a_table_entry():
@@ -32,18 +37,63 @@ def test_every_fault_code_has_a_table_entry():
 
 
 def test_every_failure_outcome_maps_to_a_fault_code():
-    for outcome in DispenserOutcome:
-        if outcome is DispenserOutcome.complete:
-            assert outcome not in OUTCOME_FAULTS
-        else:
-            assert isinstance(OUTCOME_FAULTS[outcome], FaultCode)
+    # Every (mechanism, outcome) pair registered in OUTCOME_FAULTS is for a
+    # non-complete outcome, and fault_for_outcome returns exactly what the
+    # table says -- the helper must never silently diverge from its data.
+    for (mechanism, outcome), expected_fault in OUTCOME_FAULTS.items():
+        assert outcome is not DispenserOutcome.complete
+        assert fault_for_outcome(mechanism, outcome) is expected_fault
+    # M1 (whole-branch review): every non-complete outcome is reachable
+    # through OUTCOME_FAULTS by *some* mechanism -- none was left
+    # unmapped for every mechanism that could report it.
+    assert {o for _, o in OUTCOME_FAULTS} == set(DispenserOutcome) - {
+        DispenserOutcome.complete
+    }
 
 
 def test_outcome_mapping_matches_spec():
-    assert OUTCOME_FAULTS[DispenserOutcome.bin_empty] is FaultCode.ICE_101
-    assert OUTCOME_FAULTS[DispenserOutcome.timeout] is FaultCode.ICE_301
-    assert OUTCOME_FAULTS[DispenserOutcome.jam] is FaultCode.ICE_401
-    assert OUTCOME_FAULTS[DispenserOutcome.error] is FaultCode.ICE_302
+    assert OUTCOME_FAULTS[("bagged_ice", DispenserOutcome.timeout)] is FaultCode.ICE_301
+    assert OUTCOME_FAULTS[("bagged_ice", DispenserOutcome.error)] is FaultCode.ICE_302
+    assert OUTCOME_FAULTS[("bagged_ice", DispenserOutcome.jam)] is FaultCode.ICE_401
+    assert (
+        OUTCOME_FAULTS[("bagged_ice", DispenserOutcome.door_open)] is FaultCode.ICE_402
+    )
+    assert OUTCOME_FAULTS[("water_fill", DispenserOutcome.no_flow)] is FaultCode.WTR_101
+    assert (
+        OUTCOME_FAULTS[("water_fill", DispenserOutcome.over_dispense)]
+        is FaultCode.WTR_102
+    )
+    assert OUTCOME_FAULTS[("water_fill", DispenserOutcome.timeout)] is FaultCode.WTR_101
+    assert OUTCOME_FAULTS[("water_fill", DispenserOutcome.error)] is FaultCode.ICE_302
+    assert (
+        OUTCOME_FAULTS[("bagged_ice", DispenserOutcome.bin_empty)] is FaultCode.ICE_101
+    )
+    assert (
+        OUTCOME_FAULTS[("water_fill", DispenserOutcome.bin_empty)] is FaultCode.ICE_101
+    )
+    assert len(OUTCOME_FAULTS) == 10
+
+
+def test_dispense_step_values():
+    assert DispenseStep.agitate == "agitate"
+    assert DispenseStep.fill == "fill"
+    assert DispenseStep.release == "release"
+    assert {s.value for s in DispenseStep} == {"agitate", "fill", "release"}
+
+
+def test_ice_302_description_is_mechanism_agnostic():
+    assert FAULT_TABLE[FaultCode.ICE_302].description == (
+        "Dispense actuator fault reported by the board "
+        "(motor stall, valve driver, over-current)"
+    )
+
+
+def test_fault_for_outcome_unmapped_raises_keyerror():
+    with pytest.raises(KeyError) as exc_info:
+        fault_for_outcome("bagged_ice", DispenserOutcome.complete)
+    message = str(exc_info.value)
+    assert "bagged_ice" in message
+    assert "complete" in message
 
 
 def test_fault_code_values_are_stable_strings():
@@ -141,7 +191,7 @@ class TestSubsystemCapabilities:
             )
 
     def test_contract_version_bumped(self):
-        assert CONTRACT_VERSION == "0.8.0"
+        assert CONTRACT_VERSION == "1.0.0"
 
     def test_expected_subsystems(self):
         assert EXPECTED_SUBSYSTEMS == ("vending", "mdb", "ice_maker")
@@ -160,7 +210,7 @@ def test_pay_104_is_a_machine_warning():
 def test_contract_version_bumped_for_new_code():
     from contracts.vending_machine import CONTRACT_VERSION
 
-    assert CONTRACT_VERSION == "0.8.0"
+    assert CONTRACT_VERSION == "1.0.0"
 
 
 def test_payment_blocking_faults_is_exactly_the_six_hazards_plus_svc_102():

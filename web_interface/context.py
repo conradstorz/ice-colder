@@ -75,6 +75,19 @@ def set_command_dispatcher(dispatcher) -> None:
     command_dispatcher = dispatcher
 
 
+# The routes-side handle on the loaded dispensers.toml (plan: dispenser
+# profiles, Task 2) -- main.py wires the same DispenserProfiles instance
+# the VMC owns (VMC.set_dispenser_profiles) here too, via set_dispenser_
+# profiles below, so a later task's Tests-level/products routes can read
+# profile validity without reaching into the VMC.
+dispenser_profiles = None
+
+
+def set_dispenser_profiles(profiles) -> None:
+    global dispenser_profiles
+    dispenser_profiles = profiles
+
+
 availability = None
 
 

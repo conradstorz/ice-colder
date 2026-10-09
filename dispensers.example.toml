@@ -101,7 +101,7 @@ close_timeout_seconds = 5
 [slot.0.accessories.bag_fan]
 # The channel that drives this accessory. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 channel = "bag_fan"
-# Which steps this accessory runs during, by name, or ["all"] to run for the whole slot cycle. At least one entry. Steps for bagged_ice: agitate, fill, release.
+# Which steps this accessory runs during, as a consecutive run of step names (no gaps), or ["all"] to run for the whole slot cycle. At least one entry. Steps for bagged_ice: agitate, fill, release.
 on_during = ["agitate", "fill"]
 # How long before its step(s) start this accessory turns on. Unit: s. Range: 0–30.
 lead_seconds = 0
@@ -112,7 +112,7 @@ lag_seconds = 2
 [slot.0.accessories.vending_now_light]
 # The channel that drives this accessory. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 channel = "vending_now_light"
-# Which steps this accessory runs during, by name, or ["all"] to run for the whole slot cycle. At least one entry. Steps for bagged_ice: agitate, fill, release.
+# Which steps this accessory runs during, as a consecutive run of step names (no gaps), or ["all"] to run for the whole slot cycle. At least one entry. Steps for bagged_ice: agitate, fill, release.
 on_during = ["all"]
 # How long before its step(s) start this accessory turns on. Unit: s. Range: 0–30.
 lead_seconds = 0

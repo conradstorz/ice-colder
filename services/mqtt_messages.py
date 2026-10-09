@@ -12,10 +12,11 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-from contracts.vending_machine import FaultCode
+from contracts.vending_machine import FaultCode, Mechanism
 from services.build_info import BUILD_INFO
+from services.dispenser_schema import SlotProfile
 
 
 def _utc_now() -> datetime:
@@ -75,17 +76,28 @@ class DispenserStatus(BaseModel):
     """Dispenser motor/mechanism status from ESP32."""
 
     slot: int = Field(..., description="Dispenser slot number")
-    state: str = Field(..., description="Status (e.g., 'complete', 'jammed', 'error')")
+    state: str = Field(
+        ...,
+        description=(
+            "An intermediate DispenseStep ('agitate', 'fill', 'release') or "
+            "a terminal DispenserOutcome ('complete', 'bin_empty', "
+            "'timeout', 'jam', 'error', 'door_open', 'no_flow', "
+            "'over_dispense')"
+        ),
+    )
     request_id: Optional[str] = Field(
         None,
         description=(
-            "Echoed from the command-channel `dispense` request that "
-            "triggered this run (contracts/common.py COMPLETION_TIMEOUTS, "
-            "2026-09-29 amendment), so services/command_dispatcher.py can "
-            "correlate its terminal report to the command it is waiting on. "
-            "Always None for a production `cmd/dispense` sale, which has no "
-            "request_id to carry -- that path is unaffected."
+            "Echoed from the command-channel `dispense` request for both "
+            "test runs and production sales (contracts/common.py "
+            "COMPLETION_TIMEOUTS; plan 2 moves production sales onto the "
+            "same command channel, so this is no longer test-only). The "
+            "VMC logs a mismatch but keys completion on `slot` and FSM "
+            "state, never on this field."
         ),
+    )
+    detail: Optional[str] = Field(
+        None, description="Board-supplied text, e.g. 'stall 4.2 A' or '412 pulses'"
     )
     timestamp: datetime = Field(default_factory=_utc_now)
 
@@ -129,9 +141,25 @@ class IceMakerEvent(BaseModel):
 
 
 class DispenseCommand(BaseModel):
-    """Command to dispense product from a slot."""
+    """Command to dispense product from a slot, carrying the slot's whole
+    validated profile so the board is stateless about configuration -- a
+    `dispensers.toml` save mid-vend cannot affect an in-flight command.
+    """
 
     slot: int = Field(..., ge=0, description="Slot to dispense from")
+    mechanism: Mechanism = Field(..., description="Dispense mechanism for this slot")
+    profile: SlotProfile = Field(
+        ..., description="The slot's full validated dispenser profile"
+    )
+
+    @model_validator(mode="after")
+    def _check_mechanism_matches_profile(self) -> "DispenseCommand":
+        if self.profile.mechanism != self.mechanism:
+            raise ValueError(
+                f'profile mechanism "{self.profile.mechanism}" does not match '
+                f'command mechanism "{self.mechanism}"'
+            )
+        return self
 
 
 class PaymentEnableCommand(BaseModel):

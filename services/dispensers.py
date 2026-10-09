@@ -71,6 +71,19 @@ _DISCRIMINATOR_TAGS = frozenset(
     }
 )
 
+# `_check_accessories_name_known_steps` (services/dispenser_schema.py, C6)
+# raises its "must be consecutive" ValueError from a *profile*-level
+# `@model_validator(mode="after")`, so Pydantic's own `loc` for it is
+# always `()` (the whole model, not any nested field) -- there is no
+# `loc`-based path to report. `humanize` below matches the accessory
+# name back out of the validator's own message text instead, so this
+# finding still gets a real `accessories.<name>.on_during` path (and,
+# via `find_line`, a real source line) rather than the slot-level
+# fallback every other loc-less error gets.
+_ON_DURING_CONTIGUOUS_RE = re.compile(
+    r'^accessory "([^"]+)": on_during steps must be consecutive'
+)
+
 # The two discriminator field names used anywhere in the SlotProfile tree.
 _DISCRIMINATOR_FIELDS = ("mechanism", "proof")
 
@@ -408,6 +421,9 @@ def humanize(err: dict, slot: int) -> Finding:
         # Pydantic prefixes a model/field validator's own ValueError text
         # with "Value error, "; the validator already wrote operator prose.
         message = message.removeprefix("Value error, ")
+        on_during_match = _ON_DURING_CONTIGUOUS_RE.match(message)
+        if on_during_match:
+            path = f"accessories.{on_during_match.group(1)}.on_during"
 
     if err_type == "extra_forbidden":
         field_name = str(loc[-1]) if loc else ""
@@ -1062,6 +1078,19 @@ class DispenserProfiles:
         the file on disk) so capability warnings resolve without a save."""
 
         self.capabilities = doc
+        return self._revalidate_last_loaded_text()
+
+    def revalidate(self) -> ValidationReport:
+        """Re-run validation on the last-loaded text against the
+        *current* `self.config.products`/dispense timeout -- same shape
+        as `set_capabilities` (no disk read), for a catalog mutation
+        (Copilot review, PR #32, finding C1) rather than a capabilities
+        change. A no-op, returning the existing `self.report` unchanged,
+        when nothing has been loaded yet."""
+
+        return self._revalidate_last_loaded_text()
+
+    def _revalidate_last_loaded_text(self) -> ValidationReport:
         if self._text is None:
             return self.report
         self.report = self.validate_text(self._text)

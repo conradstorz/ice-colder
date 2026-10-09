@@ -16,12 +16,14 @@ import asyncio
 
 import pytest
 
+from config.config_model import Product
 from contracts.common import COMMAND_PARAM_VALIDATORS, CommandAck
 from contracts.vending_machine import FaultCode
 from services.access import ROLE_PERMISSIONS, Permission, Role
 from services.command_dispatcher import CommandTimeout
 from services.config_store import add_product
 from services.event_recorder import EventRecorder
+from tests.dispenser_fixtures import profiles_for
 from web_interface import auth as web_auth
 from web_interface import context
 from web_interface import routes
@@ -1402,20 +1404,31 @@ class TestParamValidation:
         assert dispatcher.calls == []
 
     def test_dispense_slot_in_catalog_is_accepted(
-        self, client, wired, wire_subsystem, wire_dispatcher
+        self, client, wired, wire_subsystem, wire_dispatcher, tmp_path
     ):
         """Same crafted-request path, proving the fix doesn't also refuse
-        a legitimate slot: once the SKU is on the catalog at slot 3, that
-        exact slot is accepted and reaches the dispatcher."""
-        cfg, _vmc, _inv, _store = wired
-        add_product(cfg, "ICE-1", "Ice", 2.5, slot=3)
-        wire_subsystem("vending", ["dispense"])
-        dispatcher = wire_dispatcher(FakeAckDispatcher())
+        a legitimate slot: once the SKU is on the catalog at slot 3 with a
+        valid dispenser profile wired, that exact slot is accepted and
+        reaches the dispatcher (Task 4: carrying the whole profile)."""
+        cfg, vmc, _inv, _store = wired
+        add_product(cfg, "ICE-1", "Ice", 2.5, slot=3, kind="ice")
+        profiles = profiles_for(cfg.products, tmp_path)
+        vmc.set_dispenser_profiles(profiles)
+        routes.set_dispenser_profiles(profiles)
+        try:
+            wire_subsystem("vending", ["dispense"])
+            dispatcher = wire_dispatcher(FakeAckDispatcher())
 
-        resp = client.post("/tests/vending/dispense", data={"slot": "3"})
+            resp = client.post("/tests/vending/dispense", data={"slot": "3"})
 
-        assert resp.status_code == 200
-        assert dispatcher.calls == [("vending", "dispense", {"slot": 3})]
+            assert resp.status_code == 200
+            assert len(dispatcher.calls) == 1
+            subsystem, command, params = dispatcher.calls[0]
+            assert (subsystem, command) == ("vending", "dispense")
+            assert params["slot"] == 3
+            assert params["mechanism"] == "bagged_ice"
+        finally:
+            routes.set_dispenser_profiles(None)
 
     def test_water_valve_seconds_out_of_range_is_400(
         self, client, wired, wire_subsystem
@@ -1437,6 +1450,97 @@ class TestParamValidation:
         assert dispatcher.calls == [
             ("ice_maker", "power_cycle", {"dwell_seconds": POWER_CYCLE_DWELL_DEFAULT})
         ]
+
+
+class TestDispenseSendsProfile:
+    """Task 4: `_parse_command_params`'s "dispense" branch now looks up
+    `context.vmc_instance.dispenser_profile_for(product_for_slot)` and
+    sends the whole validated profile alongside slot/mechanism -- matching
+    what `contracts.common.COMMAND_PARAM_VALIDATORS["dispense"]` (a bare
+    `DispenseCommand(slot, mechanism, profile)`) now requires on the wire.
+    A slot whose product has no valid profile (no profiles wired at all,
+    or a `kind="other"` product no profile ever covers) is refused
+    INLINE, through the same `partials/test_refusal.html` fragment as
+    every other maintenance-lease refusal -- and, since this check runs
+    inside `_parse_command_params`, BEFORE `_acquire_lease_or_refusal` is
+    ever reached, the lease is never taken for this refusal (there is
+    nothing to release).
+    """
+
+    def test_dispense_test_sends_full_profile(
+        self, client, wired, wire_subsystem, wire_dispatcher, tmp_path
+    ):
+        cfg, vmc, _inv, _store = wired
+        add_product(cfg, "ICE-1", "Ice", 2.5, slot=3, kind="ice")
+        profiles = profiles_for(cfg.products, tmp_path)
+        vmc.set_dispenser_profiles(profiles)
+        routes.set_dispenser_profiles(profiles)
+        try:
+            wire_subsystem("vending", ["dispense"])
+            dispatcher = wire_dispatcher(FakeAckDispatcher())
+
+            resp = client.post("/tests/vending/dispense", data={"slot": "3"})
+
+            assert resp.status_code == 200
+            assert len(dispatcher.calls) == 1
+            subsystem, command, params = dispatcher.calls[0]
+            assert (subsystem, command) == ("vending", "dispense")
+            assert params["slot"] == 3
+            assert params["mechanism"] == "bagged_ice"
+            assert params["profile"]["agitate"]["motor_channel"] == "agitator_motor"
+        finally:
+            routes.set_dispenser_profiles(None)
+
+    def test_dispense_test_refused_without_profile(
+        self, client, wired, wire_subsystem, wire_dispatcher, tmp_path
+    ):
+        """slot 4's product is `kind="other"` -- `dispenser_profile_for`
+        returns `None` for it even though a (unrelated) profiles object is
+        wired, because `render_profiles_toml` never writes a table for a
+        non-ice/water product. Refused with the CFG-101 wording, 200 (not
+        a 500), the dispatcher never touched, and no lease taken. A
+        second, unrelated ice slot is seeded too, purely so the resulting
+        `dispensers.toml` has at least one `[slot.N]` table -- an
+        all-"other" catalog renders an empty file, which `profiles_for`'s
+        own `report.ok` assertion treats as a fixture bug, not a case
+        this test is about."""
+        cfg, vmc, _inv, _store = wired
+        add_product(cfg, "ICE-1", "Ice", 2.5, slot=3, kind="ice")
+        add_product(cfg, "OTHER-1", "Other", 1.0, slot=4, kind="other")
+        profiles = profiles_for(cfg.products, tmp_path)
+        vmc.set_dispenser_profiles(profiles)
+        routes.set_dispenser_profiles(profiles)
+        try:
+            wire_subsystem("vending", ["dispense"])
+            dispatcher = wire_dispatcher(FakeAckDispatcher())
+
+            resp = client.post("/tests/vending/dispense", data={"slot": "4"})
+
+            assert resp.status_code == 200
+            assert "CFG-101" in resp.text
+            assert "slot 4 (OTHER-1)" in resp.text
+            assert dispatcher.calls == []
+            assert vmc.maintenance_hold is None
+        finally:
+            routes.set_dispenser_profiles(None)
+
+    def test_dispense_test_refused_unknown_slot_unchanged(
+        self, client, wired, wire_subsystem, wire_dispatcher
+    ):
+        """Existing behaviour (Copilot review, PR 22, id=4128088598):
+        a slot not in the current catalog is still a plain 400 from
+        `_parse_command_params`'s `valid_slots` check, which runs before
+        the profile lookup -- unaffected by Task 4."""
+        cfg, vmc, _inv, _store = wired
+        assert cfg.products == []
+        wire_subsystem("vending", ["dispense"])
+        dispatcher = wire_dispatcher(FakeAckDispatcher())
+
+        resp = client.post("/tests/vending/dispense", data={"slot": "0"})
+
+        assert resp.status_code == 400
+        assert vmc.maintenance_hold is None
+        assert dispatcher.calls == []
 
 
 # --- Simulated sale ------------------------------------------------------
@@ -1597,6 +1701,25 @@ async def _wait_until(predicate, *, timeout: float = 2.0) -> None:
             await asyncio.sleep(0)
 
 
+def _dispense_params(slot: int, sku: str, tmp_path) -> dict:
+    """A full, pydantic-valid `dispense` params dict (slot, mechanism,
+    profile) for driving `_run_command` DIRECTLY in the tests below,
+    bypassing `_parse_command_params` entirely -- matching what Task 4
+    made the route itself build. Needed because
+    `contracts.common.COMMAND_PARAM_VALIDATORS["dispense"]` (reached via
+    the REAL `CommandDispatcher`'s `SubsystemCommand` construction here,
+    unlike the FakeAckDispatcher used elsewhere in this file) now rejects
+    a bare `{"slot": n}`."""
+    product = Product(sku=sku, slot=slot, kind="ice")
+    profiles = profiles_for([product], tmp_path)
+    profile = profiles.profile_for_slot(slot)
+    return {
+        "slot": slot,
+        "mechanism": profile.mechanism,
+        "profile": profile.model_dump(mode="json"),
+    }
+
+
 def _direct_principal(store, user) -> web_auth.Principal:
     """Build a real, resolvable Principal without going through HTTP/cookies
     -- this test drives `_run_command` directly (not through the route) so
@@ -1614,13 +1737,14 @@ def _direct_principal(store, user) -> web_auth.Principal:
 
 class TestActuatorLeaseHeldForRealLifetime:
     async def test_svc102_and_runs_in_flight_stay_up_until_completion_signal(
-        self, wired
+        self, wired, tmp_path
     ):
         from services.command_dispatcher import CommandDispatcher
         from web_interface.routes.tests_level import _run_command
 
         _cfg, vmc, _inv, store = wired
         principal = _direct_principal(store, store.owner())
+        params = _dispense_params(0, "ICE-1", tmp_path)
 
         mqtt = _FakeDispatcherMQTT()
         dispatcher = CommandDispatcher(mqtt)
@@ -1632,7 +1756,7 @@ class TestActuatorLeaseHeldForRealLifetime:
             assert granted is True, reason
 
             task = asyncio.ensure_future(
-                _run_command(vmc, "vending", "dispense", {"slot": 0}, principal)
+                _run_command(vmc, "vending", "dispense", params, principal)
             )
 
             # The lease is taken, and the run counted in-flight, as soon as
@@ -1704,7 +1828,7 @@ class TestActuatorLeaseHeldForRealLifetime:
             routes.set_command_dispatcher(None)
 
     async def test_ack_timeout_still_fires_independently_of_completion_timeout(
-        self, wired
+        self, wired, tmp_path
     ):
         """The regression this design most easily introduces (proof
         standard): a subsystem that never even acks a long-running command
@@ -1716,6 +1840,7 @@ class TestActuatorLeaseHeldForRealLifetime:
 
         _cfg, vmc, _inv, store = wired
         principal = _direct_principal(store, store.owner())
+        params = _dispense_params(0, "ICE-1", tmp_path)
 
         mqtt = _FakeDispatcherMQTT()
         dispatcher = CommandDispatcher(mqtt, timeout=0.05, retries=0)
@@ -1731,9 +1856,7 @@ class TestActuatorLeaseHeldForRealLifetime:
             started = time.monotonic()
             with pytest.raises(CommandTimeout):
                 await asyncio.wait_for(
-                    dispatcher.send_and_await_completion(
-                        "vending", "dispense", {"slot": 0}
-                    ),
+                    dispatcher.send_and_await_completion("vending", "dispense", params),
                     timeout=2.0,
                 )
             elapsed = time.monotonic() - started
