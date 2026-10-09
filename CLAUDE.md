@@ -287,7 +287,7 @@ Both contracts bumped again for the subsystem-windows feature: `contracts/vendin
 
 ## Key Patterns
 
-- **Logging**: Uses `loguru` throughout; logs rotate daily to `LOGS/vmc.log`. State changes are prefixed with `STATE_CHANGE_PREFIX`.
+- **Logging**: Uses `loguru` throughout. `services/logging_setup.py` owns `setup_logging()`, called explicitly at the start of `main()`; importing the module does not change handlers or create files. It configures `LOGS/vmc.log`, an INFO-level console sink, and filtered `transactions.log`, `ice_maker.log`, and `vending.log` files. File logs rotate at midnight with 300-day retention and ZIP compression. State changes are prefixed with `STATE_CHANGE_PREFIX`.
 - **Config mutation**: Product changes go through `services/config_store.py` which writes back to `config.json`. The in-memory `ConfigModel` is mutated directly (Pydantic models with mutable fields).
 - **Web UI updates**: The dashboard uses HTMX to swap HTML partials from FastAPI endpoints. No SPA framework.
 - **Timezone handling**: Report bucketing uses the machine's local timezone; weeks start on **Monday**; a sale exactly on a boundary (e.g. midnight) belongs to the **later** bucket.

@@ -16,14 +16,13 @@ from services.dispensers import (
     dispensers_path,
 )
 from services.build_info import BUILD_INFO
-from services.paths import LOG_DIR, LOG_FILE
+from services.logging_setup import setup_logging
 from services.mailer import send_email
 from services import report_scheduler
 from services.task_lifecycle import run_until_primary_exits
 from services.task_supervisor import supervise
 
 import asyncio
-import os
 import sys
 from datetime import datetime
 
@@ -37,60 +36,6 @@ from services.startup_config import apply_env_overrides, load_config
 from web_interface.server import app
 from web_interface import routes
 from web_interface import auth as web_auth
-
-
-def setup_logging():
-    """
-    Set up logging configuration for the application.
-    """
-    # Create the LOGS subdirectory if it doesn't exist
-    os.makedirs(LOG_DIR, exist_ok=True)
-
-    # Remove any default logging handlers
-    logger.remove()
-    # log file with rotation and retention settings
-    logger.add(
-        str(LOG_FILE),
-        serialize=False,
-        rotation="00:00",
-        retention="300 days",
-        compression="zip",
-        format="{message};{level} {time:YYYY-MM-DD HH:mm:ss}",
-    )
-    # Console: one line per record, level before the message so greps attribute it correctly
-    logger.add(
-        sys.stdout,
-        level="INFO",
-        serialize=False,
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",
-    )
-    # Transaction log — customer interactions only (button, payment, dispense, refund)
-    logger.add(
-        str(LOG_DIR / "transactions.log"),
-        filter=lambda record: record["extra"].get("transaction", False),
-        rotation="00:00",
-        retention="300 days",
-        compression="zip",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {message}",
-    )
-    # Ice maker log — power cycles, ice drops, and out-of-spec behavior
-    logger.add(
-        str(LOG_DIR / "ice_maker.log"),
-        filter=lambda record: record["extra"].get("ice_maker", False),
-        rotation="00:00",
-        retention="300 days",
-        compression="zip",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {message}",
-    )
-    # Vending machine log — button presses, dispense sequences, hardware events
-    logger.add(
-        str(LOG_DIR / "vending.log"),
-        filter=lambda record: record["extra"].get("vending", False),
-        rotation="00:00",
-        retention="300 days",
-        compression="zip",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {message}",
-    )
 
 
 # Plan 1 (this task) only loads `dispensers.toml` and logs its validation
