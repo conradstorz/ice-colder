@@ -347,8 +347,9 @@ class Accessory(_StrictModel):
         ...,
         min_length=1,
         description=(
-            'Which steps this accessory runs during, by name, or ["all"] '
-            "to run for the whole slot cycle."
+            "Which steps this accessory runs during, as a consecutive run "
+            'of step names (no gaps), or ["all"] to run for the whole slot '
+            "cycle."
         ),
     )
     lead_seconds: Annotated[float, Field(ge=0, le=30)] = Field(
@@ -448,6 +449,25 @@ def _check_accessories_name_known_steps(
                     f'accessory "{name}": on_during contains "{step}"; '
                     f'valid steps for {mechanism} are {valid} (or ["all"])'
                 )
+        # Copilot review (PR #32) finding C6: on_during must name a
+        # *contiguous* run of this mechanism's steps -- the simulator
+        # (simulators/vending_machine.py) reduces on_during to a single
+        # first/last span when deciding when the accessory is active, so
+        # ["agitate", "release"] would silently also cover "fill" at
+        # runtime. Caught here, at the schema, rather than left for the
+        # simulator to get subtly wrong.
+        positions = sorted(step_names.index(step) for step in accessory.on_during)
+        span = range(positions[0], positions[-1] + 1)
+        skipped = [
+            step_names[i] for i in span if step_names[i] not in accessory.on_during
+        ]
+        if skipped:
+            verb = "is" if len(skipped) == 1 else "are"
+            raise ValueError(
+                f'accessory "{name}": on_during steps must be consecutive '
+                f"(got {', '.join(accessory.on_during)}; "
+                f"{', '.join(skipped)} {verb} skipped)"
+            )
 
 
 SlotProfile = Annotated[

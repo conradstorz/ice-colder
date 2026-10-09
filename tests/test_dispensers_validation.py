@@ -231,6 +231,30 @@ def test_accessory_range_error_is_humanized():
     assert "999" in finding.message
 
 
+def test_accessory_on_during_gap_is_humanized_with_path_and_line():
+    """Copilot review (PR #32) finding C6: a non-contiguous on_during
+    ("agitate", "release" -- skipping "fill") is caught at the schema
+    and surfaces as a humanized finding with a real
+    accessories.<name>.on_during path and a real source line, not the
+    slot-level fallback every other model-level validator error gets."""
+    bad = GOOD.replace(
+        'on_during    = ["fill"]', 'on_during    = ["agitate", "release"]'
+    )
+    report = validate_document(bad, [ICE, WATER])
+    matches = [
+        f
+        for f in report.findings
+        if f.slot == 1 and f.path == "accessories.bag_fan.on_during"
+    ]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert "consecutive" in finding.message
+    assert "fill is skipped" in finding.message
+    assert finding.line is not None
+    bad_lines = bad.splitlines()
+    assert "on_during" in bad_lines[finding.line - 1]
+
+
 def test_accessory_unknown_field_suggests():
     bad = GOOD.replace("lead_seconds = 2.0", "lead_second = 2.0")
     report = validate_document(bad, [ICE, WATER])

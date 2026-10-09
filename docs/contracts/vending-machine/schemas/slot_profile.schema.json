@@ -11,7 +11,7 @@
           "type": "string"
         },
         "on_during": {
-          "description": "Which steps this accessory runs during, by name, or [\"all\"] to run for the whole slot cycle.",
+          "description": "Which steps this accessory runs during, as a consecutive run of step names (no gaps), or [\"all\"] to run for the whole slot cycle.",
           "items": {
             "type": "string"
           },

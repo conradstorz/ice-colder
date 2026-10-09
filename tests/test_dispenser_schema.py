@@ -231,6 +231,44 @@ def test_accessory_all_alone():
     assert profile.accessories["label_light"].on_during == ["all"]
 
 
+def test_accessory_on_during_must_be_contiguous():
+    """Copilot review (PR #32) finding C6: the simulator reduces
+    on_during to a first/last span when deciding whether the accessory
+    is active, so ["agitate", "release"] would silently also cover
+    "fill" at runtime -- the schema must reject a gap outright."""
+    data = _bagged_ice()
+    data["accessories"] = {
+        "bag_fan": {
+            "channel": "bag_fan",
+            "on_during": ["agitate", "release"],
+            "lead_seconds": 0,
+            "lag_seconds": 0,
+        }
+    }
+    with pytest.raises(ValidationError) as exc_info:
+        _SLOT_PROFILE.validate_python(data)
+    assert (
+        'accessory "bag_fan": on_during steps must be consecutive '
+        "(got agitate, release; fill is skipped)" in str(exc_info.value)
+    )
+
+
+def test_accessory_on_during_contiguous_but_unordered_is_accepted():
+    """Order in the list doesn't matter, only which steps are named --
+    ["release", "fill"] (fill, release are adjacent) must validate."""
+    data = _bagged_ice()
+    data["accessories"] = {
+        "bag_fan": {
+            "channel": "bag_fan",
+            "on_during": ["release", "fill"],
+            "lead_seconds": 0,
+            "lag_seconds": 0,
+        }
+    }
+    profile = _SLOT_PROFILE.validate_python(data)
+    assert profile.accessories["bag_fan"].on_during == ["release", "fill"]
+
+
 @pytest.mark.parametrize(
     "factory,path,value",
     [
