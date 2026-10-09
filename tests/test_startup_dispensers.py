@@ -1,17 +1,17 @@
-# tests/test_main_startup_dispensers.py
-"""Tests for Task 7 (plan: dispenser profiles) -- startup wiring for
-`dispensers.toml`. `main.load_dispenser_profiles(config)` is extracted out
-of `main()` so it can load and log a `DispenserProfiles` report without an
-event loop; a directory at the dispensers path mirrors `load_config`'s own
-directory-exit behaviour. This task changes no runtime behaviour: the
-report is only loaded and logged, never raised as a fault (plan 2).
+# tests/test_startup_dispensers.py
+"""Tests for `services/startup_dispensers.py` -- startup wiring for
+`dispensers.toml`. `load_dispenser_profiles(config)` loads and logs a
+`DispenserProfiles` report without an event loop; a directory at the
+dispensers path mirrors `load_config`'s own directory-exit behaviour.
+`wire_dispenser_profiles(vmc, profiles)` hands the loaded profiles to both
+the VMC and the routes module.
 """
 
 from pathlib import Path
 
 import pytest
 
-import main as main_mod
+import services.startup_dispensers as startup_dispensers
 from config.config_model import ConfigModel
 from services.dispensers import DispenserProfiles
 
@@ -24,7 +24,7 @@ def test_startup_loads_and_logs_report(tmp_path, monkeypatch, caplog):
     monkeypatch.setenv("ICE_COLDER_DISPENSERS", str(path))
     caplog.set_level("WARNING")
 
-    result = main_mod.load_dispenser_profiles(ConfigModel())
+    result = startup_dispensers.load_dispenser_profiles(ConfigModel())
 
     assert isinstance(result, DispenserProfiles)
     messages = [r.message for r in caplog.records]
@@ -38,7 +38,7 @@ def test_startup_missing_file_warns_and_continues(tmp_path, monkeypatch, caplog)
     monkeypatch.setenv("ICE_COLDER_DISPENSERS", str(tmp_path / "dispensers.toml"))
     caplog.set_level("INFO")
 
-    result = main_mod.load_dispenser_profiles(ConfigModel())
+    result = startup_dispensers.load_dispenser_profiles(ConfigModel())
 
     assert isinstance(result, DispenserProfiles)
     warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
@@ -58,7 +58,7 @@ def test_startup_survives_load_exception(tmp_path, monkeypatch, caplog):
 
     monkeypatch.setattr(DispenserProfiles, "load", raise_runtime_error)
 
-    result = main_mod.load_dispenser_profiles(ConfigModel())
+    result = startup_dispensers.load_dispenser_profiles(ConfigModel())
 
     assert isinstance(result, DispenserProfiles)
     errors = [r.message for r in caplog.records if r.levelname == "ERROR"]
@@ -77,7 +77,7 @@ def test_startup_exits_when_path_is_directory(tmp_path, monkeypatch):
     monkeypatch.setenv("ICE_COLDER_DISPENSERS", str(bogus))
 
     with pytest.raises(SystemExit) as exc_info:
-        main_mod.load_dispenser_profiles(ConfigModel())
+        startup_dispensers.load_dispenser_profiles(ConfigModel())
     assert exc_info.value.code == 1
 
 
@@ -87,15 +87,15 @@ def test_fixture_provides_two_profiles(dispenser_profiles):
 
 
 def test_main_wires_profiles_into_vmc_and_routes(monkeypatch):
-    """`main()` hands the module-level `dispenser_profiles` (set by
-    `load_dispenser_profiles`) to both the VMC and the routes module,
-    right after `vmc.set_health_monitor(health)` -- extracted into
-    `main.wire_dispenser_profiles(vmc, profiles)` since `main()` itself is
-    an infinite event loop wrapped in `@logger.catch()` and cannot be
-    exercised partially in a test. `main()`'s own behaviour is unchanged:
-    this helper is just the same two calls `main()` makes, moved so they
-    can be tested without an event loop. This test proves one load
-    reaches both consumers with the SAME object.
+    """`main()` hands the loaded `DispenserProfiles` to both the VMC and
+    the routes module, right after `vmc.set_health_monitor(health)` --
+    via `wire_dispenser_profiles(vmc, profiles)`, extracted out of
+    `main()` since `main()` itself is an infinite event loop wrapped in
+    `@logger.catch()` and cannot be exercised partially in a test.
+    `main()`'s own behaviour is unchanged: this helper is just the same
+    two calls `main()` makes, moved so they can be tested without an
+    event loop. This test proves one load reaches both consumers with
+    the SAME object.
     """
     from controller.vmc import VMC
     from web_interface import routes
@@ -111,7 +111,7 @@ def test_main_wires_profiles_into_vmc_and_routes(monkeypatch):
     vmc = VMC(config=cfg)
     sentinel = DispenserProfiles(cfg)
 
-    main_mod.wire_dispenser_profiles(vmc, sentinel)
+    startup_dispensers.wire_dispenser_profiles(vmc, sentinel)
 
     assert vmc_calls == [sentinel]
     assert routes_calls == [sentinel]
