@@ -42,6 +42,7 @@ from services.event_recorder import SaleRecordingFailed
 from services.dispensers import DispenserProfiles
 from services.dispenser_schema import MECHANISM_FOR_KIND, SlotProfile
 from controller.fault_registry import FaultRegistry
+from controller.escrow_ledger import EscrowLedger
 
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
 
@@ -226,7 +227,9 @@ class VMC:
     # never be a real, distinguishable amount of money. Half a cent is also
     # the largest tolerance that can never itself be mistaken for a whole
     # cent: an actual one-cent credit ($0.01) is always kept.
-    CREDIT_TOLERANCE = 0.005
+    # Equal to EscrowLedger.TOLERANCE -- kept as a VMC class attribute
+    # because callers (and tests) reference it as VMC.CREDIT_TOLERANCE.
+    CREDIT_TOLERANCE = EscrowLedger.TOLERANCE
 
     # Maintenance lease (system-tests design §2.2).
     MAINTENANCE_IDLE_TIMEOUT_SECONDS = 300.0  # 5 minutes since last_activity_at
@@ -253,12 +256,15 @@ class VMC:
         self.owner_contact = self.config_model.machine_owner
 
         self.selected_product = None
-        self.credit_escrow = 0.0
-        # escrow_credits is the FIFO ledger behind credit_escrow: every deposit
-        # appends one Credit in its raw method, and credit_escrow must always
-        # equal round(sum(c.amount for c in escrow_credits), 2) — the two are
+        # credit_escrow/escrow_credits live in self._escrow (an
+        # EscrowLedger, controller/escrow_ledger.py) -- the FIFO ledger
+        # behind the authoritative total. credit_escrow must always equal
+        # round(sum(c.amount for c in escrow_credits), 2) — the two are
         # never allowed to diverge (see _consume_credits_fifo's bug guard).
-        self.escrow_credits: list[Credit] = []
+        # VMC.credit_escrow/escrow_credits below are read/write properties
+        # aliasing self._escrow.total/self._escrow.credits, kept because
+        # many existing tests read and write them directly.
+        self._escrow = EscrowLedger()
         # Shares consumed by the sale currently in dispensing, keyed by raw
         # method string. Set by _consume_credits_fifo when a sale's price is
         # deducted; consumed (and reset to None) by on_vend_failed. None
@@ -676,7 +682,7 @@ class VMC:
             if effective_state == "dispensing"
             else None,
             pending_refund_request_id=pending,
-            credits=list(self.escrow_credits),
+            credits=self._escrow.snapshot_credits(),
             pending_sale_shares=dict(self.pending_sale_shares)
             if self.pending_sale_shares is not None
             else None,
@@ -747,6 +753,33 @@ class VMC:
     def _machine_faults(self) -> dict[FaultCode, float]:
         """Alias to the registry's own dict; see `_lockouts` above."""
         return self._faults.machine_faults
+
+    # --- Escrow ledger ---
+    #
+    # State and pure bookkeeping live in `self._escrow`
+    # (controller/escrow_ledger.py's `EscrowLedger`); the properties below
+    # are read/write aliases kept because many existing tests read and
+    # write `credit_escrow`/`escrow_credits` directly. The setters only
+    # ever replace `total`/`credits` on the ledger -- a direct
+    # `vmc.credit_escrow = x` assignment still cannot touch `credits`,
+    # which is what lets the divergence guard in `_consume_credits_fifo`
+    # keep working exactly as before this extraction.
+
+    @property
+    def credit_escrow(self) -> float:
+        return self._escrow.total
+
+    @credit_escrow.setter
+    def credit_escrow(self, value: float) -> None:
+        self._escrow.total = value
+
+    @property
+    def escrow_credits(self) -> list[Credit]:
+        return self._escrow.credits
+
+    @escrow_credits.setter
+    def escrow_credits(self, value: list[Credit]) -> None:
+        self._escrow.credits = value
 
     def _product_name(self, sku: str | None) -> str | None:
         if sku is None:
@@ -1495,7 +1528,7 @@ class VMC:
     @logger.catch()
     def has_credit(self):
         """Return True if there is remaining credit in the escrow."""
-        return self.credit_escrow > 0
+        return self._escrow.has_credit
 
     @logger.catch()
     def set_update_callback(self, callback):
@@ -1881,13 +1914,8 @@ class VMC:
             shares = {"unknown": round(price, 2)}
         else:
             price = round(sum(shares.values()), 2)
-        self.credit_escrow += price
         now = time.time()
-        for share_method, share_amount in shares.items():
-            if share_amount > 0:
-                self.escrow_credits.append(
-                    Credit(method=share_method, amount=share_amount, ts=now)
-                )
+        self._escrow.restore(shares, now, price)
         logger.error(
             f"{STATE_CHANGE_PREFIX} Vend failed for '{name}' ({code.value}, {outcome}); "
             f"${price:.2f} returned to escrow"
@@ -2040,10 +2068,7 @@ class VMC:
                 f"Credit ${amount:.2f} arrived during a maintenance lease; "
                 "refunding rather than escrowing"
             )
-            self.credit_escrow += amount
-            self.escrow_credits.append(
-                Credit(method=payment_method, amount=amount, ts=time.time())
-            )
+            self._escrow.deposit(payment_method, amount, time.time())
             self.last_payment_method = payment_method
             self.request_refund(reason="maintenance")
             return
@@ -2053,10 +2078,7 @@ class VMC:
                 f"({', '.join(self._availability.payment_blocking_reasons())}); "
                 "escrowed"
             )
-        self.credit_escrow += amount
-        self.escrow_credits.append(
-            Credit(method=payment_method, amount=amount, ts=time.time())
-        )
+        self._escrow.deposit(payment_method, amount, time.time())
         self.last_payment_method = payment_method
         logger.info(
             f"Deposited ${amount:.2f} via {payment_method}. New escrow: ${self.credit_escrow:.2f}"
@@ -2077,50 +2099,10 @@ class VMC:
         )
 
     def _consume_credits_fifo(self, price: float) -> dict[str, float]:
-        """Consume escrow_credits FIFO for `price`, returning consumed shares.
-
-        Mutates escrow_credits in place: fully-consumed credits are removed,
-        a partially-consumed credit shrinks in place (same method, reduced
-        amount), and untouched credits are left exactly as they were. The
-        returned dict sums each raw method string to the amount of it that
-        was spent on this sale — this is the method breakdown a later task
-        records for the sale, and it is also what on_vend_failed re-credits
-        if the vend does not complete, so it must never be re-derived from
-        anything but the credits actually consumed here.
-
-        Divergence guard: escrow_credits is supposed to sum to credit_escrow
-        at all times (every path that changes one changes the other). If it
-        does not — a bug elsewhere, e.g. credit_escrow mutated directly
-        without going through deposit_funds — the ledger cannot be trusted
-        to attribute this sale correctly, so no credit is touched and the
-        whole price is booked to the single method "unknown" instead of
-        silently mis-attributing it to whatever methods happen to be in the
-        (wrong) list. This is a bug guard, not an expected path.
-        """
-        ledger_total = round(sum(c.amount for c in self.escrow_credits), 2)
-        if abs(ledger_total - round(self.credit_escrow, 2)) > self.CREDIT_TOLERANCE:
-            logger.warning(
-                f"escrow_credits total (${ledger_total:.2f}) diverged from "
-                f"credit_escrow (${self.credit_escrow:.2f}); booking "
-                f"${price:.2f} to 'unknown' rather than misattribute it"
-            )
-            return {"unknown": round(price, 2)}
-
-        remaining = round(price, 2)
-        shares: dict[str, float] = {}
-        kept: list[Credit] = []
-        for credit in self.escrow_credits:
-            if remaining <= self.CREDIT_TOLERANCE:
-                kept.append(credit)
-                continue
-            take = round(min(credit.amount, remaining), 2)
-            shares[credit.method] = round(shares.get(credit.method, 0.0) + take, 2)
-            remaining = round(remaining - take, 2)
-            leftover = round(credit.amount - take, 2)
-            if leftover > self.CREDIT_TOLERANCE:
-                kept.append(Credit(method=credit.method, amount=leftover, ts=credit.ts))
-        self.escrow_credits = kept
-        return shares
+        """Thin delegate to EscrowLedger.consume_fifo, kept so _process_payment
+        and its docstrings read as before. See controller/escrow_ledger.py
+        for the FIFO-consumption and divergence-guard logic."""
+        return self._escrow.consume_fifo(price)
 
     @logger.catch()
     def request_refund(self, reason: str = "admin"):
@@ -2133,9 +2115,7 @@ class VMC:
         if self.credit_escrow <= 0:
             self.send_customer_message("No funds to refund.")
             return
-        amount = round(self.credit_escrow, 2)
-        self.credit_escrow = 0.0
-        self.escrow_credits = []
+        amount = self._escrow.take_all()
         pending = PendingRefund(request_id=uuid4().hex, amount=amount, reason=reason)
         self._pending_refunds[pending.request_id] = pending
         self._send_refund_command(pending)
@@ -2382,7 +2362,7 @@ class VMC:
         """
         if self.state != "idle":
             return False, "machine is mid-sale"
-        if self.credit_escrow > self.CREDIT_TOLERANCE:
+        if not self._escrow.is_empty_within_tolerance:
             return False, "credit is still on the machine"
         if self._maintenance_hold is not None:
             return False, f"held by {self._maintenance_hold.holder_user_id}"
@@ -2442,11 +2422,11 @@ class VMC:
             self.request_refund(reason="maintenance")
             self.cancel_sale()
         elif self.state == "idle":
-            if self.credit_escrow > self.CREDIT_TOLERANCE:
+            if not self._escrow.is_empty_within_tolerance:
                 self.request_refund(reason="maintenance")
             self._cancel_session_timeout()
         elif self.state == "error":
-            if self.credit_escrow > self.CREDIT_TOLERANCE:
+            if not self._escrow.is_empty_within_tolerance:
                 self.request_refund(reason="maintenance")
 
         now = time.time()
@@ -2778,8 +2758,7 @@ class VMC:
                     # (on_vend_failed restored the price to escrow), this is
                     # a no-op in the former case and the actual clear in the
                     # latter.
-                    self.credit_escrow = 0.0
-                    self.escrow_credits = []
+                    self._escrow.take_all()
 
             return TestSaleResult(
                 sku=sku,
