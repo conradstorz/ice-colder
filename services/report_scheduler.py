@@ -26,8 +26,9 @@ for that specific instant" (see ``_to_local``'s own docstring) -- which is
 exactly the DST-correct behaviour, and exactly how ``by_period`` gets it
 right on its own default path. This module previously derived a tzinfo from
 ``now.tzinfo`` and threaded *that* through instead; that broke in production
-specifically because ``main.py``'s clock (``datetime.now().astimezone()``)
-attaches a frozen, date-invariant ``datetime.timezone`` fixed offset for the
+specifically because the production clock, :func:`local_now`
+(``datetime.now().astimezone()``), attaches a frozen, date-invariant
+``datetime.timezone`` fixed offset for the
 one instant it was read at, and handing that frozen offset to
 ``_to_local``/``_floor_to_bucket`` for an *earlier* boundary (a previous
 midnight or week-start) cannot re-derive that earlier instant's true offset
@@ -644,6 +645,15 @@ def _compose_body(data: dict) -> str:
             f"({entry['count']} sale(s), {entry['share'] * 100:.1f}% of revenue)"
         )
     return "\n".join(lines)
+
+
+def local_now() -> datetime:
+    """The scheduler's production clock: an aware, local-timezone `datetime`.
+
+    A plain wall-clock read -- unlike a test's fake clock, this never
+    raises, matching ``run``'s contract (see the module docstring above).
+    """
+    return datetime.now().astimezone()
 
 
 async def run(

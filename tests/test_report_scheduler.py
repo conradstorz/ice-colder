@@ -562,6 +562,15 @@ def test_tzinfo_offset_is_frozen_classifies_fixed_and_dynamic_zones():
     )
 
 
+def test_local_now_returns_an_aware_datetime():
+    """`local_now` is the scheduler's production clock: it must return an
+    aware `datetime` (a naive one would break every `tz`-aware boundary
+    calculation it feeds)."""
+    now = report_scheduler.local_now()
+    assert now.tzinfo is not None
+    assert now.utcoffset() is not None
+
+
 # --------------------------------------------------------------------------
 # Item 4 (round-3 hardening): the dedup query's bound is now explicit
 # (LIMIT 1 + an in-SQL period match), not merely implicit in the shared
