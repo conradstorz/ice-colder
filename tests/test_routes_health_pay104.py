@@ -686,7 +686,7 @@ class TestCrossRestartExactlyOnce:
     `DATA-101` (raised when the durable marker write fails) was "the
     operator's surviving signal" because it "outlives the process
     boundary the in-memory guard cannot cross". That is false --
-    `main.py`'s `reconcile_sales_journal_faults` clears `DATA-101` on
+    `services/startup_recovery.py`'s `reconcile_sales_journal_faults` clears `DATA-101` on
     *every* boot whenever the *sales journal* is drained, and it cannot
     tell "drained because nothing needed recovering" apart from "drained
     because a PAY-104 marker write failed" (recording a sale that

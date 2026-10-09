@@ -13,6 +13,7 @@ from services.access import AccessStore, Role
 from services.config_store import save_config
 from services.event_recorder import EventRecorder
 from services import event_recorder as event_recorder_module
+from services.startup_recovery import reconcile_sales_journal_faults
 
 
 def test_env_overrides_mqtt_credentials_and_trusted_proxies(monkeypatch):
@@ -158,7 +159,7 @@ def test_reconcile_replays_nonempty_journal_and_clears_data_101(tmp_path, monkey
     vmc.raise_data_fault(FaultCode.DATA_101, outcome="pre-existing")
     assert "DATA-101" in {f["code"] for f in vmc.active_faults()}
 
-    main_mod.reconcile_sales_journal_faults(vmc, recorder)
+    reconcile_sales_journal_faults(vmc, recorder)
 
     assert "DATA-101" not in {f["code"] for f in vmc.active_faults()}
     # The journal must be drained -- absent or empty, not merely "replay
@@ -213,7 +214,7 @@ def test_reconcile_replay_returning_zero_does_not_wrongly_clear_data_101(
     vmc = VMC(config=ConfigModel())
     vmc.raise_data_fault(FaultCode.DATA_101, outcome="pre-existing")
 
-    main_mod.reconcile_sales_journal_faults(vmc, recorder)
+    reconcile_sales_journal_faults(vmc, recorder)
 
     assert "DATA-101" not in {f["code"] for f in vmc.active_faults()}
     assert (
@@ -241,7 +242,7 @@ def test_reconcile_corrupt_db_raises_data_102_and_vmc_stays_usable(
 
     vmc = VMC(config=ConfigModel())
 
-    main_mod.reconcile_sales_journal_faults(vmc, recorder)  # must not raise/exit
+    reconcile_sales_journal_faults(vmc, recorder)  # must not raise/exit
 
     assert "DATA-102" in {f["code"] for f in vmc.active_faults()}
     # The VMC keeps working: its fault registry and FSM are untouched by the
@@ -263,7 +264,7 @@ def test_reconcile_never_raises_on_recorder_failure(monkeypatch):
             raise RuntimeError("disk exploded")
 
     vmc = VMC(config=ConfigModel())
-    main_mod.reconcile_sales_journal_faults(vmc, ExplodingRecorder())  # must not raise
+    reconcile_sales_journal_faults(vmc, ExplodingRecorder())  # must not raise
     assert vmc.state == "idle"  # completely unaffected
 
 
@@ -317,7 +318,7 @@ def test_reconcile_raises_data_101_when_replay_commits_but_journal_rewrite_fails
 
     vmc = VMC(config=ConfigModel())
 
-    main_mod.reconcile_sales_journal_faults(
+    reconcile_sales_journal_faults(
         vmc, RewriteFailsAfterCommitRecorder()
     )  # must not raise/exit
 
