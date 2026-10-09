@@ -890,6 +890,75 @@ class TestExecuteProfile:
         assert fill_time == pytest.approx(3.0)
 
     @pytest.mark.asyncio
+    async def test_new_run_cancels_previous_runs_lag_off(self):
+        """Copilot review (PR #32) finding C4: a lag-off task is keyed by
+        channel and owned by the simulator, not the run that created it
+        -- a back-to-back second sale on the same slot/accessory must
+        cancel the first sale's still-pending lag-off rather than let it
+        fire later and switch the accessory off out from under the
+        second run. Run 1's ["all"] accessory has lag_seconds=5 (gated,
+        never released); run 2 starts immediately after run 1's
+        `complete` is published; the accessory stays on throughout run 2
+        and is only switched off when run 2's own lag completes."""
+        sim = _make_sim()
+        gate = asyncio.Event()
+
+        async def fake_sleep(seconds: float) -> None:
+            if seconds == 5.0:
+                await gate.wait()
+
+        sim._sleep = fake_sleep
+        client = AsyncMock()
+        hw_events: list[tuple[str, bool]] = []
+
+        async def capture_publish(c, topic, payload):
+            if topic.startswith("hardware/io/"):
+                hw_events.append((payload.device, payload.state))
+
+        sim.publish = capture_publish
+
+        fill = WaterFillTimed(
+            proof="timed", valve_channel="water_valve_solenoid", max_fill_seconds=1.0
+        )
+        profile = WaterFillProfile(
+            mechanism="water_fill",
+            product_sku="WATER-RACE",
+            fill=fill,
+            accessories={
+                "light": Accessory(
+                    channel="vending_now_light",
+                    on_during=["all"],
+                    lead_seconds=0.0,
+                    lag_seconds=5.0,
+                )
+            },
+        )
+        cmd = DispenseCommand(slot=9, mechanism="water_fill", profile=profile)
+
+        task1 = asyncio.ensure_future(sim._execute_profile(client, cmd))
+        await _REAL_SLEEP(0)
+        await _REAL_SLEEP(0)
+        # Run 1 has published its terminal report and is now blocked (via
+        # the gate) in its own lag-off wait; the accessory is still on.
+        assert ("vending_now_light", True) in hw_events
+        assert not task1.done()
+
+        task2 = asyncio.ensure_future(sim._execute_profile(client, cmd))
+        for _ in range(6):
+            if task1.done():
+                break
+            await _REAL_SLEEP(0)
+        # Run 2's _enter_step cancelled run 1's pending lag-off; run 1's
+        # own end-of-run sweep must not have turned the accessory off.
+        assert task1.done()
+        assert ("vending_now_light", False) not in hw_events
+        assert not task2.done()  # run 2 now blocked on its own lag-off
+
+        gate.set()
+        await asyncio.wait_for(task2, timeout=2.0)
+        assert ("vending_now_light", False) in hw_events
+
+    @pytest.mark.asyncio
     async def test_bag_drop_solenoid_stuck_leaves_solenoid_on(self):
         """I2: `drive_off` used to run unconditionally before the fault
         check, so the IO sequence on `bag_drop_solenoid` was identical to

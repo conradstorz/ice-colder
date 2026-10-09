@@ -274,6 +274,16 @@ class VendingMachineSimulator(ESP32Simulator):
         logger.info(f"[vending] {self.num_buttons} products")
         # Hardware state
         self._hw: dict[str, bool] = dict(HARDWARE_DEVICES)
+        # Copilot review (PR #32) finding C4: an accessory's lag-off task
+        # is keyed by channel and owned by the simulator instance, not by
+        # whichever run's `_execute_profile` call created it -- so a new
+        # run's `_enter_step` can find and cancel a *previous* run's still
+        # -pending lag-off for the same channel before it fires. Without
+        # this, a stale lag-off from an old run could switch an accessory
+        # off out from under a brand-new run that just turned it back on
+        # (same slot, back-to-back sales, the accessory's lag window still
+        # running from the first sale).
+        self._pending_lag_off: dict[str, asyncio.Task] = {}
         self._cabinet_temp: float = 22.0  # starting cabinet temperature °C
         self._water_flow_total: float = (
             0.0  # cumulative gallons (HA water_flow_total entity on sensors/water_flow)
@@ -661,14 +671,33 @@ class VendingMachineSimulator(ESP32Simulator):
         outcome) those lag-off tasks are awaited, not cancelled, *after*
         the terminal report is published -- so a run reports `complete`
         the moment its last real step finishes, while `_execute_profile`
-        itself only returns once every accessory it turned on is actually
-        off, lag included. Only a genuine exception or cancellation
-        short-circuits that: then every pending lag-off task is cancelled
-        and every output this run touched is forced off immediately,
-        before the exception propagates -- there is no terminal report to
-        publish in that case. Either way, any accessory still sitting in
-        `accessory_on` with no task of its own (a run that aborted before
-        reaching that accessory's last step) is swept off directly.
+        normally only returns once every accessory it turned on is
+        actually off, lag included. Only a genuine exception or
+        cancellation short-circuits that: then every pending lag-off task
+        is cancelled and every output this run touched is forced off
+        immediately, before the exception propagates -- there is no
+        terminal report to publish in that case. Any accessory still
+        sitting in `accessory_on` with no lag-off task of its own (a run
+        that aborted before reaching that accessory's last step) is swept
+        off directly in that path.
+
+        Review finding C4 (Copilot, PR #32) qualifies the "actually off"
+        half of that invariant: a lag-off task is keyed by channel on
+        `self._pending_lag_off`, owned by the simulator instance rather
+        than this run, so a *new* run's `_enter_step` can cancel a
+        previous run's still-pending lag-off for the same channel the
+        moment it turns that accessory back on (same slot, back-to-back
+        sales, the old sale's lag window still running). When that
+        happens this run's own end-of-run sweep deliberately skips that
+        channel -- it was handed off to the new run, not actually turned
+        off -- via `accessory_on - lag_scheduled` (a channel with a
+        lag-off task is that task's responsibility, whether it ends up
+        firing for real or losing the channel to a newer run). So on the
+        success path `_execute_profile` can return with an accessory
+        still on, if and only if a later run has since claimed it; the
+        failure path's forced sweep stays unconditional, since no later
+        run can exist yet before this run's own terminal report is ever
+        published.
 
         `water_valve_stuck_open` deliberately leaves the valve/flow sensor
         energised (its own `on_activate` already did this, independent of
@@ -691,6 +720,10 @@ class VendingMachineSimulator(ESP32Simulator):
         }
         accessory_on: set[str] = set()
         accessory_tasks: list[asyncio.Task] = []
+        # Channels this run has scheduled a lag-off task for (finding C4)
+        # -- disposing of them is that task's job, not the end-of-run
+        # sweep's; see `_turn_off_later`/`_exit_step` and the sweep below.
+        lag_scheduled: set[str] = set()
         driven_on: set[str] = set()
 
         async def _drive_on(channel: str) -> None:
@@ -708,15 +741,31 @@ class VendingMachineSimulator(ESP32Simulator):
             driven_on.discard(channel)
 
         async def _turn_off_later(channel: str, lag_seconds: float) -> None:
-            await self._sleep(lag_seconds)
-            await self._set_hw(client, channel, False)
-            accessory_on.discard(channel)
+            try:
+                await self._sleep(lag_seconds)
+                await self._set_hw(client, channel, False)
+                accessory_on.discard(channel)
+            finally:
+                # Self-removal (finding C4): identity-checked so this
+                # only clears *this* task's own entry -- a cancellation
+                # delivered because a newer run's `_enter_step` already
+                # popped and replaced it must never delete that newer
+                # task instead.
+                me = asyncio.current_task()
+                if self._pending_lag_off.get(channel) is me:
+                    del self._pending_lag_off[channel]
 
         async def _enter_step(step: str) -> None:
             leads: list[float] = []
             for name, accessory in profile.accessories.items():
                 first, _last = spans[name]
                 if first == step and accessory.channel not in accessory_on:
+                    # Finding C4: a previous run's lag-off for this same
+                    # channel, still pending, must never fire once this
+                    # run has claimed the channel back.
+                    stale = self._pending_lag_off.pop(accessory.channel, None)
+                    if stale is not None:
+                        stale.cancel()
                     await self._set_hw(client, accessory.channel, True)
                     accessory_on.add(accessory.channel)
                     leads.append(accessory.lead_seconds)
@@ -734,6 +783,8 @@ class VendingMachineSimulator(ESP32Simulator):
                         _turn_off_later(accessory.channel, accessory.lag_seconds)
                     )
                     accessory_tasks.append(task)
+                    lag_scheduled.add(accessory.channel)
+                    self._pending_lag_off[accessory.channel] = task
 
         async def _publish_step(step: str) -> None:
             await self.publish(
@@ -788,7 +839,12 @@ class VendingMachineSimulator(ESP32Simulator):
 
         if accessory_tasks:
             await asyncio.gather(*accessory_tasks, return_exceptions=True)
-        for channel in list(accessory_on):
+        # Finding C4: a channel with a lag-off task is that task's own
+        # responsibility to dispose of -- either it already fired and
+        # discarded itself from accessory_on above, or it was cancelled
+        # by a newer run's _enter_step, which means the channel now
+        # belongs to that run and this sweep must leave it alone.
+        for channel in list(accessory_on - lag_scheduled):
             await self._set_hw(client, channel, False)
 
     async def _run_bagged_ice(
