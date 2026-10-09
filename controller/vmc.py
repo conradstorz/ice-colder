@@ -7,21 +7,15 @@ from dataclasses import asdict, dataclass
 from uuid import uuid4
 from transitions import Machine
 from loguru import logger
-from pydantic import ValidationError
 from services.payment_gateway_manager import PaymentGatewayManager
 from services.mqtt_messages import (
     VMCStatus,
     PaymentEvent,
     PaymentEnableCommand,
-    PaymentStatus,
     ButtonPress,
     DispenseCommand,
-    IceMakerEvent,
-    HardwareIO,
-    SensorReading,
     VMCAlert,
 )
-from contracts.ice_maker_monitor import ChannelReading, CommandAck
 from contracts.vending_machine import (
     DispenserOutcome,
     FaultCode,
@@ -44,6 +38,7 @@ from controller.fault_registry import FaultRegistry
 from controller.escrow_ledger import EscrowLedger
 from controller.refund_protocol import PendingRefund, RefundProtocol
 from controller.session_recovery import SessionRecovery
+from controller import mqtt_inbound
 
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
 
@@ -63,8 +58,8 @@ def _has_outcome_mapping(mechanism: str | None, outcome: DispenserOutcome) -> bo
 
 # Bound loggers — initialized lazily so sinks are installed before first use.
 # Module-level references are set by VMC.__init__() (after setup_logging() in main.py).
+# ice_log lives in controller/mqtt_inbound.py now, bound at import.
 txn_log = logger
-ice_log = logger
 vend_log = logger
 
 #: FSM transition table.
@@ -235,9 +230,8 @@ class VMC:
 
     @logger.catch()
     def __init__(self, config: ConfigModel):
-        global txn_log, ice_log, vend_log
+        global txn_log, vend_log
         txn_log = logger.bind(transaction=True)
-        ice_log = logger.bind(ice_maker=True)
         vend_log = logger.bind(vending=True)
         logger.debug("Initializing VMC with pre-loaded ConfigModel")
 
@@ -386,6 +380,23 @@ class VMC:
             product_name=self._product_name,
             pay104_active=lambda: self._faults.has(FaultCode.PAY_104),
         )
+        # Telemetry-only MQTT inbound handlers (controller/mqtt_inbound.py).
+        # `health`/`availability` are callables read at call time because
+        # both are attached later via set_health_monitor/set_availability
+        # and may be None in tests; `capabilities` is this VMC's own dict
+        # object, not a copy, so the router's writes land exactly where
+        # existing tests already read them (`vmc.subsystem_capabilities`).
+        # The ICE-101 auto-clear and the vending-capabilities dispenser-
+        # profiles reconcile stay VMC callbacks -- see TelemetryRouter's
+        # docstring and _clear_ice101_lockouts/
+        # _on_vending_capabilities_validated below.
+        self._telemetry = mqtt_inbound.TelemetryRouter(
+            health=lambda: self._health_monitor,
+            availability=lambda: self._availability,
+            capabilities=self.subsystem_capabilities,
+            on_bin_half_full=self._clear_ice101_lockouts,
+            on_capabilities_validated=self._on_vending_capabilities_validated,
+        )
         self._start_time = time.monotonic()
         self._session_timeout_seconds = 180.0  # 3 minutes
         self._dispense_timeout_seconds = (
@@ -436,20 +447,12 @@ class VMC:
     def set_mqtt_client(self, client):
         """Attach an MQTTClient instance for publishing status and receiving events."""
         self._mqtt_client = client
-        # Register handlers for inbound ESP32 messages
-        client.register("payment/credit", self._handle_mqtt_payment)
-        client.register("hardware/buttons", self._handle_mqtt_button)
-        client.register("hardware/dispenser", self._handle_mqtt_dispenser)
-        client.register("sensors/temp/+", self._handle_mqtt_sensor)
-        client.register("heartbeat/+", self._handle_mqtt_heartbeat)
-        client.register("ice_maker/event", self._handle_mqtt_ice_maker_event)
-        client.register("capabilities/+", self._handle_mqtt_capabilities)
-        client.register("telemetry/ice_maker/+", self._handle_mqtt_telemetry)
-        client.register("cmd/ice_maker/ack", self._handle_mqtt_command_ack)
-        client.register("hardware/io/+", self._handle_mqtt_hardware_io)
-        client.register("cmd/payment/refund/ack", self._handle_mqtt_refund_ack)
-        client.register("payment/status", self._handle_mqtt_payment_status)
-        client.register("sensors/water_flow", self._handle_mqtt_water_flow)
+        # Register handlers for inbound ESP32 messages. SUBSCRIPTIONS
+        # (controller/mqtt_inbound.py) is the single source of truth for
+        # which topics map to which VMC method, in the exact order the
+        # individual client.register(...) calls used to run in.
+        for topic, name in mqtt_inbound.SUBSCRIPTIONS:
+            client.register(topic, getattr(self, name))
         logger.debug("VMC registered MQTT handlers.")
 
     def set_health_monitor(self, monitor: HealthMonitor):
@@ -947,21 +950,19 @@ class VMC:
         """
         return self._recovery.mark_pending_sale_recorded()
 
+    def _clear_ice101_lockouts(self) -> None:
+        """Clear every ICE-101 lockout -- invoked by the telemetry router
+        (controller/mqtt_inbound.py's `TelemetryRouter.handle_hardware_io`)
+        when the vending ESP32 reports `bin_half_full` going true. Kept on
+        the VMC because it drives the fault registry, not just telemetry.
+        """
+        for sku, code in list(self._lockouts.items()):
+            if code is FaultCode.ICE_101:
+                self.clear_fault(sku, by="auto")
+
     async def _handle_mqtt_hardware_io(self, topic: str, data: dict):
         """Binary hardware IO from the vending ESP32; ice returning clears ICE-101."""
-        hw = HardwareIO.model_validate(data)
-        if self._availability:
-            self._availability.set_hardware_io(hw.device, hw.state)
-        if self._health_monitor:
-            self._health_monitor.record_signal(
-                "vending", hw.device, 1.0 if hw.state else 0.0
-            )
-        if hw.device == "bin_half_full" and hw.state:
-            for sku, code in list(self._lockouts.items()):
-                if code is FaultCode.ICE_101:
-                    self.clear_fault(sku, by="auto")
-        else:
-            logger.debug(f"MQTT hardware IO: {hw.device}={hw.state}")
+        return await self._telemetry.handle_hardware_io(topic, data)
 
     # --- MQTT inbound handlers ---
 
@@ -974,17 +975,7 @@ class VMC:
 
     async def _handle_mqtt_payment_status(self, topic: str, data: dict):
         """MDB device readiness; any device in error/offline blocks payment."""
-        status = PaymentStatus.model_validate(data)
-        logger.debug(f"MQTT payment status: {status.device}={status.state}")
-        if self._availability:
-            self._availability.set_payment_device(status.device, status.state)
-        if self._health_monitor:
-            self._health_monitor.record_signal(
-                "mdb",
-                status.device,
-                1.0 if status.state == "ready" else 0.0,
-                text=status.state,
-            )
+        return await self._telemetry.handle_payment_status(topic, data)
 
     async def _handle_mqtt_button(self, topic: str, data: dict):
         """Handle button press from ESP32."""
@@ -1230,105 +1221,52 @@ class VMC:
 
     async def _handle_mqtt_sensor(self, topic: str, data: dict):
         """Handle temperature/sensor reading from ESP32."""
-        logger.debug(f"MQTT sensor [{topic}]: {data}")
-        if self._health_monitor:
-            location = data.get(
-                "location", topic.split("/")[-1] if "/" in topic else topic
-            )
-            value = data.get("value")
-            if value is not None:
-                self._health_monitor.record_temperature(location, float(value))
+        return await self._telemetry.handle_sensor(topic, data)
 
     async def _handle_mqtt_water_flow(self, topic: str, data: dict):
         """Handle water flow sensor readings from the vending ESP32."""
-        reading = SensorReading.model_validate(data)
-        logger.debug(f"MQTT water flow [{topic}]: {reading.value}{reading.unit}")
-        if self._health_monitor:
-            self._health_monitor.record_channel("water_flow", reading.value)
+        return await self._telemetry.handle_water_flow(topic, data)
 
     async def _handle_mqtt_heartbeat(self, topic: str, data: dict):
         """Handle heartbeat from ESP32 subsystem."""
-        logger.debug(f"MQTT heartbeat [{topic}]: {data}")
-        if self._health_monitor:
-            subsystem = data.get(
-                "subsystem", topic.split("/")[-1] if "/" in topic else topic
-            )
-            if data.get("uptime_seconds") == -1:
-                logger.warning(
-                    f"Subsystem '{subsystem}' reported OFFLINE (MQTT last will)"
-                )
-                self._health_monitor.mark_offline(subsystem)
-                return
-            self._health_monitor.record_heartbeat(subsystem, data)
-
-    # Events logged to the ice maker log: power cycles, ice drops, out-of-spec
-    _ICE_LOG_EVENTS = {
-        "power_on",
-        "power_off",
-        "ice_dropped",
-        "needs_cleaning",
-        "failed_cycle",
-        "temp_out_of_bounds",
-    }
+        return await self._telemetry.handle_heartbeat(topic, data)
 
     async def _handle_mqtt_ice_maker_event(self, topic: str, data: dict):
         """Handle operational events from the ice maker ESP32."""
-        event = IceMakerEvent.model_validate(data)
-        logger.info(f"MQTT ice maker event: {event.event} — {event.detail or ''}")
-        if event.event in self._ICE_LOG_EVENTS:
-            detail = f" ({event.detail})" if event.detail else ""
-            ice_log.info(f"{event.event.upper()}{detail}")
-        if self._health_monitor and event.event in ("power_on", "power_off"):
-            self._health_monitor.record_signal(
-                "ice_maker",
-                "compressor_run",
-                1.0 if event.event == "power_on" else 0.0,
-            )
+        return await self._telemetry.handle_ice_maker_event(topic, data)
+
+    def _on_vending_capabilities_validated(
+        self, subsystem: str, caps: SubsystemCapabilities
+    ) -> None:
+        """Re-run the dispenser-profiles capabilities cross-check whenever
+        the vending board's retained capabilities doc validates -- invoked
+        by the telemetry router (controller/mqtt_inbound.py's
+        `TelemetryRouter.handle_capabilities`) only from its successful-
+        validation branch.
+
+        Dispenser profiles (plan: dispenser profiles, Task 2): the vending
+        board's declared channel directions feed the profiles' own
+        capabilities cross-check (drive channels must be outputs, sensors
+        inputs) -- re-run it, and re-reconcile CFG-101, every time this doc
+        changes. Only on a successfully validated doc: a malformed doc must
+        never overwrite previously-good capabilities with something that
+        would wrongly downgrade real slot errors back to warnings.
+        """
+        if subsystem == "vending" and self._dispenser_profiles is not None:
+            self._dispenser_profiles.set_capabilities(caps)
+            self.reconcile_dispenser_profiles()
 
     async def _handle_mqtt_capabilities(self, topic: str, data: dict):
         """Store a subsystem's retained self-description and hand it to health."""
-        subsystem = data.get("subsystem") or topic.split("/")[-1]
-        try:
-            caps = SubsystemCapabilities.model_validate(data)
-            logger.info(
-                f"Capabilities registered for '{subsystem}' "
-                f"(firmware {caps.firmware}, contract {caps.contract_version}, "
-                f"{len(caps.channels)} channels)"
-            )
-            # Dispenser profiles (plan: dispenser profiles, Task 2): the
-            # vending board's declared channel directions feed the
-            # profiles' own capabilities cross-check (drive channels must
-            # be outputs, sensors inputs) -- re-run it, and re-reconcile
-            # CFG-101, every time this doc changes. Only on a
-            # successfully validated doc: `caps` is never bound in the
-            # except branch below, and a malformed doc must never
-            # overwrite previously-good capabilities with something that
-            # would wrongly downgrade real slot errors back to warnings.
-            if subsystem == "vending" and self._dispenser_profiles is not None:
-                self._dispenser_profiles.set_capabilities(caps)
-                self.reconcile_dispenser_profiles()
-        except ValidationError:
-            logger.warning(
-                f"Capabilities for '{subsystem}' don't match the known schema; "
-                "storing raw payload"
-            )
-        self.subsystem_capabilities[subsystem] = data
-        if self._health_monitor:
-            self._health_monitor.record_capabilities(subsystem, data)
+        return await self._telemetry.handle_capabilities(topic, data)
 
     async def _handle_mqtt_telemetry(self, topic: str, data: dict):
         """Route a generic telemetry channel reading into health tracking."""
-        reading = ChannelReading.model_validate(data)
-        if self._health_monitor:
-            self._health_monitor.record_channel(reading.channel_id, reading.value)
+        return await self._telemetry.handle_telemetry(topic, data)
 
     async def _handle_mqtt_command_ack(self, topic: str, data: dict):
         """Log command acknowledgements from the monitor."""
-        ack = CommandAck.model_validate(data)
-        detail = f" — {ack.detail}" if ack.detail else ""
-        logger.info(
-            f"Monitor ack: {ack.command} -> {ack.status}{detail} ({ack.request_id})"
-        )
+        return await self._telemetry.handle_command_ack(topic, data)
 
     def _fire_and_forget(self, coro, *, persistent: bool = False) -> None:
         """Run a coroutine on the attached loop without awaiting it.
