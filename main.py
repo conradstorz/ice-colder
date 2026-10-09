@@ -19,7 +19,6 @@ from services.task_supervisor import supervise
 
 import asyncio
 import sys
-from datetime import datetime
 
 from loguru import logger
 
@@ -33,15 +32,6 @@ from services.startup_config import (
 from web_interface.server import app
 from web_interface import routes
 from web_interface import auth as web_auth
-
-
-def _local_now() -> datetime:
-    """Clock for the report scheduler: an aware, local-timezone `datetime`.
-
-    A plain wall-clock read -- unlike a test's fake clock, this never
-    raises, matching report_scheduler.run's contract (see its docstring).
-    """
-    return datetime.now().astimezone()
 
 
 @logger.catch()
@@ -176,7 +166,7 @@ async def main():
             supervise(
                 "report scheduler",
                 lambda: report_scheduler.run(
-                    live_config, recorder, send_email, _local_now
+                    live_config, recorder, send_email, report_scheduler.local_now
                 ),
             ),
         )
