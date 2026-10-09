@@ -93,7 +93,7 @@ def test_check_with_capabilities_file_clears_warnings(temp_config, monkeypatch, 
     caps = {
         "subsystem": "vending",
         "firmware": "x",
-        "contract_version": "0.8.0",
+        "contract_version": "1.0.0",
         "channels": [
             {
                 "channel_id": "agitator_motor",

@@ -1,5 +1,5 @@
 """
-Shared contract models for the vending-machine ESP32 interface (v0.8.0).
+Shared contract models for the vending-machine ESP32 interface (v1.0.0).
 
 Terminal dispenser outcomes, the fault-code registry, the refund
 command/ack, and the general subsystem-capabilities self-description
@@ -47,9 +47,19 @@ from contracts.common import ChannelDescriptor, _utc_now
 # 0.7.0 -> 0.8.0 (plan 1): minor bump, additive. FaultCode gains CFG-101
 # (no valid dispenser profile for a slot, product-scope) and CFG-102
 # (dispensers.toml could not be read, machine-scope). Neither blocks
-# payment. Plan 2 adds DispenseCommand/DispenseStep under the same
-# version.
-CONTRACT_VERSION = "0.8.0"
+# payment.
+#
+# 0.8.0 -> 1.0.0 (plan 2, Copilot review on PR #32): MAJOR bump -- this is
+# wire-breaking, not additive, so the minor-bump rule plan 2 originally
+# shipped under does not apply. `dispense`'s params previously accepted
+# just `slot`; this version requires `mechanism` and the slot's whole
+# `profile` too, and the production dispense path moves from a bare
+# `cmd/dispense` publish (removed) onto the command channel
+# (`cmd/vending`, command `dispense`), same as a test run.
+# `DispenserStatus.request_id` is now always set for a production sale,
+# not test runs only. See docs/contracts/vending-machine/CONTRACT.md's
+# "Semantics fixed in 1.0.0 (breaking)" section for the full list.
+CONTRACT_VERSION = "1.0.0"
 
 
 class DispenserOutcome(str, Enum):

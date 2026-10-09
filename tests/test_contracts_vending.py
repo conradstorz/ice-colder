@@ -24,8 +24,11 @@ def test_contract_version():
     # 0.4.0 -> 0.5.0: SVC-102 (new FaultCode, seven-member
     # PAYMENT_BLOCKING_FAULTS) plus part 3's deferred DATA-101 wording bump.
     # 0.6.0 -> 0.7.0: ChannelDescriptor gains direction/driven_by (additive).
-    # 0.7.0 -> 0.8.0: CFG-101/CFG-102 (dispenser profiles); plan 2 adds DispenseCommand/DispenseStep under the same version.
-    assert CONTRACT_VERSION == "0.8.0"
+    # 0.7.0 -> 0.8.0: CFG-101/CFG-102 (dispenser profiles), additive.
+    # 0.8.0 -> 1.0.0: major bump (Copilot review, PR #32) -- wire-breaking:
+    # `dispense` params now require mechanism+profile, `cmd/dispense` is
+    # removed, and DispenserStatus.request_id is now always set for sales.
+    assert CONTRACT_VERSION == "1.0.0"
 
 
 def test_every_fault_code_has_a_table_entry():
@@ -188,7 +191,7 @@ class TestSubsystemCapabilities:
             )
 
     def test_contract_version_bumped(self):
-        assert CONTRACT_VERSION == "0.8.0"
+        assert CONTRACT_VERSION == "1.0.0"
 
     def test_expected_subsystems(self):
         assert EXPECTED_SUBSYSTEMS == ("vending", "mdb", "ice_maker")
@@ -207,7 +210,7 @@ def test_pay_104_is_a_machine_warning():
 def test_contract_version_bumped_for_new_code():
     from contracts.vending_machine import CONTRACT_VERSION
 
-    assert CONTRACT_VERSION == "0.8.0"
+    assert CONTRACT_VERSION == "1.0.0"
 
 
 def test_payment_blocking_faults_is_exactly_the_six_hazards_plus_svc_102():

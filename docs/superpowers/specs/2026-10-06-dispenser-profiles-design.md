@@ -532,12 +532,18 @@ execution). This spec stays the design of record; the notes below record
 where plan 2 shipped differently, and why, rather than letting the two
 documents silently drift apart.
 
-- **No contract version bump.** `CFG-101`/`CFG-102` (plan 1) and
-  `DispenseCommand`/`DispenseStep`/the new `DispenserOutcome` members/
-  `fault_for_outcome` (plan 2) all shipped under the same
-  `contracts/vending_machine.py` 0.8.0 — the plan-2 additions are
-  additive wiring on top of plan 1's schema, not a schema break, so they
-  reuse its minor bump instead of taking their own.
+- **Bumped to 1.0.0 per the contract's breaking-change rule, on Copilot
+  review.** `CFG-101`/`CFG-102` (plan 1) shipped as an additive minor bump
+  to `contracts/vending_machine.py` 0.8.0, same as planned. Plan 2's
+  additions — `DispenseCommand`/`DispenseStep`/the new `DispenserOutcome`
+  members/`fault_for_outcome` — were originally shipped under that same
+  0.8.0 on the theory that they were additive wiring, not a schema break;
+  Copilot's PR #32 review correctly identified that `dispense`'s params
+  changed shape (from `{slot}` to requiring `mechanism`+`profile`) and
+  `cmd/dispense` was removed outright, which is wire-breaking by the
+  module docstring's own rule ("Breaking changes require a major
+  CONTRACT_VERSION bump"). The fix bumps `CONTRACT_VERSION` to `1.0.0`
+  rather than reusing 0.8.0.
 - **`DispenserStatus.state` stays `str`, not an enum.** The same field
   carries both intermediate `DispenseStep` strings (`agitate`, `fill`,
   `release`) and the terminal `DispenserOutcome` strings over one sale's

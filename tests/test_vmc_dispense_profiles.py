@@ -45,7 +45,7 @@ def _complete_capabilities() -> SubsystemCapabilities:
     return SubsystemCapabilities(
         subsystem="vending",
         firmware="x",
-        contract_version="0.8.0",
+        contract_version="1.0.0",
         channels=[
             _channel("agitator_motor", "output"),
             _channel("auger_motor", "output"),

@@ -475,7 +475,7 @@ class TestVendingCapabilities:
             "water_valve",
             "payment/enable",
         ]
-        assert caps.contract_version == "0.8.0"
+        assert caps.contract_version == "1.0.0"
 
     def test_channels_match_spec_table_in_order(self):
         """Spec §4.2's eleven-row vending table, copied exactly, in
@@ -1115,7 +1115,7 @@ class TestExampleToml:
         caps = SubsystemCapabilities(
             subsystem="vending",
             firmware="sim",
-            contract_version="0.8.0",
+            contract_version="1.0.0",
             channels=VendingMachineSimulator.CHANNELS,
         )
         raw = json.loads(Path("config.example.json").read_text(encoding="utf-8"))

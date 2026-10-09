@@ -32,7 +32,7 @@ def _good_capabilities() -> SubsystemCapabilities:
     return SubsystemCapabilities(
         subsystem="vending",
         firmware="x",
-        contract_version="0.8.0",
+        contract_version="1.0.0",
         channels=[
             ch("agitator_motor", "output"),
             ch("auger_motor", "output"),
