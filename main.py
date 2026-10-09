@@ -9,7 +9,6 @@ from services.event_recorder import EventRecorder
 from services import event_recorder as event_recorder_module
 from services.availability import Availability
 from services.session_store import SessionStore
-from services.config_store import save_config
 from services.dispensers import (
     DispenserProfiles,
     Finding,
@@ -20,22 +19,21 @@ from services.build_info import BUILD_INFO
 from services.paths import LOG_DIR, LOG_FILE
 from services.mailer import send_email
 from services import report_scheduler
+from services.task_lifecycle import run_until_primary_exits
+from services.task_supervisor import supervise
 
 import asyncio
-import json
 import os
 import sys
-from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 
 from loguru import logger
-from pydantic import SecretStr, ValidationError
 
 import uvicorn
-from config.config_model import ConfigModel, MQTTConfig
+from config.config_model import ConfigModel
 from contracts.vending_machine import FaultCode
 from services.access import AccessStore
+from services.startup_config import apply_env_overrides, load_config
 from web_interface.server import app
 from web_interface import routes
 from web_interface import auth as web_auth
@@ -93,75 +91,6 @@ def setup_logging():
         compression="zip",
         format="{time:YYYY-MM-DD HH:mm:ss} | {message}",
     )
-
-
-def _config_path() -> str:
-    """Resolve the active config path from ``ICE_COLDER_CONFIG`` (read at call
-    time so tests can monkeypatch env and cwd independently), defaulting to
-    ``config.json`` in the current working directory — unchanged behavior for
-    local runs and tests.
-    """
-    return os.environ.get("ICE_COLDER_CONFIG", "config.json")
-
-
-def _create_default_config(path: str) -> ConfigModel:
-    """First run: blank defaults, persisted, then continue.
-
-    No credential is generated here — authentication lives entirely in
-    ``data/access.json`` (services/access.py), created separately and
-    walked through the setup wizard at /setup.
-    """
-    defaults = ConfigModel()
-    save_config(defaults, Path(path))
-    logger.info(f"First run: created '{path}' with blank defaults")
-    return defaults
-
-
-def load_config() -> ConfigModel:
-    """
-    Load configuration from the path named by ``ICE_COLDER_CONFIG`` (default
-    ``config.json``).
-
-    Pydantic fills in defaults for any missing fields — no manual merge needed.
-    The user's file is never overwritten.
-    """
-    path = _config_path()
-    logger.info(f"Loading configuration from '{path}'")
-
-    if os.path.isdir(path):
-        logger.error(
-            f"Config path '{path}' is a directory, not a file. This typically "
-            "happens when a Docker bind-mount targets a file path that doesn't "
-            "exist yet on the host, so Docker creates a directory there instead. "
-            "Remove the directory and fix the bind-mount/ICE_COLDER_CONFIG "
-            "setting, then retry."
-        )
-        sys.exit(1)
-
-    if not os.path.exists(path):
-        logger.warning(f"'{path}' not found — first run: creating defaults")
-        return _create_default_config(path)
-
-    try:
-        with open(path, encoding="utf-8") as f:
-            raw = json.load(f)
-    except Exception as e:
-        logger.exception(f"Error reading '{path}': {e}")
-        sys.exit(1)
-
-    try:
-        config_model = ConfigModel.model_validate(raw)
-        logger.info(
-            f"Configuration loaded successfully: version={config_model.version}"
-        )
-    except ValidationError as ve:
-        logger.error("Configuration validation failed:")
-        for err in ve.errors():
-            loc = " -> ".join(str(l) for l in err.get("loc", []))  # noqa: E741
-            logger.error(f"  {loc}: {err.get('msg', '')}")
-        sys.exit(1)
-
-    return config_model
 
 
 # Plan 1 (this task) only loads `dispensers.toml` and logs its validation
@@ -254,52 +183,6 @@ def wire_dispenser_profiles(vmc: VMC, profiles: DispenserProfiles) -> None:
     """
     vmc.set_dispenser_profiles(profiles)
     routes.set_dispenser_profiles(profiles)
-
-
-@dataclass
-class EnvOverrides:
-    """Env-derived values that must not be written back to config.json.
-
-    ``mqtt`` is a copy of ``config.mqtt`` with env values layered on top;
-    ``trusted_proxies`` is the env list if set, else the config's own.
-    """
-
-    mqtt: MQTTConfig
-    trusted_proxies: list[str]
-
-
-def apply_env_overrides(config: ConfigModel) -> EnvOverrides:
-    """Docker-friendly overrides: broker host/credentials and trusted proxies.
-
-    Returns an ``EnvOverrides`` built from a copy of ``config.mqtt`` — the
-    live ``config`` is never mutated, so a later ``save_config(config)`` (the
-    inventory routes do this) can never persist an env-only secret like
-    ``MQTT_PASSWORD`` into config.json or its ``.bak``.
-
-    Read at call time so tests can monkeypatch the environment.
-    """
-    mqtt = config.mqtt.model_copy(deep=True)
-
-    host = os.environ.get("MQTT_BROKER_HOST")
-    if host:
-        mqtt.broker_host = host
-        logger.info(f"MQTT broker host overridden by env: {host}")
-    username = os.environ.get("MQTT_USERNAME")
-    if username:
-        mqtt.username = username
-        logger.info(f"MQTT username overridden by env: {username}")
-    password = os.environ.get("MQTT_PASSWORD")
-    if password:
-        mqtt.password = SecretStr(password)
-
-    proxies_env = os.environ.get("ICE_COLDER_TRUSTED_PROXIES")
-    if proxies_env:
-        trusted_proxies = [p.strip() for p in proxies_env.split(",") if p.strip()]
-        logger.info(f"Trusted proxies overridden by env: {trusted_proxies}")
-    else:
-        trusted_proxies = list(config.web.trusted_proxies)
-
-    return EnvOverrides(mqtt=mqtt, trusted_proxies=trusted_proxies)
 
 
 def warn_if_setup_mode(store: AccessStore) -> None:
@@ -400,35 +283,6 @@ def reconcile_sales_journal_faults(vmc: VMC, recorder: EventRecorder) -> None:
         )
 
 
-_SUPERVISE_RESTART_DELAY = 5.0
-
-
-async def _run_until_server_exits(server_coro, *supervised):
-    """Run ``server_coro`` (uvicorn's ``server.serve()``) alongside long-running
-    ``supervised`` background coroutines (the MQTT client / health monitor
-    supervisors). Returns (or raises) as soon as ``server_coro`` completes,
-    cancelling the still-running supervised tasks first.
-
-    Without this, ``asyncio.gather`` over the server plus supervisors that loop
-    forever never returns when uvicorn exits (SIGTERM/SIGINT, or a startup
-    failure) — ``main()`` never reaches its ``finally`` block and the process
-    never exits, so Docker's ``restart: unless-stopped`` never gets a chance to
-    restart it.
-    """
-    server_task = asyncio.ensure_future(server_coro)
-    supervised_tasks = [asyncio.ensure_future(c) for c in supervised]
-    try:
-        return await server_task
-    finally:
-        for task in supervised_tasks:
-            task.cancel()
-        for task in supervised_tasks:
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-
 def _local_now() -> datetime:
     """Clock for the report scheduler: an aware, local-timezone `datetime`.
 
@@ -436,23 +290,6 @@ def _local_now() -> datetime:
     raises, matching report_scheduler.run's contract (see its docstring).
     """
     return datetime.now().astimezone()
-
-
-async def _supervise(name: str, coro_factory):
-    """Keep a long-running component alive: log a crash and restart it after 5s.
-
-    Prevents one component's unhandled exception from unwinding asyncio.gather
-    and taking down the whole VMC process.
-    """
-    while True:
-        try:
-            await coro_factory()
-            logger.warning(f"{name} exited unexpectedly; restarting in 5s")
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception(f"{name} crashed; restarting in 5s")
-        await asyncio.sleep(_SUPERVISE_RESTART_DELAY)
 
 
 @logger.catch()
@@ -584,11 +421,11 @@ async def main():
         "Entering main event loop with web server, MQTT client, and health monitor"
     )
     try:
-        await _run_until_server_exits(
+        await run_until_primary_exits(
             server.serve(),
-            _supervise("MQTT client", mqtt.run),
-            _supervise("health monitor", health.run),
-            _supervise(
+            supervise("MQTT client", mqtt.run),
+            supervise("health monitor", health.run),
+            supervise(
                 "report scheduler",
                 lambda: report_scheduler.run(
                     live_config, recorder, send_email, _local_now

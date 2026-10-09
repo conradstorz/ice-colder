@@ -892,8 +892,8 @@ def _check_declared_direction(
 def dispensers_path() -> Path:
     """Resolve the active `dispensers.toml` path from
     `ICE_COLDER_DISPENSERS` (read at call time, mirroring
-    `main._config_path`), defaulting to `dispensers.toml` in the current
-    working directory."""
+    `services.startup_config._config_path`), defaulting to `dispensers.toml` in
+    the current working directory."""
 
     return Path(os.environ.get("ICE_COLDER_DISPENSERS", "dispensers.toml"))
 
