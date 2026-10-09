@@ -27,7 +27,6 @@ from contracts.vending_machine import (
     FaultCode,
     PaymentRefundCommand,
     PaymentRefundResult,
-    RefundStatus,
     SubsystemCapabilities,
     fault_for_outcome,
 )
@@ -43,6 +42,7 @@ from services.dispensers import DispenserProfiles
 from services.dispenser_schema import MECHANISM_FOR_KIND, SlotProfile
 from controller.fault_registry import FaultRegistry
 from controller.escrow_ledger import EscrowLedger
+from controller.refund_protocol import PendingRefund, RefundProtocol
 
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
 
@@ -127,15 +127,6 @@ _LIVENESS_FAULTS = {
     "ice_maker": FaultCode.COM_102,
     "mdb": FaultCode.PAY_101,
 }
-
-
-@dataclass
-class PendingRefund:
-    request_id: str
-    amount: float
-    reason: str
-    attempts: int = 1
-    deadline_task: asyncio.Task | None = None
 
 
 @dataclass
@@ -377,7 +368,20 @@ class VMC:
         # registry's own dict objects, kept because many tests read and
         # write them directly.
         self._faults = FaultRegistry(self._product_name)
-        self._pending_refunds: dict[str, PendingRefund] = {}
+        # Refund protocol: request -> ack -> one retry -> terminal state
+        # machine (controller/refund_protocol.py). `_pending_refunds` below
+        # is a read-only property aliasing the protocol's own dict, kept
+        # because many tests read and write it directly. The publish/
+        # schedule/ack_timeout/max_attempts callables are read at call
+        # time, never snapshotted here -- see RefundProtocol's docstring.
+        self._refunds = RefundProtocol(
+            publish=self._publish_refund_command,
+            schedule=self._schedule,
+            on_confirmed=self._refund_confirmed,
+            on_failed=self._refund_failed,
+            ack_timeout=lambda: self.REFUND_ACK_TIMEOUT,
+            max_attempts=lambda: self.REFUND_MAX_ATTEMPTS,
+        )
         self._start_time = time.monotonic()
         self._session_timeout_seconds = 180.0  # 3 minutes
         self._dispense_timeout_seconds = (
@@ -422,9 +426,7 @@ class VMC:
         self._pending_tasks.clear()
         self._cancel_dispense_timeout()
         self._cancel_session_timeout()
-        for pending in self._pending_refunds.values():
-            if pending.deadline_task and not pending.deadline_task.done():
-                pending.deadline_task.cancel()
+        self._refunds.cancel_all()
         logger.debug("VMC: all pending tasks cancelled.")
 
     def set_mqtt_client(self, client):
@@ -665,7 +667,7 @@ class VMC:
         return None
 
     def _snapshot(self, state: str | None = None) -> SessionSnapshot:
-        pending = next(iter(self._pending_refunds), None)
+        pending = self._refunds.first_request_id()
         product = self.selected_product
         effective_state = state or self.state
         return SessionSnapshot(
@@ -780,6 +782,11 @@ class VMC:
     @escrow_credits.setter
     def escrow_credits(self, value: list[Credit]) -> None:
         self._escrow.credits = value
+
+    @property
+    def _pending_refunds(self) -> dict[str, PendingRefund]:
+        """Alias to the protocol's own dict; see `_lockouts` above."""
+        return self._refunds.pending
 
     def _product_name(self, sku: str | None) -> str | None:
         if sku is None:
@@ -2116,9 +2123,7 @@ class VMC:
             self.send_customer_message("No funds to refund.")
             return
         amount = self._escrow.take_all()
-        pending = PendingRefund(request_id=uuid4().hex, amount=amount, reason=reason)
-        self._pending_refunds[pending.request_id] = pending
-        self._send_refund_command(pending)
+        pending = self._refunds.begin(amount, reason)
         logger.info(
             f"Refund of ${amount:.2f} requested via {self.last_payment_method} "
             f"(reason={reason}, request_id={pending.request_id})"
@@ -2133,40 +2138,21 @@ class VMC:
         )
         self._refresh_ui()
 
-    def _send_refund_command(self, pending: PendingRefund) -> None:
-        cmd = PaymentRefundCommand(
-            request_id=pending.request_id, amount=pending.amount, reason=pending.reason
-        )
+    def _publish_refund_command(self, cmd: PaymentRefundCommand) -> None:
+        """Publish closure handed to RefundProtocol. Reads `_mqtt_client` at
+        call time, not construction time -- it is still None when the VMC
+        is built and only set later by `set_mqtt_client`."""
         if self._mqtt_client is not None:
             self._fire_and_forget(self._mqtt_client.publish("cmd/payment/refund", cmd))
         else:
             logger.warning("No MQTT client; refund command not sent")
-        pending.deadline_task = self._schedule(
-            self.REFUND_ACK_TIMEOUT, lambda: self._refund_deadline(pending.request_id)
-        )
 
     async def _handle_mqtt_refund_ack(self, topic: str, data: dict):
         """Payment gateway acknowledged (or refused) a refund command."""
         result = PaymentRefundResult.model_validate(data)
-        pending = self._pending_refunds.get(result.request_id)
-        if pending is None:
-            logger.warning(f"Refund ack for unknown request_id {result.request_id}")
-            return
-        if result.status is RefundStatus.ok:
-            self._refund_confirmed(pending, result.amount_returned)
-        else:
-            self._refund_attempt_failed(
-                pending, detail=result.detail or result.status.value
-            )
-
-    def _cancel_refund_deadline(self, pending: PendingRefund) -> None:
-        if pending.deadline_task and not pending.deadline_task.done():
-            pending.deadline_task.cancel()
-        pending.deadline_task = None
+        self._refunds.handle_ack(result)
 
     def _refund_confirmed(self, pending: PendingRefund, amount_returned: float) -> None:
-        self._cancel_refund_deadline(pending)
-        self._pending_refunds.pop(pending.request_id, None)
         self._persist_session()
         txn_log.info(
             f"REFUND CONFIRMED: ${amount_returned:.2f} request_id={pending.request_id}"
@@ -2181,24 +2167,7 @@ class VMC:
             f"Refund of ${amount_returned:.2f} issued via {self.last_payment_method}."
         )
 
-    def _refund_deadline(self, request_id: str) -> None:
-        pending = self._pending_refunds.get(request_id)
-        if pending is None:
-            return
-        pending.deadline_task = None
-        self._refund_attempt_failed(pending, detail="ack_timeout")
-
-    def _refund_attempt_failed(self, pending: PendingRefund, detail: str) -> None:
-        self._cancel_refund_deadline(pending)
-        if pending.attempts < self.REFUND_MAX_ATTEMPTS:
-            pending.attempts += 1
-            logger.warning(
-                f"Refund {pending.request_id} not confirmed ({detail}); "
-                f"retry {pending.attempts}/{self.REFUND_MAX_ATTEMPTS}"
-            )
-            self._send_refund_command(pending)
-            return
-        self._pending_refunds.pop(pending.request_id, None)
+    def _refund_failed(self, pending: PendingRefund, detail: str) -> None:
         self._persist_session()
         txn_log.error(
             f"REFUND FAILED: ${pending.amount:.2f} request_id={pending.request_id} "
