@@ -10,6 +10,7 @@ from loguru import logger
 from pydantic import SecretStr, ValidationError
 
 from config.config_model import ConfigModel, MQTTConfig
+from services.access import AccessStore
 from services.config_store import save_config
 
 _MQTT_ENV_VARS = {
@@ -134,3 +135,28 @@ def apply_env_overrides(config: ConfigModel) -> EnvOverrides:
         trusted_proxies = list(config.web.trusted_proxies)
 
     return EnvOverrides(mqtt=mqtt, trusted_proxies=trusted_proxies)
+
+
+def warn_if_setup_mode(store: AccessStore) -> None:
+    """Log the dashboard's access-store health at startup. Never exits: a
+    dashboard-only problem must never stop the machine selling.
+
+    - Corrupt ``data/access.json``: logged at error level. The dashboard
+      serves an error page on every route, but the VMC and MQTT client are
+      unaffected and keep running.
+    - No owner yet: logged at warning level — the dashboard is in setup mode
+      until someone completes the wizard at /setup on the machine.
+    - An owner already exists: silent.
+    """
+    if store.corrupt:
+        logger.error(
+            f"Access store at {store.path} is corrupt: the dashboard will "
+            "serve an error page on every route. The VMC and MQTT client "
+            "are unaffected and keep running."
+        )
+        return
+    if store.setup_mode:
+        logger.warning(
+            "Dashboard is in setup mode: no owner exists yet. Visit /setup "
+            "at the machine to create one."
+        )

@@ -4,8 +4,8 @@ import time
 
 import pytest
 
-import main as main_mod
 from services import startup_config
+from services.startup_config import warn_if_setup_mode
 from config.config_model import ConfigModel, WebConfig
 from contracts.vending_machine import FaultCode
 from controller.vmc import VMC
@@ -92,7 +92,7 @@ def test_warn_if_setup_mode_warns_with_no_owner(tmp_path, caplog):
     store = AccessStore(path=tmp_path / "access.json")
     caplog.set_level("WARNING")
 
-    main_mod.warn_if_setup_mode(store)  # must not raise SystemExit
+    warn_if_setup_mode(store)  # must not raise SystemExit
 
     messages = [r.message for r in caplog.records]
     assert any("setup mode" in m and "/setup" in m for m in messages), messages
@@ -104,7 +104,7 @@ def test_warn_if_setup_mode_silent_once_owner_exists(tmp_path, caplog):
     caplog.set_level("WARNING")
     caplog.clear()
 
-    main_mod.warn_if_setup_mode(store)
+    warn_if_setup_mode(store)
 
     messages = [r.message for r in caplog.records]
     assert not any("setup mode" in m for m in messages)
@@ -121,7 +121,7 @@ def test_warn_if_setup_mode_logs_error_on_corrupt_store_and_never_exits(
     assert store.corrupt
     caplog.set_level("WARNING")
 
-    main_mod.warn_if_setup_mode(store)  # must not raise SystemExit
+    warn_if_setup_mode(store)  # must not raise SystemExit
 
     messages = [r.message for r in caplog.records]
     assert any(
