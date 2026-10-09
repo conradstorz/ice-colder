@@ -44,8 +44,9 @@ All configuration is a single Pydantic `ConfigModel` loaded from `config.json`. 
 `services/config_store.py` are atomic (tmp + rename), write real secret values,
 and keep a rolling `config.json.bak`.
 
-`services/startup_config.py` owns config loading, first-run creation, and
-environment overrides; `main.py` calls it during startup. The config file path
+`services/startup_config.py` owns config loading, first-run creation,
+environment overrides, and the startup access-store / setup-mode warning
+(`warn_if_setup_mode`); `main.py` calls it during startup. The config file path
 is configurable via the `ICE_COLDER_CONFIG` environment variable (read at call
 time by both `services/startup_config.py` and `services/config_store.py`),
 defaulting to `config.json` in the current working directory when unset. This
