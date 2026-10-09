@@ -385,7 +385,32 @@ class VendingMachineSimulator(ESP32Simulator):
                 probability=0.0006,
                 on_activate=self._on_slow_flow_activate,
                 on_recover=self._on_slow_flow_recover,
-                message="Water flow much slower than expected — fill will time out",
+                message=(
+                    "Water flow modestly slow (just above the minimum) — "
+                    "may time out before reaching the target volume"
+                ),
+                severity="warning",
+            )
+        )
+        self.register_fault(
+            FaultDef(
+                name="low_flow",
+                category="short",
+                # Copilot review (PR #32) finding C7: deliberately 0 --
+                # this fault exists to be triggered explicitly (a test, or
+                # an operator via the Tests level), not rolled at random.
+                # It represents a flow rate *below* min_flow_ml_per_second,
+                # distinct from slow_flow (just above the minimum, which
+                # may or may not reach the target in time) and from
+                # no_water_flow (zero flow, the other way a fill can be
+                # starved of water).
+                probability=0.0,
+                on_activate=self._on_low_flow_activate,
+                on_recover=self._on_low_flow_recover,
+                message=(
+                    "Water flow below min_flow_ml_per_second — fill will "
+                    "fault as no_flow once no_flow_grace_seconds elapses"
+                ),
                 severity="warning",
             )
         )
@@ -595,10 +620,16 @@ class VendingMachineSimulator(ESP32Simulator):
         logger.info("[vending] Fault cleared: flow_runaway")
 
     async def _on_slow_flow_activate(self, client: aiomqtt.Client) -> None:
-        logger.warning("[vending] FAULT: water flow much slower than expected")
+        logger.warning("[vending] FAULT: water flow modestly slow")
 
     async def _on_slow_flow_recover(self, client: aiomqtt.Client) -> None:
         logger.info("[vending] Fault cleared: slow_flow")
+
+    async def _on_low_flow_activate(self, client: aiomqtt.Client) -> None:
+        logger.warning("[vending] FAULT: water flow below minimum")
+
+    async def _on_low_flow_recover(self, client: aiomqtt.Client) -> None:
+        logger.info("[vending] Fault cleared: low_flow")
 
     def _arrival_factor(self, hour: int | None = None) -> float:
         """Return an idle-time multiplier based on time of day.
@@ -957,54 +988,77 @@ class VendingMachineSimulator(ESP32Simulator):
 
     async def _pump_water_pulses(
         self, client: aiomqtt.Client, fill: WaterFillByVolume, mode: str
-    ) -> tuple[float, float, float]:
+    ) -> tuple[float, float, float, float]:
         """Simulate flow-meter pulses for one `flow_volume` fill (review
         finding I3), publishing the running count on the `fill_pulses`
         telemetry channel in at least `_WATER_FLOW_INCREMENTS` steps.
 
-        `mode="normal"` stops exactly at the slot's `target_volume_ml`
-        (converted to pulses via `pulses_per_liter`), reached in
-        `min(8.0, max_fill_seconds / 2)` seconds of simulated flow.
-        `mode="runaway"` keeps pulsing past that target, at the same
-        nominal rate, until the volume exceeds `over_dispense_percent`'s
-        tolerance. `mode="slow"` simulates a flow rate so far below
-        nominal that only half the target volume is reached by
-        `max_fill_seconds` -- the `slow_flow` fault's effect, and the
-        only way `_run_water_fill` can return `timeout` (no fault
-        currently drives a bag-full-sensor-style "ran out the clock
-        right at the target" case, so this is deliberately the one path
-        there).
+        Copilot review (PR #32) finding C7: every mode now has an actual
+        simulated flow *rate*, in ml/s, so `min_flow_ml_per_second` can
+        be consulted against something real rather than never consulted
+        at all:
 
-        Returns `(pulses, elapsed_seconds, target_pulses)`.
+        - `mode="normal"`/`"runaway"`: the same nominal rate as before
+          (`target_volume_ml / min(8.0, max_fill_seconds / 2)`),
+          unrelated to `min_flow_ml_per_second` (always comfortably
+          above it for any sane profile). `"normal"` stops exactly at
+          `target_volume_ml`'s pulses; `"runaway"` keeps going past that
+          until the volume exceeds `over_dispense_percent`'s tolerance.
+        - `mode="slow"` (the `slow_flow` fault): rate = `1.05 ×
+          min_flow_ml_per_second` -- deliberately just *above* the
+          floor, so it never trips `no_flow`. Runs for up to
+          `max_fill_seconds`, stopping early at `target_volume_ml` like
+          `"normal"` does: whether this profile's `target_volume_ml` is
+          reachable at that modest rate within `max_fill_seconds`
+          decides `complete` vs. `timeout` (both are now real outcomes
+          for this fault, not just `timeout`).
+        - `mode="low"` (the `low_flow` fault): rate = `0.5 ×
+          min_flow_ml_per_second` -- deliberately *below* the floor.
+          Runs for only `no_flow_grace_seconds` (not the full
+          `max_fill_seconds`) before returning, so the caller can fault
+          `no_flow` promptly, exactly as `no_water_flow`'s hardcoded
+          zero-rate path already does.
+
+        Returns `(pulses, elapsed_seconds, target_pulses, rate_ml_s)` --
+        `_run_water_fill` compares `rate_ml_s` against
+        `fill.min_flow_ml_per_second` itself, once, rather than this
+        method deciding the outcome.
         """
         target_pulses = fill.target_volume_ml / 1000.0 * fill.pulses_per_liter
         tolerance_pulses = target_pulses * (1 + fill.over_dispense_percent / 100.0)
+        nominal_seconds = min(8.0, fill.max_fill_seconds / 2.0)
 
-        if mode == "slow":
+        if mode == "low":
+            rate_ml_s = 0.5 * fill.min_flow_ml_per_second
+            dt = fill.no_flow_grace_seconds / _WATER_FLOW_INCREMENTS
+            run_seconds = fill.no_flow_grace_seconds
+        elif mode == "slow":
+            rate_ml_s = 1.05 * fill.min_flow_ml_per_second
             dt = fill.max_fill_seconds / _WATER_FLOW_INCREMENTS
-            step_pulses = (target_pulses * 0.5) / _WATER_FLOW_INCREMENTS
+            run_seconds = fill.max_fill_seconds
         else:
-            nominal_seconds = min(8.0, fill.max_fill_seconds / 2.0)
+            rate_ml_s = fill.target_volume_ml / nominal_seconds
             dt = nominal_seconds / _WATER_FLOW_INCREMENTS
-            step_pulses = target_pulses / _WATER_FLOW_INCREMENTS
+            run_seconds = fill.max_fill_seconds
+
+        pulse_rate = rate_ml_s / 1000.0 * fill.pulses_per_liter  # pulses/second
+        step_pulses = pulse_rate * dt
 
         pulses = 0.0
         elapsed = 0.0
-        while elapsed < fill.max_fill_seconds:
+        while elapsed < run_seconds:
             await self._sleep(dt)
             pulses += step_pulses
             elapsed += dt
             await self._publish_fill_pulses(client, pulses)
 
-            if mode == "normal" and pulses >= target_pulses:
+            if mode in ("normal", "slow") and pulses >= target_pulses:
                 pulses = target_pulses
                 break
             if mode == "runaway" and pulses > tolerance_pulses:
                 break
-            if mode == "slow" and elapsed >= fill.max_fill_seconds:
-                break
 
-        return pulses, elapsed, target_pulses
+        return pulses, elapsed, target_pulses, rate_ml_s
 
     async def _run_water_fill(
         self, ctx: "_RunContext"
@@ -1034,10 +1088,12 @@ class VendingMachineSimulator(ESP32Simulator):
                 mode = "runaway"
             elif "slow_flow" in active:
                 mode = "slow"
+            elif "low_flow" in active:
+                mode = "low"
             else:
                 mode = "normal"
 
-            pulses, elapsed, target_pulses = await self._pump_water_pulses(
+            pulses, elapsed, target_pulses, rate_ml_s = await self._pump_water_pulses(
                 ctx.client, fill, mode
             )
             tolerance_pulses = target_pulses * (1 + fill.over_dispense_percent / 100.0)
@@ -1053,6 +1109,20 @@ class VendingMachineSimulator(ESP32Simulator):
             await ctx.drive_off(fill.valve_channel)
             ctx.exit_step(DispenseStep.fill.value)
 
+            # Finding C7: min_flow_ml_per_second, consulted directly
+            # against the rate _pump_water_pulses actually simulated --
+            # below the floor for longer than no_flow_grace_seconds
+            # (which is exactly how long mode="low" ever runs) is a
+            # no_flow fault, same family as no_water_flow's hardcoded
+            # zero-rate path above, just reached through the general
+            # rate check instead of a special case.
+            if rate_ml_s < fill.min_flow_ml_per_second:
+                return (
+                    DispenserOutcome.no_flow,
+                    f"flow {rate_ml_s:.1f} ml/s below minimum "
+                    f"{fill.min_flow_ml_per_second:.1f} ml/s for "
+                    f"{fill.no_flow_grace_seconds:.1f} s",
+                )
             if mode == "runaway" and pulses > tolerance_pulses:
                 return (
                     DispenserOutcome.over_dispense,

@@ -19,6 +19,7 @@ from services.dispenser_schema import (
     BaggedIceProfile,
     IceFillTimed,
     ReleaseTimed,
+    WaterFillByVolume,
     WaterFillProfile,
     WaterFillTimed,
 )
@@ -250,9 +251,9 @@ class TestHADiscovery:
 
 
 class TestVendingFaultRegistration:
-    def test_nine_faults_registered(self):
+    def test_ten_faults_registered(self):
         sim = VendingMachineSimulator()
-        assert len(sim._fault_defs) == 9
+        assert len(sim._fault_defs) == 10
 
     def test_fault_names(self):
         sim = VendingMachineSimulator()
@@ -267,6 +268,12 @@ class TestVendingFaultRegistration:
             "door_stuck_open",
             "flow_runaway",
             "slow_flow",
+            # low_flow (finding C7): a flow rate below
+            # min_flow_ml_per_second, distinct from slow_flow (above the
+            # minimum) and no_water_flow (zero). probability=0 -- it is
+            # triggered explicitly (test, or an operator), never rolled
+            # at random.
+            "low_flow",
         }
 
 
@@ -692,6 +699,7 @@ class TestExecuteProfile:
             ("no_water_flow", DispenserOutcome.no_flow),
             ("flow_runaway", DispenserOutcome.over_dispense),
             ("slow_flow", DispenserOutcome.timeout),
+            ("low_flow", DispenserOutcome.no_flow),
             ("ice_bin_empty", DispenserOutcome.bin_empty),
         ],
     )
@@ -790,6 +798,110 @@ class TestExecuteProfile:
         fill = WATER_PROFILE.fill
         tolerance_ml = fill.target_volume_ml * (1 + fill.over_dispense_percent / 100.0)
         assert dispensed_ml > tolerance_ml
+
+    @pytest.mark.asyncio
+    async def test_slow_flow_times_out_when_target_unreachable(self):
+        """Copilot review (PR #32) finding C7: slow_flow's rate (1.05 x
+        min_flow_ml_per_second, just above the no-flow floor) is too
+        modest to reach WATER_PROFILE's target_volume_ml within
+        max_fill_seconds -- timeout, not no_flow (the rate is never
+        below the minimum) and not complete (the target is never
+        reached)."""
+        sim = _make_sim()
+        sim._sleep = AsyncMock()
+        client = AsyncMock()
+        terminal = []
+
+        async def capture_publish(c, topic, payload):
+            if topic == "hardware/dispenser" and hasattr(payload, "state"):
+                terminal.append((payload.state, payload.detail))
+
+        sim.publish = capture_publish
+        sim._fault_state["slow_flow"]["active"] = True
+        cmd = DispenseCommand(slot=2, mechanism="water_fill", profile=WATER_PROFILE)
+
+        await sim._execute_profile(client, cmd)
+
+        assert terminal[-1][0] == "timeout"
+
+    @pytest.mark.asyncio
+    async def test_slow_flow_completes_when_target_reachable(self):
+        """Finding C7: the same modest slow_flow rate completes normally
+        when the slot's own target_volume_ml/max_fill_seconds budget is
+        generous enough for it -- slow_flow is not unconditionally a
+        timeout, only when the target happens to be unreachable at that
+        rate."""
+        sim = _make_sim()
+        sim._sleep = AsyncMock()
+        client = AsyncMock()
+        terminal = []
+
+        async def capture_publish(c, topic, payload):
+            if topic == "hardware/dispenser" and hasattr(payload, "state"):
+                terminal.append((payload.state, payload.detail))
+
+        sim.publish = capture_publish
+        sim._fault_state["slow_flow"]["active"] = True
+
+        # 1.05 x 20.0 ml/s = 21.0 ml/s; 210 ml at 21 ml/s is 10 s, well
+        # inside this fill's own 30 s max_fill_seconds.
+        fill = WaterFillByVolume(
+            proof="flow_volume",
+            valve_channel="water_valve_solenoid",
+            flow_sensor_channel="water_flow_sensor",
+            target_volume_ml=210,
+            pulses_per_liter=450.0,
+            min_flow_ml_per_second=20.0,
+            no_flow_grace_seconds=3.0,
+            over_dispense_percent=10.0,
+            max_fill_seconds=30.0,
+        )
+        profile = WaterFillProfile(
+            mechanism="water_fill", product_sku="WATER-SLOW-OK", fill=fill
+        )
+        cmd = DispenseCommand(slot=2, mechanism="water_fill", profile=profile)
+
+        await sim._execute_profile(client, cmd)
+
+        assert terminal[-1][0] == "complete"
+
+    @pytest.mark.asyncio
+    async def test_rate_below_minimum_yields_no_flow_after_grace(self):
+        """Finding C7: min_flow_ml_per_second is now actually consulted
+        -- a flow rate below the floor (the low_flow fault, rate = 0.5 x
+        min_flow_ml_per_second) faults no_flow after
+        no_flow_grace_seconds, with a detail naming the rate, the
+        minimum, and the grace period -- promptly, not after the full
+        max_fill_seconds."""
+        sim = _make_sim()
+        durations = []
+
+        async def fake_sleep(seconds):
+            durations.append(seconds)
+
+        sim._sleep = fake_sleep
+        client = AsyncMock()
+        terminal = []
+
+        async def capture_publish(c, topic, payload):
+            if topic == "hardware/dispenser" and hasattr(payload, "state"):
+                terminal.append((payload.state, payload.detail))
+
+        sim.publish = capture_publish
+        sim._fault_state["low_flow"]["active"] = True
+        cmd = DispenseCommand(slot=2, mechanism="water_fill", profile=WATER_PROFILE)
+
+        await sim._execute_profile(client, cmd)
+
+        state, detail = terminal[-1]
+        assert state == "no_flow"
+        fill = WATER_PROFILE.fill
+        assert f"{0.5 * fill.min_flow_ml_per_second:.1f}" in detail
+        assert f"{fill.min_flow_ml_per_second:.1f}" in detail
+        assert f"{fill.no_flow_grace_seconds:.1f}" in detail
+        # Faulted promptly, within the grace window -- not the full
+        # max_fill_seconds.
+        assert sum(durations) == pytest.approx(fill.no_flow_grace_seconds)
 
     @pytest.mark.asyncio
     async def test_accessory_lag_runs_after_last_step_on_success(self):
