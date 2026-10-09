@@ -335,6 +335,37 @@ def test_set_capabilities_clears_warnings(tmp_path):
     assert profiles.report is report
 
 
+def test_revalidate_picks_up_catalog_change(tmp_path):
+    """Copilot review (PR #32) finding C1: `revalidate()` re-runs
+    validation against the *current* `config.products` -- same shape as
+    `set_capabilities`, no disk read -- so a catalog edit after load()
+    (e.g. a web route changing a product's kind) is picked up without
+    needing to reload dispensers.toml from disk."""
+    path = tmp_path / "dispensers.toml"
+    path.write_text(GOOD, encoding="utf-8")
+    # A local copy, never the shared module-level ICE/WATER objects --
+    # mutating those would bleed into every other test that imports them.
+    water = WATER.model_copy()
+    config = ConfigModel(physical=PhysicalDetails(products=[ICE, water]))
+    profiles = DispenserProfiles(config, path=path)
+    report = profiles.load()
+    assert report.ok
+
+    water.kind = "ice"  # now disagrees with slot 2's water_fill mechanism
+
+    report = profiles.revalidate()
+
+    assert not report.ok
+    assert profiles.report is report
+
+
+def test_revalidate_is_a_noop_before_any_load():
+    profiles = DispenserProfiles(_config())
+    before = profiles.report
+    report = profiles.revalidate()
+    assert report is before
+
+
 def test_load_non_utf8_file_is_a_file_error(tmp_path):
     path = tmp_path / "dispensers.toml"
     bad_bytes = b"schema_version = 1\n\xff\xfe"

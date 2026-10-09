@@ -289,6 +289,8 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
 
         if context.inventory_manager:
             context.inventory_manager.add_sku(sku, inventory_count, tracked=tracked)
+        if context.vmc_instance:
+            context.vmc_instance.catalog_changed()
 
         return HTMLResponse("", headers={"HX-Redirect": f"/products/{sku}"})
 
@@ -392,6 +394,8 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
                     error="Could not save changes.",
                 ),
             )
+        if context.vmc_instance:
+            context.vmc_instance.catalog_changed()
         return HTMLResponse("", headers={"HX-Redirect": f"/products/{sku}"})
 
     @router.get(
@@ -484,6 +488,8 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
             product.inventory_count = inventory_count
             product.track_inventory = tracked
             save_config(context.config)
+        if context.vmc_instance:
+            context.vmc_instance.catalog_changed()
 
         return HTMLResponse("", headers={"HX-Redirect": f"/products/{sku}"})
 
@@ -520,8 +526,11 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
     async def delete_product_route(request: Request, sku: str):
         _get_or_404(sku)
         success = delete_product(context.config, sku)
-        if success and context.inventory_manager:
-            context.inventory_manager.remove_sku(sku)
+        if success:
+            if context.inventory_manager:
+                context.inventory_manager.remove_sku(sku)
+            if context.vmc_instance:
+                context.vmc_instance.catalog_changed()
         return HTMLResponse("", headers={"HX-Redirect": "/products"})
 
     return router

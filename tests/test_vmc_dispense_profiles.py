@@ -254,6 +254,56 @@ def test_clearing_a_fault_on_a_profiled_product_does_not_relock(tmp_path):
     assert "ICE-1" not in vmc._lockouts
 
 
+# --- Copilot review (PR #32) finding C1: catalog mutations must reconcile ---
+
+
+def test_kind_change_invalidates_profile(tmp_path):
+    """A product whose stale `kind` no longer matches its profile's
+    `mechanism` (e.g. ice -> water) must lose that profile and be
+    CFG-101-locked once `catalog_changed()` re-reconciles -- a bagged-ice
+    profile must never be dispatchable for a water-kind product just
+    because the slot number still matches."""
+    ice_product = Product(sku="ICE-1", slot=0, kind="ice")
+    cfg = ConfigModel(
+        physical=PhysicalDetails(products=[ice_product, WATER_1, OTHER_X])
+    )
+    vmc = VMC(config=cfg)
+    profiles = profiles_for([ice_product, WATER_1, OTHER_X], tmp_path)
+    vmc.set_dispenser_profiles(profiles)
+    assert "ICE-1" not in vmc._lockouts
+    assert vmc.dispenser_profile_for(ice_product) is not None
+
+    ice_product.kind = "water"
+    vmc.catalog_changed()
+
+    assert vmc._lockouts["ICE-1"] is FaultCode.CFG_101
+    assert vmc.dispenser_profile_for(ice_product) is None
+
+
+def test_new_product_locked_after_catalog_change(tmp_path):
+    """A product appended to the catalog after profiles were attached
+    (e.g. by a web route's add_product) has no profile and must be
+    CFG-101-locked as soon as catalog_changed() runs -- not left
+    sellable until some unrelated reconcile happens to fire."""
+    vmc = make_vmc()
+    profiles = profiles_for([ICE_1, WATER_1, OTHER_X], tmp_path)
+    vmc.set_dispenser_profiles(profiles)
+
+    new_product = Product(sku="NEW-1", slot=9, kind="ice")
+    vmc.config_model.products.append(new_product)
+    vmc.catalog_changed()
+
+    assert vmc._lockouts["NEW-1"] is FaultCode.CFG_101
+
+
+def test_catalog_changed_is_a_noop_without_profiles():
+    """No VMC.set_dispenser_profiles call yet (no DispenserProfiles
+    attached) -- catalog_changed() must not raise."""
+    vmc = make_vmc()
+    vmc.catalog_changed()  # must not raise
+    assert vmc._lockouts == {}
+
+
 def test_reconcile_never_raises_cfg101_over_another_lockout(tmp_path):
     """The raise-side guard in reconcile_dispenser_profiles: a profile-less
     product already locked by another fault before profiles are attached

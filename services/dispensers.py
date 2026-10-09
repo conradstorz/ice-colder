@@ -1062,6 +1062,19 @@ class DispenserProfiles:
         the file on disk) so capability warnings resolve without a save."""
 
         self.capabilities = doc
+        return self._revalidate_last_loaded_text()
+
+    def revalidate(self) -> ValidationReport:
+        """Re-run validation on the last-loaded text against the
+        *current* `self.config.products`/dispense timeout -- same shape
+        as `set_capabilities` (no disk read), for a catalog mutation
+        (Copilot review, PR #32, finding C1) rather than a capabilities
+        change. A no-op, returning the existing `self.report` unchanged,
+        when nothing has been loaded yet."""
+
+        return self._revalidate_last_loaded_text()
+
+    def _revalidate_last_loaded_text(self) -> ValidationReport:
         if self._text is None:
             return self.report
         self.report = self.validate_text(self._text)

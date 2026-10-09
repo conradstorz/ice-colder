@@ -556,13 +556,22 @@ class VMC:
         `product_sku` doesn't match this product -- the same validity
         check `reconcile_dispenser_profiles` locks products on, so the
         two can never disagree.
+
+        Copilot review (PR #32) finding C1: also requires
+        `profile.mechanism == MECHANISM_FOR_KIND[product.kind]` -- a
+        profile left over at this slot from before a catalog edit changed
+        this product's `kind` (e.g. ice -> water) must not be treated as
+        valid just because the slot and sku still match.
         """
         if self._dispenser_profiles is None:
             return None
-        if product.kind not in MECHANISM_FOR_KIND:
+        expected_mechanism = MECHANISM_FOR_KIND.get(product.kind)
+        if expected_mechanism is None:
             return None
         profile = self._dispenser_profiles.profile_for_slot(product.slot)
         if profile is None or profile.product_sku != product.sku:
+            return None
+        if profile.mechanism != expected_mechanism:
             return None
         return profile
 
@@ -601,6 +610,26 @@ class VMC:
             self._raise_fault(FaultCode.CFG_102)
         elif cfg102_active and not file_error:
             self.clear_fault(FaultCode.CFG_102.value, by="auto")
+
+    def catalog_changed(self) -> None:
+        """Tell the VMC a product catalog mutation just landed (Copilot
+        review, PR #32, finding C1) -- call this from every products
+        route after a successful `save_config`, so a newly added product
+        or one whose `kind` changed is reconciled immediately rather than
+        staying sellable until the next unrelated reconcile (a profiles
+        reload or the vending capabilities hook).
+
+        Re-runs `DispenserProfiles.revalidate()` against the catalog's
+        new state first (so a kind change that now disagrees with its
+        slot's mechanism shows up as a validation error too), then
+        `reconcile_dispenser_profiles()`. No-op when no profiles object
+        is set.
+        """
+        profiles = self._dispenser_profiles
+        if profiles is None:
+            return
+        profiles.revalidate()
+        self.reconcile_dispenser_profiles()
 
     def _flag_uncertain_session(self, snap: SessionSnapshot) -> None:
         detail = snap.error or (
