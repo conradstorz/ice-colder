@@ -22,11 +22,15 @@ from services.session_store import Credit
 class EscrowLedger:
     """FIFO ledger of credit held in escrow for the customer.
 
-    Invariant: ``total == round(sum(c.amount for c in credits), 2)`` at all
-    times -- every method here that changes one changes the other, except
-    ``consume_fifo`` (see its docstring) and whatever a caller does by
-    poking ``total``/``credits`` directly (the divergence guard exists for
-    exactly that case).
+    Invariant, to the cent: ``round(total, 2) == round(sum(c.amount for c in
+    credits), 2)`` whenever no sale is in flight. ``total`` is a running
+    float sum, so it may carry sub-cent residue (0.1 + 0.2 leaves
+    0.30000000000000004); compare it rounded, never with ``==``. Every
+    method here that changes one side changes the other, with two
+    exceptions: ``consume_fifo`` deliberately changes only ``credits`` and
+    leaves the caller to subtract the price from ``total`` (see its
+    docstring), and a caller poking ``total``/``credits`` directly -- the
+    divergence guard in ``consume_fifo`` exists for exactly that case.
     """
 
     # Amounts within this many dollars of each other are the same money for
