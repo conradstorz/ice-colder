@@ -1234,11 +1234,18 @@ class VMC:
             and self._dispense_request_id
             and reported_request_id != self._dispense_request_id
         ):
+            # Review finding C2 (Copilot, PR #32): a mismatched id is a
+            # stale/foreign report -- e.g. a late report from an earlier
+            # sale on the same slot -- and must be ignored outright, not
+            # merely logged and processed anyway. A report carrying no
+            # request_id at all (a pre-1.0.0 board) skips this check
+            # entirely and is still accepted, keyed on slot and FSM state.
             logger.warning(
-                f"Dispenser report request_id={reported_request_id!r} does not "
-                f"match in-flight request_id={self._dispense_request_id!r}; "
-                "processing anyway (completion is keyed on slot and FSM state)"
+                f"Ignoring dispenser report: request_id={reported_request_id!r} "
+                f"does not match in-flight request_id={self._dispense_request_id!r} "
+                f"(slot {slot})"
             )
+            return
 
         product_name = (
             self.selected_product.name if self.selected_product else "Unknown"
@@ -1597,9 +1604,17 @@ class VMC:
                 f"DISPENSE CMD: slot {product.slot}, product '{product.name}', "
                 f"mechanism {profile.mechanism}"
             )
+            # Review finding C2 (Copilot, PR #32): the request_id must be
+            # known *before* any terminal report can possibly arrive, not
+            # learned only once the dispatcher's ack comes back -- a
+            # report that wins the race against a slow ack would
+            # otherwise be unverifiable. Generated and recorded here,
+            # synchronously, before the dispatch task is even created.
+            request_id = uuid4().hex
+            self._dispense_request_id = request_id
             snap = self._snapshot("dispensing") if self._session_store else None
             self._fire_and_forget(
-                self._persist_then_dispense(snap, cmd, seq),
+                self._persist_then_dispense(snap, cmd, seq, request_id),
                 persistent=True,
             )
 
@@ -1656,11 +1671,18 @@ class VMC:
         self._fail_vend(code, outcome=outcome)
 
     async def _persist_then_dispense(
-        self, snap, cmd: DispenseCommand, seq: int
+        self, snap, cmd: DispenseCommand, seq: int, request_id: str
     ) -> None:
         """Write the dispensing snapshot to disk before the ESP32 is told to
         move, then send the dispense command through the command dispatcher
         and await only its accepted ack -- never completion.
+
+        `request_id` (review finding C2) is `on_dispense_product`'s own
+        generated id, already recorded on `self._dispense_request_id`
+        *before* this task was even created -- passed through to
+        `send()` so the wire-level request_id the board sees is exactly
+        the id the VMC can already match a terminal report against, no
+        matter how the dispatch and the report race each other.
 
         A crash between the snapshot save and the dispatch leaves an open
         session on disk, so boot raises PAY-104 instead of forgetting that
@@ -1709,7 +1731,10 @@ class VMC:
                 return
 
             ack = await self._command_dispatcher.send(
-                "vending", "dispense", cmd.model_dump(mode="json")
+                "vending",
+                "dispense",
+                cmd.model_dump(mode="json"),
+                request_id=request_id,
             )
 
             if ack.status != "ok":
@@ -1732,8 +1757,14 @@ class VMC:
             await self._fail_dispense_async(FaultCode.PAY_102, "no_ack", seq)
             return
 
-        if self.state == "dispensing" and seq == self._sale_seq:
-            self._dispense_request_id = ack.request_id
+        if ack.request_id != request_id:
+            # Should not happen -- the dispatcher echoes back exactly the
+            # id it was given -- but a surprise here must never clobber
+            # the id already recorded for this (or, worse, a later) sale.
+            logger.warning(
+                f"VMC: dispense ack request_id={ack.request_id!r} does not "
+                f"match the sent request_id={request_id!r} for slot {cmd.slot}"
+            )
 
     def _post_dispense_dest(self) -> str:
         """Return the FSM destination after dispensing: continue if credit remains, else idle."""

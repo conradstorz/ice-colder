@@ -176,6 +176,44 @@ async def test_ack_for_sent_request_id_resolves_send():
     assert clock.calls == [5.0]  # sleep() was scheduled but never fired
 
 
+async def test_send_uses_caller_request_id():
+    """Copilot review (PR #32) finding C2: a caller (the VMC, so it can
+    know the id before any dispatch even starts) may supply its own
+    request_id -- send() must publish with exactly that id rather than
+    minting a fresh one, and the resolved ack still correlates by it."""
+    mqtt = FakeMQTTClient()
+    clock = FakeClock()
+    dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
+    caller_id = "caller-supplied-id-1"
+
+    task = asyncio.ensure_future(
+        dispatcher.send(
+            "vending", "dispense", _dispense_params(0), request_id=caller_id
+        )
+    )
+    await _wait_until(lambda: len(mqtt.published) == 1)
+
+    assert mqtt.published[0][1].request_id == caller_id
+
+    await mqtt.deliver_ack("vending", _ack_payload(caller_id, "dispense"))
+    ack = await asyncio.wait_for(task, timeout=2.0)
+    assert ack.request_id == caller_id
+
+
+async def test_send_generates_request_id_when_caller_supplies_none():
+    mqtt = FakeMQTTClient()
+    clock = FakeClock()
+    dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
+
+    task = asyncio.ensure_future(dispatcher.send("ice_maker", "ping"))
+    await _wait_until(lambda: len(mqtt.published) == 1)
+
+    request_id = mqtt.published[0][1].request_id
+    assert request_id  # minted, non-empty
+    await mqtt.deliver_ack("ice_maker", _ack_payload(request_id, "ping"))
+    await asyncio.wait_for(task, timeout=2.0)
+
+
 async def test_foreign_request_id_is_ignored_and_original_still_times_out():
     mqtt = FakeMQTTClient()
     clock = FakeClock()

@@ -420,7 +420,7 @@ async def test_rejected_ack_fails_vend(tmp_path):
     product = vmc.products[0]
     price = product.price
 
-    async def send_rejected(subsystem, command, params=None):
+    async def send_rejected(subsystem, command, params=None, request_id=None):
         dispatcher.sent.append((subsystem, command, params or {}))
         return CommandAck(request_id="rejected-1", command=command, status="rejected")
 
@@ -435,25 +435,105 @@ async def test_rejected_ack_fails_vend(tmp_path):
     vmc.cancel_pending_tasks()
 
 
-async def test_request_id_mismatch_is_logged_not_fatal(tmp_path, caplog):
+# --- Copilot review (PR #32) finding C2: request_id is known up front,
+# and a mismatched report is ignored, not merely logged -------------------
+
+
+async def test_request_id_is_known_before_the_ack_arrives(tmp_path):
+    """The VMC must generate and record request_id *before* dispatching
+    (review requirement: "the expected id must be known before any report
+    can arrive"), not learn it only once the ack comes back -- a gated
+    dispatcher here never resolves send() at all, yet the id is already
+    set by the time _start_sale returns."""
     vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    gate = asyncio.Event()
+    dispatcher.gate = gate
     product = vmc.products[0]
     _start_sale(vmc, product)
-    await asyncio.sleep(0)  # let _persist_then_dispense record the ack's request_id
+    await asyncio.sleep(0)  # dispatch reaches send() and blocks on the gate
 
-    assert vmc._dispense_request_id == dispatcher.last_request_id
+    assert vmc._dispense_request_id is not None
+    sent_subsystem, sent_command, sent_params = dispatcher.sent[-1]
+    assert sent_subsystem == "vending" and sent_command == "dispense"
+
+    gate.set()
+    await asyncio.sleep(0)
+    vmc.cancel_pending_tasks()
+
+
+async def test_stale_report_with_other_request_id_is_ignored(tmp_path, caplog):
+    """A terminal report carrying a *different* sale's request_id (e.g. a
+    stale report from an earlier sale on the same slot, arriving late)
+    must be ignored outright -- logged and returned from, never
+    processed -- rather than completing or failing the current sale."""
+    vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    product = vmc.products[1]  # W-1, currently dispensing
+    _start_sale(vmc, product)
+    await asyncio.sleep(0)
 
     await vmc._handle_mqtt_dispenser(
         "hardware/dispenser",
         {
             "slot": product.slot,
             "state": "complete",
-            "request_id": "not-the-real-one",
+            "request_id": "some-other-sale-s-request-id",
         },
     )
 
-    assert vmc.state == "idle"  # the sale still completed
+    assert vmc.state == "dispensing"  # the current sale is untouched
     assert any("request_id" in r.message for r in caplog.records)
+    vmc.cancel_pending_tasks()
+
+
+async def test_report_before_ack_completes_sale(tmp_path):
+    """The id is set before the dispatch even starts, so a terminal
+    report that wins the race against the dispatcher's own ack must
+    still complete the sale correctly -- and the ack, once it does
+    arrive, must cause no error and no double completion."""
+    vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    rec = FakeEventRecorder()
+    vmc.set_event_recorder(rec)
+    gate = asyncio.Event()
+    dispatcher.gate = gate
+    product = vmc.products[0]
+    _start_sale(vmc, product)
+    await asyncio.sleep(0)  # dispatch reaches send() and blocks on the gate
+
+    request_id = vmc._dispense_request_id
+    assert request_id is not None
+
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser",
+        {"slot": product.slot, "state": "complete", "request_id": request_id},
+    )
+
+    assert vmc.state == "idle"
+    assert len(rec.sales) == 1
+
+    # Release the ack: no error, no double completion.
+    gate.set()
+    await asyncio.sleep(0)
+    assert vmc.state == "idle"
+    assert len(rec.sales) == 1
+    vmc.cancel_pending_tasks()
+
+
+async def test_report_without_request_id_still_accepted(tmp_path):
+    """A report with no request_id at all (a pre-1.0.0 board) is still
+    accepted, keyed on slot and FSM state alone."""
+    vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    rec = FakeEventRecorder()
+    vmc.set_event_recorder(rec)
+    product = vmc.products[0]
+    _start_sale(vmc, product)
+    await asyncio.sleep(0)
+
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser", {"slot": product.slot, "state": "complete"}
+    )
+
+    assert vmc.state == "idle"
+    assert len(rec.sales) == 1
     vmc.cancel_pending_tasks()
 
 

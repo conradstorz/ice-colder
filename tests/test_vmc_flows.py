@@ -2084,14 +2084,17 @@ async def test_dispense_snapshot_persisted_before_dispense_command(tmp_path):
     sent: list = []
     dispatcher = vmc._command_dispatcher
 
-    async def send_and_check(subsystem, command, params=None):
+    async def send_and_check(subsystem, command, params=None, request_id=None):
         if command == "dispense":
             snap = store.load()
             assert snap is not None
             assert snap.state == "dispensing"
         sent.append((subsystem, command, params or {}))
         return CommandAck(
-            request_id="snapshot-check", command=command, status="ok", phase="accepted"
+            request_id=request_id or "snapshot-check",
+            command=command,
+            status="ok",
+            phase="accepted",
         )
 
     dispatcher.send = send_and_check

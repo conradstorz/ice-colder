@@ -243,7 +243,11 @@ class CommandDispatcher:
             self._early_completions.popitem(last=False)
 
     async def send(
-        self, subsystem: str, command: str, params: dict | None = None
+        self,
+        subsystem: str,
+        command: str,
+        params: dict | None = None,
+        request_id: str | None = None,
     ) -> CommandAck:
         """Send *command* to *subsystem* and await its ack.
 
@@ -252,6 +256,15 @@ class CommandDispatcher:
         wait out the timeout when there is no chance of an answer) or if no
         ack arrives after the initial attempt plus ``retries`` retries, each
         using the same ``request_id``.
+
+        ``request_id`` (Copilot review, PR #32, finding C2): optional.
+        When a caller supplies one, it is used as-is (and validated by
+        ``SubsystemCommand`` the same 8-64 char bound as any other
+        request_id) rather than minting a fresh one -- the VMC uses this
+        so it can record the dispense's expected id *before* this call
+        even starts, so a terminal report racing the ack can still be
+        correlated correctly. When omitted, a fresh id is generated, same
+        as before this parameter existed.
         """
         if not self._mqtt.connected:
             logger.warning(
@@ -260,7 +273,7 @@ class CommandDispatcher:
             )
             raise CommandTimeout(subsystem, command)
 
-        request_id = uuid.uuid4().hex
+        request_id = request_id or uuid.uuid4().hex
         cmd = SubsystemCommand(
             request_id=request_id, command=command, params=params or {}
         )
@@ -299,10 +312,16 @@ class CommandDispatcher:
             self._pending.pop(request_id, None)
 
     async def send_and_await_completion(
-        self, subsystem: str, command: str, params: dict | None = None
+        self,
+        subsystem: str,
+        command: str,
+        params: dict | None = None,
+        request_id: str | None = None,
     ) -> CommandAck:
         """Send *command* and wait for it to actually FINISH, not merely to
         be accepted (2026-09-29 completion-table amendment).
+
+        ``request_id`` (finding C2) passes through to ``send()`` unchanged.
 
         For an immediate command (its ack's `phase` is "completed" — every
         command NOT in `contracts.common.COMPLETION_TIMEOUTS`) this is
@@ -321,7 +340,7 @@ class CommandDispatcher:
         call); raises `CompletionTimeout` if accepted but no completion
         signal arrives within its own timeout.
         """
-        accept_ack = await self.send(subsystem, command, params)
+        accept_ack = await self.send(subsystem, command, params, request_id=request_id)
         if accept_ack.phase != "accepted":
             return accept_ack
 

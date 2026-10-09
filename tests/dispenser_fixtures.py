@@ -185,7 +185,11 @@ class FakeDispatcher:
         self._last_request_id: str | None = None
 
     async def send(
-        self, subsystem: str, command: str, params: dict | None = None
+        self,
+        subsystem: str,
+        command: str,
+        params: dict | None = None,
+        request_id: str | None = None,
     ) -> CommandAck:
         self.sent.append((subsystem, command, params or {}))
         outcome_exc = self.fail_with
@@ -195,8 +199,11 @@ class FakeDispatcher:
             await gate.wait()
         if outcome_exc is not None:
             raise outcome_exc
+        # Echo the caller-supplied request_id, like the real dispatcher
+        # (Copilot review, PR #32, finding C2) -- generate one only when
+        # the caller didn't supply one, matching send()'s own contract.
         ack = CommandAck(
-            request_id=uuid.uuid4().hex,
+            request_id=request_id or uuid.uuid4().hex,
             command=command,
             status="ok",
             phase="accepted",
