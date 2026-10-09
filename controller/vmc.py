@@ -23,14 +23,11 @@ from services.mqtt_messages import (
 )
 from contracts.ice_maker_monitor import ChannelReading, CommandAck
 from contracts.vending_machine import (
-    FAULT_TABLE,
     DispenserOutcome,
     FaultCode,
     PaymentRefundCommand,
     PaymentRefundResult,
     RefundStatus,
-    Scope,
-    Severity,
     SubsystemCapabilities,
     fault_for_outcome,
 )
@@ -44,6 +41,7 @@ from services.session_store import Credit, SessionSnapshot, SessionStore
 from services.event_recorder import SaleRecordingFailed
 from services.dispensers import DispenserProfiles
 from services.dispenser_schema import MECHANISM_FOR_KIND, SlotProfile
+from controller.fault_registry import FaultRegistry
 
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
 
@@ -121,16 +119,6 @@ TRANSITIONS = [
         "before": "on_reset",
     },
 ]
-
-# Alert level sent to the owner for each fault severity.
-_SEVERITY_LEVEL = {
-    Severity.info: "info",
-    Severity.warning: "warning",
-    Severity.product_unavailable: "warning",
-    Severity.vend_failed: "warning",
-    Severity.lockout: "error",
-    Severity.critical: "critical",
-}
 
 # Heartbeat loss per subsystem -> registry fault (ROADMAP §5, §8).
 _LIVENESS_FAULTS = {
@@ -377,9 +365,12 @@ class VMC:
         # in that case, so a VMC built without profiles (every pre-plan-2
         # test fixture) behaves exactly as before.
         self._dispenser_profiles: DispenserProfiles | None = None
-        # Fault registry: product-scope faults by SKU, machine-scope faults by code.
-        self._lockouts: dict[str, FaultCode] = {}
-        self._machine_faults: dict[FaultCode, float] = {}
+        # Fault registry: product-scope faults by SKU, machine-scope faults
+        # by code (controller/fault_registry.py). `_lockouts`/
+        # `_machine_faults` below are read-only properties aliasing the
+        # registry's own dict objects, kept because many tests read and
+        # write them directly.
+        self._faults = FaultRegistry(self._product_name)
         self._pending_refunds: dict[str, PendingRefund] = {}
         self._start_time = time.monotonic()
         self._session_timeout_seconds = 180.0  # 3 minutes
@@ -608,9 +599,9 @@ class VMC:
             sku = product.sku
             valid = self.dispenser_profile_for(product) is not None
             if not valid:
-                if sku not in self._lockouts:
+                if self._faults.is_locked(sku) is None:
                     self._raise_fault(FaultCode.CFG_101, sku=sku)
-            elif self._lockouts.get(sku) is FaultCode.CFG_101:
+            elif self._faults.is_locked(sku) is FaultCode.CFG_101:
                 # clear_fault's own re-check (review fix, Task 2) re-raises
                 # CFG-101 immediately if dispenser_profile_for still finds
                 # no valid profile. Here `valid` is already True, so that
@@ -619,7 +610,7 @@ class VMC:
                 self.clear_fault(sku, by="auto")
 
         file_error = profiles.report.file_error
-        cfg102_active = FaultCode.CFG_102 in self._machine_faults
+        cfg102_active = self._faults.has(FaultCode.CFG_102)
         if file_error and not cfg102_active:
             self._raise_fault(FaultCode.CFG_102)
         elif cfg102_active and not file_error:
@@ -739,6 +730,23 @@ class VMC:
         self._fire_and_forget(self._mqtt_client.publish("status", status, retain=True))
 
     # --- Fault registry ---
+    #
+    # State and pure bookkeeping live in `self._faults`
+    # (controller/fault_registry.py's `FaultRegistry`); the methods below
+    # are thin delegates that keep every side effect (event recorder,
+    # health monitor, MQTT, maintenance lease / session store guards)
+    # exactly where it always was.
+
+    @property
+    def _lockouts(self) -> dict[str, FaultCode]:
+        """Alias to the registry's own dict, kept because many tests
+        read and write it directly (`vmc._lockouts["SKU"] = code`)."""
+        return self._faults.lockouts
+
+    @property
+    def _machine_faults(self) -> dict[FaultCode, float]:
+        """Alias to the registry's own dict; see `_lockouts` above."""
+        return self._faults.machine_faults
 
     def _product_name(self, sku: str | None) -> str | None:
         if sku is None:
@@ -746,38 +754,11 @@ class VMC:
         return next((p.name for p in self.products if p.sku == sku), sku)
 
     def _sellable_products(self) -> list:
-        return [p for p in self.products if p.sku not in self._lockouts]
+        return [p for p in self.products if self._faults.is_locked(p.sku) is None]
 
     def active_faults(self) -> list[dict]:
         """Snapshot for the dashboard/health monitor. Product faults first."""
-        out = []
-        for sku, code in self._lockouts.items():
-            spec = FAULT_TABLE[code]
-            out.append(
-                {
-                    "key": sku,
-                    "sku": sku,
-                    "product": self._product_name(sku),
-                    "code": code.value,
-                    "severity": spec.severity.value,
-                    "scope": spec.scope.value,
-                    "description": spec.description,
-                }
-            )
-        for code in self._machine_faults:
-            spec = FAULT_TABLE[code]
-            out.append(
-                {
-                    "key": code.value,
-                    "sku": None,
-                    "product": None,
-                    "code": code.value,
-                    "severity": spec.severity.value,
-                    "scope": spec.scope.value,
-                    "description": spec.description,
-                }
-            )
-        return out
+        return self._faults.snapshot()
 
     def _push_active_faults(self) -> None:
         faults = self.active_faults()
@@ -793,39 +774,34 @@ class VMC:
         outcome: str | None = None,
     ) -> None:
         """Record a fault: lock the product if its severity says so, alert the owner."""
-        spec = FAULT_TABLE[code]
-        locks = spec.severity in (Severity.lockout, Severity.product_unavailable)
-        if spec.scope is Scope.product and sku is not None and locks:
-            if self._lockouts.get(sku) != code:
-                self._lockouts[sku] = code
-                if self._event_recorder:
-                    self._event_recorder.record(
-                        "lockout_set", metadata={"code": code.value, "sku": sku}
-                    )
-        elif spec.scope is Scope.machine:
-            self._machine_faults.setdefault(code, time.monotonic())
+        raised = self._faults.raise_fault(code, sku=sku, outcome=outcome)
+        if raised.newly_locked and self._event_recorder:
+            self._event_recorder.record(
+                "lockout_set", metadata={"code": code.value, "sku": sku}
+            )
+        logger.error(f"FAULT {raised.message}")
 
-        name = self._product_name(sku)
-        message = f"{code.value} {spec.description}"
-        if name:
-            message += f" — product '{name}'"
-        if outcome:
-            message += f" (reported: {outcome})"
-        logger.error(f"FAULT {message}")
-
-        key = f"{code.value}:{sku or 'machine'}"
-        level = _SEVERITY_LEVEL[spec.severity]
         if self._health_monitor:
             self._fire_and_forget(
                 self._health_monitor.raise_alert(
-                    key, level, "vmc", message, code=code.value, product_sku=sku
+                    raised.alert_key,
+                    raised.level,
+                    "vmc",
+                    raised.message,
+                    code=code.value,
+                    product_sku=sku,
                 )
             )
         if self._mqtt_client:
             self._fire_and_forget(
                 self._mqtt_client.publish(
                     "alerts",
-                    VMCAlert(level=level, message=message, code=code, product_sku=sku),
+                    VMCAlert(
+                        level=raised.level,
+                        message=raised.message,
+                        code=code,
+                        product_sku=sku,
+                    ),
                 )
             )
         self._push_active_faults()
@@ -841,7 +817,7 @@ class VMC:
 
     def clear_fault(self, key: str, by: str = "admin") -> bool:
         """Clear a fault by key (SKU for product faults, code string for machine faults)."""
-        code = self._lockouts.pop(key, None)
+        code = self._faults.pop_lockout(key)
         if code is not None:
             sku = key
             if self._event_recorder:
@@ -875,11 +851,10 @@ class VMC:
                     )
                     self._raise_fault(FaultCode.CFG_101, sku=sku)
         else:
-            try:
-                code = FaultCode(key)
-            except ValueError:
+            code = self._faults.parse_key(key)
+            if code is None:
                 return False
-            if code not in self._machine_faults:
+            if not self._faults.has(code):
                 return False
             if code is FaultCode.SVC_102 and self._maintenance_hold is not None:
                 # Copilot review (PR 22): a generic clear must not bypass
@@ -903,7 +878,7 @@ class VMC:
                         "leaving fault in place."
                     )
                     return False
-            del self._machine_faults[code]
+            self._faults.clear_machine(code)
             if code is FaultCode.PAY_104:
                 if self._availability:
                     self._availability.set_transaction_certain(True)
