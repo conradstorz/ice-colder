@@ -559,6 +559,35 @@ async def test_door_open_completes_sale_and_raises_ice402(tmp_path):
     vmc.cancel_pending_tasks()
 
 
+async def test_door_open_on_water_fill_fails_vend_with_error_mapping(tmp_path):
+    """Copilot review (PR #32) finding C3: door_open is a success only
+    for a mechanism with a (mechanism, door_open) entry in
+    OUTCOME_FAULTS -- bagged_ice, which raises ICE-402. water_fill has
+    no such entry, so door_open on a water-fill slot must take the
+    unmapped-outcome fallback (fault_for_outcome(mechanism, error)) and
+    fail the vend -- never record a sale or raise ICE-402."""
+    vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    rec = FakeEventRecorder()
+    vmc.set_event_recorder(rec)
+    avail = Availability()
+    vmc.set_availability(avail)
+    product = vmc.products[1]  # W-1, water_fill
+    price = product.price
+    _start_sale(vmc, product)
+    await asyncio.sleep(0)
+
+    await vmc._handle_mqtt_dispenser(
+        "hardware/dispenser", {"slot": product.slot, "state": "door_open"}
+    )
+
+    assert vmc.state == "interacting_with_user"
+    assert vmc.credit_escrow == price
+    assert len(rec.sales) == 0
+    assert any(e[0] == "vend_failed" and e[2]["code"] == "ICE-302" for e in rec.events)
+    assert "ICE-402" not in {f["code"] for f in vmc.active_faults()}
+    vmc.cancel_pending_tasks()
+
+
 @pytest.mark.parametrize(
     "outcome,expected",
     [

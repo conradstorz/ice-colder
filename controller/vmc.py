@@ -47,6 +47,20 @@ from services.dispenser_schema import MECHANISM_FOR_KIND, SlotProfile
 
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
 
+
+def _has_outcome_mapping(mechanism: str | None, outcome: DispenserOutcome) -> bool:
+    """True iff `(mechanism, outcome)` has an entry in OUTCOME_FAULTS --
+    used by `_handle_mqtt_dispenser` (review finding C3) to decide
+    whether `door_open` is a success for *this* mechanism (bagged_ice)
+    or must take the ordinary failed-vend path (every other mechanism,
+    e.g. water_fill, which has no `(water_fill, door_open)` mapping)."""
+    try:
+        fault_for_outcome(mechanism, outcome)
+    except KeyError:
+        return False
+    return True
+
+
 # Bound loggers — initialized lazily so sinks are installed before first use.
 # Module-level references are set by VMC.__init__() (after setup_logging() in main.py).
 txn_log = logger
@@ -1250,7 +1264,19 @@ class VMC:
         product_name = (
             self.selected_product.name if self.selected_product else "Unknown"
         )
-        if outcome in (DispenserOutcome.complete, DispenserOutcome.door_open):
+        # Review finding C3 (Copilot, PR #32): door_open is a customer
+        # success only for a mechanism that actually has a
+        # (mechanism, door_open) mapping in OUTCOME_FAULTS -- bagged_ice,
+        # which maps it to ICE-402 (the bag released but the trap door
+        # never closed). A mechanism with no such mapping (water_fill)
+        # must take the ordinary failed-vend path below instead, via the
+        # unmapped-outcome fallback in the `except KeyError` branch
+        # further down -- never record a sale or raise ICE-402 for it.
+        door_open_is_success = (
+            outcome is DispenserOutcome.door_open
+            and _has_outcome_mapping(self._sale_mechanism, DispenserOutcome.door_open)
+        )
+        if outcome is DispenserOutcome.complete or door_open_is_success:
             txn_log.info(f"DISPENSE SUCCESS: slot {slot}, product '{product_name}'")
             vend_log.info(f"DISPENSE COMPLETE: slot {slot}, product '{product_name}'")
             if self._sale_is_test:
