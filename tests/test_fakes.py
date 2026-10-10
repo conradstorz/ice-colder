@@ -159,3 +159,23 @@ async def test_cancel_pending_cancels_live_scheduled_calls_too():
     runner.cancel_pending()
 
     assert runner.scheduled == []
+
+
+def test_fire_all_skips_a_call_cancelled_earlier_in_the_same_pass():
+    runner = FakeTaskRunner()
+    ran: list[str] = []
+    second: list = []
+
+    def first():
+        ran.append("first")
+        second[0].cancel()
+
+    # fire_all runs calls in schedule order; "first" cancels "second"
+    # before the pass reaches it.
+    runner.schedule(0.5, first, label="first")
+    second.append(runner.schedule(1.0, lambda: ran.append("second"), label="second"))
+
+    runner.fire_all()
+
+    assert ran == ["first"]
+    assert runner.scheduled == []

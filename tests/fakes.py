@@ -151,5 +151,9 @@ class FakeTaskRunner:
         taken once, so a callback that re-arms itself under the same (or
         any other) label is never picked up by this same pass."""
         for call in list(self.scheduled):
+            if call.task.cancelled or call.task.fired:
+                # An earlier callback in this pass cancelled (or fired)
+                # it; the real runner would never run it either.
+                continue
             call.task.fired = True
             call.callback()
