@@ -2681,7 +2681,7 @@ class TestRunTestSale:
 
     async def test_dispensed_test_sale_records_test_run_not_sale_or_dispense(self):
         """Reaches on_dispenser_event's DispenserOutcome.complete
-        branch, its `if self._sale_is_test:` arm -- the real completion
+        branch, its `if self.sale.is_test:` arm -- the real completion
         handler, not a stub."""
         vmc, rec, client = _test_run_vmc()
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
@@ -3024,7 +3024,7 @@ class TestRunTestSale:
         Drives run_test_sale for real up to the exact point _process_
         payment persists the 'dispensing' snapshot (Task 4's unmodified
         persistence path -- unchanged by this fix), which now carries
-        is_test=True because VMC._snapshot() reads self._sale_is_test.
+        is_test=True because VMC._snapshot() reads the SaleContext's is_test.
         Then, rather than reading any flag off the live vmc1 object, this
         constructs a FRESH SessionStore and a FRESH VMC from the same
         on-disk file -- a real process boundary, exactly the shape
@@ -3033,7 +3033,7 @@ class TestRunTestSale:
         and no PAY-104 fires.
 
         Production paths reached: VMC.process_payment (unmodified),
-        VMC._snapshot (this fix's `is_test=self._sale_is_test`),
+        VMC._snapshot (this fix's `is_test=self._sale.is_test`),
         VMC.set_session_store (this fix's is_test boot branch), and
         VMC.pending_sale_for_recovery (this fix's is_test guard).
         """
@@ -3348,7 +3348,7 @@ def _test_run_vmc_with_availability(products=None):
     method, makes the branch unreachable and is how this bug survived.").
 
     `VMC.select_product` calls `Availability.test_sale_sellable` (never
-    `product_sellable`) whenever `self._sale_is_test` is True -- set only
+    `product_sellable`) whenever `self.sale.is_test` is True -- set only
     inside `run_test_sale`, before it calls `select_product` -- which
     exempts the maintenance lease's OWN `SVC-102` fault (and only that
     code) from blocking the sale, so `run_test_sale`'s `select_product`
@@ -3491,9 +3491,9 @@ class TestTestSaleAvailabilityExemption:
 
     async def test_customer_sale_still_blocked_by_lease_is_test_false(self):
         """Requirement 5: the exemption keys on the SALE's own `is_test`
-        flag (`VMC._sale_is_test`), not on the lease. A plain
+        flag (`SaleContext.is_test`), not on the lease. A plain
         `select_product` call -- a real customer button press, never going
-        through `run_test_sale`, so `_sale_is_test` stays False -- during
+        through `run_test_sale`, so `sale.is_test` stays False -- during
         an active lease must still be refused by the sale gate exactly as
         it was before this fix. Reaches `VMC.select_product`'s
         `else: self._availability.product_sellable(candidate)` branch.

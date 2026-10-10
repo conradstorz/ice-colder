@@ -457,7 +457,7 @@ def test_pre_existing_six_blocking_codes_are_unchanged_by_svc_102():
 # Production path reached: services/availability.py's Availability.
 # test_sale_sellable / product_sellable(ignore_faults=...) / sale_available
 # (ignore_faults=...) -- the same methods controller/vmc.py's
-# VMC.select_product calls when self._sale_is_test is True.
+# VMC.select_product calls when the in-flight sale's `sale.is_test` is True.
 
 
 def test_test_sale_sellable_ignores_svc_102_alone():
