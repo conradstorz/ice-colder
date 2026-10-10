@@ -110,7 +110,7 @@ def test_reconcile_never_clears_other_lockouts(tmp_path):
     vmc.set_dispenser_profiles(profiles)
     assert "ICE-1" not in vmc._lockouts  # ICE-1 has a valid profile
 
-    vmc._raise_fault(FaultCode.ICE_301, sku="ICE-1")
+    vmc.raise_fault(FaultCode.ICE_301, sku="ICE-1")
     assert vmc._lockouts["ICE-1"] is FaultCode.ICE_301
 
     vmc.reconcile_dispenser_profiles()
@@ -162,13 +162,13 @@ async def test_capabilities_hook_reruns_cross_checks(tmp_path):
     assert "ICE-1" not in vmc._lockouts
 
     incomplete = _incomplete_capabilities()
-    await vmc._handle_mqtt_capabilities("capabilities/vending", incomplete.model_dump())
+    await vmc.on_capabilities("capabilities/vending", incomplete.model_dump())
 
     assert vmc._lockouts["ICE-1"] is FaultCode.CFG_101
     assert "W-1" not in vmc._lockouts
 
     complete = _complete_capabilities()
-    await vmc._handle_mqtt_capabilities("capabilities/vending", complete.model_dump())
+    await vmc.on_capabilities("capabilities/vending", complete.model_dump())
 
     assert "ICE-1" not in vmc._lockouts
 
@@ -199,7 +199,7 @@ def test_clearing_another_fault_relocks_profileless_product_with_cfg101(tmp_path
 
     # Lock W-1 with ICE-301 *before* profiles are attached, so reconcile
     # finds it already locked and leaves it alone (per its own docstring).
-    vmc._raise_fault(FaultCode.ICE_301, sku="W-1")
+    vmc.raise_fault(FaultCode.ICE_301, sku="W-1")
     assert vmc._lockouts["W-1"] is FaultCode.ICE_301
 
     vmc.set_dispenser_profiles(profiles)
@@ -246,7 +246,7 @@ def test_clearing_a_fault_on_a_profiled_product_does_not_relock(tmp_path):
     vmc.set_dispenser_profiles(profiles)
     assert "ICE-1" not in vmc._lockouts
 
-    vmc._raise_fault(FaultCode.ICE_301, sku="ICE-1")
+    vmc.raise_fault(FaultCode.ICE_301, sku="ICE-1")
     assert vmc._lockouts["ICE-1"] is FaultCode.ICE_301
 
     assert vmc.clear_fault("ICE-1", by="admin") is True
@@ -315,7 +315,7 @@ def test_reconcile_never_raises_cfg101_over_another_lockout(tmp_path):
     )
     profiles.load()
 
-    vmc._raise_fault(FaultCode.ICE_301, sku="W-1")
+    vmc.raise_fault(FaultCode.ICE_301, sku="W-1")
     assert vmc._lockouts["W-1"] is FaultCode.ICE_301
 
     vmc.set_dispenser_profiles(profiles)
@@ -356,7 +356,7 @@ def _start_sale(vmc, product) -> None:
     vmc.machine.set_state("interacting_with_user")
     vmc.selected_product = product
     vmc.credit_escrow = product.price
-    vmc._process_payment()
+    vmc.process_payment()
     assert vmc.state == "dispensing"
 
 
@@ -471,7 +471,7 @@ async def test_stale_report_with_other_request_id_is_ignored(tmp_path, caplog):
     _start_sale(vmc, product)
     await asyncio.sleep(0)
 
-    await vmc._handle_mqtt_dispenser(
+    await vmc.on_dispenser_event(
         "hardware/dispenser",
         {
             "slot": product.slot,
@@ -502,7 +502,7 @@ async def test_report_before_ack_completes_sale(tmp_path):
     request_id = vmc._dispense_request_id
     assert request_id is not None
 
-    await vmc._handle_mqtt_dispenser(
+    await vmc.on_dispenser_event(
         "hardware/dispenser",
         {"slot": product.slot, "state": "complete", "request_id": request_id},
     )
@@ -528,7 +528,7 @@ async def test_report_without_request_id_still_accepted(tmp_path):
     _start_sale(vmc, product)
     await asyncio.sleep(0)
 
-    await vmc._handle_mqtt_dispenser(
+    await vmc.on_dispenser_event(
         "hardware/dispenser", {"slot": product.slot, "state": "complete"}
     )
 
@@ -547,7 +547,7 @@ async def test_door_open_completes_sale_and_raises_ice402(tmp_path):
     _start_sale(vmc, product)
     await asyncio.sleep(0)
 
-    await vmc._handle_mqtt_dispenser(
+    await vmc.on_dispenser_event(
         "hardware/dispenser", {"slot": product.slot, "state": "door_open"}
     )
 
@@ -576,7 +576,7 @@ async def test_door_open_on_water_fill_fails_vend_with_error_mapping(tmp_path):
     _start_sale(vmc, product)
     await asyncio.sleep(0)
 
-    await vmc._handle_mqtt_dispenser(
+    await vmc.on_dispenser_event(
         "hardware/dispenser", {"slot": product.slot, "state": "door_open"}
     )
 
@@ -605,7 +605,7 @@ async def test_water_outcomes_map_by_mechanism(tmp_path, outcome, expected):
     _start_sale(vmc, product)
     await asyncio.sleep(0)
 
-    await vmc._handle_mqtt_dispenser(
+    await vmc.on_dispenser_event(
         "hardware/dispenser", {"slot": product.slot, "state": outcome}
     )
 
@@ -621,7 +621,7 @@ async def test_ice_timeout_maps_to_ice301(tmp_path):
     _start_sale(vmc, product)
     await asyncio.sleep(0)
 
-    await vmc._handle_mqtt_dispenser(
+    await vmc.on_dispenser_event(
         "hardware/dispenser", {"slot": product.slot, "state": "timeout"}
     )
 
@@ -641,7 +641,7 @@ async def test_mis_reporting_board_falls_back_to_generic_error(tmp_path, caplog)
     _start_sale(vmc, product)
     await asyncio.sleep(0)
 
-    await vmc._handle_mqtt_dispenser(
+    await vmc.on_dispenser_event(
         "hardware/dispenser", {"slot": product.slot, "state": "jam"}
     )
 
@@ -768,7 +768,7 @@ async def test_late_no_ack_from_previous_sale_does_not_fail_current_sale(tmp_pat
 
     # Sale A completes through the real hardware report while its own
     # dispatch call is still pending behind the gate.
-    await vmc._handle_mqtt_dispenser(
+    await vmc.on_dispenser_event(
         "hardware/dispenser", {"slot": product_a.slot, "state": "complete"}
     )
     assert vmc.state == "idle"

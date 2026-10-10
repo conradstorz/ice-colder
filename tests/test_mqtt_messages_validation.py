@@ -77,7 +77,7 @@ class TestVMCDepositGuard:
         vmc = VMC(config=ConfigModel())
         vmc.attach_to_loop(asyncio.get_running_loop())
         with pytest.raises(ValidationError):
-            await vmc._handle_mqtt_payment(
+            await vmc.on_payment_credit(
                 "payment/credit", {"amount": -5.0, "method": "cash"}
             )
         assert vmc.credit_escrow == 0.0

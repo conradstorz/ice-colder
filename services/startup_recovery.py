@@ -42,7 +42,7 @@ def reconcile_sales_journal_faults(vmc: VMC, recorder: EventRecorder) -> None:
                 recorder.corrupt_backup_path
                 or "corrupt event database quarantined at startup"
             )
-            vmc.raise_data_fault(FaultCode.DATA_102, outcome=detail)
+            vmc.raise_fault(FaultCode.DATA_102, outcome=detail)
             logger.error(f"Event database was reset after corruption: {detail}")
 
         try:
@@ -65,7 +65,7 @@ def reconcile_sales_journal_faults(vmc: VMC, recorder: EventRecorder) -> None:
         if drained:
             vmc.clear_fault(FaultCode.DATA_101.value)
         else:
-            vmc.raise_data_fault(
+            vmc.raise_fault(
                 FaultCode.DATA_101,
                 outcome="sales journal not fully drained after replay",
             )

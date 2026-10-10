@@ -378,7 +378,7 @@ class TestVMCMQTTWiring:
         vmc.attach_to_loop(loop)
         vmc.start_interaction()
 
-        await vmc._handle_mqtt_payment(
+        await vmc.on_payment_credit(
             "payment/credit", {"amount": 2.50, "method": "card"}
         )
         assert vmc.credit_escrow == 2.50
@@ -393,7 +393,7 @@ class TestVMCMQTTWiring:
         vmc.attach_to_loop(loop)
 
         # button 0 should select the first configured product
-        await vmc._handle_mqtt_button("hardware/buttons", {"button": 0})
+        await vmc.on_button_press("hardware/buttons", {"button": 0})
         assert vmc.selected_product is not None
         assert vmc.state == "interacting_with_user"
 
@@ -411,7 +411,7 @@ class TestMonitorContractHandlers:
         from contracts.ice_maker_monitor import CONTRACT_VERSION
 
         vmc, _ = self._vmc_with_monitor()
-        await vmc._handle_mqtt_capabilities(
+        await vmc.on_capabilities(
             "capabilities/ice_maker",
             {
                 "subsystem": "ice_maker",
@@ -428,7 +428,7 @@ class TestMonitorContractHandlers:
 
     async def test_malformed_capabilities_stored_raw_with_warning(self):
         vmc, _ = self._vmc_with_monitor()
-        await vmc._handle_mqtt_capabilities(
+        await vmc.on_capabilities(
             "capabilities/vending", {"subsystem": "vending", "whatever": 1}
         )
         assert vmc.subsystem_capabilities["vending"] == {
@@ -438,7 +438,7 @@ class TestMonitorContractHandlers:
 
     async def test_telemetry_routed_to_health_monitor(self):
         vmc, monitor = self._vmc_with_monitor()
-        await vmc._handle_mqtt_telemetry(
+        await vmc.on_telemetry(
             "telemetry/ice_maker/bin_level",
             {"channel_id": "bin_level", "value": 42.0},
         )
@@ -446,18 +446,18 @@ class TestMonitorContractHandlers:
 
     async def test_lwt_heartbeat_marks_offline(self):
         vmc, monitor = self._vmc_with_monitor()
-        await vmc._handle_mqtt_heartbeat(
+        await vmc.on_heartbeat(
             "heartbeat/ice_maker", {"subsystem": "ice_maker", "uptime_seconds": 10}
         )
         assert monitor.get_summary()["subsystems"]["ice_maker"]["alive"] is True
-        await vmc._handle_mqtt_heartbeat(
+        await vmc.on_heartbeat(
             "heartbeat/ice_maker", {"subsystem": "ice_maker", "uptime_seconds": -1}
         )
         assert monitor.get_summary()["subsystems"]["ice_maker"]["alive"] is False
 
     async def test_command_ack_logged_without_error(self):
         vmc, _ = self._vmc_with_monitor()
-        await vmc._handle_mqtt_command_ack(
+        await vmc.on_command_ack(
             "cmd/ice_maker/ack",
             {
                 "request_id": "req-00000001",
@@ -472,7 +472,7 @@ class TestMonitorContractHandlers:
         vmc = VMC(config=ConfigModel())
         hm = HealthMonitor()
         vmc.set_health_monitor(hm)
-        await vmc._handle_mqtt_capabilities(
+        await vmc.on_capabilities(
             "capabilities/vending",
             {
                 "subsystem": "vending",
@@ -493,7 +493,7 @@ class TestMonitorContractHandlers:
         vmc = VMC(config=ConfigModel())
         hm = HealthMonitor()
         vmc.set_health_monitor(hm)
-        await vmc._handle_mqtt_capabilities(
+        await vmc.on_capabilities(
             "capabilities/mdb", {"subsystem": "mdb", "whatever": 1}
         )
         assert hm.get_summary()["subsystems"]["mdb"]["firmware"] is None

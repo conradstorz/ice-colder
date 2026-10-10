@@ -156,7 +156,7 @@ def test_reconcile_replays_nonempty_journal_and_clears_data_101(tmp_path, monkey
     # Simulate the fault already being set (e.g. a health-monitor alert that
     # outlived the process) so this test actually exercises "clear", not just
     # "never got raised in the first place".
-    vmc.raise_data_fault(FaultCode.DATA_101, outcome="pre-existing")
+    vmc.raise_fault(FaultCode.DATA_101, outcome="pre-existing")
     assert "DATA-101" in {f["code"] for f in vmc.active_faults()}
 
     reconcile_sales_journal_faults(vmc, recorder)
@@ -212,7 +212,7 @@ def test_reconcile_replay_returning_zero_does_not_wrongly_clear_data_101(
     recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
 
     vmc = VMC(config=ConfigModel())
-    vmc.raise_data_fault(FaultCode.DATA_101, outcome="pre-existing")
+    vmc.raise_fault(FaultCode.DATA_101, outcome="pre-existing")
 
     reconcile_sales_journal_faults(vmc, recorder)
 

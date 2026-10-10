@@ -69,7 +69,7 @@ def _pay104_setup(
     vmc1.selected_product = product
     for method, amount in deposits:
         vmc1.deposit_funds(amount, payment_method=method)
-    vmc1._process_payment()
+    vmc1.process_payment()
 
     # Positive control on VMC #1's own state, before it is ever discarded:
     # the real FIFO path actually ran (not silently swallowed by
@@ -160,7 +160,7 @@ class TestFaultsListRendersPendingSale:
         no pending sale -- the plain Clear button must still be offered,
         unchanged from part 2."""
         _cfg, vmc, _inv, _store = wired
-        vmc._raise_fault(FaultCode.PAY_104, outcome="test, no session store")
+        vmc.raise_fault(FaultCode.PAY_104, outcome="test, no session store")
         assert vmc.pending_sale_for_recovery() is None  # positive control
         client = login_as(Role.tech)
         resp = client.get("/health/faults")
@@ -177,7 +177,7 @@ class TestFaultsListRendersPendingSale:
         recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
         routes.set_event_recorder(recorder)
         try:
-            vmc._raise_fault(FaultCode.PAY_104, outcome="test, no session store")
+            vmc.raise_fault(FaultCode.PAY_104, outcome="test, no session store")
             assert vmc.pending_sale_for_recovery() is None
             client = login_as(Role.tech)
             resp = client.post("/health/faults/PAY-104/clear")

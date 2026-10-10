@@ -464,7 +464,7 @@ class TestPermissionMatrix:
         secretary role, which lacks clear_faults and is the only role in
         this sweep whose 403 isn't proven anywhere else."""
         _cfg, vmc, _inv, _store = wired
-        vmc._raise_fault(FaultCode.PAY_103, outcome="permission matrix seed")
+        vmc.raise_fault(FaultCode.PAY_103, outcome="permission matrix seed")
         client = login_as(role)
         resp = client.post("/health/faults/PAY-103/clear")
         if Permission.clear_faults in ROLE_PERMISSIONS[role]:
@@ -725,7 +725,7 @@ class TestStatusHealthSignal:
 class TestFaultsUI:
     def _lock(self, client):
         vmc = context.vmc_instance
-        vmc._raise_fault(FaultCode.ICE_301, sku=context.config.products[0].sku)
+        vmc.raise_fault(FaultCode.ICE_301, sku=context.config.products[0].sku)
 
     def _add_product(self, client):
         # Retargeted (Task 15): POST /inventory/add is gone; POST
@@ -983,7 +983,7 @@ class TestStillSellingBanner:
     def test_status_shows_still_selling_for_a_soft_fault(self, selling_client):
         client = selling_client
         vmc_instance = context.vmc_instance
-        vmc_instance._raise_fault(FaultCode.PAY_104, outcome="restart")
+        vmc_instance.raise_fault(FaultCode.PAY_104, outcome="restart")
         body = client.get("/status", headers={"HX-Request": "true"}).text
         assert "still selling" in body
         assert "Machine Stopped" not in body
@@ -992,7 +992,7 @@ class TestStillSellingBanner:
     def test_status_shows_machine_stopped_for_a_hazard_fault(self, selling_client):
         client = selling_client
         vmc_instance = context.vmc_instance
-        vmc_instance._raise_fault(FaultCode.WTR_104, outcome="leak")
+        vmc_instance.raise_fault(FaultCode.WTR_104, outcome="leak")
         body = client.get("/status", headers={"HX-Request": "true"}).text
         assert "Machine Stopped" in body
         assert "still selling" not in body
@@ -3188,7 +3188,7 @@ class TestHomeTileContext:
 
     def test_health_tile_shows_active_fault_count(self, client, wired):
         _cfg, vmc, _inv, _store = wired
-        vmc._raise_fault(FaultCode.PAY_103, outcome="test")
+        vmc.raise_fault(FaultCode.PAY_103, outcome="test")
         resp = client.get("/")
         assert "1 active fault" in resp.text
 
@@ -3299,7 +3299,7 @@ class TestPillEndpoint:
 
     def test_pill_is_red_and_names_the_fault_code(self, client, wired):
         _cfg, vmc, _inv, _store = wired
-        vmc._raise_fault(FaultCode.PAY_103, outcome="test")
+        vmc.raise_fault(FaultCode.PAY_103, outcome="test")
         resp = client.get("/pill")
         assert resp.status_code == 200
         assert "bg-red-600" in resp.text
@@ -3309,8 +3309,8 @@ class TestPillEndpoint:
         """ICE-301 is `lockout`, COM-103 is `warning` — lockout outranks
         warning, so the pill must name ICE-301."""
         _cfg, vmc, _inv, _store = wired
-        vmc._raise_fault(FaultCode.COM_103, outcome="test")
-        vmc._raise_fault(FaultCode.ICE_301, sku="whatever-sku", outcome="test")
+        vmc.raise_fault(FaultCode.COM_103, outcome="test")
+        vmc.raise_fault(FaultCode.ICE_301, sku="whatever-sku", outcome="test")
         resp = client.get("/pill")
         assert resp.status_code == 200
         assert "ICE-301" in resp.text
@@ -3321,8 +3321,8 @@ class TestPillEndpoint:
         returns product faults (ICE-101) before machine faults (PAY-101), so
         a tie must favor ICE-101."""
         _cfg, vmc, _inv, _store = wired
-        vmc._raise_fault(FaultCode.PAY_101, outcome="test")
-        vmc._raise_fault(FaultCode.ICE_101, sku="whatever-sku", outcome="test")
+        vmc.raise_fault(FaultCode.PAY_101, outcome="test")
+        vmc.raise_fault(FaultCode.ICE_101, sku="whatever-sku", outcome="test")
         resp = client.get("/pill")
         assert resp.status_code == 200
         assert "ICE-101" in resp.text

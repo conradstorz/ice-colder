@@ -1063,7 +1063,7 @@ class EventRecorder:
 
         Note: "dispense" events are NOT recorded from a direct
         ``hardware/dispenser`` subscription here — only the VMC (see
-        ``controller.vmc.VMC._handle_mqtt_dispenser``) knows whether a
+        ``controller.vmc.VMC.on_dispenser_event``) knows whether a
         completion was actually accepted for the active sale (correct slot,
         state == dispensing). Recording directly from the raw MQTT topic would
         overcount products_out on duplicate/late completions the VMC ignores.
