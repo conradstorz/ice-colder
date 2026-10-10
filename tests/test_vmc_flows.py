@@ -410,7 +410,7 @@ async def test_record_sale_totally_lost_preserves_pay104_recovery_not_data_101(
     but the sale must not simply vanish: this must raise PAY-104 (not the
     ordinary DATA-101) and must NOT clear pending_sale_shares, so the
     'dispensing' snapshot process_payment already wrote to disk survives
-    untouched (_persist_session refuses to touch the file once PAY-104 is
+    untouched (StatusOutputs.persist refuses to touch the file once PAY-104 is
     active) as the sale's only remaining record -- recoverable through the
     existing Health > Faults record/discard flow with no reboot required.
     """
@@ -2417,7 +2417,7 @@ class TestMaintenanceLease:
         # deadline with zero runs in flight must actually release the lease
         # -- not just flip release_requested. Reaches MaintenanceLease.
         # idle_expired's zero-runs branch -> release -> clear_fault ->
-        # real Availability._recompute -> VMC.publish_payment_enable -> the
+        # real Availability._recompute -> StatusOutputs.publish_payment_enable -> the
         # fake MQTT client's publish, via _wired_vmc()'s real Availability.
         runner = FakeTaskRunner()
         vmc, monitor, avail, published = _wired_vmc(tasks=runner)

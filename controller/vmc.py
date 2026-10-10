@@ -262,8 +262,10 @@ class VMC:
         # Outbound side effects -- MQTT publishes, session persistence, the
         # customer display, and the dashboard's UI-refresh/message/QR
         # callbacks (controller/outputs.py's StatusOutputs) -- the FSM's
-        # only outbound channel, and the first piece carved off the VMC
-        # god object (vmc-reduction plan, Task 1/2). Built here, before
+        # only outbound channel, and the first piece carved off in the
+        # vmc-reduction plan
+        # (docs/superpowers/specs/2026-10-10-vmc-sale-fsm-core-design.md).
+        # Built here, before
         # the lease and refund protocol below, because RefundProtocol's
         # `publish` is a bound method captured at construction time (not
         # a lambda) and must already resolve to something real.

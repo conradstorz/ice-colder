@@ -107,7 +107,7 @@ def make_outputs(
 # --- state_changed ---
 
 
-async def test_state_changed_with_no_sinks_is_a_no_op():
+async def test_state_changed_with_no_session_store_never_reads_snapshot():
     calls: list = []
     outputs, runner = make_outputs(
         snapshot=lambda state: calls.append(state) or not_open_snapshot(state)
@@ -176,14 +176,19 @@ async def test_state_changed_without_mqtt_client_still_pushes_health_and_availab
     runner.attach(asyncio.get_running_loop())
     health = FakeHealth()
     availability = FakeAvailability()
+    store = FakeStore()
     outputs.attach_health(health)
     outputs.attach_availability(availability)
+    outputs.attach_session_store(store)
 
     outputs.state_changed("idle")
     await asyncio.sleep(0)
 
     assert health.states == ["idle"]
     assert availability.states == ["idle"]
+    # persist() still ran too, with no MQTT client attached -- not-open
+    # snapshot (the default) -> clear_async(), recorded once.
+    assert store.cleared_async_calls == 1
 
 
 # --- persist ---
@@ -360,7 +365,7 @@ def test_refresh_calls_callback_only_when_set():
 
 
 def test_refresh_passes_state_product_and_escrow():
-    """Mirrors ``VMC._refresh_ui``'s own call:
+    """Mirrors ``StatusOutputs.refresh``'s own call:
     ``self.update_callback(self.state, self.selected_product,
     self.credit_escrow)`` -- same three positional args, same order."""
     product = Product(name="Ice Bag")
@@ -391,7 +396,7 @@ def test_message_swallows_a_raising_callback():
 
 def test_refresh_swallows_a_raising_callback():
     """``@logger.catch()`` on ``refresh`` restores the original
-    ``VMC._refresh_ui``'s swallow semantics: a raising callback is
+    ``StatusOutputs.refresh``'s swallow semantics: a raising callback is
     logged, not propagated."""
     outputs, _runner = make_outputs()
     outputs.set_update_callback(
