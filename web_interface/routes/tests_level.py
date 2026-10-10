@@ -355,7 +355,7 @@ def _acquire_lease_or_refusal(vmc, principal: web_auth.Principal) -> str | None:
 
     Returns None exactly when the caller's session now holds the lease
     (freshly granted or pre-existing) and it is safe to proceed to
-    `vmc.maintenance_test_run()`.
+    `machine.lease.test_run()`.
     """
     session_id = principal.session.id
     hold = vmc.maintenance_hold
@@ -370,15 +370,15 @@ def _acquire_lease_or_refusal(vmc, principal: web_auth.Principal) -> str | None:
 
 
 async def _run_command(
-    vmc, subsystem: str, command: str, params: dict, principal: web_auth.Principal
+    subsystem: str, command: str, params: dict, principal: web_auth.Principal
 ) -> dict:
     """Dispatch one command through the CommandDispatcher and return the
     render context for partials/test_result_card.html.
 
-    Wraps the dispatch in `vmc.maintenance_test_run()` -- the ONLY place
+    Wraps the dispatch in `machine.lease.test_run()` -- the ONLY place
     this module calls it -- so `runs_in_flight` is incremented and
     decremented around every single command run, including one that
-    raises or times out (`maintenance_test_run`'s own `finally`, per its
+    raises or times out (`test_run`'s own `finally`, per its
     docstring: "a run that fails still frees the lease's run count"). The
     caller MUST already hold the lease (via `_acquire_lease_or_refusal`)
     before calling this; it never grants one itself.
@@ -401,7 +401,7 @@ async def _run_command(
     exactly like `send` always did (the ack IS completion). For a
     long-running actuator (dispense, water_valve, power_cycle) the awaited
     call does not return until the command's own completion signal arrives,
-    so `vmc.maintenance_test_run()`'s `runs_in_flight` -- and therefore the
+    so `machine.lease.test_run()`'s `runs_in_flight` -- and therefore the
     maintenance lease and its SVC-102 fault -- stays held for the
     actuator's REAL lifetime, not just until it starts. This is the fix for
     Copilot review PR 22 id=4128088504: a previous agent proved the lease
@@ -418,7 +418,8 @@ async def _run_command(
     started = time.time()
     dispatcher = context.command_dispatcher
     checks = None
-    with vmc.maintenance_test_run():
+    machine = context.machine_instance
+    with machine.lease.test_run():
         try:
             if dispatcher is None:
                 raise CommandTimeout(subsystem, command)
@@ -711,8 +712,8 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         ],
     )
     async def tests_sale_run(request: Request, sku: str = Form(...)):
-        """Run one simulated sale (VMC.run_test_sale) for the SKU the
-        picker's form submitted.
+        """Run one simulated sale (TestSaleRunner.run_test_sale) for the
+        SKU the picker's form submitted.
 
         SKU-with-slash: the SKU arrives as a POST form field
         (application/x-www-form-urlencoded), never a URL segment -- GET and
@@ -748,8 +749,9 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
                 context.template_context(request, reason=refusal),
             )
 
+        machine = context.machine_instance
         try:
-            result = await vmc.run_test_sale(
+            result = await machine.test_sales.run_test_sale(
                 sku, user_id=principal.user.id, user_name=principal.user.name
             )
         except (ValueError, RuntimeError) as exc:
@@ -810,7 +812,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
             for command in ("ping", "self_test"):
                 if command not in testable:
                     continue
-                rows.append(await _run_command(vmc, name, command, {}, principal))
+                rows.append(await _run_command(name, command, {}, principal))
 
         return templates.TemplateResponse(
             "partials/test_run_all_table.html",
@@ -883,7 +885,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         (system-tests design §4: EventRecorder.update_metadata, merged in
         place on the writer thread -- so `checks`/`params`/etc already on
         the row survive). Works identically for a subsystem-command row
-        and a simulated-sale row (VMC.run_test_sale, Task 13b): both carry
+        and a simulated-sale row (TestSaleRunner.run_test_sale, Task 13b): both carry
         `run_id` in their metadata now, located the same way.
 
         400 for a verdict outside {"pass", "fail"} -- never silently
@@ -1006,7 +1008,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
                 context.template_context(request, reason=refusal),
             )
 
-        result = await _run_command(vmc, subsystem, command, params, principal)
+        result = await _run_command(subsystem, command, params, principal)
         return templates.TemplateResponse(
             "partials/test_result_card.html",
             context.template_context(request, **result),

@@ -1,8 +1,9 @@
 # tests/test_vmc_dispense_profiles.py
 """Tests for VMC-owned dispenser profiles (plan: dispenser profiles, Task
 2) -- CFG-101/CFG-102 reconciliation against a loaded `DispenserProfiles`,
-and the two chokepoints (`select_product`, `run_test_sale`) that must never
-let a customer or a test sale reach a slot with no valid profile.
+and the two chokepoints (`select_product`, `TestSaleRunner.run_test_sale`)
+that must never let a customer or a test sale reach a slot with no valid
+profile.
 
 Three products: `ICE_1` (slot 0, kind "ice"), `WATER_1` (slot 1, kind
 "water"), `OTHER_X` (slot 2, kind "other" -- never eligible for a profile,
@@ -187,7 +188,7 @@ async def test_run_test_sale_refuses_without_profile(tmp_path):
     machine.set_dispenser_profiles(profiles)
 
     with pytest.raises(RuntimeError, match="CFG-101"):
-        await vmc.run_test_sale("X")
+        await machine.test_sales.run_test_sale("X")
 
     assert vmc.credit_escrow == 0
 

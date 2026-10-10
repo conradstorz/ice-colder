@@ -245,7 +245,7 @@ async def test_sweep_defers_release_while_a_run_is_in_flight(loud_log):
     granted, _ = vmc.begin_standby("user-1", "sess-1")
     assert granted is True
 
-    with vmc.maintenance_test_run():
+    with machine.lease.test_run():
         assert vmc.maintenance_hold.runs_in_flight == 1
 
         runner.fire("standby_sweep")
@@ -284,7 +284,7 @@ async def test_idle_timer_defers_release_while_a_run_is_in_flight_and_is_attribu
     assert granted is True
     assert machine.lease.idle_task is not None  # no predicate: idle-timer fallback
 
-    with vmc.maintenance_test_run():
+    with machine.lease.test_run():
         assert vmc.maintenance_hold.runs_in_flight == 1
         vmc.maintenance_hold.last_activity_at -= (
             vmc.MAINTENANCE_IDLE_TIMEOUT_SECONDS + 1

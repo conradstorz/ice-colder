@@ -63,6 +63,7 @@ from controller.outputs import StatusOutputs
 from controller.refund_protocol import RefundProtocol
 from controller.session_recovery import SessionRecovery
 from controller.task_runner import TaskRunner
+from controller.test_sale import TestSaleRunner
 from controller.vmc import VMC
 from services.availability import Availability
 from services.dispensers import DispenserProfiles
@@ -205,6 +206,18 @@ class Machine:
             dispense_factory=self._dispense_factory,
         )
 
+        # Task 10 (vmc-reduction plan): the test-sale runner, built after
+        # the VMC itself since it holds a direct reference to it (unlike
+        # every other collaborator above, which the VMC also holds a
+        # reference to but which are built *before* it).
+        self._test_sales = TestSaleRunner(
+            vmc=self._vmc,
+            lease=self._lease,
+            gate=self._gate,
+            recorder=lambda: self.event_recorder,
+            tasks=self._tasks,
+        )
+
     def _product_name(self, sku: str | None) -> str | None:
         """Shared by the fault registry and session recovery -- mirrors
         `VMC._product_name` exactly, reading the catalog straight off the
@@ -246,6 +259,10 @@ class Machine:
     @property
     def lease(self) -> MaintenanceLease:
         return self._lease
+
+    @property
+    def test_sales(self) -> TestSaleRunner:
+        return self._test_sales
 
     @property
     def recovery(self) -> SessionRecovery:

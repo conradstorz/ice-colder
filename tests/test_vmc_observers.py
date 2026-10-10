@@ -223,6 +223,36 @@ async def test_sale_settled_observer_raising_does_not_block_the_next(tmp_path):
     machine.cancel_pending_tasks()
 
 
+async def test_sale_settled_observer_never_fires_on_cancel_sale_or_reset(tmp_path):
+    """Negative coverage (Task 9 review minor): `cancel_sale` (a catalog
+    edit removing the selected product mid-session) and `reset_state`
+    (recovery from `error`) both settle a sale by clearing it directly --
+    neither is one of the three sites `_notify_settled` is called from
+    (`on_dispenser_event`'s success/failure branches, `on_dispense_failed`)
+    -- so the `subscribe_sale_settled` observer must never fire for
+    either, unlike `subscribe_state_change`, which still sees every
+    transition regardless."""
+    machine, vmc, dispatcher, client, runner = _vmc_with_profiles(tmp_path)
+    product = vmc.products[0]
+    calls: list[tuple] = []
+    vmc.subscribe_sale_settled(lambda *a: calls.append(a))
+
+    vmc.deposit_funds(product.price, payment_method="cash")
+    vmc.select_product(0)
+    assert vmc.state == "interacting_with_user"
+
+    vmc.cancel_sale()
+    assert vmc.state == "idle"
+    assert calls == []
+
+    vmc.error_occurred()
+    assert vmc.state == "error"
+    vmc.reset_state()
+    assert vmc.state == "idle"
+    assert calls == []
+    machine.cancel_pending_tasks()
+
+
 # --- begin_test_sale / end_test_sale / find_product ---
 
 
