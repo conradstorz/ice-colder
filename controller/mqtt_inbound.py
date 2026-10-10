@@ -204,21 +204,28 @@ class TelemetryRouter:
         )
 
 
-#: (topic_pattern, VMC method name) pairs, in the exact order the thirteen
-#: individual `client.register(...)` calls in `VMC.set_mqtt_client` used to
-#: run in. `VMC.set_mqtt_client` loops over this table instead.
-SUBSCRIPTIONS: tuple[tuple[str, str], ...] = (
-    ("payment/credit", "on_payment_credit"),
-    ("hardware/buttons", "on_button_press"),
-    ("hardware/dispenser", "on_dispenser_event"),
-    ("sensors/temp/+", "on_sensor_reading"),
-    ("heartbeat/+", "on_heartbeat"),
-    ("ice_maker/event", "on_ice_maker_event"),
-    ("capabilities/+", "on_capabilities"),
-    ("telemetry/ice_maker/+", "on_telemetry"),
-    ("cmd/ice_maker/ack", "on_command_ack"),
-    ("hardware/io/+", "on_hardware_io"),
-    ("cmd/payment/refund/ack", "on_refund_ack"),
-    ("payment/status", "on_payment_status"),
-    ("sensors/water_flow", "on_water_flow"),
+#: (topic_pattern, owner, method_name) triples, in the exact order the
+#: thirteen individual `client.register(...)` calls in `VMC.set_mqtt_client`
+#: used to run in. `owner` is `"vmc"` for the four sale-driving handlers that
+#: stay on the VMC (`on_payment_credit`, `on_button_press`,
+#: `on_dispenser_event`, `on_refund_ack`) and `"telemetry"` for the other
+#: nine, whose `method_name` is the `TelemetryRouter`'s own `handle_*` name
+#: rather than the VMC forward that used to wrap it (vmc-reduction plan,
+#: Task 5). `VMC.set_mqtt_client` and `Machine.set_mqtt_client`
+#: (controller/machine.py) both loop over this table, resolving each triple
+#: against `self`/`self.telemetry` or `self._telemetry` respectively.
+SUBSCRIPTIONS: tuple[tuple[str, str, str], ...] = (
+    ("payment/credit", "vmc", "on_payment_credit"),
+    ("hardware/buttons", "vmc", "on_button_press"),
+    ("hardware/dispenser", "vmc", "on_dispenser_event"),
+    ("sensors/temp/+", "telemetry", "handle_sensor"),
+    ("heartbeat/+", "telemetry", "handle_heartbeat"),
+    ("ice_maker/event", "telemetry", "handle_ice_maker_event"),
+    ("capabilities/+", "telemetry", "handle_capabilities"),
+    ("telemetry/ice_maker/+", "telemetry", "handle_telemetry"),
+    ("cmd/ice_maker/ack", "telemetry", "handle_command_ack"),
+    ("hardware/io/+", "telemetry", "handle_hardware_io"),
+    ("cmd/payment/refund/ack", "vmc", "on_refund_ack"),
+    ("payment/status", "telemetry", "handle_payment_status"),
+    ("sensors/water_flow", "telemetry", "handle_water_flow"),
 )

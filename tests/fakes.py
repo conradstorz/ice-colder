@@ -238,6 +238,10 @@ class FakeAvailability:
         self.mqtt_connected: list[bool] = []
         self.republish_calls = 0
         self.transaction_certain: list[bool] = []
+        self.publisher = None
+
+    def set_publisher(self, publisher) -> None:
+        self.publisher = publisher
 
     def set_fsm_state(self, state: str) -> None:
         self.states.append(state)

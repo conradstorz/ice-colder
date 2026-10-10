@@ -299,30 +299,38 @@ class TestCommandAck:
 
 
 class TestSubscriptionsTable:
-    def test_every_name_is_a_vmc_attribute(self):
+    def test_every_vmc_owner_method_is_a_vmc_attribute(self):
         from controller.vmc import VMC
 
-        for _, name in SUBSCRIPTIONS:
-            assert hasattr(VMC, name), f"VMC has no attribute {name!r}"
+        for _, owner, name in SUBSCRIPTIONS:
+            if owner == "vmc":
+                assert hasattr(VMC, name), f"VMC has no attribute {name!r}"
+
+    def test_every_telemetry_owner_method_is_a_router_attribute(self):
+        for _, owner, name in SUBSCRIPTIONS:
+            if owner == "telemetry":
+                assert hasattr(TelemetryRouter, name), (
+                    f"TelemetryRouter has no attribute {name!r}"
+                )
 
     def test_subscriptions_table_unchanged(self):
-        # The full (topic, method) pairing, in order -- not just the topic
-        # set -- so a transposition (e.g. payment/status paired with
-        # on_water_flow) fails this test even though both the
-        # topic set and every method name would still be valid on their own.
+        # The full (topic, owner, method) triple, in order -- not just the
+        # topic set -- so a transposition (e.g. payment/status paired with
+        # handle_water_flow) fails this test even though both the topic set
+        # and every method name would still be valid on their own.
         assert SUBSCRIPTIONS == (
-            ("payment/credit", "on_payment_credit"),
-            ("hardware/buttons", "on_button_press"),
-            ("hardware/dispenser", "on_dispenser_event"),
-            ("sensors/temp/+", "on_sensor_reading"),
-            ("heartbeat/+", "on_heartbeat"),
-            ("ice_maker/event", "on_ice_maker_event"),
-            ("capabilities/+", "on_capabilities"),
-            ("telemetry/ice_maker/+", "on_telemetry"),
-            ("cmd/ice_maker/ack", "on_command_ack"),
-            ("hardware/io/+", "on_hardware_io"),
-            ("cmd/payment/refund/ack", "on_refund_ack"),
-            ("payment/status", "on_payment_status"),
-            ("sensors/water_flow", "on_water_flow"),
+            ("payment/credit", "vmc", "on_payment_credit"),
+            ("hardware/buttons", "vmc", "on_button_press"),
+            ("hardware/dispenser", "vmc", "on_dispenser_event"),
+            ("sensors/temp/+", "telemetry", "handle_sensor"),
+            ("heartbeat/+", "telemetry", "handle_heartbeat"),
+            ("ice_maker/event", "telemetry", "handle_ice_maker_event"),
+            ("capabilities/+", "telemetry", "handle_capabilities"),
+            ("telemetry/ice_maker/+", "telemetry", "handle_telemetry"),
+            ("cmd/ice_maker/ack", "telemetry", "handle_command_ack"),
+            ("hardware/io/+", "telemetry", "handle_hardware_io"),
+            ("cmd/payment/refund/ack", "vmc", "on_refund_ack"),
+            ("payment/status", "telemetry", "handle_payment_status"),
+            ("sensors/water_flow", "telemetry", "handle_water_flow"),
         )
         assert len(SUBSCRIPTIONS) == 13
