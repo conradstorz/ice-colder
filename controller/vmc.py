@@ -690,6 +690,18 @@ class VMC:
             self.selected_product.name if self.selected_product else "Unknown"
         )
         if report.success:
+            # Cancel the dispense_timeout timer here, before the
+            # test/production split and its own await (`_cycle.record()`
+            # suspends on a real asyncio.to_thread call). Once the board has
+            # reported a successful dispense the customer already has the
+            # product, so a `dispense_timeout` that fires during that
+            # suspension must never be allowed to fail this settled sale --
+            # on_dispense_failed's guards (`cycle is self._cycle` and
+            # `state == "dispensing"`) would otherwise both still pass,
+            # restoring the price to escrow and possibly issuing a refund
+            # for a sale that already succeeded. _finish_dispensing's own
+            # cancel() below is idempotent and stays as a backstop.
+            self._cycle.cancel()
             txn_log.info(f"DISPENSE SUCCESS: slot {slot}, product '{product_name}'")
             vend_log.info(f"DISPENSE COMPLETE: slot {slot}, product '{product_name}'")
             if self._sale is not None and self._sale.is_test:

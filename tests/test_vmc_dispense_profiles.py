@@ -549,6 +549,67 @@ async def test_report_without_request_id_still_accepted(tmp_path):
     machine.cancel_pending_tasks()
 
 
+async def test_success_cancels_dispense_timeout_before_record_awaits(tmp_path):
+    """Review finding (money-path, Task 8): `on_dispenser_event`'s success
+    branch must cancel the `dispense_timeout` timer as soon as the report
+    is classified -- before the test/production split's own await
+    (`DispenseCycle.record()` suspends for real on `asyncio.to_thread`).
+    Pre-fix, that cancel only happened afterward, inside
+    `_finish_dispensing()`; a `dispense_timeout` firing while `record()`
+    was still suspended would pass both of `on_dispense_failed`'s guards
+    (`cycle is self._cycle`, `state == "dispensing"`) and fail an
+    already-successful sale, restoring its price to escrow and possibly
+    issuing a refund for a sale the customer already received.
+
+    Proven here by having the fake recorder's `record_sale` -- invoked
+    from inside `record()`'s `await asyncio.to_thread(...)` window --
+    record whether any live `dispense_timeout` call still exists in
+    `runner.scheduled` at that moment. On the fix, it must already be
+    gone."""
+    runner = FakeTaskRunner()
+    machine, vmc, dispatcher = _vmc_with_profiles(tmp_path, tasks=runner)
+    rec = FakeEventRecorder()
+    machine.set_event_recorder(rec)
+    published: list[tuple[str, object]] = []
+
+    class FakeMQTT:
+        def register(self, *a, **k):
+            pass
+
+        async def publish(self, topic, payload, **kwargs):
+            published.append((topic, payload))
+
+    machine.set_mqtt_client(FakeMQTT())
+    product = vmc.products[0]
+    _start_sale(vmc, product)
+    await asyncio.sleep(0)
+    assert vmc.state == "dispensing"
+    assert any(c.label == "dispense_timeout" for c in runner.scheduled)
+
+    live_during_record: list[bool] = []
+
+    def record_sale(sku, name, slot, price, methods, ts=None):
+        live_during_record.append(
+            any(c.label == "dispense_timeout" for c in runner.scheduled)
+        )
+
+    rec.record_sale = record_sale
+
+    await vmc.on_dispenser_event(
+        "hardware/dispenser", {"slot": product.slot, "state": "complete"}
+    )
+
+    # The timer must already be retired by the time record_sale runs --
+    # not merely retired by the time this call returns.
+    assert live_during_record == [False]
+    assert vmc.state == "idle"
+    assert vmc.credit_escrow == 0
+    assert not vmc.faults.lockouts
+    assert not any(e[0] == "vend_failed" for e in rec.events)
+    assert not any(topic == "cmd/payment/refund" for topic, _ in published)
+    machine.cancel_pending_tasks()
+
+
 async def test_door_open_completes_sale_and_raises_ice402(tmp_path):
     machine, vmc, dispatcher = _vmc_with_profiles(tmp_path)
     rec = FakeEventRecorder()
