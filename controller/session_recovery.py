@@ -168,7 +168,7 @@ class SessionRecovery:
 
         Keyed on the SKU, the exact method shares (sorted so dict
         ordering never matters), and the snapshot's `saved_at` --
-        `_process_payment` sets `saved_at` fresh (`time.time()`, via
+        `process_payment` sets `saved_at` fresh (`time.time()`, via
         `_snapshot()`) at the moment it wrote the escrow shares that
         became this pending sale. A genuinely different pending sale --
         even the same SKU, even a coincidentally identical share

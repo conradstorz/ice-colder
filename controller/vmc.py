@@ -47,7 +47,7 @@ STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
 
 def _has_outcome_mapping(mechanism: str | None, outcome: DispenserOutcome) -> bool:
     """True iff `(mechanism, outcome)` has an entry in OUTCOME_FAULTS --
-    used by `_handle_mqtt_dispenser` (review finding C3) to decide
+    used by `on_dispenser_event` (review finding C3) to decide
     whether `door_open` is a success for *this* mechanism (bagged_ice)
     or must take the ordinary failed-vend path (every other mechanism,
     e.g. water_fill, which has no `(water_fill, door_open)` mapping)."""
@@ -221,7 +221,7 @@ class VMC:
         # §2.3), alongside selected_product/pending_sale_shares above --
         # NOT a VMC-global mode flag. Set True only by run_test_sale, just
         # before it selects the product; read (never inferred from
-        # self._maintenance_hold) by _handle_mqtt_dispenser and
+        # self._maintenance_hold) by on_dispenser_event and
         # _dispense_timed_out to decide sale vs. test_run recording, and
         # by _fail_vend to decide whether a failed vend may issue a real
         # refund. Reset to False only by run_test_sale itself once the
@@ -296,7 +296,7 @@ class VMC:
         # `vmc.MAINTENANCE_TAKEOVER_IDLE_SECONDS` on the live instance.
         self._lease = MaintenanceLease(
             schedule=self._schedule,
-            on_granted=lambda: self._raise_fault(
+            on_granted=lambda: self.raise_fault(
                 FaultCode.SVC_102, outcome="maintenance_lease_granted"
             ),
             on_released=lambda by: self.clear_fault(FaultCode.SVC_102.value, by=by),
@@ -335,7 +335,7 @@ class VMC:
             products=lambda: self.config_model.products,
             is_locked=self._faults.is_locked,
             has_machine_fault=self._faults.has,
-            raise_fault=self._raise_fault,
+            raise_fault=self.raise_fault,
             clear_fault=lambda key, by: self.clear_fault(key, by=by),
         )
         # Refund protocol: request -> ack -> one retry -> terminal state
@@ -485,7 +485,7 @@ class VMC:
             if alive:
                 self.clear_fault(code.value, by="auto")
             else:
-                self._raise_fault(code, outcome="heartbeat_lost")
+                self.raise_fault(code, outcome="heartbeat_lost")
         if self._availability:
             self._availability.set_subsystem_alive(subsystem, alive)
             if subsystem == "mdb" and alive:
@@ -501,7 +501,7 @@ class VMC:
                 self._availability.republish()
             self._publish_status()
         else:
-            self._raise_fault(FaultCode.COM_103, outcome="disconnected")
+            self.raise_fault(FaultCode.COM_103, outcome="disconnected")
 
     def set_display_controller(self, controller: DisplayController):
         """Attach a DisplayController so FSM state changes update the customer display."""
@@ -580,7 +580,7 @@ class VMC:
             )
         if self._availability:
             self._availability.set_transaction_certain(False)
-        self._raise_fault(FaultCode.PAY_104, outcome=detail)
+        self.raise_fault(FaultCode.PAY_104, outcome=detail)
 
     def reconcile_session(self) -> None:
         """Future hook: query the payment gateway for held credit and clear
@@ -737,13 +737,21 @@ class VMC:
         if self._availability:
             self._availability.set_active_faults(faults)
 
-    def _raise_fault(
+    def raise_fault(
         self,
         code: FaultCode,
+        *,
         sku: str | None = None,
         outcome: str | None = None,
     ) -> None:
-        """Record a fault: lock the product if its severity says so, alert the owner."""
+        """Record a fault: lock the product if its severity says so, alert the owner.
+
+        Public entry point for both an in-FSM caller and a caller outside
+        the FSM (e.g. main.py at startup, raising a machine-scope DATA-101/
+        DATA-102) -- the two used to be split between this method (then
+        private, ``_raise_fault``) and ``raise_data_fault``; they are merged
+        here since neither ever did anything the other couldn't.
+        """
         raised = self._faults.raise_fault(code, sku=sku, outcome=outcome)
         if raised.newly_locked and self._event_recorder:
             self._event_recorder.record(
@@ -776,14 +784,18 @@ class VMC:
             )
         self._push_active_faults()
 
+    def _raise_fault(
+        self,
+        code: FaultCode,
+        sku: str | None = None,
+        outcome: str | None = None,
+    ) -> None:
+        # deprecated: removed in the public-surface cleanup
+        self.raise_fault(code, sku=sku, outcome=outcome)
+
     def raise_data_fault(self, code: FaultCode, outcome: str | None = None) -> None:
-        """Public entry point for a caller outside the FSM (main.py, at
-        startup) to raise a machine-scope data fault (``DATA-101``/
-        ``DATA-102``) without reaching into the fault registry directly —
-        every in-FSM caller uses ``_raise_fault``; this is the one seam for
-        the one caller that isn't one.
-        """
-        self._raise_fault(code, outcome=outcome)
+        # deprecated: removed in the public-surface cleanup
+        self.raise_fault(code, outcome=outcome)
 
     def clear_fault(self, key: str, by: str = "admin") -> bool:
         """Clear a fault by key (SKU for product faults, code string for machine faults)."""
@@ -809,10 +821,10 @@ class VMC:
             # CFG-101 clears are unaffected: they only clear CFG-101 when
             # dispenser_profile_for already found a valid profile, so this
             # re-check finds one too and does nothing. No recursion is
-            # possible: _raise_fault never calls clear_fault.
+            # possible: raise_fault never calls clear_fault.
             if self._gate.lacks_valid_profile(sku):
                 logger.info(f"{sku} re-locked: no valid dispenser profile (CFG-101)")
-                self._raise_fault(FaultCode.CFG_101, sku=sku)
+                self.raise_fault(FaultCode.CFG_101, sku=sku)
         else:
             code = self._faults.parse_key(key)
             if code is None:
@@ -886,30 +898,46 @@ class VMC:
             if code is FaultCode.ICE_101:
                 self.clear_fault(sku, by="auto")
 
-    async def _handle_mqtt_hardware_io(self, topic: str, data: dict):
+    async def on_hardware_io(self, topic: str, data: dict):
         """Binary hardware IO from the vending ESP32; ice returning clears ICE-101."""
         return await self._telemetry.handle_hardware_io(topic, data)
 
+    async def _handle_mqtt_hardware_io(self, topic: str, data: dict):
+        # deprecated: removed in the public-surface cleanup
+        return await self.on_hardware_io(topic, data)
+
     # --- MQTT inbound handlers ---
 
-    async def _handle_mqtt_payment(self, topic: str, data: dict):
+    async def on_payment_credit(self, topic: str, data: dict):
         """Handle payment credit from MDB ESP32."""
         event = PaymentEvent.model_validate(data)
         logger.info(f"MQTT payment received: ${event.amount:.2f} via {event.method}")
         txn_log.info(f"PAYMENT RECEIVED: ${event.amount:.2f} via {event.method}")
         self.deposit_funds(event.amount, payment_method=event.method)
 
-    async def _handle_mqtt_payment_status(self, topic: str, data: dict):
+    async def _handle_mqtt_payment(self, topic: str, data: dict):
+        # deprecated: removed in the public-surface cleanup
+        return await self.on_payment_credit(topic, data)
+
+    async def on_payment_status(self, topic: str, data: dict):
         """MDB device readiness; any device in error/offline blocks payment."""
         return await self._telemetry.handle_payment_status(topic, data)
 
-    async def _handle_mqtt_button(self, topic: str, data: dict):
+    async def _handle_mqtt_payment_status(self, topic: str, data: dict):
+        # deprecated: removed in the public-surface cleanup
+        return await self.on_payment_status(topic, data)
+
+    async def on_button_press(self, topic: str, data: dict):
         """Handle button press from ESP32."""
         press = ButtonPress.model_validate(data)
         logger.info(f"MQTT button press: button {press.button}")
         txn_log.info(f"BUTTON PRESS: button {press.button}")
         vend_log.info(f"BUTTON PRESS: button {press.button}")
         self.select_product(press.button)
+
+    async def _handle_mqtt_button(self, topic: str, data: dict):
+        # deprecated: removed in the public-surface cleanup
+        return await self.on_button_press(topic, data)
 
     def _dispenser_event_slot_mismatch(self, data: dict) -> bool:
         """True if `data`'s reported slot doesn't match the active sale's slot.
@@ -959,7 +987,7 @@ class VMC:
         "record this sale" / "discard" recovery on, and ``_persist_session``
         already refuses to touch the on-disk snapshot once ``PAY-104`` is
         active — so the "dispensing" snapshot already written at deduction
-        time (``_process_payment``) survives untouched as the sale's only
+        time (``process_payment``) survives untouched as the sale's only
         remaining record, in this same running process, with no reboot
         required. Reusing this existing recovery path (rather than
         inventing a second one) is deliberate: it is exactly the situation
@@ -998,7 +1026,7 @@ class VMC:
             )
             if self._availability:
                 self._availability.set_transaction_certain(False)
-            self._raise_fault(
+            self.raise_fault(
                 FaultCode.PAY_104,
                 outcome=f"sku={product.sku} price=${price:.2f} unrecorded",
             )
@@ -1009,13 +1037,13 @@ class VMC:
                 "as fallback by record_sale itself — raising DATA-101 and "
                 "finishing the vend regardless"
             )
-            self._raise_fault(
+            self.raise_fault(
                 FaultCode.DATA_101,
                 outcome=f"sku={product.sku} price=${price:.2f}",
             )
         self.pending_sale_shares = None
 
-    async def _handle_mqtt_dispenser(self, topic: str, data: dict):
+    async def on_dispenser_event(self, topic: str, data: dict):
         """Handle dispenser status from ESP32.
 
         Only DispenserOutcome members end a sale; every other `state` string
@@ -1108,7 +1136,7 @@ class VMC:
                 # _finish_dispensing, matching the "success path plus a
                 # fault" shape the brief calls for.
                 sku = self.selected_product.sku if self.selected_product else None
-                self._raise_fault(FaultCode.ICE_402, sku=sku, outcome=outcome.value)
+                self.raise_fault(FaultCode.ICE_402, sku=sku, outcome=outcome.value)
             self._finish_dispensing()
             return
 
@@ -1140,26 +1168,46 @@ class VMC:
             f"DISPENSE FAILED: slot {slot}, product '{product_name}', "
             f"outcome: {outcome.value}, fault: {code.value}"
         )
-        self._raise_fault(code, sku=sku, outcome=outcome.value)
+        self.raise_fault(code, sku=sku, outcome=outcome.value)
         self._fail_vend(code, outcome=outcome.value)
         if self._sale_is_test:
             self._resolve_test_sale_waiter("vend_failed", code.value)
 
-    async def _handle_mqtt_sensor(self, topic: str, data: dict):
+    async def _handle_mqtt_dispenser(self, topic: str, data: dict):
+        # deprecated: removed in the public-surface cleanup
+        return await self.on_dispenser_event(topic, data)
+
+    async def on_sensor_reading(self, topic: str, data: dict):
         """Handle temperature/sensor reading from ESP32."""
         return await self._telemetry.handle_sensor(topic, data)
 
-    async def _handle_mqtt_water_flow(self, topic: str, data: dict):
+    async def _handle_mqtt_sensor(self, topic: str, data: dict):
+        # deprecated: removed in the public-surface cleanup
+        return await self.on_sensor_reading(topic, data)
+
+    async def on_water_flow(self, topic: str, data: dict):
         """Handle water flow sensor readings from the vending ESP32."""
         return await self._telemetry.handle_water_flow(topic, data)
 
-    async def _handle_mqtt_heartbeat(self, topic: str, data: dict):
+    async def _handle_mqtt_water_flow(self, topic: str, data: dict):
+        # deprecated: removed in the public-surface cleanup
+        return await self.on_water_flow(topic, data)
+
+    async def on_heartbeat(self, topic: str, data: dict):
         """Handle heartbeat from ESP32 subsystem."""
         return await self._telemetry.handle_heartbeat(topic, data)
 
-    async def _handle_mqtt_ice_maker_event(self, topic: str, data: dict):
+    async def _handle_mqtt_heartbeat(self, topic: str, data: dict):
+        # deprecated: removed in the public-surface cleanup
+        return await self.on_heartbeat(topic, data)
+
+    async def on_ice_maker_event(self, topic: str, data: dict):
         """Handle operational events from the ice maker ESP32."""
         return await self._telemetry.handle_ice_maker_event(topic, data)
+
+    async def _handle_mqtt_ice_maker_event(self, topic: str, data: dict):
+        # deprecated: removed in the public-surface cleanup
+        return await self.on_ice_maker_event(topic, data)
 
     def _on_vending_capabilities_validated(
         self, subsystem: str, caps: SubsystemCapabilities
@@ -1180,17 +1228,29 @@ class VMC:
         """
         self._gate.on_vending_capabilities(subsystem, caps)
 
-    async def _handle_mqtt_capabilities(self, topic: str, data: dict):
+    async def on_capabilities(self, topic: str, data: dict):
         """Store a subsystem's retained self-description and hand it to health."""
         return await self._telemetry.handle_capabilities(topic, data)
 
-    async def _handle_mqtt_telemetry(self, topic: str, data: dict):
+    async def _handle_mqtt_capabilities(self, topic: str, data: dict):
+        # deprecated: removed in the public-surface cleanup
+        return await self.on_capabilities(topic, data)
+
+    async def on_telemetry(self, topic: str, data: dict):
         """Route a generic telemetry channel reading into health tracking."""
         return await self._telemetry.handle_telemetry(topic, data)
 
-    async def _handle_mqtt_command_ack(self, topic: str, data: dict):
+    async def _handle_mqtt_telemetry(self, topic: str, data: dict):
+        # deprecated: removed in the public-surface cleanup
+        return await self.on_telemetry(topic, data)
+
+    async def on_command_ack(self, topic: str, data: dict):
         """Log command acknowledgements from the monitor."""
         return await self._telemetry.handle_command_ack(topic, data)
+
+    async def _handle_mqtt_command_ack(self, topic: str, data: dict):
+        # deprecated: removed in the public-surface cleanup
+        return await self.on_command_ack(topic, data)
 
     def _fire_and_forget(self, coro, *, persistent: bool = False) -> None:
         """Run a coroutine on the attached loop without awaiting it.
@@ -1398,7 +1458,7 @@ class VMC:
             return
         self._cancel_dispense_timeout()
         sku = self.selected_product.sku if self.selected_product else None
-        self._raise_fault(code, sku=sku, outcome=outcome)
+        self.raise_fault(code, sku=sku, outcome=outcome)
         self._fail_vend(code, outcome=outcome)
 
     async def _persist_then_dispense(
@@ -1510,7 +1570,7 @@ class VMC:
         # Clear the completed selection now — a stale reference here is what let a
         # late/duplicate MQTT dispenser fault (jammed/error, QoS 0, no dedup) issue a
         # bogus refund at the old product's price. The state guard in
-        # _handle_mqtt_dispenser is the primary fix; clearing here removes the stale
+        # on_dispenser_event is the primary fix; clearing here removes the stale
         # data too. Nothing downstream needs selected_product to persist across a
         # completed sale — a customer with remaining credit picks a fresh product via
         # select_product(), which overwrites it unconditionally.
@@ -1574,7 +1634,7 @@ class VMC:
     def on_vend_failed(self, code: FaultCode, outcome: str):
         """`before` hook for dispensing -> interacting_with_user on a failed vend.
 
-        Restores the price to escrow (it was deducted in _process_payment),
+        Restores the price to escrow (it was deducted in process_payment),
         records the failure, and clears the selection. Whether the customer
         stays to choose again or is paid out is decided in _fail_vend.
 
@@ -1623,7 +1683,7 @@ class VMC:
         if self._event_recorder and not self._sale_is_test:
             # Copilot review (PR 22, id=4128088653): on_vend_failed is the
             # one place that runs for every failed/timed-out vend,
-            # production or test (both _handle_mqtt_dispenser's failure
+            # production or test (both on_dispenser_event's failure
             # branch and _dispense_timed_out reach it through _fail_vend ->
             # the vend_failed transition -> this hook). Recording
             # unconditionally here counted a failed or timed-out simulated
@@ -1685,7 +1745,7 @@ class VMC:
             f"Dispense timed out after {self._dispense_timeout_seconds:.0f}s with no "
             f"terminal report (slot {self.selected_product.slot if self.selected_product else '?'})"
         )
-        self._raise_fault(FaultCode.PAY_102, sku=sku, outcome="no_report")
+        self.raise_fault(FaultCode.PAY_102, sku=sku, outcome="no_report")
         self._fail_vend(FaultCode.PAY_102, outcome="no_report")
         if self._sale_is_test:
             # Kept as its own outcome ("timeout"), distinct from
@@ -1796,7 +1856,7 @@ class VMC:
         )
 
     def _consume_credits_fifo(self, price: float) -> dict[str, float]:
-        """Thin delegate to EscrowLedger.consume_fifo, kept so _process_payment
+        """Thin delegate to EscrowLedger.consume_fifo, kept so process_payment
         and its docstrings read as before. See controller/escrow_ledger.py
         for the FIFO-consumption and divergence-guard logic."""
         return self._escrow.consume_fifo(price)
@@ -1837,10 +1897,14 @@ class VMC:
         else:
             logger.warning("No MQTT client; refund command not sent")
 
-    async def _handle_mqtt_refund_ack(self, topic: str, data: dict):
+    async def on_refund_ack(self, topic: str, data: dict):
         """Payment gateway acknowledged (or refused) a refund command."""
         result = PaymentRefundResult.model_validate(data)
         self._refunds.handle_ack(result)
+
+    async def _handle_mqtt_refund_ack(self, topic: str, data: dict):
+        # deprecated: removed in the public-surface cleanup
+        return await self.on_refund_ack(topic, data)
 
     def _refund_confirmed(self, pending: PendingRefund, amount_returned: float) -> None:
         self._persist_session()
@@ -1877,7 +1941,7 @@ class VMC:
             f"We could not return ${pending.amount:.2f} automatically. "
             f"Please contact support and quote {pending.request_id[:8]}."
         )
-        self._raise_fault(FaultCode.PAY_103, outcome=detail)
+        self.raise_fault(FaultCode.PAY_103, outcome=detail)
 
     # --- Maintenance Lease (system-tests design §2.2) ---
     #
@@ -2088,7 +2152,7 @@ class VMC:
         §2.2/§2.3).
 
         ``is_test`` is set on the sale itself (``self._sale_is_test``) here,
-        not derived from the lease, and is what ``_handle_mqtt_dispenser``,
+        not derived from the lease, and is what ``on_dispenser_event``,
         ``_dispense_timed_out`` and ``_fail_vend`` consult to keep this run
         out of the production sales ledger and away from a real refund
         command -- so releasing or losing the lease mid-run cannot flip
@@ -2380,10 +2444,10 @@ class VMC:
 
         if self.state == "idle":
             self.start_interaction()
-            self._schedule(1.0, self._process_payment)
+            self._schedule(1.0, self.process_payment)
         elif self.state == "interacting_with_user":
             self.initiate_virtual_payment(self.selected_product.price)
-            self._schedule(1.0, self._process_payment)
+            self._schedule(1.0, self.process_payment)
         self._refresh_ui()
 
     @logger.catch()
@@ -2402,7 +2466,7 @@ class VMC:
         self.last_insufficient_message = message
 
     @logger.catch()
-    def _process_payment(self):
+    def process_payment(self):
         logger.debug(f"Processing payment for product: {self.selected_product}")
         if self.state != "interacting_with_user":
             logger.debug(
@@ -2455,7 +2519,11 @@ class VMC:
                 )
                 self.send_customer_message(message)
                 self.last_insufficient_message = message
-            self._schedule(5.0, self._process_payment)
+            self._schedule(5.0, self.process_payment)
+
+    def _process_payment(self):
+        # deprecated: removed in the public-surface cleanup
+        self.process_payment()
 
     def _reset_session_timeout(self):
         """Reset (or start) the customer session inactivity timer."""

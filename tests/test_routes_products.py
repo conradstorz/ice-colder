@@ -657,7 +657,7 @@ class TestLockBadge:
 
         _cfg, vmc, _inv, _store = wired
         _add(client, "ICE-1", name="Ice", price="2.5")
-        vmc._raise_fault(FaultCode.ICE_301, sku="ICE-1")
+        vmc.raise_fault(FaultCode.ICE_301, sku="ICE-1")
 
         list_resp = client.get("/products")
         assert "locked" in list_resp.text.lower()

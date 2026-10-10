@@ -510,7 +510,7 @@ class TestFaultsLevel:
         routes.set_health_monitor(hm)
         vmc.set_health_monitor(hm)
         try:
-            vmc._raise_fault(FaultCode.WTR_104, outcome="leak")
+            vmc.raise_fault(FaultCode.WTR_104, outcome="leak")
             resp = client.get("/health/faults")
             assert resp.status_code == 200
             assert "WTR-104" in resp.text
@@ -524,7 +524,7 @@ class TestFaultsLevel:
         render, without an age (executor resolution 6), never a 500."""
         _cfg, vmc, _inv, _store = wired
         assert context.health_monitor is None
-        vmc._raise_fault(FaultCode.PAY_103, outcome="test")
+        vmc.raise_fault(FaultCode.PAY_103, outcome="test")
         resp = client.get("/health/faults")
         assert resp.status_code == 200
         assert "PAY-103" in resp.text
@@ -541,7 +541,7 @@ class TestFaultsLevel:
 
     def test_clear_button_absent_without_clear_faults(self, wired, login_as):
         _cfg, vmc, _inv, _store = wired
-        vmc._raise_fault(FaultCode.PAY_103, outcome="test")
+        vmc.raise_fault(FaultCode.PAY_103, outcome="test")
         client = login_as(Role.loader)
         resp = client.get("/health/faults")
         assert "PAY-103" in resp.text
@@ -549,7 +549,7 @@ class TestFaultsLevel:
 
     def test_clear_button_present_with_clear_faults(self, wired, login_as):
         _cfg, vmc, _inv, _store = wired
-        vmc._raise_fault(FaultCode.PAY_103, outcome="test")
+        vmc.raise_fault(FaultCode.PAY_103, outcome="test")
         client = login_as(Role.tech)
         resp = client.get("/health/faults")
         assert 'id="clear-PAY-103"' in resp.text
@@ -576,7 +576,7 @@ class TestFaultClearFlow:
     def test_clear_confirm_then_post_clears_for_a_tech(self, wired, login_as):
         _cfg, vmc, _inv, _store = wired
         key = _seed_product(_cfg)
-        vmc._raise_fault(FaultCode.ICE_301, sku=key)
+        vmc.raise_fault(FaultCode.ICE_301, sku=key)
         client = login_as(Role.tech)
 
         confirm_resp = client.get(f"/health/faults/{key}/clear/confirm")
@@ -597,7 +597,7 @@ class TestFaultClearFlow:
     def test_post_clear_403_for_a_loader(self, wired, login_as):
         _cfg, vmc, _inv, _store = wired
         key = _seed_product(_cfg)
-        vmc._raise_fault(FaultCode.ICE_301, sku=key)
+        vmc.raise_fault(FaultCode.ICE_301, sku=key)
         client = login_as(Role.loader)
         resp = client.post(f"/health/faults/{key}/clear")
         assert resp.status_code == 403
@@ -617,7 +617,7 @@ class TestFaultClearFlow:
         endpoint URLs (post_url/confirm_url)."""
         _cfg, vmc, _inv, _store = wired
         key = _seed_product(_cfg, "ICE.301")
-        vmc._raise_fault(FaultCode.ICE_301, sku=key)
+        vmc.raise_fault(FaultCode.ICE_301, sku=key)
         client = login_as(Role.tech)
 
         list_resp = client.get("/health/faults")
@@ -661,7 +661,7 @@ class TestFaultClearFlow:
     def test_post_clear_without_htmx_header_is_403(self, wired, login_as):
         _cfg, vmc, _inv, _store = wired
         key = _seed_product(_cfg)
-        vmc._raise_fault(FaultCode.ICE_301, sku=key)
+        vmc.raise_fault(FaultCode.ICE_301, sku=key)
         client = login_as(Role.tech)
         resp = client.post(f"/health/faults/{key}/clear", headers={"HX-Request": ""})
         assert resp.status_code == 403
@@ -698,7 +698,7 @@ class TestFaultClearFlow:
     def test_confirm_endpoint_requires_clear_faults(self, wired, login_as):
         _cfg, vmc, _inv, _store = wired
         key = _seed_product(_cfg)
-        vmc._raise_fault(FaultCode.ICE_301, sku=key)
+        vmc.raise_fault(FaultCode.ICE_301, sku=key)
         client = login_as(Role.loader)
         resp = client.get(f"/health/faults/{key}/clear/confirm")
         assert resp.status_code == 403

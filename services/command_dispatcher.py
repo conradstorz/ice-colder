@@ -200,7 +200,7 @@ class CommandDispatcher:
         first) instead, where it simply ages out unread; this handler is a
         pure addition alongside the VMC's own, pre-existing
         `hardware/dispenser` listener (`controller/vmc.py`'s
-        `_handle_mqtt_dispenser`), which keeps working unchanged since both
+        `on_dispenser_event`), which keeps working unchanged since both
         are registered on the same MQTT client and both simply receive
         every message on the topic.
         """

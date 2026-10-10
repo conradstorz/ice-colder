@@ -311,18 +311,18 @@ class TestSubscriptionsTable:
         # _handle_mqtt_water_flow) fails this test even though both the
         # topic set and every method name would still be valid on their own.
         assert SUBSCRIPTIONS == (
-            ("payment/credit", "_handle_mqtt_payment"),
-            ("hardware/buttons", "_handle_mqtt_button"),
-            ("hardware/dispenser", "_handle_mqtt_dispenser"),
-            ("sensors/temp/+", "_handle_mqtt_sensor"),
-            ("heartbeat/+", "_handle_mqtt_heartbeat"),
-            ("ice_maker/event", "_handle_mqtt_ice_maker_event"),
-            ("capabilities/+", "_handle_mqtt_capabilities"),
-            ("telemetry/ice_maker/+", "_handle_mqtt_telemetry"),
-            ("cmd/ice_maker/ack", "_handle_mqtt_command_ack"),
-            ("hardware/io/+", "_handle_mqtt_hardware_io"),
-            ("cmd/payment/refund/ack", "_handle_mqtt_refund_ack"),
-            ("payment/status", "_handle_mqtt_payment_status"),
-            ("sensors/water_flow", "_handle_mqtt_water_flow"),
+            ("payment/credit", "on_payment_credit"),
+            ("hardware/buttons", "on_button_press"),
+            ("hardware/dispenser", "on_dispenser_event"),
+            ("sensors/temp/+", "on_sensor_reading"),
+            ("heartbeat/+", "on_heartbeat"),
+            ("ice_maker/event", "on_ice_maker_event"),
+            ("capabilities/+", "on_capabilities"),
+            ("telemetry/ice_maker/+", "on_telemetry"),
+            ("cmd/ice_maker/ack", "on_command_ack"),
+            ("hardware/io/+", "on_hardware_io"),
+            ("cmd/payment/refund/ack", "on_refund_ack"),
+            ("payment/status", "on_payment_status"),
+            ("sensors/water_flow", "on_water_flow"),
         )
         assert len(SUBSCRIPTIONS) == 13

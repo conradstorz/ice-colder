@@ -119,18 +119,16 @@ async def test_late_dispenser_fault_after_completed_sale_is_ignored():
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 2.50
 
-    vmc._process_payment()
+    vmc.process_payment()
     assert vmc.state == "dispensing"
 
-    await vmc._handle_mqtt_dispenser(
-        "hardware/dispenser", {"slot": 0, "state": "complete"}
-    )
+    await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "complete"})
     assert vmc.state == "idle"  # no credit left
     assert vmc.selected_product is None
     assert vmc.credit_escrow == 0.0
 
     # Late/duplicate jam for the same slot arrives after completion.
-    await vmc._handle_mqtt_dispenser("hardware/dispenser", {"slot": 0, "state": "jam"})
+    await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "jam"})
 
     assert vmc.state == "idle"
     assert vmc.credit_escrow == 0.0  # no bogus refund credited
@@ -149,7 +147,7 @@ async def test_dispenser_jam_with_mismatched_slot_is_ignored():
     vmc.credit_escrow = 0.0
 
     other_slot = vmc.products[0].slot + 1
-    await vmc._handle_mqtt_dispenser(
+    await vmc.on_dispenser_event(
         "hardware/dispenser", {"slot": other_slot, "state": "jam"}
     )
 
@@ -167,11 +165,11 @@ async def test_dispense_complete_with_mismatched_slot_is_ignored():
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 2.50
 
-    vmc._process_payment()
+    vmc.process_payment()
     assert vmc.state == "dispensing"
 
     other_slot = vmc.products[0].slot + 1
-    await vmc._handle_mqtt_dispenser(
+    await vmc.on_dispenser_event(
         "hardware/dispenser", {"slot": other_slot, "state": "complete"}
     )
 
@@ -187,10 +185,10 @@ async def test_dispense_complete_with_matching_slot_still_completes():
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 2.50
 
-    vmc._process_payment()
+    vmc.process_payment()
     assert vmc.state == "dispensing"
 
-    await vmc._handle_mqtt_dispenser(
+    await vmc.on_dispenser_event(
         "hardware/dispenser",
         {"slot": vmc.products[0].slot, "state": "complete"},
     )
@@ -212,10 +210,10 @@ async def test_dispense_complete_records_event_via_recorder():
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 2.50
 
-    vmc._process_payment()
+    vmc.process_payment()
     assert vmc.state == "dispensing"
 
-    await vmc._handle_mqtt_dispenser(
+    await vmc.on_dispenser_event(
         "hardware/dispenser",
         {"slot": vmc.products[0].slot, "state": "complete"},
     )
@@ -233,11 +231,11 @@ async def test_dispense_complete_with_mismatched_slot_does_not_record_event():
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 2.50
 
-    vmc._process_payment()
+    vmc.process_payment()
     assert vmc.state == "dispensing"
 
     other_slot = vmc.products[0].slot + 1
-    await vmc._handle_mqtt_dispenser(
+    await vmc.on_dispenser_event(
         "hardware/dispenser", {"slot": other_slot, "state": "complete"}
     )
 
@@ -256,7 +254,7 @@ async def test_dispense_timeout_fallback_does_not_record_event():
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 2.50
 
-    vmc._process_payment()
+    vmc.process_payment()
     assert vmc.state == "dispensing"
 
     vmc._finish_dispensing()  # simulate the 60s hardware-silence fallback firing
@@ -300,11 +298,11 @@ async def test_dispense_complete_records_sale_durably_before_fsm_returns_to_idle
     vmc.deposit_funds(1.50, payment_method="cash_bill")
     vmc.deposit_funds(1.00, payment_method="card")
 
-    vmc._process_payment()
+    vmc.process_payment()
     assert vmc.state == "dispensing"
     assert vmc.pending_sale_shares == {"cash_bill": 1.50, "card": 1.00}
 
-    await vmc._handle_mqtt_dispenser(
+    await vmc.on_dispenser_event(
         "hardware/dispenser",
         {"slot": vmc.products[0].slot, "state": "complete"},
     )
@@ -357,10 +355,10 @@ async def test_dispense_complete_sale_record_failure_raises_data_101_but_complet
     vmc.selected_product = vmc.products[0]
     vmc.deposit_funds(2.50, payment_method="cash_coin")
 
-    vmc._process_payment()
+    vmc.process_payment()
     assert vmc.state == "dispensing"
 
-    await vmc._handle_mqtt_dispenser(
+    await vmc.on_dispenser_event(
         "hardware/dispenser",
         {"slot": vmc.products[0].slot, "state": "complete"},
     )
@@ -411,11 +409,11 @@ async def test_record_sale_totally_lost_preserves_pay104_recovery_not_data_101(
     vmc.selected_product = vmc.products[0]
     vmc.deposit_funds(2.50, payment_method="cash_bill")
 
-    vmc._process_payment()
+    vmc.process_payment()
     assert vmc.state == "dispensing"
     await vmc.drain_persistence()  # the 'dispensing' snapshot is now on disk
 
-    await vmc._handle_mqtt_dispenser(
+    await vmc.on_dispenser_event(
         "hardware/dispenser",
         {"slot": vmc.products[0].slot, "state": "complete"},
     )
@@ -480,7 +478,7 @@ async def test_dispense_complete_records_price_from_shares_not_live_catalog_pric
     vmc.selected_product = vmc.products[0]
     vmc.deposit_funds(2.50, payment_method="cash_bill")
 
-    vmc._process_payment()
+    vmc.process_payment()
     assert vmc.state == "dispensing"
     assert vmc.pending_sale_shares == {"cash_bill": 2.50}
 
@@ -488,7 +486,7 @@ async def test_dispense_complete_records_price_from_shares_not_live_catalog_pric
     # services/config_store.update_product does to the same live object.
     vmc.selected_product.price = 9.99
 
-    await vmc._handle_mqtt_dispenser(
+    await vmc.on_dispenser_event(
         "hardware/dispenser",
         {"slot": vmc.products[0].slot, "state": "complete"},
     )
@@ -520,12 +518,12 @@ async def test_vend_failed_after_deduction_writes_no_sale_row_and_restores_credi
     vmc.selected_product = vmc.products[0]  # ICE-1, price 2.50
     vmc.deposit_funds(2.50, payment_method="cash_bill")
 
-    vmc._process_payment()
+    vmc.process_payment()
     assert vmc.state == "dispensing"
     # Proves the deduction genuinely happened before the failure.
     assert vmc.pending_sale_shares == {"cash_bill": 2.50}
 
-    await vmc._handle_mqtt_dispenser(
+    await vmc.on_dispenser_event(
         "hardware/dispenser", {"slot": vmc.products[0].slot, "state": "jam"}
     )
 
@@ -560,14 +558,14 @@ async def test_vend_failed_restores_shares_total_not_live_catalog_price(tmp_path
     vmc.selected_product = vmc.products[0]  # ICE-1, price 2.50
     vmc.deposit_funds(2.50, payment_method="cash_bill")
 
-    vmc._process_payment()
+    vmc.process_payment()
     assert vmc.state == "dispensing"
     assert vmc.pending_sale_shares == {"cash_bill": 2.50}
 
     # Operator edits the catalog price mid-flight, in place.
     vmc.selected_product.price = 9.99
 
-    await vmc._handle_mqtt_dispenser(
+    await vmc.on_dispenser_event(
         "hardware/dispenser", {"slot": vmc.products[0].slot, "state": "jam"}
     )
 
@@ -618,7 +616,7 @@ async def test_pay_104_snapshot_exposes_pending_sale_after_crash_mid_dispense(
     vmc.deposit_funds(2.00, payment_method="cash_bill")
     vmc.deposit_funds(0.50, payment_method="card")
 
-    vmc._process_payment()  # persists the 'dispensing' snapshot (Task 4)
+    vmc.process_payment()  # persists the 'dispensing' snapshot (Task 4)
     assert vmc.state == "dispensing"
     await vmc.drain_persistence()  # the save is fire-and-forget -- wait for it
     vmc.cancel_pending_tasks()  # simulate the crash: nothing else ever runs
@@ -666,7 +664,7 @@ async def test_insufficient_funds_prompt_is_not_an_error_log():
         format="{message}",
     )
     try:
-        vmc._process_payment()
+        vmc.process_payment()
     finally:
         logger.remove(handle)
         vmc.cancel_pending_tasks()  # drop the 5 s retry _process_payment scheduled
@@ -684,7 +682,7 @@ async def test_insufficient_funds_waits_without_charging():
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 1.00
 
-    vmc._process_payment()
+    vmc.process_payment()
 
     assert vmc.state == "interacting_with_user"
     assert vmc.credit_escrow == 1.00
@@ -712,13 +710,11 @@ async def test_sufficient_funds_charges_and_dispenses():
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 5.00
 
-    vmc._process_payment()
+    vmc.process_payment()
     assert vmc.state == "dispensing"
     assert vmc.credit_escrow == 2.50
 
-    await vmc._handle_mqtt_dispenser(
-        "hardware/dispenser", {"slot": 0, "state": "complete"}
-    )
+    await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "complete"})
     assert vmc.state == "interacting_with_user"  # credit remains
     vmc.cancel_pending_tasks()
 
@@ -730,7 +726,7 @@ async def test_dispense_timeout_fallback_completes_transaction():
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 2.50
 
-    vmc._process_payment()
+    vmc.process_payment()
     assert vmc.state == "dispensing"
 
     # Simulate the 60s hardware-silence fallback firing
@@ -752,7 +748,7 @@ async def test_product_deleted_mid_session_cancels_sale_without_error():
     vmc.credit_escrow = 5.00
     vmc.products.clear()  # product deleted via the dashboard mid-session
 
-    vmc._process_payment()
+    vmc.process_payment()
 
     assert vmc.state == "idle"
     assert vmc.credit_escrow == 0.0  # refunded, same as on_reset/_expire_session
@@ -771,7 +767,7 @@ async def test_sale_cancelled_then_new_sale_succeeds(tmp_path):
     vmc.credit_escrow = 5.00
     vmc.products.clear()  # product deleted via the dashboard mid-session
 
-    vmc._process_payment()
+    vmc.process_payment()
     assert vmc.state == "idle"
 
     # A new product is configured; a normal sale should work with no admin
@@ -787,7 +783,7 @@ async def test_sale_cancelled_then_new_sale_succeeds(tmp_path):
     assert vmc.selected_product is new_product
 
     vmc.credit_escrow = 2.50
-    vmc._process_payment()
+    vmc.process_payment()
     assert vmc.state == "dispensing"
     vmc.cancel_pending_tasks()
 
@@ -848,7 +844,7 @@ class TestFaultRegistry:
         hm = HealthMonitor()
         vmc.set_health_monitor(hm)
 
-        vmc._raise_fault(FaultCode.ICE_301, sku="ICE-1", outcome="timeout")
+        vmc.raise_fault(FaultCode.ICE_301, sku="ICE-1", outcome="timeout")
         await asyncio.sleep(0)
 
         assert vmc._lockouts == {"ICE-1": FaultCode.ICE_301}
@@ -860,14 +856,14 @@ class TestFaultRegistry:
     async def test_vend_failed_severity_does_not_lock(self):
         vmc = make_vmc2()
         vmc.attach_to_loop(asyncio.get_running_loop())
-        vmc._raise_fault(FaultCode.PAY_102, sku="ICE-1")
+        vmc.raise_fault(FaultCode.PAY_102, sku="ICE-1")
         assert vmc._lockouts == {}
         assert vmc.active_faults() == []
 
     async def test_machine_scope_fault_keyed_by_code(self):
         vmc = make_vmc2()
         vmc.attach_to_loop(asyncio.get_running_loop())
-        vmc._raise_fault(FaultCode.PAY_103)
+        vmc.raise_fault(FaultCode.PAY_103)
         faults = vmc.active_faults()
         assert faults == [
             {
@@ -888,7 +884,7 @@ class TestFaultRegistry:
         vmc.attach_to_loop(asyncio.get_running_loop())
         messages: list[str] = []
         vmc.set_message_callback(messages.append)
-        vmc._raise_fault(FaultCode.ICE_301, sku="ICE-1")
+        vmc.raise_fault(FaultCode.ICE_301, sku="ICE-1")
 
         vmc.select_product(0)
 
@@ -898,7 +894,7 @@ class TestFaultRegistry:
 
     async def test_sellable_products_excludes_locked(self):
         vmc = make_vmc2()
-        vmc._raise_fault(FaultCode.ICE_401, sku="ICE-1")
+        vmc.raise_fault(FaultCode.ICE_401, sku="ICE-1")
         assert [p.sku for p in vmc._sellable_products()] == ["WATER-1"]
 
     async def test_clear_fault_records_and_rearms_alert(self):
@@ -908,7 +904,7 @@ class TestFaultRegistry:
         vmc.set_event_recorder(rec)
         hm = HealthMonitor()
         vmc.set_health_monitor(hm)
-        vmc._raise_fault(FaultCode.ICE_301, sku="ICE-1")
+        vmc.raise_fault(FaultCode.ICE_301, sku="ICE-1")
         await asyncio.sleep(0)
 
         assert vmc.clear_fault("ICE-1") is True
@@ -927,10 +923,10 @@ class TestFaultRegistry:
         vmc.attach_to_loop(asyncio.get_running_loop())
         rec = FakeEventRecorder()
         vmc.set_event_recorder(rec)
-        vmc._raise_fault(FaultCode.ICE_101, sku="ICE-1")
-        vmc._raise_fault(FaultCode.ICE_301, sku="WATER-1")
+        vmc.raise_fault(FaultCode.ICE_101, sku="ICE-1")
+        vmc.raise_fault(FaultCode.ICE_301, sku="WATER-1")
 
-        await vmc._handle_mqtt_hardware_io(
+        await vmc.on_hardware_io(
             "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
         )
 
@@ -974,7 +970,7 @@ def _start_dispensing(vmc: VMC, index: int = 0):
     vmc.machine.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[index]
     vmc.credit_escrow = vmc.products[index].price
-    vmc._process_payment()
+    vmc.process_payment()
     assert vmc.state == "dispensing"
 
 
@@ -998,7 +994,7 @@ class TestVendOutcomes:
         _start_dispensing(vmc, 0)
         price = vmc.products[0].price
 
-        await vmc._handle_mqtt_dispenser(
+        await vmc.on_dispenser_event(
             "hardware/dispenser", {"slot": 0, "state": outcome}
         )
         await asyncio.sleep(0)
@@ -1020,7 +1016,7 @@ class TestVendOutcomes:
         vmc = make_vmc2()
         vmc.attach_to_loop(asyncio.get_running_loop())
         _start_dispensing(vmc, 0)
-        await vmc._handle_mqtt_dispenser(
+        await vmc.on_dispenser_event(
             "hardware/dispenser", {"slot": 0, "state": "fill_complete"}
         )
         assert vmc.state == "dispensing"
@@ -1058,10 +1054,10 @@ class TestVendOutcomes:
         rec = FakeEventRecorder()
         vmc.set_event_recorder(rec)
         _start_dispensing(vmc, 0)
-        await vmc._handle_mqtt_dispenser(
+        await vmc.on_dispenser_event(
             "hardware/dispenser", {"slot": 0, "state": "timeout"}
         )
-        await vmc._handle_mqtt_dispenser(
+        await vmc.on_dispenser_event(
             "hardware/dispenser", {"slot": 0, "state": "complete"}
         )
         assert vmc.state == "interacting_with_user"
@@ -1083,7 +1079,7 @@ class TestCreditLedger:
         vmc.deposit_funds(2.00, payment_method="cash_bill")
         vmc.deposit_funds(1.00, payment_method="card")
 
-        vmc._process_payment()
+        vmc.process_payment()
 
         # Confirms the deduction branch (credit_escrow >= price) actually ran,
         # rather than the insufficient-funds branch silently passing.
@@ -1102,7 +1098,7 @@ class TestCreditLedger:
         vmc.selected_product = vmc.products[0]
         vmc.deposit_funds(2.50, payment_method="cash_coin")
 
-        vmc._process_payment()
+        vmc.process_payment()
 
         assert vmc.state == "dispensing"
         assert vmc.pending_sale_shares == {"cash_coin": 2.50}
@@ -1119,7 +1115,7 @@ class TestCreditLedger:
         vmc.deposit_funds(1.00, payment_method="cash_coin")
         vmc.deposit_funds(1.00, payment_method="card")
 
-        vmc._process_payment()
+        vmc.process_payment()
 
         assert vmc.state == "dispensing"
         assert vmc.pending_sale_shares == {"cash_coin": 2.00, "card": 0.50}
@@ -1139,7 +1135,7 @@ class TestCreditLedger:
         vmc.selected_product = vmc.products[0]
         vmc.deposit_funds(2.00, payment_method="cash_bill")
         vmc.deposit_funds(0.50, payment_method="card")
-        vmc._process_payment()
+        vmc.process_payment()
         assert vmc.state == "dispensing"  # sale actually in flight
         assert vmc.pending_sale_shares == {"cash_bill": 2.00, "card": 0.50}
         assert vmc.escrow_credits == []  # both credits fully consumed
@@ -1186,7 +1182,7 @@ class TestCreditLedger:
             format="{message}",
         )
         try:
-            vmc._process_payment()
+            vmc.process_payment()
         finally:
             logger.remove(handle)
 
@@ -1216,7 +1212,7 @@ class TestCreditLedger:
         vmc.selected_product = vmc.products[0]
         vmc.deposit_funds(2.51, payment_method="cash_coin")
 
-        vmc._process_payment()
+        vmc.process_payment()
 
         assert vmc.state == "dispensing"
         assert vmc.pending_sale_shares == {"cash_coin": 2.50}
@@ -1232,7 +1228,7 @@ class TestCreditLedger:
         vmc2.escrow_credits = [Credit(method="cash_coin", amount=1.00, ts=0.0)]
         vmc2.credit_escrow = 1.00
 
-        vmc2._process_payment()
+        vmc2.process_payment()
 
         assert vmc2.state == "dispensing"
         assert vmc2.pending_sale_shares == {"cash_coin": 1.00}
@@ -1247,7 +1243,7 @@ class TestCreditLedger:
         vmc3.escrow_credits = [Credit(method="cash_coin", amount=1.00, ts=0.0)]
         vmc3.credit_escrow = 1.01
 
-        vmc3._process_payment()
+        vmc3.process_payment()
 
         assert vmc3.state == "dispensing"
         assert vmc3.pending_sale_shares == {"unknown": 1.00}
@@ -1321,7 +1317,7 @@ class TestRefunds:
         await asyncio.sleep(0)
         rid = client.refund_commands()[0].request_id
 
-        await vmc._handle_mqtt_refund_ack(
+        await vmc.on_refund_ack(
             "cmd/payment/refund/ack",
             {"request_id": rid, "status": "ok", "amount_returned": 2.0},
         )
@@ -1346,7 +1342,7 @@ class TestRefunds:
         await asyncio.sleep(0)
         rid = client.refund_commands()[0].request_id
 
-        await vmc._handle_mqtt_refund_ack(
+        await vmc.on_refund_ack(
             "cmd/payment/refund/ack",
             {"request_id": rid, "status": "failed", "detail": "changer_empty"},
         )
@@ -1356,7 +1352,7 @@ class TestRefunds:
         # Still just a retry in flight — no promise made either way yet.
         assert "issued" not in messages[-1]
 
-        await vmc._handle_mqtt_refund_ack(
+        await vmc.on_refund_ack(
             "cmd/payment/refund/ack",
             {"request_id": rid, "status": "failed", "detail": "changer_empty"},
         )
@@ -1402,7 +1398,7 @@ class TestRefunds:
         vmc.attach_to_loop(asyncio.get_running_loop())
         rec = FakeEventRecorder()
         vmc.set_event_recorder(rec)
-        await vmc._handle_mqtt_refund_ack(
+        await vmc.on_refund_ack(
             "cmd/payment/refund/ack",
             {"request_id": "x" * 32, "status": "ok", "amount_returned": 1.0},
         )
@@ -1454,9 +1450,7 @@ class TestRefunds:
         vmc.set_mqtt_client(client)
         _start_dispensing(vmc, 0)
 
-        await vmc._handle_mqtt_dispenser(
-            "hardware/dispenser", {"slot": 0, "state": "jam"}
-        )
+        await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "jam"})
         await asyncio.sleep(0)
 
         assert vmc.state == "idle"
@@ -1559,7 +1553,7 @@ async def test_vending_heartbeat_loss_raises_com_101_without_disabling_payment()
     vmc, monitor, avail, published = _wired_vmc()
     _all_alive(monitor, vmc)
     avail.set_payment_device("coin_acceptor", "ready")
-    await vmc._handle_mqtt_hardware_io(
+    await vmc.on_hardware_io(
         "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
     )
     assert avail.payment_enabled is True
@@ -1581,7 +1575,7 @@ async def test_ice_maker_loss_is_com_102_and_only_ice_blocked():
     vmc, monitor, avail, published = _wired_vmc()
     _all_alive(monitor, vmc)
     avail.set_payment_device("coin_acceptor", "ready")
-    await vmc._handle_mqtt_hardware_io(
+    await vmc.on_hardware_io(
         "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
     )
     monitor.mark_offline("ice_maker")
@@ -1616,7 +1610,7 @@ async def test_mqtt_disconnect_is_com_103_and_reconnect_republishes():
 async def test_payment_status_error_feeds_availability():
     vmc, monitor, avail, _ = _wired_vmc()
     _all_alive(monitor, vmc)
-    await vmc._handle_mqtt_payment_status(
+    await vmc.on_payment_status(
         "payment/status", {"device": "card_reader", "state": "error"}
     )
     assert "payment_devices_ready" in avail.sale_available("ice")[1]
@@ -1629,9 +1623,7 @@ async def test_payment_status_error_feeds_availability():
 async def test_hardware_io_feeds_health_signal():
     vmc, monitor, avail, _ = _wired_vmc()
     _all_alive(monitor, vmc)
-    await vmc._handle_mqtt_hardware_io(
-        "hardware/io/fan", {"device": "fan", "state": True}
-    )
+    await vmc.on_hardware_io("hardware/io/fan", {"device": "fan", "state": True})
     signal = monitor.get_summary()["signals"]["vending"]["fan"]
     assert signal["value"] == 1.0
     vmc.cancel_pending_tasks()
@@ -1640,11 +1632,11 @@ async def test_hardware_io_feeds_health_signal():
 async def test_ice_maker_power_event_feeds_health_signal():
     vmc, monitor, avail, _ = _wired_vmc()
     _all_alive(monitor, vmc)
-    await vmc._handle_mqtt_ice_maker_event("ice_maker/event", {"event": "power_on"})
+    await vmc.on_ice_maker_event("ice_maker/event", {"event": "power_on"})
     signal = monitor.get_summary()["signals"]["ice_maker"]["compressor_run"]
     assert signal["value"] == 1.0
 
-    await vmc._handle_mqtt_ice_maker_event("ice_maker/event", {"event": "power_off"})
+    await vmc.on_ice_maker_event("ice_maker/event", {"event": "power_off"})
     signal = monitor.get_summary()["signals"]["ice_maker"]["compressor_run"]
     assert signal["value"] == 0.0
     vmc.cancel_pending_tasks()
@@ -1653,9 +1645,7 @@ async def test_ice_maker_power_event_feeds_health_signal():
 async def test_ice_maker_non_power_event_does_not_feed_compressor_signal():
     vmc, monitor, avail, _ = _wired_vmc()
     _all_alive(monitor, vmc)
-    await vmc._handle_mqtt_ice_maker_event(
-        "ice_maker/event", {"event": "needs_cleaning"}
-    )
+    await vmc.on_ice_maker_event("ice_maker/event", {"event": "needs_cleaning"})
     assert "compressor_run" not in monitor.get_summary()["signals"].get("ice_maker", {})
     vmc.cancel_pending_tasks()
 
@@ -1663,7 +1653,7 @@ async def test_ice_maker_non_power_event_does_not_feed_compressor_signal():
 async def test_water_flow_feeds_health_channel():
     vmc, monitor, avail, _ = _wired_vmc()
     _all_alive(monitor, vmc)
-    await vmc._handle_mqtt_water_flow(
+    await vmc.on_water_flow(
         "sensors/water_flow", {"location": "water_flow", "value": 12.5, "unit": "gal"}
     )
     channel = monitor.get_summary()["channels"]["water_flow"]
@@ -1692,14 +1682,12 @@ async def test_signal_feeding_handlers_tolerate_missing_health_monitor():
     vmc.set_mqtt_client(FakeMQTT())
     assert vmc._health_monitor is None
 
-    await vmc._handle_mqtt_hardware_io(
-        "hardware/io/fan", {"device": "fan", "state": True}
-    )
-    await vmc._handle_mqtt_payment_status(
+    await vmc.on_hardware_io("hardware/io/fan", {"device": "fan", "state": True})
+    await vmc.on_payment_status(
         "payment/status", {"device": "card_reader", "state": "ready"}
     )
-    await vmc._handle_mqtt_ice_maker_event("ice_maker/event", {"event": "power_on"})
-    await vmc._handle_mqtt_water_flow(
+    await vmc.on_ice_maker_event("ice_maker/event", {"event": "power_on"})
+    await vmc.on_water_flow(
         "sensors/water_flow", {"location": "water_flow", "value": 5.0, "unit": "gal"}
     )
     vmc.cancel_pending_tasks()
@@ -1752,7 +1740,7 @@ async def test_pay_104_on_boot_leaves_payment_enabled(tmp_path):
 async def test_pay_104_is_reported_as_a_warning():
     vmc, monitor, avail, _ = _wired_vmc()
     _all_alive(monitor, vmc)
-    vmc._raise_fault(FaultCode.PAY_104, outcome="test")
+    vmc.raise_fault(FaultCode.PAY_104, outcome="test")
     fault = next(f for f in vmc.active_faults() if f["code"] == "PAY-104")
     assert fault["severity"] == "warning"
     assert fault["scope"] == "machine"
@@ -1769,7 +1757,7 @@ async def test_select_product_refused_while_vending_offline_but_payment_stays_on
     vmc, monitor, avail, _ = _wired_vmc()
     _all_alive(monitor, vmc)
     avail.set_payment_device("coin_acceptor", "ready")
-    await vmc._handle_mqtt_hardware_io(
+    await vmc.on_hardware_io(
         "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
     )
     monitor.mark_offline("vending")
@@ -1809,7 +1797,7 @@ async def test_deposit_while_idle_and_vending_offline_is_refunded_on_timeout():
     vmc, monitor, avail, published = _wired_vmc()
     _all_alive(monitor, vmc)
     avail.set_payment_device("coin_acceptor", "ready")
-    await vmc._handle_mqtt_hardware_io(
+    await vmc.on_hardware_io(
         "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
     )
     monitor.mark_offline("vending")
@@ -1889,7 +1877,7 @@ async def test_hazard_fault_still_disables_payment():
     vmc, monitor, avail, published = _wired_vmc()
     _all_alive(monitor, vmc)
     avail.set_payment_device("coin_acceptor", "ready")
-    vmc._raise_fault(FaultCode.WTR_104, outcome="leak")
+    vmc.raise_fault(FaultCode.WTR_104, outcome="leak")
     assert avail.payment_enabled is False
     assert avail.payment_blocking_reasons() == ["no_critical_fault"]
     assert (await _enables(published))[-1] is False
@@ -1969,7 +1957,7 @@ async def test_session_file_written_during_sale_and_cleared_after(tmp_path):
     vmc.set_session_store(store)
     _all_alive(monitor, vmc)
     avail.set_payment_device("coin_acceptor", "ready")
-    await vmc._handle_mqtt_hardware_io(
+    await vmc.on_hardware_io(
         "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
     )
 
@@ -1985,9 +1973,7 @@ async def test_session_file_written_during_sale_and_cleared_after(tmp_path):
     snap = store.load()
     assert snap.state == "dispensing" and snap.dispense_slot == 0
 
-    await vmc._handle_mqtt_dispenser(
-        "hardware/dispenser", {"slot": 0, "state": "complete"}
-    )
+    await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "complete"})
     await asyncio.sleep(0.05)
     assert vmc.state == "idle"
     assert store.load() is None
@@ -2102,7 +2088,7 @@ async def test_dispense_snapshot_persisted_before_dispense_command(tmp_path):
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 2.50
 
-    vmc._process_payment()
+    vmc.process_payment()
 
     # Bounded wait instead of a fixed sleep: this test failed once in CI and
     # passed on an unchanged re-run, because 50ms is enough time for
@@ -2277,7 +2263,7 @@ class TestMaintenanceLease:
         assert refund_cmds[0].reason == "maintenance"
 
         rid = refund_cmds[0].request_id
-        await vmc._handle_mqtt_refund_ack(
+        await vmc.on_refund_ack(
             "cmd/payment/refund/ack",
             {"request_id": rid, "status": "ok", "amount_returned": 1.00},
         )
@@ -2565,7 +2551,7 @@ class TestRunTestSale:
     §2.3) -- the task most likely to corrupt part 3's sales ledger.
 
     Every test drives run_test_sale as a background task and calls
-    vmc._process_payment() directly (rather than waiting a real 1s for
+    vmc.process_payment() directly (rather than waiting a real 1s for
     select_product's own scheduled call) and, where a dispense timeout is
     needed, vmc._dispense_timed_out() directly (rather than waiting a real
     dispense_timeout_seconds) -- the same "call the production callback
@@ -2625,11 +2611,11 @@ class TestRunTestSale:
         assert vmc.state == "interacting_with_user"
         assert vmc._sale_is_test is True
 
-        vmc._process_payment()
+        vmc.process_payment()
         assert vmc.state == "dispensing"
         assert vmc.pending_sale_shares == {"test": 2.50}
 
-        await vmc._handle_mqtt_dispenser(
+        await vmc.on_dispenser_event(
             "hardware/dispenser", {"slot": 0, "state": "complete"}
         )
         result = await asyncio.wait_for(task, timeout=5)
@@ -2667,12 +2653,12 @@ class TestRunTestSale:
 
         task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
         await asyncio.sleep(0)
-        vmc._process_payment()
+        vmc.process_payment()
         assert vmc.state == "dispensing"
 
         vmc._maintenance_hold = None  # simulate the lease vanishing mid-run
 
-        await vmc._handle_mqtt_dispenser(
+        await vmc.on_dispenser_event(
             "hardware/dispenser", {"slot": 0, "state": "complete"}
         )
         result = await asyncio.wait_for(task, timeout=5)
@@ -2697,12 +2683,10 @@ class TestRunTestSale:
 
         task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
         await asyncio.sleep(0)
-        vmc._process_payment()
+        vmc.process_payment()
         assert vmc.state == "dispensing"
 
-        await vmc._handle_mqtt_dispenser(
-            "hardware/dispenser", {"slot": 0, "state": "jam"}
-        )
+        await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "jam"})
         result = await asyncio.wait_for(task, timeout=5)
 
         assert result.outcome == "vend_failed"
@@ -2748,11 +2732,9 @@ class TestRunTestSale:
         assert granted is True
         task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
         await asyncio.sleep(0)
-        vmc._process_payment()
+        vmc.process_payment()
         assert vmc.state == "dispensing"
-        await vmc._handle_mqtt_dispenser(
-            "hardware/dispenser", {"slot": 0, "state": "jam"}
-        )
+        await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "jam"})
         result = await asyncio.wait_for(task, timeout=5)
         assert result.outcome == "vend_failed"
 
@@ -2766,11 +2748,9 @@ class TestRunTestSale:
         vmc.machine.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[1]
         vmc.deposit_funds(1.00, payment_method="cash_bill")
-        vmc._process_payment()
+        vmc.process_payment()
         assert vmc.state == "dispensing"
-        await vmc._handle_mqtt_dispenser(
-            "hardware/dispenser", {"slot": 1, "state": "jam"}
-        )
+        await vmc.on_dispenser_event("hardware/dispenser", {"slot": 1, "state": "jam"})
         recorder.flush()
         assert recorder.get_summary(24)["vends_failed"] == 1
 
@@ -2784,7 +2764,7 @@ class TestRunTestSale:
 
         task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
         await asyncio.sleep(0)
-        vmc._process_payment()
+        vmc.process_payment()
         assert vmc.state == "dispensing"
         assert vmc._dispense_timeout_task is not None
 
@@ -2818,8 +2798,8 @@ class TestRunTestSale:
 
         task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
         await asyncio.sleep(0)
-        vmc._process_payment()
-        await vmc._handle_mqtt_dispenser(
+        vmc.process_payment()
+        await vmc.on_dispenser_event(
             "hardware/dispenser", {"slot": 0, "state": "complete"}
         )
         test_result = await asyncio.wait_for(task, timeout=5)
@@ -2833,11 +2813,11 @@ class TestRunTestSale:
         vmc.deposit_funds(1.00, payment_method="cash_coin")
         vmc.deposit_funds(1.50, payment_method="card")
         vmc.select_product(1)  # WATER-1, price 1.00
-        vmc._process_payment()
+        vmc.process_payment()
         assert vmc.state == "dispensing"
         assert vmc.pending_sale_shares == {"cash_coin": 1.00}
 
-        await vmc._handle_mqtt_dispenser(
+        await vmc.on_dispenser_event(
             "hardware/dispenser", {"slot": 1, "state": "complete"}
         )
 
@@ -2863,7 +2843,7 @@ class TestRunTestSale:
 
         task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
         await asyncio.sleep(0)
-        vmc._process_payment()
+        vmc.process_payment()
         assert vmc.state == "dispensing"
 
         # dispense_product's dispatch is fire-and-forget (see
@@ -2883,7 +2863,7 @@ class TestRunTestSale:
         assert len(dispense_calls) == 1
         assert dispense_calls[0]["slot"] == 0  # ICE-1's slot
 
-        await vmc._handle_mqtt_dispenser(
+        await vmc.on_dispenser_event(
             "hardware/dispenser", {"slot": 0, "state": "complete"}
         )
         result = await asyncio.wait_for(task, timeout=5)
@@ -2928,7 +2908,7 @@ class TestRunTestSale:
 
         task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
         await asyncio.sleep(0)
-        vmc._process_payment()  # persists the 'dispensing' snapshot
+        vmc.process_payment()  # persists the 'dispensing' snapshot
         assert vmc.state == "dispensing"
         await vmc.drain_persistence()  # the save is fire-and-forget -- wait for it
 
@@ -2990,7 +2970,7 @@ class TestRunTestSale:
                 is_test=True,
             )
         )
-        vmc._raise_fault(FaultCode.PAY_104, outcome="test, forced directly")
+        vmc.raise_fault(FaultCode.PAY_104, outcome="test, forced directly")
 
         # Positive control: the fault really is active before asserting
         # what the accessor does about it.
@@ -3024,7 +3004,7 @@ class TestRunTestSale:
         vmc.deposit_funds(2.00, payment_method="cash_bill")
         vmc.deposit_funds(0.50, payment_method="card")
 
-        vmc._process_payment()
+        vmc.process_payment()
         assert vmc.state == "dispensing"
         await vmc.drain_persistence()
 
@@ -3079,8 +3059,8 @@ class TestRunTestSaleRunContext:
             vmc.run_test_sale("ICE-1", user_id="user-1", user_name="Ada Owner")
         )
         await asyncio.sleep(0)
-        vmc._process_payment()
-        await vmc._handle_mqtt_dispenser(
+        vmc.process_payment()
+        await vmc.on_dispenser_event(
             "hardware/dispenser", {"slot": 0, "state": "complete"}
         )
         result = await asyncio.wait_for(task, timeout=5)
@@ -3109,7 +3089,7 @@ class TestRunTestSaleRunContext:
 
         task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
         await asyncio.sleep(0)
-        vmc._process_payment()
+        vmc.process_payment()
         vmc._dispense_timed_out()
         result = await asyncio.wait_for(task, timeout=5)
 
@@ -3130,8 +3110,8 @@ class TestRunTestSaleRunContext:
 
         task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
         await asyncio.sleep(0)
-        vmc._process_payment()
-        await vmc._handle_mqtt_dispenser(
+        vmc.process_payment()
+        await vmc.on_dispenser_event(
             "hardware/dispenser", {"slot": 0, "state": "complete"}
         )
         result = await asyncio.wait_for(task, timeout=5)
@@ -3180,8 +3160,8 @@ class TestRunTestSaleRunContext:
             vmc.run_test_sale("ICE-1", user_id="user-1", user_name="Ada")
         )
         await asyncio.sleep(0)
-        vmc._process_payment()
-        await vmc._handle_mqtt_dispenser(
+        vmc.process_payment()
+        await vmc.on_dispenser_event(
             "hardware/dispenser", {"slot": 0, "state": "complete"}
         )
         result = await asyncio.wait_for(task, timeout=5)
@@ -3297,9 +3277,9 @@ class TestTestSaleAvailabilityExemption:
         assert vmc.selected_product is not None
         assert vmc.selected_product.sku == "ICE-1"
 
-        vmc._process_payment()
+        vmc.process_payment()
         assert vmc.state == "dispensing"
-        await vmc._handle_mqtt_dispenser(
+        await vmc.on_dispenser_event(
             "hardware/dispenser", {"slot": 0, "state": "complete"}
         )
         result = await asyncio.wait_for(task, timeout=5)
@@ -3310,7 +3290,7 @@ class TestTestSaleAvailabilityExemption:
         """Requirement 3: a genuinely unsafe fault alongside the lease must
         still refuse a test sale -- proves the exemption is scoped to
         SVC-102 alone, not to "any fault active during a lease". Reaches
-        VMC._raise_fault(WTR_104) -> Availability.set_active_faults (both
+        VMC.raise_fault(WTR_104) -> Availability.set_active_faults (both
         SVC-102 and WTR-104 now in the row's blocking set) ->
         run_test_sale -> select_product -> test_sale_sellable, whose
         `ignore_faults - active_blocking_codes` is still non-empty, so the
@@ -3319,7 +3299,7 @@ class TestTestSaleAvailabilityExemption:
         vmc, rec, client, avail = _test_run_vmc_with_availability()
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
-        vmc._raise_fault(FaultCode.WTR_104, outcome="leak")
+        vmc.raise_fault(FaultCode.WTR_104, outcome="leak")
         await asyncio.sleep(0)
         assert avail.payment_enabled is False
         assert set(avail.payment_blocking_reasons()) == {"no_critical_fault"}
@@ -3355,8 +3335,8 @@ class TestTestSaleAvailabilityExemption:
         await asyncio.sleep(0)
         assert avail.payment_enabled is False  # still inhibited mid-run
 
-        vmc._process_payment()
-        await vmc._handle_mqtt_dispenser(
+        vmc.process_payment()
+        await vmc.on_dispenser_event(
             "hardware/dispenser", {"slot": 0, "state": "complete"}
         )
         await asyncio.wait_for(task, timeout=5)
@@ -3471,9 +3451,9 @@ class TestConcurrentTestSaleGuard:
         assert vmc.selected_product.sku == "ICE-1"
         assert vmc.maintenance_hold.runs_in_flight == 1
 
-        vmc._process_payment()
+        vmc.process_payment()
         assert vmc.state == "dispensing"
-        await vmc._handle_mqtt_dispenser(
+        await vmc.on_dispenser_event(
             "hardware/dispenser", {"slot": 0, "state": "complete"}
         )
         result = await asyncio.wait_for(task1, timeout=5)
@@ -3559,9 +3539,9 @@ class TestConcurrentTestSaleGuard:
         task2 = asyncio.get_running_loop().create_task(vmc.run_test_sale("WATER-1"))
         await asyncio.sleep(0)
         assert vmc.state == "interacting_with_user"
-        vmc._process_payment()
+        vmc.process_payment()
         assert vmc.state == "dispensing"
-        await vmc._handle_mqtt_dispenser(
+        await vmc.on_dispenser_event(
             "hardware/dispenser", {"slot": 1, "state": "complete"}
         )
         result = await asyncio.wait_for(task2, timeout=5)

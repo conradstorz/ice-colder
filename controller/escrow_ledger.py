@@ -69,7 +69,7 @@ class EscrowLedger:
         here.
 
         This method does NOT subtract `price` from `total` -- the caller
-        does that itself (see `VMC._process_payment`), mirroring the split
+        does that itself (see `VMC.process_payment`), mirroring the split
         that existed before this extraction.
 
         Divergence guard: `credits` is supposed to sum to `total` at all

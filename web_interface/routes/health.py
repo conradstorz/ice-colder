@@ -630,7 +630,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
                     "record_sale itself -- leaving PAY-104 active so the "
                     "operator can retry"
                 )
-                vmc.raise_data_fault(
+                vmc.raise_fault(
                     FaultCode.DATA_101,
                     outcome=f"sku={pending['sku']} price=${pending['price']:.2f}",
                 )
@@ -661,7 +661,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
                 # retrying here is safe too (the idempotent insert above
                 # is what guarantees that now, not this fault or the
                 # in-memory guard).
-                vmc.raise_data_fault(
+                vmc.raise_fault(
                     FaultCode.DATA_101,
                     outcome=(
                         f"sku={pending['sku']} price=${pending['price']:.2f}; "
