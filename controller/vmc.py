@@ -328,8 +328,8 @@ class VMC:
         # directly rather than a VMC-private alias, and mutate only through
         # `raise_fault`/`clear_fault`, never the registry directly. The
         # `lease_holder`/`lacks_valid_profile` closures read `self._lease`/
-        # `self._gate` at call time, never at construction -- both are
-        # built after this point.
+        # `self._gate` at call time, never at construction (`self._gate` is
+        # built after this point; nothing invokes either during __init__).
         self._registry = FaultRegistry(self._product_name)
         self._faults = FaultService(
             registry=self._registry,
