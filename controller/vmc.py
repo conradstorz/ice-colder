@@ -8,9 +8,7 @@ from transitions import Machine
 from loguru import logger
 from services.payment_gateway_manager import PaymentGatewayManager
 from services.mqtt_messages import (
-    VMCStatus,
     PaymentEvent,
-    PaymentEnableCommand,
     ButtonPress,
     DispenseCommand,
     VMCAlert,
@@ -18,7 +16,6 @@ from services.mqtt_messages import (
 from contracts.vending_machine import (
     DispenserOutcome,
     FaultCode,
-    PaymentRefundCommand,
     PaymentRefundResult,
     SubsystemCapabilities,
     fault_for_outcome,
@@ -35,6 +32,7 @@ from services.dispensers import DispenserProfiles
 from services.dispenser_schema import SlotProfile
 from controller.fault_registry import FaultRegistry
 from controller.escrow_ledger import EscrowLedger
+from controller.outputs import StatusOutputs
 from controller.refund_protocol import PendingRefund, RefundProtocol
 from controller.sale_context import SaleContext
 from controller.session_recovery import SessionRecovery
@@ -236,10 +234,6 @@ class VMC:
         self.last_insufficient_message = ""
         self.last_payment_method = "Simulated Payment"
 
-        self.update_callback = None
-        self.message_callback = None
-        self.qrcode_callback = None
-
         # Event-loop task plumbing (controller/task_runner.py): fire-and-
         # forget tasks, delayed callbacks, and the persistent-task set
         # drained (not cancelled) at shutdown. Exposed read-only as
@@ -256,20 +250,40 @@ class VMC:
         self._tasks = tasks if tasks is not None else TaskRunner()
         self._dispense_timeout_task: asyncio.Task | None = None
         self._session_timeout_task: asyncio.Task | None = None
-        self._mqtt_client = None  # Set via set_mqtt_client()
         self._health_monitor: HealthMonitor | None = (
             None  # Set via set_health_monitor()
-        )
-        self._display_controller: DisplayController | None = (
-            None  # Set via set_display_controller()
         )
         self._inventory: InventoryManager | None = (
             None  # Set via set_inventory_manager()
         )
         self._event_recorder = None  # Set via set_event_recorder()
         self._availability: Availability | None = None  # Set via set_availability()
-        self._session_store: SessionStore | None = None  # Set via set_session_store()
         self._command_dispatcher = None  # Set via set_command_dispatcher()
+        # Outbound side effects -- MQTT publishes, session persistence, the
+        # customer display, and the dashboard's UI-refresh/message/QR
+        # callbacks (controller/outputs.py's StatusOutputs) -- the FSM's
+        # only outbound channel, and the first piece carved off the VMC
+        # god object (vmc-reduction plan, Task 1/2). Built here, before
+        # the lease and refund protocol below, because RefundProtocol's
+        # `publish` is a bound method captured at construction time (not
+        # a lambda) and must already resolve to something real.
+        # `pay104_active` reads `self._faults` at call time only -- never
+        # during __init__ -- so this can be (and must be) built before
+        # `self._faults` exists further below. Exposed read-only as
+        # `self.outputs` (VMC public surface design, section 3); tests
+        # read `vmc.outputs.mqtt`/`.health`/etc. directly rather than a
+        # VMC-private alias. `mqtt_client`/`session_store`/
+        # `display_controller` stay as their own VMC properties for now,
+        # returning the matching outputs sink (Task 6 moves them to a
+        # composition root).
+        self._outputs = StatusOutputs(
+            snapshot=self._snapshot,
+            fsm_state=lambda: self.state,
+            credit_escrow=lambda: self.credit_escrow,
+            selected_product=lambda: self.selected_product,
+            pay104_active=lambda: self._faults.has(FaultCode.PAY_104),
+            tasks=self._tasks,
+        )
         # Maintenance lease lifecycle (system-tests design §2.2/§2.2a):
         # the hold itself, its idle timer, and the standby session-liveness
         # sweep (controller/maintenance_lease.py). Deliberately not part of
@@ -335,7 +349,7 @@ class VMC:
         # at call time, never snapshotted here -- see RefundProtocol's
         # docstring.
         self._refunds = RefundProtocol(
-            publish=self._publish_refund_command,
+            publish=self._outputs.publish_refund,
             schedule=self._schedule,
             on_confirmed=self._refund_confirmed,
             on_failed=self._refund_failed,
@@ -345,10 +359,11 @@ class VMC:
         # PAY-104 session recovery: the boot-time decision over a loaded
         # snapshot plus the read-only recovery accessor and its
         # record-once guards (controller/session_recovery.py). `store` is
-        # read at call time (`self._session_store` is attached later by
-        # `set_session_store`), never snapshotted here.
+        # read at call time (the session store is attached to
+        # `self._outputs` later by `set_session_store`), never
+        # snapshotted here.
         self._recovery = SessionRecovery(
-            store=lambda: self._session_store,
+            store=lambda: self._outputs.session_store,
             product_name=self._product_name,
             pay104_active=lambda: self._faults.has(FaultCode.PAY_104),
         )
@@ -369,7 +384,6 @@ class VMC:
             on_bin_half_full=self._clear_ice101_lockouts,
             on_capabilities_validated=self._on_vending_capabilities_validated,
         )
-        self._start_time = time.monotonic()
         # Public (no leading underscore) so a test can read/override them
         # directly (VMC public surface design, section 2) rather than
         # reaching into a private attribute -- e.g.
@@ -396,7 +410,6 @@ class VMC:
         self.payment_gateway_manager = PaymentGatewayManager(
             config=self.config_model.payment.model_dump()
         )
-        self.virtual_payment_index = 0
 
         logger.debug("VMC initialization complete.")
 
@@ -427,9 +440,18 @@ class VMC:
         (`attach_to_loop`, `cancel_pending_tasks`, `drain_persistence`)."""
         return self._tasks
 
+    @property
+    def outputs(self) -> StatusOutputs:
+        """Read-only view of the FSM's outbound channel (VMC public
+        surface design, section 3; vmc-reduction plan, Task 2).
+        `vmc.outputs.mqtt`/`.health`/`.availability`/`.session_store`/
+        `.display_controller` are read directly; mutation only ever
+        happens through a VMC `set_*` method."""
+        return self._outputs
+
     def set_mqtt_client(self, client):
         """Attach an MQTTClient instance for publishing status and receiving events."""
-        self._mqtt_client = client
+        self._outputs.attach_mqtt(client)
         # Register handlers for inbound ESP32 messages. SUBSCRIPTIONS
         # (controller/mqtt_inbound.py) is the single source of truth for
         # which topics map to which VMC method, in the exact order the
@@ -441,27 +463,18 @@ class VMC:
     def set_health_monitor(self, monitor: HealthMonitor):
         """Attach a HealthMonitor; its liveness transitions become COM/PAY faults."""
         self._health_monitor = monitor
+        self._outputs.attach_health(monitor)
         monitor.set_liveness_callback(self._on_subsystem_liveness)
         logger.debug("VMC attached health monitor.")
 
     def set_availability(self, availability: Availability):
         """Attach the permissive table; it publishes cmd/payment/enable through us."""
         self._availability = availability
+        self._outputs.attach_availability(availability)
         availability.set_fsm_state(self.state)
         availability.set_active_faults(self.active_faults())
-        availability.set_publisher(self.publish_payment_enable)
+        availability.set_publisher(self._outputs.publish_payment_enable)
         logger.debug("VMC attached availability.")
-
-    def publish_payment_enable(self, accept: bool) -> None:
-        """Sync publisher handed to Availability (fire-and-forget on the loop)."""
-        if self._mqtt_client is None:
-            logger.warning("No MQTT client; payment/enable not sent")
-            return
-        self._fire_and_forget(
-            self._mqtt_client.publish(
-                "cmd/payment/enable", PaymentEnableCommand(accept=accept)
-            )
-        )
 
     def _on_subsystem_liveness(self, subsystem: str, alive: bool) -> None:
         code = _LIVENESS_FAULTS.get(subsystem)
@@ -483,13 +496,13 @@ class VMC:
             self.clear_fault(FaultCode.COM_103.value, by="auto")
             if self._availability:
                 self._availability.republish()
-            self._publish_status()
+            self._outputs.state_changed(self.state)
         else:
             self.raise_fault(FaultCode.COM_103, outcome="disconnected")
 
     def set_display_controller(self, controller: DisplayController):
         """Attach a DisplayController so FSM state changes update the customer display."""
-        self._display_controller = controller
+        self._outputs.attach_display(controller)
         logger.debug("VMC attached display controller.")
 
     def set_inventory_manager(self, inventory: InventoryManager):
@@ -508,7 +521,7 @@ class VMC:
         Call after attach_to_loop, set_health_monitor and set_availability so
         the PAY-104 alert and the availability gate both land.
         """
-        self._session_store = store
+        self._outputs.attach_session_store(store)
         decision = self._recovery.evaluate_at_boot()
         if decision.kind == "discard_test":
             logger.warning(
@@ -560,11 +573,11 @@ class VMC:
 
     @property
     def session_store(self) -> SessionStore | None:
-        return self._session_store
+        return self._outputs.session_store
 
     @property
     def mqtt_client(self):
-        return self._mqtt_client
+        return self._outputs.mqtt
 
     @property
     def command_dispatcher(self):
@@ -584,7 +597,7 @@ class VMC:
 
     @property
     def display_controller(self) -> DisplayController | None:
-        return self._display_controller
+        return self._outputs.display_controller
 
     @property
     def recovery(self) -> SessionRecovery:
@@ -654,7 +667,7 @@ class VMC:
             if self.pending_sale_shares is not None
             else None,
             # self._sale is already None by the time a failed-vend's own
-            # _publish_status() snapshot is taken (on_vend_failed fully
+            # state_changed() snapshot is taken (on_vend_failed fully
             # clears it before _fail_vend gets to that point) -- fall back
             # to the re-entrancy guard, which strictly contains the whole
             # run_test_sale call, so a test sale's "no sellable products
@@ -668,52 +681,6 @@ class VMC:
                 else self._test_sale_in_progress
             ),
         )
-
-    def _persist_session(self, state: str | None = None) -> None:
-        """Save the live session, or remove the file once nothing is in flight."""
-        if self._session_store is None:
-            return
-        if FaultCode.PAY_104 in self._faults.machine_faults:
-            return  # keep the evidence file untouched until the operator clears it
-        snap = self._snapshot(state)
-        if snap.is_open():
-            self._fire_and_forget(self._session_store.save_async(snap), persistent=True)
-        else:
-            self._fire_and_forget(self._session_store.clear_async(), persistent=True)
-
-    def _update_display(self, target_state: str | None = None):
-        """Update the customer-facing display based on the target FSM state.
-
-        Pass *target_state* explicitly from ``before`` callbacks (the
-        ``transitions`` library runs ``before`` hooks while ``self.state``
-        still holds the *source* state).
-        """
-        if self._display_controller:
-            self._display_controller.update_for_state(target_state or self.state)
-
-    def _publish_status(self):
-        """Publish current VMC status to MQTT (fire-and-forget).
-
-        State updates to the health monitor and availability happen
-        regardless of whether an MQTT client is attached; only the MQTT
-        publish itself needs one.
-        """
-        if self._health_monitor:
-            self._health_monitor.update_vmc_state(self.state)
-        if self._availability:
-            self._availability.set_fsm_state(self.state)
-        self._persist_session()
-        if self._mqtt_client is None or self._tasks.loop is None:
-            return
-        status = VMCStatus(
-            state=self.state,
-            credit_escrow=self.credit_escrow,
-            selected_product=self.selected_product.name
-            if self.selected_product
-            else None,
-            uptime_seconds=int(time.monotonic() - self._start_time),
-        )
-        self._fire_and_forget(self._mqtt_client.publish("status", status, retain=True))
 
     # --- Fault registry ---
     #
@@ -879,18 +846,14 @@ class VMC:
                     product_sku=sku,
                 )
             )
-        if self._mqtt_client:
-            self._fire_and_forget(
-                self._mqtt_client.publish(
-                    "alerts",
-                    VMCAlert(
-                        level=raised.level,
-                        message=raised.message,
-                        code=code,
-                        product_sku=sku,
-                    ),
-                )
+        self._outputs.publish_alert(
+            VMCAlert(
+                level=raised.level,
+                message=raised.message,
+                code=code,
+                product_sku=sku,
             )
+        )
         self._push_active_faults()
 
     def clear_fault(self, key: str, by: str = "admin") -> bool:
@@ -941,8 +904,8 @@ class VMC:
                     f"still held by {self._lease.hold.holder_user_id}"
                 )
                 return False
-            if code is FaultCode.PAY_104 and self._session_store:
-                if not self._session_store.clear():
+            if code is FaultCode.PAY_104:
+                if not self._outputs.clear_session_evidence():
                     logger.error(
                         f"Fault {code.value}: could not remove session evidence file; "
                         "leaving fault in place."
@@ -956,7 +919,7 @@ class VMC:
                 self._health_monitor.clear_alert(f"{code.value}:machine")
             logger.info(f"Machine fault {code.value} cleared ({by})")
         self._push_active_faults()
-        self._publish_status()
+        self._outputs.state_changed(self.state)
         return True
 
     def pending_sale_for_recovery(self) -> dict | None:
@@ -1337,7 +1300,7 @@ class VMC:
 
     @logger.catch()
     def set_qrcode_callback(self, callback):
-        self.qrcode_callback = callback
+        self._outputs.set_qrcode_callback(callback)
 
     @logger.catch()
     def has_credit(self):
@@ -1346,27 +1309,16 @@ class VMC:
 
     @logger.catch()
     def set_update_callback(self, callback):
-        self.update_callback = callback
+        self._outputs.set_update_callback(callback)
 
     @logger.catch()
     def set_message_callback(self, callback):
-        self.message_callback = callback
+        self._outputs.set_message_callback(callback)
 
     @logger.catch()
     def send_customer_message(self, message):
         """Send a message to the customer via the registered callback."""
-        logger.debug(f"Sending customer message: '{message}'")
-        self._display_message(message)
-
-    @logger.catch()
-    def _refresh_ui(self):
-        if self.update_callback:
-            self.update_callback(self.state, self.selected_product, self.credit_escrow)
-
-    @logger.catch()
-    def _display_message(self, message):
-        if self.message_callback:
-            self.message_callback(message)
+        self._outputs.message(message)
 
     # --- FSM Callback Methods ---
     def _after_state_change(self, *args, **kwargs):
@@ -1377,7 +1329,7 @@ class VMC:
         ``vend_failed(code=..., outcome=...)``) to every callback list,
         including ``after_state_change``.
         """
-        self._publish_status()
+        self._outputs.state_changed(self.state)
         if self._test_sale_path is not None:
             self._test_sale_path.append(self.state)
 
@@ -1387,8 +1339,8 @@ class VMC:
             f"{STATE_CHANGE_PREFIX} Transitioning to interacting_with_user for product: {self.selected_product}"
         )
         self._reset_session_timeout()
-        self._update_display("interacting_with_user")
-        self._refresh_ui()
+        self._outputs.display("interacting_with_user")
+        self._outputs.refresh()
         self.send_customer_message(
             "Interaction started. Please insert funds or select a product."
         )
@@ -1405,8 +1357,8 @@ class VMC:
         self._sale_seq += 1
         seq = self._sale_seq
         self._cancel_session_timeout()
-        self._update_display("dispensing")
-        self._refresh_ui()
+        self._outputs.display("dispensing")
+        self._outputs.refresh()
         self.send_customer_message(
             "Processing your payment and dispensing your product..."
         )
@@ -1461,7 +1413,7 @@ class VMC:
             self._sale = self._sale.with_(
                 mechanism=profile.mechanism, request_id=request_id, seq=seq
             )
-            snap = self._snapshot("dispensing") if self._session_store else None
+            snap = self._snapshot("dispensing") if self._outputs.session_store else None
             self._fire_and_forget(
                 self._persist_then_dispense(snap, cmd, seq, request_id),
                 persistent=True,
@@ -1557,9 +1509,7 @@ class VMC:
         instead, exactly like a `CommandTimeout` does.
         """
         try:
-            if snap is not None and self._session_store is not None:
-                if FaultCode.PAY_104 not in self._faults.machine_faults:
-                    await self._session_store.save_async(snap)
+            await self._outputs.save_snapshot_async(snap)
         except Exception as exc:
             # Review finding M5: a snapshot-save failure gets its own
             # outcome string, distinct from a dispatch failure's "no_ack" --
@@ -1633,8 +1583,8 @@ class VMC:
         # completed sale — a customer with remaining credit picks a fresh product via
         # select_product(), which overwrites it unconditionally.
         self.selected_product = None
-        self._update_display(dest)
-        self._refresh_ui()
+        self._outputs.display(dest)
+        self._outputs.refresh()
         if self.credit_escrow > 0:
             self.send_customer_message(
                 "Transaction complete. You have remaining credit. Please select another product if desired."
@@ -1659,8 +1609,8 @@ class VMC:
         # nothing left to clear separately afterward.
         self.selected_product = None
         self.last_insufficient_message = ""
-        self._update_display("idle")
-        self._refresh_ui()
+        self._outputs.display("idle")
+        self._outputs.refresh()
 
     @logger.catch()
     def on_cancel_sale(self):
@@ -1683,8 +1633,8 @@ class VMC:
         self.request_refund(reason="cancel")
         self.selected_product = None
         self.last_insufficient_message = ""
-        self._update_display("idle")
-        self._refresh_ui()
+        self._outputs.display("idle")
+        self._outputs.refresh()
         self.send_customer_message(
             "Sorry, the selected product is no longer available. Please make a new selection."
         )
@@ -1801,14 +1751,14 @@ class VMC:
                 self.request_refund(reason=code.value)
             self._cancel_session_timeout()
             self.machine.set_state("idle")
-            self._publish_status()
-            self._update_display("idle")
+            self._outputs.state_changed(self.state)
+            self._outputs.display("idle")
         else:
             self.send_customer_message("Please choose another product.")
             self._reset_session_timeout()
-            self._publish_status()
-            self._update_display("interacting_with_user")
-        self._refresh_ui()
+            self._outputs.state_changed(self.state)
+            self._outputs.display("interacting_with_user")
+        self._outputs.refresh()
 
     @logger.catch()
     def _dispense_timed_out(self):
@@ -1860,8 +1810,8 @@ class VMC:
         had_credit = self.credit_escrow > 0
         if had_credit:
             self.request_refund(reason="error")
-        self._update_display("error")
-        self._refresh_ui()
+        self._outputs.display("error")
+        self._outputs.refresh()
         if had_credit:
             self.send_customer_message(
                 "An error has occurred. A refund of your credit has been requested. "
@@ -1933,8 +1883,8 @@ class VMC:
         # as a normal entry point. Without arming here, escrow taken while
         # idle would never be refunded: see _expire_session's idle branch.
         self._reset_session_timeout()
-        self._publish_status()
-        self._refresh_ui()
+        self._outputs.state_changed(self.state)
+        self._outputs.refresh()
         self.send_customer_message(
             f"${amount:.2f} deposited. Current balance: ${self.credit_escrow:.2f}."
         )
@@ -1970,16 +1920,7 @@ class VMC:
             f"Refund of ${amount:.2f} requested via {self.last_payment_method}. "
             "Please wait..."
         )
-        self._refresh_ui()
-
-    def _publish_refund_command(self, cmd: PaymentRefundCommand) -> None:
-        """Publish closure handed to RefundProtocol. Reads `_mqtt_client` at
-        call time, not construction time -- it is still None when the VMC
-        is built and only set later by `set_mqtt_client`."""
-        if self._mqtt_client is not None:
-            self._fire_and_forget(self._mqtt_client.publish("cmd/payment/refund", cmd))
-        else:
-            logger.warning("No MQTT client; refund command not sent")
+        self._outputs.refresh()
 
     async def on_refund_ack(self, topic: str, data: dict):
         """Payment gateway acknowledged (or refused) a refund command."""
@@ -1987,7 +1928,7 @@ class VMC:
         self._refunds.handle_ack(result)
 
     def _refund_confirmed(self, pending: PendingRefund, amount_returned: float) -> None:
-        self._persist_session()
+        self._outputs.persist()
         txn_log.info(
             f"REFUND CONFIRMED: ${amount_returned:.2f} request_id={pending.request_id}"
         )
@@ -2002,7 +1943,7 @@ class VMC:
         )
 
     def _refund_failed(self, pending: PendingRefund, detail: str) -> None:
-        self._persist_session()
+        self._outputs.persist()
         txn_log.error(
             f"REFUND FAILED: ${pending.amount:.2f} request_id={pending.request_id} "
             f"reason={pending.reason} detail={detail}"
@@ -2467,31 +2408,19 @@ class VMC:
         Initiates a virtual payment by generating a payment URL and corresponding QR code.
         Cycles through available virtual payment gateways.
         """
-        gateways = list(self.payment_gateway_manager.gateways.keys())
-        logger.debug(f"Available virtual payment gateways: {gateways}")
-        if not gateways:
-            logger.error("No virtual payment gateways configured.")
+        prompt = self.payment_gateway_manager.next_payment_prompt(amount)
+        if prompt is None:
             self.send_customer_message("Virtual payment is currently unavailable.")
             return
 
-        current_gateway = gateways[self.virtual_payment_index]
+        current_gateway, qr_image = prompt
         logger.info(
             f"Initiating virtual payment via {current_gateway} for amount ${amount:.2f}"
         )
-        payment_url = self.payment_gateway_manager.gateways[
-            current_gateway
-        ].generate_payment_url(amount)
-        logger.debug(f"Generated payment URL: {payment_url}")
-
-        qr_image = self.payment_gateway_manager.generate_qr_code(
-            current_gateway, amount
-        )
-        if self.qrcode_callback:
-            self.qrcode_callback(qr_image)
+        self._outputs.show_qr(qr_image)
         self.send_customer_message(
             f"Virtual Payment Option ({current_gateway}): Scan the QR code above."
         )
-        self.virtual_payment_index = (self.virtual_payment_index + 1) % len(gateways)
 
     @logger.catch()
     def select_product(self, product_index):
@@ -2570,7 +2499,7 @@ class VMC:
         elif self.state == "interacting_with_user":
             self.initiate_virtual_payment(self.selected_product.price)
             self._schedule(1.0, self.process_payment, label="process_payment")
-        self._refresh_ui()
+        self._outputs.refresh()
 
     @logger.catch()
     def _update_selection_message(self):
@@ -2621,8 +2550,8 @@ class VMC:
                 f"(shares: {self.pending_sale_shares})"
             )
             self.dispense_product()
-            self._persist_session("dispensing")
-            self._refresh_ui()
+            self._outputs.persist("dispensing")
+            self._outputs.refresh()
             # Dispenser hardware reports a terminal DispenserOutcome via MQTT; no
             # report within the timeout is a failed vend (PAY-102).
             self._dispense_timeout_task = self._schedule(
@@ -2706,8 +2635,8 @@ class VMC:
             self.request_refund(reason="session_timeout")
             self.selected_product = None
             self.last_insufficient_message = ""
-            self._publish_status()
-            self._refresh_ui()
+            self._outputs.state_changed(self.state)
+            self._outputs.refresh()
             return
         if self.state == "error":
             if self.credit_escrow <= 0:
@@ -2723,8 +2652,8 @@ class VMC:
             self.request_refund(reason="session_timeout")
             self.selected_product = None
             self.last_insufficient_message = ""
-            self._publish_status()
-            self._refresh_ui()
+            self._outputs.state_changed(self.state)
+            self._outputs.refresh()
             return
         if self.state != "interacting_with_user":
             return
@@ -2735,9 +2664,9 @@ class VMC:
         self.last_insufficient_message = ""
         # Manually transition back to idle (reset_state only works from error)
         self.machine.set_state("idle")
-        self._publish_status()
-        self._update_display("idle")
-        self._refresh_ui()
+        self._outputs.state_changed(self.state)
+        self._outputs.display("idle")
+        self._outputs.refresh()
 
     def _cancel_dispense_timeout(self):
         """Cancel the dispense fallback timeout if it is still pending."""
@@ -2770,5 +2699,5 @@ class VMC:
                     f"Inventory for {self.selected_product.name} updated: {self._inventory.get_count(sku)} remaining."
                 )
         self.complete_transaction()
-        self._persist_session()
-        self._refresh_ui()
+        self._outputs.persist()
+        self._outputs.refresh()
