@@ -209,19 +209,25 @@ class StatusOutputs:
         if self._display:
             self._display.update_for_state(state)
 
+    @logger.catch()
     def message(self, text: str) -> None:
         """Send a message to the customer via the registered callback --
         mirrors ``VMC.send_customer_message`` exactly, including its log
-        level and wording."""
+        level and wording. ``@logger.catch()`` restores the original's
+        swallow semantics: an exception raised by the registered callback
+        is logged and does not propagate out of this call."""
         logger.debug(f"Sending customer message: '{text}'")
         if self.message_callback:
             self.message_callback(text)
 
+    @logger.catch()
     def refresh(self) -> None:
         """Tell the dashboard's registered callback to refresh, passing
         the live FSM state, selected product, and credit escrow --
         mirrors ``VMC._refresh_ui`` exactly, including its three-argument
-        call."""
+        call. ``@logger.catch()`` restores the original's swallow
+        semantics: an exception raised by the registered callback is
+        logged and does not propagate out of this call."""
         if self.update_callback:
             self.update_callback(
                 self._fsm_state(), self._selected_product(), self._credit_escrow()

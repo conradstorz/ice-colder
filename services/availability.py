@@ -109,7 +109,7 @@ class Availability:
 
     Usage:
         avail = Availability()
-        avail.set_publisher(vmc.publish_payment_enable)   # sync callable(bool)
+        avail.set_publisher(outputs.publish_payment_enable)  # StatusOutputs publisher, sync callable(bool)
         avail.set_subsystem_alive("vending", True)         # ... from health monitor
         ok, failing = avail.product_sellable(product)
     """

@@ -635,8 +635,8 @@ class VMC:
         a genuine mid-dispense snapshot and persist it by hand (to boot a
         second VMC against it and simulate a crash) with no event loop
         attached anywhere in the test file -- the normal production path
-        (`_persist_then_dispense`/`_persist_session`) is fire-and-forget on
-        the attached loop and cannot run there. Pure and side-effect free
+        (`_persist_then_dispense`/`self._outputs.persist`) is fire-and-forget
+        on the attached loop and cannot run there. Pure and side-effect free
         (matches `get_status()`'s existing read-only convenience), so
         exposing it costs nothing: it only ever reads already-public state
         (`state`, `credit_escrow`, `selected_product`) plus collaborators
@@ -1026,9 +1026,10 @@ class VMC:
         does **not** clear ``pending_sale_shares`` and raises ``PAY-104``
         instead of ``DATA-101``. ``PAY-104`` is the fault
         ``pending_sale_for_recovery()`` already keys its Health › Faults
-        "record this sale" / "discard" recovery on, and ``_persist_session``
-        already refuses to touch the on-disk snapshot once ``PAY-104`` is
-        active — so the "dispensing" snapshot already written at deduction
+        "record this sale" / "discard" recovery on, and
+        ``self._outputs.persist`` already refuses to touch the on-disk
+        snapshot once ``PAY-104`` is active — so the "dispensing" snapshot
+        already written at deduction
         time (``process_payment``) survives untouched as the sale's only
         remaining record, in this same running process, with no reboot
         required. Reusing this existing recovery path (rather than
@@ -2414,9 +2415,6 @@ class VMC:
             return
 
         current_gateway, qr_image = prompt
-        logger.info(
-            f"Initiating virtual payment via {current_gateway} for amount ${amount:.2f}"
-        )
         self._outputs.show_qr(qr_image)
         self.send_customer_message(
             f"Virtual Payment Option ({current_gateway}): Scan the QR code above."

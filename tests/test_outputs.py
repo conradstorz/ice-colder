@@ -377,6 +377,30 @@ def test_refresh_passes_state_product_and_escrow():
     assert calls == [("interacting_with_user", product, 1.75)]
 
 
+def test_message_swallows_a_raising_callback():
+    """``@logger.catch()`` on ``message`` restores the original
+    ``VMC._display_message``'s swallow semantics: a raising callback is
+    logged, not propagated."""
+    outputs, _runner = make_outputs()
+    outputs.set_message_callback(
+        lambda text: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+
+    outputs.message("hello")  # must not raise
+
+
+def test_refresh_swallows_a_raising_callback():
+    """``@logger.catch()`` on ``refresh`` restores the original
+    ``VMC._refresh_ui``'s swallow semantics: a raising callback is
+    logged, not propagated."""
+    outputs, _runner = make_outputs()
+    outputs.set_update_callback(
+        lambda *args: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+
+    outputs.refresh()  # must not raise
+
+
 def test_show_qr_calls_callback_only_when_set():
     outputs, _runner = make_outputs()
     outputs.show_qr(object())  # no callback -> must not raise
