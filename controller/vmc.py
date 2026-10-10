@@ -32,13 +32,14 @@ from services.inventory_manager import InventoryManager
 from services.session_store import Credit, SessionSnapshot, SessionStore
 from services.event_recorder import SaleRecordingFailed
 from services.dispensers import DispenserProfiles
-from services.dispenser_schema import MECHANISM_FOR_KIND, SlotProfile
+from services.dispenser_schema import SlotProfile
 from controller.fault_registry import FaultRegistry
 from controller.escrow_ledger import EscrowLedger
 from controller.refund_protocol import PendingRefund, RefundProtocol
 from controller.session_recovery import SessionRecovery
 from controller.maintenance_lease import MaintenanceHold, MaintenanceLease
 from controller.task_runner import TaskRunner
+from controller.dispenser_gate import DispenserProfileGate
 from controller import mqtt_inbound
 
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
@@ -318,19 +319,25 @@ class VMC:
         # comments for why run_id uniqueness alone does not do this.
         self._test_sale_in_progress: bool = False
         self.subsystem_capabilities: dict[str, dict] = {}
-        # Dispenser profiles (plan: dispenser profiles, Task 2). Set via
-        # set_dispenser_profiles(); None means "not wired" -- every method
-        # below that reads it (reconcile_dispenser_profiles,
-        # dispenser_profile_for, the run_test_sale guard) is a no-op/None
-        # in that case, so a VMC built without profiles (every pre-plan-2
-        # test fixture) behaves exactly as before.
-        self._dispenser_profiles: DispenserProfiles | None = None
         # Fault registry: product-scope faults by SKU, machine-scope faults
         # by code (controller/fault_registry.py). `_lockouts`/
         # `_machine_faults` below are read-only properties aliasing the
         # registry's own dict objects, kept because many tests read and
         # write them directly.
         self._faults = FaultRegistry(self._product_name)
+        # Dispenser-profile gate: CFG-101/CFG-102 reconciliation against a
+        # loaded DispenserProfiles (controller/dispenser_gate.py), the
+        # seventh piece carved off the VMC god object. Set via
+        # set_dispenser_profiles(); `_dispenser_profiles` below is a
+        # read-only property aliasing `self._gate.profiles`, kept because
+        # 2 tests and run_test_sale read it directly.
+        self._gate = DispenserProfileGate(
+            products=lambda: self.config_model.products,
+            is_locked=self._faults.is_locked,
+            has_machine_fault=self._faults.has,
+            raise_fault=self._raise_fault,
+            clear_fault=lambda key, by: self.clear_fault(key, by=by),
+        )
         # Refund protocol: request -> ack -> one retry -> terminal state
         # machine (controller/refund_protocol.py). `_pending_refunds` below
         # is a read-only property aliasing the protocol's own dict, kept
@@ -541,97 +548,24 @@ class VMC:
         logger.debug("VMC attached command dispatcher.")
 
     def set_dispenser_profiles(self, profiles: DispenserProfiles) -> None:
-        """Attach the loaded `DispenserProfiles` (plan: dispenser
-        profiles, Task 2) and immediately reconcile CFG-101/CFG-102
-        against it, so a product with no valid profile is locked before
-        this VMC ever accepts a selection for it.
-        """
-        self._dispenser_profiles = profiles
-        logger.debug("VMC attached dispenser profiles.")
-        self.reconcile_dispenser_profiles()
+        """Attach the loaded `DispenserProfiles` -- delegates to
+        `self._gate.attach` (controller/dispenser_gate.py)."""
+        self._gate.attach(profiles)
 
     def dispenser_profile_for(self, product: Product) -> SlotProfile | None:
         """The one lookup every later task (dispense, Tests level, ...)
-        uses: the product's own valid `SlotProfile`, or `None` when no
-        profiles are wired, the product's `kind` has no mechanism (e.g.
-        `"other"`), no table exists for its slot, or that table's
-        `product_sku` doesn't match this product -- the same validity
-        check `reconcile_dispenser_profiles` locks products on, so the
-        two can never disagree.
-
-        Copilot review (PR #32) finding C1: also requires
-        `profile.mechanism == MECHANISM_FOR_KIND[product.kind]` -- a
-        profile left over at this slot from before a catalog edit changed
-        this product's `kind` (e.g. ice -> water) must not be treated as
-        valid just because the slot and sku still match.
-        """
-        if self._dispenser_profiles is None:
-            return None
-        expected_mechanism = MECHANISM_FOR_KIND.get(product.kind)
-        if expected_mechanism is None:
-            return None
-        profile = self._dispenser_profiles.profile_for_slot(product.slot)
-        if profile is None or profile.product_sku != product.sku:
-            return None
-        if profile.mechanism != expected_mechanism:
-            return None
-        return profile
+        uses -- delegates to `self._gate.profile_for`."""
+        return self._gate.profile_for(product)
 
     def reconcile_dispenser_profiles(self) -> None:
         """Re-derive every product's CFG-101 lockout, and the machine's
-        CFG-102 fault, from the currently loaded dispenser profiles.
-        No-op when no profiles object is set.
-
-        Idempotent, and never touches a lockout held by a different code:
-        a sku already in `self._lockouts` (for any reason) is left alone
-        here -- CFG-101 is raised only for a sku not locked at all, and
-        cleared only when the existing lockout is CFG-101 itself. See the
-        plan's resolution (3).
-        """
-        profiles = self._dispenser_profiles
-        if profiles is None:
-            return
-
-        for product in self.config_model.products:
-            sku = product.sku
-            valid = self.dispenser_profile_for(product) is not None
-            if not valid:
-                if self._faults.is_locked(sku) is None:
-                    self._raise_fault(FaultCode.CFG_101, sku=sku)
-            elif self._faults.is_locked(sku) is FaultCode.CFG_101:
-                # clear_fault's own re-check (review fix, Task 2) re-raises
-                # CFG-101 immediately if dispenser_profile_for still finds
-                # no valid profile. Here `valid` is already True, so that
-                # re-check finds a profile too and is a no-op -- this call
-                # really does clear CFG-101 rather than bouncing it back.
-                self.clear_fault(sku, by="auto")
-
-        file_error = profiles.report.file_error
-        cfg102_active = self._faults.has(FaultCode.CFG_102)
-        if file_error and not cfg102_active:
-            self._raise_fault(FaultCode.CFG_102)
-        elif cfg102_active and not file_error:
-            self.clear_fault(FaultCode.CFG_102.value, by="auto")
+        CFG-102 fault -- delegates to `self._gate.reconcile`."""
+        self._gate.reconcile()
 
     def catalog_changed(self) -> None:
-        """Tell the VMC a product catalog mutation just landed (Copilot
-        review, PR #32, finding C1) -- call this from every products
-        route after a successful `save_config`, so a newly added product
-        or one whose `kind` changed is reconciled immediately rather than
-        staying sellable until the next unrelated reconcile (a profiles
-        reload or the vending capabilities hook).
-
-        Re-runs `DispenserProfiles.revalidate()` against the catalog's
-        new state first (so a kind change that now disagrees with its
-        slot's mechanism shows up as a validation error too), then
-        `reconcile_dispenser_profiles()`. No-op when no profiles object
-        is set.
-        """
-        profiles = self._dispenser_profiles
-        if profiles is None:
-            return
-        profiles.revalidate()
-        self.reconcile_dispenser_profiles()
+        """Tell the gate a product catalog mutation just landed --
+        delegates to `self._gate.catalog_changed`."""
+        self._gate.catalog_changed()
 
     def _flag_uncertain_session(self, snap: SessionSnapshot) -> None:
         detail = snap.error or (
@@ -777,6 +711,13 @@ class VMC:
         """Alias to the protocol's own dict; see `_lockouts` above."""
         return self._refunds.pending
 
+    @property
+    def _dispenser_profiles(self) -> DispenserProfiles | None:
+        """Alias to the gate's own `profiles` attribute, kept because 2
+        tests and `run_test_sale` read `vmc._dispenser_profiles` directly;
+        see `_lockouts` above."""
+        return self._gate.profiles
+
     def _product_name(self, sku: str | None) -> str | None:
         if sku is None:
             return None
@@ -869,16 +810,9 @@ class VMC:
             # dispenser_profile_for already found a valid profile, so this
             # re-check finds one too and does nothing. No recursion is
             # possible: _raise_fault never calls clear_fault.
-            profiles = self._dispenser_profiles
-            if profiles is not None:
-                product = next(
-                    (p for p in self.config_model.products if p.sku == sku), None
-                )
-                if product is not None and self.dispenser_profile_for(product) is None:
-                    logger.info(
-                        f"{sku} re-locked: no valid dispenser profile (CFG-101)"
-                    )
-                    self._raise_fault(FaultCode.CFG_101, sku=sku)
+            if self._gate.lacks_valid_profile(sku):
+                logger.info(f"{sku} re-locked: no valid dispenser profile (CFG-101)")
+                self._raise_fault(FaultCode.CFG_101, sku=sku)
         else:
             code = self._faults.parse_key(key)
             if code is None:
@@ -1244,9 +1178,7 @@ class VMC:
         never overwrite previously-good capabilities with something that
         would wrongly downgrade real slot errors back to warnings.
         """
-        if subsystem == "vending" and self._dispenser_profiles is not None:
-            self._dispenser_profiles.set_capabilities(caps)
-            self.reconcile_dispenser_profiles()
+        self._gate.on_vending_capabilities(subsystem, caps)
 
     async def _handle_mqtt_capabilities(self, topic: str, data: dict):
         """Store a subsystem's retained self-description and hand it to health."""
