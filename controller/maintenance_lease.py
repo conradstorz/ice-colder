@@ -230,7 +230,7 @@ class MaintenanceLease:
                 logger.warning(
                     "Standby lease granted with no session-liveness predicate "
                     "wired; falling back to the idle timer (see "
-                    "VMC.set_session_liveness)"
+                    "Machine.set_session_liveness)"
                 )
                 self._no_predicate_warned = True
             self.arm_idle_timer()

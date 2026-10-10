@@ -211,9 +211,9 @@ class TelemetryRouter:
 #: `on_dispenser_event`, `on_refund_ack`) and `"telemetry"` for the other
 #: nine, whose `method_name` is the `TelemetryRouter`'s own `handle_*` name
 #: rather than the VMC forward that used to wrap it (vmc-reduction plan,
-#: Task 5). `VMC.set_mqtt_client` and `Machine.set_mqtt_client`
-#: (controller/machine.py) both loop over this table, resolving each triple
-#: against `self`/`self.telemetry` or `self._telemetry` respectively.
+#: Task 5). `Machine.set_mqtt_client` (controller/machine.py) is the sole
+#: loop over this table, resolving each triple against the VMC or its
+#: `TelemetryRouter` depending on `owner`.
 SUBSCRIPTIONS: tuple[tuple[str, str, str], ...] = (
     ("payment/credit", "vmc", "on_payment_credit"),
     ("hardware/buttons", "vmc", "on_button_press"),

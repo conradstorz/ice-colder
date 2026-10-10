@@ -1528,15 +1528,17 @@ class VMC:
     # self._lease in __init__. What stays here is the FSM/escrow
     # preconditions (begin_maintenance/begin_standby), the refunds,
     # run_test_sale itself, and the SVC-102 raise/clear wired to the lease
-    # as on_granted/on_released callbacks. `lease` below is the VMC public
-    # surface design's read-only collaborator access (section 3); tests
-    # read `vmc.lease.hold`/`.idle_task`/`.sweep_task` directly and mutate
-    # only through a VMC method (`begin_maintenance`, `end_maintenance`,
+    # as on_granted/on_released callbacks. The lease itself is no longer a
+    # VMC property: the Machine composition root (controller/machine.py)
+    # owns it, and tests/routes read it as `machine.lease` and mutate only
+    # through a VMC method (`begin_maintenance`, `end_maintenance`,
     # `take_over_maintenance`, ...) or, where the test is deliberately
     # exercising the lease itself rather than bypassing the VMC, through a
-    # method on `vmc.lease` directly (e.g. `vmc.lease.release(...)`).
-    # `maintenance_hold` is kept as its own convenience property since
-    # routes (`web_interface/context.py`) read it by that name.
+    # method on `machine.lease` directly (e.g. `machine.lease.release(...)`).
+    # `maintenance_hold` stays here as the VMC's own convenience property
+    # since routes (`web_interface/context.py`) read it by that name — until
+    # the lease-preconditions task moves `begin_*`/`end_*`/`take_over_*`
+    # onto `MaintenanceLease` itself.
 
     @property
     def maintenance_hold(self) -> MaintenanceHold | None:

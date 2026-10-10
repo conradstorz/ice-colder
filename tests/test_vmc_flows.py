@@ -3153,8 +3153,8 @@ class TestRunTestSale:
 
         Production paths reached: VMC.process_payment (unmodified),
         VMC._snapshot (this fix's `is_test=self._sale.is_test`),
-        VMC.set_session_store (this fix's is_test boot branch), and
-        VMC.pending_sale_for_recovery (this fix's is_test guard).
+        Machine.set_session_store (this fix's is_test boot branch), and
+        Machine.pending_sale_for_recovery (this fix's is_test guard).
         """
         store_path = tmp_path / "session.json"
         machine, rec, client = _test_run_machine()
@@ -3212,8 +3212,8 @@ class TestRunTestSale:
         rationale describes: some future call site raises PAY-104 while a
         stale test-sale snapshot happens to still be on disk.
 
-        Production path reached: VMC.pending_sale_for_recovery (this
-        fix's is_test guard), independent of VMC.set_session_store.
+        Production path reached: Machine.pending_sale_for_recovery (this
+        fix's is_test guard), independent of Machine.set_session_store.
         """
         store_path = tmp_path / "session.json"
         machine, rec, client = _test_run_machine()
@@ -3254,9 +3254,9 @@ class TestRunTestSale:
 
         Production paths reached: VMC.deposit_funds, VMC.select_product,
         VMC.process_payment/_consume_credits_fifo (all unmodified),
-        VMC._snapshot (is_test=False for a real sale), VMC.set_session_store
+        VMC._snapshot (is_test=False for a real sale), Machine.set_session_store
         (the pre-existing is_open() branch, untouched by this fix), and
-        VMC.pending_sale_for_recovery (returns the pending sale as before).
+        Machine.pending_sale_for_recovery (returns the pending sale as before).
         """
         store_path = tmp_path / "session.json"
         machine, rec, client = _test_run_machine()

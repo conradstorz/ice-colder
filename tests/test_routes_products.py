@@ -540,7 +540,7 @@ class TestCatalogChangedCalled:
     """Copilot review (PR #32) finding C1: every mutating products route
     must tell the VMC a catalog save happened, so CFG-101 reconciliation
     runs for a newly added product or a product whose kind changed --
-    not just on VMC.set_dispenser_profiles() and the vending capabilities
+    not just on Machine.set_dispenser_profiles() and the vending capabilities
     hook, which is all that ran reconciliation before this fix."""
 
     def test_create_calls_catalog_changed_once_on_success_not_on_rejection(
