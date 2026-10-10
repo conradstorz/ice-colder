@@ -13,8 +13,7 @@ def vmc():
     v = VMC(config=cfg)
     yield v
     # Cancel any pending async tasks
-    for t in v.tasks.pending:
-        t.cancel()
+    v.cancel_pending_tasks()
 
 
 class TestInitialState:

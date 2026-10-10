@@ -154,8 +154,7 @@ def wired(tmp_path):
     yield cfg, vmc, inv, store
 
     routes.set_access_store(None)
-    for t in vmc.tasks.pending:
-        t.cancel()
+    vmc.cancel_pending_tasks()
     web_auth.backoff.reset()
     web_auth.backoff.set_trusted_proxies([])
 
