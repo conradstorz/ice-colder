@@ -78,7 +78,7 @@ def test_set_profiles_locks_products_without_profile(tmp_path):
 
     vmc.set_dispenser_profiles(profiles)
 
-    assert vmc._lockouts == {"W-1": FaultCode.CFG_101, "X": FaultCode.CFG_101}
+    assert vmc.faults.lockouts == {"W-1": FaultCode.CFG_101, "X": FaultCode.CFG_101}
 
 
 def test_reconcile_clears_cfg101_when_profile_appears(tmp_path):
@@ -89,7 +89,7 @@ def test_reconcile_clears_cfg101_when_profile_appears(tmp_path):
     )
     profiles.load()
     vmc.set_dispenser_profiles(profiles)
-    assert vmc._lockouts["W-1"] is FaultCode.CFG_101
+    assert vmc.faults.lockouts["W-1"] is FaultCode.CFG_101
 
     # Write the full file back and reconcile again.
     (tmp_path / "dispensers.toml").write_text(
@@ -100,22 +100,22 @@ def test_reconcile_clears_cfg101_when_profile_appears(tmp_path):
 
     vmc.reconcile_dispenser_profiles()
 
-    assert "W-1" not in vmc._lockouts
-    assert vmc._lockouts["X"] is FaultCode.CFG_101
+    assert "W-1" not in vmc.faults.lockouts
+    assert vmc.faults.lockouts["X"] is FaultCode.CFG_101
 
 
 def test_reconcile_never_clears_other_lockouts(tmp_path):
     vmc = make_vmc()
     profiles = profiles_for([ICE_1, WATER_1, OTHER_X], tmp_path)
     vmc.set_dispenser_profiles(profiles)
-    assert "ICE-1" not in vmc._lockouts  # ICE-1 has a valid profile
+    assert "ICE-1" not in vmc.faults.lockouts  # ICE-1 has a valid profile
 
     vmc.raise_fault(FaultCode.ICE_301, sku="ICE-1")
-    assert vmc._lockouts["ICE-1"] is FaultCode.ICE_301
+    assert vmc.faults.lockouts["ICE-1"] is FaultCode.ICE_301
 
     vmc.reconcile_dispenser_profiles()
 
-    assert vmc._lockouts["ICE-1"] is FaultCode.ICE_301
+    assert vmc.faults.lockouts["ICE-1"] is FaultCode.ICE_301
 
 
 def test_cfg102_follows_file_error(tmp_path):
@@ -145,7 +145,7 @@ def test_select_product_refuses_cfg101_locked(tmp_path):
     vmc = make_vmc()
     profiles = profiles_for([ICE_1, WATER_1, OTHER_X], tmp_path)
     vmc.set_dispenser_profiles(profiles)
-    assert vmc._lockouts["X"] is FaultCode.CFG_101
+    assert vmc.faults.lockouts["X"] is FaultCode.CFG_101
 
     messages = []
     vmc.set_message_callback(messages.append)
@@ -159,18 +159,18 @@ async def test_capabilities_hook_reruns_cross_checks(tmp_path):
     vmc = make_vmc()
     profiles = profiles_for([ICE_1, WATER_1, OTHER_X], tmp_path)
     vmc.set_dispenser_profiles(profiles)
-    assert "ICE-1" not in vmc._lockouts
+    assert "ICE-1" not in vmc.faults.lockouts
 
     incomplete = _incomplete_capabilities()
     await vmc.on_capabilities("capabilities/vending", incomplete.model_dump())
 
-    assert vmc._lockouts["ICE-1"] is FaultCode.CFG_101
-    assert "W-1" not in vmc._lockouts
+    assert vmc.faults.lockouts["ICE-1"] is FaultCode.CFG_101
+    assert "W-1" not in vmc.faults.lockouts
 
     complete = _complete_capabilities()
     await vmc.on_capabilities("capabilities/vending", complete.model_dump())
 
-    assert "ICE-1" not in vmc._lockouts
+    assert "ICE-1" not in vmc.faults.lockouts
 
 
 async def test_run_test_sale_refuses_without_profile(tmp_path):
@@ -200,14 +200,14 @@ def test_clearing_another_fault_relocks_profileless_product_with_cfg101(tmp_path
     # Lock W-1 with ICE-301 *before* profiles are attached, so reconcile
     # finds it already locked and leaves it alone (per its own docstring).
     vmc.raise_fault(FaultCode.ICE_301, sku="W-1")
-    assert vmc._lockouts["W-1"] is FaultCode.ICE_301
+    assert vmc.faults.lockouts["W-1"] is FaultCode.ICE_301
 
     vmc.set_dispenser_profiles(profiles)
-    assert vmc._lockouts["W-1"] is FaultCode.ICE_301
+    assert vmc.faults.lockouts["W-1"] is FaultCode.ICE_301
 
     assert vmc.clear_fault("W-1", by="admin") is True
 
-    assert vmc._lockouts["W-1"] is FaultCode.CFG_101
+    assert vmc.faults.lockouts["W-1"] is FaultCode.CFG_101
 
 
 def test_admin_clear_of_cfg101_is_reasserted_without_a_profile(tmp_path):
@@ -221,10 +221,10 @@ def test_admin_clear_of_cfg101_is_reasserted_without_a_profile(tmp_path):
     )
     profiles.load()
     vmc.set_dispenser_profiles(profiles)
-    assert vmc._lockouts["W-1"] is FaultCode.CFG_101
+    assert vmc.faults.lockouts["W-1"] is FaultCode.CFG_101
 
     assert vmc.clear_fault("W-1", by="admin") is True
-    assert vmc._lockouts["W-1"] is FaultCode.CFG_101
+    assert vmc.faults.lockouts["W-1"] is FaultCode.CFG_101
 
     # Now actually fix the file -- the real clear path.
     (tmp_path / "dispensers.toml").write_text(
@@ -235,7 +235,7 @@ def test_admin_clear_of_cfg101_is_reasserted_without_a_profile(tmp_path):
 
     vmc.reconcile_dispenser_profiles()
 
-    assert "W-1" not in vmc._lockouts
+    assert "W-1" not in vmc.faults.lockouts
 
 
 def test_clearing_a_fault_on_a_profiled_product_does_not_relock(tmp_path):
@@ -244,14 +244,14 @@ def test_clearing_a_fault_on_a_profiled_product_does_not_relock(tmp_path):
     vmc = make_vmc()
     profiles = profiles_for([ICE_1, WATER_1, OTHER_X], tmp_path)
     vmc.set_dispenser_profiles(profiles)
-    assert "ICE-1" not in vmc._lockouts
+    assert "ICE-1" not in vmc.faults.lockouts
 
     vmc.raise_fault(FaultCode.ICE_301, sku="ICE-1")
-    assert vmc._lockouts["ICE-1"] is FaultCode.ICE_301
+    assert vmc.faults.lockouts["ICE-1"] is FaultCode.ICE_301
 
     assert vmc.clear_fault("ICE-1", by="admin") is True
 
-    assert "ICE-1" not in vmc._lockouts
+    assert "ICE-1" not in vmc.faults.lockouts
 
 
 # --- Copilot review (PR #32) finding C1: catalog mutations must reconcile ---
@@ -270,13 +270,13 @@ def test_kind_change_invalidates_profile(tmp_path):
     vmc = VMC(config=cfg)
     profiles = profiles_for([ice_product, WATER_1, OTHER_X], tmp_path)
     vmc.set_dispenser_profiles(profiles)
-    assert "ICE-1" not in vmc._lockouts
+    assert "ICE-1" not in vmc.faults.lockouts
     assert vmc.dispenser_profile_for(ice_product) is not None
 
     ice_product.kind = "water"
     vmc.catalog_changed()
 
-    assert vmc._lockouts["ICE-1"] is FaultCode.CFG_101
+    assert vmc.faults.lockouts["ICE-1"] is FaultCode.CFG_101
     assert vmc.dispenser_profile_for(ice_product) is None
 
 
@@ -293,7 +293,7 @@ def test_new_product_locked_after_catalog_change(tmp_path):
     vmc.config_model.products.append(new_product)
     vmc.catalog_changed()
 
-    assert vmc._lockouts["NEW-1"] is FaultCode.CFG_101
+    assert vmc.faults.lockouts["NEW-1"] is FaultCode.CFG_101
 
 
 def test_catalog_changed_is_a_noop_without_profiles():
@@ -301,7 +301,7 @@ def test_catalog_changed_is_a_noop_without_profiles():
     attached) -- catalog_changed() must not raise."""
     vmc = make_vmc()
     vmc.catalog_changed()  # must not raise
-    assert vmc._lockouts == {}
+    assert vmc.faults.lockouts == {}
 
 
 def test_reconcile_never_raises_cfg101_over_another_lockout(tmp_path):
@@ -316,11 +316,11 @@ def test_reconcile_never_raises_cfg101_over_another_lockout(tmp_path):
     profiles.load()
 
     vmc.raise_fault(FaultCode.ICE_301, sku="W-1")
-    assert vmc._lockouts["W-1"] is FaultCode.ICE_301
+    assert vmc.faults.lockouts["W-1"] is FaultCode.ICE_301
 
     vmc.set_dispenser_profiles(profiles)
 
-    assert vmc._lockouts["W-1"] is FaultCode.ICE_301
+    assert vmc.faults.lockouts["W-1"] is FaultCode.ICE_301
 
 
 # --- Task 3: the sale dispenses through the dispatcher with the profile ---
@@ -657,7 +657,9 @@ async def test_snapshot_records_mechanism(tmp_path):
     _start_sale(vmc, product)
     await asyncio.sleep(0)
 
-    snap = vmc._snapshot()
+    # vmc.snapshot() is the public, read-only wrapper over the VMC's
+    # private _snapshot() (VMC public surface design, section 3, Task 2).
+    snap = vmc.snapshot()
 
     assert snap.dispense_mechanism == "bagged_ice"
     vmc.cancel_pending_tasks()
@@ -679,7 +681,7 @@ async def test_mid_vend_profile_save_does_not_change_inflight_command(tmp_path):
         ),
         encoding="utf-8",
     )
-    vmc._dispenser_profiles.load()
+    vmc.gate.profiles.load()
 
     assert dispatcher.sent[-1] == sent_before
     vmc.cancel_pending_tasks()

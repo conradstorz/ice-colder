@@ -895,7 +895,7 @@ class TestCommandRunAndSalePermissionGates:
         # here -- this matrix only needs to prove the permission axis).
         cfg, vmc, _inv, _store = wired
         add_product(cfg, "ICE-1", "Ice Bag", 2.50, slot=0)
-        vmc._lockouts["ICE-1"] = FaultCode.ICE_101
+        vmc.raise_fault(FaultCode.ICE_101, sku="ICE-1")
         client = login_as(role)
         resp = client.post("/tests/sale", data={"sku": "ICE-1"})
         if Permission.run_tests in ROLE_PERMISSIONS[role]:
@@ -1594,7 +1594,7 @@ class TestSimulatedSaleFlow:
         """
         cfg, vmc, _inv, _store = wired
         add_product(cfg, "ICE/COLD-1", "Cold Ice", 2.50, slot=0)
-        vmc._lockouts["ICE/COLD-1"] = FaultCode.ICE_101
+        vmc.raise_fault(FaultCode.ICE_101, sku="ICE/COLD-1")
 
         picker = client.get("/tests/sale")
         assert picker.status_code == 200

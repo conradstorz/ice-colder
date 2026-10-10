@@ -161,7 +161,7 @@ async def test_standby_upgrades_own_opportunistic_lease_in_place():
     granted1, _ = vmc.begin_maintenance("user-1", "sess-1")
     assert granted1 is True
     hold_before = vmc.maintenance_hold
-    idle_task_before = vmc._maintenance_idle_task
+    idle_task_before = vmc.lease.idle_task
     assert idle_task_before is not None
 
     granted2, reason2 = vmc.begin_standby("user-1", "sess-1")
@@ -171,8 +171,8 @@ async def test_standby_upgrades_own_opportunistic_lease_in_place():
     assert reason2 is None
     assert vmc.maintenance_hold is hold_before  # same object, upgraded in place
     assert vmc.maintenance_hold.standby is True
-    assert vmc._maintenance_idle_task is None
-    assert vmc._maintenance_sweep_task is not None
+    assert vmc.lease.idle_task is None
+    assert vmc.lease.sweep_task is not None
     assert idle_task_before.cancelled()
     vmc.cancel_pending_tasks()
 
@@ -259,7 +259,7 @@ async def test_idle_timer_defers_release_while_a_run_is_in_flight_and_is_attribu
     vmc.attach_to_loop(asyncio.get_running_loop())
     granted, _ = vmc.begin_standby("user-1", "sess-1")
     assert granted is True
-    assert vmc._maintenance_idle_task is not None  # no predicate: idle-timer fallback
+    assert vmc.lease.idle_task is not None  # no predicate: idle-timer fallback
 
     with vmc.maintenance_test_run():
         assert vmc.maintenance_hold.runs_in_flight == 1
@@ -292,8 +292,8 @@ async def test_standby_falls_back_to_idle_timer_when_no_predicate_wired(loud_log
 
     assert granted is True
     assert vmc.maintenance_hold.standby is True
-    assert vmc._maintenance_sweep_task is None
-    assert vmc._maintenance_idle_task is not None
+    assert vmc.lease.sweep_task is None
+    assert vmc.lease.idle_task is not None
     assert any("no session-liveness predicate" in msg.lower() for msg in loud_log)
 
     # With no predicate the idle timer is the only automatic release, so
@@ -324,8 +324,8 @@ async def test_takeover_of_standby_lease_keeps_standby_and_sweeps_new_session():
     assert reason2 is None
     assert vmc.maintenance_hold.standby is True
     assert vmc.maintenance_hold.holder_session_id == "sess-b"
-    assert vmc._maintenance_idle_task is None
-    assert vmc._maintenance_sweep_task is not None
+    assert vmc.lease.idle_task is None
+    assert vmc.lease.sweep_task is not None
 
     vmc._maintenance_sweep_tick()
     assert live_calls[-1] == "sess-b"

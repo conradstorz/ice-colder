@@ -132,7 +132,7 @@ def live_server(tmp_path):
         server.should_exit = True
         thread.join(timeout=10)
         routes.set_access_store(None)
-        for t in vmc._pending_tasks:
+        for t in vmc.tasks.pending:
             t.cancel()
         web_auth_backoff_reset()
 

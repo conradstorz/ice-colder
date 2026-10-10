@@ -504,7 +504,7 @@ class TestFullTransactionLoop:
                 )
                 await _wait_for_state(vmc, "interacting_with_user", timeout=5.0)
                 assert vmc.credit_escrow == 2.00
-                assert vmc._lockouts["ICE-SM"].value == "ICE-401"
+                assert vmc.faults.lockouts["ICE-SM"].value == "ICE-401"
                 assert vmc.state != "error"
 
             finally:
@@ -664,7 +664,7 @@ class TestFailedVendLoop:
                 await sale("jam")
                 await _wait_for_state(vmc, "interacting_with_user")
                 assert vmc.credit_escrow == 2.00
-                assert vmc._lockouts["ICE-SM"].value == "ICE-401"
+                assert vmc.faults.lockouts["ICE-SM"].value == "ICE-401"
                 assert health.get_summary()["active_faults"][0]["code"] == "ICE-401"
 
                 # Customer walks away: session expiry pays out via the gateway.
@@ -682,7 +682,7 @@ class TestFailedVendLoop:
                 assert vmc.clear_fault("ICE-SM") is True
                 await sale("complete")
                 await _wait_for_state(vmc, "idle")
-                assert vmc._lockouts == {}
+                assert vmc.faults.lockouts == {}
             finally:
                 vmc.cancel_pending_tasks()
                 mqtt_task.cancel()

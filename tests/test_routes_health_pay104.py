@@ -79,7 +79,7 @@ def _pay104_setup(
     expected_shares = dict(vmc1.pending_sale_shares)
     expected_price = round(sum(expected_shares.values()), 2)
 
-    snap = vmc1._snapshot()
+    snap = vmc1.snapshot()
     assert snap.is_open()
     SessionStore(store_path).save(snap)
 
@@ -534,7 +534,7 @@ class TestRecordSaleExactlyOnce:
         assert vmc.pending_sale_for_recovery() is not None
         assert pay104["session_path"].exists()
 
-        monkeypatch.setattr(vmc._session_store, "clear", lambda: False)
+        monkeypatch.setattr(vmc.session_store, "clear", lambda: False)
 
         client = login_as(Role.tech)
         first = client.post("/health/faults/PAY-104/record-sale")
@@ -603,12 +603,12 @@ class TestMarkerFailureExactlyOnce:
         # Both disk writes fail -- the realistic pairing: clear_fault's
         # snapshot removal and the marker's rewrite go through the same
         # SessionStore against the same failing disk.
-        monkeypatch.setattr(vmc._session_store, "clear", lambda: False)
+        monkeypatch.setattr(vmc.session_store, "clear", lambda: False)
 
         def _save_fails(snap):
             raise OSError("simulated disk failure: read-only filesystem")
 
-        monkeypatch.setattr(vmc._session_store, "save", _save_fails)
+        monkeypatch.setattr(vmc.session_store, "save", _save_fails)
 
         client = login_as(Role.tech)
 
@@ -667,12 +667,12 @@ class TestMarkerFailureExactlyOnce:
             f["code"] for f in vmc.active_faults()
         }  # positive control
 
-        monkeypatch.setattr(vmc._session_store, "clear", lambda: False)
+        monkeypatch.setattr(vmc.session_store, "clear", lambda: False)
 
         def _save_fails(snap):
             raise OSError("simulated disk failure")
 
-        monkeypatch.setattr(vmc._session_store, "save", _save_fails)
+        monkeypatch.setattr(vmc.session_store, "save", _save_fails)
 
         client = login_as(Role.tech)
         resp = client.post("/health/faults/PAY-104/record-sale")
@@ -733,12 +733,12 @@ class TestCrossRestartExactlyOnce:
         # the snapshot removal nor the marker rewrite can persist -- the
         # storage problem that leaves PAY-104 active with a genuinely
         # unresolved on-disk snapshot.
-        monkeypatch.setattr(vmc._session_store, "clear", lambda: False)
+        monkeypatch.setattr(vmc.session_store, "clear", lambda: False)
 
         def _save_fails(snap):
             raise OSError("simulated disk failure: read-only filesystem")
 
-        monkeypatch.setattr(vmc._session_store, "save", _save_fails)
+        monkeypatch.setattr(vmc.session_store, "save", _save_fails)
 
         client = login_as(Role.tech)
         first = client.post("/health/faults/PAY-104/record-sale")

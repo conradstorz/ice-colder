@@ -314,7 +314,7 @@ class TestVMCDisplayIntegration:
         vmc = VMC(config=cfg)
         dc = DisplayController()
         vmc.set_display_controller(dc)
-        assert vmc._display_controller is dc
+        assert vmc.display_controller is dc
 
     def test_start_interaction_updates_display(self):
         cfg = ConfigModel()

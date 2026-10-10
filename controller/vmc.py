@@ -221,7 +221,7 @@ class VMC:
         # §2.3), alongside selected_product/pending_sale_shares above --
         # NOT a VMC-global mode flag. Set True only by run_test_sale, just
         # before it selects the product; read (never inferred from
-        # self._maintenance_hold) by on_dispenser_event and
+        # self._lease.hold) by on_dispenser_event and
         # _dispense_timed_out to decide sale vs. test_run recording, and
         # by _fail_vend to decide whether a failed vend may issue a real
         # refund. Reset to False only by run_test_sale itself once the
@@ -259,12 +259,13 @@ class VMC:
 
         # Event-loop task plumbing (controller/task_runner.py): fire-and-
         # forget tasks, delayed callbacks, and the persistent-task set
-        # drained (not cancelled) at shutdown. `_pending_tasks`/
-        # `_persist_tasks`/`_loop` below are read-only properties aliasing
-        # the runner's own attributes, kept because many tests read them
-        # directly. Constructed before anything that captures `self._schedule`
-        # as a closure (the maintenance lease and refund protocol below),
-        # since that closure's first real call must find a live runner.
+        # drained (not cancelled) at shutdown. Exposed read-only as
+        # `self.tasks` (VMC public surface design, section 3); tests read
+        # `vmc.tasks.pending`/`vmc.tasks.persist`/`vmc.tasks.loop` directly
+        # rather than a VMC-private alias. Constructed before anything that
+        # captures `self._schedule` as a closure (the maintenance lease and
+        # refund protocol below), since that closure's first real call must
+        # find a live runner.
         self._tasks = TaskRunner()
         self._dispense_timeout_task: asyncio.Task | None = None
         self._session_timeout_task: asyncio.Task | None = None
@@ -286,12 +287,12 @@ class VMC:
         # the hold itself, its idle timer, and the standby session-liveness
         # sweep (controller/maintenance_lease.py). Deliberately not part of
         # any persisted snapshot -- see MaintenanceHold's docstring.
-        # `_maintenance_hold`/`_maintenance_idle_task`/
-        # `_maintenance_sweep_task` below are read-only properties aliasing
-        # the lease's own attributes, kept because existing tests read them
-        # directly. `on_granted`/`on_released` are VMC callbacks (raise/
-        # clear SVC-102); the three timing knobs are callables read at call
-        # time, never snapshotted here, because tests set
+        # Exposed read-only as `self.lease` (VMC public surface design,
+        # section 3); tests read `vmc.lease.hold`/`vmc.lease.idle_task`/
+        # `vmc.lease.sweep_task` directly rather than a VMC-private alias.
+        # `on_granted`/`on_released` are VMC callbacks (raise/clear
+        # SVC-102); the three timing knobs are callables read at call time,
+        # never snapshotted here, because tests set
         # `vmc.MAINTENANCE_IDLE_TIMEOUT_SECONDS`/
         # `vmc.MAINTENANCE_TAKEOVER_IDLE_SECONDS` on the live instance.
         self._lease = MaintenanceLease(
@@ -320,17 +321,18 @@ class VMC:
         self._test_sale_in_progress: bool = False
         self.subsystem_capabilities: dict[str, dict] = {}
         # Fault registry: product-scope faults by SKU, machine-scope faults
-        # by code (controller/fault_registry.py). `_lockouts`/
-        # `_machine_faults` below are read-only properties aliasing the
-        # registry's own dict objects, kept because many tests read and
-        # write them directly.
+        # by code (controller/fault_registry.py). Exposed read-only as
+        # `self.faults` (VMC public surface design, section 3); tests read
+        # `vmc.faults.lockouts`/`vmc.faults.is_locked(...)`/`vmc.faults.has(...)`
+        # directly rather than a VMC-private alias, and mutate only through
+        # `raise_fault`/`clear_fault`, never the registry directly.
         self._faults = FaultRegistry(self._product_name)
         # Dispenser-profile gate: CFG-101/CFG-102 reconciliation against a
         # loaded DispenserProfiles (controller/dispenser_gate.py), the
         # eighth piece carved off the VMC god object. Set via
-        # set_dispenser_profiles(); `_dispenser_profiles` below is a
-        # read-only property aliasing `self._gate.profiles`, kept because
-        # 2 tests and run_test_sale read it directly.
+        # set_dispenser_profiles(); exposed read-only as `self.gate`, so
+        # tests read `vmc.gate.profiles` directly rather than a VMC-private
+        # alias.
         self._gate = DispenserProfileGate(
             products=lambda: self.config_model.products,
             is_locked=self._faults.is_locked,
@@ -339,11 +341,12 @@ class VMC:
             clear_fault=lambda key, by: self.clear_fault(key, by=by),
         )
         # Refund protocol: request -> ack -> one retry -> terminal state
-        # machine (controller/refund_protocol.py). `_pending_refunds` below
-        # is a read-only property aliasing the protocol's own dict, kept
-        # because many tests read and write it directly. The publish/
-        # schedule/ack_timeout/max_attempts callables are read at call
-        # time, never snapshotted here -- see RefundProtocol's docstring.
+        # machine (controller/refund_protocol.py). Exposed read-only as
+        # `self.refunds` (VMC public surface design, section 3); tests read
+        # `vmc.refunds.pending` directly rather than a VMC-private alias.
+        # The publish/schedule/ack_timeout/max_attempts callables are read
+        # at call time, never snapshotted here -- see RefundProtocol's
+        # docstring.
         self._refunds = RefundProtocol(
             publish=self._publish_refund_command,
             schedule=self._schedule,
@@ -424,24 +427,12 @@ class VMC:
         logger.debug("VMC: all pending tasks cancelled.")
 
     @property
-    def _loop(self) -> asyncio.AbstractEventLoop | None:
-        """Read-only alias to the task runner's attached loop."""
-        return self._tasks.loop
-
-    @property
-    def _pending_tasks(self) -> list[asyncio.Task]:
-        """Alias to the task runner's own list; see `_lockouts` below.
-
-        Returned fresh on every access (never cached) because
-        `fire_and_forget`/`schedule` reassign the list object when pruning
-        finished tasks.
-        """
-        return self._tasks.pending
-
-    @property
-    def _persist_tasks(self) -> list[asyncio.Task]:
-        """Alias to the task runner's own list; see `_pending_tasks` above."""
-        return self._tasks.persist
+    def tasks(self) -> TaskRunner:
+        """Read-only view of the event-loop task plumbing (VMC public
+        surface design, section 3). `vmc.tasks.pending`/`.persist`/`.loop`
+        are read directly; mutation only ever happens through a VMC method
+        (`attach_to_loop`, `cancel_pending_tasks`, `drain_persistence`)."""
+        return self._tasks
 
     def set_mqtt_client(self, client):
         """Attach an MQTTClient instance for publishing status and receiving events."""
@@ -567,6 +558,47 @@ class VMC:
         delegates to `self._gate.catalog_changed`."""
         self._gate.catalog_changed()
 
+    # --- Read-only wired-service accessors (VMC public surface design,
+    # section 3) --- each is attached via its own `set_*` method above;
+    # tests and routes read the collaborator directly by these names
+    # rather than a VMC-private attribute, and mutate only by calling the
+    # matching `set_*` method (or, for `recovery`, never -- it is
+    # read-only by construction).
+
+    @property
+    def session_store(self) -> SessionStore | None:
+        return self._session_store
+
+    @property
+    def mqtt_client(self):
+        return self._mqtt_client
+
+    @property
+    def command_dispatcher(self):
+        return self._command_dispatcher
+
+    @property
+    def health_monitor(self) -> HealthMonitor | None:
+        return self._health_monitor
+
+    @property
+    def availability(self) -> Availability | None:
+        return self._availability
+
+    @property
+    def event_recorder(self):
+        return self._event_recorder
+
+    @property
+    def display_controller(self) -> DisplayController | None:
+        return self._display_controller
+
+    @property
+    def recovery(self) -> SessionRecovery:
+        """Read-only PAY-104 session-recovery collaborator. See
+        ``controller.session_recovery.SessionRecovery``."""
+        return self._recovery
+
     def _flag_uncertain_session(self, snap: SessionSnapshot) -> None:
         detail = snap.error or (
             f"state={snap.state} escrow=${snap.credit_escrow:.2f} "
@@ -588,6 +620,23 @@ class VMC:
         operator clears the fault from the dashboard after checking the machine.
         """
         return None
+
+    def snapshot(self, state: str | None = None) -> SessionSnapshot:
+        """Build a `SessionSnapshot` of the VMC's current live state.
+
+        Public, read-only wrapper over `_snapshot` (VMC public surface
+        design, section 3, Task 2): added because a test needs to capture
+        a genuine mid-dispense snapshot and persist it by hand (to boot a
+        second VMC against it and simulate a crash) with no event loop
+        attached anywhere in the test file -- the normal production path
+        (`_persist_then_dispense`/`_persist_session`) is fire-and-forget on
+        the attached loop and cannot run there. Pure and side-effect free
+        (matches `get_status()`'s existing read-only convenience), so
+        exposing it costs nothing: it only ever reads already-public state
+        (`state`, `credit_escrow`, `selected_product`) plus collaborators
+        already public via `refunds`/`escrow`.
+        """
+        return self._snapshot(state)
 
     def _snapshot(self, state: str | None = None) -> SessionSnapshot:
         pending = self._refunds.first_request_id()
@@ -618,7 +667,7 @@ class VMC:
         """Save the live session, or remove the file once nothing is in flight."""
         if self._session_store is None:
             return
-        if FaultCode.PAY_104 in self._machine_faults:
+        if FaultCode.PAY_104 in self._faults.machine_faults:
             return  # keep the evidence file untouched until the operator clears it
         snap = self._snapshot(state)
         if snap.is_open():
@@ -648,7 +697,7 @@ class VMC:
         if self._availability:
             self._availability.set_fsm_state(self.state)
         self._persist_session()
-        if self._mqtt_client is None or self._loop is None:
+        if self._mqtt_client is None or self._tasks.loop is None:
             return
         status = VMCStatus(
             state=self.state,
@@ -669,15 +718,12 @@ class VMC:
     # exactly where it always was.
 
     @property
-    def _lockouts(self) -> dict[str, FaultCode]:
-        """Alias to the registry's own dict, kept because many tests
-        read and write it directly (`vmc._lockouts["SKU"] = code`)."""
-        return self._faults.lockouts
-
-    @property
-    def _machine_faults(self) -> dict[FaultCode, float]:
-        """Alias to the registry's own dict; see `_lockouts` above."""
-        return self._faults.machine_faults
+    def faults(self) -> FaultRegistry:
+        """Read-only view of the fault registry (VMC public surface
+        design, section 3). `vmc.faults.lockouts`/`.is_locked(sku)`/
+        `.has(code)` are read directly; mutation only ever happens through
+        `raise_fault`/`clear_fault`."""
+        return self._faults
 
     # --- Escrow ledger ---
     #
@@ -707,16 +753,27 @@ class VMC:
         self._escrow.credits = value
 
     @property
-    def _pending_refunds(self) -> dict[str, PendingRefund]:
-        """Alias to the protocol's own dict; see `_lockouts` above."""
-        return self._refunds.pending
+    def escrow(self) -> EscrowLedger:
+        """Read-only view of the escrow ledger (VMC public surface
+        design, section 3) -- `credit_escrow`/`escrow_credits` above stay
+        the primary read/write surface; this is for callers that want the
+        ledger object itself (e.g. `vmc.escrow.is_empty_within_tolerance`)."""
+        return self._escrow
 
     @property
-    def _dispenser_profiles(self) -> DispenserProfiles | None:
-        """Alias to the gate's own `profiles` attribute, kept because 2
-        tests and `run_test_sale` read `vmc._dispenser_profiles` directly;
-        see `_lockouts` above."""
-        return self._gate.profiles
+    def refunds(self) -> RefundProtocol:
+        """Read-only view of the refund protocol (VMC public surface
+        design, section 3). `vmc.refunds.pending` is read directly;
+        mutation only ever happens through `request_refund`/`on_refund_ack`."""
+        return self._refunds
+
+    @property
+    def gate(self) -> DispenserProfileGate:
+        """Read-only view of the dispenser-profile gate (VMC public
+        surface design, section 3). `vmc.gate.profiles` is read directly;
+        mutation only ever happens through `set_dispenser_profiles`/
+        `reconcile_dispenser_profiles`/`catalog_changed`."""
+        return self._gate
 
     def _product_name(self, sku: str | None) -> str | None:
         if sku is None:
@@ -831,19 +888,18 @@ class VMC:
                 return False
             if not self._faults.has(code):
                 return False
-            if code is FaultCode.SVC_102 and self._maintenance_hold is not None:
+            if code is FaultCode.SVC_102 and self._lease.hold is not None:
                 # Copilot review (PR 22): a generic clear must not bypass
                 # the maintenance lease invariant, the same class of bug
                 # fixed twice already for PAY-104 in part 3. Only lease
                 # release (end_maintenance / idle timeout / the last
-                # in-flight run settling, all via
-                # _release_maintenance_hold) may clear SVC-102; by the
-                # time that path calls clear_fault it has already set
-                # self._maintenance_hold = None, so this check cannot
-                # block the real release.
+                # in-flight run settling, all via `self._lease.release`)
+                # may clear SVC-102; by the time that path calls
+                # clear_fault it has already set self._lease.hold = None,
+                # so this check cannot block the real release.
                 logger.warning(
                     "Refused generic clear of SVC-102: maintenance lease "
-                    f"still held by {self._maintenance_hold.holder_user_id}"
+                    f"still held by {self._lease.hold.holder_user_id}"
                 )
                 return False
             if code is FaultCode.PAY_104 and self._session_store:
@@ -894,7 +950,7 @@ class VMC:
         when the vending ESP32 reports `bin_half_full` going true. Kept on
         the VMC because it drives the fault registry, not just telemetry.
         """
-        for sku, code in list(self._lockouts.items()):
+        for sku, code in list(self._faults.lockouts.items()):
             if code is FaultCode.ICE_101:
                 self.clear_fault(sku, by="auto")
 
@@ -1111,7 +1167,7 @@ class VMC:
             if self._sale_is_test:
                 # is_test lives on the sale (self._sale_is_test, set only
                 # by run_test_sale), not on the lease -- consulted here
-                # instead of self._maintenance_hold so a lease release or
+                # instead of self._lease.hold so a lease release or
                 # idle-timeout mid-run cannot flip this sale to production
                 # (system-tests design §2.3). Neither a `sale` row nor a
                 # `dispense` event is written; run_test_sale itself writes
@@ -1360,7 +1416,7 @@ class VMC:
         # position in self.products — deleting an earlier product from the
         # catalog shifts list indices but must not change which physical
         # motor/slot a remaining product dispenses from.
-        if self._loop and self.selected_product:
+        if self._tasks.loop and self.selected_product:
             product = self.selected_product
             profile = self.dispenser_profile_for(product)
             if profile is None:
@@ -1500,7 +1556,7 @@ class VMC:
         """
         try:
             if snap is not None and self._session_store is not None:
-                if FaultCode.PAY_104 not in self._machine_faults:
+                if FaultCode.PAY_104 not in self._faults.machine_faults:
                     await self._session_store.save_async(snap)
         except Exception as exc:
             # Review finding M5: a snapshot-save failure gets its own
@@ -1793,7 +1849,7 @@ class VMC:
         if amount <= 0:
             logger.warning(f"Ignoring non-positive deposit: {amount}")
             return
-        if self._maintenance_hold is not None and payment_method != "test":
+        if self._lease.hold is not None and payment_method != "test":
             # Payment is disabled for the whole lease (SVC-102 blocks it via
             # availability), so this only covers the race between the
             # disable command and a coin already in the mechanism -- still
@@ -1951,9 +2007,15 @@ class VMC:
     # self._lease in __init__. What stays here is the FSM/escrow
     # preconditions (begin_maintenance/begin_standby), the refunds,
     # run_test_sale itself, and the SVC-102 raise/clear wired to the lease
-    # as on_granted/on_released callbacks. The properties and one-line
-    # delegates below exist because existing tests call the old names
-    # directly.
+    # as on_granted/on_released callbacks. `lease` below is the VMC public
+    # surface design's read-only collaborator access (section 3); tests
+    # read `vmc.lease.hold`/`.idle_task`/`.sweep_task` directly and mutate
+    # only through a VMC method (`begin_maintenance`, `end_maintenance`,
+    # `take_over_maintenance`, ...) or, where the test is deliberately
+    # exercising the lease itself rather than bypassing the VMC, through a
+    # method on `vmc.lease` directly (e.g. `vmc.lease.release(...)`).
+    # `maintenance_hold` is kept as its own convenience property since
+    # routes (`web_interface/context.py`) read it by that name.
 
     @property
     def maintenance_hold(self) -> MaintenanceHold | None:
@@ -1961,20 +2023,9 @@ class VMC:
         return self._lease.hold
 
     @property
-    def _maintenance_hold(self) -> MaintenanceHold | None:
-        return self._lease.hold
-
-    @_maintenance_hold.setter
-    def _maintenance_hold(self, value: MaintenanceHold | None) -> None:
-        self._lease.hold = value
-
-    @property
-    def _maintenance_idle_task(self):
-        return self._lease.idle_task
-
-    @property
-    def _maintenance_sweep_task(self):
-        return self._lease.sweep_task
+    def lease(self) -> MaintenanceLease:
+        """Read-only view of the maintenance lease collaborator."""
+        return self._lease
 
     def _release_maintenance_hold(self, by: str) -> None:
         self._lease.release(by)
@@ -2186,7 +2237,7 @@ class VMC:
         # profiles check here, so a VMC with none set (every pre-plan-2
         # test and fixture) behaves exactly as before.
         if (
-            self._dispenser_profiles is not None
+            self._gate.profiles is not None
             and self.dispenser_profile_for(product) is None
         ):
             raise RuntimeError(
@@ -2237,7 +2288,7 @@ class VMC:
             with self.maintenance_test_run():
                 self._sale_is_test = True
                 self._test_sale_path = [self.state]
-                loop = self._loop or asyncio.get_running_loop()
+                loop = self._tasks.loop or asyncio.get_running_loop()
                 waiter: asyncio.Future = loop.create_future()
                 self._test_sale_waiter = waiter
                 started_at = time.time()
@@ -2387,7 +2438,7 @@ class VMC:
         # `product_index` here is the physical button index (ButtonPress.button),
         # not the product's dispense `slot` — buttons stay positional for now.
         candidate = self.products[product_index]
-        locked_code = self._lockouts.get(candidate.sku)
+        locked_code = self._faults.lockouts.get(candidate.sku)
         if locked_code is not None:
             txn_log.info(
                 f"LOCKED OUT: '{candidate.name}' ({locked_code.value}), customer rejected"
