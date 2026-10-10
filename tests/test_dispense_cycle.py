@@ -306,6 +306,34 @@ async def test_good_ack_never_fails_and_sets_request_id(tmp_path):
     assert params["slot"] == ICE.slot
 
 
+async def test_ack_request_id_mismatch_does_not_fail_and_logs_warning(tmp_path, caplog):
+    runner = FakeTaskRunner()
+    runner.attach(asyncio.get_running_loop())
+    failures = FailureRecorder()
+
+    async def send_mismatched(subsystem, command, params=None, request_id=None):
+        return CommandAck(request_id="some-other-id", command=command, status="ok")
+
+    dispatcher = FakeDispatcher()
+    dispatcher.send = send_mismatched
+    profile = _profile_for(tmp_path, ICE)
+    cycle, runner = make_cycle(
+        product=ICE,
+        profile=profile,
+        dispatcher=lambda: dispatcher,
+        runner=runner,
+        on_failed=failures,
+    )
+
+    cycle.start(lambda state: None)
+    await asyncio.sleep(0)
+
+    assert failures.calls == []
+    assert any(
+        "does not match the sent request_id" in r.message for r in caplog.records
+    )
+
+
 async def test_timeout_fires_on_failed_no_report(tmp_path):
     runner = FakeTaskRunner()
     runner.attach(asyncio.get_running_loop())
@@ -370,6 +398,7 @@ def test_classify_non_terminal_state_returns_none(tmp_path, caplog):
     cycle = _started_cycle(tmp_path, ICE, profile)
 
     assert cycle.classify({"state": "agitate", "slot": ICE.slot}) is None
+    assert any(f"slot {ICE.slot}, state: agitate" in r.message for r in caplog.records)
 
 
 def test_classify_slot_mismatch_returns_none(tmp_path):
@@ -465,8 +494,9 @@ async def test_record_writes_sale_with_share_sum_price():
         recorder=lambda: recorder,
     )
 
-    await cycle.record()
+    recorded = await cycle.record()
 
+    assert recorded is True
     assert recorder.events == [("dispense", float(ICE.slot), None)]
     assert recorder.sales == [
         (ICE.sku, ICE.name, ICE.slot, 1.75, {"cash": 1.00, "card": 0.75})
@@ -476,15 +506,18 @@ async def test_record_writes_sale_with_share_sum_price():
 async def test_record_skipped_without_a_recorder():
     cycle, _ = make_cycle(product=ICE, recorder=lambda: None)
 
-    await cycle.record()  # must not raise
+    recorded = await cycle.record()  # must not raise
+
+    assert recorded is True
 
 
 async def test_record_defaults_price_to_product_price_without_shares():
     recorder = FakeRecorder()
     cycle, _ = make_cycle(product=ICE, shares=None, recorder=lambda: recorder)
 
-    await cycle.record()
+    recorded = await cycle.record()
 
+    assert recorded is True
     assert recorder.sales == [
         (
             ICE.sku,
@@ -507,8 +540,9 @@ async def test_record_raises_data101_on_generic_failure():
         faults=faults,
     )
 
-    await cycle.record()  # must not raise
+    recorded = await cycle.record()  # must not raise
 
+    assert recorded is True
     assert faults.raised == [(FaultCode.DATA_101, None, "sku=ICE-1 price=$2.00")]
 
 
@@ -525,8 +559,9 @@ async def test_record_raises_pay104_and_sets_transaction_uncertain():
         set_transaction_certain=certain_calls.append,
     )
 
-    await cycle.record()  # must not raise
+    recorded = await cycle.record()  # must not raise
 
+    assert recorded is False
     assert certain_calls == [False]
     assert faults.raised == [
         (FaultCode.PAY_104, None, "sku=ICE-1 price=$2.00 unrecorded")

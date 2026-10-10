@@ -135,6 +135,7 @@ class DispenseCycle:
     def mechanism(self) -> str | None:
         return self._mechanism
 
+    @logger.catch()
     def start(self, snapshot_for: Callable[[str], SessionSnapshot | None]) -> None:
         """Begin the dispense: look up the slot's dispenser profile, mint
         the request id a hardware report must echo back, persist the
@@ -145,6 +146,11 @@ class DispenseCycle:
         defensive comment about FSM transition timing -- that concern
         belongs to the caller now (Task 8 calls this only once the
         `dispense_product` transition has actually committed).
+
+        Wrapped in ``@logger.catch()`` so an unexpected exception here is
+        logged and swallowed rather than propagating into the FSM
+        transition that calls it -- preserving the original
+        `on_dispense_product`'s never-crash-the-transition property.
         """
         product = self.sale.product
         profile = self._gate.profile_for(product)
@@ -371,7 +377,7 @@ class DispenseCycle:
             return False
         return reported_slot != self.sale.product.slot
 
-    async def record(self) -> None:
+    async def record(self) -> bool:
         """Durably record this sale: first the `dispense` KPI event,
         then the `sales` row itself, off the event loop
         (`asyncio.to_thread`) so the loop is never blocked on the disk
@@ -388,19 +394,22 @@ class DispenseCycle:
         and the on-disk "dispensing" snapshot is the only remaining
         record of it).
 
-        The caller must NOT clear `sale.shares` when this call raised
-        PAY-104 (observable via `faults.has(FaultCode.PAY_104)`
-        immediately afterward, since nothing else raises it in the same
-        window) -- the original deliberately preserved
-        `pending_sale_shares` on that path (`return  # do not clear
-        pending_sale_shares`) so the on-disk snapshot keeps advertising
-        the pending sale for the operator's "Record as sale" recovery.
-        Clearing it on the DATA-101 path and the plain success path is
-        correct and matches the original.
+        Returns `True` when the sale is durably on disk or journaled --
+        no recorder attached, the plain success path, and the `DATA-101`
+        path all count, since the journal fallback already covers the
+        insert failure -- in which case the caller may clear
+        `sale.shares`. Returns `False` only on the `PAY-104` path, where
+        the sale is recorded nowhere durable: the caller must keep
+        `sale.shares` so the on-disk "dispensing" snapshot stays the
+        sale's only record, for the operator's "Record as sale"
+        recovery. The return value is the caller's sole signal for this
+        decision -- `faults.has(FaultCode.PAY_104)` is unsound, since
+        PAY-104 can already be standing from an earlier, unrelated
+        incident while this sale records successfully.
         """
         recorder = self._recorder()
         if recorder is None:
-            return
+            return True
         product = self.sale.product
         recorder.record("dispense", value=float(product.slot))
 
@@ -433,7 +442,7 @@ class DispenseCycle:
                 FaultCode.PAY_104,
                 outcome=f"sku={product.sku} price=${price:.2f} unrecorded",
             )
-            return
+            return False
         except Exception:
             logger.exception(
                 f"record_sale failed for sku={product.sku!r}; already journaled "
@@ -444,6 +453,7 @@ class DispenseCycle:
                 FaultCode.DATA_101,
                 outcome=f"sku={product.sku} price=${price:.2f}",
             )
+        return True
 
     def cancel(self) -> None:
         """Cancel the dispense-timeout timer, if still live. Today's
