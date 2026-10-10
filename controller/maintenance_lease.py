@@ -19,8 +19,8 @@ construction -- tests (and, in principle, an operator) set
 ``vmc.MAINTENANCE_IDLE_TIMEOUT_SECONDS``/``vmc.MAINTENANCE_TAKEOVER_IDLE_SECONDS``
 on the live VMC instance after it is built, and a later read must see the
 current value. The FSM preconditions in ``VMC.begin_maintenance``/
-``VMC.begin_standby``, the refunds, ``VMC.run_test_sale`` itself, and
-raising/clearing ``SVC-102`` all stay on the VMC.
+``VMC.begin_standby``, the refunds, ``TestSaleRunner.run_test_sale`` itself,
+and raising/clearing ``SVC-102`` all stay on the VMC.
 """
 
 from __future__ import annotations
@@ -331,8 +331,8 @@ class MaintenanceLease:
         """Run accounting, start: increments ``runs_in_flight`` and
         refreshes ``last_activity_at``. Raises if no lease is held -- a run
         cannot exist outside a lease. Called from ``test_run``'s entry;
-        ``VMC.run_test_sale`` goes through that context manager rather than
-        calling this directly.
+        ``TestSaleRunner.run_test_sale`` goes through that context manager
+        rather than calling this directly.
         """
         hold = self.hold
         if hold is None:

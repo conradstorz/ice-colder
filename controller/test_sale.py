@@ -123,8 +123,8 @@ class TestSaleRunner:
         them, from the authenticated ``Principal``.
 
         Requires the maintenance lease: wrapping the whole run in
-        ``maintenance_test_run()`` is what enforces this -- its
-        ``_maintenance_run_started`` raises ``RuntimeError`` when no lease
+        ``self._lease.test_run()`` is what enforces this -- its
+        ``run_started`` raises ``RuntimeError`` when no lease
         is held, which is this method's refusal path. That also increments
         ``runs_in_flight`` for the duration, which is what stops the lease
         from being released out from under this run (system-tests design
@@ -154,7 +154,7 @@ class TestSaleRunner:
         real ``cmd/payment/refund``: test money is not real money and this
         is not a refund (system-tests design §2.3).
         """
-        product_index, product = self._vmc.find_product(sku)
+        _, product = self._vmc.find_product(sku)
         if product is None:
             raise ValueError(f"run_test_sale: unknown product sku {sku!r}")
 
@@ -181,8 +181,21 @@ class TestSaleRunner:
         # session; web_interface/routes/tests_level.py's
         # `_acquire_lease_or_refusal` deliberately lets a second command
         # through for a session that already holds the lease) is refused
-        # outright by `begin_test_sale`'s own `_test_sale_in_progress`
-        # guard below, rather than accommodated.
+        # outright, rather than accommodated. This guard is checked HERE,
+        # before `self._lease.test_run()` is ever entered, so a refused
+        # double-submit never refreshes the lease's idle clock
+        # (`MaintenanceLease.run_started`'s `last_activity_at` bump) and
+        # always produces this exact message -- matching the original,
+        # pre-extraction ordering. `begin_test_sale`'s own
+        # `_test_sale_in_progress` check (below, inside the lease bracket)
+        # stays as defence in depth for a caller that reaches it directly.
+        if self._vmc.test_sale_in_progress:
+            raise RuntimeError(
+                "run_test_sale: a simulated sale is already in progress; "
+                "wait for it to finish (or time out) before starting "
+                "another"
+            )
+
         with self._lease.test_run():
             path: list[str] = [self._vmc.state]
             loop = self._tasks.loop or asyncio.get_running_loop()

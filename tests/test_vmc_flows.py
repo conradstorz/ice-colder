@@ -2548,7 +2548,7 @@ class TestMaintenanceLease:
         assert enable_cmds[-1].accept is True
 
     async def test_cancelled_run_still_decrements_runs_in_flight(self):
-        # Reaches maintenance_test_run's `finally` via a real
+        # Reaches machine.lease.test_run()'s `finally` via a real
         # asyncio.CancelledError propagating out of the `with` body --
         # Python's context-manager protocol runs `finally` on any exception,
         # CancelledError (a BaseException) included, but nothing proved that
@@ -2579,7 +2579,7 @@ class TestMaintenanceLease:
 
     async def test_concurrent_runs_release_once_on_last_settle(self):
         # Two genuinely overlapping runs (two tasks both suspended inside
-        # maintenance_test_run, woken via a shared Event) prove the
+        # machine.lease.test_run(), woken via a shared Event) prove the
         # 0->1->2->1->0 accounting and that release-on-last-settle fires
         # exactly once -- not when the first of two in-flight runs settles.
         # The mutation below (dropping the runs_in_flight == 0 guard in
@@ -2713,7 +2713,7 @@ def _test_run_machine(
     products=None, tmp_path: Path | None = None, *, tasks: TaskRunner | None = None
 ):
     """A wired-up Machine (and its VMC) plus a FakeEventRecorder and
-    RecordingClient, for VMC.run_test_sale tests. Mirrors make_vmc2()'s
+    RecordingClient, for TestSaleRunner.run_test_sale tests. Mirrors make_vmc2()'s
     default two-product catalog (ICE-1 $2.50 slot 0, WATER-1 $1.00 slot 1)
     unless overridden. Also carries a loaded `DispenserProfiles` and a
     `FakeDispatcher` (plan: dispenser profiles, Task 3) -- every
@@ -2748,7 +2748,7 @@ def _test_run_vmc(
 
 
 class TestRunTestSale:
-    """VMC.run_test_sale and the per-sale is_test flag (system-tests design
+    """TestSaleRunner.run_test_sale and the per-sale is_test flag (system-tests design
     §2.3) -- the task most likely to corrupt part 3's sales ledger.
 
     Every test drives run_test_sale as a background task and calls
@@ -2762,8 +2762,8 @@ class TestRunTestSale:
     """
 
     async def test_run_test_sale_without_lease_is_refused(self):
-        """Reaches run_test_sale -> maintenance_test_run() ->
-        _maintenance_run_started's `if hold is None: raise RuntimeError`
+        """Reaches run_test_sale -> machine.lease.test_run() ->
+        MaintenanceLease.run_started's `if hold is None: raise RuntimeError`
         (Task 10) -- run_test_sale's own refusal path, before it ever
         touches escrow or the catalog."""
         machine, vmc, rec, client = _test_run_vmc()
@@ -3590,7 +3590,7 @@ class TestTestSaleAvailabilityExemption:
     async def test_run_test_sale_succeeds_with_real_availability_during_lease(self):
         """THE headline defect. Reaches: VMC.begin_maintenance -> SVC-102
         raised -> the real Availability.set_active_faults -> run_test_sale
-        -> maintenance_test_run -> select_product -> Availability.
+        -> machine.lease.test_run() -> select_product -> Availability.
         test_sale_sellable (the fix) -> the real FSM transition, the real
         cmd/dispense publish, and on_dispenser_event's completion
         handler. Pre-fix, `select_product` called the unexempted
@@ -3739,9 +3739,9 @@ class TestConcurrentTestSaleGuard:
 
     async def test_second_overlapping_call_is_refused_first_completes_normally(self):
         """THE decisive test for the Critical defect. Reaches:
-        `VMC.run_test_sale`'s `_test_sale_in_progress` guard (the new
-        refusal, for call #2) and, end to end for call #1, the ordinary
-        success path -- `maintenance_test_run`, `select_product`, the real
+        `TestSaleRunner.run_test_sale`'s `test_sale_in_progress` guard (the
+        new refusal, for call #2) and, end to end for call #1, the ordinary
+        success path -- `machine.lease.test_run()`, `select_product`, the real
         `cmd/dispense`-driven `on_dispenser_event` completion handler,
         `end_maintenance`, `_release_maintenance_hold`, `clear_fault`, and
         `Availability._recompute` (a real `Availability`, not a stub).

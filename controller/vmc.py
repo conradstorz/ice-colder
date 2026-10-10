@@ -249,12 +249,14 @@ class VMC:
         # (`begin_maintenance`, `deposit_funds`, ...) but no longer exposes
         # a public `lease` property (Task 6 -- `machine.lease` instead).
         self._lease = lease
-        # True for the duration of exactly one run_test_sale call (set by
-        # begin_test_sale, before maintenance_test_run() is entered,
-        # cleared by end_test_sale in that call's own outer `finally`) --
-        # the guard that refuses a second, overlapping run_test_sale call
-        # from ever running concurrently with this one. See
-        # begin_test_sale/run_test_sale's own comments for why run_id
+        # True for the duration of exactly one TestSaleRunner.run_test_sale
+        # call. TestSaleRunner.run_test_sale checks this flag itself,
+        # before `self._lease.test_run()` is ever entered, so a refused
+        # double-submit never refreshes the lease's idle clock;
+        # begin_test_sale then sets it (as defence in depth for a caller
+        # that reaches it directly), and end_test_sale clears it in that
+        # call's own outer `finally`. See begin_test_sale/
+        # TestSaleRunner.run_test_sale's own comments for why run_id
         # uniqueness alone does not do this.
         self._test_sale_in_progress: bool = False
         # Observer hooks (Task 9, observers-and-test-sale-seams): every
@@ -1445,6 +1447,20 @@ class VMC:
         Callers must pair a call with `end_test_sale()`, in a `finally`,
         regardless of which way this returns or whether an exception
         reaches that `finally` instead.
+
+        Exception-safe: anything raised between setting
+        `_test_sale_in_progress = True` and this method's own return --
+        `deposit_funds`, `find_product`, or `select_product` -- clears
+        the flag and the seeded `SaleContext` before propagating, taking
+        the just-deposited "test" credit off escrow directly (never
+        through `request_refund`, same as `end_test_sale`). A leaked flag
+        here would never be cleared by `end_test_sale` (its own `began`
+        guard in `TestSaleRunner.run_test_sale` skips calling it when
+        `begin_test_sale` itself raised), which would wrongly refuse every
+        later `run_test_sale` call as "already in progress" forever, and
+        -- the money-safety half of this -- would make `_snapshot()` mark
+        a later, genuinely production sale's crash snapshot
+        `is_test=True`, silently hiding it from `PAY-104` recovery.
         """
         if self._test_sale_in_progress:
             raise RuntimeError(
@@ -1453,10 +1469,18 @@ class VMC:
                 "another"
             )
         self._test_sale_in_progress = True
-        self._sale = SaleContext(product=product, is_test=True, started_at=time.time())
-        self.deposit_funds(round(product.price, 2), payment_method="test")
-        index, _ = self.find_product(product.sku)
-        self.select_product(index)
+        try:
+            self._sale = SaleContext(
+                product=product, is_test=True, started_at=time.time()
+            )
+            self.deposit_funds(round(product.price, 2), payment_method="test")
+            index, _ = self.find_product(product.sku)
+            self.select_product(index)
+        except BaseException:
+            self._escrow.take_all()
+            self._test_sale_in_progress = False
+            self._sale = None
+            raise
         return (
             self.selected_product is product and self.state == "interacting_with_user"
         )

@@ -305,6 +305,34 @@ async def test_begin_test_sale_returns_false_for_locked_sku(tmp_path):
     machine.cancel_pending_tasks()
 
 
+async def test_begin_test_sale_clears_flag_and_sale_and_escrow_when_select_product_raises(
+    tmp_path,
+):
+    """Review fix: `begin_test_sale` is exception-safe. If anything
+    between setting `_test_sale_in_progress = True` and this method's own
+    return raises -- here, `select_product` itself -- the flag, the seeded
+    `SaleContext`, and the just-deposited "test" credit must all be
+    cleared before the exception propagates. A leaked flag here would
+    refuse every later `run_test_sale` call forever, and would make
+    `_snapshot()` wrongly mark a later, genuinely production sale's crash
+    snapshot `is_test=True`."""
+    machine, vmc, dispatcher, client, runner = _vmc_with_profiles(tmp_path)
+    product = vmc.products[0]
+
+    def _boom(index):
+        raise RuntimeError("simulated select_product failure")
+
+    vmc.select_product = _boom
+
+    with pytest.raises(RuntimeError, match="simulated select_product failure"):
+        vmc.begin_test_sale(product)
+
+    assert vmc.test_sale_in_progress is False
+    assert vmc.sale is None
+    assert vmc.credit_escrow == 0.0
+    machine.cancel_pending_tasks()
+
+
 async def test_end_test_sale_clears_context_when_not_dispensing(tmp_path):
     machine, vmc, dispatcher, client, runner = _vmc_with_profiles(tmp_path)
     product = vmc.products[0]

@@ -76,7 +76,7 @@ LIVENESS_INPUTS = {
 _PAYMENT_BLOCKING_CODES = {code.value for code in PAYMENT_BLOCKING_FAULTS}
 _BAD_DEVICE_STATES = {"error", "offline"}
 
-# A maintenance TEST sale (VMC.run_test_sale, system-tests design §2.3) is
+# A maintenance TEST sale (TestSaleRunner.run_test_sale, system-tests design §2.3) is
 # exempt from the sale-blocking effect of the maintenance lease's OWN
 # SVC-102 fault -- and of SVC-102 alone. Program plan §2 goal 8: "A tech can
 # prove a subsystem works without making a sale, and the machine cannot sell

@@ -1313,7 +1313,7 @@ class TestRunAll:
 
 class TestFailingRunStillDecrements:
     """A run whose dispatch raises (not merely times out) still decrements
-    runs_in_flight -- reaches maintenance_test_run()'s own `finally` via
+    runs_in_flight -- reaches machine.lease.test_run()'s own `finally` via
     _run_command, proven with a dispatcher that observes runs_in_flight AT
     THE MOMENT of the call (must be 1 -- incremented before dispatch) and
     the test checks it is back to 0 afterward -- a version that never
@@ -1321,7 +1321,7 @@ class TestFailingRunStillDecrements:
     increments but never decrements (a dropped `finally`) cannot fake the
     second.
 
-    Mutation proof: replaced `with vmc.maintenance_test_run():` in
+    Mutation proof: replaced `with machine.lease.test_run():` in
     _run_command with a bare `if True:` (dropping the context manager, so
     neither increment nor decrement ever runs). Result:
     test_failing_run_still_decrements failed --
@@ -1560,7 +1560,7 @@ class TestSimulatedSaleFlow:
     TestClient. test_sale_result_card_shows_path_and_verdict_form below
     instead proves the ROUTE's own rendering (the production code this
     file is actually responsible for) against a real TestSaleResult, via
-    monkeypatching VMC.run_test_sale itself -- the FSM behavior behind
+    monkeypatching TestSaleRunner.run_test_sale itself -- the FSM behavior behind
     that result is tests/test_vmc_flows.py's TestRunTestSale's job, not
     this file's.
     """
@@ -1577,7 +1577,7 @@ class TestSimulatedSaleFlow:
     def test_sku_with_slash_end_to_end(self, client, wired):
         """The SKU travels: <select><option value="..."> (GET) -> a POST
         form field -> FastAPI's Form(...) decoding -> the route's catalog
-        lookup -> VMC.run_test_sale's own find_product -- all real
+        lookup -> TestSaleRunner.run_test_sale's own find_product -- all real
         production code, "/" intact at every hop. Locking the product out
         first makes run_test_sale fail SYNCHRONOUSLY (before ever awaiting
         the dispense-completion Future, which nothing in this fixture
@@ -1661,7 +1661,7 @@ class TestSimulatedSaleFlow:
 # `runs_in_flight`, and let the lease release. The fix: the ack now means
 # "accepted", not "done" (`CommandAck.phase`), and `_run_command` calls
 # `dispatcher.send_and_await_completion`, which does not return until the
-# command's own completion signal arrives -- so `vmc.maintenance_test_run()`
+# command's own completion signal arrives -- so `machine.lease.test_run()`
 # (which brackets that call) keeps `runs_in_flight` elevated for the whole
 # real actuation, not just until it starts.
 #

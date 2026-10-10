@@ -177,6 +177,59 @@ async def test_cancelled_mid_vend_leaves_sale_as_test_and_skips_record_sale(tmp_
     machine.cancel_pending_tasks()
 
 
+async def test_second_concurrent_call_refused_before_lease_bracket_leaves_idle_clock_untouched(
+    tmp_path,
+):
+    """The already-in-progress guard is checked in `run_test_sale` BEFORE
+    `self._lease.test_run()` is ever entered (review fix), matching the
+    original, pre-extraction ordering: a refused double-submit must never
+    refresh the lease's idle clock (`MaintenanceLease.run_started`'s
+    `last_activity_at` bump) and must always produce the exact
+    "already in progress" message `begin_test_sale` itself uses."""
+    machine, vmc, dispatcher, client, runner = _vmc_with_profiles(tmp_path)
+    rec = FakeEventRecorder()
+    machine.set_event_recorder(rec)
+    product = vmc.products[0]
+    other = vmc.products[1]
+    granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+    assert granted is True
+
+    task1 = asyncio.get_running_loop().create_task(
+        machine.test_sales.run_test_sale(product.sku)
+    )
+    await asyncio.sleep(0)
+    assert task1.done() is False
+    assert machine.lease.hold.runs_in_flight == 1
+
+    last_activity_before = machine.lease.hold.last_activity_at
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "run_test_sale: a simulated sale is already in progress; "
+            "wait for it to finish \\(or time out\\) before starting another"
+        ),
+    ):
+        await asyncio.wait_for(machine.test_sales.run_test_sale(other.sku), timeout=5)
+
+    # The refusal happened before the lease bracket was ever entered, so
+    # it must not have touched runs_in_flight or the idle clock.
+    assert machine.lease.hold.runs_in_flight == 1
+    assert machine.lease.hold.last_activity_at == last_activity_before
+
+    vmc.process_payment()
+    assert vmc.state == "dispensing"
+    await vmc.on_dispenser_event(
+        "hardware/dispenser", {"slot": product.slot, "state": "complete"}
+    )
+    result = await asyncio.wait_for(task1, timeout=5)
+
+    assert result.outcome == "dispensed"
+    assert machine.lease.hold.runs_in_flight == 0
+    assert _no_refund_published(client)
+    machine.cancel_pending_tasks()
+
+
 async def test_second_concurrent_call_raises_already_in_progress(tmp_path):
     machine, vmc, dispatcher, client, runner = _vmc_with_profiles(tmp_path)
     rec = FakeEventRecorder()
