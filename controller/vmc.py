@@ -11,7 +11,6 @@ from services.mqtt_messages import (
     PaymentEvent,
     ButtonPress,
     DispenseCommand,
-    VMCAlert,
 )
 from contracts.vending_machine import (
     DispenserOutcome,
@@ -31,6 +30,7 @@ from services.event_recorder import SaleRecordingFailed
 from services.dispensers import DispenserProfiles
 from services.dispenser_schema import SlotProfile
 from controller.fault_registry import FaultRegistry
+from controller.fault_service import FaultService
 from controller.escrow_ledger import EscrowLedger
 from controller.outputs import StatusOutputs
 from controller.refund_protocol import PendingRefund, RefundProtocol
@@ -117,13 +117,6 @@ TRANSITIONS = [
         "before": "on_reset",
     },
 ]
-
-# Heartbeat loss per subsystem -> registry fault (ROADMAP §5, §8).
-_LIVENESS_FAULTS = {
-    "vending": FaultCode.COM_101,
-    "ice_maker": FaultCode.COM_102,
-    "mdb": FaultCode.PAY_101,
-}
 
 
 @dataclass
@@ -323,13 +316,37 @@ class VMC:
         # comments for why run_id uniqueness alone does not do this.
         self._test_sale_in_progress: bool = False
         self.subsystem_capabilities: dict[str, dict] = {}
-        # Fault registry: product-scope faults by SKU, machine-scope faults
-        # by code (controller/fault_registry.py). Exposed read-only as
+        # Fault registry + side effects: product-scope faults by SKU,
+        # machine-scope faults by code (controller/fault_registry.py's
+        # `FaultRegistry`, pure bookkeeping), wrapped by
+        # controller/fault_service.py's `FaultService` (event-recorder
+        # rows, health/MQTT alerts, the availability/health active-fault
+        # push, and the liveness/MQTT-connection fault mappings -- the
+        # third piece carved off the VMC god object). Exposed read-only as
         # `self.faults` (VMC public surface design, section 3); tests read
         # `vmc.faults.lockouts`/`vmc.faults.is_locked(...)`/`vmc.faults.has(...)`
         # directly rather than a VMC-private alias, and mutate only through
-        # `raise_fault`/`clear_fault`, never the registry directly.
-        self._faults = FaultRegistry(self._product_name)
+        # `raise_fault`/`clear_fault`, never the registry directly. The
+        # `lease_holder`/`lacks_valid_profile` closures read `self._lease`/
+        # `self._gate` at call time, never at construction -- both are
+        # built after this point.
+        self._registry = FaultRegistry(self._product_name)
+        self._faults = FaultService(
+            registry=self._registry,
+            outputs=self._outputs,
+            tasks=self._tasks,
+            recorder=lambda: self._event_recorder,
+            lease_holder=lambda: (
+                self._lease.hold.holder_user_id if self._lease.hold else None
+            ),
+            lacks_valid_profile=lambda sku: self._gate.lacks_valid_profile(sku),
+            set_transaction_certain=lambda certain: (
+                self._availability.set_transaction_certain(certain)
+                if self._availability
+                else None
+            ),
+            fsm_state=lambda: self.state,
+        )
         # Dispenser-profile gate: CFG-101/CFG-102 reconciliation against a
         # loaded DispenserProfiles (controller/dispenser_gate.py), the
         # eighth piece carved off the VMC god object. Set via
@@ -375,15 +392,16 @@ class VMC:
         # and may be None in tests; `capabilities` is this VMC's own dict
         # object, not a copy, so the router's writes land exactly where
         # existing tests already read them (`vmc.subsystem_capabilities`).
-        # The ICE-101 auto-clear and the vending-capabilities dispenser-
-        # profiles reconcile stay VMC callbacks -- see TelemetryRouter's
-        # docstring and _clear_ice101_lockouts/
+        # The ICE-101 auto-clear now lives on `self._faults` (see
+        # `FaultService.clear_ice101_lockouts`); the vending-capabilities
+        # dispenser-profiles reconcile stays a VMC callback -- see
+        # TelemetryRouter's docstring and
         # _on_vending_capabilities_validated below.
         self._telemetry = mqtt_inbound.TelemetryRouter(
             health=lambda: self._health_monitor,
             availability=lambda: self._availability,
             capabilities=self.subsystem_capabilities,
-            on_bin_half_full=self._clear_ice101_lockouts,
+            on_bin_half_full=self._faults.clear_ice101_lockouts,
             on_capabilities_validated=self._on_vending_capabilities_validated,
         )
         # Public (no leading underscore) so a test can read/override them
@@ -466,7 +484,7 @@ class VMC:
         """Attach a HealthMonitor; its liveness transitions become COM/PAY faults."""
         self._health_monitor = monitor
         self._outputs.attach_health(monitor)
-        monitor.set_liveness_callback(self._on_subsystem_liveness)
+        monitor.set_liveness_callback(self._faults.on_subsystem_liveness)
         logger.debug("VMC attached health monitor.")
 
     def set_availability(self, availability: Availability):
@@ -478,29 +496,12 @@ class VMC:
         availability.set_publisher(self._outputs.publish_payment_enable)
         logger.debug("VMC attached availability.")
 
-    def _on_subsystem_liveness(self, subsystem: str, alive: bool) -> None:
-        code = _LIVENESS_FAULTS.get(subsystem)
-        if code is not None:
-            if alive:
-                self.clear_fault(code.value, by="auto")
-            else:
-                self.raise_fault(code, outcome="heartbeat_lost")
-        if self._availability:
-            self._availability.set_subsystem_alive(subsystem, alive)
-            if subsystem == "mdb" and alive:
-                self._availability.republish()
-
     def on_mqtt_connection(self, connected: bool) -> None:
-        """Connection-state callback from MQTTClient (chained after the health monitor)."""
-        if self._availability:
-            self._availability.set_mqtt_connected(connected)
-        if connected:
-            self.clear_fault(FaultCode.COM_103.value, by="auto")
-            if self._availability:
-                self._availability.republish()
-            self._outputs.state_changed(self.state)
-        else:
-            self.raise_fault(FaultCode.COM_103, outcome="disconnected")
+        """Connection-state callback from MQTTClient (chained after the
+        health monitor). Forwards to `self._faults.on_mqtt_connection`
+        (controller/fault_service.py) for now; moves to `Machine` in
+        Task 6."""
+        self._faults.on_mqtt_connection(connected)
 
     def set_display_controller(self, controller: DisplayController):
         """Attach a DisplayController so FSM state changes update the customer display."""
@@ -684,18 +685,17 @@ class VMC:
             ),
         )
 
-    # --- Fault registry ---
+    # --- Fault service ---
     #
-    # State and pure bookkeeping live in `self._faults`
-    # (controller/fault_registry.py's `FaultRegistry`); the methods below
-    # are thin delegates that keep every side effect (event recorder,
-    # health monitor, MQTT, maintenance lease / session store guards)
-    # exactly where it always was.
+    # State and side effects live in `self._faults`
+    # (controller/fault_service.py's `FaultService`, wrapping
+    # controller/fault_registry.py's `FaultRegistry` for the pure
+    # bookkeeping); the methods below are one-line forwards.
 
     @property
-    def faults(self) -> FaultRegistry:
-        """Read-only view of the fault registry (VMC public surface
-        design, section 3). `vmc.faults.lockouts`/`.is_locked(sku)`/
+    def faults(self) -> FaultService:
+        """Read-only view of the fault service (VMC public surface
+        design, section 3; see controller/fault_service.py). `vmc.faults.lockouts`/`.is_locked(sku)`/
         `.has(code)` are read directly; mutation only ever happens through
         `raise_fault`/`clear_fault`."""
         return self._faults
@@ -805,15 +805,9 @@ class VMC:
         return [p for p in self.products if self._faults.is_locked(p.sku) is None]
 
     def active_faults(self) -> list[dict]:
-        """Snapshot for the dashboard/health monitor. Product faults first."""
-        return self._faults.snapshot()
-
-    def _push_active_faults(self) -> None:
-        faults = self.active_faults()
-        if self._health_monitor:
-            self._health_monitor.set_active_faults(faults)
-        if self._availability:
-            self._availability.set_active_faults(faults)
+        """Snapshot for the dashboard/health monitor. Forwards to
+        `self._faults.active_faults()` (controller/fault_service.py)."""
+        return self._faults.active_faults()
 
     def raise_fault(
         self,
@@ -822,107 +816,16 @@ class VMC:
         sku: str | None = None,
         outcome: str | None = None,
     ) -> None:
-        """Record a fault: lock the product if its severity says so, alert the owner.
-
-        Public entry point for both an in-FSM caller and a caller outside
-        the FSM (e.g. main.py at startup, raising a machine-scope DATA-101/
-        DATA-102) -- the two used to be split between this method (then
-        private, ``_raise_fault``) and ``raise_data_fault``; they are merged
-        here since neither ever did anything the other couldn't.
-        """
-        raised = self._faults.raise_fault(code, sku=sku, outcome=outcome)
-        if raised.newly_locked and self._event_recorder:
-            self._event_recorder.record(
-                "lockout_set", metadata={"code": code.value, "sku": sku}
-            )
-        logger.error(f"FAULT {raised.message}")
-
-        if self._health_monitor:
-            self._fire_and_forget(
-                self._health_monitor.raise_alert(
-                    raised.alert_key,
-                    raised.level,
-                    "vmc",
-                    raised.message,
-                    code=code.value,
-                    product_sku=sku,
-                )
-            )
-        self._outputs.publish_alert(
-            VMCAlert(
-                level=raised.level,
-                message=raised.message,
-                code=code,
-                product_sku=sku,
-            )
-        )
-        self._push_active_faults()
+        """Record a fault. Forwards to `self._faults.raise_fault(...)`
+        (controller/fault_service.py) -- see that class's docstring for
+        the full contract."""
+        self._faults.raise_fault(code, sku=sku, outcome=outcome)
 
     def clear_fault(self, key: str, by: str = "admin") -> bool:
-        """Clear a fault by key (SKU for product faults, code string for machine faults)."""
-        code = self._faults.pop_lockout(key)
-        if code is not None:
-            sku = key
-            if self._event_recorder:
-                self._event_recorder.record(
-                    "lockout_cleared",
-                    metadata={"code": code.value, "sku": sku, "by": by},
-                )
-            if self._health_monitor:
-                self._health_monitor.clear_alert(f"{code.value}:{sku}")
-            logger.info(f"Fault {code.value} cleared for product {sku} ({by})")
-            # Dispenser profiles (plan 2, Task 2 review fix): CFG-101 is a
-            # standing invariant -- a product with no valid dispenser
-            # profile is never sellable. Popping *any* lockout here (not
-            # just CFG-101 itself, e.g. an operator clearing ICE-301 on a
-            # profile-less product) can leave such a product unlocked with
-            # no profile, since nothing else re-runs reconciliation on
-            # this path. Re-check immediately and re-raise CFG-101 if no
-            # valid profile exists. reconcile_dispenser_profiles's own
-            # CFG-101 clears are unaffected: they only clear CFG-101 when
-            # dispenser_profile_for already found a valid profile, so this
-            # re-check finds one too and does nothing. No recursion is
-            # possible: raise_fault never calls clear_fault.
-            if self._gate.lacks_valid_profile(sku):
-                logger.info(f"{sku} re-locked: no valid dispenser profile (CFG-101)")
-                self.raise_fault(FaultCode.CFG_101, sku=sku)
-        else:
-            code = self._faults.parse_key(key)
-            if code is None:
-                return False
-            if not self._faults.has(code):
-                return False
-            if code is FaultCode.SVC_102 and self._lease.hold is not None:
-                # Copilot review (PR 22): a generic clear must not bypass
-                # the maintenance lease invariant, the same class of bug
-                # fixed twice already for PAY-104 in part 3. Only lease
-                # release (end_maintenance / idle timeout / the last
-                # in-flight run settling, all via `self._lease.release`)
-                # may clear SVC-102; by the time that path calls
-                # clear_fault it has already set self._lease.hold = None,
-                # so this check cannot block the real release.
-                logger.warning(
-                    "Refused generic clear of SVC-102: maintenance lease "
-                    f"still held by {self._lease.hold.holder_user_id}"
-                )
-                return False
-            if code is FaultCode.PAY_104:
-                if not self._outputs.clear_session_evidence():
-                    logger.error(
-                        f"Fault {code.value}: could not remove session evidence file; "
-                        "leaving fault in place."
-                    )
-                    return False
-            self._faults.clear_machine(code)
-            if code is FaultCode.PAY_104:
-                if self._availability:
-                    self._availability.set_transaction_certain(True)
-            if self._health_monitor:
-                self._health_monitor.clear_alert(f"{code.value}:machine")
-            logger.info(f"Machine fault {code.value} cleared ({by})")
-        self._push_active_faults()
-        self._outputs.state_changed(self.state)
-        return True
+        """Clear a fault by key. Forwards to `self._faults.clear_fault(...)`
+        (controller/fault_service.py) -- see that class's docstring for
+        the full contract."""
+        return self._faults.clear_fault(key, by=by)
 
     def pending_sale_for_recovery(self) -> dict | None:
         """Read-only PAY-104 recovery accessor. See
@@ -947,16 +850,6 @@ class VMC:
         ``controller.session_recovery.SessionRecovery.mark_pending_sale_recorded``.
         """
         return self._recovery.mark_pending_sale_recorded()
-
-    def _clear_ice101_lockouts(self) -> None:
-        """Clear every ICE-101 lockout -- invoked by the telemetry router
-        (controller/mqtt_inbound.py's `TelemetryRouter.handle_hardware_io`)
-        when the vending ESP32 reports `bin_half_full` going true. Kept on
-        the VMC because it drives the fault registry, not just telemetry.
-        """
-        for sku, code in list(self._faults.lockouts.items()):
-            if code is FaultCode.ICE_101:
-                self.clear_fault(sku, by="auto")
 
     async def on_hardware_io(self, topic: str, data: dict):
         """Binary hardware IO from the vending ESP32; ice returning clears ICE-101."""
