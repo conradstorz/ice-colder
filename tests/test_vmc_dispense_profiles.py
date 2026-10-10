@@ -455,7 +455,7 @@ async def test_request_id_is_known_before_the_ack_arrives(tmp_path):
     _start_sale(vmc, product)
     await asyncio.sleep(0)  # dispatch reaches send() and blocks on the gate
 
-    assert vmc._dispense_request_id is not None
+    assert vmc.sale.request_id is not None
     sent_subsystem, sent_command, sent_params = dispatcher.sent[-1]
     assert sent_subsystem == "vending" and sent_command == "dispense"
 
@@ -502,7 +502,7 @@ async def test_report_before_ack_completes_sale(tmp_path):
     _start_sale(vmc, product)
     await asyncio.sleep(0)  # dispatch reaches send() and blocks on the gate
 
-    request_id = vmc._dispense_request_id
+    request_id = vmc.sale.request_id
     assert request_id is not None
 
     await vmc.on_dispenser_event(
