@@ -36,6 +36,7 @@ from services.dispenser_schema import SlotProfile
 from controller.fault_registry import FaultRegistry
 from controller.escrow_ledger import EscrowLedger
 from controller.refund_protocol import PendingRefund, RefundProtocol
+from controller.sale_context import SaleContext
 from controller.session_recovery import SessionRecovery
 from controller.maintenance_lease import MaintenanceHold, MaintenanceLease
 from controller.task_runner import TaskRunner
@@ -202,7 +203,16 @@ class VMC:
         self.products = self.config_model.products
         self.owner_contact = self.config_model.machine_owner
 
-        self.selected_product = None
+        # The in-flight sale (controller/sale_context.py's SaleContext):
+        # product, consumed escrow shares, test-ness, dispenser mechanism,
+        # dispatch request_id, and dispatch seq, all replaced wholesale at
+        # each transition rather than written as separate attributes. None
+        # whenever no sale is in progress. Exposed read-only as `self.sale`
+        # (VMC public surface design, section 3); `selected_product` and
+        # `pending_sale_shares` below stay read/write and read-only
+        # properties, respectively, over this -- see SaleContext's own
+        # module docstring for the full field-by-field rationale.
+        self._sale: SaleContext | None = None
         # credit_escrow/escrow_credits live in self._escrow (an
         # EscrowLedger, controller/escrow_ledger.py) -- the FIFO ledger
         # behind the authoritative total. credit_escrow must always equal
@@ -212,32 +222,6 @@ class VMC:
         # aliasing self._escrow.total/self._escrow.credits, kept because
         # many existing tests read and write them directly.
         self._escrow = EscrowLedger()
-        # Shares consumed by the sale currently in dispensing, keyed by raw
-        # method string. Set by _consume_credits_fifo when a sale's price is
-        # deducted; consumed (and reset to None) by on_vend_failed. None
-        # whenever no sale is in flight.
-        self.pending_sale_shares: dict[str, float] | None = None
-        # is_test lives on the in-flight sale context (system-tests design
-        # §2.3), alongside selected_product/pending_sale_shares above --
-        # NOT a VMC-global mode flag. Set True only by run_test_sale, just
-        # before it selects the product; read (never inferred from
-        # self._lease.hold) by on_dispenser_event and
-        # _dispense_timed_out to decide sale vs. test_run recording, and
-        # by _fail_vend to decide whether a failed vend may issue a real
-        # refund. Reset to False only by run_test_sale itself once the
-        # sale has settled, so a lease release or idle-timeout mid-run
-        # cannot flip this sale from test to production.
-        self._sale_is_test: bool = False
-        # Dispenser profiles (plan: dispenser profiles, Task 3): the
-        # in-flight sale's mechanism ("bagged_ice"/"water_fill", set by
-        # on_dispense_product before it dispatches) and the accepted ack's
-        # request_id (set by _persist_then_dispense once the dispatcher
-        # answers). Both live alongside selected_product/pending_sale_shares
-        # above -- per-sale context, not VMC-global state -- and are reset
-        # to None in _finish_dispensing (success), _fail_vend (failure),
-        # and on_reset/on_error (abnormal exit).
-        self._sale_mechanism: str | None = None
-        self._dispense_request_id: str | None = None
         # Review finding I2: a monotonically increasing counter identifying
         # the *current* in-flight dispense dispatch. Incremented once per
         # on_dispense_product call (one dispatch attempt per entry into
@@ -659,7 +643,7 @@ class VMC:
             dispense_slot=product.slot
             if product and effective_state == "dispensing"
             else None,
-            dispense_mechanism=self._sale_mechanism
+            dispense_mechanism=(self._sale.mechanism if self._sale else None)
             if effective_state == "dispensing"
             else None,
             dispense_started_at=time.time()
@@ -670,7 +654,20 @@ class VMC:
             pending_sale_shares=dict(self.pending_sale_shares)
             if self.pending_sale_shares is not None
             else None,
-            is_test=self._sale_is_test,
+            # self._sale is already None by the time a failed-vend's own
+            # _publish_status() snapshot is taken (on_vend_failed fully
+            # clears it before _fail_vend gets to that point) -- fall back
+            # to the re-entrancy guard, which strictly contains the whole
+            # run_test_sale call, so a test sale's "no sellable products
+            # remain" snapshot still reads is_test=True instead of
+            # wrongly raising PAY-104 for test money on a crash right
+            # there. A production sale never has this flag set, so the
+            # fallback is False for it exactly as self._sale_is_test was.
+            is_test=(
+                self._sale.is_test
+                if self._sale is not None
+                else self._test_sale_in_progress
+            ),
         )
 
     def _persist_session(self, state: str | None = None) -> None:
@@ -784,6 +781,52 @@ class VMC:
         mutation only ever happens through `set_dispenser_profiles`/
         `reconcile_dispenser_profiles`/`catalog_changed`."""
         return self._gate
+
+    # --- In-flight sale (SaleContext, controller/sale_context.py) ---
+    #
+    # `self._sale` is the single source of truth; every FSM callback below
+    # replaces it wholesale (`self._sale = self._sale.with_(...)` or
+    # `self._sale = None`) rather than writing the old separate attributes
+    # (`selected_product`, `pending_sale_shares`, `_sale_is_test`,
+    # `_sale_mechanism`, `_dispense_request_id`) by hand. `selected_product`
+    # stays read/write -- many existing tests assign
+    # `vmc.selected_product = vmc.products[0]` directly to set up a sale
+    # without going through `select_product` -- and `pending_sale_shares`
+    # stays read-only, both as properties over `self._sale`.
+
+    @property
+    def sale(self) -> SaleContext | None:
+        """Read-only view of the in-flight sale (VMC public surface
+        design, section 3). `None` whenever no sale is in progress."""
+        return self._sale
+
+    @property
+    def selected_product(self) -> Product | None:
+        return self._sale.product if self._sale is not None else None
+
+    @selected_product.setter
+    def selected_product(self, product: Product | None) -> None:
+        if product is None:
+            self._sale = None
+            return
+        if self._sale is None or self._sale.product is not product:
+            self._sale = SaleContext(product=product, started_at=time.time())
+        # else: the same product is already the in-flight sale's product --
+        # leave the existing context (shares/mechanism/request_id/is_test)
+        # untouched. This is what lets `run_test_sale` seed a context with
+        # `is_test=True` before calling `select_product`, which then goes
+        # on to assign that same product right back here.
+
+    @property
+    def pending_sale_shares(self) -> dict[str, float] | None:
+        return self._sale.shares if self._sale is not None else None
+
+    @property
+    def test_sale_in_progress(self) -> bool:
+        """Read-only view of the re-entrancy guard around
+        `run_test_sale` -- see `self._test_sale_in_progress`'s own
+        comment."""
+        return self._test_sale_in_progress
 
     def _product_name(self, sku: str | None) -> str | None:
         if sku is None:
@@ -1062,7 +1105,8 @@ class VMC:
         """
         product = self.selected_product
         if self._event_recorder is None or product is None:
-            self.pending_sale_shares = None
+            if self._sale is not None:
+                self._sale = self._sale.with_(shares=None)
             return
         methods = self.pending_sale_shares or {"unknown": round(product.price, 2)}
         # Price comes from the consumed shares, not `product.price`:
@@ -1107,7 +1151,8 @@ class VMC:
                 FaultCode.DATA_101,
                 outcome=f"sku={product.sku} price=${price:.2f}",
             )
-        self.pending_sale_shares = None
+        if self._sale is not None:
+            self._sale = self._sale.with_(shares=None)
 
     async def on_dispenser_event(self, topic: str, data: dict):
         """Handle dispenser status from ESP32.
@@ -1138,10 +1183,11 @@ class VMC:
             return
 
         reported_request_id = data.get("request_id")
+        in_flight_request_id = self._sale.request_id if self._sale else None
         if (
             reported_request_id
-            and self._dispense_request_id
-            and reported_request_id != self._dispense_request_id
+            and in_flight_request_id
+            and reported_request_id != in_flight_request_id
         ):
             # Review finding C2 (Copilot, PR #32): a mismatched id is a
             # stale/foreign report -- e.g. a late report from an earlier
@@ -1151,7 +1197,7 @@ class VMC:
             # entirely and is still accepted, keyed on slot and FSM state.
             logger.warning(
                 f"Ignoring dispenser report: request_id={reported_request_id!r} "
-                f"does not match in-flight request_id={self._dispense_request_id!r} "
+                f"does not match in-flight request_id={in_flight_request_id!r} "
                 f"(slot {slot})"
             )
             return
@@ -1167,15 +1213,16 @@ class VMC:
         # must take the ordinary failed-vend path below instead, via the
         # unmapped-outcome fallback in the `except KeyError` branch
         # further down -- never record a sale or raise ICE-402 for it.
+        mechanism = self._sale.mechanism if self._sale else None
         door_open_is_success = (
             outcome is DispenserOutcome.door_open
-            and _has_outcome_mapping(self._sale_mechanism, DispenserOutcome.door_open)
+            and _has_outcome_mapping(mechanism, DispenserOutcome.door_open)
         )
         if outcome is DispenserOutcome.complete or door_open_is_success:
             txn_log.info(f"DISPENSE SUCCESS: slot {slot}, product '{product_name}'")
             vend_log.info(f"DISPENSE COMPLETE: slot {slot}, product '{product_name}'")
-            if self._sale_is_test:
-                # is_test lives on the sale (self._sale_is_test, set only
+            if self._sale is not None and self._sale.is_test:
+                # is_test lives on the sale (self._sale.is_test, set only
                 # by run_test_sale), not on the lease -- consulted here
                 # instead of self._lease.hold so a lease release or
                 # idle-timeout mid-run cannot flip this sale to production
@@ -1185,7 +1232,7 @@ class VMC:
                 # record_sale's own bookkeeping (clearing
                 # pending_sale_shares) is replicated here since
                 # _record_sale is skipped entirely for a test sale.
-                self.pending_sale_shares = None
+                self._sale = self._sale.with_(shares=None)
                 self._resolve_test_sale_waiter("dispensed", None)
             else:
                 if self._event_recorder and self.selected_product:
@@ -1208,7 +1255,7 @@ class VMC:
 
         self._cancel_dispense_timeout()
         try:
-            code = fault_for_outcome(self._sale_mechanism, outcome)
+            code = fault_for_outcome(mechanism, outcome)
         except KeyError:
             # A board mis-reporting for its own mechanism (e.g. a water
             # board sending `jam`, which only a bagged-ice slot can report)
@@ -1218,13 +1265,11 @@ class VMC:
             # always sets it), default to bagged_ice so this fallback
             # lookup can never itself KeyError.
             logger.error(
-                f"No fault mapped for mechanism={self._sale_mechanism!r} "
+                f"No fault mapped for mechanism={mechanism!r} "
                 f"outcome={outcome.value!r}; board may be mis-reporting for "
                 "this mechanism -- falling back to a generic error"
             )
-            code = fault_for_outcome(
-                self._sale_mechanism or "bagged_ice", DispenserOutcome.error
-            )
+            code = fault_for_outcome(mechanism or "bagged_ice", DispenserOutcome.error)
         sku = self.selected_product.sku if self.selected_product else None
         txn_log.error(
             f"DISPENSE FAILED: slot {slot}, product '{product_name}', "
@@ -1235,8 +1280,14 @@ class VMC:
             f"outcome: {outcome.value}, fault: {code.value}"
         )
         self.raise_fault(code, sku=sku, outcome=outcome.value)
+        # Captured BEFORE _fail_vend: it runs the vend_failed transition,
+        # whose before-hook (on_vend_failed) fully clears self._sale (see
+        # its own comment) before this call returns -- reading is_test
+        # afterward would always see None/False and silently strand
+        # run_test_sale's waiter forever.
+        is_test = self._sale is not None and self._sale.is_test
         self._fail_vend(code, outcome=outcome.value)
-        if self._sale_is_test:
+        if is_test:
             self._resolve_test_sale_waiter("vend_failed", code.value)
 
     async def _handle_mqtt_dispenser(self, topic: str, data: dict):
@@ -1455,7 +1506,6 @@ class VMC:
                     persistent=True,
                 )
                 return
-            self._sale_mechanism = profile.mechanism
             cmd = DispenseCommand(
                 slot=product.slot, mechanism=profile.mechanism, profile=profile
             )
@@ -1470,7 +1520,9 @@ class VMC:
             # otherwise be unverifiable. Generated and recorded here,
             # synchronously, before the dispatch task is even created.
             request_id = uuid4().hex
-            self._dispense_request_id = request_id
+            self._sale = self._sale.with_(
+                mechanism=profile.mechanism, request_id=request_id, seq=seq
+            )
             snap = self._snapshot("dispensing") if self._session_store else None
             self._fire_and_forget(
                 self._persist_then_dispense(snap, cmd, seq, request_id),
@@ -1537,7 +1589,7 @@ class VMC:
         and await only its accepted ack -- never completion.
 
         `request_id` (review finding C2) is `on_dispense_product`'s own
-        generated id, already recorded on `self._dispense_request_id`
+        generated id, already recorded on `self.sale.request_id`
         *before* this task was even created -- passed through to
         `send()` so the wire-level request_id the board sees is exactly
         the id the VMC can already match a terminal report against, no
@@ -1659,15 +1711,16 @@ class VMC:
         logger.info(
             f"{STATE_CHANGE_PREFIX} Resetting to idle state. Previous selection: {self.selected_product}"
         )
-        self.selected_product = None
-        self.last_insufficient_message = ""
         # Minor fix M3: an abnormal exit from 'dispensing' (reset/error)
         # must clear per-sale dispatch context the same way a normal
         # finish or a failed vend does, so a stray late hardware report or
         # dispatch failure for the sale that was in flight can't act on
-        # stale mechanism/request_id state after the reset.
-        self._sale_mechanism = None
-        self._dispense_request_id = None
+        # stale mechanism/request_id state after the reset. Setting
+        # selected_product to None clears the whole SaleContext (product,
+        # shares, mechanism, request_id, is_test together), so there is
+        # nothing left to clear separately afterward.
+        self.selected_product = None
+        self.last_insufficient_message = ""
         self._update_display("idle")
         self._refresh_ui()
 
@@ -1725,7 +1778,8 @@ class VMC:
         sku = product.sku if product else None
         self._cancel_dispense_timeout()
         shares = self.pending_sale_shares
-        self.pending_sale_shares = None
+        if self._sale is not None:
+            self._sale = self._sale.with_(shares=None)
         if shares is None:
             # Should be unreachable: on_vend_failed only runs from
             # dispensing, which is only entered right after
@@ -1748,7 +1802,7 @@ class VMC:
         txn_log.error(
             f"VEND FAILED: '{name}' {code.value} ({outcome}); ${price:.2f} returned to escrow"
         )
-        if self._event_recorder and not self._sale_is_test:
+        if self._event_recorder and not (self._sale is not None and self._sale.is_test):
             # Copilot review (PR 22, id=4128088653): on_vend_failed is the
             # one place that runs for every failed/timed-out vend,
             # production or test (both on_dispenser_event's failure
@@ -1777,8 +1831,12 @@ class VMC:
 
     def _fail_vend(self, code: FaultCode, outcome: str) -> None:
         """Run the vend_failed transition, then decide: choose again, or pay out."""
-        self._sale_mechanism = None
-        self._dispense_request_id = None
+        # Captured BEFORE vend_failed: its before-hook (on_vend_failed)
+        # fully clears self._sale at its end, so reading is_test off
+        # self._sale any later in this method would always see None/False.
+        is_test = self._sale is not None and self._sale.is_test
+        if self._sale is not None:
+            self._sale = self._sale.with_(mechanism=None, request_id=None)
         self.vend_failed(code=code, outcome=outcome)
         if not self._sellable_products():
             txn_log.info("No sellable products remain; refunding and returning to idle")
@@ -1786,10 +1844,11 @@ class VMC:
             # above, is not real money and must never leave via a real
             # refund command (system-tests design §2.3: "escrow is cleared
             # without a refund command"). run_test_sale clears it directly
-            # once the run's outcome is known. is_test lives on the sale
-            # (self._sale_is_test), not the lease, so this still reads
-            # correctly even if the lease has since been released.
-            if not self._sale_is_test:
+            # once the run's outcome is known. is_test lives on the sale,
+            # captured above before on_vend_failed cleared it, so this
+            # still reads correctly even if the lease has since been
+            # released.
+            if not is_test:
                 self.request_refund(reason=code.value)
             self._cancel_session_timeout()
             self.machine.set_state("idle")
@@ -1814,8 +1873,11 @@ class VMC:
             f"terminal report (slot {self.selected_product.slot if self.selected_product else '?'})"
         )
         self.raise_fault(FaultCode.PAY_102, sku=sku, outcome="no_report")
+        # Captured BEFORE _fail_vend, which clears self._sale via
+        # on_vend_failed before returning -- see _fail_vend's own comment.
+        is_test = self._sale is not None and self._sale.is_test
         self._fail_vend(FaultCode.PAY_102, outcome="no_report")
-        if self._sale_is_test:
+        if is_test:
             # Kept as its own outcome ("timeout"), distinct from
             # "vend_failed", even though it runs through the same
             # vend_failed/PAY-102 transition above (system-tests design
@@ -1838,8 +1900,13 @@ class VMC:
         if self._event_recorder:
             self._event_recorder.record("error", value=1.0)
         # Minor fix M3: see on_reset's comment above -- same reasoning.
-        self._sale_mechanism = None
-        self._dispense_request_id = None
+        # Unlike on_reset, on_error does NOT clear selected_product (the
+        # log line above still prints it), so this is a genuine partial
+        # clear via with_ rather than the full self._sale = None on_reset
+        # uses -- guarded because error_occurred can fire from any state,
+        # including idle with no sale in progress at all.
+        if self._sale is not None:
+            self._sale = self._sale.with_(mechanism=None, request_id=None)
         # Pay out any remaining credit through the gateway
         had_credit = self.credit_escrow > 0
         if had_credit:
@@ -1881,7 +1948,7 @@ class VMC:
             # spoof method="test" during a lease and have their credit sit in
             # escrow instead of being auto-refunded. This is deliberately
             # NOT a free-product path: whether a sale gets recorded to the
-            # ledger is gated on `self._sale_is_test` (set only inside
+            # ledger is gated on `self.sale.is_test` (set only inside
             # run_test_sale, never by this string) and `pending_sale_for_
             # recovery()`'s own `is_test` check -- a spoofed "test" deposit
             # can sit unrefunded in escrow, but it cannot make a real sale
@@ -2214,7 +2281,7 @@ class VMC:
         from being released out from under this run (system-tests design
         §2.2/§2.3).
 
-        ``is_test`` is set on the sale itself (``self._sale_is_test``) here,
+        ``is_test`` is set on the sale itself (``self._sale.is_test``) here,
         not derived from the lease, and is what ``on_dispenser_event``,
         ``_dispense_timed_out`` and ``_fail_vend`` consult to keep this run
         out of the production sales ledger and away from a real refund
@@ -2298,7 +2365,20 @@ class VMC:
         self._test_sale_in_progress = True
         try:
             with self.maintenance_test_run():
-                self._sale_is_test = True
+                # Seed the SaleContext with is_test=True *before*
+                # select_product runs -- select_product's own availability
+                # check (the test_sale_sellable vs. product_sellable
+                # branch) reads self.sale.is_test before the product is
+                # technically "selected", so is_test cannot wait for
+                # select_product's own assignment to create the context.
+                # The selected_product setter's "same product -> keep the
+                # existing context" rule (see its own comment) is what
+                # lets select_product's `self.selected_product = candidate`
+                # below leave this seeded context (and its is_test=True)
+                # alone rather than replacing it.
+                self._sale = SaleContext(
+                    product=product, is_test=True, started_at=time.time()
+                )
                 self._test_sale_path = [self.state]
                 loop = self._tasks.loop or asyncio.get_running_loop()
                 waiter: asyncio.Future = loop.create_future()
@@ -2376,7 +2456,33 @@ class VMC:
                 finally:
                     self._test_sale_path = None
                     self._test_sale_waiter = None
-                    self._sale_is_test = False
+                    # Whenever the sale actually settled (dispensed, failed,
+                    # or timed out), on_complete_transaction/on_vend_failed
+                    # already fully cleared self._sale (selected_product =
+                    # None) before `await waiter` ever returned -- so
+                    # self.state is never still "dispensing" here on that
+                    # path, and the `else` branch below is a no-op. The two
+                    # cases where self.state IS still "dispensing" are: (a)
+                    # this call's own task was cancelled while suspended on
+                    # `await waiter`, mid-vend, with the real hardware
+                    # dispense still physically in flight -- stripping only
+                    # is_test (not the whole context) matches today's
+                    # behaviour, where only the separate _sale_is_test flag
+                    # was reset here, leaving selected_product/mechanism/
+                    # request_id exactly as the stuck vend left them, so a
+                    # later real hardware report can still settle it. The
+                    # other case -- select_product refused the seeded
+                    # context outright (locked out/unavailable/sold out) --
+                    # never reaches "dispensing" at all, so it always takes
+                    # the `else` branch, clearing the leftover seeded
+                    # context so a refused test sale leaves
+                    # vmc.selected_product is None, exactly as it did before
+                    # this sale was ever seeded onto self._sale.
+                    if self.state == "dispensing":
+                        if self._sale is not None:
+                            self._sale = self._sale.with_(is_test=False)
+                    else:
+                        self._sale = None
                     # Test money is never real money and must never leave
                     # via a refund command (system-tests design §2.3) --
                     # clear it directly rather than through request_refund.
@@ -2465,11 +2571,14 @@ class VMC:
             # A maintenance test sale is exempt from the sale-blocking
             # effect of its OWN SVC-102 lease fault -- and of SVC-102
             # alone -- because test-ness lives on the sale
-            # (self._sale_is_test, set only by run_test_sale), not on the
-            # lease: a real customer press reaching this method during a
-            # lease has self._sale_is_test False and is still refused by
-            # product_sellable like any other safety-blocked sale.
-            if self._sale_is_test:
+            # (self.sale.is_test, set only by run_test_sale, which seeds
+            # the SaleContext with is_test=True before this method even
+            # runs), not on the lease: a real customer press reaching this
+            # method during a lease has no seeded context yet (self._sale
+            # is None, or belongs to a different, already-cleared sale) and
+            # is still refused by product_sellable like any other
+            # safety-blocked sale.
+            if self._sale is not None and self._sale.is_test:
                 sellable, failing = self._availability.test_sale_sellable(candidate)
             else:
                 sellable, failing = self._availability.product_sellable(candidate)
@@ -2555,7 +2664,7 @@ class VMC:
             self.send_customer_message(
                 "Sufficient funds received. Processing your payment..."
             )
-            self.pending_sale_shares = self._consume_credits_fifo(price)
+            self._sale = self._sale.with_(shares=self._consume_credits_fifo(price))
             self.credit_escrow -= price
             logger.debug(
                 f"Deducted price from escrow. New escrow: {self.credit_escrow:.2f} "
@@ -2699,8 +2808,8 @@ class VMC:
         if self.state != "dispensing":
             logger.debug("State is not dispensing; cannot finish dispensing.")
             return
-        self._sale_mechanism = None
-        self._dispense_request_id = None
+        if self._sale is not None:
+            self._sale = self._sale.with_(mechanism=None, request_id=None)
         product_name = (
             self.selected_product.name if self.selected_product else "Unknown"
         )

@@ -2651,7 +2651,7 @@ class TestRunTestSale:
         with pytest.raises(RuntimeError):
             await vmc.run_test_sale("ICE-1")
 
-        assert vmc._sale_is_test is False
+        assert (vmc.sale is not None and vmc.sale.is_test) is False
         assert rec.sales == []
         assert client.published == []
 
@@ -2690,7 +2690,7 @@ class TestRunTestSale:
         task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
         await asyncio.sleep(0)
         assert vmc.state == "interacting_with_user"
-        assert vmc._sale_is_test is True
+        assert (vmc.sale is not None and vmc.sale.is_test) is True
 
         vmc.process_payment()
         assert vmc.state == "dispensing"
@@ -2717,7 +2717,7 @@ class TestRunTestSale:
         assert vmc.credit_escrow == 0.0
         assert vmc.escrow_credits == []
         assert client.refund_commands() == []
-        assert vmc._sale_is_test is False
+        assert (vmc.sale is not None and vmc.sale.is_test) is False
         assert vmc.pending_sale_shares is None
 
     async def test_dispensed_test_sale_survives_lease_released_mid_run(self):
@@ -3451,7 +3451,7 @@ class TestTestSaleAvailabilityExemption:
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
         await asyncio.sleep(0)
-        assert vmc._sale_is_test is False
+        assert (vmc.sale is not None and vmc.sale.is_test) is False
 
         vmc.select_product(0)  # a real customer button press, index 0 = ICE-1
 
@@ -3552,7 +3552,7 @@ class TestConcurrentTestSaleGuard:
         assert result.outcome == "dispensed"
 
         assert vmc.maintenance_hold.runs_in_flight == 0
-        assert vmc._test_sale_in_progress is False
+        assert vmc.test_sale_in_progress is False
 
         released = vmc.end_maintenance("sess-1")
         assert released is True
@@ -3591,11 +3591,11 @@ class TestConcurrentTestSaleGuard:
             await task1
 
         assert vmc.maintenance_hold.runs_in_flight == 0
-        assert vmc._test_sale_in_progress is False
+        assert vmc.test_sale_in_progress is False
         # Cancellation still clears escrow directly (never a real refund
         # command) and the per-sale flags, same as any other exit path.
         assert vmc.credit_escrow == 0.0
-        assert vmc._sale_is_test is False
+        assert (vmc.sale is not None and vmc.sale.is_test) is False
 
         released = vmc.end_maintenance("sess-1")
         assert released is True
@@ -3624,7 +3624,7 @@ class TestConcurrentTestSaleGuard:
         with pytest.raises(RuntimeError, match="could not select"):
             await vmc.run_test_sale("ICE-1")
 
-        assert vmc._test_sale_in_progress is False
+        assert vmc.test_sale_in_progress is False
         assert vmc.maintenance_hold.runs_in_flight == 0
 
         task2 = asyncio.get_running_loop().create_task(vmc.run_test_sale("WATER-1"))
