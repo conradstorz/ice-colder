@@ -22,6 +22,7 @@ from pydantic import SecretStr
 from config.config_model import ConfigModel, Product
 from contracts.common import CommandAck
 from controller.vmc import VMC
+from tests.fakes import FakeTaskRunner
 from services.command_dispatcher import CommandDispatcher
 from services.health_monitor import HealthMonitor
 from services.mqtt_client import MQTTClient
@@ -125,6 +126,16 @@ def _make_config() -> ConfigModel:
     if _MQTT_AUTH["password"]:
         config.mqtt.password = SecretStr(_MQTT_AUTH["password"])
     return config
+
+
+async def _wait_until(predicate, timeout: float = 10.0):
+    """Poll a predicate until it is true or timeout."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(0.05)
+    raise TimeoutError("condition not met within timeout")
 
 
 async def _wait_for_state(vmc: VMC, target_state: str, timeout: float = 10.0):
@@ -609,7 +620,12 @@ class TestFailedVendLoop:
         config = _make_config()
         prefix = f"vmc/{config.machine_id}"
         mqtt_client = MQTTClient(config=config.mqtt, machine_id=config.machine_id)
-        vmc = VMC(config=config)
+        # A FakeTaskRunner still runs fire-and-forget coroutines (the MQTT
+        # publishes) on the real loop; it only makes timers explicit, so
+        # the customer walking away below is runner.fire("session_timeout")
+        # rather than a 180 s wait or a call into a private handler.
+        runner = FakeTaskRunner()
+        vmc = VMC(config=config, tasks=runner)
         health = HealthMonitor()
 
         async with aiomqtt.Client(
@@ -640,6 +656,11 @@ class TestFailedVendLoop:
                         f"{prefix}/payment/credit",
                         json.dumps({"amount": 2.00, "method": "cash_bill"}),
                     )
+                    # select_product schedules process_payment a second
+                    # later; with the fake runner the test fires it once
+                    # the credit has landed in escrow.
+                    await _wait_until(lambda: vmc.credit_escrow >= 2.00)
+                    runner.fire("process_payment")
                     await _wait_for_state(vmc, "dispensing")
 
                     dispense_msg = None
@@ -667,8 +688,10 @@ class TestFailedVendLoop:
                 assert vmc.faults.lockouts["ICE-SM"].value == "ICE-401"
                 assert health.get_summary()["active_faults"][0]["code"] == "ICE-401"
 
-                # Customer walks away: session expiry pays out via the gateway.
-                vmc._expire_session()
+                # Customer walks away: the session timeout _fail_vend
+                # re-armed on the way back to interacting_with_user fires,
+                # and session expiry pays out via the gateway.
+                runner.fire("session_timeout")
 
                 async def next_refund():
                     async for m in sim_client.messages:

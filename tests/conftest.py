@@ -1,5 +1,6 @@
 """Shared fixtures. Isolates every test from the developer's real config.json."""
 
+import asyncio
 import json
 import logging
 import sys
@@ -17,6 +18,7 @@ from services.access import AccessStore, Role, User
 from services.dispensers import DispenserProfiles
 from services.inventory_manager import InventoryManager
 from tests.dispenser_fixtures import GOOD as DISPENSER_GOOD
+from tests.fakes import FakeTaskRunner
 from tests.dispenser_fixtures import ICE as DISPENSER_ICE
 from tests.dispenser_fixtures import WATER as DISPENSER_WATER
 from tests.skip_policy import MISSING_TERMINALREPORTER_MARKER, build_skip_report
@@ -202,6 +204,23 @@ def anonymous(wired):
     c = TestClient(app, follow_redirects=False)
     yield c
     c.close()
+
+
+@pytest.fixture
+async def vmc_fake_time():
+    """A VMC wired to a `FakeTaskRunner` (`tests/fakes.py`) instead of a
+    real event-loop timer (VMC public surface design, section 2): yields
+    `(vmc, runner)` so a test can arm a timer through an ordinary VMC call
+    (`deposit_funds`, `process_payment`, `begin_maintenance`, ...) and then
+    fire it by label -- `runner.fire("dispense_timeout")` -- rather than
+    reaching into a private per-timer task handle on the VMC.
+    """
+    cfg = ConfigModel()
+    runner = FakeTaskRunner()
+    vmc = VMC(config=cfg, tasks=runner)
+    vmc.attach_to_loop(asyncio.get_running_loop())
+    yield vmc, runner
+    vmc.cancel_pending_tasks()
 
 
 @pytest.fixture

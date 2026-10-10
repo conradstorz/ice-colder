@@ -21,6 +21,7 @@ from services.availability import Availability
 from services.command_dispatcher import CommandTimeout
 from services.dispensers import DispenserProfiles
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for, render_profiles_toml
+from tests.fakes import FakeTaskRunner
 
 ICE_1 = Product(sku="ICE-1", slot=0, kind="ice")
 WATER_1 = Product(sku="W-1", slot=1, kind="water")
@@ -338,12 +339,14 @@ class FakeEventRecorder:
         self.sales.append((sku, name, slot, price, methods))
 
 
-def _vmc_with_profiles(tmp_path, products=(ICE_1, WATER_1)):
+def _vmc_with_profiles(tmp_path, products=(ICE_1, WATER_1), *, tasks=None):
     """A VMC wired exactly like `make_vmc()` but with a loaded
     `DispenserProfiles` for *products* and a `FakeDispatcher` attached --
-    the minimum wiring a production sale needs to actually dispatch."""
+    the minimum wiring a production sale needs to actually dispatch. Pass
+    `tasks` (e.g. `tests.fakes.FakeTaskRunner()`) for a test that fires a
+    timer by label instead of waiting on a real one."""
     cfg = ConfigModel(physical=PhysicalDetails(products=list(products)))
-    vmc = VMC(config=cfg)
+    vmc = VMC(config=cfg, tasks=tasks)
     vmc.attach_to_loop(asyncio.get_running_loop())
     profiles = profiles_for(list(products), tmp_path)
     vmc.set_dispenser_profiles(profiles)
@@ -392,7 +395,7 @@ async def test_sale_dispatches_full_profile_on_command_channel(tmp_path):
 
 
 async def test_no_ack_fails_vend_immediately_with_pay102(tmp_path):
-    vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    vmc, dispatcher = _vmc_with_profiles(tmp_path, tasks=FakeTaskRunner())
     rec = FakeEventRecorder()
     vmc.set_event_recorder(rec)
     dispatcher.fail_with = CommandTimeout("vending", "dispense")
@@ -409,7 +412,7 @@ async def test_no_ack_fails_vend_immediately_with_pay102(tmp_path):
     # via the vend_failed event it drives, matching the convention already
     # used throughout tests/test_vmc_flows.py.
     assert any(e[0] == "vend_failed" and e[2]["code"] == "PAY-102" for e in rec.events)
-    assert vmc._dispense_timeout_task is None
+    assert not any(c.label == "dispense_timeout" for c in vmc.tasks.scheduled)
     vmc.cancel_pending_tasks()
 
 
@@ -696,7 +699,7 @@ async def test_unexpected_dispatch_error_fails_vend_immediately(tmp_path):
     publish) must fail the vend right away, exactly like a `CommandTimeout`
     does -- not leave the FSM stuck in `dispensing` for the full 120s
     dispense-timeout fallback."""
-    vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    vmc, dispatcher = _vmc_with_profiles(tmp_path, tasks=FakeTaskRunner())
     rec = FakeEventRecorder()
     vmc.set_event_recorder(rec)
     dispatcher.fail_with = ValueError("boom")
@@ -709,7 +712,7 @@ async def test_unexpected_dispatch_error_fails_vend_immediately(tmp_path):
     assert vmc.state == "interacting_with_user"
     assert vmc.credit_escrow == price
     assert any(e[0] == "vend_failed" and e[2]["code"] == "PAY-102" for e in rec.events)
-    assert vmc._dispense_timeout_task is None
+    assert not any(c.label == "dispense_timeout" for c in vmc.tasks.scheduled)
     vmc.cancel_pending_tasks()
 
 
@@ -727,7 +730,7 @@ async def test_snapshot_save_failure_fails_vend_immediately(tmp_path):
     """A disk-full or permission error during snapshot save must fail the vend
     right away with PAY-102, not leave the FSM stuck in `dispensing` for the
     full 120s dispense-timeout fallback."""
-    vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    vmc, dispatcher = _vmc_with_profiles(tmp_path, tasks=FakeTaskRunner())
     rec = FakeEventRecorder()
     vmc.set_event_recorder(rec)
     vmc.set_session_store(FakeSessionStore())
@@ -746,7 +749,7 @@ async def test_snapshot_save_failure_fails_vend_immediately(tmp_path):
         e[0] == "vend_failed" and e[2]["outcome"] == "snapshot_failed"
         for e in rec.events
     )
-    assert vmc._dispense_timeout_task is None
+    assert not any(c.label == "dispense_timeout" for c in vmc.tasks.scheduled)
     assert dispatcher.sent == []
     vmc.cancel_pending_tasks()
 
@@ -757,7 +760,7 @@ async def test_late_no_ack_from_previous_sale_does_not_fail_current_sale(tmp_pat
     reached `dispensing`, must be ignored -- never cancel B's dispense
     timer, raise PAY-102 on B's sku, or refund B's price out from under a
     product that is actually being dispensed."""
-    vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    vmc, dispatcher = _vmc_with_profiles(tmp_path, tasks=FakeTaskRunner())
     rec = FakeEventRecorder()
     vmc.set_event_recorder(rec)
     gate = asyncio.Event()
@@ -792,5 +795,5 @@ async def test_late_no_ack_from_previous_sale_does_not_fail_current_sale(tmp_pat
     assert not any(
         e[0] == "vend_failed" and e[2]["code"] == "PAY-102" for e in rec.events
     )
-    assert vmc._dispense_timeout_task is not None
+    assert any(c.label == "dispense_timeout" for c in vmc.tasks.scheduled)
     vmc.cancel_pending_tasks()

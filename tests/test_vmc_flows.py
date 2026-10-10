@@ -21,6 +21,7 @@ from contracts.vending_machine import (
     PaymentRefundCommand,
     fault_for_outcome,
 )
+from controller.task_runner import TaskRunner
 from controller.vmc import VMC
 from services.availability import Availability
 from services.event_recorder import EventRecorder, SaleRecordingFailed
@@ -28,6 +29,7 @@ from services.health_monitor import HealthMonitor
 from services.mqtt_messages import PaymentEnableCommand
 from services.session_store import Credit, SessionSnapshot, SessionStore
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
+from tests.fakes import FakeTaskRunner
 
 
 _profiles_tmp_base: Path | None = None
@@ -63,17 +65,24 @@ def _tmp_profiles_dir(tmp_path: Path | None) -> Path:
     return Path(tempfile.mkdtemp(dir=_profiles_tmp_base))
 
 
-def make_vmc(price: float = 2.50, tmp_path: Path | None = None) -> VMC:
+def make_vmc(
+    price: float = 2.50,
+    tmp_path: Path | None = None,
+    *,
+    tasks: TaskRunner | None = None,
+) -> VMC:
     """A VMC with one product (ICE-1, kind="ice") plus a loaded
     `DispenserProfiles` and a `FakeDispatcher` already attached -- the
     minimum wiring a production sale now needs to actually dispatch
     (plan: dispenser profiles, Task 3). Pass `tmp_path` (pytest's fixture)
-    when a test needs to reach `vmc.gate.profiles.path` afterward."""
+    when a test needs to reach `vmc.gate.profiles.path` afterward. Pass
+    `tasks` (e.g. `tests.fakes.FakeTaskRunner()`) for a test that fires a
+    timer by label instead of waiting on a real one."""
     cfg = ConfigModel()
     cfg.physical.products = [
         Product(sku="ICE-1", name="Ice Bag", price=price, kind="ice")
     ]
-    vmc = VMC(config=cfg)
+    vmc = VMC(config=cfg, tasks=tasks)
     profiles = profiles_for(cfg.physical.products, _tmp_profiles_dir(tmp_path))
     vmc.set_dispenser_profiles(profiles)
     vmc.set_command_dispatcher(FakeDispatcher())
@@ -654,15 +663,16 @@ async def test_pay_104_snapshot_exposes_pending_sale_after_crash_mid_dispense(
 
 
 async def test_session_timeout_refunds_and_returns_to_idle():
-    vmc = make_vmc()
+    runner = FakeTaskRunner()
+    vmc = make_vmc(tasks=runner)
     vmc.attach_to_loop(asyncio.get_running_loop())
-    vmc._session_timeout_seconds = 0.05
     messages: list[str] = []
     vmc.set_message_callback(messages.append)
     vmc.credit_escrow = 3.00
     vmc.start_interaction()
 
-    await asyncio.sleep(0.3)
+    runner.fire("session_timeout")
+    await asyncio.sleep(0)  # let the fire-and-forget refund publish run
 
     assert vmc.state == "idle"
     assert vmc.credit_escrow == 0.0
@@ -855,7 +865,7 @@ async def test_dispense_uses_product_slot_not_list_index(tmp_path):
     assert params["mechanism"] == "water_fill"
 
 
-def make_vmc2(tmp_path: Path | None = None) -> VMC:
+def make_vmc2(tmp_path: Path | None = None, *, tasks: TaskRunner | None = None) -> VMC:
     """Two products (ICE-1 kind="ice" slot 0, WATER-1 kind="water" slot 1)
     plus a loaded `DispenserProfiles` and a `FakeDispatcher` already
     attached -- see `make_vmc`'s docstring."""
@@ -864,7 +874,7 @@ def make_vmc2(tmp_path: Path | None = None) -> VMC:
         Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0, kind="ice"),
         Product(sku="WATER-1", name="Water", price=1.00, slot=1, kind="water"),
     ]
-    vmc = VMC(config=cfg)
+    vmc = VMC(config=cfg, tasks=tasks)
     profiles = profiles_for(cfg.physical.products, _tmp_profiles_dir(tmp_path))
     vmc.set_dispenser_profiles(profiles)
     vmc.set_command_dispatcher(FakeDispatcher())
@@ -1014,7 +1024,8 @@ def _start_dispensing(vmc: VMC, index: int = 0):
 class TestVendOutcomes:
     @pytest.mark.parametrize("outcome", ["timeout", "jam", "bin_empty", "error"])
     async def test_failure_outcome_restores_credit_and_records(self, outcome):
-        vmc = make_vmc2()
+        runner = FakeTaskRunner()
+        vmc = make_vmc2(tasks=runner)
         vmc.attach_to_loop(asyncio.get_running_loop())
         rec = FakeEventRecorder()
         vmc.set_event_recorder(rec)
@@ -1047,7 +1058,7 @@ class TestVendOutcomes:
         ) in rec.events
         assert not any(t == "cmd/payment/refund" for t, _ in published)
         assert vmc.faults.lockouts == {"ICE-1": code}
-        assert vmc._dispense_timeout_task is None
+        assert not any(c.label == "dispense_timeout" for c in runner.scheduled)
 
     async def test_intermediate_state_does_not_end_sale(self):
         vmc = make_vmc2()
@@ -1059,14 +1070,15 @@ class TestVendOutcomes:
         assert vmc.state == "dispensing"
 
     async def test_dispense_timeout_is_a_failed_vend(self):
-        vmc = make_vmc2()
+        runner = FakeTaskRunner()
+        vmc = make_vmc2(tasks=runner)
         vmc.attach_to_loop(asyncio.get_running_loop())
-        vmc._dispense_timeout_seconds = 0.01
         rec = FakeEventRecorder()
         vmc.set_event_recorder(rec)
         _start_dispensing(vmc, 0)
 
-        await asyncio.sleep(0.05)
+        runner.fire("dispense_timeout")
+        await asyncio.sleep(0)
 
         assert vmc.state == "interacting_with_user"
         assert vmc.credit_escrow == 2.50
@@ -1079,11 +1091,27 @@ class TestVendOutcomes:
         assert not any(e[0] == "dispense" for e in rec.events)
 
     async def test_timeout_seconds_come_from_config(self):
+        """Proves the configured timeout actually reaches the scheduled
+        call, not just the instance attribute -- arm it for real (reach
+        `dispensing`) and read the armed delay off the fake runner."""
         cfg = ConfigModel()
         cfg.physical.dispense_timeout_seconds = 45.0
-        cfg.physical.products = [Product(sku="ICE-1", name="Ice", price=1.0)]
-        vmc = VMC(config=cfg)
-        assert vmc._dispense_timeout_seconds == 45.0
+        cfg.physical.products = [
+            Product(sku="ICE-1", name="Ice", price=1.0, slot=0, kind="ice")
+        ]
+        runner = FakeTaskRunner()
+        vmc = VMC(config=cfg, tasks=runner)
+        vmc.attach_to_loop(asyncio.get_running_loop())
+        profiles = profiles_for(cfg.physical.products, _tmp_profiles_dir(None))
+        vmc.set_dispenser_profiles(profiles)
+        vmc.set_command_dispatcher(FakeDispatcher())
+
+        _start_dispensing(vmc, 0)
+        await asyncio.sleep(0)
+
+        assert any(
+            c.label == "dispense_timeout" and c.delay == 45.0 for c in runner.scheduled
+        )
 
     async def test_complete_after_failure_is_ignored(self):
         vmc = make_vmc2()
@@ -1519,7 +1547,7 @@ class TestFireAndForget:
             async def boom():
                 raise RuntimeError("publish exploded")
 
-            vmc._fire_and_forget(boom())
+            vmc.tasks.fire_and_forget(boom())
             await asyncio.sleep(0)
             await asyncio.sleep(0)
         finally:
@@ -1535,7 +1563,7 @@ class TestFireAndForget:
             started.set()
             await asyncio.sleep(10)
 
-        vmc._fire_and_forget(slow())
+        vmc.tasks.fire_and_forget(slow())
         await started.wait()
         assert any(not t.done() for t in vmc.tasks.pending)
         vmc.cancel_pending_tasks()
@@ -1543,13 +1571,13 @@ class TestFireAndForget:
         assert all(t.done() for t in vmc.tasks.pending) or vmc.tasks.pending == []
 
 
-def _wired_vmc(products=None):
+def _wired_vmc(products=None, *, tasks: TaskRunner | None = None):
     cfg = ConfigModel()
     cfg.physical.products = products or [
         Product(sku="ICE-1", name="Ice Bag", price=2.5, slot=0, kind="ice"),
         Product(sku="WTR-1", name="Water", price=1.0, slot=1, kind="water"),
     ]
-    vmc = VMC(config=cfg)
+    vmc = VMC(config=cfg, tasks=tasks)
     vmc.attach_to_loop(asyncio.get_running_loop())
     profiles = profiles_for(cfg.physical.products, _tmp_profiles_dir(None))
     vmc.set_dispenser_profiles(profiles)
@@ -1813,15 +1841,16 @@ async def test_deposit_while_idle_arms_session_timeout():
     on_start_interaction's own "insert funds or select a product" message),
     so it must arm the safety-net timer even though the FSM stays idle.
     """
-    vmc, monitor, avail, _ = _wired_vmc()
+    runner = FakeTaskRunner()
+    vmc, monitor, avail, _ = _wired_vmc(tasks=runner)
     _all_alive(monitor, vmc)
     avail.set_payment_device("coin_acceptor", "ready")
 
     assert vmc.state == "idle"
-    assert vmc._session_timeout_task is None
+    assert not any(c.label == "session_timeout" for c in runner.scheduled)
     vmc.deposit_funds(2.00)
 
-    assert vmc._session_timeout_task is not None
+    assert any(c.label == "session_timeout" for c in runner.scheduled)
     vmc.cancel_pending_tasks()
 
 
@@ -1831,14 +1860,14 @@ async def test_deposit_while_idle_and_vending_offline_is_refunded_on_timeout():
     must still be refunded when the session times out — never stranded
     silently forever.
     """
-    vmc, monitor, avail, published = _wired_vmc()
+    runner = FakeTaskRunner()
+    vmc, monitor, avail, published = _wired_vmc(tasks=runner)
     _all_alive(monitor, vmc)
     avail.set_payment_device("coin_acceptor", "ready")
     await vmc.on_hardware_io(
         "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
     )
     monitor.mark_offline("vending")
-    vmc._session_timeout_seconds = 0.05
 
     assert avail.payment_enabled is True
     vmc.deposit_funds(2.00)
@@ -1847,7 +1876,8 @@ async def test_deposit_while_idle_and_vending_offline_is_refunded_on_timeout():
     assert vmc.credit_escrow == 2.00
     assert vmc.state == "idle"
 
-    await asyncio.sleep(0.3)
+    runner.fire("session_timeout")
+    await asyncio.sleep(0)  # let the fire-and-forget refund publish run
 
     refund_cmds = [p for t, p in published if t == "cmd/payment/refund"]
     assert len(refund_cmds) == 1
@@ -1868,6 +1898,15 @@ async def test_expire_session_is_a_noop_while_dispensing():
     assert vmc.state == "dispensing"
     escrow_before = vmc.credit_escrow
 
+    # private: defensive branch unreachable via timers. The session
+    # timeout is cancelled synchronously on entering `dispensing`
+    # (`on_dispense_product` -> `_cancel_session_timeout`), so a
+    # `FakeTaskRunner` never has a live "session_timeout" call to fire
+    # here -- but `_cancel_session_timeout` only prevents a *pending*
+    # callback from ever running; it cannot un-run one that the real event
+    # loop had already resumed and begun executing synchronously the
+    # instant before cancellation, so this guard (and this direct call
+    # simulating that race) is reachable in production, not dead code.
     vmc._expire_session()
 
     assert vmc.state == "dispensing"
@@ -1883,7 +1922,8 @@ async def test_deposit_after_on_error_refund_is_refunded_on_timeout():
     still parked in `error` (awaiting an admin reset_state) must not be
     silently stranded when that timer fires.
     """
-    vmc = make_vmc2()
+    runner = FakeTaskRunner()
+    vmc = make_vmc2(tasks=runner)
     vmc.attach_to_loop(asyncio.get_running_loop())
     client = RecordingClient()
     vmc.set_mqtt_client(client)
@@ -1896,9 +1936,9 @@ async def test_deposit_after_on_error_refund_is_refunded_on_timeout():
 
     vmc.deposit_funds(1.50)
     assert vmc.credit_escrow == 1.50
-    assert vmc._session_timeout_task is not None
+    assert any(c.label == "session_timeout" for c in runner.scheduled)
 
-    vmc._expire_session()
+    runner.fire("session_timeout")
     await asyncio.sleep(0)
 
     cmds = client.refund_commands()
@@ -2331,7 +2371,7 @@ class TestMaintenanceLease:
         vmc.attach_to_loop(asyncio.get_running_loop())
         granted, _ = vmc.begin_maintenance("user-1", "sess-a")
         assert granted is True
-        vmc._maintenance_run_started()
+        vmc.lease.run_started()
         assert vmc.maintenance_hold.runs_in_flight == 1
 
         result = vmc.end_maintenance("sess-a")
@@ -2340,45 +2380,47 @@ class TestMaintenanceLease:
         assert vmc.maintenance_hold is not None  # not released yet
         assert vmc.maintenance_hold.release_requested is True
 
-        vmc._maintenance_run_finished()
+        vmc.lease.run_finished()
 
         assert vmc.maintenance_hold is None
         assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
 
     async def test_idle_timer_never_releases_with_run_in_flight(self):
         # Deterministic like the take-over tests below: backdate
-        # last_activity_at past the deadline and invoke the real timer
-        # callback directly, instead of overriding
+        # last_activity_at past the deadline and fire the already-armed
+        # "maintenance_idle" timer directly, instead of overriding
         # MAINTENANCE_IDLE_TIMEOUT_SECONDS and waiting on a real
         # asyncio.sleep for the scheduled task to fire.
-        vmc = make_vmc2()
+        runner = FakeTaskRunner()
+        vmc = make_vmc2(tasks=runner)
         vmc.attach_to_loop(asyncio.get_running_loop())
         granted, _ = vmc.begin_maintenance("user-1", "sess-a")
         assert granted is True
-        vmc._maintenance_run_started()
+        vmc.lease.run_started()
         vmc.maintenance_hold.last_activity_at -= (
             vmc.MAINTENANCE_IDLE_TIMEOUT_SECONDS + 1
         )
 
-        vmc._maintenance_idle_expired()
+        runner.fire("maintenance_idle")
 
         # The timer fired, but a run is in flight: it must defer, not release.
         assert vmc.maintenance_hold is not None
         assert vmc.maintenance_hold.release_requested is True
         assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
 
-        vmc._maintenance_run_finished()
+        vmc.lease.run_finished()
 
         assert vmc.maintenance_hold is None
 
     async def test_idle_timer_releases_lease_when_no_runs_in_flight(self):
         # Same deterministic mechanism, but the positive case: idle past the
         # deadline with zero runs in flight must actually release the lease
-        # -- not just flip release_requested. Reaches VMC._maintenance_idle_expired's
-        # zero-runs branch -> _release_maintenance_hold -> clear_fault ->
+        # -- not just flip release_requested. Reaches MaintenanceLease.
+        # idle_expired's zero-runs branch -> release -> clear_fault ->
         # real Availability._recompute -> VMC.publish_payment_enable -> the
         # fake MQTT client's publish, via _wired_vmc()'s real Availability.
-        vmc, monitor, avail, published = _wired_vmc()
+        runner = FakeTaskRunner()
+        vmc, monitor, avail, published = _wired_vmc(tasks=runner)
         await asyncio.sleep(0)  # let any initial publish settle
 
         granted, _ = vmc.begin_maintenance("user-1", "sess-a")
@@ -2391,7 +2433,7 @@ class TestMaintenanceLease:
             vmc.MAINTENANCE_IDLE_TIMEOUT_SECONDS + 1
         )
 
-        vmc._maintenance_idle_expired()
+        runner.fire("maintenance_idle")
         await asyncio.sleep(0)  # let the fire-and-forget publish task run
 
         assert vmc.maintenance_hold is None
@@ -2511,13 +2553,13 @@ class TestMaintenanceLease:
         vmc = make_vmc2()
         vmc.attach_to_loop(asyncio.get_running_loop())
         vmc.begin_maintenance("user-1", "sess-a")
-        vmc._maintenance_run_started()
+        vmc.lease.run_started()
 
         granted, reason = vmc.take_over_maintenance("user-2", "sess-b")
 
         assert granted is False
         assert vmc.maintenance_hold.holder_user_id == "user-1"
-        vmc._maintenance_run_finished()
+        vmc.lease.run_finished()
 
     async def test_takeover_refused_before_60s_idle(self):
         vmc = make_vmc2()
@@ -2558,7 +2600,9 @@ class TestMaintenanceLease:
         assert vmc.maintenance_hold.runs_in_flight == 0
 
 
-def _test_run_vmc(products=None, tmp_path: Path | None = None):
+def _test_run_vmc(
+    products=None, tmp_path: Path | None = None, *, tasks: TaskRunner | None = None
+):
     """A wired-up VMC plus a FakeEventRecorder and RecordingClient, for
     VMC.run_test_sale tests. Mirrors make_vmc2()'s default two-product
     catalog (ICE-1 $2.50 slot 0, WATER-1 $1.00 slot 1) unless overridden.
@@ -2571,7 +2615,7 @@ def _test_run_vmc(products=None, tmp_path: Path | None = None):
         Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0, kind="ice"),
         Product(sku="WATER-1", name="Water", price=1.00, slot=1, kind="water"),
     ]
-    vmc = VMC(config=cfg)
+    vmc = VMC(config=cfg, tasks=tasks)
     vmc.attach_to_loop(asyncio.get_running_loop())
     profiles = profiles_for(cfg.physical.products, _tmp_profiles_dir(tmp_path))
     vmc.set_dispenser_profiles(profiles)
@@ -2590,11 +2634,11 @@ class TestRunTestSale:
     Every test drives run_test_sale as a background task and calls
     vmc.process_payment() directly (rather than waiting a real 1s for
     select_product's own scheduled call) and, where a dispense timeout is
-    needed, vmc._dispense_timed_out() directly (rather than waiting a real
-    dispense_timeout_seconds) -- the same "call the production callback
-    directly" pattern already used throughout this file and in
-    TestMaintenanceLease's idle-timer tests, so nothing here depends on
-    real wall-clock timing.
+    needed, fires the already-armed "dispense_timeout" call on a
+    `tests.fakes.FakeTaskRunner` (rather than waiting a real
+    dispense_timeout_seconds) -- the same pattern used throughout this file
+    and in TestMaintenanceLease's idle-timer tests, so nothing here depends
+    on real wall-clock timing.
     """
 
     async def test_run_test_sale_without_lease_is_refused(self):
@@ -2800,7 +2844,7 @@ class TestRunTestSale:
         """Reaches _dispense_timed_out (the real timeout callback the
         scheduled dispense-timeout task invokes) directly, distinct from
         the DispenserOutcome-driven vend_failed path above."""
-        vmc, rec, client = _test_run_vmc()
+        vmc, rec, client = _test_run_vmc(tasks=FakeTaskRunner())
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
@@ -2808,9 +2852,9 @@ class TestRunTestSale:
         await asyncio.sleep(0)
         vmc.process_payment()
         assert vmc.state == "dispensing"
-        assert vmc._dispense_timeout_task is not None
+        assert any(c.label == "dispense_timeout" for c in vmc.tasks.scheduled)
 
-        vmc._dispense_timed_out()
+        vmc.tasks.fire("dispense_timeout")
         result = await asyncio.wait_for(task, timeout=5)
 
         assert result.outcome == "timeout"
@@ -3129,15 +3173,15 @@ class TestRunTestSaleRunContext:
     async def test_status_is_failed_for_a_non_dispensed_outcome(self):
         """outcome != "dispensed" -> status "failed" (run_test_sale's own
         derivation) -- reaches the timeout outcome path, a real one (not a
-        mock), via vmc._dispense_timed_out()."""
-        vmc, rec, client = _test_run_vmc()
+        mock), by firing the armed "dispense_timeout" timer."""
+        vmc, rec, client = _test_run_vmc(tasks=FakeTaskRunner())
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
         task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
         await asyncio.sleep(0)
         vmc.process_payment()
-        vmc._dispense_timed_out()
+        vmc.tasks.fire("dispense_timeout")
         result = await asyncio.wait_for(task, timeout=5)
 
         assert result.outcome == "timeout"

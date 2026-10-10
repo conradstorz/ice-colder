@@ -190,7 +190,7 @@ class VMC:
     STANDBY_SWEEP_SECONDS = 30.0
 
     @logger.catch()
-    def __init__(self, config: ConfigModel):
+    def __init__(self, config: ConfigModel, *, tasks: TaskRunner | None = None):
         global txn_log, vend_log
         txn_log = logger.bind(transaction=True)
         vend_log = logger.bind(vending=True)
@@ -265,8 +265,12 @@ class VMC:
         # rather than a VMC-private alias. Constructed before anything that
         # captures `self._schedule` as a closure (the maintenance lease and
         # refund protocol below), since that closure's first real call must
-        # find a live runner.
-        self._tasks = TaskRunner()
+        # find a live runner. `tasks=` (VMC public surface design, section
+        # 2) lets a test inject `tests.fakes.FakeTaskRunner` instead of a
+        # real event-loop runner, so timers can be fired by label rather
+        # than through a private task handle; defaults to a real
+        # `TaskRunner()` for every production and non-timer-test caller.
+        self._tasks = tasks if tasks is not None else TaskRunner()
         self._dispense_timeout_task: asyncio.Task | None = None
         self._session_timeout_task: asyncio.Task | None = None
         self._mqtt_client = None  # Set via set_mqtt_client()
@@ -383,8 +387,14 @@ class VMC:
             on_capabilities_validated=self._on_vending_capabilities_validated,
         )
         self._start_time = time.monotonic()
-        self._session_timeout_seconds = 180.0  # 3 minutes
-        self._dispense_timeout_seconds = (
+        # Public (no leading underscore) so a test can read/override them
+        # directly (VMC public surface design, section 2) rather than
+        # reaching into a private attribute -- e.g.
+        # `test_timeout_seconds_come_from_config` reads
+        # `dispense_timeout_seconds`, and a handful of real-timer tests set
+        # a short override before letting the real TaskRunner fire it.
+        self.session_timeout_seconds = 180.0  # 3 minutes
+        self.dispense_timeout_seconds = (
             self.config_model.physical.dispense_timeout_seconds
         )
 
@@ -1320,9 +1330,11 @@ class VMC:
         """Await in-flight session/inventory writes so shutdown never cancels them."""
         await self._tasks.drain_persistence(timeout=timeout)
 
-    def _schedule(self, delay_seconds, callback) -> asyncio.Task | None:
+    def _schedule(
+        self, delay_seconds, callback, *, label: str = ""
+    ) -> asyncio.Task | None:
         """Schedule a synchronous callback to run after delay_seconds on the event loop."""
-        return self._tasks.schedule(delay_seconds, callback)
+        return self._tasks.schedule(delay_seconds, callback, label=label)
 
     def get_status(self) -> dict:
         return {
@@ -1798,7 +1810,7 @@ class VMC:
             return
         sku = self.selected_product.sku if self.selected_product else None
         logger.error(
-            f"Dispense timed out after {self._dispense_timeout_seconds:.0f}s with no "
+            f"Dispense timed out after {self.dispense_timeout_seconds:.0f}s with no "
             f"terminal report (slot {self.selected_product.slot if self.selected_product else '?'})"
         )
         self.raise_fault(FaultCode.PAY_102, sku=sku, outcome="no_report")
@@ -2495,10 +2507,10 @@ class VMC:
 
         if self.state == "idle":
             self.start_interaction()
-            self._schedule(1.0, self.process_payment)
+            self._schedule(1.0, self.process_payment, label="process_payment")
         elif self.state == "interacting_with_user":
             self.initiate_virtual_payment(self.selected_product.price)
-            self._schedule(1.0, self.process_payment)
+            self._schedule(1.0, self.process_payment, label="process_payment")
         self._refresh_ui()
 
     @logger.catch()
@@ -2555,7 +2567,9 @@ class VMC:
             # Dispenser hardware reports a terminal DispenserOutcome via MQTT; no
             # report within the timeout is a failed vend (PAY-102).
             self._dispense_timeout_task = self._schedule(
-                self._dispense_timeout_seconds, self._dispense_timed_out
+                self.dispense_timeout_seconds,
+                self._dispense_timed_out,
+                label="dispense_timeout",
             )
             self.last_insufficient_message = ""
         else:
@@ -2570,7 +2584,7 @@ class VMC:
                 )
                 self.send_customer_message(message)
                 self.last_insufficient_message = message
-            self._schedule(5.0, self.process_payment)
+            self._schedule(5.0, self.process_payment, label="process_payment")
 
     def _process_payment(self):
         # deprecated: removed in the public-surface cleanup
@@ -2581,7 +2595,7 @@ class VMC:
         if self._session_timeout_task and not self._session_timeout_task.done():
             self._session_timeout_task.cancel()
         self._session_timeout_task = self._schedule(
-            self._session_timeout_seconds, self._expire_session
+            self.session_timeout_seconds, self._expire_session, label="session_timeout"
         )
 
     def _cancel_session_timeout(self):

@@ -47,7 +47,7 @@ class FakeScheduler:
     def __init__(self):
         self.calls: list[tuple[float, object]] = []
 
-    def __call__(self, delay, callback):
+    def __call__(self, delay, callback, *, label=""):
         self.calls.append((delay, callback))
         return FakeTask()
 
