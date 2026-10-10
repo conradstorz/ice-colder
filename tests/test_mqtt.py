@@ -362,14 +362,16 @@ class TestVMCMQTTWiring:
 
     def test_publish_status_without_client_does_nothing(self):
         vmc = _make_vmc()
-        # Should not raise when no client attached
-        vmc._publish_status()
+        # Should not raise when no client attached. start_interaction's
+        # after_state_change callback calls _publish_status internally --
+        # driving the FSM is the nearest public path to it.
+        vmc.start_interaction()
 
     def test_publish_status_without_loop_does_nothing(self):
         vmc = _make_vmc()
-        vmc._mqtt_client = MagicMock()
-        # _loop is None
-        vmc._publish_status()
+        vmc.set_mqtt_client(MagicMock())
+        # _loop is None (attach_to_loop was never called)
+        vmc.start_interaction()
 
     @pytest.mark.asyncio
     async def test_handle_mqtt_payment_deposits_funds(self):
@@ -557,8 +559,11 @@ class TestStatusRetained:
         vmc.attach_to_loop(asyncio.get_running_loop())
         mqtt = MagicMock()
         mqtt.publish = AsyncMock()
-        vmc._mqtt_client = mqtt
-        vmc._publish_status()
+        vmc.set_mqtt_client(mqtt)
+        # start_interaction's after_state_change callback calls
+        # _publish_status internally -- driving the FSM is the nearest
+        # public path to it.
+        vmc.start_interaction()
         await asyncio.sleep(0)
         args, kwargs = mqtt.publish.await_args
         assert args[0] == "status"
