@@ -1838,6 +1838,17 @@ class VMC:
         if self._sale is not None:
             self._sale = self._sale.with_(mechanism=None, request_id=None)
         self.vend_failed(code=code, outcome=outcome)
+        if is_test and self._test_sale_waiter is None:
+            # run_test_sale was cancelled while this vend was in flight,
+            # so nobody is left to clear the synthetic "test" credit
+            # on_vend_failed just restored to escrow. Test money must
+            # never sit on the machine or leave via a refund command
+            # (system-tests design §2.3): clear it here, directly.
+            cleared = self._escrow.take_all()
+            logger.warning(
+                f"Orphaned test vend failed ({code.value}, {outcome}) after "
+                f"run_test_sale was cancelled; cleared ${cleared:.2f} of test credit"
+            )
         if not self._sellable_products():
             txn_log.info("No sellable products remain; refunding and returning to idle")
             # A test sale's price, just restored to escrow by on_vend_failed
@@ -2465,12 +2476,9 @@ class VMC:
                     # cases where self.state IS still "dispensing" are: (a)
                     # this call's own task was cancelled while suspended on
                     # `await waiter`, mid-vend, with the real hardware
-                    # dispense still physically in flight -- stripping only
-                    # is_test (not the whole context) matches today's
-                    # behaviour, where only the separate _sale_is_test flag
-                    # was reset here, leaving selected_product/mechanism/
-                    # request_id exactly as the stuck vend left them, so a
-                    # later real hardware report can still settle it. The
+                    # dispense still physically in flight -- the context is
+                    # left untouched so a later real hardware report still
+                    # settles it as a test sale. The
                     # other case -- select_product refused the seeded
                     # context outright (locked out/unavailable/sold out) --
                     # never reaches "dispensing" at all, so it always takes
@@ -2479,8 +2487,16 @@ class VMC:
                     # vmc.selected_product is None, exactly as it did before
                     # this sale was ever seeded onto self._sale.
                     if self.state == "dispensing":
-                        if self._sale is not None:
-                            self._sale = self._sale.with_(is_test=False)
+                        # Cancelled mid-vend with the hardware still in
+                        # flight: leave the context -- and its is_test --
+                        # exactly as it is. The eventual hardware report
+                        # (complete, a failure outcome, or the dispense
+                        # timeout) must still be classified as a test:
+                        # never _record_sale, never a real refund of the
+                        # synthetic "test" credit. _fail_vend clears that
+                        # credit itself when it finds no run awaiting
+                        # (Copilot review, PR #48).
+                        pass
                     else:
                         self._sale = None
                     # Test money is never real money and must never leave

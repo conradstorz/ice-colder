@@ -2754,6 +2754,57 @@ class TestRunTestSale:
         assert not any(t == "dispense" for t, *_ in rec.events)
         assert any(t == "test_run" for t, *_ in rec.events)
 
+    async def _cancel_mid_dispense(self):
+        """Start a test sale, drive it into dispensing, then cancel
+        run_test_sale's own task while it awaits the hardware -- the
+        hardware report is still to come."""
+        vmc, rec, client = _test_run_vmc()
+        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        assert granted is True
+        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        await asyncio.sleep(0)
+        vmc.process_payment()
+        assert vmc.state == "dispensing"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert vmc.state == "dispensing"
+        assert vmc.sale is not None and vmc.sale.is_test is True
+        return vmc, rec, client
+
+    async def test_cancelled_mid_dispense_completion_is_still_not_a_sale(self):
+        """Copilot review, PR #48: cancelling run_test_sale mid-vend must
+        not reclassify the in-flight test vend as production -- a later
+        `complete` report still writes neither a sale nor a dispense row."""
+        vmc, rec, client = await self._cancel_mid_dispense()
+
+        await vmc.on_dispenser_event(
+            "hardware/dispenser", {"slot": 0, "state": "complete"}
+        )
+
+        assert vmc.state == "idle"
+        assert rec.sales == []
+        assert not any(t == "dispense" for t, *_ in rec.events)
+        assert vmc.credit_escrow == 0.0
+        assert client.refund_commands() == []
+
+    async def test_cancelled_mid_dispense_failure_clears_test_credit_without_refund(
+        self,
+    ):
+        """Copilot review, PR #48: a failure report after the run was
+        cancelled restores the synthetic "test" credit, which must then be
+        cleared directly -- never left on the machine, never refunded for
+        real."""
+        vmc, rec, client = await self._cancel_mid_dispense()
+
+        await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "jam"})
+
+        assert vmc.state != "dispensing"
+        assert client.refund_commands() == []
+        assert vmc.credit_escrow == 0.0
+        assert vmc.escrow_credits == []
+        assert rec.sales == []
+
     async def test_vend_failed_test_sale_returns_code_and_no_refund_published(self):
         """A single-product catalog so the failing product's lockout
         empties _sellable_products(), reaching _fail_vend's "no sellable
