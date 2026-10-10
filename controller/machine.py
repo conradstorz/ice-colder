@@ -92,9 +92,12 @@ class Machine:
         self._registry = FaultRegistry(self._product_name)
 
         # Sinks attached later via their own set_* method; None until then,
-        # exactly like the VMC attributes they replace.
+        # exactly like the VMC attributes they replace. The health monitor
+        # has no separate attribute -- `self._outputs.health` (set by
+        # `set_health_monitor` below, via `attach_health`) is the single
+        # source of truth, read by `health_monitor` and the telemetry
+        # router's `health` closure alike.
         self._event_recorder = None
-        self._health_monitor: HealthMonitor | None = None
         self._command_dispatcher = None
         self._inventory: InventoryManager | None = None
         self._subsystem_capabilities: dict[str, dict] = {}
@@ -154,7 +157,7 @@ class Machine:
             pay104_active=lambda: self._faults.has(FaultCode.PAY_104),
         )
         self._telemetry = mqtt_inbound.TelemetryRouter(
-            health=lambda: self._health_monitor,
+            health=lambda: self._outputs.health,
             availability=lambda: self._outputs.availability,
             capabilities=self._subsystem_capabilities,
             on_bin_half_full=self._faults.clear_ice101_lockouts,
@@ -172,6 +175,8 @@ class Machine:
             lease=self._lease,
             availability=lambda: self.availability,
             inventory=lambda: self.inventory,
+            recorder=lambda: self.event_recorder,
+            dispatcher=lambda: self.command_dispatcher,
         )
 
     def _product_name(self, sku: str | None) -> str | None:
@@ -238,7 +243,7 @@ class Machine:
 
     @property
     def health_monitor(self) -> HealthMonitor | None:
-        return self._health_monitor
+        return self._outputs.health
 
     @property
     def availability(self) -> Availability | None:
@@ -281,8 +286,7 @@ class Machine:
         in-flight session/inventory save.
         """
         self._tasks.cancel_pending()
-        self._vmc._cancel_dispense_timeout()
-        self._vmc._cancel_session_timeout()
+        self._vmc.cancel_timers()
         self._refunds.cancel_all()
         logger.debug("Machine: all pending tasks cancelled.")
 
@@ -304,7 +308,6 @@ class Machine:
 
     def set_health_monitor(self, monitor: HealthMonitor) -> None:
         """Attach a HealthMonitor; its liveness transitions become COM/PAY faults."""
-        self._health_monitor = monitor
         self._outputs.attach_health(monitor)
         monitor.set_liveness_callback(self._faults.on_subsystem_liveness)
         logger.debug("Machine attached health monitor.")

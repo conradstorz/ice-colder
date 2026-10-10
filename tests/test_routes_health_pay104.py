@@ -33,12 +33,12 @@ import httpx
 import pytest
 
 from contracts.vending_machine import FaultCode
-from controller.vmc import VMC
+from controller.machine import Machine
 from services.access import ROLE_PERMISSIONS, Permission, Role
 from services.config_store import add_product
 from services.event_recorder import EventRecorder
 from services.session_store import SessionStore
-from web_interface import routes
+from web_interface import context, routes
 from web_interface.server import app
 
 
@@ -60,10 +60,12 @@ def _pay104_setup(
     `set_session_store` loads an open snapshot and raises PAY-104 exactly
     as a real restart-after-crash would.
 
-    Returns (vmc2, session_store, product, expected_shares, expected_price).
+    Returns (machine2, vmc2, session_store, product, expected_shares,
+    expected_price).
     """
     store_path = tmp_path / "session.json"
-    vmc1 = VMC(config=cfg)
+    machine1 = Machine(config=cfg)
+    vmc1 = machine1.vmc
     vmc1.machine.set_state("interacting_with_user")
     product = next(p for p in vmc1.products if p.sku == sku)
     vmc1.selected_product = product
@@ -83,10 +85,18 @@ def _pay104_setup(
     assert snap.is_open()
     SessionStore(store_path).save(snap)
 
-    vmc2 = VMC(config=cfg)
-    vmc2.set_session_store(SessionStore(store_path))  # loads -> raises PAY-104
+    machine2 = Machine(config=cfg)
+    vmc2 = machine2.vmc
+    machine2.set_session_store(SessionStore(store_path))  # loads -> raises PAY-104
 
-    return vmc2, SessionStore(store_path), product, expected_shares, expected_price
+    return (
+        machine2,
+        vmc2,
+        SessionStore(store_path),
+        product,
+        expected_shares,
+        expected_price,
+    )
 
 
 @pytest.fixture
@@ -94,28 +104,30 @@ def pay104(wired, tmp_path):
     """Rewires `wired`'s VMC with one carrying a genuinely open PAY-104
     with real pending-sale shares, plus a real EventRecorder (tmp sqlite
     db) wired the same way `context.event_recorder` is in production."""
-    cfg, old_vmc, _inv, _store = wired
+    cfg, _old_vmc, _inv, _store = wired
     add_product(cfg, "ICE-1", "Ice", 2.50)
-    vmc2, session_store, product, expected_shares, expected_price = _pay104_setup(
-        cfg, tmp_path
+    machine2, vmc2, session_store, product, expected_shares, expected_price = (
+        _pay104_setup(cfg, tmp_path)
     )
 
     # Positive control: the fault is genuinely active and the accessor
     # genuinely reports the pending sale -- before any test asserts on
     # what an action against it did.
     assert "PAY-104" in {f["code"] for f in vmc2.active_faults()}
-    pending = vmc2.pending_sale_for_recovery()
+    pending = machine2.pending_sale_for_recovery()
     assert pending is not None
     assert pending["sku"] == "ICE-1"
     assert pending["methods"] == expected_shares
     assert pending["price"] == expected_price
 
     recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
-    routes.set_vmc_instance(vmc2)
+    old_machine = context.machine_instance
+    routes.set_machine_instance(machine2)
     routes.set_event_recorder(recorder)
     try:
         yield {
             "vmc": vmc2,
+            "machine": machine2,
             "session_path": session_store.path,
             "product": product,
             "shares": expected_shares,
@@ -125,7 +137,7 @@ def pay104(wired, tmp_path):
         }
     finally:
         routes.set_event_recorder(None)
-        routes.set_vmc_instance(old_vmc)
+        routes.set_machine_instance(old_machine)
 
 
 def _sales_rows(db_path):
@@ -161,7 +173,9 @@ class TestFaultsListRendersPendingSale:
         unchanged from part 2."""
         _cfg, vmc, _inv, _store = wired
         vmc.raise_fault(FaultCode.PAY_104, outcome="test, no session store")
-        assert vmc.pending_sale_for_recovery() is None  # positive control
+        assert (
+            context.machine_instance.pending_sale_for_recovery() is None
+        )  # positive control
         client = login_as(Role.tech)
         resp = client.get("/health/faults")
         assert resp.status_code == 200
@@ -178,7 +192,7 @@ class TestFaultsListRendersPendingSale:
         routes.set_event_recorder(recorder)
         try:
             vmc.raise_fault(FaultCode.PAY_104, outcome="test, no session store")
-            assert vmc.pending_sale_for_recovery() is None
+            assert context.machine_instance.pending_sale_for_recovery() is None
             client = login_as(Role.tech)
             resp = client.post("/health/faults/PAY-104/clear")
             assert resp.status_code == 200
@@ -214,7 +228,7 @@ class TestPlainClearRejectedWithPendingSale:
         # and still reports the exact same pending sale, and no sale row
         # was ever written.
         assert pay104["session_path"].exists()
-        pending = vmc.pending_sale_for_recovery()
+        pending = pay104["machine"].pending_sale_for_recovery()
         assert pending is not None
         assert pending["sku"] == "ICE-1"
         assert pending["methods"] == pay104["shares"]
@@ -270,10 +284,11 @@ class TestRecordSale:
         self, pay104, login_as
     ):
         vmc = pay104["vmc"]
+        machine = pay104["machine"]
         # Positive control, restated right before the write this test is
         # actually about.
         assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
-        assert vmc.pending_sale_for_recovery() is not None
+        assert machine.pending_sale_for_recovery() is not None
         assert pay104["session_path"].exists()
 
         client = login_as(Role.tech)
@@ -310,8 +325,9 @@ class TestRecordSale:
         assert len(_sales_rows(pay104["db_path"])) == 1  # first call really wrote
 
         vmc = pay104["vmc"]
+        machine = pay104["machine"]
         assert "PAY-104" not in {f["code"] for f in vmc.active_faults()}
-        assert vmc.pending_sale_for_recovery() is None  # idempotency token is gone
+        assert machine.pending_sale_for_recovery() is None  # idempotency token is gone
 
         second = client.post("/health/faults/PAY-104/record-sale")
         assert second.status_code == 200
@@ -376,8 +392,9 @@ class TestDiscard:
         self, pay104, login_as
     ):
         vmc = pay104["vmc"]
+        machine = pay104["machine"]
         assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
-        assert vmc.pending_sale_for_recovery() is not None
+        assert machine.pending_sale_for_recovery() is not None
         assert pay104["session_path"].exists()
 
         client = login_as(Role.tech)
@@ -453,9 +470,10 @@ class TestRecordSaleExactlyOnce:
         row is written.
         """
         vmc = pay104["vmc"]
+        machine = pay104["machine"]
         # Positive control, restated right before the concurrent write.
         assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
-        assert vmc.pending_sale_for_recovery() is not None
+        assert machine.pending_sale_for_recovery() is not None
         assert pay104["session_path"].exists()
 
         recorder = pay104["recorder"]
@@ -528,13 +546,14 @@ class TestRecordSaleExactlyOnce:
         record-sale attempt writes no second row.
         """
         vmc = pay104["vmc"]
+        machine = pay104["machine"]
         # Positive control, restated right before the write this test is
         # actually about.
         assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
-        assert vmc.pending_sale_for_recovery() is not None
+        assert machine.pending_sale_for_recovery() is not None
         assert pay104["session_path"].exists()
 
-        monkeypatch.setattr(vmc.session_store, "clear", lambda: False)
+        monkeypatch.setattr(machine.session_store, "clear", lambda: False)
 
         client = login_as(Role.tech)
         first = client.post("/health/faults/PAY-104/record-sale")
@@ -555,7 +574,7 @@ class TestRecordSaleExactlyOnce:
         # the accessor now reports no pending sale even with the fault
         # still active.
         assert pay104["session_path"].exists()
-        assert vmc.pending_sale_for_recovery() is None
+        assert machine.pending_sale_for_recovery() is None
         rewritten = SessionStore(pay104["session_path"]).load()
         assert rewritten is not None
         assert not rewritten.pending_sale_shares
@@ -593,22 +612,23 @@ class TestMarkerFailureExactlyOnce:
         self, pay104, login_as, monkeypatch
     ):
         vmc = pay104["vmc"]
+        machine = pay104["machine"]
         # Positive control, restated right before the write this test is
         # actually about -- see task-14-brief.md's "beware the fixture
         # that makes the asserted branch unreachable".
         assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
-        assert vmc.pending_sale_for_recovery() is not None
+        assert machine.pending_sale_for_recovery() is not None
         assert pay104["session_path"].exists()
 
         # Both disk writes fail -- the realistic pairing: clear_fault's
         # snapshot removal and the marker's rewrite go through the same
         # SessionStore against the same failing disk.
-        monkeypatch.setattr(vmc.session_store, "clear", lambda: False)
+        monkeypatch.setattr(machine.session_store, "clear", lambda: False)
 
         def _save_fails(snap):
             raise OSError("simulated disk failure: read-only filesystem")
 
-        monkeypatch.setattr(vmc.session_store, "save", _save_fails)
+        monkeypatch.setattr(machine.session_store, "save", _save_fails)
 
         client = login_as(Role.tech)
 
@@ -645,7 +665,7 @@ class TestMarkerFailureExactlyOnce:
         # pending sale. This is exactly the danger the in-memory guard
         # below must close, since the disk-based idempotency token is
         # gone.
-        assert vmc.pending_sale_for_recovery() is not None
+        assert machine.pending_sale_for_recovery() is not None
 
         # A second POST in the same process must not write a second row,
         # even though the disk still shows a pending sale.
@@ -661,18 +681,19 @@ class TestMarkerFailureExactlyOnce:
         self, pay104, login_as, monkeypatch
     ):
         vmc = pay104["vmc"]
+        machine = pay104["machine"]
         assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
-        assert vmc.pending_sale_for_recovery() is not None
+        assert machine.pending_sale_for_recovery() is not None
         assert "DATA-101" not in {
             f["code"] for f in vmc.active_faults()
         }  # positive control
 
-        monkeypatch.setattr(vmc.session_store, "clear", lambda: False)
+        monkeypatch.setattr(machine.session_store, "clear", lambda: False)
 
         def _save_fails(snap):
             raise OSError("simulated disk failure")
 
-        monkeypatch.setattr(vmc.session_store, "save", _save_fails)
+        monkeypatch.setattr(machine.session_store, "save", _save_fails)
 
         client = login_as(Role.tech)
         resp = client.post("/health/faults/PAY-104/record-sale")
@@ -719,13 +740,14 @@ class TestCrossRestartExactlyOnce:
     ):
         cfg, _pre_wired_vmc, _inv, _store = wired
         vmc = pay104["vmc"]
+        machine = pay104["machine"]
         session_path = pay104["session_path"]
         db_path = pay104["db_path"]
 
         # Positive control, restated right before the write this test is
         # actually about.
         assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
-        assert vmc.pending_sale_for_recovery() is not None
+        assert machine.pending_sale_for_recovery() is not None
         assert session_path.exists()
 
         # Force the same realistic failure pairing as
@@ -733,12 +755,12 @@ class TestCrossRestartExactlyOnce:
         # the snapshot removal nor the marker rewrite can persist -- the
         # storage problem that leaves PAY-104 active with a genuinely
         # unresolved on-disk snapshot.
-        monkeypatch.setattr(vmc.session_store, "clear", lambda: False)
+        monkeypatch.setattr(machine.session_store, "clear", lambda: False)
 
         def _save_fails(snap):
             raise OSError("simulated disk failure: read-only filesystem")
 
-        monkeypatch.setattr(vmc.session_store, "save", _save_fails)
+        monkeypatch.setattr(machine.session_store, "save", _save_fails)
 
         client = login_as(Role.tech)
         first = client.post("/health/faults/PAY-104/record-sale")
@@ -760,12 +782,13 @@ class TestCrossRestartExactlyOnce:
         # snapshot: a fresh `SessionStore` over the SAME session.json
         # path, `set_session_store` re-loading the still-open snapshot
         # and re-raising PAY-104 from it. A fresh `EventRecorder` opens
-        # the SAME sqlite file. `routes.set_vmc_instance` / `routes.
+        # the SAME sqlite file. `routes.set_machine_instance` / `routes.
         # set_event_recorder` replace the module-level state the route
         # handlers actually read, so the route has no path back to the
         # old `vmc` object at all from this point on.
-        vmc_after_restart = VMC(config=cfg)
-        vmc_after_restart.set_session_store(SessionStore(session_path))
+        machine_after_restart = Machine(config=cfg)
+        vmc_after_restart = machine_after_restart.vmc
+        machine_after_restart.set_session_store(SessionStore(session_path))
         assert "DATA-101" not in {
             f["code"] for f in vmc_after_restart.active_faults()
         }, "a fresh VMC must not inherit the pre-restart process's faults"
@@ -775,11 +798,11 @@ class TestCrossRestartExactlyOnce:
         # still reported, and (per this test's own docstring) no
         # DATA-101 survives to warn that a retry needs care.
         assert "PAY-104" in {f["code"] for f in vmc_after_restart.active_faults()}
-        assert vmc_after_restart.pending_sale_for_recovery() is not None
+        assert machine_after_restart.pending_sale_for_recovery() is not None
 
         recorder_after_restart = EventRecorder(db_path=str(db_path))
 
-        routes.set_vmc_instance(vmc_after_restart)
+        routes.set_machine_instance(machine_after_restart)
         routes.set_event_recorder(recorder_after_restart)
         try:
             second = client.post("/health/faults/PAY-104/record-sale")
@@ -791,5 +814,5 @@ class TestCrossRestartExactlyOnce:
                 f"{len(rows_after_restart)}"
             )
         finally:
-            routes.set_vmc_instance(vmc)
+            routes.set_machine_instance(machine)
             routes.set_event_recorder(pay104["recorder"])

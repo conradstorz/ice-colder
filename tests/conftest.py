@@ -13,7 +13,7 @@ from loguru import logger as _loguru
 import services.access as access
 import services.config_store as config_store
 from config.config_model import ConfigModel, PhysicalDetails
-from controller.vmc import VMC
+from controller.machine import Machine
 from services.access import AccessStore, Role, User
 from services.dispensers import DispenserProfiles
 from services.inventory_manager import InventoryManager
@@ -142,21 +142,22 @@ def wired(tmp_path):
     web_auth.backoff.reset()
 
     cfg = ConfigModel()
-    vmc = VMC(config=cfg)
+    machine = Machine(config=cfg)
+    vmc = machine.vmc
     inv = InventoryManager([], path=tmp_path / "inventory.json")
     store = AccessStore(path=tmp_path / "access.json")
     store.create_user("Ada", "ada@example.com", Role.owner, "1379")
     store.finalize_setup()
 
     routes.set_config_object(cfg)
-    routes.set_vmc_instance(vmc)
+    routes.set_machine_instance(machine)
     routes.set_inventory_manager(inv)
     routes.set_access_store(store)
 
     yield cfg, vmc, inv, store
 
     routes.set_access_store(None)
-    vmc.cancel_pending_tasks()
+    machine.cancel_pending_tasks()
     web_auth.backoff.reset()
     web_auth.backoff.set_trusted_proxies([])
 
@@ -207,20 +208,48 @@ def anonymous(wired):
 
 
 @pytest.fixture
-async def vmc_fake_time():
-    """A VMC wired to a `FakeTaskRunner` (`tests/fakes.py`) instead of a
-    real event-loop timer (VMC public surface design, section 2): yields
-    `(vmc, runner)` so a test can arm a timer through an ordinary VMC call
-    (`deposit_funds`, `process_payment`, `begin_maintenance`, ...) and then
-    fire it by label -- `runner.fire("dispense_timeout")` -- rather than
-    reaching into a private per-timer task handle on the VMC.
+def machine():
+    """The composition root (`controller/machine.py`'s `Machine`,
+    vmc-reduction plan, Task 6) built fresh for a test, with a real
+    `TaskRunner`. `vmc` below yields `machine.vmc` and depends on this
+    fixture, so a test taking both shares the same `Machine` instance.
+    """
+    m = Machine(config=ConfigModel())
+    yield m
+    m.cancel_pending_tasks()
+
+
+@pytest.fixture
+def vmc(machine):
+    """The VMC owned by `machine` above -- for tests that only need the
+    sale FSM itself, never a `Machine`-level `set_*`/wiring method."""
+    yield machine.vmc
+
+
+@pytest.fixture
+async def machine_fake_time():
+    """A `Machine` wired to a `FakeTaskRunner` (`tests/fakes.py`) instead
+    of a real event-loop timer (VMC public surface design, section 2):
+    yields `(machine, runner)` so a test can arm a timer through an
+    ordinary `Machine`/VMC call (`deposit_funds`, `process_payment`,
+    `begin_maintenance`, ...) and then fire it by label --
+    `runner.fire("dispense_timeout")` -- rather than reaching into a
+    private per-timer task handle.
     """
     cfg = ConfigModel()
     runner = FakeTaskRunner()
-    vmc = VMC(config=cfg, tasks=runner)
-    vmc.attach_to_loop(asyncio.get_running_loop())
-    yield vmc, runner
-    vmc.cancel_pending_tasks()
+    m = Machine(config=cfg, tasks=runner)
+    m.attach_to_loop(asyncio.get_running_loop())
+    yield m, runner
+    m.cancel_pending_tasks()
+
+
+@pytest.fixture
+async def vmc_fake_time(machine_fake_time):
+    """`(vmc, runner)` over `machine_fake_time` above, for tests that only
+    need the VMC itself."""
+    machine, runner = machine_fake_time
+    yield machine.vmc, runner
 
 
 @pytest.fixture

@@ -773,7 +773,7 @@ class TestFaultsUI:
 
         hm = HealthMonitor()
         routes.set_health_monitor(hm)
-        context.vmc_instance.set_health_monitor(hm)
+        context.machine_instance.set_health_monitor(hm)
         try:
             self._add_product(client)
             self._lock(client)
@@ -973,7 +973,7 @@ class TestStillSellingBanner:
         from web_interface import context as r
 
         avail = Availability()
-        r.vmc_instance.set_availability(avail)
+        r.machine_instance.set_availability(avail)
         r.set_availability(avail)
         r.set_health_monitor(HealthMonitor())
         yield client
@@ -1018,7 +1018,7 @@ class TestMaintenanceHero:
         from services.availability import Availability
 
         avail = Availability()
-        context.vmc_instance.set_availability(avail)
+        context.machine_instance.set_availability(avail)
         context.set_availability(avail)
         yield client
         context.set_availability(None)
@@ -3259,7 +3259,8 @@ class TestHomeTileContext:
         vmc_instance, health_monitor, event_recorder, availability,
         inventory_manager or access_store is None (executor resolution 3)."""
         _cfg, _vmc, _inv, _store = wired
-        routes.set_vmc_instance(None)
+        _machine = context.machine_instance
+        routes.set_machine_instance(None)
         routes.set_inventory_manager(None)
         try:
             client = login_as(Role.owner)
@@ -3267,7 +3268,7 @@ class TestHomeTileContext:
             assert resp.status_code == 200
             assert "tracking off" in resp.text
         finally:
-            routes.set_vmc_instance(_vmc)
+            routes.set_machine_instance(_machine)
             routes.set_inventory_manager(_inv)
 
 
@@ -3330,7 +3331,8 @@ class TestPillEndpoint:
 
     def test_pill_with_no_vmc_is_neutral_not_500(self, login_as, wired):
         _cfg, _vmc, _inv, _store = wired
-        routes.set_vmc_instance(None)
+        _machine = context.machine_instance
+        routes.set_machine_instance(None)
         try:
             client = login_as(Role.owner)
             resp = client.get("/pill")
@@ -3339,7 +3341,7 @@ class TestPillEndpoint:
             assert "bg-slate-400" in resp.text
             assert "OK" not in resp.text
         finally:
-            routes.set_vmc_instance(_vmc)
+            routes.set_machine_instance(_machine)
 
     def test_pill_requires_a_session(self, anonymous):
         resp = anonymous.get("/pill", headers={"HX-Request": "true"})

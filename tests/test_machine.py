@@ -105,6 +105,32 @@ class TestConstruction:
         machine = Machine(ConfigModel())
         assert machine.vmc.faults is machine.faults
 
+    def test_vmc_and_machine_share_the_same_outputs(self):
+        machine = Machine(ConfigModel())
+        assert machine.vmc.outputs is machine.outputs
+
+    def test_vmc_and_machine_share_the_same_refund_protocol(self):
+        machine = Machine(ConfigModel())
+        assert machine.vmc.refunds is machine.refunds
+
+    def test_vmc_and_machine_share_the_same_dispenser_gate(self):
+        """Task 6 removed VMC's own public `gate` property (routes/tests
+        now read `machine.gate`), so this identity check reaches the
+        VMC-private `_gate` directly -- exactly the construction-wiring
+        case the guard test's `# private:` escape hatch exists for."""
+        machine = Machine(ConfigModel())
+        # private: asserts Machine/VMC share one DispenserProfileGate; no
+        # public VMC accessor for this exists since Task 6 removed `gate`.
+        assert machine.vmc._gate is machine.gate
+
+    def test_vmc_and_machine_share_the_same_maintenance_lease(self):
+        """Same reasoning as the gate check above -- VMC's public `lease`
+        property was removed in Task 6."""
+        machine = Machine(ConfigModel())
+        # private: asserts Machine/VMC share one MaintenanceLease; no
+        # public VMC accessor for this exists since Task 6 removed `lease`.
+        assert machine.vmc._lease is machine.lease
+
     def test_no_closure_is_invoked_during_construction(self):
         """Building a Machine must not touch the VMC's FSM/escrow/fault
         state at all -- every cross-referencing closure is deferred."""

@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, AsyncMock
 import pytest
 
 from config.config_model import ConfigModel
-from controller.vmc import VMC
+from controller.machine import Machine
 from services.display_controller import DisplayController
 from services.mqtt_messages import DisplayMode
 
@@ -311,34 +311,37 @@ class TestDisplayControllerReconnect:
 class TestVMCDisplayIntegration:
     def test_vmc_accepts_display_controller(self):
         cfg = ConfigModel()
-        vmc = VMC(config=cfg)
+        machine = Machine(config=cfg)
         dc = DisplayController()
-        vmc.set_display_controller(dc)
-        assert vmc.display_controller is dc
+        machine.set_display_controller(dc)
+        assert machine.display_controller is dc
 
     def test_start_interaction_updates_display(self):
         cfg = ConfigModel()
-        vmc = VMC(config=cfg)
+        machine = Machine(config=cfg)
+        vmc = machine.vmc
         dc = DisplayController()
-        vmc.set_display_controller(dc)
+        machine.set_display_controller(dc)
 
         vmc.start_interaction()
         assert dc.current_mode == DisplayMode.transaction
 
     def test_error_updates_display(self):
         cfg = ConfigModel()
-        vmc = VMC(config=cfg)
+        machine = Machine(config=cfg)
+        vmc = machine.vmc
         dc = DisplayController()
-        vmc.set_display_controller(dc)
+        machine.set_display_controller(dc)
 
         vmc.error_occurred()
         assert dc.current_mode == DisplayMode.error
 
     def test_reset_from_error_returns_to_advertising(self):
         cfg = ConfigModel()
-        vmc = VMC(config=cfg)
+        machine = Machine(config=cfg)
+        vmc = machine.vmc
         dc = DisplayController()
-        vmc.set_display_controller(dc)
+        machine.set_display_controller(dc)
 
         vmc.error_occurred()
         assert dc.current_mode == DisplayMode.error

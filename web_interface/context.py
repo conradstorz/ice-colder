@@ -40,12 +40,18 @@ def set_config_object(cfg: ConfigModel):
 
 
 vmc_instance = None
+machine_instance = None
 health_monitor = None
 
 
-def set_vmc_instance(vmc):
-    global vmc_instance
-    vmc_instance = vmc
+def set_machine_instance(machine):
+    """Wire the composition root (controller/machine.py's `Machine`,
+    vmc-reduction plan, Task 6). Also sets `vmc_instance = machine.vmc` so
+    the many existing `context.vmc_instance` reads across the routes
+    package keep working unchanged."""
+    global machine_instance, vmc_instance
+    machine_instance = machine
+    vmc_instance = machine.vmc if machine is not None else None
 
 
 def set_health_monitor(monitor):

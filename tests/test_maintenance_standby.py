@@ -18,7 +18,7 @@ from tests.fakes import FakeTaskRunner
 from tests.test_vmc_flows import (
     RecordingClient,
     _profiles_tmp_base_dir,  # noqa: F401 -- pytest picks this up as an autouse fixture
-    make_vmc2,
+    make_machine2,
 )
 
 
@@ -42,10 +42,11 @@ def _active_fault_codes(vmc) -> list[str]:
 
 
 async def test_standby_from_interacting_with_user_refunds_and_idles():
-    vmc = make_vmc2()
-    vmc.attach_to_loop(asyncio.get_running_loop())
+    machine = make_machine2()
+    vmc = machine.vmc
+    machine.attach_to_loop(asyncio.get_running_loop())
     client = RecordingClient()
-    vmc.set_mqtt_client(client)
+    machine.set_mqtt_client(client)
     vmc.machine.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 1.00
@@ -68,15 +69,16 @@ async def test_standby_from_interacting_with_user_refunds_and_idles():
     assert hold.holder_user_id == "user-1"
     assert hold.holder_session_id == "sess-1"
     assert "SVC-102" in _active_fault_codes(vmc)
-    vmc.cancel_pending_tasks()
+    machine.cancel_pending_tasks()
 
 
 async def test_standby_from_idle_refunds_stranded_escrow_and_cancels_timer():
     runner = FakeTaskRunner()
-    vmc = make_vmc2(tasks=runner)
-    vmc.attach_to_loop(asyncio.get_running_loop())
+    machine = make_machine2(tasks=runner)
+    vmc = machine.vmc
+    machine.attach_to_loop(asyncio.get_running_loop())
     client = RecordingClient()
-    vmc.set_mqtt_client(client)
+    machine.set_mqtt_client(client)
     assert vmc.state == "idle"
     vmc.deposit_funds(2.00, payment_method="cash_coin")
     assert any(c.label == "session_timeout" for c in runner.scheduled)
@@ -95,14 +97,15 @@ async def test_standby_from_idle_refunds_stranded_escrow_and_cancels_timer():
     assert not any(c.label == "session_timeout" for c in runner.scheduled)
     assert vmc.maintenance_hold is not None
     assert vmc.maintenance_hold.standby is True
-    vmc.cancel_pending_tasks()
+    machine.cancel_pending_tasks()
 
 
 async def test_standby_from_error_refunds_and_stays_in_error():
-    vmc = make_vmc2()
-    vmc.attach_to_loop(asyncio.get_running_loop())
+    machine = make_machine2()
+    vmc = machine.vmc
+    machine.attach_to_loop(asyncio.get_running_loop())
     client = RecordingClient()
-    vmc.set_mqtt_client(client)
+    machine.set_mqtt_client(client)
     vmc.machine.set_state("error")
     vmc.credit_escrow = 1.50
 
@@ -119,14 +122,15 @@ async def test_standby_from_error_refunds_and_stays_in_error():
     assert vmc.credit_escrow == 0.0
     assert vmc.maintenance_hold is not None
     assert vmc.maintenance_hold.standby is True
-    vmc.cancel_pending_tasks()
+    machine.cancel_pending_tasks()
 
 
 async def test_standby_refused_while_dispensing():
-    vmc = make_vmc2()
-    vmc.attach_to_loop(asyncio.get_running_loop())
+    machine = make_machine2()
+    vmc = machine.vmc
+    machine.attach_to_loop(asyncio.get_running_loop())
     client = RecordingClient()
-    vmc.set_mqtt_client(client)
+    machine.set_mqtt_client(client)
     vmc.machine.set_state("dispensing")
     vmc.credit_escrow = 3.00
 
@@ -138,12 +142,13 @@ async def test_standby_refused_while_dispensing():
     assert client.refund_commands() == []
     assert vmc.credit_escrow == 3.00  # untouched
     assert vmc.maintenance_hold is None
-    vmc.cancel_pending_tasks()
+    machine.cancel_pending_tasks()
 
 
 async def test_standby_refused_when_another_session_holds_the_lease():
-    vmc = make_vmc2()
-    vmc.attach_to_loop(asyncio.get_running_loop())
+    machine = make_machine2()
+    vmc = machine.vmc
+    machine.attach_to_loop(asyncio.get_running_loop())
     granted1, _ = vmc.begin_maintenance("owner-1", "sess-a")
     assert granted1 is True
 
@@ -153,17 +158,18 @@ async def test_standby_refused_when_another_session_holds_the_lease():
     assert reason2 == "held by owner-1"
     assert vmc.maintenance_hold.holder_session_id == "sess-a"
     assert vmc.maintenance_hold.standby is False
-    vmc.cancel_pending_tasks()
+    machine.cancel_pending_tasks()
 
 
 async def test_standby_upgrades_own_opportunistic_lease_in_place():
-    vmc = make_vmc2()
-    vmc.attach_to_loop(asyncio.get_running_loop())
-    vmc.set_session_liveness(lambda session_id: True)
+    machine = make_machine2()
+    vmc = machine.vmc
+    machine.attach_to_loop(asyncio.get_running_loop())
+    machine.set_session_liveness(lambda session_id: True)
     granted1, _ = vmc.begin_maintenance("user-1", "sess-1")
     assert granted1 is True
     hold_before = vmc.maintenance_hold
-    idle_task_before = vmc.lease.idle_task
+    idle_task_before = machine.lease.idle_task
     assert idle_task_before is not None
 
     granted2, reason2 = vmc.begin_standby("user-1", "sess-1")
@@ -173,16 +179,17 @@ async def test_standby_upgrades_own_opportunistic_lease_in_place():
     assert reason2 is None
     assert vmc.maintenance_hold is hold_before  # same object, upgraded in place
     assert vmc.maintenance_hold.standby is True
-    assert vmc.lease.idle_task is None
-    assert vmc.lease.sweep_task is not None
+    assert machine.lease.idle_task is None
+    assert machine.lease.sweep_task is not None
     assert idle_task_before.cancelled()
-    vmc.cancel_pending_tasks()
+    machine.cancel_pending_tasks()
 
 
 async def test_standby_lease_never_released_by_idle_timer():
-    vmc = make_vmc2()
-    vmc.attach_to_loop(asyncio.get_running_loop())
-    vmc.set_session_liveness(lambda session_id: True)
+    machine = make_machine2()
+    vmc = machine.vmc
+    machine.attach_to_loop(asyncio.get_running_loop())
+    machine.set_session_liveness(lambda session_id: True)
     granted, _ = vmc.begin_standby("user-1", "sess-1")
     assert granted is True
     vmc.maintenance_hold.last_activity_at -= vmc.MAINTENANCE_IDLE_TIMEOUT_SECONDS + 1
@@ -195,24 +202,25 @@ async def test_standby_lease_never_released_by_idle_timer():
     # guard inside it: even if some future caller re-armed the idle timer
     # by mistake for a standby lease with a predicate wired, it must still
     # never release the lease.
-    vmc.lease.idle_expired()
+    machine.lease.idle_expired()
 
     assert vmc.maintenance_hold is not None
     assert "SVC-102" in _active_fault_codes(vmc)
-    vmc.cancel_pending_tasks()
+    machine.cancel_pending_tasks()
 
 
 async def test_sweep_releases_lease_once_holder_session_is_gone(loud_log):
     runner = FakeTaskRunner()
-    vmc = make_vmc2(tasks=runner)
-    vmc.attach_to_loop(asyncio.get_running_loop())
+    machine = make_machine2(tasks=runner)
+    vmc = machine.vmc
+    machine.attach_to_loop(asyncio.get_running_loop())
     live_calls: list[str] = []
 
     def liveness(session_id: str) -> bool:
         live_calls.append(session_id)
         return len(live_calls) == 1  # live on the first check, gone on the second
 
-    vmc.set_session_liveness(liveness)
+    machine.set_session_liveness(liveness)
     granted, _ = vmc.begin_standby("user-1", "sess-1")
     assert granted is True
 
@@ -225,14 +233,15 @@ async def test_sweep_releases_lease_once_holder_session_is_gone(loud_log):
     assert vmc.maintenance_hold is None
     assert "SVC-102" not in _active_fault_codes(vmc)
     assert any("session_ended" in msg for msg in loud_log)
-    vmc.cancel_pending_tasks()
+    machine.cancel_pending_tasks()
 
 
 async def test_sweep_defers_release_while_a_run_is_in_flight(loud_log):
     runner = FakeTaskRunner()
-    vmc = make_vmc2(tasks=runner)
-    vmc.attach_to_loop(asyncio.get_running_loop())
-    vmc.set_session_liveness(lambda session_id: False)  # already gone
+    machine = make_machine2(tasks=runner)
+    vmc = machine.vmc
+    machine.attach_to_loop(asyncio.get_running_loop())
+    machine.set_session_liveness(lambda session_id: False)  # already gone
     granted, _ = vmc.begin_standby("user-1", "sess-1")
     assert granted is True
 
@@ -255,7 +264,7 @@ async def test_sweep_defers_release_while_a_run_is_in_flight(loud_log):
         "released (session_ended)" in msg or "cleared (session_ended)" in msg
         for msg in loud_log
     )
-    vmc.cancel_pending_tasks()
+    machine.cancel_pending_tasks()
 
 
 async def test_idle_timer_defers_release_while_a_run_is_in_flight_and_is_attributed(
@@ -268,11 +277,12 @@ async def test_idle_timer_defers_release_while_a_run_is_in_flight_and_is_attribu
     # deferral must be attributed to "idle_timeout", not misreported as
     # "admin" once the run settles.
     runner = FakeTaskRunner()
-    vmc = make_vmc2(tasks=runner)
-    vmc.attach_to_loop(asyncio.get_running_loop())
+    machine = make_machine2(tasks=runner)
+    vmc = machine.vmc
+    machine.attach_to_loop(asyncio.get_running_loop())
     granted, _ = vmc.begin_standby("user-1", "sess-1")
     assert granted is True
-    assert vmc.lease.idle_task is not None  # no predicate: idle-timer fallback
+    assert machine.lease.idle_task is not None  # no predicate: idle-timer fallback
 
     with vmc.maintenance_test_run():
         assert vmc.maintenance_hold.runs_in_flight == 1
@@ -294,20 +304,21 @@ async def test_idle_timer_defers_release_while_a_run_is_in_flight_and_is_attribu
         "released (idle_timeout)" in msg or "cleared (idle_timeout)" in msg
         for msg in loud_log
     )
-    vmc.cancel_pending_tasks()
+    machine.cancel_pending_tasks()
 
 
 async def test_standby_falls_back_to_idle_timer_when_no_predicate_wired(loud_log):
     runner = FakeTaskRunner()
-    vmc = make_vmc2(tasks=runner)
-    vmc.attach_to_loop(asyncio.get_running_loop())
+    machine = make_machine2(tasks=runner)
+    vmc = machine.vmc
+    machine.attach_to_loop(asyncio.get_running_loop())
 
     granted, _ = vmc.begin_standby("user-1", "sess-1")
 
     assert granted is True
     assert vmc.maintenance_hold.standby is True
-    assert vmc.lease.sweep_task is None
-    assert vmc.lease.idle_task is not None
+    assert machine.lease.sweep_task is None
+    assert machine.lease.idle_task is not None
     assert any("no session-liveness predicate" in msg.lower() for msg in loud_log)
 
     # With no predicate the idle timer is the only automatic release, so
@@ -315,20 +326,21 @@ async def test_standby_falls_back_to_idle_timer_when_no_predicate_wired(loud_log
     # opportunistic lease" half of plan Task 1).
     runner.fire("maintenance_idle")
     assert vmc.maintenance_hold is None
-    vmc.cancel_pending_tasks()
+    machine.cancel_pending_tasks()
 
 
 async def test_takeover_of_standby_lease_keeps_standby_and_sweeps_new_session():
     runner = FakeTaskRunner()
-    vmc = make_vmc2(tasks=runner)
-    vmc.attach_to_loop(asyncio.get_running_loop())
+    machine = make_machine2(tasks=runner)
+    vmc = machine.vmc
+    machine.attach_to_loop(asyncio.get_running_loop())
     live_calls: list[str] = []
 
     def liveness(session_id: str) -> bool:
         live_calls.append(session_id)
         return True
 
-    vmc.set_session_liveness(liveness)
+    machine.set_session_liveness(liveness)
     granted, _ = vmc.begin_standby("user-1", "sess-a")
     assert granted is True
     vmc.maintenance_hold.last_activity_at -= vmc.MAINTENANCE_TAKEOVER_IDLE_SECONDS + 1
@@ -339,9 +351,9 @@ async def test_takeover_of_standby_lease_keeps_standby_and_sweeps_new_session():
     assert reason2 is None
     assert vmc.maintenance_hold.standby is True
     assert vmc.maintenance_hold.holder_session_id == "sess-b"
-    assert vmc.lease.idle_task is None
-    assert vmc.lease.sweep_task is not None
+    assert machine.lease.idle_task is None
+    assert machine.lease.sweep_task is not None
 
     runner.fire("standby_sweep")
     assert live_calls[-1] == "sess-b"
-    vmc.cancel_pending_tasks()
+    machine.cancel_pending_tasks()

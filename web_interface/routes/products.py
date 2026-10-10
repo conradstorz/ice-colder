@@ -290,7 +290,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         if context.inventory_manager:
             context.inventory_manager.add_sku(sku, inventory_count, tracked=tracked)
         if context.vmc_instance:
-            context.vmc_instance.catalog_changed()
+            context.machine_instance.gate.catalog_changed()
 
         return HTMLResponse("", headers={"HX-Redirect": f"/products/{sku}"})
 
@@ -395,7 +395,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
                 ),
             )
         if context.vmc_instance:
-            context.vmc_instance.catalog_changed()
+            context.machine_instance.gate.catalog_changed()
         return HTMLResponse("", headers={"HX-Redirect": f"/products/{sku}"})
 
     @router.get(
@@ -489,7 +489,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
             product.track_inventory = tracked
             save_config(context.config)
         if context.vmc_instance:
-            context.vmc_instance.catalog_changed()
+            context.machine_instance.gate.catalog_changed()
 
         return HTMLResponse("", headers={"HX-Redirect": f"/products/{sku}"})
 
@@ -530,7 +530,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
             if context.inventory_manager:
                 context.inventory_manager.remove_sku(sku)
             if context.vmc_instance:
-                context.vmc_instance.catalog_changed()
+                context.machine_instance.gate.catalog_changed()
         return HTMLResponse("", headers={"HX-Redirect": "/products"})
 
     return router

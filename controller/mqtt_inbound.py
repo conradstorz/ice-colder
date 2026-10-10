@@ -15,15 +15,15 @@ injected callbacks (``on_bin_half_full``/``on_capabilities_validated``)
 invoked at exactly the point the old inline code did.
 
 ``health``/``availability`` are callables read at call time, not
-snapshotted at construction: both are attached to the VMC later via
-``set_health_monitor``/``set_availability`` and may be ``None`` in tests.
-``capabilities`` is the VMC's own ``subsystem_capabilities`` dict object
-(not a copy), so the router's writes land exactly where existing tests
-already read them.
+snapshotted at construction: both are attached later via
+``Machine.set_health_monitor``/``set_availability`` and may be ``None`` in
+tests. ``capabilities`` is ``Machine``'s own ``subsystem_capabilities``
+dict object (not a copy), so the router's writes land exactly where
+existing tests already read them.
 
-``SUBSCRIPTIONS`` is the single table ``VMC.set_mqtt_client`` loops over
-to register every inbound handler (telemetry-only and sale-driving alike)
-with the MQTT client, in the same order the thirteen individual
+``SUBSCRIPTIONS`` is the single table ``Machine.set_mqtt_client`` loops
+over to register every inbound handler (telemetry-only and sale-driving
+alike) with the MQTT client, in the same order the thirteen individual
 ``client.register(...)`` calls used to run in.
 """
 

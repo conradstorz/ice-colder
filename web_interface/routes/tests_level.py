@@ -291,8 +291,8 @@ def _parse_command_params(
             raise ValueError(f"slot {value} is not in the current catalog")
         product = next(p for p in context.config.products if p.slot == value)
         profile = (
-            context.vmc_instance.dispenser_profile_for(product)
-            if context.vmc_instance is not None
+            context.machine_instance.gate.profile_for(product)
+            if context.machine_instance is not None
             else None
         )
         if profile is None:

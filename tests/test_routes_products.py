@@ -10,6 +10,7 @@ executor resolution 1) — this file owns only the new /products/* routes.
 
 import pytest
 
+from controller.dispenser_gate import DispenserProfileGate
 from services.access import Role
 from web_interface import context
 
@@ -548,7 +549,7 @@ class TestCatalogChangedCalled:
         _cfg, vmc, _inv, _store = wired
         calls = []
         monkeypatch.setattr(
-            vmc.__class__, "catalog_changed", lambda self: calls.append(1)
+            DispenserProfileGate, "catalog_changed", lambda self: calls.append(1)
         )
 
         resp = client.post(
@@ -577,7 +578,7 @@ class TestCatalogChangedCalled:
         _add(client, "CC-CAT", name="Old", price="1.00")
         calls = []
         monkeypatch.setattr(
-            vmc.__class__, "catalog_changed", lambda self: calls.append(1)
+            DispenserProfileGate, "catalog_changed", lambda self: calls.append(1)
         )
 
         resp = client.post(
@@ -602,7 +603,7 @@ class TestCatalogChangedCalled:
         _add(client, "CC-PLC-B", name="B", price="1.00", slot="2")
         calls = []
         monkeypatch.setattr(
-            vmc.__class__, "catalog_changed", lambda self: calls.append(1)
+            DispenserProfileGate, "catalog_changed", lambda self: calls.append(1)
         )
 
         # slot 1 is already CC-PLC-A's -- rejected.
@@ -627,7 +628,7 @@ class TestCatalogChangedCalled:
         _add(client, "CC-DEL", name="Doomed", price="1.00")
         calls = []
         monkeypatch.setattr(
-            vmc.__class__, "catalog_changed", lambda self: calls.append(1)
+            DispenserProfileGate, "catalog_changed", lambda self: calls.append(1)
         )
 
         resp = client.post("/products/NOPE-DEL/delete")

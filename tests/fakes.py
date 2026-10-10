@@ -9,17 +9,18 @@ Also holds the small sink fakes shared by `tests/test_outputs.py` and
 `FakeAvailability`) -- each records what it was given so a test asserts on
 state, not call counts.
 
-Construct a VMC with ``VMC(config, tasks=FakeTaskRunner())``, attach it to the
-running loop exactly as the real runner would be, and then:
+Construct a `Machine` with ``Machine(config, tasks=FakeTaskRunner())``
+(vmc-reduction plan, Task 6 -- `Machine` is the only construction path),
+attach it to the running loop exactly as the real runner would be, and then:
 
-- ``vmc.tasks.scheduled`` -- every *live* (not yet fired, not cancelled)
+- ``machine.tasks.scheduled`` -- every *live* (not yet fired, not cancelled)
   scheduled call, in the order ``schedule()`` was called.
-- ``vmc.tasks.fire("dispense_timeout")`` -- runs the most recently scheduled
-  live call with that label, retiring it first (its own callback may
-  re-schedule under the same label, as ``MaintenanceLease.sweep_tick`` does,
-  without this call retroactively seeing its own re-arm as the one it just
-  fired).
-- ``vmc.tasks.fire_all()`` -- fires every call live at the moment it is
+- ``machine.tasks.fire("dispense_timeout")`` -- runs the most recently
+  scheduled live call with that label, retiring it first (its own callback
+  may re-schedule under the same label, as ``MaintenanceLease.sweep_tick``
+  does, without this call retroactively seeing its own re-arm as the one it
+  just fired).
+- ``machine.tasks.fire_all()`` -- fires every call live at the moment it is
   called (a snapshot taken once, so a callback that re-arms itself under the
   same label never causes this to loop).
 

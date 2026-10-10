@@ -2,7 +2,7 @@
 import asyncio
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from uuid import uuid4
 from transitions import Machine
 from loguru import logger
@@ -16,30 +16,22 @@ from contracts.vending_machine import (
     DispenserOutcome,
     FaultCode,
     PaymentRefundResult,
-    SubsystemCapabilities,
     fault_for_outcome,
 )
 from config.config_model import ConfigModel, Product
 from services.availability import Availability
 from services.command_dispatcher import CommandTimeout
-from services.health_monitor import HealthMonitor
-from services.display_controller import DisplayController
 from services.inventory_manager import InventoryManager
-from services.session_store import Credit, SessionSnapshot, SessionStore
+from services.session_store import Credit, SessionSnapshot
 from services.event_recorder import SaleRecordingFailed
-from services.dispensers import DispenserProfiles
-from services.dispenser_schema import SlotProfile
-from controller.fault_registry import FaultRegistry
 from controller.fault_service import FaultService
 from controller.escrow_ledger import EscrowLedger
 from controller.outputs import StatusOutputs
 from controller.refund_protocol import PendingRefund, RefundProtocol
 from controller.sale_context import SaleContext
-from controller.session_recovery import SessionRecovery
 from controller.maintenance_lease import MaintenanceHold, MaintenanceLease
 from controller.task_runner import TaskRunner
 from controller.dispenser_gate import DispenserProfileGate
-from controller import mqtt_inbound
 
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
 
@@ -186,38 +178,37 @@ class VMC:
         self,
         config: ConfigModel,
         *,
-        tasks: TaskRunner | None = None,
-        escrow: EscrowLedger | None = None,
-        refunds: RefundProtocol | None = None,
-        faults: FaultService | None = None,
-        outputs: StatusOutputs | None = None,
-        gate: DispenserProfileGate | None = None,
-        lease: MaintenanceLease | None = None,
-        availability: Callable[[], Availability | None] | None = None,
-        inventory: Callable[[], InventoryManager | None] | None = None,
+        tasks: TaskRunner,
+        escrow: EscrowLedger,
+        refunds: RefundProtocol,
+        faults: FaultService,
+        outputs: StatusOutputs,
+        gate: DispenserProfileGate,
+        lease: MaintenanceLease,
+        availability: Callable[[], Availability | None],
+        inventory: Callable[[], InventoryManager | None],
+        recorder: Callable[[], object | None],
+        dispatcher: Callable[[], object | None],
     ):
-        """`escrow`/`refunds`/`faults`/`outputs`/`gate`/`lease` let a
-        composition root (`controller/machine.py`'s `Machine`, vmc-
-        reduction plan, Task 5) build these collaborators itself and hand
-        them in fully formed; every closure inside each one that needs the
-        live VMC (e.g. `outputs.snapshot`, `faults.fsm_state`) is written by
-        `Machine` as `lambda *a: self.vmc.<method>(*a)`, so there is no
-        circularity even though `Machine` builds them before its own
-        `self.vmc` exists. `None` (every pre-Machine construction path,
-        including every existing test that builds `VMC(config)` directly)
-        falls back to building each one here exactly as before.
+        """VMC-reduction plan, Task 6: `controller/machine.py`'s `Machine`
+        is now the ONLY construction path -- every collaborator parameter
+        is required. `Machine` builds `tasks`/`escrow`/`refunds`/`faults`/
+        `outputs`/`gate`/`lease` itself and hands them in fully formed;
+        every closure inside each one that needs the live VMC (e.g.
+        `outputs.snapshot`, `faults.fsm_state`) is written by `Machine` as
+        `lambda *a: self.vmc.<method>(*a)`, so there is no circularity even
+        though `Machine` builds them before its own `self.vmc` exists.
 
-        `availability`/`inventory` are zero-arg callables (`Machine` passes
-        `lambda: self.availability`/`lambda: self.inventory`) rather than
-        the objects themselves, because -- unlike the six collaborators
-        above -- the live `Availability`/`InventoryManager` instance is
-        attached well after construction, via `set_availability`/
-        `set_inventory_manager`; every internal read goes through
-        `self._availability()`/`self._inventory()` so it always sees
-        whatever is current, whichever construction path built it. `None`
-        (the default) falls back to a callable over this VMC's own
-        `set_availability`/`set_inventory_manager`-assigned attribute,
-        exactly matching pre-Task-5 behavior.
+        `availability`/`inventory`/`recorder`/`dispatcher` are zero-arg
+        callables (`Machine` passes `lambda: self.availability`/
+        `lambda: self.inventory`/`lambda: self.event_recorder`/
+        `lambda: self.command_dispatcher`) rather than the objects
+        themselves, because the live instance is attached well after
+        construction, via `Machine.set_availability`/
+        `set_inventory_manager`/`set_event_recorder`/
+        `set_command_dispatcher`; every internal read goes through
+        `self._availability()`/`self._inventory()`/`self._recorder()`/
+        `self._dispatcher()` so it always sees whatever is current.
         """
         global txn_log, vend_log
         txn_log = logger.bind(transaction=True)
@@ -247,7 +238,7 @@ class VMC:
         # never allowed to diverge (see _consume_credits_fifo's bug guard).
         # VMC.credit_escrow/escrow_credits below are the public read/write
         # surface over self._escrow.total/self._escrow.credits.
-        self._escrow = escrow if escrow is not None else EscrowLedger()
+        self._escrow = escrow
         # Review finding I2: a monotonically increasing counter identifying
         # the *current* in-flight dispense dispatch. Incremented once per
         # on_dispense_product call (one dispatch attempt per entry into
@@ -276,89 +267,34 @@ class VMC:
         # real event-loop runner, so timers can be fired by label rather
         # than through a private task handle; defaults to a real
         # `TaskRunner()` for every production and non-timer-test caller.
-        self._tasks = tasks if tasks is not None else TaskRunner()
+        self._tasks = tasks
         self._dispense_timeout_task: asyncio.Task | None = None
         self._session_timeout_task: asyncio.Task | None = None
-        self._health_monitor: HealthMonitor | None = (
-            None  # Set via set_health_monitor()
-        )
-        # `self._inventory`/`self._availability` are always zero-arg
-        # callables (see the __init__ docstring above): either the one
-        # `Machine` passed in, reading through its own `outputs.*`, or --
-        # when the constructor parameter is `None`, every pre-Task-5
-        # construction path -- a callable closing over
-        # `self._inventory_obj`/`self._availability_obj`, the plain
-        # attribute `set_inventory_manager`/`set_availability` still
-        # assign directly.
-        self._inventory_obj: InventoryManager | None = None
-        self._inventory: Callable[[], InventoryManager | None] = (
-            inventory if inventory is not None else (lambda: self._inventory_obj)
-        )
-        self._event_recorder = None  # Set via set_event_recorder()
-        self._availability_obj: Availability | None = None
-        self._availability: Callable[[], Availability | None] = (
-            availability
-            if availability is not None
-            else (lambda: self._availability_obj)
-        )
-        self._command_dispatcher = None  # Set via set_command_dispatcher()
+        # `self._inventory`/`self._availability`/`self._recorder`/
+        # `self._dispatcher` are always the zero-arg callables `Machine`
+        # passed in (see the __init__ docstring above) -- never a plain
+        # attribute assigned by a VMC-side `set_*` method, which no longer
+        # exists (Task 6).
+        self._inventory: Callable[[], InventoryManager | None] = inventory
+        self._availability: Callable[[], Availability | None] = availability
+        self._recorder: Callable[[], object | None] = recorder
+        self._dispatcher: Callable[[], object | None] = dispatcher
         # Outbound side effects -- MQTT publishes, session persistence, the
         # customer display, and the dashboard's UI-refresh/message/QR
         # callbacks (controller/outputs.py's StatusOutputs) -- the FSM's
-        # only outbound channel, and the first piece carved off in the
-        # vmc-reduction plan
-        # (docs/superpowers/specs/2026-10-10-vmc-sale-fsm-core-design.md).
-        # Built here, before
-        # the lease and refund protocol below, because RefundProtocol's
-        # `publish` is a bound method captured at construction time (not
-        # a lambda) and must already resolve to something real.
-        # `pay104_active` reads `self._faults` at call time only -- never
-        # during __init__ -- so this can be (and must be) built before
-        # `self._faults` exists further below. Exposed read-only as
-        # `self.outputs` (VMC public surface design, section 3); tests
-        # read `vmc.outputs.mqtt`/`.health`/etc. directly rather than a
-        # VMC-private alias. `mqtt_client`/`session_store`/
-        # `display_controller` stay as their own VMC properties for now,
-        # returning the matching outputs sink (Task 6 moves them to a
-        # composition root).
-        self._outputs = (
-            outputs
-            if outputs is not None
-            else StatusOutputs(
-                snapshot=self._snapshot,
-                fsm_state=lambda: self.state,
-                credit_escrow=lambda: self.credit_escrow,
-                selected_product=lambda: self.selected_product,
-                pay104_active=lambda: self._faults.has(FaultCode.PAY_104),
-                tasks=self._tasks,
-            )
-        )
+        # only outbound channel. Exposed read-only as `self.outputs` (VMC
+        # public surface design, section 3); tests read
+        # `vmc.outputs.mqtt`/`.health`/etc. directly rather than a
+        # VMC-private alias.
+        self._outputs = outputs
         # Maintenance lease lifecycle (system-tests design §2.2/§2.2a):
         # the hold itself, its idle timer, and the standby session-liveness
         # sweep (controller/maintenance_lease.py). Deliberately not part of
-        # any persisted snapshot -- see MaintenanceHold's docstring.
-        # Exposed read-only as `self.lease` (VMC public surface design,
-        # section 3); tests read `vmc.lease.hold`/`vmc.lease.idle_task`/
-        # `vmc.lease.sweep_task` directly rather than a VMC-private alias.
-        # `on_granted`/`on_released` are VMC callbacks (raise/clear
-        # SVC-102); the three timing knobs are callables read at call time,
-        # never snapshotted here, because tests set
-        # `vmc.MAINTENANCE_IDLE_TIMEOUT_SECONDS`/
-        # `vmc.MAINTENANCE_TAKEOVER_IDLE_SECONDS` on the live instance.
-        self._lease = (
-            lease
-            if lease is not None
-            else MaintenanceLease(
-                schedule=self._schedule,
-                on_granted=lambda: self.raise_fault(
-                    FaultCode.SVC_102, outcome="maintenance_lease_granted"
-                ),
-                on_released=lambda by: self.clear_fault(FaultCode.SVC_102.value, by=by),
-                idle_timeout=lambda: self.MAINTENANCE_IDLE_TIMEOUT_SECONDS,
-                takeover_idle=lambda: self.MAINTENANCE_TAKEOVER_IDLE_SECONDS,
-                sweep_seconds=lambda: self.STANDBY_SWEEP_SECONDS,
-            )
-        )
+        # any persisted snapshot -- see MaintenanceHold's docstring. Built
+        # by `Machine`; this VMC still reads `self._lease` internally
+        # (`begin_maintenance`, `deposit_funds`, ...) but no longer exposes
+        # a public `lease` property (Task 6 -- `machine.lease` instead).
+        self._lease = lease
         # run_test_sale's own bookkeeping (system-tests design §2.3): the
         # Future its completion-handling call sites resolve with
         # (outcome, fault_code) once the sale settles, and the FSM states
@@ -373,107 +309,30 @@ class VMC:
         # _test_sale_waiter/_test_sale_path above. See run_test_sale's own
         # comments for why run_id uniqueness alone does not do this.
         self._test_sale_in_progress: bool = False
-        self.subsystem_capabilities: dict[str, dict] = {}
-        # Fault registry + side effects: product-scope faults by SKU,
-        # machine-scope faults by code (controller/fault_registry.py's
-        # `FaultRegistry`, pure bookkeeping), wrapped by
-        # controller/fault_service.py's `FaultService` (event-recorder
-        # rows, health/MQTT alerts, the availability/health active-fault
-        # push, and the liveness/MQTT-connection fault mappings -- the
-        # third piece carved off the VMC god object). Exposed read-only as
-        # `self.faults` (VMC public surface design, section 3); tests read
+        # Fault service: product-scope faults by SKU, machine-scope faults
+        # by code, wrapped by controller/fault_service.py's `FaultService`
+        # (event-recorder rows, health/MQTT alerts, the availability/health
+        # active-fault push, and the liveness/MQTT-connection fault
+        # mappings). Built by `Machine`. Exposed read-only as `self.faults`
+        # (VMC public surface design, section 3); tests read
         # `vmc.faults.lockouts`/`vmc.faults.is_locked(...)`/`vmc.faults.has(...)`
         # directly rather than a VMC-private alias, and mutate only through
-        # `raise_fault`/`clear_fault`, never the registry directly. The
-        # `lease_holder`/`lacks_valid_profile` closures read `self._lease`/
-        # `self._gate` at call time, never at construction (`self._gate` is
-        # built after this point; nothing invokes either during __init__).
-        self._registry = FaultRegistry(self._product_name)
-        self._faults = (
-            faults
-            if faults is not None
-            else FaultService(
-                registry=self._registry,
-                outputs=self._outputs,
-                tasks=self._tasks,
-                recorder=lambda: self._event_recorder,
-                lease_holder=lambda: (
-                    self._lease.hold.holder_user_id if self._lease.hold else None
-                ),
-                lacks_valid_profile=lambda sku: self._gate.lacks_valid_profile(sku),
-                set_transaction_certain=lambda certain: (
-                    self._availability().set_transaction_certain(certain)
-                    if self._availability()
-                    else None
-                ),
-                fsm_state=lambda: self.state,
-            )
-        )
+        # `raise_fault`/`clear_fault`, never the registry directly.
+        self._faults = faults
         # Dispenser-profile gate: CFG-101/CFG-102 reconciliation against a
-        # loaded DispenserProfiles (controller/dispenser_gate.py), the
-        # eighth piece carved off the VMC god object. Set via
-        # set_dispenser_profiles(); exposed read-only as `self.gate`, so
-        # tests read `vmc.gate.profiles` directly rather than a VMC-private
-        # alias.
-        self._gate = (
-            gate
-            if gate is not None
-            else DispenserProfileGate(
-                products=lambda: self.config_model.products,
-                is_locked=self._faults.is_locked,
-                has_machine_fault=self._faults.has,
-                raise_fault=self.raise_fault,
-                clear_fault=lambda key, by: self.clear_fault(key, by=by),
-            )
-        )
+        # loaded DispenserProfiles (controller/dispenser_gate.py). Built by
+        # `Machine`, attached via `Machine.set_dispenser_profiles`; this
+        # VMC still reads `self._gate` internally (`run_test_sale`'s
+        # profile check, `on_dispense_product`, `clear_fault`'s closure)
+        # but no longer exposes a public `gate` property (Task 6 --
+        # `machine.gate` instead).
+        self._gate = gate
         # Refund protocol: request -> ack -> one retry -> terminal state
-        # machine (controller/refund_protocol.py). Exposed read-only as
-        # `self.refunds` (VMC public surface design, section 3); tests read
-        # `vmc.refunds.pending` directly rather than a VMC-private alias.
-        # The publish/schedule/ack_timeout/max_attempts callables are read
-        # at call time, never snapshotted here -- see RefundProtocol's
-        # docstring.
-        self._refunds = (
-            refunds
-            if refunds is not None
-            else RefundProtocol(
-                publish=self._outputs.publish_refund,
-                schedule=self._schedule,
-                on_confirmed=self._refund_confirmed,
-                on_failed=self._refund_failed,
-                ack_timeout=lambda: self.REFUND_ACK_TIMEOUT,
-                max_attempts=lambda: self.REFUND_MAX_ATTEMPTS,
-            )
-        )
-        # PAY-104 session recovery: the boot-time decision over a loaded
-        # snapshot plus the read-only recovery accessor and its
-        # record-once guards (controller/session_recovery.py). `store` is
-        # read at call time (the session store is attached to
-        # `self._outputs` later by `set_session_store`), never
-        # snapshotted here.
-        self._recovery = SessionRecovery(
-            store=lambda: self._outputs.session_store,
-            product_name=self._product_name,
-            pay104_active=lambda: self._faults.has(FaultCode.PAY_104),
-        )
-        # Telemetry-only MQTT inbound handlers (controller/mqtt_inbound.py).
-        # `health`/`availability` are callables read at call time because
-        # both are attached later via set_health_monitor/set_availability
-        # and may be None in tests; `capabilities` is this VMC's own dict
-        # object, not a copy, so the router's writes land exactly where
-        # existing tests already read them (`vmc.subsystem_capabilities`).
-        # The ICE-101 auto-clear now lives on `self._faults` (see
-        # `FaultService.clear_ice101_lockouts`); the vending-capabilities
-        # dispenser-profiles reconcile stays a VMC callback -- see
-        # TelemetryRouter's docstring and
-        # _on_vending_capabilities_validated below.
-        self._telemetry = mqtt_inbound.TelemetryRouter(
-            health=lambda: self._health_monitor,
-            availability=self._availability,
-            capabilities=self.subsystem_capabilities,
-            on_bin_half_full=self._faults.clear_ice101_lockouts,
-            on_capabilities_validated=self._on_vending_capabilities_validated,
-        )
+        # machine (controller/refund_protocol.py). Built by `Machine`.
+        # Exposed read-only as `self.refunds` (VMC public surface design,
+        # section 3); tests read `vmc.refunds.pending` directly rather than
+        # a VMC-private alias.
+        self._refunds = refunds
         # Public (no leading underscore) so a test can read/override them
         # directly (VMC public surface design, section 2) rather than
         # reaching into a private attribute -- e.g.
@@ -503,32 +362,13 @@ class VMC:
 
         logger.debug("VMC initialization complete.")
 
-    def attach_to_loop(self, loop: asyncio.AbstractEventLoop):
-        """Attach VMC to the running asyncio event loop. Must be called before scheduling."""
-        self._tasks.attach(loop)
-        logger.debug("VMC attached to asyncio event loop.")
-
-    def cancel_pending_tasks(self):
-        """Cancel all pending scheduled tasks. Call during shutdown.
-
-        Persistence writes tracked by the task runner are never cancelled
-        here — they are drained (awaited to completion) by
-        ``drain_persistence()`` instead, so a shutdown cannot truncate an
-        in-flight session/inventory save.
-        """
-        self._tasks.cancel_pending()
+    def cancel_timers(self) -> None:
+        """Cancel the dispense and session timeout timers. Call during
+        shutdown (`Machine.cancel_pending_tasks`, Task 6) -- the remaining
+        VMC-private pieces of what `cancel_pending_tasks` used to do before
+        it moved to `Machine` entirely."""
         self._cancel_dispense_timeout()
         self._cancel_session_timeout()
-        self._refunds.cancel_all()
-        logger.debug("VMC: all pending tasks cancelled.")
-
-    @property
-    def tasks(self) -> TaskRunner:
-        """Read-only view of the event-loop task plumbing (VMC public
-        surface design, section 3). `vmc.tasks.pending`/`.persist`/`.loop`
-        are read directly; mutation only ever happens through a VMC method
-        (`attach_to_loop`, `cancel_pending_tasks`, `drain_persistence`)."""
-        return self._tasks
 
     @property
     def outputs(self) -> StatusOutputs:
@@ -536,167 +376,8 @@ class VMC:
         surface design, section 3; vmc-reduction plan, Task 2).
         `vmc.outputs.mqtt`/`.health`/`.availability`/`.session_store`/
         `.display_controller` are read directly; mutation only ever
-        happens through a VMC `set_*` method."""
+        happens through a `Machine` `set_*` method."""
         return self._outputs
-
-    def set_mqtt_client(self, client):
-        """Attach an MQTTClient instance for publishing status and receiving events."""
-        self._outputs.attach_mqtt(client)
-        # Register handlers for inbound ESP32 messages. SUBSCRIPTIONS
-        # (controller/mqtt_inbound.py) is the single source of truth for
-        # which topics map to which handler, in the exact order the
-        # individual client.register(...) calls used to run in. Each triple
-        # is (topic, owner, method); owner "vmc" resolves against self,
-        # "telemetry" against self._telemetry (vmc-reduction plan, Task 5 --
-        # Machine.set_mqtt_client resolves the same table the same way).
-        for topic, owner, name in mqtt_inbound.SUBSCRIPTIONS:
-            target = self if owner == "vmc" else self._telemetry
-            client.register(topic, getattr(target, name))
-        logger.debug("VMC registered MQTT handlers.")
-
-    def set_health_monitor(self, monitor: HealthMonitor):
-        """Attach a HealthMonitor; its liveness transitions become COM/PAY faults."""
-        self._health_monitor = monitor
-        self._outputs.attach_health(monitor)
-        monitor.set_liveness_callback(self._faults.on_subsystem_liveness)
-        logger.debug("VMC attached health monitor.")
-
-    def set_availability(self, availability: Availability):
-        """Attach the permissive table; it publishes cmd/payment/enable through us."""
-        self._availability_obj = availability
-        self._outputs.attach_availability(availability)
-        availability.set_fsm_state(self.state)
-        availability.set_active_faults(self.active_faults())
-        availability.set_publisher(self._outputs.publish_payment_enable)
-        logger.debug("VMC attached availability.")
-
-    def on_mqtt_connection(self, connected: bool) -> None:
-        """Connection-state callback from MQTTClient (chained after the
-        health monitor). Forwards to `self._faults.on_mqtt_connection`
-        (controller/fault_service.py) for now; moves to `Machine` in
-        Task 6."""
-        self._faults.on_mqtt_connection(connected)
-
-    def set_display_controller(self, controller: DisplayController):
-        """Attach a DisplayController so FSM state changes update the customer display."""
-        self._outputs.attach_display(controller)
-        logger.debug("VMC attached display controller.")
-
-    def set_inventory_manager(self, inventory: InventoryManager):
-        """Attach an InventoryManager for persistent stock tracking."""
-        self._inventory_obj = inventory
-        logger.debug("VMC attached inventory manager.")
-
-    def set_event_recorder(self, recorder):
-        """Attach an EventRecorder so FSM error events are persisted."""
-        self._event_recorder = recorder
-        logger.debug("VMC attached event recorder.")
-
-    def set_session_store(self, store: SessionStore):
-        """Attach the session store and evaluate any snapshot left by a previous run.
-
-        Call after attach_to_loop, set_health_monitor and set_availability so
-        the PAY-104 alert and the availability gate both land.
-        """
-        self._outputs.attach_session_store(store)
-        decision = self._recovery.evaluate_at_boot()
-        if decision.kind == "discard_test":
-            logger.warning(
-                "SessionStore: discarding a test-sale snapshot found at "
-                f"boot (sku={decision.snapshot.selected_sku!r}, "
-                f"state={decision.snapshot.state!r}); a test sale risks no "
-                "real money, so no PAY-104 is raised."
-            )
-        elif decision.kind == "uncertain":
-            self._flag_uncertain_session(decision.snapshot)
-        logger.debug("VMC attached session store.")
-
-    def set_command_dispatcher(self, dispatcher) -> None:
-        """Attach the subsystem CommandDispatcher (system-tests design §2.1).
-
-        A later task's `run_test_sale` and the Tests level routes use this
-        to send actuator/automatic commands through the same dispatcher
-        `main.py` registers on `cmd/+/ack`.
-        """
-        self._command_dispatcher = dispatcher
-        logger.debug("VMC attached command dispatcher.")
-
-    def set_dispenser_profiles(self, profiles: DispenserProfiles) -> None:
-        """Attach the loaded `DispenserProfiles` -- delegates to
-        `self._gate.attach` (controller/dispenser_gate.py)."""
-        self._gate.attach(profiles)
-
-    def dispenser_profile_for(self, product: Product) -> SlotProfile | None:
-        """The one lookup every later task (dispense, Tests level, ...)
-        uses -- delegates to `self._gate.profile_for`."""
-        return self._gate.profile_for(product)
-
-    def reconcile_dispenser_profiles(self) -> None:
-        """Re-derive every product's CFG-101 lockout, and the machine's
-        CFG-102 fault -- delegates to `self._gate.reconcile`."""
-        self._gate.reconcile()
-
-    def catalog_changed(self) -> None:
-        """Tell the gate a product catalog mutation just landed --
-        delegates to `self._gate.catalog_changed`."""
-        self._gate.catalog_changed()
-
-    # --- Read-only wired-service accessors (VMC public surface design,
-    # section 3) --- each is attached via its own `set_*` method above;
-    # tests and routes read the collaborator directly by these names
-    # rather than a VMC-private attribute, and mutate only by calling the
-    # matching `set_*` method (or, for `recovery`, never -- it is
-    # read-only by construction).
-
-    @property
-    def session_store(self) -> SessionStore | None:
-        return self._outputs.session_store
-
-    @property
-    def mqtt_client(self):
-        return self._outputs.mqtt
-
-    @property
-    def command_dispatcher(self):
-        return self._command_dispatcher
-
-    @property
-    def health_monitor(self) -> HealthMonitor | None:
-        return self._health_monitor
-
-    @property
-    def availability(self) -> Availability | None:
-        return self._availability()
-
-    @property
-    def event_recorder(self):
-        return self._event_recorder
-
-    @property
-    def display_controller(self) -> DisplayController | None:
-        return self._outputs.display_controller
-
-    @property
-    def recovery(self) -> SessionRecovery:
-        """Read-only PAY-104 session-recovery collaborator. See
-        ``controller.session_recovery.SessionRecovery``."""
-        return self._recovery
-
-    def _flag_uncertain_session(self, snap: SessionSnapshot) -> None:
-        detail = snap.error or (
-            f"state={snap.state} escrow=${snap.credit_escrow:.2f} "
-            f"sku={snap.selected_sku} refund={snap.pending_refund_request_id}"
-        )
-        logger.error(f"Transaction uncertain after restart: {detail}")
-        txn_log.error(f"RESTART WITH OPEN SESSION: {detail}")
-        if self._event_recorder:
-            self._event_recorder.record(
-                "session_uncertain", value=snap.credit_escrow, metadata=asdict(snap)
-            )
-        availability = self._availability()
-        if availability:
-            availability.set_transaction_certain(False)
-        self.raise_fault(FaultCode.PAY_104, outcome=detail)
 
     def reconcile_session(self) -> None:
         """Future hook: query the payment gateway for held credit and clear
@@ -817,14 +498,6 @@ class VMC:
         mutation only ever happens through `request_refund`/`on_refund_ack`."""
         return self._refunds
 
-    @property
-    def gate(self) -> DispenserProfileGate:
-        """Read-only view of the dispenser-profile gate (VMC public
-        surface design, section 3). `vmc.gate.profiles` is read directly;
-        mutation only ever happens through `set_dispenser_profiles`/
-        `reconcile_dispenser_profiles`/`catalog_changed`."""
-        return self._gate
-
     # --- In-flight sale (SaleContext, controller/sale_context.py) ---
     #
     # `self._sale` is the single source of truth; every FSM callback below
@@ -902,34 +575,6 @@ class VMC:
         the full contract."""
         return self._faults.clear_fault(key, by=by)
 
-    def pending_sale_for_recovery(self) -> dict | None:
-        """Read-only PAY-104 recovery accessor. See
-        ``controller.session_recovery.SessionRecovery.pending_sale_for_recovery``.
-        """
-        return self._recovery.pending_sale_for_recovery()
-
-    def pending_sale_already_recorded(self, pending: dict) -> bool:
-        """In-memory record-once guard. See
-        ``controller.session_recovery.SessionRecovery.pending_sale_already_recorded``.
-        """
-        return self._recovery.pending_sale_already_recorded(pending)
-
-    def reserve_pending_sale(self, pending: dict) -> None:
-        """In-memory record-once guard. See
-        ``controller.session_recovery.SessionRecovery.reserve_pending_sale``.
-        """
-        self._recovery.reserve_pending_sale(pending)
-
-    def mark_pending_sale_recorded(self) -> bool:
-        """Durable record-once marker. See
-        ``controller.session_recovery.SessionRecovery.mark_pending_sale_recorded``.
-        """
-        return self._recovery.mark_pending_sale_recorded()
-
-    async def on_hardware_io(self, topic: str, data: dict):
-        """Binary hardware IO from the vending ESP32; ice returning clears ICE-101."""
-        return await self._telemetry.handle_hardware_io(topic, data)
-
     # --- MQTT inbound handlers ---
 
     async def on_payment_credit(self, topic: str, data: dict):
@@ -938,10 +583,6 @@ class VMC:
         logger.info(f"MQTT payment received: ${event.amount:.2f} via {event.method}")
         txn_log.info(f"PAYMENT RECEIVED: ${event.amount:.2f} via {event.method}")
         self.deposit_funds(event.amount, payment_method=event.method)
-
-    async def on_payment_status(self, topic: str, data: dict):
-        """MDB device readiness; any device in error/offline blocks payment."""
-        return await self._telemetry.handle_payment_status(topic, data)
 
     async def on_button_press(self, topic: str, data: dict):
         """Handle button press from ESP32."""
@@ -1008,7 +649,8 @@ class VMC:
         uncertain and must be reconciled by an operator.
         """
         product = self.selected_product
-        if self._event_recorder is None or product is None:
+        recorder = self._recorder()
+        if recorder is None or product is None:
             if self._sale is not None:
                 self._sale = self._sale.with_(shares=None)
             return
@@ -1023,7 +665,7 @@ class VMC:
         price = round(sum(methods.values()), 2)
         try:
             await asyncio.to_thread(
-                self._event_recorder.record_sale,
+                recorder.record_sale,
                 product.sku,
                 product.name,
                 product.slot,
@@ -1140,10 +782,9 @@ class VMC:
                 self._sale = self._sale.with_(shares=None)
                 self._resolve_test_sale_waiter("dispensed", None)
             else:
-                if self._event_recorder and self.selected_product:
-                    self._event_recorder.record(
-                        "dispense", value=float(self.selected_product.slot)
-                    )
+                recorder = self._recorder()
+                if recorder and self.selected_product:
+                    recorder.record("dispense", value=float(self.selected_product.slot))
                 await self._record_sale()
             if outcome is DispenserOutcome.door_open:
                 # door_open is a customer success (the ice/water was
@@ -1195,53 +836,6 @@ class VMC:
         if is_test:
             self._resolve_test_sale_waiter("vend_failed", code.value)
 
-    async def on_sensor_reading(self, topic: str, data: dict):
-        """Handle temperature/sensor reading from ESP32."""
-        return await self._telemetry.handle_sensor(topic, data)
-
-    async def on_water_flow(self, topic: str, data: dict):
-        """Handle water flow sensor readings from the vending ESP32."""
-        return await self._telemetry.handle_water_flow(topic, data)
-
-    async def on_heartbeat(self, topic: str, data: dict):
-        """Handle heartbeat from ESP32 subsystem."""
-        return await self._telemetry.handle_heartbeat(topic, data)
-
-    async def on_ice_maker_event(self, topic: str, data: dict):
-        """Handle operational events from the ice maker ESP32."""
-        return await self._telemetry.handle_ice_maker_event(topic, data)
-
-    def _on_vending_capabilities_validated(
-        self, subsystem: str, caps: SubsystemCapabilities
-    ) -> None:
-        """Re-run the dispenser-profiles capabilities cross-check whenever
-        the vending board's retained capabilities doc validates -- invoked
-        by the telemetry router (controller/mqtt_inbound.py's
-        `TelemetryRouter.handle_capabilities`) only from its successful-
-        validation branch.
-
-        Dispenser profiles (plan: dispenser profiles, Task 2): the vending
-        board's declared channel directions feed the profiles' own
-        capabilities cross-check (drive channels must be outputs, sensors
-        inputs) -- re-run it, and re-reconcile CFG-101, every time this doc
-        changes. Only on a successfully validated doc: a malformed doc must
-        never overwrite previously-good capabilities with something that
-        would wrongly downgrade real slot errors back to warnings.
-        """
-        self._gate.on_vending_capabilities(subsystem, caps)
-
-    async def on_capabilities(self, topic: str, data: dict):
-        """Store a subsystem's retained self-description and hand it to health."""
-        return await self._telemetry.handle_capabilities(topic, data)
-
-    async def on_telemetry(self, topic: str, data: dict):
-        """Route a generic telemetry channel reading into health tracking."""
-        return await self._telemetry.handle_telemetry(topic, data)
-
-    async def on_command_ack(self, topic: str, data: dict):
-        """Log command acknowledgements from the monitor."""
-        return await self._telemetry.handle_command_ack(topic, data)
-
     def _fire_and_forget(self, coro, *, persistent: bool = False) -> None:
         """Run a coroutine on the attached loop without awaiting it.
 
@@ -1249,10 +843,6 @@ class VMC:
         `TaskRunner.fire_and_forget` for the actual behavior.
         """
         self._tasks.fire_and_forget(coro, persistent=persistent)
-
-    async def drain_persistence(self, timeout: float = 3.0) -> None:
-        """Await in-flight session/inventory writes so shutdown never cancels them."""
-        await self._tasks.drain_persistence(timeout=timeout)
 
     def _schedule(
         self, delay_seconds, callback, *, label: str = ""
@@ -1271,21 +861,9 @@ class VMC:
         }
 
     @logger.catch()
-    def set_qrcode_callback(self, callback):
-        self._outputs.set_qrcode_callback(callback)
-
-    @logger.catch()
     def has_credit(self):
         """Return True if there is remaining credit in the escrow."""
         return self._escrow.has_credit
-
-    @logger.catch()
-    def set_update_callback(self, callback):
-        self._outputs.set_update_callback(callback)
-
-    @logger.catch()
-    def set_message_callback(self, callback):
-        self._outputs.set_message_callback(callback)
 
     @logger.catch()
     def send_customer_message(self, message):
@@ -1343,7 +921,7 @@ class VMC:
         # motor/slot a remaining product dispenses from.
         if self._tasks.loop and self.selected_product:
             product = self.selected_product
-            profile = self.dispenser_profile_for(product)
+            profile = self._gate.profile_for(product)
             if profile is None:
                 # Cannot happen after Task 2's CFG-101 lockout (select_product
                 # already refuses a profile-less product) -- a defensive
@@ -1493,7 +1071,8 @@ class VMC:
             return
 
         try:
-            if self._command_dispatcher is None:
+            dispatcher = self._dispatcher()
+            if dispatcher is None:
                 logger.error(
                     "VMC: no command dispatcher attached; cannot send "
                     "dispense command (wiring error)"
@@ -1501,7 +1080,7 @@ class VMC:
                 await self._fail_dispense_async(FaultCode.PAY_102, "no_ack", seq)
                 return
 
-            ack = await self._command_dispatcher.send(
+            ack = await dispatcher.send(
                 "vending",
                 "dispense",
                 cmd.model_dump(mode="json"),
@@ -1662,7 +1241,8 @@ class VMC:
         txn_log.error(
             f"VEND FAILED: '{name}' {code.value} ({outcome}); ${price:.2f} returned to escrow"
         )
-        if self._event_recorder and not (self._sale is not None and self._sale.is_test):
+        recorder = self._recorder()
+        if recorder and not (self._sale is not None and self._sale.is_test):
             # Copilot review (PR 22, id=4128088653): on_vend_failed is the
             # one place that runs for every failed/timed-out vend,
             # production or test (both on_dispenser_event's failure
@@ -1677,7 +1257,7 @@ class VMC:
             # everything else in this method (restoring escrow, the
             # customer message) still runs exactly as it does for a real
             # vend.
-            self._event_recorder.record(
+            recorder.record(
                 "vend_failed",
                 value=price,
                 metadata={"code": code.value, "sku": sku, "outcome": outcome},
@@ -1768,8 +1348,9 @@ class VMC:
         logger.error(
             f"{STATE_CHANGE_PREFIX} Error encountered for product: {self.selected_product}. Transitioning to error state."
         )
-        if self._event_recorder:
-            self._event_recorder.record("error", value=1.0)
+        recorder = self._recorder()
+        if recorder:
+            recorder.record("error", value=1.0)
         # Minor fix M3: see on_reset's comment above -- same reasoning.
         # Unlike on_reset, on_error does NOT clear selected_product (the
         # log line above still prints it), so this is a genuine partial
@@ -1905,8 +1486,9 @@ class VMC:
         txn_log.info(
             f"REFUND CONFIRMED: ${amount_returned:.2f} request_id={pending.request_id}"
         )
-        if self._event_recorder:
-            self._event_recorder.record(
+        recorder = self._recorder()
+        if recorder:
+            recorder.record(
                 "refund",
                 value=amount_returned,
                 metadata={"request_id": pending.request_id, "reason": pending.reason},
@@ -1921,8 +1503,9 @@ class VMC:
             f"REFUND FAILED: ${pending.amount:.2f} request_id={pending.request_id} "
             f"reason={pending.reason} detail={detail}"
         )
-        if self._event_recorder:
-            self._event_recorder.record(
+        recorder = self._recorder()
+        if recorder:
+            recorder.record(
                 "refund_failed",
                 value=pending.amount,
                 metadata={
@@ -1960,11 +1543,6 @@ class VMC:
         """Read-only view of the current lease, if any. Never persisted."""
         return self._lease.hold
 
-    @property
-    def lease(self) -> MaintenanceLease:
-        """Read-only view of the maintenance lease collaborator."""
-        return self._lease
-
     def _release_maintenance_hold(self, by: str) -> None:
         self._lease.release(by)
 
@@ -1973,19 +1551,6 @@ class VMC:
 
     def _maintenance_idle_expired(self) -> None:
         self._lease.idle_expired()
-
-    def set_session_liveness(self, predicate: Callable[[str], bool] | None) -> None:
-        """Wire (or clear) the predicate the standby sweep uses to check the
-        holder's web session (system-tests design §2.2a).
-
-        ``predicate(session_id) -> bool`` should apply the same rules
-        ``AccessStore.resolve_session`` would, without refreshing the
-        session's own activity -- ``AccessStore.session_is_live`` is the
-        intended implementation, wired in main.py. With no predicate wired
-        (the default), a standby lease falls back to the ordinary idle
-        timer instead of the sweep -- see ``MaintenanceLease.arm_sweep``.
-        """
-        self._lease.set_session_liveness(predicate)
 
     def _arm_maintenance_sweep(self) -> None:
         self._lease.arm_sweep()
@@ -2174,10 +1739,7 @@ class VMC:
         # on profiles actually being wired, like every other dispenser-
         # profiles check here, so a VMC with none set (every pre-plan-2
         # test and fixture) behaves exactly as before.
-        if (
-            self._gate.profiles is not None
-            and self.dispenser_profile_for(product) is None
-        ):
+        if self._gate.profiles is not None and self._gate.profile_for(product) is None:
             raise RuntimeError(
                 f"{product.sku} has no valid dispenser profile (CFG-101); "
                 "fix dispensers.toml"
@@ -2268,7 +1830,8 @@ class VMC:
                     ):
                         self._test_sale_path.append(self.state)
                     path = list(self._test_sale_path)
-                    if self._event_recorder is not None:
+                    recorder = self._recorder()
+                    if recorder is not None:
                         # The seam a later task's recorder-side work fills in
                         # (system-tests design §4): this already lands in
                         # the existing `events` table via the same generic
@@ -2292,7 +1855,7 @@ class VMC:
                         # (web_interface/routes/tests_level.py's
                         # POST /tests/sale reuses this result's `run_id`
                         # rather than writing its own row).
-                        self._event_recorder.record(
+                        recorder.record(
                             "test_run",
                             value=round(time.time() - started_at, 3),
                             metadata={

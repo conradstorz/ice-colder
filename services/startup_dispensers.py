@@ -5,7 +5,7 @@ import sys
 from loguru import logger
 
 from config.config_model import ConfigModel
-from controller.vmc import VMC
+from controller.machine import Machine
 from services.dispensers import (
     DispenserProfiles,
     Finding,
@@ -83,19 +83,19 @@ def load_dispenser_profiles(config: ConfigModel) -> DispenserProfiles:
     return profiles
 
 
-def wire_dispenser_profiles(vmc: VMC, profiles: DispenserProfiles) -> None:
-    """Hand the loaded dispenser profiles to the VMC (CFG-101/CFG-102
-    reconciliation) and to the routes module. Extracted out of `main()`
-    so this step can be exercised in a test without an event loop --
-    `main()` itself is an infinite event loop under `@logger.catch()`,
-    so it cannot be run partially; this is the same two calls `main()`
-    makes, just moved into a function, and changes none of `main()`'s
-    own behaviour.
+def wire_dispenser_profiles(machine: Machine, profiles: DispenserProfiles) -> None:
+    """Hand the loaded dispenser profiles to the `Machine` (CFG-101/CFG-102
+    reconciliation, via its dispenser-profile gate) and to the routes
+    module. Extracted out of `main()` so this step can be exercised in a
+    test without an event loop -- `main()` itself is an infinite event
+    loop under `@logger.catch()`, so it cannot be run partially; this is
+    the same two calls `main()` makes, just moved into a function, and
+    changes none of `main()`'s own behaviour.
 
     `web_interface.routes` is imported at module scope here: it does not
     import anything that reaches back into `services.startup_dispensers`
     (verified empirically -- importing this module standalone succeeds),
     so there is no cycle to work around.
     """
-    vmc.set_dispenser_profiles(profiles)
+    machine.set_dispenser_profiles(profiles)
     routes.set_dispenser_profiles(profiles)

@@ -87,9 +87,9 @@ def test_fixture_provides_two_profiles(dispenser_profiles):
 
 
 def test_main_wires_profiles_into_vmc_and_routes(monkeypatch):
-    """`main()` hands the loaded `DispenserProfiles` to both the VMC and
-    the routes module, right after `vmc.set_health_monitor(health)` --
-    via `wire_dispenser_profiles(vmc, profiles)`, extracted out of
+    """`main()` hands the loaded `DispenserProfiles` to both the `Machine`
+    and the routes module, right after `machine.set_health_monitor(health)`
+    -- via `wire_dispenser_profiles(machine, profiles)`, extracted out of
     `main()` since `main()` itself is an infinite event loop wrapped in
     `@logger.catch()` and cannot be exercised partially in a test.
     `main()`'s own behaviour is unchanged: this helper is just the same
@@ -97,23 +97,23 @@ def test_main_wires_profiles_into_vmc_and_routes(monkeypatch):
     event loop. This test proves one load reaches both consumers with
     the SAME object.
     """
-    from controller.vmc import VMC
+    from controller.machine import Machine
     from web_interface import routes
 
-    vmc_calls = []
+    machine_calls = []
     routes_calls = []
     monkeypatch.setattr(
-        VMC, "set_dispenser_profiles", lambda self, p: vmc_calls.append(p)
+        Machine, "set_dispenser_profiles", lambda self, p: machine_calls.append(p)
     )
     monkeypatch.setattr(routes, "set_dispenser_profiles", routes_calls.append)
 
     cfg = ConfigModel()
-    vmc = VMC(config=cfg)
+    machine = Machine(config=cfg)
     sentinel = DispenserProfiles(cfg)
 
-    startup_dispensers.wire_dispenser_profiles(vmc, sentinel)
+    startup_dispensers.wire_dispenser_profiles(machine, sentinel)
 
-    assert vmc_calls == [sentinel]
+    assert machine_calls == [sentinel]
     assert routes_calls == [sentinel]
 
 
