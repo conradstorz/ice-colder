@@ -14,30 +14,39 @@ no-op or a logged warning -- with no sink attached at all, exactly as the
 VMC is usable before ``main.py`` finishes wiring MQTT/health/availability/
 session store/display onto it.
 
-``snapshot``/``credit_escrow``/``selected_product_name``/``pay104_active``
-are callables read at call time, not snapshotted at construction, mirroring
-the pattern already used for ``RefundProtocol.ack_timeout``/
-``max_attempts``: the live VMC's state changes between construction and
-any given call, so this class must always see the current value.
+``snapshot``/``credit_escrow``/``selected_product``/``fsm_state``/
+``pay104_active`` are callables read at call time, not snapshotted at
+construction, mirroring the pattern already used for
+``RefundProtocol.ack_timeout``/``max_attempts``: the live VMC's state
+changes between construction and any given call, so this class must
+always see the current value.
 """
 
 from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
+from config.config_model import Product
 from contracts.vending_machine import PaymentRefundCommand
 from controller.task_runner import TaskRunner
+from services.availability import Availability
+from services.display_controller import DisplayController
+from services.health_monitor import HealthMonitor
 from services.mqtt_messages import PaymentEnableCommand, VMCAlert, VMCStatus
-from services.session_store import SessionSnapshot
+from services.session_store import SessionSnapshot, SessionStore
+
+if TYPE_CHECKING:
+    from services.mqtt_client import MQTTClient
 
 
 class StatusOutputs:
     """The FSM's only outbound channel.
 
-    Constructed with four callables that always read live VMC state (never
+    Constructed with five callables that always read live VMC state (never
     snapshotted) plus the shared ``TaskRunner`` used for every
     fire-and-forget publish/persist. Every sink is attached later via
     ``attach_mqtt``/``attach_health``/``attach_availability``/
@@ -49,13 +58,15 @@ class StatusOutputs:
         *,
         snapshot: Callable[[str | None], SessionSnapshot],
         credit_escrow: Callable[[], float],
-        selected_product_name: Callable[[], str | None],
+        selected_product: Callable[[], Product | None],
+        fsm_state: Callable[[], str],
         pay104_active: Callable[[], bool],
         tasks: TaskRunner,
     ) -> None:
         self._snapshot = snapshot
         self._credit_escrow = credit_escrow
-        self._selected_product_name = selected_product_name
+        self._selected_product = selected_product
+        self._fsm_state = fsm_state
         self._pay104_active = pay104_active
         self._tasks = tasks
         self._start_time = time.monotonic()
@@ -72,19 +83,19 @@ class StatusOutputs:
 
     # --- sinks ---
 
-    def attach_mqtt(self, client) -> None:
+    def attach_mqtt(self, client: "MQTTClient") -> None:
         self._mqtt = client
 
-    def attach_health(self, monitor) -> None:
+    def attach_health(self, monitor: HealthMonitor) -> None:
         self._health = monitor
 
-    def attach_availability(self, availability) -> None:
+    def attach_availability(self, availability: Availability) -> None:
         self._availability = availability
 
-    def attach_session_store(self, store) -> None:
+    def attach_session_store(self, store: SessionStore) -> None:
         self._session_store = store
 
-    def attach_display(self, controller) -> None:
+    def attach_display(self, controller: DisplayController) -> None:
         self._display = controller
 
     @property
@@ -140,10 +151,11 @@ class StatusOutputs:
         self.persist(state)
         if self._mqtt is None or self._tasks.loop is None:
             return
+        product = self._selected_product()
         status = VMCStatus(
             state=state,
             credit_escrow=self._credit_escrow(),
-            selected_product=self._selected_product_name(),
+            selected_product=product.name if product else None,
             uptime_seconds=self.uptime_seconds,
         )
         self._tasks.fire_and_forget(self._mqtt.publish("status", status, retain=True))
@@ -166,12 +178,17 @@ class StatusOutputs:
                 self._session_store.clear_async(), persistent=True
             )
 
-    async def save_snapshot_async(self, snap: SessionSnapshot) -> None:
+    async def save_snapshot_async(self, snap: SessionSnapshot | None) -> None:
         """Await a snapshot save directly, for a caller that is already
         async and needs to await the write itself (the dispatcher-based
-        dispense path) rather than fire-and-forget it. Same two guards as
-        ``persist``; any exception from the save propagates to the
-        caller, which is responsible for its own failure handling."""
+        dispense path) rather than fire-and-forget it. A no-op when
+        ``snap`` is ``None`` -- mirroring the original call site's own
+        guard (``snap is not None and self._session_store is not None``)
+        -- plus the same two guards as ``persist``; any exception from the
+        save propagates to the caller, which is responsible for its own
+        failure handling."""
+        if snap is None:
+            return
         if self._session_store is None:
             return
         if self._pay104_active():
@@ -193,15 +210,22 @@ class StatusOutputs:
             self._display.update_for_state(state)
 
     def message(self, text: str) -> None:
-        """Send a message to the customer via the registered callback."""
-        logger.info(f"Customer message: {text}")
+        """Send a message to the customer via the registered callback --
+        mirrors ``VMC.send_customer_message`` exactly, including its log
+        level and wording."""
+        logger.debug(f"Sending customer message: '{text}'")
         if self.message_callback:
             self.message_callback(text)
 
     def refresh(self) -> None:
-        """Tell the dashboard's registered callback to refresh."""
+        """Tell the dashboard's registered callback to refresh, passing
+        the live FSM state, selected product, and credit escrow --
+        mirrors ``VMC._refresh_ui`` exactly, including its three-argument
+        call."""
         if self.update_callback:
-            self.update_callback()
+            self.update_callback(
+                self._fsm_state(), self._selected_product(), self._credit_escrow()
+            )
 
     def show_qr(self, image) -> None:
         """Hand a QR code image to the registered callback."""

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 
+from config.config_model import Product
 from contracts.vending_machine import PaymentRefundCommand
 from controller.outputs import StatusOutputs
 from services.mqtt_messages import AlertLevel, PaymentEnableCommand, VMCAlert, VMCStatus
@@ -87,14 +88,16 @@ def make_outputs(
     tasks: FakeTaskRunner | None = None,
     snapshot=not_open_snapshot,
     credit_escrow=lambda: 0.0,
-    selected_product_name=lambda: None,
+    selected_product=lambda: None,
+    fsm_state=lambda: "idle",
     pay104_active=lambda: False,
 ) -> tuple[StatusOutputs, FakeTaskRunner]:
     runner = tasks if tasks is not None else FakeTaskRunner()
     outputs = StatusOutputs(
         snapshot=snapshot,
         credit_escrow=credit_escrow,
-        selected_product_name=selected_product_name,
+        selected_product=selected_product,
+        fsm_state=fsm_state,
         pay104_active=pay104_active,
         tasks=runner,
     )
@@ -122,7 +125,7 @@ async def test_state_changed_with_no_sinks_is_a_no_op():
 async def test_state_changed_with_every_sink_pushes_and_publishes_retained_status():
     outputs, runner = make_outputs(
         credit_escrow=lambda: 3.25,
-        selected_product_name=lambda: "Ice Bag",
+        selected_product=lambda: Product(name="Ice Bag"),
         snapshot=not_open_snapshot,
     )
     runner.attach(asyncio.get_running_loop())
@@ -150,6 +153,22 @@ async def test_state_changed_with_every_sink_pushes_and_publishes_retained_statu
     assert payload.credit_escrow == 3.25
     assert payload.selected_product == "Ice Bag"
     assert payload.uptime_seconds >= 0
+
+
+async def test_state_changed_publishes_none_selected_product_when_none_selected():
+    """Pins the ``product.name if product else None`` derivation to the old
+    ``selected_product_name()`` behavior when nothing is selected."""
+    outputs, runner = make_outputs(selected_product=lambda: None)
+    runner.attach(asyncio.get_running_loop())
+    mqtt = FakeMqtt()
+    outputs.attach_mqtt(mqtt)
+
+    outputs.state_changed("idle")
+    await asyncio.sleep(0)
+
+    assert len(mqtt.published) == 1
+    _topic, payload, _retain = mqtt.published[0]
+    assert payload.selected_product is None
 
 
 async def test_state_changed_without_mqtt_client_still_pushes_health_and_availability():
@@ -229,6 +248,20 @@ async def test_save_snapshot_async_without_session_store_is_a_no_op():
 
     await outputs.save_snapshot_async(open_snapshot("dispensing"))
     # no store attached -> nothing to assert on but "did not raise"
+
+
+async def test_save_snapshot_async_with_none_snapshot_is_a_no_op():
+    """Mirrors the original call site's own guard (``snap is not None and
+    self._session_store is not None``) -- a None snapshot never reaches
+    the store, even with one attached."""
+    store = FakeStore()
+    outputs, runner = make_outputs()
+    runner.attach(asyncio.get_running_loop())
+    outputs.attach_session_store(store)
+
+    await outputs.save_snapshot_async(None)
+
+    assert store.saved == []
 
 
 async def test_save_snapshot_async_skips_while_pay104_is_active():
@@ -320,10 +353,28 @@ def test_refresh_calls_callback_only_when_set():
     outputs.refresh()  # no callback -> must not raise
 
     calls = []
-    outputs.set_update_callback(lambda: calls.append(True))
+    outputs.set_update_callback(lambda *args: calls.append(args))
     outputs.refresh()
 
-    assert calls == [True]
+    assert len(calls) == 1
+
+
+def test_refresh_passes_state_product_and_escrow():
+    """Mirrors ``VMC._refresh_ui``'s own call:
+    ``self.update_callback(self.state, self.selected_product,
+    self.credit_escrow)`` -- same three positional args, same order."""
+    product = Product(name="Ice Bag")
+    outputs, _runner = make_outputs(
+        fsm_state=lambda: "interacting_with_user",
+        selected_product=lambda: product,
+        credit_escrow=lambda: 1.75,
+    )
+    calls = []
+    outputs.set_update_callback(lambda *args: calls.append(args))
+
+    outputs.refresh()
+
+    assert calls == [("interacting_with_user", product, 1.75)]
 
 
 def test_show_qr_calls_callback_only_when_set():
