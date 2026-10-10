@@ -4,6 +4,11 @@ collaborators, `RefundProtocol`/`MaintenanceLease`) armed it with, instead of
 reaching into a private per-timer task handle on the VMC (VMC public
 surface design, section 2).
 
+Also holds the small sink fakes shared by `tests/test_outputs.py` and
+`tests/test_fault_service.py` (`FakeMqtt`, `FakeStore`, `FakeHealth`,
+`FakeAvailability`) -- each records what it was given so a test asserts on
+state, not call counts.
+
 Construct a VMC with ``VMC(config, tasks=FakeTaskRunner())``, attach it to the
 running loop exactly as the real runner would be, and then:
 
@@ -32,6 +37,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from controller.task_runner import TaskRunner
+from services.session_store import SessionSnapshot
 
 
 @dataclass
@@ -157,3 +163,96 @@ class FakeTaskRunner:
                 continue
             call.task.fired = True
             call.callback()
+
+
+class FakeMqtt:
+    """Records every publish() call; `register` is accepted and ignored
+    since neither `StatusOutputs` nor `FaultService` ever calls it."""
+
+    def __init__(self):
+        self.published: list[tuple[str, object, bool]] = []
+
+    async def publish(self, topic, payload, qos=1, retain=False):
+        self.published.append((topic, payload, retain))
+
+
+class FakeStore:
+    def __init__(self, *, clear_result: bool = True):
+        self.saved: list[SessionSnapshot] = []
+        self.cleared_async_calls = 0
+        self.clear_calls = 0
+        self.clear_result = clear_result
+
+    async def save_async(self, snap: SessionSnapshot) -> None:
+        self.saved.append(snap)
+
+    async def clear_async(self) -> bool:
+        self.cleared_async_calls += 1
+        return self.clear_result
+
+    def clear(self) -> bool:
+        self.clear_calls += 1
+        return self.clear_result
+
+
+class FakeHealth:
+    """Records state pushes, active-fault snapshots, and raised/cleared
+    alerts -- the surface `StatusOutputs.state_changed` and
+    `FaultService.raise_fault`/`clear_fault`/`push_active_faults` touch."""
+
+    def __init__(self):
+        self.states: list[str] = []
+        self.active_faults_calls: list[list[dict]] = []
+        self.raised_alerts: list[tuple] = []
+        self.cleared_alerts: list[str] = []
+
+    def update_vmc_state(self, state: str) -> None:
+        self.states.append(state)
+
+    def set_active_faults(self, faults: list[dict]) -> None:
+        self.active_faults_calls.append(faults)
+
+    async def raise_alert(
+        self,
+        key: str,
+        level: str,
+        source: str,
+        message: str,
+        code: str | None = None,
+        product_sku: str | None = None,
+    ) -> None:
+        self.raised_alerts.append((key, level, source, message, code, product_sku))
+
+    def clear_alert(self, key: str) -> None:
+        self.cleared_alerts.append(key)
+
+
+class FakeAvailability:
+    """Records every call `StatusOutputs.state_changed` and
+    `FaultService` make against the real `Availability` surface."""
+
+    def __init__(self):
+        self.states: list[str] = []
+        self.active_faults_calls: list[list[dict]] = []
+        self.subsystem_alive: list[tuple[str, bool]] = []
+        self.mqtt_connected: list[bool] = []
+        self.republish_calls = 0
+        self.transaction_certain: list[bool] = []
+
+    def set_fsm_state(self, state: str) -> None:
+        self.states.append(state)
+
+    def set_active_faults(self, faults: list[dict]) -> None:
+        self.active_faults_calls.append(faults)
+
+    def set_subsystem_alive(self, subsystem: str, alive: bool) -> None:
+        self.subsystem_alive.append((subsystem, alive))
+
+    def set_mqtt_connected(self, connected: bool) -> None:
+        self.mqtt_connected.append(connected)
+
+    def republish(self) -> None:
+        self.republish_calls += 1
+
+    def set_transaction_certain(self, certain: bool) -> None:
+        self.transaction_certain.append(certain)

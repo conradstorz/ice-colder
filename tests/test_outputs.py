@@ -4,7 +4,10 @@
 display) is a small fake that records what it was given; `tasks` is the
 real `tests.fakes.FakeTaskRunner`, attached to the running event loop so
 `fire_and_forget` publishes/persists actually run (and can be awaited with
-a bare `asyncio.sleep(0)`) instead of being swallowed.
+a bare `asyncio.sleep(0)`) instead of being swallowed. `FakeMqtt`/
+`FakeStore`/`FakeHealth`/`FakeAvailability` live in `tests/fakes.py` so
+`tests/test_fault_service.py` can reuse them; only `FakeDisplay` (unused
+there) stays local to this file.
 """
 
 from __future__ import annotations
@@ -17,54 +20,13 @@ from controller.outputs import StatusOutputs
 from services.mqtt_messages import AlertLevel, PaymentEnableCommand, VMCAlert, VMCStatus
 from services.payment_gateway_manager import PaymentGatewayManager
 from services.session_store import SessionSnapshot
-from tests.fakes import FakeTaskRunner
-
-
-class FakeMqtt:
-    """Records every publish() call; `register` is accepted and ignored
-    since StatusOutputs never calls it, mirroring the real client's
-    surface closely enough for other fakes in this test suite."""
-
-    def __init__(self):
-        self.published: list[tuple[str, object, bool]] = []
-
-    async def publish(self, topic, payload, qos=1, retain=False):
-        self.published.append((topic, payload, retain))
-
-
-class FakeStore:
-    def __init__(self, *, clear_result: bool = True):
-        self.saved: list[SessionSnapshot] = []
-        self.cleared_async_calls = 0
-        self.clear_calls = 0
-        self.clear_result = clear_result
-
-    async def save_async(self, snap: SessionSnapshot) -> None:
-        self.saved.append(snap)
-
-    async def clear_async(self) -> bool:
-        self.cleared_async_calls += 1
-        return self.clear_result
-
-    def clear(self) -> bool:
-        self.clear_calls += 1
-        return self.clear_result
-
-
-class FakeHealth:
-    def __init__(self):
-        self.states: list[str] = []
-
-    def update_vmc_state(self, state: str) -> None:
-        self.states.append(state)
-
-
-class FakeAvailability:
-    def __init__(self):
-        self.states: list[str] = []
-
-    def set_fsm_state(self, state: str) -> None:
-        self.states.append(state)
+from tests.fakes import (
+    FakeAvailability,
+    FakeHealth,
+    FakeMqtt,
+    FakeStore,
+    FakeTaskRunner,
+)
 
 
 class FakeDisplay:
