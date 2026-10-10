@@ -184,7 +184,7 @@ async def _ack_dispense(sim_client: "aiomqtt.Client", prefix: str, request_id: s
             phase="accepted",
         ).model_dump_json(),
     )
-    # Give the dispatcher's cmd/+/ack handler and _persist_then_dispense a
+    # Give the dispatcher's cmd/+/ack handler and DispenseCycle._run a
     # moment to actually process the ack before the terminal report (sent
     # by the caller right after this returns) arrives.
     await asyncio.sleep(0.3)

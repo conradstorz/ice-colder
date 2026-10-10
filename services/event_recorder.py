@@ -69,8 +69,8 @@ class SaleRecordingFailed(Exception):
     ``sales`` insert failed *and* the journal fallback write also failed
     (e.g. a full or read-only data volume) -- unlike the ordinary "insert
     failed, journal caught it" case, which re-raises the original insert
-    exception unchanged. Distinguished by type so ``VMC._record_sale`` can
-    tell "the row is safe in the journal, an ordinary DATA-101 alert is
+    exception unchanged. Distinguished by type so ``DispenseCycle.record``
+    can tell "the row is safe in the journal, an ordinary DATA-101 alert is
     enough" apart from "the row is nowhere; this must not be silently
     treated the same way," and instead preserve it via the PAY-104
     recovery path (see that method's docstring).
@@ -609,7 +609,7 @@ class EventRecorder:
         the row is then recorded nowhere durable at all, which the plain
         "insert failed, DATA-101, journal has it" path must not be
         mistaken for. See ``SaleRecordingFailed``'s docstring and
-        ``VMC._record_sale``.
+        ``DispenseCycle.record``.
         """
         ts = time.time() if ts is None else ts
         payload = {

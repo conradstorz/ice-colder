@@ -263,6 +263,7 @@ class DispenseCycle:
                 f"match the sent request_id={request_id!r} for slot {cmd.slot}"
             )
 
+    @logger.catch()
     def _timed_out(self) -> None:
         """No terminal dispenser report arrived within the configured
         timeout. Today's `_dispense_timed_out` body (controller/vmc.py),
@@ -270,6 +271,12 @@ class DispenseCycle:
         side effects, which belong to the caller now (Task 8) -- it is
         the caller's job to tell a timeout that outlived its own sale
         apart from one that still matters.
+
+        Wrapped in ``@logger.catch()``, mirroring the original
+        `_dispense_timed_out`: `TaskRunner.schedule`'s delayed callback
+        attaches no failure logger of its own, so an uncaught exception
+        here would otherwise be silently dropped, leaving the FSM stuck
+        in `dispensing` with no timer to retry or fail it.
         """
         self._timeout_task = None
         logger.error(
