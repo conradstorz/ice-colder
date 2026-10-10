@@ -67,8 +67,16 @@ class TaskRunner:
             self.persist.append(task)
             self.persist = [t for t in self.persist if not t.done()]
 
-    def schedule(self, delay_seconds, callback) -> asyncio.Task | None:
-        """Schedule a synchronous callback to run after delay_seconds on the event loop."""
+    def schedule(
+        self, delay_seconds, callback, *, label: str = ""
+    ) -> asyncio.Task | None:
+        """Schedule a synchronous callback to run after delay_seconds on the event loop.
+
+        ``label`` identifies the timer for tests (VMC public surface
+        design, section 2) -- the real runner accepts and ignores it;
+        ``tests.fakes.FakeTaskRunner`` records it so a test can fire a
+        specific timer by name instead of poking a private task handle.
+        """
         if self.loop is None or self.loop.is_closed():
             logger.warning("No event loop attached; cannot schedule callback.")
             return None

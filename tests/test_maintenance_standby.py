@@ -14,6 +14,7 @@ import asyncio
 import pytest
 from loguru import logger
 
+from tests.fakes import FakeTaskRunner
 from tests.test_vmc_flows import (
     RecordingClient,
     _profiles_tmp_base_dir,  # noqa: F401 -- pytest picks this up as an autouse fixture
@@ -71,13 +72,14 @@ async def test_standby_from_interacting_with_user_refunds_and_idles():
 
 
 async def test_standby_from_idle_refunds_stranded_escrow_and_cancels_timer():
-    vmc = make_vmc2()
+    runner = FakeTaskRunner()
+    vmc = make_vmc2(tasks=runner)
     vmc.attach_to_loop(asyncio.get_running_loop())
     client = RecordingClient()
     vmc.set_mqtt_client(client)
     assert vmc.state == "idle"
     vmc.deposit_funds(2.00, payment_method="cash_coin")
-    assert vmc._session_timeout_task is not None
+    assert any(c.label == "session_timeout" for c in runner.scheduled)
 
     granted, reason = vmc.begin_standby("user-1", "sess-1")
     await asyncio.sleep(0)
@@ -90,7 +92,7 @@ async def test_standby_from_idle_refunds_stranded_escrow_and_cancels_timer():
     assert refunds[0].reason == "maintenance"
     assert vmc.state == "idle"
     assert vmc.credit_escrow == 0.0
-    assert vmc._session_timeout_task is None
+    assert not any(c.label == "session_timeout" for c in runner.scheduled)
     assert vmc.maintenance_hold is not None
     assert vmc.maintenance_hold.standby is True
     vmc.cancel_pending_tasks()
@@ -185,7 +187,15 @@ async def test_standby_lease_never_released_by_idle_timer():
     assert granted is True
     vmc.maintenance_hold.last_activity_at -= vmc.MAINTENANCE_IDLE_TIMEOUT_SECONDS + 1
 
-    vmc._maintenance_idle_expired()
+    # A predicate is wired, so begin_standby's grant armed the session
+    # sweep, not the idle timer (MaintenanceLease.arm_sweep) -- there is no
+    # live "maintenance_idle" scheduled call to fire here at all. This
+    # calls the lease's own public `idle_expired()` directly (a public
+    # collaborator method, not a VMC private) to prove the belt-and-braces
+    # guard inside it: even if some future caller re-armed the idle timer
+    # by mistake for a standby lease with a predicate wired, it must still
+    # never release the lease.
+    vmc.lease.idle_expired()
 
     assert vmc.maintenance_hold is not None
     assert "SVC-102" in _active_fault_codes(vmc)
@@ -193,7 +203,8 @@ async def test_standby_lease_never_released_by_idle_timer():
 
 
 async def test_sweep_releases_lease_once_holder_session_is_gone(loud_log):
-    vmc = make_vmc2()
+    runner = FakeTaskRunner()
+    vmc = make_vmc2(tasks=runner)
     vmc.attach_to_loop(asyncio.get_running_loop())
     live_calls: list[str] = []
 
@@ -205,11 +216,11 @@ async def test_sweep_releases_lease_once_holder_session_is_gone(loud_log):
     granted, _ = vmc.begin_standby("user-1", "sess-1")
     assert granted is True
 
-    vmc._maintenance_sweep_tick()  # first sweep: still live
+    runner.fire("standby_sweep")  # first sweep: still live
     assert vmc.maintenance_hold is not None
     assert live_calls == ["sess-1"]
 
-    vmc._maintenance_sweep_tick()  # second sweep: session gone
+    runner.fire("standby_sweep")  # second sweep: session gone
 
     assert vmc.maintenance_hold is None
     assert "SVC-102" not in _active_fault_codes(vmc)
@@ -218,7 +229,8 @@ async def test_sweep_releases_lease_once_holder_session_is_gone(loud_log):
 
 
 async def test_sweep_defers_release_while_a_run_is_in_flight(loud_log):
-    vmc = make_vmc2()
+    runner = FakeTaskRunner()
+    vmc = make_vmc2(tasks=runner)
     vmc.attach_to_loop(asyncio.get_running_loop())
     vmc.set_session_liveness(lambda session_id: False)  # already gone
     granted, _ = vmc.begin_standby("user-1", "sess-1")
@@ -227,16 +239,16 @@ async def test_sweep_defers_release_while_a_run_is_in_flight(loud_log):
     with vmc.maintenance_test_run():
         assert vmc.maintenance_hold.runs_in_flight == 1
 
-        vmc._maintenance_sweep_tick()
+        runner.fire("standby_sweep")
 
         assert vmc.maintenance_hold is not None
         assert vmc.maintenance_hold.release_requested is True
         assert vmc.maintenance_hold.release_reason == "session_ended"
 
-    # The run's own `finally` (_maintenance_run_finished) performs the
+    # The run's own `finally` (MaintenanceLease.run_finished) performs the
     # deferred release once runs_in_flight settles back to zero, and must
     # attribute it to "session_ended" (the sweep's own reason), not the
-    # generic "admin" _maintenance_run_finished falls back to.
+    # generic "admin" run_finished falls back to.
     assert vmc.maintenance_hold is None
     assert "SVC-102" not in _active_fault_codes(vmc)
     assert any(
@@ -252,10 +264,11 @@ async def test_idle_timer_defers_release_while_a_run_is_in_flight_and_is_attribu
     # Standby leases are normally released via the session-liveness sweep,
     # not the idle timer -- but with no predicate wired (begin_standby's
     # fallback), the idle timer is the lease's only automatic release path
-    # (see _maintenance_idle_expired's docstring), so its own in-flight
+    # (see MaintenanceLease.idle_expired's docstring), so its own in-flight
     # deferral must be attributed to "idle_timeout", not misreported as
     # "admin" once the run settles.
-    vmc = make_vmc2()
+    runner = FakeTaskRunner()
+    vmc = make_vmc2(tasks=runner)
     vmc.attach_to_loop(asyncio.get_running_loop())
     granted, _ = vmc.begin_standby("user-1", "sess-1")
     assert granted is True
@@ -267,7 +280,7 @@ async def test_idle_timer_defers_release_while_a_run_is_in_flight_and_is_attribu
             vmc.MAINTENANCE_IDLE_TIMEOUT_SECONDS + 1
         )
 
-        vmc._maintenance_idle_expired()
+        runner.fire("maintenance_idle")
 
         assert vmc.maintenance_hold is not None
         assert vmc.maintenance_hold.release_requested is True
@@ -285,7 +298,8 @@ async def test_idle_timer_defers_release_while_a_run_is_in_flight_and_is_attribu
 
 
 async def test_standby_falls_back_to_idle_timer_when_no_predicate_wired(loud_log):
-    vmc = make_vmc2()
+    runner = FakeTaskRunner()
+    vmc = make_vmc2(tasks=runner)
     vmc.attach_to_loop(asyncio.get_running_loop())
 
     granted, _ = vmc.begin_standby("user-1", "sess-1")
@@ -299,13 +313,14 @@ async def test_standby_falls_back_to_idle_timer_when_no_predicate_wired(loud_log
     # With no predicate the idle timer is the only automatic release, so
     # it must still act on a standby lease (the "degrades to the
     # opportunistic lease" half of plan Task 1).
-    vmc._maintenance_idle_expired()
+    runner.fire("maintenance_idle")
     assert vmc.maintenance_hold is None
     vmc.cancel_pending_tasks()
 
 
 async def test_takeover_of_standby_lease_keeps_standby_and_sweeps_new_session():
-    vmc = make_vmc2()
+    runner = FakeTaskRunner()
+    vmc = make_vmc2(tasks=runner)
     vmc.attach_to_loop(asyncio.get_running_loop())
     live_calls: list[str] = []
 
@@ -327,6 +342,6 @@ async def test_takeover_of_standby_lease_keeps_standby_and_sweeps_new_session():
     assert vmc.lease.idle_task is None
     assert vmc.lease.sweep_task is not None
 
-    vmc._maintenance_sweep_tick()
+    runner.fire("standby_sweep")
     assert live_calls[-1] == "sess-b"
     vmc.cancel_pending_tasks()

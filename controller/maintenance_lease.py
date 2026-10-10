@@ -87,7 +87,7 @@ class MaintenanceLease:
     def __init__(
         self,
         *,
-        schedule: Callable[[float, Callable[[], None]], object | None],
+        schedule: Callable[..., object | None],
         on_granted: Callable[[], None],
         on_released: Callable[[str], None],
         idle_timeout: Callable[[], float],
@@ -171,7 +171,9 @@ class MaintenanceLease:
     def arm_idle_timer(self) -> None:
         if self.idle_task and not self.idle_task.done():
             self.idle_task.cancel()
-        self.idle_task = self._schedule(self._idle_timeout(), self.idle_expired)
+        self.idle_task = self._schedule(
+            self._idle_timeout(), self.idle_expired, label="maintenance_idle"
+        )
 
     def idle_expired(self) -> None:
         """5 minutes since ``last_activity_at``: behaves exactly like a
@@ -233,7 +235,9 @@ class MaintenanceLease:
                 self._no_predicate_warned = True
             self.arm_idle_timer()
             return
-        self.sweep_task = self._schedule(self._sweep_seconds(), self.sweep_tick)
+        self.sweep_task = self._schedule(
+            self._sweep_seconds(), self.sweep_tick, label="standby_sweep"
+        )
 
     def sweep_tick(self) -> None:
         """One tick of the standby sweep: re-arms itself (a repeating chain
@@ -252,7 +256,9 @@ class MaintenanceLease:
         if self.session_liveness is not None and self.session_liveness(
             hold.holder_session_id
         ):
-            self.sweep_task = self._schedule(self._sweep_seconds(), self.sweep_tick)
+            self.sweep_task = self._schedule(
+                self._sweep_seconds(), self.sweep_tick, label="standby_sweep"
+            )
             return
         if hold.runs_in_flight > 0:
             hold.release_requested = True

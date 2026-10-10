@@ -59,7 +59,7 @@ class RefundProtocol:
         self,
         *,
         publish: Callable[[PaymentRefundCommand], None],
-        schedule: Callable[[float, Callable[[], None]], asyncio.Task | None],
+        schedule: Callable[..., asyncio.Task | None],
         on_confirmed: Callable[[PendingRefund, float], None],
         on_failed: Callable[[PendingRefund, str], None],
         ack_timeout: Callable[[], float],
@@ -87,7 +87,9 @@ class RefundProtocol:
         )
         self._publish(cmd)
         pending.deadline_task = self._schedule(
-            self._ack_timeout(), lambda: self._deadline(pending.request_id)
+            self._ack_timeout(),
+            lambda: self._deadline(pending.request_id),
+            label="refund_deadline",
         )
 
     def handle_ack(self, result: PaymentRefundResult) -> None:

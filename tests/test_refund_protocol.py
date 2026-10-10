@@ -36,7 +36,7 @@ class FakeClock:
     def publish(self, cmd) -> None:
         self.published.append(cmd)
 
-    def schedule(self, delay, callback):
+    def schedule(self, delay, callback, *, label=""):
         self.scheduled.append((delay, callback))
         task = FakeTask()
         self.tasks.append(task)
