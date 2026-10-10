@@ -175,7 +175,7 @@ class FakeDispatcher:
     `send_and_await_completion` always raises `AssertionError`: a
     production sale must await only the accepted ack via `send()`, never
     completion -- completion is signalled by the real `hardware/dispenser`
-    report, handled by `VMC._handle_mqtt_dispenser`, not the dispatcher.
+    report, handled by `VMC.on_dispenser_event`, not the dispatcher.
     """
 
     def __init__(self):
