@@ -3,7 +3,7 @@ pending sale left behind by a crash mid-dispense.
 
 Fixtures come from tests/conftest.py (`wired`, `login_as`) for the login
 plumbing; this file adds its own `_pay104_setup` helper, which drives the
-real deposit -> `_process_payment` pipeline (never a hand-built
+real deposit -> `process_payment` pipeline (never a hand-built
 SessionSnapshot or a directly-assigned `credit_escrow`) so the resulting
 snapshot's `pending_sale_shares` are genuine FIFO shares, then boots a
 second VMC against the saved snapshot so PAY-104 is genuinely raised --
@@ -50,7 +50,7 @@ def _pay104_setup(
 ):
     """Build a genuinely open PAY-104 with real pending_sale_shares.
 
-    Drives VMC #1 through the real deposit_funds -> _process_payment path
+    Drives VMC #1 through the real deposit_funds -> process_payment path
     (never assigning credit_escrow or pending_sale_shares directly -- that
     would bypass the FIFO ledger's divergence guard and collapse the
     shares to {"unknown": price}, per task-14-brief.md), captures the
@@ -73,7 +73,7 @@ def _pay104_setup(
 
     # Positive control on VMC #1's own state, before it is ever discarded:
     # the real FIFO path actually ran (not silently swallowed by
-    # _process_payment's @logger.catch()).
+    # process_payment's @logger.catch()).
     assert vmc1.state == "dispensing", "setup did not reach dispensing"
     assert vmc1.pending_sale_shares, "setup produced no pending_sale_shares"
     expected_shares = dict(vmc1.pending_sale_shares)

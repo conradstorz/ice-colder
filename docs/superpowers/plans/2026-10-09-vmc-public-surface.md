@@ -31,11 +31,11 @@
 - Produces on `VMC`, all `async def name(self, topic: str, data: dict)` unless noted: `on_payment_credit`, `on_button_press`, `on_dispenser_event`, `on_refund_ack`, `on_hardware_io`, `on_payment_status`, `on_sensor_reading`, `on_water_flow`, `on_heartbeat`, `on_ice_maker_event`, `on_capabilities`, `on_telemetry`, `on_command_ack`; sync `process_payment(self)`; sync `raise_fault(self, code: FaultCode, *, sku: str | None = None, outcome: str | None = None) -> None`.
 - Deprecated aliases kept until task 5: each old `_handle_mqtt_*` name, `_process_payment`, `_raise_fault`, `raise_data_fault` as one-line delegates with a `# deprecated: removed in the public-surface cleanup` comment.
 
-- [ ] Rename each method body to its new name; add the deprecated alias beside it.
-- [ ] Update `SUBSCRIPTIONS` to the new names and the pinned tuple in `tests/test_mqtt_inbound.py`.
-- [ ] Grep `controller/ services/ web_interface/ main.py` for every old name and switch callers to the new one (the `DispenserProfileGate` `raise_fault=` wiring, `startup_recovery`'s `raise_data_fault`, the `TelemetryRouter` callbacks).
-- [ ] Repoint tests with a careful search-and-replace per old name; keep positional/keyword call shapes unchanged. Note `_raise_fault(code, sku=..., outcome=...)` callers that pass `sku` positionally must become keyword.
-- [ ] Run lint, full suite, and the private-access count. Report the count before and after.
+- [x] Rename each method body to its new name; add the deprecated alias beside it.
+- [x] Update `SUBSCRIPTIONS` to the new names and the pinned tuple in `tests/test_mqtt_inbound.py`.
+- [x] Grep `controller/ services/ web_interface/ main.py` for every old name and switch callers to the new one (the `DispenserProfileGate` `raise_fault=` wiring, `startup_recovery`'s `raise_data_fault`, the `TelemetryRouter` callbacks).
+- [x] Repoint tests with a careful search-and-replace per old name; keep positional/keyword call shapes unchanged. Note `_raise_fault(code, sku=..., outcome=...)` callers that pass `sku` positionally must become keyword.
+- [x] Run lint, full suite, and the private-access count. Report the count before and after.
 
 ### Task 2: Public collaborators and `raise_fault` consumers
 
@@ -49,9 +49,9 @@
 - Deleted: `_lockouts`, `_machine_faults`, `_pending_refunds`, `_maintenance_hold` (getter and setter), `_maintenance_idle_task`, `_maintenance_sweep_task`, `_dispenser_profiles`, `_pending_tasks`, `_persist_tasks`, `_loop`. Internal reads inside `vmc.py` switch to the collaborator (`self._faults.is_locked(...)`, `self._lease.hold`, `self._tasks.loop`).
 - Kept public: `maintenance_hold`, `active_faults()`, `credit_escrow`, `escrow_credits`, `has_credit`, `get_status()`, `selected_product`, `pending_sale_shares`.
 
-- [ ] Add the properties; switch every internal `self._lockouts` / `self._maintenance_hold` / `self._loop` read in `vmc.py` to the collaborator; delete the alias properties.
-- [ ] Rewrite tests: `vmc._lockouts["X"] = code` → `vmc.raise_fault(code, sku="X")` (check that the test still passes with the side effects; if a test relied on *no* side effects, rewrite its assertions rather than restoring a bypass and report it); `vmc._lockouts` reads → `vmc.faults.is_locked(sku)` or `vmc.faults.lockouts`; `_machine_faults` → `vmc.faults.has(code)`; `_pending_refunds` → `vmc.refunds.pending`; `_maintenance_hold` reads → `vmc.maintenance_hold`; the single `vmc._maintenance_hold = None` write → `vmc.lease.release("admin")`; `_pending_tasks` / `_persist_tasks` → `vmc.tasks.pending` / `vmc.tasks.persist`; `_session_store` / `_mqtt_client` / `_command_dispatcher` → the public property; `_sellable_products` → `[p for p in vmc.products if vmc.faults.is_locked(p.sku) is None]` or a public `sellable_products()` if more than two tests need it; `_snapshot`, `_publish_status`, `_finish_dispensing` → look at each test and use the nearest public path (`vmc.recovery` / `active_faults()` / driving the FSM), reporting any that genuinely need a new public method.
-- [ ] Run lint, full suite, private-access count. Report the per-name remaining list.
+- [x] Add the properties; switch every internal `self._lockouts` / `self._maintenance_hold` / `self._loop` read in `vmc.py` to the collaborator; delete the alias properties.
+- [x] Rewrite tests: `vmc._lockouts["X"] = code` → `vmc.raise_fault(code, sku="X")` (check that the test still passes with the side effects; if a test relied on *no* side effects, rewrite its assertions rather than restoring a bypass and report it); `vmc._lockouts` reads → `vmc.faults.is_locked(sku)` or `vmc.faults.lockouts`; `_machine_faults` → `vmc.faults.has(code)`; `_pending_refunds` → `vmc.refunds.pending`; `_maintenance_hold` reads → `vmc.maintenance_hold`; the single `vmc._maintenance_hold = None` write → `vmc.lease.release("admin")`; `_pending_tasks` / `_persist_tasks` → `vmc.tasks.pending` / `vmc.tasks.persist`; `_session_store` / `_mqtt_client` / `_command_dispatcher` → the public property; `_sellable_products` → `[p for p in vmc.products if vmc.faults.is_locked(p.sku) is None]` or a public `sellable_products()` if more than two tests need it; `_snapshot`, `_publish_status`, `_finish_dispensing` → look at each test and use the nearest public path (`vmc.recovery` / `active_faults()` / driving the FSM), reporting any that genuinely need a new public method.
+- [x] Run lint, full suite, private-access count. Report the per-name remaining list.
 
 ### Task 3: Fake scheduler
 
@@ -70,10 +70,10 @@
 - `tests/fakes.py`: `@dataclass FakeTask(cancelled: bool = False)` with `done() -> bool` (True once fired or cancelled) and `cancel()`; `@dataclass ScheduledCall(delay: float, callback: Callable[[], None], label: str, task: FakeTask)`; `class FakeTaskRunner` with `loop`, `pending`, `persist`, `attach(loop)`, `fire_and_forget(coro, *, persistent=False)` (schedules on the running loop via `loop.create_task` and tracks it like the real one), `schedule(delay, callback, *, label="")`, `drain_persistence(timeout=3.0)`, `cancel_pending()`, and helpers `scheduled -> list[ScheduledCall]` (not fired, not cancelled), `fire(label: str) -> None` (most recent live call with that label; raises `LookupError` naming the live labels if none), `fire_all() -> None`.
 - `tests/conftest.py`: fixture `vmc_fake_time` yielding `(vmc, runner)` built with `VMC(config, tasks=FakeTaskRunner())`, attached to the running loop, following whatever the existing `vmc` fixture does for config and wiring.
 
-- [ ] Add `label` to `TaskRunner.schedule` and to every call site; add the `tasks=` constructor argument.
-- [ ] Write `tests/fakes.py` and `tests/test_fakes.py` (schedule records and returns a task; `fire` runs exactly one and retires it; `cancel()` removes from `scheduled`; `fire` on an unknown label raises with the live labels in the message; `fire_and_forget` runs the coroutine).
-- [ ] Rewrite timer tests: `vmc._dispense_timed_out()` → `runner.fire("dispense_timeout")`; `vmc._expire_session()` → `runner.fire("session_timeout")`; `_maintenance_idle_expired` → `fire("maintenance_idle")`; `_maintenance_sweep_tick` → `fire("standby_sweep")`; `_dispense_timeout_task is not None` → `any(c.label == "dispense_timeout" for c in runner.scheduled)`; `_dispense_timeout_seconds` / `_session_timeout_seconds` overrides → assert on `ScheduledCall.delay` instead, or keep the override via a public class attribute if the test needs a short real timeout (report which). `_maintenance_run_started` / `_finished` → `with vmc.maintenance_test_run():`. `_fire_and_forget` → `vmc.tasks.fire_and_forget`.
-- [ ] Run lint, full suite, private-access count.
+- [x] Add `label` to `TaskRunner.schedule` and to every call site; add the `tasks=` constructor argument.
+- [x] Write `tests/fakes.py` and `tests/test_fakes.py` (schedule records and returns a task; `fire` runs exactly one and retires it; `cancel()` removes from `scheduled`; `fire` on an unknown label raises with the live labels in the message; `fire_and_forget` runs the coroutine).
+- [x] Rewrite timer tests: `vmc._dispense_timed_out()` → `runner.fire("dispense_timeout")`; `vmc._expire_session()` → `runner.fire("session_timeout")`; `_maintenance_idle_expired` → `fire("maintenance_idle")`; `_maintenance_sweep_tick` → `fire("standby_sweep")`; `_dispense_timeout_task is not None` → `any(c.label == "dispense_timeout" for c in runner.scheduled)`; `_dispense_timeout_seconds` / `_session_timeout_seconds` overrides → assert on `ScheduledCall.delay` instead, or keep the override via a public class attribute if the test needs a short real timeout (report which). `_maintenance_run_started` / `_finished` → `with vmc.maintenance_test_run():`. `_fire_and_forget` → `vmc.tasks.fire_and_forget`.
+- [x] Run lint, full suite, private-access count.
 
 ### Task 4: SaleContext
 
@@ -88,11 +88,11 @@
 - `VMC.sale -> SaleContext | None` (read-only property). `VMC.selected_product -> Product | None` and `VMC.pending_sale_shares -> dict[str, float] | None` become properties reading `self._sale`. Transitions: `select_product` creates the context; `process_payment` replaces it with `shares`; `on_dispense_product` replaces with `request_id`, `seq`, `mechanism`; `run_test_sale` creates it with `is_test=True`; `_finish_dispensing`, `on_cancel_sale`, `on_reset`, `on_error`, `_expire_session` clear it; `on_vend_failed` keeps `product` but clears `shares`, `request_id`, `mechanism` (the sale returns to `interacting_with_user` with the product still selected, matching today's behavior where `selected_product` survives a failed vend — verify by reading `on_vend_failed` before coding and report if the current code clears it).
 - `_test_sale_in_progress` stays a private flag (it guards re-entrancy, not sale state) but gains a public read-only `test_sale_in_progress` property for the three tests that read it.
 
-- [ ] Write `tests/test_sale_context.py`: construction defaults, `with_` returns a new instance and leaves the original unchanged, frozen (assignment raises).
-- [ ] Introduce `self._sale` and the properties; migrate each write site; keep every read through the properties where it already exists.
-- [ ] Rewrite the tests: `vmc._sale_is_test` → `vmc.sale is not None and vmc.sale.is_test`; `_dispense_request_id` → `vmc.sale.request_id`; `_test_sale_in_progress` → `vmc.test_sale_in_progress`.
-- [ ] Read `process_payment`, `on_vend_failed`, `_record_sale`, `_persist_then_dispense`, `on_dispenser_event` end to end after the change and confirm the shares that `on_vend_failed` restores are exactly the shares `process_payment` consumed (the FIFO attribution guarantee in CLAUDE.md). Report the reasoning.
-- [ ] Run lint, full suite, private-access count (expect zero outside `vmc.__class__` monkeypatches; list anything left).
+- [x] Write `tests/test_sale_context.py`: construction defaults, `with_` returns a new instance and leaves the original unchanged, frozen (assignment raises).
+- [x] Introduce `self._sale` and the properties; migrate each write site; keep every read through the properties where it already exists.
+- [x] Rewrite the tests: `vmc._sale_is_test` → `vmc.sale is not None and vmc.sale.is_test`; `_dispense_request_id` → `vmc.sale.request_id`; `_test_sale_in_progress` → `vmc.test_sale_in_progress`.
+- [x] Read `process_payment`, `on_vend_failed`, `_record_sale`, `_persist_then_dispense`, `on_dispenser_event` end to end after the change and confirm the shares that `on_vend_failed` restores are exactly the shares `process_payment` consumed (the FIFO attribution guarantee in CLAUDE.md). Report the reasoning.
+- [x] Run lint, full suite, private-access count (expect zero outside `vmc.__class__` monkeypatches; list anything left).
 
 ### Task 5: Guard and cleanup
 
@@ -105,7 +105,7 @@
 **Interfaces:**
 - `tests/test_no_private_access.py`: walks `tests/**/*.py` except itself, fails listing `file:line: match` for every regex `\bvmc\._[a-zA-Z]` hit (allow `vmc.__class__` and `vmc.__dict__` via the pattern requiring a lowercase letter after the underscore).
 
-- [ ] Write the guard test; run it; fix whatever it lists.
-- [ ] Delete the deprecated aliases; grep `controller/ services/ web_interface/ main.py tests/` for each old name to prove nothing references it.
-- [ ] Update CLAUDE.md.
-- [ ] Run lint and full suite.
+- [x] Write the guard test; run it; fix whatever it lists.
+- [x] Delete the deprecated aliases; grep `controller/ services/ web_interface/ main.py tests/` for each old name to prove nothing references it.
+- [x] Update CLAUDE.md.
+- [x] Run lint and full suite.

@@ -218,9 +218,8 @@ class VMC:
         # behind the authoritative total. credit_escrow must always equal
         # round(sum(c.amount for c in escrow_credits), 2) — the two are
         # never allowed to diverge (see _consume_credits_fifo's bug guard).
-        # VMC.credit_escrow/escrow_credits below are read/write properties
-        # aliasing self._escrow.total/self._escrow.credits, kept because
-        # many existing tests read and write them directly.
+        # VMC.credit_escrow/escrow_credits below are the public read/write
+        # surface over self._escrow.total/self._escrow.credits.
         self._escrow = EscrowLedger()
         # Review finding I2: a monotonically increasing counter identifying
         # the *current* in-flight dispense dispatch. Incremented once per
@@ -736,9 +735,9 @@ class VMC:
     #
     # State and pure bookkeeping live in `self._escrow`
     # (controller/escrow_ledger.py's `EscrowLedger`); the properties below
-    # are read/write aliases kept because many existing tests read and
-    # write `credit_escrow`/`escrow_credits` directly. The setters only
-    # ever replace `total`/`credits` on the ledger -- a direct
+    # are the public read/write surface over it -- `credit_escrow`/
+    # `escrow_credits`. The setters only ever replace `total`/`credits` on
+    # the ledger -- a direct
     # `vmc.credit_escrow = x` assignment still cannot touch `credits`,
     # which is what lets the divergence guard in `_consume_credits_fifo`
     # keep working exactly as before this extraction.
@@ -894,19 +893,6 @@ class VMC:
             )
         self._push_active_faults()
 
-    def _raise_fault(
-        self,
-        code: FaultCode,
-        sku: str | None = None,
-        outcome: str | None = None,
-    ) -> None:
-        # deprecated: removed in the public-surface cleanup
-        self.raise_fault(code, sku=sku, outcome=outcome)
-
-    def raise_data_fault(self, code: FaultCode, outcome: str | None = None) -> None:
-        # deprecated: removed in the public-surface cleanup
-        self.raise_fault(code, outcome=outcome)
-
     def clear_fault(self, key: str, by: str = "admin") -> bool:
         """Clear a fault by key (SKU for product faults, code string for machine faults)."""
         code = self._faults.pop_lockout(key)
@@ -1011,10 +997,6 @@ class VMC:
         """Binary hardware IO from the vending ESP32; ice returning clears ICE-101."""
         return await self._telemetry.handle_hardware_io(topic, data)
 
-    async def _handle_mqtt_hardware_io(self, topic: str, data: dict):
-        # deprecated: removed in the public-surface cleanup
-        return await self.on_hardware_io(topic, data)
-
     # --- MQTT inbound handlers ---
 
     async def on_payment_credit(self, topic: str, data: dict):
@@ -1024,17 +1006,9 @@ class VMC:
         txn_log.info(f"PAYMENT RECEIVED: ${event.amount:.2f} via {event.method}")
         self.deposit_funds(event.amount, payment_method=event.method)
 
-    async def _handle_mqtt_payment(self, topic: str, data: dict):
-        # deprecated: removed in the public-surface cleanup
-        return await self.on_payment_credit(topic, data)
-
     async def on_payment_status(self, topic: str, data: dict):
         """MDB device readiness; any device in error/offline blocks payment."""
         return await self._telemetry.handle_payment_status(topic, data)
-
-    async def _handle_mqtt_payment_status(self, topic: str, data: dict):
-        # deprecated: removed in the public-surface cleanup
-        return await self.on_payment_status(topic, data)
 
     async def on_button_press(self, topic: str, data: dict):
         """Handle button press from ESP32."""
@@ -1043,10 +1017,6 @@ class VMC:
         txn_log.info(f"BUTTON PRESS: button {press.button}")
         vend_log.info(f"BUTTON PRESS: button {press.button}")
         self.select_product(press.button)
-
-    async def _handle_mqtt_button(self, topic: str, data: dict):
-        # deprecated: removed in the public-surface cleanup
-        return await self.on_button_press(topic, data)
 
     def _dispenser_event_slot_mismatch(self, data: dict) -> bool:
         """True if `data`'s reported slot doesn't match the active sale's slot.
@@ -1290,41 +1260,21 @@ class VMC:
         if is_test:
             self._resolve_test_sale_waiter("vend_failed", code.value)
 
-    async def _handle_mqtt_dispenser(self, topic: str, data: dict):
-        # deprecated: removed in the public-surface cleanup
-        return await self.on_dispenser_event(topic, data)
-
     async def on_sensor_reading(self, topic: str, data: dict):
         """Handle temperature/sensor reading from ESP32."""
         return await self._telemetry.handle_sensor(topic, data)
-
-    async def _handle_mqtt_sensor(self, topic: str, data: dict):
-        # deprecated: removed in the public-surface cleanup
-        return await self.on_sensor_reading(topic, data)
 
     async def on_water_flow(self, topic: str, data: dict):
         """Handle water flow sensor readings from the vending ESP32."""
         return await self._telemetry.handle_water_flow(topic, data)
 
-    async def _handle_mqtt_water_flow(self, topic: str, data: dict):
-        # deprecated: removed in the public-surface cleanup
-        return await self.on_water_flow(topic, data)
-
     async def on_heartbeat(self, topic: str, data: dict):
         """Handle heartbeat from ESP32 subsystem."""
         return await self._telemetry.handle_heartbeat(topic, data)
 
-    async def _handle_mqtt_heartbeat(self, topic: str, data: dict):
-        # deprecated: removed in the public-surface cleanup
-        return await self.on_heartbeat(topic, data)
-
     async def on_ice_maker_event(self, topic: str, data: dict):
         """Handle operational events from the ice maker ESP32."""
         return await self._telemetry.handle_ice_maker_event(topic, data)
-
-    async def _handle_mqtt_ice_maker_event(self, topic: str, data: dict):
-        # deprecated: removed in the public-surface cleanup
-        return await self.on_ice_maker_event(topic, data)
 
     def _on_vending_capabilities_validated(
         self, subsystem: str, caps: SubsystemCapabilities
@@ -1349,25 +1299,13 @@ class VMC:
         """Store a subsystem's retained self-description and hand it to health."""
         return await self._telemetry.handle_capabilities(topic, data)
 
-    async def _handle_mqtt_capabilities(self, topic: str, data: dict):
-        # deprecated: removed in the public-surface cleanup
-        return await self.on_capabilities(topic, data)
-
     async def on_telemetry(self, topic: str, data: dict):
         """Route a generic telemetry channel reading into health tracking."""
         return await self._telemetry.handle_telemetry(topic, data)
 
-    async def _handle_mqtt_telemetry(self, topic: str, data: dict):
-        # deprecated: removed in the public-surface cleanup
-        return await self.on_telemetry(topic, data)
-
     async def on_command_ack(self, topic: str, data: dict):
         """Log command acknowledgements from the monitor."""
         return await self._telemetry.handle_command_ack(topic, data)
-
-    async def _handle_mqtt_command_ack(self, topic: str, data: dict):
-        # deprecated: removed in the public-surface cleanup
-        return await self.on_command_ack(topic, data)
 
     def _fire_and_forget(self, coro, *, persistent: bool = False) -> None:
         """Run a coroutine on the attached loop without awaiting it.
@@ -2048,10 +1986,6 @@ class VMC:
         result = PaymentRefundResult.model_validate(data)
         self._refunds.handle_ack(result)
 
-    async def _handle_mqtt_refund_ack(self, topic: str, data: dict):
-        # deprecated: removed in the public-surface cleanup
-        return await self.on_refund_ack(topic, data)
-
     def _refund_confirmed(self, pending: PendingRefund, amount_returned: float) -> None:
         self._persist_session()
         txn_log.info(
@@ -2710,10 +2644,6 @@ class VMC:
                 self.send_customer_message(message)
                 self.last_insufficient_message = message
             self._schedule(5.0, self.process_payment, label="process_payment")
-
-    def _process_payment(self):
-        # deprecated: removed in the public-surface cleanup
-        self.process_payment()
 
     def _reset_session_timeout(self):
         """Reset (or start) the customer session inactivity timer."""

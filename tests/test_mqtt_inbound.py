@@ -308,7 +308,7 @@ class TestSubscriptionsTable:
     def test_subscriptions_table_unchanged(self):
         # The full (topic, method) pairing, in order -- not just the topic
         # set -- so a transposition (e.g. payment/status paired with
-        # _handle_mqtt_water_flow) fails this test even though both the
+        # on_water_flow) fails this test even though both the
         # topic set and every method name would still be valid on their own.
         assert SUBSCRIPTIONS == (
             ("payment/credit", "on_payment_credit"),

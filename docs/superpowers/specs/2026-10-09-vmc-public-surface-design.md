@@ -1,6 +1,6 @@
 # VMC public surface: design
 
-Date: 2026-10-09. Status: approved.
+Date: 2026-10-09. Status: implemented (PRs #45-#49).
 
 ## Problem
 

@@ -409,7 +409,7 @@ async def test_record_sale_totally_lost_preserves_pay104_recovery_not_data_101(
     vend must still complete (a storage problem must never fail the vend),
     but the sale must not simply vanish: this must raise PAY-104 (not the
     ordinary DATA-101) and must NOT clear pending_sale_shares, so the
-    'dispensing' snapshot _process_payment already wrote to disk survives
+    'dispensing' snapshot process_payment already wrote to disk survives
     untouched (_persist_session refuses to touch the file once PAY-104 is
     active) as the sale's only remaining record -- recoverable through the
     existing Health > Faults record/discard flow with no reboot required.
@@ -625,7 +625,7 @@ async def test_pay_104_snapshot_exposes_pending_sale_after_crash_mid_dispense(
     tmp_path,
 ):
     """Simulates a real crash right after the dispense command is sent but
-    before the FSM ever hears back: the live `_process_payment` path (Task
+    before the FSM ever hears back: the live `process_payment` path (Task
     4) already persists a 'dispensing' snapshot carrying
     `pending_sale_shares`. This task's job is only to make sure that data
     survives to a reboot and is exposed on the resulting PAY-104 -- Task 14
@@ -696,7 +696,7 @@ async def test_insufficient_funds_prompt_is_not_an_error_log():
         vmc.process_payment()
     finally:
         logger.remove(handle)
-        vmc.cancel_pending_tasks()  # drop the 5 s retry _process_payment scheduled
+        vmc.cancel_pending_tasks()  # drop the 5 s retry process_payment scheduled
     prompts = [lvl for lvl, msg in records if "Insufficient funds" in msg]
     assert "INFO" in prompts
     assert "ERROR" not in prompts
@@ -1898,15 +1898,15 @@ async def test_expire_session_is_a_noop_while_dispensing():
     assert vmc.state == "dispensing"
     escrow_before = vmc.credit_escrow
 
-    # private: defensive branch unreachable via timers. The session
-    # timeout is cancelled synchronously on entering `dispensing`
-    # (`on_dispense_product` -> `_cancel_session_timeout`), so a
-    # `FakeTaskRunner` never has a live "session_timeout" call to fire
+    # The session timeout is cancelled synchronously on entering
+    # `dispensing` (`on_dispense_product` -> `_cancel_session_timeout`), so
+    # a `FakeTaskRunner` never has a live "session_timeout" call to fire
     # here -- but `_cancel_session_timeout` only prevents a *pending*
     # callback from ever running; it cannot un-run one that the real event
     # loop had already resumed and begun executing synchronously the
     # instant before cancellation, so this guard (and this direct call
     # simulating that race) is reachable in production, not dead code.
+    # private: defensive branch unreachable via timers
     vmc._expire_session()
 
     assert vmc.state == "dispensing"
@@ -2044,7 +2044,7 @@ async def test_session_file_written_during_sale_and_cleared_after(tmp_path):
     assert snap is not None and snap.credit_escrow == 2.5
 
     vmc.select_product(0)
-    await asyncio.sleep(1.2)  # _process_payment runs after 1s
+    await asyncio.sleep(1.2)  # process_payment runs after 1s
     assert vmc.state == "dispensing"
     await asyncio.sleep(0.05)
     snap = store.load()
@@ -2169,7 +2169,7 @@ async def test_dispense_snapshot_persisted_before_dispense_command(tmp_path):
 
     # Bounded wait instead of a fixed sleep: this test failed once in CI and
     # passed on an unchanged re-run, because 50ms is enough time for
-    # _process_payment's background task to dispatch dispense on a
+    # process_payment's background task to dispatch dispense on a
     # developer machine but not reliably enough on a loaded CI runner. Poll
     # for the dispatch instead of gambling on a fixed delay; the assertions
     # inside send_and_check (snapshot persisted with state "dispensing"
@@ -2181,7 +2181,7 @@ async def test_dispense_snapshot_persisted_before_dispense_command(tmp_path):
         if asyncio.get_running_loop().time() >= deadline:
             pytest.fail(
                 "dispense was never dispatched within 2s of "
-                f"_process_payment(); sent so far: {sent!r}"
+                f"process_payment(); sent so far: {sent!r}"
             )
         await asyncio.sleep(0.01)
 
@@ -2680,7 +2680,7 @@ class TestRunTestSale:
         assert len(client.refund_commands()) == 1  # no new refund
 
     async def test_dispensed_test_sale_records_test_run_not_sale_or_dispense(self):
-        """Reaches _handle_mqtt_dispenser's DispenserOutcome.complete
+        """Reaches on_dispenser_event's DispenserOutcome.complete
         branch, its `if self._sale_is_test:` arm -- the real completion
         handler, not a stub."""
         vmc, rec, client = _test_run_vmc()
@@ -3032,7 +3032,7 @@ class TestRunTestSale:
         uses for the production case -- and asserts recovery finds nothing
         and no PAY-104 fires.
 
-        Production paths reached: VMC._process_payment (unmodified),
+        Production paths reached: VMC.process_payment (unmodified),
         VMC._snapshot (this fix's `is_test=self._sale_is_test`),
         VMC.set_session_store (this fix's is_test boot branch), and
         VMC.pending_sale_for_recovery (this fix's is_test guard).
@@ -3131,7 +3131,7 @@ class TestRunTestSale:
         SessionStore/VMC process boundary as the test-sale case.
 
         Production paths reached: VMC.deposit_funds, VMC.select_product,
-        VMC._process_payment/_consume_credits_fifo (all unmodified),
+        VMC.process_payment/_consume_credits_fifo (all unmodified),
         VMC._snapshot (is_test=False for a real sale), VMC.set_session_store
         (the pre-existing is_open() branch, untouched by this fix), and
         VMC.pending_sale_for_recovery (returns the pending sale as before).
@@ -3397,7 +3397,7 @@ class TestTestSaleAvailabilityExemption:
         raised -> the real Availability.set_active_faults -> run_test_sale
         -> maintenance_test_run -> select_product -> Availability.
         test_sale_sellable (the fix) -> the real FSM transition, the real
-        cmd/dispense publish, and _handle_mqtt_dispenser's completion
+        cmd/dispense publish, and on_dispenser_event's completion
         handler. Pre-fix, `select_product` called the unexempted
         `product_sellable`, hit the lease's own SVC-102 row, and this whole
         method raised `RuntimeError("...could not select 'ICE-1'... blocked
@@ -3541,7 +3541,7 @@ class TestConcurrentTestSaleGuard:
         `VMC.run_test_sale`'s `_test_sale_in_progress` guard (the new
         refusal, for call #2) and, end to end for call #1, the ordinary
         success path -- `maintenance_test_run`, `select_product`, the real
-        `cmd/dispense`-driven `_handle_mqtt_dispenser` completion handler,
+        `cmd/dispense`-driven `on_dispenser_event` completion handler,
         `end_maintenance`, `_release_maintenance_hold`, `clear_fault`, and
         `Availability._recompute` (a real `Availability`, not a stub).
 
