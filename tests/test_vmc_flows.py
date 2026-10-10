@@ -3679,7 +3679,7 @@ class TestTestSaleAvailabilityExemption:
     """
 
     async def test_run_test_sale_succeeds_with_real_availability_during_lease(self):
-        """THE headline defect. Reaches: VMC.begin_maintenance -> SVC-102
+        """THE headline defect. Reaches: machine.lease.begin_maintenance -> SVC-102
         raised -> the real Availability.set_active_faults -> run_test_sale
         -> machine.lease.test_run() -> select_product -> Availability.
         test_sale_sellable (the fix) -> the real FSM transition, the real

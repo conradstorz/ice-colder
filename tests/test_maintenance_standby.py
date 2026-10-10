@@ -1,7 +1,7 @@
 """Unit tests for the standby maintenance lease (system-tests design §2.2a).
 
-Standby is VMC.begin_standby: unlike the opportunistic lease
-(VMC.begin_maintenance), it makes a busy machine idle itself -- refunding
+Standby is machine.lease.begin_standby: unlike the opportunistic lease
+(machine.lease.begin_maintenance), it makes a busy machine idle itself -- refunding
 any escrow and cancelling a live customer session -- rather than refusing
 until the machine happens to be idle. It is bound to the holder's web
 session via a liveness-predicate sweep instead of the ordinary idle timer.

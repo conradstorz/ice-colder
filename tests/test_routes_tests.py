@@ -305,7 +305,7 @@ class TestNoTestsAdvertised:
 
 class TestLeaseNotTaken:
     """Entering /tests, or any subsystem's detail page, must never call
-    VMC.begin_maintenance -- it only ever reads the read-only
+    machine.lease.begin_maintenance -- it only ever reads the read-only
     `maintenance_hold` property. Reaches
     web_interface/routes/tests_level.py's `tests_level` handler.
 
@@ -390,7 +390,7 @@ class TestLeaseHolderDisplay:
 class TestStandby:
     """GET /tests/standby/confirm and POST /tests/standby: the two-tap
     "Take out of service" control that grants a session-bound standby
-    lease via VMC.begin_standby (controller/vmc.py). Reaches
+    lease via machine.lease.begin_standby (controller/maintenance_lease.py). Reaches
     web_interface/routes/tests_level.py's tests_standby_confirm and
     tests_standby handlers, and the service-state card
     (partials/tests_hold_banner.html) both re-render.
@@ -1523,7 +1523,7 @@ class TestDispenseSendsProfile:
     def test_dispense_test_refused_without_profile(
         self, client, wired, wire_subsystem, wire_dispatcher, tmp_path
     ):
-        """slot 4's product is `kind="other"` -- `dispenser_profile_for`
+        """slot 4's product is `kind="other"` -- `gate.profile_for`
         returns `None` for it even though a (unrelated) profiles object is
         wired, because `render_profiles_toml` never writes a table for a
         non-ice/water product. Refused with the CFG-101 wording, 200 (not

@@ -17,7 +17,7 @@ from contracts.vending_machine import (
 from config.config_model import ConfigModel, Product
 from services.availability import Availability
 from services.inventory_manager import InventoryManager
-from services.session_store import Credit, SessionSnapshot
+from services.session_store import SessionSnapshot
 from controller.dispense_cycle import DispenseCycle
 from controller.fault_service import FaultService
 from controller.escrow_ledger import EscrowLedger
@@ -93,6 +93,31 @@ TRANSITIONS = [
 
 
 class VMC:
+    """The vending machine's sale finite-state machine (states: `idle`,
+    `interacting_with_user`, `dispensing`, `error`; see `TRANSITIONS`
+    above).
+
+    `VMC` holds no transport or service handle -- no MQTT client, health
+    monitor, session store, event recorder, command dispatcher, display
+    controller, or maintenance-lease reference. Every collaborator it
+    needs is injected by `controller/machine.py`'s `Machine`, the sole
+    construction path: `tasks` (`TaskRunner`), `escrow` (`EscrowLedger`),
+    `refunds` (`RefundProtocol`), `faults` (`FaultService`), `outputs`
+    (`StatusOutputs`), `gate` (`DispenserProfileGate`), a `DispenseCycle`
+    factory, and three read-only callables (`in_maintenance`,
+    `availability`, `inventory`, `recorder`). Everything the FSM
+    publishes, persists, displays, or messages to the customer goes
+    through `outputs` (`StatusOutputs`, its only outbound channel); every
+    fault it raises or clears goes through `faults` (`FaultService`,
+    wrapping `FaultRegistry`). One `DispenseCycle` is built per entry into
+    `dispensing` and owns that sale's dispatch/timeout/classify/record
+    conversation with the board, holding the VMC's own identity-based
+    guard against a late callback from a superseded attempt.
+    `subscribe_state_change`/`subscribe_sale_settled` let other
+    collaborators (chiefly `controller/test_sale.py`'s `TestSaleRunner`)
+    observe a sale settling without the FSM knowing they exist.
+    """
+
     states = ["idle", "interacting_with_user", "dispensing", "error"]
 
     REFUND_ACK_TIMEOUT = 10.0  # seconds to wait for cmd/payment/refund/ack
@@ -128,23 +153,23 @@ class VMC:
         recorder: Callable[[], object | None],
         dispense_factory: Callable[[SaleContext], DispenseCycle],
     ):
-        """VMC-reduction plan, Task 6: `controller/machine.py`'s `Machine`
-        is now the ONLY construction path -- every collaborator parameter
-        is required. `Machine` builds `tasks`/`escrow`/`refunds`/`faults`/
-        `outputs`/`gate` itself and hands them in fully formed; every
-        closure inside each one that needs the live VMC (e.g.
-        `outputs.snapshot`, `faults.fsm_state`) is written by `Machine` as
-        `lambda *a: self.vmc.<method>(*a)`, so there is no circularity even
-        though `Machine` builds them before its own `self.vmc` exists.
+        """`controller/machine.py`'s `Machine` is the only construction
+        path -- every collaborator parameter above is required. `Machine`
+        builds `tasks`/`escrow`/`refunds`/`faults`/`outputs`/`gate` itself
+        and hands them in fully formed; every closure inside each one
+        that needs the live VMC (e.g. `outputs.snapshot`,
+        `faults.fsm_state`) is written by `Machine` as `lambda *a:
+        self.vmc.<method>(*a)`, so there is no circularity even though
+        `Machine` builds them before its own `self.vmc` exists.
 
-        `in_maintenance` (Task 11, lease-preconditions) is a zero-arg
-        callable (`Machine` passes `lambda: self.lease.hold is not None`)
-        -- `deposit_funds` is its only reader. The lease itself (its hold,
-        idle timer, standby sweep, and every FSM precondition it needs --
+        `in_maintenance` is a zero-arg callable (`Machine` passes
+        `lambda: self.lease.hold is not None`) -- `deposit_funds` is its
+        only reader. The lease itself (its hold, idle timer, standby
+        sweep, and every FSM precondition it needs --
         `begin_maintenance`/`begin_standby`/`end_maintenance`/
-        `take_over_maintenance`) now lives entirely on the `MaintenanceLease`
+        `take_over_maintenance`) lives entirely on the `MaintenanceLease`
         collaborator, read and mutated by tests and routes as
-        `machine.lease`; the VMC no longer holds a reference to it at all,
+        `machine.lease`; the VMC never holds a reference to it at all,
         only this one boolean read.
 
         `availability`/`inventory`/`recorder` are zero-arg callables
@@ -156,7 +181,7 @@ class VMC:
         goes through `self._availability()`/`self._inventory()`/
         `self._recorder()` so it always sees whatever is current.
 
-        `dispense_factory` (Task 8) builds a fresh `DispenseCycle`
+        `dispense_factory` builds a fresh `DispenseCycle`
         (controller/dispense_cycle.py) for one sale's dispatch attempt --
         `Machine` builds it as a closure over itself carrying the
         dispatcher, gate, outputs, faults, recorder, and
@@ -192,11 +217,11 @@ class VMC:
         # EscrowLedger, controller/escrow_ledger.py) -- the FIFO ledger
         # behind the authoritative total. credit_escrow must always equal
         # round(sum(c.amount for c in escrow_credits), 2) — the two are
-        # never allowed to diverge (see _consume_credits_fifo's bug guard).
+        # never allowed to diverge (see EscrowLedger.consume_fifo's bug guard).
         # VMC.credit_escrow/escrow_credits below are the public read/write
         # surface over self._escrow.total/self._escrow.credits.
         self._escrow = escrow
-        # Task 8: the current in-flight dispense's DispenseCycle
+        # The current in-flight dispense's DispenseCycle
         # (controller/dispense_cycle.py), built fresh by `dispense_factory`
         # once per on_dispense_product call (one dispatch attempt per entry
         # into 'dispensing'). None whenever no dispatch is in flight. The
@@ -228,7 +253,7 @@ class VMC:
         # `self._inventory`/`self._availability`/`self._recorder` are
         # always the zero-arg callables `Machine` passed in (see the
         # __init__ docstring above) -- never a plain attribute assigned by
-        # a VMC-side `set_*` method, which no longer exists (Task 6).
+        # a VMC-side `set_*` method, which does not exist.
         self._inventory: Callable[[], InventoryManager | None] = inventory
         self._availability: Callable[[], Availability | None] = availability
         self._recorder: Callable[[], object | None] = recorder
@@ -240,7 +265,7 @@ class VMC:
         # `vmc.outputs.mqtt`/`.health`/etc. directly rather than a
         # VMC-private alias.
         self._outputs = outputs
-        # Task 11 (lease-preconditions): the maintenance lease itself (the
+        # The maintenance lease itself (the
         # `MaintenanceLease` collaborator) now lives entirely off the VMC,
         # owned by `Machine` and read/mutated by tests and routes as
         # `machine.lease`. `deposit_funds` is the VMC's one remaining
@@ -257,7 +282,7 @@ class VMC:
         # TestSaleRunner.run_test_sale's own comments for why run_id
         # uniqueness alone does not do this.
         self._test_sale_in_progress: bool = False
-        # Observer hooks (Task 9, observers-and-test-sale-seams): every
+        # Observer hooks: every
         # FSM state transition and every sale-settled outcome is
         # broadcast to subscribers via subscribe_state_change/
         # subscribe_sale_settled, in subscription order, synchronously.
@@ -284,8 +309,8 @@ class VMC:
         # `Machine`, attached via `Machine.set_dispenser_profiles`; this
         # VMC still reads `self._gate` internally (`run_test_sale`'s
         # profile check, `on_dispense_product`, `clear_fault`'s closure)
-        # but no longer exposes a public `gate` property (Task 6 --
-        # `machine.gate` instead).
+        # but no longer exposes a public `gate` property --
+        # `machine.gate` instead.
         self._gate = gate
         # Refund protocol: request -> ack -> one retry -> terminal state
         # machine (controller/refund_protocol.py). Built by `Machine`.
@@ -324,7 +349,7 @@ class VMC:
 
     def cancel_timers(self) -> None:
         """Cancel the dispense cycle's timer and the session timeout. Call
-        during shutdown (`Machine.cancel_pending_tasks`, Task 6) -- the
+        during shutdown (`Machine.cancel_pending_tasks`) -- the
         remaining VMC-private pieces of what `cancel_pending_tasks` used to
         do before it moved to `Machine` entirely."""
         if self._cycle is not None:
@@ -334,7 +359,7 @@ class VMC:
     @property
     def outputs(self) -> StatusOutputs:
         """Read-only view of the FSM's outbound channel (VMC public
-        surface design, section 3; vmc-reduction plan, Task 2).
+        surface design, section 3).
         `vmc.outputs.mqtt`/`.health`/`.availability`/`.session_store`/
         `.display_controller` are read directly; mutation only ever
         happens through a `Machine` `set_*` method."""
@@ -351,7 +376,7 @@ class VMC:
         """Build a `SessionSnapshot` of the VMC's current live state.
 
         Public, read-only wrapper over `_snapshot` (VMC public surface
-        design, section 3, Task 2): added because a test needs to capture
+        design, section 3): added because a test needs to capture
         a genuine mid-dispense snapshot and persist it by hand (to boot a
         second VMC against it and simulate a crash) with no event loop
         attached anywhere in the test file -- the normal production path
@@ -425,7 +450,7 @@ class VMC:
     # `escrow_credits`. The setters only ever replace `total`/`credits` on
     # the ledger -- a direct
     # `vmc.credit_escrow = x` assignment still cannot touch `credits`,
-    # which is what lets the divergence guard in `_consume_credits_fifo`
+    # which is what lets the divergence guard in `EscrowLedger.consume_fifo`
     # keep working exactly as before this extraction.
 
     @property
@@ -437,11 +462,11 @@ class VMC:
         self._escrow.total = value
 
     @property
-    def escrow_credits(self) -> list[Credit]:
+    def escrow_credits(self) -> list:
         return self._escrow.credits
 
     @escrow_credits.setter
-    def escrow_credits(self, value: list[Credit]) -> None:
+    def escrow_credits(self, value: list) -> None:
         self._escrow.credits = value
 
     @property
@@ -571,8 +596,8 @@ class VMC:
         fallback in `start`) and for the no-terminal-report timeout
         (`_timed_out`) alike.
 
-        `cycle`'s own identity (review finding I2's `seq` counter,
-        replaced in Task 8) guards against a late failure from an
+        `cycle`'s own identity (replacing review finding I2's old `seq`
+        counter) guards against a late failure from an
         *earlier* sale's dispatch reaching here after that sale has
         already settled and a new sale has since reached 'dispensing':
         without this check, a delayed `CommandTimeout` for sale A (the
@@ -614,8 +639,8 @@ class VMC:
                 # Kept as its own outcome ("timeout"), distinct from
                 # "vend_failed", even though it runs through the same
                 # vend_failed/PAY-102 transition above (system-tests
-                # design §2.3; see TestSaleResult's docstring) --
-                # DispenseCycle._timed_out's own outcome string.
+                # design §2.3; see controller/test_sale.py's TestSaleResult
+                # docstring) -- DispenseCycle._timed_out's own outcome string.
                 self._notify_settled(sale, "timeout", None)
             else:
                 self._notify_settled(sale, "vend_failed", code.value)
@@ -737,14 +762,6 @@ class VMC:
         if sale is not None:
             self._notify_settled(sale, "vend_failed", code.value)
 
-    def _fire_and_forget(self, coro, *, persistent: bool = False) -> None:
-        """Run a coroutine on the attached loop without awaiting it.
-
-        Delegates to `self._tasks` (controller/task_runner.py) — see
-        `TaskRunner.fire_and_forget` for the actual behavior.
-        """
-        self._tasks.fire_and_forget(coro, persistent=persistent)
-
     def _schedule(
         self, delay_seconds, callback, *, label: str = ""
     ) -> asyncio.Task | None:
@@ -771,7 +788,7 @@ class VMC:
         """Send a message to the customer via the registered callback."""
         self._outputs.message(message)
 
-    # --- Observers (Task 9: observers and the test-sale seams) ---
+    # --- Observers (state-change and sale-settled subscriptions) ---
     #
     # Two independent subscriber lists: state-change (every FSM
     # transition) and sale-settled (one of the three terminal outcomes
@@ -966,7 +983,7 @@ class VMC:
         stays to choose again or is paid out is decided in _fail_vend.
 
         The restore must never reclassify money: it re-credits exactly the
-        per-method shares _consume_credits_fifo consumed for this sale
+        per-method shares `EscrowLedger.consume_fifo` consumed for this sale
         (pending_sale_shares), as separate Credits, not one blob of the
         current/default method. That is what stops a failed vend laundering
         cash into card (or any other method) in the sales ledger.
@@ -991,7 +1008,7 @@ class VMC:
         if shares is None:
             # Should be unreachable: on_vend_failed only runs from
             # dispensing, which is only entered right after
-            # _consume_credits_fifo sets pending_sale_shares. Guard, not a
+            # `EscrowLedger.consume_fifo` sets pending_sale_shares. Guard, not a
             # path — attribute to "unknown" rather than guess a method.
             price = product.price if product else 0.0
             logger.warning(
@@ -1187,12 +1204,6 @@ class VMC:
             f"${amount:.2f} deposited. Current balance: ${self.credit_escrow:.2f}."
         )
 
-    def _consume_credits_fifo(self, price: float) -> dict[str, float]:
-        """Thin delegate to EscrowLedger.consume_fifo, kept so process_payment
-        and its docstrings read as before. See controller/escrow_ledger.py
-        for the FIFO-consumption and divergence-guard logic."""
-        return self._escrow.consume_fifo(price)
-
     @logger.catch()
     def request_refund(self, reason: str = "admin"):
         """Pay the customer back: publish a refund command and await its ack.
@@ -1315,10 +1326,10 @@ class VMC:
         ``self.products`` (not ``list.index``, which compares by value and
         could pick the wrong entry for two otherwise-identical products).
 
-        Public (Task 9: observers and the test-sale seams) -- was
-        `_find_product_by_sku`, renamed with no change in behavior so
-        `run_test_sale` (and, after Task 10, `TestSaleRunner`) can call it
-        without reaching into a VMC-private method."""
+        Public -- was `_find_product_by_sku`, renamed with no change in
+        behavior so `controller/test_sale.py`'s `TestSaleRunner.
+        run_test_sale` can call it without reaching into a VMC-private
+        method."""
         for index, product in enumerate(self.products):
             if product.sku == sku:
                 return index, product
@@ -1326,7 +1337,7 @@ class VMC:
 
     def begin_test_sale(self, product: Product) -> bool:
         """Seed and select a simulated sale for `product` (system-tests
-        design §2.3, Task 9). Refuses a second, overlapping call outright:
+        design §2.3). Refuses a second, overlapping call outright:
         there is no ``await`` between the guard check and setting the
         flag, so under asyncio's single-threaded event loop the
         check-and-set is atomic -- no other coroutine can run between them
@@ -1390,7 +1401,7 @@ class VMC:
 
     def end_test_sale(self) -> None:
         """Release `begin_test_sale`'s guard and clean up after one
-        simulated sale, whatever the outcome (Task 9).
+        simulated sale, whatever the outcome.
 
         Still `dispensing` means this call's own task was cancelled (or
         is otherwise returning) while the hardware dispense is still
@@ -1550,7 +1561,7 @@ class VMC:
             self.send_customer_message(
                 "Sufficient funds received. Processing your payment..."
             )
-            self._sale = self._sale.with_(shares=self._consume_credits_fifo(price))
+            self._sale = self._sale.with_(shares=self._escrow.consume_fifo(price))
             self.credit_escrow -= price
             logger.debug(
                 f"Deducted price from escrow. New escrow: {self.credit_escrow:.2f} "
@@ -1695,7 +1706,7 @@ class VMC:
             sku = self.selected_product.sku
             if inventory.is_tracked(sku):
                 inventory.decrement(sku, persist=False)
-                self._fire_and_forget(inventory.save_async(), persistent=True)
+                self._tasks.fire_and_forget(inventory.save_async(), persistent=True)
                 logger.info(
                     f"Inventory for {self.selected_product.name} updated: {inventory.get_count(sku)} remaining."
                 )

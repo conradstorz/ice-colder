@@ -1,6 +1,6 @@
 # VMC as the sale FSM: design
 
-Date: 2026-10-10. Status: approved, not yet implemented.
+Date: 2026-10-10. Status: implemented (PRs #50–#55).
 
 ## Problem
 

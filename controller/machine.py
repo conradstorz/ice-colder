@@ -1,22 +1,19 @@
 """`Machine`: the composition root that builds the VMC and every collaborator
-and owns the service wiring (vmc-reduction plan, Task 5).
+and owns the service wiring.
 
-Tasks 1-4 carved `StatusOutputs`, `FaultRegistry`/`FaultService`,
-`EscrowLedger`, `RefundProtocol`, `SessionRecovery`, `TelemetryRouter`,
-`MaintenanceLease` and `DispenserProfileGate` off the VMC god object one at a
-time, with the VMC itself still constructing every one of them in its own
-`__init__`. `Machine` is the next step: it builds all of those collaborators
+`StatusOutputs`, `FaultRegistry`/`FaultService`, `EscrowLedger`,
+`RefundProtocol`, `SessionRecovery`, `TelemetryRouter`, `MaintenanceLease`
+and `DispenserProfileGate` were each carved off the VMC god object in turn
+(see `CLAUDE.md`'s "FSM Core" section); `Machine` builds every one of them
 *itself*, in the order below, then builds the `VMC` and hands most of them
-in (`escrow`, `refunds`, `faults`, `outputs`, `gate` -- all optional
+in (`escrow`, `refunds`, `faults`, `outputs`, `gate` -- all required
 keyword-only `VMC.__init__` parameters) so the VMC stores and uses the exact
-same objects rather than building its own. `lease` is the one exception
-(Task 11, lease-preconditions): the VMC no longer holds a reference to the
-`MaintenanceLease` collaborator at all, only the `in_maintenance` boolean
-callable built from it below. `recovery` and
-`telemetry` are *not* passed into the VMC -- they stay only on `Machine`, so
-the VMC's own internal copies of those two (kept, unchanged, until Task 6
-deletes them) are a deliberate, temporary duplication during this
-transition. `availability`/`inventory` are passed as zero-arg callables
+same objects rather than building its own. `lease` is the one exception: the
+VMC never holds a reference to the `MaintenanceLease` collaborator at all,
+only the `in_maintenance` boolean callable built from it below. `recovery`
+and `telemetry` are *not* passed into the VMC either -- they live only on
+`Machine`, which owns the PAY-104 boot decision and the telemetry-only MQTT
+handlers directly rather than through the VMC. `availability`/`inventory` are passed as zero-arg callables
 (`lambda: self.availability`/`lambda: self.inventory`) rather than objects,
 because the live `Availability`/`InventoryManager` instance is attached long
 after construction, via `Machine.set_availability`/`set_inventory_manager`.
@@ -171,7 +168,7 @@ class Machine:
             on_bin_half_full=self._faults.clear_ice101_lockouts,
             on_capabilities_validated=self._gate.on_vending_capabilities,
         )
-        # Task 8: builds a fresh DispenseCycle (controller/dispense_cycle.py)
+        # Builds a fresh DispenseCycle (controller/dispense_cycle.py)
         # for one sale's dispatch attempt -- the cycle's own identity, not a
         # sequence number, is what VMC.on_dispense_failed uses to tell a
         # late callback from an earlier attempt apart from the current one.
@@ -212,10 +209,10 @@ class Machine:
             dispense_factory=self._dispense_factory,
         )
 
-        # Task 10 (vmc-reduction plan): the test-sale runner, built after
-        # the VMC itself since it holds a direct reference to it (unlike
-        # every other collaborator above, which the VMC also holds a
-        # reference to but which are built *before* it).
+        # The test-sale runner, built after the VMC itself since it holds
+        # a direct reference to it (unlike every other collaborator
+        # above, which the VMC also holds a reference to but which are
+        # built *before* it).
         self._test_sales = TestSaleRunner(
             vmc=self._vmc,
             lease=self._lease,
@@ -444,7 +441,7 @@ class Machine:
             availability.set_transaction_certain(False)
         self._faults.raise_fault(FaultCode.PAY_104, outcome=detail)
 
-    # --- recovery conveniences (one-line forwards; routes call them in Task 6) ---
+    # --- recovery conveniences (one-line forwards; routes call them) ---
 
     def pending_sale_for_recovery(self) -> dict | None:
         return self._recovery.pending_sale_for_recovery()

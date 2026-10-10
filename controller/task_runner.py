@@ -12,11 +12,12 @@ bookkeeping with no domain knowledge whatsoever: it does not know about the
 FSM, MQTT, refunds, or sessions, only about ``asyncio.Task`` objects.
 
 The VMC keeps a single ``TaskRunner`` instance (``self._tasks``) and exposes
-``_fire_and_forget``/``_schedule``/``drain_persistence``/
-``cancel_pending_tasks`` as thin delegates so existing call sites and tests
-are unaffected; ``cancel_pending_tasks`` additionally performs the VMC's own
-domain cancels (dispense/session timeouts, refund deadlines) after this
-class's ``cancel_pending()`` clears the generic lists.
+``_schedule`` as a thin delegate so existing call sites and tests are
+unaffected. ``drain_persistence`` and ``cancel_pending_tasks`` live on
+``controller/machine.py``'s ``Machine`` instead: ``Machine.
+cancel_pending_tasks`` calls this class's ``cancel_pending()`` to clear the
+generic lists, then the VMC's own ``cancel_timers()`` (the dispense cycle's
+timer and the session timeout) and ``RefundProtocol.cancel_all()``.
 """
 
 from __future__ import annotations
