@@ -1,6 +1,6 @@
 # controller/dispenser_gate.py
 """Dispenser-profile gating: extracted from ``controller.vmc.VMC`` as the
-seventh piece carved off the VMC god object, following the same pattern as
+eighth piece carved off the VMC god object, following the same pattern as
 ``controller/fault_registry.py``'s ``FaultRegistry``,
 ``controller/escrow_ledger.py``'s ``EscrowLedger``,
 ``controller/refund_protocol.py``'s ``RefundProtocol``,

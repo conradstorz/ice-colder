@@ -327,7 +327,7 @@ class VMC:
         self._faults = FaultRegistry(self._product_name)
         # Dispenser-profile gate: CFG-101/CFG-102 reconciliation against a
         # loaded DispenserProfiles (controller/dispenser_gate.py), the
-        # seventh piece carved off the VMC god object. Set via
+        # eighth piece carved off the VMC god object. Set via
         # set_dispenser_profiles(); `_dispenser_profiles` below is a
         # read-only property aliasing `self._gate.profiles`, kept because
         # 2 tests and run_test_sale read it directly.
