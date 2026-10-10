@@ -124,8 +124,8 @@ class TestSaleRunner:
 
         Requires the maintenance lease: wrapping the whole run in
         ``self._lease.test_run()`` is what enforces this -- its
-        ``run_started`` raises ``RuntimeError`` when no lease
-        is held, which is this method's refusal path. That also increments
+        ``run_started`` raises ``RuntimeError`` when no lease is held,
+        which is this method's refusal path. That also increments
         ``runs_in_flight`` for the duration, which is what stops the lease
         from being released out from under this run (system-tests design
         §2.2/§2.3).

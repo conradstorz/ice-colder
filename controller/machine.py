@@ -6,10 +6,13 @@ Tasks 1-4 carved `StatusOutputs`, `FaultRegistry`/`FaultService`,
 `MaintenanceLease` and `DispenserProfileGate` off the VMC god object one at a
 time, with the VMC itself still constructing every one of them in its own
 `__init__`. `Machine` is the next step: it builds all of those collaborators
-*itself*, in the order below, then builds the `VMC` and hands six of them in
-(`escrow`, `refunds`, `faults`, `outputs`, `gate`, `lease` -- all now
-optional keyword-only `VMC.__init__` parameters) so the VMC stores and uses
-the exact same objects rather than building its own. `recovery` and
+*itself*, in the order below, then builds the `VMC` and hands most of them
+in (`escrow`, `refunds`, `faults`, `outputs`, `gate` -- all optional
+keyword-only `VMC.__init__` parameters) so the VMC stores and uses the exact
+same objects rather than building its own. `lease` is the one exception
+(Task 11, lease-preconditions): the VMC no longer holds a reference to the
+`MaintenanceLease` collaborator at all, only the `in_maintenance` boolean
+callable built from it below. `recovery` and
 `telemetry` are *not* passed into the VMC -- they stay only on `Machine`, so
 the VMC's own internal copies of those two (kept, unchanged, until Task 6
 deletes them) are a deliberate, temporary duplication during this
@@ -149,9 +152,12 @@ class Machine:
                 FaultCode.SVC_102, outcome="maintenance_lease_granted"
             ),
             on_released=lambda by: self.vmc.clear_fault(FaultCode.SVC_102.value, by=by),
-            idle_timeout=lambda: self.vmc.MAINTENANCE_IDLE_TIMEOUT_SECONDS,
-            takeover_idle=lambda: self.vmc.MAINTENANCE_TAKEOVER_IDLE_SECONDS,
-            sweep_seconds=lambda: self.vmc.STANDBY_SWEEP_SECONDS,
+            idle_timeout=lambda: self.lease.MAINTENANCE_IDLE_TIMEOUT_SECONDS,
+            takeover_idle=lambda: self.lease.MAINTENANCE_TAKEOVER_IDLE_SECONDS,
+            sweep_seconds=lambda: self.lease.STANDBY_SWEEP_SECONDS,
+            fsm_state=lambda: self.vmc.state,
+            escrow_is_empty=lambda: self.escrow.is_empty_within_tolerance,
+            make_idle_for_service=lambda: self.vmc.make_idle_for_service(),
         )
         self._recovery = SessionRecovery(
             store=lambda: self._outputs.session_store,
@@ -199,7 +205,7 @@ class Machine:
             faults=self._faults,
             outputs=self._outputs,
             gate=self._gate,
-            lease=self._lease,
+            in_maintenance=lambda: self.lease.hold is not None,
             availability=lambda: self.availability,
             inventory=lambda: self.inventory,
             recorder=lambda: self.event_recorder,

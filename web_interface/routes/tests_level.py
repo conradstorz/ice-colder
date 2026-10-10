@@ -194,10 +194,10 @@ def _recent_test_runs(limit: int = 100) -> list[dict]:
 # context through _service_state so none of them can drift from another
 # about what the card looks like for the same VMC state.
 
-# Busy refusals from VMC.begin_maintenance (the OPPORTUNISTIC lease) that
-# now point the operator at the standby button instead of their own raw
-# wording -- "held by <id>" is deliberately NOT in this map (system-tests
-# design §2.2a / Task 3 brief): a lease already held by someone else is a
+# Busy refusals from MaintenanceLease.begin_maintenance (the OPPORTUNISTIC
+# lease) that now point the operator at the standby button instead of
+# their own raw wording -- "held by <id>" is deliberately NOT in this map
+# (system-tests design §2.2a / Task 3 brief): a lease already held by someone else is a
 # different situation than a busy-but-unheld machine, and keeps its own
 # wording unchanged.
 _BUSY_REFUSAL_WORDING = "machine is busy — take it out of service first"
@@ -205,7 +205,7 @@ _BUSY_REFUSALS = frozenset({"machine is mid-sale", "credit is still on the machi
 
 
 def _service_state(
-    vmc,
+    machine,
     principal: web_auth.Principal | None,
     *,
     confirming: bool = False,
@@ -224,7 +224,7 @@ def _service_state(
     POST /tests/standby respectively); every other caller leaves them at
     their defaults, which the template ignores whenever a lease is held.
     """
-    hold = vmc.maintenance_hold if vmc is not None else None
+    hold = machine.maintenance_hold if machine is not None else None
     held_by_me = bool(
         hold is not None
         and principal is not None
@@ -330,26 +330,27 @@ def _parse_command_params(
     return {}
 
 
-def _acquire_lease_or_refusal(vmc, principal: web_auth.Principal) -> str | None:
+def _acquire_lease_or_refusal(machine, principal: web_auth.Principal) -> str | None:
     """Take the maintenance lease for *principal*'s session, or return why
     not, WITHOUT ever touching the dispatcher (system-tests design §2.2,
     task brief: "takes the lease or returns the refusal inline").
 
     Three cases:
-      - No lease held: try to grant one (`VMC.begin_maintenance`); refused
-        for one of its two busy reasons ("machine is mid-sale", "credit is
-        still on the machine") is remapped to `_BUSY_REFUSAL_WORDING`
-        ("machine is busy — take it out of service first", Task 3, system-
-        tests design §2.2a) so the refusal itself points the operator at
-        the standby button rather than leaving them to guess what to do
-        about a machine that just won't take the opportunistic lease.
+      - No lease held: try to grant one (`MaintenanceLease.begin_maintenance`);
+        refused for one of its two busy reasons ("machine is mid-sale",
+        "credit is still on the machine") is remapped to
+        `_BUSY_REFUSAL_WORDING` ("machine is busy — take it out of service
+        first", Task 3, system-tests design §2.2a) so the refusal itself
+        points the operator at the standby button rather than leaving them
+        to guess what to do about a machine that just won't take the
+        opportunistic lease.
       - Lease already held by THIS session (a second command run in the
         same maintenance visit): a no-op -- returns None (proceed) without
         calling begin_maintenance again, which would otherwise refuse with
-        a spurious "held by <self>" (VMC.begin_maintenance refuses
-        whenever any lease exists, regardless of who holds it).
+        a spurious "held by <self>" (`begin_maintenance` refuses whenever
+        any lease exists, regardless of who holds it).
       - Lease held by a DIFFERENT session: refused, "held by <holder>",
-        matching VMC.begin_maintenance's own wording for the same case --
+        matching `begin_maintenance`'s own wording for the same case --
         deliberately NOT remapped, since "someone else has it" is a
         different situation than "the machine is busy".
 
@@ -358,12 +359,12 @@ def _acquire_lease_or_refusal(vmc, principal: web_auth.Principal) -> str | None:
     `machine.lease.test_run()`.
     """
     session_id = principal.session.id
-    hold = vmc.maintenance_hold
+    hold = machine.maintenance_hold
     if hold is not None and hold.holder_session_id == session_id:
         return None
     if hold is not None:
         return f"held by {hold.holder_user_id}"
-    granted, reason = vmc.begin_maintenance(principal.user.id, session_id)
+    granted, reason = machine.lease.begin_maintenance(principal.user.id, session_id)
     if granted:
         return None
     return _BUSY_REFUSAL_WORDING if reason in _BUSY_REFUSALS else reason
@@ -484,7 +485,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         """One card per EXPECTED_SUBSYSTEMS entry plus the lease banner.
 
         Deliberately takes no lease (system-tests design §2.2, task brief):
-        this handler never calls VMC.begin_maintenance -- it only reads the
+        this handler never calls `begin_maintenance` -- it only reads the
         read-only `maintenance_hold` property.
         """
         subsystems = _subsystem_summary()
@@ -505,7 +506,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
                 request,
                 level=LEVEL_TESTS,
                 cards=cards,
-                **_service_state(context.vmc_instance, principal),
+                **_service_state(context.machine_instance, principal),
             ),
         )
 
@@ -582,7 +583,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
             context.template_context(
                 request,
                 **_service_state(
-                    context.vmc_instance,
+                    context.machine_instance,
                     principal,
                     confirming=(confirming != "false"),
                 ),
@@ -674,32 +675,34 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
     )
     async def tests_standby(request: Request):
         """Take the machine out of service for the caller's whole web
-        session (VMC.begin_standby, Task 3 / system-tests design §2.2a):
-        refunds any credit on the machine, cancels a live customer sale,
-        and grants the lease with `standby=True` -- no idle-timer release;
-        the VMC's own session-liveness sweep (wired via
-        Machine.set_session_liveness in main.py) is what ends it if the tech
-        simply walks away or locks the tablet.
+        session (`MaintenanceLease.begin_standby`, Task 3 / system-tests
+        design §2.2a): refunds any credit on the machine, cancels a live
+        customer sale, and grants the lease with `standby=True` -- no
+        idle-timer release; the lease's own session-liveness sweep (wired
+        via Machine.set_session_liveness in main.py) is what ends it if
+        the tech simply walks away or locks the tablet.
 
-        Calls `vmc.begin_standby` directly rather than going through
-        `_acquire_lease_or_refusal` -- that helper's busy-wording remap
-        exists to point OTHER callers (a command run, a simulated sale) at
-        THIS button; begin_standby's own refusal wording ("vend finishing,
-        tap again" mid-dispense, "held by <id>" for a different session's
-        lease) is already the right thing to show here, verbatim, inside
-        the card (Task 3 requirement).
+        Calls `machine.lease.begin_standby` directly rather than going
+        through `_acquire_lease_or_refusal` -- that helper's busy-wording
+        remap exists to point OTHER callers (a command run, a simulated
+        sale) at THIS button; begin_standby's own refusal wording ("vend
+        finishing, tap again" mid-dispense, "held by <id>" for a different
+        session's lease) is already the right thing to show here,
+        verbatim, inside the card (Task 3 requirement).
         """
         principal = web_auth.current_principal(request)
-        vmc = context.vmc_instance
-        if vmc is None:
+        machine = context.machine_instance
+        if machine is None:
             refusal = "VMC not initialized"
         else:
-            granted, reason = vmc.begin_standby(principal.user.id, principal.session.id)
+            granted, reason = machine.lease.begin_standby(
+                principal.user.id, principal.session.id
+            )
             refusal = None if granted else reason
         return templates.TemplateResponse(
             "partials/tests_hold_banner.html",
             context.template_context(
-                request, **_service_state(vmc, principal, refusal=refusal)
+                request, **_service_state(machine, principal, refusal=refusal)
             ),
         )
 
@@ -735,21 +738,20 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         if product is None:
             raise HTTPException(status_code=404, detail=f"No such product: {sku}")
 
-        vmc = context.vmc_instance
-        if vmc is None:
+        machine = context.machine_instance
+        if machine is None:
             return templates.TemplateResponse(
                 "partials/test_refusal.html",
                 context.template_context(request, reason="VMC not initialized"),
             )
 
-        refusal = _acquire_lease_or_refusal(vmc, principal)
+        refusal = _acquire_lease_or_refusal(machine, principal)
         if refusal:
             return templates.TemplateResponse(
                 "partials/test_refusal.html",
                 context.template_context(request, reason=refusal),
             )
 
-        machine = context.machine_instance
         try:
             result = await machine.test_sales.run_test_sale(
                 sku, user_id=principal.user.id, user_name=principal.user.name
@@ -787,8 +789,8 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         fragment if the lease can't be taken at all).
         """
         principal = web_auth.current_principal(request)
-        vmc = context.vmc_instance
-        if vmc is None:
+        machine = context.machine_instance
+        if machine is None:
             return templates.TemplateResponse(
                 "partials/test_run_all_table.html",
                 context.template_context(
@@ -796,7 +798,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
                 ),
             )
 
-        refusal = _acquire_lease_or_refusal(vmc, principal)
+        refusal = _acquire_lease_or_refusal(machine, principal)
         if refusal:
             return templates.TemplateResponse(
                 "partials/test_run_all_table.html",
@@ -829,19 +831,20 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
     )
     async def tests_end(request: Request):
         """Release the CALLER's OWN lease, once nothing is in flight
-        (VMC.end_maintenance already enforces both: session match and
-        runs_in_flight == 0, deferring via release_requested otherwise).
-        Re-renders the same #tests-hold banner tests.html swaps this into
-        (outerHTML) -- empty when no lease remains, so the banner div is
-        removed entirely, matching tests.html's own `{% if hold %}` guard.
+        (`MaintenanceLease.end_maintenance` already enforces both: session
+        match and runs_in_flight == 0, deferring via release_requested
+        otherwise). Re-renders the same #tests-hold banner tests.html swaps
+        this into (outerHTML) -- empty when no lease remains, so the
+        banner div is removed entirely, matching tests.html's own
+        `{% if hold %}` guard.
         """
         principal = web_auth.current_principal(request)
-        vmc = context.vmc_instance
-        if vmc is not None:
-            vmc.end_maintenance(principal.session.id)
+        machine = context.machine_instance
+        if machine is not None:
+            machine.lease.end_maintenance(principal.session.id)
         return templates.TemplateResponse(
             "partials/tests_hold_banner.html",
-            context.template_context(request, **_service_state(vmc, principal)),
+            context.template_context(request, **_service_state(machine, principal)),
         )
 
     @router.post(
@@ -854,17 +857,17 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
     )
     async def tests_takeover(request: Request):
         """Transfer an idle, run-free lease to the caller
-        (VMC.take_over_maintenance, system-tests design §2.2) -- refused
-        (lease unchanged) while a run is in flight or before the 60s idle
-        threshold. Re-renders #tests-hold either way.
+        (`MaintenanceLease.take_over_maintenance`, system-tests design
+        §2.2) -- refused (lease unchanged) while a run is in flight or
+        before the 60s idle threshold. Re-renders #tests-hold either way.
         """
         principal = web_auth.current_principal(request)
-        vmc = context.vmc_instance
-        if vmc is not None:
-            vmc.take_over_maintenance(principal.user.id, principal.session.id)
+        machine = context.machine_instance
+        if machine is not None:
+            machine.lease.take_over_maintenance(principal.user.id, principal.session.id)
         return templates.TemplateResponse(
             "partials/tests_hold_banner.html",
-            context.template_context(request, **_service_state(vmc, principal)),
+            context.template_context(request, **_service_state(machine, principal)),
         )
 
     @router.post(
@@ -994,14 +997,14 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
             )
 
         principal = web_auth.current_principal(request)
-        vmc = context.vmc_instance
-        if vmc is None:
+        machine = context.machine_instance
+        if machine is None:
             return templates.TemplateResponse(
                 "partials/test_refusal.html",
                 context.template_context(request, reason="VMC not initialized"),
             )
 
-        refusal = _acquire_lease_or_refusal(vmc, principal)
+        refusal = _acquire_lease_or_refusal(machine, principal)
         if refusal:
             return templates.TemplateResponse(
                 "partials/test_refusal.html",

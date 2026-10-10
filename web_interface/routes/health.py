@@ -447,7 +447,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
                     "silently dropped."
                 ),
             )
-        if key == FaultCode.SVC_102.value and vmc.maintenance_hold is not None:
+        if key == FaultCode.SVC_102.value and machine.maintenance_hold is not None:
             # Copilot review (PR 22): sibling of the PAY-104 guard above --
             # a generic Clear must not bypass the maintenance lease
             # invariant. VMC.clear_fault also refuses this (defense in

@@ -383,7 +383,7 @@ async def health_snapshot() -> dict:
     # description — but only after is_healthy above has already counted
     # it, so the pill's amber/red state is unaffected.
     maintenance = None
-    hold = vmc_instance.maintenance_hold
+    hold = machine_instance.maintenance_hold
     if hold is not None and any(
         f["code"] == FaultCode.SVC_102.value for f in active_faults
     ):

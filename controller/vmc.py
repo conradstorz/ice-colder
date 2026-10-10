@@ -24,7 +24,6 @@ from controller.escrow_ledger import EscrowLedger
 from controller.outputs import StatusOutputs
 from controller.refund_protocol import PendingRefund, RefundProtocol
 from controller.sale_context import SaleContext
-from controller.maintenance_lease import MaintenanceHold, MaintenanceLease
 from controller.task_runner import TaskRunner
 from controller.dispenser_gate import DispenserProfileGate
 
@@ -112,16 +111,6 @@ class VMC:
     # because callers (and tests) reference it as VMC.CREDIT_TOLERANCE.
     CREDIT_TOLERANCE = EscrowLedger.TOLERANCE
 
-    # Maintenance lease (system-tests design §2.2).
-    MAINTENANCE_IDLE_TIMEOUT_SECONDS = 300.0  # 5 minutes since last_activity_at
-    MAINTENANCE_TAKEOVER_IDLE_SECONDS = (
-        60.0  # lease must be idle this long to take over
-    )
-    # Standby lease (system-tests design §2.2a): how often the session
-    # sweep re-checks the holder's web session liveness. A class attribute
-    # so tests can shrink it rather than waiting out a real 30s interval.
-    STANDBY_SWEEP_SECONDS = 30.0
-
     @logger.catch()
     def __init__(
         self,
@@ -133,7 +122,7 @@ class VMC:
         faults: FaultService,
         outputs: StatusOutputs,
         gate: DispenserProfileGate,
-        lease: MaintenanceLease,
+        in_maintenance: Callable[[], bool],
         availability: Callable[[], Availability | None],
         inventory: Callable[[], InventoryManager | None],
         recorder: Callable[[], object | None],
@@ -142,11 +131,21 @@ class VMC:
         """VMC-reduction plan, Task 6: `controller/machine.py`'s `Machine`
         is now the ONLY construction path -- every collaborator parameter
         is required. `Machine` builds `tasks`/`escrow`/`refunds`/`faults`/
-        `outputs`/`gate`/`lease` itself and hands them in fully formed;
-        every closure inside each one that needs the live VMC (e.g.
+        `outputs`/`gate` itself and hands them in fully formed; every
+        closure inside each one that needs the live VMC (e.g.
         `outputs.snapshot`, `faults.fsm_state`) is written by `Machine` as
         `lambda *a: self.vmc.<method>(*a)`, so there is no circularity even
         though `Machine` builds them before its own `self.vmc` exists.
+
+        `in_maintenance` (Task 11, lease-preconditions) is a zero-arg
+        callable (`Machine` passes `lambda: self.lease.hold is not None`)
+        -- `deposit_funds` is its only reader. The lease itself (its hold,
+        idle timer, standby sweep, and every FSM precondition it needs --
+        `begin_maintenance`/`begin_standby`/`end_maintenance`/
+        `take_over_maintenance`) now lives entirely on the `MaintenanceLease`
+        collaborator, read and mutated by tests and routes as
+        `machine.lease`; the VMC no longer holds a reference to it at all,
+        only this one boolean read.
 
         `availability`/`inventory`/`recorder` are zero-arg callables
         (`Machine` passes `lambda: self.availability`/
@@ -241,14 +240,13 @@ class VMC:
         # `vmc.outputs.mqtt`/`.health`/etc. directly rather than a
         # VMC-private alias.
         self._outputs = outputs
-        # Maintenance lease lifecycle (system-tests design §2.2/§2.2a):
-        # the hold itself, its idle timer, and the standby session-liveness
-        # sweep (controller/maintenance_lease.py). Deliberately not part of
-        # any persisted snapshot -- see MaintenanceHold's docstring. Built
-        # by `Machine`; this VMC still reads `self._lease` internally
-        # (`begin_maintenance`, `deposit_funds`, ...) but no longer exposes
-        # a public `lease` property (Task 6 -- `machine.lease` instead).
-        self._lease = lease
+        # Task 11 (lease-preconditions): the maintenance lease itself (the
+        # `MaintenanceLease` collaborator) now lives entirely off the VMC,
+        # owned by `Machine` and read/mutated by tests and routes as
+        # `machine.lease`. `deposit_funds` is the VMC's one remaining
+        # lease-aware read, via this boolean callable -- see the __init__
+        # docstring above.
+        self._in_maintenance: Callable[[], bool] = in_maintenance
         # True for the duration of exactly one TestSaleRunner.run_test_sale
         # call. TestSaleRunner.run_test_sale checks this flag itself,
         # before `self._lease.test_run()` is ever entered, so a refused
@@ -677,11 +675,10 @@ class VMC:
             vend_log.info(f"DISPENSE COMPLETE: slot {slot}, product '{product_name}'")
             if self._sale is not None and self._sale.is_test:
                 # is_test lives on the sale (self._sale.is_test, set only
-                # by run_test_sale), not on the lease -- consulted here
-                # instead of self._lease.hold so a lease release or
-                # idle-timeout mid-run cannot flip this sale to production
-                # (system-tests design §2.3). Neither a `sale` row nor a
-                # `dispense` event is written; run_test_sale itself writes
+                # by run_test_sale), not on the maintenance lease -- so a
+                # lease release or idle-timeout mid-run cannot flip this
+                # sale to production (system-tests design §2.3). Neither a
+                # `sale` row nor a `dispense` event is written; run_test_sale itself writes
                 # the `test_run` event once it observes this outcome via
                 # the sale-settled notification below.
                 # DispenseCycle.record's own bookkeeping (clearing
@@ -1127,7 +1124,7 @@ class VMC:
         if amount <= 0:
             logger.warning(f"Ignoring non-positive deposit: {amount}")
             return
-        if self._lease.hold is not None and payment_method != "test":
+        if self._in_maintenance() and payment_method != "test":
             # Payment is disabled for the whole lease (SVC-102 blocks it via
             # availability), so this only covers the race between the
             # disable command and a coin already in the mechanism -- still
@@ -1269,93 +1266,32 @@ class VMC:
 
     # --- Maintenance Lease (system-tests design §2.2) ---
     #
-    # The lease lifecycle itself (the hold, its idle timer, the standby
-    # sweep, and grant/release/takeover/run accounting) lives in
-    # controller/maintenance_lease.py's MaintenanceLease, constructed as
-    # self._lease in __init__. What stays here is the FSM/escrow
-    # preconditions (begin_maintenance/begin_standby), the refunds,
-    # run_test_sale itself, and the SVC-102 raise/clear wired to the lease
-    # as on_granted/on_released callbacks. The lease itself is no longer a
-    # VMC property: the Machine composition root (controller/machine.py)
-    # owns it, and tests/routes read it as `machine.lease` and mutate only
-    # through a VMC method (`begin_maintenance`, `end_maintenance`,
-    # `take_over_maintenance`, ...) or, where the test is deliberately
-    # exercising the lease itself rather than bypassing the VMC, through a
-    # method on `machine.lease` directly (e.g. `machine.lease.release(...)`).
-    # `maintenance_hold` stays here as the VMC's own convenience property
-    # since routes (`web_interface/context.py`) read it by that name — until
-    # the lease-preconditions task moves `begin_*`/`end_*`/`take_over_*`
-    # onto `MaintenanceLease` itself.
+    # The lease lifecycle (the hold, its idle timer, the standby sweep,
+    # grant/release/takeover/run accounting) AND every FSM precondition it
+    # needs (`begin_maintenance`/`begin_standby`/`end_maintenance`/
+    # `take_over_maintenance`) now live entirely on the `MaintenanceLease`
+    # collaborator -- the Machine composition root (controller/machine.py)
+    # owns it, and tests/routes
+    # read and mutate it as `machine.lease` directly. The one FSM operation
+    # the lease cannot do for itself -- making the machine idle (refund the
+    # right amount, cancel a live sale, cancel the session timer) -- stays
+    # here as `make_idle_for_service`, which `MaintenanceLease.begin_standby`
+    # calls back through the `make_idle_for_service` callable `Machine`
+    # wires in.
 
-    @property
-    def maintenance_hold(self) -> MaintenanceHold | None:
-        """Read-only view of the current lease, if any. Never persisted."""
-        return self._lease.hold
+    def make_idle_for_service(self) -> bool:
+        """Make the machine idle for `MaintenanceLease.begin_standby`
+        (system-tests design §2.2a): the one FSM operation the lease needs
+        and cannot do itself.
 
-    def _release_maintenance_hold(self, by: str) -> None:
-        self._lease.release(by)
-
-    def _arm_maintenance_idle_timer(self) -> None:
-        self._lease.arm_idle_timer()
-
-    def _maintenance_idle_expired(self) -> None:
-        self._lease.idle_expired()
-
-    def _arm_maintenance_sweep(self) -> None:
-        self._lease.arm_sweep()
-
-    def _maintenance_sweep_tick(self) -> None:
-        self._lease.sweep_tick()
-
-    def begin_maintenance(
-        self, user_id: str, session_id: str
-    ) -> tuple[bool, str | None]:
-        """Grant the maintenance lease.
-
-        Returns ``(granted, reason)``: ``reason`` is ``None`` when granted,
-        and a short human-readable refusal ("machine is mid-sale", "held by
-        <id>") otherwise -- so a caller (the Tests level route, added by a
-        later task) can tell the operator why without re-deriving it from
-        VMC state. Granting requires the FSM to be idle, escrow to be zero
-        (a mid-sale credit is a refusal even while idle -- the sale just
-        hasn't been selected/dispensed yet), and no lease already held.
-        """
-        if self.state != "idle":
-            return False, "machine is mid-sale"
-        if not self._escrow.is_empty_within_tolerance:
-            return False, "credit is still on the machine"
-        if self._lease.hold is not None:
-            return False, f"held by {self._lease.hold.holder_user_id}"
-        self._lease.grant(user_id, session_id, standby=False)
-        return True, None
-
-    def begin_standby(self, user_id: str, session_id: str) -> tuple[bool, str | None]:
-        """Take the machine out of service, making it idle first if needed
-        (system-tests design §2.2a).
-
-        Unlike ``begin_maintenance``, standby does not require the machine
-        to already be idle with zero escrow -- it gets there itself:
-        whatever credit is on the machine is refunded (``reason=
-        "maintenance"``) and any live customer session is cancelled before
-        the lease is granted with ``standby=True`` (no idle timer; the
-        session sweep is armed instead).
-
-        Refused exactly like ``begin_maintenance``'s two busy cases --
-        ``"vend finishing, tap again"`` while ``dispensing`` (a running
-        motor is never aborted), and ``"held by <id>"`` when another
-        session already holds the lease. If the caller's own session
-        already holds an (opportunistic) lease it is upgraded to standby
-        in place rather than replaced.
+        Refuses only while `dispensing` (a running motor is never
+        aborted) -- returns False and touches nothing. Otherwise refunds
+        whatever credit is on the machine (``reason="maintenance"``),
+        cancels a live customer sale (`interacting_with_user`) or the idle
+        session timer (`idle`), and returns True.
         """
         if self.state == "dispensing":
-            return False, "vend finishing, tap again"
-        hold = self._lease.hold
-        if hold is not None and hold.holder_session_id != session_id:
-            return False, f"held by {hold.holder_user_id}"
-        if hold is not None:
-            self._lease.upgrade_to_standby(user_id, session_id)
-            return True, None
-
+            return False
         if self.state == "interacting_with_user":
             # request_refund is a no-op at zero escrow (just a customer
             # message), so this is safe to call unconditionally; it also
@@ -1371,40 +1307,7 @@ class VMC:
         elif self.state == "error":
             if not self._escrow.is_empty_within_tolerance:
                 self.request_refund(reason="maintenance")
-
-        self._lease.grant(user_id, session_id, standby=True)
-        return True, None
-
-    def end_maintenance(self, session_id: str) -> bool:
-        """Release the lease for its holder's session only.
-
-        Returns False when there is no lease, or ``session_id`` is not its
-        holder (refused either way). Returns True whenever the request is
-        accepted -- either released immediately (``runs_in_flight == 0``),
-        or deferred via ``release_requested`` for the last in-flight run to
-        perform (`MaintenanceLease.run_finished`).
-        """
-        return self._lease.request_release(session_id)
-
-    def take_over_maintenance(
-        self, user_id: str, session_id: str
-    ) -> tuple[bool, str | None]:
-        """Transfer an idle, run-free lease to a new holder.
-
-        Permitted only when no run is in flight and the lease has been idle
-        (since ``last_activity_at``) for at least
-        ``MAINTENANCE_TAKEOVER_IDLE_SECONDS``; records who took it over by
-        overwriting the hold's holder fields in place. A standby lease
-        (§2.2a) stays standby across the takeover -- the sweep is re-armed
-        for the new holder's session rather than the idle timer.
-        """
-        return self._lease.take_over(user_id, session_id)
-
-    def _maintenance_run_started(self) -> None:
-        self._lease.run_started()
-
-    def _maintenance_run_finished(self) -> None:
-        self._lease.run_finished()
+        return True
 
     def find_product(self, sku: str) -> tuple[int | None, Product | None]:
         """Return ``(button_index, product)`` for `sku` in the live catalog,
