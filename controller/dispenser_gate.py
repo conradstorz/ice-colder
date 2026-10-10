@@ -149,11 +149,11 @@ class DispenserProfileGate:
         self, subsystem: str, caps: SubsystemCapabilities
     ) -> None:
         """Re-run the dispenser-profiles capabilities cross-check whenever
-        the vending board's retained capabilities doc validates -- invoked
-        by `VMC._on_vending_capabilities_validated`, itself called by the
-        telemetry router (controller/mqtt_inbound.py's
-        `TelemetryRouter.handle_capabilities`) only from its successful-
-        validation branch.
+        the vending board's retained capabilities doc validates -- wired by
+        `Machine` directly as the telemetry router's
+        (controller/mqtt_inbound.py's `TelemetryRouter.handle_capabilities`)
+        `on_capabilities_validated` callback, invoked only from its
+        successful-validation branch.
 
         Dispenser profiles (plan: dispenser profiles, Task 2): the vending
         board's declared channel directions feed the profiles' own
@@ -170,8 +170,8 @@ class DispenserProfileGate:
     def lacks_valid_profile(self, sku: str) -> bool:
         """True iff profiles are attached, `sku` names a product in the
         current catalog, and `profile_for` finds no valid profile for it
-        -- backs `VMC.clear_fault`'s CFG-101 re-check (review fix, Task
-        2): popping *any* lockout (not just CFG-101 itself, e.g. an
+        -- backs `FaultService.clear_fault`'s CFG-101 re-check (review fix,
+        Task 2): popping *any* lockout (not just CFG-101 itself, e.g. an
         operator clearing ICE-301 on a profile-less product) can leave a
         profile-less product unlocked, since nothing else re-runs
         reconciliation on that path. False -- never re-locks -- when no

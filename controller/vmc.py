@@ -104,7 +104,7 @@ class VMC:
     construction path: `tasks` (`TaskRunner`), `escrow` (`EscrowLedger`),
     `refunds` (`RefundProtocol`), `faults` (`FaultService`), `outputs`
     (`StatusOutputs`), `gate` (`DispenserProfileGate`), a `DispenseCycle`
-    factory, and three read-only callables (`in_maintenance`,
+    factory, and four read-only callables (`in_maintenance`,
     `availability`, `inventory`, `recorder`). Everything the FSM
     publishes, persists, displays, or messages to the customer goes
     through `outputs` (`StatusOutputs`, its only outbound channel); every

@@ -134,6 +134,33 @@ def _iter_imports(tree: ast.AST):
             yield node.module, [alias.name for alias in node.names]
 
 
+def _find_forbidden_imports(tree: ast.AST) -> list[str]:
+    """Return a human-readable violation string for every forbidden import
+    in `tree`, matched two ways: `module` itself in `FORBIDDEN_VMC_IMPORTS`
+    (an ordinary `import x`/`from x import ...`), or -- mirroring how
+    `test_only_machine_imports_controller_machine` catches `from controller
+    import machine` below -- a `from <package> import <name>` whose
+    `f"{package}.{name}"` names a forbidden module, which `ast` never
+    surfaces as a single dotted `module` string (e.g. `from services
+    import session_store`, which names forbidden `services.session_store`
+    without ever setting `module == "services.session_store"`)."""
+    violations = []
+    for module, names in _iter_imports(tree):
+        if module in FORBIDDEN_VMC_IMPORTS:
+            allowed = ALLOWED_NAMES_FROM_FORBIDDEN_MODULE.get(module)
+            if allowed is None:
+                violations.append(module if names is None else f"{module} ({names})")
+            elif names is None or not set(names) <= allowed:
+                violations.append(f"{module} ({names})")
+            continue
+        if names:
+            for name in names:
+                dotted = f"{module}.{name}"
+                if dotted in FORBIDDEN_VMC_IMPORTS:
+                    violations.append(f"from {module} import {name}")
+    return violations
+
+
 def test_vmc_has_no_forbidden_imports():
     """`controller/vmc.py` holds no transport or service handle -- see
     this module's docstring, "Guard 2", for the forbidden list and the
@@ -141,15 +168,7 @@ def test_vmc_has_no_forbidden_imports():
     path = CONTROLLER_DIR / "vmc.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
-    violations = []
-    for module, names in _iter_imports(tree):
-        if module not in FORBIDDEN_VMC_IMPORTS:
-            continue
-        allowed = ALLOWED_NAMES_FROM_FORBIDDEN_MODULE.get(module)
-        if allowed is None:
-            violations.append(module if names is None else f"{module} ({names})")
-        elif names is None or not set(names) <= allowed:
-            violations.append(f"{module} ({names})")
+    violations = _find_forbidden_imports(tree)
 
     assert not violations, (
         "controller/vmc.py imports a forbidden transport/service module -- "
@@ -157,6 +176,24 @@ def test_vmc_has_no_forbidden_imports():
         'Machine instead. See this file\'s module docstring, "Guard 2", for '
         "the allowlist.\n" + "\n".join(violations)
     )
+
+
+def test_forbidden_import_check_catches_package_submodule_form():
+    """Negative self-test for `_find_forbidden_imports`: `from services
+    import session_store` and `from controller import maintenance_lease`
+    name forbidden modules via the `from <package> import <name>` form,
+    not as a single dotted `module` string -- without the package-form
+    check in `_find_forbidden_imports`, both slip past undetected."""
+    tree = ast.parse(
+        "from services import session_store\nfrom controller import maintenance_lease\n"
+    )
+
+    violations = _find_forbidden_imports(tree)
+
+    assert violations == [
+        "from services import session_store",
+        "from controller import maintenance_lease",
+    ]
 
 
 def test_only_machine_imports_controller_machine():

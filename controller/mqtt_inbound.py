@@ -10,9 +10,11 @@ validates its payload and forwards it to the health monitor, availability,
 or a log sink -- it never touches the FSM, escrow, or a sale. The two
 handlers that *do* have a side effect reaching back into FSM/fault state
 (the ICE-101 auto-clear inside hardware IO, and the dispenser-profiles
-reconcile inside capabilities) keep that side effect on the VMC via
-injected callbacks (``on_bin_half_full``/``on_capabilities_validated``)
-invoked at exactly the point the old inline code did.
+reconcile inside capabilities) reach that side effect through injected
+callbacks (``on_bin_half_full``/``on_capabilities_validated``), invoked at
+exactly the point the old inline code did -- wired by ``Machine`` straight
+to the collaborator that now owns it (``FaultService.clear_ice101_lockouts``
+and ``DispenserProfileGate.on_vending_capabilities``), not to the VMC.
 
 ``health``/``availability`` are callables read at call time, not
 snapshotted at construction: both are attached later via
