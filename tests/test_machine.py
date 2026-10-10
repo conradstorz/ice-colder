@@ -10,12 +10,15 @@ fakes don't offer.
 
 from __future__ import annotations
 
+import asyncio
+
 from config.config_model import ConfigModel, PhysicalDetails, Product
 from contracts.vending_machine import FaultCode
 from controller.machine import Machine
 from controller.mqtt_inbound import SUBSCRIPTIONS
 from controller.vmc import VMC
 from services.session_store import SessionSnapshot
+from tests.dispenser_fixtures import FakeDispatcher, profiles_for
 from tests.fakes import FakeAvailability, FakeTaskRunner
 
 
@@ -211,15 +214,30 @@ class TestCancelPendingTasks:
 
         assert not any(c.label == "refund_deadline" for c in runner.scheduled)
 
-    def test_cancels_dispense_timeout(self):
-        product = Product(sku="A", price=0.0, slot=1)
+    async def test_cancels_dispense_timeout(self, tmp_path):
+        """Task 8: the dispense-timeout timer is now armed inside
+        `DispenseCycle.start` (controller/dispense_cycle.py), which only
+        runs once `on_dispense_product` finds a loop attached AND a valid
+        dispenser profile for the product -- unlike the pre-Task-8 VMC,
+        where `process_payment` armed this timer itself, unconditionally,
+        regardless of whether the dispatch below it ever got off the
+        ground. A product with no profile wired (as this test used before)
+        now never reaches a dispatch at all (CFG-101 fails the vend
+        immediately instead), so a profile is wired here to exercise the
+        real path this timer actually guards."""
+        product = Product(sku="A", price=0.0, slot=1, kind="ice")
         runner = FakeTaskRunner()
         machine = Machine(_config(product), tasks=runner)
+        machine.attach_to_loop(asyncio.get_running_loop())
+        profiles = profiles_for([product], tmp_path)
+        machine.set_dispenser_profiles(profiles)
+        machine.set_command_dispatcher(FakeDispatcher())
         vmc = machine.vmc
         vmc.start_interaction()
         vmc.selected_product = product
         vmc.process_payment()
         assert vmc.state == "dispensing"
+        await asyncio.sleep(0)  # let the real dispatch actually run
         assert any(c.label == "dispense_timeout" for c in runner.scheduled)
 
         machine.cancel_pending_tasks()

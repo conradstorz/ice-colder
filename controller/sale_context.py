@@ -5,10 +5,10 @@
 *the one sale the FSM is currently working on* -- the product a customer (or
 ``VMC.run_test_sale``) selected, the per-method shares deducted from escrow
 to pay for it, whether it is a simulated test sale, which dispenser
-mechanism and dispatcher ``request_id`` are in flight for it, the dispatch
-sequence number minted for it, and when it started. ``VMC`` holds at most one
-of these at a time, on ``self._sale``, exposed read-only as ``VMC.sale`` --
-``None`` whenever no sale is in progress (idle, or between sales).
+mechanism and dispatcher ``request_id`` are in flight for it, and when it
+started. ``VMC`` holds at most one of these at a time, on ``self._sale``,
+exposed read-only as ``VMC.sale`` -- ``None`` whenever no sale is in progress
+(idle, or between sales).
 
 A transition in the sale's life never mutates an existing ``SaleContext`` in
 place (it is frozen) -- it is always *replaced wholesale* with a new instance
@@ -42,10 +42,6 @@ Fields, and who sets them:
 - ``request_id``: the dispatcher command id minted for this sale's dispense
   command, known before any terminal hardware report can arrive so a report
   racing the dispatcher's own ack is still verifiable.
-- ``seq``: the dispatch sequence number (``VMC._sale_seq``, a VMC-level
-  counter that survives across sales) minted for *this* sale's dispatch
-  attempt, captured onto the context at the same point ``mechanism`` and
-  ``request_id`` are.
 - ``started_at``: wall-clock time the sale began (``select_product``, or the
   seed ``run_test_sale`` builds).
 """
@@ -65,7 +61,6 @@ class SaleContext:
     is_test: bool = False
     mechanism: str | None = None
     request_id: str | None = None
-    seq: int = 0
     started_at: float = 0.0
 
     def with_(self, **changes) -> "SaleContext":

@@ -16,6 +16,7 @@ import pytest
 from config.config_model import ConfigModel, PhysicalDetails, Product
 from contracts.common import ChannelDescriptor, CommandAck
 from contracts.vending_machine import FaultCode, SubsystemCapabilities
+from controller.dispense_cycle import DispenseCycle
 from controller.machine import Machine
 from controller.vmc import VMC
 from services.availability import Availability
@@ -804,4 +805,66 @@ async def test_late_no_ack_from_previous_sale_does_not_fail_current_sale(tmp_pat
         e[0] == "vend_failed" and e[2]["code"] == "PAY-102" for e in rec.events
     )
     assert any(c.label == "dispense_timeout" for c in machine.tasks.scheduled)
+    machine.cancel_pending_tasks()
+
+
+async def test_on_dispense_failed_ignores_a_stale_cycle(tmp_path):
+    """`VMC.on_dispense_failed`'s identity guard (Task 8, replacing review
+    finding I2's `_sale_seq` counter): a `DispenseCycle` instance that is
+    not the VMC's own current cycle -- a late callback from an earlier
+    attempt, or any other object -- must never fail the vend, touch
+    escrow, or lock the product out, whether the real sale is still
+    dispensing or has already settled through the real hardware report.
+
+    Both calls below take `on_dispense_failed`'s *first* guard clause
+    (`cycle is not self._cycle`), by design: every exit from 'dispensing'
+    (`_finish_dispensing`/`on_vend_failed`/`on_error`) sets `self._cycle =
+    None` in the same step that leaves the state, so a cycle can never be
+    "the current cycle" while the FSM has already moved on -- unlike the
+    predecessor's `_sale_seq` counter, which never reset and so could
+    independently match on `seq` after a sale settled, making its second
+    (state-only) guard clause reachable on its own. That second clause is
+    kept here as defence in depth (see `on_dispense_failed`'s docstring)
+    but is not independently exercised by this test.
+    """
+    machine, vmc, dispatcher = _vmc_with_profiles(tmp_path, tasks=FakeTaskRunner())
+    product = vmc.products[0]  # ICE-1
+    _start_sale(vmc, product)
+    await asyncio.sleep(0)  # let the real dispatch actually run
+
+    # An independent DispenseCycle, never wired as vmc's own -- its mere
+    # existence as a *different* object is what on_dispense_failed must
+    # reject, regardless of anything else about it.
+    stale = DispenseCycle(
+        sale=vmc.sale,
+        dispatcher=lambda: None,
+        gate=machine.gate,
+        outputs=machine.outputs,
+        faults=machine.faults,
+        recorder=lambda: None,
+        set_transaction_certain=lambda certain: None,
+        tasks=machine.tasks,
+        timeout_seconds=lambda: 1.0,
+        on_failed=vmc.on_dispense_failed,
+        on_request_id=lambda *a: None,
+    )
+
+    await vmc.on_dispense_failed(stale, FaultCode.PAY_102, "no_ack")
+
+    assert vmc.state == "dispensing"
+    assert vmc.credit_escrow == 0.0
+    assert vmc.faults.lockouts == {}
+
+    # Settle the real sale through the real hardware report.
+    await vmc.on_dispenser_event(
+        "hardware/dispenser", {"slot": product.slot, "state": "complete"}
+    )
+    assert vmc.state == "idle"
+
+    # The same stale cycle, now doubly stale (the real sale has also
+    # settled), must still be ignored.
+    await vmc.on_dispense_failed(stale, FaultCode.PAY_102, "no_ack")
+
+    assert vmc.state == "idle"
+    assert vmc.faults.lockouts == {}
     machine.cancel_pending_tasks()
