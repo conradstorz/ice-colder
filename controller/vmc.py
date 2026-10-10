@@ -38,6 +38,7 @@ from controller.escrow_ledger import EscrowLedger
 from controller.refund_protocol import PendingRefund, RefundProtocol
 from controller.session_recovery import SessionRecovery
 from controller.maintenance_lease import MaintenanceHold, MaintenanceLease
+from controller.task_runner import TaskRunner
 from controller import mqtt_inbound
 
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
@@ -255,11 +256,17 @@ class VMC:
         self.message_callback = None
         self.qrcode_callback = None
 
-        self._pending_tasks: list[asyncio.Task] = []
-        self._persist_tasks: list[asyncio.Task] = []
+        # Event-loop task plumbing (controller/task_runner.py): fire-and-
+        # forget tasks, delayed callbacks, and the persistent-task set
+        # drained (not cancelled) at shutdown. `_pending_tasks`/
+        # `_persist_tasks`/`_loop` below are read-only properties aliasing
+        # the runner's own attributes, kept because many tests read them
+        # directly. Constructed before anything that captures `self._schedule`
+        # as a closure (the maintenance lease and refund protocol below),
+        # since that closure's first real call must find a live runner.
+        self._tasks = TaskRunner()
         self._dispense_timeout_task: asyncio.Task | None = None
         self._session_timeout_task: asyncio.Task | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
         self._mqtt_client = None  # Set via set_mqtt_client()
         self._health_monitor: HealthMonitor | None = (
             None  # Set via set_health_monitor()
@@ -392,25 +399,42 @@ class VMC:
 
     def attach_to_loop(self, loop: asyncio.AbstractEventLoop):
         """Attach VMC to the running asyncio event loop. Must be called before scheduling."""
-        self._loop = loop
+        self._tasks.attach(loop)
         logger.debug("VMC attached to asyncio event loop.")
 
     def cancel_pending_tasks(self):
         """Cancel all pending scheduled tasks. Call during shutdown.
 
-        Persistence writes tracked in ``_persist_tasks`` are never cancelled
+        Persistence writes tracked by the task runner are never cancelled
         here — they are drained (awaited to completion) by
         ``drain_persistence()`` instead, so a shutdown cannot truncate an
         in-flight session/inventory save.
         """
-        for task in self._pending_tasks:
-            if not task.done() and task not in self._persist_tasks:
-                task.cancel()
-        self._pending_tasks.clear()
+        self._tasks.cancel_pending()
         self._cancel_dispense_timeout()
         self._cancel_session_timeout()
         self._refunds.cancel_all()
         logger.debug("VMC: all pending tasks cancelled.")
+
+    @property
+    def _loop(self) -> asyncio.AbstractEventLoop | None:
+        """Read-only alias to the task runner's attached loop."""
+        return self._tasks.loop
+
+    @property
+    def _pending_tasks(self) -> list[asyncio.Task]:
+        """Alias to the task runner's own list; see `_lockouts` below.
+
+        Returned fresh on every access (never cached) because
+        `fire_and_forget`/`schedule` reassign the list object when pruning
+        finished tasks.
+        """
+        return self._tasks.pending
+
+    @property
+    def _persist_tasks(self) -> list[asyncio.Task]:
+        """Alias to the task runner's own list; see `_pending_tasks` above."""
+        return self._tasks.persist
 
     def set_mqtt_client(self, client):
         """Attach an MQTTClient instance for publishing status and receiving events."""
@@ -1239,59 +1263,18 @@ class VMC:
     def _fire_and_forget(self, coro, *, persistent: bool = False) -> None:
         """Run a coroutine on the attached loop without awaiting it.
 
-        The task is kept in _pending_tasks (so it is not garbage-collected and
-        is cancelled on shutdown) and any exception it raises is logged rather
-        than silently dropped — these carry alerts and refund commands.
-
-        Pass persistent=True for session/inventory writes that must not be
-        cancelled by a graceful shutdown; such tasks are additionally tracked
-        in _persist_tasks so drain_persistence() can await them.
+        Delegates to `self._tasks` (controller/task_runner.py) — see
+        `TaskRunner.fire_and_forget` for the actual behavior.
         """
-        if self._loop is None or self._loop.is_closed():
-            coro.close()
-            return
-        task = self._loop.create_task(coro)
-        task.add_done_callback(self._log_task_failure)
-        self._pending_tasks.append(task)
-        self._pending_tasks = [t for t in self._pending_tasks if not t.done()]
-        if persistent:
-            self._persist_tasks.append(task)
-            self._persist_tasks = [t for t in self._persist_tasks if not t.done()]
+        self._tasks.fire_and_forget(coro, persistent=persistent)
 
     async def drain_persistence(self, timeout: float = 3.0) -> None:
         """Await in-flight session/inventory writes so shutdown never cancels them."""
-        pending = [t for t in self._persist_tasks if not t.done()]
-        if not pending:
-            return
-        done, still = await asyncio.wait(pending, timeout=timeout)
-        if still:
-            logger.warning(
-                f"Shutdown: {len(still)} persistence task(s) still running after {timeout}s"
-            )
-
-    @staticmethod
-    def _log_task_failure(task: asyncio.Task) -> None:
-        if task.cancelled():
-            return
-        exc = task.exception()
-        if exc is not None:
-            logger.error(f"Background task {task.get_name()} failed: {exc!r}")
+        await self._tasks.drain_persistence(timeout=timeout)
 
     def _schedule(self, delay_seconds, callback) -> asyncio.Task | None:
         """Schedule a synchronous callback to run after delay_seconds on the event loop."""
-        if self._loop is None or self._loop.is_closed():
-            logger.warning("No event loop attached; cannot schedule callback.")
-            return None
-
-        async def _delayed():
-            await asyncio.sleep(delay_seconds)
-            callback()
-
-        task = self._loop.create_task(_delayed())
-        self._pending_tasks.append(task)
-        # Clean up finished tasks
-        self._pending_tasks = [t for t in self._pending_tasks if not t.done()]
-        return task
+        return self._tasks.schedule(delay_seconds, callback)
 
     def get_status(self) -> dict:
         return {
@@ -1518,7 +1501,7 @@ class VMC:
         was guarded; any other exception raised while dispatching -- bad
         `SubsystemCommand`/`model_dump` validation, a broken MQTT publish,
         anything -- escaped this task entirely, landed in
-        `_log_task_failure`, and left the FSM stuck in 'dispensing' with
+        `TaskRunner._log_task_failure`, and left the FSM stuck in 'dispensing' with
         the price already deducted until the full 120s dispense-timeout
         fallback. Every failure path here now fails the vend immediately
         instead, exactly like a `CommandTimeout` does.
