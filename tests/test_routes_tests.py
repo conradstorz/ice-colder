@@ -1577,7 +1577,7 @@ class TestSimulatedSaleFlow:
     def test_sku_with_slash_end_to_end(self, client, wired):
         """The SKU travels: <select><option value="..."> (GET) -> a POST
         form field -> FastAPI's Form(...) decoding -> the route's catalog
-        lookup -> VMC.run_test_sale's own _find_product_by_sku -- all real
+        lookup -> VMC.run_test_sale's own find_product -- all real
         production code, "/" intact at every hop. Locking the product out
         first makes run_test_sale fail SYNCHRONOUSLY (before ever awaiting
         the dispense-completion Future, which nothing in this fixture

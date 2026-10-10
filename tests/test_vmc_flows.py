@@ -3680,9 +3680,11 @@ class TestConcurrentTestSaleGuard:
     `web_interface/routes/tests_level.py`'s `_acquire_lease_or_refusal`,
     which deliberately proceeds WITHOUT reacquiring the lease for a
     session that already holds it ("a second command run in the same
-    maintenance visit") -- used to silently overwrite the single instance
-    attributes `self._test_sale_waiter` and `self._test_sale_path`
-    (`controller/vmc.py`). That left the FIRST call's `await waiter`
+    maintenance visit") -- used to silently overwrite the single-instance
+    waiter/path attributes `run_test_sale` kept on the VMC at the time
+    (`controller/vmc.py`; Task 9 later made them local to each call, kept
+    alive only by the `_test_sale_in_progress` guard below). That left the
+    FIRST call's `await waiter`
     suspended forever on a Future nothing would ever resolve again, while
     its `with self.maintenance_test_run():` was still on the stack --
     `runs_in_flight` never decremented, pinning the maintenance lease out
@@ -3721,8 +3723,8 @@ class TestConcurrentTestSaleGuard:
         waiter` and hangs -- which is exactly what happened pre-fix, once
         call #2's `select_product` succeeded (state was still
         `interacting_with_user`, not yet `dispensing`) and silently
-        overwrote `self._test_sale_waiter`/`self._test_sale_path` out from
-        under call #1 -- the failure surfaces as a bounded
+        overwrote the single waiter/path attributes out from under call
+        #1 -- the failure surfaces as a bounded
         `TimeoutError`/`asyncio.TimeoutError` after 5s, not a stuck test
         process. `pytest.raises(RuntimeError, match="already in
         progress")` additionally failed to match on that pre-fix

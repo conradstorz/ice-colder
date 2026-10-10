@@ -755,7 +755,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         except (ValueError, RuntimeError) as exc:
             # ValueError: the catalog moved under us between the lookup
             # above and this call (vmc.products, not context.config.products
-            # -- see run_test_sale's own _find_product_by_sku). RuntimeError:
+            # -- see run_test_sale's own find_product). RuntimeError:
             # run_test_sale's own "could not select" guard (locked out,
             # sold out) or "no lease held" (a race against the check above).
             # Either way this is a refusal, not a 500.
