@@ -191,7 +191,7 @@ async def test_second_concurrent_call_refused_before_lease_bracket_leaves_idle_c
     machine.set_event_recorder(rec)
     product = vmc.products[0]
     other = vmc.products[1]
-    granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+    granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
     assert granted is True
 
     task1 = asyncio.get_running_loop().create_task(
