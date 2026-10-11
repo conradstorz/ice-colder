@@ -60,6 +60,7 @@ class PaymentGatewayManager:
             "paypal": PayPalGateway(self.config.get("paypal")),
             "square": SquareGateway(self.config.get("square")),
         }
+        self.virtual_payment_index = 0
 
     async def monitor_accounts(self):
         """
@@ -85,6 +86,37 @@ class PaymentGatewayManager:
         logger.info(f"PaymentGatewayManager: Generating QR code for URL: {payment_url}")
         img = gateway.generate_qr_code(payment_url)
         return img
+
+    def next_payment_prompt(self, amount: float) -> tuple[str, object] | None:
+        """Return the (gateway name, QR image) for the current virtual
+        payment gateway, then cycle to the next one. ``None`` when no
+        gateways are configured at all.
+
+        Extracted from ``VMC.initiate_virtual_payment`` (vmc-reduction
+        plan, Task 1) -- the cycling index moves here from the VMC since
+        it is state belonging to the gateway rotation, not the FSM. The
+        log lines below (and their order -- available gateways, then the
+        empty-config error, then the "initiating" line before the URL is
+        generated, then the generated URL) were originally logged by
+        ``VMC.initiate_virtual_payment`` itself; they moved here with the
+        rest of the gateway-prompt logic so the log output is unchanged.
+        """
+        gateways = list(self.gateways.keys())
+        logger.debug(f"Available virtual payment gateways: {gateways}")
+        if not gateways:
+            logger.error("No virtual payment gateways configured.")
+            return None
+
+        current_gateway = gateways[self.virtual_payment_index % len(gateways)]
+        logger.info(
+            f"Initiating virtual payment via {current_gateway} for amount ${amount:.2f}"
+        )
+        payment_url = self.gateways[current_gateway].generate_payment_url(amount)
+        logger.debug(f"Generated payment URL: {payment_url}")
+
+        qr_image = self.generate_qr_code(current_gateway, amount)
+        self.virtual_payment_index = (self.virtual_payment_index + 1) % len(gateways)
+        return current_gateway, qr_image
 
 
 # Example usage (this code would typically be called from your FSM or UI code):

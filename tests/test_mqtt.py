@@ -363,8 +363,8 @@ class TestVMCMQTTWiring:
     def test_publish_status_without_client_does_nothing(self):
         vmc = _make_vmc()
         # Should not raise when no client attached. start_interaction's
-        # after_state_change callback calls _publish_status internally --
-        # driving the FSM is the nearest public path to it.
+        # after_state_change callback calls StatusOutputs.state_changed
+        # internally -- driving the FSM is the nearest public path to it.
         vmc.start_interaction()
 
     def test_publish_status_without_loop_does_nothing(self):
@@ -561,8 +561,8 @@ class TestStatusRetained:
         mqtt.publish = AsyncMock()
         vmc.set_mqtt_client(mqtt)
         # start_interaction's after_state_change callback calls
-        # _publish_status internally -- driving the FSM is the nearest
-        # public path to it.
+        # StatusOutputs.state_changed internally -- driving the FSM is the
+        # nearest public path to it.
         vmc.start_interaction()
         await asyncio.sleep(0)
         args, kwargs = mqtt.publish.await_args
