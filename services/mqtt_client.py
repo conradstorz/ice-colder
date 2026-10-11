@@ -219,9 +219,15 @@ class MQTTClient:
                 logger.info(f"MQTT: Subscribed to {full_topic}")
             self._subscribed = True
 
-            # Listen and dispatch
-            async for message in client.messages:
-                await self._dispatch(message)
+            try:
+                # Listen and dispatch
+                async for message in client.messages:
+                    await self._dispatch(message)
+            finally:
+                # Cancellation during the message loop (the normal shutdown
+                # path) raises CancelledError, which is not an Exception and
+                # would otherwise skip the resets below the `async with`.
+                self._subscribed = False
 
         # If we exit the context manager, we disconnected
         self._client = None
