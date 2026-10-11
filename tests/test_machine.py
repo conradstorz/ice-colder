@@ -126,13 +126,34 @@ class TestConstruction:
         # public VMC accessor for this exists since Task 6 removed `gate`.
         assert machine.vmc._gate is machine.gate
 
-    def test_vmc_and_machine_share_the_same_maintenance_lease(self):
-        """Same reasoning as the gate check above -- VMC's public `lease`
-        property was removed in Task 6."""
+    def test_vmc_in_maintenance_callable_reflects_machine_lease_hold(self):
+        """Task 11 (lease-preconditions): the VMC no longer holds a
+        reference to `MaintenanceLease` at all -- only the one-way
+        `in_maintenance` boolean callable `Machine` wires in
+        (`lambda: self.lease.hold is not None`). This proves that
+        callable actually tracks `machine.lease.hold` rather than some
+        stale snapshot, by flipping the hold directly (no timers, no
+        event loop needed) and reading the callable's result each time."""
+        from controller.maintenance_lease import MaintenanceHold
+
         machine = Machine(ConfigModel())
-        # private: asserts Machine/VMC share one MaintenanceLease; no
-        # public VMC accessor for this exists since Task 6 removed `lease`.
-        assert machine.vmc._lease is machine.lease
+        # private: asserts VMC's internal `_in_maintenance` callable
+        # tracks `machine.lease.hold`; no public VMC accessor for this
+        # exists -- `deposit_funds` is its only production reader.
+        assert machine.vmc._in_maintenance() is False
+
+        machine.lease.hold = MaintenanceHold(
+            holder_user_id="user-1",
+            holder_session_id="sess-1",
+            started_at=0.0,
+            last_activity_at=0.0,
+        )
+        # private: see the marker above -- same internal callable.
+        assert machine.vmc._in_maintenance() is True
+
+        machine.lease.hold = None
+        # private: see the marker above -- same internal callable.
+        assert machine.vmc._in_maintenance() is False
 
     def test_no_closure_is_invoked_during_construction(self):
         """Building a Machine must not touch the VMC's FSM/escrow/fault

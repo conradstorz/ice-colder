@@ -65,10 +65,24 @@ def make_lease(
     idle_timeout=5.0,
     takeover_idle=2.0,
     sweep_seconds=3.0,
+    fsm_state="idle",
+    escrow_is_empty=True,
+    make_idle_for_service=None,
 ):
+    """`fsm_state`/`escrow_is_empty`/`make_idle_for_service` (Task 11,
+    lease-preconditions) back `begin_maintenance`/`begin_standby`'s own
+    FSM checks -- every pre-Task-11 caller here never touches those two
+    methods, so the defaults ("idle", True, a no-op returning True) are
+    inert for them. `make_idle_for_service` defaults to `lambda: True`
+    when not given; pass a recording callable to assert on when/whether
+    it was actually called.
+    """
     scheduler = FakeScheduler()
     granted: list[None] = []
     released: list[str] = []
+    idle_for_service = (
+        make_idle_for_service if make_idle_for_service is not None else (lambda: True)
+    )
     lease = MaintenanceLease(
         schedule=scheduler,
         on_granted=lambda: granted.append(None),
@@ -76,6 +90,9 @@ def make_lease(
         idle_timeout=lambda: idle_timeout,
         takeover_idle=lambda: takeover_idle,
         sweep_seconds=lambda: sweep_seconds,
+        fsm_state=lambda: fsm_state,
+        escrow_is_empty=lambda: escrow_is_empty,
+        make_idle_for_service=idle_for_service,
     )
     return lease, scheduler, granted, released
 
@@ -353,3 +370,132 @@ def test_hold_dataclass_defaults():
     assert hold.release_requested is False
     assert hold.release_reason is None
     assert hold.standby is False
+
+
+# --- begin_maintenance / begin_standby / end_maintenance /
+#     take_over_maintenance (Task 11, lease-preconditions) ------------------
+#
+# These four moved onto MaintenanceLease verbatim from VMC; the FSM reads
+# that used to be `self.state`/`self._escrow.is_empty_within_tolerance`
+# are now the `fsm_state`/`escrow_is_empty` callables `make_lease` wires in
+# above, and `begin_standby`'s own per-state refund/cancel block is now a
+# single call to `make_idle_for_service` (recorded below via a custom
+# callable rather than the make_lease default).
+
+
+def test_begin_maintenance_refused_when_fsm_not_idle():
+    lease, *_ = make_lease(fsm_state="interacting_with_user")
+    granted, reason = lease.begin_maintenance("user-1", "sess-1")
+    assert granted is False
+    assert reason == "machine is mid-sale"
+    assert lease.hold is None
+
+
+def test_begin_maintenance_refused_when_escrow_nonzero_even_while_idle():
+    lease, *_ = make_lease(fsm_state="idle", escrow_is_empty=False)
+    granted, reason = lease.begin_maintenance("user-1", "sess-1")
+    assert granted is False
+    assert reason == "credit is still on the machine"
+    assert lease.hold is None
+
+
+def test_begin_maintenance_refused_when_lease_exists_names_holder():
+    lease, *_ = make_lease()
+    lease.grant("owner-1", "sess-a", standby=False)
+
+    granted, reason = lease.begin_maintenance("tech-2", "sess-b")
+
+    assert granted is False
+    assert reason == "held by owner-1"
+    assert lease.hold.holder_user_id == "owner-1"
+
+
+def test_begin_maintenance_grants_when_idle_with_zero_escrow():
+    lease, *_ = make_lease(fsm_state="idle", escrow_is_empty=True)
+    granted, reason = lease.begin_maintenance("user-1", "sess-1")
+    assert granted is True
+    assert reason is None
+    assert lease.hold is not None
+    assert lease.hold.holder_user_id == "user-1"
+    assert lease.hold.standby is False
+
+
+def test_begin_standby_refused_while_dispensing():
+    calls: list[None] = []
+    lease, *_ = make_lease(
+        fsm_state="dispensing", make_idle_for_service=lambda: calls.append(None)
+    )
+    granted, reason = lease.begin_standby("user-1", "sess-1")
+    assert granted is False
+    assert reason == "vend finishing, tap again"
+    assert lease.hold is None
+    assert calls == []  # make_idle_for_service never called while dispensing
+
+
+def test_begin_standby_refused_when_held_by_a_different_session():
+    calls: list[None] = []
+    lease, *_ = make_lease(make_idle_for_service=lambda: calls.append(None) or True)
+    lease.grant("owner-1", "sess-a", standby=False)
+
+    granted, reason = lease.begin_standby("tech-2", "sess-b")
+
+    assert granted is False
+    assert reason == "held by owner-1"
+    assert calls == []  # the held-by-another-session path never calls it
+
+
+def test_begin_standby_upgrades_in_place_for_holders_own_session():
+    calls: list[None] = []
+    lease, *_ = make_lease(make_idle_for_service=lambda: calls.append(None) or True)
+    lease.grant("user-1", "sess-1", standby=False)
+    hold_before = lease.hold
+
+    granted, reason = lease.begin_standby("user-1", "sess-1")
+
+    assert granted is True
+    assert reason is None
+    assert lease.hold is hold_before  # same object, upgraded in place
+    assert lease.hold.standby is True
+    assert calls == []  # the upgrade-in-place path never calls it either
+
+
+def test_begin_standby_fresh_grant_calls_make_idle_for_service_then_grants():
+    calls: list[None] = []
+    lease, scheduler, granted_log, released = make_lease(
+        fsm_state="idle", make_idle_for_service=lambda: calls.append(None) or True
+    )
+
+    granted, reason = lease.begin_standby("user-1", "sess-1")
+
+    assert granted is True
+    assert reason is None
+    assert calls == [None]  # called exactly once, on the fresh-grant path
+    assert lease.hold is not None
+    assert lease.hold.standby is True
+    assert lease.hold.holder_user_id == "user-1"
+
+
+def test_end_maintenance_delegates_to_request_release():
+    lease, *_ = make_lease()
+    lease.grant("user-1", "sess-1", standby=False)
+
+    assert lease.end_maintenance("sess-other") is False
+    assert lease.hold is not None
+
+    assert lease.end_maintenance("sess-1") is True
+    assert lease.hold is None
+
+
+def test_take_over_maintenance_delegates_to_take_over():
+    lease, *_ = make_lease(takeover_idle=60.0)
+    lease.grant("user-1", "sess-1", standby=False)
+
+    refused, reason = lease.take_over_maintenance("user-2", "sess-2")
+    assert refused is False
+    assert reason == "lease not yet idle"
+
+    lease.hold.last_activity_at = time.time() - 61.0
+    granted, reason = lease.take_over_maintenance("user-2", "sess-2")
+    assert granted is True
+    assert reason is None
+    assert lease.hold.holder_user_id == "user-2"

@@ -17,14 +17,13 @@ from contracts.vending_machine import (
 from config.config_model import ConfigModel, Product
 from services.availability import Availability
 from services.inventory_manager import InventoryManager
-from services.session_store import Credit, SessionSnapshot
+from services.session_store import SessionSnapshot
 from controller.dispense_cycle import DispenseCycle
 from controller.fault_service import FaultService
 from controller.escrow_ledger import EscrowLedger
 from controller.outputs import StatusOutputs
 from controller.refund_protocol import PendingRefund, RefundProtocol
 from controller.sale_context import SaleContext
-from controller.maintenance_lease import MaintenanceHold, MaintenanceLease
 from controller.task_runner import TaskRunner
 from controller.dispenser_gate import DispenserProfileGate
 
@@ -94,6 +93,31 @@ TRANSITIONS = [
 
 
 class VMC:
+    """The vending machine's sale finite-state machine (states: `idle`,
+    `interacting_with_user`, `dispensing`, `error`; see `TRANSITIONS`
+    above).
+
+    `VMC` holds no transport or service handle -- no MQTT client, health
+    monitor, session store, event recorder, command dispatcher, display
+    controller, or maintenance-lease reference. Every collaborator it
+    needs is injected by `controller/machine.py`'s `Machine`, the sole
+    construction path: `tasks` (`TaskRunner`), `escrow` (`EscrowLedger`),
+    `refunds` (`RefundProtocol`), `faults` (`FaultService`), `outputs`
+    (`StatusOutputs`), `gate` (`DispenserProfileGate`), a `DispenseCycle`
+    factory, and four read-only callables (`in_maintenance`,
+    `availability`, `inventory`, `recorder`). Everything the FSM
+    publishes, persists, displays, or messages to the customer goes
+    through `outputs` (`StatusOutputs`, its only outbound channel); every
+    fault it raises or clears goes through `faults` (`FaultService`,
+    wrapping `FaultRegistry`). One `DispenseCycle` is built per entry into
+    `dispensing` and owns that sale's dispatch/timeout/classify/record
+    conversation with the board, holding the VMC's own identity-based
+    guard against a late callback from a superseded attempt.
+    `subscribe_state_change`/`subscribe_sale_settled` let other
+    collaborators (chiefly `controller/test_sale.py`'s `TestSaleRunner`)
+    observe a sale settling without the FSM knowing they exist.
+    """
+
     states = ["idle", "interacting_with_user", "dispensing", "error"]
 
     REFUND_ACK_TIMEOUT = 10.0  # seconds to wait for cmd/payment/refund/ack
@@ -112,16 +136,6 @@ class VMC:
     # because callers (and tests) reference it as VMC.CREDIT_TOLERANCE.
     CREDIT_TOLERANCE = EscrowLedger.TOLERANCE
 
-    # Maintenance lease (system-tests design §2.2).
-    MAINTENANCE_IDLE_TIMEOUT_SECONDS = 300.0  # 5 minutes since last_activity_at
-    MAINTENANCE_TAKEOVER_IDLE_SECONDS = (
-        60.0  # lease must be idle this long to take over
-    )
-    # Standby lease (system-tests design §2.2a): how often the session
-    # sweep re-checks the holder's web session liveness. A class attribute
-    # so tests can shrink it rather than waiting out a real 30s interval.
-    STANDBY_SWEEP_SECONDS = 30.0
-
     @logger.catch()
     def __init__(
         self,
@@ -133,20 +147,30 @@ class VMC:
         faults: FaultService,
         outputs: StatusOutputs,
         gate: DispenserProfileGate,
-        lease: MaintenanceLease,
+        in_maintenance: Callable[[], bool],
         availability: Callable[[], Availability | None],
         inventory: Callable[[], InventoryManager | None],
         recorder: Callable[[], object | None],
         dispense_factory: Callable[[SaleContext], DispenseCycle],
     ):
-        """VMC-reduction plan, Task 6: `controller/machine.py`'s `Machine`
-        is now the ONLY construction path -- every collaborator parameter
-        is required. `Machine` builds `tasks`/`escrow`/`refunds`/`faults`/
-        `outputs`/`gate`/`lease` itself and hands them in fully formed;
-        every closure inside each one that needs the live VMC (e.g.
-        `outputs.snapshot`, `faults.fsm_state`) is written by `Machine` as
-        `lambda *a: self.vmc.<method>(*a)`, so there is no circularity even
-        though `Machine` builds them before its own `self.vmc` exists.
+        """`controller/machine.py`'s `Machine` is the only construction
+        path -- every collaborator parameter above is required. `Machine`
+        builds `tasks`/`escrow`/`refunds`/`faults`/`outputs`/`gate` itself
+        and hands them in fully formed; every closure inside each one
+        that needs the live VMC (e.g. `outputs.snapshot`,
+        `faults.fsm_state`) is written by `Machine` as `lambda *a:
+        self.vmc.<method>(*a)`, so there is no circularity even though
+        `Machine` builds them before its own `self.vmc` exists.
+
+        `in_maintenance` is a zero-arg callable (`Machine` passes
+        `lambda: self.lease.hold is not None`) -- `deposit_funds` is its
+        only reader. The lease itself (its hold, idle timer, standby
+        sweep, and every FSM precondition it needs --
+        `begin_maintenance`/`begin_standby`/`end_maintenance`/
+        `take_over_maintenance`) lives entirely on the `MaintenanceLease`
+        collaborator, read and mutated by tests and routes as
+        `machine.lease`; the VMC never holds a reference to it at all,
+        only this one boolean read.
 
         `availability`/`inventory`/`recorder` are zero-arg callables
         (`Machine` passes `lambda: self.availability`/
@@ -157,7 +181,7 @@ class VMC:
         goes through `self._availability()`/`self._inventory()`/
         `self._recorder()` so it always sees whatever is current.
 
-        `dispense_factory` (Task 8) builds a fresh `DispenseCycle`
+        `dispense_factory` builds a fresh `DispenseCycle`
         (controller/dispense_cycle.py) for one sale's dispatch attempt --
         `Machine` builds it as a closure over itself carrying the
         dispatcher, gate, outputs, faults, recorder, and
@@ -193,11 +217,11 @@ class VMC:
         # EscrowLedger, controller/escrow_ledger.py) -- the FIFO ledger
         # behind the authoritative total. credit_escrow must always equal
         # round(sum(c.amount for c in escrow_credits), 2) — the two are
-        # never allowed to diverge (see _consume_credits_fifo's bug guard).
+        # never allowed to diverge (see EscrowLedger.consume_fifo's bug guard).
         # VMC.credit_escrow/escrow_credits below are the public read/write
         # surface over self._escrow.total/self._escrow.credits.
         self._escrow = escrow
-        # Task 8: the current in-flight dispense's DispenseCycle
+        # The current in-flight dispense's DispenseCycle
         # (controller/dispense_cycle.py), built fresh by `dispense_factory`
         # once per on_dispense_product call (one dispatch attempt per entry
         # into 'dispensing'). None whenever no dispatch is in flight. The
@@ -229,7 +253,7 @@ class VMC:
         # `self._inventory`/`self._availability`/`self._recorder` are
         # always the zero-arg callables `Machine` passed in (see the
         # __init__ docstring above) -- never a plain attribute assigned by
-        # a VMC-side `set_*` method, which no longer exists (Task 6).
+        # a VMC-side `set_*` method, which does not exist.
         self._inventory: Callable[[], InventoryManager | None] = inventory
         self._availability: Callable[[], Availability | None] = availability
         self._recorder: Callable[[], object | None] = recorder
@@ -241,14 +265,13 @@ class VMC:
         # `vmc.outputs.mqtt`/`.health`/etc. directly rather than a
         # VMC-private alias.
         self._outputs = outputs
-        # Maintenance lease lifecycle (system-tests design §2.2/§2.2a):
-        # the hold itself, its idle timer, and the standby session-liveness
-        # sweep (controller/maintenance_lease.py). Deliberately not part of
-        # any persisted snapshot -- see MaintenanceHold's docstring. Built
-        # by `Machine`; this VMC still reads `self._lease` internally
-        # (`begin_maintenance`, `deposit_funds`, ...) but no longer exposes
-        # a public `lease` property (Task 6 -- `machine.lease` instead).
-        self._lease = lease
+        # The maintenance lease itself (the
+        # `MaintenanceLease` collaborator) now lives entirely off the VMC,
+        # owned by `Machine` and read/mutated by tests and routes as
+        # `machine.lease`. `deposit_funds` is the VMC's one remaining
+        # lease-aware read, via this boolean callable -- see the __init__
+        # docstring above.
+        self._in_maintenance: Callable[[], bool] = in_maintenance
         # True for the duration of exactly one TestSaleRunner.run_test_sale
         # call. TestSaleRunner.run_test_sale checks this flag itself,
         # before `self._lease.test_run()` is ever entered, so a refused
@@ -259,7 +282,7 @@ class VMC:
         # TestSaleRunner.run_test_sale's own comments for why run_id
         # uniqueness alone does not do this.
         self._test_sale_in_progress: bool = False
-        # Observer hooks (Task 9, observers-and-test-sale-seams): every
+        # Observer hooks: every
         # FSM state transition and every sale-settled outcome is
         # broadcast to subscribers via subscribe_state_change/
         # subscribe_sale_settled, in subscription order, synchronously.
@@ -286,8 +309,8 @@ class VMC:
         # `Machine`, attached via `Machine.set_dispenser_profiles`; this
         # VMC still reads `self._gate` internally (`run_test_sale`'s
         # profile check, `on_dispense_product`, `clear_fault`'s closure)
-        # but no longer exposes a public `gate` property (Task 6 --
-        # `machine.gate` instead).
+        # but no longer exposes a public `gate` property --
+        # `machine.gate` instead.
         self._gate = gate
         # Refund protocol: request -> ack -> one retry -> terminal state
         # machine (controller/refund_protocol.py). Built by `Machine`.
@@ -326,7 +349,7 @@ class VMC:
 
     def cancel_timers(self) -> None:
         """Cancel the dispense cycle's timer and the session timeout. Call
-        during shutdown (`Machine.cancel_pending_tasks`, Task 6) -- the
+        during shutdown (`Machine.cancel_pending_tasks`) -- the
         remaining VMC-private pieces of what `cancel_pending_tasks` used to
         do before it moved to `Machine` entirely."""
         if self._cycle is not None:
@@ -336,7 +359,7 @@ class VMC:
     @property
     def outputs(self) -> StatusOutputs:
         """Read-only view of the FSM's outbound channel (VMC public
-        surface design, section 3; vmc-reduction plan, Task 2).
+        surface design, section 3).
         `vmc.outputs.mqtt`/`.health`/`.availability`/`.session_store`/
         `.display_controller` are read directly; mutation only ever
         happens through a `Machine` `set_*` method."""
@@ -353,7 +376,7 @@ class VMC:
         """Build a `SessionSnapshot` of the VMC's current live state.
 
         Public, read-only wrapper over `_snapshot` (VMC public surface
-        design, section 3, Task 2): added because a test needs to capture
+        design, section 3): added because a test needs to capture
         a genuine mid-dispense snapshot and persist it by hand (to boot a
         second VMC against it and simulate a crash) with no event loop
         attached anywhere in the test file -- the normal production path
@@ -427,7 +450,7 @@ class VMC:
     # `escrow_credits`. The setters only ever replace `total`/`credits` on
     # the ledger -- a direct
     # `vmc.credit_escrow = x` assignment still cannot touch `credits`,
-    # which is what lets the divergence guard in `_consume_credits_fifo`
+    # which is what lets the divergence guard in `EscrowLedger.consume_fifo`
     # keep working exactly as before this extraction.
 
     @property
@@ -439,11 +462,11 @@ class VMC:
         self._escrow.total = value
 
     @property
-    def escrow_credits(self) -> list[Credit]:
+    def escrow_credits(self) -> list:
         return self._escrow.credits
 
     @escrow_credits.setter
-    def escrow_credits(self, value: list[Credit]) -> None:
+    def escrow_credits(self, value: list) -> None:
         self._escrow.credits = value
 
     @property
@@ -573,8 +596,8 @@ class VMC:
         fallback in `start`) and for the no-terminal-report timeout
         (`_timed_out`) alike.
 
-        `cycle`'s own identity (review finding I2's `seq` counter,
-        replaced in Task 8) guards against a late failure from an
+        `cycle`'s own identity (replacing review finding I2's old `seq`
+        counter) guards against a late failure from an
         *earlier* sale's dispatch reaching here after that sale has
         already settled and a new sale has since reached 'dispensing':
         without this check, a delayed `CommandTimeout` for sale A (the
@@ -616,8 +639,8 @@ class VMC:
                 # Kept as its own outcome ("timeout"), distinct from
                 # "vend_failed", even though it runs through the same
                 # vend_failed/PAY-102 transition above (system-tests
-                # design §2.3; see TestSaleResult's docstring) --
-                # DispenseCycle._timed_out's own outcome string.
+                # design §2.3; see controller/test_sale.py's TestSaleResult
+                # docstring) -- DispenseCycle._timed_out's own outcome string.
                 self._notify_settled(sale, "timeout", None)
             else:
                 self._notify_settled(sale, "vend_failed", code.value)
@@ -677,11 +700,10 @@ class VMC:
             vend_log.info(f"DISPENSE COMPLETE: slot {slot}, product '{product_name}'")
             if self._sale is not None and self._sale.is_test:
                 # is_test lives on the sale (self._sale.is_test, set only
-                # by run_test_sale), not on the lease -- consulted here
-                # instead of self._lease.hold so a lease release or
-                # idle-timeout mid-run cannot flip this sale to production
-                # (system-tests design §2.3). Neither a `sale` row nor a
-                # `dispense` event is written; run_test_sale itself writes
+                # by run_test_sale), not on the maintenance lease -- so a
+                # lease release or idle-timeout mid-run cannot flip this
+                # sale to production (system-tests design §2.3). Neither a
+                # `sale` row nor a `dispense` event is written; run_test_sale itself writes
                 # the `test_run` event once it observes this outcome via
                 # the sale-settled notification below.
                 # DispenseCycle.record's own bookkeeping (clearing
@@ -740,14 +762,6 @@ class VMC:
         if sale is not None:
             self._notify_settled(sale, "vend_failed", code.value)
 
-    def _fire_and_forget(self, coro, *, persistent: bool = False) -> None:
-        """Run a coroutine on the attached loop without awaiting it.
-
-        Delegates to `self._tasks` (controller/task_runner.py) — see
-        `TaskRunner.fire_and_forget` for the actual behavior.
-        """
-        self._tasks.fire_and_forget(coro, persistent=persistent)
-
     def _schedule(
         self, delay_seconds, callback, *, label: str = ""
     ) -> asyncio.Task | None:
@@ -774,7 +788,7 @@ class VMC:
         """Send a message to the customer via the registered callback."""
         self._outputs.message(message)
 
-    # --- Observers (Task 9: observers and the test-sale seams) ---
+    # --- Observers (state-change and sale-settled subscriptions) ---
     #
     # Two independent subscriber lists: state-change (every FSM
     # transition) and sale-settled (one of the three terminal outcomes
@@ -969,7 +983,7 @@ class VMC:
         stays to choose again or is paid out is decided in _fail_vend.
 
         The restore must never reclassify money: it re-credits exactly the
-        per-method shares _consume_credits_fifo consumed for this sale
+        per-method shares `EscrowLedger.consume_fifo` consumed for this sale
         (pending_sale_shares), as separate Credits, not one blob of the
         current/default method. That is what stops a failed vend laundering
         cash into card (or any other method) in the sales ledger.
@@ -994,7 +1008,7 @@ class VMC:
         if shares is None:
             # Should be unreachable: on_vend_failed only runs from
             # dispensing, which is only entered right after
-            # _consume_credits_fifo sets pending_sale_shares. Guard, not a
+            # `EscrowLedger.consume_fifo` sets pending_sale_shares. Guard, not a
             # path — attribute to "unknown" rather than guess a method.
             price = product.price if product else 0.0
             logger.warning(
@@ -1127,7 +1141,7 @@ class VMC:
         if amount <= 0:
             logger.warning(f"Ignoring non-positive deposit: {amount}")
             return
-        if self._lease.hold is not None and payment_method != "test":
+        if self._in_maintenance() and payment_method != "test":
             # Payment is disabled for the whole lease (SVC-102 blocks it via
             # availability), so this only covers the race between the
             # disable command and a coin already in the mechanism -- still
@@ -1189,12 +1203,6 @@ class VMC:
         self.send_customer_message(
             f"${amount:.2f} deposited. Current balance: ${self.credit_escrow:.2f}."
         )
-
-    def _consume_credits_fifo(self, price: float) -> dict[str, float]:
-        """Thin delegate to EscrowLedger.consume_fifo, kept so process_payment
-        and its docstrings read as before. See controller/escrow_ledger.py
-        for the FIFO-consumption and divergence-guard logic."""
-        return self._escrow.consume_fifo(price)
 
     @logger.catch()
     def request_refund(self, reason: str = "admin"):
@@ -1269,93 +1277,32 @@ class VMC:
 
     # --- Maintenance Lease (system-tests design §2.2) ---
     #
-    # The lease lifecycle itself (the hold, its idle timer, the standby
-    # sweep, and grant/release/takeover/run accounting) lives in
-    # controller/maintenance_lease.py's MaintenanceLease, constructed as
-    # self._lease in __init__. What stays here is the FSM/escrow
-    # preconditions (begin_maintenance/begin_standby), the refunds,
-    # run_test_sale itself, and the SVC-102 raise/clear wired to the lease
-    # as on_granted/on_released callbacks. The lease itself is no longer a
-    # VMC property: the Machine composition root (controller/machine.py)
-    # owns it, and tests/routes read it as `machine.lease` and mutate only
-    # through a VMC method (`begin_maintenance`, `end_maintenance`,
-    # `take_over_maintenance`, ...) or, where the test is deliberately
-    # exercising the lease itself rather than bypassing the VMC, through a
-    # method on `machine.lease` directly (e.g. `machine.lease.release(...)`).
-    # `maintenance_hold` stays here as the VMC's own convenience property
-    # since routes (`web_interface/context.py`) read it by that name — until
-    # the lease-preconditions task moves `begin_*`/`end_*`/`take_over_*`
-    # onto `MaintenanceLease` itself.
+    # The lease lifecycle (the hold, its idle timer, the standby sweep,
+    # grant/release/takeover/run accounting) AND every FSM precondition it
+    # needs (`begin_maintenance`/`begin_standby`/`end_maintenance`/
+    # `take_over_maintenance`) now live entirely on the `MaintenanceLease`
+    # collaborator -- the Machine composition root (controller/machine.py)
+    # owns it, and tests/routes
+    # read and mutate it as `machine.lease` directly. The one FSM operation
+    # the lease cannot do for itself -- making the machine idle (refund the
+    # right amount, cancel a live sale, cancel the session timer) -- stays
+    # here as `make_idle_for_service`, which `MaintenanceLease.begin_standby`
+    # calls back through the `make_idle_for_service` callable `Machine`
+    # wires in.
 
-    @property
-    def maintenance_hold(self) -> MaintenanceHold | None:
-        """Read-only view of the current lease, if any. Never persisted."""
-        return self._lease.hold
+    def make_idle_for_service(self) -> bool:
+        """Make the machine idle for `MaintenanceLease.begin_standby`
+        (system-tests design §2.2a): the one FSM operation the lease needs
+        and cannot do itself.
 
-    def _release_maintenance_hold(self, by: str) -> None:
-        self._lease.release(by)
-
-    def _arm_maintenance_idle_timer(self) -> None:
-        self._lease.arm_idle_timer()
-
-    def _maintenance_idle_expired(self) -> None:
-        self._lease.idle_expired()
-
-    def _arm_maintenance_sweep(self) -> None:
-        self._lease.arm_sweep()
-
-    def _maintenance_sweep_tick(self) -> None:
-        self._lease.sweep_tick()
-
-    def begin_maintenance(
-        self, user_id: str, session_id: str
-    ) -> tuple[bool, str | None]:
-        """Grant the maintenance lease.
-
-        Returns ``(granted, reason)``: ``reason`` is ``None`` when granted,
-        and a short human-readable refusal ("machine is mid-sale", "held by
-        <id>") otherwise -- so a caller (the Tests level route, added by a
-        later task) can tell the operator why without re-deriving it from
-        VMC state. Granting requires the FSM to be idle, escrow to be zero
-        (a mid-sale credit is a refusal even while idle -- the sale just
-        hasn't been selected/dispensed yet), and no lease already held.
-        """
-        if self.state != "idle":
-            return False, "machine is mid-sale"
-        if not self._escrow.is_empty_within_tolerance:
-            return False, "credit is still on the machine"
-        if self._lease.hold is not None:
-            return False, f"held by {self._lease.hold.holder_user_id}"
-        self._lease.grant(user_id, session_id, standby=False)
-        return True, None
-
-    def begin_standby(self, user_id: str, session_id: str) -> tuple[bool, str | None]:
-        """Take the machine out of service, making it idle first if needed
-        (system-tests design §2.2a).
-
-        Unlike ``begin_maintenance``, standby does not require the machine
-        to already be idle with zero escrow -- it gets there itself:
-        whatever credit is on the machine is refunded (``reason=
-        "maintenance"``) and any live customer session is cancelled before
-        the lease is granted with ``standby=True`` (no idle timer; the
-        session sweep is armed instead).
-
-        Refused exactly like ``begin_maintenance``'s two busy cases --
-        ``"vend finishing, tap again"`` while ``dispensing`` (a running
-        motor is never aborted), and ``"held by <id>"`` when another
-        session already holds the lease. If the caller's own session
-        already holds an (opportunistic) lease it is upgraded to standby
-        in place rather than replaced.
+        Refuses only while `dispensing` (a running motor is never
+        aborted) -- returns False and touches nothing. Otherwise refunds
+        whatever credit is on the machine (``reason="maintenance"``),
+        cancels a live customer sale (`interacting_with_user`) or the idle
+        session timer (`idle`), and returns True.
         """
         if self.state == "dispensing":
-            return False, "vend finishing, tap again"
-        hold = self._lease.hold
-        if hold is not None and hold.holder_session_id != session_id:
-            return False, f"held by {hold.holder_user_id}"
-        if hold is not None:
-            self._lease.upgrade_to_standby(user_id, session_id)
-            return True, None
-
+            return False
         if self.state == "interacting_with_user":
             # request_refund is a no-op at zero escrow (just a customer
             # message), so this is safe to call unconditionally; it also
@@ -1371,40 +1318,7 @@ class VMC:
         elif self.state == "error":
             if not self._escrow.is_empty_within_tolerance:
                 self.request_refund(reason="maintenance")
-
-        self._lease.grant(user_id, session_id, standby=True)
-        return True, None
-
-    def end_maintenance(self, session_id: str) -> bool:
-        """Release the lease for its holder's session only.
-
-        Returns False when there is no lease, or ``session_id`` is not its
-        holder (refused either way). Returns True whenever the request is
-        accepted -- either released immediately (``runs_in_flight == 0``),
-        or deferred via ``release_requested`` for the last in-flight run to
-        perform (`MaintenanceLease.run_finished`).
-        """
-        return self._lease.request_release(session_id)
-
-    def take_over_maintenance(
-        self, user_id: str, session_id: str
-    ) -> tuple[bool, str | None]:
-        """Transfer an idle, run-free lease to a new holder.
-
-        Permitted only when no run is in flight and the lease has been idle
-        (since ``last_activity_at``) for at least
-        ``MAINTENANCE_TAKEOVER_IDLE_SECONDS``; records who took it over by
-        overwriting the hold's holder fields in place. A standby lease
-        (§2.2a) stays standby across the takeover -- the sweep is re-armed
-        for the new holder's session rather than the idle timer.
-        """
-        return self._lease.take_over(user_id, session_id)
-
-    def _maintenance_run_started(self) -> None:
-        self._lease.run_started()
-
-    def _maintenance_run_finished(self) -> None:
-        self._lease.run_finished()
+        return True
 
     def find_product(self, sku: str) -> tuple[int | None, Product | None]:
         """Return ``(button_index, product)`` for `sku` in the live catalog,
@@ -1412,10 +1326,10 @@ class VMC:
         ``self.products`` (not ``list.index``, which compares by value and
         could pick the wrong entry for two otherwise-identical products).
 
-        Public (Task 9: observers and the test-sale seams) -- was
-        `_find_product_by_sku`, renamed with no change in behavior so
-        `run_test_sale` (and, after Task 10, `TestSaleRunner`) can call it
-        without reaching into a VMC-private method."""
+        Public -- was `_find_product_by_sku`, renamed with no change in
+        behavior so `controller/test_sale.py`'s `TestSaleRunner.
+        run_test_sale` can call it without reaching into a VMC-private
+        method."""
         for index, product in enumerate(self.products):
             if product.sku == sku:
                 return index, product
@@ -1423,7 +1337,7 @@ class VMC:
 
     def begin_test_sale(self, product: Product) -> bool:
         """Seed and select a simulated sale for `product` (system-tests
-        design §2.3, Task 9). Refuses a second, overlapping call outright:
+        design §2.3). Refuses a second, overlapping call outright:
         there is no ``await`` between the guard check and setting the
         flag, so under asyncio's single-threaded event loop the
         check-and-set is atomic -- no other coroutine can run between them
@@ -1487,7 +1401,7 @@ class VMC:
 
     def end_test_sale(self) -> None:
         """Release `begin_test_sale`'s guard and clean up after one
-        simulated sale, whatever the outcome (Task 9).
+        simulated sale, whatever the outcome.
 
         Still `dispensing` means this call's own task was cancelled (or
         is otherwise returning) while the hardware dispense is still
@@ -1647,7 +1561,7 @@ class VMC:
             self.send_customer_message(
                 "Sufficient funds received. Processing your payment..."
             )
-            self._sale = self._sale.with_(shares=self._consume_credits_fifo(price))
+            self._sale = self._sale.with_(shares=self._escrow.consume_fifo(price))
             self.credit_escrow -= price
             logger.debug(
                 f"Deducted price from escrow. New escrow: {self.credit_escrow:.2f} "
@@ -1792,7 +1706,7 @@ class VMC:
             sku = self.selected_product.sku
             if inventory.is_tracked(sku):
                 inventory.decrement(sku, persist=False)
-                self._fire_and_forget(inventory.save_async(), persistent=True)
+                self._tasks.fire_and_forget(inventory.save_async(), persistent=True)
                 logger.info(
                     f"Inventory for {self.selected_product.name} updated: {inventory.get_count(sku)} remaining."
                 )

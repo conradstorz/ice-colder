@@ -1024,9 +1024,10 @@ class TestMaintenanceHero:
         context.set_availability(None)
 
     def test_status_shows_out_of_service_with_holder_name(self, maintenance_client):
-        vmc = context.vmc_instance
         owner = context.access_store.owner()
-        granted, reason = vmc.begin_maintenance(owner.id, "some-other-session")
+        granted, reason = context.machine_instance.lease.begin_maintenance(
+            owner.id, "some-other-session"
+        )
         assert granted, reason
 
         resp = maintenance_client.get("/status")

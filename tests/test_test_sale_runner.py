@@ -44,7 +44,7 @@ async def test_dispensed_sale_returns_outcome_and_writes_ok_test_run_row(tmp_pat
     rec = FakeEventRecorder()
     machine.set_event_recorder(rec)
     product = vmc.products[0]
-    granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+    granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
     assert granted is True
 
     task = asyncio.get_running_loop().create_task(
@@ -82,7 +82,7 @@ async def test_jam_returns_vend_failed_with_code_and_failed_status(tmp_path):
     rec = FakeEventRecorder()
     machine.set_event_recorder(rec)
     product = vmc.products[0]  # ICE-1, bagged_ice -- jam maps to ICE-401
-    granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+    granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
     assert granted is True
 
     task = asyncio.get_running_loop().create_task(
@@ -114,7 +114,7 @@ async def test_dispense_timeout_returns_timeout_with_no_fault_code(tmp_path):
     rec = FakeEventRecorder()
     machine.set_event_recorder(rec)
     product = vmc.products[0]
-    granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+    granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
     assert granted is True
 
     task = asyncio.get_running_loop().create_task(
@@ -149,7 +149,7 @@ async def test_cancelled_mid_vend_leaves_sale_as_test_and_skips_record_sale(tmp_
     rec = FakeEventRecorder()
     machine.set_event_recorder(rec)
     product = vmc.products[0]
-    granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+    granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
     assert granted is True
 
     task = asyncio.get_running_loop().create_task(
@@ -191,7 +191,7 @@ async def test_second_concurrent_call_refused_before_lease_bracket_leaves_idle_c
     machine.set_event_recorder(rec)
     product = vmc.products[0]
     other = vmc.products[1]
-    granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+    granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
     assert granted is True
 
     task1 = asyncio.get_running_loop().create_task(
@@ -236,7 +236,7 @@ async def test_second_concurrent_call_raises_already_in_progress(tmp_path):
     machine.set_event_recorder(rec)
     product = vmc.products[0]
     other = vmc.products[1]
-    granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+    granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
     assert granted is True
 
     task1 = asyncio.get_running_loop().create_task(

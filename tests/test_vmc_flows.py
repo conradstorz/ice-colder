@@ -2297,24 +2297,122 @@ async def test_status_republished_on_mqtt_connect():
     machine.cancel_pending_tasks()
 
 
+# --- Task 11: VMC.make_idle_for_service (lease-preconditions) -----------
+
+
+class TestMakeIdleForService:
+    """VMC.make_idle_for_service -- the one FSM operation
+    `MaintenanceLease.begin_standby` needs and cannot do itself (refund
+    the right amount, cancel a live sale or the idle session timer).
+    Exercised directly here, one state at a time, independent of
+    begin_standby -- see tests/test_maintenance_standby.py for the
+    higher-level begin_standby tests that exercise the same branches
+    through the lease.
+    """
+
+    async def test_refuses_while_dispensing_and_touches_nothing(self):
+        machine = make_machine2()
+        vmc = machine.vmc
+        machine.attach_to_loop(asyncio.get_running_loop())
+        client = RecordingClient()
+        machine.set_mqtt_client(client)
+        vmc.machine.set_state("dispensing")
+        vmc.credit_escrow = 1.00
+
+        result = vmc.make_idle_for_service()
+
+        assert result is False
+        assert vmc.state == "dispensing"
+        assert vmc.credit_escrow == 1.00
+        assert client.refund_commands() == []
+        machine.cancel_pending_tasks()
+
+    async def test_interacting_with_user_refunds_and_cancels_sale(self):
+        machine = make_machine2()
+        vmc = machine.vmc
+        machine.attach_to_loop(asyncio.get_running_loop())
+        client = RecordingClient()
+        machine.set_mqtt_client(client)
+        vmc.machine.set_state("interacting_with_user")
+        vmc.selected_product = vmc.products[0]
+        vmc.credit_escrow = 1.00
+
+        result = vmc.make_idle_for_service()
+        await asyncio.sleep(0)  # let the fire-and-forget refund publish run
+
+        assert result is True
+        assert vmc.state == "idle"
+        assert vmc.credit_escrow == 0.0
+        assert vmc.selected_product is None
+        refunds = client.refund_commands()
+        assert len(refunds) == 1
+        assert refunds[0].amount == 1.00
+        assert refunds[0].reason == "maintenance"
+        machine.cancel_pending_tasks()
+
+    async def test_idle_with_credit_refunds_and_cancels_session_timer(self):
+        runner = FakeTaskRunner()
+        machine = make_machine2(tasks=runner)
+        vmc = machine.vmc
+        machine.attach_to_loop(asyncio.get_running_loop())
+        client = RecordingClient()
+        machine.set_mqtt_client(client)
+        assert vmc.state == "idle"
+        vmc.deposit_funds(2.00, payment_method="cash_coin")
+        assert any(c.label == "session_timeout" for c in runner.scheduled)
+
+        result = vmc.make_idle_for_service()
+        await asyncio.sleep(0)
+
+        assert result is True
+        assert vmc.state == "idle"
+        assert vmc.credit_escrow == 0.0
+        assert not any(c.label == "session_timeout" for c in runner.scheduled)
+        refunds = client.refund_commands()
+        assert len(refunds) == 1
+        assert refunds[0].amount == 2.00
+        assert refunds[0].reason == "maintenance"
+        machine.cancel_pending_tasks()
+
+    async def test_error_with_credit_refunds(self):
+        machine = make_machine2()
+        vmc = machine.vmc
+        machine.attach_to_loop(asyncio.get_running_loop())
+        client = RecordingClient()
+        machine.set_mqtt_client(client)
+        vmc.machine.set_state("error")
+        vmc.credit_escrow = 1.25
+
+        result = vmc.make_idle_for_service()
+        await asyncio.sleep(0)
+
+        assert result is True
+        assert vmc.state == "error"
+        assert vmc.credit_escrow == 0.0
+        refunds = client.refund_commands()
+        assert len(refunds) == 1
+        assert refunds[0].amount == 1.25
+        assert refunds[0].reason == "maintenance"
+        machine.cancel_pending_tasks()
+
+
 # --- Task 10: the maintenance lease (system-tests design §2.2) ---
 
 
 class TestMaintenanceLease:
     async def test_granted_when_idle_with_zero_escrow(self):
         machine = make_machine2()
-        vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
 
-        granted, reason = vmc.begin_maintenance("user-1", "sess-1")
+        granted, reason = machine.lease.begin_maintenance("user-1", "sess-1")
 
         assert granted is True
         assert reason is None
-        assert vmc.maintenance_hold is not None
-        assert vmc.maintenance_hold.holder_user_id == "user-1"
-        assert vmc.maintenance_hold.holder_session_id == "sess-1"
-        assert vmc.maintenance_hold.runs_in_flight == 0
-        assert vmc.maintenance_hold.release_requested is False
+        assert machine.maintenance_hold is not None
+        assert machine.maintenance_hold.holder_user_id == "user-1"
+        assert machine.maintenance_hold.holder_session_id == "sess-1"
+        assert machine.maintenance_hold.runs_in_flight == 0
+        assert machine.maintenance_hold.release_requested is False
 
     async def test_refused_when_fsm_not_idle(self):
         machine = make_machine2()
@@ -2322,11 +2420,11 @@ class TestMaintenanceLease:
         machine.attach_to_loop(asyncio.get_running_loop())
         vmc.machine.set_state("interacting_with_user")
 
-        granted, reason = vmc.begin_maintenance("user-1", "sess-1")
+        granted, reason = machine.lease.begin_maintenance("user-1", "sess-1")
 
         assert granted is False
         assert reason == "machine is mid-sale"
-        assert vmc.maintenance_hold is None
+        assert machine.maintenance_hold is None
 
     async def test_refused_when_escrow_nonzero_even_while_idle(self):
         machine = make_machine2()
@@ -2335,38 +2433,37 @@ class TestMaintenanceLease:
         assert vmc.state == "idle"
         vmc.credit_escrow = 1.00
 
-        granted, reason = vmc.begin_maintenance("user-1", "sess-1")
+        granted, reason = machine.lease.begin_maintenance("user-1", "sess-1")
 
         assert granted is False
         assert "credit" in reason
-        assert vmc.maintenance_hold is None
+        assert machine.maintenance_hold is None
 
     async def test_refused_when_lease_exists_names_holder(self):
         machine = make_machine2()
-        vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        granted1, _ = vmc.begin_maintenance("owner-1", "sess-a")
+        granted1, _ = machine.lease.begin_maintenance("owner-1", "sess-a")
         assert granted1 is True
 
-        granted2, reason2 = vmc.begin_maintenance("tech-2", "sess-b")
+        granted2, reason2 = machine.lease.begin_maintenance("tech-2", "sess-b")
 
         assert granted2 is False
         assert "owner-1" in reason2
-        assert vmc.maintenance_hold.holder_user_id == "owner-1"
+        assert machine.maintenance_hold.holder_user_id == "owner-1"
 
     async def test_svc_102_raised_on_grant_and_cleared_on_release(self):
         machine = make_machine2()
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
 
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
         assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
 
-        released = vmc.end_maintenance("sess-1")
+        released = machine.lease.end_maintenance("sess-1")
         assert released is True
         assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
-        assert vmc.maintenance_hold is None
+        assert machine.maintenance_hold is None
 
     async def test_generic_clear_fault_cannot_clear_svc_102_while_lease_held(self):
         """Copilot review (PR 22): the generic Health > Faults clear route
@@ -2382,7 +2479,7 @@ class TestMaintenanceLease:
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
 
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
         assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
 
@@ -2390,11 +2487,11 @@ class TestMaintenanceLease:
 
         assert cleared is False
         assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
-        assert vmc.maintenance_hold is not None
-        assert vmc.maintenance_hold.holder_session_id == "sess-1"
+        assert machine.maintenance_hold is not None
+        assert machine.maintenance_hold.holder_session_id == "sess-1"
 
         # The real release path still works once the lease itself is ended.
-        released = vmc.end_maintenance("sess-1")
+        released = machine.lease.end_maintenance("sess-1")
         assert released is True
         assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
 
@@ -2402,7 +2499,7 @@ class TestMaintenanceLease:
         vmc, monitor, avail, published, machine = _wired_vmc()
         await asyncio.sleep(0)  # let any initial publish settle
 
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
         await asyncio.sleep(0)  # let the fire-and-forget publish task run
 
@@ -2411,7 +2508,7 @@ class TestMaintenanceLease:
         assert enable_cmds, "expected cmd/payment/enable to have been published"
         assert enable_cmds[-1].accept is False
 
-        released = vmc.end_maintenance("sess-1")
+        released = machine.lease.end_maintenance("sess-1")
         assert released is True
         await asyncio.sleep(0)
 
@@ -2427,7 +2524,7 @@ class TestMaintenanceLease:
         machine.set_mqtt_client(client)
         rec = FakeEventRecorder()
         machine.set_event_recorder(rec)
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
         vmc.deposit_funds(1.00, payment_method="cash_coin")
@@ -2457,35 +2554,34 @@ class TestMaintenanceLease:
 
     async def test_end_maintenance_by_non_holder_is_refused(self):
         machine = make_machine2()
-        vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        granted, _ = vmc.begin_maintenance("user-1", "sess-a")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-a")
         assert granted is True
 
-        result = vmc.end_maintenance("sess-b")
+        result = machine.lease.end_maintenance("sess-b")
 
         assert result is False
-        assert vmc.maintenance_hold is not None
-        assert vmc.maintenance_hold.holder_session_id == "sess-a"
+        assert machine.maintenance_hold is not None
+        assert machine.maintenance_hold.holder_session_id == "sess-a"
 
     async def test_release_with_run_in_flight_defers_then_settles(self):
         machine = make_machine2()
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        granted, _ = vmc.begin_maintenance("user-1", "sess-a")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-a")
         assert granted is True
         machine.lease.run_started()
-        assert vmc.maintenance_hold.runs_in_flight == 1
+        assert machine.maintenance_hold.runs_in_flight == 1
 
-        result = vmc.end_maintenance("sess-a")
+        result = machine.lease.end_maintenance("sess-a")
 
         assert result is True
-        assert vmc.maintenance_hold is not None  # not released yet
-        assert vmc.maintenance_hold.release_requested is True
+        assert machine.maintenance_hold is not None  # not released yet
+        assert machine.maintenance_hold.release_requested is True
 
         machine.lease.run_finished()
 
-        assert vmc.maintenance_hold is None
+        assert machine.maintenance_hold is None
         assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
 
     async def test_idle_timer_never_releases_with_run_in_flight(self):
@@ -2498,23 +2594,23 @@ class TestMaintenanceLease:
         machine = make_machine2(tasks=runner)
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        granted, _ = vmc.begin_maintenance("user-1", "sess-a")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-a")
         assert granted is True
         machine.lease.run_started()
-        vmc.maintenance_hold.last_activity_at -= (
-            vmc.MAINTENANCE_IDLE_TIMEOUT_SECONDS + 1
+        machine.maintenance_hold.last_activity_at -= (
+            machine.lease.MAINTENANCE_IDLE_TIMEOUT_SECONDS + 1
         )
 
         runner.fire("maintenance_idle")
 
         # The timer fired, but a run is in flight: it must defer, not release.
-        assert vmc.maintenance_hold is not None
-        assert vmc.maintenance_hold.release_requested is True
+        assert machine.maintenance_hold is not None
+        assert machine.maintenance_hold.release_requested is True
         assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
 
         machine.lease.run_finished()
 
-        assert vmc.maintenance_hold is None
+        assert machine.maintenance_hold is None
 
     async def test_idle_timer_releases_lease_when_no_runs_in_flight(self):
         # Same deterministic mechanism, but the positive case: idle past the
@@ -2527,20 +2623,20 @@ class TestMaintenanceLease:
         vmc, monitor, avail, published, machine = _wired_vmc(tasks=runner)
         await asyncio.sleep(0)  # let any initial publish settle
 
-        granted, _ = vmc.begin_maintenance("user-1", "sess-a")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-a")
         assert granted is True
         await asyncio.sleep(0)
         assert avail.payment_enabled is False
         assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
 
-        vmc.maintenance_hold.last_activity_at -= (
-            vmc.MAINTENANCE_IDLE_TIMEOUT_SECONDS + 1
+        machine.maintenance_hold.last_activity_at -= (
+            machine.lease.MAINTENANCE_IDLE_TIMEOUT_SECONDS + 1
         )
 
         runner.fire("maintenance_idle")
         await asyncio.sleep(0)  # let the fire-and-forget publish task run
 
-        assert vmc.maintenance_hold is None
+        assert machine.maintenance_hold is None
         assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
         assert avail.payment_enabled is True
         enable_cmds = [p for t, p in published if t == "cmd/payment/enable"]
@@ -2554,28 +2650,27 @@ class TestMaintenanceLease:
         # CancelledError (a BaseException) included, but nothing proved that
         # until now.
         machine = make_machine2()
-        vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        granted, _ = vmc.begin_maintenance("user-1", "sess-a")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-a")
         assert granted is True
 
         entered = asyncio.Event()
 
         async def run():
             with machine.lease.test_run():
-                assert vmc.maintenance_hold.runs_in_flight == 1
+                assert machine.maintenance_hold.runs_in_flight == 1
                 entered.set()
                 await asyncio.sleep(3600)  # never elapses; cancelled below
 
         task = asyncio.get_running_loop().create_task(run())
         await entered.wait()
-        assert vmc.maintenance_hold.runs_in_flight == 1
+        assert machine.maintenance_hold.runs_in_flight == 1
 
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        assert vmc.maintenance_hold.runs_in_flight == 0
+        assert machine.maintenance_hold.runs_in_flight == 0
 
     async def test_concurrent_runs_release_once_on_last_settle(self):
         # Two genuinely overlapping runs (two tasks both suspended inside
@@ -2590,7 +2685,7 @@ class TestMaintenanceLease:
         # what makes a stray extra release call harmless.
         vmc, monitor, avail, published, machine = _wired_vmc()
         await asyncio.sleep(0)
-        granted, _ = vmc.begin_maintenance("user-1", "sess-a")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-a")
         assert granted is True
         await asyncio.sleep(0)
         assert avail.payment_enabled is False
@@ -2609,24 +2704,24 @@ class TestMaintenanceLease:
 
         t1 = asyncio.get_running_loop().create_task(run(gate1))
         await asyncio.sleep(0)
-        assert vmc.maintenance_hold.runs_in_flight == 1
+        assert machine.maintenance_hold.runs_in_flight == 1
 
         t2 = asyncio.get_running_loop().create_task(run(gate2))
         await asyncio.sleep(0)
-        assert vmc.maintenance_hold.runs_in_flight == 2
+        assert machine.maintenance_hold.runs_in_flight == 2
 
         # Request release while both runs are in flight: must defer.
-        result = vmc.end_maintenance("sess-a")
+        result = machine.lease.end_maintenance("sess-a")
         assert result is True
-        assert vmc.maintenance_hold is not None
-        assert vmc.maintenance_hold.release_requested is True
+        assert machine.maintenance_hold is not None
+        assert machine.maintenance_hold.release_requested is True
 
         gate1.set()
         await t1
         # Only one of the two runs has settled: the lease must still be
         # held and payment must still be disabled.
-        assert vmc.maintenance_hold is not None
-        assert vmc.maintenance_hold.runs_in_flight == 1
+        assert machine.maintenance_hold is not None
+        assert machine.maintenance_hold.runs_in_flight == 1
         assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
         assert avail.payment_enabled is False
 
@@ -2634,7 +2729,7 @@ class TestMaintenanceLease:
         await t2
         await asyncio.sleep(0)  # let the release's fire-and-forget publish run
 
-        assert vmc.maintenance_hold is None
+        assert machine.maintenance_hold is None
         assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
         assert avail.payment_enabled is True
         enable_true = [
@@ -2656,57 +2751,53 @@ class TestMaintenanceLease:
 
     async def test_takeover_refused_with_run_in_flight(self):
         machine = make_machine2()
-        vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        vmc.begin_maintenance("user-1", "sess-a")
+        machine.lease.begin_maintenance("user-1", "sess-a")
         machine.lease.run_started()
 
-        granted, reason = vmc.take_over_maintenance("user-2", "sess-b")
+        granted, reason = machine.lease.take_over_maintenance("user-2", "sess-b")
 
         assert granted is False
-        assert vmc.maintenance_hold.holder_user_id == "user-1"
+        assert machine.maintenance_hold.holder_user_id == "user-1"
         machine.lease.run_finished()
 
     async def test_takeover_refused_before_60s_idle(self):
         machine = make_machine2()
-        vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        vmc.begin_maintenance("user-1", "sess-a")
+        machine.lease.begin_maintenance("user-1", "sess-a")
 
-        granted, reason = vmc.take_over_maintenance("user-2", "sess-b")
+        granted, reason = machine.lease.take_over_maintenance("user-2", "sess-b")
 
         assert granted is False
         assert "idle" in reason
-        assert vmc.maintenance_hold.holder_user_id == "user-1"
+        assert machine.maintenance_hold.holder_user_id == "user-1"
 
     async def test_takeover_permitted_after_60s_idle_records_who(self):
         machine = make_machine2()
-        vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        vmc.begin_maintenance("user-1", "sess-a")
-        vmc.maintenance_hold.last_activity_at -= (
-            vmc.MAINTENANCE_TAKEOVER_IDLE_SECONDS + 1
+        machine.lease.begin_maintenance("user-1", "sess-a")
+        machine.maintenance_hold.last_activity_at -= (
+            machine.lease.MAINTENANCE_TAKEOVER_IDLE_SECONDS + 1
         )
 
-        granted, reason = vmc.take_over_maintenance("user-2", "sess-b")
+        granted, reason = machine.lease.take_over_maintenance("user-2", "sess-b")
 
         assert granted is True
         assert reason is None
-        assert vmc.maintenance_hold.holder_user_id == "user-2"
-        assert vmc.maintenance_hold.holder_session_id == "sess-b"
+        assert machine.maintenance_hold.holder_user_id == "user-2"
+        assert machine.maintenance_hold.holder_session_id == "sess-b"
 
     async def test_failed_run_still_decrements_runs_in_flight(self):
         machine = make_machine2()
-        vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        vmc.begin_maintenance("user-1", "sess-a")
+        machine.lease.begin_maintenance("user-1", "sess-a")
 
         with pytest.raises(ValueError):
             with machine.lease.test_run():
-                assert vmc.maintenance_hold.runs_in_flight == 1
+                assert machine.maintenance_hold.runs_in_flight == 1
                 raise ValueError("simulated run failure")
 
-        assert vmc.maintenance_hold.runs_in_flight == 0
+        assert machine.maintenance_hold.runs_in_flight == 0
 
 
 def _test_run_machine(
@@ -2779,7 +2870,7 @@ class TestRunTestSale:
         """Reaches deposit_funds's lease branch (Task 10 + this task's
         `and payment_method != "test"` exception)."""
         machine, vmc, rec, client = _test_run_vmc()
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
         # A stray non-"test" credit during the lease is still refunded,
@@ -2804,7 +2895,7 @@ class TestRunTestSale:
         branch, its `if self.sale.is_test:` arm -- the real completion
         handler, not a stub."""
         machine, vmc, rec, client = _test_run_vmc()
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
         task = asyncio.get_running_loop().create_task(
@@ -2852,7 +2943,7 @@ class TestRunTestSale:
         still treat this as a test sale with no lease at all."""
         machine, rec, client = _test_run_machine()
         vmc = machine.vmc
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
         task = asyncio.get_running_loop().create_task(
@@ -2884,7 +2975,7 @@ class TestRunTestSale:
         run_test_sale's own task while it awaits the hardware -- the
         hardware report is still to come."""
         machine, vmc, rec, client = _test_run_vmc()
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
         task = asyncio.get_running_loop().create_task(
             machine.test_sales.run_test_sale("ICE-1")
@@ -2942,7 +3033,7 @@ class TestRunTestSale:
                 Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0, kind="ice")
             ]
         )
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
         task = asyncio.get_running_loop().create_task(
@@ -2995,7 +3086,7 @@ class TestRunTestSale:
         recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
         machine.set_event_recorder(recorder)
 
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
         task = asyncio.get_running_loop().create_task(
             machine.test_sales.run_test_sale("ICE-1")
@@ -3010,7 +3101,7 @@ class TestRunTestSale:
         recorder.flush()
         assert recorder.get_summary(24)["vends_failed"] == 0
 
-        released = vmc.end_maintenance("sess-1")
+        released = machine.lease.end_maintenance("sess-1")
         assert released is True
 
         # A real (non-test) failed vend on the other SKU still moves it.
@@ -3029,7 +3120,7 @@ class TestRunTestSale:
         the DispenserOutcome-driven vend_failed path above."""
         machine, rec, client = _test_run_machine(tasks=FakeTaskRunner())
         vmc = machine.vmc
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
         task = asyncio.get_running_loop().create_task(
@@ -3075,7 +3166,7 @@ class TestRunTestSale:
         vmc = machine.vmc
         dispatcher = machine.command_dispatcher
         dispatcher.fail_with = CommandTimeout("vending", "dispense")
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
         task = asyncio.get_running_loop().create_task(
@@ -3095,8 +3186,8 @@ class TestRunTestSale:
         # The dispense_timeout timer armed by DispenseCycle.start is
         # cancelled on this (earlier, dispatcher-level) failure path too.
         assert not any(c.label == "dispense_timeout" for c in machine.tasks.scheduled)
-        assert vmc.maintenance_hold is not None
-        assert vmc.maintenance_hold.runs_in_flight == 0
+        assert machine.maintenance_hold is not None
+        assert machine.maintenance_hold.runs_in_flight == 0
 
     async def test_production_sale_immediately_after_test_sale_records_normally(self):
         """Part 3's guarantee still holds right after a test sale on the
@@ -3104,7 +3195,7 @@ class TestRunTestSale:
         method shares, catching a regression here rather than in part 3's
         own tests."""
         machine, vmc, rec, client = _test_run_vmc()
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
         task = asyncio.get_running_loop().create_task(
@@ -3119,9 +3210,9 @@ class TestRunTestSale:
         assert test_result.outcome == "dispensed"
         assert rec.sales == []  # the test sale itself recorded nothing
 
-        released = vmc.end_maintenance("sess-1")
+        released = machine.lease.end_maintenance("sess-1")
         assert released is True
-        assert vmc.maintenance_hold is None
+        assert machine.maintenance_hold is None
 
         vmc.deposit_funds(1.00, payment_method="cash_coin")
         vmc.deposit_funds(1.50, payment_method="card")
@@ -3152,7 +3243,7 @@ class TestRunTestSale:
         dispatcher call, not inferred from state."""
         machine, rec, client = _test_run_machine()
         vmc = machine.vmc
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
         task = asyncio.get_running_loop().create_task(
@@ -3220,7 +3311,7 @@ class TestRunTestSale:
         machine, rec, client = _test_run_machine()
         vmc = machine.vmc
         machine.set_session_store(SessionStore(store_path))
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
         task = asyncio.get_running_loop().create_task(
@@ -3380,7 +3471,7 @@ class TestRunTestSaleRunContext:
         (mutation proof for THAT test lives on it already, above).
         """
         machine, vmc, rec, client = _test_run_vmc()
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
         task = asyncio.get_running_loop().create_task(
@@ -3415,7 +3506,7 @@ class TestRunTestSaleRunContext:
         mock), by firing the armed "dispense_timeout" timer."""
         machine, rec, client = _test_run_machine(tasks=FakeTaskRunner())
         vmc = machine.vmc
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
         task = asyncio.get_running_loop().create_task(
@@ -3438,7 +3529,7 @@ class TestRunTestSaleRunContext:
         must keep working unchanged -- reaches run_test_sale's keyword-only
         defaults directly."""
         machine, vmc, rec, client = _test_run_vmc()
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
         task = asyncio.get_running_loop().create_task(
@@ -3489,7 +3580,7 @@ class TestRunTestSaleRunContext:
         recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
         machine.set_event_recorder(recorder)
 
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
         task = asyncio.get_running_loop().create_task(
@@ -3588,7 +3679,7 @@ class TestTestSaleAvailabilityExemption:
     """
 
     async def test_run_test_sale_succeeds_with_real_availability_during_lease(self):
-        """THE headline defect. Reaches: VMC.begin_maintenance -> SVC-102
+        """THE headline defect. Reaches: machine.lease.begin_maintenance -> SVC-102
         raised -> the real Availability.set_active_faults -> run_test_sale
         -> machine.lease.test_run() -> select_product -> Availability.
         test_sale_sellable (the fix) -> the real FSM transition, the real
@@ -3601,7 +3692,7 @@ class TestTestSaleAvailabilityExemption:
         .superpowers/sdd/whole-branch-fix-2-report.md.
         """
         machine, vmc, rec, client, avail = _test_run_vmc_with_availability()
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
         await asyncio.sleep(0)
         assert avail.payment_enabled is False
@@ -3636,7 +3727,7 @@ class TestTestSaleAvailabilityExemption:
         row still fails and select_product's post-condition check raises.
         """
         machine, vmc, rec, client, avail = _test_run_vmc_with_availability()
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
         vmc.raise_fault(FaultCode.WTR_104, outcome="leak")
         await asyncio.sleep(0)
@@ -3659,7 +3750,7 @@ class TestTestSaleAvailabilityExemption:
         test_sale_sellable never touches payment_enabled/
         payment_blocking_reasons."""
         machine, vmc, rec, client, avail = _test_run_vmc_with_availability()
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
         await asyncio.sleep(0)
         assert avail.payment_enabled is False
@@ -3683,7 +3774,7 @@ class TestTestSaleAvailabilityExemption:
         await asyncio.wait_for(task, timeout=5)
         assert avail.payment_enabled is False  # lease not released yet
 
-        released = vmc.end_maintenance("sess-1")
+        released = machine.lease.end_maintenance("sess-1")
         assert released is True
         await asyncio.sleep(0)
         assert avail.payment_enabled is True
@@ -3698,7 +3789,7 @@ class TestTestSaleAvailabilityExemption:
         `else: self._availability.product_sellable(candidate)` branch.
         """
         machine, vmc, rec, client, avail = _test_run_vmc_with_availability()
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
         await asyncio.sleep(0)
         assert (vmc.sale is not None and vmc.sale.is_test) is False
@@ -3767,7 +3858,7 @@ class TestConcurrentTestSaleGuard:
         pre-fix run failed loudly on two independent counts.
         """
         machine, vmc, rec, client, avail = _test_run_vmc_with_availability()
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
         await asyncio.sleep(0)
         assert avail.payment_enabled is False
@@ -3783,8 +3874,8 @@ class TestConcurrentTestSaleGuard:
         # Genuinely suspended inside `await waiter` -- not merely created,
         # and not yet processed into `dispensing`.
         assert task1.done() is False
-        assert vmc.maintenance_hold is not None
-        assert vmc.maintenance_hold.runs_in_flight == 1
+        assert machine.maintenance_hold is not None
+        assert machine.maintenance_hold.runs_in_flight == 1
 
         with pytest.raises(RuntimeError, match="already in progress"):
             await asyncio.wait_for(
@@ -3796,7 +3887,7 @@ class TestConcurrentTestSaleGuard:
         # counted.
         assert task1.done() is False
         assert vmc.selected_product.sku == "ICE-1"
-        assert vmc.maintenance_hold.runs_in_flight == 1
+        assert machine.maintenance_hold.runs_in_flight == 1
 
         vmc.process_payment()
         assert vmc.state == "dispensing"
@@ -3807,12 +3898,12 @@ class TestConcurrentTestSaleGuard:
         assert result.sku == "ICE-1"
         assert result.outcome == "dispensed"
 
-        assert vmc.maintenance_hold.runs_in_flight == 0
+        assert machine.maintenance_hold.runs_in_flight == 0
         assert vmc.test_sale_in_progress is False
 
-        released = vmc.end_maintenance("sess-1")
+        released = machine.lease.end_maintenance("sess-1")
         assert released is True
-        assert vmc.maintenance_hold is None
+        assert machine.maintenance_hold is None
         assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
         await asyncio.sleep(0)  # let the release's fire-and-forget publish run
         assert avail.payment_enabled is True
@@ -3828,7 +3919,7 @@ class TestConcurrentTestSaleGuard:
         `BaseException`) propagating out of `await waiter`, not a mock.
         """
         machine, vmc, rec, client, avail = _test_run_vmc_with_availability()
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
         await asyncio.sleep(0)
 
@@ -3837,29 +3928,29 @@ class TestConcurrentTestSaleGuard:
         )
         await asyncio.sleep(0)
         assert task1.done() is False
-        assert vmc.maintenance_hold.runs_in_flight == 1
+        assert machine.maintenance_hold.runs_in_flight == 1
 
         with pytest.raises(RuntimeError, match="already in progress"):
             await asyncio.wait_for(
                 machine.test_sales.run_test_sale("WATER-1"), timeout=5
             )
         assert task1.done() is False
-        assert vmc.maintenance_hold.runs_in_flight == 1
+        assert machine.maintenance_hold.runs_in_flight == 1
 
         task1.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task1
 
-        assert vmc.maintenance_hold.runs_in_flight == 0
+        assert machine.maintenance_hold.runs_in_flight == 0
         assert vmc.test_sale_in_progress is False
         # Cancellation still clears escrow directly (never a real refund
         # command) and the per-sale flags, same as any other exit path.
         assert vmc.credit_escrow == 0.0
         assert (vmc.sale is not None and vmc.sale.is_test) is False
 
-        released = vmc.end_maintenance("sess-1")
+        released = machine.lease.end_maintenance("sess-1")
         assert released is True
-        assert vmc.maintenance_hold is None
+        assert machine.maintenance_hold is None
         assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
         await asyncio.sleep(0)
         assert avail.payment_enabled is True
@@ -3877,7 +3968,7 @@ class TestConcurrentTestSaleGuard:
         calls do not overlap at all.
         """
         machine, vmc, rec, client, avail = _test_run_vmc_with_availability()
-        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
         vmc.raise_fault(FaultCode.ICE_401, sku="ICE-1")  # forces "could not select"
 
@@ -3885,7 +3976,7 @@ class TestConcurrentTestSaleGuard:
             await machine.test_sales.run_test_sale("ICE-1")
 
         assert vmc.test_sale_in_progress is False
-        assert vmc.maintenance_hold.runs_in_flight == 0
+        assert machine.maintenance_hold.runs_in_flight == 0
 
         task2 = asyncio.get_running_loop().create_task(
             machine.test_sales.run_test_sale("WATER-1")
@@ -3900,11 +3991,11 @@ class TestConcurrentTestSaleGuard:
         result = await asyncio.wait_for(task2, timeout=5)
         assert result.sku == "WATER-1"
         assert result.outcome == "dispensed"
-        assert vmc.maintenance_hold.runs_in_flight == 0
+        assert machine.maintenance_hold.runs_in_flight == 0
 
-        released = vmc.end_maintenance("sess-1")
+        released = machine.lease.end_maintenance("sess-1")
         assert released is True
-        assert vmc.maintenance_hold is None
+        assert machine.maintenance_hold is None
         assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
         await asyncio.sleep(0)
         assert avail.payment_enabled is True

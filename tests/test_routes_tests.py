@@ -305,7 +305,7 @@ class TestNoTestsAdvertised:
 
 class TestLeaseNotTaken:
     """Entering /tests, or any subsystem's detail page, must never call
-    VMC.begin_maintenance -- it only ever reads the read-only
+    machine.lease.begin_maintenance -- it only ever reads the read-only
     `maintenance_hold` property. Reaches
     web_interface/routes/tests_level.py's `tests_level` handler.
 
@@ -324,16 +324,16 @@ class TestLeaseNotTaken:
 
     def test_viewing_tests_does_not_take_lease(self, client, wired):
         _cfg, vmc, _inv, _store = wired
-        assert vmc.maintenance_hold is None
+        assert context.machine_instance.maintenance_hold is None
         resp = client.get("/tests")
         assert resp.status_code == 200
-        assert vmc.maintenance_hold is None
+        assert context.machine_instance.maintenance_hold is None
 
     def test_viewing_subsystem_does_not_take_lease(self, client, wired):
         _cfg, vmc, _inv, _store = wired
         resp = client.get("/tests/vending")
         assert resp.status_code == 200
-        assert vmc.maintenance_hold is None
+        assert context.machine_instance.maintenance_hold is None
 
 
 class TestLeaseHolderDisplay:
@@ -345,7 +345,9 @@ class TestLeaseHolderDisplay:
 
     def test_shows_holder_and_take_over_for_a_different_session(self, client, wired):
         _cfg, vmc, _inv, _store = wired
-        granted, reason = vmc.begin_maintenance("someone-else", "different-session")
+        granted, reason = context.machine_instance.lease.begin_maintenance(
+            "someone-else", "different-session"
+        )
         assert granted, reason
         resp = client.get("/tests")
         assert resp.status_code == 200
@@ -358,7 +360,9 @@ class TestLeaseHolderDisplay:
         owner = store.owner()
         session_id = client.cookies.get(web_auth.SESSION_COOKIE)
         assert session_id, "owner client must carry a session cookie"
-        granted, reason = vmc.begin_maintenance(owner.id, session_id)
+        granted, reason = context.machine_instance.lease.begin_maintenance(
+            owner.id, session_id
+        )
         assert granted, reason
         resp = client.get("/tests")
         assert resp.status_code == 200
@@ -372,7 +376,7 @@ class TestLeaseHolderDisplay:
         rather than disappearing entirely as the old banner did.
         """
         _cfg, vmc, _inv, _store = wired
-        assert vmc.maintenance_hold is None
+        assert context.machine_instance.maintenance_hold is None
         resp = client.get("/tests")
         assert 'id="tests-hold"' in resp.text
         assert "Take out of service" in resp.text
@@ -386,7 +390,7 @@ class TestLeaseHolderDisplay:
 class TestStandby:
     """GET /tests/standby/confirm and POST /tests/standby: the two-tap
     "Take out of service" control that grants a session-bound standby
-    lease via VMC.begin_standby (controller/vmc.py). Reaches
+    lease via machine.lease.begin_standby (controller/maintenance_lease.py). Reaches
     web_interface/routes/tests_level.py's tests_standby_confirm and
     tests_standby handlers, and the service-state card
     (partials/tests_hold_banner.html) both re-render.
@@ -409,10 +413,12 @@ class TestStandby:
         session_id = client.cookies.get(web_auth.SESSION_COOKIE)
         resp = client.post("/tests/standby")
         assert resp.status_code == 200
-        assert vmc.maintenance_hold is not None
-        assert vmc.maintenance_hold.holder_user_id == store.owner().id
-        assert vmc.maintenance_hold.holder_session_id == session_id
-        assert vmc.maintenance_hold.standby is True
+        assert context.machine_instance.maintenance_hold is not None
+        assert (
+            context.machine_instance.maintenance_hold.holder_user_id == store.owner().id
+        )
+        assert context.machine_instance.maintenance_hold.holder_session_id == session_id
+        assert context.machine_instance.maintenance_hold.standby is True
         assert "Out of service" in resp.text
         assert "Return to service" in resp.text
 
@@ -424,8 +430,7 @@ class TestStandby:
         point them AT this button; this route IS that button, so its own
         refusal needs no further translation.
         """
-        _cfg, vmc, _inv, _store = wired
-        vmc.begin_standby = lambda user_id, session_id: (
+        context.machine_instance.lease.begin_standby = lambda user_id, session_id: (
             False,
             "vend finishing, tap again",
         )
@@ -440,8 +445,7 @@ class TestStandby:
         pointed at Take out of service instead of left with VMC-internal
         wording. Reaches _acquire_lease_or_refusal via POST /tests/run-all.
         """
-        _cfg, vmc, _inv, _store = wired
-        vmc.begin_maintenance = lambda user_id, session_id: (
+        context.machine_instance.lease.begin_maintenance = lambda user_id, session_id: (
             False,
             "machine is mid-sale",
         )
@@ -929,13 +933,13 @@ class TestLeaseTakenByRun:
     _acquire_lease_or_refusal via post_test_command.
 
     Mutation proof: replaced _acquire_lease_or_refusal's whole body with
-    `return None` (never calling vmc.begin_maintenance, and never
+    `return None` (never calling `begin_maintenance`, and never
     refusing). Result: 5 failed across two classes --
-    test_running_a_command_takes_the_lease (vmc.maintenance_hold was
-    still None after the 200 response -- SVC-102 never raised),
+    test_running_a_command_takes_the_lease (maintenance_hold was still
+    None after the 200 response -- SVC-102 never raised),
     test_refused_inline_when_held_by_someone_else (the request reached
     the dispatcher instead of being refused), and all three TestRunAll
-    tests below (with no real lease ever granted, `vmc.maintenance_
+    tests below (with no real lease ever granted, `machine.lease.
     test_run()` inside `_run_command` raises `RuntimeError("no
     maintenance lease held")`, which TestClient's `raise_server_
     exceptions=True` default re-raises instead of returning 200) --
@@ -946,10 +950,10 @@ class TestLeaseTakenByRun:
     def test_running_a_command_takes_the_lease(self, client, wired, wire_subsystem):
         _cfg, vmc, _inv, _store = wired
         wire_subsystem("vending", ["ping"])
-        assert vmc.maintenance_hold is None
+        assert context.machine_instance.maintenance_hold is None
         resp = client.post("/tests/vending/ping")
         assert resp.status_code == 200
-        assert vmc.maintenance_hold is not None
+        assert context.machine_instance.maintenance_hold is not None
 
     def test_refused_inline_when_held_by_someone_else(
         self, wired, login_as, wire_subsystem, wire_dispatcher
@@ -973,7 +977,9 @@ class TestLeaseTakenByRun:
         owner_client = login_as(Role.owner)
         tech_client = login_as(Role.tech)
         owner_session = owner_client.cookies.get(web_auth.SESSION_COOKIE)
-        granted, reason = vmc.begin_maintenance(store.owner().id, owner_session)
+        granted, reason = context.machine_instance.lease.begin_maintenance(
+            store.owner().id, owner_session
+        )
         assert granted, reason
 
         resp = tech_client.post("/tests/mdb/ping")
@@ -987,21 +993,23 @@ class TestLeaseTakenByRun:
 
 class TestLeaseEndAndTakeover:
     """POST /tests/end releases only the CALLER's own lease
-    (VMC.end_maintenance already enforces the session match); POST
-    /tests/takeover transfers an idle lease (VMC.take_over_maintenance,
-    system-tests design §2.2), refused while a run is in flight or before
-    the 60s idle threshold.
+    (`MaintenanceLease.end_maintenance` already enforces the session
+    match); POST /tests/takeover transfers an idle lease
+    (`MaintenanceLease.take_over_maintenance`, system-tests design §2.2),
+    refused while a run is in flight or before the 60s idle threshold.
 
     Mutation proof (takeover): changed post_test_command's sibling
-    tests_takeover handler to call `vmc.begin_maintenance(principal.
-    user.id, principal.session.id)` instead of `vmc.take_over_maintenance
-    (...)`. Ran this class: test_takeover_succeeds_once_idle failed --
-    begin_maintenance refuses whenever ANY lease is held (regardless of
-    idle time), so the holder never changed even after the 61s idle
-    backdate ("held by <owner's id>" persisted). test_end_releases_only_
-    the_callers_own_lease and test_takeover_refused_before_idle_threshold
-    kept passing (neither reaches take_over_maintenance's success path).
-    Restored the real `take_over_maintenance` call -- all 3 passed again.
+    tests_takeover handler to call
+    `context.machine_instance.lease.begin_maintenance(principal.user.id,
+    principal.session.id)` instead of
+    `context.machine_instance.lease.take_over_maintenance(...)`. Ran this
+    class: test_takeover_succeeds_once_idle failed -- begin_maintenance
+    refuses whenever ANY lease is held (regardless of idle time), so the
+    holder never changed even after the 61s idle backdate ("held by
+    <owner's id>" persisted). test_end_releases_only_the_callers_own_lease
+    and test_takeover_refused_before_idle_threshold kept passing (neither
+    reaches take_over_maintenance's success path). Restored the real
+    `take_over_maintenance` call -- all 3 passed again.
     """
 
     def test_end_releases_only_the_callers_own_lease(self, wired, login_as):
@@ -1009,30 +1017,38 @@ class TestLeaseEndAndTakeover:
         owner_client = login_as(Role.owner)
         tech_client = login_as(Role.tech)
         owner_session = owner_client.cookies.get(web_auth.SESSION_COOKIE)
-        granted, reason = vmc.begin_maintenance(store.owner().id, owner_session)
+        granted, reason = context.machine_instance.lease.begin_maintenance(
+            store.owner().id, owner_session
+        )
         assert granted, reason
 
         resp = tech_client.post("/tests/end")
         assert resp.status_code == 200
-        assert vmc.maintenance_hold is not None
-        assert vmc.maintenance_hold.holder_session_id == owner_session
+        assert context.machine_instance.maintenance_hold is not None
+        assert (
+            context.machine_instance.maintenance_hold.holder_session_id == owner_session
+        )
 
         # The actual holder CAN end it.
         owner_resp = owner_client.post("/tests/end")
         assert owner_resp.status_code == 200
-        assert vmc.maintenance_hold is None
+        assert context.machine_instance.maintenance_hold is None
 
     def test_takeover_refused_before_idle_threshold(self, wired, login_as):
         _cfg, vmc, _inv, store = wired
         owner_client = login_as(Role.owner)
         tech_client = login_as(Role.tech)
         owner_session = owner_client.cookies.get(web_auth.SESSION_COOKIE)
-        granted, reason = vmc.begin_maintenance(store.owner().id, owner_session)
+        granted, reason = context.machine_instance.lease.begin_maintenance(
+            store.owner().id, owner_session
+        )
         assert granted, reason
 
         resp = tech_client.post("/tests/takeover")
         assert resp.status_code == 200
-        assert vmc.maintenance_hold.holder_session_id == owner_session  # unchanged
+        assert (
+            context.machine_instance.maintenance_hold.holder_session_id == owner_session
+        )  # unchanged
         assert "held by" in resp.text
 
     def test_takeover_succeeds_once_idle(self, wired, login_as):
@@ -1041,13 +1057,19 @@ class TestLeaseEndAndTakeover:
         tech_client = login_as(Role.tech)
         owner_session = owner_client.cookies.get(web_auth.SESSION_COOKIE)
         tech_session = tech_client.cookies.get(web_auth.SESSION_COOKIE)
-        granted, reason = vmc.begin_maintenance(store.owner().id, owner_session)
+        granted, reason = context.machine_instance.lease.begin_maintenance(
+            store.owner().id, owner_session
+        )
         assert granted, reason
-        vmc.maintenance_hold.last_activity_at -= 61  # force past the 60s threshold
+        context.machine_instance.maintenance_hold.last_activity_at -= (
+            61  # force past the 60s threshold
+        )
 
         resp = tech_client.post("/tests/takeover")
         assert resp.status_code == 200
-        assert vmc.maintenance_hold.holder_session_id == tech_session
+        assert (
+            context.machine_instance.maintenance_hold.holder_session_id == tech_session
+        )
 
 
 # --- Verdict --------------------------------------------------------------
@@ -1252,7 +1274,9 @@ class TestRunAll:
         owner_client = login_as(Role.owner)
         tech_client = login_as(Role.tech)
         owner_session = owner_client.cookies.get(web_auth.SESSION_COOKIE)
-        granted, reason = vmc.begin_maintenance(store.owner().id, owner_session)
+        granted, reason = context.machine_instance.lease.begin_maintenance(
+            store.owner().id, owner_session
+        )
         assert granted, reason
 
         resp = tech_client.post("/tests/run-all")
@@ -1333,33 +1357,36 @@ class TestFailingRunStillDecrements:
     def test_failing_run_still_decrements(
         self, client, wired, wire_subsystem, wire_dispatcher
     ):
-        _cfg, vmc, _inv, _store = wired
         wire_subsystem("mdb", ["ping"])
 
         class ExplodingDispatcher:
             _retries = 1
 
-            def __init__(self, vmc):
-                self._vmc = vmc
+            def __init__(self, machine):
+                self._machine = machine
                 self.observed_in_flight = None
 
             async def send(self, subsystem, command, params=None):
-                hold = self._vmc.maintenance_hold
+                hold = self._machine.maintenance_hold
                 self.observed_in_flight = hold.runs_in_flight if hold else None
                 raise RuntimeError("simulated dispatcher bug")
 
             async def send_and_await_completion(self, subsystem, command, params=None):
                 return await self.send(subsystem, command, params)
 
-        dispatcher = ExplodingDispatcher(vmc)
+        dispatcher = ExplodingDispatcher(context.machine_instance)
         wire_dispatcher(dispatcher)
 
         with pytest.raises(RuntimeError):
             client.post("/tests/mdb/ping")
 
         assert dispatcher.observed_in_flight == 1  # incremented before dispatch
-        assert vmc.maintenance_hold is not None  # lease itself still held
-        assert vmc.maintenance_hold.runs_in_flight == 0  # but decremented after
+        assert (
+            context.machine_instance.maintenance_hold is not None
+        )  # lease itself still held
+        assert (
+            context.machine_instance.maintenance_hold.runs_in_flight == 0
+        )  # but decremented after
 
 
 # --- Param validation --------------------------------------------------
@@ -1373,7 +1400,7 @@ class TestParamValidation:
     Mutation proof: removed the `if not (lo <= value <= hi): raise
     ValueError(...)` bounds check from _parse_command_params's
     water_valve branch. Result: test_water_valve_seconds_out_of_range_
-    is_400 failed -- 200 instead of 400, and vmc.maintenance_hold was
+    is_400 failed -- 200 instead of 400, and context.machine_instance.maintenance_hold was
     granted (the lease WAS taken for a value the widget itself would
     never submit). Restored the check -- passed again.
     """
@@ -1400,7 +1427,7 @@ class TestParamValidation:
         resp = client.post("/tests/vending/dispense", data={"slot": "0"})
 
         assert resp.status_code == 400
-        assert vmc.maintenance_hold is None
+        assert context.machine_instance.maintenance_hold is None
         assert dispatcher.calls == []
 
     def test_dispense_slot_in_catalog_is_accepted(
@@ -1438,7 +1465,9 @@ class TestParamValidation:
         lo, hi = WATER_VALVE_SECONDS_RANGE
         resp = client.post("/tests/vending/water_valve", data={"seconds": str(hi + 1)})
         assert resp.status_code == 400
-        assert vmc.maintenance_hold is None  # refused before the lease was touched
+        assert (
+            context.machine_instance.maintenance_hold is None
+        )  # refused before the lease was touched
 
     def test_power_cycle_defaults_dwell_seconds_when_omitted(
         self, client, wired, wire_subsystem, wire_dispatcher
@@ -1494,7 +1523,7 @@ class TestDispenseSendsProfile:
     def test_dispense_test_refused_without_profile(
         self, client, wired, wire_subsystem, wire_dispatcher, tmp_path
     ):
-        """slot 4's product is `kind="other"` -- `dispenser_profile_for`
+        """slot 4's product is `kind="other"` -- `gate.profile_for`
         returns `None` for it even though a (unrelated) profiles object is
         wired, because `render_profiles_toml` never writes a table for a
         non-ice/water product. Refused with the CFG-101 wording, 200 (not
@@ -1520,7 +1549,7 @@ class TestDispenseSendsProfile:
             assert "CFG-101" in resp.text
             assert "slot 4 (OTHER-1)" in resp.text
             assert dispatcher.calls == []
-            assert vmc.maintenance_hold is None
+            assert context.machine_instance.maintenance_hold is None
         finally:
             routes.set_dispenser_profiles(None)
 
@@ -1539,7 +1568,7 @@ class TestDispenseSendsProfile:
         resp = client.post("/tests/vending/dispense", data={"slot": "0"})
 
         assert resp.status_code == 400
-        assert vmc.maintenance_hold is None
+        assert context.machine_instance.maintenance_hold is None
         assert dispatcher.calls == []
 
 
@@ -1568,11 +1597,11 @@ class TestSimulatedSaleFlow:
     def test_picker_never_takes_the_lease(self, client, wired):
         cfg, vmc, _inv, _store = wired
         add_product(cfg, "ICE-1", "Ice Bag", 2.50, slot=0)
-        assert vmc.maintenance_hold is None
+        assert context.machine_instance.maintenance_hold is None
         resp = client.get("/tests/sale")
         assert resp.status_code == 200
         assert "ICE-1" in resp.text
-        assert vmc.maintenance_hold is None
+        assert context.machine_instance.maintenance_hold is None
 
     def test_sku_with_slash_end_to_end(self, client, wired):
         """The SKU travels: <select><option value="..."> (GET) -> a POST
@@ -1752,7 +1781,7 @@ class TestActuatorLeaseHeldForRealLifetime:
         dispatcher = CommandDispatcher(mqtt)
         routes.set_command_dispatcher(dispatcher)
         try:
-            granted, reason = vmc.begin_maintenance(
+            granted, reason = context.machine_instance.lease.begin_maintenance(
                 principal.user.id, principal.session.id
             )
             assert granted is True, reason
@@ -1766,8 +1795,8 @@ class TestActuatorLeaseHeldForRealLifetime:
             # ack has even arrived.
             await _wait_until(lambda: len(mqtt.published) == 1)
             request_id = mqtt.published[0][1].request_id
-            assert vmc.maintenance_hold is not None
-            assert vmc.maintenance_hold.runs_in_flight == 1
+            assert context.machine_instance.maintenance_hold is not None
+            assert context.machine_instance.maintenance_hold.runs_in_flight == 1
             assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
 
             # The subsystem ACCEPTS the command (phase="accepted" -- the
@@ -1791,8 +1820,8 @@ class TestActuatorLeaseHeldForRealLifetime:
             # true the instant the lease was granted must STILL be true —
             # simulating the real motor still running.
             assert not task.done()
-            assert vmc.maintenance_hold is not None
-            assert vmc.maintenance_hold.runs_in_flight == 1
+            assert context.machine_instance.maintenance_hold is not None
+            assert context.machine_instance.maintenance_hold.runs_in_flight == 1
             assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
 
             # A tech tapping "End Test Mode" mid-actuation is accepted but
@@ -1802,10 +1831,14 @@ class TestActuatorLeaseHeldForRealLifetime:
             # proves _run_command's dispatch keeps that guarantee true
             # against a realistic accept/complete timing gap, which is
             # exactly what the pre-fix code did not do.
-            released = vmc.end_maintenance(principal.session.id)
+            released = context.machine_instance.lease.end_maintenance(
+                principal.session.id
+            )
             assert released is True  # request accepted...
-            assert vmc.maintenance_hold is not None  # ...but not released yet
-            assert vmc.maintenance_hold.release_requested is True
+            assert (
+                context.machine_instance.maintenance_hold is not None
+            )  # ...but not released yet
+            assert context.machine_instance.maintenance_hold.release_requested is True
             assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
 
             # NOW the motor actually finishes: the terminal
@@ -1824,7 +1857,7 @@ class TestActuatorLeaseHeldForRealLifetime:
 
             # Completion is what frees the run, and — since a release was
             # already requested — releases the lease and clears SVC-102.
-            assert vmc.maintenance_hold is None
+            assert context.machine_instance.maintenance_hold is None
             assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
         finally:
             routes.set_command_dispatcher(None)
@@ -1848,7 +1881,7 @@ class TestActuatorLeaseHeldForRealLifetime:
         dispatcher = CommandDispatcher(mqtt, timeout=0.05, retries=0)
         routes.set_command_dispatcher(dispatcher)
         try:
-            granted, reason = vmc.begin_maintenance(
+            granted, reason = context.machine_instance.lease.begin_maintenance(
                 principal.user.id, principal.session.id
             )
             assert granted is True, reason
@@ -1882,7 +1915,7 @@ class TestActuatorLeaseHeldForRealLifetime:
         dispatcher = CommandDispatcher(mqtt)
         routes.set_command_dispatcher(dispatcher)
         try:
-            granted, reason = vmc.begin_maintenance(
+            granted, reason = context.machine_instance.lease.begin_maintenance(
                 principal.user.id, principal.session.id
             )
             assert granted is True, reason
@@ -1906,7 +1939,9 @@ class TestActuatorLeaseHeldForRealLifetime:
             result = await asyncio.wait_for(task, timeout=2.0)
 
             assert result["status"] == "ok"
-            assert vmc.maintenance_hold is not None
-            assert vmc.maintenance_hold.runs_in_flight == 0  # freed immediately
+            assert context.machine_instance.maintenance_hold is not None
+            assert (
+                context.machine_instance.maintenance_hold.runs_in_flight == 0
+            )  # freed immediately
         finally:
             routes.set_command_dispatcher(None)

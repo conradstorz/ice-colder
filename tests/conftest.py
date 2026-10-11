@@ -209,10 +209,10 @@ def anonymous(wired):
 
 @pytest.fixture
 def machine():
-    """The composition root (`controller/machine.py`'s `Machine`,
-    vmc-reduction plan, Task 6) built fresh for a test, with a real
-    `TaskRunner`. `vmc` below yields `machine.vmc` and depends on this
-    fixture, so a test taking both shares the same `Machine` instance.
+    """The composition root (`controller/machine.py`'s `Machine`) built
+    fresh for a test, with a real `TaskRunner`. `vmc` below yields
+    `machine.vmc` and depends on this fixture, so a test taking both
+    shares the same `Machine` instance.
     """
     m = Machine(config=ConfigModel())
     yield m
@@ -254,7 +254,7 @@ async def vmc_fake_time(machine_fake_time):
 
 @pytest.fixture
 def dispenser_profiles(tmp_path, monkeypatch):
-    """A loaded `DispenserProfiles` backed by the Task 3 `GOOD` two-slot
+    """A loaded `DispenserProfiles` backed by the `GOOD` two-slot
     text (slot 1 bagged ice, slot 2 water fill) and a `ConfigModel` whose
     catalog matches it -- for tests that need a ready profile set without
     rebuilding the fixture text and config themselves."""

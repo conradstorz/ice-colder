@@ -15,8 +15,8 @@ liveness/connection changes (``on_subsystem_liveness``, keyed by
 and read-only pass-throughs onto the registry
 (``is_locked``/``has``/``lockouts``/``machine_faults``/``active_faults``/
 ``parse_key``) plus the health/availability push (``push_active_faults``,
-public here -- Task 4's VMC and Task 5's ``Machine.set_availability`` both
-call it).
+public here -- both ``raise_fault``/``clear_fault`` above and
+``Machine.set_availability`` call it).
 
 Five collaborators are injected as callables rather than objects, because
 the VMC attaches (or replaces) what they read after this class is
