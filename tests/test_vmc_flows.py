@@ -25,6 +25,7 @@ from controller.machine import Machine
 from controller.task_runner import TaskRunner
 from controller.vmc import VMC
 from services.availability import Availability
+from services.command_dispatcher import CommandTimeout
 from services.event_recorder import EventRecorder, SaleRecordingFailed
 from services.health_monitor import HealthMonitor
 from services.mqtt_messages import PaymentEnableCommand
@@ -259,7 +260,8 @@ async def test_dispense_complete_does_not_double_record_event():
     _completes_transaction) that exercised _finish_dispensing directly
     and asserted NO event was ever recorded, framed as "the 60s hardware-
     silence fallback". That framing no longer matches production code:
-    the real dispense timeout (_dispense_timed_out) fails the vend
+    the real dispense timeout (the `dispense_timeout` timer inside
+    DispenseCycle, which fires DispenseCycle._timed_out) fails the vend
     (PAY-102 via _fail_vend), it never reaches _finish_dispensing at all
     -- see test_dispense_timeout_is_a_failed_vend. _finish_dispensing's
     only caller today is on_dispenser_event's own 'complete'/door_open-
@@ -791,7 +793,8 @@ async def test_dispense_complete_with_no_remaining_credit_returns_to_idle():
     transaction, which called _finish_dispensing directly and was framed
     as "the 60s hardware-silence fallback [completing] the transaction".
     That framing no longer matches production code: the real dispense
-    timeout (_dispense_timed_out) fails the vend instead (PAY-102 via
+    timeout (the `dispense_timeout` timer inside DispenseCycle, which
+    fires DispenseCycle._timed_out) fails the vend instead (PAY-102 via
     _fail_vend) -- see test_dispense_timeout_is_a_failed_vend. The
     faithful public path to this exact-escrow completion is a real
     'complete' report with price == escrow, same as
@@ -3009,7 +3012,7 @@ class TestRunTestSale:
         assert recorder.get_summary(24)["vends_failed"] == 1
 
     async def test_timeout_test_sale_returns_timeout_distinct_from_vend_failed(self):
-        """Reaches _dispense_timed_out (the real timeout callback the
+        """Reaches DispenseCycle._timed_out (the real timeout callback the
         scheduled dispense-timeout task invokes) directly, distinct from
         the DispenserOutcome-driven vend_failed path above."""
         machine, rec, client = _test_run_machine(tasks=FakeTaskRunner())
@@ -3037,10 +3040,44 @@ class TestRunTestSale:
         test_run_events = [e for e in rec.events if e[0] == "test_run"]
         assert len(test_run_events) == 1
         assert test_run_events[0][2]["outcome"] == "timeout"
-        # Copilot review (PR 22, id=4128088653): _dispense_timed_out also
-        # reaches on_vend_failed via _fail_vend -- must not write its own
-        # vend_failed row for a test sale either.
+        # Copilot review (PR 22, id=4128088653): DispenseCycle._timed_out
+        # also reaches on_vend_failed via _fail_vend -- must not write its
+        # own vend_failed row for a test sale either.
         assert not any(t == "vend_failed" for t, *_ in rec.events)
+
+    async def test_dispatch_timeout_resolves_test_sale_waiter_with_pay102(self):
+        """Reaches on_dispense_failed via DispenseCycle._run's
+        CommandTimeout path (controller/dispense_cycle.py), never the
+        hardware-report path the tests above drive. Before
+        on_dispense_failed resolved the test-sale waiter on every failure
+        path, a dispatcher-level failure (e.g. a dead broker/subsystem)
+        left run_test_sale's waiter un-resolved forever instead of
+        returning a TestSaleResult -- this would hang (and time out the
+        surrounding asyncio.wait_for) if that regressed."""
+        machine, rec, client = _test_run_machine(tasks=FakeTaskRunner())
+        vmc = machine.vmc
+        dispatcher = machine.command_dispatcher
+        dispatcher.fail_with = CommandTimeout("vending", "dispense")
+        granted, _ = vmc.begin_maintenance("user-1", "sess-1")
+        assert granted is True
+
+        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        await asyncio.sleep(0)
+        vmc.process_payment()
+        assert vmc.state == "dispensing"
+
+        result = await asyncio.wait_for(task, timeout=5)
+
+        assert result.outcome == "vend_failed"
+        assert result.fault_code == "PAY-102"
+        assert vmc.credit_escrow == 0.0
+        assert vmc.escrow_credits == []
+        assert client.refund_commands() == []
+        # The dispense_timeout timer armed by DispenseCycle.start is
+        # cancelled on this (earlier, dispatcher-level) failure path too.
+        assert not any(c.label == "dispense_timeout" for c in machine.tasks.scheduled)
+        assert vmc.maintenance_hold is not None
+        assert vmc.maintenance_hold.runs_in_flight == 0
 
     async def test_production_sale_immediately_after_test_sale_records_normally(self):
         """Part 3's guarantee still holds right after a test sale on the

@@ -24,7 +24,6 @@ def test_construction_defaults():
     assert ctx.is_test is False
     assert ctx.mechanism is None
     assert ctx.request_id is None
-    assert ctx.seq == 0
     assert ctx.started_at == 0.0
 
 
@@ -35,7 +34,6 @@ def test_construction_with_all_fields():
         is_test=True,
         mechanism="bagged_ice",
         request_id="req-1",
-        seq=3,
         started_at=12345.0,
     )
     assert ctx.product is PRODUCT
@@ -43,7 +41,6 @@ def test_construction_with_all_fields():
     assert ctx.is_test is True
     assert ctx.mechanism == "bagged_ice"
     assert ctx.request_id == "req-1"
-    assert ctx.seq == 3
     assert ctx.started_at == 12345.0
 
 
@@ -61,11 +58,10 @@ def test_with_returns_a_new_instance_leaving_the_original_unchanged():
 
 def test_with_can_change_multiple_fields_at_once():
     original = SaleContext(product=PRODUCT)
-    updated = original.with_(mechanism="bagged_ice", request_id="req-1", seq=5)
+    updated = original.with_(mechanism="bagged_ice", request_id="req-1")
 
     assert updated.mechanism == "bagged_ice"
     assert updated.request_id == "req-1"
-    assert updated.seq == 5
     # Fields not named in the call carry over unchanged.
     assert updated.product is original.product
     assert updated.is_test is original.is_test

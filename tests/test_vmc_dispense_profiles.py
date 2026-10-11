@@ -16,6 +16,7 @@ import pytest
 from config.config_model import ConfigModel, PhysicalDetails, Product
 from contracts.common import ChannelDescriptor, CommandAck
 from contracts.vending_machine import FaultCode, SubsystemCapabilities
+from controller.dispense_cycle import DispenseCycle
 from controller.machine import Machine
 from controller.vmc import VMC
 from services.availability import Availability
@@ -548,6 +549,67 @@ async def test_report_without_request_id_still_accepted(tmp_path):
     machine.cancel_pending_tasks()
 
 
+async def test_success_cancels_dispense_timeout_before_record_awaits(tmp_path):
+    """Review finding (money-path, Task 8): `on_dispenser_event`'s success
+    branch must cancel the `dispense_timeout` timer as soon as the report
+    is classified -- before the test/production split's own await
+    (`DispenseCycle.record()` suspends for real on `asyncio.to_thread`).
+    Pre-fix, that cancel only happened afterward, inside
+    `_finish_dispensing()`; a `dispense_timeout` firing while `record()`
+    was still suspended would pass both of `on_dispense_failed`'s guards
+    (`cycle is self._cycle`, `state == "dispensing"`) and fail an
+    already-successful sale, restoring its price to escrow and possibly
+    issuing a refund for a sale the customer already received.
+
+    Proven here by having the fake recorder's `record_sale` -- invoked
+    from inside `record()`'s `await asyncio.to_thread(...)` window --
+    record whether any live `dispense_timeout` call still exists in
+    `runner.scheduled` at that moment. On the fix, it must already be
+    gone."""
+    runner = FakeTaskRunner()
+    machine, vmc, dispatcher = _vmc_with_profiles(tmp_path, tasks=runner)
+    rec = FakeEventRecorder()
+    machine.set_event_recorder(rec)
+    published: list[tuple[str, object]] = []
+
+    class FakeMQTT:
+        def register(self, *a, **k):
+            pass
+
+        async def publish(self, topic, payload, **kwargs):
+            published.append((topic, payload))
+
+    machine.set_mqtt_client(FakeMQTT())
+    product = vmc.products[0]
+    _start_sale(vmc, product)
+    await asyncio.sleep(0)
+    assert vmc.state == "dispensing"
+    assert any(c.label == "dispense_timeout" for c in runner.scheduled)
+
+    live_during_record: list[bool] = []
+
+    def record_sale(sku, name, slot, price, methods, ts=None):
+        live_during_record.append(
+            any(c.label == "dispense_timeout" for c in runner.scheduled)
+        )
+
+    rec.record_sale = record_sale
+
+    await vmc.on_dispenser_event(
+        "hardware/dispenser", {"slot": product.slot, "state": "complete"}
+    )
+
+    # The timer must already be retired by the time record_sale runs --
+    # not merely retired by the time this call returns.
+    assert live_during_record == [False]
+    assert vmc.state == "idle"
+    assert vmc.credit_escrow == 0
+    assert not vmc.faults.lockouts
+    assert not any(e[0] == "vend_failed" for e in rec.events)
+    assert not any(topic == "cmd/payment/refund" for topic, _ in published)
+    machine.cancel_pending_tasks()
+
+
 async def test_door_open_completes_sale_and_raises_ice402(tmp_path):
     machine, vmc, dispatcher = _vmc_with_profiles(tmp_path)
     rec = FakeEventRecorder()
@@ -804,4 +866,66 @@ async def test_late_no_ack_from_previous_sale_does_not_fail_current_sale(tmp_pat
         e[0] == "vend_failed" and e[2]["code"] == "PAY-102" for e in rec.events
     )
     assert any(c.label == "dispense_timeout" for c in machine.tasks.scheduled)
+    machine.cancel_pending_tasks()
+
+
+async def test_on_dispense_failed_ignores_a_stale_cycle(tmp_path):
+    """`VMC.on_dispense_failed`'s identity guard (Task 8, replacing review
+    finding I2's `_sale_seq` counter): a `DispenseCycle` instance that is
+    not the VMC's own current cycle -- a late callback from an earlier
+    attempt, or any other object -- must never fail the vend, touch
+    escrow, or lock the product out, whether the real sale is still
+    dispensing or has already settled through the real hardware report.
+
+    Both calls below take `on_dispense_failed`'s *first* guard clause
+    (`cycle is not self._cycle`), by design: every exit from 'dispensing'
+    (`_finish_dispensing`/`on_vend_failed`/`on_error`) sets `self._cycle =
+    None` in the same step that leaves the state, so a cycle can never be
+    "the current cycle" while the FSM has already moved on -- unlike the
+    predecessor's `_sale_seq` counter, which never reset and so could
+    independently match on `seq` after a sale settled, making its second
+    (state-only) guard clause reachable on its own. That second clause is
+    kept here as defence in depth (see `on_dispense_failed`'s docstring)
+    but is not independently exercised by this test.
+    """
+    machine, vmc, dispatcher = _vmc_with_profiles(tmp_path, tasks=FakeTaskRunner())
+    product = vmc.products[0]  # ICE-1
+    _start_sale(vmc, product)
+    await asyncio.sleep(0)  # let the real dispatch actually run
+
+    # An independent DispenseCycle, never wired as vmc's own -- its mere
+    # existence as a *different* object is what on_dispense_failed must
+    # reject, regardless of anything else about it.
+    stale = DispenseCycle(
+        sale=vmc.sale,
+        dispatcher=lambda: None,
+        gate=machine.gate,
+        outputs=machine.outputs,
+        faults=machine.faults,
+        recorder=lambda: None,
+        set_transaction_certain=lambda certain: None,
+        tasks=machine.tasks,
+        timeout_seconds=lambda: 1.0,
+        on_failed=vmc.on_dispense_failed,
+        on_request_id=lambda *a: None,
+    )
+
+    await vmc.on_dispense_failed(stale, FaultCode.PAY_102, "no_ack")
+
+    assert vmc.state == "dispensing"
+    assert vmc.credit_escrow == 0.0
+    assert vmc.faults.lockouts == {}
+
+    # Settle the real sale through the real hardware report.
+    await vmc.on_dispenser_event(
+        "hardware/dispenser", {"slot": product.slot, "state": "complete"}
+    )
+    assert vmc.state == "idle"
+
+    # The same stale cycle, now doubly stale (the real sale has also
+    # settled), must still be ignored.
+    await vmc.on_dispense_failed(stale, FaultCode.PAY_102, "no_ack")
+
+    assert vmc.state == "idle"
+    assert vmc.faults.lockouts == {}
     machine.cancel_pending_tasks()

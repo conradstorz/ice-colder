@@ -53,6 +53,7 @@ from loguru import logger
 from config.config_model import ConfigModel
 from contracts.vending_machine import FaultCode
 from controller import mqtt_inbound
+from controller.dispense_cycle import DispenseCycle
 from controller.dispenser_gate import DispenserProfileGate
 from controller.escrow_ledger import EscrowLedger
 from controller.fault_registry import FaultRegistry
@@ -163,6 +164,31 @@ class Machine:
             on_bin_half_full=self._faults.clear_ice101_lockouts,
             on_capabilities_validated=self._gate.on_vending_capabilities,
         )
+        # Task 8: builds a fresh DispenseCycle (controller/dispense_cycle.py)
+        # for one sale's dispatch attempt -- the cycle's own identity, not a
+        # sequence number, is what VMC.on_dispense_failed uses to tell a
+        # late callback from an earlier attempt apart from the current one.
+        # `on_failed`/`on_request_id` reference `self.vmc` INSIDE this
+        # lambda's body, resolved only once the lambda is actually called
+        # (at sale time, long after `self._vmc` exists below) -- see the
+        # module docstring's "lambda *a: self.vmc.<method>(*a)" pattern.
+        self._dispense_factory = lambda sale: DispenseCycle(
+            sale=sale,
+            dispatcher=lambda: self.command_dispatcher,
+            gate=self._gate,
+            outputs=self._outputs,
+            faults=self._faults,
+            recorder=lambda: self._event_recorder,
+            set_transaction_certain=lambda certain: (
+                self._outputs.availability.set_transaction_certain(certain)
+                if self._outputs.availability
+                else None
+            ),
+            tasks=self._tasks,
+            timeout_seconds=lambda: self.vmc.dispense_timeout_seconds,
+            on_failed=self.vmc.on_dispense_failed,
+            on_request_id=self.vmc.note_dispense_request,
+        )
 
         self._vmc = VMC(
             config,
@@ -176,7 +202,7 @@ class Machine:
             availability=lambda: self.availability,
             inventory=lambda: self.inventory,
             recorder=lambda: self.event_recorder,
-            dispatcher=lambda: self.command_dispatcher,
+            dispense_factory=self._dispense_factory,
         )
 
     def _product_name(self, sku: str | None) -> str | None:
