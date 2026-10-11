@@ -39,7 +39,7 @@ from web_interface.levels import (
 from web_interface.subsystem_window import build_window
 
 # active_faults() reports fault codes as strings (FaultCode.value); compare
-# against the contract's enum set once, here, rather than in _fault_gate.
+# against the contract's enum set once, here, rather than in fault_gate.
 _PAYMENT_BLOCKING_CODES = {code.value for code in PAYMENT_BLOCKING_FAULTS}
 
 # Task 14 review finding 1: pending_sale_for_recovery()'s read, record_sale's
@@ -65,7 +65,7 @@ _pay104_lock = asyncio.Lock()
 _SELECTOR_SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
-def _dom_safe_key(key: str) -> str:
+def dom_safe_key(key: str) -> str:
     """A selector-safe id fragment for a fault's #clear-<key> button.
 
     Copilot review (PR 20, comment 4113241371): for a product-scoped
@@ -89,7 +89,7 @@ def _dom_safe_key(key: str) -> str:
     return "h" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
 
 
-def _fault_gate(fault: dict) -> str:
+def fault_gate(fault: dict) -> str:
     """Classify one active fault into "safety" / "fulfillment" / "alert".
 
     Executor resolution 1 (task-6-brief.md): the spec asks for "the gate
@@ -175,8 +175,8 @@ def _faults_with_age() -> list[dict]:
         }
     for f in faults:
         f["since_seconds"] = ages.get(f["key"])
-        f["gate"] = _fault_gate(f)
-        f["dom_key"] = _dom_safe_key(f["key"])
+        f["gate"] = fault_gate(f)
+        f["dom_key"] = dom_safe_key(f["key"])
         # Task 14: only the machine-scope PAY-104 fault ever carries a
         # pending sale; every other fault (product-scope, or another
         # machine-scope code) gets None, keeping its plain Clear button.
@@ -396,7 +396,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
                 label="Clear",
                 confirm_label="Confirm",
                 post_url=f"/health/faults/{key}/clear",
-                target=f"#clear-{_dom_safe_key(key)}",
+                target=f"#clear-{dom_safe_key(key)}",
                 confirm_url=f"/health/faults/{key}/clear/confirm",
                 confirming=(confirming != "false"),
             ),
@@ -483,7 +483,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         request: Request, confirming: str | None = Query(default=None)
     ):
         """Same confirm_url contract as fault_clear_confirm above."""
-        dom_key = _dom_safe_key(FaultCode.PAY_104.value)
+        dom_key = dom_safe_key(FaultCode.PAY_104.value)
         return templates.TemplateResponse(
             "partials/confirm_button.html",
             context.template_context(
@@ -681,7 +681,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
     async def pay104_discard_confirm(
         request: Request, confirming: str | None = Query(default=None)
     ):
-        dom_key = _dom_safe_key(FaultCode.PAY_104.value)
+        dom_key = dom_safe_key(FaultCode.PAY_104.value)
         return templates.TemplateResponse(
             "partials/confirm_button.html",
             context.template_context(

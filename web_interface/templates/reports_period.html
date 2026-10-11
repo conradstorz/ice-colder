@@ -33,7 +33,7 @@
        Day buckets from the epoch means one row -- and, per by_period's
        own per-bucket queries, several SQL queries -- for every real day
        the machine has ever run, tens of thousands of rows/100k+ queries
-       on a long-lived machine. Blocked server-side too (_resolve_bucket
+       on a long-lived machine. Blocked server-side too (resolve_bucket
        falls back to the range's default bucket for this exact
        combination) -- this only keeps an operator from ever generating
        the link in the first place. #}

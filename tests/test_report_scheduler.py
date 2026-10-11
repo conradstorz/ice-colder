@@ -157,7 +157,7 @@ def _report_sent_events(recorder) -> list[dict]:
     database, oldest first -- proof against the actual written state, not
     against anything ``report_scheduler`` itself computed in-process."""
     recorder.flush()
-    with sqlite3.connect(recorder._db_path) as conn:
+    with sqlite3.connect(recorder.db_path) as conn:
         rows = conn.execute(
             "SELECT metadata FROM events WHERE event_type='report_sent' ORDER BY id ASC"
         ).fetchall()
@@ -348,19 +348,19 @@ def test_compute_next_due_weekly_period_is_dst_correct_across_spring_forward():
 def test_compute_next_due_threads_tz_param_not_now_tzinfo(monkeypatch):
     """The threading test -- this round's key evidence.
 
-    Spies on ``report_scheduler._to_local`` (imported from
+    Spies on ``report_scheduler.to_local`` (imported from
     ``services.reports`` into this module's namespace, so patching the
     module-level name here intercepts every call ``_advance_one_local_day``/
     ``_shift_local_day`` make) while still delegating to the real
     implementation, so ``compute_next_due``'s actual behaviour is
     unaffected -- only the ``tz`` argument each call received is recorded.
     A spy was chosen over asserting the resulting boundaries match
-    ``_to_local(ts, None)`` independently, because the boundaries alone
+    ``to_local(ts, None)`` independently, because the boundaries alone
     cannot discriminate this bug in general (they coincidentally agree
     whenever there is no DST transition in the walked range, which most
     ``now`` values hit) -- watching the actual argument passed proves
     directly that ``None`` (the per-instant OS-resolution path), not
-    ``now.tzinfo``, reaches ``_to_local``, regardless of whether this
+    ``now.tzinfo``, reaches ``to_local``, regardless of whether this
     particular ``now`` straddles a transition.
 
     ``now.tzinfo`` here is ``FIXED_TZ`` -- a real, distinct-from-``None``
@@ -369,13 +369,13 @@ def test_compute_next_due_threads_tz_param_not_now_tzinfo(monkeypatch):
     call would carry ``FIXED_TZ``, not ``None``.
     """
     calls: list = []
-    real_to_local = report_scheduler._to_local
+    real_to_local = report_scheduler.to_local
 
     def _spy(ts, tz):
         calls.append(tz)
         return real_to_local(ts, tz)
 
-    monkeypatch.setattr(report_scheduler, "_to_local", _spy)
+    monkeypatch.setattr(report_scheduler, "to_local", _spy)
 
     config = _config(schedule="daily", hour=7)
     now = _dt(2026, 9, 20, 9, 0, 0)  # aware in FIXED_TZ, not None
@@ -384,9 +384,9 @@ def test_compute_next_due_threads_tz_param_not_now_tzinfo(monkeypatch):
 
     assert due is not None
     # Positive control: the backward day-walk (period_start) genuinely
-    # invoked _to_local at least once -- proving the spy was actually
+    # invoked to_local at least once -- proving the spy was actually
     # exercised, not merely installed and bypassed.
-    assert calls, "expected _to_local to be invoked by the backward day-walk"
+    assert calls, "expected to_local to be invoked by the backward day-walk"
     assert all(tz is None for tz in calls)
     assert FIXED_TZ not in calls
 
@@ -589,15 +589,15 @@ def test_period_already_sent_true_for_a_matching_row(recorder):
         },
     )
     recorder.flush()
-    assert report_scheduler._period_already_sent(recorder, "daily:2026-09-19") is True
-    assert report_scheduler._period_already_sent(recorder, "daily:2026-09-20") is False
+    assert report_scheduler.period_already_sent(recorder, "daily:2026-09-19") is True
+    assert report_scheduler.period_already_sent(recorder, "daily:2026-09-20") is False
 
 
 def test_period_already_sent_tolerates_malformed_metadata_row(recorder):
     """A malformed `metadata` value (corruption, never this module's own
     write) must be skipped, not raise -- proving `json_valid` actually
     guards `json_extract` rather than merely looking like it should."""
-    conn = sqlite3.connect(recorder._db_path)
+    conn = sqlite3.connect(recorder.db_path)
     with conn:
         conn.execute(
             "INSERT INTO events (event_type, timestamp, value, metadata) "
@@ -606,7 +606,7 @@ def test_period_already_sent_tolerates_malformed_metadata_row(recorder):
         )
     conn.close()
 
-    assert report_scheduler._period_already_sent(recorder, "daily:2026-09-19") is False
+    assert report_scheduler.period_already_sent(recorder, "daily:2026-09-19") is False
 
     # A genuine match alongside the malformed row is still found.
     recorder.record(
@@ -619,7 +619,7 @@ def test_period_already_sent_tolerates_malformed_metadata_row(recorder):
         },
     )
     recorder.flush()
-    assert report_scheduler._period_already_sent(recorder, "daily:2026-09-19") is True
+    assert report_scheduler.period_already_sent(recorder, "daily:2026-09-19") is True
 
 
 # --------------------------------------------------------------------------
@@ -806,7 +806,7 @@ async def test_run_writer_thread_dead_does_not_resend_within_same_process(
 ):
     """Family D (Copilot review): report_sent is only QUEUED on the writer
     thread by `recorder.record(...)`. If that thread has died,
-    `_period_already_sent`'s own `flush()` returns immediately (by design,
+    `period_already_sent`'s own `flush()` returns immediately (by design,
     see EventRecorder.flush) without ever writing the marker, so the very
     next pass's de-dup query sees no matching row. A naive implementation
     relying solely on that DB read would resend the same summary on every
@@ -835,7 +835,7 @@ async def test_run_writer_thread_dead_does_not_resend_within_same_process(
     # Proves the marker genuinely never made it into the database -- the
     # in-process guard under test is the ONLY thing that prevented a
     # resend here, not a lucky durable write this test failed to break.
-    with sqlite3.connect(recorder._db_path) as conn:
+    with sqlite3.connect(recorder.db_path) as conn:
         count = conn.execute(
             "SELECT COUNT(*) FROM events WHERE event_type='report_sent'"
         ).fetchone()[0]

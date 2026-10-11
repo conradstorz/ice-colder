@@ -214,21 +214,21 @@ class TestAllDayComboCapped:
     produced 20,725 rows in 2.13s against an EMPTY database (2026-09-27);
     bucket="month" over the same window produced 682 rows in 0.07s -- both
     numbers scale with wall-clock time, but the ~30x gap does not.
-    _resolve_bucket now refuses that specific combination server-side
+    resolve_bucket now refuses that specific combination server-side
     (falls back to the range's own default bucket -- month for "all" --
     the same shape an unrecognized bucket already gets), not merely a
     UI-only guard a typed or bookmarked URL would bypass.
     """
 
     def test_resolve_bucket_refuses_all_plus_day(self):
-        assert reports_routes._resolve_bucket("all", "day") == "month"
-        assert reports_routes._resolve_bucket("all", "day") != "day"
+        assert reports_routes.resolve_bucket("all", "day") == "month"
+        assert reports_routes.resolve_bucket("all", "day") != "day"
         # Every other combination is unaffected -- this is not a blanket
         # "day never allowed" rule, only the one dangerous pairing.
-        assert reports_routes._resolve_bucket("all", "week") == "week"
-        assert reports_routes._resolve_bucket("all", "month") == "month"
-        assert reports_routes._resolve_bucket("30d", "day") == "day"
-        assert reports_routes._resolve_bucket("7d", "day") == "day"
+        assert reports_routes.resolve_bucket("all", "week") == "week"
+        assert reports_routes.resolve_bucket("all", "month") == "month"
+        assert reports_routes.resolve_bucket("30d", "day") == "day"
+        assert reports_routes.resolve_bucket("7d", "day") == "day"
 
     def test_all_day_request_renders_month_not_day(self, client):
         resp = client.get("/reports/period?range=all&bucket=day")

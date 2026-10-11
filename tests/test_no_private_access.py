@@ -10,8 +10,8 @@ would have run -- a fault alert never published, a lockout never recorded,
 money moved without the FIFO ledger's bookkeeping -- so a test using it
 proves nothing about the production path it claims to exercise. The same
 goes for importing a private name directly out of another module (`from
-web_interface.routes.health import _fault_gate`): it reaches past whatever
-that module considers its public surface.
+web_interface.routes.health import _faults_with_age`): it reaches past
+whatever that module considers its public surface.
 
 This was originally a hardcoded check for `vmc._<name>`/`machine._<name>`
 only. It is now a general ratchet over **every** `<object>._<name>` access

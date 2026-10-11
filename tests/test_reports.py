@@ -37,9 +37,9 @@ class _SyntheticDstTz(tzinfo):
     `fromutc` deliberately returns a datetime whose attached tzinfo is a
     plain, FROZEN `datetime.timezone` snapshot -- exactly what
     `datetime.astimezone(None)` returns in production (see
-    `services.reports._to_local`) -- rather than `self`. That is what
+    `services.reports.to_local`) -- rather than `self`. That is what
     makes this class reproduce the *specific* bug under review: code that
-    calls `_to_local` once and then advances by `timedelta` alone carries
+    calls `to_local` once and then advances by `timedelta` alone carries
     that stale, `dt`-independent snapshot forward and never re-derives the
     true offset for a later date. (A "fully dynamic" tzinfo whose
     `utcoffset()` genuinely reads its `dt` argument on every call would
@@ -439,7 +439,7 @@ class TestByPeriodFallBackTransition:
         # the module's own helpers rather than trusting bucket_start alone.
         for i in range(len(dates) - 1):
             end_of_this = reports._floor_to_bucket(
-                reports._to_local(sale_ts[dates[i + 1]], SYN_FB_TZ), "day"
+                reports.to_local(sale_ts[dates[i + 1]], SYN_FB_TZ), "day"
             )
             assert end_of_this == actual_starts[i + 1]
 
@@ -579,7 +579,7 @@ class TestByPeriodSkuFilter:
         now = time.time()
         recorder.record_sale("A", "Alpha", 1, 2.00, {"cash": 2.00}, ts=now - 20)
 
-        with sqlite3.connect(recorder._db_path) as conn:
+        with sqlite3.connect(recorder.db_path) as conn:
             conn.execute(
                 "INSERT INTO events (event_type, timestamp, value, metadata) "
                 "VALUES ('vend_failed', ?, 1.0, ?)",
@@ -720,7 +720,7 @@ class TestRetentionNoneVersusZero:
         # bucket, directly into events (never pruned mid-test), so a None
         # result below proves the code withholds them by *date policy* --
         # not merely because no matching row happens to exist.
-        with sqlite3.connect(recorder._db_path) as conn:
+        with sqlite3.connect(recorder.db_path) as conn:
             conn.execute(
                 "INSERT INTO events (event_type, timestamp, value, metadata) "
                 "VALUES ('vend_failed', ?, 1.0, ?)",
@@ -740,7 +740,7 @@ class TestRetentionNoneVersusZero:
         rows = reports.by_period(recorder, window, "day", tz=FIXED_TZ)
 
         old_day_start = reports._floor_to_bucket(
-            reports._to_local(old_ts, FIXED_TZ), "day"
+            reports.to_local(old_ts, FIXED_TZ), "day"
         ).isoformat()
         matching = [r for r in rows if r["bucket_start"] == old_day_start]
 
@@ -780,7 +780,7 @@ class TestRetentionStraddlingBucket:
         # the real-world result partial.)
         cutoff_ts = time.time() - reports.RETENTION_DAYS * 86400
         bucket_start = reports._floor_to_bucket(
-            reports._to_local(cutoff_ts, FIXED_TZ), "day"
+            reports.to_local(cutoff_ts, FIXED_TZ), "day"
         )
         bucket_end = reports._next_bucket(bucket_start, "day")
 
@@ -797,7 +797,7 @@ class TestRetentionStraddlingBucket:
         )
 
         recorder.record_sale("STR", "Straddler", 1, 5.00, {"cash": 5.00}, ts=after_ts)
-        with sqlite3.connect(recorder._db_path) as conn:
+        with sqlite3.connect(recorder.db_path) as conn:
             conn.execute(
                 "INSERT INTO events (event_type, timestamp, value, metadata) "
                 "VALUES ('vend_failed', ?, 1.0, ?)",
@@ -896,7 +896,7 @@ class TestCollections:
         recorder.record_cash_collection("u1", "Alice")
         recorder.flush()
 
-        with sqlite3.connect(recorder._db_path) as conn:
+        with sqlite3.connect(recorder.db_path) as conn:
             first_stored = conn.execute(
                 "SELECT expected_cash FROM cash_collections WHERE user_id='u1'"
             ).fetchone()[0]
@@ -954,7 +954,7 @@ class TestCollections:
         recorder.flush()
         monkeypatch.undo()
 
-        with sqlite3.connect(recorder._db_path) as conn:
+        with sqlite3.connect(recorder.db_path) as conn:
             id_rows = conn.execute(
                 "SELECT id, user_id, ts, expected_cash FROM cash_collections "
                 "ORDER BY id ASC"

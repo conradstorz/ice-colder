@@ -93,7 +93,7 @@ def resolve_window(range_key: str, now: Optional[float] = None) -> tuple[float, 
 # --------------------------------------------------------------------------
 
 
-def _to_local(ts: float, tz: Optional[tzinfo]) -> datetime:
+def to_local(ts: float, tz: Optional[tzinfo]) -> datetime:
     """Convert an epoch timestamp to an aware local datetime.
 
     Built from a UTC-aware datetime and then `.astimezone(tz)`'d, per the
@@ -230,7 +230,7 @@ def by_period(
     pinned by a test; it is not a bug.
 
     Bucket boundaries are derived from the local wall clock at each
-    boundary's own instant (via `_to_local`), not by adding a fixed
+    boundary's own instant (via `to_local`), not by adding a fixed
     `timedelta` to a stale offset -- so a bucket always starts and ends at
     true local midnight (or week/month start) even across a DST
     transition, and a day that is locally 23 or 25 hours long is queried
@@ -252,8 +252,8 @@ def by_period(
     now = time.time()
     retention_cutoff = now - RETENTION_DAYS * _DAY
 
-    current = _floor_to_bucket(_to_local(start_ts, tz), bucket)
-    end_local = _to_local(end_ts, tz)
+    current = _floor_to_bucket(to_local(start_ts, tz), bucket)
+    end_local = to_local(end_ts, tz)
 
     rows: list[dict] = []
     with contextlib.closing(sqlite3.connect(db_path)) as conn:
@@ -261,7 +261,7 @@ def by_period(
             # Re-derive the next boundary from its own epoch instant rather
             # than carrying `current`'s tzinfo snapshot forward: `tz=None`
             # (the production default) resolves to a *fixed*-offset
-            # snapshot for one instant (see `_to_local`), so advancing by
+            # snapshot for one instant (see `to_local`), so advancing by
             # `timedelta` alone and reusing that same offset would silently
             # merge or split a day across a DST transition. Re-deriving on
             # every iteration, then re-flooring, lands exactly on true
@@ -285,7 +285,7 @@ def by_period(
             # outer-loop iteration in both DST directions.
             current_key = _bucket_key(current, bucket)
             candidate = _next_bucket(current, bucket)
-            next_start = _floor_to_bucket(_to_local(candidate.timestamp(), tz), bucket)
+            next_start = _floor_to_bucket(to_local(candidate.timestamp(), tz), bucket)
             retries = 0
             while (
                 _bucket_key(next_start, bucket) <= current_key
@@ -293,7 +293,7 @@ def by_period(
             ):
                 candidate = _next_bucket(next_start, bucket)
                 next_start = _floor_to_bucket(
-                    _to_local(candidate.timestamp(), tz), bucket
+                    to_local(candidate.timestamp(), tz), bucket
                 )
                 retries += 1
             if next_start <= current:

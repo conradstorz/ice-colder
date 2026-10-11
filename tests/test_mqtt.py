@@ -117,31 +117,31 @@ class TestStatusSchemas:
 
 class TestTopicMatching:
     def test_exact_match(self):
-        assert MQTTClient._topic_matches("payment/credit", "payment/credit") is True
+        assert MQTTClient.topic_matches("payment/credit", "payment/credit") is True
 
     def test_exact_no_match(self):
-        assert MQTTClient._topic_matches("payment/credit", "payment/status") is False
+        assert MQTTClient.topic_matches("payment/credit", "payment/status") is False
 
     def test_single_level_wildcard(self):
         assert (
-            MQTTClient._topic_matches("sensors/temp/+", "sensors/temp/evaporator")
+            MQTTClient.topic_matches("sensors/temp/+", "sensors/temp/evaporator")
             is True
         )
 
     def test_single_level_wildcard_wrong_depth(self):
-        assert MQTTClient._topic_matches("sensors/temp/+", "sensors/temp/a/b") is False
+        assert MQTTClient.topic_matches("sensors/temp/+", "sensors/temp/a/b") is False
 
     def test_multi_level_wildcard(self):
-        assert MQTTClient._topic_matches("sensors/#", "sensors/temp/evaporator") is True
+        assert MQTTClient.topic_matches("sensors/#", "sensors/temp/evaporator") is True
 
     def test_multi_level_wildcard_root(self):
-        assert MQTTClient._topic_matches("#", "anything/goes/here") is True
+        assert MQTTClient.topic_matches("#", "anything/goes/here") is True
 
     def test_shorter_pattern_no_match(self):
-        assert MQTTClient._topic_matches("sensors/temp", "sensors/temp/extra") is False
+        assert MQTTClient.topic_matches("sensors/temp", "sensors/temp/extra") is False
 
     def test_longer_pattern_no_match(self):
-        assert MQTTClient._topic_matches("sensors/temp/extra", "sensors/temp") is False
+        assert MQTTClient.topic_matches("sensors/temp/extra", "sensors/temp") is False
 
 
 # ── MQTTClient unit tests ────────────────────────────────────

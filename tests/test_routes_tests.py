@@ -33,7 +33,7 @@ from web_interface.routes.tests_level import (
     WATER_VALVE_SECONDS_RANGE,
     contract_match,
 )
-from web_interface.routes.tests_level import _recent_test_runs
+from web_interface.routes.tests_level import recent_test_runs
 from web_interface.routes.tests_level import testable_commands as compute_testable
 
 # Imported under an alias: a bare `testable_commands` name starting with
@@ -510,7 +510,7 @@ class TestContractMatch:
 
 
 class TestLog:
-    """Reaches web_interface/routes/tests_level.py's `_recent_test_runs`
+    """Reaches web_interface/routes/tests_level.py's `recent_test_runs`
     (a direct sqlite3 read against EventRecorder._db_path, following
     services/reports.py's own documented deviation) and tests_log.html.
     """
@@ -540,7 +540,7 @@ class TestLog:
         TestSaleRunner.run_test_sale writes today: {sku, outcome,
         fault_code, path}, no run_id, no subsystem/command/params at all.
 
-        Mutation proof: changed `_recent_test_runs` to build the row via
+        Mutation proof: changed `recent_test_runs` to build the row via
         direct subscription (`meta["subsystem"]`, `meta["command"]`,
         `meta.get("params")`) instead of `row.update(meta)`. Ran the whole
         TestLog class: 2 failed, 3 passed --
@@ -606,7 +606,7 @@ class TestLog:
     def test_user_status_and_duration_render(self, client, wire_event_recorder):
         """Copilot review (PR 22, id=4128088722): spec §3 requires the log
         to show who ran it, the status, and the duration -- the card
-        previously rendered none of the three, and _recent_test_runs
+        previously rendered none of the three, and recent_test_runs
         didn't even select the event `value` column that holds the
         duration. `value=12.5` here is the run's actual DURATION (how
         long the command took), not "time ago" -- distinct from
@@ -1151,7 +1151,7 @@ class TestResultRendering:
             client, "mdb", "ping", FakeAckDispatcher(status="ok")
         )
         assert resp.status_code == 200
-        assert _recent_test_runs(1)[0]["status"] == "ok"
+        assert recent_test_runs(1)[0]["status"] == "ok"
 
     def test_rejected_ack_shows_detail_verbatim(
         self, client, wired, wire_subsystem, wire_event_recorder
@@ -1165,7 +1165,7 @@ class TestResultRendering:
         )
         assert resp.status_code == 200
         assert "blocked by service door" in resp.text
-        assert _recent_test_runs(1)[0]["status"] == "rejected"
+        assert recent_test_runs(1)[0]["status"] == "rejected"
 
     def test_failed_ack_shows_detail_verbatim(
         self, client, wired, wire_subsystem, wire_event_recorder
@@ -1179,7 +1179,7 @@ class TestResultRendering:
         )
         assert resp.status_code == 200
         assert "motor stalled" in resp.text
-        assert _recent_test_runs(1)[0]["status"] == "failed"
+        assert recent_test_runs(1)[0]["status"] == "failed"
 
     def test_unsupported_ack_shows_detail_verbatim(
         self, client, wired, wire_subsystem, wire_event_recorder
@@ -1193,7 +1193,7 @@ class TestResultRendering:
         )
         assert resp.status_code == 200
         assert "firmware too old" in resp.text
-        assert _recent_test_runs(1)[0]["status"] == "unsupported"
+        assert recent_test_runs(1)[0]["status"] == "unsupported"
 
     def test_timeout_renders_exact_message(
         self, client, wired, wire_subsystem, wire_event_recorder
@@ -1204,7 +1204,7 @@ class TestResultRendering:
         )
         assert resp.status_code == 200
         assert "no answer from mdb after 2 attempts" in resp.text
-        assert _recent_test_runs(1)[0]["status"] == "timeout"
+        assert recent_test_runs(1)[0]["status"] == "timeout"
 
 
 # --- Run all ----------------------------------------------------------

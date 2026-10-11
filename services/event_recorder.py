@@ -315,6 +315,14 @@ class EventRecorder:
         )
         self._writer.start()
 
+    @property
+    def db_path(self) -> Path:
+        """The database file actually in use right now -- the path the
+        caller passed in, unless the DATA-102 corrupt-rename fallback in
+        ``_quarantine_corrupt_db`` switched ``self._db_path`` to a fresh
+        file instead."""
+        return Path(self._db_path)
+
     @staticmethod
     def _try_rename_aside(source: str, dest: str) -> Optional[bool]:
         """Best-effort rename of one file. Returns True if renamed, False if
