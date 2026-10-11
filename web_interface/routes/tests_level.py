@@ -143,20 +143,20 @@ def recent_test_runs(limit: int = 100) -> list[dict]:
     event's own `value` column, how LONG the run took, not how long ago it
     happened) added.
 
-    Reads `context.event_recorder._db_path` directly rather than caching
-    it or adding a public query method to services/event_recorder.py --
-    the same deliberate deviation services/reports.py's module docstring
-    documents (that module reads the same private attribute, at call time,
-    for the same reason: EventRecorder._quarantine_corrupt_db can reassign
-    it mid-process after a corruption recovery, and event_recorder.py is
-    outside this task's file list to add an accessor to). Returns [] when
-    no recorder is wired, rather than raising.
+    Reads `context.event_recorder.db_path` -- `EventRecorder`'s public
+    read-only property for the live database file -- at call time rather
+    than caching it, the same convention services/reports.py's module
+    docstring documents (that module reads the same public property, at
+    call time, for the same reason: `EventRecorder._quarantine_corrupt_db`
+    can reassign the underlying path mid-process after a corruption
+    recovery, and a cached path would silently keep reading the wrong
+    database). Returns [] when no recorder is wired, rather than raising.
     """
     recorder = context.event_recorder
     if recorder is None:
         return []
     recorder.flush()
-    db_path = recorder._db_path
+    db_path = recorder.db_path
     now = time.time()
     rows: list[dict] = []
     with contextlib.closing(sqlite3.connect(db_path)) as conn:

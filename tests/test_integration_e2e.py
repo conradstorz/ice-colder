@@ -187,6 +187,11 @@ async def _ack_dispense(sim_client: "aiomqtt.Client", prefix: str, request_id: s
     # Give the dispatcher's cmd/+/ack handler and DispenseCycle._run a
     # moment to actually process the ack before the terminal report (sent
     # by the caller right after this returns) arrives.
+    #
+    # Deliberate residual fixed sleep: the dispatcher exposes no public
+    # "ack consumed" observable (its pending-ack bookkeeping is private),
+    # and on the success path the dispense cycle produces no state change
+    # to wait on instead -- the FSM stays in "dispensing" throughout.
     await asyncio.sleep(0.3)
 
 
@@ -411,10 +416,13 @@ class TestFullTransactionLoop:
                     f"{prefix}/payment/credit",
                     PaymentEvent(amount=1.00, method="cash_coin").model_dump_json(),
                 )
-                await asyncio.sleep(0.5)
-                # Should still be interacting, not dispensing
+                # Wait for the positive part -- escrow reflecting the
+                # deposit -- then check the negative: state unchanged.
+                # Credit never becomes sufficient ($1.00 < $3.50), so the
+                # state assertion holds regardless of when process_payment's
+                # own timer happens to re-check.
+                await _wait_until(lambda: abs(vmc.credit_escrow - 1.00) < 0.01)
                 assert vmc.state == "interacting_with_user"
-                assert abs(vmc.credit_escrow - 1.00) < 0.01
 
                 # Insert another $3.00 — now $4.00 total >= $3.50
                 await sim_client.publish(
@@ -563,7 +571,9 @@ class TestSensorAndHeartbeatRouting:
                     f"{prefix}/sensors/temp/compressor",
                     SensorReading(location="compressor", value=65.3).model_dump_json(),
                 )
-                await asyncio.sleep(0.5)
+                await _wait_until(
+                    lambda: "compressor" in health.get_summary()["temperatures"]
+                )
 
                 summary = health.get_summary()
                 assert "compressor" in summary["temperatures"]
@@ -605,7 +615,9 @@ class TestSensorAndHeartbeatRouting:
                     f"{prefix}/heartbeat/ice_maker",
                     json.dumps({"subsystem": "ice_maker", "uptime_seconds": 120}),
                 )
-                await asyncio.sleep(0.5)
+                await _wait_until(
+                    lambda: "ice_maker" in health.get_summary()["subsystems"]
+                )
 
                 summary = health.get_summary()
                 assert "ice_maker" in summary["subsystems"]
@@ -752,7 +764,13 @@ async def test_vending_heartbeat_loss_blocks_sale_not_payment_enable():
     seen: list[bool] = []
     async with aiomqtt.Client(hostname="localhost", port=1883, **_MQTT_AUTH) as probe:
         await probe.subscribe(f"vmc/{cfg.machine_id}/cmd/payment/enable")
-        await asyncio.sleep(1.0)
+        # `mqtt.connected` flips true before the subscribe loop runs, so it
+        # does not guarantee the VMC is subscribed to the heartbeat/payment/
+        # hardware-io topics published below. `mqtt.subscribed` is the
+        # signal that does: it only goes true once every registered topic
+        # has been subscribed, which is what guarantees the non-retained
+        # publishes below are actually received.
+        await _wait_until(lambda: mqtt.subscribed)
         prefix = f"vmc/{cfg.machine_id}"
         for name in ("vending", "mdb", "ice_maker"):
             await probe.publish(
@@ -767,12 +785,18 @@ async def test_vending_heartbeat_loss_blocks_sale_not_payment_enable():
             f"{prefix}/hardware/io/bin_half_full",
             json.dumps({"device": "bin_half_full", "state": True}),
         )
-        await asyncio.sleep(1.0)
+        # Wait on the state the three publishes above (heartbeats for
+        # vending/mdb/ice_maker, payment/status, bin_half_full) produce --
+        # everything alive -- rather than a fixed sleep.
+        await _wait_until(
+            lambda: avail.payment_enabled is True
+            and avail.sale_available("ice")[0] is True
+        )
         await probe.publish(
             f"{prefix}/heartbeat/vending",
             json.dumps({"subsystem": "vending", "uptime_seconds": -1}),
         )
-        await asyncio.sleep(1.0)
+        await _wait_until(lambda: "vending_alive" in avail.sale_available("ice")[1])
         assert avail.payment_enabled is True
         sellable, reasons = avail.sale_available("ice")
         assert sellable is False
@@ -782,7 +806,7 @@ async def test_vending_heartbeat_loss_blocks_sale_not_payment_enable():
             f"{prefix}/heartbeat/vending",
             json.dumps({"subsystem": "vending", "uptime_seconds": 2}),
         )
-        await asyncio.sleep(1.0)
+        await _wait_until(lambda: avail.sale_available("ice")[0] is True)
         assert avail.sale_available("ice")[0] is True
 
         while True:

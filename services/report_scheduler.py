@@ -114,9 +114,10 @@ the key.
 
 Every read of the events database goes through :func:`asyncio.to_thread`
 (``summary()`` and the ``report_sent`` lookup below), matching
-``services/reports.py``'s own convention of reading ``recorder._db_path`` at
-call time rather than caching it, since corrupt-database recovery can
-reassign it mid-process.
+``services/reports.py``'s own convention of reading ``recorder.db_path`` (the
+public read for the recorder's database file) at call time rather than
+caching it, since corrupt-database recovery can reassign the underlying path
+mid-process.
 
 The loop never raises out of its own body: the whole per-pass workload (the
 de-dup query, ``summary()``, the send, the ``report_sent`` write) is wrapped
@@ -146,7 +147,7 @@ from loguru import logger
 # `_MAX_BUCKET_KEY_RETRIES` are underscore-private in services/reports.py
 # (`to_local` itself is public), but importing them here is a deliberate,
 # directed reuse -- not an accident -- for the same reason services/reports.py
-# itself reads `recorder._db_path` across modules (see that module's docstring):
+# itself reads `recorder.db_path` across modules (see that module's docstring):
 # `services/reports.py` already contains the ONE correct, tested
 # implementation of "re-derive true local midnight from an epoch instant,
 # DST-correct in both directions, advancing one real day at a time" (backing
@@ -599,12 +600,13 @@ def period_already_sent(recorder, period_key: str) -> bool:
     is untouched -- this adds an explicit match-and-stop bound on TOP of
     it, not a replacement for it.
 
-    Reads ``recorder._db_path`` at call time, never cached: see
-    ``services/reports.py``'s module docstring for why (corrupt-database
-    recovery can reassign it mid-process).
+    Reads ``recorder.db_path`` (the public read for the recorder's database
+    file) at call time, never cached: see ``services/reports.py``'s module
+    docstring for why (corrupt-database recovery can reassign the underlying
+    path mid-process).
     """
     recorder.flush()
-    db_path = recorder._db_path
+    db_path = recorder.db_path
     with contextlib.closing(sqlite3.connect(db_path)) as conn:
         row = conn.execute(
             "SELECT 1 FROM events WHERE event_type='report_sent' "

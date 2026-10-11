@@ -10,6 +10,7 @@ from config.config_model import ConfigModel
 from controller.machine import Machine
 from services.display_controller import DisplayController
 from services.mqtt_messages import DisplayMode
+from tests.fakes import settle
 
 
 class TestDisplayControllerModes:
@@ -71,7 +72,7 @@ class TestDisplayControllerMQTT:
 
         dc.update_for_state("error")  # advertising -> error, should publish
         # Give the task a chance to run
-        await asyncio.sleep(0.01)
+        await settle()
 
         mock_client.publish.assert_awaited_once()
         call_args = mock_client.publish.call_args
@@ -86,7 +87,7 @@ class TestDisplayControllerMQTT:
         dc.set_mqtt(mock_client, loop)
 
         dc.update_for_state("idle")  # already advertising, no change
-        await asyncio.sleep(0.01)
+        await settle()
 
         mock_client.publish.assert_not_awaited()
 
@@ -99,7 +100,7 @@ class TestDisplayControllerMQTT:
         dc.set_mqtt(mock_client, loop)
 
         dc.set_mode(DisplayMode.advertising)  # same as current, but manual
-        await asyncio.sleep(0.01)
+        await settle()
 
         mock_client.publish.assert_awaited_once()
 
@@ -112,7 +113,7 @@ class TestDisplayControllerMQTT:
         dc.set_mqtt(mock_client, loop)
 
         dc.update_for_state("error")  # advertising -> error, should publish
-        await asyncio.sleep(0.01)
+        await settle()
 
         mock_client.publish.assert_awaited_once()
         command = mock_client.publish.call_args[0][1]
@@ -129,7 +130,7 @@ class TestDisplayControllerSetupCode:
         dc.set_mqtt(mock_client, loop)
 
         dc.show_setup_code("12345678")
-        await asyncio.sleep(0.01)
+        await settle()
 
         assert dc.current_mode == DisplayMode.maintenance
         assert dc.setup_code == "12345678"
@@ -149,11 +150,11 @@ class TestDisplayControllerSetupCode:
         dc.set_mqtt(mock_client, loop)
 
         dc.show_setup_code("12345678")
-        await asyncio.sleep(0.01)
+        await settle()
         mock_client.publish.reset_mock()
 
         dc.update_for_state("interacting_with_user")
-        await asyncio.sleep(0.01)
+        await settle()
 
         mock_client.publish.assert_not_awaited()
         assert dc.current_mode == DisplayMode.maintenance
@@ -168,13 +169,13 @@ class TestDisplayControllerSetupCode:
         dc.set_mqtt(mock_client, loop)
 
         dc.show_setup_code("12345678")
-        await asyncio.sleep(0.01)
+        await settle()
         dc.update_for_state("interacting_with_user")  # recorded but not published
-        await asyncio.sleep(0.01)
+        await settle()
         mock_client.publish.reset_mock()
 
         dc.clear_setup_code()
-        await asyncio.sleep(0.01)
+        await settle()
 
         assert dc.setup_code is None
         assert dc.current_mode == DisplayMode.transaction
@@ -192,7 +193,7 @@ class TestDisplayControllerSetupCode:
         dc.set_mqtt(mock_client, loop)
 
         dc.clear_setup_code()
-        await asyncio.sleep(0.01)
+        await settle()
 
         assert dc.setup_code is None
         mock_client.publish.assert_not_awaited()
@@ -239,7 +240,7 @@ class TestDisplayControllerReconnect:
         dc.set_mqtt(client, loop)
 
         dc.show_setup_code("12345678")
-        await asyncio.sleep(0.01)
+        await settle()
 
         assert client.published == []
         assert dc.setup_code == "12345678"  # held in memory regardless
@@ -252,12 +253,12 @@ class TestDisplayControllerReconnect:
         dc.set_mqtt(client, loop)
 
         dc.show_setup_code("12345678")
-        await asyncio.sleep(0.01)
+        await settle()
         assert client.published == []  # dropped, as above
 
         client.connected = True  # simulates the MQTT connection callback firing
         dc.republish()
-        await asyncio.sleep(0.01)
+        await settle()
 
         assert len(client.published) == 1
         topic, command = client.published[0]
@@ -272,12 +273,12 @@ class TestDisplayControllerReconnect:
         loop = asyncio.get_running_loop()
         dc.set_mqtt(client, loop)
         dc.update_for_state("error")  # advertising -> error, dropped (disconnected)
-        await asyncio.sleep(0.01)
+        await settle()
         assert client.published == []
 
         client.connected = True
         dc.republish()
-        await asyncio.sleep(0.01)
+        await settle()
 
         assert len(client.published) == 1
         command = client.published[0][1]
@@ -296,13 +297,13 @@ class TestDisplayControllerReconnect:
         dc.set_mqtt(client, loop)
 
         dc.show_setup_code("12345678")
-        await asyncio.sleep(0.01)
+        await settle()
         client.connected = True
 
         # A second call with the identical code still held — must still
         # publish, unlike show_setup_code's caller-side equality check.
         dc.republish()
-        await asyncio.sleep(0.01)
+        await settle()
 
         assert len(client.published) == 1
         assert client.published[0][1].message == "Setup code: 1234 5678"

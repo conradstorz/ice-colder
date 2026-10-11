@@ -2,6 +2,7 @@
 import csv
 import io
 import sqlite3
+import threading
 import time
 from datetime import datetime, timedelta, timezone, tzinfo
 
@@ -150,6 +151,34 @@ def _syn_fb_midnight(year, month, day):
 @pytest.fixture
 def recorder(tmp_path):
     return EventRecorder(db_path=str(tmp_path / "events.db"))
+
+
+@pytest.fixture
+def ticking_clock(monkeypatch):
+    """Patch `time.time` to a thread-safe, monotonically ticking counter.
+
+    Same seam `tests/test_event_recorder.py` already uses
+    (`monkeypatch.setattr(time, "time", ...)`) -- patching the shared
+    `time` module's `time` attribute, which every caller that does
+    `import time; time.time()` (including `services.event_recorder`)
+    then sees. Each call advances by 0.05s from one real `time.time()`
+    captured at fixture setup, so successive calls are always strictly
+    increasing with no wall-clock wait, regardless of OS clock
+    resolution or how many threads call it.
+    """
+    base = time.time()
+    count = 0
+    lock = threading.Lock()
+
+    def counter():
+        nonlocal count
+        with lock:
+            n = count
+            count += 1
+        return base + n * 0.05
+
+    monkeypatch.setattr(time, "time", counter)
+    return counter
 
 
 # --------------------------------------------------------------------------
@@ -884,15 +913,15 @@ class TestEmptyDatabase:
 
 
 class TestCollections:
-    def test_newest_row_is_live_older_rows_are_stored(self, recorder):
+    def test_newest_row_is_live_older_rows_are_stored(self, recorder, ticking_clock):
         # record_cash_collection always stamps with the real wall clock, so
         # every timestamp here is real time.time() too (never a synthetic
         # offset) -- otherwise an artificially-future sale ts could sort
         # ahead of a later, real-time collection and invert the ordering
-        # this test relies on. Tiny sleeps guarantee strictly increasing
-        # timestamps regardless of OS clock resolution.
+        # this test relies on. `time.time` is patched to a monotonically
+        # ticking clock (the `ticking_clock` fixture) to guarantee strictly
+        # increasing timestamps with no wall-clock wait.
         recorder.record_sale("A", "Alpha", 1, 1.00, {"cash": 1.00})
-        time.sleep(0.02)
         recorder.record_cash_collection("u1", "Alice")
         recorder.flush()
 
@@ -901,15 +930,12 @@ class TestCollections:
                 "SELECT expected_cash FROM cash_collections WHERE user_id='u1'"
             ).fetchone()[0]
 
-        time.sleep(0.02)
         recorder.record_sale("B", "Beta", 2, 2.00, {"cash": 2.00})
-        time.sleep(0.02)
         recorder.record_cash_collection("u2", "Bob")
         recorder.flush()
 
         # A sale that arrives AFTER the newest collection -- proves the
         # newest row's figure is live, not frozen at insert time.
-        time.sleep(0.02)
         recorder.record_sale("C", "Gamma", 3, 7.00, {"cash": 7.00})
 
         rows = reports.collections(recorder, limit=10)
@@ -919,7 +945,6 @@ class TestCollections:
         assert by_user["u1"]["expected_cash"] == pytest.approx(first_stored)
 
         # It keeps changing as still more sales arrive.
-        time.sleep(0.02)
         recorder.record_sale("D", "Delta", 4, 3.00, {"cash": 3.00})
         rows_again = reports.collections(recorder, limit=10)
         by_user_again = {r["user_id"]: r for r in rows_again}

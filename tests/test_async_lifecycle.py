@@ -6,6 +6,7 @@ import pytest
 
 from services.task_lifecycle import run_until_primary_exits
 from services.task_supervisor import supervise
+from tests.fakes import settle
 
 
 async def test_supervise_restarts_after_crash():
@@ -78,7 +79,9 @@ class TestRunUntilPrimaryExits:
         supervisor_started = asyncio.Event()
 
         async def fake_server():
-            await asyncio.sleep(0.01)
+            # Yield to the loop so fake_supervisor runs far enough to set
+            # supervisor_started before this returns -- no clock wait.
+            await settle()
             return "served"
 
         async def fake_supervisor():

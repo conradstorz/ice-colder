@@ -4,6 +4,7 @@
 import asyncio
 import json
 from datetime import datetime
+from typing import Optional
 from unittest.mock import AsyncMock, MagicMock
 
 import aiomqtt
@@ -165,6 +166,7 @@ class TestMQTTClientUnit:
         cfg = MQTTConfig()
         client = MQTTClient(config=cfg, machine_id="vmc-0001")
         assert client.connected is False
+        assert client.subscribed is False
 
     @pytest.mark.asyncio
     async def test_publish_when_not_connected_does_nothing(self):
@@ -253,6 +255,11 @@ class _FakeAiomqttClient:
 
     def __init__(self, *args, **kwargs):
         self.subscribed: list[tuple[str, int]] = []
+        # Set by a test that wants to observe MQTTClient.subscribed at the
+        # moment the message loop starts (right after the subscribe loop
+        # completes, before the connection ends).
+        self.mqtt_client: Optional["MQTTClient"] = None
+        self.subscribed_during_messages: Optional[bool] = None
 
     async def __aenter__(self):
         return self
@@ -267,6 +274,8 @@ class _FakeAiomqttClient:
         pass
 
     async def _empty_messages(self):
+        if self.mqtt_client is not None:
+            self.subscribed_during_messages = self.mqtt_client.subscribed
         return
         yield  # pragma: no cover - never reached; makes this an async generator
 
@@ -284,6 +293,7 @@ class TestMQTTClientSubscribeQoS:
         client.register("sensors/temp/+", AsyncMock())
 
         fake = _FakeAiomqttClient()
+        fake.mqtt_client = client
         monkeypatch.setattr(
             "services.mqtt_client.aiomqtt.Client", lambda *a, **kw: fake
         )
@@ -294,6 +304,56 @@ class TestMQTTClientSubscribeQoS:
             ("vmc/vmc-0001/payment/credit", 1),
             ("vmc/vmc-0001/sensors/temp/+", 1),
         ]
+        # subscribed flipped true once the subscribe loop finished, in time
+        # for the message loop that follows it...
+        assert fake.subscribed_during_messages is True
+        # ...and flipped back false once the connection ended.
+        assert client.subscribed is False
+
+
+class _BlockingMessagesAiomqttClient(_FakeAiomqttClient):
+    """Stand-in whose message loop blocks forever once started — like a live
+    broker connection that the VMC never disconnects from on its own, so the
+    only way out of the `async for` is cancellation."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.started = asyncio.Event()
+
+    async def _blocking_messages(self):
+        self.started.set()
+        await asyncio.Event().wait()
+        yield  # pragma: no cover - never reached
+
+    @property
+    def messages(self):
+        return self._blocking_messages()
+
+
+class TestMQTTClientSubscribedResetOnCancel:
+    @pytest.mark.asyncio
+    async def test_subscribed_resets_when_message_loop_is_cancelled(self, monkeypatch):
+        cfg = MQTTConfig()
+        client = MQTTClient(config=cfg, machine_id="vmc-0001")
+        client.register("payment/credit", AsyncMock())
+
+        fake = _BlockingMessagesAiomqttClient()
+        monkeypatch.setattr(
+            "services.mqtt_client.aiomqtt.Client", lambda *a, **kw: fake
+        )
+
+        # private: drives the connect/subscribe/listen loop directly, same
+        # as the adjacent qos-1 test above, since there is no public seam
+        # for "run one connection attempt" short of the full run() retry loop.
+        task = asyncio.create_task(client._connect_and_listen())
+        await fake.started.wait()
+        assert client.subscribed is True
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert client.subscribed is False
 
 
 class TestMQTTProtocolVersion:

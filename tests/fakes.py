@@ -166,6 +166,13 @@ class FakeTaskRunner:
             call.callback()
 
 
+async def settle(turns: int = 3) -> None:
+    """Yield to the loop `turns` times so fire-and-forget tasks with no real I/O run to completion.
+    Replaces `await asyncio.sleep(0.01)`-style waits; never waits on the clock."""
+    for _ in range(turns):
+        await asyncio.sleep(0)
+
+
 class FakeMqtt:
     """Records every publish() call; `register` is accepted and ignored
     since neither `StatusOutputs` nor `FaultService` ever calls it."""

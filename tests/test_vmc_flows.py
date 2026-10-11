@@ -31,7 +31,7 @@ from services.health_monitor import HealthMonitor
 from services.mqtt_messages import PaymentEnableCommand
 from services.session_store import Credit, SessionSnapshot, SessionStore
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
-from tests.fakes import FakeTaskRunner
+from tests.fakes import FakeTaskRunner, settle
 
 
 _profiles_tmp_base: Path | None = None
@@ -1509,10 +1509,10 @@ class TestRefunds:
         assert "issued" not in messages[-1]
 
     async def test_no_ack_deadline_retries_then_pay_103(self):
-        machine = make_machine2()
+        runner = FakeTaskRunner()
+        machine = make_machine2(tasks=runner)
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        vmc.REFUND_ACK_TIMEOUT = 0.01
         client = RecordingClient()
         machine.set_mqtt_client(client)
         rec = FakeEventRecorder()
@@ -1520,7 +1520,10 @@ class TestRefunds:
         vmc.credit_escrow = 3.0
         vmc.request_refund(reason="error")
 
-        await asyncio.sleep(0.1)
+        runner.fire("refund_deadline")
+        await settle()
+        runner.fire("refund_deadline")
+        await settle()
 
         assert len(client.refund_commands()) == 2
         assert vmc.refunds.pending == {}
@@ -1870,11 +1873,11 @@ async def test_deposit_while_disabled_is_escrowed_and_logged():
     machine.cancel_pending_tasks()
 
 
-def _boot_with(tmp_path, snap):
+def _boot_with(tmp_path, snap, *, tasks: TaskRunner | None = None):
     store = SessionStore(tmp_path / "session.json")
     if snap is not None:
         store.save(snap)
-    vmc, monitor, avail, published, machine = _wired_vmc()
+    vmc, monitor, avail, published, machine = _wired_vmc(tasks=tasks)
     machine.set_session_store(store)
     return vmc, avail, store, machine
 
@@ -2098,10 +2101,12 @@ async def test_boot_with_corrupt_file_raises_pay_104(tmp_path):
 
 async def test_clearing_pay_104_removes_file_and_reenables(tmp_path):
     vmc, avail, store, machine = _boot_with(
-        tmp_path, SessionSnapshot(state="interacting_with_user", credit_escrow=1.0)
+        tmp_path,
+        SessionSnapshot(state="interacting_with_user", credit_escrow=1.0),
+        tasks=FakeTaskRunner(),
     )
     assert vmc.clear_fault("PAY-104", by="admin") is True
-    await asyncio.sleep(0.05)
+    await machine.tasks.drain_persistence()
     assert store.load() is None
     rows = {r["name"]: r for r in avail.table()}
     assert rows["transaction_certain"]["state"] == "pass"
@@ -2123,7 +2128,8 @@ async def test_clear_pay_104_fails_closed_when_evidence_file_persists(tmp_path):
 
 async def test_session_file_written_during_sale_and_cleared_after(tmp_path):
     store = SessionStore(tmp_path / "session.json")
-    vmc, monitor, avail, published, machine = _wired_vmc()
+    runner = FakeTaskRunner()
+    vmc, monitor, avail, published, machine = _wired_vmc(tasks=runner)
     machine.set_session_store(store)
     _all_alive(monitor, machine)
     avail.set_payment_device("coin_acceptor", "ready")
@@ -2132,19 +2138,19 @@ async def test_session_file_written_during_sale_and_cleared_after(tmp_path):
     )
 
     vmc.deposit_funds(2.5, payment_method="cash_bill")
-    await asyncio.sleep(0.05)
+    await runner.drain_persistence()
     snap = store.load()
     assert snap is not None and snap.credit_escrow == 2.5
 
     vmc.select_product(0)
-    await asyncio.sleep(1.2)  # process_payment runs after 1s
+    runner.fire("process_payment")
+    await runner.drain_persistence()
     assert vmc.state == "dispensing"
-    await asyncio.sleep(0.05)
     snap = store.load()
     assert snap.state == "dispensing" and snap.dispense_slot == 0
 
     await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "complete"})
-    await asyncio.sleep(0.05)
+    await runner.drain_persistence()
     assert vmc.state == "idle"
     assert store.load() is None
     machine.cancel_pending_tasks()
@@ -2233,7 +2239,7 @@ async def test_cancel_pending_tasks_never_cancels_persistence(tmp_path):
 
 async def test_dispense_snapshot_persisted_before_dispense_command(tmp_path):
     store = SessionStore(tmp_path / "session.json")
-    machine = make_machine(price=2.50, tmp_path=tmp_path)
+    machine = make_machine(price=2.50, tmp_path=tmp_path, tasks=FakeTaskRunner())
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
     machine.set_session_store(store)
@@ -2261,25 +2267,14 @@ async def test_dispense_snapshot_persisted_before_dispense_command(tmp_path):
 
     vmc.process_payment()
 
-    # Bounded wait instead of a fixed sleep: this test failed once in CI and
-    # passed on an unchanged re-run, because 50ms is enough time for
-    # process_payment's background task to dispatch dispense on a
-    # developer machine but not reliably enough on a loaded CI runner. Poll
-    # for the dispatch instead of gambling on a fixed delay; the assertions
+    # The drain awaits the persistent dispatch task started inside the
+    # dispense cycle directly instead of polling for it; the assertions
     # inside send_and_check (snapshot persisted with state "dispensing"
-    # *before* the dispatch) still run for real on whichever iteration the
-    # dispatch actually lands, so this stays a wait for the real event, not
-    # a race that can pass without ever running them.
-    deadline = asyncio.get_running_loop().time() + 2.0
-    while not any(c == "dispense" for _, c, _ in sent):
-        if asyncio.get_running_loop().time() >= deadline:
-            pytest.fail(
-                "dispense was never dispatched within 2s of "
-                f"process_payment(); sent so far: {sent!r}"
-            )
-        await asyncio.sleep(0.01)
+    # *before* the dispatch) still run for real as part of that awaited
+    # task.
+    await machine.tasks.drain_persistence()
 
-    assert any(c == "dispense" for _, c, _ in sent)
+    assert any(c == "dispense" for _, c, _ in sent), f"sent so far: {sent!r}"
     machine.cancel_pending_tasks()
 
 

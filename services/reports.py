@@ -13,15 +13,16 @@ Design notes / deliberate deviations (recorded here per the task brief):
   code. This module imports from ``event_recorder``, never the reverse, so
   there is no import cycle. This arrangement was directed by the task brief,
   not chosen independently.
-- There is no public accessor for the recorder's database path. Every
-  function below reads ``recorder._db_path`` **at call time** rather than
-  caching it, because ``EventRecorder._quarantine_corrupt_db`` can reassign
-  ``self._db_path`` mid-process when it falls back to a ``.new-<timestamp>``
-  file after a corruption recovery -- a cached path would silently keep
-  reading the wrong (possibly deleted, possibly stale) database for the rest
-  of the process's life. Reading this private attribute across modules in
-  the same package is a deliberate, directed deviation; ``event_recorder.py``
-  is outside this task's permitted files, so no property was added there.
+- ``EventRecorder.db_path`` is the public read for the recorder's database
+  file path. Every function below reads ``recorder.db_path`` **at call
+  time** rather than caching it, because ``EventRecorder._quarantine_corrupt_db``
+  can reassign the underlying path mid-process when it falls back to a
+  ``.new-<timestamp>`` file after a corruption recovery -- a cached path
+  would silently keep reading the wrong (possibly deleted, possibly stale)
+  database for the rest of the process's life. (An earlier revision of this
+  module read the private ``recorder._db_path`` directly, before that
+  property existed; using ``.db_path`` now is a sanctioned rename to the
+  public seam, not a new deviation.)
 """
 
 import contextlib
@@ -54,9 +55,8 @@ _DAY = 86400.0
 # Must agree with EventRecorder's default retention_days=90 (see design
 # §2/§1.3): the `events` table is pruned to this window, but `sales` and
 # `cash_collections` are never pruned. This constant is not read off the
-# recorder because, unlike `_db_path`, it never changes after construction
-# and the brief only sanctions reading `_db_path` across modules -- so it is
-# simply kept in agreement with the documented default here.
+# recorder because, unlike `db_path`, it never changes after construction --
+# so it is simply kept in agreement with the documented default here.
 RETENTION_DAYS = 90
 
 # Window presets selected by the dashboard's `?range=` query param: each
@@ -245,9 +245,9 @@ def by_period(
     start_ts, end_ts = window
     if start_ts >= end_ts:
         return []
-    # Read at call time -- see module docstring: _db_path can be reassigned
+    # Read at call time -- see module docstring: db_path can be reassigned
     # mid-process by corrupt-database recovery, so it must never be cached.
-    db_path = recorder._db_path
+    db_path = recorder.db_path
 
     now = time.time()
     retention_cutoff = now - RETENTION_DAYS * _DAY
@@ -406,7 +406,7 @@ def by_product(recorder, window: tuple[float, float]) -> list[dict]:
     """
     recorder.flush()
     start_ts, end_ts = window
-    db_path = recorder._db_path
+    db_path = recorder.db_path
 
     entries: dict[str, dict] = {}
     with contextlib.closing(sqlite3.connect(db_path)) as conn:
@@ -473,7 +473,7 @@ def by_method(recorder, window: tuple[float, float]) -> list[dict]:
     """
     recorder.flush()
     start_ts, end_ts = window
-    db_path = recorder._db_path
+    db_path = recorder.db_path
 
     totals: dict[str, dict] = {}
     total_revenue = 0.0
@@ -532,7 +532,7 @@ def collections(recorder, limit: int = 50) -> list[dict]:
     no caller needs).
     """
     recorder.flush()
-    db_path = recorder._db_path
+    db_path = recorder.db_path
 
     result: list[dict] = []
     with contextlib.closing(sqlite3.connect(db_path)) as conn:
@@ -564,7 +564,7 @@ def summary(recorder, window: tuple[float, float]) -> dict:
     """
     recorder.flush()
     start_ts, end_ts = window
-    db_path = recorder._db_path
+    db_path = recorder.db_path
 
     with contextlib.closing(sqlite3.connect(db_path)) as conn:
         revenue = conn.execute(

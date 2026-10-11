@@ -14,6 +14,7 @@ from contracts.vending_machine import SubsystemCapabilities
 from services.build_info import BUILD_INFO
 from services.mqtt_client import PROTOCOL_VERSIONS
 from contracts.common import SubsystemCommand
+from tests.fakes import settle
 from simulators.base import (
     CommandOutcome,
     ESP32Simulator,
@@ -33,7 +34,7 @@ class ConcreteSimulator(ESP32Simulator):
 
     async def run_simulation(self, client):
         self.simulation_ran = True
-        await asyncio.sleep(0.1)
+        await asyncio.Event().wait()
 
 
 class TestInit:
@@ -970,7 +971,7 @@ class TestCredentials:
         monkeypatch.setattr(base.aiomqtt, "Client", FakeClient)
         sim = ConcreteSimulator(username="u", password="p")
         task = asyncio.create_task(sim.run())
-        await asyncio.sleep(0.05)
+        await settle()
         task.cancel()
         try:
             await task
@@ -1001,7 +1002,7 @@ class TestSimulatorProtocolVersion:
         monkeypatch.setattr(base.aiomqtt, "Client", FakeClient)
         sim = ConcreteSimulator(config=cfg)
         task = asyncio.create_task(sim.run())
-        await asyncio.sleep(0.05)
+        await settle()
         task.cancel()
         try:
             await task
@@ -1330,12 +1331,23 @@ class TestRegisterCommandHook:
 
 
 class TestCommandLoop:
+    @staticmethod
+    async def _start_loop(sim, client):
+        task = asyncio.create_task(sim.command_loop(client))
+        await settle()
+        topic, queue = next(
+            (t, q)
+            for t, q in sim._subscriptions
+            if t == f"{sim.topic_prefix}/cmd/{sim.subsystem_name}"
+        )
+        return task, topic, queue
+
     @pytest.mark.asyncio
     async def test_subscribes_to_cmd_subsystem_topic(self):
         sim = ConcreteSimulator(machine_id="vmc-1")
         client = AsyncMock()
         task = asyncio.create_task(sim.command_loop(client))
-        await asyncio.sleep(0.02)
+        await settle()
         client.subscribe.assert_any_call("vmc/vmc-1/cmd/test_subsystem")
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -1345,15 +1357,11 @@ class TestCommandLoop:
     async def test_dispatches_a_queued_command_and_acks(self):
         sim = ConcreteSimulator(machine_id="vmc-1")
         client = AsyncMock()
-        task = asyncio.create_task(sim.command_loop(client))
-        await asyncio.sleep(0.02)
-        topic, queue = next(
-            (t, q) for t, q in sim._subscriptions if t == "vmc/vmc-1/cmd/test_subsystem"
-        )
+        task, topic, queue = await self._start_loop(sim, client)
         queue.put_nowait(
             (topic, {"request_id": "req-loop0001", "command": "ping", "params": {}})
         )
-        await asyncio.sleep(0.02)
+        await asyncio.wait_for(queue.join(), 1.0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -1367,18 +1375,50 @@ class TestCommandLoop:
     async def test_invalid_payload_is_dropped_not_raised(self):
         sim = ConcreteSimulator(machine_id="vmc-1")
         client = AsyncMock()
-        task = asyncio.create_task(sim.command_loop(client))
-        await asyncio.sleep(0.02)
-        topic, queue = next(
-            (t, q) for t, q in sim._subscriptions if t == "vmc/vmc-1/cmd/test_subsystem"
-        )
+        task, topic, queue = await self._start_loop(sim, client)
         queue.put_nowait((topic, {"not": "a valid command"}))
-        await asyncio.sleep(0.02)
+        await asyncio.wait_for(queue.join(), 1.0)
         assert not task.done()  # the loop is still alive, not crashed
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
         client.publish.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_command_loop_marks_items_done(self):
+        """`queue.task_done()` must fire for every dequeued item, valid or
+        invalid, so `queue.join()` is a true "fully dispatched" signal."""
+        sim = ConcreteSimulator(machine_id="vmc-1")
+        client = AsyncMock()
+        task, topic, queue = await self._start_loop(sim, client)
+        queue.put_nowait(
+            (topic, {"request_id": "req-ok00001", "command": "ping", "params": {}})
+        )
+        queue.put_nowait(
+            (
+                topic,
+                {
+                    "request_id": "req-bad0001",
+                    "command": "water_valve",
+                    "params": {"seconds": 11},
+                },
+            )
+        )
+        await asyncio.wait_for(queue.join(), 1.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        ack_calls = [
+            c for c in client.publish.call_args_list if c[0][0].endswith("/ack")
+        ]
+        assert len(ack_calls) == 2
+        statuses = {
+            json.loads(c[0][1])["request_id"]: json.loads(c[0][1])["status"]
+            for c in ack_calls
+        }
+        assert statuses["req-ok00001"] == "ok"
+        assert statuses["req-bad0001"] == "rejected"
 
 
 class TestCommandLoopValidationRejection:
@@ -1396,7 +1436,7 @@ class TestCommandLoopValidationRejection:
     @staticmethod
     async def _start_loop(sim, client):
         task = asyncio.create_task(sim.command_loop(client))
-        await asyncio.sleep(0.02)
+        await settle()
         topic, queue = next(
             (t, q)
             for t, q in sim._subscriptions
@@ -1426,7 +1466,7 @@ class TestCommandLoopValidationRejection:
                 },
             )
         )
-        await asyncio.sleep(0.02)
+        await asyncio.wait_for(queue.join(), 1.0)
         await self._stop_loop(task)
 
         ack_calls = [
@@ -1457,7 +1497,7 @@ class TestCommandLoopValidationRejection:
                 },
             )
         )
-        await asyncio.sleep(0.02)
+        await asyncio.wait_for(queue.join(), 1.0)
         await self._stop_loop(task)
 
         ack_calls = [
@@ -1479,7 +1519,7 @@ class TestCommandLoopValidationRejection:
         task, topic, queue = await self._start_loop(sim, client)
 
         queue.put_nowait((topic, {"command": "water_valve", "params": {"seconds": 11}}))
-        await asyncio.sleep(0.02)
+        await asyncio.wait_for(queue.join(), 1.0)
         assert not task.done()  # still alive
         await self._stop_loop(task)
         client.publish.assert_not_called()
@@ -1516,7 +1556,7 @@ class TestCommandLoopValidationRejection:
         queue.put_nowait(
             (topic, {"request_id": "req-ping9999", "command": "ping", "params": {}})
         )
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(queue.join(), 1.0)
         await self._stop_loop(task)
 
         ack_calls = [
