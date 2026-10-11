@@ -21,9 +21,11 @@ access like `vmc.__class__`, used by a few monkeypatches) and every private
 
 `count_private_access(path)` returns one `"path:line: text"` entry per
 unmarked hit in a file (an attribute-access match from `PRIVATE_ATTR_RE`,
-or a flagged name from a `from ... import ...` line matched by
-`PRIVATE_IMPORT_RE`). `current_budget()` sums those per file into
-`{rel_posix_path: count}`, omitting files with zero hits.
+or a private name imported via an `ast.ImportFrom` node -- every `alias`
+whose *imported* name starts with `_[a-z]`, regardless of any `asname`,
+including names spread across a multi-line parenthesised import).
+`current_budget()` sums those per file into `{rel_posix_path: count}`,
+omitting files with zero hits.
 
 `test_budget_is_exact` checks the *current* counts against the committed
 `tests/private_access_budget.py::BUDGET`:
@@ -50,8 +52,13 @@ or a flagged name from a `from ... import ...` line matched by
    marker above the line and explain why. This test only checks for the
    marker's presence, not its content -- the reviewer reads the reason.
 5. `self._x`, `cls._x`, and dunder access (`vmc.__class__`) are never
-   hits. An aliased import (`import logger as _loguru`) is not a hit;
-   `from m import _foo` is.
+   hits. A plain `import x as _y` is never a hit (it names a module, not
+   an imported name). A `from <module> import <name>` is a hit whenever
+   the *imported* name starts with `_[a-z]`, regardless of any `as`
+   alias -- so `from m import _foo` and `from m import _foo as bar` are
+   both hits, `from loguru import logger as _loguru` is not, and this
+   holds across a multi-line parenthesised import exactly as it does for
+   a single-line one.
 
 **Guard 2: the VMC's own import boundary.** `controller/vmc.py` is the
 sale FSM alone (see `CLAUDE.md`'s "FSM Core" section): it holds no
@@ -86,12 +93,13 @@ PRIVATE_ATTR_RE = re.compile(
     r"\b(?!self\b|cls\b)[A-Za-z_][A-Za-z0-9_]*\._[a-z][A-Za-z0-9_]*"
 )
 
-#: A `from <module> import <names>` line. Matching this alone does not
-#: make a hit -- count_private_access still splits `<names>` on ',', takes
-#: the part before ' as ', and only counts a name that starts with '_'
-#: (so `from loguru import logger as _loguru` is not a hit, but `from m
-#: import _foo` is).
-PRIVATE_IMPORT_RE = re.compile(r"^\s*from\s+\S+\s+import\s+(.+)$")
+#: A private imported name, matched against each `ast.ImportFrom` alias's
+#: *imported* name (never its `asname`) -- so `from loguru import logger
+#: as _loguru` is not a hit (the imported name is `logger`), but `from m
+#: import _foo` and `from m import _foo as bar` both are. Mirrors
+#: PRIVATE_ATTR_RE's own leading-character rule so a dunder import
+#: (`from m import __version__`) is not a hit either.
+PRIVATE_IMPORT_NAME_RE = re.compile(r"^_[a-z][A-Za-z0-9_]*$")
 
 PRIVATE_MARKER = "# private:"
 LOOKBACK_LINES = 3
@@ -163,10 +171,12 @@ def _is_marked(lines: list[str], match_index: int) -> bool:
 def count_private_access(path: Path) -> list[str]:
     """Return one `"rel:line: text"` entry per unmarked private-access hit
     in `path`: an attribute access matched by `PRIVATE_ATTR_RE`, or a
-    flagged name (starts with `_` once any ` as alias` is stripped) out of
-    a `from ... import ...` line matched by `PRIVATE_IMPORT_RE`. A `#
-    private: <reason>` marker on one of the three lines above a hit still
-    exempts that line entirely, for both kinds of hit."""
+    private name imported via an `ast.ImportFrom` alias (matched on the
+    alias's *imported* name, never its `asname`, via
+    `PRIVATE_IMPORT_NAME_RE` -- so this catches a multi-line parenthesised
+    import exactly like a single-line one). A `# private: <reason>`
+    marker on one of the three lines above a hit still exempts that line
+    entirely, for both kinds of hit."""
     text = path.read_text(encoding="utf-8")
     lines = text.splitlines()
     try:
@@ -176,19 +186,28 @@ def count_private_access(path: Path) -> list[str]:
         # this module's own sample-based tests) -- fall back to its own
         # path rather than raising.
         rel = path.as_posix()
-    findings = []
+    hits: list[tuple[int, str]] = []
     for i, line in enumerate(lines):
         if _is_marked(lines, i):
             continue
         for match in PRIVATE_ATTR_RE.finditer(line):
-            findings.append(f"{rel}:{i + 1}: {match.group(0)}")
-        import_match = PRIVATE_IMPORT_RE.match(line)
-        if import_match:
-            for name in import_match.group(1).split(","):
-                base = name.strip().split(" as ")[0].strip()
-                if base.startswith("_"):
-                    findings.append(f"{rel}:{i + 1}: {line.strip()}")
-    return findings
+            hits.append((i + 1, match.group(0)))
+
+    tree = ast.parse(text, filename=str(path))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        module = ("." * node.level) + (node.module or "")
+        for alias in node.names:
+            if not PRIVATE_IMPORT_NAME_RE.match(alias.name):
+                continue
+            lineno = alias.lineno
+            if _is_marked(lines, lineno - 1):
+                continue
+            hits.append((lineno, f"from {module} import {alias.name}"))
+
+    hits.sort(key=lambda item: item[0])
+    return [f"{rel}:{lineno}: {text}" for lineno, text in hits]
 
 
 def current_budget() -> dict[str, int]:
@@ -291,31 +310,61 @@ def test_regex_ignores_self_cls_and_dunder():
         assert not PRIVATE_ATTR_RE.search(sample), sample
 
 
-def test_regex_matches_object_private_and_private_import(tmp_path):
+def test_regex_matches_object_private_attr():
     assert PRIVATE_ATTR_RE.search("sim._fault_state")
-    assert PRIVATE_IMPORT_RE.search(
-        "from web_interface.routes.health import _fault_gate"
-    )
 
+
+def test_private_import_detection_via_ast(tmp_path):
+    """`count_private_access`'s AST-based import scan: a multi-line
+    parenthesised private import, a single-line private import, an
+    aliased *module* import (`import logger as _loguru`, not a hit --
+    it is `ast.Import`, never `ast.ImportFrom`), and a `from m import _x
+    as y` import (a hit, keyed on the imported name `_x`, not the
+    `asname` `y`)."""
     tmp = tmp_path / "import_sample.py"
     tmp.write_text(
         "sim._fault_state\n"
         "from web_interface.routes.health import _fault_gate\n"
-        "from loguru import logger as _loguru\n",
+        "import loguru as _loguru\n"
+        "from services.widgets import _hidden as visible\n"
+        "from tests.test_vmc_flows import (\n"
+        "    RecordingClient,\n"
+        "    # private: driving a defensive branch, see brief\n"
+        "    _profiles_tmp_base_dir,\n"
+        "    make_machine2,\n"
+        "    filler_one,\n"
+        "    _another_private,\n"
+        ")\n",
         encoding="utf-8",
     )
     findings = count_private_access(tmp)
-    assert len(findings) == 2
+    assert len(findings) == 4
     assert any("sim._fault_state" in f for f in findings)
     assert any("_fault_gate" in f for f in findings)
     assert not any("_loguru" in f for f in findings)
+    assert any("_hidden" in f for f in findings)
+    # `_profiles_tmp_base_dir` sits 1 line below its marker (within the
+    # 3-line lookback) and is exempted; `_another_private` sits 4 lines
+    # below the same marker (outside the lookback) and still counts --
+    # proving the marker applies per alias line inside a multi-line
+    # import, bounded the same way as an ordinary attribute hit, not to
+    # the `from` statement as a whole.
+    assert not any("_profiles_tmp_base_dir" in f for f in findings)
+    assert any("_another_private" in f for f in findings)
+    assert not any("RecordingClient" in f for f in findings)
+    assert not any("make_machine2" in f for f in findings)
+    assert not any("filler_one" in f for f in findings)
 
 
-def test_marker_exempts_line(tmp_path):
+def test_marker_exempts_line_within_three_line_lookback(tmp_path):
+    """A `# private:` marker exactly `LOOKBACK_LINES` (3) lines above a hit
+    -- two blank lines between the marker and the hit -- still exempts it."""
     tmp = tmp_path / "marker_sample.py"
     tmp.write_text(
         "sim._fault_state\n"
         "# private: needed for defensive branch\n"
+        "\n"
+        "\n"
         "sim._other_private\n",
         encoding="utf-8",
     )
@@ -323,6 +372,26 @@ def test_marker_exempts_line(tmp_path):
     assert len(findings) == 1
     assert "sim._fault_state" in findings[0]
     assert not any("sim._other_private" in f for f in findings)
+
+
+def test_marker_does_not_exempt_line_outside_three_line_lookback(tmp_path):
+    """A marker 4 lines above a hit -- one line past LOOKBACK_LINES -- no
+    longer exempts it. Proves the lookback window is bounded, not merely
+    `>= 1`."""
+    tmp = tmp_path / "marker_sample.py"
+    tmp.write_text(
+        "sim._fault_state\n"
+        "# private: needed for defensive branch\n"
+        "\n"
+        "\n"
+        "\n"
+        "sim._other_private\n",
+        encoding="utf-8",
+    )
+    findings = count_private_access(tmp)
+    assert len(findings) == 2
+    assert any("sim._fault_state" in f for f in findings)
+    assert any("sim._other_private" in f for f in findings)
 
 
 def test_budget_is_exact():
