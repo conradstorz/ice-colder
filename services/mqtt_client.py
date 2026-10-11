@@ -58,11 +58,20 @@ class MQTTClient:
         self._handlers: list[tuple[str, MessageHandler]] = []
         self._client: Optional[aiomqtt.Client] = None
         self._connected = False
+        self._subscribed = False
         self._connection_callback: Optional[ConnectionCallback] = None
 
     @property
     def connected(self) -> bool:
         return self._connected
+
+    @property
+    def subscribed(self) -> bool:
+        """True once every registered topic's subscribe has been acknowledged
+        on the current connection. This is the signal a test needs before
+        publishing non-retained messages the VMC must receive — `connected`
+        flips true before the subscribe loop runs."""
+        return self._subscribed
 
     def set_connection_callback(self, callback: ConnectionCallback):
         """Register a callback invoked with True/False on connect/disconnect."""
@@ -129,6 +138,7 @@ class MQTTClient:
                 _in_retry_loop = False
             except aiomqtt.MqttError as e:
                 self._connected = False
+                self._subscribed = False
                 if self._connection_callback:
                     self._connection_callback(False)
                 if not _in_retry_loop:
@@ -138,6 +148,7 @@ class MQTTClient:
                     logger.debug(f"MQTT: Reconnect failed: {e}")
             except Exception as e:
                 self._connected = False
+                self._subscribed = False
                 if self._connection_callback:
                     self._connection_callback(False)
                 if not _in_retry_loop:
@@ -206,6 +217,7 @@ class MQTTClient:
                 full_topic = f"{self.topic_prefix}/{topic_suffix}"
                 await client.subscribe(full_topic, qos=1)
                 logger.info(f"MQTT: Subscribed to {full_topic}")
+            self._subscribed = True
 
             # Listen and dispatch
             async for message in client.messages:
@@ -214,6 +226,7 @@ class MQTTClient:
         # If we exit the context manager, we disconnected
         self._client = None
         self._connected = False
+        self._subscribed = False
         if self._connection_callback:
             self._connection_callback(False)
 

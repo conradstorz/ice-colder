@@ -4,6 +4,7 @@
 import asyncio
 import json
 from datetime import datetime
+from typing import Optional
 from unittest.mock import AsyncMock, MagicMock
 
 import aiomqtt
@@ -165,6 +166,7 @@ class TestMQTTClientUnit:
         cfg = MQTTConfig()
         client = MQTTClient(config=cfg, machine_id="vmc-0001")
         assert client.connected is False
+        assert client.subscribed is False
 
     @pytest.mark.asyncio
     async def test_publish_when_not_connected_does_nothing(self):
@@ -253,6 +255,11 @@ class _FakeAiomqttClient:
 
     def __init__(self, *args, **kwargs):
         self.subscribed: list[tuple[str, int]] = []
+        # Set by a test that wants to observe MQTTClient.subscribed at the
+        # moment the message loop starts (right after the subscribe loop
+        # completes, before the connection ends).
+        self.mqtt_client: Optional["MQTTClient"] = None
+        self.subscribed_during_messages: Optional[bool] = None
 
     async def __aenter__(self):
         return self
@@ -267,6 +274,8 @@ class _FakeAiomqttClient:
         pass
 
     async def _empty_messages(self):
+        if self.mqtt_client is not None:
+            self.subscribed_during_messages = self.mqtt_client.subscribed
         return
         yield  # pragma: no cover - never reached; makes this an async generator
 
@@ -284,6 +293,7 @@ class TestMQTTClientSubscribeQoS:
         client.register("sensors/temp/+", AsyncMock())
 
         fake = _FakeAiomqttClient()
+        fake.mqtt_client = client
         monkeypatch.setattr(
             "services.mqtt_client.aiomqtt.Client", lambda *a, **kw: fake
         )
@@ -294,6 +304,11 @@ class TestMQTTClientSubscribeQoS:
             ("vmc/vmc-0001/payment/credit", 1),
             ("vmc/vmc-0001/sensors/temp/+", 1),
         ]
+        # subscribed flipped true once the subscribe loop finished, in time
+        # for the message loop that follows it...
+        assert fake.subscribed_during_messages is True
+        # ...and flipped back false once the connection ended.
+        assert client.subscribed is False
 
 
 class TestMQTTProtocolVersion:

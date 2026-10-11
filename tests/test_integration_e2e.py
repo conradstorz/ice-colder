@@ -188,19 +188,10 @@ async def _ack_dispense(sim_client: "aiomqtt.Client", prefix: str, request_id: s
     # moment to actually process the ack before the terminal report (sent
     # by the caller right after this returns) arrives.
     #
-    # Task 9 (deterministic waits): deliberately left as a fixed sleep.
-    # On the success path the dispatch coroutine produces no publicly
-    # observable state change once the accept ack's future resolves --
-    # the request id and mechanism are already recorded before that
-    # coroutine even starts (see DispenseCycle's own start method), the
-    # FSM stays in "dispensing" throughout, and CommandDispatcher exposes
-    # no public property over its internal pending-ack bookkeeping. The
-    # only real "ack processed" signal is the request id leaving that
-    # internal map, which is private and would push this file's
-    # private-access budget (tests/private_access_budget.py) above its
-    # current count. Per the task brief, stopping here rather than adding
-    # new private access or reaching for the "private: reason" escape
-    # hatch -- see task-9-report.md.
+    # Deliberate residual fixed sleep: the dispatcher exposes no public
+    # "ack consumed" observable (its pending-ack bookkeeping is private),
+    # and on the success path the dispense cycle produces no state change
+    # to wait on instead -- the FSM stays in "dispensing" throughout.
     await asyncio.sleep(0.3)
 
 
@@ -773,15 +764,13 @@ async def test_vending_heartbeat_loss_blocks_sale_not_payment_enable():
     seen: list[bool] = []
     async with aiomqtt.Client(hostname="localhost", port=1883, **_MQTT_AUTH) as probe:
         await probe.subscribe(f"vmc/{cfg.machine_id}/cmd/payment/enable")
-        # Wait for the VMC's own MQTT client to connect -- same predicate
-        # and pattern as the 0.1 s "connected" poll loops elsewhere in this
-        # file. Note this is weaker than the original fixed sleep: the
-        # client marks itself connected before it has finished subscribing
-        # to every registered topic, so this does not strictly guarantee
-        # the VMC is already subscribed to the heartbeat/payment/hardware-io
-        # topics below. Flagged in the Task 9 report as the site most
-        # likely to need a tweak once verified against a real broker.
-        await _wait_until(lambda: mqtt.connected)
+        # `mqtt.connected` flips true before the subscribe loop runs, so it
+        # does not guarantee the VMC is subscribed to the heartbeat/payment/
+        # hardware-io topics published below. `mqtt.subscribed` is the
+        # signal that does: it only goes true once every registered topic
+        # has been subscribed, which is what guarantees the non-retained
+        # publishes below are actually received.
+        await _wait_until(lambda: mqtt.subscribed)
         prefix = f"vmc/{cfg.machine_id}"
         for name in ("vending", "mdb", "ice_maker"):
             await probe.publish(
