@@ -185,8 +185,8 @@ class TestFaultRegistration:
             message="Test fault",
         )
         sim.register_fault(fault)
-        assert len(sim._fault_defs) == 1
-        assert sim._fault_defs[0].name == "test_fault"
+        assert len(sim.fault_defs) == 1
+        assert sim.fault_defs[0].name == "test_fault"
 
     def test_register_fault_initialises_state(self):
         sim = ConcreteSimulator()
@@ -199,7 +199,7 @@ class TestFaultRegistration:
             message="Test fault",
         )
         sim.register_fault(fault)
-        assert sim._fault_state["test_fault"] == {
+        assert sim.fault_state["test_fault"] == {
             "active": False,
             "recover_at": 0.0,
             "recovering": False,
@@ -207,9 +207,10 @@ class TestFaultRegistration:
 
     def test_active_fault_names_empty_initially(self):
         sim = ConcreteSimulator()
-        assert sim._active_fault_names == set()
+        assert sim.active_fault_names == set()
 
-    def test_active_fault_names_reflects_active_state(self):
+    @pytest.mark.asyncio
+    async def test_active_fault_names_reflects_active_state(self):
         sim = ConcreteSimulator()
         fault = FaultDef(
             name="test_fault",
@@ -220,8 +221,9 @@ class TestFaultRegistration:
             message="Test fault",
         )
         sim.register_fault(fault)
-        sim._fault_state["test_fault"]["active"] = True
-        assert "test_fault" in sim._active_fault_names
+        client = AsyncMock()
+        await sim.activate_fault(client, fault)
+        assert "test_fault" in sim.active_fault_names
 
     def test_register_multiple_faults(self):
         sim = ConcreteSimulator()
@@ -236,8 +238,8 @@ class TestFaultRegistration:
                     message=f"{name} message",
                 )
             )
-        assert len(sim._fault_defs) == 3
-        assert set(sim._fault_state.keys()) == {"fault_a", "fault_b", "fault_c"}
+        assert len(sim.fault_defs) == 3
+        assert set(sim.fault_state.keys()) == {"fault_a", "fault_b", "fault_c"}
 
 
 class TestFaultLoop:
@@ -254,13 +256,13 @@ class TestFaultLoop:
         )
         sim.register_fault(fault)
         client = AsyncMock()
-        await sim._activate_fault(client, fault)
-        assert sim._fault_state["test_fault"]["active"] is True
+        await sim.activate_fault(client, fault)
+        assert sim.fault_state["test_fault"]["active"] is True
         now = time.monotonic()
         lo, hi = RECOVERY_RANGES["short"]
         assert (
             now + lo - 1.0
-            <= sim._fault_state["test_fault"]["recover_at"]
+            <= sim.fault_state["test_fault"]["recover_at"]
             <= now + hi + 1.0
         )
 
@@ -278,7 +280,7 @@ class TestFaultLoop:
         )
         sim.register_fault(fault)
         client = AsyncMock()
-        await sim._activate_fault(client, fault)
+        await sim.activate_fault(client, fault)
         on_activate.assert_called_once_with(client)
 
     @pytest.mark.asyncio
@@ -295,8 +297,8 @@ class TestFaultLoop:
         )
         sim.register_fault(fault)
         client = AsyncMock()
-        await sim._try_roll_faults(client)
-        assert sim._fault_state["test_fault"]["active"] is True
+        await sim.try_roll_faults(client)
+        assert sim.fault_state["test_fault"]["active"] is True
         on_activate.assert_called_once()
 
     @pytest.mark.asyncio
@@ -313,8 +315,8 @@ class TestFaultLoop:
         )
         sim.register_fault(fault)
         client = AsyncMock()
-        await sim._try_roll_faults(client)
-        assert sim._fault_state["test_fault"]["active"] is False
+        await sim.try_roll_faults(client)
+        assert sim.fault_state["test_fault"]["active"] is False
         on_activate.assert_not_called()
 
     @pytest.mark.asyncio
@@ -332,8 +334,8 @@ class TestFaultLoop:
                 )
             )
         client = AsyncMock()
-        await sim._try_roll_faults(client)
-        active_count = sum(1 for s in sim._fault_state.values() if s["active"])
+        await sim.try_roll_faults(client)
+        active_count = sum(1 for s in sim.fault_state.values() if s["active"])
         assert active_count == 1
 
     @pytest.mark.asyncio
@@ -349,10 +351,11 @@ class TestFaultLoop:
             message="Test fault",
         )
         sim.register_fault(fault)
-        # Pre-activate the fault
-        sim._fault_state["test_fault"]["active"] = True
         client = AsyncMock()
-        await sim._try_roll_faults(client)
+        # Pre-activate the fault
+        await sim.activate_fault(client, fault)
+        on_activate.reset_mock()
+        await sim.try_roll_faults(client)
         on_activate.assert_not_called()
 
     @pytest.mark.asyncio
@@ -368,16 +371,13 @@ class TestFaultLoop:
             message="Test fault",
         )
         sim.register_fault(fault)
-        sim._fault_state["test_fault"]["active"] = True
-        sim._fault_state["test_fault"]["recover_at"] = (
-            time.monotonic() - 1.0
-        )  # past due
         client = AsyncMock()
-        await sim._check_recoveries(client)
+        await sim.activate_fault(client, fault, recover_in=-1.0)  # past due
+        await sim.check_recoveries(client)
         # Recovery runs in a background task — wait for it to finish.
         for task in list(sim._recovery_tasks):
             await task
-        assert sim._fault_state["test_fault"]["active"] is False
+        assert sim.fault_state["test_fault"]["active"] is False
         on_recover.assert_called_once_with(client)
 
     @pytest.mark.asyncio
@@ -400,22 +400,21 @@ class TestFaultLoop:
             message="Slow fault",
         )
         sim.register_fault(fault)
-        sim._fault_state["slow_fault"]["active"] = True
-        sim._fault_state["slow_fault"]["recover_at"] = time.monotonic() - 1.0
         client = AsyncMock()
+        await sim.activate_fault(client, fault, recover_in=-1.0)
 
-        await asyncio.wait_for(sim._check_recoveries(client), timeout=1.0)
+        await asyncio.wait_for(sim.check_recoveries(client), timeout=1.0)
         await asyncio.wait_for(started.wait(), timeout=1.0)
 
-        assert sim._fault_state["slow_fault"]["active"] is True
-        assert sim._fault_state["slow_fault"]["recovering"] is True
-        assert "slow_fault" in sim._active_fault_names
+        assert sim.fault_state["slow_fault"]["active"] is True
+        assert sim.fault_state["slow_fault"]["recovering"] is True
+        assert "slow_fault" in sim.active_fault_names
 
         finish.set()
         for task in list(sim._recovery_tasks):
             await task
-        assert sim._fault_state["slow_fault"]["active"] is False
-        assert sim._fault_state["slow_fault"]["recovering"] is False
+        assert sim.fault_state["slow_fault"]["active"] is False
+        assert sim.fault_state["slow_fault"]["recovering"] is False
 
     @pytest.mark.asyncio
     async def test_check_recoveries_does_not_start_second_recovery(self):
@@ -440,16 +439,15 @@ class TestFaultLoop:
             message="Slow fault",
         )
         sim.register_fault(fault)
-        sim._fault_state["slow_fault"]["active"] = True
-        sim._fault_state["slow_fault"]["recover_at"] = time.monotonic() - 1.0
         client = AsyncMock()
+        await sim.activate_fault(client, fault, recover_in=-1.0)
 
-        await asyncio.wait_for(sim._check_recoveries(client), timeout=1.0)
+        await asyncio.wait_for(sim.check_recoveries(client), timeout=1.0)
         await asyncio.wait_for(started.wait(), timeout=1.0)
         assert len(sim._recovery_tasks) == 1
 
         # Second call while recovery is still in-flight must not add a task
-        await asyncio.wait_for(sim._check_recoveries(client), timeout=1.0)
+        await asyncio.wait_for(sim.check_recoveries(client), timeout=1.0)
         assert len(sim._recovery_tasks) == 1
         assert call_count == 1
 
@@ -486,12 +484,11 @@ class TestFaultLoop:
         )
         sim.register_fault(recovering_fault)
         sim.register_fault(other_fault)
-        sim._fault_state["recovering_fault"]["active"] = True
-        sim._fault_state["recovering_fault"]["recover_at"] = time.monotonic() - 1.0
         client = AsyncMock()
+        await sim.activate_fault(client, recovering_fault, recover_in=-1.0)
 
-        await sim._check_recoveries(client)
-        await sim._try_roll_faults(client)
+        await sim.check_recoveries(client)
+        await sim.try_roll_faults(client)
         other_on_activate.assert_not_called()
 
         finish.set()
@@ -514,10 +511,9 @@ class TestFaultLoop:
             message="Stuck",
         )
         sim.register_fault(fault)
-        sim._fault_state["stuck_fault"]["active"] = True
-        sim._fault_state["stuck_fault"]["recover_at"] = time.monotonic() - 1.0
         client = AsyncMock()
-        await sim._check_recoveries(client)
+        await sim.activate_fault(client, fault, recover_in=-1.0)
+        await sim.check_recoveries(client)
         assert len(sim._recovery_tasks) == 1
 
         sim._cancel_recovery_tasks()
@@ -537,11 +533,10 @@ class TestFaultLoop:
             message="Test fault",
         )
         sim.register_fault(fault)
-        sim._fault_state["test_fault"]["active"] = True
-        sim._fault_state["test_fault"]["recover_at"] = time.monotonic() + 9999.0
         client = AsyncMock()
-        await sim._check_recoveries(client)
-        assert sim._fault_state["test_fault"]["active"] is True
+        await sim.activate_fault(client, fault, recover_in=9999.0)
+        await sim.check_recoveries(client)
+        assert sim.fault_state["test_fault"]["active"] is True
         on_recover.assert_not_called()
 
 
@@ -559,15 +554,14 @@ class TestRecoveryFailure:
             message="Test fault",
         )
         sim.register_fault(fault)
-        sim._fault_state["test_fault"]["active"] = True
-        sim._fault_state["test_fault"]["recover_at"] = time.monotonic() - 1.0
         client = AsyncMock()
+        await sim.activate_fault(client, fault, recover_in=-1.0)
 
-        await sim._check_recoveries(client)
+        await sim.check_recoveries(client)
         for task in list(sim._recovery_tasks):
             await task  # must not raise
 
-        state = sim._fault_state["test_fault"]
+        state = sim.fault_state["test_fault"]
         assert state["active"] is True
         assert state["recovering"] is False
         now = time.monotonic()
@@ -586,26 +580,27 @@ class TestRecoveryFailure:
             message="Test fault",
         )
         sim.register_fault(fault)
-        sim._fault_state["test_fault"]["active"] = True
-        sim._fault_state["test_fault"]["recover_at"] = time.monotonic() - 1.0
         client = AsyncMock()
+        await sim.activate_fault(client, fault, recover_in=-1.0)
 
         # First recovery attempt fails.
-        await sim._check_recoveries(client)
+        await sim.check_recoveries(client)
         for task in list(sim._recovery_tasks):
             await task
-        assert sim._fault_state["test_fault"]["active"] is True
-        assert sim._fault_state["test_fault"]["recovering"] is False
+        assert sim.fault_state["test_fault"]["active"] is True
+        assert sim.fault_state["test_fault"]["recovering"] is False
 
         # Simulate time passing: force the recover_at into the past again.
+        # No public path re-arms recover_at without also re-activating (and
+        # re-running on_activate), so this stays a direct, deliberate write.
         sim._fault_state["test_fault"]["recover_at"] = time.monotonic() - 1.0
 
         # Second recovery attempt succeeds.
-        await sim._check_recoveries(client)
+        await sim.check_recoveries(client)
         for task in list(sim._recovery_tasks):
             await task
-        assert sim._fault_state["test_fault"]["active"] is False
-        assert sim._fault_state["test_fault"]["recovering"] is False
+        assert sim.fault_state["test_fault"]["active"] is False
+        assert sim.fault_state["test_fault"]["recovering"] is False
         assert on_recover.call_count == 2
 
     @pytest.mark.asyncio
@@ -626,18 +621,17 @@ class TestRecoveryFailure:
             message="Test fault",
         )
         sim.register_fault(fault)
-        sim._fault_state["test_fault"]["active"] = True
-        sim._fault_state["test_fault"]["recover_at"] = time.monotonic() - 1.0
         client = AsyncMock()
+        await sim.activate_fault(client, fault, recover_in=-1.0)
 
-        await sim._check_recoveries(client)
+        await sim.check_recoveries(client)
         await asyncio.wait_for(started.wait(), timeout=1.0)
         task = next(iter(sim._recovery_tasks))
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        state = sim._fault_state["test_fault"]
+        state = sim.fault_state["test_fault"]
         assert state["active"] is True
         assert state["recovering"] is False
 
@@ -702,7 +696,7 @@ class TestFaultInject:
         sim.register_fault(fault)
         client = AsyncMock()
         await sim._handle_inject_command(client, {"fault": "test_fault"})
-        assert sim._fault_state["test_fault"]["active"] is True
+        assert sim.fault_state["test_fault"]["active"] is True
         on_activate.assert_called_once_with(client)
 
     @pytest.mark.asyncio
@@ -725,8 +719,9 @@ class TestFaultInject:
             message="Test fault",
         )
         sim.register_fault(fault)
-        sim._fault_state["test_fault"]["active"] = True
         client = AsyncMock()
+        await sim.activate_fault(client, fault)
+        on_activate.reset_mock()
         await sim._handle_inject_command(client, {"fault": "test_fault"})
         on_activate.assert_not_called()
 
@@ -745,9 +740,10 @@ class TestFaultInject:
                     message=f"{name} message",
                 )
             )
-        # fault_a already active
-        sim._fault_state["fault_a"]["active"] = True
         client = AsyncMock()
+        # fault_a already active
+        fault_a = next(f for f in sim.fault_defs if f.name == "fault_a")
+        await sim.activate_fault(client, fault_a)
         await sim._handle_inject_command(client, {"fault": "fault_b"})
         on_activate_b.assert_not_called()
 
@@ -757,7 +753,7 @@ class TestFaultInject:
         client = AsyncMock()
         # Empty payload — no "fault" key
         await sim._handle_inject_command(client, {})
-        assert sim._active_fault_names == set()
+        assert sim.active_fault_names == set()
 
 
 class TestLoadConfig:
@@ -1011,7 +1007,7 @@ class TestStandardCommands:
     async def test_ping_acks_ok(self):
         sim = ConcreteSimulator(machine_id="vmc-1")
         client = AsyncMock()
-        await sim._handle_command(client, _cmd("req-ping001", "ping"))
+        await sim.handle_command(client, _cmd("req-ping001", "ping"))
         client.publish.assert_called_once()
         topic, payload_str = client.publish.call_args[0]
         assert topic == "vmc/vmc-1/cmd/test_subsystem/ack"
@@ -1023,7 +1019,7 @@ class TestStandardCommands:
     async def test_unknown_command_acks_unsupported(self):
         sim = ConcreteSimulator()
         client = AsyncMock()
-        await sim._handle_command(client, _cmd("req-unk0001", "not_a_real_command"))
+        await sim.handle_command(client, _cmd("req-unk0001", "not_a_real_command"))
         payload = json.loads(client.publish.call_args[0][1])
         assert payload["status"] == "unsupported"
 
@@ -1047,7 +1043,7 @@ class TestSelfTest:
         sim = ConcreteSimulator()
         self._register_two_faults(sim)
         client = AsyncMock()
-        await sim._handle_command(client, _cmd("req-st000001", "self_test"))
+        await sim.handle_command(client, _cmd("req-st000001", "self_test"))
         payload = json.loads(client.publish.call_args[0][1])
         checks = payload["result"]["checks"]
         assert len(checks) == 2  # guard: the assertion below must not be vacuous
@@ -1057,9 +1053,10 @@ class TestSelfTest:
     async def test_fails_exactly_the_injected_fault(self):
         sim = ConcreteSimulator()
         self._register_two_faults(sim)
-        sim._fault_state["fault_a"]["active"] = True
         client = AsyncMock()
-        await sim._handle_command(client, _cmd("req-st000002", "self_test"))
+        fault_a = next(f for f in sim.fault_defs if f.name == "fault_a")
+        await sim.activate_fault(client, fault_a)
+        await sim.handle_command(client, _cmd("req-st000002", "self_test"))
         checks = json.loads(client.publish.call_args[0][1])["result"]["checks"]
         assert len(checks) == 2
         by_name = {c["name"]: c for c in checks}
@@ -1071,18 +1068,22 @@ class TestSelfTest:
         sim = ConcreteSimulator()
         self._register_two_faults(sim)
         client = AsyncMock()
+        fault_a = next(f for f in sim.fault_defs if f.name == "fault_a")
+        fault_b = next(f for f in sim.fault_defs if f.name == "fault_b")
 
-        sim._fault_state["fault_a"]["active"] = True
-        await sim._handle_command(client, _cmd("req-st000003", "self_test"))
+        await sim.activate_fault(client, fault_a)
+        await sim.handle_command(client, _cmd("req-st000003", "self_test"))
         first = {
             c["name"]: c["pass"]
             for c in json.loads(client.publish.call_args[0][1])["result"]["checks"]
         }
         assert first == {"fault_a": False, "fault_b": True}
 
+        # No public "deactivate" path exists; this one direct write stays
+        # private (see decision in the task-2 brief/report).
         sim._fault_state["fault_a"]["active"] = False
-        sim._fault_state["fault_b"]["active"] = True
-        await sim._handle_command(client, _cmd("req-st000004", "self_test"))
+        await sim.activate_fault(client, fault_b)
+        await sim.handle_command(client, _cmd("req-st000004", "self_test"))
         second = {
             c["name"]: c["pass"]
             for c in json.loads(client.publish.call_args[0][1])["result"]["checks"]
@@ -1096,7 +1097,7 @@ class TestForceReport:
     async def test_republishes_heartbeat_and_acks_ok(self):
         sim = ConcreteSimulator(machine_id="vmc-1")
         client = AsyncMock()
-        await sim._handle_command(client, _cmd("req-fr000001", "force_report"))
+        await sim.handle_command(client, _cmd("req-fr000001", "force_report"))
         topics = [call[0][0] for call in client.publish.call_args_list]
         assert "vmc/vmc-1/heartbeat/test_subsystem" in topics
         assert "vmc/vmc-1/cmd/test_subsystem/ack" in topics
@@ -1108,7 +1109,7 @@ class TestForceReport:
         sim = ConcreteSimulator()
         sim._force_report_extra = AsyncMock()
         client = AsyncMock()
-        await sim._handle_command(client, _cmd("req-fr000002", "force_report"))
+        await sim.handle_command(client, _cmd("req-fr000002", "force_report"))
         sim._force_report_extra.assert_awaited_once_with(client)
 
 
@@ -1126,9 +1127,9 @@ class TestIdempotencyCache:
         client = AsyncMock()
 
         cmd = _cmd("req-dup00001", "bump")
-        await sim._handle_command(client, cmd)
-        await sim._handle_command(client, cmd)
-        await sim._handle_command(client, cmd)
+        await sim.handle_command(client, cmd)
+        await sim.handle_command(client, cmd)
+        await sim.handle_command(client, cmd)
 
         assert len(calls) == 1  # the observable side effect ran exactly once
 
@@ -1143,10 +1144,10 @@ class TestIdempotencyCache:
         client = AsyncMock()
         cmd = _cmd("req-dup00002", "bump")
 
-        await sim._handle_command(client, cmd)
+        await sim.handle_command(client, cmd)
         first_payload = json.loads(client.publish.call_args[0][1])
 
-        await sim._handle_command(client, cmd)
+        await sim.handle_command(client, cmd)
         second_payload = json.loads(client.publish.call_args[0][1])
 
         assert first_payload == second_payload
@@ -1166,7 +1167,7 @@ class TestIdempotencyCache:
         assert IDEMPOTENCY_CACHE_SIZE == 32
         request_ids = [f"req-evict{i:03d}" for i in range(IDEMPOTENCY_CACHE_SIZE + 1)]
         for rid in request_ids:
-            await sim._handle_command(client, _cmd(rid, "bump"))
+            await sim.handle_command(client, _cmd(rid, "bump"))
 
         assert len(calls) == IDEMPOTENCY_CACHE_SIZE + 1
         # The very first id was pushed out by the 33rd; it's no longer cached.
@@ -1175,7 +1176,7 @@ class TestIdempotencyCache:
 
         # Resending the evicted id must be treated as new: the handler runs
         # again (a second, observable call for that same request_id).
-        await sim._handle_command(client, _cmd(oldest, "bump"))
+        await sim.handle_command(client, _cmd(oldest, "bump"))
         assert calls.count(oldest) == 2
         assert len(calls) == IDEMPOTENCY_CACHE_SIZE + 2
 
@@ -1195,9 +1196,9 @@ class TestIdempotencyCache:
 
         request_ids = [f"req-window{i:03d}" for i in range(IDEMPOTENCY_CACHE_SIZE)]
         for rid in request_ids:
-            await sim._handle_command(client, _cmd(rid, "bump"))
+            await sim.handle_command(client, _cmd(rid, "bump"))
 
-        await sim._handle_command(client, _cmd(request_ids[0], "bump"))
+        await sim.handle_command(client, _cmd(request_ids[0], "bump"))
         assert calls.count(request_ids[0]) == 1
 
 
@@ -1211,7 +1212,7 @@ class TestHandlerExceptions:
 
         sim.register_command("jam", handler)
         client = AsyncMock()
-        await sim._handle_command(client, _cmd("req-jam00001", "jam"))
+        await sim.handle_command(client, _cmd("req-jam00001", "jam"))
 
         payload = json.loads(client.publish.call_args[0][1])
         assert payload["status"] == "failed"
@@ -1228,7 +1229,7 @@ class TestHandlerExceptions:
         sim.register_command("jam", handler)
         client = AsyncMock()
         await asyncio.wait_for(
-            sim._handle_command(client, _cmd("req-jam00002", "jam")), timeout=1.0
+            sim.handle_command(client, _cmd("req-jam00002", "jam")), timeout=1.0
         )
         client.publish.assert_called_once()
 
@@ -1243,7 +1244,7 @@ class TestCommandOutcome:
 
         sim.register_command("locked", handler)
         client = AsyncMock()
-        await sim._handle_command(client, _cmd("req-lock0001", "locked"))
+        await sim.handle_command(client, _cmd("req-lock0001", "locked"))
         payload = json.loads(client.publish.call_args[0][1])
         assert payload["status"] == "rejected"
         assert payload["detail"] == "lockout"
@@ -1257,7 +1258,7 @@ class TestCommandOutcome:
 
         sim.register_command("read", handler)
         client = AsyncMock()
-        await sim._handle_command(client, _cmd("req-read0001", "read"))
+        await sim.handle_command(client, _cmd("req-read0001", "read"))
         payload = json.loads(client.publish.call_args[0][1])
         assert payload["status"] == "ok"
         assert payload["result"] == {"reading": 42}
@@ -1293,7 +1294,7 @@ class TestRegisterCommandHook:
         sim.register_command("brew", handler)
         client = AsyncMock()
         cmd = _cmd("req-brew0001", "brew", {"strength": "strong"})
-        await sim._handle_command(client, cmd)
+        await sim.handle_command(client, cmd)
         assert received["client"] is client
         assert received["cmd"] is cmd
 
@@ -1303,7 +1304,7 @@ class TestCommandLoop:
     async def test_subscribes_to_cmd_subsystem_topic(self):
         sim = ConcreteSimulator(machine_id="vmc-1")
         client = AsyncMock()
-        task = asyncio.create_task(sim._command_loop(client))
+        task = asyncio.create_task(sim.command_loop(client))
         await asyncio.sleep(0.02)
         client.subscribe.assert_any_call("vmc/vmc-1/cmd/test_subsystem")
         task.cancel()
@@ -1314,7 +1315,7 @@ class TestCommandLoop:
     async def test_dispatches_a_queued_command_and_acks(self):
         sim = ConcreteSimulator(machine_id="vmc-1")
         client = AsyncMock()
-        task = asyncio.create_task(sim._command_loop(client))
+        task = asyncio.create_task(sim.command_loop(client))
         await asyncio.sleep(0.02)
         topic, queue = next(
             (t, q) for t, q in sim._subscriptions if t == "vmc/vmc-1/cmd/test_subsystem"
@@ -1336,7 +1337,7 @@ class TestCommandLoop:
     async def test_invalid_payload_is_dropped_not_raised(self):
         sim = ConcreteSimulator(machine_id="vmc-1")
         client = AsyncMock()
-        task = asyncio.create_task(sim._command_loop(client))
+        task = asyncio.create_task(sim.command_loop(client))
         await asyncio.sleep(0.02)
         topic, queue = next(
             (t, q) for t, q in sim._subscriptions if t == "vmc/vmc-1/cmd/test_subsystem"
@@ -1354,7 +1355,7 @@ class TestCommandLoopValidationRejection:
     """Defect 1 fix: a raw payload that fails `SubsystemCommand`'s param
     validator (out-of-range `water_valve`/`power_cycle` params) must not be
     silently dropped when it carries a usable `request_id` — the loop now
-    acks it "rejected" itself, from inside `_command_loop`'s decode-and-
+    acks it "rejected" itself, from inside `command_loop`'s decode-and-
     validate, with no handler ever invoked. Uses `ConcreteSimulator`
     directly (not a real subsystem's handler): `COMMAND_PARAM_VALIDATORS`
     is enforced by `SubsystemCommand` itself, so this is genuinely shared,
@@ -1364,7 +1365,7 @@ class TestCommandLoopValidationRejection:
 
     @staticmethod
     async def _start_loop(sim, client):
-        task = asyncio.create_task(sim._command_loop(client))
+        task = asyncio.create_task(sim.command_loop(client))
         await asyncio.sleep(0.02)
         topic, queue = next(
             (t, q)

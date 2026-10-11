@@ -17,7 +17,7 @@ import sys
 import time
 from abc import ABC, abstractmethod
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Union
@@ -310,11 +310,25 @@ class ESP32Simulator(ABC):
         }
 
     @property
-    def _active_fault_names(self) -> set[str]:
+    def fault_state(self) -> Mapping[str, dict]:
+        """Read-only view of each registered fault's live state dict
+        (``active``/``recover_at``/``recovering``) -- tests read through
+        this instead of the private ``_fault_state`` store; the one
+        sanctioned mutation path is ``activate_fault``."""
+        return self._fault_state
+
+    @property
+    def fault_defs(self) -> Sequence[FaultDef]:
+        """Read-only view of registered fault definitions, so a test can
+        look one up by name (e.g. to hand to ``activate_fault``)."""
+        return self._fault_defs
+
+    @property
+    def active_fault_names(self) -> set[str]:
         """Return the set of currently active fault names."""
         return {name for name, state in self._fault_state.items() if state["active"]}
 
-    async def _activate_fault(
+    async def activate_fault(
         self,
         client: aiomqtt.Client,
         fault: FaultDef,
@@ -333,7 +347,7 @@ class ESP32Simulator(ABC):
             f"(recover in {recover_in / 60:.1f} min)"
         )
 
-    async def _check_recoveries(self, client: aiomqtt.Client) -> None:
+    async def check_recoveries(self, client: aiomqtt.Client) -> None:
         """Start recovery for any faults whose recovery timer has elapsed.
 
         Recovery (``fault.on_recover``) runs in a background task rather than
@@ -342,7 +356,7 @@ class ESP32Simulator(ABC):
         block this single ``_fault_loop`` from draining inject commands or
         rolling other faults for the whole recovery duration. The fault is
         marked "recovering" and stays counted as active (via
-        ``_active_fault_names``) until the background task actually
+        ``active_fault_names``) until the background task actually
         completes, so callers that gate behavior on active faults keep
         excluding it the whole time.
         """
@@ -367,7 +381,7 @@ class ESP32Simulator(ABC):
         attempts and any other fault from ever being rolled/injected).
         Cancellation is re-raised so task cancellation still works normally;
         any other exception is logged and the fault stays active with its
-        recovery timer pushed out so ``_check_recoveries`` retries later.
+        recovery timer pushed out so ``check_recoveries`` retries later.
         """
         state = self._fault_state[fault.name]
         try:
@@ -392,13 +406,13 @@ class ESP32Simulator(ABC):
             task.cancel()
         self._recovery_tasks.clear()
 
-    async def _try_roll_faults(self, client: aiomqtt.Client) -> None:
+    async def try_roll_faults(self, client: aiomqtt.Client) -> None:
         """Roll for new faults if none are currently active."""
         if any(s["active"] for s in self._fault_state.values()):
             return
         for fault in self._fault_defs:
             if random.random() < fault.probability:
-                await self._activate_fault(client, fault)
+                await self.activate_fault(client, fault)
                 break  # one fault at a time
 
     async def _publish_alert(
@@ -436,7 +450,7 @@ class ESP32Simulator(ABC):
                 f"[{self.subsystem_name}] Inject ignored: a fault is already active"
             )
             return
-        await self._activate_fault(client, fault)
+        await self.activate_fault(client, fault)
         logger.info(f"[{self.subsystem_name}] Fault injected: {name}")
 
     async def _fault_loop(self, client: aiomqtt.Client) -> None:
@@ -453,9 +467,9 @@ class ESP32Simulator(ABC):
                 _, data = inject_queue.get_nowait()
                 await self._handle_inject_command(client, data)
             # Check if any active faults have recovered
-            await self._check_recoveries(client)
+            await self.check_recoveries(client)
             # Roll for new faults
-            await self._try_roll_faults(client)
+            await self.try_roll_faults(client)
 
     # --- Shared command loop (§1.1, §1.2) -----------------------------------
     #
@@ -499,12 +513,12 @@ class ESP32Simulator(ABC):
     ) -> dict:
         """§1.2: one check per registered FaultDef, failing the injected one.
 
-        Reads `_active_fault_names` fresh on every call, so the result
+        Reads `active_fault_names` fresh on every call, so the result
         always reflects the fault state *at the moment of the call* — never
         a snapshot taken when the fault was registered or the simulator
         started.
         """
-        active = self._active_fault_names
+        active = self.active_fault_names
         checks = [
             {
                 "name": fault.name,
@@ -564,7 +578,7 @@ class ESP32Simulator(ABC):
             "expected CommandOutcome, dict, or None"
         )
 
-    async def _handle_command(
+    async def handle_command(
         self, client: aiomqtt.Client, cmd: SubsystemCommand
     ) -> None:
         """Dispatch one validated command: idempotency cache, handler, ack.
@@ -624,7 +638,7 @@ class ESP32Simulator(ABC):
     # CommandOutcome(..., phase="accepted") *without* awaiting the real
     # actuation inline, and instead hands it to _spawn_background — exactly
     # the pattern `_handle_power_cycle` already used before this amendment
-    # existed. _handle_command above acks that "accepted" outcome completely
+    # existed. handle_command above acks that "accepted" outcome completely
     # normally (no special-casing needed there): the only new behaviour is
     # what happens once the background work finishes.
 
@@ -667,7 +681,7 @@ class ESP32Simulator(ABC):
         `VendingMachineSimulator._dispense_slot`).
 
         Re-caches the ack under `cmd.request_id`, overwriting the
-        "accepted" entry that was cached when `_handle_command` first acked
+        "accepted" entry that was cached when `handle_command` first acked
         this command, so a very late duplicate (an ack-timeout retry whose
         original "accepted" ack was itself lost in transit, arriving after
         the command has since finished) replays the real, final outcome
@@ -745,7 +759,7 @@ class ESP32Simulator(ABC):
             "rejected (validation)"
         )
 
-    async def _command_loop(self, client: aiomqtt.Client) -> None:
+    async def command_loop(self, client: aiomqtt.Client) -> None:
         """Subscribe to cmd/<subsystem> and dispatch each command as it arrives.
 
         Call this from a subclass's `run_simulation` (inside its
@@ -765,7 +779,7 @@ class ESP32Simulator(ABC):
             except ValidationError as e:
                 await self._handle_invalid_command(client, data, e)
                 continue
-            await self._handle_command(client, cmd)
+            await self.handle_command(client, cmd)
 
     def ha_discovery_entities(self) -> list[dict]:
         """Override in subclasses to return HA discovery entity definitions.

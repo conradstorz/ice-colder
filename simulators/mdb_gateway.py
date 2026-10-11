@@ -114,7 +114,7 @@ class MDBGatewaySimulator(ESP32Simulator):
 
         # §1.3 actuator test counters — observable proof that a handler's
         # side effect ran exactly once per new request_id (the idempotency
-        # cache in ESP32Simulator._handle_command stops a duplicate
+        # cache in ESP32Simulator.handle_command stops a duplicate
         # request_id from reaching the handler at all).
         self.bill_acceptor_test_count = 0
         self.coin_return_test_count = 0
@@ -241,7 +241,7 @@ class MDBGatewaySimulator(ESP32Simulator):
             self._last_status = data
             await self._vmc_status.put(data)
 
-    async def _apply_enable(self, data: dict) -> None:
+    async def apply_enable(self, data: dict) -> None:
         try:
             cmd = PaymentEnableCommand.model_validate(data)
         except ValidationError as e:
@@ -269,7 +269,7 @@ class MDBGatewaySimulator(ESP32Simulator):
         logger.info(f"[mdb] Listening for payment enable on {topic}")
         while True:
             _topic, data = await queue.get()
-            await self._apply_enable(data)
+            await self.apply_enable(data)
 
     async def _payment_loop(self, client: aiomqtt.Client):
         """React to VMC state changes by inserting payments."""
@@ -296,7 +296,7 @@ class MDBGatewaySimulator(ESP32Simulator):
             # Simulate customer reaching for wallet
             await asyncio.sleep(random.uniform(2.0, 5.0))
 
-            excluded = self._build_payment_exclusions()
+            excluded = self.build_payment_exclusions()
             method = self.strategy.pick_method(excluded=excluded)
             if method is None:
                 logger.info(
@@ -364,9 +364,9 @@ class MDBGatewaySimulator(ESP32Simulator):
         )
         logger.info(f"[mdb] Card/NFC payment: ${amount:.2f} via {method}")
 
-    def _build_payment_exclusions(self) -> set[str]:
+    def build_payment_exclusions(self) -> set[str]:
         """Return the set of payment methods excluded by currently active faults."""
-        active = self._active_fault_names
+        active = self.active_fault_names
         excluded: set[str] = set()
         if "coin_acceptor_jammed" in active:
             excluded.add("cash_coin")
@@ -447,9 +447,9 @@ class MDBGatewaySimulator(ESP32Simulator):
             except ValidationError as e:
                 logger.error(f"[mdb] Bad refund command ignored: {e}")
                 continue
-            await self._handle_refund(client, cmd)
+            await self.handle_refund(client, cmd)
 
-    async def _handle_refund(
+    async def handle_refund(
         self, client: aiomqtt.Client, cmd: PaymentRefundCommand
     ) -> None:
         cached = self._refund_results.get(cmd.request_id)
@@ -461,7 +461,7 @@ class MDBGatewaySimulator(ESP32Simulator):
             return
 
         await asyncio.sleep(random.uniform(*self.REFUND_DELAY_RANGE))
-        if "changer_empty" in self._active_fault_names:
+        if "changer_empty" in self.active_fault_names:
             result = PaymentRefundResult(
                 request_id=cmd.request_id,
                 status=RefundStatus.failed,
@@ -536,7 +536,7 @@ class MDBGatewaySimulator(ESP32Simulator):
             tg.create_task(self._payment_loop(client))
             tg.create_task(self._refund_loop(client))
             tg.create_task(self._enable_loop(client))
-            tg.create_task(self._command_loop(client))
+            tg.create_task(self.command_loop(client))
 
 
 if __name__ == "__main__":
