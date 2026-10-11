@@ -8,7 +8,7 @@ import asyncio
 
 import pytest
 
-from tests.fakes import FakeTask, FakeTaskRunner, ScheduledCall
+from tests.fakes import FakeTask, FakeTaskRunner, ScheduledCall, settle
 
 
 async def test_schedule_records_a_call_and_returns_a_task():
@@ -159,6 +159,24 @@ async def test_cancel_pending_cancels_live_scheduled_calls_too():
     runner.cancel_pending()
 
     assert runner.scheduled == []
+
+
+async def test_settle_runs_a_created_task_to_completion():
+    """`settle()` yields to the loop enough times for a fire-and-forget
+    task with no real I/O (one `await asyncio.sleep(0)` of its own) to run
+    to completion -- the deterministic replacement for
+    `await asyncio.sleep(0.01)`."""
+    results: list[str] = []
+
+    async def fake_publish():
+        await asyncio.sleep(0)
+        results.append("published")
+
+    asyncio.get_running_loop().create_task(fake_publish())
+
+    await settle()
+
+    assert results == ["published"]
 
 
 def test_fire_all_skips_a_call_cancelled_earlier_in_the_same_pass():
