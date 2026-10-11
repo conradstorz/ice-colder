@@ -786,11 +786,14 @@ class ESP32Simulator(ABC):
         while True:
             _, data = await queue.get()
             try:
-                cmd = SubsystemCommand.model_validate(data)
-            except ValidationError as e:
-                await self._handle_invalid_command(client, data, e)
-                continue
-            await self.handle_command(client, cmd)
+                try:
+                    cmd = SubsystemCommand.model_validate(data)
+                except ValidationError as e:
+                    await self._handle_invalid_command(client, data, e)
+                    continue
+                await self.handle_command(client, cmd)
+            finally:
+                queue.task_done()
 
     def ha_discovery_entities(self) -> list[dict]:
         """Override in subclasses to return HA discovery entity definitions.

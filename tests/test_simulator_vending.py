@@ -27,6 +27,7 @@ from services.dispensers import validate_document
 from services.mqtt_messages import DispenseCommand
 from simulators.vending_machine import VendingMachineSimulator
 from tests.dispenser_fixtures import GOOD, ICE, WATER
+from tests.fakes import settle
 
 
 _REAL_SLEEP = asyncio.sleep  # captured before any test patches asyncio.sleep
@@ -1375,7 +1376,7 @@ class TestWaterValveCommand:
     @staticmethod
     async def _start_command_loop(sim, client):
         task = asyncio.create_task(sim.command_loop(client))
-        await asyncio.sleep(0.02)
+        await settle()
         topic, queue = next(
             (t, q)
             for t, q in sim._subscriptions
@@ -1405,7 +1406,7 @@ class TestWaterValveCommand:
                 },
             )
         )
-        await asyncio.sleep(0.02)
+        await asyncio.wait_for(queue.join(), 1.0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -1437,7 +1438,7 @@ class TestWaterValveCommand:
                 },
             )
         )
-        await asyncio.sleep(0.02)
+        await asyncio.wait_for(queue.join(), 1.0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -1473,7 +1474,7 @@ class TestWaterValveCommand:
                 },
             )
         )
-        await asyncio.sleep(0.02)
+        await asyncio.wait_for(queue.join(), 1.0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -1504,7 +1505,7 @@ class TestWaterValveCommand:
         assert len(sim._background_tasks) == 1
         task = next(iter(sim._background_tasks))
 
-        await asyncio.sleep(0.02)  # let it open the valve and reach the sleep
+        await settle()  # let it open the valve and reach the real asyncio.sleep
         assert sim._hw["water_valve_solenoid"] is True
         assert sim._hw["water_flow_sensor"] is True
 
