@@ -28,7 +28,6 @@ def recorder_with_db(wired, tmp_path):
     recorder = EventRecorder(db_path=str(db_path), retention_days=90)
     context.set_event_recorder(recorder)
     yield recorder
-    context.set_event_recorder(None)
 
 
 def _seed_sales(recorder, methods_list):

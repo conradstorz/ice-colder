@@ -75,10 +75,7 @@ class TestReportsPeriodParameter:
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
-        try:
-            yield client
-        finally:
-            r.set_event_recorder(None)
+        yield client
 
     @pytest.mark.parametrize("period", [24, 168, 720])
     def test_valid_period(self, wired_client, period):
@@ -132,13 +129,10 @@ class TestReportsRecorderOffloading:
             return await real_to_thread(func, *args, **kwargs)
 
         monkeypatch.setattr(r.asyncio, "to_thread", spying_to_thread)
-        try:
-            resp = client.get("/reports?period=168")
-            assert resp.status_code == 200
-            assert (recorder.get_summary, (168,)) in calls
-            assert (recorder.get_historical_average, (168,)) in calls
-        finally:
-            r.set_event_recorder(None)
+        resp = client.get("/reports?period=168")
+        assert resp.status_code == 200
+        assert (recorder.get_summary, (168,)) in calls
+        assert (recorder.get_historical_average, (168,)) in calls
 
 
 class TestReportsTableMarkup:
@@ -150,15 +144,12 @@ class TestReportsTableMarkup:
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
-        try:
-            response = client.get("/reports")
-            assert response.status_code == 200
-            # Verify overflow-x: auto container is in the HTML
-            assert "overflow-x-auto" in response.text
-            # Verify there's a table element
-            assert "<table" in response.text
-        finally:
-            r.set_event_recorder(None)
+        response = client.get("/reports")
+        assert response.status_code == 200
+        # Verify overflow-x: auto container is in the HTML
+        assert "overflow-x-auto" in response.text
+        # Verify there's a table element
+        assert "<table" in response.text
 
 
 class TestReportsLevel:

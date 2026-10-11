@@ -576,14 +576,11 @@ class TestKpiEndpoint:
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
-        try:
-            response = client.get("/kpi")
-            assert response.status_code == 200
-            # "no history yet" only appears in the recorder-present branch (average sub-line);
-            # the placeholder skeleton uses "no data" instead.
-            assert "no history yet" in response.text
-        finally:
-            r.set_event_recorder(None)
+        response = client.get("/kpi")
+        assert response.status_code == 200
+        # "no history yet" only appears in the recorder-present branch (average sub-line);
+        # the placeholder skeleton uses "no data" instead.
+        assert "no history yet" in response.text
 
 
 # TestActivityPeriodParam removed (Task 15): GET /activity is gone (see
@@ -613,12 +610,9 @@ class TestEventRecorderCallsOffloaded:
             return await real_to_thread(func, *args, **kwargs)
 
         monkeypatch.setattr(r.asyncio, "to_thread", spying_to_thread)
-        try:
-            resp = client.get("/status")
-            assert resp.status_code == 200
-            assert (recorder.get_summary, (24,)) in calls
-        finally:
-            r.set_event_recorder(None)
+        resp = client.get("/status")
+        assert resp.status_code == 200
+        assert (recorder.get_summary, (24,)) in calls
 
     def test_kpi_offloads_summary_and_average_to_thread(
         self, client, tmp_path, monkeypatch
@@ -637,13 +631,10 @@ class TestEventRecorderCallsOffloaded:
             return await real_to_thread(func, *args, **kwargs)
 
         monkeypatch.setattr(r.asyncio, "to_thread", spying_to_thread)
-        try:
-            resp = client.get("/kpi")
-            assert resp.status_code == 200
-            assert (recorder.get_summary, (24,)) in calls
-            assert (recorder.get_historical_average, (24,)) in calls
-        finally:
-            r.set_event_recorder(None)
+        resp = client.get("/kpi")
+        assert resp.status_code == 200
+        assert (recorder.get_summary, (24,)) in calls
+        assert (recorder.get_historical_average, (24,)) in calls
 
     # test_activity_offloads_summary_and_average_to_thread removed (Task
     # 15): GET /activity is gone; the identical offloading assertion against
@@ -672,12 +663,9 @@ class TestStatusHealthSignal:
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
-        try:
-            response = client.get("/status")
-            assert response.status_code == 200
-            assert "All Systems OK" in response.text
-        finally:
-            r.set_event_recorder(None)
+        response = client.get("/status")
+        assert response.status_code == 200
+        assert "All Systems OK" in response.text
 
     def test_status_with_recorder_has_errors(self, client, tmp_path):
         from services.event_recorder import EventRecorder
@@ -686,12 +674,9 @@ class TestStatusHealthSignal:
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         recorder.record("error")
         r.set_event_recorder(recorder)
-        try:
-            response = client.get("/status")
-            assert response.status_code == 200
-            assert "Issues Detected" in response.text
-        finally:
-            r.set_event_recorder(None)
+        response = client.get("/status")
+        assert response.status_code == 200
+        assert "Issues Detected" in response.text
 
 
 # TestDeleteAndEmptyState removed (Task 15): every test here hit
@@ -954,8 +939,6 @@ class TestStillSellingBanner:
         r.set_availability(avail)
         r.set_health_monitor(HealthMonitor())
         yield client
-        r.set_availability(None)
-        r.set_health_monitor(None)
 
     def test_status_shows_still_selling_for_a_soft_fault(self, selling_client):
         client = selling_client
@@ -998,7 +981,6 @@ class TestMaintenanceHero:
         context.machine_instance.set_availability(avail)
         context.set_availability(avail)
         yield client
-        context.set_availability(None)
 
     def test_status_shows_out_of_service_with_holder_name(self, maintenance_client):
         owner = context.access_store.owner()
@@ -1023,7 +1005,6 @@ class TestAvailabilityOnDashboard:
         r.set_availability(avail)
         r.set_health_monitor(HealthMonitor())
         yield client, avail
-        r.set_availability(None)
 
     def test_status_shows_payment_disabled_with_reason(self, avail_client):
         # Only a safety-gate row can disable payment now; a service door left

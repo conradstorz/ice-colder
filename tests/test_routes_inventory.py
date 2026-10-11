@@ -92,14 +92,10 @@ class TestInventoryRows:
         add_product(cfg, "NOMGR-1", "No Manager Item", 1.00, slot=1, kind="other")
         worker = login_as(Role.owner)
         context.set_inventory_manager(None)
-        try:
-            resp = worker.get("/inventory")
-            assert resp.status_code == 200
-            assert "No Manager Item" in resp.text
-            assert 'hx-post="/inventory/NOMGR-1/adjust"' not in resp.text
-        finally:
-            _cfg, _vmc, inv, _store = wired
-            context.set_inventory_manager(inv)
+        resp = worker.get("/inventory")
+        assert resp.status_code == 200
+        assert "No Manager Item" in resp.text
+        assert 'hx-post="/inventory/NOMGR-1/adjust"' not in resp.text
 
 
 class TestInventoryAdjust:
