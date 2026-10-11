@@ -77,11 +77,11 @@ class TestPaymentStrategyExclusion:
 class TestMDBFaultRegistration:
     def test_five_faults_registered(self):
         sim = MDBGatewaySimulator()
-        assert len(sim._fault_defs) == 5
+        assert len(sim.fault_defs) == 5
 
     def test_fault_names(self):
         sim = MDBGatewaySimulator()
-        names = {f.name for f in sim._fault_defs}
+        names = {f.name for f in sim.fault_defs}
         assert names == {
             "coin_acceptor_jammed",
             "bill_validator_offline",
@@ -109,15 +109,17 @@ class TestCoinAcceptorJammedFault:
         device = next(d for d in sim.devices if d["name"] == "coin_acceptor")
         assert device["state"] == "ready"
 
-    def test_excluded_methods_during_coin_fault(self):
+    async def test_excluded_methods_during_coin_fault(self):
         sim = MDBGatewaySimulator()
-        sim._fault_state["coin_acceptor_jammed"] = {"active": True, "recover_at": 9e9}
-        excluded = sim._build_payment_exclusions()
+        client = AsyncMock()
+        fault = next(f for f in sim.fault_defs if f.name == "coin_acceptor_jammed")
+        await sim.activate_fault(client, fault, recover_in=9e9)
+        excluded = sim.build_payment_exclusions()
         assert "cash_coin" in excluded
 
     def test_no_exclusions_when_no_faults(self):
         sim = MDBGatewaySimulator()
-        excluded = sim._build_payment_exclusions()
+        excluded = sim.build_payment_exclusions()
         assert excluded == set()
 
 
@@ -139,10 +141,12 @@ class TestBillValidatorOfflineFault:
         device = next(d for d in sim.devices if d["name"] == "bill_validator")
         assert device["state"] == "ready"
 
-    def test_excluded_methods_during_bill_fault(self):
+    async def test_excluded_methods_during_bill_fault(self):
         sim = MDBGatewaySimulator()
-        sim._fault_state["bill_validator_offline"] = {"active": True, "recover_at": 9e9}
-        excluded = sim._build_payment_exclusions()
+        client = AsyncMock()
+        fault = next(f for f in sim.fault_defs if f.name == "bill_validator_offline")
+        await sim.activate_fault(client, fault, recover_in=9e9)
+        excluded = sim.build_payment_exclusions()
         assert "cash_bill" in excluded
 
 
@@ -164,10 +168,12 @@ class TestCardReaderErrorFault:
         device = next(d for d in sim.devices if d["name"] == "card_reader")
         assert device["state"] == "ready"
 
-    def test_excluded_methods_during_card_fault(self):
+    async def test_excluded_methods_during_card_fault(self):
         sim = MDBGatewaySimulator()
-        sim._fault_state["card_reader_error"] = {"active": True, "recover_at": 9e9}
-        excluded = sim._build_payment_exclusions()
+        client = AsyncMock()
+        fault = next(f for f in sim.fault_defs if f.name == "card_reader_error")
+        await sim.activate_fault(client, fault, recover_in=9e9)
+        excluded = sim.build_payment_exclusions()
         assert "card" in excluded
         assert "nfc" in excluded
 
@@ -193,10 +199,12 @@ class TestMDBBusResetFault:
         for device in sim.devices:
             assert device["state"] == "ready"
 
-    def test_bus_reset_excludes_all_payment_methods(self):
+    async def test_bus_reset_excludes_all_payment_methods(self):
         sim = MDBGatewaySimulator()
-        sim._fault_state["mdb_bus_reset"] = {"active": True, "recover_at": 9e9}
-        excluded = sim._build_payment_exclusions()
+        client = AsyncMock()
+        fault = next(f for f in sim.fault_defs if f.name == "mdb_bus_reset")
+        await sim.activate_fault(client, fault, recover_in=9e9)
+        excluded = sim.build_payment_exclusions()
         assert excluded == {"cash_coin", "cash_bill", "card", "nfc"}
 
 
@@ -256,7 +264,7 @@ class TestRefunds:
     async def test_refund_acked_ok_with_amount(self):
         sim = self._sim()
         cmd = PaymentRefundCommand(request_id="r" * 32, amount=2.5, reason="cancel")
-        await sim._handle_refund(None, cmd)
+        await sim.handle_refund(None, cmd)
         acks = self._acks(sim)
         assert len(acks) == 1
         assert acks[0].status is RefundStatus.ok
@@ -266,8 +274,8 @@ class TestRefunds:
     async def test_repeated_request_id_resends_stored_result(self):
         sim = self._sim()
         cmd = PaymentRefundCommand(request_id="r" * 32, amount=2.5, reason="cancel")
-        await sim._handle_refund(None, cmd)
-        await sim._handle_refund(None, cmd)
+        await sim.handle_refund(None, cmd)
+        await sim.handle_refund(None, cmd)
         acks = self._acks(sim)
         assert len(acks) == 2
         assert acks[0] is acks[1]  # same stored object, no second pay-out
@@ -275,9 +283,10 @@ class TestRefunds:
 
     async def test_changer_empty_fault_answers_failed(self):
         sim = self._sim()
-        sim._fault_state["changer_empty"]["active"] = True
+        fault = next(f for f in sim.fault_defs if f.name == "changer_empty")
+        await sim.activate_fault(AsyncMock(), fault)
         cmd = PaymentRefundCommand(request_id="r" * 32, amount=2.5, reason="cancel")
-        await sim._handle_refund(None, cmd)
+        await sim.handle_refund(None, cmd)
         ack = self._acks(sim)[0]
         assert ack.status is RefundStatus.failed
         assert ack.amount_returned == 0.0
@@ -290,7 +299,7 @@ class TestRefunds:
             cmd = PaymentRefundCommand(
                 request_id=f"{i:032d}", amount=1.0, reason="cancel"
             )
-            await sim._handle_refund(None, cmd)
+            await sim.handle_refund(None, cmd)
         assert list(sim._refund_results) == [
             "2".zfill(32),
             "3".zfill(32),
@@ -299,7 +308,7 @@ class TestRefunds:
 
     def test_changer_empty_fault_registered(self):
         sim = MDBGatewaySimulator()
-        assert "changer_empty" in sim._fault_state
+        assert "changer_empty" in sim.fault_state
 
 
 class TestMDBCapabilities:
@@ -342,14 +351,14 @@ class TestPaymentEnable:
 
     async def test_enable_command_toggles_accepting(self):
         sim = MDBGatewaySimulator()
-        await sim._apply_enable({"accept": True})
+        await sim.apply_enable({"accept": True})
         assert sim.accepting is True
-        await sim._apply_enable({"accept": False})
+        await sim.apply_enable({"accept": False})
         assert sim.accepting is False
 
     async def test_bad_enable_payload_ignored(self):
         sim = MDBGatewaySimulator()
-        await sim._apply_enable({"nope": 1})
+        await sim.apply_enable({"nope": 1})
         assert sim.accepting is False
 
     async def test_no_credit_published_while_inhibited(self):
@@ -358,28 +367,28 @@ class TestPaymentEnable:
         sim.publish = AsyncMock()
         await sim._do_card_payment(client, "card", price=3.0)
         sim.publish.assert_not_awaited()
-        await sim._apply_enable({"accept": True})
+        await sim.apply_enable({"accept": True})
         await sim._do_card_payment(client, "card", price=3.0)
         sim.publish.assert_awaited()
 
     async def test_enable_requeues_pending_interaction(self):
         sim = MDBGatewaySimulator()
         sim._last_status = {"state": "interacting_with_user", "selected_product": "Ice"}
-        await sim._apply_enable({"accept": True})
+        await sim.apply_enable({"accept": True})
         assert sim._vmc_status.get_nowait()["state"] == "interacting_with_user"
 
     async def test_enable_does_not_requeue_idle_status(self):
         sim = MDBGatewaySimulator()
         sim._last_status = {"state": "idle"}
-        await sim._apply_enable({"accept": True})
+        await sim.apply_enable({"accept": True})
         assert sim._vmc_status.empty()
 
     async def test_repeated_enable_does_not_requeue_again(self):
         sim = MDBGatewaySimulator()
         sim._last_status = {"state": "interacting_with_user", "selected_product": "Ice"}
-        await sim._apply_enable({"accept": True})
+        await sim.apply_enable({"accept": True})
         assert sim._vmc_status.get_nowait()["state"] == "interacting_with_user"
-        await sim._apply_enable({"accept": True})
+        await sim.apply_enable({"accept": True})
         assert sim._vmc_status.empty()
 
 
@@ -400,7 +409,7 @@ class TestActuatorCommands:
 
     async def _send(self, sim, client, command, request_id):
         cmd = SubsystemCommand(request_id=request_id, command=command, params={})
-        await sim._handle_command(client, cmd)
+        await sim.handle_command(client, cmd)
 
     async def test_bill_acceptor_test_acks_ok(self):
         sim = self._sim()
@@ -428,8 +437,8 @@ class TestActuatorCommands:
 
     async def test_card_reader_test_result_reflects_fault_state(self):
         sim = self._sim()
-        sim._fault_state["card_reader_error"] = {"active": True, "recover_at": 9e9}
-        await sim._on_card_reader_error_activate(AsyncMock())
+        fault = next(f for f in sim.fault_defs if f.name == "card_reader_error")
+        await sim.activate_fault(AsyncMock(), fault, recover_in=9e9)
         await self._send(sim, AsyncMock(), "card_reader_test", "e" * 16)
         acks = self._acks(sim)
         assert "error" in acks[0].result["status_text"]
@@ -440,8 +449,8 @@ class TestActuatorCommands:
         cmd = SubsystemCommand(
             request_id="d" * 16, command="bill_acceptor_test", params={}
         )
-        await sim._handle_command(client, cmd)
-        await sim._handle_command(client, cmd)
+        await sim.handle_command(client, cmd)
+        await sim.handle_command(client, cmd)
         assert sim.bill_acceptor_test_count == 1
         assert len(self._acks(sim)) == 2  # cached ack still republished
 
@@ -451,8 +460,8 @@ class TestActuatorCommands:
         cmd = SubsystemCommand(
             request_id="f" * 16, command="coin_return_test", params={}
         )
-        await sim._handle_command(client, cmd)
-        await sim._handle_command(client, cmd)
+        await sim.handle_command(client, cmd)
+        await sim.handle_command(client, cmd)
         assert sim.coin_return_test_count == 1
 
     async def test_card_reader_duplicate_request_id_does_not_re_actuate(self):
@@ -461,8 +470,8 @@ class TestActuatorCommands:
         cmd = SubsystemCommand(
             request_id="g" * 16, command="card_reader_test", params={}
         )
-        await sim._handle_command(client, cmd)
-        await sim._handle_command(client, cmd)
+        await sim.handle_command(client, cmd)
+        await sim.handle_command(client, cmd)
         assert sim.card_reader_test_count == 1
 
     def test_all_three_advertised_in_capabilities(self):

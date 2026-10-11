@@ -145,7 +145,7 @@ def _default_bucket(range_key: str) -> str:
     return _BUCKET_DEFAULTS.get(range_key, "day")
 
 
-def _resolve_bucket(range_key: str, bucket: str | None) -> str:
+def resolve_bucket(range_key: str, bucket: str | None) -> str:
     """An unrecognized or absent bucket falls back to the range's default,
     never a 422 -- the same fallback shape as `_effective_range`.
 
@@ -491,7 +491,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         bucket: str | None = Query(default=None),
     ):
         range_key = _effective_range(range)
-        bucket_key = _resolve_bucket(range_key, bucket)
+        bucket_key = resolve_bucket(range_key, bucket)
         data = await _compute_period(range_key, bucket_key)
         return _render(request, data)
 
@@ -524,7 +524,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         bucket: str | None = Query(default=None),
     ):
         range_key = _effective_range(range)
-        bucket_key = _resolve_bucket(range_key, bucket)
+        bucket_key = resolve_bucket(range_key, bucket)
         data = await _compute_product_sku(range_key, bucket_key, sku)
         return _render(request, data)
 
@@ -582,7 +582,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         range_key = _effective_range(range)
 
         if report == "period":
-            bucket_key = _resolve_bucket(range_key, bucket)
+            bucket_key = resolve_bucket(range_key, bucket)
             data = await _compute_period(range_key, bucket_key)
         elif report == "product":
             data = await _compute_product(range_key)
@@ -591,7 +591,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
                 raise HTTPException(
                     status_code=400, detail="sku is required for product_sku report"
                 )
-            bucket_key = _resolve_bucket(range_key, bucket)
+            bucket_key = resolve_bucket(range_key, bucket)
             data = await _compute_product_sku(range_key, bucket_key, sku)
         elif report == "method":
             data = await _compute_method(range_key)

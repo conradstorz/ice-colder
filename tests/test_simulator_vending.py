@@ -33,12 +33,12 @@ _REAL_SLEEP = asyncio.sleep  # captured before any test patches asyncio.sleep
 
 
 class FakeClock:
-    """A fake `sim._sleep` that advances a cumulative `now` by exactly the
+    """A fake `sim.sleep` that advances a cumulative `now` by exactly the
     requested duration on every call, synchronously, instead of actually
     waiting -- lets a test assert *when* within a run something happened
     (e.g. "the terminal report went out at t=1.0, the lagged accessory
     turned off at t=3.0") without real wall-clock delay. Assign an
-    instance directly to `sim._sleep` the same way other tests here
+    instance directly to `sim.sleep` the same way other tests here
     assign a plain async function or an `AsyncMock`."""
 
     def __init__(self) -> None:
@@ -63,7 +63,7 @@ async def _drain_background(sim, timeout: float = 2.0) -> None:
     that also patches `simulators.vending_machine.asyncio.sleep` (the
     water_valve tests in this file) needs this real-sleep workaround for
     the same reason explained historically here; profile-execution tests
-    patch `sim._sleep` instead (an instance attribute), which leaves the
+    patch `sim.sleep` instead (an instance attribute), which leaves the
     module-global `asyncio.sleep` untouched, so this real sleep is not
     strictly required there but is harmless and kept for one shared
     helper.
@@ -130,7 +130,7 @@ def _make_command(command: str, params: dict, request_id: str = "req-00000001"):
     that validator so tests can exercise a handler's own defense-in-depth
     check directly (and build a deliberately-bare `{"slot": n}` payload
     for the rejection test), while every in-range/valid command here still
-    matches exactly what `_command_loop` would have built.
+    matches exactly what `command_loop` would have built.
     """
     return SubsystemCommand.model_construct(
         request_id=request_id,
@@ -253,11 +253,11 @@ class TestHADiscovery:
 class TestVendingFaultRegistration:
     def test_ten_faults_registered(self):
         sim = VendingMachineSimulator()
-        assert len(sim._fault_defs) == 10
+        assert len(sim.fault_defs) == 10
 
     def test_fault_names(self):
         sim = VendingMachineSimulator()
-        names = {f.name for f in sim._fault_defs}
+        names = {f.name for f in sim.fault_defs}
         assert names == {
             "auger_jam",
             "bag_drop_solenoid_stuck",
@@ -281,7 +281,7 @@ class TestAugerJamFault:
     @pytest.mark.asyncio
     async def test_fault_is_registered(self):
         sim = VendingMachineSimulator()
-        names = {f.name for f in sim._fault_defs}
+        names = {f.name for f in sim.fault_defs}
         assert "auger_jam" in names
 
     @pytest.mark.asyncio
@@ -301,7 +301,7 @@ class TestWaterValveStuckOpenFault:
         async def capture_set_hw(client, device, state):
             set_hw_calls.append((device, state))
 
-        sim._set_hw = capture_set_hw
+        sim.set_hw = capture_set_hw
         client = AsyncMock()
         await sim._on_water_valve_stuck_open_activate(client)
         assert ("water_valve_solenoid", True) in set_hw_calls
@@ -315,7 +315,7 @@ class TestWaterValveStuckOpenFault:
         async def capture_set_hw(client, device, state):
             set_hw_calls.append((device, state))
 
-        sim._set_hw = capture_set_hw
+        sim.set_hw = capture_set_hw
         client = AsyncMock()
         await sim._on_water_valve_stuck_open_recover(client)
         assert ("water_valve_solenoid", False) in set_hw_calls
@@ -332,7 +332,7 @@ class TestIceBinEmptyFault:
             set_hw_calls.append((device, state))
             sim._hw[device] = state
 
-        sim._set_hw = capture_set_hw
+        sim.set_hw = capture_set_hw
         client = AsyncMock()
         await sim._on_ice_bin_empty_activate(client)
         assert ("bin_half_full", False) in set_hw_calls
@@ -345,7 +345,7 @@ class TestIceBinEmptyFault:
         async def capture_set_hw(client, device, state):
             set_hw_calls.append((device, state))
 
-        sim._set_hw = capture_set_hw
+        sim.set_hw = capture_set_hw
         client = AsyncMock()
         await sim._on_ice_bin_empty_recover(client)
         assert ("bin_half_full", True) in set_hw_calls
@@ -451,9 +451,11 @@ class TestCustomerBehaviours:
         factor = sim._arrival_factor(hour=9)
         assert factor == 1.0
 
-    def test_fault_aware_idle_time_shortened(self):
+    async def test_fault_aware_idle_time_shortened(self):
         sim = VendingMachineSimulator()
-        sim._fault_state["auger_jam"] = {"active": True, "recover_at": 9e9}
+        client = AsyncMock()
+        fault = next(f for f in sim.fault_defs if f.name == "auger_jam")
+        await sim.activate_fault(client, fault, recover_in=9e9)
         idle = sim._compute_idle_time()
         # Must be within 5-15 range (fault-aware)
         assert 5.0 <= idle <= 15.0
@@ -605,13 +607,13 @@ class TestVendingCapabilities:
 
 
 class TestExecuteProfile:
-    """`_execute_profile` -- the profile-driven replacement for
+    """`execute_profile` -- the profile-driven replacement for
     `_dispense_slot`/`_run_ice_dispense`/`_run_water_dispense`."""
 
     @pytest.mark.asyncio
     async def test_bagged_ice_profile_step_sequence_and_io(self):
         sim = _make_sim()
-        sim._sleep = AsyncMock()
+        sim.sleep = AsyncMock()
         client = AsyncMock()
         states = []
         hw_events = []
@@ -625,7 +627,7 @@ class TestExecuteProfile:
         sim.publish = capture_publish
         cmd = DispenseCommand(slot=1, mechanism="bagged_ice", profile=ICE_PROFILE)
 
-        await sim._execute_profile(client, cmd, request_id="req-ice-1")
+        await sim.execute_profile(client, cmd, request_id="req-ice-1")
 
         assert states == ["agitate", "fill", "release", "complete"]
 
@@ -658,7 +660,7 @@ class TestExecuteProfile:
         async def fake_sleep(seconds):
             durations.append(seconds)
 
-        sim._sleep = fake_sleep
+        sim.sleep = fake_sleep
         client = AsyncMock()
         sim.publish = AsyncMock()
 
@@ -684,7 +686,7 @@ class TestExecuteProfile:
         )
         cmd = DispenseCommand(slot=3, mechanism="bagged_ice", profile=profile)
 
-        await sim._execute_profile(client, cmd)
+        await sim.execute_profile(client, cmd)
 
         assert 17.0 in durations
 
@@ -705,7 +707,7 @@ class TestExecuteProfile:
     )
     async def test_injected_fault_yields_outcome(self, fault, expected):
         sim = _make_sim()
-        sim._sleep = AsyncMock()
+        sim.sleep = AsyncMock()
         client = AsyncMock()
         terminal = []
 
@@ -714,14 +716,15 @@ class TestExecuteProfile:
                 terminal.append(payload.state)
 
         sim.publish = capture_publish
-        sim._fault_state[fault]["active"] = True
+        fault_def = next(f for f in sim.fault_defs if f.name == fault)
+        await sim.activate_fault(client, fault_def)
 
         if fault in _ICE_FAULTS:
             cmd = DispenseCommand(slot=1, mechanism="bagged_ice", profile=ICE_PROFILE)
         else:
             cmd = DispenseCommand(slot=2, mechanism="water_fill", profile=WATER_PROFILE)
 
-        await sim._execute_profile(client, cmd)
+        await sim.execute_profile(client, cmd)
 
         assert DispenserOutcome(terminal[-1]) is expected
 
@@ -741,7 +744,7 @@ class TestExecuteProfile:
         async def fake_sleep(seconds):
             durations.append(seconds)
 
-        sim._sleep = fake_sleep
+        sim.sleep = fake_sleep
         client = AsyncMock()
         terminal = []
         flow_readings = []
@@ -755,7 +758,7 @@ class TestExecuteProfile:
         sim.publish = capture_publish
         cmd = DispenseCommand(slot=2, mechanism="water_fill", profile=WATER_PROFILE)
 
-        await sim._execute_profile(client, cmd)
+        await sim.execute_profile(client, cmd)
 
         assert DispenserOutcome(terminal[-1]) is DispenserOutcome.complete
         assert len(flow_readings) >= 4
@@ -777,7 +780,7 @@ class TestExecuteProfile:
         `over_dispense_percent`'s tolerance -- proved from the terminal
         report's own `detail`, not just the outcome name."""
         sim = _make_sim()
-        sim._sleep = AsyncMock()
+        sim.sleep = AsyncMock()
         client = AsyncMock()
         terminal = []
 
@@ -786,10 +789,11 @@ class TestExecuteProfile:
                 terminal.append((payload.state, payload.detail))
 
         sim.publish = capture_publish
-        sim._fault_state["flow_runaway"]["active"] = True
+        fault = next(f for f in sim.fault_defs if f.name == "flow_runaway")
+        await sim.activate_fault(client, fault)
         cmd = DispenseCommand(slot=2, mechanism="water_fill", profile=WATER_PROFILE)
 
-        await sim._execute_profile(client, cmd)
+        await sim.execute_profile(client, cmd)
 
         state, detail = terminal[-1]
         assert state == "over_dispense"
@@ -808,7 +812,7 @@ class TestExecuteProfile:
         below the minimum) and not complete (the target is never
         reached)."""
         sim = _make_sim()
-        sim._sleep = AsyncMock()
+        sim.sleep = AsyncMock()
         client = AsyncMock()
         terminal = []
 
@@ -817,10 +821,11 @@ class TestExecuteProfile:
                 terminal.append((payload.state, payload.detail))
 
         sim.publish = capture_publish
-        sim._fault_state["slow_flow"]["active"] = True
+        fault = next(f for f in sim.fault_defs if f.name == "slow_flow")
+        await sim.activate_fault(client, fault)
         cmd = DispenseCommand(slot=2, mechanism="water_fill", profile=WATER_PROFILE)
 
-        await sim._execute_profile(client, cmd)
+        await sim.execute_profile(client, cmd)
 
         assert terminal[-1][0] == "timeout"
 
@@ -832,7 +837,7 @@ class TestExecuteProfile:
         timeout, only when the target happens to be unreachable at that
         rate."""
         sim = _make_sim()
-        sim._sleep = AsyncMock()
+        sim.sleep = AsyncMock()
         client = AsyncMock()
         terminal = []
 
@@ -841,7 +846,8 @@ class TestExecuteProfile:
                 terminal.append((payload.state, payload.detail))
 
         sim.publish = capture_publish
-        sim._fault_state["slow_flow"]["active"] = True
+        fault = next(f for f in sim.fault_defs if f.name == "slow_flow")
+        await sim.activate_fault(client, fault)
 
         # 1.05 x 20.0 ml/s = 21.0 ml/s; 210 ml at 21 ml/s is 10 s, well
         # inside this fill's own 30 s max_fill_seconds.
@@ -861,7 +867,7 @@ class TestExecuteProfile:
         )
         cmd = DispenseCommand(slot=2, mechanism="water_fill", profile=profile)
 
-        await sim._execute_profile(client, cmd)
+        await sim.execute_profile(client, cmd)
 
         assert terminal[-1][0] == "complete"
 
@@ -879,7 +885,7 @@ class TestExecuteProfile:
         async def fake_sleep(seconds):
             durations.append(seconds)
 
-        sim._sleep = fake_sleep
+        sim.sleep = fake_sleep
         client = AsyncMock()
         terminal = []
 
@@ -888,10 +894,11 @@ class TestExecuteProfile:
                 terminal.append((payload.state, payload.detail))
 
         sim.publish = capture_publish
-        sim._fault_state["low_flow"]["active"] = True
+        fault = next(f for f in sim.fault_defs if f.name == "low_flow")
+        await sim.activate_fault(client, fault)
         cmd = DispenseCommand(slot=2, mechanism="water_fill", profile=WATER_PROFILE)
 
-        await sim._execute_profile(client, cmd)
+        await sim.execute_profile(client, cmd)
 
         state, detail = terminal[-1]
         assert state == "no_flow"
@@ -912,7 +919,7 @@ class TestExecuteProfile:
         the moment the fill step itself finishes, not after the lag."""
         sim = _make_sim()
         clock = FakeClock()
-        sim._sleep = clock
+        sim.sleep = clock
         client = AsyncMock()
         events: list[tuple[str, object, float]] = []
 
@@ -942,7 +949,7 @@ class TestExecuteProfile:
         )
         cmd = DispenseCommand(slot=9, mechanism="water_fill", profile=profile)
 
-        await sim._execute_profile(client, cmd)
+        await sim.execute_profile(client, cmd)
 
         complete_time = next(
             t for kind, val, t in events if kind == "state" and val == "complete"
@@ -962,7 +969,7 @@ class TestExecuteProfile:
         the longer lead) instead of stacking (a wait per accessory)."""
         sim = _make_sim()
         clock = FakeClock()
-        sim._sleep = clock
+        sim.sleep = clock
         client = AsyncMock()
         events: list[tuple[str, float]] = []
 
@@ -996,7 +1003,7 @@ class TestExecuteProfile:
         )
         cmd = DispenseCommand(slot=9, mechanism="water_fill", profile=profile)
 
-        await sim._execute_profile(client, cmd)
+        await sim.execute_profile(client, cmd)
 
         fill_time = next(t for state, t in events if state == "fill")
         assert fill_time == pytest.approx(3.0)
@@ -1019,7 +1026,7 @@ class TestExecuteProfile:
             if seconds == 5.0:
                 await gate.wait()
 
-        sim._sleep = fake_sleep
+        sim.sleep = fake_sleep
         client = AsyncMock()
         hw_events: list[tuple[str, bool]] = []
 
@@ -1047,7 +1054,7 @@ class TestExecuteProfile:
         )
         cmd = DispenseCommand(slot=9, mechanism="water_fill", profile=profile)
 
-        task1 = asyncio.ensure_future(sim._execute_profile(client, cmd))
+        task1 = asyncio.ensure_future(sim.execute_profile(client, cmd))
         await _REAL_SLEEP(0)
         await _REAL_SLEEP(0)
         # Run 1 has published its terminal report and is now blocked (via
@@ -1055,7 +1062,7 @@ class TestExecuteProfile:
         assert ("vending_now_light", True) in hw_events
         assert not task1.done()
 
-        task2 = asyncio.ensure_future(sim._execute_profile(client, cmd))
+        task2 = asyncio.ensure_future(sim.execute_profile(client, cmd))
         for _ in range(6):
             if task1.done():
                 break
@@ -1079,7 +1086,7 @@ class TestExecuteProfile:
         the outcome must be `jam` with a detail describing the stuck
         solenoid; recovering the fault then publishes the solenoid off."""
         sim = _make_sim()
-        sim._sleep = AsyncMock()
+        sim.sleep = AsyncMock()
         client = AsyncMock()
         io_events = []
         terminal = []
@@ -1091,10 +1098,11 @@ class TestExecuteProfile:
                 io_events.append((payload.device, payload.state))
 
         sim.publish = capture_publish
-        sim._fault_state["bag_drop_solenoid_stuck"]["active"] = True
+        fault = next(f for f in sim.fault_defs if f.name == "bag_drop_solenoid_stuck")
+        await sim.activate_fault(client, fault)
         cmd = DispenseCommand(slot=1, mechanism="bagged_ice", profile=ICE_PROFILE)
 
-        await sim._execute_profile(client, cmd)
+        await sim.execute_profile(client, cmd)
 
         assert terminal[-1] == ("jam", "bag release solenoid stuck on")
         solenoid_events = [
@@ -1118,7 +1126,7 @@ class TestExecuteProfile:
         see test_bag_drop_solenoid_stuck_leaves_solenoid_on) -- neither
         fault is active here, so they don't apply to this run."""
         sim = _make_sim()
-        sim._sleep = AsyncMock()
+        sim.sleep = AsyncMock()
         client = AsyncMock()
         hw_events = []
 
@@ -1127,10 +1135,11 @@ class TestExecuteProfile:
                 hw_events.append((payload.device, payload.state))
 
         sim.publish = capture_publish
-        sim._fault_state["motor_stall"]["active"] = True
+        fault = next(f for f in sim.fault_defs if f.name == "motor_stall")
+        await sim.activate_fault(client, fault)
         cmd = DispenseCommand(slot=1, mechanism="bagged_ice", profile=ICE_PROFILE)
 
-        await sim._execute_profile(client, cmd)
+        await sim.execute_profile(client, cmd)
 
         assert ("vending_now_light", True) in hw_events
         assert ("vending_now_light", False) in hw_events
@@ -1141,18 +1150,18 @@ class TestExecuteProfile:
 
 class TestDispenseCommand:
     """Command-channel `dispense`: runs the slot's profile via
-    `_execute_profile` through `_handle_command`."""
+    `execute_profile` through `handle_command`."""
 
     @pytest.mark.asyncio
     async def test_runs_profile_once_and_publishes_hardware_dispenser(self):
-        """Completion-table amendment (2026-09-29): `_handle_command`
+        """Completion-table amendment (2026-09-29): `handle_command`
         itself now returns as soon as the "accepted" ack is published —
         the real sequence runs in a background task
         (`_spawn_background`), so this drains it (`_drain_background`)
         before checking the motor ran and the terminal report went out.
         """
         sim = _make_sim()
-        sim._sleep = AsyncMock()
+        sim.sleep = AsyncMock()
         client = AsyncMock()
         dispenser_states = []
 
@@ -1161,25 +1170,25 @@ class TestDispenseCommand:
                 dispenser_states.append(payload.state)
 
         sim.publish = capture_publish
-        run_profile = AsyncMock(wraps=sim._execute_profile)
-        sim._execute_profile = run_profile
+        run_profile = AsyncMock(wraps=sim.execute_profile)
+        sim.execute_profile = run_profile
 
         cmd = _make_command("dispense", _dispense_params(1, "bagged_ice", ICE_PROFILE))
-        ack = await sim._handle_command(client, cmd)
+        ack = await sim.handle_command(client, cmd)
         await _drain_background(sim)
 
         assert run_profile.await_count == 1
         assert dispenser_states == ["agitate", "fill", "release", "complete"]
-        assert ack is None  # _handle_command publishes the ack, doesn't return it
+        assert ack is None  # handle_command publishes the ack, doesn't return it
 
     @pytest.mark.asyncio
     async def test_publishes_ok_ack_with_slot_and_mechanism_result(self):
         """This ack is the "accepted" one (published synchronously, before
-        `_handle_command` returns) — the command's own completion is the
+        `handle_command` returns) — the command's own completion is the
         terminal `hardware/dispenser` report, not a second ack.
         """
         sim = _make_sim()
-        sim._sleep = AsyncMock()
+        sim.sleep = AsyncMock()
         client = AsyncMock()
         published_acks = []
 
@@ -1189,7 +1198,7 @@ class TestDispenseCommand:
 
         sim.publish = capture_publish
         cmd = _make_command("dispense", _dispense_params(1, "bagged_ice", ICE_PROFILE))
-        await sim._handle_command(client, cmd)
+        await sim.handle_command(client, cmd)
 
         assert len(published_acks) == 1
         assert published_acks[0].status == "ok"
@@ -1204,19 +1213,19 @@ class TestDispenseCommand:
         request_id must not run the dispense sequence a second time.
         """
         sim = _make_sim()
-        sim._sleep = AsyncMock()
+        sim.sleep = AsyncMock()
         client = AsyncMock()
         sim.publish = AsyncMock()
-        run_profile = AsyncMock(wraps=sim._execute_profile)
-        sim._execute_profile = run_profile
+        run_profile = AsyncMock(wraps=sim.execute_profile)
+        sim.execute_profile = run_profile
 
         cmd = _make_command(
             "dispense",
             _dispense_params(1, "bagged_ice", ICE_PROFILE),
             request_id="dup-req-1",
         )
-        await sim._handle_command(client, cmd)
-        await sim._handle_command(client, cmd)  # same request_id, sent again
+        await sim.handle_command(client, cmd)
+        await sim.handle_command(client, cmd)  # same request_id, sent again
         await _drain_background(sim)
 
         assert run_profile.await_count == 1
@@ -1233,7 +1242,7 @@ class TestDispenseCommand:
     @pytest.mark.asyncio
     async def test_water_slot_runs_fill_only(self):
         sim = _make_sim()
-        sim._sleep = AsyncMock()
+        sim.sleep = AsyncMock()
         client = AsyncMock()
         dispenser_states = []
 
@@ -1245,7 +1254,7 @@ class TestDispenseCommand:
         cmd = _make_command(
             "dispense", _dispense_params(2, "water_fill", WATER_PROFILE)
         )
-        await sim._handle_command(client, cmd)
+        await sim.handle_command(client, cmd)
         await _drain_background(sim)
 
         assert dispenser_states == ["fill", "complete"]
@@ -1310,12 +1319,12 @@ class TestExampleToml:
 
 
 class TestWaterValveCommand:
-    """`water_valve` acks ok in [1, 10]; outside it, `_command_loop`
+    """`water_valve` acks ok in [1, 10]; outside it, `command_loop`
     (`simulators/base.py`) now acks "rejected" itself from the raw wire
     payload before a `SubsystemCommand` — and therefore `_handle_water_valve`
     — ever exists. `_handle_water_valve` has no defense-in-depth check of
     its own any more (see its docstring); the out-of-range cases below are
-    proven over the real wire path (`_command_loop`), not by constructing an
+    proven over the real wire path (`command_loop`), not by constructing an
     out-of-range command directly, since that construction now fails before
     reaching this simulator at all.
     """
@@ -1323,7 +1332,7 @@ class TestWaterValveCommand:
     @pytest.mark.asyncio
     async def test_seconds_one_acks_ok(self):
         """This is the "accepted" ack -- published synchronously before
-        `_handle_command` returns, before the background task that
+        `handle_command` returns, before the background task that
         actually opens the valve has had any chance to run (nothing here
         yields control). Draining afterward (inside the patched-sleep
         `with` block) lets that background task finish and publish its own
@@ -1336,7 +1345,7 @@ class TestWaterValveCommand:
         sim.publish = AsyncMock()
         cmd = _make_command("water_valve", {"seconds": 1})
         with patch("simulators.vending_machine.asyncio.sleep", new=AsyncMock()):
-            await sim._handle_command(client, cmd)
+            await sim.handle_command(client, cmd)
 
             ack = sim.publish.await_args_list[-1].args[2]
             assert ack.status == "ok"
@@ -1356,7 +1365,7 @@ class TestWaterValveCommand:
         sim.publish = AsyncMock()
         cmd = _make_command("water_valve", {"seconds": 10})
         with patch("simulators.vending_machine.asyncio.sleep", new=AsyncMock()):
-            await sim._handle_command(client, cmd)
+            await sim.handle_command(client, cmd)
 
             ack = sim.publish.await_args_list[-1].args[2]
             assert ack.status == "ok"
@@ -1365,7 +1374,7 @@ class TestWaterValveCommand:
 
     @staticmethod
     async def _start_command_loop(sim, client):
-        task = asyncio.create_task(sim._command_loop(client))
+        task = asyncio.create_task(sim.command_loop(client))
         await asyncio.sleep(0.02)
         topic, queue = next(
             (t, q)
@@ -1377,7 +1386,7 @@ class TestWaterValveCommand:
     @pytest.mark.asyncio
     async def test_seconds_zero_over_the_wire_acks_rejected_by_the_loop(self):
         """Out-of-range `seconds` reaches this simulator only as a raw wire
-        payload now — `_command_loop` (`simulators/base.py`) acks
+        payload now — `command_loop` (`simulators/base.py`) acks
         "rejected" itself before a `SubsystemCommand`, and therefore
         `_handle_water_valve`, ever exists."""
         sim = _make_sim()
@@ -1450,8 +1459,8 @@ class TestWaterValveCommand:
         longer has a rejection branch to exercise directly."""
         sim = _make_sim()
         client = AsyncMock()
-        set_hw = AsyncMock(wraps=sim._set_hw)
-        sim._set_hw = set_hw
+        set_hw = AsyncMock(wraps=sim.set_hw)
+        sim.set_hw = set_hw
 
         task, topic, queue = await self._start_command_loop(sim, client)
         queue.put_nowait(
@@ -1526,7 +1535,7 @@ class TestWaterValveCommand:
         sim.publish = AsyncMock()
         cmd = _make_command("water_valve", {"seconds": 1})
 
-        real_set_hw = sim._set_hw
+        real_set_hw = sim.set_hw
         call_count = 0
 
         async def _flaky_set_hw(client, device, state):
@@ -1536,7 +1545,7 @@ class TestWaterValveCommand:
                 raise RuntimeError("simulated MQTT publish failure")
             await real_set_hw(client, device, state)
 
-        sim._set_hw = _flaky_set_hw
+        sim.set_hw = _flaky_set_hw
 
         await sim._handle_water_valve(client, cmd)
         assert len(sim._background_tasks) == 1
@@ -1551,7 +1560,7 @@ class TestWaterValveCommand:
     def test_real_wire_construction_rejects_before_reaching_the_handler(self):
         """Documents the adjacent base.py behaviour (see class docstring):
         going through the real `SubsystemCommand.model_validate` path (what
-        `_command_loop` actually calls) raises immediately for an
+        `command_loop` actually calls) raises immediately for an
         out-of-range `seconds` — it never becomes a command object at all,
         let alone reaches a handler."""
         with pytest.raises(ValidationError):
@@ -1571,7 +1580,7 @@ class TestUnknownCommand:
         client = AsyncMock()
         sim.publish = AsyncMock()
         cmd = _make_command("not_a_real_command", {})
-        await sim._handle_command(client, cmd)
+        await sim.handle_command(client, cmd)
 
         ack = sim.publish.await_args_list[-1].args[2]
         assert ack.status == "unsupported"

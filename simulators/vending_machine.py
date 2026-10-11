@@ -11,7 +11,7 @@ Dispensing itself (plan: dispenser profiles, Task 5) is driven entirely by
 the command channel: the VMC sends a `dispense` command on
 `cmd/vending` carrying the slot's full, validated `DispenseCommand`
 (slot, mechanism, profile), and `_handle_dispense` runs it via
-`_execute_profile`, which plays out the profile's own agitate/fill/release
+`execute_profile`, which plays out the profile's own agitate/fill/release
 (bagged ice) or fill (water) steps against the hardware. There is no
 longer a separate, legacy dispense topic or a board-side notion of "ice
 vs. water by product name" -- the profile says exactly which channels to
@@ -230,11 +230,11 @@ _WATER_FLOW_INCREMENTS = 4
 @dataclass
 class _RunContext:
     """Bundles everything `_run_bagged_ice`/`_run_water_fill` need from
-    `_execute_profile` so each helper takes exactly one argument instead
+    `execute_profile` so each helper takes exactly one argument instead
     of a long positional list (review finding M2): the triggering
     `DispenseCommand` (`profile`/`slot` below are read straight off it),
     this run's active-fault snapshot, and the io/publish closures
-    `_execute_profile` builds around its own per-run state (`driven_on`,
+    `execute_profile` builds around its own per-run state (`driven_on`,
     `accessory_on`, the pending lag-off tasks)."""
 
     client: aiomqtt.Client
@@ -266,8 +266,21 @@ class VendingMachineSimulator(ESP32Simulator):
     BRAND = "ice-colder"
     MODEL = "vending-sim"
 
-    def __init__(self, **kwargs):
+    def __init__(
+        self,
+        *,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
+        **kwargs,
+    ):
         super().__init__(subsystem_name="vending", **kwargs)
+        # The single seam every wait in `execute_profile` goes through, so a
+        # test can patch one instance attribute (`sim.sleep`) instead of the
+        # module-global `asyncio.sleep` (which other tests in this file
+        # still patch directly for the pre-existing command-channel tests --
+        # both seams coexist because this is a thin, real wrapper, not an
+        # internal fake clock). Defaults to `asyncio.sleep`; a constructor
+        # kwarg lets a caller supply its own from the start.
+        self.sleep = sleep or asyncio.sleep
         self.register_command("dispense", self._handle_dispense)
         self.register_command("water_valve", self._handle_water_valve)
         self.num_buttons = len(self.config.products)
@@ -276,7 +289,7 @@ class VendingMachineSimulator(ESP32Simulator):
         self._hw: dict[str, bool] = dict(HARDWARE_DEVICES)
         # Copilot review (PR #32) finding C4: an accessory's lag-off task
         # is keyed by channel and owned by the simulator instance, not by
-        # whichever run's `_execute_profile` call created it -- so a new
+        # whichever run's `execute_profile` call created it -- so a new
         # run's `_enter_step` can find and cancel a *previous* run's still
         # -pending lag-off for the same channel before it fires. Without
         # this, a stale lag-off from an old run could switch an accessory
@@ -493,16 +506,7 @@ class VendingMachineSimulator(ESP32Simulator):
     def _pick_button(self) -> int:
         return random.randint(0, self.num_buttons - 1)
 
-    async def _sleep(self, seconds: float) -> None:
-        """The single seam every wait in `_execute_profile` goes through,
-        so a test can patch one instance attribute (`sim._sleep`) instead
-        of the module-global `asyncio.sleep` (which other tests in this
-        file still patch directly for the pre-existing command-channel
-        tests -- both seams coexist because this is a thin, real wrapper,
-        not an internal fake clock)."""
-        await asyncio.sleep(seconds)
-
-    async def _set_hw(self, client: aiomqtt.Client, device: str, state: bool):
+    async def set_hw(self, client: aiomqtt.Client, device: str, state: bool):
         """Update hardware state and publish to MQTT."""
         self._hw[device] = state
         await self.publish(
@@ -529,9 +533,9 @@ class VendingMachineSimulator(ESP32Simulator):
             self._cabinet_temp += random.gauss(0, 0.3)
             # Heater kicks in below 5°C
             if self._cabinet_temp < 5.0 and not self._hw["heater_relay"]:
-                await self._set_hw(client, "heater_relay", True)
+                await self.set_hw(client, "heater_relay", True)
             elif self._cabinet_temp > 10.0 and self._hw["heater_relay"]:
-                await self._set_hw(client, "heater_relay", False)
+                await self.set_hw(client, "heater_relay", False)
 
             # If water valve stuck open, keep incrementing flow
             if self._hw.get("water_flow_sensor") and self._hw.get(
@@ -555,7 +559,7 @@ class VendingMachineSimulator(ESP32Simulator):
             )
 
             # Publish current bin level state
-            await self._set_hw(client, "bin_half_full", self._hw["bin_half_full"])
+            await self.set_hw(client, "bin_half_full", self._hw["bin_half_full"])
 
             await asyncio.sleep(SENSOR_PUBLISH_INTERVAL)
 
@@ -573,26 +577,26 @@ class VendingMachineSimulator(ESP32Simulator):
         logger.warning("[vending] FAULT: bag drop solenoid stuck")
 
     async def _on_bag_drop_solenoid_stuck_recover(self, client: aiomqtt.Client) -> None:
-        await self._set_hw(client, "bag_full_sensor", False)
-        await self._set_hw(client, "bag_drop_solenoid", False)
+        await self.set_hw(client, "bag_full_sensor", False)
+        await self.set_hw(client, "bag_drop_solenoid", False)
         logger.info("[vending] Fault cleared: bag_drop_solenoid_stuck")
 
     async def _on_water_valve_stuck_open_activate(self, client: aiomqtt.Client) -> None:
-        await self._set_hw(client, "water_valve_solenoid", True)
-        await self._set_hw(client, "water_flow_sensor", True)
+        await self.set_hw(client, "water_valve_solenoid", True)
+        await self.set_hw(client, "water_flow_sensor", True)
         logger.warning("[vending] FAULT: water valve stuck open — flow incrementing")
 
     async def _on_water_valve_stuck_open_recover(self, client: aiomqtt.Client) -> None:
-        await self._set_hw(client, "water_valve_solenoid", False)
-        await self._set_hw(client, "water_flow_sensor", False)
+        await self.set_hw(client, "water_valve_solenoid", False)
+        await self.set_hw(client, "water_flow_sensor", False)
         logger.info("[vending] Fault cleared: water_valve_stuck_open")
 
     async def _on_ice_bin_empty_activate(self, client: aiomqtt.Client) -> None:
-        await self._set_hw(client, "bin_half_full", False)
+        await self.set_hw(client, "bin_half_full", False)
         logger.warning("[vending] FAULT: ice bin empty")
 
     async def _on_ice_bin_empty_recover(self, client: aiomqtt.Client) -> None:
-        await self._set_hw(client, "bin_half_full", True)
+        await self.set_hw(client, "bin_half_full", True)
         logger.info("[vending] Fault cleared: ice_bin_empty")
 
     async def _on_motor_stall_activate(self, client: aiomqtt.Client) -> None:
@@ -649,8 +653,8 @@ class VendingMachineSimulator(ESP32Simulator):
     def _compute_idle_time(self, hour: int | None = None) -> float:
         """Return idle wait time in seconds, accounting for faults and time-of-day."""
         fault_active = (
-            "auger_jam" in self._active_fault_names
-            or "ice_bin_empty" in self._active_fault_names
+            "auger_jam" in self.active_fault_names
+            or "ice_bin_empty" in self.active_fault_names
         )
         if fault_active:
             return random.uniform(5.0, 15.0)
@@ -671,7 +675,7 @@ class VendingMachineSimulator(ESP32Simulator):
         present = [s for s in step_names if s in accessory.on_during]
         return present[0], present[-1]
 
-    async def _execute_profile(
+    async def execute_profile(
         self,
         client: aiomqtt.Client,
         cmd: DispenseCommand,
@@ -701,7 +705,7 @@ class VendingMachineSimulator(ESP32Simulator):
         Review finding I1: on a normal return (success or a fault
         outcome) those lag-off tasks are awaited, not cancelled, *after*
         the terminal report is published -- so a run reports `complete`
-        the moment its last real step finishes, while `_execute_profile`
+        the moment its last real step finishes, while `execute_profile`
         normally only returns once every accessory it turned on is
         actually off, lag included. Only a genuine exception or
         cancellation short-circuits that: then every pending lag-off task
@@ -724,7 +728,7 @@ class VendingMachineSimulator(ESP32Simulator):
         off -- via `accessory_on - lag_scheduled` (a channel with a
         lag-off task is that task's responsibility, whether it ends up
         firing for real or losing the channel to a newer run). So on the
-        success path `_execute_profile` can return with an accessory
+        success path `execute_profile` can return with an accessory
         still on, if and only if a later run has since claimed it; the
         failure path's forced sweep stays unconditional, since no later
         run can exist yet before this run's own terminal report is ever
@@ -740,7 +744,7 @@ class VendingMachineSimulator(ESP32Simulator):
         """
         profile = cmd.profile
         slot = cmd.slot
-        active = self._active_fault_names
+        active = self.active_fault_names
 
         step_names = (
             _BAGGED_ICE_STEPS if profile.mechanism == "bagged_ice" else _WATER_STEPS
@@ -758,11 +762,11 @@ class VendingMachineSimulator(ESP32Simulator):
         driven_on: set[str] = set()
 
         async def _drive_on(channel: str) -> None:
-            await self._set_hw(client, channel, True)
+            await self.set_hw(client, channel, True)
             driven_on.add(channel)
 
         async def _drive_off(channel: str) -> None:
-            await self._set_hw(client, channel, False)
+            await self.set_hw(client, channel, False)
             driven_on.discard(channel)
 
         def _leave_on(channel: str) -> None:
@@ -773,8 +777,8 @@ class VendingMachineSimulator(ESP32Simulator):
 
         async def _turn_off_later(channel: str, lag_seconds: float) -> None:
             try:
-                await self._sleep(lag_seconds)
-                await self._set_hw(client, channel, False)
+                await self.sleep(lag_seconds)
+                await self.set_hw(client, channel, False)
                 accessory_on.discard(channel)
             finally:
                 # Self-removal (finding C4): identity-checked so this
@@ -797,14 +801,14 @@ class VendingMachineSimulator(ESP32Simulator):
                     stale = self._pending_lag_off.pop(accessory.channel, None)
                     if stale is not None:
                         stale.cancel()
-                    await self._set_hw(client, accessory.channel, True)
+                    await self.set_hw(client, accessory.channel, True)
                     accessory_on.add(accessory.channel)
                     leads.append(accessory.lead_seconds)
             if leads:
                 # Review finding M1: two accessories leading the same step
                 # overlap (one wait for the longest lead) instead of
                 # stacking (a wait per accessory).
-                await self._sleep(max(leads))
+                await self.sleep(max(leads))
 
         def _exit_step(step: str) -> None:
             for name, accessory in profile.accessories.items():
@@ -851,14 +855,14 @@ class VendingMachineSimulator(ESP32Simulator):
                 await asyncio.gather(*accessory_tasks, return_exceptions=True)
             if "water_valve_stuck_open" not in active:
                 for channel in list(driven_on):
-                    await self._set_hw(client, channel, False)
+                    await self.set_hw(client, channel, False)
             for channel in list(accessory_on):
-                await self._set_hw(client, channel, False)
+                await self.set_hw(client, channel, False)
             raise
 
         if "water_valve_stuck_open" not in active:
             for channel in list(driven_on):
-                await self._set_hw(client, channel, False)
+                await self.set_hw(client, channel, False)
 
         await self.publish(
             client,
@@ -876,7 +880,7 @@ class VendingMachineSimulator(ESP32Simulator):
         # by a newer run's _enter_step, which means the channel now
         # belongs to that run and this sweep must leave it alone.
         for channel in list(accessory_on - lag_scheduled):
-            await self._set_hw(client, channel, False)
+            await self.set_hw(client, channel, False)
 
     async def _run_bagged_ice(
         self, ctx: "_RunContext"
@@ -907,7 +911,7 @@ class VendingMachineSimulator(ESP32Simulator):
             await ctx.drive_off(agitate.motor_channel)
             ctx.exit_step(DispenseStep.agitate.value)
             return DispenserOutcome.error, f"stall {amps:.1f} A"
-        await self._sleep(agitate.run_seconds)
+        await self.sleep(agitate.run_seconds)
         await ctx.drive_off(agitate.motor_channel)
         ctx.exit_step(DispenseStep.agitate.value)
 
@@ -923,15 +927,15 @@ class VendingMachineSimulator(ESP32Simulator):
 
         if isinstance(fill, IceFillBySensor):
             if "auger_jam" in active:
-                await self._sleep(fill.max_run_seconds)
+                await self.sleep(fill.max_run_seconds)
                 await ctx.drive_off(fill.motor_channel)
                 ctx.exit_step(DispenseStep.fill.value)
                 return DispenserOutcome.timeout, None
             duration = min(6.0, fill.max_run_seconds / 2)
-            await self._sleep(duration)
-            await self._set_hw(ctx.client, fill.sensor_channel, True)
+            await self.sleep(duration)
+            await self.set_hw(ctx.client, fill.sensor_channel, True)
         else:  # IceFillTimed
-            await self._sleep(fill.max_run_seconds)
+            await self.sleep(fill.max_run_seconds)
         await ctx.drive_off(fill.motor_channel)
         ctx.exit_step(DispenseStep.fill.value)
 
@@ -940,7 +944,7 @@ class VendingMachineSimulator(ESP32Simulator):
         await ctx.publish_step(DispenseStep.release.value)
         release = profile.release
         await ctx.drive_on(release.solenoid_channel)
-        await self._sleep(release.pulse_seconds)
+        await self.sleep(release.pulse_seconds)
 
         if isinstance(release, ReleaseBySensor) and "bag_drop_solenoid_stuck" in active:
             # The release solenoid stays energised -- it's stuck, not
@@ -954,15 +958,15 @@ class VendingMachineSimulator(ESP32Simulator):
 
         if isinstance(release, ReleaseBySensor):
             if "door_stuck_open" in active:
-                await self._set_hw(ctx.client, release.sensor_channel, True)
-                await self._sleep(release.close_timeout_seconds)
+                await self.set_hw(ctx.client, release.sensor_channel, True)
+                await self.sleep(release.close_timeout_seconds)
                 ctx.exit_step(DispenseStep.release.value)
                 return DispenserOutcome.door_open, None
-            await self._set_hw(ctx.client, release.sensor_channel, True)
-            await self._sleep(1.0)
-            await self._set_hw(ctx.client, release.sensor_channel, False)
+            await self.set_hw(ctx.client, release.sensor_channel, True)
+            await self.sleep(1.0)
+            await self.set_hw(ctx.client, release.sensor_channel, False)
             if isinstance(fill, IceFillBySensor):
-                await self._set_hw(ctx.client, fill.sensor_channel, False)
+                await self.set_hw(ctx.client, fill.sensor_channel, False)
 
         ctx.exit_step(DispenseStep.release.value)
         return DispenserOutcome.complete, None
@@ -1047,7 +1051,7 @@ class VendingMachineSimulator(ESP32Simulator):
         pulses = 0.0
         elapsed = 0.0
         while elapsed < run_seconds:
-            await self._sleep(dt)
+            await self.sleep(dt)
             pulses += step_pulses
             elapsed += dt
             await self._publish_fill_pulses(client, pulses)
@@ -1072,11 +1076,11 @@ class VendingMachineSimulator(ESP32Simulator):
         await ctx.drive_on(fill.valve_channel)
 
         if isinstance(fill, WaterFillByVolume):
-            await self._set_hw(ctx.client, fill.flow_sensor_channel, True)
+            await self.set_hw(ctx.client, fill.flow_sensor_channel, True)
 
             if "no_water_flow" in active:
-                await self._set_hw(ctx.client, fill.flow_sensor_channel, False)
-                await self._sleep(fill.no_flow_grace_seconds)
+                await self.set_hw(ctx.client, fill.flow_sensor_channel, False)
+                await self.sleep(fill.no_flow_grace_seconds)
                 await ctx.drive_off(fill.valve_channel)
                 ctx.exit_step(DispenseStep.fill.value)
                 return (
@@ -1100,12 +1104,12 @@ class VendingMachineSimulator(ESP32Simulator):
             volume_ml = pulses / fill.pulses_per_liter * 1000.0
 
             if "water_valve_stuck_open" in active:
-                # Valve/flow sensor stay energised (see _execute_profile's
+                # Valve/flow sensor stay energised (see execute_profile's
                 # docstring) -- matches the fault's existing effect.
                 ctx.exit_step(DispenseStep.fill.value)
                 return DispenserOutcome.complete, None
 
-            await self._set_hw(ctx.client, fill.flow_sensor_channel, False)
+            await self.set_hw(ctx.client, fill.flow_sensor_channel, False)
             await ctx.drive_off(fill.valve_channel)
             ctx.exit_step(DispenseStep.fill.value)
 
@@ -1133,7 +1137,7 @@ class VendingMachineSimulator(ESP32Simulator):
             return DispenserOutcome.complete, None
 
         # WaterFillTimed -- unchanged.
-        await self._sleep(fill.max_fill_seconds)
+        await self.sleep(fill.max_fill_seconds)
 
         if "water_valve_stuck_open" in active:
             ctx.exit_step(DispenseStep.fill.value)
@@ -1147,22 +1151,22 @@ class VendingMachineSimulator(ESP32Simulator):
         self, client: aiomqtt.Client, cmd: SubsystemCommand
     ) -> CommandOutcome:
         """Command-channel `dispense`: validate the slot's full profile and
-        run it via `_execute_profile`.
+        run it via `execute_profile`.
 
         Completion-table amendment (2026-09-29, carried over from the
         pre-profile design): the ack means "accepted", not "done" --
-        `_execute_profile` can legitimately run well past
+        `execute_profile` can legitimately run well past
         `ACK_TIMEOUT_SECONDS`. Acks `phase="accepted"` immediately and
         runs the real sequence in the background (`_spawn_background`);
         its own completion is the terminal `hardware/dispenser` report
-        `_execute_profile` already publishes, carrying this command's
+        `execute_profile` already publishes, carrying this command's
         `request_id` so `services/command_dispatcher.py` can correlate
         it -- there is no second ack for this command.
 
         `COMMAND_PARAM_VALIDATORS["dispense"]` (contracts/common.py)
         already validates `cmd.params` as a `DispenseCommand` before a
         `SubsystemCommand` built through the real wire path
-        (`_command_loop`) can even exist, so a `ValidationError` here only
+        (`command_loop`) can even exist, so a `ValidationError` here only
         happens for a command built around that check (as the duplicate-
         request-id and rejection tests in this file do, via
         `SubsystemCommand.model_construct`) -- handled the same way
@@ -1179,7 +1183,7 @@ class VendingMachineSimulator(ESP32Simulator):
             return CommandOutcome(status="rejected", detail=first_line)
 
         self._spawn_background(
-            self._execute_profile(client, dispense_cmd, request_id=cmd.request_id)
+            self.execute_profile(client, dispense_cmd, request_id=cmd.request_id)
         )
         return CommandOutcome(
             status="ok",
@@ -1195,9 +1199,9 @@ class VendingMachineSimulator(ESP32Simulator):
         `SubsystemCommand`'s own model validator runs
         `COMMAND_PARAM_VALIDATORS["water_valve"]` at construction time, so a
         command reaching this handler through the real wire path
-        (`_command_loop` -> `SubsystemCommand.model_validate` ->
-        `_handle_command`) always has `seconds` in [1, 10] already. An
-        out-of-range value never gets this far any more: `_command_loop`
+        (`command_loop` -> `SubsystemCommand.model_validate` ->
+        `handle_command`) always has `seconds` in [1, 10] already. An
+        out-of-range value never gets this far any more: `command_loop`
         (`simulators/base.py`) now acks it "rejected" itself, from the raw
         payload, before a `SubsystemCommand` instance — and therefore this
         handler — ever exists. This handler no longer re-checks the range;
@@ -1217,8 +1221,8 @@ class VendingMachineSimulator(ESP32Simulator):
 
         async def _run() -> None:
             try:
-                await self._set_hw(client, "water_valve_solenoid", True)
-                await self._set_hw(client, "water_flow_sensor", True)
+                await self.set_hw(client, "water_valve_solenoid", True)
+                await self.set_hw(client, "water_flow_sensor", True)
                 await asyncio.sleep(seconds)
             finally:
                 # Copilot review (PR 22): the shutdown belongs here, not
@@ -1227,8 +1231,8 @@ class VendingMachineSimulator(ESP32Simulator):
                 # clears the flow sensor instead of leaving them enabled
                 # indefinitely. Idempotent to call even when the opening
                 # updates never completed (or never ran at all).
-                await self._set_hw(client, "water_valve_solenoid", False)
-                await self._set_hw(client, "water_flow_sensor", False)
+                await self.set_hw(client, "water_valve_solenoid", False)
+                await self.set_hw(client, "water_flow_sensor", False)
             await self.publish_completion_ack(client, cmd, {"seconds": seconds})
 
         self._spawn_background(_run())
@@ -1240,8 +1244,8 @@ class VendingMachineSimulator(ESP32Simulator):
         """Simulate customers pressing buttons.
 
         Production dispensing now arrives entirely through the command
-        channel (`cmd/vending`, `_handle_command` -> `_handle_dispense` ->
-        `_execute_profile`), running concurrently via `_command_loop` --
+        channel (`cmd/vending`, `handle_command` -> `_handle_dispense` ->
+        `execute_profile`), running concurrently via `command_loop` --
         this loop no longer waits for, or itself runs, a dispense. It only
         generates the button-press traffic a real customer would (plus the
         occasional change-of-mind second press); the old "wait on the
@@ -1295,7 +1299,7 @@ class VendingMachineSimulator(ESP32Simulator):
         async with asyncio.TaskGroup() as tg:
             tg.create_task(self._customer_loop(client))
             tg.create_task(self._publish_sensors(client))
-            tg.create_task(self._command_loop(client))
+            tg.create_task(self.command_loop(client))
 
 
 if __name__ == "__main__":

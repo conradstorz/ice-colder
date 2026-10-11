@@ -106,7 +106,7 @@ class TestGetSummary:
         # 360 heartbeats at a real 10s cadence (distinct buckets), covering
         # 3600s of a 24h (86400s) window → ~4.2%.
         now = time.time()
-        conn = sqlite3.connect(recorder._db_path)
+        conn = sqlite3.connect(recorder.db_path)
         conn.executemany(
             "INSERT INTO events (event_type, timestamp, value) VALUES ('heartbeat', ?, 100)",
             [(now - i * 10,) for i in range(360)],
@@ -145,7 +145,7 @@ class TestUptimeComputation:
     def test_full_coverage_by_one_subsystem_reads_100_pct(self, recorder):
         start = 1_000_000.0
         end = start + 100.0  # 10 buckets of 10s
-        self._insert_heartbeats(recorder._db_path, [start + i * 10 for i in range(10)])
+        self._insert_heartbeats(recorder.db_path, [start + i * 10 for i in range(10)])
         assert recorder._compute_window(start, end)["uptime_pct"] == pytest.approx(
             100.0
         )
@@ -153,14 +153,14 @@ class TestUptimeComputation:
     def test_half_covered_window_reads_about_50_pct(self, recorder):
         start = 1_000_000.0
         end = start + 100.0
-        self._insert_heartbeats(recorder._db_path, [start + i * 10 for i in range(5)])
+        self._insert_heartbeats(recorder.db_path, [start + i * 10 for i in range(5)])
         assert recorder._compute_window(start, end)["uptime_pct"] == pytest.approx(50.0)
 
     def test_multiple_subsystems_in_same_bucket_count_once(self, recorder):
         start = 1_000_000.0
         end = start + 100.0
         # Three subsystems all beat within the same 10s bucket.
-        self._insert_heartbeats(recorder._db_path, [start + 1, start + 2, start + 3])
+        self._insert_heartbeats(recorder.db_path, [start + 1, start + 2, start + 3])
         # 1 of 10 buckets covered, not 3 rows worth.
         assert recorder._compute_window(start, end)["uptime_pct"] == pytest.approx(10.0)
 
@@ -178,7 +178,7 @@ class TestUptimeComputation:
         for i in range(10):
             timestamps.append(start + i * 10)  # subsystem A
             timestamps.append(start + i * 10 + 0.5)  # subsystem B
-        self._insert_heartbeats(recorder._db_path, timestamps)
+        self._insert_heartbeats(recorder.db_path, timestamps)
         # Still reads 100% for "at least one subsystem alive" per bucket —
         # this documents the metric's honest ceiling, not per-subsystem health.
         assert recorder._compute_window(start, end)["uptime_pct"] == pytest.approx(
@@ -338,7 +338,7 @@ class TestRegisterHandlers:
             },
         )
         recorder.flush()
-        with sqlite3.connect(recorder._db_path) as conn:
+        with sqlite3.connect(recorder.db_path) as conn:
             row = conn.execute("SELECT event_type, metadata FROM events").fetchone()
         assert row[0] == "subsystem_offline"
         assert json.loads(row[1]) == {"subsystem": "vending"}
@@ -1098,10 +1098,10 @@ class TestCorruptDatabaseRenameFailure:
 
         # The recorder fell back to a different, usable path in the same
         # directory rather than retrying the same corrupt path.
-        assert rec._db_path != str(db_path)
-        assert Path(rec._db_path).parent == tmp_path
-        assert Path(rec._db_path).exists()
-        with sqlite3.connect(rec._db_path) as conn:
+        assert rec.db_path != db_path
+        assert rec.db_path.parent == tmp_path
+        assert rec.db_path.exists()
+        with sqlite3.connect(rec.db_path) as conn:
             tables = {
                 r[0]
                 for r in conn.execute(
@@ -1114,6 +1114,38 @@ class TestCorruptDatabaseRenameFailure:
         rec.record("payment", value=1.0)
         rec.flush()
         assert rec.get_summary(24)["money_in"] == pytest.approx(1.0)
+
+    def test_db_path_follows_corrupt_rename(self, tmp_path, monkeypatch):
+        """The public db_path property must reflect whichever file the
+        constructor actually ends up using -- here, the fallback path the
+        DATA-102 rename-failure branch switches to -- not the path the
+        caller originally requested."""
+        db_path = tmp_path / "events.db"
+        db_path.write_bytes(b"this is not a valid sqlite database")
+
+        def fake_replace(_src, _dst):
+            raise PermissionError("simulated: another handle has this file open")
+
+        monkeypatch.setattr(os, "replace", fake_replace)
+
+        rec = EventRecorder(db_path=str(db_path))
+
+        # Identity, not just "some other file exists somewhere in
+        # tmp_path": the fallback filename is `<original>.new-<timestamp>`
+        # (see _quarantine_corrupt_db), so this pins db_path to that exact
+        # file rather than merely a different one.
+        assert rec.db_path.name.startswith("events.db.new-")
+        assert rec.db_path.parent == tmp_path
+
+        # And it is genuinely the file the recorder writes through, not
+        # just a path that happens to exist.
+        rec.record("payment", value=1.0)
+        rec.flush()
+        with sqlite3.connect(rec.db_path) as conn:
+            row = conn.execute(
+                "SELECT event_type, value FROM events WHERE event_type='payment'"
+            ).fetchone()
+        assert row == ("payment", 1.0)
 
 
 class TestCorruptDetectionNarrowedToGenuineCorruption:
@@ -1992,7 +2024,7 @@ class TestUpdateMetadata:
         assert any("run-does-not-exist" in msg for msg in warning_texts)
 
         # The real row is untouched.
-        conn2 = sqlite3.connect(recorder._db_path)
+        conn2 = sqlite3.connect(recorder.db_path)
         try:
             (meta_str,) = conn2.execute(
                 "SELECT metadata FROM events WHERE event_type = 'test_run'"

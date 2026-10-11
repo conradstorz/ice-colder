@@ -20,9 +20,9 @@ never a stale, previously computed interval.
 ``tz`` is optional and last on both ``run`` and ``compute_next_due``, and
 defaults to ``None`` on both -- production (``main.py``) passes neither
 argument and gets ``None`` all the way down to ``services.reports``'s
-``_to_local``/``_floor_to_bucket``/``_next_bucket``/``_bucket_key``, whose
+``to_local``/``_floor_to_bucket``/``_next_bucket``/``_bucket_key``, whose
 ``tz=None`` path means "resolve each epoch's offset through the OS, fresh,
-for that specific instant" (see ``_to_local``'s own docstring) -- which is
+for that specific instant" (see ``to_local``'s own docstring) -- which is
 exactly the DST-correct behaviour, and exactly how ``by_period`` gets it
 right on its own default path. This module previously derived a tzinfo from
 ``now.tzinfo`` and threaded *that* through instead; that broke in production
@@ -30,7 +30,7 @@ specifically because the production clock, :func:`local_now`
 (``datetime.now().astimezone()``), attaches a frozen, date-invariant
 ``datetime.timezone`` fixed offset for the
 one instant it was read at, and handing that frozen offset to
-``_to_local``/``_floor_to_bucket`` for an *earlier* boundary (a previous
+``to_local``/``_floor_to_bucket`` for an *earlier* boundary (a previous
 midnight or week-start) cannot re-derive that earlier instant's true offset
 -- it just reapplies the current instant's offset, which is wrong exactly
 across a DST transition. Tests pass their synthetic zone explicitly as
@@ -62,7 +62,7 @@ now blow up ``run``'s loop on a bad but non-fatal argument combination.
 
 Sends are de-duplicated by period: before sending, the loop asks whether
 *any* ``report_sent`` event's ``metadata["period"]`` matches the period
-:func:`compute_next_due` says is currently due (:func:`_period_already_sent`)
+:func:`compute_next_due` says is currently due (:func:`period_already_sent`)
 -- not merely whether the *most recent* row matches, which would miss a
 period buried under a later send for a *different* schedule (e.g. an admin
 tries ``weekly``, then switches back to ``daily`` while the original
@@ -81,7 +81,7 @@ backlog to accumulate.
 The write itself only *queues* the marker on ``recorder``'s writer thread,
 not commits it synchronously, so ``run`` also keeps an in-memory
 ``last_sent_period`` guard (Family D, mirroring ``last_failed_period``
-immediately below): ``_period_already_sent``'s own ``flush()`` call returns
+immediately below): ``period_already_sent``'s own ``flush()`` call returns
 immediately, without error, both when the writer thread has died and when
 it is merely delayed past its timeout, so the very next pass's de-dup query
 can miss a marker that a send genuinely just wrote. ``run`` attempts to
@@ -142,11 +142,11 @@ from typing import Awaitable, Callable, Optional
 
 from loguru import logger
 
-# `_to_local`, `_floor_to_bucket`, `_next_bucket`, `_bucket_key` and
-# `_MAX_BUCKET_KEY_RETRIES` are underscore-private in services/reports.py,
-# but importing them here is a deliberate, directed reuse -- not an
-# accident -- for the same reason services/reports.py itself reads
-# `recorder._db_path` across modules (see that module's docstring):
+# `_floor_to_bucket`, `_next_bucket`, `_bucket_key` and
+# `_MAX_BUCKET_KEY_RETRIES` are underscore-private in services/reports.py
+# (`to_local` itself is public), but importing them here is a deliberate,
+# directed reuse -- not an accident -- for the same reason services/reports.py
+# itself reads `recorder._db_path` across modules (see that module's docstring):
 # `services/reports.py` already contains the ONE correct, tested
 # implementation of "re-derive true local midnight from an epoch instant,
 # DST-correct in both directions, advancing one real day at a time" (backing
@@ -164,7 +164,7 @@ from services.reports import (
     _bucket_key,
     _floor_to_bucket,
     _next_bucket,
-    _to_local,
+    to_local,
     summary,
 )
 
@@ -211,7 +211,7 @@ def _advance_one_local_day(current: datetime, tz) -> datetime:
 
     This is a straight copy of ``services.reports.by_period``'s own
     single-step advance-and-retry: compute the naive next-day candidate,
-    convert its epoch back through ``_to_local`` (which re-resolves the
+    convert its epoch back through ``to_local`` (which re-resolves the
     offset fresh for that specific instant), floor it, and -- since a
     FALL-BACK transition can make that re-derived, re-floored candidate
     land back on the SAME local calendar day (just under the new, smaller
@@ -233,14 +233,14 @@ def _advance_one_local_day(current: datetime, tz) -> datetime:
     """
     current_key = _bucket_key(current, "day")
     candidate = _next_bucket(current, "day")
-    next_start = _floor_to_bucket(_to_local(candidate.timestamp(), tz), "day")
+    next_start = _floor_to_bucket(to_local(candidate.timestamp(), tz), "day")
     retries = 0
     while (
         _bucket_key(next_start, "day") <= current_key
         and retries < _MAX_BUCKET_KEY_RETRIES
     ):
         candidate = _next_bucket(next_start, "day")
-        next_start = _floor_to_bucket(_to_local(candidate.timestamp(), tz), "day")
+        next_start = _floor_to_bucket(to_local(candidate.timestamp(), tz), "day")
         retries += 1
     if next_start <= current:
         next_start = candidate
@@ -270,10 +270,10 @@ def _shift_local_day(reference: datetime, days_before: int, tz) -> datetime:
     class ``services/reports.py``'s module docstring describes, and that
     this module's Finding 2 (see the module docstring) reproduced: a fixed
     offset carried across a DST boundary merges or splits a day by the
-    transition's delta. Simply reusing ``_to_local``/``_floor_to_bucket``
+    transition's delta. Simply reusing ``to_local``/``_floor_to_bucket``
     for a single direct jump has the same problem in a subtler form: an
     anchor placed at, say, local NOON of the target day resolves (via
-    ``_to_local``) to whatever offset is correct for NOON -- which, on the
+    ``to_local``) to whatever offset is correct for NOON -- which, on the
     transition day itself, can differ from the offset that is correct for
     that SAME day's MIDNIGHT (e.g. a spring-forward's 2 AM transition means
     noon is already on the new side while midnight was still on the old
@@ -317,7 +317,7 @@ def _walk_to_local_midnight(
     same DST-correct algorithm rather than two independently-written ones
     that could quietly disagree.
     """
-    current = _floor_to_bucket(_to_local(anchor_ts, tz), "day")
+    current = _floor_to_bucket(to_local(anchor_ts, tz), "day")
     steps = 0
     while current.date() < target_date and steps < max_steps:
         current = _advance_one_local_day(current, tz)
@@ -453,14 +453,14 @@ def compute_next_due(
     and the period it covers, or ``None`` when ``schedule == "off"``.
 
     ``tz`` -- optional and last, defaulting to ``None`` -- is the tzinfo
-    handed to ``services.reports``'s ``_to_local``/``_floor_to_bucket`` for
+    handed to ``services.reports``'s ``to_local``/``_floor_to_bucket`` for
     every BACKWARD-walking boundary this function derives (see
     :func:`_shift_local_day` below). It is deliberately NOT derived from
     ``now.tzinfo``: ``now.tzinfo`` may be a frozen, date-invariant fixed
     offset (exactly what ``datetime.now().astimezone()`` produces -- see the
     module docstring), which cannot re-derive an EARLIER boundary's true
     offset across a DST transition. Passing ``tz=None`` (production's
-    default) instead asks ``_to_local`` to resolve each epoch through the OS
+    default) instead asks ``to_local`` to resolve each epoch through the OS
     fresh, for that specific instant -- DST-correct. Callers must keep
     ``now`` and ``tz`` consistent -- see the module docstring.
 
@@ -487,7 +487,7 @@ def compute_next_due(
     ``period_start`` for both schedules (1 or 7 days back) -- goes through
     :func:`_shift_local_day`, which re-derives that day's true local
     midnight via ``services.reports``'s DST-correct
-    ``_to_local``/``_floor_to_bucket`` rather than naive ``timedelta``
+    ``to_local``/``_floor_to_bucket`` rather than naive ``timedelta``
     subtraction, so a spring-forward or
     fall-back transition between the two dates cannot merge or split the
     reported window (see the module docstring's Finding 2 note and
@@ -572,7 +572,7 @@ def _recipients(config) -> list[str]:
     return result
 
 
-def _period_already_sent(recorder, period_key: str) -> bool:
+def period_already_sent(recorder, period_key: str) -> bool:
     """True if ANY ``report_sent`` event's stored period matches ``period_key``.
 
     Synchronous DB read -- run through ``asyncio.to_thread`` from `run`.
@@ -679,7 +679,7 @@ async def run(
     # subsequent bounded-sleep pass. `last_sent_period` is this same
     # in-process guard's mirror for a SUCCESSFUL send (Copilot review,
     # Family D): `recorder.record("report_sent", ...)` below only queues
-    # the de-dup marker for the writer thread -- `_period_already_sent`'s
+    # the de-dup marker for the writer thread -- `period_already_sent`'s
     # own `flush()` returns immediately, without error, both when the
     # writer thread has died and when it is merely delayed past its
     # timeout (see EventRecorder.flush's docstring), so the marker can be
@@ -702,7 +702,7 @@ async def run(
                 and due.period_key != last_sent_period
             ):
                 already_sent = await asyncio.to_thread(
-                    _period_already_sent, recorder, due.period_key
+                    period_already_sent, recorder, due.period_key
                 )
                 if not already_sent:
                     window = (due.period_start.timestamp(), due.period_end.timestamp())
@@ -731,7 +731,7 @@ async def run(
                         # last_sent_period below is what actually prevents
                         # a duplicate send either way.
                         landed = await asyncio.to_thread(
-                            _period_already_sent, recorder, due.period_key
+                            period_already_sent, recorder, due.period_key
                         )
                         if not landed:
                             logger.error(

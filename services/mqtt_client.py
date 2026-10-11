@@ -238,14 +238,14 @@ class MQTTClient:
 
         # Match against registered handlers
         for topic_pattern, handler in self._handlers:
-            if self._topic_matches(topic_pattern, suffix):
+            if self.topic_matches(topic_pattern, suffix):
                 try:
                     await handler(suffix, payload)
                 except Exception as e:
                     logger.error(f"MQTT: Handler error for {topic_str}: {e}")
 
     @staticmethod
-    def _topic_matches(pattern: str, topic: str) -> bool:
+    def topic_matches(pattern: str, topic: str) -> bool:
         """
         Simple MQTT topic matching supporting + (single level) and # (multi level).
         """

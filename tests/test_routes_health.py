@@ -17,7 +17,7 @@ from services.access import ROLE_PERMISSIONS, Permission, Role
 from services.config_store import add_product
 from web_interface import context
 from web_interface import routes
-from web_interface.routes.health import _dom_safe_key, _fault_gate
+from web_interface.routes.health import dom_safe_key, fault_gate
 
 import pytest
 
@@ -561,15 +561,15 @@ class TestFaultGateHelper:
 
     def test_payment_blocking_code_is_safety(self):
         fault = {"code": "WTR-104", "scope": "machine"}
-        assert _fault_gate(fault) == "safety"
+        assert fault_gate(fault) == "safety"
 
     def test_product_scope_non_blocking_is_fulfillment(self):
         fault = {"code": "ICE-301", "scope": "product"}
-        assert _fault_gate(fault) == "fulfillment"
+        assert fault_gate(fault) == "fulfillment"
 
     def test_machine_scope_non_blocking_is_alert(self):
         fault = {"code": "COM-103", "scope": "machine"}
-        assert _fault_gate(fault) == "alert"
+        assert fault_gate(fault) == "alert"
 
 
 class TestFaultClearFlow:
@@ -628,7 +628,7 @@ class TestFaultClearFlow:
         assert f"/health/faults/{key}/clear" in list_resp.text
         assert f"/health/faults/{key}/clear/confirm" in list_resp.text
 
-        dom_id = f"clear-{_dom_safe_key(key)}"
+        dom_id = f"clear-{dom_safe_key(key)}"
         assert re.fullmatch(r"clear-[A-Za-z0-9_-]+", dom_id)
         assert f'id="{dom_id}"' in list_resp.text
         assert f'hx-target="#{dom_id}"' in list_resp.text
@@ -648,12 +648,12 @@ class TestFaultClearFlow:
         """Machine FaultCode.value keys (e.g. "PAY-103") are always drawn
         from a fixed selector-safe charset and must pass through unchanged
         -- existing tests assert on the literal id "clear-PAY-103"."""
-        assert _dom_safe_key("PAY-103") == "PAY-103"
+        assert dom_safe_key("PAY-103") == "PAY-103"
 
     def test_dom_safe_key_is_stable_and_collision_free_for_unsafe_keys(self):
-        a = _dom_safe_key("ICE.301")
-        b = _dom_safe_key("ICE.301")
-        c = _dom_safe_key("ICE_301")
+        a = dom_safe_key("ICE.301")
+        b = dom_safe_key("ICE.301")
+        c = dom_safe_key("ICE_301")
         assert a == b  # deterministic
         assert re.fullmatch(r"[A-Za-z0-9_-]+", a)
         assert a != c  # a dotted SKU never collides with a similar safe one

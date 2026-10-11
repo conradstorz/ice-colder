@@ -136,7 +136,7 @@ def _params_widget(command: str, products: list) -> dict | None:
     return None
 
 
-def _recent_test_runs(limit: int = 100) -> list[dict]:
+def recent_test_runs(limit: int = 100) -> list[dict]:
     """The last *limit* `test_run` events, newest first, metadata merged
     into the row, `elapsed_seconds` (for the `humanize_seconds` filter,
     "N ago") added, and `duration_seconds` (system-tests design §4: the
@@ -526,7 +526,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         return templates.TemplateResponse(
             "tests_log.html",
             context.template_context(
-                request, level=LEVEL_TESTS_LOG, runs=_recent_test_runs(100)
+                request, level=LEVEL_TESTS_LOG, runs=recent_test_runs(100)
             ),
         )
 

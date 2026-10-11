@@ -224,13 +224,13 @@ class IceMakerSimulator(ESP32Simulator):
                 )
             )
 
-    def _sensor_by_name(self, name: str) -> ThermalSensor:
+    def sensor_by_name(self, name: str) -> ThermalSensor:
         """Return the ThermalSensor with the given name."""
         return next(s for s in self.sensors if s.name == name)
 
     async def _on_compressor_overtemp_activate(self, client: aiomqtt.Client) -> None:
         self.compressor_on = False
-        sensor = self._sensor_by_name("refrigerant_high")
+        sensor = self.sensor_by_name("refrigerant_high")
         sensor.target_on = 95.0
         sensor.target_off = 95.0
         await self.publish(
@@ -242,7 +242,7 @@ class IceMakerSimulator(ESP32Simulator):
 
     async def _on_compressor_overtemp_recover(self, client: aiomqtt.Client) -> None:
         original = next(d for d in SENSOR_DEFS if d["name"] == "refrigerant_high")
-        sensor = self._sensor_by_name("refrigerant_high")
+        sensor = self.sensor_by_name("refrigerant_high")
         sensor.target_on = original["target_on"]
         sensor.target_off = original["target_off"]
         await self.publish(
@@ -253,7 +253,7 @@ class IceMakerSimulator(ESP32Simulator):
         logger.info("[ice_maker] Fault cleared: compressor_overtemp")
 
     async def _on_low_refrigerant_activate(self, client: aiomqtt.Client) -> None:
-        sensor = self._sensor_by_name("refrigerant_low")
+        sensor = self.sensor_by_name("refrigerant_low")
         sensor.target_on = 10.0
         sensor.target_off = 10.0
         await self.publish(
@@ -265,7 +265,7 @@ class IceMakerSimulator(ESP32Simulator):
 
     async def _on_low_refrigerant_recover(self, client: aiomqtt.Client) -> None:
         original = next(d for d in SENSOR_DEFS if d["name"] == "refrigerant_low")
-        sensor = self._sensor_by_name("refrigerant_low")
+        sensor = self.sensor_by_name("refrigerant_low")
         sensor.target_on = original["target_on"]
         sensor.target_off = original["target_off"]
         await self.publish(
@@ -276,7 +276,7 @@ class IceMakerSimulator(ESP32Simulator):
         logger.info("[ice_maker] Fault cleared: low_refrigerant")
 
     async def _on_water_inlet_blocked_activate(self, client: aiomqtt.Client) -> None:
-        sensor = self._sensor_by_name("water_bath")
+        sensor = self.sensor_by_name("water_bath")
         sensor.target_on = 20.0
         sensor.target_off = 20.0
         await self.publish(
@@ -288,7 +288,7 @@ class IceMakerSimulator(ESP32Simulator):
 
     async def _on_water_inlet_blocked_recover(self, client: aiomqtt.Client) -> None:
         original = next(d for d in SENSOR_DEFS if d["name"] == "water_bath")
-        sensor = self._sensor_by_name("water_bath")
+        sensor = self.sensor_by_name("water_bath")
         sensor.target_on = original["target_on"]
         sensor.target_off = original["target_off"]
         await self.publish(
@@ -302,7 +302,7 @@ class IceMakerSimulator(ESP32Simulator):
         """The machine has no fault detection: pin the valve temp, publish nothing."""
 
         async def _activate(client: aiomqtt.Client) -> None:
-            sensor = self._sensor_by_name(f"hot_gas_valve_{valve}")
+            sensor = self.sensor_by_name(f"hot_gas_valve_{valve}")
             sensor.target_on = 95.0
             sensor.target_off = 95.0
             logger.warning(
@@ -317,7 +317,7 @@ class IceMakerSimulator(ESP32Simulator):
             original = next(
                 d for d in SENSOR_DEFS if d["name"] == f"hot_gas_valve_{valve}"
             )
-            sensor = self._sensor_by_name(f"hot_gas_valve_{valve}")
+            sensor = self.sensor_by_name(f"hot_gas_valve_{valve}")
             sensor.target_on = original["target_on"]
             sensor.target_off = original["target_off"]
             logger.info(f"[ice_maker] Fault cleared: defrost_stuck_{valve}")
@@ -372,7 +372,7 @@ class IceMakerSimulator(ESP32Simulator):
 
     def tick(self, dt: float):
         """Advance the simulation by dt seconds."""
-        active = self._active_fault_names
+        active = self.active_fault_names
 
         # compressor_overtemp: safety cutout — machine fully halted
         if "compressor_overtemp" in active:
@@ -590,7 +590,7 @@ class IceMakerSimulator(ESP32Simulator):
             IceMakerEvent(event="power_on", detail="simulator started"),
         )
         async with asyncio.TaskGroup() as tg:
-            tg.create_task(self._command_loop(client))
+            tg.create_task(self.command_loop(client))
             tg.create_task(self._publish_loop(client))
 
     async def _publish_loop(self, client: aiomqtt.Client):

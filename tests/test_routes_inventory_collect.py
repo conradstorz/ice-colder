@@ -114,28 +114,28 @@ class TestCollectCashEndpoint:
         client = login_as(Role.owner)
         resp = client.post("/inventory/collect", headers={"HX-Request": "true"})
         assert resp.status_code == 200
-        rows = _read_cash_collections(recorder_with_db._db_path)
+        rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 1
 
     def test_collect_cash_is_200_for_secretary(self, login_as, wired, recorder_with_db):
         client = login_as(Role.secretary)
         resp = client.post("/inventory/collect", headers={"HX-Request": "true"})
         assert resp.status_code == 200
-        rows = _read_cash_collections(recorder_with_db._db_path)
+        rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 1
 
     def test_collect_cash_is_200_for_tech(self, login_as, wired, recorder_with_db):
         client = login_as(Role.tech)
         resp = client.post("/inventory/collect", headers={"HX-Request": "true"})
         assert resp.status_code == 200
-        rows = _read_cash_collections(recorder_with_db._db_path)
+        rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 1
 
     def test_collect_cash_is_200_for_loader(self, login_as, wired, recorder_with_db):
         client = login_as(Role.loader)
         resp = client.post("/inventory/collect", headers={"HX-Request": "true"})
         assert resp.status_code == 200
-        rows = _read_cash_collections(recorder_with_db._db_path)
+        rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 1
 
     def test_collect_cash_403_without_htmx_header(
@@ -159,7 +159,7 @@ class TestCollectCashEndpoint:
         # Now make a POST without HX-Request header
         resp = bare_client.post("/inventory/collect")
         assert resp.status_code == 403
-        rows = _read_cash_collections(recorder_with_db._db_path)
+        rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 0
 
     def test_collect_cash_records_exactly_one_row_per_call(
@@ -170,13 +170,13 @@ class TestCollectCashEndpoint:
         # First collection
         resp1 = client.post("/inventory/collect", headers={"HX-Request": "true"})
         assert resp1.status_code == 200
-        rows = _read_cash_collections(recorder_with_db._db_path)
+        rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 1
 
         # Second collection
         resp2 = client.post("/inventory/collect", headers={"HX-Request": "true"})
         assert resp2.status_code == 200
-        rows = _read_cash_collections(recorder_with_db._db_path)
+        rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 2
 
     def test_response_preserves_the_swap_anchor_id(
@@ -231,7 +231,7 @@ class TestCollectCashEndpoint:
         resp = client.post("/inventory/collect", headers={"HX-Request": "true"})
         assert resp.status_code == 200
 
-        rows = _read_cash_collections(recorder_with_db._db_path)
+        rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 1
         assert rows[0][4] == 2.00  # expected_cash column
 
@@ -250,7 +250,7 @@ class TestCollectCashEndpoint:
         resp = client.post("/inventory/collect", headers={"HX-Request": "true"})
         assert resp.status_code == 200
 
-        rows = _read_cash_collections(recorder_with_db._db_path)
+        rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 1
         assert rows[0][4] == 1.00  # expected_cash = cash_coin only
 
@@ -266,7 +266,7 @@ class TestCollectCashEndpoint:
         # First collection
         resp1 = client.post("/inventory/collect", headers={"HX-Request": "true"})
         assert resp1.status_code == 200
-        rows = _read_cash_collections(recorder_with_db._db_path)
+        rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 1
         assert rows[0][4] == 5.00
 
@@ -276,7 +276,7 @@ class TestCollectCashEndpoint:
         # Second collection
         resp2 = client.post("/inventory/collect", headers={"HX-Request": "true"})
         assert resp2.status_code == 200
-        rows = _read_cash_collections(recorder_with_db._db_path)
+        rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 2
         assert rows[1][4] == 3.00  # Only the cash_bill from the second sale
 
@@ -288,7 +288,7 @@ class TestCollectCashEndpoint:
         resp = client.post("/inventory/collect", headers={"HX-Request": "true"})
         assert resp.status_code == 200
 
-        rows = _read_cash_collections(recorder_with_db._db_path)
+        rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 1
         assert rows[0][4] == 0.0
 
@@ -309,7 +309,7 @@ class TestCollectCashEndpoint:
         resp = client.post("/inventory/collect", headers={"HX-Request": "true"})
         assert resp.status_code == 200
 
-        rows = _read_cash_collections(recorder_with_db._db_path)
+        rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 1
         assert rows[0][2] == store.owner().id
 
@@ -321,7 +321,7 @@ class TestCollectCashEndpoint:
         resp = client.post("/inventory/collect", headers={"HX-Request": "true"})
         assert resp.status_code == 200
 
-        rows = _read_cash_collections(recorder_with_db._db_path)
+        rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 1
         # The user_name should be "Ada" (the owner in the fixture)
         assert rows[0][3] == "Ada"
@@ -338,7 +338,7 @@ class TestConfirmButtonFlow:
         assert resp.status_code == 200
 
         # No row should be recorded
-        rows = _read_cash_collections(recorder_with_db._db_path)
+        rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 0
 
     def test_cancel_tap_returns_to_initial_state_without_recording(
@@ -355,7 +355,7 @@ class TestConfirmButtonFlow:
         assert "Confirm Collection" not in resp.text
 
         # No row should be recorded
-        rows = _read_cash_collections(recorder_with_db._db_path)
+        rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 0
 
     def test_full_flow_confirm_button_then_post(
@@ -374,7 +374,7 @@ class TestConfirmButtonFlow:
         assert "Confirm Collection" in confirm_resp.text
 
         # Verify no row is recorded yet
-        rows = _read_cash_collections(recorder_with_db._db_path)
+        rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 0
 
         # Second tap: POST to collect
@@ -382,7 +382,7 @@ class TestConfirmButtonFlow:
         assert post_resp.status_code == 200
 
         # Now a row should be recorded with the correct amount
-        rows = _read_cash_collections(recorder_with_db._db_path)
+        rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 1
         assert rows[0][4] == 10.00
 
@@ -453,7 +453,7 @@ class TestConcurrentCollectionsShowOwnRow:
         assert resp_owner.status_code == 200
         assert resp_secretary.status_code == 200
 
-        rows = _read_cash_collections(recorder_with_db._db_path)
+        rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 2
         rows_by_id = sorted(rows, key=lambda r: r[0])
         assert rows_by_id[0][1] == rows_by_id[1][1] == frozen_ts, (
@@ -500,7 +500,7 @@ class TestDeadWriterThreadDoesNotShowStaleRow:
         # dead writer thread would let a later request wrongly reuse.
         resp1 = client.post("/inventory/collect", headers={"HX-Request": "true"})
         assert resp1.status_code == 200
-        rows = _read_cash_collections(recorder_with_db._db_path)
+        rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 1
 
         # Simulate a dead writer thread exactly the way flush()'s own
@@ -516,7 +516,7 @@ class TestDeadWriterThreadDoesNotShowStaleRow:
         resp2 = client.post("/inventory/collect", headers={"HX-Request": "true"})
 
         # No new row was written -- the route must not claim success.
-        rows = _read_cash_collections(recorder_with_db._db_path)
+        rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 1, "no new row should have been written"
         assert resp2.status_code == 500, (
             "a dead writer thread must surface a failure, never a stale row"

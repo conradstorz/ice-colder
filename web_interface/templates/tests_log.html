@@ -20,7 +20,7 @@
      Both shapes carry user_name and status (Copilot review, PR 22,
      id=4128088722 -- spec §3 requires who ran it, the status, and the
      duration); duration_seconds comes from the event's own `value`
-     column, added by _recent_test_runs alongside the metadata merge, not
+     column, added by recent_test_runs alongside the metadata merge, not
      from metadata itself. Every field is read with a truthiness check
      before use, never a bare attribute access assumed present, so a row
      missing any of these (either shape, or a future/malformed third one)
