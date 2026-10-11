@@ -136,7 +136,6 @@ def pay104(wired, tmp_path):
             "db_path": tmp_path / "events.db",
         }
     finally:
-        routes.set_event_recorder(None)
         routes.set_machine_instance(old_machine)
 
 
@@ -190,16 +189,13 @@ class TestFaultsListRendersPendingSale:
         cfg, vmc, _inv, _store = wired
         recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
         routes.set_event_recorder(recorder)
-        try:
-            vmc.raise_fault(FaultCode.PAY_104, outcome="test, no session store")
-            assert context.machine_instance.pending_sale_for_recovery() is None
-            client = login_as(Role.tech)
-            resp = client.post("/health/faults/PAY-104/clear")
-            assert resp.status_code == 200
-            assert "PAY-104" not in {f["code"] for f in vmc.active_faults()}
-            assert _sales_rows(tmp_path / "events.db") == []
-        finally:
-            routes.set_event_recorder(None)
+        vmc.raise_fault(FaultCode.PAY_104, outcome="test, no session store")
+        assert context.machine_instance.pending_sale_for_recovery() is None
+        client = login_as(Role.tech)
+        resp = client.post("/health/faults/PAY-104/clear")
+        assert resp.status_code == 200
+        assert "PAY-104" not in {f["code"] for f in vmc.active_faults()}
+        assert _sales_rows(tmp_path / "events.db") == []
 
 
 class TestPlainClearRejectedWithPendingSale:

@@ -5,11 +5,10 @@ POST takeover).
 
 Fixtures come from tests/conftest.py: `wired` seeds a ConfigModel, VMC,
 InventoryManager and AccessStore (owner "Ada"); `login_as`/`client` sign in
-as a given role. Every test that wires a HealthMonitor, EventRecorder or
-CommandDispatcher restores module state to None in a `finally`/fixture
-teardown, matching the pattern used throughout tests/test_routes_health.py
-and tests/test_routes_reports.py, since all three are plain module globals
-in web_interface.context shared across tests.
+as a given role. A test that wires a HealthMonitor, EventRecorder or
+CommandDispatcher no longer tears it back down itself -- the autouse
+`_isolated_route_context` fixture (tests/conftest.py, tests/route_context.py)
+snapshots and restores every web_interface.context global around each test.
 """
 
 import asyncio
@@ -73,10 +72,7 @@ def wire_subsystem():
         )
         return hm
 
-    try:
-        yield _wire
-    finally:
-        routes.set_health_monitor(None)
+    yield _wire
 
 
 @pytest.fixture
@@ -84,10 +80,7 @@ def wire_event_recorder(tmp_path):
     """A real EventRecorder wired into routes, for /tests/log."""
     recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
     routes.set_event_recorder(recorder)
-    try:
-        yield recorder
-    finally:
-        routes.set_event_recorder(None)
+    yield recorder
 
 
 class FakeAckDispatcher:
@@ -169,10 +162,7 @@ def wire_dispatcher():
         routes.set_command_dispatcher(dispatcher)
         return dispatcher
 
-    try:
-        yield _wire
-    finally:
-        routes.set_command_dispatcher(None)
+    yield _wire
 
 
 # --- Permission gates -------------------------------------------------
@@ -282,12 +272,9 @@ class TestNoTestsAdvertised:
             "ice_maker", {"subsystem": "ice_maker", "uptime_seconds": 5}
         )
         routes.set_health_monitor(hm)
-        try:
-            resp = client.get("/tests/ice_maker")
-            assert resp.status_code == 200
-            assert "No tests advertised." in resp.text
-        finally:
-            routes.set_health_monitor(None)
+        resp = client.get("/tests/ice_maker")
+        assert resp.status_code == 200
+        assert "No tests advertised." in resp.text
 
     def test_never_seen_shows_no_tests_advertised(self, client):
         assert context.health_monitor is None
@@ -1140,10 +1127,7 @@ class TestResultRendering:
 
     def _post_with_ack(self, client, subsystem, command, dispatcher, **form):
         routes.set_command_dispatcher(dispatcher)
-        try:
-            return client.post(f"/tests/{subsystem}/{command}", data=form)
-        finally:
-            routes.set_command_dispatcher(None)
+        return client.post(f"/tests/{subsystem}/{command}", data=form)
 
     def test_ok_ack_status_ok(self, client, wired, wire_subsystem, wire_event_recorder):
         wire_subsystem("mdb", ["ping"])
@@ -1442,20 +1426,17 @@ class TestParamValidation:
         profiles = profiles_for(cfg.products, tmp_path)
         context.machine_instance.set_dispenser_profiles(profiles)
         routes.set_dispenser_profiles(profiles)
-        try:
-            wire_subsystem("vending", ["dispense"])
-            dispatcher = wire_dispatcher(FakeAckDispatcher())
+        wire_subsystem("vending", ["dispense"])
+        dispatcher = wire_dispatcher(FakeAckDispatcher())
 
-            resp = client.post("/tests/vending/dispense", data={"slot": "3"})
+        resp = client.post("/tests/vending/dispense", data={"slot": "3"})
 
-            assert resp.status_code == 200
-            assert len(dispatcher.calls) == 1
-            subsystem, command, params = dispatcher.calls[0]
-            assert (subsystem, command) == ("vending", "dispense")
-            assert params["slot"] == 3
-            assert params["mechanism"] == "bagged_ice"
-        finally:
-            routes.set_dispenser_profiles(None)
+        assert resp.status_code == 200
+        assert len(dispatcher.calls) == 1
+        subsystem, command, params = dispatcher.calls[0]
+        assert (subsystem, command) == ("vending", "dispense")
+        assert params["slot"] == 3
+        assert params["mechanism"] == "bagged_ice"
 
     def test_water_valve_seconds_out_of_range_is_400(
         self, client, wired, wire_subsystem
@@ -1504,21 +1485,18 @@ class TestDispenseSendsProfile:
         profiles = profiles_for(cfg.products, tmp_path)
         context.machine_instance.set_dispenser_profiles(profiles)
         routes.set_dispenser_profiles(profiles)
-        try:
-            wire_subsystem("vending", ["dispense"])
-            dispatcher = wire_dispatcher(FakeAckDispatcher())
+        wire_subsystem("vending", ["dispense"])
+        dispatcher = wire_dispatcher(FakeAckDispatcher())
 
-            resp = client.post("/tests/vending/dispense", data={"slot": "3"})
+        resp = client.post("/tests/vending/dispense", data={"slot": "3"})
 
-            assert resp.status_code == 200
-            assert len(dispatcher.calls) == 1
-            subsystem, command, params = dispatcher.calls[0]
-            assert (subsystem, command) == ("vending", "dispense")
-            assert params["slot"] == 3
-            assert params["mechanism"] == "bagged_ice"
-            assert params["profile"]["agitate"]["motor_channel"] == "agitator_motor"
-        finally:
-            routes.set_dispenser_profiles(None)
+        assert resp.status_code == 200
+        assert len(dispatcher.calls) == 1
+        subsystem, command, params = dispatcher.calls[0]
+        assert (subsystem, command) == ("vending", "dispense")
+        assert params["slot"] == 3
+        assert params["mechanism"] == "bagged_ice"
+        assert params["profile"]["agitate"]["motor_channel"] == "agitator_motor"
 
     def test_dispense_test_refused_without_profile(
         self, client, wired, wire_subsystem, wire_dispatcher, tmp_path
@@ -1539,19 +1517,16 @@ class TestDispenseSendsProfile:
         profiles = profiles_for(cfg.products, tmp_path)
         context.machine_instance.set_dispenser_profiles(profiles)
         routes.set_dispenser_profiles(profiles)
-        try:
-            wire_subsystem("vending", ["dispense"])
-            dispatcher = wire_dispatcher(FakeAckDispatcher())
+        wire_subsystem("vending", ["dispense"])
+        dispatcher = wire_dispatcher(FakeAckDispatcher())
 
-            resp = client.post("/tests/vending/dispense", data={"slot": "4"})
+        resp = client.post("/tests/vending/dispense", data={"slot": "4"})
 
-            assert resp.status_code == 200
-            assert "CFG-101" in resp.text
-            assert "slot 4 (OTHER-1)" in resp.text
-            assert dispatcher.calls == []
-            assert context.machine_instance.maintenance_hold is None
-        finally:
-            routes.set_dispenser_profiles(None)
+        assert resp.status_code == 200
+        assert "CFG-101" in resp.text
+        assert "slot 4 (OTHER-1)" in resp.text
+        assert dispatcher.calls == []
+        assert context.machine_instance.maintenance_hold is None
 
     def test_dispense_test_refused_unknown_slot_unchanged(
         self, client, wired, wire_subsystem, wire_dispatcher
@@ -1780,87 +1755,82 @@ class TestActuatorLeaseHeldForRealLifetime:
         mqtt = _FakeDispatcherMQTT()
         dispatcher = CommandDispatcher(mqtt)
         routes.set_command_dispatcher(dispatcher)
-        try:
-            granted, reason = context.machine_instance.lease.begin_maintenance(
-                principal.user.id, principal.session.id
-            )
-            assert granted is True, reason
+        granted, reason = context.machine_instance.lease.begin_maintenance(
+            principal.user.id, principal.session.id
+        )
+        assert granted is True, reason
 
-            task = asyncio.ensure_future(
-                _run_command("vending", "dispense", params, principal)
-            )
+        task = asyncio.ensure_future(
+            _run_command("vending", "dispense", params, principal)
+        )
 
-            # The lease is taken, and the run counted in-flight, as soon as
-            # _run_command enters machine.lease.test_run() -- before any
-            # ack has even arrived.
-            await _wait_until(lambda: len(mqtt.published) == 1)
-            request_id = mqtt.published[0][1].request_id
-            assert context.machine_instance.maintenance_hold is not None
-            assert context.machine_instance.maintenance_hold.runs_in_flight == 1
-            assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        # The lease is taken, and the run counted in-flight, as soon as
+        # _run_command enters machine.lease.test_run() -- before any
+        # ack has even arrived.
+        await _wait_until(lambda: len(mqtt.published) == 1)
+        request_id = mqtt.published[0][1].request_id
+        assert context.machine_instance.maintenance_hold is not None
+        assert context.machine_instance.maintenance_hold.runs_in_flight == 1
+        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
 
-            # The subsystem ACCEPTS the command (phase="accepted" -- the
-            # fix). Under the pre-fix design this single ack was already
-            # the whole story and the run would end right here.
-            await mqtt.deliver_ack(
-                "vending",
-                {
-                    "request_id": request_id,
-                    "command": "dispense",
-                    "status": "ok",
-                    "detail": None,
-                    "result": {"slot": 0},
-                    "phase": "accepted",
-                    "timestamp": "2026-09-29T00:00:00+00:00",
-                },
-            )
-            await _wait_until(lambda: request_id in dispatcher._pending_completions)
+        # The subsystem ACCEPTS the command (phase="accepted" -- the
+        # fix). Under the pre-fix design this single ack was already
+        # the whole story and the run would end right here.
+        await mqtt.deliver_ack(
+            "vending",
+            {
+                "request_id": request_id,
+                "command": "dispense",
+                "status": "ok",
+                "detail": None,
+                "result": {"slot": 0},
+                "phase": "accepted",
+                "timestamp": "2026-09-29T00:00:00+00:00",
+            },
+        )
+        await _wait_until(lambda: request_id in dispatcher._pending_completions)
 
-            # THE PROOF: accepted is not completed. Everything that was
-            # true the instant the lease was granted must STILL be true —
-            # simulating the real motor still running.
-            assert not task.done()
-            assert context.machine_instance.maintenance_hold is not None
-            assert context.machine_instance.maintenance_hold.runs_in_flight == 1
-            assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        # THE PROOF: accepted is not completed. Everything that was
+        # true the instant the lease was granted must STILL be true —
+        # simulating the real motor still running.
+        assert not task.done()
+        assert context.machine_instance.maintenance_hold is not None
+        assert context.machine_instance.maintenance_hold.runs_in_flight == 1
+        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
 
-            # A tech tapping "End Test Mode" mid-actuation is accepted but
-            # DEFERRED -- exactly what VMC.end_maintenance already
-            # guarantees at the lease level (test_vmc_flows.py's
-            # test_release_with_run_in_flight_defers_then_settles); this
-            # proves _run_command's dispatch keeps that guarantee true
-            # against a realistic accept/complete timing gap, which is
-            # exactly what the pre-fix code did not do.
-            released = context.machine_instance.lease.end_maintenance(
-                principal.session.id
-            )
-            assert released is True  # request accepted...
-            assert (
-                context.machine_instance.maintenance_hold is not None
-            )  # ...but not released yet
-            assert context.machine_instance.maintenance_hold.release_requested is True
-            assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
+        # A tech tapping "End Test Mode" mid-actuation is accepted but
+        # DEFERRED -- exactly what VMC.end_maintenance already
+        # guarantees at the lease level (test_vmc_flows.py's
+        # test_release_with_run_in_flight_defers_then_settles); this
+        # proves _run_command's dispatch keeps that guarantee true
+        # against a realistic accept/complete timing gap, which is
+        # exactly what the pre-fix code did not do.
+        released = context.machine_instance.lease.end_maintenance(principal.session.id)
+        assert released is True  # request accepted...
+        assert (
+            context.machine_instance.maintenance_hold is not None
+        )  # ...but not released yet
+        assert context.machine_instance.maintenance_hold.release_requested is True
+        assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
 
-            # NOW the motor actually finishes: the terminal
-            # hardware/dispenser report, carrying the same request_id.
-            await mqtt.deliver_dispenser_report(
-                {
-                    "slot": 0,
-                    "state": "complete",
-                    "request_id": request_id,
-                    "timestamp": "2026-09-29T00:00:01+00:00",
-                }
-            )
+        # NOW the motor actually finishes: the terminal
+        # hardware/dispenser report, carrying the same request_id.
+        await mqtt.deliver_dispenser_report(
+            {
+                "slot": 0,
+                "state": "complete",
+                "request_id": request_id,
+                "timestamp": "2026-09-29T00:00:01+00:00",
+            }
+        )
 
-            result = await asyncio.wait_for(task, timeout=2.0)
-            assert result["status"] == "ok"
+        result = await asyncio.wait_for(task, timeout=2.0)
+        assert result["status"] == "ok"
 
-            # Completion is what frees the run, and — since a release was
-            # already requested — releases the lease and clears SVC-102.
-            assert context.machine_instance.maintenance_hold is None
-            assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
-        finally:
-            routes.set_command_dispatcher(None)
+        # Completion is what frees the run, and — since a release was
+        # already requested — releases the lease and clears SVC-102.
+        assert context.machine_instance.maintenance_hold is None
+        assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
 
     async def test_ack_timeout_still_fires_independently_of_completion_timeout(
         self, wired, tmp_path
@@ -1880,24 +1850,21 @@ class TestActuatorLeaseHeldForRealLifetime:
         mqtt = _FakeDispatcherMQTT()
         dispatcher = CommandDispatcher(mqtt, timeout=0.05, retries=0)
         routes.set_command_dispatcher(dispatcher)
-        try:
-            granted, reason = context.machine_instance.lease.begin_maintenance(
-                principal.user.id, principal.session.id
+        granted, reason = context.machine_instance.lease.begin_maintenance(
+            principal.user.id, principal.session.id
+        )
+        assert granted is True, reason
+
+        import time
+
+        started = time.monotonic()
+        with pytest.raises(CommandTimeout):
+            await asyncio.wait_for(
+                dispatcher.send_and_await_completion("vending", "dispense", params),
+                timeout=2.0,
             )
-            assert granted is True, reason
-
-            import time
-
-            started = time.monotonic()
-            with pytest.raises(CommandTimeout):
-                await asyncio.wait_for(
-                    dispatcher.send_and_await_completion("vending", "dispense", params),
-                    timeout=2.0,
-                )
-            elapsed = time.monotonic() - started
-            assert elapsed < 1.0  # nowhere near the 120s completion timeout
-        finally:
-            routes.set_command_dispatcher(None)
+        elapsed = time.monotonic() - started
+        assert elapsed < 1.0  # nowhere near the 120s completion timeout
 
     async def test_ping_via_run_command_is_unaffected(self, wired):
         """An immediate command (ping) through the REAL `_run_command` +
@@ -1914,34 +1881,31 @@ class TestActuatorLeaseHeldForRealLifetime:
         mqtt = _FakeDispatcherMQTT()
         dispatcher = CommandDispatcher(mqtt)
         routes.set_command_dispatcher(dispatcher)
-        try:
-            granted, reason = context.machine_instance.lease.begin_maintenance(
-                principal.user.id, principal.session.id
-            )
-            assert granted is True, reason
+        granted, reason = context.machine_instance.lease.begin_maintenance(
+            principal.user.id, principal.session.id
+        )
+        assert granted is True, reason
 
-            task = asyncio.ensure_future(_run_command("vending", "ping", {}, principal))
-            await _wait_until(lambda: len(mqtt.published) == 1)
-            request_id = mqtt.published[0][1].request_id
+        task = asyncio.ensure_future(_run_command("vending", "ping", {}, principal))
+        await _wait_until(lambda: len(mqtt.published) == 1)
+        request_id = mqtt.published[0][1].request_id
 
-            await mqtt.deliver_ack(
-                "vending",
-                {
-                    "request_id": request_id,
-                    "command": "ping",
-                    "status": "ok",
-                    "detail": None,
-                    "result": None,
-                    "phase": "completed",
-                    "timestamp": "2026-09-29T00:00:00+00:00",
-                },
-            )
-            result = await asyncio.wait_for(task, timeout=2.0)
+        await mqtt.deliver_ack(
+            "vending",
+            {
+                "request_id": request_id,
+                "command": "ping",
+                "status": "ok",
+                "detail": None,
+                "result": None,
+                "phase": "completed",
+                "timestamp": "2026-09-29T00:00:00+00:00",
+            },
+        )
+        result = await asyncio.wait_for(task, timeout=2.0)
 
-            assert result["status"] == "ok"
-            assert context.machine_instance.maintenance_hold is not None
-            assert (
-                context.machine_instance.maintenance_hold.runs_in_flight == 0
-            )  # freed immediately
-        finally:
-            routes.set_command_dispatcher(None)
+        assert result["status"] == "ok"
+        assert context.machine_instance.maintenance_hold is not None
+        assert (
+            context.machine_instance.maintenance_hold.runs_in_flight == 0
+        )  # freed immediately

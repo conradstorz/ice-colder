@@ -143,7 +143,6 @@ def live_server(tmp_path):
     finally:
         server.should_exit = True
         thread.join(timeout=10)
-        routes.set_access_store(None)
         machine.cancel_pending_tasks()
         web_auth_backoff_reset()
 

@@ -4,10 +4,11 @@
 
 Fixtures come from tests/conftest.py: `wired` seeds a ConfigModel, VMC,
 InventoryManager and AccessStore (owner "Ada", PIN 1379, setup finalized);
-`login_as`/`client` sign in as a given role. Every test that wires a
-HealthMonitor or Availability restores module state to None in a `finally`,
-matching the pattern already used throughout tests/test_web_routes.py, since
-both are plain module globals in web_interface.context shared across tests.
+`login_as`/`client` sign in as a given role. A test that wires a
+HealthMonitor or Availability no longer tears it back down itself -- the
+autouse `_isolated_route_context` fixture (tests/conftest.py,
+tests/route_context.py) snapshots and restores every web_interface.context
+global around each test.
 """
 
 import re
@@ -113,12 +114,9 @@ class TestSubsystemsLevel:
 
         hm = HealthMonitor()
         routes.set_health_monitor(hm)
-        try:
-            resp = client.get("/health/subsystems")
-            for name in ("vending", "mdb", "ice_maker"):
-                assert name in resp.text
-        finally:
-            routes.set_health_monitor(None)
+        resp = client.get("/health/subsystems")
+        for name in ("vending", "mdb", "ice_maker"):
+            assert name in resp.text
 
     def test_links_to_the_subsystem_level(self, client):
         resp = client.get("/health/subsystems")
@@ -151,16 +149,13 @@ class TestSubsystemDetailLevel:
             },
         )
         routes.set_health_monitor(hm)
-        try:
-            resp = client.get("/health/subsystems/mdb")
-            assert resp.status_code == 200
-            assert "abc1234" in resp.text
-            assert "0.3.0" in resp.text
-            assert "ice-colder mdb-sim" in resp.text
-            assert "02:11:22:33:44:55" in resp.text
-            assert "172.18.0.7" in resp.text
-        finally:
-            routes.set_health_monitor(None)
+        resp = client.get("/health/subsystems/mdb")
+        assert resp.status_code == 200
+        assert "abc1234" in resp.text
+        assert "0.3.0" in resp.text
+        assert "ice-colder mdb-sim" in resp.text
+        assert "02:11:22:33:44:55" in resp.text
+        assert "172.18.0.7" in resp.text
 
     def test_breadcrumb_is_home_health_subsystems_name(self, client):
         resp = client.get("/health/subsystems/vending")
@@ -213,16 +208,13 @@ class TestSubsystemDetailLevel:
         hm.record_temperature("cabinet", 5.0)
         hm.record_temperature("evaporator", -10.0)
         routes.set_health_monitor(hm)
-        try:
-            vending_resp = client.get("/health/subsystems/vending")
-            assert "cabinet" in vending_resp.text
-            assert "evaporator" not in vending_resp.text
+        vending_resp = client.get("/health/subsystems/vending")
+        assert "cabinet" in vending_resp.text
+        assert "evaporator" not in vending_resp.text
 
-            ice_resp = client.get("/health/subsystems/ice_maker")
-            assert "evaporator" in ice_resp.text
-            assert "cabinet" not in ice_resp.text
-        finally:
-            routes.set_health_monitor(None)
+        ice_resp = client.get("/health/subsystems/ice_maker")
+        assert "evaporator" in ice_resp.text
+        assert "cabinet" not in ice_resp.text
 
     def test_digital_signal_with_text_shows_label_text_and_red(self, client):
         """Task 7 brief, test (b): an MDB device declares a binary channel
@@ -250,14 +242,11 @@ class TestSubsystemDetailLevel:
         hm.record_heartbeat("mdb")
         hm.record_signal("mdb", "card_reader", 0.0, text="error")
         routes.set_health_monitor(hm)
-        try:
-            resp = client.get("/health/subsystems/mdb")
-            assert "card_reader" in resp.text
-            assert "card reader" in resp.text  # label: underscores spaced
-            assert "error" in resp.text
-            assert "bg-red-600" in resp.text
-        finally:
-            routes.set_health_monitor(None)
+        resp = client.get("/health/subsystems/mdb")
+        assert "card_reader" in resp.text
+        assert "card reader" in resp.text  # label: underscores spaced
+        assert "error" in resp.text
+        assert "bg-red-600" in resp.text
 
     def test_never_seen_board_shows_gray_not_green(self, client):
         """Task 7 brief, test (c): a signal recorded with no heartbeat ever
@@ -284,12 +273,9 @@ class TestSubsystemDetailLevel:
         )
         hm.record_signal("vending", "bag_full_sensor", 1.0)
         routes.set_health_monitor(hm)
-        try:
-            resp = client.get("/health/subsystems/vending")
-            assert "bg-gray-200" in resp.text
-            assert "bg-green-600" not in resp.text
-        finally:
-            routes.set_health_monitor(None)
+        resp = client.get("/health/subsystems/vending")
+        assert "bg-gray-200" in resp.text
+        assert "bg-green-600" not in resp.text
 
     def test_inhibited_output_marked_fan_is_not(self, client):
         """Task 7 brief, test (d): with Availability wired and vending's
@@ -332,21 +318,18 @@ class TestSubsystemDetailLevel:
         avail = Availability()
         avail.set_subsystem_alive("vending", False)
         routes.set_availability(avail)
-        try:
-            resp = client.get("/health/subsystems/vending")
-            text = resp.text
-            assert "ring-dashed" in text
-            assert "inhibited" in text
+        resp = client.get("/health/subsystems/vending")
+        text = resp.text
+        assert "ring-dashed" in text
+        assert "inhibited" in text
 
-            def _row(signal_id: str) -> str:
-                start = text.index(f'id="signal-{signal_id}"')
-                end = text.index("</div>", start)
-                return text[start:end]
+        def _row(signal_id: str) -> str:
+            start = text.index(f'id="signal-{signal_id}"')
+            end = text.index("</div>", start)
+            return text[start:end]
 
-            assert "inhibited" in _row("auger_motor")
-            assert "inhibited" not in _row("fan")
-        finally:
-            routes.set_health_monitor(None)
+        assert "inhibited" in _row("auger_motor")
+        assert "inhibited" not in _row("fan")
 
     def test_stale_board_shows_gray_not_last_live_reading(self, client):
         """Copilot review (PR 27, finding 1): a board that heartbeat-timed-out
@@ -378,14 +361,11 @@ class TestSubsystemDetailLevel:
         assert hm.get_summary()["subsystems"]["mdb"]["alive"] is True
         assert hm.get_summary()["subsystems"]["mdb"]["stale"] is True
         routes.set_health_monitor(hm)
-        try:
-            resp = client.get("/health/subsystems/mdb")
-            assert resp.status_code == 200
-            assert "bg-gray-200" in resp.text
-            assert "bg-green-600" not in resp.text
-            assert "bg-red-600" not in resp.text
-        finally:
-            routes.set_health_monitor(None)
+        resp = client.get("/health/subsystems/mdb")
+        assert resp.status_code == 200
+        assert "bg-gray-200" in resp.text
+        assert "bg-green-600" not in resp.text
+        assert "bg-red-600" not in resp.text
 
     def test_updated_clock_is_os_local_time_string(self, client):
         """Copilot review (PR 27, finding 2): the route must pass tz=None
@@ -414,12 +394,9 @@ class TestSubsystemDetailLevel:
         hm.record_heartbeat("vending")
         hm.record_signal("vending", "bag_full_sensor", 1.0)
         routes.set_health_monitor(hm)
-        try:
-            resp = client.get("/health/subsystems/vending")
-            assert resp.status_code == 200
-            assert re.search(r"\d\d:\d\d:\d\d", resp.text)
-        finally:
-            routes.set_health_monitor(None)
+        resp = client.get("/health/subsystems/vending")
+        assert resp.status_code == 200
+        assert re.search(r"\d\d:\d\d:\d\d", resp.text)
 
     def test_non_string_channel_id_does_not_500(self, client):
         """Copilot review (PR 27, finding 3): a schema-invalid capabilities
@@ -433,12 +410,8 @@ class TestSubsystemDetailLevel:
             "mdb", {"channels": [{"channel_id": ["x"], "kind": "binary"}]}
         )
         routes.set_health_monitor(hm)
-        try:
-            resp = client.get("/health/subsystems/mdb")
-            assert resp.status_code == 200
-        finally:
-            routes.set_health_monitor(None)
-            routes.set_availability(None)
+        resp = client.get("/health/subsystems/mdb")
+        assert resp.status_code == 200
 
     def test_live_wrapper_hx_attributes_and_single_extra_trigger(self, client):
         """Task 7 brief, test (e): the full page carries exactly one
@@ -509,15 +482,12 @@ class TestFaultsLevel:
         hm = HealthMonitor()
         routes.set_health_monitor(hm)
         context.machine_instance.set_health_monitor(hm)
-        try:
-            vmc.raise_fault(FaultCode.WTR_104, outcome="leak")
-            resp = client.get("/health/faults")
-            assert resp.status_code == 200
-            assert "WTR-104" in resp.text
-            assert "safety" in resp.text
-            assert "s ago" in resp.text or "m ago" in resp.text
-        finally:
-            routes.set_health_monitor(None)
+        vmc.raise_fault(FaultCode.WTR_104, outcome="leak")
+        resp = client.get("/health/faults")
+        assert resp.status_code == 200
+        assert "WTR-104" in resp.text
+        assert "safety" in resp.text
+        assert "s ago" in resp.text or "m ago" in resp.text
 
     def test_renders_without_a_health_monitor(self, wired, client):
         """Fault age is None with no monitor wired -- the row must still
@@ -718,26 +688,20 @@ class TestAvailabilityLevel:
 
         avail = Availability()
         routes.set_availability(avail)
-        try:
-            resp = client.get("/health/availability")
-            assert "bag_present" in resp.text
-            assert "not instrumented" in resp.text
-            assert "vending_alive" in resp.text
-        finally:
-            routes.set_availability(None)
+        resp = client.get("/health/availability")
+        assert "bag_present" in resp.text
+        assert "not instrumented" in resp.text
+        assert "vending_alive" in resp.text
 
     def test_shows_payment_enabled_and_per_kind(self, client):
         from services.availability import Availability
 
         avail = Availability()
         routes.set_availability(avail)
-        try:
-            resp = client.get("/health/availability")
-            assert "Payment enabled" in resp.text
-            assert "Ice" in resp.text
-            assert "Water" in resp.text
-        finally:
-            routes.set_availability(None)
+        resp = client.get("/health/availability")
+        assert "Payment enabled" in resp.text
+        assert "Ice" in resp.text
+        assert "Water" in resp.text
 
 
 class TestLogsLevel:
