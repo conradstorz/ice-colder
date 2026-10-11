@@ -20,6 +20,7 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Literal, Union
 
 import aiomqtt
@@ -310,18 +311,28 @@ class ESP32Simulator(ABC):
         }
 
     @property
-    def fault_state(self) -> Mapping[str, dict]:
-        """Read-only view of each registered fault's live state dict
+    def fault_state(self) -> Mapping[str, Mapping[str, object]]:
+        """Immutable snapshot of each registered fault's live state dict
         (``active``/``recover_at``/``recovering``) -- tests read through
         this instead of the private ``_fault_state`` store; the one
-        sanctioned mutation path is ``activate_fault``."""
-        return self._fault_state
+        sanctioned mutation path is ``activate_fault``.
+
+        Returns a fresh ``MappingProxyType`` snapshot on every call, both
+        the outer mapping and each per-fault inner mapping, so
+        ``sim.fault_state[name]["active"] = True`` raises ``TypeError``
+        instead of silently bypassing ``activate_fault``'s callbacks and
+        alert publish.
+        """
+        return MappingProxyType(
+            {name: MappingProxyType(state) for name, state in self._fault_state.items()}
+        )
 
     @property
     def fault_defs(self) -> Sequence[FaultDef]:
-        """Read-only view of registered fault definitions, so a test can
-        look one up by name (e.g. to hand to ``activate_fault``)."""
-        return self._fault_defs
+        """Immutable snapshot of registered fault definitions, so a test can
+        look one up by name (e.g. to hand to ``activate_fault``). Returns a
+        fresh ``tuple`` on every call, so it cannot be mutated in place."""
+        return tuple(self._fault_defs)
 
     @property
     def active_fault_names(self) -> set[str]:

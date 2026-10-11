@@ -241,6 +241,36 @@ class TestFaultRegistration:
         assert len(sim.fault_defs) == 3
         assert set(sim.fault_state.keys()) == {"fault_a", "fault_b", "fault_c"}
 
+    def test_fault_state_write_through_property_raises(self):
+        sim = ConcreteSimulator()
+        fault = FaultDef(
+            name="test_fault",
+            category="short",
+            probability=1.0,
+            on_activate=AsyncMock(),
+            on_recover=AsyncMock(),
+            message="Test fault",
+        )
+        sim.register_fault(fault)
+        with pytest.raises(TypeError):
+            sim.fault_state["test_fault"]["active"] = True
+
+    def test_fault_defs_is_immutable_tuple(self):
+        sim = ConcreteSimulator()
+        fault = FaultDef(
+            name="test_fault",
+            category="short",
+            probability=1.0,
+            on_activate=AsyncMock(),
+            on_recover=AsyncMock(),
+            message="Test fault",
+        )
+        sim.register_fault(fault)
+        assert isinstance(sim.fault_defs, tuple)
+        with pytest.raises(AttributeError):
+            sim.fault_defs.append(fault)
+        assert sim.active_fault_names == set()
+
 
 class TestFaultLoop:
     @pytest.mark.asyncio
