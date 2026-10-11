@@ -1331,6 +1331,17 @@ class TestRegisterCommandHook:
 
 
 class TestCommandLoop:
+    @staticmethod
+    async def _start_loop(sim, client):
+        task = asyncio.create_task(sim.command_loop(client))
+        await settle()
+        topic, queue = next(
+            (t, q)
+            for t, q in sim._subscriptions
+            if t == f"{sim.topic_prefix}/cmd/{sim.subsystem_name}"
+        )
+        return task, topic, queue
+
     @pytest.mark.asyncio
     async def test_subscribes_to_cmd_subsystem_topic(self):
         sim = ConcreteSimulator(machine_id="vmc-1")
@@ -1346,11 +1357,7 @@ class TestCommandLoop:
     async def test_dispatches_a_queued_command_and_acks(self):
         sim = ConcreteSimulator(machine_id="vmc-1")
         client = AsyncMock()
-        task = asyncio.create_task(sim.command_loop(client))
-        await settle()
-        topic, queue = next(
-            (t, q) for t, q in sim._subscriptions if t == "vmc/vmc-1/cmd/test_subsystem"
-        )
+        task, topic, queue = await self._start_loop(sim, client)
         queue.put_nowait(
             (topic, {"request_id": "req-loop0001", "command": "ping", "params": {}})
         )
@@ -1368,11 +1375,7 @@ class TestCommandLoop:
     async def test_invalid_payload_is_dropped_not_raised(self):
         sim = ConcreteSimulator(machine_id="vmc-1")
         client = AsyncMock()
-        task = asyncio.create_task(sim.command_loop(client))
-        await settle()
-        topic, queue = next(
-            (t, q) for t, q in sim._subscriptions if t == "vmc/vmc-1/cmd/test_subsystem"
-        )
+        task, topic, queue = await self._start_loop(sim, client)
         queue.put_nowait((topic, {"not": "a valid command"}))
         await asyncio.wait_for(queue.join(), 1.0)
         assert not task.done()  # the loop is still alive, not crashed
@@ -1387,11 +1390,7 @@ class TestCommandLoop:
         invalid, so `queue.join()` is a true "fully dispatched" signal."""
         sim = ConcreteSimulator(machine_id="vmc-1")
         client = AsyncMock()
-        task = asyncio.create_task(sim.command_loop(client))
-        await settle()
-        topic, queue = next(
-            (t, q) for t, q in sim._subscriptions if t == "vmc/vmc-1/cmd/test_subsystem"
-        )
+        task, topic, queue = await self._start_loop(sim, client)
         queue.put_nowait(
             (topic, {"request_id": "req-ok00001", "command": "ping", "params": {}})
         )

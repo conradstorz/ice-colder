@@ -1505,6 +1505,9 @@ class TestWaterValveCommand:
         assert len(sim._background_tasks) == 1
         task = next(iter(sim._background_tasks))
 
+        # Deterministic only because sim.publish is an AsyncMock (no internal
+        # suspension), so the background task runs both set_hw calls on its
+        # first slice and parks at the real asyncio.sleep.
         await settle()  # let it open the valve and reach the real asyncio.sleep
         assert sim._hw["water_valve_solenoid"] is True
         assert sim._hw["water_flow_sensor"] is True
