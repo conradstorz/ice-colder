@@ -14,7 +14,6 @@ def store(tmp_path):
     auth.set_access_store(s)
     auth.backoff.set_trusted_proxies([])
     yield s
-    auth.set_access_store(None)
 
 
 @pytest.fixture

@@ -576,14 +576,11 @@ class TestKpiEndpoint:
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
-        try:
-            response = client.get("/kpi")
-            assert response.status_code == 200
-            # "no history yet" only appears in the recorder-present branch (average sub-line);
-            # the placeholder skeleton uses "no data" instead.
-            assert "no history yet" in response.text
-        finally:
-            r.set_event_recorder(None)
+        response = client.get("/kpi")
+        assert response.status_code == 200
+        # "no history yet" only appears in the recorder-present branch (average sub-line);
+        # the placeholder skeleton uses "no data" instead.
+        assert "no history yet" in response.text
 
 
 # TestActivityPeriodParam removed (Task 15): GET /activity is gone (see
@@ -613,12 +610,9 @@ class TestEventRecorderCallsOffloaded:
             return await real_to_thread(func, *args, **kwargs)
 
         monkeypatch.setattr(r.asyncio, "to_thread", spying_to_thread)
-        try:
-            resp = client.get("/status")
-            assert resp.status_code == 200
-            assert (recorder.get_summary, (24,)) in calls
-        finally:
-            r.set_event_recorder(None)
+        resp = client.get("/status")
+        assert resp.status_code == 200
+        assert (recorder.get_summary, (24,)) in calls
 
     def test_kpi_offloads_summary_and_average_to_thread(
         self, client, tmp_path, monkeypatch
@@ -637,13 +631,10 @@ class TestEventRecorderCallsOffloaded:
             return await real_to_thread(func, *args, **kwargs)
 
         monkeypatch.setattr(r.asyncio, "to_thread", spying_to_thread)
-        try:
-            resp = client.get("/kpi")
-            assert resp.status_code == 200
-            assert (recorder.get_summary, (24,)) in calls
-            assert (recorder.get_historical_average, (24,)) in calls
-        finally:
-            r.set_event_recorder(None)
+        resp = client.get("/kpi")
+        assert resp.status_code == 200
+        assert (recorder.get_summary, (24,)) in calls
+        assert (recorder.get_historical_average, (24,)) in calls
 
     # test_activity_offloads_summary_and_average_to_thread removed (Task
     # 15): GET /activity is gone; the identical offloading assertion against
@@ -672,12 +663,9 @@ class TestStatusHealthSignal:
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
-        try:
-            response = client.get("/status")
-            assert response.status_code == 200
-            assert "All Systems OK" in response.text
-        finally:
-            r.set_event_recorder(None)
+        response = client.get("/status")
+        assert response.status_code == 200
+        assert "All Systems OK" in response.text
 
     def test_status_with_recorder_has_errors(self, client, tmp_path):
         from services.event_recorder import EventRecorder
@@ -686,12 +674,9 @@ class TestStatusHealthSignal:
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         recorder.record("error")
         r.set_event_recorder(recorder)
-        try:
-            response = client.get("/status")
-            assert response.status_code == 200
-            assert "Issues Detected" in response.text
-        finally:
-            r.set_event_recorder(None)
+        response = client.get("/status")
+        assert response.status_code == 200
+        assert "Issues Detected" in response.text
 
 
 # TestDeleteAndEmptyState removed (Task 15): every test here hit
@@ -774,25 +759,19 @@ class TestFaultsUI:
         hm = HealthMonitor()
         routes.set_health_monitor(hm)
         context.machine_instance.set_health_monitor(hm)
-        try:
-            self._add_product(client)
-            self._lock(client)
-            r = client.get("/status", auth=client.auth)
-            assert r.status_code == 200
-            assert "ICE-301" in r.text
-            assert "s</span>" in r.text
-        finally:
-            routes.set_health_monitor(None)
+        self._add_product(client)
+        self._lock(client)
+        r = client.get("/status", auth=client.auth)
+        assert r.status_code == 200
+        assert "ICE-301" in r.text
+        assert "s</span>" in r.text
 
     def test_status_still_renders_without_health_monitor(self, client):
         self._add_product(client)
         self._lock(client)
-        try:
-            r = client.get("/status", auth=client.auth)
-            assert r.status_code == 200
-            assert "ICE-301" in r.text
-        finally:
-            routes.set_health_monitor(None)
+        r = client.get("/status", auth=client.auth)
+        assert r.status_code == 200
+        assert "ICE-301" in r.text
 
     def test_status_without_faults_says_none(self, client):
         r = client.get("/status", auth=client.auth)
@@ -835,11 +814,8 @@ class TestFaultsUI:
         rec = EventRecorder(db_path=str(tmp_path / "events.db"))
         rec.record("vend_failed", value=2.5, metadata={"code": "ICE-301"})
         routes.set_event_recorder(rec)
-        try:
-            r = client.get("/kpi", auth=client.auth)
-            assert "1 failed" in r.text
-        finally:
-            routes.set_event_recorder(None)
+        r = client.get("/kpi", auth=client.auth)
+        assert "1 failed" in r.text
 
     def test_reports_shows_failed_vends_and_refunds(self, client, tmp_path):
         """Retargeted (Task 15) from GET /activity to its replacement, GET
@@ -853,13 +829,10 @@ class TestFaultsUI:
         rec.record("vend_failed", value=2.5)
         rec.record("refund", value=2.5)
         routes.set_event_recorder(rec)
-        try:
-            r = client.get("/reports", auth=client.auth)
-            assert "Failed Vends" in r.text
-            assert "Refunds Paid" in r.text
-            assert "$2.50" in r.text
-        finally:
-            routes.set_event_recorder(None)
+        r = client.get("/reports", auth=client.auth)
+        assert "Failed Vends" in r.text
+        assert "Refunds Paid" in r.text
+        assert "$2.50" in r.text
 
 
 class TestHealthTabIdentity:
@@ -874,14 +847,11 @@ class TestHealthTabIdentity:
         from services.build_info import BUILD_INFO
 
         self._hm()
-        try:
-            r = client.get("/health", auth=client.auth)
-            assert r.status_code == 200
-            assert BUILD_INFO.commit_short in r.text
-            assert BUILD_INFO.source in r.text
-            assert "vmc-test" in r.text
-        finally:
-            routes.set_health_monitor(None)
+        r = client.get("/health", auth=client.auth)
+        assert r.status_code == 200
+        assert BUILD_INFO.commit_short in r.text
+        assert BUILD_INFO.source in r.text
+        assert "vmc-test" in r.text
 
     def test_heartbeat_only_row_shows_dashes(self, client):
         # Retargeted (Task 6): the per-subsystem uptime/firmware/contract
@@ -892,43 +862,35 @@ class TestHealthTabIdentity:
         # old test_expected_subsystems_listed_when_silent is not repeated
         # here.
         hm = self._hm()
-        try:
-            hm.record_heartbeat(
-                "vending", {"subsystem": "vending", "uptime_seconds": 90}
-            )
-            r = client.get("/health/subsystems", auth=client.auth)
-            assert "1m" in r.text  # uptime humanized
-            assert "—" in r.text  # firmware/contract/hardware unknown
-        finally:
-            routes.set_health_monitor(None)
+        hm.record_heartbeat("vending", {"subsystem": "vending", "uptime_seconds": 90})
+        r = client.get("/health/subsystems", auth=client.auth)
+        assert "1m" in r.text  # uptime humanized
+        assert "—" in r.text  # firmware/contract/hardware unknown
 
     def test_capabilities_render(self, client):
         # Retargeted (Task 6): identity fields (brand/model/hardware id/ip)
         # now live on the per-subsystem detail page, not /health.
         hm = self._hm()
-        try:
-            hm.record_heartbeat("mdb", {"subsystem": "mdb", "uptime_seconds": 5})
-            hm.record_capabilities(
-                "mdb",
-                {
-                    "subsystem": "mdb",
-                    "firmware": "abc1234",
-                    "contract_version": "0.3.0",
-                    "brand": "ice-colder",
-                    "model": "mdb-sim",
-                    "hardware_id": "02:11:22:33:44:55",
-                    "ip": "172.18.0.7",
-                    "commands": ["refund"],
-                },
-            )
-            r = client.get("/health/subsystems/mdb", auth=client.auth)
-            assert "abc1234" in r.text
-            assert "0.3.0" in r.text
-            assert "ice-colder mdb-sim" in r.text
-            assert "02:11:22:33:44:55" in r.text
-            assert "172.18.0.7" in r.text
-        finally:
-            routes.set_health_monitor(None)
+        hm.record_heartbeat("mdb", {"subsystem": "mdb", "uptime_seconds": 5})
+        hm.record_capabilities(
+            "mdb",
+            {
+                "subsystem": "mdb",
+                "firmware": "abc1234",
+                "contract_version": "0.3.0",
+                "brand": "ice-colder",
+                "model": "mdb-sim",
+                "hardware_id": "02:11:22:33:44:55",
+                "ip": "172.18.0.7",
+                "commands": ["refund"],
+            },
+        )
+        r = client.get("/health/subsystems/mdb", auth=client.auth)
+        assert "abc1234" in r.text
+        assert "0.3.0" in r.text
+        assert "ice-colder mdb-sim" in r.text
+        assert "02:11:22:33:44:55" in r.text
+        assert "172.18.0.7" in r.text
 
 
 class TestLogsContent:
@@ -977,8 +939,6 @@ class TestStillSellingBanner:
         r.set_availability(avail)
         r.set_health_monitor(HealthMonitor())
         yield client
-        r.set_availability(None)
-        r.set_health_monitor(None)
 
     def test_status_shows_still_selling_for_a_soft_fault(self, selling_client):
         client = selling_client
@@ -1021,7 +981,6 @@ class TestMaintenanceHero:
         context.machine_instance.set_availability(avail)
         context.set_availability(avail)
         yield client
-        context.set_availability(None)
 
     def test_status_shows_out_of_service_with_holder_name(self, maintenance_client):
         owner = context.access_store.owner()
@@ -1046,7 +1005,6 @@ class TestAvailabilityOnDashboard:
         r.set_availability(avail)
         r.set_health_monitor(HealthMonitor())
         yield client, avail
-        r.set_availability(None)
 
     def test_status_shows_payment_disabled_with_reason(self, avail_client):
         # Only a safety-gate row can disable payment now; a service door left
@@ -1104,14 +1062,10 @@ class TestAvailabilityOnDashboard:
 
         r.set_availability(None)
         r.set_health_monitor(None)
-        try:
-            resp = client.get("/screen/body")
-            assert resp.status_code == 200
-            assert "Disabled" not in resp.text
-            assert "Unavailable" not in resp.text
-        finally:
-            r.set_availability(None)
-            r.set_health_monitor(None)
+        resp = client.get("/screen/body")
+        assert resp.status_code == 200
+        assert "Disabled" not in resp.text
+        assert "Unavailable" not in resp.text
 
 
 class TestOfflineAssets:
@@ -1138,7 +1092,6 @@ class TestOfflineAssets:
         with TestClient(app, follow_redirects=False) as c:
             c.headers["HX-Request"] = "true"
             yield c
-        routes.set_access_store(None)
 
     def test_static_htmx_is_served_locally(self, public):
         resp = public.get("/static/htmx.min.js")
@@ -1159,7 +1112,6 @@ class TestOfflineAssets:
             resp = c.get("/setup")
         assert "unpkg.com" not in resp.text
         assert "/static/htmx.min.js" in resp.text
-        routes.set_access_store(None)
 
 
 class TestAuthPagesShellHardening:
@@ -1193,7 +1145,6 @@ class TestAuthPagesShellHardening:
         with TestClient(app, follow_redirects=False) as c:
             c.headers["HX-Request"] = "true"
             pages["login"] = c.get("/login").text
-        routes.set_access_store(None)
 
         # enroll.html — correct PIN, device the store has never trusted:
         # login_submit's own path to "Trust this device" (see TestLogin
@@ -1207,7 +1158,6 @@ class TestAuthPagesShellHardening:
             pages["enroll"] = c.post(
                 "/login", data={"user_id": owner.id, "pin": "1379"}
             ).text
-        routes.set_access_store(None)
 
         # setup.html — a fresh store, no owner yet (setup mode).
         web_auth.backoff.reset()
@@ -1234,8 +1184,6 @@ class TestAuthPagesShellHardening:
                 },
             )
             pages["setup_codes"] = c.get("/setup/codes").text
-        routes.set_access_store(None)
-        routes.set_display_controller(None)
 
         # setup_review_user.html — complete an ownership transfer with one
         # retained user still waiting to be reviewed (TestOwnershipTransfer
@@ -1275,13 +1223,10 @@ class TestAuthPagesShellHardening:
                 },
             )
             pages["setup_review"] = c2.get("/setup/review").text
-        routes.set_access_store(None)
         web_auth.backoff.reset()
 
         yield pages
 
-        routes.set_access_store(None)
-        routes.set_display_controller(None)
         web_auth.backoff.reset()
         web_auth.backoff.set_trusted_proxies([])
 
@@ -1338,7 +1283,6 @@ class TestLogin:
         with TestClient(app, follow_redirects=False) as c:
             c.headers["HX-Request"] = "true"
             yield c, store, owner
-        routes.set_access_store(None)
         web_auth.backoff.reset()
         web_auth.backoff.set_trusted_proxies([])
 
@@ -1466,7 +1410,6 @@ class TestLogin:
             resp = c.get("/login")
         assert resp.status_code == 303
         assert resp.headers["location"] == "/setup"
-        routes.set_access_store(None)
 
 
 class TestEnrollment:
@@ -1484,7 +1427,6 @@ class TestEnrollment:
         with TestClient(app, follow_redirects=False) as c:
             c.headers["HX-Request"] = "true"
             yield c, store, owner, cfg
-        routes.set_access_store(None)
         web_auth.backoff.set_trusted_proxies([])
 
     def test_enrollment_issues_a_device_cookie_immediately(self, public):
@@ -1737,16 +1679,9 @@ class TestSetupWizard:
         routes.set_config_object(cfg)
         routes.set_access_store(store)
         routes.set_display_controller(display)
-        # context._pending_codes is module-level state shared by every test in
-        # this process (Task 15) — reset it on both sides so a test that
-        # generates codes can never leak them into the next one.
-        context._pending_codes = []
 
         yield cfg, store, display
 
-        context._pending_codes = []
-        routes.set_access_store(None)
-        routes.set_display_controller(None)
         web_auth.backoff.reset()
         web_auth.backoff.set_trusted_proxies([])
 
@@ -3068,7 +3003,6 @@ class TestCorruptAccessFile:
         c = TestClient(app, follow_redirects=False)
         yield c
 
-        routes.set_access_store(None)
         c.close()
 
     @pytest.mark.parametrize("path", ["/", "/setup", "/login", "/status"])

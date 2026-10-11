@@ -36,14 +36,12 @@ from web_interface.routes import reports as reports_routes
 
 @pytest.fixture
 def recorder(wired, tmp_path):
-    """A real EventRecorder wired into routes, torn down after the test --
-    same shape as test_routes_reports.py's own `wired_client` fixture."""
+    """A real EventRecorder wired into routes; the autouse route-context
+    fixture restores the global after the test, same shape as
+    test_routes_reports.py's own `wired_client` fixture."""
     rec = EventRecorder(db_path=str(tmp_path / "events.db"))
     ctx.set_event_recorder(rec)
-    try:
-        yield rec
-    finally:
-        ctx.set_event_recorder(None)
+    yield rec
 
 
 def _add_product(cfg, sku="SKU-COLA", name="Cola", price=1.50, slot=1):

@@ -21,6 +21,7 @@ from tests.dispenser_fixtures import GOOD as DISPENSER_GOOD
 from tests.fakes import FakeTaskRunner
 from tests.dispenser_fixtures import ICE as DISPENSER_ICE
 from tests.dispenser_fixtures import WATER as DISPENSER_WATER
+from tests import route_context
 from tests.skip_policy import MISSING_TERMINALREPORTER_MARKER, build_skip_report
 from web_interface import auth as web_auth
 from web_interface import routes
@@ -33,6 +34,16 @@ _ISSUED_CLIENTS: list[TestClient] = []
 def isolated_config_path(tmp_path, monkeypatch):
     """Redirect config saves to a temp dir so no test can clobber config.json."""
     monkeypatch.setattr(config_store, "CONFIG_PATH", tmp_path / "config.json")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_route_context():
+    """Restore every web_interface.context global after each test (Task 4,
+    tests-b-route-context), whatever a test or the fixtures it used wired
+    into it. See tests/route_context.py."""
+    snap = route_context.snapshot()
+    yield
+    route_context.restore(snap)
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -156,10 +167,7 @@ def wired(tmp_path):
 
     yield cfg, vmc, inv, store
 
-    routes.set_access_store(None)
     machine.cancel_pending_tasks()
-    web_auth.backoff.reset()
-    web_auth.backoff.set_trusted_proxies([])
 
 
 @pytest.fixture
