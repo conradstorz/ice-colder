@@ -2548,7 +2548,7 @@ class TestMaintenanceLease:
         assert enable_cmds[-1].accept is True
 
     async def test_cancelled_run_still_decrements_runs_in_flight(self):
-        # Reaches maintenance_test_run's `finally` via a real
+        # Reaches machine.lease.test_run()'s `finally` via a real
         # asyncio.CancelledError propagating out of the `with` body --
         # Python's context-manager protocol runs `finally` on any exception,
         # CancelledError (a BaseException) included, but nothing proved that
@@ -2562,7 +2562,7 @@ class TestMaintenanceLease:
         entered = asyncio.Event()
 
         async def run():
-            with vmc.maintenance_test_run():
+            with machine.lease.test_run():
                 assert vmc.maintenance_hold.runs_in_flight == 1
                 entered.set()
                 await asyncio.sleep(3600)  # never elapses; cancelled below
@@ -2579,7 +2579,7 @@ class TestMaintenanceLease:
 
     async def test_concurrent_runs_release_once_on_last_settle(self):
         # Two genuinely overlapping runs (two tasks both suspended inside
-        # maintenance_test_run, woken via a shared Event) prove the
+        # machine.lease.test_run(), woken via a shared Event) prove the
         # 0->1->2->1->0 accounting and that release-on-last-settle fires
         # exactly once -- not when the first of two in-flight runs settles.
         # The mutation below (dropping the runs_in_flight == 0 guard in
@@ -2604,7 +2604,7 @@ class TestMaintenanceLease:
         gate2 = asyncio.Event()
 
         async def run(gate):
-            with vmc.maintenance_test_run():
+            with machine.lease.test_run():
                 await gate.wait()
 
         t1 = asyncio.get_running_loop().create_task(run(gate1))
@@ -2702,7 +2702,7 @@ class TestMaintenanceLease:
         vmc.begin_maintenance("user-1", "sess-a")
 
         with pytest.raises(ValueError):
-            with vmc.maintenance_test_run():
+            with machine.lease.test_run():
                 assert vmc.maintenance_hold.runs_in_flight == 1
                 raise ValueError("simulated run failure")
 
@@ -2713,7 +2713,7 @@ def _test_run_machine(
     products=None, tmp_path: Path | None = None, *, tasks: TaskRunner | None = None
 ):
     """A wired-up Machine (and its VMC) plus a FakeEventRecorder and
-    RecordingClient, for VMC.run_test_sale tests. Mirrors make_vmc2()'s
+    RecordingClient, for TestSaleRunner.run_test_sale tests. Mirrors make_vmc2()'s
     default two-product catalog (ICE-1 $2.50 slot 0, WATER-1 $1.00 slot 1)
     unless overridden. Also carries a loaded `DispenserProfiles` and a
     `FakeDispatcher` (plan: dispenser profiles, Task 3) -- every
@@ -2739,14 +2739,16 @@ def _test_run_machine(
 def _test_run_vmc(
     products=None, tmp_path: Path | None = None, *, tasks: TaskRunner | None = None
 ):
-    """See `_test_run_machine` -- returns just the VMC, for the majority of
-    callers that never touch a moved collaborator."""
+    """See `_test_run_machine` -- returns `(machine, vmc, rec, client)`.
+    `machine` is needed for `machine.test_sales.run_test_sale` (Task 10);
+    most callers destructure only `vmc`/`rec`/`client` and never otherwise
+    touch a moved collaborator."""
     machine, rec, client = _test_run_machine(products, tmp_path, tasks=tasks)
-    return machine.vmc, rec, client
+    return machine, machine.vmc, rec, client
 
 
 class TestRunTestSale:
-    """VMC.run_test_sale and the per-sale is_test flag (system-tests design
+    """TestSaleRunner.run_test_sale and the per-sale is_test flag (system-tests design
     §2.3) -- the task most likely to corrupt part 3's sales ledger.
 
     Every test drives run_test_sale as a background task and calls
@@ -2760,14 +2762,14 @@ class TestRunTestSale:
     """
 
     async def test_run_test_sale_without_lease_is_refused(self):
-        """Reaches run_test_sale -> maintenance_test_run() ->
-        _maintenance_run_started's `if hold is None: raise RuntimeError`
+        """Reaches run_test_sale -> machine.lease.test_run() ->
+        MaintenanceLease.run_started's `if hold is None: raise RuntimeError`
         (Task 10) -- run_test_sale's own refusal path, before it ever
         touches escrow or the catalog."""
-        vmc, rec, client = _test_run_vmc()
+        machine, vmc, rec, client = _test_run_vmc()
 
         with pytest.raises(RuntimeError):
-            await vmc.run_test_sale("ICE-1")
+            await machine.test_sales.run_test_sale("ICE-1")
 
         assert (vmc.sale is not None and vmc.sale.is_test) is False
         assert rec.sales == []
@@ -2776,7 +2778,7 @@ class TestRunTestSale:
     async def test_deposit_funds_test_method_accepted_other_methods_refunded(self):
         """Reaches deposit_funds's lease branch (Task 10 + this task's
         `and payment_method != "test"` exception)."""
-        vmc, rec, client = _test_run_vmc()
+        machine, vmc, rec, client = _test_run_vmc()
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
@@ -2801,11 +2803,13 @@ class TestRunTestSale:
         """Reaches on_dispenser_event's DispenserOutcome.complete
         branch, its `if self.sale.is_test:` arm -- the real completion
         handler, not a stub."""
-        vmc, rec, client = _test_run_vmc()
+        machine, vmc, rec, client = _test_run_vmc()
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
-        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        task = asyncio.get_running_loop().create_task(
+            machine.test_sales.run_test_sale("ICE-1")
+        )
         await asyncio.sleep(0)
         assert vmc.state == "interacting_with_user"
         assert (vmc.sale is not None and vmc.sale.is_test) is True
@@ -2851,7 +2855,9 @@ class TestRunTestSale:
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
-        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        task = asyncio.get_running_loop().create_task(
+            machine.test_sales.run_test_sale("ICE-1")
+        )
         await asyncio.sleep(0)
         vmc.process_payment()
         assert vmc.state == "dispensing"
@@ -2877,10 +2883,12 @@ class TestRunTestSale:
         """Start a test sale, drive it into dispensing, then cancel
         run_test_sale's own task while it awaits the hardware -- the
         hardware report is still to come."""
-        vmc, rec, client = _test_run_vmc()
+        machine, vmc, rec, client = _test_run_vmc()
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
-        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        task = asyncio.get_running_loop().create_task(
+            machine.test_sales.run_test_sale("ICE-1")
+        )
         await asyncio.sleep(0)
         vmc.process_payment()
         assert vmc.state == "dispensing"
@@ -2929,7 +2937,7 @@ class TestRunTestSale:
         empties _sellable_products(), reaching _fail_vend's "no sellable
         products remain" branch -- the one that would otherwise call
         request_refund and publish a real cmd/payment/refund."""
-        vmc, rec, client = _test_run_vmc(
+        machine, vmc, rec, client = _test_run_vmc(
             products=[
                 Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0, kind="ice")
             ]
@@ -2937,7 +2945,9 @@ class TestRunTestSale:
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
-        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        task = asyncio.get_running_loop().create_task(
+            machine.test_sales.run_test_sale("ICE-1")
+        )
         await asyncio.sleep(0)
         vmc.process_payment()
         assert vmc.state == "dispensing"
@@ -2987,7 +2997,9 @@ class TestRunTestSale:
 
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
-        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        task = asyncio.get_running_loop().create_task(
+            machine.test_sales.run_test_sale("ICE-1")
+        )
         await asyncio.sleep(0)
         vmc.process_payment()
         assert vmc.state == "dispensing"
@@ -3020,7 +3032,9 @@ class TestRunTestSale:
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
-        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        task = asyncio.get_running_loop().create_task(
+            machine.test_sales.run_test_sale("ICE-1")
+        )
         await asyncio.sleep(0)
         vmc.process_payment()
         assert vmc.state == "dispensing"
@@ -3045,15 +3059,18 @@ class TestRunTestSale:
         # own vend_failed row for a test sale either.
         assert not any(t == "vend_failed" for t, *_ in rec.events)
 
-    async def test_dispatch_timeout_resolves_test_sale_waiter_with_pay102(self):
+    async def test_dispatch_timeout_resolves_test_sale_settlement_with_pay102(self):
         """Reaches on_dispense_failed via DispenseCycle._run's
         CommandTimeout path (controller/dispense_cycle.py), never the
         hardware-report path the tests above drive. Before
-        on_dispense_failed resolved the test-sale waiter on every failure
-        path, a dispatcher-level failure (e.g. a dead broker/subsystem)
-        left run_test_sale's waiter un-resolved forever instead of
-        returning a TestSaleResult -- this would hang (and time out the
-        surrounding asyncio.wait_for) if that regressed."""
+        on_dispense_failed notified the sale-settled observer on every
+        failure path, a dispatcher-level failure (e.g. a dead
+        broker/subsystem) left `TestSaleRunner.run_test_sale`'s own
+        one-shot `Future` -- resolved by the `subscribe_sale_settled`
+        observer it subscribes for the run's duration -- un-resolved
+        forever instead of returning a `TestSaleResult`; this would hang
+        (and time out the surrounding asyncio.wait_for) if that
+        regressed."""
         machine, rec, client = _test_run_machine(tasks=FakeTaskRunner())
         vmc = machine.vmc
         dispatcher = machine.command_dispatcher
@@ -3061,7 +3078,9 @@ class TestRunTestSale:
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
-        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        task = asyncio.get_running_loop().create_task(
+            machine.test_sales.run_test_sale("ICE-1")
+        )
         await asyncio.sleep(0)
         vmc.process_payment()
         assert vmc.state == "dispensing"
@@ -3084,11 +3103,13 @@ class TestRunTestSale:
         same VMC instance: a production sale records its row with its FIFO
         method shares, catching a regression here rather than in part 3's
         own tests."""
-        vmc, rec, client = _test_run_vmc()
+        machine, vmc, rec, client = _test_run_vmc()
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
-        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        task = asyncio.get_running_loop().create_task(
+            machine.test_sales.run_test_sale("ICE-1")
+        )
         await asyncio.sleep(0)
         vmc.process_payment()
         await vmc.on_dispenser_event(
@@ -3134,7 +3155,9 @@ class TestRunTestSale:
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
-        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        task = asyncio.get_running_loop().create_task(
+            machine.test_sales.run_test_sale("ICE-1")
+        )
         await asyncio.sleep(0)
         vmc.process_payment()
         assert vmc.state == "dispensing"
@@ -3200,7 +3223,9 @@ class TestRunTestSale:
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
-        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        task = asyncio.get_running_loop().create_task(
+            machine.test_sales.run_test_sale("ICE-1")
+        )
         await asyncio.sleep(0)
         vmc.process_payment()  # persists the 'dispensing' snapshot
         assert vmc.state == "dispensing"
@@ -3354,12 +3379,14 @@ class TestRunTestSaleRunContext:
         not_sale_or_dispense (unrelated to run_id) kept passing throughout
         (mutation proof for THAT test lives on it already, above).
         """
-        vmc, rec, client = _test_run_vmc()
+        machine, vmc, rec, client = _test_run_vmc()
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
         task = asyncio.get_running_loop().create_task(
-            vmc.run_test_sale("ICE-1", user_id="user-1", user_name="Ada Owner")
+            machine.test_sales.run_test_sale(
+                "ICE-1", user_id="user-1", user_name="Ada Owner"
+            )
         )
         await asyncio.sleep(0)
         vmc.process_payment()
@@ -3391,7 +3418,9 @@ class TestRunTestSaleRunContext:
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
-        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        task = asyncio.get_running_loop().create_task(
+            machine.test_sales.run_test_sale("ICE-1")
+        )
         await asyncio.sleep(0)
         vmc.process_payment()
         machine.tasks.fire("dispense_timeout")
@@ -3408,11 +3437,13 @@ class TestRunTestSaleRunContext:
         TestRunTestSale class above, which never passes user_id/user_name)
         must keep working unchanged -- reaches run_test_sale's keyword-only
         defaults directly."""
-        vmc, rec, client = _test_run_vmc()
+        machine, vmc, rec, client = _test_run_vmc()
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
-        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        task = asyncio.get_running_loop().create_task(
+            machine.test_sales.run_test_sale("ICE-1")
+        )
         await asyncio.sleep(0)
         vmc.process_payment()
         await vmc.on_dispenser_event(
@@ -3462,7 +3493,7 @@ class TestRunTestSaleRunContext:
         assert granted is True
 
         task = asyncio.get_running_loop().create_task(
-            vmc.run_test_sale("ICE-1", user_id="user-1", user_name="Ada")
+            machine.test_sales.run_test_sale("ICE-1", user_id="user-1", user_name="Ada")
         )
         await asyncio.sleep(0)
         vmc.process_payment()
@@ -3544,7 +3575,7 @@ def _test_run_vmc_with_availability(products=None):
     avail.set_subsystem_alive("ice_maker", True)
     avail.set_payment_device("coin_acceptor", "ready")
     avail.set_hardware_io("bin_half_full", True)
-    return vmc, rec, client, avail
+    return machine, vmc, rec, client, avail
 
 
 class TestTestSaleAvailabilityExemption:
@@ -3559,7 +3590,7 @@ class TestTestSaleAvailabilityExemption:
     async def test_run_test_sale_succeeds_with_real_availability_during_lease(self):
         """THE headline defect. Reaches: VMC.begin_maintenance -> SVC-102
         raised -> the real Availability.set_active_faults -> run_test_sale
-        -> maintenance_test_run -> select_product -> Availability.
+        -> machine.lease.test_run() -> select_product -> Availability.
         test_sale_sellable (the fix) -> the real FSM transition, the real
         cmd/dispense publish, and on_dispenser_event's completion
         handler. Pre-fix, `select_product` called the unexempted
@@ -3569,13 +3600,15 @@ class TestTestSaleAvailabilityExemption:
         every-other-fault and customer-sale tests below, in
         .superpowers/sdd/whole-branch-fix-2-report.md.
         """
-        vmc, rec, client, avail = _test_run_vmc_with_availability()
+        machine, vmc, rec, client, avail = _test_run_vmc_with_availability()
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
         await asyncio.sleep(0)
         assert avail.payment_enabled is False
 
-        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        task = asyncio.get_running_loop().create_task(
+            machine.test_sales.run_test_sale("ICE-1")
+        )
         await asyncio.sleep(0)
         # The assertion that raised pre-fix: selection must have succeeded
         # against the real, unmodified Availability.
@@ -3602,7 +3635,7 @@ class TestTestSaleAvailabilityExemption:
         `ignore_faults - active_blocking_codes` is still non-empty, so the
         row still fails and select_product's post-condition check raises.
         """
-        vmc, rec, client, avail = _test_run_vmc_with_availability()
+        machine, vmc, rec, client, avail = _test_run_vmc_with_availability()
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
         vmc.raise_fault(FaultCode.WTR_104, outcome="leak")
@@ -3611,7 +3644,7 @@ class TestTestSaleAvailabilityExemption:
         assert set(avail.payment_blocking_reasons()) == {"no_critical_fault"}
 
         with pytest.raises(RuntimeError, match="could not select"):
-            await vmc.run_test_sale("ICE-1")
+            await machine.test_sales.run_test_sale("ICE-1")
 
         assert vmc.state == "idle"
         assert vmc.selected_product is None
@@ -3625,7 +3658,7 @@ class TestTestSaleAvailabilityExemption:
         exemption is about the sale gate only; Availability.
         test_sale_sellable never touches payment_enabled/
         payment_blocking_reasons."""
-        vmc, rec, client, avail = _test_run_vmc_with_availability()
+        machine, vmc, rec, client, avail = _test_run_vmc_with_availability()
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
         await asyncio.sleep(0)
@@ -3637,7 +3670,9 @@ class TestTestSaleAvailabilityExemption:
         ]
         assert len(disables) >= 1
 
-        task = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        task = asyncio.get_running_loop().create_task(
+            machine.test_sales.run_test_sale("ICE-1")
+        )
         await asyncio.sleep(0)
         assert avail.payment_enabled is False  # still inhibited mid-run
 
@@ -3662,7 +3697,7 @@ class TestTestSaleAvailabilityExemption:
         it was before this fix. Reaches `VMC.select_product`'s
         `else: self._availability.product_sellable(candidate)` branch.
         """
-        vmc, rec, client, avail = _test_run_vmc_with_availability()
+        machine, vmc, rec, client, avail = _test_run_vmc_with_availability()
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
         await asyncio.sleep(0)
@@ -3680,9 +3715,11 @@ class TestConcurrentTestSaleGuard:
     `web_interface/routes/tests_level.py`'s `_acquire_lease_or_refusal`,
     which deliberately proceeds WITHOUT reacquiring the lease for a
     session that already holds it ("a second command run in the same
-    maintenance visit") -- used to silently overwrite the single instance
-    attributes `self._test_sale_waiter` and `self._test_sale_path`
-    (`controller/vmc.py`). That left the FIRST call's `await waiter`
+    maintenance visit") -- used to silently overwrite the single-instance
+    waiter/path attributes `run_test_sale` kept on the VMC at the time
+    (`controller/vmc.py`; Task 9 later made them local to each call, kept
+    alive only by the `_test_sale_in_progress` guard below). That left the
+    FIRST call's `await waiter`
     suspended forever on a Future nothing would ever resolve again, while
     its `with self.maintenance_test_run():` was still on the stack --
     `runs_in_flight` never decremented, pinning the maintenance lease out
@@ -3702,9 +3739,9 @@ class TestConcurrentTestSaleGuard:
 
     async def test_second_overlapping_call_is_refused_first_completes_normally(self):
         """THE decisive test for the Critical defect. Reaches:
-        `VMC.run_test_sale`'s `_test_sale_in_progress` guard (the new
-        refusal, for call #2) and, end to end for call #1, the ordinary
-        success path -- `maintenance_test_run`, `select_product`, the real
+        `TestSaleRunner.run_test_sale`'s `test_sale_in_progress` guard (the
+        new refusal, for call #2) and, end to end for call #1, the ordinary
+        success path -- `machine.lease.test_run()`, `select_product`, the real
         `cmd/dispense`-driven `on_dispenser_event` completion handler,
         `end_maintenance`, `_release_maintenance_hold`, `clear_fault`, and
         `Availability._recompute` (a real `Availability`, not a stub).
@@ -3721,22 +3758,24 @@ class TestConcurrentTestSaleGuard:
         waiter` and hangs -- which is exactly what happened pre-fix, once
         call #2's `select_product` succeeded (state was still
         `interacting_with_user`, not yet `dispensing`) and silently
-        overwrote `self._test_sale_waiter`/`self._test_sale_path` out from
-        under call #1 -- the failure surfaces as a bounded
+        overwrote the single waiter/path attributes out from under call
+        #1 -- the failure surfaces as a bounded
         `TimeoutError`/`asyncio.TimeoutError` after 5s, not a stuck test
         process. `pytest.raises(RuntimeError, match="already in
         progress")` additionally failed to match on that pre-fix
         `TimeoutError` at all (it isn't even a `RuntimeError`), so the
         pre-fix run failed loudly on two independent counts.
         """
-        vmc, rec, client, avail = _test_run_vmc_with_availability()
+        machine, vmc, rec, client, avail = _test_run_vmc_with_availability()
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
         await asyncio.sleep(0)
         assert avail.payment_enabled is False
         assert "SVC-102" in [f["code"] for f in vmc.active_faults()]
 
-        task1 = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        task1 = asyncio.get_running_loop().create_task(
+            machine.test_sales.run_test_sale("ICE-1")
+        )
         await asyncio.sleep(0)
         assert vmc.state == "interacting_with_user"
         assert vmc.selected_product is not None
@@ -3748,7 +3787,9 @@ class TestConcurrentTestSaleGuard:
         assert vmc.maintenance_hold.runs_in_flight == 1
 
         with pytest.raises(RuntimeError, match="already in progress"):
-            await asyncio.wait_for(vmc.run_test_sale("WATER-1"), timeout=5)
+            await asyncio.wait_for(
+                machine.test_sales.run_test_sale("WATER-1"), timeout=5
+            )
 
         # The refusal must not have perturbed call #1's in-flight state:
         # still ICE-1 selected, still suspended, still exactly one run
@@ -3786,18 +3827,22 @@ class TestConcurrentTestSaleGuard:
         outer `finally` via a real `asyncio.CancelledError` (a
         `BaseException`) propagating out of `await waiter`, not a mock.
         """
-        vmc, rec, client, avail = _test_run_vmc_with_availability()
+        machine, vmc, rec, client, avail = _test_run_vmc_with_availability()
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
         await asyncio.sleep(0)
 
-        task1 = asyncio.get_running_loop().create_task(vmc.run_test_sale("ICE-1"))
+        task1 = asyncio.get_running_loop().create_task(
+            machine.test_sales.run_test_sale("ICE-1")
+        )
         await asyncio.sleep(0)
         assert task1.done() is False
         assert vmc.maintenance_hold.runs_in_flight == 1
 
         with pytest.raises(RuntimeError, match="already in progress"):
-            await asyncio.wait_for(vmc.run_test_sale("WATER-1"), timeout=5)
+            await asyncio.wait_for(
+                machine.test_sales.run_test_sale("WATER-1"), timeout=5
+            )
         assert task1.done() is False
         assert vmc.maintenance_hold.runs_in_flight == 1
 
@@ -3831,18 +3876,20 @@ class TestConcurrentTestSaleGuard:
         refused too, even though the first is fully finished and the
         calls do not overlap at all.
         """
-        vmc, rec, client, avail = _test_run_vmc_with_availability()
+        machine, vmc, rec, client, avail = _test_run_vmc_with_availability()
         granted, _ = vmc.begin_maintenance("user-1", "sess-1")
         assert granted is True
         vmc.raise_fault(FaultCode.ICE_401, sku="ICE-1")  # forces "could not select"
 
         with pytest.raises(RuntimeError, match="could not select"):
-            await vmc.run_test_sale("ICE-1")
+            await machine.test_sales.run_test_sale("ICE-1")
 
         assert vmc.test_sale_in_progress is False
         assert vmc.maintenance_hold.runs_in_flight == 0
 
-        task2 = asyncio.get_running_loop().create_task(vmc.run_test_sale("WATER-1"))
+        task2 = asyncio.get_running_loop().create_task(
+            machine.test_sales.run_test_sale("WATER-1")
+        )
         await asyncio.sleep(0)
         assert vmc.state == "interacting_with_user"
         vmc.process_payment()

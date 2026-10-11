@@ -14,8 +14,9 @@
   {# Each `test_run` event's metadata comes in one of two shapes (see
      web_interface/routes/tests_level.py's module docstring):
        - a subsystem command run: subsystem/command/params/run_id/verdict/note
-       - controller/vmc.py's run_test_sale: sku/outcome/fault_code/path,
-         no run_id, no subsystem/command/params at all.
+       - controller/test_sale.py's TestSaleRunner.run_test_sale:
+         sku/outcome/fault_code/path, no run_id, no subsystem/command/params
+         at all.
      Both shapes carry user_name and status (Copilot review, PR 22,
      id=4128088722 -- spec §3 requires who ran it, the status, and the
      duration); duration_seconds comes from the event's own `value`

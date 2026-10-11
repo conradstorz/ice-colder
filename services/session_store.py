@@ -65,7 +65,7 @@ class SessionSnapshot:
     pending_refund_request_id: Optional[str] = None
     credits: list[Credit] = field(default_factory=list)
     pending_sale_shares: Optional[dict[str, float]] = None
-    # True only for VMC.run_test_sale's simulated sale (system-tests design
+    # True only for TestSaleRunner.run_test_sale's simulated sale (system-tests design
     # §2.3/§6), set from the sale's own self._sale_is_test at the moment
     # VMC._snapshot() is built -- never derived from the maintenance lease,
     # which (per spec §6) is never persisted and so has nothing to consult

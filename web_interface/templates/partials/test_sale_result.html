@@ -1,12 +1,12 @@
 {# The simulated-sale result (POST /tests/sale). `result` is a
-   controller.vmc.TestSaleResult: sku, path (FSM states visited, in
+   controller.test_sale.TestSaleResult: sku, path (FSM states visited, in
    order), outcome, fault_code, run_id. `result.sku` is plain text content
    here, not a URL or CSS-id, so it needs no sku_url_segment-style
    escaping -- Jinja2's default autoescaping already makes any catalog
    string (a "/" included) safe as text content. `run_id` (a fresh
-   uuid4().hex minted by VMC.run_test_sale) is what makes this card's
-   Pass/Fail form -- otherwise identical to test_result_card.html's -- and
-   is why a simulated sale's test_run row is verdictable at all. #}
+   uuid4().hex minted by TestSaleRunner.run_test_sale) is what makes this
+   card's Pass/Fail form -- otherwise identical to test_result_card.html's
+   -- and is why a simulated sale's test_run row is verdictable at all. #}
 <div id="sale-result" class="space-y-2 bg-white rounded-xl border border-gray-200 shadow-sm p-4">
   <div class="text-sm text-gray-900">
     SKU: <span class="font-mono">{{ result.sku }}</span>

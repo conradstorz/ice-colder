@@ -3,7 +3,7 @@
 
 ``SaleContext`` is the single, frozen value object carrying everything about
 *the one sale the FSM is currently working on* -- the product a customer (or
-``VMC.run_test_sale``) selected, the per-method shares deducted from escrow
+``TestSaleRunner.run_test_sale``) selected, the per-method shares deducted from escrow
 to pay for it, whether it is a simulated test sale, which dispenser
 mechanism and dispatcher ``request_id`` are in flight for it, and when it
 started. ``VMC`` holds at most one of these at a time, on ``self._sale``,
@@ -23,7 +23,8 @@ hand across every FSM callback.
 Fields, and who sets them:
 
 - ``product``: the selected ``Product``. Set when the sale begins
-  (``VMC.select_product``, or seeded directly by ``VMC.run_test_sale`` before
+  (``VMC.select_product``, or seeded directly by
+  ``TestSaleRunner.run_test_sale`` (via ``VMC.begin_test_sale``) before
   it calls ``select_product`` so the test-sale exemption in
   ``select_product``'s own availability check sees ``is_test`` before the
   product is technically "selected").
@@ -33,7 +34,7 @@ Fields, and who sets them:
   between methods (CLAUDE.md's FIFO method attribution invariant). ``None``
   until payment is processed, and cleared once the sale is recorded or has
   failed.
-- ``is_test``: true only for ``VMC.run_test_sale``'s simulated sale. Lives on
+- ``is_test``: true only for ``TestSaleRunner.run_test_sale``'s simulated sale. Lives on
   the sale, never derived from the maintenance lease, so a lease release or
   idle-timeout mid-run cannot flip a test sale into a production one.
 - ``mechanism``: the dispenser mechanism ("bagged_ice"/"water_fill") for

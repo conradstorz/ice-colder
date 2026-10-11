@@ -532,9 +532,9 @@ class TestLog:
     def test_survives_a_row_missing_subsystem_command_params(
         self, client, wire_event_recorder
     ):
-        """The simulated-sale shape controller/vmc.py's run_test_sale
-        writes today: {sku, outcome, fault_code, path}, no run_id, no
-        subsystem/command/params at all.
+        """The simulated-sale shape controller/test_sale.py's
+        TestSaleRunner.run_test_sale writes today: {sku, outcome,
+        fault_code, path}, no run_id, no subsystem/command/params at all.
 
         Mutation proof: changed `_recent_test_runs` to build the row via
         direct subscription (`meta["subsystem"]`, `meta["command"]`,
@@ -1313,7 +1313,7 @@ class TestRunAll:
 
 class TestFailingRunStillDecrements:
     """A run whose dispatch raises (not merely times out) still decrements
-    runs_in_flight -- reaches maintenance_test_run()'s own `finally` via
+    runs_in_flight -- reaches machine.lease.test_run()'s own `finally` via
     _run_command, proven with a dispatcher that observes runs_in_flight AT
     THE MOMENT of the call (must be 1 -- incremented before dispatch) and
     the test checks it is back to 0 afterward -- a version that never
@@ -1321,7 +1321,7 @@ class TestFailingRunStillDecrements:
     increments but never decrements (a dropped `finally`) cannot fake the
     second.
 
-    Mutation proof: replaced `with vmc.maintenance_test_run():` in
+    Mutation proof: replaced `with machine.lease.test_run():` in
     _run_command with a bare `if True:` (dropping the context manager, so
     neither increment nor decrement ever runs). Result:
     test_failing_run_still_decrements failed --
@@ -1549,8 +1549,8 @@ class TestDispenseSendsProfile:
 class TestSimulatedSaleFlow:
     """GET /tests/sale renders a picker (never taking the lease, same rule
     as GET /tests and GET /tests/{subsystem} -- Task 13a's
-    TestLeaseNotTaken); POST /tests/sale runs VMC.run_test_sale for the
-    submitted SKU.
+    TestLeaseNotTaken); POST /tests/sale runs TestSaleRunner.run_test_sale
+    for the submitted SKU.
 
     A full real dispensed-to-completion run driven purely over HTTP is out
     of scope for this file: `wired`'s VMC is never `attach_to_loop()`d
@@ -1560,7 +1560,7 @@ class TestSimulatedSaleFlow:
     TestClient. test_sale_result_card_shows_path_and_verdict_form below
     instead proves the ROUTE's own rendering (the production code this
     file is actually responsible for) against a real TestSaleResult, via
-    monkeypatching VMC.run_test_sale itself -- the FSM behavior behind
+    monkeypatching TestSaleRunner.run_test_sale itself -- the FSM behavior behind
     that result is tests/test_vmc_flows.py's TestRunTestSale's job, not
     this file's.
     """
@@ -1577,7 +1577,7 @@ class TestSimulatedSaleFlow:
     def test_sku_with_slash_end_to_end(self, client, wired):
         """The SKU travels: <select><option value="..."> (GET) -> a POST
         form field -> FastAPI's Form(...) decoding -> the route's catalog
-        lookup -> VMC.run_test_sale's own _find_product_by_sku -- all real
+        lookup -> TestSaleRunner.run_test_sale's own find_product -- all real
         production code, "/" intact at every hop. Locking the product out
         first makes run_test_sale fail SYNCHRONOUSLY (before ever awaiting
         the dispense-completion Future, which nothing in this fixture
@@ -1614,10 +1614,10 @@ class TestSimulatedSaleFlow:
     ):
         """Reaches tests_sale_run's success-path rendering
         (partials/test_sale_result.html) against a REAL TestSaleResult,
-        with VMC.run_test_sale itself monkeypatched to return it instantly
-        -- isolating the route's own rendering from FSM/dispense timing
-        (see this class's docstring for why a real dispense isn't driven
-        here).
+        with TestSaleRunner.run_test_sale itself monkeypatched to return it
+        instantly -- isolating the route's own rendering from FSM/dispense
+        timing (see this class's docstring for why a real dispense isn't
+        driven here).
 
         Mutation proof: changed test_sale_result.html's verdict form
         `hx-post` from `/tests/runs/{{ result.run_id }}/verdict` to a
@@ -1626,10 +1626,10 @@ class TestSimulatedSaleFlow:
         resp.text). Restored the real `{{ result.run_id }}` -- passed
         again.
         """
-        cfg, vmc, _inv, _store = wired
+        cfg, _vmc, _inv, _store = wired
         add_product(cfg, "ICE-1", "Ice Bag", 2.50, slot=0)
 
-        from controller.vmc import TestSaleResult
+        from controller.test_sale import TestSaleResult
 
         async def fake_run_test_sale(sku, *, user_id=None, user_name=None):
             assert sku == "ICE-1"
@@ -1641,7 +1641,9 @@ class TestSimulatedSaleFlow:
                 run_id="fixed-run-id",
             )
 
-        monkeypatch.setattr(vmc, "run_test_sale", fake_run_test_sale)
+        monkeypatch.setattr(
+            context.machine_instance.test_sales, "run_test_sale", fake_run_test_sale
+        )
         resp = client.post("/tests/sale", data={"sku": "ICE-1"})
         assert resp.status_code == 200
         assert "dispensed" in resp.text
@@ -1659,7 +1661,7 @@ class TestSimulatedSaleFlow:
 # `runs_in_flight`, and let the lease release. The fix: the ack now means
 # "accepted", not "done" (`CommandAck.phase`), and `_run_command` calls
 # `dispatcher.send_and_await_completion`, which does not return until the
-# command's own completion signal arrives -- so `vmc.maintenance_test_run()`
+# command's own completion signal arrives -- so `machine.lease.test_run()`
 # (which brackets that call) keeps `runs_in_flight` elevated for the whole
 # real actuation, not just until it starts.
 #
@@ -1756,12 +1758,12 @@ class TestActuatorLeaseHeldForRealLifetime:
             assert granted is True, reason
 
             task = asyncio.ensure_future(
-                _run_command(vmc, "vending", "dispense", params, principal)
+                _run_command("vending", "dispense", params, principal)
             )
 
             # The lease is taken, and the run counted in-flight, as soon as
-            # _run_command enters maintenance_test_run() -- before any ack
-            # has even arrived.
+            # _run_command enters machine.lease.test_run() -- before any
+            # ack has even arrived.
             await _wait_until(lambda: len(mqtt.published) == 1)
             request_id = mqtt.published[0][1].request_id
             assert vmc.maintenance_hold is not None
@@ -1885,9 +1887,7 @@ class TestActuatorLeaseHeldForRealLifetime:
             )
             assert granted is True, reason
 
-            task = asyncio.ensure_future(
-                _run_command(vmc, "vending", "ping", {}, principal)
-            )
+            task = asyncio.ensure_future(_run_command("vending", "ping", {}, principal))
             await _wait_until(lambda: len(mqtt.published) == 1)
             request_id = mqtt.published[0][1].request_id
 
