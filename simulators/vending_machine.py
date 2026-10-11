@@ -280,6 +280,9 @@ class VendingMachineSimulator(ESP32Simulator):
         # both seams coexist because this is a thin, real wrapper, not an
         # internal fake clock). Defaults to `asyncio.sleep`; a constructor
         # kwarg lets a caller supply its own from the start.
+        # Bound here, at construction time: monkeypatching `asyncio.sleep`
+        # afterward no longer affects `execute_profile`'s waits (it still
+        # affects `_handle_water_valve`'s own bare `asyncio.sleep` call).
         self.sleep = sleep or asyncio.sleep
         self.register_command("dispense", self._handle_dispense)
         self.register_command("water_valve", self._handle_water_valve)
