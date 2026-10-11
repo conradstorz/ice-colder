@@ -1413,7 +1413,7 @@ class TestParamValidation:
         cfg, vmc, _inv, _store = wired
         add_product(cfg, "ICE-1", "Ice", 2.5, slot=3, kind="ice")
         profiles = profiles_for(cfg.products, tmp_path)
-        vmc.set_dispenser_profiles(profiles)
+        context.machine_instance.set_dispenser_profiles(profiles)
         routes.set_dispenser_profiles(profiles)
         try:
             wire_subsystem("vending", ["dispense"])
@@ -1454,7 +1454,7 @@ class TestParamValidation:
 
 class TestDispenseSendsProfile:
     """Task 4: `_parse_command_params`'s "dispense" branch now looks up
-    `context.vmc_instance.dispenser_profile_for(product_for_slot)` and
+    `context.machine_instance.gate.profile_for(product_for_slot)` and
     sends the whole validated profile alongside slot/mechanism -- matching
     what `contracts.common.COMMAND_PARAM_VALIDATORS["dispense"]` (a bare
     `DispenseCommand(slot, mechanism, profile)`) now requires on the wire.
@@ -1473,7 +1473,7 @@ class TestDispenseSendsProfile:
         cfg, vmc, _inv, _store = wired
         add_product(cfg, "ICE-1", "Ice", 2.5, slot=3, kind="ice")
         profiles = profiles_for(cfg.products, tmp_path)
-        vmc.set_dispenser_profiles(profiles)
+        context.machine_instance.set_dispenser_profiles(profiles)
         routes.set_dispenser_profiles(profiles)
         try:
             wire_subsystem("vending", ["dispense"])
@@ -1508,7 +1508,7 @@ class TestDispenseSendsProfile:
         add_product(cfg, "ICE-1", "Ice", 2.5, slot=3, kind="ice")
         add_product(cfg, "OTHER-1", "Other", 1.0, slot=4, kind="other")
         profiles = profiles_for(cfg.products, tmp_path)
-        vmc.set_dispenser_profiles(profiles)
+        context.machine_instance.set_dispenser_profiles(profiles)
         routes.set_dispenser_profiles(profiles)
         try:
             wire_subsystem("vending", ["dispense"])

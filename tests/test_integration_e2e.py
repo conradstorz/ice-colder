@@ -21,6 +21,7 @@ from pydantic import SecretStr
 
 from config.config_model import ConfigModel, Product
 from contracts.common import CommandAck
+from controller.machine import Machine
 from controller.vmc import VMC
 from tests.fakes import FakeTaskRunner
 from services.command_dispatcher import CommandDispatcher
@@ -151,7 +152,7 @@ async def _wait_for_state(vmc: VMC, target_state: str, timeout: float = 10.0):
 
 
 def _wire_dispenser_runtime(
-    vmc: VMC, mqtt_client: MQTTClient, config: ConfigModel, tmp_path
+    machine: Machine, mqtt_client: MQTTClient, config: ConfigModel, tmp_path
 ) -> CommandDispatcher:
     """Attach a loaded `DispenserProfiles` and a real `CommandDispatcher` --
     constructed exactly as `main.py` does (`CommandDispatcher(mqtt_client)`,
@@ -161,9 +162,9 @@ def _wire_dispenser_runtime(
     finding I2). Must be called before the caller creates the
     `mqtt_client.run()` task."""
     profiles = profiles_for(config.physical.products, tmp_path)
-    vmc.set_dispenser_profiles(profiles)
+    machine.set_dispenser_profiles(profiles)
     dispatcher = CommandDispatcher(mqtt_client)
-    vmc.set_command_dispatcher(dispatcher)
+    machine.set_command_dispatcher(dispatcher)
     return dispatcher
 
 
@@ -199,7 +200,8 @@ class TestFullTransactionLoop:
 
         # Set up VMC with real MQTT client
         mqtt_client = MQTTClient(config=config.mqtt, machine_id=config.machine_id)
-        vmc = VMC(config=config)
+        machine = Machine(config=config)
+        vmc = machine.vmc
         health = HealthMonitor()
 
         # We need a separate "simulator" MQTT client to inject messages
@@ -215,14 +217,14 @@ class TestFullTransactionLoop:
 
             # Start the VMC MQTT client in background
             loop = asyncio.get_running_loop()
-            vmc.attach_to_loop(loop)
-            vmc.set_mqtt_client(mqtt_client)
-            vmc.set_health_monitor(health)
+            machine.attach_to_loop(loop)
+            machine.set_mqtt_client(mqtt_client)
+            machine.set_health_monitor(health)
             # Review finding I2: without a loaded DispenserProfiles and a
             # real CommandDispatcher, on_dispense_product takes the
             # CFG-101 "no valid profile" branch and never publishes
             # anything on cmd/vending at all.
-            _wire_dispenser_runtime(vmc, mqtt_client, config, tmp_path)
+            _wire_dispenser_runtime(machine, mqtt_client, config, tmp_path)
 
             mqtt_task = asyncio.create_task(mqtt_client.run())
 
@@ -299,16 +301,17 @@ class TestFullTransactionLoop:
         prefix = f"vmc/{config.machine_id}"
 
         mqtt_client = MQTTClient(config=config.mqtt, machine_id=config.machine_id)
-        vmc = VMC(config=config)
+        machine = Machine(config=config)
+        vmc = machine.vmc
 
         async with aiomqtt.Client(
             hostname="localhost", port=1883, identifier="e2e-sim-overpay", **_MQTT_AUTH
         ) as sim_client:
             await sim_client.subscribe(f"{prefix}/cmd/vending")
             loop = asyncio.get_running_loop()
-            vmc.attach_to_loop(loop)
-            vmc.set_mqtt_client(mqtt_client)
-            _wire_dispenser_runtime(vmc, mqtt_client, config, tmp_path)
+            machine.attach_to_loop(loop)
+            machine.set_mqtt_client(mqtt_client)
+            _wire_dispenser_runtime(machine, mqtt_client, config, tmp_path)
 
             mqtt_task = asyncio.create_task(mqtt_client.run())
 
@@ -376,16 +379,17 @@ class TestFullTransactionLoop:
         prefix = f"vmc/{config.machine_id}"
 
         mqtt_client = MQTTClient(config=config.mqtt, machine_id=config.machine_id)
-        vmc = VMC(config=config)
+        machine = Machine(config=config)
+        vmc = machine.vmc
 
         async with aiomqtt.Client(
             hostname="localhost", port=1883, identifier="e2e-sim-underpay", **_MQTT_AUTH
         ) as sim_client:
             await sim_client.subscribe(f"{prefix}/cmd/vending")
             loop = asyncio.get_running_loop()
-            vmc.attach_to_loop(loop)
-            vmc.set_mqtt_client(mqtt_client)
-            _wire_dispenser_runtime(vmc, mqtt_client, config, tmp_path)
+            machine.attach_to_loop(loop)
+            machine.set_mqtt_client(mqtt_client)
+            _wire_dispenser_runtime(machine, mqtt_client, config, tmp_path)
 
             mqtt_task = asyncio.create_task(mqtt_client.run())
 
@@ -458,16 +462,17 @@ class TestFullTransactionLoop:
         prefix = f"vmc/{config.machine_id}"
 
         mqtt_client = MQTTClient(config=config.mqtt, machine_id=config.machine_id)
-        vmc = VMC(config=config)
+        machine = Machine(config=config)
+        vmc = machine.vmc
 
         async with aiomqtt.Client(
             hostname="localhost", port=1883, identifier="e2e-sim-error", **_MQTT_AUTH
         ) as sim_client:
             await sim_client.subscribe(f"{prefix}/cmd/vending")
             loop = asyncio.get_running_loop()
-            vmc.attach_to_loop(loop)
-            vmc.set_mqtt_client(mqtt_client)
-            _wire_dispenser_runtime(vmc, mqtt_client, config, tmp_path)
+            machine.attach_to_loop(loop)
+            machine.set_mqtt_client(mqtt_client)
+            _wire_dispenser_runtime(machine, mqtt_client, config, tmp_path)
 
             mqtt_task = asyncio.create_task(mqtt_client.run())
 
@@ -534,16 +539,16 @@ class TestSensorAndHeartbeatRouting:
         prefix = f"vmc/{config.machine_id}"
 
         mqtt_client = MQTTClient(config=config.mqtt, machine_id=config.machine_id)
-        vmc = VMC(config=config)
+        machine = Machine(config=config)
         health = HealthMonitor()
 
         async with aiomqtt.Client(
             hostname="localhost", port=1883, identifier="e2e-sim-sensor", **_MQTT_AUTH
         ) as sim_client:
             loop = asyncio.get_running_loop()
-            vmc.attach_to_loop(loop)
-            vmc.set_mqtt_client(mqtt_client)
-            vmc.set_health_monitor(health)
+            machine.attach_to_loop(loop)
+            machine.set_mqtt_client(mqtt_client)
+            machine.set_health_monitor(health)
 
             mqtt_task = asyncio.create_task(mqtt_client.run())
 
@@ -576,16 +581,16 @@ class TestSensorAndHeartbeatRouting:
         prefix = f"vmc/{config.machine_id}"
 
         mqtt_client = MQTTClient(config=config.mqtt, machine_id=config.machine_id)
-        vmc = VMC(config=config)
+        machine = Machine(config=config)
         health = HealthMonitor()
 
         async with aiomqtt.Client(
             hostname="localhost", port=1883, identifier="e2e-sim-hb", **_MQTT_AUTH
         ) as sim_client:
             loop = asyncio.get_running_loop()
-            vmc.attach_to_loop(loop)
-            vmc.set_mqtt_client(mqtt_client)
-            vmc.set_health_monitor(health)
+            machine.attach_to_loop(loop)
+            machine.set_mqtt_client(mqtt_client)
+            machine.set_health_monitor(health)
 
             mqtt_task = asyncio.create_task(mqtt_client.run())
 
@@ -625,7 +630,8 @@ class TestFailedVendLoop:
         # the customer walking away below is runner.fire("session_timeout")
         # rather than a 180 s wait or a call into a private handler.
         runner = FakeTaskRunner()
-        vmc = VMC(config=config, tasks=runner)
+        machine = Machine(config=config, tasks=runner)
+        vmc = machine.vmc
         health = HealthMonitor()
 
         async with aiomqtt.Client(
@@ -634,12 +640,12 @@ class TestFailedVendLoop:
             await sim_client.subscribe(f"{prefix}/cmd/vending")
             await sim_client.subscribe(f"{prefix}/cmd/payment/refund")
             loop = asyncio.get_running_loop()
-            vmc.attach_to_loop(loop)
-            vmc.set_mqtt_client(mqtt_client)
-            vmc.set_health_monitor(health)
+            machine.attach_to_loop(loop)
+            machine.set_mqtt_client(mqtt_client)
+            machine.set_health_monitor(health)
             # Review finding I2: without this, on_dispense_product takes
             # the CFG-101 branch and the lockout below is never ICE-401.
-            _wire_dispenser_runtime(vmc, mqtt_client, config, tmp_path)
+            _wire_dispenser_runtime(machine, mqtt_client, config, tmp_path)
             mqtt_task = asyncio.create_task(mqtt_client.run())
             try:
                 for _ in range(50):
@@ -707,7 +713,7 @@ class TestFailedVendLoop:
                 await _wait_for_state(vmc, "idle")
                 assert vmc.faults.lockouts == {}
             finally:
-                vmc.cancel_pending_tasks()
+                machine.cancel_pending_tasks()
                 mqtt_task.cancel()
                 try:
                     await mqtt_task
@@ -731,15 +737,15 @@ async def test_vending_heartbeat_loss_blocks_sale_not_payment_enable():
     if _MQTT_AUTH["password"]:
         cfg.mqtt.password = SecretStr(_MQTT_AUTH["password"])
     mqtt = MQTTClient(config=cfg.mqtt, machine_id=cfg.machine_id)
-    vmc = VMC(config=cfg)
-    vmc.attach_to_loop(asyncio.get_running_loop())
+    machine = Machine(config=cfg)
+    machine.attach_to_loop(asyncio.get_running_loop())
     monitor = HealthMonitor()
-    vmc.set_health_monitor(monitor)
+    machine.set_health_monitor(monitor)
     avail = Availability()
-    vmc.set_availability(avail)
-    vmc.set_mqtt_client(mqtt)
+    machine.set_availability(avail)
+    machine.set_mqtt_client(mqtt)
     mqtt.set_connection_callback(
-        lambda c: (monitor.update_mqtt_status(c), vmc.on_mqtt_connection(c))
+        lambda c: (monitor.update_mqtt_status(c), machine.on_mqtt_connection(c))
     )
     run = asyncio.create_task(mqtt.run())
 
@@ -787,6 +793,6 @@ async def test_vending_heartbeat_loss_blocks_sale_not_payment_enable():
             seen.append(json.loads(msg.payload)["accept"])
 
     run.cancel()
-    vmc.cancel_pending_tasks()
+    machine.cancel_pending_tasks()
     assert seen  # payment/enable was published at least once (initial true)
     assert all(seen), "payment/enable must never go false on fulfillment-only loss"

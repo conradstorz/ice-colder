@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from config.config_model import ConfigModel
-from controller.vmc import VMC
+from controller.machine import Machine
 from services.dispensers import validate_document
 from services.mqtt_messages import ButtonPress, DispenseCommand, PaymentEvent, VMCStatus
 from tests.dispenser_fixtures import GOOD, ICE, WATER
@@ -62,20 +62,21 @@ class TestOtherMessageBounds:
 
 class TestVMCDepositGuard:
     def test_deposit_ignores_negative(self):
-        vmc = VMC(config=ConfigModel())
+        vmc = Machine(config=ConfigModel()).vmc
         vmc.deposit_funds(-1.0)
         assert vmc.credit_escrow == 0.0
 
     def test_deposit_ignores_zero(self):
-        vmc = VMC(config=ConfigModel())
+        vmc = Machine(config=ConfigModel()).vmc
         vmc.deposit_funds(0.0)
         assert vmc.credit_escrow == 0.0
 
     async def test_mqtt_handler_drops_invalid_payment(self):
         import asyncio
 
-        vmc = VMC(config=ConfigModel())
-        vmc.attach_to_loop(asyncio.get_running_loop())
+        machine = Machine(config=ConfigModel())
+        vmc = machine.vmc
+        machine.attach_to_loop(asyncio.get_running_loop())
         with pytest.raises(ValidationError):
             await vmc.on_payment_credit(
                 "payment/credit", {"amount": -5.0, "method": "cash"}

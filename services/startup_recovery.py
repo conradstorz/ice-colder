@@ -3,12 +3,12 @@
 from loguru import logger
 
 from contracts.vending_machine import FaultCode
-from controller.vmc import VMC
+from controller.machine import Machine
 from services.event_recorder import EventRecorder
 from services import event_recorder as event_recorder_module
 
 
-def reconcile_sales_journal_faults(vmc: VMC, recorder: EventRecorder) -> None:
+def reconcile_sales_journal_faults(machine: Machine, recorder: EventRecorder) -> None:
     """At startup: replay any journalled sales and reconcile DATA-101/DATA-102.
 
     Never exits and never raises out to the caller — a reports/history
@@ -42,7 +42,7 @@ def reconcile_sales_journal_faults(vmc: VMC, recorder: EventRecorder) -> None:
                 recorder.corrupt_backup_path
                 or "corrupt event database quarantined at startup"
             )
-            vmc.raise_fault(FaultCode.DATA_102, outcome=detail)
+            machine.faults.raise_fault(FaultCode.DATA_102, outcome=detail)
             logger.error(f"Event database was reset after corruption: {detail}")
 
         try:
@@ -63,9 +63,9 @@ def reconcile_sales_journal_faults(vmc: VMC, recorder: EventRecorder) -> None:
             or not journal_path.read_text(encoding="utf-8").strip()
         )
         if drained:
-            vmc.clear_fault(FaultCode.DATA_101.value)
+            machine.faults.clear_fault(FaultCode.DATA_101.value)
         else:
-            vmc.raise_fault(
+            machine.faults.raise_fault(
                 FaultCode.DATA_101,
                 outcome="sales journal not fully drained after replay",
             )

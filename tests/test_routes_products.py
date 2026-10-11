@@ -10,6 +10,7 @@ executor resolution 1) — this file owns only the new /products/* routes.
 
 import pytest
 
+from controller.dispenser_gate import DispenserProfileGate
 from services.access import Role
 from web_interface import context
 
@@ -539,7 +540,7 @@ class TestCatalogChangedCalled:
     """Copilot review (PR #32) finding C1: every mutating products route
     must tell the VMC a catalog save happened, so CFG-101 reconciliation
     runs for a newly added product or a product whose kind changed --
-    not just on VMC.set_dispenser_profiles() and the vending capabilities
+    not just on Machine.set_dispenser_profiles() and the vending capabilities
     hook, which is all that ran reconciliation before this fix."""
 
     def test_create_calls_catalog_changed_once_on_success_not_on_rejection(
@@ -548,7 +549,7 @@ class TestCatalogChangedCalled:
         _cfg, vmc, _inv, _store = wired
         calls = []
         monkeypatch.setattr(
-            vmc.__class__, "catalog_changed", lambda self: calls.append(1)
+            DispenserProfileGate, "catalog_changed", lambda self: calls.append(1)
         )
 
         resp = client.post(
@@ -577,7 +578,7 @@ class TestCatalogChangedCalled:
         _add(client, "CC-CAT", name="Old", price="1.00")
         calls = []
         monkeypatch.setattr(
-            vmc.__class__, "catalog_changed", lambda self: calls.append(1)
+            DispenserProfileGate, "catalog_changed", lambda self: calls.append(1)
         )
 
         resp = client.post(
@@ -602,7 +603,7 @@ class TestCatalogChangedCalled:
         _add(client, "CC-PLC-B", name="B", price="1.00", slot="2")
         calls = []
         monkeypatch.setattr(
-            vmc.__class__, "catalog_changed", lambda self: calls.append(1)
+            DispenserProfileGate, "catalog_changed", lambda self: calls.append(1)
         )
 
         # slot 1 is already CC-PLC-A's -- rejected.
@@ -627,7 +628,7 @@ class TestCatalogChangedCalled:
         _add(client, "CC-DEL", name="Doomed", price="1.00")
         calls = []
         monkeypatch.setattr(
-            vmc.__class__, "catalog_changed", lambda self: calls.append(1)
+            DispenserProfileGate, "catalog_changed", lambda self: calls.append(1)
         )
 
         resp = client.post("/products/NOPE-DEL/delete")

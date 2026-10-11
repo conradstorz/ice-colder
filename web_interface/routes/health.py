@@ -181,7 +181,7 @@ def _faults_with_age() -> list[dict]:
         # pending sale; every other fault (product-scope, or another
         # machine-scope code) gets None, keeping its plain Clear button.
         f["pending_sale"] = (
-            context.vmc_instance.pending_sale_for_recovery()
+            context.machine_instance.pending_sale_for_recovery()
             if f["code"] == FaultCode.PAY_104.value
             else None
         )
@@ -429,13 +429,14 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         only way to resolve it.
         """
         vmc = context.vmc_instance
+        machine = context.machine_instance
         if not vmc:
             raise HTTPException(
                 status_code=404, detail=f"No active fault with key {key}"
             )
         if (
             key == FaultCode.PAY_104.value
-            and vmc.pending_sale_for_recovery() is not None
+            and machine.pending_sale_for_recovery() is not None
         ):
             raise HTTPException(
                 status_code=409,
@@ -549,7 +550,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         this is a realistic pairing, not a contrived one. When it does,
         `pending_sale_for_recovery()` keeps (truthfully) reporting the
         original sale, since the snapshot was never rewritten.
-        `vmc.reserve_pending_sale`/`pending_sale_already_recorded` still
+        `machine.reserve_pending_sale`/`pending_sale_already_recorded` still
         add an in-memory guard, checked under this same lock, so a retry
         *within this process* short-circuits before `record_sale` is
         called again at all -- but that guard is not what makes a retry
@@ -573,6 +574,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         every retry, with or without any fault visible on the Faults page.
         """
         vmc = context.vmc_instance
+        machine = context.machine_instance
         if vmc is None:
             raise HTTPException(status_code=404, detail="No VMC attached")
         marker_unwritable_detail = (
@@ -583,12 +585,12 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
             "once it is fixed"
         )
         async with _pay104_lock:
-            pending = vmc.pending_sale_for_recovery()
+            pending = machine.pending_sale_for_recovery()
             if pending is None:
                 # Already recorded/discarded/cleared by an earlier request
                 # -- nothing to do. Money-safe no-op, not an error.
                 return _render_fault_list_oob(request)
-            if vmc.pending_sale_already_recorded(pending):
+            if machine.pending_sale_already_recorded(pending):
                 # The durable marker failed to persist on an earlier
                 # request in this process (finding 3) -- the sale is
                 # already recorded, so this in-memory short-circuit saves
@@ -644,8 +646,8 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
                 # still inside the lock, so even if the durable marker
                 # below also fails, no later request in this process can
                 # find a pending sale here again.
-                vmc.reserve_pending_sale(pending)
-                if vmc.mark_pending_sale_recorded():
+                machine.reserve_pending_sale(pending)
+                if machine.mark_pending_sale_recorded():
                     raise HTTPException(
                         status_code=500,
                         detail=(

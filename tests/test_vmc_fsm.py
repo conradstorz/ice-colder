@@ -1,19 +1,9 @@
 """Tests for controller/vmc.py — VMC finite state machine transitions."""
 
-import pytest
 from unittest.mock import MagicMock
+
 from config.config_model import ConfigModel
-from controller.vmc import VMC
-
-
-@pytest.fixture
-def vmc():
-    """Create a VMC instance (no event loop attached)."""
-    cfg = ConfigModel()
-    v = VMC(config=cfg)
-    yield v
-    # Cancel any pending async tasks
-    v.cancel_pending_tasks()
+from controller.machine import Machine
 
 
 class TestInitialState:
@@ -117,24 +107,24 @@ class TestGetStatus:
 class TestCallbacks:
     def test_update_callback_called_on_deposit(self, vmc):
         cb = MagicMock()
-        vmc.set_update_callback(cb)
+        vmc.outputs.set_update_callback(cb)
         vmc.deposit_funds(1.00)
         cb.assert_called()
 
     def test_message_callback_called_on_deposit(self, vmc):
         cb = MagicMock()
-        vmc.set_message_callback(cb)
+        vmc.outputs.set_message_callback(cb)
         vmc.deposit_funds(1.00)
         cb.assert_called()
 
 
 class TestEventRecorder:
     def test_error_transition_calls_recorder(self):
-        from unittest.mock import MagicMock
-
         config = ConfigModel()
-        vmc = VMC(config=config)
+        machine = Machine(config=config)
+        vmc = machine.vmc
         recorder = MagicMock()
-        vmc.set_event_recorder(recorder)
+        machine.set_event_recorder(recorder)
         vmc.error_occurred()
         recorder.record.assert_called_once_with("error", value=1.0)
+        machine.cancel_pending_tasks()

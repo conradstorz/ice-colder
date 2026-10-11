@@ -36,7 +36,7 @@ import pytest
 import uvicorn
 
 from config.config_model import ConfigModel
-from controller.vmc import VMC
+from controller.machine import Machine
 from services.access import AccessStore, Role
 from services.inventory_manager import InventoryManager
 from web_interface import routes
@@ -84,14 +84,14 @@ def live_server(tmp_path):
     web_auth_backoff_reset()
 
     cfg = ConfigModel()
-    vmc = VMC(config=cfg)
+    machine = Machine(config=cfg)
     inv = InventoryManager([], path=tmp_path / "inventory.json")
     store = AccessStore(path=tmp_path / "access.json")
     owner = store.create_user("Ada", "ada@example.com", Role.owner, "1379")
     store.finalize_setup()
 
     routes.set_config_object(cfg)
-    routes.set_vmc_instance(vmc)
+    routes.set_machine_instance(machine)
     routes.set_inventory_manager(inv)
     routes.set_access_store(store)
 
@@ -121,7 +121,7 @@ def live_server(tmp_path):
         server.should_exit = True
         thread.join(timeout=10)
         routes.set_access_store(None)
-        vmc.cancel_pending_tasks()
+        machine.cancel_pending_tasks()
         web_auth_backoff_reset()
 
 

@@ -11,7 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from config.config_model import ConfigModel, MQTTConfig, Product
-from controller.vmc import VMC
+from controller.machine import Machine
 from services.dispensers import validate_document
 from services.mqtt_client import (
     MQTTClient,
@@ -347,37 +347,37 @@ class TestMQTTProtocolVersion:
 # ── VMC MQTT wiring tests ────────────────────────────────────
 
 
-def _make_vmc():
+def _make_machine():
     config = ConfigModel()
-    vmc = VMC(config=config)
-    return vmc
+    return Machine(config=config)
 
 
 class TestVMCMQTTWiring:
     def test_set_mqtt_client_registers_handlers(self):
-        vmc = _make_vmc()
+        machine = _make_machine()
         mock_client = MagicMock()
-        vmc.set_mqtt_client(mock_client)
+        machine.set_mqtt_client(mock_client)
         assert mock_client.register.call_count == 13
 
     def test_publish_status_without_client_does_nothing(self):
-        vmc = _make_vmc()
+        machine = _make_machine()
         # Should not raise when no client attached. start_interaction's
         # after_state_change callback calls StatusOutputs.state_changed
         # internally -- driving the FSM is the nearest public path to it.
-        vmc.start_interaction()
+        machine.vmc.start_interaction()
 
     def test_publish_status_without_loop_does_nothing(self):
-        vmc = _make_vmc()
-        vmc.set_mqtt_client(MagicMock())
+        machine = _make_machine()
+        machine.set_mqtt_client(MagicMock())
         # _loop is None (attach_to_loop was never called)
-        vmc.start_interaction()
+        machine.vmc.start_interaction()
 
     @pytest.mark.asyncio
     async def test_handle_mqtt_payment_deposits_funds(self):
-        vmc = _make_vmc()
+        machine = _make_machine()
+        vmc = machine.vmc
         loop = asyncio.get_running_loop()
-        vmc.attach_to_loop(loop)
+        machine.attach_to_loop(loop)
         vmc.start_interaction()
 
         await vmc.on_payment_credit(
@@ -390,9 +390,10 @@ class TestVMCMQTTWiring:
     async def test_handle_mqtt_button_selects_product(self):
         config = ConfigModel()
         config.physical.products = [Product(sku="T-1", name="Test", price=1.0)]
-        vmc = VMC(config=config)
+        machine = Machine(config=config)
+        vmc = machine.vmc
         loop = asyncio.get_running_loop()
-        vmc.attach_to_loop(loop)
+        machine.attach_to_loop(loop)
 
         # button 0 should select the first configured product
         await vmc.on_button_press("hardware/buttons", {"button": 0})
@@ -401,19 +402,19 @@ class TestVMCMQTTWiring:
 
 
 class TestMonitorContractHandlers:
-    def _vmc_with_monitor(self):
+    def _machine_with_monitor(self):
         from services.health_monitor import HealthMonitor
 
-        vmc = VMC(config=ConfigModel())
+        machine = Machine(config=ConfigModel())
         monitor = HealthMonitor()
-        vmc.set_health_monitor(monitor)
-        return vmc, monitor
+        machine.set_health_monitor(monitor)
+        return machine, monitor
 
     async def test_capabilities_stored(self):
         from contracts.ice_maker_monitor import CONTRACT_VERSION
 
-        vmc, _ = self._vmc_with_monitor()
-        await vmc.on_capabilities(
+        machine, _ = self._machine_with_monitor()
+        await machine.telemetry.handle_capabilities(
             "capabilities/ice_maker",
             {
                 "subsystem": "ice_maker",
@@ -425,41 +426,41 @@ class TestMonitorContractHandlers:
                 "commands": ["power_cycle"],
             },
         )
-        assert "ice_maker" in vmc.subsystem_capabilities
-        assert vmc.subsystem_capabilities["ice_maker"]["brand"] == "BrandX"
+        assert "ice_maker" in machine.subsystem_capabilities
+        assert machine.subsystem_capabilities["ice_maker"]["brand"] == "BrandX"
 
     async def test_malformed_capabilities_stored_raw_with_warning(self):
-        vmc, _ = self._vmc_with_monitor()
-        await vmc.on_capabilities(
+        machine, _ = self._machine_with_monitor()
+        await machine.telemetry.handle_capabilities(
             "capabilities/vending", {"subsystem": "vending", "whatever": 1}
         )
-        assert vmc.subsystem_capabilities["vending"] == {
+        assert machine.subsystem_capabilities["vending"] == {
             "subsystem": "vending",
             "whatever": 1,
         }
 
     async def test_telemetry_routed_to_health_monitor(self):
-        vmc, monitor = self._vmc_with_monitor()
-        await vmc.on_telemetry(
+        machine, monitor = self._machine_with_monitor()
+        await machine.telemetry.handle_telemetry(
             "telemetry/ice_maker/bin_level",
             {"channel_id": "bin_level", "value": 42.0},
         )
         assert monitor.get_summary()["channels"]["bin_level"]["value"] == 42.0
 
     async def test_lwt_heartbeat_marks_offline(self):
-        vmc, monitor = self._vmc_with_monitor()
-        await vmc.on_heartbeat(
+        machine, monitor = self._machine_with_monitor()
+        await machine.telemetry.handle_heartbeat(
             "heartbeat/ice_maker", {"subsystem": "ice_maker", "uptime_seconds": 10}
         )
         assert monitor.get_summary()["subsystems"]["ice_maker"]["alive"] is True
-        await vmc.on_heartbeat(
+        await machine.telemetry.handle_heartbeat(
             "heartbeat/ice_maker", {"subsystem": "ice_maker", "uptime_seconds": -1}
         )
         assert monitor.get_summary()["subsystems"]["ice_maker"]["alive"] is False
 
     async def test_command_ack_logged_without_error(self):
-        vmc, _ = self._vmc_with_monitor()
-        await vmc.on_command_ack(
+        machine, _ = self._machine_with_monitor()
+        await machine.telemetry.handle_command_ack(
             "cmd/ice_maker/ack",
             {
                 "request_id": "req-00000001",
@@ -471,10 +472,10 @@ class TestMonitorContractHandlers:
     async def test_capabilities_forwarded_to_health_monitor(self):
         from services.health_monitor import HealthMonitor
 
-        vmc = VMC(config=ConfigModel())
+        machine = Machine(config=ConfigModel())
         hm = HealthMonitor()
-        vmc.set_health_monitor(hm)
-        await vmc.on_capabilities(
+        machine.set_health_monitor(hm)
+        await machine.telemetry.handle_capabilities(
             "capabilities/vending",
             {
                 "subsystem": "vending",
@@ -492,10 +493,10 @@ class TestMonitorContractHandlers:
     async def test_malformed_capabilities_still_forwarded_raw(self):
         from services.health_monitor import HealthMonitor
 
-        vmc = VMC(config=ConfigModel())
+        machine = Machine(config=ConfigModel())
         hm = HealthMonitor()
-        vmc.set_health_monitor(hm)
-        await vmc.on_capabilities(
+        machine.set_health_monitor(hm)
+        await machine.telemetry.handle_capabilities(
             "capabilities/mdb", {"subsystem": "mdb", "whatever": 1}
         )
         assert hm.get_summary()["subsystems"]["mdb"]["firmware"] is None
@@ -555,11 +556,12 @@ class TestMQTTPresence:
 
 class TestStatusRetained:
     async def test_publish_status_is_retained(self):
-        vmc = _make_vmc()
-        vmc.attach_to_loop(asyncio.get_running_loop())
+        machine = _make_machine()
+        vmc = machine.vmc
+        machine.attach_to_loop(asyncio.get_running_loop())
         mqtt = MagicMock()
         mqtt.publish = AsyncMock()
-        vmc.set_mqtt_client(mqtt)
+        machine.set_mqtt_client(mqtt)
         # start_interaction's after_state_change callback calls
         # StatusOutputs.state_changed internally -- driving the FSM is the
         # nearest public path to it.
@@ -568,4 +570,4 @@ class TestStatusRetained:
         args, kwargs = mqtt.publish.await_args
         assert args[0] == "status"
         assert kwargs.get("retain") is True
-        vmc.cancel_pending_tasks()
+        machine.cancel_pending_tasks()

@@ -212,7 +212,7 @@ class EventRecorder:
     Usage:
         recorder = EventRecorder(db_path="data/events.db")
         recorder.register_handlers(mqtt_client)
-        vmc.set_event_recorder(recorder)  # for FSM error events
+        machine.set_event_recorder(recorder)  # for FSM error events
         summary = recorder.get_summary(24)
         avg = recorder.get_historical_average(24)
 

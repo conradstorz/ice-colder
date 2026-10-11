@@ -29,7 +29,7 @@ from web_interface.context import (
     set_event_recorder,
     set_health_monitor,
     set_inventory_manager,
-    set_vmc_instance,
+    set_machine_instance,
 )
 from web_interface.routes import auth as auth_routes
 from web_interface.routes import controls, health, home, inventory, products
@@ -47,7 +47,7 @@ __all__ = [
     "set_event_recorder",
     "set_health_monitor",
     "set_inventory_manager",
-    "set_vmc_instance",
+    "set_machine_instance",
 ]
 
 

@@ -291,8 +291,8 @@ def _parse_command_params(
             raise ValueError(f"slot {value} is not in the current catalog")
         product = next(p for p in context.config.products if p.slot == value)
         profile = (
-            context.vmc_instance.dispenser_profile_for(product)
-            if context.vmc_instance is not None
+            context.machine_instance.gate.profile_for(product)
+            if context.machine_instance is not None
             else None
         )
         if profile is None:
@@ -677,7 +677,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         refunds any credit on the machine, cancels a live customer sale,
         and grants the lease with `standby=True` -- no idle-timer release;
         the VMC's own session-liveness sweep (wired via
-        VMC.set_session_liveness in main.py) is what ends it if the tech
+        Machine.set_session_liveness in main.py) is what ends it if the tech
         simply walks away or locks the tablet.
 
         Calls `vmc.begin_standby` directly rather than going through

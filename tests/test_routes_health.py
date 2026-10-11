@@ -508,7 +508,7 @@ class TestFaultsLevel:
 
         hm = HealthMonitor()
         routes.set_health_monitor(hm)
-        vmc.set_health_monitor(hm)
+        context.machine_instance.set_health_monitor(hm)
         try:
             vmc.raise_fault(FaultCode.WTR_104, outcome="leak")
             resp = client.get("/health/faults")
@@ -530,14 +530,14 @@ class TestFaultsLevel:
         assert "PAY-103" in resp.text
 
     def test_renders_with_no_vmc(self, wired, client):
-        routes.set_vmc_instance(None)
+        _machine = context.machine_instance
+        routes.set_machine_instance(None)
         try:
             resp = client.get("/health/faults")
             assert resp.status_code == 200
             assert "No active faults" in resp.text
         finally:
-            _cfg, vmc, _inv, _store = wired
-            routes.set_vmc_instance(vmc)
+            routes.set_machine_instance(_machine)
 
     def test_clear_button_absent_without_clear_faults(self, wired, login_as):
         _cfg, vmc, _inv, _store = wired
