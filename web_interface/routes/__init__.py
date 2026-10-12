@@ -14,7 +14,6 @@ from fastapi.exception_handlers import (
     http_exception_handler as fastapi_http_exception_handler,
 )
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from web_interface import context
@@ -34,6 +33,7 @@ from web_interface.context import (
 from web_interface.routes import auth as auth_routes
 from web_interface.routes import controls, health, home, inventory, products
 from web_interface.routes import reports, screen, settings, tests_level, users
+from web_interface.templating import templates
 
 __all__ = [
     "attach_routes",
@@ -51,7 +51,7 @@ __all__ = [
 ]
 
 
-def attach_routes(app: FastAPI, templates: Jinja2Templates) -> None:
+def attach_routes(app: FastAPI) -> None:
     """Build every area router, wire them into *app*, and register the
     access-gate middleware exactly once.
 
