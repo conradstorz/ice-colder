@@ -413,9 +413,9 @@ async def _render_status(request: Request):
     button went with it — executor resolution 2 — clearing now lives
     entirely on /health/faults). The only caller left is routes/home.py's
     GET /status; this function still lives here rather than in home.py per
-    Task 1 executor resolution 3's original reasoning, and its signature is
-    unchanged since nothing about what it renders (or how) needed to
-    change.
+    Task 1 executor resolution 3's original reasoning.
+    It reads the shared `templating.templates` singleton rather than taking it
+    as a parameter.
 
     The health computation itself lives in `health_snapshot()` (Task 5),
     shared with GET /pill, so the hero and the bar pill can never disagree
