@@ -18,7 +18,16 @@ import pytest
 ROUTES_DIR = Path(__file__).parent.parent / "web_interface" / "routes"
 
 CONVERTED: frozenset[str] = frozenset(
-    {"controls", "home", "screen", "inventory", "health", "products", "reports"}
+    {
+        "controls",
+        "home",
+        "screen",
+        "inventory",
+        "health",
+        "products",
+        "reports",
+        "settings",
+    }
 )
 
 _FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)

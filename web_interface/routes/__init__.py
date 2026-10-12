@@ -153,5 +153,5 @@ def attach_routes(app: FastAPI) -> None:
     app.include_router(controls.router)
     app.include_router(tests_level.build_router(templates))
     app.include_router(users.build_router(templates))
-    app.include_router(settings.build_router(templates))
+    app.include_router(settings.router)
     app.include_router(auth_routes.build_router(templates))
