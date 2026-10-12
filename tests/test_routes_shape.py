@@ -29,6 +29,7 @@ CONVERTED: frozenset[str] = frozenset(
         "products",
         "reports",
         "settings",
+        "tests_level",
     }
 )
 

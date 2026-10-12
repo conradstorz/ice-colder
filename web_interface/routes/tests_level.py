@@ -31,7 +31,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
+from web_interface.templating import templates
 
 from contracts.common import TESTABLE_COMMANDS
 from contracts.ice_maker_monitor import CONTRACT_VERSION as ICE_MAKER_CONTRACT_VERSION
@@ -473,548 +473,542 @@ async def _run_command(
     }
 
 
-def build_router(templates: Jinja2Templates) -> APIRouter:
-    router = APIRouter()
+router = APIRouter()
 
-    @router.get(
-        "/tests",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.run_tests))],
+
+@router.get(
+    "/tests",
+    response_class=HTMLResponse,
+    dependencies=[Depends(web_auth.require(Permission.run_tests))],
+)
+async def tests_level(request: Request):
+    """One card per EXPECTED_SUBSYSTEMS entry plus the lease banner.
+
+    Deliberately takes no lease (system-tests design §2.2, task brief):
+    this handler never calls `begin_maintenance` -- it only reads the
+    read-only `maintenance_hold` property.
+    """
+    subsystems = _subsystem_summary()
+    cards = [
+        {
+            "name": name,
+            "row": row,
+            "match": contract_match(name, row),
+            "testable_count": len(testable_commands(name, row["commands"])),
+        }
+        for name, row in subsystems.items()
+    ]
+
+    principal = web_auth.current_principal(request)
+    return templates.TemplateResponse(
+        "tests.html",
+        context.template_context(
+            request,
+            level=LEVEL_TESTS,
+            cards=cards,
+            **_service_state(context.machine_instance, principal),
+        ),
     )
-    async def tests_level(request: Request):
-        """One card per EXPECTED_SUBSYSTEMS entry plus the lease banner.
 
-        Deliberately takes no lease (system-tests design §2.2, task brief):
-        this handler never calls `begin_maintenance` -- it only reads the
-        read-only `maintenance_hold` property.
-        """
-        subsystems = _subsystem_summary()
-        cards = [
-            {
-                "name": name,
-                "row": row,
-                "match": contract_match(name, row),
-                "testable_count": len(testable_commands(name, row["commands"])),
-            }
-            for name, row in subsystems.items()
-        ]
 
-        principal = web_auth.current_principal(request)
-        return templates.TemplateResponse(
-            "tests.html",
-            context.template_context(
-                request,
-                level=LEVEL_TESTS,
-                cards=cards,
-                **_service_state(context.machine_instance, principal),
+@router.get(
+    "/tests/log",
+    response_class=HTMLResponse,
+    dependencies=[Depends(web_auth.require(Permission.run_tests))],
+)
+async def tests_log(request: Request):
+    """Last 100 test_run events (system-tests design §4).
+
+    Registered BEFORE the parameterized /tests/{subsystem} route below
+    so "log" is never swallowed as a (nonexistent) subsystem name --
+    see that route's own docstring for the full ordering rule, which
+    Task 13b's own new /tests/* GET routes must also respect.
+    """
+    return templates.TemplateResponse(
+        "tests_log.html",
+        context.template_context(
+            request, level=LEVEL_TESTS_LOG, runs=recent_test_runs(100)
+        ),
+    )
+
+
+@router.get(
+    "/tests/sale",
+    response_class=HTMLResponse,
+    dependencies=[Depends(web_auth.require(Permission.run_tests))],
+)
+async def tests_sale_picker(request: Request):
+    """The simulated-sale SKU picker (Task 13b). Deliberately takes no
+    lease -- same rule as `tests_level`/`tests_subsystem` above: a
+    POST /tests/sale run is what acquires it, not viewing this page.
+
+    Registered BEFORE /tests/{subsystem} below, same reason /tests/log
+    is: "sale" would otherwise be swallowed as a (nonexistent)
+    subsystem name by that single-segment route.
+    """
+    products = (
+        sorted(context.config.products, key=lambda p: p.slot) if context.config else []
+    )
+    return templates.TemplateResponse(
+        "tests_sale.html",
+        context.template_context(request, level=LEVEL_TESTS_SALE, products=products),
+    )
+
+
+@router.get(
+    "/tests/standby/confirm",
+    response_class=HTMLResponse,
+    dependencies=[Depends(web_auth.require(Permission.run_tests))],
+)
+async def tests_standby_confirm(
+    request: Request, confirming: str | None = Query(default=None)
+):
+    """confirm_button.html's confirm_url contract (Task 3, matching
+    routes/health.py's fault_clear_confirm): absent or anything but
+    the literal string "false" renders the confirming (Confirm/Cancel)
+    state; "false" renders the plain first-tap button. Re-renders the
+    WHOLE service-state card (#tests-hold), not just the button --
+    every route that touches this card swaps that same outer id.
+
+    Two segments deep (/tests/standby/confirm), so it can never
+    collide with the single-segment GET /tests/{subsystem} catch-all
+    below regardless of registration order -- registered ahead of it
+    anyway, matching this file's "literal paths before catch-alls"
+    convention (see tests_subsystem's own ORDERING WARNING).
+    """
+    principal = web_auth.current_principal(request)
+    return templates.TemplateResponse(
+        "partials/tests_hold_banner.html",
+        context.template_context(
+            request,
+            **_service_state(
+                context.machine_instance,
+                principal,
+                confirming=(confirming != "false"),
             ),
-        )
-
-    @router.get(
-        "/tests/log",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.run_tests))],
+        ),
     )
-    async def tests_log(request: Request):
-        """Last 100 test_run events (system-tests design §4).
 
-        Registered BEFORE the parameterized /tests/{subsystem} route below
-        so "log" is never swallowed as a (nonexistent) subsystem name --
-        see that route's own docstring for the full ordering rule, which
-        Task 13b's own new /tests/* GET routes must also respect.
-        """
+
+@router.get(
+    "/tests/{subsystem}",
+    response_class=HTMLResponse,
+    dependencies=[Depends(web_auth.require(Permission.run_tests))],
+)
+async def tests_subsystem(request: Request, subsystem: str):
+    """Testable commands for one subsystem, split into the automatic
+    and actuator groups (system-tests design §1.2/§1.3).
+
+    ORDERING WARNING for Task 13b: this route matches ANY single path
+    segment under /tests/, including "sale", "run-all", "end" and
+    "takeover" -- it 404s on those today only because none of
+    EXPECTED_SUBSYSTEMS is named that. Every literal-path GET route
+    Task 13b adds under /tests/ (GET /tests/sale in particular) MUST
+    be registered on this router BEFORE this route, exactly like
+    /tests/log above, or this handler will shadow it.
+    """
+    if subsystem not in EXPECTED_SUBSYSTEMS:
+        raise HTTPException(status_code=404, detail=f"Unknown subsystem '{subsystem}'")
+    row = _subsystem_summary()[subsystem]
+    testable = testable_commands(subsystem, row["commands"])
+    products = (
+        sorted(context.config.products, key=lambda p: p.slot) if context.config else []
+    )
+
+    automatic = [
+        {"name": c, "widget": _params_widget(c, products)}
+        for c in sorted(testable & AUTOMATIC_COMMANDS)
+    ]
+    actuator = [
+        {"name": c, "widget": _params_widget(c, products)}
+        for c in sorted(testable - AUTOMATIC_COMMANDS)
+    ]
+
+    level = Level.child(LEVEL_TESTS, subsystem, f"/tests/{subsystem}")
+    return templates.TemplateResponse(
+        "tests_subsystem.html",
+        context.template_context(
+            request,
+            level=level,
+            subsystem=subsystem,
+            row=row,
+            automatic=automatic,
+            actuator=actuator,
+            post_base=f"/tests/{subsystem}",
+        ),
+    )
+
+
+# --- Task 13b: action routes ---------------------------------------
+#
+# Registration order below is load-bearing (see tests_subsystem's own
+# ORDERING WARNING above, and task-13a-report.md's "Route registration
+# order" section): every literal-path POST route under /tests/ --
+# /tests/sale, /tests/run-all, /tests/end, /tests/takeover, and
+# /tests/runs/{run_id}/verdict -- is registered BEFORE the generic
+# POST /tests/{subsystem}/{command:path} at the bottom. The verdict
+# route is the one that actually collides if this order is reversed:
+# POST /tests/runs/r1/verdict has the same shape (two path segments
+# after /tests/, subsystem="runs", command:path="r1/verdict") that the
+# generic route matches -- it would 404 (no subsystem named "runs")
+# instead of ever reaching post_verdict. /tests/sale, /tests/run-all,
+# /tests/end and /tests/takeover are single-segment POSTs and could not
+# collide with the generic route either way (it needs subsystem AND at
+# least one command segment), but are kept ahead of it here too, for
+# the same reason GET /tests/log/GET /tests/sale precede GET
+# /tests/{subsystem} above: literal paths first, catch-all last.
+#
+# POST /tests/standby (Task 3, system-tests design §2.2a) joins this
+# group for the same reason -- a single-segment literal path, kept
+# ahead of the generic route below along with the rest.
+
+
+@router.post(
+    "/tests/standby",
+    response_class=HTMLResponse,
+    dependencies=[
+        Depends(web_auth.require(Permission.run_tests)),
+        Depends(context.require_htmx),
+    ],
+)
+async def tests_standby(request: Request):
+    """Take the machine out of service for the caller's whole web
+    session (`MaintenanceLease.begin_standby`, Task 3 / system-tests
+    design §2.2a): refunds any credit on the machine, cancels a live
+    customer sale, and grants the lease with `standby=True` -- no
+    idle-timer release; the lease's own session-liveness sweep (wired
+    via Machine.set_session_liveness in main.py) is what ends it if
+    the tech simply walks away or locks the tablet.
+
+    Calls `machine.lease.begin_standby` directly rather than going
+    through `_acquire_lease_or_refusal` -- that helper's busy-wording
+    remap exists to point OTHER callers (a command run, a simulated
+    sale) at THIS button; begin_standby's own refusal wording ("vend
+    finishing, tap again" mid-dispense, "held by <id>" for a different
+    session's lease) is already the right thing to show here,
+    verbatim, inside the card (Task 3 requirement).
+    """
+    principal = web_auth.current_principal(request)
+    machine = context.machine_instance
+    if machine is None:
+        refusal = "VMC not initialized"
+    else:
+        granted, reason = machine.lease.begin_standby(
+            principal.user.id, principal.session.id
+        )
+        refusal = None if granted else reason
+    return templates.TemplateResponse(
+        "partials/tests_hold_banner.html",
+        context.template_context(
+            request, **_service_state(machine, principal, refusal=refusal)
+        ),
+    )
+
+
+@router.post(
+    "/tests/sale",
+    response_class=HTMLResponse,
+    dependencies=[
+        Depends(web_auth.require(Permission.run_tests)),
+        Depends(context.require_htmx),
+    ],
+)
+async def tests_sale_run(request: Request, sku: str = Form(...)):
+    """Run one simulated sale (TestSaleRunner.run_test_sale) for the
+    SKU the picker's form submitted.
+
+    SKU-with-slash: the SKU arrives as a POST form field
+    (application/x-www-form-urlencoded), never a URL segment -- GET and
+    POST /tests/sale are the only two routes this picker defines (no
+    `{sku}` route segment exists anywhere under it), so there is no
+    second SKU-in-a-URL escaping mechanism to invent here:
+    `sku_url_segment`/`{sku:path}` exist specifically because a raw `/`
+    in a URL PATH segment 404s (see web_interface/filters.py's
+    docstring); a form body has no such restriction, and FastAPI's
+    `Form(...)` decodes it back to the exact original string,
+    including any `/`. `tests_sale.html`'s `<option value="{{
+    product.sku }}">` is likewise not a URL -- it is an HTML attribute
+    value, which Jinja2's autoescaping (the default here) already
+    makes safe on its own for any catalog string, `/` included.
+    """
+    principal = web_auth.current_principal(request)
+    products = context.config.products if context.config else []
+    product = next((p for p in products if p.sku == sku), None)
+    if product is None:
+        raise HTTPException(status_code=404, detail=f"No such product: {sku}")
+
+    machine = context.machine_instance
+    if machine is None:
         return templates.TemplateResponse(
-            "tests_log.html",
-            context.template_context(
-                request, level=LEVEL_TESTS_LOG, runs=recent_test_runs(100)
-            ),
+            "partials/test_refusal.html",
+            context.template_context(request, reason="VMC not initialized"),
         )
 
-    @router.get(
-        "/tests/sale",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.run_tests))],
-    )
-    async def tests_sale_picker(request: Request):
-        """The simulated-sale SKU picker (Task 13b). Deliberately takes no
-        lease -- same rule as `tests_level`/`tests_subsystem` above: a
-        POST /tests/sale run is what acquires it, not viewing this page.
-
-        Registered BEFORE /tests/{subsystem} below, same reason /tests/log
-        is: "sale" would otherwise be swallowed as a (nonexistent)
-        subsystem name by that single-segment route.
-        """
-        products = (
-            sorted(context.config.products, key=lambda p: p.slot)
-            if context.config
-            else []
-        )
+    refusal = _acquire_lease_or_refusal(machine, principal)
+    if refusal:
         return templates.TemplateResponse(
-            "tests_sale.html",
-            context.template_context(
-                request, level=LEVEL_TESTS_SALE, products=products
-            ),
+            "partials/test_refusal.html",
+            context.template_context(request, reason=refusal),
         )
 
-    @router.get(
-        "/tests/standby/confirm",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.run_tests))],
-    )
-    async def tests_standby_confirm(
-        request: Request, confirming: str | None = Query(default=None)
-    ):
-        """confirm_button.html's confirm_url contract (Task 3, matching
-        routes/health.py's fault_clear_confirm): absent or anything but
-        the literal string "false" renders the confirming (Confirm/Cancel)
-        state; "false" renders the plain first-tap button. Re-renders the
-        WHOLE service-state card (#tests-hold), not just the button --
-        every route that touches this card swaps that same outer id.
-
-        Two segments deep (/tests/standby/confirm), so it can never
-        collide with the single-segment GET /tests/{subsystem} catch-all
-        below regardless of registration order -- registered ahead of it
-        anyway, matching this file's "literal paths before catch-alls"
-        convention (see tests_subsystem's own ORDERING WARNING).
-        """
-        principal = web_auth.current_principal(request)
+    try:
+        result = await machine.test_sales.run_test_sale(
+            sku, user_id=principal.user.id, user_name=principal.user.name
+        )
+    except (ValueError, RuntimeError) as exc:
+        # ValueError: the catalog moved under us between the lookup
+        # above and this call (vmc.products, not context.config.products
+        # -- see run_test_sale's own find_product). RuntimeError:
+        # run_test_sale's own "could not select" guard (locked out,
+        # sold out) or "no lease held" (a race against the check above).
+        # Either way this is a refusal, not a 500.
         return templates.TemplateResponse(
-            "partials/tests_hold_banner.html",
-            context.template_context(
-                request,
-                **_service_state(
-                    context.machine_instance,
-                    principal,
-                    confirming=(confirming != "false"),
-                ),
-            ),
+            "partials/test_refusal.html",
+            context.template_context(request, reason=str(exc)),
         )
 
-    @router.get(
-        "/tests/{subsystem}",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.run_tests))],
+    return templates.TemplateResponse(
+        "partials/test_sale_result.html",
+        context.template_context(request, result=result),
     )
-    async def tests_subsystem(request: Request, subsystem: str):
-        """Testable commands for one subsystem, split into the automatic
-        and actuator groups (system-tests design §1.2/§1.3).
 
-        ORDERING WARNING for Task 13b: this route matches ANY single path
-        segment under /tests/, including "sale", "run-all", "end" and
-        "takeover" -- it 404s on those today only because none of
-        EXPECTED_SUBSYSTEMS is named that. Every literal-path GET route
-        Task 13b adds under /tests/ (GET /tests/sale in particular) MUST
-        be registered on this router BEFORE this route, exactly like
-        /tests/log above, or this handler will shadow it.
-        """
-        if subsystem not in EXPECTED_SUBSYSTEMS:
-            raise HTTPException(
-                status_code=404, detail=f"Unknown subsystem '{subsystem}'"
-            )
-        row = _subsystem_summary()[subsystem]
-        testable = testable_commands(subsystem, row["commands"])
-        products = (
-            sorted(context.config.products, key=lambda p: p.slot)
-            if context.config
-            else []
-        )
 
-        automatic = [
-            {"name": c, "widget": _params_widget(c, products)}
-            for c in sorted(testable & AUTOMATIC_COMMANDS)
-        ]
-        actuator = [
-            {"name": c, "widget": _params_widget(c, products)}
-            for c in sorted(testable - AUTOMATIC_COMMANDS)
-        ]
-
-        level = Level.child(LEVEL_TESTS, subsystem, f"/tests/{subsystem}")
-        return templates.TemplateResponse(
-            "tests_subsystem.html",
-            context.template_context(
-                request,
-                level=level,
-                subsystem=subsystem,
-                row=row,
-                automatic=automatic,
-                actuator=actuator,
-                post_base=f"/tests/{subsystem}",
-            ),
-        )
-
-    # --- Task 13b: action routes ---------------------------------------
-    #
-    # Registration order below is load-bearing (see tests_subsystem's own
-    # ORDERING WARNING above, and task-13a-report.md's "Route registration
-    # order" section): every literal-path POST route under /tests/ --
-    # /tests/sale, /tests/run-all, /tests/end, /tests/takeover, and
-    # /tests/runs/{run_id}/verdict -- is registered BEFORE the generic
-    # POST /tests/{subsystem}/{command:path} at the bottom. The verdict
-    # route is the one that actually collides if this order is reversed:
-    # POST /tests/runs/r1/verdict has the same shape (two path segments
-    # after /tests/, subsystem="runs", command:path="r1/verdict") that the
-    # generic route matches -- it would 404 (no subsystem named "runs")
-    # instead of ever reaching post_verdict. /tests/sale, /tests/run-all,
-    # /tests/end and /tests/takeover are single-segment POSTs and could not
-    # collide with the generic route either way (it needs subsystem AND at
-    # least one command segment), but are kept ahead of it here too, for
-    # the same reason GET /tests/log/GET /tests/sale precede GET
-    # /tests/{subsystem} above: literal paths first, catch-all last.
-    #
-    # POST /tests/standby (Task 3, system-tests design §2.2a) joins this
-    # group for the same reason -- a single-segment literal path, kept
-    # ahead of the generic route below along with the rest.
-
-    @router.post(
-        "/tests/standby",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(web_auth.require(Permission.run_tests)),
-            Depends(context.require_htmx),
-        ],
-    )
-    async def tests_standby(request: Request):
-        """Take the machine out of service for the caller's whole web
-        session (`MaintenanceLease.begin_standby`, Task 3 / system-tests
-        design §2.2a): refunds any credit on the machine, cancels a live
-        customer sale, and grants the lease with `standby=True` -- no
-        idle-timer release; the lease's own session-liveness sweep (wired
-        via Machine.set_session_liveness in main.py) is what ends it if
-        the tech simply walks away or locks the tablet.
-
-        Calls `machine.lease.begin_standby` directly rather than going
-        through `_acquire_lease_or_refusal` -- that helper's busy-wording
-        remap exists to point OTHER callers (a command run, a simulated
-        sale) at THIS button; begin_standby's own refusal wording ("vend
-        finishing, tap again" mid-dispense, "held by <id>" for a different
-        session's lease) is already the right thing to show here,
-        verbatim, inside the card (Task 3 requirement).
-        """
-        principal = web_auth.current_principal(request)
-        machine = context.machine_instance
-        if machine is None:
-            refusal = "VMC not initialized"
-        else:
-            granted, reason = machine.lease.begin_standby(
-                principal.user.id, principal.session.id
-            )
-            refusal = None if granted else reason
-        return templates.TemplateResponse(
-            "partials/tests_hold_banner.html",
-            context.template_context(
-                request, **_service_state(machine, principal, refusal=refusal)
-            ),
-        )
-
-    @router.post(
-        "/tests/sale",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(web_auth.require(Permission.run_tests)),
-            Depends(context.require_htmx),
-        ],
-    )
-    async def tests_sale_run(request: Request, sku: str = Form(...)):
-        """Run one simulated sale (TestSaleRunner.run_test_sale) for the
-        SKU the picker's form submitted.
-
-        SKU-with-slash: the SKU arrives as a POST form field
-        (application/x-www-form-urlencoded), never a URL segment -- GET and
-        POST /tests/sale are the only two routes this picker defines (no
-        `{sku}` route segment exists anywhere under it), so there is no
-        second SKU-in-a-URL escaping mechanism to invent here:
-        `sku_url_segment`/`{sku:path}` exist specifically because a raw `/`
-        in a URL PATH segment 404s (see web_interface/filters.py's
-        docstring); a form body has no such restriction, and FastAPI's
-        `Form(...)` decodes it back to the exact original string,
-        including any `/`. `tests_sale.html`'s `<option value="{{
-        product.sku }}">` is likewise not a URL -- it is an HTML attribute
-        value, which Jinja2's autoescaping (the default here) already
-        makes safe on its own for any catalog string, `/` included.
-        """
-        principal = web_auth.current_principal(request)
-        products = context.config.products if context.config else []
-        product = next((p for p in products if p.sku == sku), None)
-        if product is None:
-            raise HTTPException(status_code=404, detail=f"No such product: {sku}")
-
-        machine = context.machine_instance
-        if machine is None:
-            return templates.TemplateResponse(
-                "partials/test_refusal.html",
-                context.template_context(request, reason="VMC not initialized"),
-            )
-
-        refusal = _acquire_lease_or_refusal(machine, principal)
-        if refusal:
-            return templates.TemplateResponse(
-                "partials/test_refusal.html",
-                context.template_context(request, reason=refusal),
-            )
-
-        try:
-            result = await machine.test_sales.run_test_sale(
-                sku, user_id=principal.user.id, user_name=principal.user.name
-            )
-        except (ValueError, RuntimeError) as exc:
-            # ValueError: the catalog moved under us between the lookup
-            # above and this call (vmc.products, not context.config.products
-            # -- see run_test_sale's own find_product). RuntimeError:
-            # run_test_sale's own "could not select" guard (locked out,
-            # sold out) or "no lease held" (a race against the check above).
-            # Either way this is a refusal, not a 500.
-            return templates.TemplateResponse(
-                "partials/test_refusal.html",
-                context.template_context(request, reason=str(exc)),
-            )
-
-        return templates.TemplateResponse(
-            "partials/test_sale_result.html",
-            context.template_context(request, result=result),
-        )
-
-    @router.post(
-        "/tests/run-all",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(web_auth.require(Permission.run_tests)),
-            Depends(context.require_htmx),
-        ],
-    )
-    async def tests_run_all(request: Request):
-        """`ping` then `self_test` on every alive subsystem, IN SEQUENCE
-        (task brief) -- one `await _run_command(...)` at a time, never
-        `asyncio.gather`, so two subsystems' commands can never interleave
-        on the wire. Renders one result table (or a single refusal
-        fragment if the lease can't be taken at all).
-        """
-        principal = web_auth.current_principal(request)
-        machine = context.machine_instance
-        if machine is None:
-            return templates.TemplateResponse(
-                "partials/test_run_all_table.html",
-                context.template_context(
-                    request, rows=[], refusal="VMC not initialized"
-                ),
-            )
-
-        refusal = _acquire_lease_or_refusal(machine, principal)
-        if refusal:
-            return templates.TemplateResponse(
-                "partials/test_run_all_table.html",
-                context.template_context(request, rows=[], refusal=refusal),
-            )
-
-        subsystems = _subsystem_summary()
-        rows: list[dict] = []
-        for name, row in subsystems.items():
-            if not row["alive"]:
-                continue
-            testable = testable_commands(name, row["commands"])
-            for command in ("ping", "self_test"):
-                if command not in testable:
-                    continue
-                rows.append(await _run_command(name, command, {}, principal))
-
+@router.post(
+    "/tests/run-all",
+    response_class=HTMLResponse,
+    dependencies=[
+        Depends(web_auth.require(Permission.run_tests)),
+        Depends(context.require_htmx),
+    ],
+)
+async def tests_run_all(request: Request):
+    """`ping` then `self_test` on every alive subsystem, IN SEQUENCE
+    (task brief) -- one `await _run_command(...)` at a time, never
+    `asyncio.gather`, so two subsystems' commands can never interleave
+    on the wire. Renders one result table (or a single refusal
+    fragment if the lease can't be taken at all).
+    """
+    principal = web_auth.current_principal(request)
+    machine = context.machine_instance
+    if machine is None:
         return templates.TemplateResponse(
             "partials/test_run_all_table.html",
-            context.template_context(request, rows=rows, refusal=None),
+            context.template_context(request, rows=[], refusal="VMC not initialized"),
         )
 
-    @router.post(
-        "/tests/end",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(web_auth.require(Permission.run_tests)),
-            Depends(context.require_htmx),
-        ],
-    )
-    async def tests_end(request: Request):
-        """Release the CALLER's OWN lease, once nothing is in flight
-        (`MaintenanceLease.end_maintenance` already enforces both: session
-        match and runs_in_flight == 0, deferring via release_requested
-        otherwise). Re-renders the same #tests-hold banner tests.html swaps
-        this into (outerHTML) -- empty when no lease remains, so the
-        banner div is removed entirely, matching tests.html's own
-        `{% if hold %}` guard.
-        """
-        principal = web_auth.current_principal(request)
-        machine = context.machine_instance
-        if machine is not None:
-            machine.lease.end_maintenance(principal.session.id)
+    refusal = _acquire_lease_or_refusal(machine, principal)
+    if refusal:
         return templates.TemplateResponse(
-            "partials/tests_hold_banner.html",
-            context.template_context(request, **_service_state(machine, principal)),
+            "partials/test_run_all_table.html",
+            context.template_context(request, rows=[], refusal=refusal),
         )
 
-    @router.post(
-        "/tests/takeover",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(web_auth.require(Permission.run_tests)),
-            Depends(context.require_htmx),
-        ],
+    subsystems = _subsystem_summary()
+    rows: list[dict] = []
+    for name, row in subsystems.items():
+        if not row["alive"]:
+            continue
+        testable = testable_commands(name, row["commands"])
+        for command in ("ping", "self_test"):
+            if command not in testable:
+                continue
+            rows.append(await _run_command(name, command, {}, principal))
+
+    return templates.TemplateResponse(
+        "partials/test_run_all_table.html",
+        context.template_context(request, rows=rows, refusal=None),
     )
-    async def tests_takeover(request: Request):
-        """Transfer an idle, run-free lease to the caller
-        (`MaintenanceLease.take_over_maintenance`, system-tests design
-        §2.2) -- refused (lease unchanged) while a run is in flight or
-        before the 60s idle threshold. Re-renders #tests-hold either way.
-        """
-        principal = web_auth.current_principal(request)
-        machine = context.machine_instance
-        if machine is not None:
-            machine.lease.take_over_maintenance(principal.user.id, principal.session.id)
-        return templates.TemplateResponse(
-            "partials/tests_hold_banner.html",
-            context.template_context(request, **_service_state(machine, principal)),
-        )
 
-    @router.post(
-        "/tests/runs/{run_id}/verdict",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(web_auth.require(Permission.run_tests)),
-            Depends(context.require_htmx),
-        ],
+
+@router.post(
+    "/tests/end",
+    response_class=HTMLResponse,
+    dependencies=[
+        Depends(web_auth.require(Permission.run_tests)),
+        Depends(context.require_htmx),
+    ],
+)
+async def tests_end(request: Request):
+    """Release the CALLER's OWN lease, once nothing is in flight
+    (`MaintenanceLease.end_maintenance` already enforces both: session
+    match and runs_in_flight == 0, deferring via release_requested
+    otherwise). Re-renders the same #tests-hold banner tests.html swaps
+    this into (outerHTML) -- empty when no lease remains, so the
+    banner div is removed entirely, matching tests.html's own
+    `{% if hold %}` guard.
+    """
+    principal = web_auth.current_principal(request)
+    machine = context.machine_instance
+    if machine is not None:
+        machine.lease.end_maintenance(principal.session.id)
+    return templates.TemplateResponse(
+        "partials/tests_hold_banner.html",
+        context.template_context(request, **_service_state(machine, principal)),
     )
-    async def post_verdict(
-        request: Request,
-        run_id: str,
-        verdict: str = Form(...),
-        note: str | None = Form(None),
-    ):
-        """Record pass/fail + note on one test_run row, by run_id
-        (system-tests design §4: EventRecorder.update_metadata, merged in
-        place on the writer thread -- so `checks`/`params`/etc already on
-        the row survive). Works identically for a subsystem-command row
-        and a simulated-sale row (TestSaleRunner.run_test_sale, Task 13b): both carry
-        `run_id` in their metadata now, located the same way.
 
-        400 for a verdict outside {"pass", "fail"} -- never silently
-        coerced. A run_id matching no row (already pruned past the 90-day
-        window, or simply wrong) is a no-op on the recorder side
-        (update_metadata's own documented behavior) -- still 200, since
-        there is nothing the caller did wrong at the HTTP level.
-        """
-        if verdict not in ("pass", "fail"):
-            raise HTTPException(
-                status_code=400, detail="verdict must be 'pass' or 'fail'"
-            )
-        note = note or None
-        if context.event_recorder is not None:
-            context.event_recorder.update_metadata(run_id, verdict=verdict, note=note)
-            # Block until the write lands: a test (or an operator's very
-            # next GET /tests/log) reading right back must see it -- update_
-            # metadata itself only queues the merge for the writer thread.
-            await asyncio.to_thread(context.event_recorder.flush)
-        return templates.TemplateResponse(
-            "partials/test_verdict_recorded.html",
-            context.template_context(
-                request, run_id=run_id, verdict=verdict, note=note
-            ),
-        )
 
-    @router.post(
-        # {command:path} (not plain {command}), matching web_interface/
-        # filters.py's sku_url_segment/{sku:path} reasoning: a command name
-        # can itself contain "/" (e.g. the illustrative "payment/enable" a
-        # capabilities doc might advertise -- see TestDiscoveryIntersection
-        # in tests/test_routes_tests.py), and a plain str-converter segment
-        # 404s on a literal "/" the same way a SKU would. This is what lets
-        # a direct POST /tests/vending/payment/enable actually REACH this
-        # handler (and get refused by the allowlist check below, 403)
-        # instead of 404ing before the security check ever runs -- a 404
-        # here would look like the command "doesn't exist" rather than
-        # "exists and is refused," which is the wrong signal to prove the
-        # allowlist re-check is a real boundary.
-        "/tests/{subsystem}/{command:path}",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(web_auth.require(Permission.run_tests)),
-            Depends(context.require_htmx),
-        ],
+@router.post(
+    "/tests/takeover",
+    response_class=HTMLResponse,
+    dependencies=[
+        Depends(web_auth.require(Permission.run_tests)),
+        Depends(context.require_htmx),
+    ],
+)
+async def tests_takeover(request: Request):
+    """Transfer an idle, run-free lease to the caller
+    (`MaintenanceLease.take_over_maintenance`, system-tests design
+    §2.2) -- refused (lease unchanged) while a run is in flight or
+    before the 60s idle threshold. Re-renders #tests-hold either way.
+    """
+    principal = web_auth.current_principal(request)
+    machine = context.machine_instance
+    if machine is not None:
+        machine.lease.take_over_maintenance(principal.user.id, principal.session.id)
+    return templates.TemplateResponse(
+        "partials/tests_hold_banner.html",
+        context.template_context(request, **_service_state(machine, principal)),
     )
-    async def post_test_command(
-        request: Request,
-        subsystem: str,
-        command: str,
-        slot: str | None = Form(None),
-        seconds: str | None = Form(None),
-        dwell_seconds: str | None = Form(None),
-    ):
-        """Run one command test (system-tests design §3's "Run" row).
 
-        THE SECURITY BOUNDARY (task brief): re-checks `testable_commands`
-        (the advertised-∩-allowlist intersection, the one place that
-        computation lives -- see this module's docstring) against the
-        LIVE, freshly-read `_subsystem_summary()[subsystem]["commands"]`,
-        never trusting anything the client claims about what buttons it
-        was shown. `command` is not in `testable` for `refund` or
-        `payment/enable` on every subsystem (contracts.common.
-        TESTABLE_COMMANDS never lists either, for any subsystem, whether
-        or not that subsystem's capabilities doc happens to advertise it)
-        -- 403, unconditionally, before the maintenance lease is ever
-        touched and before the dispatcher is ever called. A command that
-        IS allowlisted but NOT advertised by this particular subsystem is
-        refused the same way (it is simply absent from the intersection).
-        """
-        if subsystem not in EXPECTED_SUBSYSTEMS:
-            raise HTTPException(
-                status_code=404, detail=f"Unknown subsystem '{subsystem}'"
-            )
-        row = _subsystem_summary()[subsystem]
-        testable = testable_commands(subsystem, row["commands"])
-        if command not in testable:
-            raise HTTPException(
-                status_code=403,
-                detail=f"{command!r} is not a testable command for {subsystem!r}",
-            )
 
-        valid_slots = (
-            frozenset(p.slot for p in context.config.products)
-            if context.config
-            else frozenset()
+@router.post(
+    "/tests/runs/{run_id}/verdict",
+    response_class=HTMLResponse,
+    dependencies=[
+        Depends(web_auth.require(Permission.run_tests)),
+        Depends(context.require_htmx),
+    ],
+)
+async def post_verdict(
+    request: Request,
+    run_id: str,
+    verdict: str = Form(...),
+    note: str | None = Form(None),
+):
+    """Record pass/fail + note on one test_run row, by run_id
+    (system-tests design §4: EventRecorder.update_metadata, merged in
+    place on the writer thread -- so `checks`/`params`/etc already on
+    the row survive). Works identically for a subsystem-command row
+    and a simulated-sale row (TestSaleRunner.run_test_sale, Task 13b): both carry
+    `run_id` in their metadata now, located the same way.
+
+    400 for a verdict outside {"pass", "fail"} -- never silently
+    coerced. A run_id matching no row (already pruned past the 90-day
+    window, or simply wrong) is a no-op on the recorder side
+    (update_metadata's own documented behavior) -- still 200, since
+    there is nothing the caller did wrong at the HTTP level.
+    """
+    if verdict not in ("pass", "fail"):
+        raise HTTPException(status_code=400, detail="verdict must be 'pass' or 'fail'")
+    note = note or None
+    if context.event_recorder is not None:
+        context.event_recorder.update_metadata(run_id, verdict=verdict, note=note)
+        # Block until the write lands: a test (or an operator's very
+        # next GET /tests/log) reading right back must see it -- update_
+        # metadata itself only queues the merge for the writer thread.
+        await asyncio.to_thread(context.event_recorder.flush)
+    return templates.TemplateResponse(
+        "partials/test_verdict_recorded.html",
+        context.template_context(request, run_id=run_id, verdict=verdict, note=note),
+    )
+
+
+@router.post(
+    # {command:path} (not plain {command}), matching web_interface/
+    # filters.py's sku_url_segment/{sku:path} reasoning: a command name
+    # can itself contain "/" (e.g. the illustrative "payment/enable" a
+    # capabilities doc might advertise -- see TestDiscoveryIntersection
+    # in tests/test_routes_tests.py), and a plain str-converter segment
+    # 404s on a literal "/" the same way a SKU would. This is what lets
+    # a direct POST /tests/vending/payment/enable actually REACH this
+    # handler (and get refused by the allowlist check below, 403)
+    # instead of 404ing before the security check ever runs -- a 404
+    # here would look like the command "doesn't exist" rather than
+    # "exists and is refused," which is the wrong signal to prove the
+    # allowlist re-check is a real boundary.
+    "/tests/{subsystem}/{command:path}",
+    response_class=HTMLResponse,
+    dependencies=[
+        Depends(web_auth.require(Permission.run_tests)),
+        Depends(context.require_htmx),
+    ],
+)
+async def post_test_command(
+    request: Request,
+    subsystem: str,
+    command: str,
+    slot: str | None = Form(None),
+    seconds: str | None = Form(None),
+    dwell_seconds: str | None = Form(None),
+):
+    """Run one command test (system-tests design §3's "Run" row).
+
+    THE SECURITY BOUNDARY (task brief): re-checks `testable_commands`
+    (the advertised-∩-allowlist intersection, the one place that
+    computation lives -- see this module's docstring) against the
+    LIVE, freshly-read `_subsystem_summary()[subsystem]["commands"]`,
+    never trusting anything the client claims about what buttons it
+    was shown. `command` is not in `testable` for `refund` or
+    `payment/enable` on every subsystem (contracts.common.
+    TESTABLE_COMMANDS never lists either, for any subsystem, whether
+    or not that subsystem's capabilities doc happens to advertise it)
+    -- 403, unconditionally, before the maintenance lease is ever
+    touched and before the dispatcher is ever called. A command that
+    IS allowlisted but NOT advertised by this particular subsystem is
+    refused the same way (it is simply absent from the intersection).
+    """
+    if subsystem not in EXPECTED_SUBSYSTEMS:
+        raise HTTPException(status_code=404, detail=f"Unknown subsystem '{subsystem}'")
+    row = _subsystem_summary()[subsystem]
+    testable = testable_commands(subsystem, row["commands"])
+    if command not in testable:
+        raise HTTPException(
+            status_code=403,
+            detail=f"{command!r} is not a testable command for {subsystem!r}",
         )
-        try:
-            params = _parse_command_params(
-                command,
-                slot=slot,
-                seconds=seconds,
-                dwell_seconds=dwell_seconds,
-                valid_slots=valid_slots,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            # A slot with no valid dispenser profile (CFG-101) -- a
-            # refusal, not a 400/500, and raised before any lease is ever
-            # taken (see _parse_command_params's docstring), so there is
-            # nothing to release here.
-            return templates.TemplateResponse(
-                "partials/test_refusal.html",
-                context.template_context(request, reason=str(exc)),
-            )
 
-        principal = web_auth.current_principal(request)
-        machine = context.machine_instance
-        if machine is None:
-            return templates.TemplateResponse(
-                "partials/test_refusal.html",
-                context.template_context(request, reason="VMC not initialized"),
-            )
-
-        refusal = _acquire_lease_or_refusal(machine, principal)
-        if refusal:
-            return templates.TemplateResponse(
-                "partials/test_refusal.html",
-                context.template_context(request, reason=refusal),
-            )
-
-        result = await _run_command(subsystem, command, params, principal)
+    valid_slots = (
+        frozenset(p.slot for p in context.config.products)
+        if context.config
+        else frozenset()
+    )
+    try:
+        params = _parse_command_params(
+            command,
+            slot=slot,
+            seconds=seconds,
+            dwell_seconds=dwell_seconds,
+            valid_slots=valid_slots,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        # A slot with no valid dispenser profile (CFG-101) -- a
+        # refusal, not a 400/500, and raised before any lease is ever
+        # taken (see _parse_command_params's docstring), so there is
+        # nothing to release here.
         return templates.TemplateResponse(
-            "partials/test_result_card.html",
-            context.template_context(request, **result),
+            "partials/test_refusal.html",
+            context.template_context(request, reason=str(exc)),
         )
 
-    return router
+    principal = web_auth.current_principal(request)
+    machine = context.machine_instance
+    if machine is None:
+        return templates.TemplateResponse(
+            "partials/test_refusal.html",
+            context.template_context(request, reason="VMC not initialized"),
+        )
+
+    refusal = _acquire_lease_or_refusal(machine, principal)
+    if refusal:
+        return templates.TemplateResponse(
+            "partials/test_refusal.html",
+            context.template_context(request, reason=refusal),
+        )
+
+    result = await _run_command(subsystem, command, params, principal)
+    return templates.TemplateResponse(
+        "partials/test_result_card.html",
+        context.template_context(request, **result),
+    )
