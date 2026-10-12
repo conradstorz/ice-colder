@@ -46,7 +46,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
+from web_interface.templating import templates
 
 from services import reports as reports_service
 from services.access import Permission
@@ -210,418 +210,430 @@ def _totalize_period(rows: list[dict]) -> dict:
     }
 
 
-def build_router(templates: Jinja2Templates) -> APIRouter:
-    router = APIRouter()
+router = APIRouter()
 
-    # ------------------------------------------------------------------
-    # Per-report "compute" helpers: each returns a dict shared by the GET
-    # level route (renders with no email notice) and POST /reports/email
-    # (renders the same page with a notice/error appended) -- so the two
-    # can never drift out of sync on what a report actually shows.
-    # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# Per-report "compute" helpers: each returns a dict shared by the GET
+# level route (renders with no email notice) and POST /reports/email
+# (renders the same page with a notice/error appended) -- so the two
+# can never drift out of sync on what a report actually shows.
+# ------------------------------------------------------------------
 
-    async def _compute_period(range_key: str, bucket_key: str) -> dict:
-        rows: list[dict] = []
-        if context.event_recorder:
-            window = reports_service.resolve_window(range_key)
-            rows = await asyncio.to_thread(
-                reports_service.by_period, context.event_recorder, window, bucket_key
-            )
-        total = _totalize_period(rows)
-        csv_rows = [*rows, {"bucket_start": "Total", **total}]
 
-        lines = [
-            f"{r['bucket_start']}: revenue {_fmt(r['revenue'], money=True)}, "
-            f"vends {r['vends']}, failed {_fmt(r['failed_vends'])}, "
-            f"refunds {_fmt(r['refunds'], money=True)}, "
-            f"uptime {_fmt(r['uptime_pct'])}"
-            for r in rows
-        ]
-        lines.append(
-            f"Total: revenue {_fmt(total['revenue'], money=True)}, "
-            f"vends {total['vends']}, failed {_fmt(total['failed_vends'])}, "
-            f"refunds {_fmt(total['refunds'], money=True)}, "
-            f"uptime {_fmt(total['uptime_pct'])}"
+async def _compute_period(range_key: str, bucket_key: str) -> dict:
+    rows: list[dict] = []
+    if context.event_recorder:
+        window = reports_service.resolve_window(range_key)
+        rows = await asyncio.to_thread(
+            reports_service.by_period, context.event_recorder, window, bucket_key
         )
+    total = _totalize_period(rows)
+    csv_rows = [*rows, {"bucket_start": "Total", **total}]
 
-        return {
-            "rows": rows,
-            "total": total,
-            "csv_rows": csv_rows,
-            "header": PERIOD_HEADER,
-            "subject": f"Sales report: by period ({range_key}, {bucket_key})",
-            "body": "\n".join(lines),
-            "level": LEVEL_REPORTS_PERIOD,
-            "template": "reports_period.html",
-            "extra": {"range": range_key, "bucket": bucket_key},
-            "label": "period",
-        }
-
-    async def _compute_product(range_key: str) -> dict:
-        rows: list[dict] = []
-        if context.event_recorder:
-            window = reports_service.resolve_window(range_key)
-            rows = await asyncio.to_thread(
-                reports_service.by_product, context.event_recorder, window
-            )
-        lines = [
-            f"{r['name']} ({r['sku']}): units {r['units']}, "
-            f"revenue ${r['revenue']:.2f}, failed {r['failed_vends']}"
-            for r in rows
-        ]
-        return {
-            "rows": rows,
-            "csv_rows": rows,
-            "header": PRODUCT_HEADER,
-            "subject": f"Sales report: by product ({range_key})",
-            "body": "\n".join(lines) or "No sales in this range.",
-            "level": LEVEL_REPORTS_PRODUCT,
-            "template": "reports_product.html",
-            "extra": {"range": range_key},
-            "label": "product",
-        }
-
-    async def _compute_product_sku(range_key: str, bucket_key: str, sku: str) -> dict:
-        # Catalog lookup runs -- and 404s -- BEFORE any query, same as
-        # every other level's shell 404: a real SKU with zero sales in the
-        # window must still render 200 with a zero row, never a 404, and
-        # this ordering is what guarantees that.
-        product = _find_product(sku)
-        if product is None:
-            raise HTTPException(status_code=404, detail=f"No such product: {sku}")
-
-        rows: list[dict] = []
-        if context.event_recorder:
-            window = reports_service.resolve_window(range_key)
-            rows = await asyncio.to_thread(
-                reports_service.by_period,
-                context.event_recorder,
-                window,
-                bucket_key,
-                None,
-                sku,
-            )
-        total = _totalize_period(rows)
-        csv_rows = [*rows, {"bucket_start": "Total", **total}]
-
-        # The breadcrumb uses the CATALOG's product name -- never a name
-        # derived from query rows, which carry no `name` field at all for
-        # this by_period shape (and are simply absent for a no-sales SKU).
-        # sku_url_segment: `sku` is an arbitrary catalog string, but this
-        # becomes the breadcrumb/Back URL for a `{sku}` single-segment
-        # route -- see its docstring (web_interface/filters.py). The same
-        # function backs the `sku_url_segment` Jinja filter used by
-        # reports_product.html and reports_product_sku.html so all three
-        # links for a SKU agree.
-        level = Level.child(
-            LEVEL_REPORTS_PRODUCT,
-            product.name or sku,
-            f"/reports/product/{sku_url_segment(sku)}",
-        )
-
-        lines = [
-            f"{r['bucket_start']}: revenue {_fmt(r['revenue'], money=True)}, "
-            f"vends {r['vends']}, failed {_fmt(r['failed_vends'])}, "
-            f"refunds {_fmt(r['refunds'], money=True)}, "
-            f"uptime {_fmt(r['uptime_pct'])}"
-            for r in rows
-        ]
-        lines.append(
-            f"Total: revenue {_fmt(total['revenue'], money=True)}, "
-            f"vends {total['vends']}, failed {_fmt(total['failed_vends'])}, "
-            f"refunds {_fmt(total['refunds'], money=True)}, "
-            f"uptime {_fmt(total['uptime_pct'])}"
-        )
-        body = f"{product.name} ({sku}) by period:\n" + "\n".join(lines)
-
-        return {
-            "rows": rows,
-            "total": total,
-            "csv_rows": csv_rows,
-            "header": PERIOD_HEADER,
-            "subject": (
-                f"Sales report: {product.name} by period ({range_key}, {bucket_key})"
-            ),
-            "body": body,
-            "level": level,
-            "template": "reports_product_sku.html",
-            "extra": {
-                "range": range_key,
-                "bucket": bucket_key,
-                "sku": sku,
-                "product_name": product.name,
-            },
-            "label": f"product-{sku}",
-        }
-
-    async def _compute_method(range_key: str) -> dict:
-        rows: list[dict] = []
-        if context.event_recorder:
-            window = reports_service.resolve_window(range_key)
-            rows = await asyncio.to_thread(
-                reports_service.by_method, context.event_recorder, window
-            )
-        lines = [
-            f"{r['method']}: ${r['amount']:.2f} ({r['share'] * 100:.1f}%), "
-            f"{r['count']} sales, {'cash' if r['is_cash'] else 'other'}"
-            for r in rows
-        ]
-        return {
-            "rows": rows,
-            "csv_rows": rows,
-            "header": METHOD_HEADER,
-            "subject": f"Sales report: by method ({range_key})",
-            "body": "\n".join(lines) or "No sales in this range.",
-            "level": LEVEL_REPORTS_METHOD,
-            "template": "reports_method.html",
-            "extra": {"range": range_key},
-            "label": "method",
-        }
-
-    async def _compute_collections(range_key: str) -> dict:
-        raw_rows: list[dict] = []
-        if context.event_recorder:
-            raw_rows = await asyncio.to_thread(
-                reports_service.collections, context.event_recorder, 50
-            )
-        # `ts_display` is added for the template only (a human timestamp).
-        # Unlike the earlier version of this helper, it is added by
-        # building new dicts here rather than mutating the service's
-        # returned rows in place -- `raw_rows` (what `render_csv` uses)
-        # stays exactly what `reports_service.collections` returned, and
-        # `render_csv`'s `DictWriter(..., extrasaction="ignore")` would
-        # have ignored the extra key either way, so this is a tidiness fix
-        # with no behavior change.
-        rows = [{**row, "ts_display": _ts_display(row["ts"])} for row in raw_rows]
-        lines = [
-            f"{_ts_display(r['ts'])} {r['user_name']}: "
-            f"expected ${r['expected_cash']:.2f}"
-            for r in raw_rows
-        ]
-        return {
-            "rows": rows,
-            "csv_rows": raw_rows,
-            "header": COLLECTIONS_HEADER,
-            "subject": "Sales report: cash collections",
-            "body": "\n".join(lines) or "No collections recorded.",
-            "level": LEVEL_REPORTS_COLLECTIONS,
-            "template": "reports_collections.html",
-            "extra": {"range": range_key},
-            "label": "collections",
-        }
-
-    def _render(request: Request, data: dict, *, email_notice=None, email_error=None):
-        ctx = {
-            "level": data["level"],
-            "rows": data["rows"],
-            "email_notice": email_notice,
-            "email_error": email_error,
-            **data["extra"],
-        }
-        if "total" in data:
-            ctx["total"] = data["total"]
-        return templates.TemplateResponse(
-            data["template"], context.template_context(request, **ctx)
-        )
-
-    # ------------------------------------------------------------------
-    # /reports (Task 9, unchanged)
-    # ------------------------------------------------------------------
-
-    @router.get(
-        "/reports",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.view_reports))],
+    lines = [
+        f"{r['bucket_start']}: revenue {_fmt(r['revenue'], money=True)}, "
+        f"vends {r['vends']}, failed {_fmt(r['failed_vends'])}, "
+        f"refunds {_fmt(r['refunds'], money=True)}, "
+        f"uptime {_fmt(r['uptime_pct'])}"
+        for r in rows
+    ]
+    lines.append(
+        f"Total: revenue {_fmt(total['revenue'], money=True)}, "
+        f"vends {total['vends']}, failed {_fmt(total['failed_vends'])}, "
+        f"refunds {_fmt(total['refunds'], money=True)}, "
+        f"uptime {_fmt(total['uptime_pct'])}"
     )
-    async def reports_level(request: Request, period: int = Query(default=24)):
-        """The Reports level with activity table.
 
-        Period parameter accepts 24, 168, or 720 hours (24h/7d/30d). Invalid
-        periods fall back to 24. If no event recorder is wired, render a
-        neutral placeholder and status 200.
-        """
-        # If no recorder is wired, return the neutral placeholder inside the shell
-        if not context.event_recorder:
-            return templates.TemplateResponse(
-                "reports.html",
-                context.template_context(
-                    request,
-                    level=LEVEL_REPORTS,
-                    summary=None,
-                    average=None,
-                    period=period,
-                    tiles=_REPORT_TILES,
-                ),
-            )
+    return {
+        "rows": rows,
+        "total": total,
+        "csv_rows": csv_rows,
+        "header": PERIOD_HEADER,
+        "subject": f"Sales report: by period ({range_key}, {bucket_key})",
+        "body": "\n".join(lines),
+        "level": LEVEL_REPORTS_PERIOD,
+        "template": "reports_period.html",
+        "extra": {"range": range_key, "bucket": bucket_key},
+        "label": "period",
+    }
 
-        # Fall back to 24 hours if period is invalid
-        if period not in (24, 168, 720):
-            period = 24
 
-        # Offload synchronous SQLite calls to a worker thread
-        summary = await asyncio.to_thread(context.event_recorder.get_summary, period)
-        average = await asyncio.to_thread(
-            context.event_recorder.get_historical_average, period
+async def _compute_product(range_key: str) -> dict:
+    rows: list[dict] = []
+    if context.event_recorder:
+        window = reports_service.resolve_window(range_key)
+        rows = await asyncio.to_thread(
+            reports_service.by_product, context.event_recorder, window
         )
+    lines = [
+        f"{r['name']} ({r['sku']}): units {r['units']}, "
+        f"revenue ${r['revenue']:.2f}, failed {r['failed_vends']}"
+        for r in rows
+    ]
+    return {
+        "rows": rows,
+        "csv_rows": rows,
+        "header": PRODUCT_HEADER,
+        "subject": f"Sales report: by product ({range_key})",
+        "body": "\n".join(lines) or "No sales in this range.",
+        "level": LEVEL_REPORTS_PRODUCT,
+        "template": "reports_product.html",
+        "extra": {"range": range_key},
+        "label": "product",
+    }
 
+
+async def _compute_product_sku(range_key: str, bucket_key: str, sku: str) -> dict:
+    # Catalog lookup runs -- and 404s -- BEFORE any query, same as
+    # every other level's shell 404: a real SKU with zero sales in the
+    # window must still render 200 with a zero row, never a 404, and
+    # this ordering is what guarantees that.
+    product = _find_product(sku)
+    if product is None:
+        raise HTTPException(status_code=404, detail=f"No such product: {sku}")
+
+    rows: list[dict] = []
+    if context.event_recorder:
+        window = reports_service.resolve_window(range_key)
+        rows = await asyncio.to_thread(
+            reports_service.by_period,
+            context.event_recorder,
+            window,
+            bucket_key,
+            None,
+            sku,
+        )
+    total = _totalize_period(rows)
+    csv_rows = [*rows, {"bucket_start": "Total", **total}]
+
+    # The breadcrumb uses the CATALOG's product name -- never a name
+    # derived from query rows, which carry no `name` field at all for
+    # this by_period shape (and are simply absent for a no-sales SKU).
+    # sku_url_segment: `sku` is an arbitrary catalog string, but this
+    # becomes the breadcrumb/Back URL for a `{sku}` single-segment
+    # route -- see its docstring (web_interface/filters.py). The same
+    # function backs the `sku_url_segment` Jinja filter used by
+    # reports_product.html and reports_product_sku.html so all three
+    # links for a SKU agree.
+    level = Level.child(
+        LEVEL_REPORTS_PRODUCT,
+        product.name or sku,
+        f"/reports/product/{sku_url_segment(sku)}",
+    )
+
+    lines = [
+        f"{r['bucket_start']}: revenue {_fmt(r['revenue'], money=True)}, "
+        f"vends {r['vends']}, failed {_fmt(r['failed_vends'])}, "
+        f"refunds {_fmt(r['refunds'], money=True)}, "
+        f"uptime {_fmt(r['uptime_pct'])}"
+        for r in rows
+    ]
+    lines.append(
+        f"Total: revenue {_fmt(total['revenue'], money=True)}, "
+        f"vends {total['vends']}, failed {_fmt(total['failed_vends'])}, "
+        f"refunds {_fmt(total['refunds'], money=True)}, "
+        f"uptime {_fmt(total['uptime_pct'])}"
+    )
+    body = f"{product.name} ({sku}) by period:\n" + "\n".join(lines)
+
+    return {
+        "rows": rows,
+        "total": total,
+        "csv_rows": csv_rows,
+        "header": PERIOD_HEADER,
+        "subject": (
+            f"Sales report: {product.name} by period ({range_key}, {bucket_key})"
+        ),
+        "body": body,
+        "level": level,
+        "template": "reports_product_sku.html",
+        "extra": {
+            "range": range_key,
+            "bucket": bucket_key,
+            "sku": sku,
+            "product_name": product.name,
+        },
+        "label": f"product-{sku}",
+    }
+
+
+async def _compute_method(range_key: str) -> dict:
+    rows: list[dict] = []
+    if context.event_recorder:
+        window = reports_service.resolve_window(range_key)
+        rows = await asyncio.to_thread(
+            reports_service.by_method, context.event_recorder, window
+        )
+    lines = [
+        f"{r['method']}: ${r['amount']:.2f} ({r['share'] * 100:.1f}%), "
+        f"{r['count']} sales, {'cash' if r['is_cash'] else 'other'}"
+        for r in rows
+    ]
+    return {
+        "rows": rows,
+        "csv_rows": rows,
+        "header": METHOD_HEADER,
+        "subject": f"Sales report: by method ({range_key})",
+        "body": "\n".join(lines) or "No sales in this range.",
+        "level": LEVEL_REPORTS_METHOD,
+        "template": "reports_method.html",
+        "extra": {"range": range_key},
+        "label": "method",
+    }
+
+
+async def _compute_collections(range_key: str) -> dict:
+    raw_rows: list[dict] = []
+    if context.event_recorder:
+        raw_rows = await asyncio.to_thread(
+            reports_service.collections, context.event_recorder, 50
+        )
+    # `ts_display` is added for the template only (a human timestamp).
+    # Unlike the earlier version of this helper, it is added by
+    # building new dicts here rather than mutating the service's
+    # returned rows in place -- `raw_rows` (what `render_csv` uses)
+    # stays exactly what `reports_service.collections` returned, and
+    # `render_csv`'s `DictWriter(..., extrasaction="ignore")` would
+    # have ignored the extra key either way, so this is a tidiness fix
+    # with no behavior change.
+    rows = [{**row, "ts_display": _ts_display(row["ts"])} for row in raw_rows]
+    lines = [
+        f"{_ts_display(r['ts'])} {r['user_name']}: expected ${r['expected_cash']:.2f}"
+        for r in raw_rows
+    ]
+    return {
+        "rows": rows,
+        "csv_rows": raw_rows,
+        "header": COLLECTIONS_HEADER,
+        "subject": "Sales report: cash collections",
+        "body": "\n".join(lines) or "No collections recorded.",
+        "level": LEVEL_REPORTS_COLLECTIONS,
+        "template": "reports_collections.html",
+        "extra": {"range": range_key},
+        "label": "collections",
+    }
+
+
+def _render(request: Request, data: dict, *, email_notice=None, email_error=None):
+    ctx = {
+        "level": data["level"],
+        "rows": data["rows"],
+        "email_notice": email_notice,
+        "email_error": email_error,
+        **data["extra"],
+    }
+    if "total" in data:
+        ctx["total"] = data["total"]
+    return templates.TemplateResponse(
+        data["template"], context.template_context(request, **ctx)
+    )
+
+
+# ------------------------------------------------------------------
+# /reports (Task 9, unchanged)
+# ------------------------------------------------------------------
+
+
+@router.get(
+    "/reports",
+    response_class=HTMLResponse,
+    dependencies=[Depends(web_auth.require(Permission.view_reports))],
+)
+async def reports_level(request: Request, period: int = Query(default=24)):
+    """The Reports level with activity table.
+
+    Period parameter accepts 24, 168, or 720 hours (24h/7d/30d). Invalid
+    periods fall back to 24. If no event recorder is wired, render a
+    neutral placeholder and status 200.
+    """
+    # If no recorder is wired, return the neutral placeholder inside the shell
+    if not context.event_recorder:
         return templates.TemplateResponse(
             "reports.html",
             context.template_context(
                 request,
                 level=LEVEL_REPORTS,
+                summary=None,
+                average=None,
                 period=period,
-                summary=summary,
-                average=average,
                 tiles=_REPORT_TILES,
             ),
         )
 
-    # ------------------------------------------------------------------
-    # The four report levels (Task 10)
-    # ------------------------------------------------------------------
+    # Fall back to 24 hours if period is invalid
+    if period not in (24, 168, 720):
+        period = 24
 
-    @router.get(
-        "/reports/period",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.view_reports))],
+    # Offload synchronous SQLite calls to a worker thread
+    summary = await asyncio.to_thread(context.event_recorder.get_summary, period)
+    average = await asyncio.to_thread(
+        context.event_recorder.get_historical_average, period
     )
-    async def reports_period_level(
-        request: Request,
-        range: str = Query(default=reports_service.DEFAULT_WINDOW),
-        bucket: str | None = Query(default=None),
-    ):
-        range_key = _effective_range(range)
+
+    return templates.TemplateResponse(
+        "reports.html",
+        context.template_context(
+            request,
+            level=LEVEL_REPORTS,
+            period=period,
+            summary=summary,
+            average=average,
+            tiles=_REPORT_TILES,
+        ),
+    )
+
+
+# ------------------------------------------------------------------
+# The four report levels (Task 10)
+# ------------------------------------------------------------------
+
+
+@router.get(
+    "/reports/period",
+    response_class=HTMLResponse,
+    dependencies=[Depends(web_auth.require(Permission.view_reports))],
+)
+async def reports_period_level(
+    request: Request,
+    range: str = Query(default=reports_service.DEFAULT_WINDOW),
+    bucket: str | None = Query(default=None),
+):
+    range_key = _effective_range(range)
+    bucket_key = resolve_bucket(range_key, bucket)
+    data = await _compute_period(range_key, bucket_key)
+    return _render(request, data)
+
+
+@router.get(
+    "/reports/product",
+    response_class=HTMLResponse,
+    dependencies=[Depends(web_auth.require(Permission.view_reports))],
+)
+async def reports_product_level(
+    request: Request, range: str = Query(default=reports_service.DEFAULT_WINDOW)
+):
+    range_key = _effective_range(range)
+    data = await _compute_product(range_key)
+    return _render(request, data)
+
+
+@router.get(
+    # `{sku:path}` (not plain `{sku}`) -- see sku_url_segment's
+    # docstring (web_interface/filters.py): a `str`-converter route
+    # 404s on a percent-encoded `/` (`%2F`) since the ASGI server
+    # decodes it before Starlette's router sees it, so a SKU
+    # containing `/` needs the `path` converter to route at all.
+    "/reports/product/{sku:path}",
+    response_class=HTMLResponse,
+    dependencies=[Depends(web_auth.require(Permission.view_reports))],
+)
+async def reports_product_sku_level(
+    request: Request,
+    sku: str,
+    range: str = Query(default=reports_service.DEFAULT_WINDOW),
+    bucket: str | None = Query(default=None),
+):
+    range_key = _effective_range(range)
+    bucket_key = resolve_bucket(range_key, bucket)
+    data = await _compute_product_sku(range_key, bucket_key, sku)
+    return _render(request, data)
+
+
+@router.get(
+    "/reports/method",
+    response_class=HTMLResponse,
+    dependencies=[Depends(web_auth.require(Permission.view_reports))],
+)
+async def reports_method_level(
+    request: Request, range: str = Query(default=reports_service.DEFAULT_WINDOW)
+):
+    range_key = _effective_range(range)
+    data = await _compute_method(range_key)
+    return _render(request, data)
+
+
+@router.get(
+    "/reports/collections",
+    response_class=HTMLResponse,
+    dependencies=[Depends(web_auth.require(Permission.view_reports))],
+)
+async def reports_collections_level(
+    request: Request, range: str = Query(default=reports_service.DEFAULT_WINDOW)
+):
+    range_key = _effective_range(range)
+    data = await _compute_collections(range_key)
+    return _render(request, data)
+
+
+# ------------------------------------------------------------------
+# POST /reports/email (Task 10)
+# ------------------------------------------------------------------
+
+
+@router.post(
+    "/reports/email",
+    response_class=HTMLResponse,
+    dependencies=[
+        Depends(web_auth.require(Permission.view_reports)),
+        Depends(context.require_htmx),
+    ],
+)
+async def email_report(
+    request: Request,
+    report: str = Form(...),
+    range: str = Form(default=reports_service.DEFAULT_WINDOW),
+    bucket: str | None = Form(default=None),
+    sku: str | None = Form(default=None),
+):
+    """Email the current page's report: a plain-text rendering in the
+    body, the same rows as a CSV attachment, to the current user's
+    email -- falling back to the owner's when the user has none.
+    Recomputes the report from the posted parameters (never trusts a
+    client-supplied row list), so what is emailed always matches what
+    the query would render. Reports success or failure inline by
+    re-rendering the originating page template.
+    """
+    range_key = _effective_range(range)
+
+    if report == "period":
         bucket_key = resolve_bucket(range_key, bucket)
         data = await _compute_period(range_key, bucket_key)
-        return _render(request, data)
-
-    @router.get(
-        "/reports/product",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.view_reports))],
-    )
-    async def reports_product_level(
-        request: Request, range: str = Query(default=reports_service.DEFAULT_WINDOW)
-    ):
-        range_key = _effective_range(range)
+    elif report == "product":
         data = await _compute_product(range_key)
-        return _render(request, data)
-
-    @router.get(
-        # `{sku:path}` (not plain `{sku}`) -- see sku_url_segment's
-        # docstring (web_interface/filters.py): a `str`-converter route
-        # 404s on a percent-encoded `/` (`%2F`) since the ASGI server
-        # decodes it before Starlette's router sees it, so a SKU
-        # containing `/` needs the `path` converter to route at all.
-        "/reports/product/{sku:path}",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.view_reports))],
-    )
-    async def reports_product_sku_level(
-        request: Request,
-        sku: str,
-        range: str = Query(default=reports_service.DEFAULT_WINDOW),
-        bucket: str | None = Query(default=None),
-    ):
-        range_key = _effective_range(range)
+    elif report == "product_sku":
+        if not sku:
+            raise HTTPException(
+                status_code=400, detail="sku is required for product_sku report"
+            )
         bucket_key = resolve_bucket(range_key, bucket)
         data = await _compute_product_sku(range_key, bucket_key, sku)
-        return _render(request, data)
-
-    @router.get(
-        "/reports/method",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.view_reports))],
-    )
-    async def reports_method_level(
-        request: Request, range: str = Query(default=reports_service.DEFAULT_WINDOW)
-    ):
-        range_key = _effective_range(range)
+    elif report == "method":
         data = await _compute_method(range_key)
-        return _render(request, data)
-
-    @router.get(
-        "/reports/collections",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.view_reports))],
-    )
-    async def reports_collections_level(
-        request: Request, range: str = Query(default=reports_service.DEFAULT_WINDOW)
-    ):
-        range_key = _effective_range(range)
+    elif report == "collections":
         data = await _compute_collections(range_key)
-        return _render(request, data)
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown report: {report!r}")
 
-    # ------------------------------------------------------------------
-    # POST /reports/email (Task 10)
-    # ------------------------------------------------------------------
+    principal = web_auth.current_principal(request)
+    user_email = principal.user.email if principal else None
+    to_addr = user_email or context.config.machine_owner.email
 
-    @router.post(
-        "/reports/email",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(web_auth.require(Permission.view_reports)),
-            Depends(context.require_htmx),
-        ],
+    filename = reports_service.report_filename(
+        context.config.machine_id, data["label"], range_key
     )
-    async def email_report(
-        request: Request,
-        report: str = Form(...),
-        range: str = Form(default=reports_service.DEFAULT_WINDOW),
-        bucket: str | None = Form(default=None),
-        sku: str | None = Form(default=None),
-    ):
-        """Email the current page's report: a plain-text rendering in the
-        body, the same rows as a CSV attachment, to the current user's
-        email -- falling back to the owner's when the user has none.
-        Recomputes the report from the posted parameters (never trusts a
-        client-supplied row list), so what is emailed always matches what
-        the query would render. Reports success or failure inline by
-        re-rendering the originating page template.
-        """
-        range_key = _effective_range(range)
+    csv_bytes = reports_service.render_csv(data["csv_rows"], data["header"])
+    gateway = context.config.communication.email_gateway
 
-        if report == "period":
-            bucket_key = resolve_bucket(range_key, bucket)
-            data = await _compute_period(range_key, bucket_key)
-        elif report == "product":
-            data = await _compute_product(range_key)
-        elif report == "product_sku":
-            if not sku:
-                raise HTTPException(
-                    status_code=400, detail="sku is required for product_sku report"
-                )
-            bucket_key = resolve_bucket(range_key, bucket)
-            data = await _compute_product_sku(range_key, bucket_key, sku)
-        elif report == "method":
-            data = await _compute_method(range_key)
-        elif report == "collections":
-            data = await _compute_collections(range_key)
-        else:
-            raise HTTPException(status_code=400, detail=f"Unknown report: {report!r}")
-
-        principal = web_auth.current_principal(request)
-        user_email = principal.user.email if principal else None
-        to_addr = user_email or context.config.machine_owner.email
-
-        filename = reports_service.report_filename(
-            context.config.machine_id, data["label"], range_key
+    ok = False
+    if to_addr and gateway.is_configured:
+        ok = await send_email(
+            gateway,
+            to_addr,
+            data["subject"],
+            data["body"],
+            attachments=[(filename, csv_bytes, "text/csv")],
         )
-        csv_bytes = reports_service.render_csv(data["csv_rows"], data["header"])
-        gateway = context.config.communication.email_gateway
 
-        ok = False
-        if to_addr and gateway.is_configured:
-            ok = await send_email(
-                gateway,
-                to_addr,
-                data["subject"],
-                data["body"],
-                attachments=[(filename, csv_bytes, "text/csv")],
-            )
-
-        if ok:
-            return _render(request, data, email_notice=f"Report emailed to {to_addr}.")
-        return _render(request, data, email_error="Could not send the email.")
-
-    return router
+    if ok:
+        return _render(request, data, email_notice=f"Report emailed to {to_addr}.")
+    return _render(request, data, email_error="Could not send the email.")
