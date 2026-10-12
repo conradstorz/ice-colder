@@ -31,6 +31,7 @@ CONVERTED: frozenset[str] = frozenset(
         "settings",
         "tests_level",
         "users",
+        "auth",
     }
 )
 
