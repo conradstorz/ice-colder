@@ -60,6 +60,8 @@ print("OK" if not bad else "FAIL")
 
 Run: `uv run python <scratch>/verify_move.py <area>` → must print `OK`.
 
+The verify script sees only defs and assignments. **Module-level comment blocks and section dividers (`# --- ... ---`, a `# Task N ...` explanation above a helper) move with the function they precede**, verbatim. The one exception: a comment whose only content is about route registration order within the old single file is replaced by a one-line pointer to the package `__init__.py`, and any docstring sentence that referred to it is updated to point there. After the move, confirm nothing else was dropped: compare the multiset of non-blank lines of the original (`git show main:web_interface/routes/<area>.py`) against the concatenation of the package files; every original line must appear at least as often in the package, apart from the import block, the `router`/`public` line, and that ordering comment.
+
 4. `uv run ruff check --fix .` then `uv run ruff format .`; re-run the verify script (ruff must not have touched a function body — if it did, the original had a formatting difference and you must restore the original text).
 
 ---
