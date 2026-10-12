@@ -42,7 +42,7 @@ def _path_for(module_name: str) -> Path:
     return module_file if module_file.exists() else base / "__init__.py"
 
 
-# auth.py is the one module whose router is the unauthenticated `public` one.
+# `auth` is the one package whose router is the unauthenticated `public` one.
 ROUTER_ATTR = {"auth": "public"}
 
 

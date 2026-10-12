@@ -3,7 +3,7 @@
 
 {# GET /tests/sale (this page) never takes the maintenance lease -- only
    POST /tests/sale (submitted below) does, via web_interface/routes/
-   tests_level.py's _acquire_lease_or_refusal. The SKU travels as a plain
+   tests_level/lease.py's _acquire_lease_or_refusal. The SKU travels as a plain
    POST form field (name="sku"), never a URL segment -- see
    tests_sale_run's own docstring for why that makes a SKU containing "/"
    need no sku_url_segment/{sku:path} handling here. #}

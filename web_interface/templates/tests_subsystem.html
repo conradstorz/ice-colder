@@ -5,7 +5,7 @@
    POST /tests/{subsystem}/{command}, not added by this task) plus its
    params widget, if the command takes one. A local macro rather than a
    separate partial file, since this task's file list does not include one
-   -- see web_interface/routes/tests_level.py's module docstring. #}
+   -- see web_interface/routes/tests_level/commands.py. #}
 {% macro command_card(subsystem, post_base, cmd) %}
 {# id/target keyed on `subsystem` + `cmd.name` -- both drawn from a fixed,
    slash-free vocabulary (EXPECTED_SUBSYSTEMS and

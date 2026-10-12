@@ -22,7 +22,7 @@
    fragment (it has no <main>) and blank the failure paths above. So that
    third case is retargeted per-response instead, via HX-Retarget/
    HX-Reselect headers set only on that response in
-   web_interface/routes/auth.py's _enrollment_response — see its comment
+   web_interface/routes/auth/login.py's _enrollment_response — see its comment
    for the mechanism. #}
 <form id="login-form"
       hx-post="/login"

@@ -118,7 +118,7 @@ class TestSaleRunner:
         TestRunTestSale, which calls this with only ``sku`` -- keeps working
         unchanged) identify who started the run for the ``test_run`` log row
         below and for the returned ``TestSaleResult.run_id``'s eventual
-        verdict. The web route (``web_interface/routes/tests_level.py``'s
+        verdict. The web route (``web_interface/routes/tests_level/sale.py``'s
         ``POST /tests/sale``) is the only production caller that supplies
         them, from the authenticated ``Principal``.
 
@@ -178,7 +178,7 @@ class TestSaleRunner:
         # A single machine can only ever be mid one sale anyway -- the FSM
         # itself is single-sale by construction -- so a second, concurrent
         # simulated sale (a double-submit, or two browser tabs on the same
-        # session; web_interface/routes/tests_level.py's
+        # session; web_interface/routes/tests_level/lease.py's
         # `_acquire_lease_or_refusal` deliberately lets a second command
         # through for a session that already holds the lease) is refused
         # outright, rather than accommodated. This guard is checked HERE,
@@ -263,7 +263,7 @@ class TestSaleRunner:
                     # docstring). This is the ONLY place a simulated
                     # sale writes a test_run row -- one row per call,
                     # never a second write from the route side
-                    # (web_interface/routes/tests_level.py's
+                    # (web_interface/routes/tests_level/sale.py's
                     # POST /tests/sale reuses this result's `run_id`
                     # rather than writing its own row).
                     recorder.record(

@@ -108,7 +108,7 @@ class FakeAckDispatcher:
         )
 
     async def send_and_await_completion(self, subsystem, command, params=None):
-        """`_run_command` (web_interface/routes/tests_level.py) now calls
+        """`_run_command` (web_interface/routes/tests_level/commands.py) now calls
         this instead of `send` (completion-table amendment, 2026-09-29).
         This fake's ack always defaults `phase="completed"` (see `send`
         above), so delegating to `send` reproduces exactly what the real
@@ -172,7 +172,7 @@ class TestPermissionGates:
     """All three GET routes gate on run_tests: 200 for owner/tech, 403 for
     secretary/loader (run_tests is held by exactly owner and tech --
     services/access.py's ROLE_PERMISSIONS). Reaches
-    web_interface/routes/tests_level.py's `Depends(web_auth.require(...))`
+    the `web_interface/routes/tests_level/` package's `Depends(web_auth.require(...))`
     on each of the three routes.
 
     Mutation proof (dropping the dependency from GET /tests/log): removed
@@ -201,7 +201,7 @@ class TestDiscoveryIntersection:
     """GET /tests/{subsystem} renders a Run button only for a command that
     is both server-allowlisted (contracts.common.TESTABLE_COMMANDS) and
     advertised by that subsystem's capabilities -- reaches
-    web_interface/routes/tests_level.py's `testable_commands` and the
+    web_interface/routes/tests_level/commands.py's `testable_commands` and the
     tests_subsystem.html template's automatic/actuator loops.
 
     Mutation proof: changed `testable_commands` to `return set(advertised
@@ -294,7 +294,7 @@ class TestLeaseNotTaken:
     """Entering /tests, or any subsystem's detail page, must never call
     machine.lease.begin_maintenance -- it only ever reads the read-only
     `maintenance_hold` property. Reaches
-    web_interface/routes/tests_level.py's `tests_level` handler.
+    web_interface/routes/tests_level/overview.py's `tests_level` handler.
 
     Mutation proof: added `context.vmc_instance.begin_maintenance(
     "mutation-test", "mutation-session")` as the first line inside the
@@ -378,7 +378,7 @@ class TestStandby:
     """GET /tests/standby/confirm and POST /tests/standby: the two-tap
     "Take out of service" control that grants a session-bound standby
     lease via machine.lease.begin_standby (controller/maintenance_lease.py). Reaches
-    web_interface/routes/tests_level.py's tests_standby_confirm and
+    web_interface/routes/tests_level/lease.py's tests_standby_confirm and
     tests_standby handlers, and the service-state card
     (partials/tests_hold_banner.html) both re-render.
     """
@@ -451,7 +451,7 @@ class TestStandby:
 
 
 class TestContractMatch:
-    """Reaches `contract_match` (web_interface/routes/tests_level.py) --
+    """Reaches `contract_match` (web_interface/routes/tests_level/commands.py) --
     the one place this program computes a contract-version match; no
     sibling exists to reuse (see that function's docstring).
 
@@ -497,7 +497,7 @@ class TestContractMatch:
 
 
 class TestLog:
-    """Reaches web_interface/routes/tests_level.py's `recent_test_runs`
+    """Reaches web_interface/routes/tests_level/log.py's `recent_test_runs`
     (a direct sqlite3 read against EventRecorder._db_path, following
     services/reports.py's own documented deviation) and tests_log.html.
     """
@@ -532,7 +532,7 @@ class TestLog:
         `meta.get("params")`) instead of `row.update(meta)`. Ran the whole
         TestLog class: 2 failed, 3 passed --
           FAILED test_survives_a_row_missing_subsystem_command_params
-            KeyError: 'subsystem' (web_interface/routes/tests_level.py:173)
+            KeyError: 'subsystem' (web_interface/routes/tests_level/log.py)
             -- a real 500 traceback from inside the request, not merely a
             wrong assertion.
           FAILED test_verdict_pass_and_fail_render
@@ -702,16 +702,16 @@ class TestSkuWithSlash:
 
 
 class TestParamRangesMatchContract:
-    """web_interface/routes/tests_level.py's WATER_VALVE_SECONDS_RANGE and
+    """web_interface/routes/tests_level/commands.py's WATER_VALVE_SECONDS_RANGE and
     POWER_CYCLE_DWELL_RANGE are a second literal copy of
     contracts/common.py's COMMAND_PARAM_VALIDATORS bounds (that module
     exposes validator functions, not reusable constants, and is out of
-    this task's file list -- see tests_level.py's module docstring). This
+    this task's file list -- see the comment above them in tests_level/commands.py). This
     test is what keeps the two from silently drifting apart: it calls the
     REAL validators at the exact boundary values the widget renders.
 
     Mutation proof: changed WATER_VALVE_SECONDS_RANGE to (1, 11) in
-    tests_level.py (simulating this constant having drifted from
+    tests_level/commands.py (simulating this constant having drifted from
     contracts/common.py's real bound, still 1-10). test_water_valve_
     seconds_range then failed -- not at the `pytest.raises` boundary
     check, but one line earlier, at the plain `validator({"seconds":
@@ -722,7 +722,7 @@ class TestParamRangesMatchContract:
     contract actually accepts. The other three tests in this class kept
     passing (test_power_cycle_dwell_range_and_default checks a different
     constant; the two test_rendered_*_bounds tests only check the HTML
-    against tests_level.py's own constant, so they're self-consistent
+    against tests_level/commands.py's own constant, so they're self-consistent
     even when that constant is wrong -- which is exactly why this
     dedicated contract-calling test exists). Restored (1, 10) -- all 4
     passed again.

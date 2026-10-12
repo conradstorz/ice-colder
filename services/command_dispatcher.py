@@ -100,7 +100,7 @@ class CompletionTimeout(Exception):
     (``contracts.common.COMPLETION_TIMEOUTS``).
 
     Distinct from ``CommandTimeout`` on purpose: a caller (e.g.
-    ``web_interface/routes/tests_level.py``'s ``_run_command``) needs to
+    ``web_interface/routes/tests_level/commands.py``'s ``_run_command``) needs to
     tell "the subsystem never even answered" apart from "it answered,
     started the work, and then never reported finishing it" — the two
     failures mean very different things to an operator.

@@ -1,4 +1,4 @@
-"""Tests for the Users levels (web_interface/routes/users.py): /users,
+"""Tests for the Users levels (web_interface/routes/users/): /users,
 /users/{id}, /users/new, /devices, /users/codes, /users/ownership and their
 POSTs.
 
