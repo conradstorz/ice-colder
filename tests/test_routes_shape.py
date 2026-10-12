@@ -17,7 +17,7 @@ import pytest
 
 ROUTES_DIR = Path(__file__).parent.parent / "web_interface" / "routes"
 
-CONVERTED: frozenset[str] = frozenset()
+CONVERTED: frozenset[str] = frozenset({"controls"})
 
 _FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
 
