@@ -18,7 +18,7 @@ import pytest
 ROUTES_DIR = Path(__file__).parent.parent / "web_interface" / "routes"
 
 CONVERTED: frozenset[str] = frozenset(
-    {"controls", "home", "screen", "inventory", "health"}
+    {"controls", "home", "screen", "inventory", "health", "products"}
 )
 
 _FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
@@ -49,7 +49,9 @@ def _hits(module_name: str) -> tuple[list[str], list[str]]:
     ]
     nested: dict[int, str] = {}
     for node in ast.walk(tree):
-        if isinstance(node, _FUNCS):
+        # _require_any is a dependency factory: its inner `dependency`
+        # closes over *permissions*, so it cannot be hoisted.
+        if isinstance(node, _FUNCS) and node.name != "_require_any":
             for inner in _nested_in(node):
                 nested[inner.lineno] = f"{rel}:{inner.lineno}"
     return build_router, [nested[k] for k in sorted(nested)]
