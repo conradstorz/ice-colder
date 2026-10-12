@@ -16,7 +16,6 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
-from web_interface.templating import templates
 from loguru import logger
 
 from contracts.vending_machine import (
@@ -37,6 +36,7 @@ from web_interface.levels import (
     Level,
 )
 from web_interface.subsystem_window import build_window
+from web_interface.templating import templates
 
 # active_faults() reports fault codes as strings (FaultCode.value); compare
 # against the contract's enum set once, here, rather than in fault_gate.

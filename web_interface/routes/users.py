@@ -17,7 +17,6 @@ the dynamic route first and capture e.g. "new" as a user id.
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
-from web_interface.templating import templates
 
 from services.access import AccessError, OwnerExistsError, Permission, Role
 from services.auth_policy import pin_problem
@@ -32,6 +31,7 @@ from web_interface.levels import (
     LEVEL_USERS_OWNERSHIP,
     Level,
 )
+from web_interface.templating import templates
 
 
 def _guard_owner_target(principal: web_auth.Principal, user_id: str) -> None:

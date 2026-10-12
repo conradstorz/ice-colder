@@ -9,7 +9,6 @@ here verbatim, per Task 1 executor resolution 2. Handlers dereference
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from web_interface.templating import templates
 
 from services.access import (
     OTP_DIGITS,
@@ -21,6 +20,7 @@ from services.auth_policy import pin_problem
 from services.mailer import send_email
 from web_interface import auth as web_auth
 from web_interface import context
+from web_interface.templating import templates
 
 # Backoff subject for a user_id form value that names nobody. Copilot review
 # (web_interface/routes.py:263): the raw form value was used as the backoff

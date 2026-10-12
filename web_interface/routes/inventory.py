@@ -25,12 +25,12 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
-from web_interface.templating import templates
 
 from services.access import Permission
 from web_interface import auth as web_auth
 from web_interface import context
 from web_interface.levels import LEVEL_INVENTORY
+from web_interface.templating import templates
 
 # The only four deltas the four adjust buttons ever send (brief resolution
 # 6). The endpoint is reachable directly, not only from those buttons, so

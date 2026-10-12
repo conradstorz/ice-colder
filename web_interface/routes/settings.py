@@ -29,7 +29,6 @@ module avoids importing main.py and creating a cycle through the web app.
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
-from web_interface.templating import templates
 from loguru import logger
 from pydantic import SecretStr, ValidationError
 
@@ -50,6 +49,7 @@ from web_interface.levels import (
     LEVEL_SETTINGS_REPORTS,
     LEVEL_SETTINGS_WEB,
 )
+from web_interface.templating import templates
 
 # Fixed placeholder rendered for any secret that is already set, real value
 # or dummy default alike — never the actual secret text (brief resolution

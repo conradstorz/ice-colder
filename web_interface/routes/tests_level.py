@@ -31,7 +31,6 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
-from web_interface.templating import templates
 
 from contracts.common import TESTABLE_COMMANDS
 from contracts.ice_maker_monitor import CONTRACT_VERSION as ICE_MAKER_CONTRACT_VERSION
@@ -43,6 +42,7 @@ from web_interface import auth as web_auth
 from web_interface import context
 from web_interface.levels import LEVEL_TESTS, LEVEL_TESTS_LOG, LEVEL_TESTS_SALE, Level
 from web_interface.routes.health import _subsystem_summary
+from web_interface.templating import templates
 
 # Standard commands every subsystem answers (system-tests design §1.2),
 # rendered in their own group on /tests/{subsystem}; every other testable
