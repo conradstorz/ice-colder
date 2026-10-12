@@ -25,7 +25,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
+from web_interface.templating import templates
 
 from services.access import Permission
 from web_interface import auth as web_auth
@@ -126,174 +126,173 @@ def _row_for(product) -> dict:
     return row
 
 
-def build_router(templates: Jinja2Templates) -> APIRouter:
-    router = APIRouter()
+router = APIRouter()
 
-    @router.get(
-        "/inventory",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.edit_placement))],
+
+@router.get(
+    "/inventory",
+    response_class=HTMLResponse,
+    dependencies=[Depends(web_auth.require(Permission.edit_placement))],
+)
+async def inventory_view(request: Request):
+    rows = [_row_for(p) for p in context.config.products]
+    # Tracked rows first, untracked at the bottom (brief resolution 8)
+    # — decided once here, never left to the template to sort out.
+    ordered = [r for r in rows if r["tracked"]] + [r for r in rows if not r["tracked"]]
+    return templates.TemplateResponse(
+        "inventory.html",
+        context.template_context(request, level=LEVEL_INVENTORY, rows=ordered),
     )
-    async def inventory_view(request: Request):
-        rows = [_row_for(p) for p in context.config.products]
-        # Tracked rows first, untracked at the bottom (brief resolution 8)
-        # — decided once here, never left to the template to sort out.
-        ordered = [r for r in rows if r["tracked"]] + [
-            r for r in rows if not r["tracked"]
-        ]
-        return templates.TemplateResponse(
-            "inventory.html",
-            context.template_context(request, level=LEVEL_INVENTORY, rows=ordered),
+
+
+@router.post(
+    "/inventory/{sku}/adjust",
+    response_class=HTMLResponse,
+    dependencies=[
+        Depends(web_auth.require(Permission.edit_placement)),
+        Depends(context.require_htmx),
+    ],
+)
+async def adjust_inventory(request: Request, sku: str, delta: str = Form(...)):
+    product = _get_or_404(sku)
+
+    # delta is declared as `str`, not `int` — FastAPI's own validation
+    # would otherwise turn a non-integer form value into a 422 before
+    # this handler ever runs, and the brief is explicit that a
+    # rejected delta is a 400 (brief resolution 6). Parsed and
+    # range-checked by hand instead, so a non-integer ("abc") and an
+    # out-of-range integer ("7") both take the same path to the same
+    # 400, leaving the stored count untouched.
+    try:
+        delta_value = int(delta)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400, detail="delta must be one of -10, -1, 1, 10"
+        ) from exc
+    if delta_value not in _ALLOWED_DELTAS:
+        raise HTTPException(
+            status_code=400, detail="delta must be one of -10, -1, 1, 10"
         )
 
-    @router.post(
-        "/inventory/{sku}/adjust",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(web_auth.require(Permission.edit_placement)),
-            Depends(context.require_htmx),
-        ],
+    if context.inventory_manager:
+        # Clamp at zero rather than erroring — a loader tapping -10 on
+        # a count of 3 should land on 0, the physically meaningful
+        # result (brief resolution 5). Deliberately different from the
+        # placement form, which rejects a typed negative count outright.
+        current = context.inventory_manager.get_count(sku)
+        context.inventory_manager.set_count(sku, max(0, current + delta_value))
+
+    # One row, not the whole list (brief resolution 7) — a loader's
+    # repeated taps must not scroll-jump the page on a tablet.
+    return templates.TemplateResponse(
+        "partials/inventory_row.html",
+        context.template_context(request, row=_row_for(product)),
     )
-    async def adjust_inventory(request: Request, sku: str, delta: str = Form(...)):
-        product = _get_or_404(sku)
 
-        # delta is declared as `str`, not `int` — FastAPI's own validation
-        # would otherwise turn a non-integer form value into a 422 before
-        # this handler ever runs, and the brief is explicit that a
-        # rejected delta is a 400 (brief resolution 6). Parsed and
-        # range-checked by hand instead, so a non-integer ("abc") and an
-        # out-of-range integer ("7") both take the same path to the same
-        # 400, leaving the stored count untouched.
-        try:
-            delta_value = int(delta)
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(
-                status_code=400, detail="delta must be one of -10, -1, 1, 10"
-            ) from exc
-        if delta_value not in _ALLOWED_DELTAS:
-            raise HTTPException(
-                status_code=400, detail="delta must be one of -10, -1, 1, 10"
-            )
 
-        if context.inventory_manager:
-            # Clamp at zero rather than erroring — a loader tapping -10 on
-            # a count of 3 should land on 0, the physically meaningful
-            # result (brief resolution 5). Deliberately different from the
-            # placement form, which rejects a typed negative count outright.
-            current = context.inventory_manager.get_count(sku)
-            context.inventory_manager.set_count(sku, max(0, current + delta_value))
+@router.get(
+    "/inventory/collect/confirm",
+    response_class=HTMLResponse,
+    dependencies=[Depends(web_auth.require(Permission.collect_cash))],
+)
+async def collect_confirm(
+    request: Request, confirming: str | None = Query(default=None)
+):
+    """confirm_button.html's confirm_url contract: absent or anything but
+    the literal string "false" renders the confirming (Confirm/Cancel)
+    state; "false" renders the plain first-tap button -- this is what its
+    Cancel button sends via hx-vals."""
+    return templates.TemplateResponse(
+        "partials/confirm_button.html",
+        context.template_context(
+            request,
+            label="Collect Cash",
+            confirm_label="Confirm Collection",
+            post_url="/inventory/collect",
+            target="#collect-cash-confirm",
+            confirm_url="/inventory/collect/confirm",
+            confirming=(confirming != "false"),
+        ),
+    )
 
-        # One row, not the whole list (brief resolution 7) — a loader's
-        # repeated taps must not scroll-jump the page on a tablet.
-        return templates.TemplateResponse(
-            "partials/inventory_row.html",
-            context.template_context(request, row=_row_for(product)),
+
+@router.post(
+    "/inventory/collect",
+    response_class=HTMLResponse,
+    dependencies=[
+        Depends(web_auth.require(Permission.collect_cash)),
+        Depends(context.require_htmx),
+    ],
+)
+async def collect_cash(request: Request):
+    """Record a cash collection and return the recorded time and expected amount."""
+    if not context.event_recorder:
+        raise HTTPException(status_code=500, detail="Event recorder not configured")
+
+    # Depends(web_auth.require(Permission.collect_cash)) above has
+    # already guaranteed an authenticated principal; this re-derivation
+    # is defensive only (current_principal returning None here would
+    # mean the dependency itself is broken), kept as a belt-and-braces
+    # guard rather than trusted to never change.
+    principal = web_auth.current_principal(request)
+    if not principal:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    user_id = principal.user.id
+    user_name = principal.user.name
+    db_path = context.event_recorder._db_path
+
+    async with _collect_cash_lock:
+        # Captured before enqueueing (Finding 2): proves, after the
+        # read-back below, whether a genuinely NEW row was written by
+        # THIS call, rather than trusting that any row present at all
+        # means this call's write landed.
+        baseline_id = await asyncio.to_thread(_max_cash_collection_id, db_path)
+
+        # Record the cash collection, which enqueues it on the writer
+        # thread.
+        context.event_recorder.record_cash_collection(user_id, user_name)
+
+        # Flush the queue to ensure the row is written. If the writer
+        # thread has died, this returns immediately without waiting --
+        # see EventRecorder.flush's docstring -- which is exactly why
+        # the id captured above matters: nothing below may assume the
+        # enqueued job was actually processed.
+        await asyncio.to_thread(context.event_recorder.flush)
+
+        # Read the row back to get the expected_cash value that was
+        # computed in the writer thread at insert time (this ensures
+        # consistency with the recorded value, not a figure recomputed
+        # here in the route). Ordered by `id`, not `ts` -- see
+        # `_collect_cash_lock`'s comment for why `ts` alone cannot
+        # disambiguate the newest row. Runs in a thread (Finding 4):
+        # the connect+query is a blocking disk read like `flush()`
+        # itself, and must not run directly in the coroutine body on
+        # this project's SD-card target.
+        row = await asyncio.to_thread(_latest_cash_collection_row, db_path)
+
+    if row is None or row[0] <= baseline_id:
+        # Either the table is empty (nothing was ever written) or the
+        # newest row is no newer than what existed before this call
+        # enqueued its job -- the writer thread did not process it (a
+        # dead writer thread; see flush()'s docstring). Showing the
+        # collector *any* older row here would be showing them someone
+        # else's already-recorded collection as if it were their own.
+        raise HTTPException(
+            status_code=500,
+            detail="Cash collection was not recorded (writer thread not running)",
         )
 
-    @router.get(
-        "/inventory/collect/confirm",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.collect_cash))],
+    _row_id, ts, expected_cash = row
+
+    # Format the recorded time as a human-readable string.
+    recorded_time = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+
+    return templates.TemplateResponse(
+        "partials/cash_collection_result.html",
+        context.template_context(
+            request,
+            recorded_time=recorded_time,
+            expected_cash=expected_cash,
+        ),
     )
-    async def collect_confirm(
-        request: Request, confirming: str | None = Query(default=None)
-    ):
-        """confirm_button.html's confirm_url contract: absent or anything but
-        the literal string "false" renders the confirming (Confirm/Cancel)
-        state; "false" renders the plain first-tap button -- this is what its
-        Cancel button sends via hx-vals."""
-        return templates.TemplateResponse(
-            "partials/confirm_button.html",
-            context.template_context(
-                request,
-                label="Collect Cash",
-                confirm_label="Confirm Collection",
-                post_url="/inventory/collect",
-                target="#collect-cash-confirm",
-                confirm_url="/inventory/collect/confirm",
-                confirming=(confirming != "false"),
-            ),
-        )
-
-    @router.post(
-        "/inventory/collect",
-        response_class=HTMLResponse,
-        dependencies=[
-            Depends(web_auth.require(Permission.collect_cash)),
-            Depends(context.require_htmx),
-        ],
-    )
-    async def collect_cash(request: Request):
-        """Record a cash collection and return the recorded time and expected amount."""
-        if not context.event_recorder:
-            raise HTTPException(status_code=500, detail="Event recorder not configured")
-
-        # Depends(web_auth.require(Permission.collect_cash)) above has
-        # already guaranteed an authenticated principal; this re-derivation
-        # is defensive only (current_principal returning None here would
-        # mean the dependency itself is broken), kept as a belt-and-braces
-        # guard rather than trusted to never change.
-        principal = web_auth.current_principal(request)
-        if not principal:
-            raise HTTPException(status_code=401, detail="Not authenticated")
-
-        user_id = principal.user.id
-        user_name = principal.user.name
-        db_path = context.event_recorder._db_path
-
-        async with _collect_cash_lock:
-            # Captured before enqueueing (Finding 2): proves, after the
-            # read-back below, whether a genuinely NEW row was written by
-            # THIS call, rather than trusting that any row present at all
-            # means this call's write landed.
-            baseline_id = await asyncio.to_thread(_max_cash_collection_id, db_path)
-
-            # Record the cash collection, which enqueues it on the writer
-            # thread.
-            context.event_recorder.record_cash_collection(user_id, user_name)
-
-            # Flush the queue to ensure the row is written. If the writer
-            # thread has died, this returns immediately without waiting --
-            # see EventRecorder.flush's docstring -- which is exactly why
-            # the id captured above matters: nothing below may assume the
-            # enqueued job was actually processed.
-            await asyncio.to_thread(context.event_recorder.flush)
-
-            # Read the row back to get the expected_cash value that was
-            # computed in the writer thread at insert time (this ensures
-            # consistency with the recorded value, not a figure recomputed
-            # here in the route). Ordered by `id`, not `ts` -- see
-            # `_collect_cash_lock`'s comment for why `ts` alone cannot
-            # disambiguate the newest row. Runs in a thread (Finding 4):
-            # the connect+query is a blocking disk read like `flush()`
-            # itself, and must not run directly in the coroutine body on
-            # this project's SD-card target.
-            row = await asyncio.to_thread(_latest_cash_collection_row, db_path)
-
-        if row is None or row[0] <= baseline_id:
-            # Either the table is empty (nothing was ever written) or the
-            # newest row is no newer than what existed before this call
-            # enqueued its job -- the writer thread did not process it (a
-            # dead writer thread; see flush()'s docstring). Showing the
-            # collector *any* older row here would be showing them someone
-            # else's already-recorded collection as if it were their own.
-            raise HTTPException(
-                status_code=500,
-                detail="Cash collection was not recorded (writer thread not running)",
-            )
-
-        _row_id, ts, expected_cash = row
-
-        # Format the recorded time as a human-readable string.
-        recorded_time = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
-
-        return templates.TemplateResponse(
-            "partials/cash_collection_result.html",
-            context.template_context(
-                request,
-                recorded_time=recorded_time,
-                expected_cash=expected_cash,
-            ),
-        )
-
-    return router
