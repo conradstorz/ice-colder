@@ -27,6 +27,13 @@ ROUTE_MODULES: list[str] = sorted(
 # auth.py is the one module whose router is the unauthenticated `public` one.
 ROUTER_ATTR = {"auth": "public"}
 
+
+def test_discovery_finds_route_modules():
+    """Guards the parametrised tests below: an empty discovery (e.g. a mistyped ROUTES_DIR) would skip them silently."""
+    assert "auth" in ROUTE_MODULES
+    assert "home" in ROUTE_MODULES
+
+
 _FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
 
 
