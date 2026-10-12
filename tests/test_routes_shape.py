@@ -6,9 +6,10 @@ it carries a decorator), and `build_router` must not exist. A
 `build_router(templates)` closure hides each handler from import, tracebacks
 and readers alike. Plain undecorated closures are allowed.
 
-The guard is closed: `ROUTE_MODULES` is discovered from every `*.py` in the
-routes directory except `__init__.py`, so a new module is checked the moment
-it exists.
+The guard is closed: `ROUTE_MODULES` is discovered recursively from every `*.py`
+under the routes directory except the top-level `__init__.py`, as dotted names
+(`tests_level` for a package's `__init__.py`, `tests_level.commands` for a
+sub-module), so a new module is checked the moment it exists.
 """
 
 import ast
@@ -20,9 +21,26 @@ from fastapi import APIRouter
 
 ROUTES_DIR = Path(__file__).parent.parent / "web_interface" / "routes"
 
+
+def _module_name(path: Path) -> str:
+    """Dotted name relative to ROUTES_DIR, suffix dropped, trailing `.__init__` removed."""
+    dotted = ".".join(path.relative_to(ROUTES_DIR).with_suffix("").parts)
+    return dotted.removesuffix(".__init__")
+
+
 ROUTE_MODULES: list[str] = sorted(
-    path.stem for path in ROUTES_DIR.glob("*.py") if path.name != "__init__.py"
+    _module_name(path)
+    for path in ROUTES_DIR.rglob("*.py")
+    if path != ROUTES_DIR / "__init__.py" and "__pycache__" not in path.parts
 )
+
+
+def _path_for(module_name: str) -> Path:
+    """File behind a dotted module name: `<a>/<b>.py`, else `<a>/<b>/__init__.py`."""
+    base = ROUTES_DIR.joinpath(*module_name.split("."))
+    module_file = base.with_name(base.name + ".py")
+    return module_file if module_file.exists() else base / "__init__.py"
+
 
 # auth.py is the one module whose router is the unauthenticated `public` one.
 ROUTER_ATTR = {"auth": "public"}
@@ -32,6 +50,7 @@ def test_discovery_finds_route_modules():
     """Guards the parametrised tests below: an empty discovery (e.g. a mistyped ROUTES_DIR) would skip them silently."""
     assert "auth" in ROUTE_MODULES
     assert "home" in ROUTE_MODULES
+    # A sub-module assert ("tests_level.commands") is added in Task 2, once it exists.
 
 
 _FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
@@ -52,7 +71,7 @@ def _nested_in(func: ast.AST) -> list[ast.AST]:
 
 
 def _hits(module_name: str) -> tuple[list[str], list[str]]:
-    path = ROUTES_DIR / f"{module_name}.py"
+    path = _path_for(module_name)
     rel = path.relative_to(ROUTES_DIR.parent.parent).as_posix()
     tree = ast.parse(path.read_text(encoding="utf-8"))
     build_router = [
