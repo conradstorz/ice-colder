@@ -1,7 +1,8 @@
 """Route package for the web dashboard: one module per area.
 
-Splits what used to be a single web_interface/routes.py (two routers built
-inside one attach_routes() closure) into an area-per-module package. Shared
+Splits what used to be a single web_interface/routes.py into an
+area-per-module package. Each area module exposes a module-level `router`
+(`public` for auth), and `attach_routes(app)` includes them in order. Shared
 module state, its setters, and template_context now live in
 web_interface/context.py; this package re-exports the setters and
 ensure_setup_mode below so `from web_interface import routes` keeps working
