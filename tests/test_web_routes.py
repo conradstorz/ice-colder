@@ -1484,7 +1484,7 @@ class TestEnrollment:
             sent["body"] = body
             return True
 
-        monkeypatch.setattr(routes.auth, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.auth.login, "send_email", fake_send_email)
         c.post("/login", data={"user_id": owner.id, "pin": "1379"})
         page = c.post("/login/enroll/send", data={})
         assert page.status_code == 200
@@ -1532,7 +1532,7 @@ class TestEnrollment:
         async def fake_send_email(gateway, to, subject, body):
             return False
 
-        monkeypatch.setattr(routes.auth, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.auth.login, "send_email", fake_send_email)
         c.post("/login", data={"user_id": owner.id, "pin": "1379"})
         page = c.post("/login/enroll/send", data={})
         assert "emergency code" in page.text.lower()
@@ -2047,7 +2047,7 @@ class TestSetupWizard:
             sent["body"] = body
             return True
 
-        monkeypatch.setattr(routes.auth, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.auth.setup, "send_email", fake_send_email)
         page = anon.get("/setup/codes")
         codes = _codes_in(page.text)
         resp = anon.post("/setup/codes/email", data={})
@@ -2122,7 +2122,7 @@ class TestSetupWizard:
         async def fake_send_email(gateway, to, subject, body):
             return False
 
-        monkeypatch.setattr(routes.auth, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.auth.setup, "send_email", fake_send_email)
         anon.get("/setup/codes")
         resp = anon.post("/setup/codes/email", data={})
         assert resp.status_code == 200
@@ -2788,7 +2788,7 @@ class TestMachineReport:
             sent["body"] = body
             return True
 
-        monkeypatch.setattr(routes.users, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.users.ownership, "send_email", fake_send_email)
         resp = client.post("/users/report", data={})
         assert resp.status_code == 200
         assert sent["to"] == "ada@example.com"
@@ -2804,7 +2804,7 @@ class TestMachineReport:
             sent["body"] = body
             return True
 
-        monkeypatch.setattr(routes.users, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.users.ownership, "send_email", fake_send_email)
         client.post("/users/report", data={})
         for user in store.users.values():
             assert user.pin_hash not in sent["body"]

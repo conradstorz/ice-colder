@@ -1,15 +1,4 @@
-"""The Tests level (system-tests design, spec §3): discovery + action routes.
-
-Task 13 split at the discovery/actions seam (task-13-brief.md): Task 13a
-built `GET /tests`, `GET /tests/{subsystem}` and `GET /tests/log` --
-read-only, and entering none of them takes the maintenance lease (see
-`.superpowers/sdd/task-13a-report.md` for the interface it hands off).
-Task 13b (this revision) adds every action route: `GET`/`POST /tests/sale`,
-`POST /tests/{subsystem}/{command}`, `POST /tests/runs/{run_id}/verdict`,
-`POST /tests/run-all`, `POST /tests/end`, `POST /tests/takeover`. See
-`.superpowers/sdd/task-13b-report.md` for the full account of this half.
-
-Two things this module deliberately reuses rather than re-derives, per the
+"""Two things this module deliberately reuses rather than re-derives, per the
 task brief's "fix applied in one file but not its siblings" warning:
 
 - `_subsystem_summary` is imported from `web_interface.routes.health`
@@ -22,14 +11,10 @@ task brief's "fix applied in one file but not its siblings" warning:
   command, never by re-deriving the intersection a second way.
 """
 
-import asyncio
-import contextlib
-import json
-import sqlite3
 import time
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from contracts.common import TESTABLE_COMMANDS
@@ -40,14 +25,20 @@ from services.access import Permission
 from services.command_dispatcher import CommandTimeout, CompletionTimeout
 from web_interface import auth as web_auth
 from web_interface import context
-from web_interface.levels import LEVEL_TESTS, LEVEL_TESTS_LOG, LEVEL_TESTS_SALE, Level
+from web_interface.levels import LEVEL_TESTS, Level
 from web_interface.routes.health import _subsystem_summary
+from web_interface.routes.tests_level.lease import _acquire_lease_or_refusal
 from web_interface.templating import templates
+
+
+router = APIRouter()
+
 
 # Standard commands every subsystem answers (system-tests design §1.2),
 # rendered in their own group on /tests/{subsystem}; every other testable
 # command is an "actuator" command (§1.3).
 AUTOMATIC_COMMANDS: frozenset[str] = frozenset({"ping", "self_test", "force_report"})
+
 
 # Which contract a subsystem's reported contract_version is compared
 # against for the /tests card's "contract match" field. "vending" and
@@ -112,7 +103,11 @@ def testable_commands(subsystem: str, advertised) -> frozenset[str]:
 # validators at these exact boundary values and fails loudly if they ever
 # disagree.
 WATER_VALVE_SECONDS_RANGE: tuple[int, int] = (1, 10)
+
+
 POWER_CYCLE_DWELL_RANGE: tuple[int, int] = (5, 300)
+
+
 POWER_CYCLE_DWELL_DEFAULT: int = 30
 
 
@@ -134,113 +129,6 @@ def _params_widget(command: str, products: list) -> dict | None:
             "default": POWER_CYCLE_DWELL_DEFAULT,
         }
     return None
-
-
-def recent_test_runs(limit: int = 100) -> list[dict]:
-    """The last *limit* `test_run` events, newest first, metadata merged
-    into the row, `elapsed_seconds` (for the `humanize_seconds` filter,
-    "N ago") added, and `duration_seconds` (system-tests design §4: the
-    event's own `value` column, how LONG the run took, not how long ago it
-    happened) added.
-
-    Reads `context.event_recorder.db_path` -- `EventRecorder`'s public
-    read-only property for the live database file -- at call time rather
-    than caching it, the same convention services/reports.py's module
-    docstring documents (that module reads the same public property, at
-    call time, for the same reason: `EventRecorder._quarantine_corrupt_db`
-    can reassign the underlying path mid-process after a corruption
-    recovery, and a cached path would silently keep reading the wrong
-    database). Returns [] when no recorder is wired, rather than raising.
-    """
-    recorder = context.event_recorder
-    if recorder is None:
-        return []
-    recorder.flush()
-    db_path = recorder.db_path
-    now = time.time()
-    rows: list[dict] = []
-    with contextlib.closing(sqlite3.connect(db_path)) as conn:
-        cursor = conn.execute(
-            "SELECT id, timestamp, value, metadata FROM events "
-            "WHERE event_type = 'test_run' ORDER BY id DESC, timestamp DESC LIMIT ?",
-            (limit,),
-        )
-        for row_id, ts, value, meta_str in cursor.fetchall():
-            try:
-                meta = json.loads(meta_str) if meta_str else {}
-            except (TypeError, ValueError):
-                meta = {}
-            if not isinstance(meta, dict):
-                meta = {}
-            row = {
-                "id": row_id,
-                "timestamp": ts,
-                "elapsed_seconds": max(now - ts, 0.0),
-                "duration_seconds": value,
-            }
-            row.update(meta)
-            rows.append(row)
-    return rows
-
-
-# --- Task 3 (system-tests design §2.2a): the service-state card --------
-#
-# The card that replaced the old plain maintenance-lease banner
-# (partials/tests_hold_banner.html): "Take out of service" when no lease
-# is held, or "Out of service since HH:MM, held by <name>" plus
-# Return-to-service/Take-over once one is. Every route that shows or
-# re-renders it -- GET /tests, GET /tests/standby/confirm, POST
-# /tests/standby, POST /tests/end, POST /tests/takeover -- builds its
-# context through _service_state so none of them can drift from another
-# about what the card looks like for the same VMC state.
-
-# Busy refusals from MaintenanceLease.begin_maintenance (the OPPORTUNISTIC
-# lease) that now point the operator at the standby button instead of
-# their own raw wording -- "held by <id>" is deliberately NOT in this map
-# (system-tests design §2.2a / Task 3 brief): a lease already held by someone else is a
-# different situation than a busy-but-unheld machine, and keeps its own
-# wording unchanged.
-_BUSY_REFUSAL_WORDING = "machine is busy — take it out of service first"
-_BUSY_REFUSALS = frozenset({"machine is mid-sale", "credit is still on the machine"})
-
-
-def _service_state(
-    machine,
-    principal: web_auth.Principal | None,
-    *,
-    confirming: bool = False,
-    refusal: str | None = None,
-) -> dict:
-    """The render context for partials/tests_hold_banner.html.
-
-    ``hold`` is the live MaintenanceHold or None; ``held_by_me`` is only
-    True when *principal* is not None and its session matches the hold's
-    holder (never inferred from a None principal). ``holder_name`` resolves
-    through context.holder_display_name (shared with the Home hero's
-    `maintenance` field so both agree on the same name for the same hold).
-    ``started_at_hhmm`` is computed here, in Python, rather than adding a
-    Jinja time filter for one caller. ``confirming``/``refusal`` are passed
-    straight through for the templates that need them (GET .../confirm and
-    POST /tests/standby respectively); every other caller leaves them at
-    their defaults, which the template ignores whenever a lease is held.
-    """
-    hold = machine.maintenance_hold if machine is not None else None
-    held_by_me = bool(
-        hold is not None
-        and principal is not None
-        and hold.holder_session_id == principal.session.id
-    )
-    started_at_hhmm = (
-        time.strftime("%H:%M", time.localtime(hold.started_at)) if hold else None
-    )
-    return {
-        "hold": hold,
-        "held_by_me": held_by_me,
-        "holder_name": context.holder_display_name(hold),
-        "started_at_hhmm": started_at_hhmm,
-        "confirming": confirming,
-        "refusal": refusal,
-    }
 
 
 # --- Task 13b: action-route helpers -----------------------------------
@@ -328,46 +216,6 @@ def _parse_command_params(
             raise ValueError(f"dwell_seconds must be between {lo} and {hi}")
         return {"dwell_seconds": value}
     return {}
-
-
-def _acquire_lease_or_refusal(machine, principal: web_auth.Principal) -> str | None:
-    """Take the maintenance lease for *principal*'s session, or return why
-    not, WITHOUT ever touching the dispatcher (system-tests design §2.2,
-    task brief: "takes the lease or returns the refusal inline").
-
-    Three cases:
-      - No lease held: try to grant one (`MaintenanceLease.begin_maintenance`);
-        refused for one of its two busy reasons ("machine is mid-sale",
-        "credit is still on the machine") is remapped to
-        `_BUSY_REFUSAL_WORDING` ("machine is busy — take it out of service
-        first", Task 3, system-tests design §2.2a) so the refusal itself
-        points the operator at the standby button rather than leaving them
-        to guess what to do about a machine that just won't take the
-        opportunistic lease.
-      - Lease already held by THIS session (a second command run in the
-        same maintenance visit): a no-op -- returns None (proceed) without
-        calling begin_maintenance again, which would otherwise refuse with
-        a spurious "held by <self>" (`begin_maintenance` refuses whenever
-        any lease exists, regardless of who holds it).
-      - Lease held by a DIFFERENT session: refused, "held by <holder>",
-        matching `begin_maintenance`'s own wording for the same case --
-        deliberately NOT remapped, since "someone else has it" is a
-        different situation than "the machine is busy".
-
-    Returns None exactly when the caller's session now holds the lease
-    (freshly granted or pre-existing) and it is safe to proceed to
-    `machine.lease.test_run()`.
-    """
-    session_id = principal.session.id
-    hold = machine.maintenance_hold
-    if hold is not None and hold.holder_session_id == session_id:
-        return None
-    if hold is not None:
-        return f"held by {hold.holder_user_id}"
-    granted, reason = machine.lease.begin_maintenance(principal.user.id, session_id)
-    if granted:
-        return None
-    return _BUSY_REFUSAL_WORDING if reason in _BUSY_REFUSALS else reason
 
 
 async def _run_command(
@@ -473,123 +321,6 @@ async def _run_command(
     }
 
 
-router = APIRouter()
-
-
-@router.get(
-    "/tests",
-    response_class=HTMLResponse,
-    dependencies=[Depends(web_auth.require(Permission.run_tests))],
-)
-async def tests_level(request: Request):
-    """One card per EXPECTED_SUBSYSTEMS entry plus the lease banner.
-
-    Deliberately takes no lease (system-tests design §2.2, task brief):
-    this handler never calls `begin_maintenance` -- it only reads the
-    read-only `maintenance_hold` property.
-    """
-    subsystems = _subsystem_summary()
-    cards = [
-        {
-            "name": name,
-            "row": row,
-            "match": contract_match(name, row),
-            "testable_count": len(testable_commands(name, row["commands"])),
-        }
-        for name, row in subsystems.items()
-    ]
-
-    principal = web_auth.current_principal(request)
-    return templates.TemplateResponse(
-        "tests.html",
-        context.template_context(
-            request,
-            level=LEVEL_TESTS,
-            cards=cards,
-            **_service_state(context.machine_instance, principal),
-        ),
-    )
-
-
-@router.get(
-    "/tests/log",
-    response_class=HTMLResponse,
-    dependencies=[Depends(web_auth.require(Permission.run_tests))],
-)
-async def tests_log(request: Request):
-    """Last 100 test_run events (system-tests design §4).
-
-    Registered BEFORE the parameterized /tests/{subsystem} route below
-    so "log" is never swallowed as a (nonexistent) subsystem name --
-    see that route's own docstring for the full ordering rule, which
-    Task 13b's own new /tests/* GET routes must also respect.
-    """
-    return templates.TemplateResponse(
-        "tests_log.html",
-        context.template_context(
-            request, level=LEVEL_TESTS_LOG, runs=recent_test_runs(100)
-        ),
-    )
-
-
-@router.get(
-    "/tests/sale",
-    response_class=HTMLResponse,
-    dependencies=[Depends(web_auth.require(Permission.run_tests))],
-)
-async def tests_sale_picker(request: Request):
-    """The simulated-sale SKU picker (Task 13b). Deliberately takes no
-    lease -- same rule as `tests_level`/`tests_subsystem` above: a
-    POST /tests/sale run is what acquires it, not viewing this page.
-
-    Registered BEFORE /tests/{subsystem} below, same reason /tests/log
-    is: "sale" would otherwise be swallowed as a (nonexistent)
-    subsystem name by that single-segment route.
-    """
-    products = (
-        sorted(context.config.products, key=lambda p: p.slot) if context.config else []
-    )
-    return templates.TemplateResponse(
-        "tests_sale.html",
-        context.template_context(request, level=LEVEL_TESTS_SALE, products=products),
-    )
-
-
-@router.get(
-    "/tests/standby/confirm",
-    response_class=HTMLResponse,
-    dependencies=[Depends(web_auth.require(Permission.run_tests))],
-)
-async def tests_standby_confirm(
-    request: Request, confirming: str | None = Query(default=None)
-):
-    """confirm_button.html's confirm_url contract (Task 3, matching
-    routes/health.py's fault_clear_confirm): absent or anything but
-    the literal string "false" renders the confirming (Confirm/Cancel)
-    state; "false" renders the plain first-tap button. Re-renders the
-    WHOLE service-state card (#tests-hold), not just the button --
-    every route that touches this card swaps that same outer id.
-
-    Two segments deep (/tests/standby/confirm), so it can never
-    collide with the single-segment GET /tests/{subsystem} catch-all
-    below regardless of registration order -- registered ahead of it
-    anyway, matching this file's "literal paths before catch-alls"
-    convention (see tests_subsystem's own ORDERING WARNING).
-    """
-    principal = web_auth.current_principal(request)
-    return templates.TemplateResponse(
-        "partials/tests_hold_banner.html",
-        context.template_context(
-            request,
-            **_service_state(
-                context.machine_instance,
-                principal,
-                confirming=(confirming != "false"),
-            ),
-        ),
-    )
-
-
 @router.get(
     "/tests/{subsystem}",
     response_class=HTMLResponse,
@@ -639,138 +370,9 @@ async def tests_subsystem(request: Request, subsystem: str):
     )
 
 
-# --- Task 13b: action routes ---------------------------------------
-#
-# Registration order below is load-bearing (see tests_subsystem's own
-# ORDERING WARNING above, and task-13a-report.md's "Route registration
-# order" section): every literal-path POST route under /tests/ --
-# /tests/sale, /tests/run-all, /tests/end, /tests/takeover, and
-# /tests/runs/{run_id}/verdict -- is registered BEFORE the generic
-# POST /tests/{subsystem}/{command:path} at the bottom. The verdict
-# route is the one that actually collides if this order is reversed:
-# POST /tests/runs/r1/verdict has the same shape (two path segments
-# after /tests/, subsystem="runs", command:path="r1/verdict") that the
-# generic route matches -- it would 404 (no subsystem named "runs")
-# instead of ever reaching post_verdict. /tests/sale, /tests/run-all,
-# /tests/end and /tests/takeover are single-segment POSTs and could not
-# collide with the generic route either way (it needs subsystem AND at
-# least one command segment), but are kept ahead of it here too, for
-# the same reason GET /tests/log/GET /tests/sale precede GET
-# /tests/{subsystem} above: literal paths first, catch-all last.
-#
-# POST /tests/standby (Task 3, system-tests design §2.2a) joins this
-# group for the same reason -- a single-segment literal path, kept
-# ahead of the generic route below along with the rest.
-
-
-@router.post(
-    "/tests/standby",
-    response_class=HTMLResponse,
-    dependencies=[
-        Depends(web_auth.require(Permission.run_tests)),
-        Depends(context.require_htmx),
-    ],
-)
-async def tests_standby(request: Request):
-    """Take the machine out of service for the caller's whole web
-    session (`MaintenanceLease.begin_standby`, Task 3 / system-tests
-    design §2.2a): refunds any credit on the machine, cancels a live
-    customer sale, and grants the lease with `standby=True` -- no
-    idle-timer release; the lease's own session-liveness sweep (wired
-    via Machine.set_session_liveness in main.py) is what ends it if
-    the tech simply walks away or locks the tablet.
-
-    Calls `machine.lease.begin_standby` directly rather than going
-    through `_acquire_lease_or_refusal` -- that helper's busy-wording
-    remap exists to point OTHER callers (a command run, a simulated
-    sale) at THIS button; begin_standby's own refusal wording ("vend
-    finishing, tap again" mid-dispense, "held by <id>" for a different
-    session's lease) is already the right thing to show here,
-    verbatim, inside the card (Task 3 requirement).
-    """
-    principal = web_auth.current_principal(request)
-    machine = context.machine_instance
-    if machine is None:
-        refusal = "VMC not initialized"
-    else:
-        granted, reason = machine.lease.begin_standby(
-            principal.user.id, principal.session.id
-        )
-        refusal = None if granted else reason
-    return templates.TemplateResponse(
-        "partials/tests_hold_banner.html",
-        context.template_context(
-            request, **_service_state(machine, principal, refusal=refusal)
-        ),
-    )
-
-
-@router.post(
-    "/tests/sale",
-    response_class=HTMLResponse,
-    dependencies=[
-        Depends(web_auth.require(Permission.run_tests)),
-        Depends(context.require_htmx),
-    ],
-)
-async def tests_sale_run(request: Request, sku: str = Form(...)):
-    """Run one simulated sale (TestSaleRunner.run_test_sale) for the
-    SKU the picker's form submitted.
-
-    SKU-with-slash: the SKU arrives as a POST form field
-    (application/x-www-form-urlencoded), never a URL segment -- GET and
-    POST /tests/sale are the only two routes this picker defines (no
-    `{sku}` route segment exists anywhere under it), so there is no
-    second SKU-in-a-URL escaping mechanism to invent here:
-    `sku_url_segment`/`{sku:path}` exist specifically because a raw `/`
-    in a URL PATH segment 404s (see web_interface/filters.py's
-    docstring); a form body has no such restriction, and FastAPI's
-    `Form(...)` decodes it back to the exact original string,
-    including any `/`. `tests_sale.html`'s `<option value="{{
-    product.sku }}">` is likewise not a URL -- it is an HTML attribute
-    value, which Jinja2's autoescaping (the default here) already
-    makes safe on its own for any catalog string, `/` included.
-    """
-    principal = web_auth.current_principal(request)
-    products = context.config.products if context.config else []
-    product = next((p for p in products if p.sku == sku), None)
-    if product is None:
-        raise HTTPException(status_code=404, detail=f"No such product: {sku}")
-
-    machine = context.machine_instance
-    if machine is None:
-        return templates.TemplateResponse(
-            "partials/test_refusal.html",
-            context.template_context(request, reason="VMC not initialized"),
-        )
-
-    refusal = _acquire_lease_or_refusal(machine, principal)
-    if refusal:
-        return templates.TemplateResponse(
-            "partials/test_refusal.html",
-            context.template_context(request, reason=refusal),
-        )
-
-    try:
-        result = await machine.test_sales.run_test_sale(
-            sku, user_id=principal.user.id, user_name=principal.user.name
-        )
-    except (ValueError, RuntimeError) as exc:
-        # ValueError: the catalog moved under us between the lookup
-        # above and this call (vmc.products, not context.config.products
-        # -- see run_test_sale's own find_product). RuntimeError:
-        # run_test_sale's own "could not select" guard (locked out,
-        # sold out) or "no lease held" (a race against the check above).
-        # Either way this is a refusal, not a 500.
-        return templates.TemplateResponse(
-            "partials/test_refusal.html",
-            context.template_context(request, reason=str(exc)),
-        )
-
-    return templates.TemplateResponse(
-        "partials/test_sale_result.html",
-        context.template_context(request, result=result),
-    )
+# This module's router is included last in web_interface/routes/tests_level/__init__.py
+# because its parametrised /tests/{subsystem} and /tests/{subsystem}/{command:path}
+# routes would otherwise capture the static /tests/... paths of the other sub-routers.
 
 
 @router.post(
@@ -817,99 +419,6 @@ async def tests_run_all(request: Request):
     return templates.TemplateResponse(
         "partials/test_run_all_table.html",
         context.template_context(request, rows=rows, refusal=None),
-    )
-
-
-@router.post(
-    "/tests/end",
-    response_class=HTMLResponse,
-    dependencies=[
-        Depends(web_auth.require(Permission.run_tests)),
-        Depends(context.require_htmx),
-    ],
-)
-async def tests_end(request: Request):
-    """Release the CALLER's OWN lease, once nothing is in flight
-    (`MaintenanceLease.end_maintenance` already enforces both: session
-    match and runs_in_flight == 0, deferring via release_requested
-    otherwise). Re-renders the same #tests-hold banner tests.html swaps
-    this into (outerHTML) -- empty when no lease remains, so the
-    banner div is removed entirely, matching tests.html's own
-    `{% if hold %}` guard.
-    """
-    principal = web_auth.current_principal(request)
-    machine = context.machine_instance
-    if machine is not None:
-        machine.lease.end_maintenance(principal.session.id)
-    return templates.TemplateResponse(
-        "partials/tests_hold_banner.html",
-        context.template_context(request, **_service_state(machine, principal)),
-    )
-
-
-@router.post(
-    "/tests/takeover",
-    response_class=HTMLResponse,
-    dependencies=[
-        Depends(web_auth.require(Permission.run_tests)),
-        Depends(context.require_htmx),
-    ],
-)
-async def tests_takeover(request: Request):
-    """Transfer an idle, run-free lease to the caller
-    (`MaintenanceLease.take_over_maintenance`, system-tests design
-    §2.2) -- refused (lease unchanged) while a run is in flight or
-    before the 60s idle threshold. Re-renders #tests-hold either way.
-    """
-    principal = web_auth.current_principal(request)
-    machine = context.machine_instance
-    if machine is not None:
-        machine.lease.take_over_maintenance(principal.user.id, principal.session.id)
-    return templates.TemplateResponse(
-        "partials/tests_hold_banner.html",
-        context.template_context(request, **_service_state(machine, principal)),
-    )
-
-
-@router.post(
-    "/tests/runs/{run_id}/verdict",
-    response_class=HTMLResponse,
-    dependencies=[
-        Depends(web_auth.require(Permission.run_tests)),
-        Depends(context.require_htmx),
-    ],
-)
-async def post_verdict(
-    request: Request,
-    run_id: str,
-    verdict: str = Form(...),
-    note: str | None = Form(None),
-):
-    """Record pass/fail + note on one test_run row, by run_id
-    (system-tests design §4: EventRecorder.update_metadata, merged in
-    place on the writer thread -- so `checks`/`params`/etc already on
-    the row survive). Works identically for a subsystem-command row
-    and a simulated-sale row (TestSaleRunner.run_test_sale, Task 13b): both carry
-    `run_id` in their metadata now, located the same way.
-
-    400 for a verdict outside {"pass", "fail"} -- never silently
-    coerced. A run_id matching no row (already pruned past the 90-day
-    window, or simply wrong) is a no-op on the recorder side
-    (update_metadata's own documented behavior) -- still 200, since
-    there is nothing the caller did wrong at the HTTP level.
-    """
-    if verdict not in ("pass", "fail"):
-        raise HTTPException(status_code=400, detail="verdict must be 'pass' or 'fail'")
-    note = note or None
-    if context.event_recorder is not None:
-        context.event_recorder.update_metadata(run_id, verdict=verdict, note=note)
-        # Block until the write lands: a test (or an operator's very
-        # next GET /tests/log) reading right back must see it -- update_
-        # metadata itself only queues the merge for the writer thread.
-        await asyncio.to_thread(context.event_recorder.flush)
-    return templates.TemplateResponse(
-        "partials/test_verdict_recorded.html",
-        context.template_context(request, run_id=run_id, verdict=verdict, note=note),
     )
 
 
