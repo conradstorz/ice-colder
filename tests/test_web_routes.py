@@ -2788,7 +2788,7 @@ class TestMachineReport:
             sent["body"] = body
             return True
 
-        monkeypatch.setattr(routes.users, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.users.ownership, "send_email", fake_send_email)
         resp = client.post("/users/report", data={})
         assert resp.status_code == 200
         assert sent["to"] == "ada@example.com"
@@ -2804,7 +2804,7 @@ class TestMachineReport:
             sent["body"] = body
             return True
 
-        monkeypatch.setattr(routes.users, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.users.ownership, "send_email", fake_send_email)
         client.post("/users/report", data={})
         for user in store.users.values():
             assert user.pin_hash not in sent["body"]
