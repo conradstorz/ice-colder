@@ -422,25 +422,6 @@ async def placement_form(request: Request, sku: str):
     )
 
 
-def _rerender_placement(
-    request: Request, product, sku: str, error: str
-) -> HTMLResponse:
-    level = Level.child(
-        _product_level(product), "Placement", f"/products/{sku}/placement"
-    )
-    return templates.TemplateResponse(
-        "product_placement.html",
-        context.template_context(
-            request,
-            level=level,
-            product=product,
-            inventory_count=_inventory_count(sku),
-            tracked=_is_tracked(sku),
-            error=error,
-        ),
-    )
-
-
 @router.post(
     "/products/{sku}/placement",
     response_class=HTMLResponse,
@@ -459,6 +440,22 @@ async def update_placement(
     product = _get_or_404(sku)
     tracked = track_inventory is not None
 
+    def _rerender(error: str) -> HTMLResponse:
+        level = Level.child(
+            _product_level(product), "Placement", f"/products/{sku}/placement"
+        )
+        return templates.TemplateResponse(
+            "product_placement.html",
+            context.template_context(
+                request,
+                level=level,
+                product=product,
+                inventory_count=_inventory_count(sku),
+                tracked=_is_tracked(sku),
+                error=error,
+            ),
+        )
+
     if inventory_count < 0:
         # Mirror services/config_store.py's slot < 0 guard: reject the
         # whole write and leave the stored count unchanged (part 1's
@@ -468,9 +465,7 @@ async def update_placement(
             f"Cannot update placement SKU={sku}: inventory_count "
             f"{inventory_count} is invalid (must be >= 0)"
         )
-        return _rerender_placement(
-            request, product, sku, "Inventory count cannot be negative."
-        )
+        return _rerender("Inventory count cannot be negative.")
 
     # This endpoint owns slot/count/tracking only — pass the product's
     # own stored name/price through unchanged (kind=None leaves kind
@@ -487,9 +482,7 @@ async def update_placement(
         # exactly as it was, not just the slot (part 1's a2b8829,
         # Copilot review web_interface/routes.py:1202): checked before
         # any InventoryManager write below.
-        return _rerender_placement(
-            request, product, sku, "That slot is already in use."
-        )
+        return _rerender("That slot is already in use.")
 
     if context.inventory_manager:
         context.inventory_manager.add_sku(sku, inventory_count, tracked=tracked)

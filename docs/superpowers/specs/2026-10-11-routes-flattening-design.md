@@ -67,7 +67,7 @@ Registration order is preserved exactly; the permission-gated routers go first a
 New `tests/test_routes_shape.py`, in the style of `tests/test_no_private_access.py`: parse every `web_interface/routes/*.py` with `ast` and fail, listing `path:line`, if
 
 - any module defines a function named `build_router`, or
-- any `FunctionDef`/`AsyncFunctionDef` is nested inside another function (walk each top-level function's body; any function node found below it is a hit). Lambdas and functions nested inside classes are not hits.
+- any decorated `FunctionDef`/`AsyncFunctionDef` is nested inside another function (walk each function's body; a function node found below it is a hit only if its `decorator_list` is non-empty). Lambdas and functions nested inside classes are not hits. Plain undecorated closures (a handler-local `_rerender`, a dependency factory's inner function) are allowed because hoisting them would change handler bodies.
 
 During the three-PR rollout the guard carries an explicit `CONVERTED` set of module names it checks; PR (c) replaces the set with "every module in the package" so a new module cannot opt out.
 

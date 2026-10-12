@@ -1,8 +1,10 @@
 """Shape guard for the route modules under web_interface/routes/.
 
-The rule: every route module exposes a module-level `router`, and no handler
-or helper is nested inside another function. A `build_router(templates)`
-closure hides each handler from import, tracebacks and readers alike.
+The rule: every route module exposes a module-level `router`, no route
+handler is nested inside another function (a nested function counts only if
+it carries a decorator), and `build_router` must not exist. A
+`build_router(templates)` closure hides each handler from import, tracebacks
+and readers alike. Plain undecorated closures are allowed.
 
 `CONVERTED` lists the modules (basenames, no `.py`) already flattened. Each
 conversion task adds its module name here first (the red), then converts the
@@ -58,11 +60,10 @@ def _hits(module_name: str) -> tuple[list[str], list[str]]:
     ]
     nested: dict[int, str] = {}
     for node in ast.walk(tree):
-        # _require_any is a dependency factory: its inner `dependency`
-        # closes over *permissions*, so it cannot be hoisted.
-        if isinstance(node, _FUNCS) and node.name != "_require_any":
+        if isinstance(node, _FUNCS):
             for inner in _nested_in(node):
-                nested[inner.lineno] = f"{rel}:{inner.lineno}"
+                if inner.decorator_list:
+                    nested[inner.lineno] = f"{rel}:{inner.lineno}"
     return build_router, [nested[k] for k in sorted(nested)]
 
 
