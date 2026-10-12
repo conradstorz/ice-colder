@@ -37,6 +37,24 @@ txn_log = logger
 vend_log = logger
 
 #: FSM transition table.
+#:
+#:     idle --start_interaction--> interacting_with_user --dispense_product--> dispensing
+#:     dispensing --complete_transaction--> idle (no credit left)
+#:     dispensing --complete_transaction / vend_failed--> interacting_with_user
+#:     interacting_with_user --cancel_sale--> idle
+#:     (any state) --error_occurred--> error --reset_state--> idle
+#:
+#: Every hook named here is a `before` callback, so it runs before the state
+#: changes. The Machine's global `after_state_change="_after_state_change"`
+#: (set in `VMC.__init__`) then runs on every transition. `auto_transitions`
+#: is False, so there are no implicit `to_<state>()` triggers.
+#:
+#: This table is not the whole FSM. `_fail_vend` (the "no sellable products
+#: remain" branch) and `_expire_session` (session timeout in
+#: `interacting_with_user`) call `self.machine.set_state("idle")` directly,
+#: bypassing this table and every `before` hook, because `reset_state` only
+#: fires from `error`.
+#:
 #: Ordering matters when multiple transitions share the same trigger name.
 TRANSITIONS = [
     {
@@ -51,6 +69,12 @@ TRANSITIONS = [
         "dest": "dispensing",
         "before": "on_dispense_product",
     },
+    #: The price was already deducted from escrow in `process_payment`, so
+    #: leftover credit means the customer stays to buy again; zero credit
+    #: returns to idle. `conditions` and `unless` on `has_credit` are
+    #: complementary, so exactly one entry matches. `transitions` tries
+    #: same-trigger entries in table order and the first whose conditions pass
+    #: wins; conditions are evaluated before `before` callbacks.
     {
         "trigger": "complete_transaction",
         "source": "dispensing",
@@ -65,18 +89,30 @@ TRANSITIONS = [
         "unless": "has_credit",
         "before": "on_complete_transaction",
     },
+    #: The customer's selection disappeared from under them (a catalog edit
+    #: removed the selected product), so the sale is abandoned.
     {
         "trigger": "cancel_sale",
         "source": "interacting_with_user",
         "dest": "idle",
         "before": "on_cancel_sale",
     },
+    #: Returns to `interacting_with_user`, not `idle`, on purpose:
+    #: `on_vend_failed` restores the sale's FIFO shares to escrow and the
+    #: product is locked out per `FAULT_TABLE`, so the customer can choose
+    #: another product. `_fail_vend` then decides whether they stay or are
+    #: refunded and forced to idle (when no sellable products remain).
     {
         "trigger": "vend_failed",
         "source": "dispensing",
         "dest": "interacting_with_user",
         "before": "on_vend_failed",
     },
+    #: Source "*" includes `error` itself, so firing this while already in
+    #: `error` is a self-transition that re-runs `on_error`. That is not
+    #: strictly idempotent: each run records another "error" event, logs, and
+    #: sends the customer message again, and requests a refund if escrow is
+    #: positive (nothing is refunded when escrow is already empty).
     {
         "trigger": "error_occurred",
         "source": "*",
