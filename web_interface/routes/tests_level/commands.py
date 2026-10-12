@@ -370,9 +370,9 @@ async def tests_subsystem(request: Request, subsystem: str):
     )
 
 
-# Route registration order across the Tests sub-routers is fixed in
-# web_interface/routes/tests_level/__init__.py. The parametrised routes in this
-# module go last because /tests/{subsystem}... would otherwise shadow literal paths.
+# This module's router is included last in web_interface/routes/tests_level/__init__.py
+# because its parametrised /tests/{subsystem} and /tests/{subsystem}/{command:path}
+# routes would otherwise capture the static /tests/... paths of the other sub-routers.
 
 
 @router.post(

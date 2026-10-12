@@ -32,6 +32,7 @@ Every sub-module defines its own module-level `router = APIRouter()` (sub-module
 Each moved function, constant, and decorator is byte-for-byte identical to the current one. The only edits are the import block and cross-module references:
 
 - `tests_level/commands.py` imports `_acquire_lease_or_refusal` from `.lease`.
+- `tests_level/sale.py` imports `_acquire_lease_or_refusal` from `.lease` (`tests_sale_run` calls it).
 - `tests_level/overview.py` imports `_service_state` from `.lease` and `contract_match`, `testable_commands` from `.commands`.
 - `tests_level/__init__.py` re-exports the names tests import today: `contract_match`, `testable_commands`, `recent_test_runs`, `_run_command`, `WATER_VALVE_SECONDS_RANGE`, `POWER_CYCLE_DWELL_RANGE`, `POWER_CYCLE_DWELL_DEFAULT`, listed in `__all__` alongside `router`.
 - The module docstrings of the three current files are split: the package `__init__.py` keeps the area overview, each sub-module gets the paragraphs about its own contents. No sentence is rewritten except to drop a now-false file reference.
@@ -54,7 +55,7 @@ The existing route tests exercise every one of the shadowable routes, so a wrong
 
 ### 4. Tests and documentation
 
-- `tests/test_web_routes.py` retargets its five `send_email` monkeypatches to the sub-module whose global the handler reads: `routes.auth.login` for the enrollment OTP, `routes.auth.setup` for the setup-codes email, `routes.users.ownership` for the access report. A `monkeypatch.setattr(routes.auth, ...)` left on the package would set an attribute the handler never reads.
+- `tests/test_web_routes.py` retargets its six `send_email` monkeypatches to the sub-module whose global the handler reads: `routes.auth.login` for the enrollment OTP, `routes.auth.setup` for the setup-codes email, `routes.users.ownership` for the access report. A `monkeypatch.setattr(routes.auth, ...)` left on the package would set an attribute the handler never reads.
 - No other test changes are expected. `tests/test_routes_tests.py`'s imports from `web_interface.routes.tests_level` resolve through the package re-exports.
 - CLAUDE.md, Web Dashboard: the `routes/` package description lists the three packages and their sub-modules; the `_acquire_lease_or_refusal` reference (`web_interface/routes/tests_level.py:308`) becomes `web_interface/routes/tests_level/lease.py` without a line number; the Tests level paragraph's `web_interface/routes/tests_level.py` references become the package or the relevant sub-module.
 
