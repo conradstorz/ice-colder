@@ -50,7 +50,7 @@ def test_discovery_finds_route_modules():
     """Guards the parametrised tests below: an empty discovery (e.g. a mistyped ROUTES_DIR) would skip them silently."""
     assert "auth" in ROUTE_MODULES
     assert "home" in ROUTE_MODULES
-    # A sub-module assert ("tests_level.commands") is added in Task 2, once it exists.
+    assert "tests_level.commands" in ROUTE_MODULES
 
 
 _FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
