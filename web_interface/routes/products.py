@@ -18,7 +18,6 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
-from web_interface.templating import templates
 from loguru import logger
 
 from services.access import Permission
@@ -31,6 +30,7 @@ from services.config_store import (
 from web_interface import auth as web_auth
 from web_interface import context
 from web_interface.levels import LEVEL_PRODUCTS, LEVEL_PRODUCTS_NEW, Level
+from web_interface.templating import templates
 
 
 def _require_any(*permissions: Permission):

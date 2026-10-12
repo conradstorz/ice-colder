@@ -5,7 +5,7 @@ at the open machine with a box of stock, tapping counts up and down.
 Deletes GET /inventory's old coverage in routes/legacy.py's
 `inventory_view` (same commit — task-8 brief resolution 1): FastAPI
 matches the first registered route, and web_interface/routes/__init__.py
-includes legacy.build_router() before this module's, so leaving that old
+includes the legacy routes before this module's, so leaving that old
 handler in place would silently shadow this level's GET /inventory.
 Every other /inventory/* route in legacy.py (add, new, copy, the
 catalog/placement edit+update forms, delete) is untouched here; Task 15
@@ -25,12 +25,12 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
-from web_interface.templating import templates
 
 from services.access import Permission
 from web_interface import auth as web_auth
 from web_interface import context
 from web_interface.levels import LEVEL_INVENTORY
+from web_interface.templating import templates
 
 # The only four deltas the four adjust buttons ever send (brief resolution
 # 6). The endpoint is reachable directly, not only from those buttons, so

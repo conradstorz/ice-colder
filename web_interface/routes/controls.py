@@ -1,12 +1,12 @@
 """Controls level: restart, reset, shutdown with two-tap server-rendered confirm."""
 
 from fastapi import APIRouter, Depends, Request
-from web_interface.templating import templates
 
 from services import fsm_control
 from web_interface import auth as web_auth
 from web_interface import context
 from web_interface.levels import LEVEL_CONTROLS
+from web_interface.templating import templates
 from services.access import Permission
 
 

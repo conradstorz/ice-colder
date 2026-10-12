@@ -46,7 +46,6 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
-from web_interface.templating import templates
 
 from services import reports as reports_service
 from services.access import Permission
@@ -62,6 +61,7 @@ from web_interface.levels import (
     LEVEL_REPORTS_PRODUCT,
     Level,
 )
+from web_interface.templating import templates
 
 # Bucket defaults per range preset (design §3's "By period" row): day for
 # 7d/30d, week for 90d, month for 12m/all.

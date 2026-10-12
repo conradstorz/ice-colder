@@ -11,7 +11,6 @@ import asyncio
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
-from web_interface.templating import templates
 
 from services.access import Permission
 from web_interface import auth as web_auth
@@ -27,6 +26,7 @@ from web_interface.levels import (
     LEVEL_TESTS,
     LEVEL_USERS,
 )
+from web_interface.templating import templates
 
 # The eight Home tiles (spec §2's permission table), as
 # (title, url, icon key, permission set, coming_soon). Static — no live

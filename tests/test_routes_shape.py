@@ -6,31 +6,33 @@ it carries a decorator), and `build_router` must not exist. A
 `build_router(templates)` closure hides each handler from import, tracebacks
 and readers alike. Plain undecorated closures are allowed.
 
-`CONVERTED` lists the modules (basenames, no `.py`) already flattened. Each
-conversion task adds its module name here first (the red), then converts the
-module (the green). With the set empty both tests are skipped by pytest's
-empty parametrisation.
+The guard is closed: `ROUTE_MODULES` is discovered from every `*.py` in the
+routes directory except `__init__.py`, so a new module is checked the moment
+it exists.
 """
 
 import ast
+import importlib
 from pathlib import Path
 
 import pytest
+from fastapi import APIRouter
 
 ROUTES_DIR = Path(__file__).parent.parent / "web_interface" / "routes"
 
-CONVERTED: frozenset[str] = frozenset(
-    {
-        "controls",
-        "home",
-        "screen",
-        "inventory",
-        "health",
-        "products",
-        "reports",
-        "settings",
-    }
+ROUTE_MODULES: list[str] = sorted(
+    path.stem for path in ROUTES_DIR.glob("*.py") if path.name != "__init__.py"
 )
+
+# auth.py is the one module whose router is the unauthenticated `public` one.
+ROUTER_ATTR = {"auth": "public"}
+
+
+def test_discovery_finds_route_modules():
+    """Guards the parametrised tests below: an empty discovery (e.g. a mistyped ROUTES_DIR) would skip them silently."""
+    assert "auth" in ROUTE_MODULES
+    assert "home" in ROUTE_MODULES
+
 
 _FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
 
@@ -67,13 +69,22 @@ def _hits(module_name: str) -> tuple[list[str], list[str]]:
     return build_router, [nested[k] for k in sorted(nested)]
 
 
-@pytest.mark.parametrize("module_name", sorted(CONVERTED))
+@pytest.mark.parametrize("module_name", ROUTE_MODULES)
 def test_no_build_router(module_name: str) -> None:
     build_router, _ = _hits(module_name)
     assert not build_router, f"{module_name} still defines build_router: {build_router}"
 
 
-@pytest.mark.parametrize("module_name", sorted(CONVERTED))
+@pytest.mark.parametrize("module_name", ROUTE_MODULES)
 def test_no_nested_functions(module_name: str) -> None:
     _, nested = _hits(module_name)
     assert not nested, f"{module_name} nests functions: {nested}"
+
+
+@pytest.mark.parametrize("module_name", ROUTE_MODULES)
+def test_every_module_exposes_a_router(module_name: str) -> None:
+    module = importlib.import_module(f"web_interface.routes.{module_name}")
+    attr = ROUTER_ATTR.get(module_name, "router")
+    assert isinstance(getattr(module, attr, None), APIRouter), (
+        f"{module_name} must expose a module-level APIRouter named {attr!r}"
+    )

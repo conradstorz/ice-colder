@@ -1,7 +1,8 @@
 """Route package for the web dashboard: one module per area.
 
-Splits what used to be a single web_interface/routes.py (two routers built
-inside one attach_routes() closure) into an area-per-module package. Shared
+Splits what used to be a single web_interface/routes.py into an
+area-per-module package. Each area module exposes a module-level `router`
+(`public` for auth), and `attach_routes(app)` includes them in order. Shared
 module state, its setters, and template_context now live in
 web_interface/context.py; this package re-exports the setters and
 ensure_setup_mode below so `from web_interface import routes` keeps working
@@ -151,7 +152,7 @@ def attach_routes(app: FastAPI) -> None:
     app.include_router(inventory.router)
     app.include_router(reports.router)
     app.include_router(controls.router)
-    app.include_router(tests_level.build_router(templates))
-    app.include_router(users.build_router(templates))
+    app.include_router(tests_level.router)
+    app.include_router(users.router)
     app.include_router(settings.router)
-    app.include_router(auth_routes.build_router(templates))
+    app.include_router(auth_routes.public)
