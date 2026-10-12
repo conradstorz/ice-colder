@@ -27,8 +27,8 @@ from web_interface import auth as web_auth
 from web_interface import context
 from web_interface.levels import LEVEL_TESTS, Level
 from web_interface.routes.health import _subsystem_summary
-from web_interface.templating import templates
 from web_interface.routes.tests_level.lease import _acquire_lease_or_refusal
+from web_interface.templating import templates
 
 
 router = APIRouter()
@@ -129,6 +129,9 @@ def _params_widget(command: str, products: list) -> dict | None:
             "default": POWER_CYCLE_DWELL_DEFAULT,
         }
     return None
+
+
+# --- Task 13b: action-route helpers -----------------------------------
 
 
 def _parse_command_params(
@@ -365,6 +368,11 @@ async def tests_subsystem(request: Request, subsystem: str):
             post_base=f"/tests/{subsystem}",
         ),
     )
+
+
+# Route registration order across the Tests sub-routers is fixed in
+# web_interface/routes/tests_level/__init__.py. The parametrised routes in this
+# module go last because /tests/{subsystem}... would otherwise shadow literal paths.
 
 
 @router.post(

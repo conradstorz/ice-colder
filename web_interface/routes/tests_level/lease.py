@@ -24,6 +24,18 @@ _BUSY_REFUSAL_WORDING = "machine is busy — take it out of service first"
 _BUSY_REFUSALS = frozenset({"machine is mid-sale", "credit is still on the machine"})
 
 
+# --- Task 3 (system-tests design §2.2a): the service-state card --------
+#
+# The card that replaced the old plain maintenance-lease banner
+# (partials/tests_hold_banner.html): "Take out of service" when no lease
+# is held, or "Out of service since HH:MM, held by <name>" plus
+# Return-to-service/Take-over once one is. Every route that shows or
+# re-renders it -- GET /tests, GET /tests/standby/confirm, POST
+# /tests/standby, POST /tests/end, POST /tests/takeover -- builds its
+# context through _service_state so none of them can drift from another
+# about what the card looks like for the same VMC state.
+
+
 def _service_state(
     machine,
     principal: web_auth.Principal | None,
@@ -136,6 +148,9 @@ async def tests_standby_confirm(
             ),
         ),
     )
+
+
+# --- Task 13b: action routes ---------------------------------------
 
 
 @router.post(
