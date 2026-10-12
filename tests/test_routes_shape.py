@@ -63,7 +63,6 @@ def test_discovery_finds_route_modules():
     assert "tests_level.commands" in ROUTE_MODULES
     assert "health.faults" in ROUTE_MODULES
     assert "settings.secrets" in ROUTE_MODULES
-    # "health.faults" and "settings.secrets" asserts are added in Tasks 2–3 once they exist.
 
 
 _FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
