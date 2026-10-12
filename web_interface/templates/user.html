@@ -8,7 +8,7 @@
    owner viewing their own row) keeps the profile form and Reset PIN, but
    never renders Disable or Delete for that row (part 1's owner
    self-lockout guarantee, template half) — the server refuses those same
-   two writes regardless of what this page renders (routes/users.py's
+   two writes regardless of what this page renders (routes/users/accounts.py's
    _guard_owner_self_lockout).
 #}
 {% extends "base.html" %}

@@ -3798,7 +3798,7 @@ class TestTestSaleAvailabilityExemption:
 class TestConcurrentTestSaleGuard:
     """Whole-branch-review Critical defect: a second, overlapping
     `run_test_sale` call from the same session -- reachable via
-    `web_interface/routes/tests_level.py`'s `_acquire_lease_or_refusal`,
+    `web_interface/routes/tests_level/lease.py`'s `_acquire_lease_or_refusal`,
     which deliberately proceeds WITHOUT reacquiring the lease for a
     session that already holds it ("a second command run in the same
     maintenance visit") -- used to silently overwrite the single-instance

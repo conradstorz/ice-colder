@@ -4,7 +4,7 @@
    rendered on /tests now (tests.html no longer wraps it in `{% if hold %}`)
    and re-rendered, outerHTML, by every route that changes what it shows --
    GET /tests/standby/confirm, POST /tests/standby, POST /tests/end and
-   POST /tests/takeover -- via web_interface/routes/tests_level.py's shared
+   POST /tests/takeover -- via web_interface/routes/tests_level/lease.py's shared
    `_service_state()` context builder, so none of them can render a
    different shape for the same VMC state.
 

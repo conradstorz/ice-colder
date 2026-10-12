@@ -58,7 +58,7 @@ def attach_routes(app: FastAPI) -> None:
 
     Registration order mirrors the original single-file attach_routes: every
     permission-gated router (home, screen, and the area modules) is included
-    before routes/auth.py's session-less public router, the same relative
+    before the routes/auth/ package's session-less public router, the same relative
     order `app.include_router(router)` then `app.include_router(public)` had
     before this split — route matching order can matter, so that order is
     preserved here.

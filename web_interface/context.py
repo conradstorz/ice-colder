@@ -138,7 +138,7 @@ _last_logged_setup_code: str | None = None
 # after that only their scrypt hashes exist anywhere, so a reload of
 # /setup/codes must never regenerate the pool while this list is non-empty.
 #
-# Mutated from routes/auth.py's setup routes via `context._pending_codes =
+# Mutated from routes/auth/setup.py's setup routes via `context._pending_codes =
 # ...` — a `global _pending_codes` statement in that module would not reach
 # this name, since it lives here, not there (Task 1 executor resolution 4).
 _pending_codes: list[str] = []
@@ -244,8 +244,8 @@ def _can_email_owner(owner) -> bool:
     """True when *owner* has an email address and the email gateway is
     configured.
 
-    Shared by routes/auth.py (the setup-codes page and its email button)
-    and routes/users.py (the users list's email-report button, moved
+    Shared by routes/auth/setup.py (the setup-codes page and its email button)
+    and routes/users/ownership.py (the users list's email-report button, moved
     verbatim from the now-deleted routes/legacy.py by Task 12) — one of the
     couple of helpers used by more than one area module besides
     template_context and _render_status, per Task 1 executor resolution 3.
@@ -274,7 +274,7 @@ def holder_display_name(hold) -> str | None:
     store has no such user (a test-only id, or a user deleted since) or
     ``access_store`` isn't wired at all (None in most route tests). Shared
     by `health_snapshot`'s `maintenance` field and the Tests level's
-    service-state card (`web_interface/routes/tests_level.py`) so both
+    service-state card (`web_interface/routes/tests_level/lease.py`) so both
     agree on the same name for the same hold rather than growing two
     copies of this lookup. Returns None when *hold* itself is None.
     """
