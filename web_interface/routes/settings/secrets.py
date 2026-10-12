@@ -1,5 +1,4 @@
-"""
-Masking (brief resolution 4): a SecretStr that is already set must never
+"""Masking (brief resolution 4): a SecretStr that is already set must never
 round-trip its real value through the browser. Every masked field renders
 the fixed `SECRET_MASK` placeholder instead, and `_secret_changed` is the
 one helper every masked field's POST handler calls to decide whether the

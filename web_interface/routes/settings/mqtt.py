@@ -1,5 +1,4 @@
-"""
-MQTT env overrides (brief resolution 6): the shared
+"""MQTT env overrides (brief resolution 6): the shared
 `services.startup_config.mqtt_env_overrides()` helper identifies active
 fields at request time. The startup loader separately applies those values
 to a copy of `config.mqtt`, so an env-only MQTT_PASSWORD is never written

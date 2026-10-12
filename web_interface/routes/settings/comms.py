@@ -1,4 +1,4 @@
-"""GET/POST /settings/comms and POST /settings/comms/test-email."""
+"""GET/POST /settings/comms and POST /settings/comms/test."""
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
