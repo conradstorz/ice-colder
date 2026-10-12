@@ -144,7 +144,7 @@ def attach_routes(app: FastAPI) -> None:
 
     # Permission-gated routers first (the original `router`), the
     # session-less auth/setup router last (the original `public`).
-    app.include_router(home.build_router(templates))
+    app.include_router(home.router)
     app.include_router(screen.build_router(templates))
     app.include_router(health.build_router(templates))
     app.include_router(products.build_router(templates))

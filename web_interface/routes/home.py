@@ -11,7 +11,7 @@ import asyncio
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
+from web_interface.templating import templates
 
 from services.access import Permission
 from web_interface import auth as web_auth
@@ -185,74 +185,73 @@ def _highest_priority_fault(active_faults: list[dict]) -> dict | None:
     )
 
 
-def build_router(templates: Jinja2Templates) -> APIRouter:
-    router = APIRouter()
+router = APIRouter()
 
-    @router.get(
-        "/",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.view_status))],
+
+@router.get(
+    "/",
+    response_class=HTMLResponse,
+    dependencies=[Depends(web_auth.require(Permission.view_status))],
+)
+async def dashboard(request: Request):
+    principal = web_auth.current_principal(request)
+    perms = principal.perms if principal else frozenset()
+    tiles = _build_tiles(perms)
+    return templates.TemplateResponse(
+        "home.html",
+        context.template_context(request, level=LEVEL_HOME, tiles=tiles),
     )
-    async def dashboard(request: Request):
-        principal = web_auth.current_principal(request)
-        perms = principal.perms if principal else frozenset()
-        tiles = _build_tiles(perms)
-        return templates.TemplateResponse(
-            "home.html",
-            context.template_context(request, level=LEVEL_HOME, tiles=tiles),
+
+
+@router.get(
+    "/pill",
+    response_class=HTMLResponse,
+    dependencies=[Depends(web_auth.require(Permission.view_status))],
+)
+async def pill(request: Request):
+    """The bar's health indicator (spec §1.1), sharing
+    context.health_snapshot() with /status so the two can never
+    disagree about what "healthy" means (Task 5 brief). Tolerates a
+    missing VMC exactly as /status does: a neutral grey pill, never a
+    500 (executor resolution 3)."""
+    snap = await context.health_snapshot()
+    if snap["vmc_missing"]:
+        pill_state, pill_text = "neutral", "—"
+    elif snap["is_healthy"]:
+        pill_state, pill_text = "ok", "OK"
+    else:
+        top = _highest_priority_fault(snap["active_faults"])
+        pill_state, pill_text = "fault", (top["code"] if top else "ISSUE")
+    return templates.TemplateResponse(
+        "partials/pill.html",
+        context.template_context(request, pill_state=pill_state, pill_text=pill_text),
+    )
+
+
+@router.get(
+    "/status",
+    response_class=HTMLResponse,
+    dependencies=[Depends(web_auth.require(Permission.view_status))],
+)
+async def status_fragment(request: Request):
+    return await context._render_status(request)
+
+
+@router.get(
+    "/kpi",
+    response_class=HTMLResponse,
+    dependencies=[Depends(web_auth.require(Permission.view_status))],
+)
+async def kpi_fragment(request: Request):
+    if context.event_recorder:
+        summary = await asyncio.to_thread(context.event_recorder.get_summary, 24)
+        average = await asyncio.to_thread(
+            context.event_recorder.get_historical_average, 24
         )
-
-    @router.get(
-        "/pill",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.view_status))],
+    else:
+        summary = None
+        average = None
+    return templates.TemplateResponse(
+        "partials/kpi_fragment.html",
+        context.template_context(request, summary=summary, average=average),
     )
-    async def pill(request: Request):
-        """The bar's health indicator (spec §1.1), sharing
-        context.health_snapshot() with /status so the two can never
-        disagree about what "healthy" means (Task 5 brief). Tolerates a
-        missing VMC exactly as /status does: a neutral grey pill, never a
-        500 (executor resolution 3)."""
-        snap = await context.health_snapshot()
-        if snap["vmc_missing"]:
-            pill_state, pill_text = "neutral", "—"
-        elif snap["is_healthy"]:
-            pill_state, pill_text = "ok", "OK"
-        else:
-            top = _highest_priority_fault(snap["active_faults"])
-            pill_state, pill_text = "fault", (top["code"] if top else "ISSUE")
-        return templates.TemplateResponse(
-            "partials/pill.html",
-            context.template_context(
-                request, pill_state=pill_state, pill_text=pill_text
-            ),
-        )
-
-    @router.get(
-        "/status",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.view_status))],
-    )
-    async def status_fragment(request: Request):
-        return await context._render_status(request)
-
-    @router.get(
-        "/kpi",
-        response_class=HTMLResponse,
-        dependencies=[Depends(web_auth.require(Permission.view_status))],
-    )
-    async def kpi_fragment(request: Request):
-        if context.event_recorder:
-            summary = await asyncio.to_thread(context.event_recorder.get_summary, 24)
-            average = await asyncio.to_thread(
-                context.event_recorder.get_historical_average, 24
-            )
-        else:
-            summary = None
-            average = None
-        return templates.TemplateResponse(
-            "partials/kpi_fragment.html",
-            context.template_context(request, summary=summary, average=average),
-        )
-
-    return router
