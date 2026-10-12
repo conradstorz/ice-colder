@@ -30,6 +30,7 @@ from contracts.vending_machine import FaultCode
 from services.access import AccessStore
 from services.paths import LOG_FILE
 from web_interface import auth as web_auth
+from web_interface import templating
 
 config: ConfigModel = None
 
@@ -404,7 +405,7 @@ async def health_snapshot() -> dict:
     }
 
 
-async def _render_status(templates, request: Request):
+async def _render_status(request: Request):
     """The /status fragment body.
 
     Task 15 deleted routes/legacy.py's POST /faults/{key}/clear, which used
@@ -414,8 +415,7 @@ async def _render_status(templates, request: Request):
     GET /status; this function still lives here rather than in home.py per
     Task 1 executor resolution 3's original reasoning, and its signature is
     unchanged since nothing about what it renders (or how) needed to
-    change. `templates` is passed in explicitly since this function lives
-    outside any build_router(templates) closure.
+    change.
 
     The health computation itself lives in `health_snapshot()` (Task 5),
     shared with GET /pill, so the hero and the bar pill can never disagree
@@ -429,7 +429,7 @@ async def _render_status(templates, request: Request):
             '<p class="text-red-600 font-semibold">VMC not initialized</p></div>'
         )
 
-    return templates.TemplateResponse(
+    return templating.templates.TemplateResponse(
         "partials/status_fragment.html",
         template_context(
             request,

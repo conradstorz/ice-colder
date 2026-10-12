@@ -234,7 +234,7 @@ def build_router(templates: Jinja2Templates) -> APIRouter:
         dependencies=[Depends(web_auth.require(Permission.view_status))],
     )
     async def status_fragment(request: Request):
-        return await context._render_status(templates, request)
+        return await context._render_status(request)
 
     @router.get(
         "/kpi",
