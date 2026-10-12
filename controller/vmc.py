@@ -89,8 +89,11 @@ TRANSITIONS = [
         "unless": "has_credit",
         "before": "on_complete_transaction",
     },
-    #: The customer's selection disappeared from under them (a catalog edit
-    #: removed the selected product), so the sale is abandoned.
+    #: Abandons a live sale. Two callers: `process_payment`, when a catalog
+    #: edit removed the selected product from under the customer; and
+    #: `make_idle_for_service`, when maintenance standby takes the machine out
+    #: of service mid-session (it refunds with reason="maintenance" first, so
+    #: `on_cancel_sale`'s own refund finds nothing left).
     {
         "trigger": "cancel_sale",
         "source": "interacting_with_user",
