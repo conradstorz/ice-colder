@@ -14,7 +14,6 @@ from fastapi.exception_handlers import (
     http_exception_handler as fastapi_http_exception_handler,
 )
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from web_interface import context
@@ -34,6 +33,7 @@ from web_interface.context import (
 from web_interface.routes import auth as auth_routes
 from web_interface.routes import controls, health, home, inventory, products
 from web_interface.routes import reports, screen, settings, tests_level, users
+from web_interface.templating import templates
 
 __all__ = [
     "attach_routes",
@@ -51,7 +51,7 @@ __all__ = [
 ]
 
 
-def attach_routes(app: FastAPI, templates: Jinja2Templates) -> None:
+def attach_routes(app: FastAPI) -> None:
     """Build every area router, wire them into *app*, and register the
     access-gate middleware exactly once.
 
@@ -144,13 +144,13 @@ def attach_routes(app: FastAPI, templates: Jinja2Templates) -> None:
 
     # Permission-gated routers first (the original `router`), the
     # session-less auth/setup router last (the original `public`).
-    app.include_router(home.build_router(templates))
-    app.include_router(screen.build_router(templates))
+    app.include_router(home.router)
+    app.include_router(screen.router)
     app.include_router(health.build_router(templates))
     app.include_router(products.build_router(templates))
-    app.include_router(inventory.build_router(templates))
+    app.include_router(inventory.router)
     app.include_router(reports.build_router(templates))
-    app.include_router(controls.build_router(templates))
+    app.include_router(controls.router)
     app.include_router(tests_level.build_router(templates))
     app.include_router(users.build_router(templates))
     app.include_router(settings.build_router(templates))
