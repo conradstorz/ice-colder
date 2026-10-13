@@ -139,8 +139,13 @@ async function main() {
     // Proves a navigation landed on `path` and its document finished loading.
     const loadedAt = (path) =>
       `location.pathname === ${JSON.stringify(path)} && document.readyState === 'complete'`;
-    // htmx adds .htmx-request while a request is in flight and removes it once settled.
-    const IDLE = `!document.querySelector('.htmx-request')`;
+    // htmx adds .htmx-request while a request is in flight, and marks swapped-in
+    // content .htmx-added / .htmx-settling until its settle phase. That phase
+    // is when htmx processes the NEW nodes' hx-* attributes (settle tasks run
+    // ~20 ms after the swap), so a click on a freshly swapped-in button before
+    // then hits a button with no handler and sends no request. "Idle" therefore
+    // means no request in flight AND nothing mid-swap/settle.
+    const IDLE = `!document.querySelector('.htmx-request, .htmx-swapping, .htmx-settling, .htmx-added')`;
 
     await cmd("Page.enable");
     await cmd("Runtime.enable");
