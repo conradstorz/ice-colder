@@ -25,144 +25,16 @@ Run explicitly with:
 from __future__ import annotations
 
 import json
-import os
-import shutil
-import socket
-import subprocess
-import threading
-from pathlib import Path
 
-import pytest
-import uvicorn
+from tests.browser_harness import BROWSER_OPT_IN, run_node_check
 
-from config.config_model import ConfigModel
-from controller.machine import Machine
-from services.access import AccessStore, Role
-from services.inventory_manager import InventoryManager
-from web_interface import routes
-from web_interface.server import app
+_NODE_SCRIPT = "users_codes_pin_check.mjs"
 
-_ENV_FLAG = "ICE_COLDER_BROWSER_TESTS"
-_NODE_SCRIPT = Path(__file__).parent / "browser" / "users_codes_pin_check.mjs"
-
-
-def _find_chrome() -> str | None:
-    env_path = os.environ.get("CHROME_PATH")
-    if env_path and Path(env_path).exists():
-        return env_path
-    candidates = [
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        "/usr/bin/google-chrome",
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    ]
-    for c in candidates:
-        if Path(c).exists():
-            return c
-    return shutil.which("google-chrome") or shutil.which("chromium")
-
-
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-pytestmark = pytest.mark.skipif(
-    os.environ.get(_ENV_FLAG) != "1",
-    reason=f"opt-in only: set {_ENV_FLAG}=1 to run (requires Chrome + Node; CI always runs these)",
-)
-
-
-@pytest.fixture
-def live_server(tmp_path):
-    """A real uvicorn server (not TestClient), wired like tests/conftest.py's
-    `wired` fixture, with an owner already logged in on a trusted device --
-    mirrors test_dashboard_v2_home_browser.py's fixture of the same name."""
-    web_auth_backoff_reset()
-
-    cfg = ConfigModel()
-    machine = Machine(config=cfg)
-    inv = InventoryManager([], path=tmp_path / "inventory.json")
-    store = AccessStore(path=tmp_path / "access.json")
-    owner = store.create_user("Ada", "ada@example.com", Role.owner, "1379")
-    store.finalize_setup()
-
-    routes.set_config_object(cfg)
-    routes.set_machine_instance(machine)
-    routes.set_inventory_manager(inv)
-    routes.set_access_store(store)
-
-    port = _free_port()
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
-    server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    try:
-        for _ in range(200):
-            if server.started:
-                break
-            threading.Event().wait(0.05)
-        else:
-            raise RuntimeError("uvicorn server never reported started")
-
-        device, token = store.create_device("browser-check", shared=True)
-        store.trust_device(device.id, owner.id)
-        session_id = store.create_session(owner.id, device.id)
-
-        yield {
-            "base_url": f"http://127.0.0.1:{port}",
-            "session_cookie": session_id,
-            "device_cookie": token,
-        }
-    finally:
-        server.should_exit = True
-        thread.join(timeout=10)
-        machine.cancel_pending_tasks()
-        web_auth_backoff_reset()
-
-
-def web_auth_backoff_reset() -> None:
-    from web_interface import auth as web_auth
-
-    web_auth.backoff.reset()
-    web_auth.backoff.set_trusted_proxies([])
+pytestmark = BROWSER_OPT_IN
 
 
 def test_owner_pin_never_reaches_the_confirmation_get_query_string(live_server):
-    chrome = _find_chrome()
-    node = shutil.which("node")
-    if not chrome or not node:
-        pytest.skip("Chrome or Node not found on this machine")
-
-    env = dict(os.environ)
-    if chrome:
-        env["CHROME_PATH"] = chrome
-
-    result = subprocess.run(
-        [
-            node,
-            str(_NODE_SCRIPT),
-            live_server["base_url"],
-            live_server["session_cookie"],
-            live_server["device_cookie"],
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        env=env,
-    )
-
-    assert result.stdout.strip(), (
-        f"browser check produced no output; stderr: {result.stderr}"
-    )
-    payload = json.loads(result.stdout.strip().splitlines()[-1])
-    assert result.returncode == 0, (
-        f"browser checker exited {result.returncode}; "
-        f"stdout: {result.stdout!r}; stderr: {result.stderr!r}"
-    )
+    result, payload = run_node_check(_NODE_SCRIPT, live_server)
 
     assert not payload.get("error"), (
         f"browser check errored: {payload.get('error')}\nstderr: {result.stderr}"
