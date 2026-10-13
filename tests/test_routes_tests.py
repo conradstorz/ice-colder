@@ -445,6 +445,7 @@ class TestStandby:
         loader_client = login_as(Role.loader)
         assert loader_client.get("/tests/standby/confirm").status_code == 403
         assert loader_client.post("/tests/standby").status_code == 403
+        assert context.machine_instance.maintenance_hold is None
 
 
 # --- Contract match -------------------------------------------------
@@ -795,27 +796,40 @@ class TestAllowlistSecurityBoundary:
     check -- all 3 passed again.
     """
 
-    def test_post_refund_directly_is_403(self, client, wire_subsystem):
+    def test_post_refund_directly_is_403(self, client, wire_subsystem, wire_dispatcher):
         # "refund" advertised on purpose -- proves the allowlist refuses
         # it even when the capabilities doc claims to support it.
         wire_subsystem("vending", ["ping", "refund"])
+        dispatcher = wire_dispatcher(FakeAckDispatcher())
         resp = client.post("/tests/vending/refund")
         assert resp.status_code == 403
+        assert context.machine_instance.maintenance_hold is None
+        assert dispatcher.calls == []
 
-    def test_post_payment_enable_directly_is_403(self, client, wire_subsystem):
+    def test_post_payment_enable_directly_is_403(
+        self, client, wire_subsystem, wire_dispatcher
+    ):
         # A command name containing "/" -- POST /tests/vending/payment/enable
         # must REACH this handler (via {command:path}) and be refused by
         # the allowlist, not 404 before the security check ever runs.
         wire_subsystem("vending", ["ping", "payment/enable"])
+        dispatcher = wire_dispatcher(FakeAckDispatcher())
         resp = client.post("/tests/vending/payment/enable")
         assert resp.status_code == 403
+        assert context.machine_instance.maintenance_hold is None
+        assert dispatcher.calls == []
 
-    def test_allowlisted_but_unadvertised_is_403(self, client, wire_subsystem):
+    def test_allowlisted_but_unadvertised_is_403(
+        self, client, wire_subsystem, wire_dispatcher
+    ):
         # "dispense" IS in TESTABLE_COMMANDS["vending"] -- but this
         # subsystem advertises only "ping", so the intersection is empty.
         wire_subsystem("vending", ["ping"])
+        dispatcher = wire_dispatcher(FakeAckDispatcher())
         resp = client.post("/tests/vending/dispense", data={"slot": "0"})
         assert resp.status_code == 403
+        assert context.machine_instance.maintenance_hold is None
+        assert dispatcher.calls == []
 
 
 # --- Permission gates on every POST action route -------------------------
