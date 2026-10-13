@@ -20,7 +20,6 @@ BUDGET: dict[str, int] = {
     "tests/test_mqtt.py": 19,
     "tests/test_notifier.py": 6,
     "tests/test_report_scheduler.py": 5,
-    "tests/test_reports.py": 4,
     "tests/test_route_context.py": 2,
     "tests/test_routes_tests.py": 3,
     "tests/test_simulator_base.py": 38,
