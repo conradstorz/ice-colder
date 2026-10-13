@@ -82,7 +82,7 @@ def _free_port() -> int:
 
 pytestmark = pytest.mark.skipif(
     os.environ.get(_ENV_FLAG) != "1",
-    reason=f"opt-in only: set {_ENV_FLAG}=1 to run (requires Chrome + Node; not run in CI)",
+    reason=f"opt-in only: set {_ENV_FLAG}=1 to run (requires Chrome + Node; CI always runs these)",
 )
 
 

@@ -53,7 +53,7 @@ class TestSkipLegitimacy:
 
     def test_browser_test_skip_is_not_legitimate(self):
         """Browser opt-in test skips are NOT legitimate (must run in CI)."""
-        reason = "Skipped: opt-in only: set ICE_COLDER_BROWSER_TESTS=1 to run (requires Chrome + Node; not run in CI)"
+        reason = "Skipped: opt-in only: set ICE_COLDER_BROWSER_TESTS=1 to run (requires Chrome + Node; CI always runs these)"
         assert is_skip_legitimate(reason) is False
 
     def test_unrecognized_skip_is_not_legitimate(self):
@@ -101,7 +101,7 @@ class TestSkipValidation:
         skips = [
             {
                 "nodeid": "tests/test_dashboard_v2_home_browser.py::test_some_browser_test",
-                "reason": "Skipped: opt-in only: set ICE_COLDER_BROWSER_TESTS=1 to run (requires Chrome + Node; not run in CI)",
+                "reason": "Skipped: opt-in only: set ICE_COLDER_BROWSER_TESTS=1 to run (requires Chrome + Node; CI always runs these)",
             },
         ]
         is_valid, errors = validate_skips(skips)
@@ -119,7 +119,7 @@ class TestSkipValidation:
             },
             {
                 "nodeid": "tests/test_dashboard_v2_home_browser.py::test_browser",
-                "reason": "Skipped: opt-in only: set ICE_COLDER_BROWSER_TESTS=1 to run (requires Chrome + Node; not run in CI)",
+                "reason": "Skipped: opt-in only: set ICE_COLDER_BROWSER_TESTS=1 to run (requires Chrome + Node; CI always runs these)",
             },
         ]
         is_valid, errors = validate_skips(skips)
