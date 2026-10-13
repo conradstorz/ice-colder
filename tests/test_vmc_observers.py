@@ -11,8 +11,7 @@
   of the VMC-private waiter/path instance attributes it used to keep.
 
 Drives real sales (through dispenser profiles and a `FakeDispatcher`,
-mirroring `tests/test_vmc_dispense_profiles.py`'s own `_vmc_with_profiles`
-helper) rather than a stub, so the settled notification is proven against
+via `tests.fakes.vmc_with_profiles`) rather than a stub, so the settled notification is proven against
 the real `on_dispenser_event`/`on_dispense_failed` call sites.
 """
 
@@ -20,55 +19,21 @@ import asyncio
 
 import pytest
 
-from config.config_model import ConfigModel, PhysicalDetails, Product
+from config.config_model import Product
 from contracts.vending_machine import FaultCode
-from controller.machine import Machine
-from tests.dispenser_fixtures import FakeDispatcher, profiles_for
-from tests.fakes import FakeTaskRunner
+from tests.fakes import FakeMqtt, FakeTaskRunner, vmc_with_profiles
 
 ICE_1 = Product(sku="ICE-1", slot=0, kind="ice")
 WATER_1 = Product(sku="WATER-1", slot=1, kind="water")
 
 
-class FakeMQTT:
-    """Minimal MQTT client for `Machine.set_mqtt_client` -- `register` is
-    a no-op (the real client's subscription hook, called once per entry
-    in `controller/mqtt_inbound.py`'s `SUBSCRIPTIONS` table; `tests.fakes.
-    FakeMqtt` has no `register` at all, so it cannot stand in for a full
-    `Machine` wiring, only for lower-level collaborator tests) and
-    `publish` records every call, mirroring
-    `tests/test_vmc_dispense_profiles.py`'s own local `FakeMQTT`."""
-
-    def __init__(self):
-        self.published: list[tuple[str, object]] = []
-
-    def register(self, *a, **k):
-        pass
-
-    async def publish(self, topic, payload, **kwargs):
-        self.published.append((topic, payload))
-
-
 def _vmc_with_profiles(tmp_path, products=(ICE_1, WATER_1)):
-    """A `Machine`/`VMC` wired for a real dispatch: loaded dispenser
-    profiles, a `FakeDispatcher`, a `FakeMqtt`, and a `FakeTaskRunner` (so
-    `dispense_timeout`/`process_payment` can be fired by label, exactly
-    like the `vmc_fake_time`/`machine_fake_time` fixtures in
-    `tests/conftest.py`) -- mirrors
-    `tests/test_vmc_dispense_profiles.py`'s own `_vmc_with_profiles`,
-    copied here per the task brief rather than inventing a new fixture,
-    since that file's generic fixtures carry no products/profiles of
-    their own."""
-    cfg = ConfigModel(physical=PhysicalDetails(products=list(products)))
+    """`tests.fakes.vmc_with_profiles` plus a `FakeTaskRunner` (so
+    `dispense_timeout`/`process_payment` can be fired by label) and a
+    `FakeMqtt` attached."""
     runner = FakeTaskRunner()
-    machine = Machine(config=cfg, tasks=runner)
-    vmc = machine.vmc
-    machine.attach_to_loop(asyncio.get_running_loop())
-    profiles = profiles_for(list(products), tmp_path)
-    machine.set_dispenser_profiles(profiles)
-    dispatcher = FakeDispatcher()
-    machine.set_command_dispatcher(dispatcher)
-    client = FakeMQTT()
+    machine, vmc, dispatcher = vmc_with_profiles(tmp_path, products, tasks=runner)
+    client = FakeMqtt()
     machine.set_mqtt_client(client)
     return machine, vmc, dispatcher, client, runner
 

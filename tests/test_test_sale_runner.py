@@ -36,7 +36,7 @@ class FakeEventRecorder:
 
 
 def _no_refund_published(client) -> bool:
-    return not any(topic == "cmd/payment/refund" for topic, _ in client.published)
+    return not any(topic == "cmd/payment/refund" for topic, *_ in client.published)
 
 
 async def test_dispensed_sale_returns_outcome_and_writes_ok_test_run_row(tmp_path):

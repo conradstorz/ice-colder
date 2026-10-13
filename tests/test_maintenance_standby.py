@@ -18,7 +18,8 @@ from tests.fakes import FakeTaskRunner
 from tests.test_vmc_flows import (
     RecordingClient,
     _profiles_tmp_base_dir,  # noqa: F401 -- pytest picks this up as an autouse fixture
-    make_machine2,
+    make_machine,
+    two_products,
 )
 
 
@@ -42,7 +43,7 @@ def _active_fault_codes(vmc) -> list[str]:
 
 
 async def test_standby_from_interacting_with_user_refunds_and_idles():
-    machine = make_machine2()
+    machine = make_machine(products=two_products())
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
     client = RecordingClient()
@@ -74,7 +75,7 @@ async def test_standby_from_interacting_with_user_refunds_and_idles():
 
 async def test_standby_from_idle_refunds_stranded_escrow_and_cancels_timer():
     runner = FakeTaskRunner()
-    machine = make_machine2(tasks=runner)
+    machine = make_machine(tasks=runner, products=two_products())
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
     client = RecordingClient()
@@ -101,7 +102,7 @@ async def test_standby_from_idle_refunds_stranded_escrow_and_cancels_timer():
 
 
 async def test_standby_from_error_refunds_and_stays_in_error():
-    machine = make_machine2()
+    machine = make_machine(products=two_products())
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
     client = RecordingClient()
@@ -126,7 +127,7 @@ async def test_standby_from_error_refunds_and_stays_in_error():
 
 
 async def test_standby_refused_while_dispensing():
-    machine = make_machine2()
+    machine = make_machine(products=two_products())
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
     client = RecordingClient()
@@ -146,7 +147,7 @@ async def test_standby_refused_while_dispensing():
 
 
 async def test_standby_refused_when_another_session_holds_the_lease():
-    machine = make_machine2()
+    machine = make_machine(products=two_products())
     machine.attach_to_loop(asyncio.get_running_loop())
     granted1, _ = machine.lease.begin_maintenance("owner-1", "sess-a")
     assert granted1 is True
@@ -161,7 +162,7 @@ async def test_standby_refused_when_another_session_holds_the_lease():
 
 
 async def test_standby_upgrades_own_opportunistic_lease_in_place():
-    machine = make_machine2()
+    machine = make_machine(products=two_products())
     machine.attach_to_loop(asyncio.get_running_loop())
     machine.set_session_liveness(lambda session_id: True)
     granted1, _ = machine.lease.begin_maintenance("user-1", "sess-1")
@@ -184,7 +185,7 @@ async def test_standby_upgrades_own_opportunistic_lease_in_place():
 
 
 async def test_standby_lease_never_released_by_idle_timer():
-    machine = make_machine2()
+    machine = make_machine(products=two_products())
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
     machine.set_session_liveness(lambda session_id: True)
@@ -211,7 +212,7 @@ async def test_standby_lease_never_released_by_idle_timer():
 
 async def test_sweep_releases_lease_once_holder_session_is_gone(loud_log):
     runner = FakeTaskRunner()
-    machine = make_machine2(tasks=runner)
+    machine = make_machine(tasks=runner, products=two_products())
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
     live_calls: list[str] = []
@@ -238,7 +239,7 @@ async def test_sweep_releases_lease_once_holder_session_is_gone(loud_log):
 
 async def test_sweep_defers_release_while_a_run_is_in_flight(loud_log):
     runner = FakeTaskRunner()
-    machine = make_machine2(tasks=runner)
+    machine = make_machine(tasks=runner, products=two_products())
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
     machine.set_session_liveness(lambda session_id: False)  # already gone
@@ -277,7 +278,7 @@ async def test_idle_timer_defers_release_while_a_run_is_in_flight_and_is_attribu
     # deferral must be attributed to "idle_timeout", not misreported as
     # "admin" once the run settles.
     runner = FakeTaskRunner()
-    machine = make_machine2(tasks=runner)
+    machine = make_machine(tasks=runner, products=two_products())
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
     granted, _ = machine.lease.begin_standby("user-1", "sess-1")
@@ -309,7 +310,7 @@ async def test_idle_timer_defers_release_while_a_run_is_in_flight_and_is_attribu
 
 async def test_standby_falls_back_to_idle_timer_when_no_predicate_wired(loud_log):
     runner = FakeTaskRunner()
-    machine = make_machine2(tasks=runner)
+    machine = make_machine(tasks=runner, products=two_products())
     machine.attach_to_loop(asyncio.get_running_loop())
 
     granted, _ = machine.lease.begin_standby("user-1", "sess-1")
@@ -330,7 +331,7 @@ async def test_standby_falls_back_to_idle_timer_when_no_predicate_wired(loud_log
 
 async def test_takeover_of_standby_lease_keeps_standby_and_sweeps_new_session():
     runner = FakeTaskRunner()
-    machine = make_machine2(tasks=runner)
+    machine = make_machine(tasks=runner, products=two_products())
     machine.attach_to_loop(asyncio.get_running_loop())
     live_calls: list[str] = []
 

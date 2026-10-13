@@ -23,8 +23,8 @@ from controller.vmc import VMC
 from services.availability import Availability
 from services.command_dispatcher import CommandTimeout
 from services.dispensers import DispenserProfiles
-from tests.dispenser_fixtures import FakeDispatcher, profiles_for, render_profiles_toml
-from tests.fakes import FakeTaskRunner
+from tests.dispenser_fixtures import profiles_for, render_profiles_toml
+from tests.fakes import FakeMqtt, FakeTaskRunner, vmc_with_profiles
 
 ICE_1 = Product(sku="ICE-1", slot=0, kind="ice")
 WATER_1 = Product(sku="W-1", slot=1, kind="water")
@@ -349,20 +349,7 @@ class FakeEventRecorder:
 
 
 def _vmc_with_profiles(tmp_path, products=(ICE_1, WATER_1), *, tasks=None):
-    """A VMC wired exactly like `make_vmc()` but with a loaded
-    `DispenserProfiles` for *products* and a `FakeDispatcher` attached --
-    the minimum wiring a production sale needs to actually dispatch. Pass
-    `tasks` (e.g. `tests.fakes.FakeTaskRunner()`) for a test that fires a
-    timer by label instead of waiting on a real one."""
-    cfg = ConfigModel(physical=PhysicalDetails(products=list(products)))
-    machine = Machine(config=cfg, tasks=tasks)
-    vmc = machine.vmc
-    machine.attach_to_loop(asyncio.get_running_loop())
-    profiles = profiles_for(list(products), tmp_path)
-    machine.set_dispenser_profiles(profiles)
-    dispatcher = FakeDispatcher()
-    machine.set_command_dispatcher(dispatcher)
-    return machine, vmc, dispatcher
+    return vmc_with_profiles(tmp_path, products, tasks=tasks)
 
 
 def _start_sale(vmc, product) -> None:
@@ -376,16 +363,8 @@ def _start_sale(vmc, product) -> None:
 async def test_sale_dispatches_full_profile_on_command_channel(tmp_path):
     machine, vmc, dispatcher = _vmc_with_profiles(tmp_path)
 
-    published: list[tuple[str, object]] = []
-
-    class FakeMQTT:
-        def register(self, *a, **k):
-            pass
-
-        async def publish(self, topic, payload, **kwargs):
-            published.append((topic, payload))
-
-    machine.set_mqtt_client(FakeMQTT())
+    client = FakeMqtt()
+    machine.set_mqtt_client(client)
     _start_sale(vmc, vmc.products[0])  # ICE-1, bagged_ice
 
     await asyncio.sleep(0)
@@ -400,7 +379,7 @@ async def test_sale_dispatches_full_profile_on_command_channel(tmp_path):
     # (cmd_dispatcher.send -> cmd/vending/dispense under the hood) -- the
     # VMC must never also publish it directly on a bare "cmd/dispense"
     # topic via the MQTT client.
-    assert not any(topic == "cmd/dispense" for topic, _ in published)
+    assert not any(topic == "cmd/dispense" for topic, *_ in client.published)
 
 
 async def test_no_ack_fails_vend_immediately_with_pay102(tmp_path):
@@ -564,16 +543,8 @@ async def test_success_cancels_dispense_timeout_before_record_awaits(tmp_path):
     machine, vmc, dispatcher = _vmc_with_profiles(tmp_path, tasks=runner)
     rec = FakeEventRecorder()
     machine.set_event_recorder(rec)
-    published: list[tuple[str, object]] = []
-
-    class FakeMQTT:
-        def register(self, *a, **k):
-            pass
-
-        async def publish(self, topic, payload, **kwargs):
-            published.append((topic, payload))
-
-    machine.set_mqtt_client(FakeMQTT())
+    client = FakeMqtt()
+    machine.set_mqtt_client(client)
     product = vmc.products[0]
     _start_sale(vmc, product)
     await asyncio.sleep(0)
@@ -600,7 +571,7 @@ async def test_success_cancels_dispense_timeout_before_record_awaits(tmp_path):
     assert vmc.credit_escrow == 0
     assert not vmc.faults.lockouts
     assert not any(e[0] == "vend_failed" for e in rec.events)
-    assert not any(topic == "cmd/payment/refund" for topic, _ in published)
+    assert not any(topic == "cmd/payment/refund" for topic, *_ in client.published)
 
 
 async def test_door_open_completes_sale_and_raises_ice402(tmp_path):
