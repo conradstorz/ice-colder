@@ -140,7 +140,6 @@ def test_whole_string_equal_to_module_rewritten() -> None:
         "config.example.json",
         "config.json.bak",
         "services/mailer.py",
-        "contracts.json",
         "contracts",
         "simulators",
         "services.mailerx.thing",
@@ -425,3 +424,30 @@ def test_uncovered_tests_detects_new_test_files() -> None:
         "controller/test_sale.py",
     ]
     assert codemod.uncovered_tests(existing, TEST_MOVES) == ["tests/test_brand_new.py"]
+
+
+def test_deep_module_named_like_a_suffix_is_rewritten() -> None:
+    phase4 = [m for m in MODULE_MOVES if m.phase == 4]
+    out, review = codemod.rewrite_source(
+        'x = "web_interface.routes.tests_level.log"\n', phase4
+    )
+    assert out == 'x = "ice_edge.web.routes.tests_level.log"\n'
+    assert review == []
+
+
+def test_suffix_guard_blocks_but_reports() -> None:
+    src = 'x = "contracts.json"\n'
+    out, review = rw(src)
+    assert out == src
+    assert len(review) == 1
+
+
+def test_text_suffix_guard_reports_and_deep_module_rewritten() -> None:
+    text, review = txt("see contracts.json here")
+    assert text == "see contracts.json here"
+    assert len(review) == 1
+    phase4 = [m for m in MODULE_MOVES if m.phase == 4]
+    text, _ = codemod.rewrite_text(
+        "web_interface.routes.tests_level.log", phase4, FILE_MOVES, TEST_MOVES
+    )
+    assert text == "ice_edge.web.routes.tests_level.log"

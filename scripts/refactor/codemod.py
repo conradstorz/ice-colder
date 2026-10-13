@@ -102,14 +102,21 @@ def resolve(hit: Hit) -> str:
     return hit.move.new + ("." + hit.rest if hit.rest else "")
 
 
-def _string_ok(hit: Hit) -> bool:
-    """Guard shared by string and text mode against non-module look-alikes."""
+def _guard(hit: Hit) -> str:
+    """Guard shared by string and text mode against non-module look-alikes.
+
+    Returns "ok", "bare" (a bare package name: silently left alone) or
+    "suffix" (left alone but reported). The suffix guard fires only when the
+    tail after a package-row key is exactly one component that looks like a
+    file suffix ("contracts.json"); a deeper tail such as
+    "web_interface.routes.tests_level.log" is a real module and is rewritten.
+    """
     if hit.move.package:
         if not hit.rest:
-            return False  # a bare package name is never rewritten
-        if hit.rest.rsplit(".", 1)[-1].lower() in FILE_SUFFIXES:
-            return False  # "contracts.json"
-    return True
+            return "bare"
+        if "." not in hit.rest and hit.rest.lower() in FILE_SUFFIXES:
+            return "suffix"
+    return "ok"
 
 
 # ------------------------------------------------------------- Python rewriting
@@ -244,7 +251,15 @@ class _Rewriter(cst.CSTTransformer):
         if not isinstance(value, str) or not _DOTTED.fullmatch(value):
             return updated_node
         hit = match_move(value, self.index, strings=True)
-        if hit is None or not _string_ok(hit):
+        if hit is None:
+            return updated_node
+        guard = _guard(hit)
+        if guard == "suffix":
+            self._note(
+                original_node,
+                f'string "{value}" looks like a file name, not a module: not rewritten',
+            )
+        if guard != "ok":
             return updated_node
         self.result.strings += 1
         return updated_node.with_changes(
@@ -359,9 +374,16 @@ def rewrite_text(
     """Rewrite dotted refs, slash paths and test paths; list what still needs a human."""
     index = _index(moves)
 
+    blocked: list[str] = []
+
     def dotted(m: re.Match[str]) -> str:
         hit = match_move(m.group(0), index, strings=True)
-        if hit is None or not _string_ok(hit):
+        if hit is None:
+            return m.group(0)
+        guard = _guard(hit)
+        if guard == "suffix":
+            blocked.append(m.group(0))
+        if guard != "ok":
             return m.group(0)
         return resolve(hit)
 
@@ -381,7 +403,7 @@ def rewrite_text(
     review = [
         f"{n}: {line.strip()}"
         for n, line in enumerate(text.splitlines(), start=1)
-        if _REVIEW.search(line)
+        if _REVIEW.search(line) or any(tok in line for tok in blocked)
     ]
     return text, review
 
