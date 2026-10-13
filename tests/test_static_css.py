@@ -2,8 +2,8 @@
 
 Offline 7-inch tablets have no CDN, so every Tailwind utility class a
 template references must already be baked into the committed
-`web_interface/static/app.css` by the build
-(`web_interface/tailwind.config.js` + `web_interface/tailwind.input.css`,
+`packages/ui/src/ice_ui/static/app.css` by the build
+(`packages/ui/tailwind.config.js` + `packages/ui/tailwind.input.css`,
 compiled with the standalone Tailwind CLI — see that config file's header
 comment for the exact command). A class missing from `app.css` is a build
 defect, not a test defect: per the task-3 brief's resolution 6, fix the
@@ -114,7 +114,7 @@ def all_template_classes() -> dict[str, set[str]]:
 def test_every_template_class_is_in_app_css():
     assert APP_CSS_PATH.exists(), (
         f"{APP_CSS_PATH} is missing; run the Tailwind build "
-        "(see web_interface/tailwind.config.js's header comment)"
+        "(see packages/ui/tailwind.config.js's header comment)"
     )
     css_text = APP_CSS_PATH.read_text(encoding="utf-8")
     assert css_text.strip(), f"{APP_CSS_PATH} is empty; run the Tailwind build"
@@ -138,8 +138,8 @@ def test_every_template_class_is_in_app_css():
             missing_by_template[template] = template_missing
 
     assert not missing_by_template, (
-        "classes used in templates but absent from web_interface/static/app.css "
-        "(rebuild it, or add a safelist entry in web_interface/tailwind.config.js "
+        "classes used in templates but absent from packages/ui/src/ice_ui/static/app.css "
+        "(rebuild it, or add a safelist entry in packages/ui/tailwind.config.js "
         f"for a class assembled at render time): {missing_by_template}"
     )
 

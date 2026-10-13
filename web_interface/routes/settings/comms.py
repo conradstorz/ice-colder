@@ -10,11 +10,11 @@ from services.access import Permission
 from services.mailer import send_email
 from web_interface import auth as web_auth
 from web_interface import context
-from web_interface.levels import (
+from ice_ui.levels import (
     LEVEL_SETTINGS_COMMS,
 )
 from web_interface.routes.settings.secrets import SECRET_MASK, _secret_changed
-from web_interface.templating import templates
+from ice_ui.templating import templates
 
 
 router = APIRouter()

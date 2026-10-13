@@ -14,7 +14,7 @@ from services.access import Permission
 from services.health_monitor import HealthMonitor
 from web_interface import auth as web_auth
 from web_interface import context
-from web_interface.templating import templates
+from ice_ui.templating import templates
 
 
 router = APIRouter()

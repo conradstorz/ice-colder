@@ -30,7 +30,7 @@ from ice_contracts.board.vending_machine import FaultCode
 from services.access import AccessStore
 from ice_common.paths import LOG_FILE
 from web_interface import auth as web_auth
-from web_interface import templating
+from ice_ui import templating
 
 config: ConfigModel = None
 

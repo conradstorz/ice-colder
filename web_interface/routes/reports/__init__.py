@@ -30,7 +30,7 @@ Design notes / deliberate deviations, recorded here per the task brief:
   consistency; the query itself simply does not use it.
 - The four sub-tiles this task's §3 adds below the existing activity table
   on the Reports level landing page live in
-  `web_interface/templates/reports.html`, which is not listed under "Files
+  `packages/ui/src/ice_ui/templates/reports.html`, which is not listed under "Files
   you may touch" (only routes/reports.py and the five new templates are).
   No other Task 10 wave agent owns that file (their file sets are
   inventory.py/inventory.html, settings.py/settings_reports.html,

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import controller.vmc
 import web_interface.routes
-from web_interface.templating import STATIC_DIR, TEMPLATES_DIR
+from ice_ui.templating import STATIC_DIR, TEMPLATES_DIR
 
 
 def _repo_root() -> Path:
@@ -25,14 +25,13 @@ VMC_PATH = Path(controller.vmc.__file__)
 
 # (current repo-relative path, legacy paths to try at origin/main)
 SCREEN_TEMPLATES: list[tuple[str, tuple[str, ...]]] = [
-    (str((TEMPLATES_DIR / "screen.html").relative_to(REPO_ROOT).as_posix()), ()),
     (
-        str(
-            (TEMPLATES_DIR / "partials" / "screen_body.html")
-            .relative_to(REPO_ROOT)
-            .as_posix()
-        ),
-        (),
+        "packages/ui/src/ice_ui/templates/screen.html",
+        ("web_interface/templates/screen.html",),
+    ),
+    (
+        "packages/ui/src/ice_ui/templates/partials/screen_body.html",
+        ("web_interface/templates/partials/screen_body.html",),
     ),
 ]
 

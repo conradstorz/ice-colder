@@ -3,7 +3,7 @@ design §4.6). No I/O; `now` and `tz` are injected."""
 
 from datetime import datetime, timezone
 
-from web_interface.subsystem_window import build_window
+from ice_ui.views.subsystem_window import build_window
 
 
 class _FakeAvailability:

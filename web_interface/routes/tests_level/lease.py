@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse
 from services.access import Permission
 from web_interface import auth as web_auth
 from web_interface import context
-from web_interface.templating import templates
+from ice_ui.templating import templates
 
 
 router = APIRouter()

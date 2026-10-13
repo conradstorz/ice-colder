@@ -54,7 +54,7 @@ async def reports_product_level(
 
 @router.get(
     # `{sku:path}` (not plain `{sku}`) -- see sku_url_segment's
-    # docstring (web_interface/filters.py): a `str`-converter route
+    # docstring (packages/ui/src/ice_ui/filters.py): a `str`-converter route
     # 404s on a percent-encoded `/` (`%2F`) since the ASGI server
     # decodes it before Starlette's router sees it, so a SKU
     # containing `/` needs the `path` converter to route at all.

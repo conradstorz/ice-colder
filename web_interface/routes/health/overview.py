@@ -6,14 +6,14 @@ from fastapi.responses import HTMLResponse
 from services.access import Permission
 from web_interface import auth as web_auth
 from web_interface import context
-from web_interface.levels import (
+from ice_ui.levels import (
     LEVEL_HEALTH,
     LEVEL_HEALTH_AVAILABILITY,
     LEVEL_HEALTH_FAULTS,
     LEVEL_HEALTH_LOGS,
     LEVEL_HEALTH_SUBSYSTEMS,
 )
-from web_interface.templating import templates
+from ice_ui.templating import templates
 from web_interface.routes.health.availability import _availability_context_line
 from web_interface.routes.health.faults import _faults_with_age
 from web_interface.routes.health.subsystems import _subsystem_summary

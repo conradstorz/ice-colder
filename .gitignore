@@ -202,7 +202,7 @@ docker-compose.override.yml
 .superpowers/
 
 # Build-time Tailwind CLI binary (~100MB standalone .exe) — downloaded by
-# hand, never committed; web_interface/static/app.css is the committed,
+# hand, never committed; packages/ui/src/ice_ui/static/app.css is the committed,
 # compiled artifact CI and the offline tablet actually need.
 .tailwind/
 

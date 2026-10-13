@@ -25,8 +25,8 @@ from web_interface import routes
 
 # Emergency/transfer codes are 8 decimal digits, rendered by the templates
 # inside an element carrying the `code-value` hook class (see
-# web_interface/templates/setup_codes.html and
-# web_interface/templates/partials/users_list.html). A page-wide
+# packages/ui/src/ice_ui/templates/setup_codes.html and
+# packages/ui/src/ice_ui/templates/partials/users_list.html). A page-wide
 # `\b\d{8}\b` scrape used to be used instead, but the users-list partial
 # also renders user uuids into hx-post targets and a device-count lookup,
 # and a uuid4's first hyphen-delimited group is occasionally eight decimal
@@ -1172,8 +1172,8 @@ class TestOfflineAssets:
     form (including /login/enroll's emergency-code path, guarded by
     require_htmx) would fall back to a plain, non-HTMX request and get
     refused, so offline enrollment could not actually complete (Copilot
-    review, web_interface/templates/enroll.html:25). HTMX is now vendored
-    at web_interface/static/htmx.min.js and served with no network
+    review, packages/ui/src/ice_ui/templates/enroll.html:25). HTMX is now vendored
+    at packages/ui/src/ice_ui/static/htmx.min.js and served with no network
     dependency; Tailwind is deliberately left on its CDN (losing it only
     degrades styling, not function)."""
 
@@ -3447,7 +3447,7 @@ class TestRemovedLegacyRoutesAre404:
 
 class TestTemplateIncludeIntegrity:
     """Every {% include %} and {% extends %} target across
-    web_interface/templates/**/*.html must resolve to a real file — cheap
+    packages/ui/src/ice_ui/templates/**/*.html must resolve to a real file — cheap
     insurance against exactly the class of mistake this task risks
     (deleting a partial something still includes, per brief resolution 6's
     name-collision trap)."""

@@ -4,11 +4,11 @@ from fastapi.responses import HTMLResponse
 from services.access import Permission
 from web_interface import auth as web_auth
 from web_interface import context
-from web_interface.levels import LEVEL_TESTS
+from ice_ui.levels import LEVEL_TESTS
 from web_interface.routes.health import _subsystem_summary
 from web_interface.routes.tests_level.commands import contract_match, testable_commands
 from web_interface.routes.tests_level.lease import _service_state
-from web_interface.templating import templates
+from ice_ui.templating import templates
 
 router = APIRouter()
 

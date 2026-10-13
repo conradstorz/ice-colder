@@ -15,70 +15,9 @@ from fastapi.responses import HTMLResponse
 from services.access import Permission
 from web_interface import auth as web_auth
 from web_interface import context
-from web_interface.levels import (
-    LEVEL_CONTROLS,
-    LEVEL_HEALTH,
-    LEVEL_HOME,
-    LEVEL_INVENTORY,
-    LEVEL_PRODUCTS,
-    LEVEL_REPORTS,
-    LEVEL_SETTINGS,
-    LEVEL_TESTS,
-    LEVEL_USERS,
-)
-from web_interface.templating import templates
-
-# The eight Home tiles (spec §2's permission table), as
-# (title, url, icon key, permission set, coming_soon). Static — no live
-# state — so it is a module-level constant rather than rebuilt per request;
-# _build_tiles() below pairs each entry with its live context line and its
-# per-request `enabled` flag.
-_TILE_DEFS: list[tuple[str, str, str, frozenset, bool]] = [
-    ("Health", LEVEL_HEALTH.url, "health", frozenset({Permission.view_status}), False),
-    (
-        "Products",
-        LEVEL_PRODUCTS.url,
-        "products",
-        frozenset({Permission.edit_catalog, Permission.edit_placement}),
-        False,
-    ),
-    (
-        "Inventory",
-        LEVEL_INVENTORY.url,
-        "inventory",
-        frozenset({Permission.edit_placement}),
-        False,
-    ),
-    (
-        "Reports",
-        LEVEL_REPORTS.url,
-        "reports",
-        frozenset({Permission.view_reports}),
-        False,
-    ),
-    (
-        "Controls",
-        LEVEL_CONTROLS.url,
-        "controls",
-        frozenset({Permission.machine_controls}),
-        False,
-    ),
-    ("Tests", LEVEL_TESTS.url, "tests", frozenset({Permission.run_tests}), False),
-    (
-        "Users",
-        LEVEL_USERS.url,
-        "users",
-        frozenset({Permission.manage_users}),
-        False,
-    ),
-    (
-        "Settings",
-        LEVEL_SETTINGS.url,
-        "settings",
-        frozenset({Permission.edit_contacts, Permission.edit_secrets}),
-        False,
-    ),
-]
+from ice_ui.levels import LEVEL_HOME
+from ice_ui.templating import templates
+from ice_ui.tiles import build_tiles
 
 # Rank highest-first for the pill's "which fault do I name" choice (Task 5
 # brief, "Fault severity ranking"): critical > lockout > vend_failed >
@@ -143,12 +82,9 @@ def _user_count_line() -> str:
     return f"{n} user{'s' if n != 1 else ''}"
 
 
-def _build_tiles(perms: frozenset) -> list[dict]:
-    """Build all eight tile dicts. Every tile is always present in the
-    returned list — `enabled` (True when *perms* intersects the tile's
-    permission set) is what home.html uses to decide whether to render it,
-    per spec §2's per-role table (Task 5 brief, "Tile visibility")."""
-    context_lines = {
+def _tile_lines() -> dict[str, str]:
+    """Each Home tile's live context line, keyed by tile title."""
+    return {
         "Health": _fault_count_line(),
         "Products": _product_count_line(),
         "Inventory": _inventory_line(),
@@ -158,17 +94,6 @@ def _build_tiles(perms: frozenset) -> list[dict]:
         "Users": _user_count_line(),
         "Settings": "Contacts, payments, comms",
     }
-    return [
-        {
-            "title": title,
-            "url": url,
-            "icon": icon,
-            "context": context_lines[title],
-            "enabled": bool(perms & perm_set),
-            "coming_soon": coming_soon,
-        }
-        for title, url, icon, perm_set, coming_soon in _TILE_DEFS
-    ]
 
 
 def _highest_priority_fault(active_faults: list[dict]) -> dict | None:
@@ -196,7 +121,7 @@ router = APIRouter()
 async def dashboard(request: Request):
     principal = web_auth.current_principal(request)
     perms = principal.perms if principal else frozenset()
-    tiles = _build_tiles(perms)
+    tiles = build_tiles(perms, _tile_lines())
     return templates.TemplateResponse(
         request,
         "home.html",

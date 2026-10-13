@@ -9,7 +9,7 @@ from services.access import (
 from services.mailer import send_email
 from web_interface import auth as web_auth
 from web_interface import context
-from web_interface.templating import templates
+from ice_ui.templating import templates
 
 # Backoff subject for a user_id form value that names nobody. Copilot review
 # (web_interface/routes.py:263): the raw form value was used as the backoff

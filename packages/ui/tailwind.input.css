@@ -7,7 +7,7 @@
      base.html — spec docs/superpowers/specs/2026-09-30-touch-feedback-design.md
      §4.1. Element selectors in @layer base are never tree-shaken, so no
      template needs a class for any of this. The selector list must match
-     TAPPABLE in web_interface/static/feedback.js. */
+     TAPPABLE in packages/ui/src/ice_ui/static/feedback.js. */
 
   button, [type="submit"], [type="button"], a[href], label[for], summary,
   input:not([type="hidden"]), select, textarea {
@@ -93,7 +93,7 @@
 
   /* `.code-value` is a test/automation hook, not a Tailwind utility — see
      the comment beside its use in
-     web_interface/templates/partials/users_list.html. It marks an
+     packages/ui/src/ice_ui/templates/partials/users_list.html. It marks an
      emergency/transfer code's <li>/<span> so tests (and anything else that
      needs to scrape a code) can find it unambiguously; every visual style
      it needs comes from the Tailwind utilities applied alongside it

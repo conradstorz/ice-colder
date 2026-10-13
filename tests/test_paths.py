@@ -27,7 +27,7 @@ def test_cwd_independent(tmp_path: Path):
         [
             sys.executable,
             "-c",
-            "from web_interface.templating import templates; "
+            "from ice_ui.templating import templates; "
             "templates.get_template('base.html')",
         ],
         cwd=tmp_path,

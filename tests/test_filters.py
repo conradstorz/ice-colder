@@ -1,6 +1,6 @@
 import pytest
 
-from web_interface.filters import humanize_seconds
+from ice_ui.filters import humanize_seconds
 
 
 @pytest.mark.parametrize(
