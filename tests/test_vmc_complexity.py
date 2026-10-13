@@ -15,7 +15,7 @@ VMC_PATH = Path(__file__).resolve().parent.parent / "controller" / "vmc.py"
 # Stage 3 moved the FSM table into the class (the only sanctioned upward move);
 # it goes down from here.
 CLASS_CODE_LINES = 689
-FILE_LINES = 1422
+FILE_LINES = 1005
 LARGEST_METHOD_CODE_LINES = 54
 
 
