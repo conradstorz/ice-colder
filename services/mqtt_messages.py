@@ -15,7 +15,6 @@ from typing import Optional
 from pydantic import BaseModel, Field, model_validator
 
 from contracts.vending_machine import FaultCode, Mechanism
-from services.build_info import BUILD_INFO
 from services.dispenser_schema import SlotProfile
 
 
@@ -204,10 +203,7 @@ class VMCStatus(BaseModel):
     credit_escrow: float = Field(0.0)
     selected_product: Optional[str] = Field(None)
     uptime_seconds: int = Field(0)
-    version: str = Field(
-        default_factory=lambda: BUILD_INFO.commit_short,
-        description="VMC build (short commit)",
-    )
+    version: str = Field(..., description="VMC build (short commit)")
     timestamp: datetime = Field(default_factory=_utc_now)
 
 

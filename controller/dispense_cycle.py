@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from loguru import logger
@@ -47,13 +48,15 @@ from contracts.vending_machine import (
 )
 from controller.dispenser_gate import DispenserProfileGate
 from controller.fault_service import FaultService
-from controller.outputs import StatusOutputs
-from controller.sale_context import SaleContext
 from controller.task_runner import TaskRunner
 from services.command_dispatcher import CommandTimeout
 from services.event_recorder import SaleRecordingFailed
 from services.mqtt_messages import DispenseCommand
 from services.session_store import SessionSnapshot
+
+if TYPE_CHECKING:
+    from controller.outputs import StatusOutputs
+    from controller.sale_context import SaleContext
 
 # Bound logger for the vending log -- mirrors controller/vmc.py's own
 # `vend_log` / controller/machine.py's `_txn_log`: loguru's bind() only

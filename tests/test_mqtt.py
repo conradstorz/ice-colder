@@ -89,7 +89,7 @@ class TestOutboundSchemas:
 
 class TestStatusSchemas:
     def test_vmc_status_defaults(self):
-        s = VMCStatus(state="idle")
+        s = VMCStatus(state="idle", version="t")
         assert s.credit_escrow == 0.0
         assert s.selected_product is None
         assert s.uptime_seconds == 0
@@ -103,6 +103,7 @@ class TestStatusSchemas:
     def test_vmc_status_json_roundtrip(self):
         s = VMCStatus(
             state="dispensing",
+            version="t",
             credit_escrow=2.50,
             selected_product="Ice 10lb",
             uptime_seconds=300,

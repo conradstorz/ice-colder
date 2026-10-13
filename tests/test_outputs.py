@@ -115,6 +115,9 @@ async def test_state_changed_with_every_sink_pushes_and_publishes_retained_statu
     assert payload.credit_escrow == 3.25
     assert payload.selected_product == "Ice Bag"
     assert payload.uptime_seconds >= 0
+    from services.build_info import BUILD_INFO
+
+    assert payload.version == BUILD_INFO.commit_short
 
 
 async def test_state_changed_publishes_none_selected_product_when_none_selected():
