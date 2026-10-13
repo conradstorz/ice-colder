@@ -16,7 +16,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 UNKNOWN = "unknown"
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _find_git_root(start: Path) -> Path | None:
+    for parent in (start.resolve(), *start.resolve().parents):
+        if (parent / ".git").exists():
+            return parent
+    return None
+
+
+_REPO_ROOT = _find_git_root(Path(__file__).parent)
 
 
 @dataclass(frozen=True)
@@ -58,7 +67,9 @@ def resolve_build_info(
             source="image",
         )
 
-    sha = _run_git(cwd, "rev-parse", "HEAD") if cwd.is_dir() else None
+    sha = (
+        _run_git(cwd, "rev-parse", "HEAD") if cwd is not None and cwd.is_dir() else None
+    )
     if sha:
         dirty = bool(_run_git(cwd, "status", "--porcelain"))
         commit_time = _run_git(cwd, "log", "-1", "--format=%cI") or UNKNOWN

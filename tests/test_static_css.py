@@ -15,12 +15,10 @@ disappears from the check.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "web_interface" / "templates"
-APP_CSS_PATH = (
-    Path(__file__).resolve().parent.parent / "web_interface" / "static" / "app.css"
-)
+from tests.paths import STATIC_DIR, TEMPLATES_DIR
+
+APP_CSS_PATH = STATIC_DIR / "app.css"
 
 _CLASS_ATTR_RE = re.compile(r'class="([^"]*)"')
 

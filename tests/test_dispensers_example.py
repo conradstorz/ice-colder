@@ -15,7 +15,6 @@ vanishing from the example.
 
 import json
 import re
-from pathlib import Path
 
 import pytest
 
@@ -28,8 +27,8 @@ from services.dispensers_doc import (
     _render_table,
     render_example,
 )
+from tests.paths import REPO_ROOT
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE_PATH = REPO_ROOT / "dispensers.example.toml"
 CONFIG_EXAMPLE_PATH = REPO_ROOT / "config.example.json"
 

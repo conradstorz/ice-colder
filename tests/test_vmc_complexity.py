@@ -8,8 +8,8 @@ fails too, naming the number to lower it to -- budgets only move down.
 
 import ast
 from pathlib import Path
+from tests.paths import VMC_PATH
 
-VMC_PATH = Path(__file__).resolve().parent.parent / "controller" / "vmc.py"
 
 # Budgets. Lower them when a stage lands; never raise them.
 # Stage 3 moved the FSM table into the class (the only sanctioned upward move);

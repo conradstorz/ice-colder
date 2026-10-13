@@ -33,7 +33,17 @@ from contracts.vending_machine import (
     SubsystemCapabilities,
 )
 
-SCHEMA_DIR = Path("docs/contracts/ice-maker-monitor/schemas")
+
+def _repo_root() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").is_file() and (parent / "uv.lock").is_file():
+            return parent
+    raise RuntimeError("repo root not found (no pyproject.toml + uv.lock above)")
+
+
+_REPO_ROOT = _repo_root()
+
+SCHEMA_DIR = _REPO_ROOT / "docs/contracts/ice-maker-monitor/schemas"
 
 MODELS = {
     "sensor_reading": SensorReading,
@@ -52,7 +62,7 @@ MODELS = {
     "command_ack": CommandAck,
 }
 
-VENDING_SCHEMA_DIR = Path("docs/contracts/vending-machine/schemas")
+VENDING_SCHEMA_DIR = _REPO_ROOT / "docs/contracts/vending-machine/schemas"
 
 VENDING_MODELS = {
     "dispense_command": DispenseCommand,

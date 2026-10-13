@@ -12,9 +12,10 @@ the committed example never drifts from the schema it documents:
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+from _repo import repo_root
+
+_REPO_ROOT = repo_root()
 sys.path.insert(0, str(_REPO_ROOT))
 
 from services.dispensers_doc import render_example  # noqa: E402

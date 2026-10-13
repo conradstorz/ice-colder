@@ -28,8 +28,8 @@ from services.mqtt_messages import DispenseCommand
 from simulators.vending_machine import VendingMachineSimulator
 from tests.dispenser_fixtures import GOOD, ICE, WATER
 from tests.fakes import patch_module_sleep, settle
+from tests.paths import REPO_ROOT
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 
 _REAL_SLEEP = asyncio.sleep  # captured before any test patches asyncio.sleep
 

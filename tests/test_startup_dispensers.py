@@ -8,7 +8,6 @@ the VMC and the routes module.
 """
 
 import ast
-from pathlib import Path
 
 import pytest
 import yaml
@@ -16,8 +15,8 @@ import yaml
 import services.startup_dispensers as startup_dispensers
 from config.config_model import ConfigModel
 from services.dispensers import DispenserProfiles
+from tests.paths import REPO_ROOT
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPOSE_PATH = REPO_ROOT / "docker-compose.yml"
 
 

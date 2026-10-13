@@ -22,9 +22,19 @@ import sys
 from pathlib import Path
 
 # Add the parent directory to sys.path so imports work when run as a script
-sys.path.insert(0, str(Path(__file__).parent.parent))
+_here = Path(__file__).resolve()
+sys.path.insert(
+    0,
+    str(
+        next(
+            p
+            for p in _here.parents
+            if (p / "pyproject.toml").is_file() and (p / "uv.lock").is_file()
+        )
+    ),
+)
 
-from tests.skip_policy import is_error_marker, validate_skips
+from tests.skip_policy import is_error_marker, validate_skips  # noqa: E402
 
 
 def check_report(report_path: Path) -> int:
