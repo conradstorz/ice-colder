@@ -1,0 +1,20 @@
+[project]
+name = "ice-cloud"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.115.11",
+    "ice-common",
+    "ice-ui",
+]
+
+[tool.uv.sources]
+ice-common = { workspace = true }
+ice-ui = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ice_cloud"]

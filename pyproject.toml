@@ -4,17 +4,54 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = [
-    "aiomqtt>=2.3.0",
-    "fastapi[standard]>=0.115.11",
-    "loguru>=0.7.3",
-    "phonenumbers>=9.0.5",
-    "pillow>=11.1.0",
-    "pydantic>=2.10.6",
-    "pydantic-extra-types>=2.10.4",
-    "pydantic-settings>=2.9.1",
-    "qrcode>=8.1",
+dependencies = ["ice-edge", "ice-cloud", "ice-sims"]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+ice-contracts = { workspace = true }
+ice-common = { workspace = true }
+ice-ui = { workspace = true }
+ice-edge = { workspace = true }
+ice-cloud = { workspace = true }
+ice-sims = { workspace = true }
+
+[tool.importlinter]
+root_packages = [
+    "ice_contracts",
+    "ice_common",
+    "ice_ui",
+    "ice_edge",
+    "ice_cloud",
+    "ice_sims",
 ]
+exclude_type_checking_imports = true
+
+[[tool.importlinter.contracts]]
+name = "Package layers: contracts < common < ui < edge | cloud | sims"
+type = "layers"
+layers = [
+    "ice_edge | ice_cloud | ice_sims",
+    "ice_ui",
+    "ice_common",
+    "ice_contracts",
+]
+
+[[tool.importlinter.contracts]]
+name = "Boards have no UI: ice_sims must not import ice_ui"
+type = "forbidden"
+source_modules = ["ice_sims"]
+forbidden_modules = ["ice_ui"]
+
+[[tool.importlinter.contracts]]
+name = "ice_ui depends only on ice_contracts, never ice_common"
+type = "forbidden"
+source_modules = ["ice_ui"]
+forbidden_modules = ["ice_common"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
