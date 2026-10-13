@@ -47,6 +47,9 @@ def main() -> int:
                 "--package",
                 project,
                 "python",
+                # -P: do not prepend cwd, so legacy top-level dirs cannot mask a
+                # member that wrongly imports them.
+                "-P",
                 "-c",
                 code,
             ],

@@ -13,6 +13,7 @@ Tooling only: nothing in the application may import this module or libcst.
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 import subprocess
 import sys
@@ -343,6 +344,8 @@ def _path_pairs(
 ) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
     for m in moves:
+        if m.old.startswith("tests."):
+            continue  # derived test rows: covered by test_moves below
         if m.old in STRING_EXEMPT:
             continue  # `main.py` is reported for review instead
         old_file = old_module_file(m.old, package=m.package).as_posix()
@@ -481,10 +484,45 @@ def plan_moves(
     return plan
 
 
+def is_trivial_init(source: str) -> bool:
+    """True when an ``__init__.py`` holds nothing but an optional docstring/comments."""
+    try:
+        body = ast.parse(source).body
+    except SyntaxError:
+        return False
+    if not body:
+        return True
+    return (
+        len(body) == 1
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    )
+
+
+def init_collision_action(src: str, dst: str, src_text: str) -> str:
+    """Decide a both-exist collision: "drop" the source or "error".
+
+    Only a package ``__init__.py`` moving onto an existing ``__init__.py`` may
+    be dropped (the documented destination wins), and only if the source has no
+    code of its own.
+    """
+    if src.endswith("/__init__.py") and dst.endswith("/__init__.py"):
+        return "drop" if is_trivial_init(src_text) else "error"
+    return "error"
+
+
 def validate_plan(
-    plan: Sequence[tuple[str, str]], exists: Callable[[str], bool]
+    plan: Sequence[tuple[str, str]],
+    exists: Callable[[str], bool],
+    read: Callable[[str], str] | None = None,
+    drop: list[str] | None = None,
 ) -> tuple[list[tuple[str, str]], list[str]]:
-    """Split a plan into moves still to do and errors; applied rows are skipped."""
+    """Split a plan into moves still to do and errors; applied rows are skipped.
+
+    A package ``__init__.py`` whose destination ``__init__.py`` already exists is
+    appended to ``drop`` (to be ``git rm``-ed) when ``read`` shows it has no code.
+    """
     todo: list[tuple[str, str]] = []
     errors: list[str] = []
     for src, dst in plan:
@@ -494,7 +532,18 @@ def validate_plan(
         elif not src_ok and dst_ok:
             continue  # already applied
         elif src_ok and dst_ok:
-            errors.append(f"both source and destination exist: {src} -> {dst}")
+            both = f"both source and destination exist: {src} -> {dst}"
+            is_init = src.endswith("/__init__.py") and dst.endswith("/__init__.py")
+            if is_init and read is not None and drop is not None:
+                if init_collision_action(src, dst, read(src)) == "drop":
+                    drop.append(src)
+                else:
+                    errors.append(
+                        f"{both} (the source has real code; merge it into the "
+                        f"destination by hand, then remove {src})"
+                    )
+            else:
+                errors.append(both)
         else:
             errors.append(f"source missing and destination missing: {src} -> {dst}")
     seen: dict[str, str] = {}
@@ -503,6 +552,16 @@ def validate_plan(
             errors.append(f"two sources for one destination {dst}: {seen[dst]}, {src}")
         seen[dst] = src
     return todo, errors
+
+
+def derive_test_module_moves(tests: Sequence[TestMove]) -> list[ModuleMove]:
+    """Module rows for the selected TEST_MOVES: ``tests.test_x`` -> ``tests.<dir>.test_x``."""
+    moves = []
+    for t in tests:
+        stem = t.file.removesuffix(".py")
+        dest = t.dest_dir.strip("/").replace("/", ".")
+        moves.append(ModuleMove(t.phase, f"tests.{stem}", f"{dest}.{stem}", False))
+    return moves
 
 
 def check_package_roots(
@@ -630,13 +689,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             for p in uncovered_tests(tracked, TEST_MOVES)
         ]
     plan = plan_moves(phase, MODULE_MOVES, FILE_MOVES, TEST_MOVES, tracked, prefix)
-    todo, plan_errors = validate_plan(plan, lambda p: (root / p).exists())
+    drop: list[str] = []
+    todo, plan_errors = validate_plan(
+        plan,
+        lambda p: (root / p).exists(),
+        lambda p: (root / p).read_text(encoding="utf-8"),
+        drop,
+    )
     errors += plan_errors
     if errors:
         for e in errors:
             print(f"error: {e}", file=sys.stderr)
         return 1
 
+    rewrite_moves = [*sel_modules, *derive_test_module_moves(sel_tests)]
     mode = "DRY RUN " if args.dry_run else ""
     print(
         f"{mode}phase {phase}: {len(todo)} to move, {len(plan) - len(todo)} already applied"
@@ -644,7 +710,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.dry_run:
         for src, dst in todo:
             print(f"  git mv {src} {dst}")
+        for src in drop:
+            print(f"  git rm {src}  (docstring-only; destination __init__ kept)")
     else:
+        for src in drop:
+            _git(root, "rm", "-f", "--", src)
         for src, dst in todo:
             (root / dst).parent.mkdir(parents=True, exist_ok=True)
             _git(root, "mv", src, dst)
@@ -662,7 +732,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not path.is_file():
             continue
         original = path.read_bytes().decode("utf-8")
-        result = rewrite_source_stats(original, sel_modules)
+        result = rewrite_source_stats(original, rewrite_moves)
         review += [f"{rel}:{item}" for item in result.review]
         if result.source != original:
             n_py += 1
@@ -675,7 +745,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     for rel in _expand_text_files(root):
         path = root / rel
         original = path.read_bytes().decode("utf-8")
-        new_text, items = rewrite_text(original, sel_modules, sel_files, sel_tests)
+        new_text, items = rewrite_text(original, rewrite_moves, sel_files, sel_tests)
         review += [f"{rel}:{item}" for item in items]
         if new_text != original:
             n_text += 1

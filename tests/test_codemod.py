@@ -451,3 +451,80 @@ def test_text_suffix_guard_reports_and_deep_module_rewritten() -> None:
         "web_interface.routes.tests_level.log", phase4, FILE_MOVES, TEST_MOVES
     )
     assert text == "ice_edge.web.routes.tests_level.log"
+
+
+# ------------------------------------------------- init collisions / test moves
+
+
+def test_is_trivial_init() -> None:
+    assert codemod.is_trivial_init("")
+    assert codemod.is_trivial_init('"""Doc."""\n')
+    assert codemod.is_trivial_init("# just a comment\n")
+    assert not codemod.is_trivial_init('"""Doc."""\nX = 1\n')
+    assert not codemod.is_trivial_init("from a import b\n")
+    assert not codemod.is_trivial_init("def broken(:\n")
+
+
+def test_init_collision_action() -> None:
+    src, dst = "simulators/__init__.py", "packages/sims/src/ice_sims/__init__.py"
+    assert codemod.init_collision_action(src, dst, '"""Sims."""') == "drop"
+    assert codemod.init_collision_action(src, dst, "X = 1\n") == "error"
+    assert codemod.init_collision_action("a.py", "b.py", "") == "error"
+
+
+def test_validate_plan_drops_trivial_init_collision() -> None:
+    src, dst = "simulators/__init__.py", "packages/sims/src/ice_sims/__init__.py"
+    texts = {src: '"""Old."""\n'}
+    drop: list[str] = []
+    todo, errors = codemod.validate_plan(
+        [(src, dst)], lambda p: True, texts.__getitem__, drop
+    )
+    assert (todo, errors, drop) == ([], [], [src])
+
+
+def test_validate_plan_keeps_init_with_code_fatal() -> None:
+    src, dst = "web_interface/__init__.py", "packages/edge/src/ice_edge/web/__init__.py"
+    drop: list[str] = []
+    _, errors = codemod.validate_plan(
+        [(src, dst)], lambda p: True, lambda p: "X = 1\n", drop
+    )
+    assert drop == []
+    assert len(errors) == 1 and src in errors[0] and dst in errors[0]
+
+
+def test_validate_plan_non_init_collision_still_fatal() -> None:
+    drop: list[str] = []
+    _, errors = codemod.validate_plan(
+        [("a.py", "b.py")], lambda p: True, lambda p: "", drop
+    )
+    assert drop == [] and len(errors) == 1
+
+
+def test_derive_test_module_moves_follow_test_moves() -> None:
+    rows = [
+        t
+        for t in TEST_MOVES
+        if t.file in ("test_vmc_flows.py", "test_vmc_observers.py")
+    ]
+    assert rows
+    moves = codemod.derive_test_module_moves(rows)
+    by_old = {m.old: m.new for m in moves}
+    for t in rows:
+        stem = t.file[:-3]
+        assert (
+            by_old[f"tests.{stem}"]
+            == t.dest_dir.strip("/").replace("/", ".") + "." + stem
+        )
+
+
+def test_test_to_test_import_is_rewritten() -> None:
+    rows = [t for t in TEST_MOVES if t.file == "test_vmc_flows.py"]
+    moves = codemod.derive_test_module_moves(rows)
+    dest = rows[0].dest_dir.strip("/").replace("/", ".")
+    out, _ = codemod.rewrite_source("from tests.test_vmc_flows import make\n", moves)
+    assert out == f"from {dest}.test_vmc_flows import make\n"
+    out, _ = codemod.rewrite_source("from tests import test_vmc_flows\n", moves)
+    assert out == f"from {dest} import test_vmc_flows\n"
+    # text mode must not choke on derived (non-PACKAGE_ROOTS) rows
+    text, _ = codemod.rewrite_text("tests/test_vmc_flows.py", moves, [], rows)
+    assert text == f"{rows[0].dest_dir}test_vmc_flows.py"
