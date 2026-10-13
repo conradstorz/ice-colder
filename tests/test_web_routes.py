@@ -126,12 +126,12 @@ class TestPollingDoesNotTouchSessionIdle:
     def test_pill_leaves_last_active_at_unchanged(self, wired, client):
         _cfg, _vmc, _inv, store = wired
         session_id = client.cookies.get(web_auth.SESSION_COOKIE)
-        before = store._sessions[session_id].last_active_at
+        before = store.resolve_session(session_id, touch=False).last_active_at
 
         resp = client.get("/pill")
 
         assert resp.status_code == 200
-        assert store._sessions[session_id].last_active_at == before
+        assert store.resolve_session(session_id, touch=False).last_active_at == before
 
     def test_home_refreshes_last_active_at(self, wired, client):
         _cfg, _vmc, _inv, store = wired
@@ -142,19 +142,19 @@ class TestPollingDoesNotTouchSessionIdle:
         resp = client.get("/")
 
         assert resp.status_code == 200
-        assert store._sessions[session_id].last_active_at != before
+        assert store.resolve_session(session_id, touch=False).last_active_at > before
 
     def test_subsystem_live_leaves_last_active_at_unchanged(self, wired, client):
         """Task 7: the per-board live fragment polls every 2s and must be
         exempted the same way /pill, /status and /kpi already are."""
         _cfg, _vmc, _inv, store = wired
         session_id = client.cookies.get(web_auth.SESSION_COOKIE)
-        before = store._sessions[session_id].last_active_at
+        before = store.resolve_session(session_id, touch=False).last_active_at
 
         resp = client.get("/health/subsystems/vending/live")
 
         assert resp.status_code == 200
-        assert store._sessions[session_id].last_active_at == before
+        assert store.resolve_session(session_id, touch=False).last_active_at == before
 
     def test_subsystem_detail_page_refreshes_last_active_at(self, wired, client):
         """The page itself (not its polled fragment) is a real navigation
@@ -167,7 +167,7 @@ class TestPollingDoesNotTouchSessionIdle:
         resp = client.get("/health/subsystems/vending")
 
         assert resp.status_code == 200
-        assert store._sessions[session_id].last_active_at != before
+        assert store.resolve_session(session_id, touch=False).last_active_at > before
 
 
 class TestIsPollingPath:
@@ -1650,7 +1650,7 @@ class TestEnrollment:
         c, store, owner, _ = public
         codes = store.generate_emergency_codes()
         resp = c.post("/login/enroll", data={"code": codes[0]})
-        assert resp.status_code in (401, 403)
+        assert resp.status_code == 401
         assert not c.cookies.get("vmc_session")
 
     def test_logout_ends_the_session_and_keeps_the_device(self, public):
