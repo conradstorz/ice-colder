@@ -12,7 +12,12 @@ from contracts.vending_machine import FaultCode
 from services.access import ROLE_PERMISSIONS, AccessStore, Permission, Role, User
 from services.display_controller import DisplayController
 from tests.conftest import make_client, sign_in
-from tests.dom_utils import find_by_id, parse_elements
+from tests.dom_utils import (
+    find_by_id,
+    heading_texts,
+    parse_elements,
+    title_text,
+)
 from web_interface import auth as web_auth
 from web_interface import context
 from web_interface.server import app
@@ -44,7 +49,7 @@ class TestDashboard:
 
     def test_dashboard_contains_title(self, client):
         resp = client.get("/")
-        assert "Vending Machine" in resp.text
+        assert title_text(resp.text) == "Vending Machine"
 
 
 class TestShellBar:
@@ -70,7 +75,7 @@ class TestShellBar:
         assert "<main" in resp.text
         assert '<header id="bar"' in resp.text
         assert "hx-swap-oob" in resp.text
-        assert "Tests" in resp.text
+        assert heading_texts(resp.text, "h1") == ["Tests"]
 
     def test_full_page_child_request_also_has_bar(self, wired):
         """The same URL, requested the way a reload or bookmark would (no
@@ -89,7 +94,8 @@ class TestShellBar:
             page_client.close()
         assert resp.status_code == 200
         assert '<header id="bar"' in resp.text
-        assert "Tests" in resp.text
+        assert title_text(resp.text).startswith("Tests")
+        assert heading_texts(resp.text, "h1") == ["Tests"]
 
     def test_no_cdn_references(self, client):
         for path in ("/", "/tests"):
@@ -823,7 +829,8 @@ class TestFaultsUI:
         r = client.get("/status")
         assert r.status_code == 200
         assert "ICE-301" in r.text
-        assert "Ice" in r.text
+        # The fault row names both the code and the locked product's name.
+        assert re.search(r"ICE-301</span>.*?· Ice</span>", r.text, flags=re.DOTALL)
         assert "Issues Detected" in r.text
 
     def test_status_issues_headline_uses_hero_token(self, client):
@@ -1099,8 +1106,10 @@ class TestAvailabilityOnDashboard:
         client, avail = avail_client
         avail.set_hardware_io("service_door", True)
         resp = client.get("/status")
-        assert "Payment" in resp.text
-        assert "Disabled" in resp.text
+        # The "Payment" label and its "Disabled" value are one field.
+        assert re.search(
+            r">Payment</div>\s*<div class=\"[^\"]*\">Disabled</div>", resp.text
+        )
         assert "service_door_closed" in resp.text
 
     def test_status_is_not_healthy_when_only_payment_is_disabled(self, avail_client):
@@ -1136,7 +1145,8 @@ class TestAvailabilityOnDashboard:
         body = client.get("/screen/body")
         assert body.status_code == 200
         assert "hx-post" not in body.text
-        assert "Ice" in body.text and "Water" in body.text
+        for kind in ("Ice", "Water"):
+            assert re.search(rf">{kind}</div>\s*<div[^>]*>", body.text), kind
 
     def test_screen_requires_auth(self, anonymous):
         resp = anonymous.get("/screen")
@@ -1387,7 +1397,11 @@ class TestLogin:
         c, store, owner = public
         resp = c.post("/login", data={"user_id": owner.id, "pin": "1379"})
         assert resp.status_code == 200
-        assert "code" in resp.text.lower()
+        assert heading_texts(resp.text, "h1") == ["Trust this device"]
+        code_inputs = [
+            e for e in parse_elements(resp.text) if e.attrs.get("name") == "code"
+        ]
+        assert len(code_inputs) == 1 and code_inputs[0].tag == "input"
         assert "hx-redirect" not in {k.lower() for k in resp.headers}
         assert c.cookies.get("vmc_enroll")
 

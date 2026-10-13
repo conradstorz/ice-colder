@@ -9,6 +9,8 @@ Fixtures come from tests/conftest.py.
 
 import re
 
+from tests.dom_utils import title_text
+
 import pytest
 from services.access import Role
 from web_interface import context
@@ -162,5 +164,5 @@ class TestReportsLevel:
         # Check for base.html elements (header, main)
         assert "<header" in response.text
         assert "<main" in response.text
-        # Check for breadcrumb/title
-        assert "Reports" in response.text
+        # Check for title and heading
+        assert title_text(response.text).startswith("Reports")
