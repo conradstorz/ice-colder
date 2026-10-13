@@ -98,44 +98,74 @@ class TestCollectCashConfirmEndpoint:
         assert "Confirm Collection" in resp.text
         assert "Cancel" in resp.text
 
-    def test_confirm_endpoint_requires_collect_cash_permission(self, login_as):
+    def test_confirm_endpoint_allows_every_role(self, login_as):
         """All four roles have collect_cash, so this should pass for all."""
         for role in [Role.owner, Role.secretary, Role.tech, Role.loader]:
             client = login_as(role)
             resp = client.get("/inventory/collect/confirm")
             assert resp.status_code == 200, f"Role {role.value} failed"
 
+    def test_confirm_endpoint_refuses_unauthenticated_get(
+        self, wired, recorder_with_db
+    ):
+        """An unauthenticated GET to confirm should be refused with 303 redirect."""
+        from fastapi.testclient import TestClient
+
+        client = TestClient(app)
+        resp = client.get("/inventory/collect/confirm", follow_redirects=False)
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/login"
+        # No row should be recorded
+        rows = _read_cash_collections(recorder_with_db.db_path)
+        assert len(rows) == 0
+
+    def test_confirm_endpoint_refuses_unauthenticated_htmx_get(
+        self, wired, recorder_with_db
+    ):
+        """An unauthenticated HTMX GET should be refused with 401."""
+        from fastapi.testclient import TestClient
+
+        client = TestClient(app)
+        resp = client.get(
+            "/inventory/collect/confirm",
+            headers={"HX-Request": "true"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 401
+        assert resp.headers.get("hx-redirect") == "/login"
+        # No row should be recorded
+        rows = _read_cash_collections(recorder_with_db.db_path)
+        assert len(rows) == 0
+
 
 class TestCollectCashEndpoint:
     """Test POST /inventory/collect (the action endpoint)."""
 
-    def test_collect_cash_is_200_for_owner(self, login_as, wired, recorder_with_db):
-        client = login_as(Role.owner)
+    @pytest.mark.parametrize("role", list(Role), ids=lambda r: r.value)
+    def test_collect_cash_is_200_for_all_roles(
+        self, login_as, wired, recorder_with_db, role
+    ):
+        client = login_as(role)
         resp = client.post("/inventory/collect", headers={"HX-Request": "true"})
         assert resp.status_code == 200
         rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 1
 
-    def test_collect_cash_is_200_for_secretary(self, login_as, wired, recorder_with_db):
-        client = login_as(Role.secretary)
-        resp = client.post("/inventory/collect", headers={"HX-Request": "true"})
-        assert resp.status_code == 200
-        rows = _read_cash_collections(recorder_with_db.db_path)
-        assert len(rows) == 1
+    def test_collect_cash_refuses_unauthenticated_post(self, wired, recorder_with_db):
+        """An unauthenticated POST should be refused with 401 and HX-Redirect."""
+        from fastapi.testclient import TestClient
 
-    def test_collect_cash_is_200_for_tech(self, login_as, wired, recorder_with_db):
-        client = login_as(Role.tech)
-        resp = client.post("/inventory/collect", headers={"HX-Request": "true"})
-        assert resp.status_code == 200
+        client = TestClient(app)
+        resp = client.post(
+            "/inventory/collect",
+            headers={"HX-Request": "true"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 401
+        assert resp.headers.get("hx-redirect") == "/login"
+        # No row should be recorded
         rows = _read_cash_collections(recorder_with_db.db_path)
-        assert len(rows) == 1
-
-    def test_collect_cash_is_200_for_loader(self, login_as, wired, recorder_with_db):
-        client = login_as(Role.loader)
-        resp = client.post("/inventory/collect", headers={"HX-Request": "true"})
-        assert resp.status_code == 200
-        rows = _read_cash_collections(recorder_with_db.db_path)
-        assert len(rows) == 1
+        assert len(rows) == 0
 
     def test_collect_cash_403_without_htmx_header(
         self, login_as, wired, recorder_with_db
@@ -194,13 +224,20 @@ class TestCollectCashEndpoint:
 
     def test_response_contains_recorded_time(self, login_as, wired, recorder_with_db):
         """Response must contain the recorded time so collector can verify."""
+        from datetime import datetime
+
         client = login_as(Role.owner)
         resp = client.post("/inventory/collect", headers={"HX-Request": "true"})
         assert resp.status_code == 200
         # Should contain a timestamp in the response
         assert "Cash Collection Recorded" in resp.text
-        # The response should contain something that looks like a time
-        assert ":" in resp.text  # HH:MM:SS format
+        # Extract the exact time from the recorded row
+        rows = _read_cash_collections(recorder_with_db.db_path)
+        assert len(rows) == 1
+        _row_id, ts, _user_id, _user_name, _expected_cash = rows[0]
+        recorded_time = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+        # Assert the exact formatted time appears in the response
+        assert recorded_time in resp.text
 
     def test_response_contains_expected_cash_amount(
         self, login_as, wired, recorder_with_db
