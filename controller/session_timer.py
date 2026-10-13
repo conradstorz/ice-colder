@@ -1,7 +1,7 @@
 import asyncio
 from collections.abc import Callable
 
-from controller.task_runner import TaskRunner
+from ice_edge.supervisor.task_runner import TaskRunner
 
 
 class SessionTimer:

@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from loguru import logger as _loguru
 
 import services.access as access
-import services.config_store as config_store
+import ice_edge.config.config_store as config_store
 from ice_common.config_model import ConfigModel, PhysicalDetails
 from controller.machine import Machine
 from services.access import AccessStore, Role, User

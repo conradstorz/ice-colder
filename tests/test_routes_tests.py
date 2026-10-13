@@ -20,7 +20,7 @@ from ice_contracts.board.common import COMMAND_PARAM_VALIDATORS, CommandAck
 from ice_contracts.board.vending_machine import FaultCode
 from services.access import ROLE_PERMISSIONS, Role
 from services.command_dispatcher import CommandTimeout
-from services.config_store import add_product
+from ice_edge.config.config_store import add_product
 from services.event_recorder import EventRecorder
 from tests.dispenser_fixtures import profiles_for
 from web_interface import auth as web_auth

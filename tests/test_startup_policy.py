@@ -10,7 +10,7 @@ from ice_common.config_model import ConfigModel, WebConfig
 from ice_contracts.board.vending_machine import FaultCode
 from controller.machine import Machine
 from services.access import AccessStore, Role
-from services.config_store import save_config
+from ice_edge.config.config_store import save_config
 from services.event_recorder import EventRecorder
 from services import event_recorder as event_recorder_module
 from services.startup_recovery import reconcile_sales_journal_faults

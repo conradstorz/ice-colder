@@ -34,7 +34,7 @@ from loguru import logger
 
 from ice_common.config_model import Product
 from ice_contracts.board.vending_machine import PaymentRefundCommand
-from controller.task_runner import TaskRunner
+from ice_edge.supervisor.task_runner import TaskRunner
 from services.display_controller import DisplayController
 from services.health_monitor import HealthMonitor
 from ice_contracts.board.mqtt_messages import PaymentEnableCommand, VMCAlert, VMCStatus

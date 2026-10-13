@@ -48,7 +48,7 @@ from ice_contracts.board.vending_machine import (
 )
 from controller.dispenser_gate import DispenserProfileGate
 from controller.fault_service import FaultService
-from controller.task_runner import TaskRunner
+from ice_edge.supervisor.task_runner import TaskRunner
 from services.command_dispatcher import CommandTimeout
 from services.event_recorder import SaleRecordingFailed
 from ice_contracts.board.mqtt_messages import DispenseCommand

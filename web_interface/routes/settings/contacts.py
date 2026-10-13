@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse
 from loguru import logger
 
 from ice_common.config_model import Channel
-from services import config_store
+from ice_edge.config import config_store
 from services.access import Permission
 from web_interface import auth as web_auth
 from web_interface import context

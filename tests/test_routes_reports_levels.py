@@ -27,7 +27,7 @@ from urllib.parse import quote
 import pytest
 
 from services.access import Role
-from services.config_store import add_product
+from ice_edge.config.config_store import add_product
 from services.event_recorder import EventRecorder
 from web_interface import context as ctx
 from web_interface import routes

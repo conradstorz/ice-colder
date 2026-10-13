@@ -11,7 +11,7 @@ from pydantic import SecretStr, ValidationError
 
 from ice_common.config_model import ConfigModel, MQTTConfig
 from services.access import AccessStore
-from services.config_store import save_config
+from ice_edge.config.config_store import save_config
 
 _MQTT_ENV_VARS = {
     "broker_host": "MQTT_BROKER_HOST",

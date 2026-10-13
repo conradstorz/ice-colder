@@ -63,7 +63,7 @@ from controller.outputs import StatusOutputs
 from controller.refund_protocol import RefundProtocol
 from controller.sale_journal import SaleJournal
 from controller.session_recovery import SessionRecovery
-from controller.task_runner import TaskRunner
+from ice_edge.supervisor.task_runner import TaskRunner
 from controller.test_sale import TestSaleRunner
 from controller.vmc import VMC
 from services.availability import Availability

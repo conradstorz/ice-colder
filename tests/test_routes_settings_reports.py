@@ -18,7 +18,7 @@ import pytest
 
 from ice_common.config_model import ConfigModel
 from services.access import Role
-from services import config_store
+from ice_edge.config import config_store
 
 
 class TestReportsPageGating:

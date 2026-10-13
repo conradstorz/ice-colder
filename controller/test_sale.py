@@ -25,7 +25,7 @@ from uuid import uuid4
 from controller.dispenser_gate import DispenserProfileGate
 from controller.maintenance_lease import MaintenanceLease
 from controller.sale_context import SaleContext
-from controller.task_runner import TaskRunner
+from ice_edge.supervisor.task_runner import TaskRunner
 
 if TYPE_CHECKING:
     from controller.vmc import VMC

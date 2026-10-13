@@ -8,7 +8,7 @@ import warnings
 
 from loguru import logger
 
-from controller.task_runner import TaskRunner
+from ice_edge.supervisor.task_runner import TaskRunner
 
 
 # --- fire_and_forget, no loop attached ---

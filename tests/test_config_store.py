@@ -5,7 +5,7 @@ import json
 from pydantic import SecretStr
 
 from ice_common.config_model import ConfigModel
-from services.config_store import add_product, save_config
+from ice_edge.config.config_store import add_product, save_config
 
 
 def _config_with_secret() -> ConfigModel:
@@ -88,7 +88,7 @@ def test_save_config_leaves_no_tmp_file(tmp_path):
 
 
 def test_add_product_uses_module_config_path(tmp_path, monkeypatch):
-    import services.config_store as cs
+    import ice_edge.config.config_store as cs
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
     cfg = ConfigModel()
@@ -98,7 +98,7 @@ def test_add_product_uses_module_config_path(tmp_path, monkeypatch):
 
 def test_delete_product_removes_and_saves(tmp_path):
     from ice_common.config_model import Product
-    from services.config_store import delete_product
+    from ice_edge.config.config_store import delete_product
 
     cfg = ConfigModel()
     cfg.physical.products = [Product(sku="A-1", name="Thing A", price=1.0)]
@@ -108,7 +108,7 @@ def test_delete_product_removes_and_saves(tmp_path):
 
 
 def test_delete_product_unknown_sku_returns_false_without_saving(tmp_path):
-    from services.config_store import delete_product
+    from ice_edge.config.config_store import delete_product
 
     cfg = ConfigModel()
     assert delete_product(cfg, "NOPE") is False
@@ -138,7 +138,7 @@ def test_save_config_env_var_tmp_and_bak_land_beside_it(tmp_path, monkeypatch):
 
 def test_save_config_env_var_overrides_config_path_attribute(tmp_path, monkeypatch):
     """ICE_COLDER_CONFIG takes priority over a monkeypatched CONFIG_PATH."""
-    import services.config_store as cs
+    import ice_edge.config.config_store as cs
 
     other = tmp_path / "other.json"
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "should-not-be-used.json")
@@ -150,7 +150,7 @@ def test_save_config_env_var_overrides_config_path_attribute(tmp_path, monkeypat
 
 
 def test_add_product_auto_assigns_lowest_free_slot(tmp_path, monkeypatch):
-    import services.config_store as cs
+    import ice_edge.config.config_store as cs
     from ice_common.config_model import Product
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
@@ -165,7 +165,7 @@ def test_add_product_auto_assigns_lowest_free_slot(tmp_path, monkeypatch):
 
 
 def test_add_product_with_explicit_slot(tmp_path, monkeypatch):
-    import services.config_store as cs
+    import ice_edge.config.config_store as cs
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
     cfg = ConfigModel()
@@ -175,7 +175,7 @@ def test_add_product_with_explicit_slot(tmp_path, monkeypatch):
 
 
 def test_add_product_with_taken_slot_fails(tmp_path, monkeypatch):
-    import services.config_store as cs
+    import ice_edge.config.config_store as cs
     from ice_common.config_model import Product
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
@@ -186,9 +186,9 @@ def test_add_product_with_taken_slot_fails(tmp_path, monkeypatch):
 
 
 def test_update_product_can_change_slot(tmp_path, monkeypatch):
-    import services.config_store as cs
+    import ice_edge.config.config_store as cs
     from ice_common.config_model import Product
-    from services.config_store import update_product
+    from ice_edge.config.config_store import update_product
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
     cfg = ConfigModel()
@@ -198,8 +198,8 @@ def test_update_product_can_change_slot(tmp_path, monkeypatch):
 
 
 def test_update_product_omitted_kind_leaves_it_unchanged(tmp_path, monkeypatch):
-    import services.config_store as cs
-    from services.config_store import add_product, update_product
+    import ice_edge.config.config_store as cs
+    from ice_edge.config.config_store import add_product, update_product
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
     cfg = ConfigModel()
@@ -216,7 +216,7 @@ def test_update_product_omitted_kind_leaves_it_unchanged(tmp_path, monkeypatch):
 
 
 def test_add_product_rejects_negative_slot(tmp_path, monkeypatch):
-    import services.config_store as cs
+    import ice_edge.config.config_store as cs
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
     cfg = ConfigModel()
@@ -226,9 +226,9 @@ def test_add_product_rejects_negative_slot(tmp_path, monkeypatch):
 
 
 def test_update_product_rejects_negative_slot(tmp_path, monkeypatch):
-    import services.config_store as cs
+    import ice_edge.config.config_store as cs
     from ice_common.config_model import Product
-    from services.config_store import update_product
+    from ice_edge.config.config_store import update_product
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
     cfg = ConfigModel()
@@ -238,9 +238,9 @@ def test_update_product_rejects_negative_slot(tmp_path, monkeypatch):
 
 
 def test_update_product_rejects_slot_already_in_use(tmp_path, monkeypatch):
-    import services.config_store as cs
+    import ice_edge.config.config_store as cs
     from ice_common.config_model import Product
-    from services.config_store import update_product
+    from ice_edge.config.config_store import update_product
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
     cfg = ConfigModel()
@@ -253,9 +253,9 @@ def test_update_product_rejects_slot_already_in_use(tmp_path, monkeypatch):
 
 
 def test_delete_product_leaves_other_slots_unchanged(tmp_path, monkeypatch):
-    import services.config_store as cs
+    import ice_edge.config.config_store as cs
     from ice_common.config_model import Product
-    from services.config_store import delete_product
+    from ice_edge.config.config_store import delete_product
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
     cfg = ConfigModel()
@@ -271,7 +271,7 @@ def test_delete_product_leaves_other_slots_unchanged(tmp_path, monkeypatch):
 
 def test_save_config_fsyncs_before_replace(tmp_path, monkeypatch):
     import os
-    import services.config_store as cs
+    import ice_edge.config.config_store as cs
 
     calls: list[str] = []
     real_fsync = os.fsync
@@ -295,7 +295,7 @@ def test_save_config_fsyncs_before_replace(tmp_path, monkeypatch):
 
 
 def test_add_product_unrecognized_kind_falls_back_to_other(tmp_path, monkeypatch):
-    import services.config_store as cs
+    import ice_edge.config.config_store as cs
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
     cfg = ConfigModel()

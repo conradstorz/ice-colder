@@ -40,7 +40,7 @@ from pathlib import Path
 
 from ice_common.config_model import ConfigModel, PhysicalDetails, Product
 from controller.machine import Machine
-from controller.task_runner import TaskRunner
+from ice_edge.supervisor.task_runner import TaskRunner
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
 from services.session_store import SessionSnapshot
 

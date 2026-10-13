@@ -24,7 +24,7 @@ from controller.outputs import StatusOutputs
 from controller.refund_protocol import PendingRefund, RefundProtocol
 from controller.sale_context import SaleContext
 from controller.session_timer import SessionTimer
-from controller.task_runner import TaskRunner
+from ice_edge.supervisor.task_runner import TaskRunner
 from controller.dispenser_gate import DispenserProfileGate
 from controller.sale_journal import STATE_CHANGE_PREFIX, SaleJournal  # noqa: F401  (tests import STATE_CHANGE_PREFIX from here)
 

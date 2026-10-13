@@ -131,14 +131,14 @@ handles process-level restarts). Neither helper imports application components.
 ### Configuration (`packages/common/src/ice_common/config_model.py`, `config.json`)
 
 All configuration is a single Pydantic `ConfigModel` loaded from `config.json`. The model has seven top-level sections: `version`, `physical` (machine details, people, products), `payment` (Stripe, PayPal, MDB), `communication` (email, SMS, Snapchat gateways), `mqtt` (broker connection), `web` (dashboard host/port/trusted proxies), and `reports` (scheduled sales-summary email: `schedule` off/daily/weekly, `hour` 0–23, `weekday` Monday-based 0–6, `extra_recipients`) — plus the scalar `machine_id` field. The reports section is edited at **`/settings/reports`** gated on `edit_contacts`. `ConfigModel` exposes convenience properties (e.g., `config.products`, `config.machine_owner`, `config.stripe`) so consumers don't need to navigate the nested structure. Missing keys are filled from Pydantic defaults at load time. Saves via
-`services/config_store.py` are atomic (tmp + rename), write real secret values,
+`packages/edge/src/ice_edge/config/config_store.py` are atomic (tmp + rename), write real secret values,
 and keep a rolling `config.json.bak`.
 
 `services/startup_config.py` owns config loading, first-run creation,
 environment overrides, and the startup access-store / setup-mode warning
 (`warn_if_setup_mode`); `main.py` calls it during startup. The config file path
 is configurable via the `ICE_COLDER_CONFIG` environment variable (read at call
-time by both `services/startup_config.py` and `services/config_store.py`),
+time by both `services/startup_config.py` and `packages/edge/src/ice_edge/config/config_store.py`),
 defaulting to `config.json` in the current working directory when unset. This
 lets Docker point the app at a writable, bind-mounted location instead of
 relying on a bind-mount targeting `config.json` directly (which would let
@@ -194,7 +194,7 @@ Three deliberate deviations from the original design doc, recorded here rather t
 
 **Telemetry router extraction:** every inbound MQTT handler that only reads/validates its payload and forwards it to the health monitor, availability, or a log sink — hardware IO, payment status, sensor/water-flow/telemetry readings, heartbeats, ice-maker events, command acks, and capabilities — lives in `controller/mqtt_inbound.py`'s `TelemetryRouter` (the fifth piece carved off the VMC god object, after `FaultRegistry`, `EscrowLedger`, `RefundProtocol`, and `SessionRecovery`), owned by `Machine`. The nine `handle_*` methods replace the VMC's old one-line `async` delegates outright — there is no VMC forward left for any of them; `SUBSCRIPTIONS` resolves each topic straight to `machine.telemetry.handle_*` or `machine.vmc.on_*` (see the `Machine` paragraph above). The two handlers with a side effect reaching back into FSM/fault state are wired by `Machine` directly to the collaborator that owns it, not through the VMC: the ICE-101 auto-clear inside hardware IO is `on_bin_half_full=self._faults.clear_ice101_lockouts`, and the dispenser-profiles reconcile inside capabilities is `on_capabilities_validated=self._gate.on_vending_capabilities`.
 
-**Task runner extraction:** the asyncio task plumbing — fire-and-forget tasks with failure logging, delayed callbacks, and the persistent-task set drained (not cancelled) at shutdown — lives in `controller/task_runner.py`'s `TaskRunner`, pure event-loop bookkeeping with no domain knowledge. `VMC._schedule` is a one-line delegate onto `self._tasks`; `drain_persistence` and `cancel_pending_tasks` live on `Machine` instead — `Machine.cancel_pending_tasks` calls `self._tasks.cancel_pending()`, then the VMC's own `cancel_timers()` (the dispense cycle's timer and the session timeout) and `RefundProtocol.cancel_all()`. `tasks` is the public read-only `@property` over the `TaskRunner` itself on `machine`; tests read `machine.tasks.loop`/`.pending`/`.persist` directly, and the `machine_fake_time`/`vmc_fake_time` fixtures construct `Machine(config, tasks=FakeTaskRunner())` in place of a real one.
+**Task runner extraction:** the asyncio task plumbing — fire-and-forget tasks with failure logging, delayed callbacks, and the persistent-task set drained (not cancelled) at shutdown — lives in `packages/edge/src/ice_edge/supervisor/task_runner.py`'s `TaskRunner`, pure event-loop bookkeeping with no domain knowledge. `VMC._schedule` is a one-line delegate onto `self._tasks`; `drain_persistence` and `cancel_pending_tasks` live on `Machine` instead — `Machine.cancel_pending_tasks` calls `self._tasks.cancel_pending()`, then the VMC's own `cancel_timers()` (the dispense cycle's timer and the session timeout) and `RefundProtocol.cancel_all()`. `tasks` is the public read-only `@property` over the `TaskRunner` itself on `machine`; tests read `machine.tasks.loop`/`.pending`/`.persist` directly, and the `machine_fake_time`/`vmc_fake_time` fixtures construct `Machine(config, tasks=FakeTaskRunner())` in place of a real one.
 
 ### Web Dashboard (`web_interface/`)
 
@@ -403,7 +403,7 @@ Both contracts bumped again for the subsystem-windows feature: `packages/contrac
 ## Key Patterns
 
 - **Logging**: Uses `loguru` throughout. `packages/common/src/ice_common/logging_setup.py` owns `setup_logging()`, called explicitly at the start of `main()`; importing the module does not change handlers or create files. It configures `LOGS/vmc.log`, an INFO-level console sink, and filtered `transactions.log`, `ice_maker.log`, and `vending.log` files. File logs rotate at midnight with 300-day retention and ZIP compression. State changes are prefixed with `STATE_CHANGE_PREFIX`.
-- **Config mutation**: Product changes go through `services/config_store.py` which writes back to `config.json`. The in-memory `ConfigModel` is mutated directly (Pydantic models with mutable fields).
+- **Config mutation**: Product changes go through `packages/edge/src/ice_edge/config/config_store.py` which writes back to `config.json`. The in-memory `ConfigModel` is mutated directly (Pydantic models with mutable fields).
 - **Web UI updates**: The dashboard uses HTMX to swap HTML partials from FastAPI endpoints. No SPA framework.
 - **Timezone handling**: Report bucketing uses the machine's local timezone; weeks start on **Monday**; a sale exactly on a boundary (e.g. midnight) belongs to the **later** bucket.
 - **DST testing**: `zoneinfo.ZoneInfo` is **unusable on a Windows checkout without `tzdata`**, so the DST tests use synthetic `tzinfo` classes. The primary synthetic zones (`_SyntheticDstTz` and `_SyntheticFallBackTz`) are in `tests/test_reports.py` (lines 24, 91) to test report bucketing across DST transitions; `tests/test_report_scheduler.py` mirrors them (lines 72, 102) to verify the scheduler threads its `tz` parameter correctly. Production code uses the OS's real timezone resolver.

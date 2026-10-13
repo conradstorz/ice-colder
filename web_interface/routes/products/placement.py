@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse
 from loguru import logger
 
 from services.access import Permission
-from services.config_store import (
+from ice_edge.config.config_store import (
     save_config,
     update_product,
 )

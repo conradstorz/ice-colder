@@ -17,7 +17,7 @@ from pydantic import SecretStr
 
 from ice_common.config_model import Channel, ConfigModel
 from services.access import Role
-from services import config_store
+from ice_edge.config import config_store
 from web_interface.routes import settings as settings_routes
 from web_interface.routes.settings import comms as settings_comms
 

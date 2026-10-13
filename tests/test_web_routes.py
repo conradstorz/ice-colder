@@ -519,7 +519,7 @@ class TestPermissionMatrix:
 
     @pytest.mark.parametrize("role", list(Role))
     def test_matrix(self, login_as, wired, role):
-        from services.config_store import add_product
+        from ice_edge.config.config_store import add_product
 
         cfg, _vmc, _inv, store = wired
         add_product(cfg, _SKU, "Matrix Item", 1.00)
@@ -586,7 +586,7 @@ class TestPermissionMatrix:
         tech/loader 403). Unlike the old handler, the new one 404s on an
         unknown SKU before the permission's 200/403 branch would ever show,
         so a real product must exist first."""
-        from services.config_store import add_product
+        from ice_edge.config.config_store import add_product
 
         _cfg, _vmc, _inv, _store = wired
         add_product(_cfg, "MATRIX-1", "Matrix Item", 1.00)

@@ -22,7 +22,7 @@ from ice_contracts.board.vending_machine import (
     fault_for_outcome,
 )
 from controller.machine import Machine
-from controller.task_runner import TaskRunner
+from ice_edge.supervisor.task_runner import TaskRunner
 from controller.vmc import VMC
 from services.availability import Availability
 from services.command_dispatcher import CommandTimeout

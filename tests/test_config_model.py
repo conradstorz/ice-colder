@@ -257,7 +257,7 @@ class TestReportsConfig:
         assert cfg.reports == ReportsConfig()
 
     def test_reports_section_round_trips_through_save_config(self, tmp_path):
-        from services.config_store import save_config
+        from ice_edge.config.config_store import save_config
 
         cfg = ConfigModel()
         cfg.reports.schedule = "weekly"

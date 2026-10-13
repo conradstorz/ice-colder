@@ -12,7 +12,7 @@ import pytest
 
 from controller.dispenser_gate import DispenserProfileGate
 from services.access import Role
-from services import config_store
+from ice_edge.config import config_store
 from web_interface import context
 
 

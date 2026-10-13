@@ -15,7 +15,7 @@ import re
 
 from ice_contracts.board.vending_machine import FaultCode
 from services.access import ROLE_PERMISSIONS, Permission, Role
-from services.config_store import add_product
+from ice_edge.config.config_store import add_product
 from web_interface import context
 from web_interface import routes
 from web_interface.routes.health import dom_safe_key, fault_gate
