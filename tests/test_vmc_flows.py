@@ -2849,7 +2849,7 @@ class TestRunTestSale:
         touches escrow or the catalog."""
         machine, vmc, rec, client = _test_run_vmc()
 
-        with pytest.raises(RuntimeError):
+        with pytest.raises(RuntimeError, match="no maintenance lease held"):
             await machine.test_sales.run_test_sale("ICE-1")
 
         assert (vmc.sale is not None and vmc.sale.is_test) is False
