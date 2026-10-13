@@ -561,7 +561,7 @@ class VMC:
     def on_complete_transaction(self):
         self._journal.completing(self.credit_escrow)
         dest = self._post_dispense_dest()
-        # Clear the selection: a stale one let a late duplicate dispenser fault
+        # Clear the selection: a stale selection would let a late duplicate dispenser fault
         # refund at the old product's price.
         self.selected_product = None
         self._outputs.display(dest)
@@ -786,8 +786,8 @@ class VMC:
         return True
 
     def find_product(self, sku: str) -> tuple[int | None, Product | None]:
-        """Return `(button_index, product)` for `sku` in the live catalog (matched by
-        identity), or `(None, None)`."""
+        """Returns `(button_index, product)` for `sku` in the live catalog, or
+        `(None, None)`; enumerating prevents collisions between value-equal products."""
         for index, product in enumerate(self.products):
             if product.sku == sku:
                 return index, product
