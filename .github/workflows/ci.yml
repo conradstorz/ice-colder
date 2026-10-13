@@ -65,10 +65,8 @@ jobs:
       # inline config. The image is pinned; the wait loop is bounded.
       - name: Start MQTT broker (for the e2e tests)
         run: |
-          printf 'listener 1883
-allow_anonymous true
-' > "$RUNNER_TEMP/mosquitto.conf"
-          docker run -d --name mosquitto -p 1883:1883             -v "$RUNNER_TEMP/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro"             eclipse-mosquitto:2.0.20
+          printf '%s\n' 'listener 1883' 'allow_anonymous true' > "$RUNNER_TEMP/mosquitto.conf"
+          docker run -d --name mosquitto -p 1883:1883 -v "$RUNNER_TEMP/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2.0.20
           for i in $(seq 1 30); do
             nc -z localhost 1883 && exit 0
             sleep 1
