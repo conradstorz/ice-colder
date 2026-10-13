@@ -135,8 +135,8 @@ class VMC:
     construction path: `tasks` (`TaskRunner`), `escrow` (`EscrowLedger`),
     `refunds` (`RefundProtocol`), `faults` (`FaultService`), `outputs`
     (`StatusOutputs`), `gate` (`DispenserProfileGate`), a `DispenseCycle`
-    factory, and four read-only callables (`in_maintenance`,
-    `availability`, `inventory`, `recorder`). Everything the FSM
+    factory, and three read-only callables (`in_maintenance`,
+    `availability`, `inventory`). Everything the FSM
     publishes, persists, displays, or messages to the customer goes
     through `outputs` (`StatusOutputs`, its only outbound channel); every
     fault it raises or clears goes through `faults` (`FaultService`,
@@ -181,7 +181,6 @@ class VMC:
         in_maintenance: Callable[[], bool],
         availability: Callable[[], Availability | None],
         inventory: Callable[[], InventoryManager | None],
-        recorder: Callable[[], object | None],
         dispense_factory: Callable[[SaleContext], DispenseCycle],
         journal: SaleJournal,
     ):
@@ -204,14 +203,14 @@ class VMC:
         `machine.lease`; the VMC never holds a reference to it at all,
         only this one boolean read.
 
-        `availability`/`inventory`/`recorder` are zero-arg callables
+        `availability`/`inventory` are zero-arg callables
         (`Machine` passes `lambda: self.availability`/
-        `lambda: self.inventory`/`lambda: self.event_recorder`) rather than
+        `lambda: self.inventory`) rather than
         the objects themselves, because the live instance is attached well
         after construction, via `Machine.set_availability`/
-        `set_inventory_manager`/`set_event_recorder`; every internal read
-        goes through `self._availability()`/`self._inventory()`/
-        `self._recorder()` so it always sees whatever is current.
+        `set_inventory_manager`; every internal read goes through
+        `self._availability()`/`self._inventory()` so it always sees
+        whatever is current.
 
         `dispense_factory` builds a fresh `DispenseCycle`
         (controller/dispense_cycle.py) for one sale's dispatch attempt --
@@ -280,13 +279,12 @@ class VMC:
         # `TaskRunner()` for every production and non-timer-test caller.
         self._tasks = tasks
         self._session_timeout_task: asyncio.Task | None = None
-        # `self._inventory`/`self._availability`/`self._recorder` are
+        # `self._inventory`/`self._availability` are
         # always the zero-arg callables `Machine` passed in (see the
         # __init__ docstring above) -- never a plain attribute assigned by
         # a VMC-side `set_*` method, which does not exist.
         self._inventory: Callable[[], InventoryManager | None] = inventory
         self._availability: Callable[[], Availability | None] = availability
-        self._recorder: Callable[[], object | None] = recorder
         # Outbound side effects -- MQTT publishes, session persistence, the
         # customer display, and the dashboard's UI-refresh/message/QR
         # callbacks (controller/outputs.py's StatusOutputs) -- the FSM's
