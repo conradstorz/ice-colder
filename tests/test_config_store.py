@@ -34,12 +34,50 @@ def test_save_config_round_trips_through_model_validate(tmp_path):
 
 
 def test_save_config_keeps_rolling_backup(tmp_path):
-    cfg = ConfigModel()
+    from config.config_model import Person
+
+    # First save with config A (owner name="Alice")
+    cfg_a = ConfigModel()
+    cfg_a.physical.people.machine_owner = Person(
+        name="Alice", email="alice@test.com", phone="111", address="A", notes=""
+    )
     target = tmp_path / "config.json"
-    save_config(cfg, target)  # first save: no backup yet
+    save_config(cfg_a, target)
     assert not (tmp_path / "config.json.bak").exists()
-    save_config(cfg, target)  # second save: previous file backed up
-    assert (tmp_path / "config.json.bak").exists()
+    first_content = target.read_bytes()
+
+    # Second save with config B (owner name="Bob") should back up A
+    cfg_b = ConfigModel()
+    cfg_b.physical.people.machine_owner = Person(
+        name="Bob", email="bob@test.com", phone="222", address="B", notes=""
+    )
+    save_config(cfg_b, target)
+
+    # Verify backup contains the first save's content (Alice)
+    bak_path = tmp_path / "config.json.bak"
+    assert bak_path.exists()
+    assert bak_path.read_bytes() == first_content
+    assert b"Alice" in first_content
+
+    # Verify main file contains the new content (Bob, not Alice)
+    current_content = target.read_bytes()
+    assert b"Bob" in current_content
+    assert b"Alice" not in current_content
+
+    # Third save with config C (owner name="Charlie") should back up B
+    cfg_c = ConfigModel()
+    cfg_c.physical.people.machine_owner = Person(
+        name="Charlie", email="charlie@test.com", phone="333", address="C", notes=""
+    )
+    second_content = current_content
+    save_config(cfg_c, target)
+
+    # Verify backup now contains B (rolled over from A)
+    assert bak_path.read_bytes() == second_content
+    assert b"Bob" in bak_path.read_bytes()
+
+    # Verify main file contains the latest content (Charlie)
+    assert b"Charlie" in target.read_bytes()
 
 
 def test_save_config_leaves_no_tmp_file(tmp_path):
