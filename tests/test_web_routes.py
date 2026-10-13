@@ -401,18 +401,8 @@ class TestStatusEndpoint:
 # TestProductsListGating, TestCatalogGating and TestPlacementGating.
 
 
-# TestConfigEndpoints removed (Task 15): /config/machine and /config/contacts
-# are covered by tests/test_routes_settings.py's TestMachinePage and
-# TestContactsPage (both GET /settings/machine and /settings/contacts,
-# Task 13) — test_machine_info_shows_product_count's own claim (a product
-# count on the machine info page) has no replacement, since the new
-# /settings/machine page carries no such count; that display did not
-# survive the migration. The skipped test_payments and test_comms (for
-# /config/payments and /config/comms, whose templates never existed) are
-# deleted per this task's executor resolution 5: their routes are among the
-# fifteen this task deletes, and Task 13 built real, unskipped coverage of
-# their replacements in tests/test_routes_settings.py's TestPaymentsPage and
-# TestCommsPage (13 tests each). This drops the skip count from 13 to 11.
+# Covered by tests/test_routes_settings.py's TestMachinePage, TestContactsPage,
+# TestPaymentsPage, and TestCommsPage.
 
 # Hard-coded expected roles per route. These sets are deliberately written
 # out by hand from CLAUDE.md's gate table crossed with the role->permission
@@ -820,7 +810,6 @@ class TestFaultsUI:
         client.post(
             "/products/new",
             data={"sku": "ICE-1", "name": "Ice", "price": "2.5"},
-            auth=client.auth,
         )
 
     def test_status_lists_active_fault(self, client):
@@ -831,7 +820,7 @@ class TestFaultsUI:
         §1.3), so this keeps everything except the hx-post assertion."""
         self._add_product(client)
         self._lock(client)
-        r = client.get("/status", auth=client.auth)
+        r = client.get("/status")
         assert r.status_code == 200
         assert "ICE-301" in r.text
         assert "Ice" in r.text
@@ -843,7 +832,7 @@ class TestFaultsUI:
         carry the same 24px token, not `text-base`."""
         self._add_product(client)
         self._lock(client)
-        r = client.get("/status", auth=client.auth)
+        r = client.get("/status")
         assert "text-hero font-semibold" in r.text
         assert "text-base font-semibold" not in r.text
 
@@ -863,7 +852,7 @@ class TestFaultsUI:
         context.machine_instance.set_health_monitor(hm)
         self._add_product(client)
         self._lock(client)
-        r = client.get("/status", auth=client.auth)
+        r = client.get("/status")
         assert r.status_code == 200
         assert "ICE-301" in r.text
         assert "s</span>" in r.text
@@ -871,12 +860,12 @@ class TestFaultsUI:
     def test_status_still_renders_without_health_monitor(self, client):
         self._add_product(client)
         self._lock(client)
-        r = client.get("/status", auth=client.auth)
+        r = client.get("/status")
         assert r.status_code == 200
         assert "ICE-301" in r.text
 
     def test_status_without_faults_says_none(self, client):
-        r = client.get("/status", auth=client.auth)
+        r = client.get("/status")
         assert "No active faults" in r.text
 
     def test_status_banner_is_neutral_without_availability(self, client):
@@ -888,7 +877,7 @@ class TestFaultsUI:
         "still selling"."""
         self._add_product(client)
         self._lock(client)
-        r = client.get("/status", auth=client.auth)
+        r = client.get("/status")
         assert "Issues Detected" in r.text
         assert "Machine Stopped" not in r.text
         assert "still selling" not in r.text
@@ -902,12 +891,7 @@ class TestFaultsUI:
     # ::test_post_clear_unknown_key_is_404 against the replacement, POST
     # /health/faults/{key}/clear (Task 6).
 
-    # test_inventory_table_shows_locked_badge removed: it asserted on the
-    # old /inventory fragment's lockout badge, a route task 8 replaced.
-    # Lockout badges are not part of the Inventory restock level's brief
-    # (web_interface/routes/inventory.py never reads active_faults());
-    # that coverage already lives on the Products level instead —
-    # tests/test_routes_products.py::TestLockBadge
+    # Covered by tests/test_routes_products.py::TestLockBadge
     # ::test_locked_badge_shown_on_list_and_detail.
 
     def test_kpi_shows_failed_vends(self, client, tmp_path):
@@ -916,7 +900,7 @@ class TestFaultsUI:
         rec = EventRecorder(db_path=str(tmp_path / "events.db"))
         rec.record("vend_failed", value=2.5, metadata={"code": "ICE-301"})
         routes.set_event_recorder(rec)
-        r = client.get("/kpi", auth=client.auth)
+        r = client.get("/kpi")
         assert "1 failed" in r.text
 
     def test_reports_shows_failed_vends_and_refunds(self, client, tmp_path):
@@ -931,7 +915,7 @@ class TestFaultsUI:
         rec.record("vend_failed", value=2.5)
         rec.record("refund", value=2.5)
         routes.set_event_recorder(rec)
-        r = client.get("/reports", auth=client.auth)
+        r = client.get("/reports")
         assert "Failed Vends" in r.text
         assert "Refunds Paid" in r.text
         assert "$2.50" in r.text
@@ -949,7 +933,7 @@ class TestHealthTabIdentity:
         from services.build_info import BUILD_INFO
 
         self._hm()
-        r = client.get("/health", auth=client.auth)
+        r = client.get("/health")
         assert r.status_code == 200
         assert BUILD_INFO.commit_short in r.text
         assert BUILD_INFO.source in r.text
@@ -965,7 +949,7 @@ class TestHealthTabIdentity:
         # here.
         hm = self._hm()
         hm.record_heartbeat("vending", {"subsystem": "vending", "uptime_seconds": 90})
-        r = client.get("/health/subsystems", auth=client.auth)
+        r = client.get("/health/subsystems")
         assert "1m" in r.text  # uptime humanized
         assert "—" in r.text  # firmware/contract/hardware unknown
 
@@ -987,7 +971,7 @@ class TestHealthTabIdentity:
                 "commands": ["refund"],
             },
         )
-        r = client.get("/health/subsystems/mdb", auth=client.auth)
+        r = client.get("/health/subsystems/mdb")
         assert "abc1234" in r.text
         assert "0.3.0" in r.text
         assert "ice-colder mdb-sim" in r.text
