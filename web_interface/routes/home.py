@@ -2,8 +2,8 @@
 
 These are the only polling endpoints in the dashboard — the hero every 1 s,
 the KPI cards every 60 s, and the health pill every 5 s. Every other area
-lives in its own sibling module (`health.py`, `products.py`, `inventory.py`,
-`reports.py`, `controls.py`, `tests_level/`, `users/`, `settings.py`),
+lives in its own sibling module (`health/`, `products/`, `inventory.py`,
+`reports.py`, `controls.py`, `tests_level/`, `users/`, `settings/`),
 assembled by `routes/__init__.py::attach_routes`.
 """
 
