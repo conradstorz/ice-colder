@@ -52,7 +52,7 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass
 
-from config.config_model import Product
+from ice_common.config_model import Product
 
 
 @dataclass(frozen=True)

@@ -33,8 +33,8 @@ import annotated_types
 from pydantic import StringConstraints
 from pydantic.fields import FieldInfo
 
-from contracts.common import CHANNEL_ID_PATTERN
-from services.dispenser_schema import (
+from ice_contracts.board.common import CHANNEL_ID_PATTERN
+from ice_contracts.board.dispenser_schema import (
     CHANNEL_ID_DESCRIPTION,
     Accessory,
     AgitateStep,

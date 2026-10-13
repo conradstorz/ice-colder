@@ -5,7 +5,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from contracts.vending_machine import (
+from ice_contracts.board.vending_machine import (
     EXPECTED_SUBSYSTEMS,
 )
 from services.access import Permission

@@ -2,7 +2,7 @@
 
 from loguru import logger
 
-from contracts.vending_machine import FaultCode
+from ice_contracts.board.vending_machine import FaultCode
 from controller.machine import Machine
 from services.event_recorder import EventRecorder
 from services import event_recorder as event_recorder_module

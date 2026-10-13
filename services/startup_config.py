@@ -9,7 +9,7 @@ from pathlib import Path
 from loguru import logger
 from pydantic import SecretStr, ValidationError
 
-from config.config_model import ConfigModel, MQTTConfig
+from ice_common.config_model import ConfigModel, MQTTConfig
 from services.access import AccessStore
 from services.config_store import save_config
 

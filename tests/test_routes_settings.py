@@ -15,7 +15,7 @@ the skip count in that other file's suite drop on its own.
 import pytest
 from pydantic import SecretStr
 
-from config.config_model import Channel, ConfigModel
+from ice_common.config_model import Channel, ConfigModel
 from services.access import Role
 from services import config_store
 from web_interface.routes import settings as settings_routes

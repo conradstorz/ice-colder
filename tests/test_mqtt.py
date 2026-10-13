@@ -11,15 +11,15 @@ import aiomqtt
 import pytest
 from pydantic import ValidationError
 
-from config.config_model import ConfigModel, MQTTConfig, Product
+from ice_common.config_model import ConfigModel, MQTTConfig, Product
 from controller.machine import Machine
 from services.dispensers import validate_document
-from services.mqtt_client import (
+from ice_common.mqtt_client import (
     MQTTClient,
     PROTOCOL_VERSIONS,
     DEPRECATED_PROTOCOL_VERSIONS,
 )
-from services.mqtt_messages import (
+from ice_contracts.board.mqtt_messages import (
     ButtonPress,
     DispenseCommand,
     DisplayCommand,
@@ -296,7 +296,7 @@ class TestMQTTClientSubscribeQoS:
         fake = _FakeAiomqttClient()
         fake.mqtt_client = client
         monkeypatch.setattr(
-            "services.mqtt_client.aiomqtt.Client", lambda *a, **kw: fake
+            "ice_common.mqtt_client.aiomqtt.Client", lambda *a, **kw: fake
         )
 
         await client._connect_and_listen()
@@ -340,7 +340,7 @@ class TestMQTTClientSubscribedResetOnCancel:
 
         fake = _BlockingMessagesAiomqttClient()
         monkeypatch.setattr(
-            "services.mqtt_client.aiomqtt.Client", lambda *a, **kw: fake
+            "ice_common.mqtt_client.aiomqtt.Client", lambda *a, **kw: fake
         )
 
         # private: drives the connect/subscribe/listen loop directly, same
@@ -369,7 +369,7 @@ class TestMQTTProtocolVersion:
             captured.update(kwargs)
             return fake
 
-        monkeypatch.setattr("services.mqtt_client.aiomqtt.Client", _factory)
+        monkeypatch.setattr("ice_common.mqtt_client.aiomqtt.Client", _factory)
         client = MQTTClient(config=cfg, machine_id="vmc-0001")
         await client._connect_and_listen()
         return captured
@@ -472,7 +472,7 @@ class TestMonitorContractHandlers:
         return machine, monitor
 
     async def test_capabilities_stored(self):
-        from contracts.ice_maker_monitor import CONTRACT_VERSION
+        from ice_contracts.board.ice_maker_monitor import CONTRACT_VERSION
 
         machine, _ = self._machine_with_monitor()
         await machine.telemetry.handle_capabilities(
@@ -583,7 +583,7 @@ class TestMQTTPresence:
         )
 
     async def test_connect_sets_last_will_and_publishes_online(self, monkeypatch):
-        import services.mqtt_client as mc
+        import ice_common.mqtt_client as mc
 
         captured: dict = {}
         fake = _RecordingAiomqttClient()
@@ -608,7 +608,7 @@ class TestMQTTPresence:
         assert (qos, retain) == (1, True)
 
     def test_vmc_online_model(self):
-        from services.mqtt_messages import VMCOnline
+        from ice_contracts.board.mqtt_messages import VMCOnline
 
         m = VMCOnline(online=True)
         assert m.online is True

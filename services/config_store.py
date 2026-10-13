@@ -18,8 +18,8 @@ from pathlib import Path
 from loguru import logger
 from pydantic import SecretStr
 
-from config.config_model import ConfigModel, Product
-from services.paths import fsync_dir
+from ice_common.config_model import ConfigModel, Product
+from ice_common.paths import fsync_dir
 
 CONFIG_PATH = Path("config.json")
 

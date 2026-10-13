@@ -28,7 +28,7 @@ from uuid import uuid4
 
 from loguru import logger
 
-from contracts.vending_machine import (
+from ice_contracts.board.vending_machine import (
     PaymentRefundCommand,
     PaymentRefundResult,
     RefundStatus,

@@ -3,8 +3,8 @@
 import pytest
 from loguru import logger
 
-from config.config_model import Product
-from contracts.vending_machine import FaultCode
+from ice_common.config_model import Product
+from ice_contracts.board.vending_machine import FaultCode
 from controller.sale_journal import STATE_CHANGE_PREFIX, SaleJournal
 
 

@@ -39,7 +39,7 @@ from datetime import datetime, timedelta, timezone, tzinfo
 
 import pytest
 
-from config.config_model import ConfigModel
+from ice_common.config_model import ConfigModel
 from services import report_scheduler
 from services.event_recorder import EventRecorder
 

@@ -31,7 +31,7 @@ from pydantic import (
     model_validator,
 )
 
-from contracts.common import CHANNEL_ID_PATTERN
+from ice_contracts.board.common import CHANNEL_ID_PATTERN
 
 # A sensor or current-sense pair a board does not have is spelled out with
 # this literal string rather than omitted, so every profile stays

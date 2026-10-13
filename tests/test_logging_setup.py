@@ -30,7 +30,7 @@ from loguru import logger
 sink = StringIO()
 logger.remove()
 logger.add(sink, format="{message}")
-from services.logging_setup import setup_logging
+from ice_common.logging_setup import setup_logging
 
 logger.info("existing-handler")
 assert sink.getvalue() == "existing-handler\\n"
@@ -50,7 +50,7 @@ def test_setup_routes_messages_without_duplicate_handlers(tmp_path, setup_count)
 import sys
 sys.path.insert(0, sys.argv[1])
 from loguru import logger
-from services.logging_setup import setup_logging
+from ice_common.logging_setup import setup_logging
 
 for _ in range({setup_count}):
     setup_logging()

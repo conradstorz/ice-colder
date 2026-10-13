@@ -17,10 +17,14 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from contracts.common import TESTABLE_COMMANDS
-from contracts.ice_maker_monitor import CONTRACT_VERSION as ICE_MAKER_CONTRACT_VERSION
-from contracts.vending_machine import CONTRACT_VERSION as VENDING_CONTRACT_VERSION
-from contracts.vending_machine import EXPECTED_SUBSYSTEMS
+from ice_contracts.board.common import TESTABLE_COMMANDS
+from ice_contracts.board.ice_maker_monitor import (
+    CONTRACT_VERSION as ICE_MAKER_CONTRACT_VERSION,
+)
+from ice_contracts.board.vending_machine import (
+    CONTRACT_VERSION as VENDING_CONTRACT_VERSION,
+)
+from ice_contracts.board.vending_machine import EXPECTED_SUBSYSTEMS
 from services.access import Permission
 from services.command_dispatcher import CommandTimeout, CompletionTimeout
 from web_interface import auth as web_auth

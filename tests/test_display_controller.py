@@ -6,10 +6,10 @@ from unittest.mock import MagicMock, AsyncMock
 
 import pytest
 
-from config.config_model import ConfigModel
+from ice_common.config_model import ConfigModel
 from controller.machine import Machine
 from services.display_controller import DisplayController
-from services.mqtt_messages import DisplayMode
+from ice_contracts.board.mqtt_messages import DisplayMode
 from tests.fakes import settle
 
 

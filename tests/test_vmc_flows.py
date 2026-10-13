@@ -13,9 +13,9 @@ from pathlib import Path
 import pytest
 from loguru import logger
 
-from config.config_model import ConfigModel, Product
-from contracts.common import CommandAck
-from contracts.vending_machine import (
+from ice_common.config_model import ConfigModel, Product
+from ice_contracts.board.common import CommandAck
+from ice_contracts.board.vending_machine import (
     DispenserOutcome,
     FaultCode,
     PaymentRefundCommand,
@@ -28,7 +28,7 @@ from services.availability import Availability
 from services.command_dispatcher import CommandTimeout
 from services.event_recorder import EventRecorder, SaleRecordingFailed
 from services.health_monitor import HealthMonitor
-from services.mqtt_messages import PaymentEnableCommand
+from ice_contracts.board.mqtt_messages import PaymentEnableCommand
 from services.session_store import Credit, SessionSnapshot, SessionStore
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
 from tests.fakes import FakeTaskRunner, drain_pending, settle

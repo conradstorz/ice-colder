@@ -15,9 +15,9 @@ import logging
 
 import pytest
 
-from config.config_model import ConfigModel, PhysicalDetails, Product
-from contracts.common import ChannelDescriptor, CommandAck
-from contracts.vending_machine import FaultCode, SubsystemCapabilities
+from ice_common.config_model import ConfigModel, PhysicalDetails, Product
+from ice_contracts.board.common import ChannelDescriptor, CommandAck
+from ice_contracts.board.vending_machine import FaultCode, SubsystemCapabilities
 from controller.dispense_cycle import DispenseCycle
 from controller.machine import Machine
 from controller.vmc import VMC

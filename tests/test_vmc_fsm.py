@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from config.config_model import ConfigModel
+from ice_common.config_model import ConfigModel
 from controller.machine import Machine
 from controller.vmc import InvalidTransition
 

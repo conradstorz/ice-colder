@@ -69,7 +69,7 @@ parses `controller/vmc.py` with `ast` (so a `TYPE_CHECKING`-guarded import
 is caught exactly like an ordinary one -- the VMC must not even *name*
 these types) and fails if it imports `controller.machine`,
 `controller.maintenance_lease`, `controller.test_sale`,
-`services.mqtt_client`, `services.health_monitor`, `services.session_store`,
+`ice_common.mqtt_client`, `services.health_monitor`, `services.session_store`,
 `services.event_recorder`, `services.command_dispatcher`, or
 `services.display_controller`. One deliberate carve-out: `VMC.snapshot()`
 constructs and returns a `services.session_store.SessionSnapshot` -- a
@@ -85,7 +85,17 @@ one, or even name the module, besides `controller/machine.py` itself.
 import ast
 import importlib.util
 import re
+import sys
 from pathlib import Path
+
+try:
+    from tests.paths import TESTS_ROOT
+except ModuleNotFoundError:  # run as `python tests/.../test_no_private_access.py`
+    for _parent in Path(__file__).resolve().parents:
+        if (_parent / "pyproject.toml").is_file():
+            sys.path.insert(0, str(_parent))
+            break
+    from tests.paths import TESTS_ROOT
 
 #: An attribute name that counts as private: a single leading underscore
 #: followed by a lowercase letter (dunders such as `__class__` never match).
@@ -107,9 +117,9 @@ PRIVATE_IMPORT_NAME_RE = re.compile(r"^_[a-z][A-Za-z0-9_]*$")
 PRIVATE_MARKER_RE = re.compile(r"# private:\s*\S")
 LOOKBACK_LINES = 3
 
-TESTS_DIR = Path(__file__).resolve().parent
+TESTS_DIR = TESTS_ROOT  # tests/ root, whichever subdirectory this file lives in
 THIS_FILE = Path(__file__).resolve()
-REPO_ROOT = TESTS_DIR.parent
+REPO_ROOT = TESTS_ROOT.parent
 CONTROLLER_DIR = REPO_ROOT / "controller"
 
 #: Modules controller/vmc.py must never import -- transport/service
@@ -119,7 +129,7 @@ FORBIDDEN_VMC_IMPORTS = {
     "controller.machine",
     "controller.maintenance_lease",
     "controller.test_sale",
-    "services.mqtt_client",
+    "ice_common.mqtt_client",
     "services.health_monitor",
     "services.session_store",
     "services.event_recorder",

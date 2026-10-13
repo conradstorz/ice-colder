@@ -18,9 +18,13 @@ from loguru import logger
 from pydantic import ValidationError
 
 from simulators.base import ESP32Simulator, FaultDef
-from services.mqtt_messages import PaymentEnableCommand, PaymentEvent, PaymentStatus
-from contracts.common import ChannelDescriptor, SubsystemCommand
-from contracts.vending_machine import (
+from ice_contracts.board.mqtt_messages import (
+    PaymentEnableCommand,
+    PaymentEvent,
+    PaymentStatus,
+)
+from ice_contracts.board.common import ChannelDescriptor, SubsystemCommand
+from ice_contracts.board.vending_machine import (
     PaymentRefundCommand,
     PaymentRefundResult,
     RefundStatus,

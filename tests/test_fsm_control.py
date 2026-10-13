@@ -2,7 +2,7 @@
 
 from unittest.mock import create_autospec
 
-from config.config_model import ConfigModel
+from ice_common.config_model import ConfigModel
 from controller.machine import Machine
 from controller.vmc import VMC
 from services.fsm_control import perform_command

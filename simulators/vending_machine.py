@@ -30,17 +30,17 @@ import aiomqtt
 from loguru import logger
 from pydantic import ValidationError
 
-from contracts.common import ChannelDescriptor, SubsystemCommand
-from contracts.ice_maker_monitor import ChannelReading
-from contracts.vending_machine import DispenserOutcome, DispenseStep
+from ice_contracts.board.common import ChannelDescriptor, SubsystemCommand
+from ice_contracts.board.ice_maker_monitor import ChannelReading
+from ice_contracts.board.vending_machine import DispenserOutcome, DispenseStep
 from simulators.base import CommandOutcome, ESP32Simulator, FaultDef
-from services.dispenser_schema import (
+from ice_contracts.board.dispenser_schema import (
     Accessory,
     IceFillBySensor,
     ReleaseBySensor,
     WaterFillByVolume,
 )
-from services.mqtt_messages import (
+from ice_contracts.board.mqtt_messages import (
     ButtonPress,
     DispenseCommand,
     DispenserStatus,

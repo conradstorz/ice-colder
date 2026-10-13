@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from loguru import logger
 
-from contracts.vending_machine import (
+from ice_contracts.board.vending_machine import (
     FaultCode,
 )
 from services.access import Permission

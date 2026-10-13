@@ -15,7 +15,7 @@ from typing import Callable, Optional
 
 from loguru import logger
 
-from contracts.vending_machine import PAYMENT_BLOCKING_FAULTS, FaultCode
+from ice_contracts.board.vending_machine import PAYMENT_BLOCKING_FAULTS, FaultCode
 
 
 class PermissiveState(str, Enum):

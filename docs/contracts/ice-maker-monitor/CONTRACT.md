@@ -5,8 +5,8 @@ interface between the ice-colder VMC (this repo) and the separate,
 brand-specific ice-maker monitor project. The monitor runs on its own
 Raspberry Pi and conforms to this contract without importing any code from
 this repo. The `schemas/*.schema.json` files are generated directly from
-this repo's Pydantic models (`contracts/ice_maker_monitor.py` and
-`services/mqtt_messages.py`) via `model_json_schema()`; they are the
+this repo's Pydantic models (`packages/contracts/src/ice_contracts/board/ice_maker_monitor.py` and
+`packages/contracts/src/ice_contracts/board/mqtt_messages.py`) via `model_json_schema()`; they are the
 normative payload definitions. Where prose in this document and a schema
 file appear to disagree, treat that as a bug against this document — the
 schema files are regenerated from source and are always current.
@@ -28,7 +28,7 @@ schema files are regenerated from source and are always current.
   and `ip`; the model is now the shared `SubsystemCapabilities` with
   `subsystem` fixed to `ice_maker`.
 - **1.2.0** (2026-09-25): The `MonitorCommand` and `CommandAck` models move
-  to `contracts/common.py` as `SubsystemCommand` and `CommandAck` and are
+  to `packages/contracts/src/ice_contracts/board/common.py` as `SubsystemCommand` and `CommandAck` and are
   re-exported here under their original names (same classes, wire format
   unchanged). The ack gains an optional `result` field for command-specific
   return data. This enables the shared subsystem command channel (see below).
@@ -276,7 +276,7 @@ The VMC's own completion timeout for `power_cycle` is **`dwell_seconds` + a 30-s
   `CommandAck` rather than re-executing the command. This is essential: if a
   timeout and retry re-ran the action, two power cycles, two dispenses, or
   two motor tests would occur.
-- **Ack deadline: 10 seconds.** (`ACK_TIMEOUT_SECONDS` in `contracts/common.py`.)
+- **Ack deadline: 10 seconds.** (`ACK_TIMEOUT_SECONDS` in `packages/contracts/src/ice_contracts/board/common.py`.)
   If the VMC does not receive a `CommandAck` within 10 seconds of publishing
   a `SubsystemCommand`, it treats the command as lost and may retry it using
   the same `request_id` (which the idempotency rule above makes safe). This

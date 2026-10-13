@@ -22,9 +22,9 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from config.config_model import Product
-from contracts.common import CommandAck
-from contracts.vending_machine import DispenserOutcome, FaultCode
+from ice_common.config_model import Product
+from ice_contracts.board.common import CommandAck
+from ice_contracts.board.vending_machine import DispenserOutcome, FaultCode
 from controller.dispense_cycle import DispenseCycle, DispenseReport
 from controller.outputs import StatusOutputs
 from controller.sale_context import SaleContext

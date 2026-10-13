@@ -25,3 +25,7 @@
 **/values.dev.yaml
 LICENSE
 README.md
+packages/cloud
+# The cloud package is not part of the edge image; keep only its manifest so
+# the workspace (members = packages/*) still resolves against uv.lock.
+!packages/cloud/pyproject.toml

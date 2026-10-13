@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from contracts.generate import CONTRACTS, schema_for
+from ice_contracts.generate import CONTRACTS, schema_for
 
 _CASES = [
     (contract, name, schema_dir, models[name])
@@ -29,5 +29,5 @@ def test_committed_schema_matches_model(contract, name, schema_dir, model):
         (schema_dir / f"{name}.schema.json").read_text(encoding="utf-8")
     )
     assert committed == schema_for(model), (
-        f"{contract}/{name} schema drifted — run: uv run python -m contracts.generate"
+        f"{contract}/{name} schema drifted — run: uv run python -m ice_contracts.generate"
     )

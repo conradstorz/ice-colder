@@ -3,8 +3,8 @@
 import os
 import subprocess
 import sys
-from pathlib import Path
 from tests.paths import REPO_ROOT as ROOT
+from tests.paths import TESTS_ROOT
 
 
 def test_exported_config_env_does_not_redirect_saves(tmp_path):
@@ -19,7 +19,7 @@ def test_exported_config_env_does_not_redirect_saves(tmp_path):
             "-q",
             "-p",
             "no:cacheprovider",
-            str(Path(__file__).parent / "_env_isolation_probe.py"),
+            str(TESTS_ROOT / "_env_isolation_probe.py"),
         ],
         cwd=ROOT,
         env=env,

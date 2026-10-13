@@ -17,6 +17,8 @@ def _repo_root() -> Path:
 
 
 REPO_ROOT = _repo_root()
+# The tests/ root; this module stays there when tests move into subdirectories.
+TESTS_ROOT = Path(__file__).resolve().parent
 ROUTES_DIR = Path(web_interface.routes.__file__).parent
 ROUTES_PACKAGE = web_interface.routes.__name__
 VMC_PATH = Path(controller.vmc.__file__)
@@ -36,6 +38,7 @@ SCREEN_TEMPLATES: list[tuple[str, tuple[str, ...]]] = [
 
 __all__ = [
     "REPO_ROOT",
+    "TESTS_ROOT",
     "TEMPLATES_DIR",
     "STATIC_DIR",
     "ROUTES_DIR",

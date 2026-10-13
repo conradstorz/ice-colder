@@ -31,7 +31,7 @@ from pathlib import Path
 import pytest
 import uvicorn
 
-from config.config_model import ConfigModel
+from ice_common.config_model import ConfigModel
 from controller.machine import Machine
 from services.access import AccessStore, Role
 from services.inventory_manager import InventoryManager

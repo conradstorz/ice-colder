@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
-from config.config_model import _is_placeholder_host, ConfigModel, Channel
+from ice_common.config_model import _is_placeholder_host, ConfigModel, Channel
 from services.mailer import smtp_send
 
 if TYPE_CHECKING:

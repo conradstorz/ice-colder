@@ -6,7 +6,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
-from contracts.vending_machine import (
+from ice_contracts.board.vending_machine import (
     PAYMENT_BLOCKING_FAULTS,
     FaultCode,
 )

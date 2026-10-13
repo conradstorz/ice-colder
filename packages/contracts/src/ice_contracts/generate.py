@@ -1,7 +1,7 @@
 # contracts/generate.py
 """Generate the contracts' JSON Schema files.
 
-Run after any model change: uv run python -m contracts.generate
+Run after any model change: uv run python -m ice_contracts.generate
 tests/test_contract_schemas.py fails if the committed files drift.
 """
 
@@ -10,21 +10,21 @@ from pathlib import Path
 
 from pydantic import BaseModel, TypeAdapter
 
-from services.dispenser_schema import SlotProfile
-from services.mqtt_messages import (
+from ice_contracts.board.dispenser_schema import SlotProfile
+from ice_contracts.board.mqtt_messages import (
     DispenseCommand,
     IceMakerEvent,
     SensorReading,
     SubsystemHeartbeat,
 )
 
-from contracts.common import CommandAck, SubsystemCommand
-from contracts.ice_maker_monitor import (
+from ice_contracts.board.common import CommandAck, SubsystemCommand
+from ice_contracts.board.ice_maker_monitor import (
     ChannelDescriptor,
     ChannelReading,
     MonitorCapabilities,
 )
-from contracts.vending_machine import (
+from ice_contracts.board.vending_machine import (
     DispenserOutcome,
     DispenseStep,
     FaultCode,

@@ -16,7 +16,13 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from contracts.vending_machine import FAULT_TABLE, FaultCode, FaultSpec, Scope, Severity
+from ice_contracts.board.vending_machine import (
+    FAULT_TABLE,
+    FaultCode,
+    FaultSpec,
+    Scope,
+    Severity,
+)
 
 # Alert level sent to the owner for each fault severity.
 _SEVERITY_LEVEL = {

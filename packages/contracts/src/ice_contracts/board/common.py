@@ -85,7 +85,7 @@ def _validate_dispense_params(params: dict) -> None:
     # Lazy import: services/mqtt_messages.py imports contracts.vending_machine
     # (and, through services.dispenser_schema, contracts.common), so a
     # module-level import here would be a contracts -> services cycle.
-    from services.mqtt_messages import DispenseCommand
+    from ice_contracts.board.mqtt_messages import DispenseCommand
 
     try:
         DispenseCommand.model_validate(params)

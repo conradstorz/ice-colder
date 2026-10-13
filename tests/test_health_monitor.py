@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from loguru import logger
 
-from config.config_model import ConfigModel
+from ice_common.config_model import ConfigModel
 from services.health_monitor import HealthMonitor, SubsystemStatus, Alert
 from services.notifier import Notifier
 
@@ -570,7 +570,7 @@ class TestSubsystemIdentity:
     def test_vmc_block(self, monkeypatch):
         import time as _time
 
-        from services.build_info import BUILD_INFO
+        from ice_common.build_info import BUILD_INFO
 
         t = [1000.0]
         monkeypatch.setattr(_time, "monotonic", lambda: t[0])

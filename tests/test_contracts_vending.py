@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from contracts.vending_machine import (
+from ice_contracts.board.vending_machine import (
     CONTRACT_VERSION,
     FAULT_TABLE,
     OUTCOME_FAULTS,
@@ -17,7 +17,10 @@ from contracts.vending_machine import (
     Severity,
     fault_for_outcome,
 )
-from contracts.vending_machine import EXPECTED_SUBSYSTEMS, SubsystemCapabilities
+from ice_contracts.board.vending_machine import (
+    EXPECTED_SUBSYSTEMS,
+    SubsystemCapabilities,
+)
 
 
 def test_contract_version():
@@ -149,7 +152,7 @@ class TestPaymentRefundResult:
 
 
 def test_vmc_alert_carries_code_and_sku():
-    from services.mqtt_messages import VMCAlert
+    from ice_contracts.board.mqtt_messages import VMCAlert
 
     alert = VMCAlert(
         level="error", message="x", code=FaultCode.ICE_301, product_sku="ICE-1"
@@ -198,7 +201,12 @@ class TestSubsystemCapabilities:
 
 
 def test_pay_104_is_a_machine_warning():
-    from contracts.vending_machine import FAULT_TABLE, FaultCode, Scope, Severity
+    from ice_contracts.board.vending_machine import (
+        FAULT_TABLE,
+        FaultCode,
+        Scope,
+        Severity,
+    )
 
     spec = FAULT_TABLE[FaultCode.PAY_104]
     assert FaultCode.PAY_104.value == "PAY-104"
@@ -208,13 +216,13 @@ def test_pay_104_is_a_machine_warning():
 
 
 def test_contract_version_bumped_for_new_code():
-    from contracts.vending_machine import CONTRACT_VERSION
+    from ice_contracts.board.vending_machine import CONTRACT_VERSION
 
     assert CONTRACT_VERSION == "1.0.0"
 
 
 def test_payment_blocking_faults_is_exactly_the_six_hazards_plus_svc_102():
-    from contracts.vending_machine import PAYMENT_BLOCKING_FAULTS
+    from ice_contracts.board.vending_machine import PAYMENT_BLOCKING_FAULTS
 
     assert PAYMENT_BLOCKING_FAULTS == frozenset(
         {
@@ -231,7 +239,7 @@ def test_payment_blocking_faults_is_exactly_the_six_hazards_plus_svc_102():
 
 
 def test_every_payment_blocking_fault_is_machine_scope_and_critical_except_svc_102():
-    from contracts.vending_machine import PAYMENT_BLOCKING_FAULTS
+    from ice_contracts.board.vending_machine import PAYMENT_BLOCKING_FAULTS
 
     for code in PAYMENT_BLOCKING_FAULTS:
         spec = FAULT_TABLE[code]
@@ -254,18 +262,18 @@ class TestSvc102:
         assert spec.description == "Maintenance test in progress"
 
     def test_blocks_payment(self):
-        from contracts.vending_machine import PAYMENT_BLOCKING_FAULTS
+        from ice_contracts.board.vending_machine import PAYMENT_BLOCKING_FAULTS
 
         assert FaultCode.SVC_102 in PAYMENT_BLOCKING_FAULTS
 
     def test_payment_blocking_faults_now_has_seven_members(self):
-        from contracts.vending_machine import PAYMENT_BLOCKING_FAULTS
+        from ice_contracts.board.vending_machine import PAYMENT_BLOCKING_FAULTS
 
         assert len(PAYMENT_BLOCKING_FAULTS) == 7
 
 
 def test_pay_104_is_a_warning_and_never_blocks_payment():
-    from contracts.vending_machine import PAYMENT_BLOCKING_FAULTS
+    from ice_contracts.board.vending_machine import PAYMENT_BLOCKING_FAULTS
 
     spec = FAULT_TABLE[FaultCode.PAY_104]
     assert spec.severity is Severity.warning
@@ -293,7 +301,7 @@ def test_data_102_is_an_alert_class_machine_warning_for_the_event_db_reset():
 
 
 def test_data_faults_never_block_payment_and_the_original_six_hazards_are_unchanged():
-    from contracts.vending_machine import PAYMENT_BLOCKING_FAULTS
+    from ice_contracts.board.vending_machine import PAYMENT_BLOCKING_FAULTS
 
     assert FaultCode.DATA_101 not in PAYMENT_BLOCKING_FAULTS
     assert FaultCode.DATA_102 not in PAYMENT_BLOCKING_FAULTS
@@ -311,7 +319,7 @@ def test_data_faults_never_block_payment_and_the_original_six_hazards_are_unchan
 
 
 def test_cfg_faults_are_registered_and_never_block_payment():
-    from contracts.vending_machine import PAYMENT_BLOCKING_FAULTS
+    from ice_contracts.board.vending_machine import PAYMENT_BLOCKING_FAULTS
 
     assert FAULT_TABLE[FaultCode.CFG_101].severity is Severity.product_unavailable
     assert FAULT_TABLE[FaultCode.CFG_101].scope is Scope.product

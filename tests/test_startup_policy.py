@@ -6,8 +6,8 @@ import pytest
 
 from services import startup_config
 from services.startup_config import warn_if_setup_mode
-from config.config_model import ConfigModel, WebConfig
-from contracts.vending_machine import FaultCode
+from ice_common.config_model import ConfigModel, WebConfig
+from ice_contracts.board.vending_machine import FaultCode
 from controller.machine import Machine
 from services.access import AccessStore, Role
 from services.config_store import save_config

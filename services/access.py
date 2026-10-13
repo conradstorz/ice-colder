@@ -18,13 +18,17 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional
 
 from loguru import logger
 
-from services.paths import DATA_DIR
+from ice_common.paths import DATA_DIR
+from ice_contracts.access import (  # noqa: F401  (re-exported for existing importers)
+    ROLE_PERMISSIONS,
+    Permission,
+    Role,
+)
 
 BACKOFF_CAP_SECONDS = 3600.0
 BUDGET_THRESHOLD = 20
@@ -39,63 +43,6 @@ SCRYPT_DKLEN = 32
 EMERGENCY_CODE_COUNT = 20
 CODE_DIGITS = 8
 TRANSFER_TTL_DAYS = 7
-
-
-class Role(str, Enum):
-    owner = "owner"
-    secretary = "secretary"
-    tech = "tech"
-    loader = "loader"
-
-
-class Permission(str, Enum):
-    view_status = "view_status"
-    clear_faults = "clear_faults"
-    view_logs = "view_logs"
-    machine_controls = "machine_controls"
-    run_tests = "run_tests"
-    edit_catalog = "edit_catalog"
-    edit_placement = "edit_placement"
-    view_reports = "view_reports"
-    edit_contacts = "edit_contacts"
-    edit_secrets = "edit_secrets"
-    manage_users = "manage_users"
-    manage_ownership = "manage_ownership"
-    collect_cash = "collect_cash"
-
-
-ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
-    Role.owner: frozenset(Permission),
-    Role.secretary: frozenset(
-        {
-            Permission.view_status,
-            Permission.edit_catalog,
-            Permission.edit_placement,
-            Permission.view_reports,
-            Permission.edit_contacts,
-            Permission.manage_users,
-            Permission.collect_cash,
-        }
-    ),
-    Role.tech: frozenset(
-        {
-            Permission.view_status,
-            Permission.clear_faults,
-            Permission.view_logs,
-            Permission.machine_controls,
-            Permission.run_tests,
-            Permission.edit_placement,
-            Permission.collect_cash,
-        }
-    ),
-    Role.loader: frozenset(
-        {
-            Permission.view_status,
-            Permission.edit_placement,
-            Permission.collect_cash,
-        }
-    ),
-}
 
 
 def _scrypt(value: str, salt: bytes) -> bytes:

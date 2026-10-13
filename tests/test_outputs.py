@@ -14,10 +14,15 @@ from __future__ import annotations
 
 import asyncio
 
-from config.config_model import Product
-from contracts.vending_machine import PaymentRefundCommand
+from ice_common.config_model import Product
+from ice_contracts.board.vending_machine import PaymentRefundCommand
 from controller.outputs import StatusOutputs
-from services.mqtt_messages import AlertLevel, PaymentEnableCommand, VMCAlert, VMCStatus
+from ice_contracts.board.mqtt_messages import (
+    AlertLevel,
+    PaymentEnableCommand,
+    VMCAlert,
+    VMCStatus,
+)
 from services.payment_gateway_manager import PaymentGatewayManager
 from services.session_store import SessionSnapshot
 from tests.fakes import (
@@ -115,7 +120,7 @@ async def test_state_changed_with_every_sink_pushes_and_publishes_retained_statu
     assert payload.credit_escrow == 3.25
     assert payload.selected_product == "Ice Bag"
     assert payload.uptime_seconds >= 0
-    from services.build_info import BUILD_INFO
+    from ice_common.build_info import BUILD_INFO
 
     assert payload.version == BUILD_INFO.commit_short
 

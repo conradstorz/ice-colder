@@ -1,6 +1,6 @@
 from controller.machine import Machine
 from services.command_dispatcher import CommandDispatcher
-from services.mqtt_client import MQTTClient
+from ice_common.mqtt_client import MQTTClient
 from services.health_monitor import HealthMonitor
 from services.notifier import Notifier
 from services.display_controller import DisplayController
@@ -8,14 +8,14 @@ from services.inventory_manager import InventoryManager
 from services.event_recorder import EventRecorder
 from services.availability import Availability
 from services.session_store import SessionStore
-from services.build_info import BUILD_INFO
-from services.logging_setup import setup_logging
+from ice_common.build_info import BUILD_INFO
+from ice_common.logging_setup import setup_logging
 from services.mailer import send_email
 from services import report_scheduler
 from services.startup_dispensers import load_dispenser_profiles, wire_dispenser_profiles
 from services.startup_recovery import reconcile_sales_journal_faults
-from services.task_lifecycle import run_until_primary_exits
-from services.task_supervisor import supervise
+from ice_common.task_lifecycle import run_until_primary_exits
+from ice_common.task_supervisor import supervise
 
 import asyncio
 import sys

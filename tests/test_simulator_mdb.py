@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock
 
 from tests.fakes import patch_module_sleep
 
-from contracts.common import SubsystemCommand, TESTABLE_COMMANDS
-from contracts.vending_machine import PaymentRefundCommand, RefundStatus
+from ice_contracts.board.common import SubsystemCommand, TESTABLE_COMMANDS
+from ice_contracts.board.vending_machine import PaymentRefundCommand, RefundStatus
 
 
 class TestInit:

@@ -15,8 +15,8 @@ from typing import Optional, Callable, Awaitable
 
 from loguru import logger
 
-from contracts.vending_machine import EXPECTED_SUBSYSTEMS
-from services.build_info import BUILD_INFO
+from ice_contracts.board.vending_machine import EXPECTED_SUBSYSTEMS
+from ice_common.build_info import BUILD_INFO
 
 
 @dataclass
