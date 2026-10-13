@@ -24,7 +24,7 @@ from services.availability import Availability
 from services.command_dispatcher import CommandTimeout
 from services.dispensers import DispenserProfiles
 from tests.dispenser_fixtures import profiles_for, render_profiles_toml
-from tests.fakes import FakeMqtt, FakeTaskRunner, vmc_with_profiles
+from tests.fakes import FakeMqtt, FakeTaskRunner, drain_pending, vmc_with_profiles
 
 ICE_1 = Product(sku="ICE-1", slot=0, kind="ice")
 WATER_1 = Product(sku="W-1", slot=1, kind="water")
@@ -477,7 +477,8 @@ async def test_report_before_ack_completes_sale(tmp_path):
     report that wins the race against the dispatcher's own ack must
     still complete the sale correctly -- and the ack, once it does
     arrive, must cause no error and no double completion."""
-    machine, vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    runner = FakeTaskRunner()
+    machine, vmc, dispatcher = _vmc_with_profiles(tmp_path, tasks=runner)
     rec = FakeEventRecorder()
     machine.set_event_recorder(rec)
     gate = asyncio.Event()
@@ -499,7 +500,7 @@ async def test_report_before_ack_completes_sale(tmp_path):
 
     # Release the ack: no error, no double completion.
     gate.set()
-    await asyncio.sleep(0)
+    await drain_pending(runner)  # the late ack has been fully processed
     assert vmc.state == "idle"
     assert len(rec.sales) == 1
 
@@ -567,6 +568,7 @@ async def test_success_cancels_dispense_timeout_before_record_awaits(tmp_path):
     # The timer must already be retired by the time record_sale runs --
     # not merely retired by the time this call returns.
     assert live_during_record == [False]
+    await drain_pending(runner)  # a refund publish would be fire-and-forget
     assert vmc.state == "idle"
     assert vmc.credit_escrow == 0
     assert not vmc.faults.lockouts
@@ -735,6 +737,7 @@ async def test_unexpected_dispatch_error_fails_vend_immediately(tmp_path):
     _start_sale(vmc, product)
 
     await asyncio.sleep(0)
+    await drain_pending(machine.tasks)  # the negative below must not be vacuous
 
     assert vmc.state == "interacting_with_user"
     assert vmc.credit_escrow == price
@@ -765,6 +768,7 @@ async def test_snapshot_save_failure_fails_vend_immediately(tmp_path):
     _start_sale(vmc, product)
 
     await asyncio.sleep(0)
+    await drain_pending(machine.tasks)  # the negatives below must not be vacuous
 
     assert vmc.state == "interacting_with_user"
     assert vmc.credit_escrow == price
@@ -813,7 +817,7 @@ async def test_late_no_ack_from_previous_sale_does_not_fail_current_sale(tmp_pat
 
     # A's delayed CommandTimeout finally arrives.
     gate.set()
-    await asyncio.sleep(0)
+    await drain_pending(machine.tasks)  # A's CommandTimeout has been fully handled
 
     assert vmc.state == "dispensing"
     assert vmc.credit_escrow == escrow_before

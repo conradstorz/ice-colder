@@ -21,7 +21,7 @@ import pytest
 
 from config.config_model import Product
 from contracts.vending_machine import FaultCode
-from tests.fakes import FakeMqtt, FakeTaskRunner, vmc_with_profiles
+from tests.fakes import FakeMqtt, FakeTaskRunner, drain_pending, vmc_with_profiles
 
 ICE_1 = Product(sku="ICE-1", slot=0, kind="ice")
 WATER_1 = Product(sku="WATER-1", slot=1, kind="water")
@@ -154,6 +154,7 @@ async def test_sale_settled_observer_fires_once_with_timeout_on_dispense_timeout
 
     runner.fire("dispense_timeout")
     await asyncio.sleep(0)  # on_dispense_failed runs via fire_and_forget
+    await drain_pending(runner)  # "exactly once": no second firing may follow
 
     assert len(calls) == 1
     sale, outcome, fault_code = calls[0]

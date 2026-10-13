@@ -31,7 +31,7 @@ from services.health_monitor import HealthMonitor
 from services.mqtt_messages import PaymentEnableCommand
 from services.session_store import Credit, SessionSnapshot, SessionStore
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
-from tests.fakes import FakeTaskRunner, settle
+from tests.fakes import FakeTaskRunner, drain_pending, settle
 
 
 _profiles_tmp_base: Path | None = None
@@ -1076,6 +1076,7 @@ class TestVendOutcomes:
             "hardware/dispenser", {"slot": 0, "state": outcome}
         )
         await asyncio.sleep(0)
+        await drain_pending(runner)  # the negatives below must not pass vacuously
 
         code = fault_for_outcome("bagged_ice", DispenserOutcome(outcome))
         assert vmc.state == "interacting_with_user"
@@ -1111,6 +1112,7 @@ class TestVendOutcomes:
 
         runner.fire("dispense_timeout")
         await asyncio.sleep(0)
+        await drain_pending(runner)  # the "no dispense row" negative needs this
 
         assert vmc.state == "interacting_with_user"
         assert vmc.credit_escrow == 2.50
@@ -1440,7 +1442,8 @@ class TestRefunds:
         assert "$2.00" in messages[-1]
 
     async def test_ack_failed_retries_once_then_pay_103(self):
-        machine = make_machine(products=two_products())
+        runner = FakeTaskRunner()
+        machine = make_machine(tasks=runner, products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
         client = RecordingClient()
@@ -1469,6 +1472,7 @@ class TestRefunds:
             {"request_id": rid, "status": "failed", "detail": "changer_empty"},
         )
         await asyncio.sleep(0)
+        await drain_pending(runner)  # a stray third retry would land here
 
         assert rid not in vmc.refunds.pending
         assert len(client.refund_commands()) == 2
@@ -1500,6 +1504,7 @@ class TestRefunds:
         await settle()
         runner.fire("refund_deadline")
         await settle()
+        await drain_pending(runner)  # a stray third retry would land here
 
         assert len(client.refund_commands()) == 2
         assert vmc.refunds.pending == {}
@@ -1545,7 +1550,8 @@ class TestRefunds:
         assert "refunded" not in messages[-1]
 
     async def test_on_error_without_credit_says_contact_support_only(self):
-        machine = make_machine(products=two_products())
+        runner = FakeTaskRunner()
+        machine = make_machine(tasks=runner, products=two_products())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
         client = RecordingClient()
@@ -1557,6 +1563,7 @@ class TestRefunds:
 
         vmc.error_occurred()
         await asyncio.sleep(0)
+        await drain_pending(runner)  # a wrongly-sent refund would land here
 
         assert vmc.state == "error"
         assert client.refund_commands() == []
@@ -1985,6 +1992,7 @@ async def test_deposit_after_on_error_refund_is_refunded_on_timeout():
     vmc.credit_escrow = 0.0
     vmc.error_occurred()
     await asyncio.sleep(0)
+    await drain_pending(runner)  # a wrongly-sent refund would land here
     assert vmc.state == "error"
     assert client.refund_commands() == []  # nothing to refund yet
 
@@ -2617,7 +2625,8 @@ class TestMaintenanceLease:
         # what catches that. It also proves _release_maintenance_hold's
         # idempotence (via clear_fault's own "already cleared" guard) is
         # what makes a stray extra release call harmless.
-        vmc, monitor, avail, published, machine = _wired_vmc()
+        runner = FakeTaskRunner()
+        vmc, monitor, avail, published, machine = _wired_vmc(tasks=runner)
         await asyncio.sleep(0)
         granted, _ = machine.lease.begin_maintenance("user-1", "sess-a")
         assert granted is True
@@ -2661,7 +2670,7 @@ class TestMaintenanceLease:
 
         gate2.set()
         await t2
-        await asyncio.sleep(0)  # let the release's fire-and-forget publish run
+        await drain_pending(runner)  # let the release's fire-and-forget publish run
 
         assert machine.maintenance_hold is None
         assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
@@ -2677,7 +2686,7 @@ class TestMaintenanceLease:
         # "already cleared" guard stops it from re-pushing availability, so
         # no second enable is published.
         machine.lease.release(by="stray")
-        await asyncio.sleep(0)
+        await drain_pending(runner)  # a double publish would land here
         enable_true_after = [
             p for t, p in published if t == "cmd/payment/enable" and p.accept is True
         ]
@@ -2803,7 +2812,8 @@ class TestRunTestSale:
     async def test_deposit_funds_test_method_accepted_other_methods_refunded(self):
         """Reaches deposit_funds's lease branch (Task 10 + this task's
         `and payment_method != "test"` exception)."""
-        machine, vmc, rec, client = _test_run_vmc()
+        runner = FakeTaskRunner()
+        machine, vmc, rec, client = _test_run_vmc(tasks=runner)
         granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
         assert granted is True
 
@@ -2819,7 +2829,7 @@ class TestRunTestSale:
         # run_test_sale's own "test" credit is the one exception: it must
         # fall through to the normal escrow path instead of being refunded.
         vmc.deposit_funds(1.00, payment_method="test")
-        await asyncio.sleep(0)
+        await drain_pending(runner)  # a wrongly-sent refund would land here
         assert vmc.credit_escrow == 1.00
         assert [c.method for c in vmc.escrow_credits] == ["test"]
         assert len(client.refund_commands()) == 1  # no new refund
