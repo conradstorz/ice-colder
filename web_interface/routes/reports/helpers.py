@@ -2,7 +2,6 @@
 
 from datetime import datetime
 
-
 from services import reports as reports_service
 from web_interface import context
 
