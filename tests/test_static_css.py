@@ -81,9 +81,26 @@ def escape_for_css_selector(class_name: str) -> str:
     )
 
 
+# Classes that legitimately have no CSS rule of their own. Keep this short and
+# justified; a genuine Tailwind utility missing from app.css is a build defect,
+# never an allowlist entry.
+NO_CSS_CLASSES: frozenset[str] = frozenset()
+
+# Characters that may follow a class selector in Tailwind's minified output:
+# `.x{`, `.x:hover`, `.x,`, `.x `, `.x.y`, `.x[attr]`, `.x>`, `.x~`, `.x+`, `.x)`.
+_SELECTOR_BOUNDARY = r"(?=[{:,\s.\[>~+)]|$)"
+
+
 def class_is_covered(class_name: str, css_text: str) -> bool:
-    """True if `class_name`'s escaped selector form is a substring of `css_text`."""
-    return escape_for_css_selector(class_name) in css_text
+    """True if `css_text` has a real class selector for `class_name`.
+
+    Requires a leading `.` and a selector boundary after the escaped name, so
+    `flex` is not satisfied by `display:flex` and `p-2` not by `.p-20`.
+    """
+    pattern = (
+        r"\." + re.escape(escape_for_css_selector(class_name)) + _SELECTOR_BOUNDARY
+    )
+    return re.search(pattern, css_text) is not None
 
 
 def all_template_classes() -> dict[str, set[str]]:
@@ -115,7 +132,9 @@ def test_every_template_class_is_in_app_css():
     missing_by_template: dict[str, list[str]] = {}
     for template, classes in per_template.items():
         template_missing = sorted(
-            c for c in classes if not class_is_covered(c, css_text)
+            c
+            for c in classes
+            if c not in NO_CSS_CLASSES and not class_is_covered(c, css_text)
         )
         if template_missing:
             missing_by_template[template] = template_missing
@@ -134,6 +153,32 @@ def test_checker_reports_a_fabricated_class_as_missing():
     css_text = APP_CSS_PATH.read_text(encoding="utf-8")
     fake_class = "not-a-real-tailwind-class-xyz"
     assert not class_is_covered(fake_class, css_text)
+
+
+def test_short_class_not_satisfied_by_substring():
+    css = ".p-20{padding:5rem}.a{display:flex;border:0}"
+    assert not class_is_covered("flex", css)
+    assert not class_is_covered("p-2", css)
+    assert not class_is_covered("border", css)
+    assert class_is_covered("p-20", css)
+
+
+def test_class_selector_boundaries_are_found():
+    for css in (
+        ".flex{display:flex}",
+        ".flex:hover{x:y}",
+        ".a,.flex,.b{x:y}",
+        ".flex .b{x:y}",
+        ".flex.b{x:y}",
+        ".flex[x]{x:y}",
+        ".flex>.b{x:y}",
+        ".flex~.b{x:y}",
+        ".flex+.b{x:y}",
+        ":is(.flex){x:y}",
+        ".flex",
+    ):
+        assert class_is_covered("flex", css), css
+    assert class_is_covered("lg:grid-cols-4", ".lg\\:grid-cols-4{x:y}")
 
 
 def test_extractor_skips_only_jinja_fragments():
