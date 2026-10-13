@@ -29,8 +29,9 @@ from services.dispensers_doc import (
     render_example,
 )
 
-EXAMPLE_PATH = Path("dispensers.example.toml")
-CONFIG_EXAMPLE_PATH = Path("config.example.json")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+EXAMPLE_PATH = REPO_ROOT / "dispensers.example.toml"
+CONFIG_EXAMPLE_PATH = REPO_ROOT / "config.example.json"
 
 
 def test_example_is_byte_identical_to_generator():
