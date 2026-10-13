@@ -11,6 +11,7 @@ import ast
 from pathlib import Path
 
 import pytest
+import yaml
 
 import services.startup_dispensers as startup_dispensers
 from config.config_model import ConfigModel
@@ -149,12 +150,35 @@ def test_compose_sets_dispensers_env():
     """Only the `vmc` service wires ICE_COLDER_DISPENSERS -- the three
     simulators never read dispensers.toml (the VMC sends the whole slot
     profile in the dispense command, plan 2), so their copy of the env var
-    was vestigial. Assert it appears exactly once, inside the vmc service
-    block, rather than once per ICE_COLDER_CONFIG line."""
+    was vestigial. Assert it is set in the vmc service and absent from all
+    simulator services."""
     text = COMPOSE_PATH.read_text(encoding="utf-8")
-    dispensers_count = text.count("ICE_COLDER_DISPENSERS=/app/data/dispensers.toml")
-    assert dispensers_count == 1
+    data = yaml.safe_load(text)
 
-    assert "\n  sim-ice-maker:" in text
-    vmc_block = text.split("\n  sim-ice-maker:", 1)[0]
-    assert vmc_block.count("ICE_COLDER_DISPENSERS=/app/data/dispensers.toml") == 1
+    # Helper to check if an environment (list or dict) contains the dispensers var
+    def has_dispensers_var(env):
+        """Check if environment contains ICE_COLDER_DISPENSERS variable."""
+        if env is None:
+            return False
+        if isinstance(env, list):
+            return any(
+                "ICE_COLDER_DISPENSERS=/app/data/dispensers.toml" in item
+                for item in env
+            )
+        elif isinstance(env, dict):
+            return env.get("ICE_COLDER_DISPENSERS") == "/app/data/dispensers.toml"
+        return False
+
+    # Assert vmc service has it
+    vmc_env = data["services"]["vmc"].get("environment")
+    assert has_dispensers_var(vmc_env), (
+        "vmc service must have ICE_COLDER_DISPENSERS set"
+    )
+
+    # Assert simulators don't have it
+    simulator_services = ["sim-ice-maker", "sim-mdb", "sim-vending"]
+    for sim_name in simulator_services:
+        sim_env = data["services"][sim_name].get("environment")
+        assert not has_dispensers_var(sim_env), (
+            f"{sim_name} must not have ICE_COLDER_DISPENSERS set"
+        )
