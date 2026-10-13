@@ -2,7 +2,7 @@ import json
 import time
 from pathlib import Path
 
-from services.session_store import (
+from ice_edge.ledger.session_store import (
     SAVED_AT_FUTURE_SKEW_SECONDS,
     Credit,
     SessionSnapshot,

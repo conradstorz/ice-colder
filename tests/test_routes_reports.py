@@ -72,7 +72,7 @@ class TestReportsPeriodParameter:
         """The `client` fixture with a real EventRecorder wired in, so
         /reports renders the activity table (and reaches the period
         fallback logic) instead of the no-recorder placeholder."""
-        from services.event_recorder import EventRecorder
+        from ice_edge.ledger.event_recorder import EventRecorder
         from web_interface import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
@@ -117,7 +117,7 @@ class TestReportsRecorderOffloading:
     """asyncio.to_thread offloads get_summary and get_historical_average calls."""
 
     def test_reports_offloads_to_thread(self, client, tmp_path, monkeypatch):
-        from services.event_recorder import EventRecorder
+        from ice_edge.ledger.event_recorder import EventRecorder
         from web_interface import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
@@ -141,7 +141,7 @@ class TestReportsTableMarkup:
     """The activity table is wrapped in overflow-x: auto container."""
 
     def test_table_has_overflow_x_container(self, client, tmp_path):
-        from services.event_recorder import EventRecorder
+        from ice_edge.ledger.event_recorder import EventRecorder
         from web_interface import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))

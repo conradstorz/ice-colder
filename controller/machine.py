@@ -52,26 +52,26 @@ from loguru import logger
 
 from ice_common.config_model import ConfigModel
 from ice_contracts.board.vending_machine import FaultCode
-from controller import mqtt_inbound
+from ice_edge.hal import mqtt_inbound
 from controller.dispense_cycle import DispenseCycle
 from controller.dispenser_gate import DispenserProfileGate
-from controller.escrow_ledger import EscrowLedger
+from ice_edge.ledger.escrow_ledger import EscrowLedger
 from controller.fault_registry import FaultRegistry
 from controller.fault_service import FaultService
 from controller.maintenance_lease import MaintenanceHold, MaintenanceLease
 from controller.outputs import StatusOutputs
 from controller.refund_protocol import RefundProtocol
 from controller.sale_journal import SaleJournal
-from controller.session_recovery import SessionRecovery
+from ice_edge.ledger.session_recovery import SessionRecovery
 from ice_edge.supervisor.task_runner import TaskRunner
 from controller.test_sale import TestSaleRunner
 from controller.vmc import VMC
 from services.availability import Availability
 from services.dispensers import DispenserProfiles
-from services.display_controller import DisplayController
+from ice_edge.customer_ui.display_controller import DisplayController
 from services.health_monitor import HealthMonitor
 from services.inventory_manager import InventoryManager
-from services.session_store import SessionSnapshot, SessionStore
+from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
 
 # Bound logger for the transaction log -- mirrors controller/mqtt_inbound.py's
 # `ice_log`: loguru's bind() only

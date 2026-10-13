@@ -30,7 +30,7 @@ from controller.fault_registry import FaultRegistry
 from controller.fault_service import FaultService
 from controller.outputs import StatusOutputs
 from ice_contracts.board.mqtt_messages import VMCAlert
-from services.session_store import SessionSnapshot
+from ice_edge.ledger.session_store import SessionSnapshot
 from tests.fakes import (
     FakeAvailability,
     FakeHealth,

@@ -4,8 +4,8 @@ from loguru import logger
 
 from ice_contracts.board.vending_machine import FaultCode
 from controller.machine import Machine
-from services.event_recorder import EventRecorder
-from services import event_recorder as event_recorder_module
+from ice_edge.ledger.event_recorder import EventRecorder
+from ice_edge.ledger import event_recorder as event_recorder_module
 
 
 def reconcile_sales_journal_faults(machine: Machine, recorder: EventRecorder) -> None:

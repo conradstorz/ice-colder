@@ -22,7 +22,7 @@ from controller.dispense_cycle import DispenseCycle
 from controller.machine import Machine
 from controller.vmc import VMC
 from services.availability import Availability
-from services.command_dispatcher import CommandTimeout
+from ice_edge.hal.command_dispatcher import CommandTimeout
 from services.dispensers import DispenserProfiles
 from tests.dispenser_fixtures import profiles_for, render_profiles_toml
 from tests.fakes import FakeMqtt, FakeTaskRunner, drain_pending, vmc_with_profiles

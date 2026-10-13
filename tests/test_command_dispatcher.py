@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 import pytest
 
 from ice_contracts.board.common import CommandAck, SubsystemCommand
-from services.command_dispatcher import (
+from ice_edge.hal.command_dispatcher import (
     CommandDispatcher,
     CommandTimeout,
     CompletionTimeout,

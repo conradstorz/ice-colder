@@ -19,9 +19,9 @@ from ice_common.config_model import Product
 from ice_contracts.board.common import COMMAND_PARAM_VALIDATORS, CommandAck
 from ice_contracts.board.vending_machine import FaultCode
 from services.access import ROLE_PERMISSIONS, Role
-from services.command_dispatcher import CommandTimeout
+from ice_edge.hal.command_dispatcher import CommandTimeout
 from ice_edge.config.config_store import add_product
-from services.event_recorder import EventRecorder
+from ice_edge.ledger.event_recorder import EventRecorder
 from tests.dispenser_fixtures import profiles_for
 from web_interface import auth as web_auth
 from web_interface import context
@@ -1793,7 +1793,7 @@ class TestActuatorLeaseHeldForRealLifetime:
     async def test_svc102_and_runs_in_flight_stay_up_until_completion_signal(
         self, wired, tmp_path
     ):
-        from services.command_dispatcher import CommandDispatcher
+        from ice_edge.hal.command_dispatcher import CommandDispatcher
         from web_interface.routes.tests_level import _run_command
 
         _cfg, vmc, _inv, store = wired
@@ -1889,7 +1889,7 @@ class TestActuatorLeaseHeldForRealLifetime:
         longer completion timeout. Uses a real CommandDispatcher with a
         short ack timeout and zero retries so this runs in real time
         without waiting a real 10s."""
-        from services.command_dispatcher import CommandDispatcher, CommandTimeout
+        from ice_edge.hal.command_dispatcher import CommandDispatcher, CommandTimeout
 
         _cfg, vmc, _inv, store = wired
         principal = _direct_principal(store, store.owner())
@@ -1920,7 +1920,7 @@ class TestActuatorLeaseHeldForRealLifetime:
         accept ack IS completion, so runs_in_flight goes back to 0 and the
         lease can be released as soon as the single ack arrives -- no
         second wait, no behavioural change at all."""
-        from services.command_dispatcher import CommandDispatcher
+        from ice_edge.hal.command_dispatcher import CommandDispatcher
         from web_interface.routes.tests_level import _run_command
 
         _cfg, vmc, _inv, store = wired

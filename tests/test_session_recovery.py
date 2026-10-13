@@ -5,8 +5,8 @@ isolation from `VMC` -- no FSM, no MQTT, no health monitor. Uses a real
 `SessionSnapshot`s.
 """
 
-from controller.session_recovery import BootDecision, SessionRecovery
-from services.session_store import SessionSnapshot, SessionStore
+from ice_edge.ledger.session_recovery import BootDecision, SessionRecovery
+from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
 
 
 def make_recovery(store: SessionStore | None, *, pay104_active: bool = False):

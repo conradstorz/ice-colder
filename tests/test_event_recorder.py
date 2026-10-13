@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from services import event_recorder as event_recorder_module
-from services.event_recorder import EventRecorder, is_cash
+from ice_edge.ledger import event_recorder as event_recorder_module
+from ice_edge.ledger.event_recorder import EventRecorder, is_cash
 
 
 @pytest.fixture

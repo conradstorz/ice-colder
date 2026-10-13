@@ -22,7 +22,7 @@ from typing import Literal
 
 from loguru import logger
 
-from services.session_store import SessionSnapshot, SessionStore
+from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
 
 BootDecisionKind = Literal["discard_test", "uncertain", "closed", "none"]
 

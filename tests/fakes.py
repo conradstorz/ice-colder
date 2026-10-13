@@ -42,7 +42,7 @@ from ice_common.config_model import ConfigModel, PhysicalDetails, Product
 from controller.machine import Machine
 from ice_edge.supervisor.task_runner import TaskRunner
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
-from services.session_store import SessionSnapshot
+from ice_edge.ledger.session_store import SessionSnapshot
 
 
 @dataclass

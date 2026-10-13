@@ -41,7 +41,7 @@ import pytest
 
 from ice_common.config_model import ConfigModel
 from services import report_scheduler
-from services.event_recorder import EventRecorder
+from ice_edge.ledger.event_recorder import EventRecorder
 
 # A fixed, deterministic offset -- not the machine's own timezone -- so every
 # assertion below is independent of whatever system runs the suite. Mirrors

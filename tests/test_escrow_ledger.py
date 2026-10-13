@@ -1,7 +1,7 @@
 """Unit tests for controller.escrow_ledger.EscrowLedger -- ledger only, no VMC."""
 
-from controller.escrow_ledger import EscrowLedger
-from services.session_store import Credit
+from ice_edge.ledger.escrow_ledger import EscrowLedger
+from ice_edge.ledger.session_store import Credit
 
 
 def test_deposit_updates_total_and_credits():

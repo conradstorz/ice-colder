@@ -28,9 +28,9 @@ from ice_contracts.board.vending_machine import DispenserOutcome, FaultCode
 from controller.dispense_cycle import DispenseCycle, DispenseReport
 from controller.outputs import StatusOutputs
 from controller.sale_context import SaleContext
-from services.command_dispatcher import CommandTimeout
-from services.event_recorder import SaleRecordingFailed
-from services.session_store import SessionSnapshot
+from ice_edge.hal.command_dispatcher import CommandTimeout
+from ice_edge.ledger.event_recorder import SaleRecordingFailed
+from ice_edge.ledger.session_store import SessionSnapshot
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
 from tests.fakes import FakeTaskRunner
 

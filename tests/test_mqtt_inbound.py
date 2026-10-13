@@ -8,7 +8,7 @@ real VMC attributes and that the registered topic set hasn't changed.
 """
 
 from ice_contracts.board.ice_maker_monitor import CONTRACT_VERSION
-from controller.mqtt_inbound import SUBSCRIPTIONS, TelemetryRouter
+from ice_edge.hal.mqtt_inbound import SUBSCRIPTIONS, TelemetryRouter
 
 
 class FakeHealth:

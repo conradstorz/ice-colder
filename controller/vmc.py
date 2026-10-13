@@ -16,10 +16,10 @@ from ice_contracts.board.vending_machine import (
 from ice_common.config_model import ConfigModel, Product
 from services.availability import Availability
 from services.inventory_manager import InventoryManager
-from services.session_store import SessionSnapshot
+from ice_edge.ledger.session_store import SessionSnapshot
 from controller.dispense_cycle import DispenseCycle, DispenseReport
 from controller.fault_service import FaultService
-from controller.escrow_ledger import EscrowLedger
+from ice_edge.ledger.escrow_ledger import EscrowLedger
 from controller.outputs import StatusOutputs
 from controller.refund_protocol import PendingRefund, RefundProtocol
 from controller.sale_context import SaleContext

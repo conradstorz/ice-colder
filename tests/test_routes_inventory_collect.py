@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from services.access import Role
-from services.event_recorder import EventRecorder
+from ice_edge.ledger.event_recorder import EventRecorder
 from web_interface import context
 from web_interface.server import app
 
@@ -470,7 +470,7 @@ class TestConcurrentCollectionsShowOwnRow:
         _seed_sales(recorder_with_db, [{"cash_coin": 7.25}])
 
         frozen_ts = time.time()
-        monkeypatch.setattr("services.event_recorder.time.time", lambda: frozen_ts)
+        monkeypatch.setattr("ice_edge.ledger.event_recorder.time.time", lambda: frozen_ts)
 
         owner_client = login_as(Role.owner)
         secretary_client = login_as(Role.secretary)

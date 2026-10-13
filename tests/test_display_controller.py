@@ -8,7 +8,7 @@ import pytest
 
 from ice_common.config_model import ConfigModel
 from controller.machine import Machine
-from services.display_controller import DisplayController
+from ice_edge.customer_ui.display_controller import DisplayController
 from ice_contracts.board.mqtt_messages import DisplayMode
 from tests.fakes import settle
 

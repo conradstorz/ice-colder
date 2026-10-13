@@ -49,10 +49,10 @@ from ice_contracts.board.vending_machine import (
 from controller.dispenser_gate import DispenserProfileGate
 from controller.fault_service import FaultService
 from ice_edge.supervisor.task_runner import TaskRunner
-from services.command_dispatcher import CommandTimeout
-from services.event_recorder import SaleRecordingFailed
+from ice_edge.hal.command_dispatcher import CommandTimeout
+from ice_edge.ledger.event_recorder import SaleRecordingFailed
 from ice_contracts.board.mqtt_messages import DispenseCommand
-from services.session_store import SessionSnapshot
+from ice_edge.ledger.session_store import SessionSnapshot
 
 if TYPE_CHECKING:
     from controller.outputs import StatusOutputs

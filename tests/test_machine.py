@@ -15,9 +15,9 @@ import asyncio
 from ice_common.config_model import ConfigModel, PhysicalDetails, Product
 from ice_contracts.board.vending_machine import FaultCode
 from controller.machine import Machine
-from controller.mqtt_inbound import SUBSCRIPTIONS
+from ice_edge.hal.mqtt_inbound import SUBSCRIPTIONS
 from controller.vmc import VMC
-from services.session_store import SessionSnapshot
+from ice_edge.ledger.session_store import SessionSnapshot
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
 from tests.fakes import FakeAvailability, FakeTaskRunner
 

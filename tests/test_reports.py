@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from services import reports
-from services.event_recorder import EventRecorder
+from ice_edge.ledger.event_recorder import EventRecorder
 
 # A fixed, DST-free offset -- deliberately not the machine's own timezone, so
 # bucket-boundary assignment is proven independent of whatever system the
@@ -996,7 +996,7 @@ class TestCollections:
         # explicit `ts` param so this does not depend on wall-clock luck.
         recorder.record_sale("A", "Alpha", 1, 1.00, {"cash": 1.00}, ts=frozen_ts - 10)
 
-        monkeypatch.setattr("services.event_recorder.time.time", lambda: frozen_ts)
+        monkeypatch.setattr("ice_edge.ledger.event_recorder.time.time", lambda: frozen_ts)
         recorder.record_cash_collection("alice", "Alice")  # id=1
         recorder.record_cash_collection("bob", "Bob")  # id=2, the true newest
         recorder.flush()

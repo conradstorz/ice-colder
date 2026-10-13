@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from ice_common.config_model import ConfigModel
 from ice_contracts.board.vending_machine import FaultCode
 from services.access import ROLE_PERMISSIONS, AccessStore, Permission, Role, User
-from services.display_controller import DisplayController
+from ice_edge.customer_ui.display_controller import DisplayController
 from tests.conftest import make_client, sign_in
 from tests.paths import REPO_ROOT, SCREEN_TEMPLATES, TEMPLATES_DIR
 from tests.dom_utils import (
@@ -669,7 +669,7 @@ class TestKpiEndpoint:
         assert "text/html" in response.headers["content-type"]
 
     def test_kpi_with_recorder(self, client, tmp_path):
-        from services.event_recorder import EventRecorder
+        from ice_edge.ledger.event_recorder import EventRecorder
         from web_interface import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
@@ -694,7 +694,7 @@ class TestEventRecorderCallsOffloaded:
     stalled by a synchronous SELECT."""
 
     def test_status_offloads_get_summary_to_thread(self, client, tmp_path, monkeypatch):
-        from services.event_recorder import EventRecorder
+        from ice_edge.ledger.event_recorder import EventRecorder
         from web_interface import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
@@ -715,7 +715,7 @@ class TestEventRecorderCallsOffloaded:
     def test_kpi_offloads_summary_and_average_to_thread(
         self, client, tmp_path, monkeypatch
     ):
-        from services.event_recorder import EventRecorder
+        from ice_edge.ledger.event_recorder import EventRecorder
         from web_interface import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
@@ -756,7 +756,7 @@ class TestStatusHealthSignal:
         assert "text-base font-semibold" not in response.text
 
     def test_status_with_recorder_no_errors(self, client, tmp_path):
-        from services.event_recorder import EventRecorder
+        from ice_edge.ledger.event_recorder import EventRecorder
         from web_interface import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
@@ -766,7 +766,7 @@ class TestStatusHealthSignal:
         assert "All Systems OK" in response.text
 
     def test_status_with_recorder_has_errors(self, client, tmp_path):
-        from services.event_recorder import EventRecorder
+        from ice_edge.ledger.event_recorder import EventRecorder
         from web_interface import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
@@ -902,7 +902,7 @@ class TestFaultsUI:
     # ::test_locked_badge_shown_on_list_and_detail.
 
     def test_kpi_shows_failed_vends(self, client, tmp_path):
-        from services.event_recorder import EventRecorder
+        from ice_edge.ledger.event_recorder import EventRecorder
 
         rec = EventRecorder(db_path=str(tmp_path / "events.db"))
         rec.record("vend_failed", value=2.5, metadata={"code": "ICE-301"})
@@ -916,7 +916,7 @@ class TestFaultsUI:
         tests/test_routes_reports.py never asserts on the table's actual
         cell content (only its overflow-x-auto wrapper and that a <table>
         exists), so this specific content check has no duplicate."""
-        from services.event_recorder import EventRecorder
+        from ice_edge.ledger.event_recorder import EventRecorder
 
         rec = EventRecorder(db_path=str(tmp_path / "events.db"))
         rec.record("vend_failed", value=2.5)

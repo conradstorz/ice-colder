@@ -34,7 +34,7 @@ import time
 from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Optional
 
-from services.event_recorder import _HEARTBEAT_INTERVAL, is_cash
+from ice_edge.ledger.event_recorder import _HEARTBEAT_INTERVAL, is_cash
 
 __all__ = [
     "is_cash",

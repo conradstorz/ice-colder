@@ -69,12 +69,12 @@ parses `controller/vmc.py` with `ast` (so a `TYPE_CHECKING`-guarded import
 is caught exactly like an ordinary one -- the VMC must not even *name*
 these types) and fails if it imports `controller.machine`,
 `controller.maintenance_lease`, `controller.test_sale`,
-`ice_common.mqtt_client`, `services.health_monitor`, `services.session_store`,
-`services.event_recorder`, `services.command_dispatcher`, or
-`services.display_controller`. One deliberate carve-out: `VMC.snapshot()`
-constructs and returns a `services.session_store.SessionSnapshot` -- a
+`ice_common.mqtt_client`, `services.health_monitor`, `ice_edge.ledger.session_store`,
+`ice_edge.ledger.event_recorder`, `ice_edge.hal.command_dispatcher`, or
+`ice_edge.customer_ui.display_controller`. One deliberate carve-out: `VMC.snapshot()`
+constructs and returns a `ice_edge.ledger.session_store.SessionSnapshot` -- a
 plain value object, not a transport/service handle -- so importing exactly
-that one name from `services.session_store` is allowed; importing anything
+that one name from `ice_edge.ledger.session_store` is allowed; importing anything
 else from it (`SessionStore` itself, say) is not.
 `test_only_machine_imports_controller_machine` parses every other
 `controller/*.py` module and fails if any of them import `controller.machine`
@@ -131,17 +131,17 @@ FORBIDDEN_VMC_IMPORTS = {
     "controller.test_sale",
     "ice_common.mqtt_client",
     "services.health_monitor",
-    "services.session_store",
-    "services.event_recorder",
-    "services.command_dispatcher",
-    "services.display_controller",
+    "ice_edge.ledger.session_store",
+    "ice_edge.ledger.event_recorder",
+    "ice_edge.hal.command_dispatcher",
+    "ice_edge.customer_ui.display_controller",
 }
 
 #: Per forbidden module, the names `from <module> import <name>` may still
 #: import -- a value object, never a service handle. Any module not listed
 #: here is fully forbidden: no name may be imported from it at all.
 ALLOWED_NAMES_FROM_FORBIDDEN_MODULE = {
-    "services.session_store": {"SessionSnapshot"},
+    "ice_edge.ledger.session_store": {"SessionSnapshot"},
 }
 
 
@@ -282,9 +282,9 @@ def _find_forbidden_imports(tree: ast.AST) -> list[str]:
     `test_only_machine_imports_controller_machine` catches `from controller
     import machine` below -- a `from <package> import <name>` whose
     `f"{package}.{name}"` names a forbidden module, which `ast` never
-    surfaces as a single dotted `module` string (e.g. `from services
-    import session_store`, which names forbidden `services.session_store`
-    without ever setting `module == "services.session_store"`)."""
+    surfaces as a single dotted `module` string (e.g. `from ice_edge.ledger
+    import session_store`, which names forbidden `ice_edge.ledger.session_store`
+    without ever setting `module == "ice_edge.ledger.session_store"`)."""
     violations = []
     for module, names in _iter_imports(tree):
         if module in FORBIDDEN_VMC_IMPORTS:
@@ -320,19 +320,19 @@ def test_vmc_has_no_forbidden_imports():
 
 
 def test_forbidden_import_check_catches_package_submodule_form():
-    """Negative self-test for `_find_forbidden_imports`: `from services
+    """Negative self-test for `_find_forbidden_imports`: `from ice_edge.ledger
     import session_store` and `from controller import maintenance_lease`
     name forbidden modules via the `from <package> import <name>` form,
     not as a single dotted `module` string -- without the package-form
     check in `_find_forbidden_imports`, both slip past undetected."""
     tree = ast.parse(
-        "from services import session_store\nfrom controller import maintenance_lease\n"
+        "from ice_edge.ledger import session_store\nfrom controller import maintenance_lease\n"
     )
 
     violations = _find_forbidden_imports(tree)
 
     assert violations == [
-        "from services import session_store",
+        "from ice_edge.ledger import session_store",
         "from controller import maintenance_lease",
     ]
 

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from loguru import logger
 
-from services.session_store import Credit
+from ice_edge.ledger.session_store import Credit
 
 
 class EscrowLedger:
