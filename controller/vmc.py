@@ -755,11 +755,11 @@ class VMC:
     # bypasses both (`_fail_vend`, `_expire_session`: reset_state only fires from `error`).
     def _transition(
         self,
-        sources: frozenset[str] | None,
+        source: str | None,
         dest: str,
         before: Callable[[], None],
     ) -> None:
-        if sources is not None and self.state not in sources:
+        if source is not None and self.state != source:
             raise InvalidTransition(f"{dest!r} is not reachable from {self.state!r}")
         before()
         self.state = dest
@@ -773,28 +773,24 @@ class VMC:
         self.state = state
 
     def start_interaction(self) -> None:
-        self._transition(
-            frozenset({"idle"}), "interacting_with_user", self.on_start_interaction
-        )
+        self._transition("idle", "interacting_with_user", self.on_start_interaction)
 
     def dispense_product(self) -> None:
         self._transition(
-            frozenset({"interacting_with_user"}), "dispensing", self.on_dispense_product
+            "interacting_with_user", "dispensing", self.on_dispense_product
         )
 
     def complete_transaction(self) -> None:
         # Price was already deducted from escrow; leftover credit keeps the customer.
         dest = "interacting_with_user" if self.has_credit() else "idle"
-        self._transition(frozenset({"dispensing"}), dest, self.on_complete_transaction)
+        self._transition("dispensing", dest, self.on_complete_transaction)
 
     def cancel_sale(self) -> None:
-        self._transition(
-            frozenset({"interacting_with_user"}), "idle", self.on_cancel_sale
-        )
+        self._transition("interacting_with_user", "idle", self.on_cancel_sale)
 
     def vend_failed(self, *, code: FaultCode, outcome: str) -> None:
         self._transition(
-            frozenset({"dispensing"}),
+            "dispensing",
             "interacting_with_user",
             lambda: self.on_vend_failed(code, outcome),
         )
@@ -804,7 +800,7 @@ class VMC:
         self._transition(None, "error", self.on_error)
 
     def reset_state(self) -> None:
-        self._transition(frozenset({"error"}), "idle", self.on_reset)
+        self._transition("error", "idle", self.on_reset)
 
     # --- FSM Callback Methods ---
     def _after_state_change(self):

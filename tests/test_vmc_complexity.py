@@ -12,10 +12,10 @@ from pathlib import Path
 VMC_PATH = Path(__file__).resolve().parent.parent / "controller" / "vmc.py"
 
 # Budgets. Lower them when a stage lands; never raise them.
-CLASS_CODE_LINES = (
-    715  # raised from 683: trigger methods moved the table into the class
-)
-FILE_LINES = 1455
+# Stage 3 moved the FSM table into the class (the only sanctioned upward move);
+# it goes down from here.
+CLASS_CODE_LINES = 711
+FILE_LINES = 1451
 LARGEST_METHOD_CODE_LINES = 56
 
 
