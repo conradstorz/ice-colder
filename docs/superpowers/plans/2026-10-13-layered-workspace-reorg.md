@@ -369,7 +369,7 @@ Two edits make the target layering satisfiable before anything moves. No behavio
 **Files:** Modify `services/mqtt_messages.py:18,208`, `services/mqtt_client.py:186,204`, `controller/fault_service.py:54`, `controller/dispense_cycle.py:50-51`, `controller/mqtt_inbound.py:41` (and its `HealthMonitor` import), `controller/outputs.py:38`, `services/notifier.py` (`Alert` import). Test: `tests/test_mqtt_messages_validation.py`.
 
 **Interfaces:**
-- **`mqtt_messages` stops importing `build_info`.** `VMCOnline.firmware` loses its `default_factory` and becomes a required `str`. `mqtt_client.py` passes `firmware=BUILD_INFO.commit_short` at both construction sites. `VMCOnline` is in no generated schema (`git grep -n VMCOnline docs/contracts` is empty), so no contract version bump is needed.
+- **`mqtt_messages` stops importing `build_info`.** `VMCStatus.version` loses its `default_factory` and becomes a required `str`. `controller/outputs.py`, its only production construction site, passes `version=BUILD_INFO.commit_short`. `VMCStatus` is in no generated schema, so no contract version bump is needed. (As executed: an earlier draft of this plan named `VMCOnline.firmware`, which does not exist.)
 - **Annotation-only cross-layer imports move under `if TYPE_CHECKING:`,** with `from __future__ import annotations` added where missing. The list was verified on 2026-10-13: every non-import mention of these names is in a docstring or an annotation.
   - `fault_service` → `StatusOutputs`
   - `dispense_cycle` → `StatusOutputs`, `SaleContext`
@@ -377,7 +377,7 @@ Two edits make the target layering satisfiable before anything moves. No behavio
   - `outputs` → `Availability`
   - `notifier` → `Alert`
 
-- [ ] **Step 1: Write the failing test:** `VMCOnline(online=True)` raises `ValidationError`, and `services.mqtt_messages` has no attribute `BUILD_INFO`.
+- [ ] **Step 1: Write the failing test:** `VMCStatus(state="idle")` raises `ValidationError`, and `services.mqtt_messages` has no attribute `BUILD_INFO`.
 - [ ] **Step 2:** Run it → FAIL.
 - [ ] **Step 3:** Make the edits.
 - [ ] **Step 4:** `uv run pytest -q` → all pass; `uv run python -c "import controller.machine"` → exit 0.
