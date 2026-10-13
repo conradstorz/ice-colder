@@ -29,6 +29,7 @@ from simulators.vending_machine import VendingMachineSimulator
 from tests.dispenser_fixtures import GOOD, ICE, WATER
 from tests.fakes import patch_module_sleep, settle
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 _REAL_SLEEP = asyncio.sleep  # captured before any test patches asyncio.sleep
 
@@ -1309,9 +1310,11 @@ class TestExampleToml:
             contract_version="1.0.0",
             channels=VendingMachineSimulator.CHANNELS,
         )
-        raw = json.loads(Path("config.example.json").read_text(encoding="utf-8"))
+        raw = json.loads(
+            (REPO_ROOT / "config.example.json").read_text(encoding="utf-8")
+        )
         config = ConfigModel.model_validate(raw)
-        text = Path("dispensers.example.toml").read_text(encoding="utf-8")
+        text = (REPO_ROOT / "dispensers.example.toml").read_text(encoding="utf-8")
 
         report = validate_document(text, config.products, capabilities=caps)
 

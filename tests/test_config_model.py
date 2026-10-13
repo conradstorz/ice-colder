@@ -17,6 +17,8 @@ from config.config_model import (
     ReportsConfig,
 )
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 def test_default_config_model():
     """ConfigModel can be constructed with all defaults."""
@@ -189,9 +191,10 @@ class TestDispenseTimeout:
 
     def test_example_config_declares_it(self):
         import json
-        from pathlib import Path
 
-        raw = json.loads(Path("config.example.json").read_text(encoding="utf-8"))
+        raw = json.loads(
+            (REPO_ROOT / "config.example.json").read_text(encoding="utf-8")
+        )
         assert raw["physical"]["dispense_timeout_seconds"] == 120
 
 
@@ -248,7 +251,9 @@ class TestReportsConfig:
         assert ReportsConfig(weekday=6).weekday == 6
 
     def test_config_missing_reports_key_loads_with_defaults(self):
-        raw = json.loads(Path("config.example.json").read_text(encoding="utf-8"))
+        raw = json.loads(
+            (REPO_ROOT / "config.example.json").read_text(encoding="utf-8")
+        )
         assert "reports" not in raw
         cfg = ConfigModel.model_validate(raw)
         assert cfg.reports == ReportsConfig()

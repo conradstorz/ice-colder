@@ -16,7 +16,8 @@ import services.startup_dispensers as startup_dispensers
 from config.config_model import ConfigModel
 from services.dispensers import DispenserProfiles
 
-COMPOSE_PATH = Path("docker-compose.yml")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+COMPOSE_PATH = REPO_ROOT / "docker-compose.yml"
 
 
 def test_startup_loads_and_logs_report(tmp_path, monkeypatch, caplog):
@@ -111,7 +112,7 @@ def test_main_calls_wire_dispenser_profiles_after_set_health_monitor():
     partially): `main()` must pass the very name it assigned from
     `load_dispenser_profiles(...)` to `wire_dispenser_profiles(machine, ...)`,
     and that call must come after `machine.set_health_monitor(...)`."""
-    tree = ast.parse(Path("main.py").read_text(encoding="utf-8"))
+    tree = ast.parse((REPO_ROOT / "main.py").read_text(encoding="utf-8"))
     main_fn = next(
         n
         for n in ast.walk(tree)
