@@ -79,11 +79,21 @@ def test_evaluate_at_boot_uncertain_leaves_the_file(tmp_path):
     store.save(snap)
     recovery = make_recovery(store)
 
+    # Capture the file content before evaluate_at_boot
+    file_path = tmp_path / "session.json"
+    bytes_before = file_path.read_bytes()
+    snapshot_before = store.load()
+
     decision = recovery.evaluate_at_boot()
 
+    # Verify the decision is correct
     assert decision.kind == "uncertain"
     assert decision.snapshot == snap
-    assert store.load() is not None
+
+    # Verify the file is unchanged (both content and loaded snapshot)
+    bytes_after = file_path.read_bytes()
+    assert bytes_before == bytes_after, "Raw file bytes should be unchanged"
+    assert store.load() == snapshot_before, "Loaded snapshot should be unchanged"
 
 
 # --- pending_sale_for_recovery ---
