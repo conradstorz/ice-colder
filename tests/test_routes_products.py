@@ -12,7 +12,23 @@ import pytest
 
 from controller.dispenser_gate import DispenserProfileGate
 from services.access import Role
+from services import config_store
 from web_interface import context
+
+
+def _state(cfg, inv):
+    """Everything a rejected product POST must leave untouched: the product
+    list, the inventory counts, and the saved config.json bytes (None when
+    nothing has been written)."""
+    saved = config_store.CONFIG_PATH
+    return (
+        [
+            (p.sku, p.name, p.price, p.slot, p.kind, inv.get_count(p.sku))
+            for p in cfg.products
+        ],
+        inv.get_all(),
+        saved.read_bytes() if saved.exists() else None,
+    )
 
 
 def _add(client, sku, name="Item", price="1.00", **extra):
@@ -143,9 +159,11 @@ class TestCatalogGating:
 
     @pytest.mark.parametrize("role", [Role.tech, Role.loader])
     def test_catalog_post_403_for_placement_only_roles(self, login_as, wired, role):
+        cfg, _vmc, inv, _store = wired
         owner = login_as(Role.owner)
         _add(owner, f"POSTGATE-{role.value}", name="Item", price="1.00")
         worker = login_as(role)
+        before = _state(cfg, inv)
         resp = worker.post(
             f"/products/POSTGATE-{role.value}/catalog",
             data={"name": "Hacked", "price": "0.01", "kind": "other"},
@@ -155,6 +173,7 @@ class TestCatalogGating:
             p for p in context.config.products if p.sku == f"POSTGATE-{role.value}"
         )
         assert product.name == "Item"
+        assert _state(cfg, inv) == before
 
 
 class TestPlacementGating:
@@ -458,9 +477,11 @@ class TestCreateCopyDelete:
         assert "DEL-1" not in inv.get_all()
 
     def test_create_copy_delete_403_for_loader(self, login_as, wired):
+        cfg, _vmc, inv, _store = wired
         owner = login_as(Role.owner)
         _add(owner, "SRC-3", name="Source Three", price="1.00")
         loader = login_as(Role.loader)
+        before = _state(cfg, inv)
 
         resp = loader.post(
             "/products/new", data={"sku": "LOADER-NEW", "name": "X", "price": "1.00"}
@@ -472,6 +493,7 @@ class TestCreateCopyDelete:
 
         resp = loader.post("/products/SRC-3/delete")
         assert resp.status_code == 403
+        assert _state(cfg, inv) == before
 
 
 class TestUnknownSku:
@@ -519,7 +541,9 @@ class TestCsrfGuard:
         ],
     )
     def test_post_without_hx_request_is_403(self, client, wired, path):
+        cfg, _vmc, inv, _store = wired
         _add(client, "HTMX-1", name="Item", price="1.00")
+        before = _state(cfg, inv)
         resp = client.post(
             path,
             headers={"HX-Request": ""},
@@ -534,6 +558,10 @@ class TestCsrfGuard:
         )
         assert resp.status_code == 403
         assert "HTMX" in resp.text
+        # Rejected before any handler ran: HTMX-1 is intact, no new product
+        # exists, and config.json is byte-identical.
+        assert _state(cfg, inv) == before
+        assert any(p.sku == "HTMX-1" for p in cfg.products)
 
 
 class TestCatalogChangedCalled:
