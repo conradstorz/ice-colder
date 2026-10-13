@@ -11,8 +11,7 @@
   of the VMC-private waiter/path instance attributes it used to keep.
 
 Drives real sales (through dispenser profiles and a `FakeDispatcher`,
-mirroring `tests/test_vmc_dispense_profiles.py`'s own `_vmc_with_profiles`
-helper) rather than a stub, so the settled notification is proven against
+via `tests.fakes.vmc_with_profiles`) rather than a stub, so the settled notification is proven against
 the real `on_dispenser_event`/`on_dispense_failed` call sites.
 """
 
@@ -20,55 +19,21 @@ import asyncio
 
 import pytest
 
-from config.config_model import ConfigModel, PhysicalDetails, Product
+from config.config_model import Product
 from contracts.vending_machine import FaultCode
-from controller.machine import Machine
-from tests.dispenser_fixtures import FakeDispatcher, profiles_for
-from tests.fakes import FakeTaskRunner
+from tests.fakes import FakeMqtt, FakeTaskRunner, drain_pending, vmc_with_profiles
 
 ICE_1 = Product(sku="ICE-1", slot=0, kind="ice")
 WATER_1 = Product(sku="WATER-1", slot=1, kind="water")
 
 
-class FakeMQTT:
-    """Minimal MQTT client for `Machine.set_mqtt_client` -- `register` is
-    a no-op (the real client's subscription hook, called once per entry
-    in `controller/mqtt_inbound.py`'s `SUBSCRIPTIONS` table; `tests.fakes.
-    FakeMqtt` has no `register` at all, so it cannot stand in for a full
-    `Machine` wiring, only for lower-level collaborator tests) and
-    `publish` records every call, mirroring
-    `tests/test_vmc_dispense_profiles.py`'s own local `FakeMQTT`."""
-
-    def __init__(self):
-        self.published: list[tuple[str, object]] = []
-
-    def register(self, *a, **k):
-        pass
-
-    async def publish(self, topic, payload, **kwargs):
-        self.published.append((topic, payload))
-
-
 def _vmc_with_profiles(tmp_path, products=(ICE_1, WATER_1)):
-    """A `Machine`/`VMC` wired for a real dispatch: loaded dispenser
-    profiles, a `FakeDispatcher`, a `FakeMqtt`, and a `FakeTaskRunner` (so
-    `dispense_timeout`/`process_payment` can be fired by label, exactly
-    like the `vmc_fake_time`/`machine_fake_time` fixtures in
-    `tests/conftest.py`) -- mirrors
-    `tests/test_vmc_dispense_profiles.py`'s own `_vmc_with_profiles`,
-    copied here per the task brief rather than inventing a new fixture,
-    since that file's generic fixtures carry no products/profiles of
-    their own."""
-    cfg = ConfigModel(physical=PhysicalDetails(products=list(products)))
+    """`tests.fakes.vmc_with_profiles` plus a `FakeTaskRunner` (so
+    `dispense_timeout`/`process_payment` can be fired by label) and a
+    `FakeMqtt` attached."""
     runner = FakeTaskRunner()
-    machine = Machine(config=cfg, tasks=runner)
-    vmc = machine.vmc
-    machine.attach_to_loop(asyncio.get_running_loop())
-    profiles = profiles_for(list(products), tmp_path)
-    machine.set_dispenser_profiles(profiles)
-    dispatcher = FakeDispatcher()
-    machine.set_command_dispatcher(dispatcher)
-    client = FakeMQTT()
+    machine, vmc, dispatcher = vmc_with_profiles(tmp_path, products, tasks=runner)
+    client = FakeMqtt()
     machine.set_mqtt_client(client)
     return machine, vmc, dispatcher, client, runner
 
@@ -99,7 +64,6 @@ async def test_state_change_observer_sees_every_transition_in_order(tmp_path):
     runner.fire("process_payment")  # interacting_with_user -> dispensing
 
     assert seen == ["interacting_with_user", "dispensing"]
-    machine.cancel_pending_tasks()
 
 
 async def test_state_change_observer_stops_after_unsubscribe(tmp_path):
@@ -118,7 +82,6 @@ async def test_state_change_observer_stops_after_unsubscribe(tmp_path):
     assert vmc.state == "dispensing"
     # The transition happened -- it is simply no longer observed.
     assert seen == ["interacting_with_user"]
-    machine.cancel_pending_tasks()
 
 
 async def test_state_change_observer_raising_does_not_block_the_next(tmp_path):
@@ -136,7 +99,6 @@ async def test_state_change_observer_raising_does_not_block_the_next(tmp_path):
     vmc.select_product(0)
 
     assert seen == ["interacting_with_user"]
-    machine.cancel_pending_tasks()
 
 
 # --- subscribe_sale_settled ---
@@ -158,7 +120,6 @@ async def test_sale_settled_observer_fires_once_with_dispensed_on_complete(tmp_p
     assert outcome == "dispensed"
     assert fault_code is None
     assert sale.product is product
-    machine.cancel_pending_tasks()
 
 
 async def test_sale_settled_observer_fires_once_with_vend_failed_code_on_jam(
@@ -179,7 +140,6 @@ async def test_sale_settled_observer_fires_once_with_vend_failed_code_on_jam(
     assert outcome == "vend_failed"
     assert fault_code == "ICE-401"
     assert sale.product is product
-    machine.cancel_pending_tasks()
 
 
 async def test_sale_settled_observer_fires_once_with_timeout_on_dispense_timeout(
@@ -194,13 +154,13 @@ async def test_sale_settled_observer_fires_once_with_timeout_on_dispense_timeout
 
     runner.fire("dispense_timeout")
     await asyncio.sleep(0)  # on_dispense_failed runs via fire_and_forget
+    await drain_pending(runner)  # "exactly once": no second firing may follow
 
     assert len(calls) == 1
     sale, outcome, fault_code = calls[0]
     assert outcome == "timeout"
     assert fault_code is None
     assert sale.product is product
-    machine.cancel_pending_tasks()
 
 
 async def test_sale_settled_observer_raising_does_not_block_the_next(tmp_path):
@@ -220,7 +180,6 @@ async def test_sale_settled_observer_raising_does_not_block_the_next(tmp_path):
     )
 
     assert len(calls) == 1
-    machine.cancel_pending_tasks()
 
 
 async def test_sale_settled_observer_never_fires_on_cancel_sale_or_reset(tmp_path):
@@ -250,7 +209,6 @@ async def test_sale_settled_observer_never_fires_on_cancel_sale_or_reset(tmp_pat
     vmc.reset_state()
     assert vmc.state == "idle"
     assert calls == []
-    machine.cancel_pending_tasks()
 
 
 # --- begin_test_sale / end_test_sale / find_product ---
@@ -264,7 +222,6 @@ async def test_find_product_returns_index_and_product_by_identity(tmp_path):
     assert product is vmc.products[1]
 
     assert vmc.find_product("NO-SUCH-SKU") == (None, None)
-    machine.cancel_pending_tasks()
 
 
 async def test_begin_test_sale_refuses_second_call_while_active(tmp_path):
@@ -280,7 +237,6 @@ async def test_begin_test_sale_refuses_second_call_while_active(tmp_path):
     # The refused call must not have perturbed the first call's state.
     assert vmc.selected_product is product
     assert vmc.sale is not None and vmc.sale.is_test is True
-    machine.cancel_pending_tasks()
 
 
 async def test_begin_test_sale_returns_false_for_locked_sku(tmp_path):
@@ -302,7 +258,6 @@ async def test_begin_test_sale_returns_false_for_locked_sku(tmp_path):
 
     vmc.end_test_sale()
     assert vmc.selected_product is None
-    machine.cancel_pending_tasks()
 
 
 async def test_begin_test_sale_clears_flag_and_sale_and_escrow_when_select_product_raises(
@@ -330,7 +285,6 @@ async def test_begin_test_sale_clears_flag_and_sale_and_escrow_when_select_produ
     assert vmc.test_sale_in_progress is False
     assert vmc.sale is None
     assert vmc.credit_escrow == 0.0
-    machine.cancel_pending_tasks()
 
 
 async def test_end_test_sale_clears_context_when_not_dispensing(tmp_path):
@@ -345,7 +299,6 @@ async def test_end_test_sale_clears_context_when_not_dispensing(tmp_path):
     assert vmc.sale is None
     assert vmc.test_sale_in_progress is False
     assert vmc.credit_escrow == 0.0
-    machine.cancel_pending_tasks()
 
 
 async def test_end_test_sale_leaves_context_while_still_dispensing(tmp_path):
@@ -362,7 +315,6 @@ async def test_end_test_sale_leaves_context_while_still_dispensing(tmp_path):
     assert vmc.sale is not None
     assert vmc.sale.is_test is True
     assert vmc.test_sale_in_progress is False
-    machine.cancel_pending_tasks()
 
 
 # --- _fail_vend's unconditional test-credit clear (decision 3) ---
@@ -388,4 +340,3 @@ async def test_failed_test_vend_leaves_escrow_at_zero_with_no_refund_published(
 
     vmc.end_test_sale()
     assert vmc.test_sale_in_progress is False
-    machine.cancel_pending_tasks()

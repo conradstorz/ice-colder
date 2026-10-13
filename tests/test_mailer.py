@@ -1,7 +1,8 @@
 """Tests for services/mailer.py."""
 
+import threading
 from email.message import EmailMessage
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -58,14 +59,22 @@ async def test_send_email_swallows_failures_and_returns_false(gateway, caplog):
 
 async def test_send_email_never_blocks_the_loop(gateway):
     """The blocking send must go through an executor, not run inline."""
-    calls = []
+    loop_thread_id = threading.get_ident()
+    send_thread_id = None
 
     def fake_send(cfg, msg):
-        calls.append(MagicMock())
+        nonlocal send_thread_id
+        send_thread_id = threading.get_ident()
 
     with patch("services.mailer.smtp_send", side_effect=fake_send):
         assert await send_email(gateway, "a@b.c", "s", "b") is True
-    assert len(calls) == 1
+
+    # Verify the send ran in a different thread (the executor thread pool)
+    assert send_thread_id is not None, "fake_send was never called"
+    assert send_thread_id != loop_thread_id, (
+        f"send ran on the event loop thread ({loop_thread_id}), "
+        f"not in an executor thread ({send_thread_id})"
+    )
 
 
 async def test_send_email_without_attachments_remains_single_part(gateway):

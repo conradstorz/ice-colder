@@ -953,38 +953,12 @@ class TestCredentials:
             monkeypatch.delenv(k, raising=False)
         assert ESP32Simulator.credentials_from(ConfigModel()) == (None, None)
 
-    async def test_run_passes_credentials_to_client(self, monkeypatch):
-        import simulators.base as base
-
-        captured = {}
-
-        class FakeClient:
-            def __init__(self, *a, **kw):
-                captured.update(kw)
-
-            async def __aenter__(self):
-                raise base.aiomqtt.MqttError("stop")
-
-            async def __aexit__(self, *exc):
-                return False
-
-        monkeypatch.setattr(base.aiomqtt, "Client", FakeClient)
-        sim = ConcreteSimulator(username="u", password="p")
-        task = asyncio.create_task(sim.run())
-        await settle()
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
-        assert captured["username"] == "u" and captured["password"] == "p"
-
 
 class TestSimulatorProtocolVersion:
     """Simulators must negotiate the same MQTT version the VMC does."""
 
     @staticmethod
-    async def _connect_kwargs(monkeypatch, cfg) -> dict:
+    async def _connect_kwargs(monkeypatch, cfg=None, **sim_kwargs) -> dict:
         import simulators.base as base
 
         captured: dict = {}
@@ -1000,15 +974,21 @@ class TestSimulatorProtocolVersion:
                 return False
 
         monkeypatch.setattr(base.aiomqtt, "Client", FakeClient)
-        sim = ConcreteSimulator(config=cfg)
+        sim = ConcreteSimulator(config=cfg, **sim_kwargs)
         task = asyncio.create_task(sim.run())
         await settle()
         task.cancel()
-        try:
+        # run() loops forever (reconnecting); the only way out is our cancel().
+        # Anything else it raises is a real bug and must fail the test.
+        with pytest.raises(asyncio.CancelledError):
             await task
-        except (asyncio.CancelledError, Exception):
-            pass
         return captured
+
+    async def test_run_passes_credentials_to_client(self, monkeypatch):
+        captured = await self._connect_kwargs(
+            monkeypatch, ConfigModel(), username="u", password="p"
+        )
+        assert captured["username"] == "u" and captured["password"] == "p"
 
     async def test_defaults_to_v5(self, monkeypatch):
         captured = await self._connect_kwargs(monkeypatch, ConfigModel())

@@ -146,6 +146,16 @@ def _sales_rows(db_path):
         ).fetchall()
 
 
+def _assert_evidence_intact(pay104):
+    """A refused recovery action must leave every piece of PAY-104 crash
+    evidence untouched: snapshot file, active fault, pending-sale accessor,
+    and the sales table."""
+    assert pay104["session_path"].exists()
+    assert "PAY-104" in {f["code"] for f in pay104["vmc"].active_faults()}
+    assert pay104["machine"].pending_sale_for_recovery() is not None
+    assert _sales_rows(pay104["db_path"]) == []
+
+
 class TestFaultsListRendersPendingSale:
     def test_sku_price_and_method_shares_render(self, pay104, login_as):
         client = login_as(Role.tech)
@@ -337,7 +347,7 @@ class TestRecordSale:
         )
         resp = client.post("/health/faults/PAY-104/record-sale")
         assert resp.status_code == 403
-        assert _sales_rows(pay104["db_path"]) == []
+        _assert_evidence_intact(pay104)
 
     @pytest.mark.parametrize("role", [Role.owner, Role.tech])
     def test_200_for_role_with_clear_faults(self, pay104, login_as, role):
@@ -353,7 +363,7 @@ class TestRecordSale:
             "/health/faults/PAY-104/record-sale", headers={"HX-Request": ""}
         )
         assert resp.status_code == 403
-        assert _sales_rows(pay104["db_path"]) == []
+        _assert_evidence_intact(pay104)
 
 
 class TestDiscard:
@@ -417,6 +427,7 @@ class TestDiscard:
         client = login_as(role)
         resp = client.post("/health/faults/PAY-104/discard")
         assert resp.status_code == 403
+        _assert_evidence_intact(pay104)
 
     @pytest.mark.parametrize("role", [Role.owner, Role.tech])
     def test_200_for_role_with_clear_faults(self, pay104, login_as, role):
@@ -430,8 +441,7 @@ class TestDiscard:
         client = login_as(Role.tech)
         resp = client.post("/health/faults/PAY-104/discard", headers={"HX-Request": ""})
         assert resp.status_code == 403
-        vmc = pay104["vmc"]
-        assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+        _assert_evidence_intact(pay104)
 
 
 class TestRecordSaleExactlyOnce:
@@ -462,8 +472,12 @@ class TestRecordSaleExactlyOnce:
         never lets the second request's `pending_sale_for_recovery()`
         check run until the first request has fully finished (write +
         clear) inside the lock, so `record_sale` is only ever entered
-        once, the rendezvous wait times out harmlessly, and exactly one
-        row is written.
+        once (asserted via the arrival count, since the idempotent SQL
+        insert would yield one row even without the lock), the rendezvous
+        wait times out harmlessly, and exactly one row is written. The
+        bounded wait is kept: it is what makes the unfixed code reliably
+        reach two arrivals, and no public observable exists to await
+        instead.
         """
         vmc = pay104["vmc"]
         machine = pay104["machine"]
@@ -507,19 +521,23 @@ class TestRecordSaleExactlyOnce:
                 async_client.post("/health/faults/PAY-104/record-sale"),
             )
 
-        # The row count is the finding this test exists to prove -- assert
-        # it first, so an unfixed run fails on the duplicate itself rather
-        # than on a downstream symptom (e.g. the loser of the clear_fault
-        # race getting a 500 because the other request already cleared
-        # the fault out from under it).
+        # The arrival count is what actually guards `_pay104_lock`:
+        # record_sale(..., idempotent=True) dedupes on (ts, sku) in SQL, so
+        # the row count is 1 even with the lock removed. With the lock, the
+        # second request finds nothing pending and never reaches
+        # record_sale (n == 1); without it both race past the check (n == 2).
+        # Asserted first so an unfixed run fails on the race itself rather
+        # than on a downstream symptom (e.g. a 500 for the loser of the
+        # clear_fault race).
+        assert arrivals["n"] == 1, (
+            f"expected exactly one request to reach record_sale, "
+            f"got {arrivals['n']} (the _pay104_lock did not serialize them)"
+        )
         rows = _sales_rows(pay104["db_path"])
         assert len(rows) == 1, (
             f"expected exactly one sale row from two concurrent requests, "
             f"got {len(rows)}"
         )
-        # arrivals["n"] may be 1 (fixed: lock serialized the two requests,
-        # the second found nothing pending and never called record_sale)
-        # or 2 (unfixed: both raced past the check and both wrote).
 
         for resp in responses:
             assert resp.status_code == 200

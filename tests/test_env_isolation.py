@@ -1,0 +1,31 @@
+"""The autouse fixture must shield tests from host-exported config env vars."""
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def test_exported_config_env_does_not_redirect_saves(tmp_path):
+    sentinel = tmp_path / "sentinel" / "config.json"
+    sentinel.parent.mkdir()
+    env = dict(os.environ, ICE_COLDER_CONFIG=str(sentinel))
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            str(ROOT / "tests" / "_env_isolation_probe.py"),
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not sentinel.exists()

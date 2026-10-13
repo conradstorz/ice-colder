@@ -36,8 +36,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
+from config.config_model import ConfigModel, PhysicalDetails, Product
+from controller.machine import Machine
 from controller.task_runner import TaskRunner
+from tests.dispenser_fixtures import FakeDispatcher, profiles_for
 from services.session_store import SessionSnapshot
 
 
@@ -173,12 +177,32 @@ async def settle(turns: int = 3) -> None:
         await asyncio.sleep(0)
 
 
+async def drain_pending(runner: FakeTaskRunner) -> None:
+    """Await every fire-and-forget task `runner` has launched (including any
+    they spawn in turn) until none is live. Use before a NEGATIVE assertion
+    ("no refund published", "no vend_failed row") so it cannot pass merely
+    because the work has not run yet -- a single `sleep(0)` only proves the
+    work got one loop turn. Never use on a task that is gated on something the
+    test has not released yet: it would wait for it forever."""
+    while True:
+        live = [t for t in runner.pending if not t.done()]
+        if not live:
+            return
+        await asyncio.gather(*live, return_exceptions=True)
+
+
 class FakeMqtt:
-    """Records every publish() call; `register` is accepted and ignored
-    since neither `StatusOutputs` nor `FaultService` ever calls it."""
+    """Records every publish() call as `(topic, payload, retain)`.
+    `register` is accepted and ignored: `StatusOutputs`/`FaultService`
+    never call it, but `Machine.set_mqtt_client` calls it once per
+    `SUBSCRIPTIONS` entry, so this fake can stand in for a full `Machine`
+    wiring too."""
 
     def __init__(self):
         self.published: list[tuple[str, object, bool]] = []
+
+    def register(self, *a, **k):
+        pass
 
     async def publish(self, topic, payload, qos=1, retain=False):
         self.published.append((topic, payload, retain))
@@ -268,3 +292,51 @@ class FakeAvailability:
 
     def set_transaction_certain(self, certain: bool) -> None:
         self.transaction_certain.append(certain)
+
+
+class _AsyncioWithSleep:
+    """Stand-in for the `asyncio` module that overrides only `sleep`."""
+
+    def __init__(self, sleep):
+        self.sleep = sleep
+
+    def __getattr__(self, name):
+        import asyncio
+
+        return getattr(asyncio, name)
+
+
+def patch_module_sleep(module_name: str, sleep):
+    """Patch `sleep` as seen by ONE module, leaving `asyncio.sleep` intact.
+
+    `patch("asyncio.sleep", ...)` mutates the shared asyncio module, so it
+    would also replace sleep for pytest-asyncio and the loop's own helpers.
+    Instead, rebind the module's own `asyncio` global to a proxy that
+    delegates everything but `sleep`. Use as a context manager.
+    """
+    from unittest.mock import patch
+
+    return patch(f"{module_name}.asyncio", new=_AsyncioWithSleep(sleep))
+
+
+def vmc_with_profiles(
+    tmp_path: Path,
+    products: tuple[Product, ...] | list[Product] = (),
+    *,
+    tasks: TaskRunner | None = None,
+):
+    """A `Machine`/`VMC` wired for a real dispatch: *products* in the
+    config, loaded dispenser profiles written under *tmp_path*, and a
+    `FakeDispatcher` attached -- the minimum wiring a production sale needs
+    to actually dispatch. Pass `tasks` (e.g. `FakeTaskRunner()`) for a test
+    that fires a timer by label instead of waiting on a real one. Returns
+    `(machine, vmc, dispatcher)`; must be called with a running loop."""
+    cfg = ConfigModel(physical=PhysicalDetails(products=list(products)))
+    machine = Machine(config=cfg, tasks=tasks)
+    vmc = machine.vmc
+    machine.attach_to_loop(asyncio.get_running_loop())
+    profiles = profiles_for(list(products), tmp_path)
+    machine.set_dispenser_profiles(profiles)
+    dispatcher = FakeDispatcher()
+    machine.set_command_dispatcher(dispatcher)
+    return machine, vmc, dispatcher

@@ -7,15 +7,18 @@ dispensers path mirrors `load_config`'s own directory-exit behaviour.
 the VMC and the routes module.
 """
 
+import ast
 from pathlib import Path
 
 import pytest
+import yaml
 
 import services.startup_dispensers as startup_dispensers
 from config.config_model import ConfigModel
 from services.dispensers import DispenserProfiles
 
-COMPOSE_PATH = Path("docker-compose.yml")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+COMPOSE_PATH = REPO_ROOT / "docker-compose.yml"
 
 
 def test_startup_loads_and_logs_report(tmp_path, monkeypatch, caplog):
@@ -86,47 +89,96 @@ def test_fixture_provides_two_profiles(dispenser_profiles):
     assert dispenser_profiles.profile_for_slot(2).mechanism == "water_fill"
 
 
-def test_main_wires_profiles_into_vmc_and_routes(monkeypatch):
-    """`main()` hands the loaded `DispenserProfiles` to both the `Machine`
-    and the routes module, right after `machine.set_health_monitor(health)`
-    -- via `wire_dispenser_profiles(machine, profiles)`, extracted out of
-    `main()` since `main()` itself is an infinite event loop wrapped in
-    `@logger.catch()` and cannot be exercised partially in a test.
-    `main()`'s own behaviour is unchanged: this helper is just the same
-    two calls `main()` makes, moved so they can be tested without an
-    event loop. This test proves one load reaches both consumers with
-    the SAME object.
-    """
+def test_wire_dispenser_profiles_reaches_machine_gate_and_routes():
+    """One load reaches both consumers with the SAME object, through a real
+    `Machine` (nothing on the Machine side is mocked): the public
+    `machine.gate.profiles` read and the routes-side `context` handle."""
     from controller.machine import Machine
-    from web_interface import routes
-
-    machine_calls = []
-    routes_calls = []
-    monkeypatch.setattr(
-        Machine, "set_dispenser_profiles", lambda self, p: machine_calls.append(p)
-    )
-    monkeypatch.setattr(routes, "set_dispenser_profiles", routes_calls.append)
+    from web_interface import context, routes
 
     cfg = ConfigModel()
     machine = Machine(config=cfg)
     sentinel = DispenserProfiles(cfg)
+    assert machine.gate.profiles is None
 
     startup_dispensers.wire_dispenser_profiles(machine, sentinel)
 
-    assert machine_calls == [sentinel]
-    assert routes_calls == [sentinel]
+    assert machine.gate.profiles is sentinel
+    assert context.dispenser_profiles is sentinel
+    assert routes.context.dispenser_profiles is sentinel
+
+
+def test_main_calls_wire_dispenser_profiles_after_set_health_monitor():
+    """Structural guard (`main()` is an infinite event loop and cannot be run
+    partially): `main()` must pass the very name it assigned from
+    `load_dispenser_profiles(...)` to `wire_dispenser_profiles(machine, ...)`,
+    and that call must come after `machine.set_health_monitor(...)`."""
+    tree = ast.parse((REPO_ROOT / "main.py").read_text(encoding="utf-8"))
+    main_fn = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "main"
+    )
+
+    def callee(call):
+        f = call.func
+        return f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
+
+    loaded_names = [
+        t.id
+        for n in ast.walk(main_fn)
+        if isinstance(n, ast.Assign)
+        and isinstance(n.value, ast.Call)
+        and callee(n.value) == "load_dispenser_profiles"
+        for t in n.targets
+        if isinstance(t, ast.Name)
+    ]
+    assert len(loaded_names) == 1, "main() must assign load_dispenser_profiles(...)"
+
+    calls = [n for n in ast.walk(main_fn) if isinstance(n, ast.Call)]
+    wires = [c for c in calls if callee(c) == "wire_dispenser_profiles"]
+    assert len(wires) == 1, "main() must call wire_dispenser_profiles exactly once"
+    wire = wires[0]
+    assert [getattr(a, "id", None) for a in wire.args] == ["machine", loaded_names[0]]
+
+    health_lines = [c.lineno for c in calls if callee(c) == "set_health_monitor"]
+    assert health_lines, "main() no longer calls set_health_monitor"
+    assert wire.lineno > max(health_lines)
 
 
 def test_compose_sets_dispensers_env():
     """Only the `vmc` service wires ICE_COLDER_DISPENSERS -- the three
     simulators never read dispensers.toml (the VMC sends the whole slot
     profile in the dispense command, plan 2), so their copy of the env var
-    was vestigial. Assert it appears exactly once, inside the vmc service
-    block, rather than once per ICE_COLDER_CONFIG line."""
+    was vestigial. Assert it is set in the vmc service and absent from all
+    simulator services."""
     text = COMPOSE_PATH.read_text(encoding="utf-8")
-    dispensers_count = text.count("ICE_COLDER_DISPENSERS=/app/data/dispensers.toml")
-    assert dispensers_count == 1
+    data = yaml.safe_load(text)
 
-    assert "\n  sim-ice-maker:" in text
-    vmc_block = text.split("\n  sim-ice-maker:", 1)[0]
-    assert vmc_block.count("ICE_COLDER_DISPENSERS=/app/data/dispensers.toml") == 1
+    # Helper to check if an environment (list or dict) contains the dispensers var
+    def has_dispensers_var(env):
+        """Check if environment contains ICE_COLDER_DISPENSERS variable."""
+        if env is None:
+            return False
+        if isinstance(env, list):
+            return any(
+                "ICE_COLDER_DISPENSERS=/app/data/dispensers.toml" in item
+                for item in env
+            )
+        elif isinstance(env, dict):
+            return env.get("ICE_COLDER_DISPENSERS") == "/app/data/dispensers.toml"
+        return False
+
+    # Assert vmc service has it
+    vmc_env = data["services"]["vmc"].get("environment")
+    assert has_dispensers_var(vmc_env), (
+        "vmc service must have ICE_COLDER_DISPENSERS set"
+    )
+
+    # Assert simulators don't have it
+    simulator_services = ["sim-ice-maker", "sim-mdb", "sim-vending"]
+    for sim_name in simulator_services:
+        sim_env = data["services"][sim_name].get("environment")
+        assert not has_dispensers_var(sim_env), (
+            f"{sim_name} must not have ICE_COLDER_DISPENSERS set"
+        )

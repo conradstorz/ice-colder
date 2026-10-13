@@ -18,7 +18,7 @@ import pytest
 from config.config_model import Product
 from contracts.common import COMMAND_PARAM_VALIDATORS, CommandAck
 from contracts.vending_machine import FaultCode
-from services.access import ROLE_PERMISSIONS, Permission, Role
+from services.access import ROLE_PERMISSIONS, Role
 from services.command_dispatcher import CommandTimeout
 from services.config_store import add_product
 from services.event_recorder import EventRecorder
@@ -41,6 +41,11 @@ from web_interface.routes.tests_level import testable_commands as compute_testab
 # also matches "test*" for imported names), which fails at collection with
 # "fixture 'subsystem' not found". Confirmed by reproducing it during
 # development of this file.
+
+# Hard-coded on purpose (not derived from ROLE_PERMISSIONS, which would make
+# these matrices tautological): run_tests is held by exactly owner and tech,
+# as pinned by tests/test_access.py's TestPermissionTable.
+RUN_TESTS_ROLES = frozenset({Role.owner, Role.tech})
 
 _TESTS_GET_ROUTES = ["/tests", "/tests/log", "/tests/vending"]
 
@@ -188,7 +193,7 @@ class TestPermissionGates:
     def test_matrix(self, login_as, path, role):
         client = login_as(role)
         resp = client.get(path)
-        if Permission.run_tests in ROLE_PERMISSIONS[role]:
+        if role in RUN_TESTS_ROLES:
             assert resp.status_code == 200, (role, path, resp.status_code)
         else:
             assert resp.status_code == 403, (role, path, resp.status_code)
@@ -445,6 +450,7 @@ class TestStandby:
         loader_client = login_as(Role.loader)
         assert loader_client.get("/tests/standby/confirm").status_code == 403
         assert loader_client.post("/tests/standby").status_code == 403
+        assert context.machine_instance.maintenance_hold is None
 
 
 # --- Contract match -------------------------------------------------
@@ -795,27 +801,40 @@ class TestAllowlistSecurityBoundary:
     check -- all 3 passed again.
     """
 
-    def test_post_refund_directly_is_403(self, client, wire_subsystem):
+    def test_post_refund_directly_is_403(self, client, wire_subsystem, wire_dispatcher):
         # "refund" advertised on purpose -- proves the allowlist refuses
         # it even when the capabilities doc claims to support it.
         wire_subsystem("vending", ["ping", "refund"])
+        dispatcher = wire_dispatcher(FakeAckDispatcher())
         resp = client.post("/tests/vending/refund")
         assert resp.status_code == 403
+        assert context.machine_instance.maintenance_hold is None
+        assert dispatcher.calls == []
 
-    def test_post_payment_enable_directly_is_403(self, client, wire_subsystem):
+    def test_post_payment_enable_directly_is_403(
+        self, client, wire_subsystem, wire_dispatcher
+    ):
         # A command name containing "/" -- POST /tests/vending/payment/enable
         # must REACH this handler (via {command:path}) and be refused by
         # the allowlist, not 404 before the security check ever runs.
         wire_subsystem("vending", ["ping", "payment/enable"])
+        dispatcher = wire_dispatcher(FakeAckDispatcher())
         resp = client.post("/tests/vending/payment/enable")
         assert resp.status_code == 403
+        assert context.machine_instance.maintenance_hold is None
+        assert dispatcher.calls == []
 
-    def test_allowlisted_but_unadvertised_is_403(self, client, wire_subsystem):
+    def test_allowlisted_but_unadvertised_is_403(
+        self, client, wire_subsystem, wire_dispatcher
+    ):
         # "dispense" IS in TESTABLE_COMMANDS["vending"] -- but this
         # subsystem advertises only "ping", so the intersection is empty.
         wire_subsystem("vending", ["ping"])
+        dispatcher = wire_dispatcher(FakeAckDispatcher())
         resp = client.post("/tests/vending/dispense", data={"slot": "0"})
         assert resp.status_code == 403
+        assert context.machine_instance.maintenance_hold is None
+        assert dispatcher.calls == []
 
 
 # --- Permission gates on every POST action route -------------------------
@@ -855,7 +874,7 @@ class TestPostPermissionMatrix:
     def test_matrix(self, login_as, path, form, role):
         client = login_as(role)
         resp = client.post(path, data=form)
-        if Permission.run_tests in ROLE_PERMISSIONS[role]:
+        if role in RUN_TESTS_ROLES:
             assert resp.status_code == 200, (role, path, resp.status_code)
         else:
             assert resp.status_code == 403, (role, path, resp.status_code)
@@ -873,7 +892,7 @@ class TestCommandRunAndSalePermissionGates:
         wire_subsystem("mdb", ["ping"])
         client = login_as(role)
         resp = client.post("/tests/mdb/ping")
-        if Permission.run_tests in ROLE_PERMISSIONS[role]:
+        if role in RUN_TESTS_ROLES:
             assert resp.status_code == 200, (role, resp.status_code)
         else:
             assert resp.status_code == 403, (role, resp.status_code)
@@ -889,7 +908,7 @@ class TestCommandRunAndSalePermissionGates:
         vmc.raise_fault(FaultCode.ICE_101, sku="ICE-1")
         client = login_as(role)
         resp = client.post("/tests/sale", data={"sku": "ICE-1"})
-        if Permission.run_tests in ROLE_PERMISSIONS[role]:
+        if role in RUN_TESTS_ROLES:
             assert resp.status_code == 200, (role, resp.status_code)
         else:
             assert resp.status_code == 403, (role, resp.status_code)
@@ -897,18 +916,47 @@ class TestCommandRunAndSalePermissionGates:
 
 class TestPostRequiresHtmx:
     """require_htmx (web_interface/context.py) is the CSRF guard shared by
-    every mutating route in this app (this module's own docstring). One
-    representative action route proves it is wired on this level's POSTs
-    too.
+    every mutating route in this app (this module's own docstring). Every
+    POST route of this level is exercised below.
 
     Mutation proof: removed `Depends(context.require_htmx)` from POST
-    /tests/end's dependencies. test_post_without_hx_header_is_403 failed
-    (200 != 403). Restored -- passed again.
+    /tests/end's dependencies. test_post_without_hx_header_is_403[/tests/end]
+    failed (200 != 403). Restored -- passed again. Parametrized over every
+    POST route in the package, so dropping the guard from any one of them
+    fails that route's case.
     """
 
-    def test_post_without_hx_header_is_403(self, client, wired):
-        resp = client.post("/tests/end", headers={"HX-Request": "false"})
-        assert resp.status_code == 403
+    @pytest.mark.parametrize(
+        "path,form",
+        [
+            ("/tests/sale", {"sku": "ICE-1"}),
+            ("/tests/run-all", {}),
+            ("/tests/standby", {}),
+            ("/tests/end", {}),
+            ("/tests/takeover", {}),
+            ("/tests/runs/some-run/verdict", {"verdict": "pass"}),
+            ("/tests/mdb/ping", {}),
+        ],
+    )
+    def test_post_without_hx_header_is_403(
+        self, client, wired, wire_subsystem, wire_dispatcher, path, form
+    ):
+        # Owner holds run_tests, so a 403 can only be the CSRF guard. The
+        # fixture client sends HX-Request: true by default; delete it so the
+        # header is truly absent (not just "false"/empty).
+        wire_subsystem("mdb", ["ping"])
+        dispatcher = wire_dispatcher(FakeAckDispatcher())
+        cfg, vmc, _inv, _store = wired
+        add_product(cfg, "ICE-1", "Ice Bag", 2.50, slot=0)
+        # Locked out so that, were the guard missing, /tests/sale would refuse
+        # synchronously instead of hanging on a dispense that never completes.
+        vmc.raise_fault(FaultCode.ICE_101, sku="ICE-1")
+        del client.headers["HX-Request"]
+        assert "HX-Request" not in client.headers
+        resp = client.post(path, data=form)
+        assert resp.status_code == 403, (path, resp.status_code)
+        assert context.machine_instance.maintenance_hold is None
+        assert dispatcher.calls == []
 
 
 # --- The maintenance lease: a run TAKES it, viewing never does ----------

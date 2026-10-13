@@ -27,8 +27,9 @@ from services.dispensers import validate_document
 from services.mqtt_messages import DispenseCommand
 from simulators.vending_machine import VendingMachineSimulator
 from tests.dispenser_fixtures import GOOD, ICE, WATER
-from tests.fakes import settle
+from tests.fakes import patch_module_sleep, settle
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 _REAL_SLEEP = asyncio.sleep  # captured before any test patches asyncio.sleep
 
@@ -370,7 +371,7 @@ class TestZeroProducts:
             if len(sleep_calls) >= 3:
                 raise asyncio.CancelledError
 
-        with patch("asyncio.sleep", new=fake_sleep):
+        with patch_module_sleep("simulators.vending_machine", fake_sleep):
             with pytest.raises(asyncio.CancelledError):
                 await sim._customer_loop(client)
 
@@ -390,7 +391,7 @@ class TestZeroProducts:
             if len(sleep_calls) >= 5:
                 raise asyncio.CancelledError
 
-        with patch("asyncio.sleep", new=fake_sleep):
+        with patch_module_sleep("simulators.vending_machine", fake_sleep):
             with patch("simulators.vending_machine.logger") as mock_logger:
                 with pytest.raises(asyncio.CancelledError):
                     await sim._customer_loop(client)
@@ -424,7 +425,7 @@ class TestZeroProducts:
             if len(sleep_calls) >= 2:
                 raise asyncio.CancelledError
 
-        with patch("asyncio.sleep", new=fake_sleep):
+        with patch_module_sleep("simulators.vending_machine", fake_sleep):
             with pytest.raises(asyncio.CancelledError):
                 await sim._customer_loop(client)
 
@@ -1309,9 +1310,11 @@ class TestExampleToml:
             contract_version="1.0.0",
             channels=VendingMachineSimulator.CHANNELS,
         )
-        raw = json.loads(Path("config.example.json").read_text(encoding="utf-8"))
+        raw = json.loads(
+            (REPO_ROOT / "config.example.json").read_text(encoding="utf-8")
+        )
         config = ConfigModel.model_validate(raw)
-        text = Path("dispensers.example.toml").read_text(encoding="utf-8")
+        text = (REPO_ROOT / "dispensers.example.toml").read_text(encoding="utf-8")
 
         report = validate_document(text, config.products, capabilities=caps)
 
@@ -1345,7 +1348,7 @@ class TestWaterValveCommand:
         client = AsyncMock()
         sim.publish = AsyncMock()
         cmd = _make_command("water_valve", {"seconds": 1})
-        with patch("simulators.vending_machine.asyncio.sleep", new=AsyncMock()):
+        with patch_module_sleep("simulators.vending_machine", AsyncMock()):
             await sim.handle_command(client, cmd)
 
             ack = sim.publish.await_args_list[-1].args[2]
@@ -1365,7 +1368,7 @@ class TestWaterValveCommand:
         client = AsyncMock()
         sim.publish = AsyncMock()
         cmd = _make_command("water_valve", {"seconds": 10})
-        with patch("simulators.vending_machine.asyncio.sleep", new=AsyncMock()):
+        with patch_module_sleep("simulators.vending_machine", AsyncMock()):
             await sim.handle_command(client, cmd)
 
             ack = sim.publish.await_args_list[-1].args[2]

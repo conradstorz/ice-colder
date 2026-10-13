@@ -11,6 +11,7 @@ always CFG-101 like a product with no table at all).
 """
 
 import asyncio
+import logging
 
 import pytest
 
@@ -23,8 +24,8 @@ from controller.vmc import VMC
 from services.availability import Availability
 from services.command_dispatcher import CommandTimeout
 from services.dispensers import DispenserProfiles
-from tests.dispenser_fixtures import FakeDispatcher, profiles_for, render_profiles_toml
-from tests.fakes import FakeTaskRunner
+from tests.dispenser_fixtures import profiles_for, render_profiles_toml
+from tests.fakes import FakeMqtt, FakeTaskRunner, drain_pending, vmc_with_profiles
 
 ICE_1 = Product(sku="ICE-1", slot=0, kind="ice")
 WATER_1 = Product(sku="W-1", slot=1, kind="water")
@@ -349,20 +350,7 @@ class FakeEventRecorder:
 
 
 def _vmc_with_profiles(tmp_path, products=(ICE_1, WATER_1), *, tasks=None):
-    """A VMC wired exactly like `make_vmc()` but with a loaded
-    `DispenserProfiles` for *products* and a `FakeDispatcher` attached --
-    the minimum wiring a production sale needs to actually dispatch. Pass
-    `tasks` (e.g. `tests.fakes.FakeTaskRunner()`) for a test that fires a
-    timer by label instead of waiting on a real one."""
-    cfg = ConfigModel(physical=PhysicalDetails(products=list(products)))
-    machine = Machine(config=cfg, tasks=tasks)
-    vmc = machine.vmc
-    machine.attach_to_loop(asyncio.get_running_loop())
-    profiles = profiles_for(list(products), tmp_path)
-    machine.set_dispenser_profiles(profiles)
-    dispatcher = FakeDispatcher()
-    machine.set_command_dispatcher(dispatcher)
-    return machine, vmc, dispatcher
+    return vmc_with_profiles(tmp_path, products, tasks=tasks)
 
 
 def _start_sale(vmc, product) -> None:
@@ -376,16 +364,8 @@ def _start_sale(vmc, product) -> None:
 async def test_sale_dispatches_full_profile_on_command_channel(tmp_path):
     machine, vmc, dispatcher = _vmc_with_profiles(tmp_path)
 
-    published: list[tuple[str, object]] = []
-
-    class FakeMQTT:
-        def register(self, *a, **k):
-            pass
-
-        async def publish(self, topic, payload, **kwargs):
-            published.append((topic, payload))
-
-    machine.set_mqtt_client(FakeMQTT())
+    client = FakeMqtt()
+    machine.set_mqtt_client(client)
     _start_sale(vmc, vmc.products[0])  # ICE-1, bagged_ice
 
     await asyncio.sleep(0)
@@ -400,8 +380,7 @@ async def test_sale_dispatches_full_profile_on_command_channel(tmp_path):
     # (cmd_dispatcher.send -> cmd/vending/dispense under the hood) -- the
     # VMC must never also publish it directly on a bare "cmd/dispense"
     # topic via the MQTT client.
-    assert not any(topic == "cmd/dispense" for topic, _ in published)
-    machine.cancel_pending_tasks()
+    assert not any(topic == "cmd/dispense" for topic, *_ in client.published)
 
 
 async def test_no_ack_fails_vend_immediately_with_pay102(tmp_path):
@@ -423,7 +402,6 @@ async def test_no_ack_fails_vend_immediately_with_pay102(tmp_path):
     # used throughout tests/test_vmc_flows.py.
     assert any(e[0] == "vend_failed" and e[2]["code"] == "PAY-102" for e in rec.events)
     assert not any(c.label == "dispense_timeout" for c in machine.tasks.scheduled)
-    machine.cancel_pending_tasks()
 
 
 async def test_rejected_ack_fails_vend(tmp_path):
@@ -445,7 +423,6 @@ async def test_rejected_ack_fails_vend(tmp_path):
     assert vmc.state == "interacting_with_user"
     assert vmc.credit_escrow == price
     assert any(e[0] == "vend_failed" and e[2]["code"] == "PAY-102" for e in rec.events)
-    machine.cancel_pending_tasks()
 
 
 # --- Copilot review (PR #32) finding C2: request_id is known up front,
@@ -471,7 +448,6 @@ async def test_request_id_is_known_before_the_ack_arrives(tmp_path):
 
     gate.set()
     await asyncio.sleep(0)
-    machine.cancel_pending_tasks()
 
 
 async def test_stale_report_with_other_request_id_is_ignored(tmp_path, caplog):
@@ -480,22 +456,36 @@ async def test_stale_report_with_other_request_id_is_ignored(tmp_path, caplog):
     must be ignored outright -- logged and returned from, never
     processed -- rather than completing or failing the current sale."""
     machine, vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    rec = FakeEventRecorder()
+    machine.set_event_recorder(rec)
     product = vmc.products[1]  # W-1, currently dispensing
     _start_sale(vmc, product)
     await asyncio.sleep(0)
+    in_flight_id = vmc.sale.request_id
+    assert in_flight_id is not None
+    stale_id = "some-other-sale-s-request-id"
 
     await vmc.on_dispenser_event(
         "hardware/dispenser",
-        {
-            "slot": product.slot,
-            "state": "complete",
-            "request_id": "some-other-sale-s-request-id",
-        },
+        {"slot": product.slot, "state": "complete", "request_id": stale_id},
     )
 
-    assert vmc.state == "dispensing"  # the current sale is untouched
-    assert any("request_id" in r.message for r in caplog.records)
-    machine.cancel_pending_tasks()
+    # Behaviour: the current sale is untouched -- still dispensing with the
+    # same id, nothing recorded, no fault raised, no refund started.
+    assert vmc.state == "dispensing"
+    assert vmc.sale is not None and vmc.sale.request_id == in_flight_id
+    assert rec.sales == []
+    assert not vmc.faults.lockouts and not vmc.faults.machine_faults
+    assert not vmc.refunds.pending
+    # The one observable of "classified as ignored": a warning naming both
+    # the stale id and the in-flight id.
+    assert any(
+        r.levelno == logging.WARNING
+        and "Ignoring dispenser report" in r.message
+        and repr(stale_id) in r.message
+        and repr(in_flight_id) in r.message
+        for r in caplog.records
+    )
 
 
 async def test_report_before_ack_completes_sale(tmp_path):
@@ -503,7 +493,8 @@ async def test_report_before_ack_completes_sale(tmp_path):
     report that wins the race against the dispatcher's own ack must
     still complete the sale correctly -- and the ack, once it does
     arrive, must cause no error and no double completion."""
-    machine, vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    runner = FakeTaskRunner()
+    machine, vmc, dispatcher = _vmc_with_profiles(tmp_path, tasks=runner)
     rec = FakeEventRecorder()
     machine.set_event_recorder(rec)
     gate = asyncio.Event()
@@ -525,10 +516,9 @@ async def test_report_before_ack_completes_sale(tmp_path):
 
     # Release the ack: no error, no double completion.
     gate.set()
-    await asyncio.sleep(0)
+    await drain_pending(runner)  # the late ack has been fully processed
     assert vmc.state == "idle"
     assert len(rec.sales) == 1
-    machine.cancel_pending_tasks()
 
 
 async def test_report_without_request_id_still_accepted(tmp_path):
@@ -547,7 +537,6 @@ async def test_report_without_request_id_still_accepted(tmp_path):
 
     assert vmc.state == "idle"
     assert len(rec.sales) == 1
-    machine.cancel_pending_tasks()
 
 
 async def test_success_cancels_dispense_timeout_before_record_awaits(tmp_path):
@@ -571,16 +560,8 @@ async def test_success_cancels_dispense_timeout_before_record_awaits(tmp_path):
     machine, vmc, dispatcher = _vmc_with_profiles(tmp_path, tasks=runner)
     rec = FakeEventRecorder()
     machine.set_event_recorder(rec)
-    published: list[tuple[str, object]] = []
-
-    class FakeMQTT:
-        def register(self, *a, **k):
-            pass
-
-        async def publish(self, topic, payload, **kwargs):
-            published.append((topic, payload))
-
-    machine.set_mqtt_client(FakeMQTT())
+    client = FakeMqtt()
+    machine.set_mqtt_client(client)
     product = vmc.products[0]
     _start_sale(vmc, product)
     await asyncio.sleep(0)
@@ -603,12 +584,12 @@ async def test_success_cancels_dispense_timeout_before_record_awaits(tmp_path):
     # The timer must already be retired by the time record_sale runs --
     # not merely retired by the time this call returns.
     assert live_during_record == [False]
+    await drain_pending(runner)  # a refund publish would be fire-and-forget
     assert vmc.state == "idle"
     assert vmc.credit_escrow == 0
     assert not vmc.faults.lockouts
     assert not any(e[0] == "vend_failed" for e in rec.events)
-    assert not any(topic == "cmd/payment/refund" for topic, _ in published)
-    machine.cancel_pending_tasks()
+    assert not any(topic == "cmd/payment/refund" for topic, *_ in client.published)
 
 
 async def test_door_open_completes_sale_and_raises_ice402(tmp_path):
@@ -630,7 +611,6 @@ async def test_door_open_completes_sale_and_raises_ice402(tmp_path):
     assert rec.sales[0][0] == "ICE-1"
     assert "ICE-402" in {f["code"] for f in vmc.active_faults()}
     assert avail.payment_enabled is False
-    machine.cancel_pending_tasks()
 
 
 async def test_door_open_on_water_fill_fails_vend_with_error_mapping(tmp_path):
@@ -659,7 +639,6 @@ async def test_door_open_on_water_fill_fails_vend_with_error_mapping(tmp_path):
     assert len(rec.sales) == 0
     assert any(e[0] == "vend_failed" and e[2]["code"] == "ICE-302" for e in rec.events)
     assert "ICE-402" not in {f["code"] for f in vmc.active_faults()}
-    machine.cancel_pending_tasks()
 
 
 @pytest.mark.parametrize(
@@ -684,7 +663,6 @@ async def test_water_outcomes_map_by_mechanism(tmp_path, outcome, expected):
     )
 
     assert any(e[0] == "vend_failed" and e[2]["code"] == expected for e in rec.events)
-    machine.cancel_pending_tasks()
 
 
 async def test_ice_timeout_maps_to_ice301(tmp_path):
@@ -700,7 +678,6 @@ async def test_ice_timeout_maps_to_ice301(tmp_path):
     )
 
     assert any(e[0] == "vend_failed" and e[2]["code"] == "ICE-301" for e in rec.events)
-    machine.cancel_pending_tasks()
 
 
 async def test_mis_reporting_board_falls_back_to_generic_error(tmp_path, caplog):
@@ -721,8 +698,11 @@ async def test_mis_reporting_board_falls_back_to_generic_error(tmp_path, caplog)
 
     assert vmc.state == "interacting_with_user"
     assert any(e[0] == "vend_failed" and e[2]["code"] == "ICE-302" for e in rec.events)
-    assert any("no fault mapped" in r.message.lower() for r in caplog.records)
-    machine.cancel_pending_tasks()
+    assert any(
+        r.levelno == logging.ERROR
+        and "No fault mapped for mechanism='water_fill' outcome='jam'" in r.message
+        for r in caplog.records
+    )
 
 
 async def test_snapshot_records_mechanism(tmp_path):
@@ -736,7 +716,6 @@ async def test_snapshot_records_mechanism(tmp_path):
     snap = vmc.snapshot()
 
     assert snap.dispense_mechanism == "bagged_ice"
-    machine.cancel_pending_tasks()
 
 
 async def test_mid_vend_profile_save_does_not_change_inflight_command(tmp_path):
@@ -758,7 +737,6 @@ async def test_mid_vend_profile_save_does_not_change_inflight_command(tmp_path):
     machine.gate.profiles.load()
 
     assert dispatcher.sent[-1] == sent_before
-    machine.cancel_pending_tasks()
 
 
 # --- Review findings I1/I2: dispatch-failure robustness ---
@@ -779,12 +757,12 @@ async def test_unexpected_dispatch_error_fails_vend_immediately(tmp_path):
     _start_sale(vmc, product)
 
     await asyncio.sleep(0)
+    await drain_pending(machine.tasks)  # the negative below must not be vacuous
 
     assert vmc.state == "interacting_with_user"
     assert vmc.credit_escrow == price
     assert any(e[0] == "vend_failed" and e[2]["code"] == "PAY-102" for e in rec.events)
     assert not any(c.label == "dispense_timeout" for c in machine.tasks.scheduled)
-    machine.cancel_pending_tasks()
 
 
 class FakeSessionStore:
@@ -810,6 +788,7 @@ async def test_snapshot_save_failure_fails_vend_immediately(tmp_path):
     _start_sale(vmc, product)
 
     await asyncio.sleep(0)
+    await drain_pending(machine.tasks)  # the negatives below must not be vacuous
 
     assert vmc.state == "interacting_with_user"
     assert vmc.credit_escrow == price
@@ -822,7 +801,6 @@ async def test_snapshot_save_failure_fails_vend_immediately(tmp_path):
     )
     assert not any(c.label == "dispense_timeout" for c in machine.tasks.scheduled)
     assert dispatcher.sent == []
-    machine.cancel_pending_tasks()
 
 
 async def test_late_no_ack_from_previous_sale_does_not_fail_current_sale(tmp_path):
@@ -859,7 +837,7 @@ async def test_late_no_ack_from_previous_sale_does_not_fail_current_sale(tmp_pat
 
     # A's delayed CommandTimeout finally arrives.
     gate.set()
-    await asyncio.sleep(0)
+    await drain_pending(machine.tasks)  # A's CommandTimeout has been fully handled
 
     assert vmc.state == "dispensing"
     assert vmc.credit_escrow == escrow_before
@@ -867,7 +845,6 @@ async def test_late_no_ack_from_previous_sale_does_not_fail_current_sale(tmp_pat
         e[0] == "vend_failed" and e[2]["code"] == "PAY-102" for e in rec.events
     )
     assert any(c.label == "dispense_timeout" for c in machine.tasks.scheduled)
-    machine.cancel_pending_tasks()
 
 
 async def test_on_dispense_failed_ignores_a_stale_cycle(tmp_path):
@@ -929,4 +906,3 @@ async def test_on_dispense_failed_ignores_a_stale_cycle(tmp_path):
 
     assert vmc.state == "idle"
     assert vmc.faults.lockouts == {}
-    machine.cancel_pending_tasks()

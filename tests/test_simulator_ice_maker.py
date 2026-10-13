@@ -1,6 +1,7 @@
 # tests/test_simulator_ice_maker.py
 """Tests for simulators/ice_maker.py — ice maker temperature simulation."""
 
+import math
 import pytest
 from unittest.mock import AsyncMock
 
@@ -97,10 +98,19 @@ class TestIceMakerSimulator:
 
     def test_compressor_cycles(self):
         sim = IceMakerSimulator()
+        dt = 5.0
         assert sim.compressor_on is False
-        # Advance past the off-cycle (300s default)
-        for _ in range(61):
-            sim.tick(dt=5.0)  # 305 seconds
+        # Derive tick count from off-cycle constant to guard against changes
+        off_seconds = sim.COMPRESSOR_OFF_TIME
+        ticks_to_boundary = math.ceil(off_seconds / dt)
+        # Verify compressor is still OFF one tick before the boundary
+        for _ in range(ticks_to_boundary - 1):
+            sim.tick(dt=dt)
+        assert sim.compressor_on is False, (
+            f"Compressor should still be OFF before boundary (at {ticks_to_boundary - 1} ticks)"
+        )
+        # One more tick to cross the boundary
+        sim.tick(dt=dt)
         assert sim.compressor_on is True
 
 
@@ -267,9 +277,13 @@ class TestCompressorOvertempFault:
         client = AsyncMock()
         fault = next(f for f in sim.fault_defs if f.name == "compressor_overtemp")
         await sim.activate_fault(client, fault, recover_in=9e9)
-        # Advance well past compressor off time (300s default)
-        for _ in range(100):
-            sim.tick(dt=5.0)
+        # Advance well past compressor off time
+        dt = 5.0
+        off_seconds = sim.COMPRESSOR_OFF_TIME
+        ticks_to_boundary = math.ceil(off_seconds / dt)
+        # Advance 200% of the off-cycle duration to ensure we're well past
+        for _ in range(ticks_to_boundary * 2):
+            sim.tick(dt=dt)
         # compressor should not have flipped (still False)
         assert sim.compressor_on is False
 
@@ -314,9 +328,18 @@ class TestLowRefrigerantFault:
         client = AsyncMock()
         fault = next(f for f in sim.fault_defs if f.name == "low_refrigerant")
         await sim.activate_fault(client, fault, recover_in=9e9)
-        # Advance past the off-cycle (300s default)
-        for _ in range(61):
-            sim.tick(dt=5.0)
+        # Advance past the off-cycle, derived from simulator constant
+        dt = 5.0
+        off_seconds = sim.COMPRESSOR_OFF_TIME
+        ticks_to_boundary = math.ceil(off_seconds / dt)
+        # Verify still OFF one tick before boundary
+        for _ in range(ticks_to_boundary - 1):
+            sim.tick(dt=dt)
+        assert sim.compressor_on is False, (
+            f"Compressor should still be OFF before boundary (at {ticks_to_boundary - 1} ticks)"
+        )
+        # One more tick to cross the boundary
+        sim.tick(dt=dt)
         # Compressor should have turned on (cycling continues under low_refrigerant)
         assert sim.compressor_on is True
 
@@ -407,8 +430,17 @@ class TestDefrostStuckPerValve:
     async def test_compressor_keeps_cycling_while_valve_stuck(self):
         sim = IceMakerSimulator()
         await self._force_active(sim, 1, AsyncMock())
-        for _ in range(61):  # 305s > 300s off-cycle
-            sim.tick(dt=5.0)
+        dt = 5.0
+        off_seconds = sim.COMPRESSOR_OFF_TIME
+        ticks_to_boundary = math.ceil(off_seconds / dt)
+        # Verify still OFF one tick before boundary
+        for _ in range(ticks_to_boundary - 1):
+            sim.tick(dt=dt)
+        assert sim.compressor_on is False, (
+            f"Compressor should still be OFF before boundary (at {ticks_to_boundary - 1} ticks)"
+        )
+        # One more tick to cross the boundary and turn on
+        sim.tick(dt=dt)
         assert sim.compressor_on is True
 
     def test_harvests_alternate_when_healthy(self):

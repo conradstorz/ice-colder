@@ -12,6 +12,8 @@ self-lockout template halves, sub-tile absence, and the new profile-edit
 route.
 """
 
+import copy
+import json
 import re
 
 import pytest
@@ -25,6 +27,21 @@ _CODE_VALUE_RE = re.compile(r'class="[^"]*\bcode-value\b[^"]*">(\d{8})<')
 
 def _codes_in(html: str) -> list[str]:
     return _CODE_VALUE_RE.findall(html)
+
+
+def _store_state(store) -> dict:
+    """Everything a users/devices POST could mutate, read via the public
+    surface: the user and device records (dataclass copies), the pending
+    transfer, and the persisted emergency-code entries (read from the
+    store's public ``path`` since the codes themselves are private)."""
+    codes = json.loads(store.path.read_text(encoding="utf-8"))["emergency_codes"]
+    return {
+        "users": copy.deepcopy(store.users),
+        "devices": copy.deepcopy(store.devices),
+        "pending_transfer": copy.deepcopy(store.pending_transfer),
+        "unused_codes": store.unused_emergency_code_count,
+        "emergency_codes": codes,
+    }
 
 
 class TestGateMatrix:
@@ -88,9 +105,13 @@ class TestPostRequiresHtmx:
             ("/users/transfer/cancel", {"pin": "1379"}),
         ],
     )
-    def test_post_without_htmx_header_is_403(self, client, path, data):
+    def test_post_without_htmx_header_is_403(self, client, wired, path, data):
+        _cfg, _vmc, _inv, store = wired
+        store.generate_emergency_codes()
+        before = _store_state(store)
         resp = client.post(path, headers={"HX-Request": ""}, data=data)
         assert resp.status_code == 403
+        assert _store_state(store) == before
 
     def test_user_id_posts_without_htmx_header_are_403(self, login_as, wired):
         _cfg, _vmc, _inv, store = wired
@@ -99,27 +120,49 @@ class TestPostRequiresHtmx:
         for path, data in [
             (f"/users/{target.id}/disable", {}),
             (f"/users/{target.id}/enable", {}),
-            (f"/users/{target.id}/reset-pin", {"pin": "5297"}),
+            (f"/users/{target.id}/reset-pin", {"pin": "8642"}),
             (f"/users/{target.id}/delete", {}),
         ]:
+            before = _store_state(store)
             resp = owner.post(path, headers={"HX-Request": ""}, data=data)
             assert resp.status_code == 403
+            assert _store_state(store) == before
+        # The target survived every attempt, still enabled, PIN untouched.
+        survivor = store.get_user(target.id)
+        assert survivor is not None
+        assert survivor.disabled is False
+        assert store.verify_user_pin(target.id, "5297")
+
+    def test_enable_without_htmx_header_leaves_disabled_user_disabled(
+        self, login_as, wired
+    ):
+        _cfg, _vmc, _inv, store = wired
+        owner = login_as(Role.owner)
+        target = store.create_user("T", "t@example.com", Role.loader, "5297")
+        store.set_user_disabled(target.id, True)
+        before = _store_state(store)
+        resp = owner.post(
+            f"/users/{target.id}/enable", headers={"HX-Request": ""}, data={}
+        )
+        assert resp.status_code == 403
+        assert _store_state(store) == before
+        assert store.get_user(target.id).disabled is True
 
     def test_device_posts_without_htmx_header_are_403(self, client, wired):
         _cfg, _vmc, _inv, store = wired
         device_id = next(iter(store.devices))
-        assert (
-            client.post(
-                f"/devices/{device_id}/forget", headers={"HX-Request": ""}
-            ).status_code
-            == 403
+        before = _store_state(store)
+        shared_resp = client.post(
+            f"/devices/{device_id}/shared", headers={"HX-Request": ""}
         )
-        assert (
-            client.post(
-                f"/devices/{device_id}/shared", headers={"HX-Request": ""}
-            ).status_code
-            == 403
+        assert shared_resp.status_code == 403
+        assert _store_state(store) == before
+        forget_resp = client.post(
+            f"/devices/{device_id}/forget", headers={"HX-Request": ""}
         )
+        assert forget_resp.status_code == 403
+        assert device_id in store.devices
+        assert _store_state(store) == before
 
 
 class TestOwnerRowReadOnlyForSecretary:

@@ -109,16 +109,22 @@ class TestGetStatus:
 
 class TestCallbacks:
     def test_update_callback_called_on_deposit(self, vmc):
+        """Update callback receives state, product, and credit_escrow."""
         cb = MagicMock()
+        vmc.deposit_funds(2.00)  # Seed escrow to distinguish amount from balance
         vmc.outputs.set_update_callback(cb)
         vmc.deposit_funds(1.00)
-        cb.assert_called()
+        # Callback is called once with (state, product, credit), not twice
+        cb.assert_called_once_with("idle", None, 3.0)
 
     def test_message_callback_called_on_deposit(self, vmc):
+        """Message callback receives formatted text with amount and balance."""
         cb = MagicMock()
+        vmc.deposit_funds(2.00)  # Seed escrow to distinguish amount from balance
         vmc.outputs.set_message_callback(cb)
         vmc.deposit_funds(1.00)
-        cb.assert_called()
+        # Callback is called with the exact message text
+        cb.assert_called_once_with("$1.00 deposited. Current balance: $3.00.")
 
 
 class TestEventRecorder:

@@ -22,6 +22,7 @@ from tests.fakes import FakeTaskRunner
 from tests.dispenser_fixtures import ICE as DISPENSER_ICE
 from tests.dispenser_fixtures import WATER as DISPENSER_WATER
 from tests import route_context
+from tests.browser_harness import live_server  # noqa: F401  (fixture shared by the browser tests)
 from tests.skip_policy import MISSING_TERMINALREPORTER_MARKER, build_skip_report
 from web_interface import auth as web_auth
 from web_interface import routes
@@ -29,11 +30,61 @@ from web_interface.server import app
 
 _ISSUED_CLIENTS: list[TestClient] = []
 
+_HOST_ENV_OVERRIDES = (
+    "ICE_COLDER_CONFIG",
+    "ICE_COLDER_DISPENSERS",
+    "ICE_COLDER_TRUSTED_PROXIES",
+    "MQTT_BROKER_HOST",
+    "MQTT_USERNAME",
+    "MQTT_PASSWORD",
+)
+
 
 @pytest.fixture(autouse=True)
 def isolated_config_path(tmp_path, monkeypatch):
-    """Redirect config saves to a temp dir so no test can clobber config.json."""
+    """Redirect config saves to tmp and clear host env overrides.
+
+    the config store prefers ``ICE_COLDER_CONFIG`` over
+    ``CONFIG_PATH``, so an exported variable would send tests to the real
+    config. The dispensers path and the MQTT / trusted-proxy overrides read by
+    ``services.startup_config`` are cleared too; tests that need one set it
+    themselves with ``monkeypatch.setenv``.
+    """
     monkeypatch.setattr(config_store, "CONFIG_PATH", tmp_path / "config.json")
+    for name in _HOST_ENV_OVERRIDES:
+        monkeypatch.delenv(name, raising=False)
+
+
+# Modules whose tests build a Machine through local helpers (make_machine,
+# _vmc_with_profiles, ...) rather than the `machine` fixture. Their machines
+# are tracked and cancelled at teardown so a failing assertion cannot leak
+# timers/tasks into later tests.
+_MACHINE_TRACKED_MODULES = frozenset(
+    {"test_vmc_flows", "test_vmc_dispense_profiles", "test_vmc_observers"}
+)
+
+
+@pytest.fixture(autouse=True)
+def _cancel_helper_built_machines(request, monkeypatch):
+    """Call `cancel_pending_tasks()` on every Machine a test builds, even when
+    an assertion fails first (cancel is idempotent). Active only for the
+    modules in `_MACHINE_TRACKED_MODULES`."""
+    if request.module.__name__.rsplit(".", 1)[-1] not in _MACHINE_TRACKED_MODULES:
+        yield
+        return
+    from controller.machine import Machine
+
+    built: list[Machine] = []
+    real_init = Machine.__init__
+
+    def tracking_init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        built.append(self)
+
+    monkeypatch.setattr(Machine, "__init__", tracking_init)
+    yield
+    for m in built:
+        m.cancel_pending_tasks()
 
 
 @pytest.fixture(autouse=True)

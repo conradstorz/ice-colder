@@ -46,11 +46,6 @@ class TestDisplayControllerModes:
         dc.update_for_state("some_unknown_state")
         assert dc.current_mode == DisplayMode.advertising
 
-    def test_no_change_skips_publish(self):
-        dc = DisplayController()
-        dc.update_for_state("idle")  # already advertising -> no change
-        # No error, no publish (no mqtt attached)
-
     def test_set_mode_manual(self):
         dc = DisplayController()
         dc.set_mode(DisplayMode.maintenance)

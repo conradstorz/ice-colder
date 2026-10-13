@@ -12,7 +12,12 @@ from contracts.vending_machine import FaultCode
 from services.access import ROLE_PERMISSIONS, AccessStore, Permission, Role, User
 from services.display_controller import DisplayController
 from tests.conftest import make_client, sign_in
-from tests.dom_utils import find_by_id, parse_elements
+from tests.dom_utils import (
+    find_by_id,
+    heading_texts,
+    parse_elements,
+    title_text,
+)
 from web_interface import auth as web_auth
 from web_interface import context
 from web_interface.server import app
@@ -44,7 +49,7 @@ class TestDashboard:
 
     def test_dashboard_contains_title(self, client):
         resp = client.get("/")
-        assert "Vending Machine" in resp.text
+        assert title_text(resp.text) == "Vending Machine"
 
 
 class TestShellBar:
@@ -70,7 +75,7 @@ class TestShellBar:
         assert "<main" in resp.text
         assert '<header id="bar"' in resp.text
         assert "hx-swap-oob" in resp.text
-        assert "Tests" in resp.text
+        assert heading_texts(resp.text, "h1") == ["Tests"]
 
     def test_full_page_child_request_also_has_bar(self, wired):
         """The same URL, requested the way a reload or bookmark would (no
@@ -89,7 +94,8 @@ class TestShellBar:
             page_client.close()
         assert resp.status_code == 200
         assert '<header id="bar"' in resp.text
-        assert "Tests" in resp.text
+        assert title_text(resp.text).startswith("Tests")
+        assert heading_texts(resp.text, "h1") == ["Tests"]
 
     def test_no_cdn_references(self, client):
         for path in ("/", "/tests"):
@@ -120,12 +126,12 @@ class TestPollingDoesNotTouchSessionIdle:
     def test_pill_leaves_last_active_at_unchanged(self, wired, client):
         _cfg, _vmc, _inv, store = wired
         session_id = client.cookies.get(web_auth.SESSION_COOKIE)
-        before = store._sessions[session_id].last_active_at
+        before = store.resolve_session(session_id, touch=False).last_active_at
 
         resp = client.get("/pill")
 
         assert resp.status_code == 200
-        assert store._sessions[session_id].last_active_at == before
+        assert store.resolve_session(session_id, touch=False).last_active_at == before
 
     def test_home_refreshes_last_active_at(self, wired, client):
         _cfg, _vmc, _inv, store = wired
@@ -136,19 +142,19 @@ class TestPollingDoesNotTouchSessionIdle:
         resp = client.get("/")
 
         assert resp.status_code == 200
-        assert store._sessions[session_id].last_active_at != before
+        assert store.resolve_session(session_id, touch=False).last_active_at > before
 
     def test_subsystem_live_leaves_last_active_at_unchanged(self, wired, client):
         """Task 7: the per-board live fragment polls every 2s and must be
         exempted the same way /pill, /status and /kpi already are."""
         _cfg, _vmc, _inv, store = wired
         session_id = client.cookies.get(web_auth.SESSION_COOKIE)
-        before = store._sessions[session_id].last_active_at
+        before = store.resolve_session(session_id, touch=False).last_active_at
 
         resp = client.get("/health/subsystems/vending/live")
 
         assert resp.status_code == 200
-        assert store._sessions[session_id].last_active_at == before
+        assert store.resolve_session(session_id, touch=False).last_active_at == before
 
     def test_subsystem_detail_page_refreshes_last_active_at(self, wired, client):
         """The page itself (not its polled fragment) is a real navigation
@@ -161,7 +167,7 @@ class TestPollingDoesNotTouchSessionIdle:
         resp = client.get("/health/subsystems/vending")
 
         assert resp.status_code == 200
-        assert store._sessions[session_id].last_active_at != before
+        assert store.resolve_session(session_id, touch=False).last_active_at > before
 
 
 class TestIsPollingPath:
@@ -401,52 +407,144 @@ class TestStatusEndpoint:
 # TestProductsListGating, TestCatalogGating and TestPlacementGating.
 
 
-# TestConfigEndpoints removed (Task 15): /config/machine and /config/contacts
-# are covered by tests/test_routes_settings.py's TestMachinePage and
-# TestContactsPage (both GET /settings/machine and /settings/contacts,
-# Task 13) — test_machine_info_shows_product_count's own claim (a product
-# count on the machine info page) has no replacement, since the new
-# /settings/machine page carries no such count; that display did not
-# survive the migration. The skipped test_payments and test_comms (for
-# /config/payments and /config/comms, whose templates never existed) are
-# deleted per this task's executor resolution 5: their routes are among the
-# fifteen this task deletes, and Task 13 built real, unskipped coverage of
-# their replacements in tests/test_routes_settings.py's TestPaymentsPage and
-# TestCommsPage (13 tests each). This drops the skip count from 13 to 11.
+# Covered by tests/test_routes_settings.py's TestMachinePage, TestContactsPage,
+# TestPaymentsPage, and TestCommsPage.
 
-# (method, path, permission) — the authoritative route -> permission table.
+# Hard-coded expected roles per route. These sets are deliberately written
+# out by hand from CLAUDE.md's gate table crossed with the role->permission
+# sets pinned in tests/test_access.py's TestPermissionTable — NOT derived from
+# ROLE_PERMISSIONS, so a wrong grant in that table (or a wrong gate on a
+# route) turns a row red instead of being mirrored. "A or B" gates are
+# resolved to the union of the roles holding either permission.
+_ALL = frozenset(Role)
+_OWNER = frozenset({Role.owner})
+_OWNER_SECRETARY = frozenset({Role.owner, Role.secretary})
+_OWNER_TECH = frozenset({Role.owner, Role.tech})
+
+_SKU = "MATRIX-1"
+
+# (method, path template, roles allowed). "{sku}" and "{user_id}" are filled
+# in by the test with seeded data; the subsystem name is concrete.
 _MATRIX_ROUTES = [
-    ("GET", "/", Permission.view_status),
-    ("GET", "/status", Permission.view_status),
-    ("GET", "/kpi", Permission.view_status),
-    ("GET", "/pill", Permission.view_status),
-    ("GET", "/health", Permission.view_status),
-    ("GET", "/screen", Permission.view_status),
-    ("GET", "/inventory", Permission.view_status),
-    ("GET", "/health/logs", Permission.view_logs),
-    ("GET", "/users", Permission.manage_users),
-    ("GET", "/users/new", Permission.manage_users),
+    # view_status — every role
+    ("GET", "/", _ALL),
+    ("GET", "/status", _ALL),
+    ("GET", "/kpi", _ALL),
+    ("GET", "/pill", _ALL),
+    ("GET", "/screen", _ALL),
+    ("GET", "/health", _ALL),
+    ("GET", "/health/subsystems", _ALL),
+    ("GET", "/health/subsystems/vending", _ALL),
+    ("GET", "/health/subsystems/vending/live", _ALL),
+    ("GET", "/health/faults", _ALL),
+    ("GET", "/health/availability", _ALL),
+    # view_logs — owner, tech
+    ("GET", "/health/logs", _OWNER_TECH),
+    # edit_catalog or edit_placement — every role (all hold edit_placement)
+    ("GET", "/products", _ALL),
+    ("GET", "/products/{sku}", _ALL),
+    # edit_catalog — owner, secretary
+    ("GET", "/products/new", _OWNER_SECRETARY),
+    ("GET", "/products/{sku}/catalog", _OWNER_SECRETARY),
+    ("GET", "/products/{sku}/copy", _OWNER_SECRETARY),
+    # edit_placement — every role
+    ("GET", "/products/{sku}/placement", _ALL),
+    ("GET", "/inventory", _ALL),
+    # view_reports — owner, secretary
+    ("GET", "/reports", _OWNER_SECRETARY),
+    ("GET", "/reports/period", _OWNER_SECRETARY),
+    ("GET", "/reports/product", _OWNER_SECRETARY),
+    ("GET", "/reports/product/{sku}", _OWNER_SECRETARY),
+    ("GET", "/reports/method", _OWNER_SECRETARY),
+    ("GET", "/reports/collections", _OWNER_SECRETARY),
+    # machine_controls — owner, tech
+    ("GET", "/controls", _OWNER_TECH),
+    # run_tests — owner, tech
+    ("GET", "/tests", _OWNER_TECH),
+    ("GET", "/tests/log", _OWNER_TECH),
+    ("GET", "/tests/sale", _OWNER_TECH),
+    ("GET", "/tests/vending", _OWNER_TECH),
+    ("GET", "/tests/standby/confirm", _OWNER_TECH),
+    # manage_users — owner, secretary
+    ("GET", "/users", _OWNER_SECRETARY),
+    ("GET", "/users/new", _OWNER_SECRETARY),
+    ("GET", "/users/{user_id}", _OWNER_SECRETARY),
+    ("GET", "/devices", _OWNER_SECRETARY),
+    # manage_ownership — owner only
+    ("GET", "/users/codes", _OWNER),
+    ("GET", "/users/ownership", _OWNER),
+    # edit_contacts or edit_secrets — owner, secretary (via edit_contacts)
+    ("GET", "/settings", _OWNER_SECRETARY),
+    # edit_contacts — owner, secretary
+    ("GET", "/settings/machine", _OWNER_SECRETARY),
+    ("GET", "/settings/contacts", _OWNER_SECRETARY),
+    ("GET", "/settings/reports", _OWNER_SECRETARY),
+    # edit_secrets — owner only
+    ("GET", "/settings/payments", _OWNER),
+    ("GET", "/settings/comms", _OWNER),
+    ("GET", "/settings/mqtt", _OWNER),
+    ("GET", "/settings/web", _OWNER),
+    # --- mutating POSTs gated on one permission, called with a dummy body
+    # (HX-Request is always sent, so the permission gate is what's measured).
+    # Allowed roles must get anything but 403 (400/404/422 for the dummy
+    # body is fine); denied roles must get exactly 403.
+    ("POST", "/controls/bogus-command", _OWNER_TECH),
+    ("POST", "/health/faults/NOPE-000/clear", _OWNER_TECH),
+    ("POST", "/health/faults/PAY-104/discard", _OWNER_TECH),
+    ("POST", "/inventory/{sku}/adjust", _ALL),
+    ("POST", "/inventory/collect", _ALL),
+    ("POST", "/products/new", _OWNER_SECRETARY),
+    ("POST", "/products/{sku}/catalog", _OWNER_SECRETARY),
+    ("POST", "/products/{sku}/placement", _ALL),
+    ("POST", "/settings/machine", _OWNER_SECRETARY),
+    ("POST", "/settings/contacts", _OWNER_SECRETARY),
+    ("POST", "/settings/reports", _OWNER_SECRETARY),
+    ("POST", "/settings/payments", _OWNER),
+    ("POST", "/settings/comms", _OWNER),
+    ("POST", "/settings/mqtt", _OWNER),
+    ("POST", "/settings/web", _OWNER),
+    ("POST", "/tests/sale", _OWNER_TECH),
+    ("POST", "/tests/runs/nope/verdict", _OWNER_TECH),
+    ("POST", "/users/new", _OWNER_SECRETARY),
+    ("POST", "/devices/nope/forget", _OWNER_SECRETARY),
+    ("POST", "/users/transfer/cancel", _OWNER),
 ]
 
 
 class TestPermissionMatrix:
-    """For every (route, role) pair, 200 exactly when ROLE_PERMISSIONS[role]
-    holds the route's permission, and 403 otherwise."""
+    """For every (route, role) pair: a GET is 200 exactly for the
+    hand-written roles in _MATRIX_ROUTES and 403 otherwise; a POST with a
+    dummy body is anything but 403 for those roles and 403 otherwise. One
+    client per role is reused for the whole sweep."""
 
     @pytest.mark.parametrize("role", list(Role))
-    @pytest.mark.parametrize("method, path, permission", _MATRIX_ROUTES)
-    def test_matrix(self, login_as, method, path, permission, role):
+    def test_matrix(self, login_as, wired, role):
+        from services.config_store import add_product
+
+        cfg, _vmc, _inv, store = wired
+        add_product(cfg, _SKU, "Matrix Item", 1.00)
+        owner_id = store.owner().id
         client = login_as(role)
-        resp = client.get(path) if method == "GET" else client.post(path)
-        if permission in ROLE_PERMISSIONS[role]:
-            assert resp.status_code == 200, (
-                role,
-                path,
-                resp.status_code,
-                resp.text[:300],
-            )
-        else:
-            assert resp.status_code == 403, (role, path, resp.status_code)
+
+        wrong = []
+        for method, template, allowed in _MATRIX_ROUTES:
+            path = template.format(sku=_SKU, user_id=owner_id)
+            if method == "GET":
+                resp = client.get(path)
+            else:
+                resp = client.post(
+                    path,
+                    data={"delta": "7"} if path.endswith("/adjust") else {},
+                    headers={"HX-Request": "true"},
+                )
+            code = resp.status_code
+            if role in allowed:
+                ok = code == 200 if method == "GET" else code != 403
+            else:
+                ok = code == 403
+            if not ok:
+                wrong.append((method, path, code, role in allowed))
+        assert not wrong, (role, "(method, path, status, expected_allowed)", wrong)
 
     @pytest.mark.parametrize("role", list(Role))
     def test_matrix_clear_faults(self, login_as, wired, role):
@@ -718,7 +816,6 @@ class TestFaultsUI:
         client.post(
             "/products/new",
             data={"sku": "ICE-1", "name": "Ice", "price": "2.5"},
-            auth=client.auth,
         )
 
     def test_status_lists_active_fault(self, client):
@@ -729,10 +826,11 @@ class TestFaultsUI:
         §1.3), so this keeps everything except the hx-post assertion."""
         self._add_product(client)
         self._lock(client)
-        r = client.get("/status", auth=client.auth)
+        r = client.get("/status")
         assert r.status_code == 200
         assert "ICE-301" in r.text
-        assert "Ice" in r.text
+        # The fault row names both the code and the locked product's name.
+        assert re.search(r"ICE-301</span>.*?· Ice</span>", r.text, flags=re.DOTALL)
         assert "Issues Detected" in r.text
 
     def test_status_issues_headline_uses_hero_token(self, client):
@@ -741,7 +839,7 @@ class TestFaultsUI:
         carry the same 24px token, not `text-base`."""
         self._add_product(client)
         self._lock(client)
-        r = client.get("/status", auth=client.auth)
+        r = client.get("/status")
         assert "text-hero font-semibold" in r.text
         assert "text-base font-semibold" not in r.text
 
@@ -761,7 +859,7 @@ class TestFaultsUI:
         context.machine_instance.set_health_monitor(hm)
         self._add_product(client)
         self._lock(client)
-        r = client.get("/status", auth=client.auth)
+        r = client.get("/status")
         assert r.status_code == 200
         assert "ICE-301" in r.text
         assert "s</span>" in r.text
@@ -769,12 +867,12 @@ class TestFaultsUI:
     def test_status_still_renders_without_health_monitor(self, client):
         self._add_product(client)
         self._lock(client)
-        r = client.get("/status", auth=client.auth)
+        r = client.get("/status")
         assert r.status_code == 200
         assert "ICE-301" in r.text
 
     def test_status_without_faults_says_none(self, client):
-        r = client.get("/status", auth=client.auth)
+        r = client.get("/status")
         assert "No active faults" in r.text
 
     def test_status_banner_is_neutral_without_availability(self, client):
@@ -786,7 +884,7 @@ class TestFaultsUI:
         "still selling"."""
         self._add_product(client)
         self._lock(client)
-        r = client.get("/status", auth=client.auth)
+        r = client.get("/status")
         assert "Issues Detected" in r.text
         assert "Machine Stopped" not in r.text
         assert "still selling" not in r.text
@@ -800,12 +898,7 @@ class TestFaultsUI:
     # ::test_post_clear_unknown_key_is_404 against the replacement, POST
     # /health/faults/{key}/clear (Task 6).
 
-    # test_inventory_table_shows_locked_badge removed: it asserted on the
-    # old /inventory fragment's lockout badge, a route task 8 replaced.
-    # Lockout badges are not part of the Inventory restock level's brief
-    # (web_interface/routes/inventory.py never reads active_faults());
-    # that coverage already lives on the Products level instead —
-    # tests/test_routes_products.py::TestLockBadge
+    # Covered by tests/test_routes_products.py::TestLockBadge
     # ::test_locked_badge_shown_on_list_and_detail.
 
     def test_kpi_shows_failed_vends(self, client, tmp_path):
@@ -814,7 +907,7 @@ class TestFaultsUI:
         rec = EventRecorder(db_path=str(tmp_path / "events.db"))
         rec.record("vend_failed", value=2.5, metadata={"code": "ICE-301"})
         routes.set_event_recorder(rec)
-        r = client.get("/kpi", auth=client.auth)
+        r = client.get("/kpi")
         assert "1 failed" in r.text
 
     def test_reports_shows_failed_vends_and_refunds(self, client, tmp_path):
@@ -829,7 +922,7 @@ class TestFaultsUI:
         rec.record("vend_failed", value=2.5)
         rec.record("refund", value=2.5)
         routes.set_event_recorder(rec)
-        r = client.get("/reports", auth=client.auth)
+        r = client.get("/reports")
         assert "Failed Vends" in r.text
         assert "Refunds Paid" in r.text
         assert "$2.50" in r.text
@@ -847,7 +940,7 @@ class TestHealthTabIdentity:
         from services.build_info import BUILD_INFO
 
         self._hm()
-        r = client.get("/health", auth=client.auth)
+        r = client.get("/health")
         assert r.status_code == 200
         assert BUILD_INFO.commit_short in r.text
         assert BUILD_INFO.source in r.text
@@ -863,7 +956,7 @@ class TestHealthTabIdentity:
         # here.
         hm = self._hm()
         hm.record_heartbeat("vending", {"subsystem": "vending", "uptime_seconds": 90})
-        r = client.get("/health/subsystems", auth=client.auth)
+        r = client.get("/health/subsystems")
         assert "1m" in r.text  # uptime humanized
         assert "—" in r.text  # firmware/contract/hardware unknown
 
@@ -885,7 +978,7 @@ class TestHealthTabIdentity:
                 "commands": ["refund"],
             },
         )
-        r = client.get("/health/subsystems/mdb", auth=client.auth)
+        r = client.get("/health/subsystems/mdb")
         assert "abc1234" in r.text
         assert "0.3.0" in r.text
         assert "ice-colder mdb-sim" in r.text
@@ -1013,8 +1106,10 @@ class TestAvailabilityOnDashboard:
         client, avail = avail_client
         avail.set_hardware_io("service_door", True)
         resp = client.get("/status")
-        assert "Payment" in resp.text
-        assert "Disabled" in resp.text
+        # The "Payment" label and its "Disabled" value are one field.
+        assert re.search(
+            r">Payment</div>\s*<div class=\"[^\"]*\">Disabled</div>", resp.text
+        )
         assert "service_door_closed" in resp.text
 
     def test_status_is_not_healthy_when_only_payment_is_disabled(self, avail_client):
@@ -1050,7 +1145,8 @@ class TestAvailabilityOnDashboard:
         body = client.get("/screen/body")
         assert body.status_code == 200
         assert "hx-post" not in body.text
-        assert "Ice" in body.text and "Water" in body.text
+        for kind in ("Ice", "Water"):
+            assert re.search(rf">{kind}</div>\s*<div[^>]*>", body.text), kind
 
     def test_screen_requires_auth(self, anonymous):
         resp = anonymous.get("/screen")
@@ -1301,7 +1397,11 @@ class TestLogin:
         c, store, owner = public
         resp = c.post("/login", data={"user_id": owner.id, "pin": "1379"})
         assert resp.status_code == 200
-        assert "code" in resp.text.lower()
+        assert heading_texts(resp.text, "h1") == ["Trust this device"]
+        code_inputs = [
+            e for e in parse_elements(resp.text) if e.attrs.get("name") == "code"
+        ]
+        assert len(code_inputs) == 1 and code_inputs[0].tag == "input"
         assert "hx-redirect" not in {k.lower() for k in resp.headers}
         assert c.cookies.get("vmc_enroll")
 
@@ -1550,7 +1650,7 @@ class TestEnrollment:
         c, store, owner, _ = public
         codes = store.generate_emergency_codes()
         resp = c.post("/login/enroll", data={"code": codes[0]})
-        assert resp.status_code in (401, 403)
+        assert resp.status_code == 401
         assert not c.cookies.get("vmc_session")
 
     def test_logout_ends_the_session_and_keeps_the_device(self, public):

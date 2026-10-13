@@ -5,6 +5,7 @@ import sqlite3
 import threading
 import time
 from datetime import datetime, timedelta, timezone, tzinfo
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +21,19 @@ FIXED_TZ = timezone(timedelta(hours=-5))
 
 def _dt(year, month, day, hour=0, minute=0, second=0):
     return datetime(year, month, day, hour, minute, second, tzinfo=FIXED_TZ)
+
+
+@pytest.fixture
+def fixed_now(monkeypatch):
+    """Pin `services.reports`' wall clock to 2026-10-13 12:00 -05:00.
+
+    `by_period` derives its retention cutoff from `time.time()`; replacing
+    the module's `time` binding (not the global clock) lets tests use
+    literal dates for buckets near that cutoff.
+    """
+    now = _dt(2026, 10, 13, 12).timestamp()
+    monkeypatch.setattr(reports, "time", SimpleNamespace(time=lambda: now))
+    return now
 
 
 class _SyntheticDstTz(tzinfo):
@@ -464,13 +478,18 @@ class TestByPeriodFallBackTransition:
         ]
         assert gaps == [86400.0, 86400.0, 86400.0, 90000.0, 86400.0, 86400.0]
 
-        # q_end of each row equals q_start of the next: re-derive both via
-        # the module's own helpers rather than trusting bucket_start alone.
-        for i in range(len(dates) - 1):
-            end_of_this = reports._floor_to_bucket(
-                reports.to_local(sale_ts[dates[i + 1]], SYN_FB_TZ), "day"
-            )
-            assert end_of_this == actual_starts[i + 1]
+        # Literal, hand-derived bucket starts (EDT -04:00 up to and
+        # including the 2026-11-01 midnight, EST -05:00 after the 06:00 UTC
+        # fall-back) -- not recomputed through the module's own helpers.
+        assert [r["bucket_start"] for r in rows] == [
+            "2026-10-29T00:00:00-04:00",
+            "2026-10-30T00:00:00-04:00",
+            "2026-10-31T00:00:00-04:00",
+            "2026-11-01T00:00:00-04:00",
+            "2026-11-02T00:00:00-05:00",
+            "2026-11-03T00:00:00-05:00",
+            "2026-11-04T00:00:00-05:00",
+        ]
 
         # Sum invariant: nothing double-counted, nothing dropped.
         assert sum(r["revenue"] for r in rows) == pytest.approx(float(len(dates)))
@@ -741,8 +760,12 @@ class TestByMethod:
 
 
 class TestRetentionNoneVersusZero:
-    def test_old_bucket_revenue_correct_but_event_columns_none(self, recorder):
-        old_ts = time.time() - 100 * 86400  # well past the 90-day cutoff
+    def test_old_bucket_revenue_correct_but_event_columns_none(
+        self, recorder, fixed_now
+    ):
+        # 100 days before fixed_now (2026-10-13 12:00 -05:00) is
+        # 2026-07-05 12:00 -05:00 -- well past the 90-day cutoff.
+        old_ts = _dt(2026, 7, 5, 12).timestamp()
         recorder.record_sale("OLD", "Old Item", 1, 9.00, {"cash": 9.00}, ts=old_ts)
 
         # Seed REAL vend_failed/refund/heartbeat rows in the same old
@@ -768,9 +791,7 @@ class TestRetentionNoneVersusZero:
         window = (old_ts - 2 * 86400, old_ts + 2 * 86400)
         rows = reports.by_period(recorder, window, "day", tz=FIXED_TZ)
 
-        old_day_start = reports._floor_to_bucket(
-            reports.to_local(old_ts, FIXED_TZ), "day"
-        ).isoformat()
+        old_day_start = "2026-07-05T00:00:00-05:00"
         matching = [r for r in rows if r["bucket_start"] == old_day_start]
 
         # Positive half FIRST: the bucket exists and its revenue is right --
@@ -795,7 +816,9 @@ class TestRetentionNoneVersusZero:
 
 
 class TestRetentionStraddlingBucket:
-    def test_straddling_bucket_counts_both_sides_of_the_cutoff(self, recorder):
+    def test_straddling_bucket_counts_both_sides_of_the_cutoff(
+        self, recorder, fixed_now
+    ):
         # by_period's docstring now says a straddling bucket's event-derived
         # columns cover only the *retained* portion in production, because
         # `_prune_with` has already deleted rows older than the cutoff
@@ -807,16 +830,16 @@ class TestRetentionStraddlingBucket:
         # before-cutoff row would already be gone by the time this runs;
         # it is that absence -- not a filter in this module -- that makes
         # the real-world result partial.)
-        cutoff_ts = time.time() - reports.RETENTION_DAYS * 86400
-        bucket_start = reports._floor_to_bucket(
-            reports.to_local(cutoff_ts, FIXED_TZ), "day"
-        )
-        bucket_end = reports._next_bucket(bucket_start, "day")
+        # fixed_now is 2026-10-13 12:00 -05:00, so the 90-day cutoff is
+        # exactly 2026-07-15 12:00 -05:00, inside the local day starting
+        # 2026-07-15 00:00 -05:00 and ending 2026-07-16 00:00 -05:00.
+        assert reports.RETENTION_DAYS == 90
+        cutoff_ts = _dt(2026, 7, 15, 12).timestamp()
+        bucket_start = _dt(2026, 7, 15)
+        bucket_end = _dt(2026, 7, 16)
 
-        before_ts = (
-            bucket_start.timestamp() + (cutoff_ts - bucket_start.timestamp()) / 2
-        )
-        after_ts = cutoff_ts + (bucket_end.timestamp() - cutoff_ts) / 2
+        before_ts = _dt(2026, 7, 15, 6).timestamp()
+        after_ts = _dt(2026, 7, 15, 18).timestamp()
         assert (
             bucket_start.timestamp()
             < before_ts
@@ -883,7 +906,9 @@ class TestEmptyDatabase:
         window = reports.resolve_window("30d", now=now)
 
         period_rows = reports.by_period(recorder, window, "day", tz=FIXED_TZ)
-        assert isinstance(period_rows, list)
+        # A 30-day window from (now - 30*86400) to now produces 31 day buckets:
+        # the floored start day plus 30 complete days through the current day.
+        assert len(period_rows) == 31
         for row in period_rows:
             assert row["revenue"] == 0.0
             assert row["vends"] == 0
@@ -903,8 +928,6 @@ class TestEmptyDatabase:
         assert summary["refunds"] == 0.0
         assert summary["by_method"] == []
         assert summary["cash_since_last_collection"] == 0.0
-        assert summary["revenue"] is not None
-        assert summary["cash_since_last_collection"] is not None
 
 
 # --------------------------------------------------------------------------

@@ -20,7 +20,7 @@ access like `vmc.__class__`, used by a few monkeypatches) and every private
 `from ... import _name`, across all of `tests/**/*.py`.
 
 `count_private_access(path)` returns one `"path:line: text"` entry per
-unmarked hit in a file (an attribute-access match from `PRIVATE_ATTR_RE`,
+unmarked hit in a file (an `ast` attribute access or `getattr`-style string, see `_private_attr_hits`,
 or a private name imported via an `ast.ImportFrom` node -- every `alias`
 whose *imported* name starts with `_[a-z]`, regardless of any `asname`,
 including names spread across a multi-line parenthesised import).
@@ -49,8 +49,9 @@ omitting files with zero hits.
    mechanism is unchanged from the original guard. This is the escape
    hatch for a test that genuinely needs to reach a private (e.g. to drive
    a defensive branch unreachable through any public seam): put the
-   marker above the line and explain why. This test only checks for the
-   marker's presence, not its content -- the reviewer reads the reason.
+   marker above the line and explain why. The marker must carry
+   non-empty reason text (a bare `# private:` exempts nothing); the
+   reviewer reads the reason.
 5. `self._x`, `cls._x`, and dunder access (`vmc.__class__`) are never
    hits. A plain `import x as _y` is never a hit (it names a module, not
    an imported name). A `from <module> import <name>` is a hit whenever
@@ -86,22 +87,24 @@ import importlib.util
 import re
 from pathlib import Path
 
-#: Any `<object>._name` access, except `self._x`/`cls._x` (a class's own
-#: fields) and dunder access (`vmc.__class__` -- the second underscore is
-#: not a lowercase letter so it never matches).
-PRIVATE_ATTR_RE = re.compile(
-    r"\b(?!self\b|cls\b)[A-Za-z_][A-Za-z0-9_]*\._[a-z][A-Za-z0-9_]*"
-)
+#: An attribute name that counts as private: a single leading underscore
+#: followed by a lowercase letter (dunders such as `__class__` never match).
+PRIVATE_NAME_RE = re.compile(r"^_[a-z]")
+
+#: Builtins whose second argument names an attribute: `getattr(vmc, "_x")`.
+ATTR_BUILTINS = frozenset({"getattr", "setattr", "hasattr", "delattr"})
 
 #: A private imported name, matched against each `ast.ImportFrom` alias's
 #: *imported* name (never its `asname`) -- so `from loguru import logger
 #: as _loguru` is not a hit (the imported name is `logger`), but `from m
 #: import _foo` and `from m import _foo as bar` both are. Mirrors
-#: PRIVATE_ATTR_RE's own leading-character rule so a dunder import
+#: PRIVATE_NAME_RE's own leading-character rule so a dunder import
 #: (`from m import __version__`) is not a hit either.
 PRIVATE_IMPORT_NAME_RE = re.compile(r"^_[a-z][A-Za-z0-9_]*$")
 
-PRIVATE_MARKER = "# private:"
+#: `# private: <reason>` -- the reason must contain at least one
+#: non-space character, so a bare marker exempts nothing.
+PRIVATE_MARKER_RE = re.compile(r"# private:\s*\S")
 LOOKBACK_LINES = 3
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -163,14 +166,42 @@ def _iter_test_files():
 
 def _is_marked(lines: list[str], match_index: int) -> bool:
     """True if one of the up-to-`LOOKBACK_LINES` lines immediately above
-    `lines[match_index]` contains the `# private:` marker."""
+    `lines[match_index]` carries a `# private: <reason>` marker (a bare
+    `# private:` with no reason text does not count)."""
     start = max(0, match_index - LOOKBACK_LINES)
-    return any(PRIVATE_MARKER in line for line in lines[start:match_index])
+    return any(PRIVATE_MARKER_RE.search(line) for line in lines[start:match_index])
+
+
+def _private_attr_hits(tree: ast.AST) -> list[tuple[int, str]]:
+    """`(lineno, text)` for every private attribute access in `tree`: an
+    `ast.Attribute` whose `attr` matches `PRIVATE_NAME_RE` and whose value
+    is not the bare Name `self`/`cls` (so call chains, subscripts and
+    parenthesised expressions all count), plus `getattr`/`setattr`/
+    `hasattr`/`delattr` calls whose second argument is a private-looking
+    string constant. Comments and docstrings are never parsed as code, so
+    they never count."""
+    hits: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and PRIVATE_NAME_RE.match(node.attr):
+            if isinstance(node.value, ast.Name) and node.value.id in ("self", "cls"):
+                continue
+            hits.append((node.end_lineno or node.lineno, ast.unparse(node)))
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in ATTR_BUILTINS
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and isinstance(node.args[1].value, str)
+            and PRIVATE_NAME_RE.match(node.args[1].value)
+        ):
+            hits.append((node.lineno, ast.unparse(node)))
+    return hits
 
 
 def count_private_access(path: Path) -> list[str]:
     """Return one `"rel:line: text"` entry per unmarked private-access hit
-    in `path`: an attribute access matched by `PRIVATE_ATTR_RE`, or a
+    in `path`: a private attribute access found by `_private_attr_hits`, or a
     private name imported via an `ast.ImportFrom` alias (matched on the
     alias's *imported* name, never its `asname`, via
     `PRIVATE_IMPORT_NAME_RE` -- so this catches a multi-line parenthesised
@@ -186,14 +217,12 @@ def count_private_access(path: Path) -> list[str]:
         # this module's own sample-based tests) -- fall back to its own
         # path rather than raising.
         rel = path.as_posix()
-    hits: list[tuple[int, str]] = []
-    for i, line in enumerate(lines):
-        if _is_marked(lines, i):
-            continue
-        for match in PRIVATE_ATTR_RE.finditer(line):
-            hits.append((i + 1, match.group(0)))
-
     tree = ast.parse(text, filename=str(path))
+    hits: list[tuple[int, str]] = [
+        (lineno, snippet)
+        for lineno, snippet in _private_attr_hits(tree)
+        if not _is_marked(lines, lineno - 1)
+    ]
     for node in ast.walk(tree):
         if not isinstance(node, ast.ImportFrom):
             continue
@@ -298,20 +327,77 @@ def test_forbidden_import_check_catches_package_submodule_form():
     ]
 
 
-def test_regex_ignores_self_cls_and_dunder():
-    samples = [
-        "self._x = 1",
-        "cls._y()",
-        "vmc.__class__",
-        "vmc.__dict__",
-        "machine.__class__.__name__",
-    ]
-    for sample in samples:
-        assert not PRIVATE_ATTR_RE.search(sample), sample
+def _hits(tmp_path, source):
+    tmp = tmp_path / "sample.py"
+    tmp.write_text(source, encoding="utf-8")
+    return count_private_access(tmp)
 
 
-def test_regex_matches_object_private_attr():
-    assert PRIVATE_ATTR_RE.search("sim._fault_state")
+def test_ignores_self_cls_and_dunder(tmp_path):
+    source = (
+        "class A:\n"
+        "    def f(self):\n"
+        "        self._x = 1\n"
+        "        return self._x\n"
+        "    @classmethod\n"
+        "    def g(cls):\n"
+        "        return cls._y()\n"
+        "vmc.__class__\n"
+        "vmc.__dict__\n"
+        "machine.__class__.__name__\n"
+    )
+    assert _hits(tmp_path, source) == []
+
+
+def test_matches_object_private_attr(tmp_path):
+    assert len(_hits(tmp_path, "sim._fault_state\n")) == 1
+
+
+def test_getattr_family_with_private_string_counts(tmp_path):
+    source = (
+        'getattr(vmc, "_x")\n'
+        'setattr(vmc, "_x", 1)\n'
+        'hasattr(vmc, "_x")\n'
+        'delattr(vmc, "_x")\n'
+        'getattr(vmc, "public")\n'
+        'getattr(vmc, "__class__")\n'
+    )
+    assert len(_hits(tmp_path, source)) == 4
+
+
+def test_call_chain_subscript_and_parenthesised_access_count(tmp_path):
+    source = "f()._x\nxs[0]._y\n(a or b)._z\n"
+    assert len(_hits(tmp_path, source)) == 3
+
+
+def test_multiline_chain_hit_is_reported_on_the_attribute_line(tmp_path):
+    findings = _hits(tmp_path, "value = (\n    make()\n    ._x\n)\n")
+    assert len(findings) == 1
+    assert ":3:" in findings[0]
+
+
+def test_comments_and_docstrings_are_not_counted(tmp_path):
+    source = (
+        '"""Mentions vmc._x in a docstring."""\n'
+        "# a comment about sim._y\n"
+        'text = "obj._z inside a string"\n'
+    )
+    assert _hits(tmp_path, source) == []
+
+
+def test_bare_marker_does_not_exempt(tmp_path):
+    source = "# private:\nsim._a\n# private:   \nsim._b\n"
+    assert len(_hits(tmp_path, source)) == 2
+
+
+def test_marker_with_reason_exempts_new_hit_kinds(tmp_path):
+    source = (
+        "# private: driving a defensive branch\n"
+        'getattr(vmc, "_x")\n'
+        "# private: same\n"
+        "f()._y\n"
+    )
+    assert _hits(tmp_path, source) == []
 
 
 def test_private_import_detection_via_ast(tmp_path):
