@@ -62,7 +62,20 @@ def test_check_ok_exit_0(temp_config, monkeypatch, capsys):
     assert result == 0
 
     output = capsys.readouterr().out
-    assert "0 error(s), 2 warning(s)" in output
+    lines = output.splitlines()
+    # Each slot warns, by content, that capabilities are unknown...
+    for slot in (1, 2):
+        assert (
+            f"Slot {slot}: board capabilities unknown; channel names not verified"
+            in lines
+        )
+    # ...those are the only findings (no other warning, no error)...
+    finding_lines = [ln for ln in lines if ln.startswith("Slot ") and ": OK" not in ln]
+    assert len(finding_lines) == 2
+    assert "INVALID" not in output
+    # ...and both slots validate OK.
+    assert "Slot 1 (ICE-10LB, bagged ice): OK" in lines
+    assert "Slot 2 (WATER-1GAL, water fill): OK" in lines
 
 
 def test_check_errors_exit_1(temp_config, monkeypatch, capsys):
@@ -267,4 +280,17 @@ def test_check_is_default_when_no_flag_given(temp_config, monkeypatch, capsys):
 
     output = capsys.readouterr().out
     # Output should end with the counts line (same as --check behavior)
-    assert "0 error(s), 2 warning(s)" in output
+    lines = output.splitlines()
+    # Each slot warns, by content, that capabilities are unknown...
+    for slot in (1, 2):
+        assert (
+            f"Slot {slot}: board capabilities unknown; channel names not verified"
+            in lines
+        )
+    # ...those are the only findings (no other warning, no error)...
+    finding_lines = [ln for ln in lines if ln.startswith("Slot ") and ": OK" not in ln]
+    assert len(finding_lines) == 2
+    assert "INVALID" not in output
+    # ...and both slots validate OK.
+    assert "Slot 1 (ICE-10LB, bagged ice): OK" in lines
+    assert "Slot 2 (WATER-1GAL, water fill): OK" in lines

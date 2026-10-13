@@ -11,6 +11,7 @@ always CFG-101 like a product with no table at all).
 """
 
 import asyncio
+import logging
 
 import pytest
 
@@ -455,21 +456,36 @@ async def test_stale_report_with_other_request_id_is_ignored(tmp_path, caplog):
     must be ignored outright -- logged and returned from, never
     processed -- rather than completing or failing the current sale."""
     machine, vmc, dispatcher = _vmc_with_profiles(tmp_path)
+    rec = FakeEventRecorder()
+    machine.set_event_recorder(rec)
     product = vmc.products[1]  # W-1, currently dispensing
     _start_sale(vmc, product)
     await asyncio.sleep(0)
+    in_flight_id = vmc.sale.request_id
+    assert in_flight_id is not None
+    stale_id = "some-other-sale-s-request-id"
 
     await vmc.on_dispenser_event(
         "hardware/dispenser",
-        {
-            "slot": product.slot,
-            "state": "complete",
-            "request_id": "some-other-sale-s-request-id",
-        },
+        {"slot": product.slot, "state": "complete", "request_id": stale_id},
     )
 
-    assert vmc.state == "dispensing"  # the current sale is untouched
-    assert any("request_id" in r.message for r in caplog.records)
+    # Behaviour: the current sale is untouched -- still dispensing with the
+    # same id, nothing recorded, no fault raised, no refund started.
+    assert vmc.state == "dispensing"
+    assert vmc.sale is not None and vmc.sale.request_id == in_flight_id
+    assert rec.sales == []
+    assert not vmc.faults.lockouts and not vmc.faults.machine_faults
+    assert not vmc.refunds.pending
+    # The one observable of "classified as ignored": a warning naming both
+    # the stale id and the in-flight id.
+    assert any(
+        r.levelno == logging.WARNING
+        and "Ignoring dispenser report" in r.message
+        and repr(stale_id) in r.message
+        and repr(in_flight_id) in r.message
+        for r in caplog.records
+    )
 
 
 async def test_report_before_ack_completes_sale(tmp_path):
@@ -680,7 +696,11 @@ async def test_mis_reporting_board_falls_back_to_generic_error(tmp_path, caplog)
 
     assert vmc.state == "interacting_with_user"
     assert any(e[0] == "vend_failed" and e[2]["code"] == "ICE-302" for e in rec.events)
-    assert any("no fault mapped" in r.message.lower() for r in caplog.records)
+    assert any(
+        r.levelno == logging.ERROR
+        and "No fault mapped for mechanism='water_fill' outcome='jam'" in r.message
+        for r in caplog.records
+    )
 
 
 async def test_snapshot_records_mechanism(tmp_path):
