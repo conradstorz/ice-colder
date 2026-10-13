@@ -177,6 +177,20 @@ async def settle(turns: int = 3) -> None:
         await asyncio.sleep(0)
 
 
+async def drain_pending(runner: FakeTaskRunner) -> None:
+    """Await every fire-and-forget task `runner` has launched (including any
+    they spawn in turn) until none is live. Use before a NEGATIVE assertion
+    ("no refund published", "no vend_failed row") so it cannot pass merely
+    because the work has not run yet -- a single `sleep(0)` only proves the
+    work got one loop turn. Never use on a task that is gated on something the
+    test has not released yet: it would wait for it forever."""
+    while True:
+        live = [t for t in runner.pending if not t.done()]
+        if not live:
+            return
+        await asyncio.gather(*live, return_exceptions=True)
+
+
 class FakeMqtt:
     """Records every publish() call as `(topic, payload, retain)`.
     `register` is accepted and ignored: `StatusOutputs`/`FaultService`
