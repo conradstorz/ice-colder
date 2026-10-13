@@ -1,8 +1,9 @@
 # Layer Contracts — Design Spec
 
-> **Status:** Aspirational document, version 1.0. Companion to
+> **Status:** Aspirational document, version 1.1. Companion to
 > [`docs/vending-system-reference-architecture.md`](../../vending-system-reference-architecture.md).
-> Describes the target contracts independent of the current implementation.
+> Describes the target contracts independent of the current implementation. v1.1 absorbs lessons from
+> the existing codebase (see [`docs/aspirational-gap-analysis.md`](../../aspirational-gap-analysis.md) §5).
 
 ## 0. Scope and decisions
 
@@ -14,8 +15,12 @@ This spec defines the contracts at the three boundaries of the reference archite
 
 Decisions recorded here:
 
-- **Format:** prose rules plus a message catalog with JSON examples (§6). AsyncAPI documents with
-  JSON Schema per message are the future normative form; until they exist, this document is normative.
+- **Format:** prose rules plus a message catalog with JSON examples (§6).
+  - **Normative form:** the message models in the edge codebase (Pydantic or equivalent). Each boundary's
+    JSON Schemas, and AsyncAPI documents where useful, are *generated* from those models and committed.
+  - **Drift test:** CI fails when the committed schemas differ from what the models generate.
+  - **Why not hand-written schemas:** they drift from the code; generated ones cannot.
+  - **Until the models exist,** this document is normative.
 - **Board model: hybrid.** Boards expose *domain verbs* (`dispense`, `payment.enable`) whose behavior is
   parameterized by *profiles* pushed from the edge, and also declare their raw I/O *channels* in a
   capabilities document for diagnostics and validation. Local safety interlocks on the board always win
@@ -75,6 +80,14 @@ Every message is a JSON object:
 - Each party publishes its contract version at connect. On a **major** mismatch the commanding side
   raises a fault and treats the peer as **observe-only**: it reads state and events but sends no
   operational commands.
+- **Bump checklist (required in review).** Any one of these is a **major** bump, however small the diff
+  looks:
+  - a command's params changed shape;
+  - a topic or message type was removed or renamed;
+  - a field became required;
+  - an enum member's meaning changed.
+
+  An "additive" change that alters what an existing receiver must send or expect is not additive.
 
 ### 1.4 Commands, idempotency and expiry
 
@@ -105,9 +118,16 @@ Delivery-guaranteed events (money and vend outcomes, §3.5) are also acked by th
 
 ### 1.6 Liveness
 
-Every party publishes `state.heartbeat` every **10 s** (`body: {uptime_s, contract, state}`). Three
-missed heartbeats (30 s) mark the peer dead and raise a coded fault (`COM-1xx`). Where the transport
-supports it, a last-will `state.online=false` is also registered.
+Every party publishes `state.heartbeat` every **10 s** (`body: {uptime_s, contract, state}`). Where the
+transport supports it, a last-will `state.online=false` is also registered and counts as immediate
+silence. Silence is judged against **two thresholds**:
+
+| Threshold | Default | Effect |
+|---|---|---|
+| **Stop** | 30 s (3 missed heartbeats) | Stop selling whatever the silent peer serves; a board fails safe (§2) |
+| **Alert** | 120 s | Raise the coded fault (`COM-1xx`) and notify a human |
+
+A peer that returns between the two thresholds resumes silently. A Wi-Fi blip must not page anyone.
 
 ## 2. Field device ↔ subsystem board
 
@@ -154,8 +174,10 @@ Board-level invariants:
 2. **Validate.** The edge checks the capabilities against its configuration: expected role, contract
    major version, and every channel the profiles reference. On mismatch the board is observe-only and the
    edge raises a fault.
-3. **Configure.** The edge sends `cmd.configure` with the board's profiles. Until it acks `ok`, the board
-   rejects every operational command with `reason:"unconfigured"`.
+3. **Configure.** The edge sends `cmd.configure` with the board's profiles, which the board caches.
+   Until it acks `ok`, the board rejects every operational command with `reason:"unconfigured"`, except a
+   `cmd.dispense` that carries its own inline profile (§3.3). The inline profile makes each dispense
+   self-contained, so the edge can always vend with the exact profile it validated.
 4. **Operate.** Commands, events, state and telemetry per §3.3–§3.5.
 5. **Re-announce** on reconnect, reboot, or firmware change. The edge re-validates and re-configures.
 
@@ -173,7 +195,7 @@ Board-level invariants:
 | | `cmd.payment.payout` | `{amount, sale_id}` | `evt.payout.result` |
 | | `cmd.payment.refund` | `{credit_id, amount}` | `evt.refund.result` |
 | | `cmd.cashless.approve` / `cmd.cashless.deny` | `{session, amount}` | `evt.cashless.result` |
-| Dispense | `cmd.dispense` | `{sale_id, slot, profile_ref}` | `evt.vend.result` (exactly one) |
+| Dispense | `cmd.dispense` | `{sale_id, slot, profile_ref}` or `{sale_id, slot, profile}` — an inline `profile` wins over the cached one | `evt.vend.result` (exactly one) |
 | | `cmd.abort` | `{sale_id}` | `evt.vend.result{outcome:"aborted"}` |
 | Environment | `cmd.setpoint` | `{channel, value}` | ack only |
 | | `cmd.output` | `{channel, on, max_s}` — service and test use only | ack only |
@@ -185,7 +207,7 @@ A board answers any command not in its declared capabilities with `unsupported`.
 | Type | Body | Notes |
 |---|---|---|
 | `evt.credit` | `{credit_id, method, amount, external_id?}` | Cash or coin inserted, or cashless session approved. **Delivery-guaranteed** |
-| `evt.vend.result` | `{sale_id, outcome, steps[]}` | `outcome ∈ delivered, no_drop, jam, door_open, aborted, error`. **Delivery-guaranteed** |
+| `evt.vend.result` | `{sale_id, mechanism, outcome, steps[]}` | `outcome` is drawn from the mechanism's outcome table (§5.1). **Delivery-guaranteed** |
 | `evt.payout.result`, `evt.refund.result`, `evt.cashless.result` | `{…, status, amount}` | **Delivery-guaranteed** |
 | `evt.fault` | `{code, action: raised \| cleared, detail}` | The board's own interlock and device faults |
 | `evt.input` | `{channel, value}` | Change of a declared input |
@@ -200,6 +222,15 @@ A board answers any command not in its declared capabilities with `unsupported`.
 - **One dispense at a time.** A second `cmd.dispense` while one is running gets `busy`.
 - **Delivery guarantee.** `evt.credit`, `evt.vend.result` and the payment `*.result` events are re-sent
   with the same `id` until the edge acks them; the edge dedupes by `id`.
+- **Monitor-only boards.** A board with `role: "monitor"` watches equipment the machine does not control,
+  such as a third-party ice maker (bin level, compressor, harvest cycles, its own fault lights).
+  - It declares only `direction: "in"` channels, plus outputs it *observes* (e.g. `compressor_run`) marked
+    `driven_by: null`.
+  - It accepts only the standard commands.
+  - Its `evt.fault` codes feed availability exactly like any other board's (for example, bin-empty locks
+    ice products; bin-half-full clears that lockout).
+- **Channel ids are unique within a board.** The edge attributes a reading to a board by `(id, kind)`, so
+  two boards declaring the same id under different kinds can never steal each other's readings.
 - **Board firmware comes only from the edge** via `cmd.ota.begin`. The board verifies the signature and
   SHA-256, writes the inactive A/B slot, boots it, and rolls back unless the edge confirms health within
   **5 minutes**.
@@ -281,17 +312,41 @@ A board answers any command not in its declared capabilities with `unsupported`.
 Versioned alongside the contracts, owned by the edge codebase, and published to both other layers.
 
 - **Fault codes** `DOMAIN-NNN` (e.g. `PAY-102`, `ENV-201`), each with severity
-  (`critical | product_unavailable | warning | info`), scope (`machine | product | payment`),
-  auto-clear rule, and a payment-blocking flag.
-- **Vend outcomes**, each mapped to a fault code and a refund-or-restore action.
+  (`critical | product_unavailable | warning | info`), scope (`machine | product | payment`), gate
+  (`safety | fulfillment | alert`), and auto-clear rule.
+- **Payment-blocking set:** an explicit list of codes that withdraw payment machine-wide.
+  - Membership, not severity, decides. A non-critical operator-held code such as the maintenance lease
+    belongs in it.
+  - Data-integrity codes (sale write failed, event database reset) must **never** be members.
+- **Vend outcome tables, one per mechanism.** Each row is `(mechanism, outcome) → customer result, fault`:
+
+  | Mechanism | Outcome | Customer result | Fault |
+  |---|---|---|---|
+  | `auger` | `delivered` | success | — |
+  | `auger` | `no_drop`, `jam` | fail (credit restored) | product lockout |
+  | `bagged_ice` | `delivered` | success | — |
+  | `bagged_ice` | `door_open` | **success** | door fault |
+  | `water_fill` | `delivered` | success | — |
+  | `water_fill` | `low_flow`, `no_flow` | fail (credit restored) | product or water fault |
+  | any | `aborted`, `error` | fail (credit restored) | product lockout |
+
+  An outcome a board reports that has no row for its mechanism maps to that mechanism's `error` row,
+  never an exception.
 - **Payment method strings:** `cash`, `coin`, `card`, `nfc`, `qr:<provider>`, `test`.
+- **Sale shares:** every sale event carries `shares: {method: amount}`.
+  - Shares come from consuming escrow credits first-in-first-out.
+  - A failed vend restores exactly those shares with their original methods.
+  - A ledger/escrow disagreement books `{"unknown": price}` with a warning.
+- **Test flag:** any message or persisted record describing a pending or completed sale carries `is_test`.
+  A test sale never produces a sale record, an `evt.sale`, or a recoverable uncertain-sale card.
 - **Channel kinds and units.**
 
 ### 5.2 Failure behavior
 
 | Failure | Board | Edge | Cloud |
 |---|---|---|---|
-| Board silent > 30 s | Fails safe: actuators off, payment disabled | Raises `COM-1xx`; blocks affected sales; refunds open credit | Alerts the technician |
+| Board silent > stop threshold (30 s) | Fails safe: actuators off, payment disabled | Blocks affected sales; refunds open credit | — |
+| Board silent > alert threshold (120 s) | — | Raises `COM-1xx` | Alerts the technician |
 | Edge crash mid-vend | Finishes or aborts its own cycle; re-sends the result until acked | On boot, holds the in-flight snapshot as an *uncertain sale* fault; never guesses | Shows a recovery card to the owner |
 | Cloud unreachable | — | Keeps selling cash and card; virtual payments unavailable; outbox grows | Marks the machine stale after 3 missed heartbeats |
 | Contract major mismatch | Observe-only | Raises a fault; sends no operational commands | Blocks the rollout |
@@ -303,7 +358,9 @@ Versioned alongside the contracts, owned by the edge codebase, and published to 
   tested against the other side's stub, never against the real implementation.
 - **Required scenarios:** duplicate command; expired command; lost ack with retry on the same `id`;
   power loss mid-dispense; edge silence causing board failsafe; major-version mismatch; outbox replay
-  with a gap; expired payment credit; unauthorized remote command.
+  with a gap; expired payment credit; unauthorized remote command; a vend outcome that is a customer
+  success plus a fault; an outcome unmapped for its mechanism; a test sale crashing mid-dispense (must
+  never become a recoverable sale); a peer returning between the stop and alert thresholds.
 - **Certification:** a board firmware or cloud release ships only if it passes the kit for the contract
   version it claims.
 
@@ -343,7 +400,7 @@ Versioned alongside the contracts, owned by the edge codebase, and published to 
 {"type": "ack", "corr": "5b1d…", "body": {"status": "ok"}}
 
 {"id": "0f8c…", "type": "evt.vend.result", "corr": "5b1d…",
- "body": {"sale_id": "s-20261013-0193", "outcome": "delivered",
+ "body": {"sale_id": "s-20261013-0193", "mechanism": "auger", "outcome": "delivered",
           "steps": [{"step": "run", "ms": 1790}, {"step": "drop", "ms": 412}]}}
 ```
 

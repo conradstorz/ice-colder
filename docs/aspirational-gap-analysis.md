@@ -1,6 +1,6 @@
 # Aspirational Gap Analysis — First Impression
 
-> **Status:** Version 1.0 — first impression, 2026-10-13. Compares the current monolithic codebase (branch
+> **Status:** Version 1.1 — first impression, 2026-10-13. Compares the current monolithic codebase (branch
 > `test-suite-review`, after `beb6381`) against the two aspirational documents:
 > [`vending-system-reference-architecture.md`](vending-system-reference-architecture.md) (the *architecture*)
 > and [`superpowers/specs/2026-10-13-layer-contracts-design.md`](superpowers/specs/2026-10-13-layer-contracts-design.md)
@@ -192,7 +192,8 @@ version enforcement, no transport security.
 
 ## 5. What the aspirational documents should learn from the existing work
 
-The existing code has solved real problems the aspirational documents gloss over. Proposed amendments:
+The existing code has solved real problems the aspirational documents gloss over. Proposed amendments
+(all fifteen were applied in architecture v1.1 and contracts spec v1.1):
 
 1. **Generate schemas from code.** The code-first contract (Pydantic → JSON Schema with a drift test)
    works and stays honest. The contracts spec should make *code-generated schemas* the normative form
