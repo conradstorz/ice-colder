@@ -134,6 +134,7 @@ class TestInventoryAdjust:
         assert inv.get_count("ADJ-4") == 5
 
     def test_adjust_without_hx_request_is_403(self, client, wired):
+        _cfg, _vmc, inv, _store = wired
         _add_tracked(wired, "ADJ-5", count=5)
         resp = client.post(
             "/inventory/ADJ-5/adjust",
@@ -141,6 +142,7 @@ class TestInventoryAdjust:
             data={"delta": "1"},
         )
         assert resp.status_code == 403
+        assert inv.get_count("ADJ-5") == 5
 
     def test_adjust_response_is_single_row_not_full_list(self, client, wired):
         """A successful adjust must return only the re-rendered row for
