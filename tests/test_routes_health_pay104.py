@@ -146,6 +146,16 @@ def _sales_rows(db_path):
         ).fetchall()
 
 
+def _assert_evidence_intact(pay104):
+    """A refused recovery action must leave every piece of PAY-104 crash
+    evidence untouched: snapshot file, active fault, pending-sale accessor,
+    and the sales table."""
+    assert pay104["session_path"].exists()
+    assert "PAY-104" in {f["code"] for f in pay104["vmc"].active_faults()}
+    assert pay104["machine"].pending_sale_for_recovery() is not None
+    assert _sales_rows(pay104["db_path"]) == []
+
+
 class TestFaultsListRendersPendingSale:
     def test_sku_price_and_method_shares_render(self, pay104, login_as):
         client = login_as(Role.tech)
@@ -337,7 +347,7 @@ class TestRecordSale:
         )
         resp = client.post("/health/faults/PAY-104/record-sale")
         assert resp.status_code == 403
-        assert _sales_rows(pay104["db_path"]) == []
+        _assert_evidence_intact(pay104)
 
     @pytest.mark.parametrize("role", [Role.owner, Role.tech])
     def test_200_for_role_with_clear_faults(self, pay104, login_as, role):
@@ -353,7 +363,7 @@ class TestRecordSale:
             "/health/faults/PAY-104/record-sale", headers={"HX-Request": ""}
         )
         assert resp.status_code == 403
-        assert _sales_rows(pay104["db_path"]) == []
+        _assert_evidence_intact(pay104)
 
 
 class TestDiscard:
@@ -417,6 +427,7 @@ class TestDiscard:
         client = login_as(role)
         resp = client.post("/health/faults/PAY-104/discard")
         assert resp.status_code == 403
+        _assert_evidence_intact(pay104)
 
     @pytest.mark.parametrize("role", [Role.owner, Role.tech])
     def test_200_for_role_with_clear_faults(self, pay104, login_as, role):
@@ -430,8 +441,7 @@ class TestDiscard:
         client = login_as(Role.tech)
         resp = client.post("/health/faults/PAY-104/discard", headers={"HX-Request": ""})
         assert resp.status_code == 403
-        vmc = pay104["vmc"]
-        assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
+        _assert_evidence_intact(pay104)
 
 
 class TestRecordSaleExactlyOnce:
