@@ -5,6 +5,8 @@ import pytest
 from simulators.mdb_gateway import MDBGatewaySimulator, PaymentStrategy
 from unittest.mock import AsyncMock
 
+from tests.fakes import patch_module_sleep
+
 from contracts.common import SubsystemCommand, TESTABLE_COMMANDS
 from contracts.vending_machine import PaymentRefundCommand, RefundStatus
 
@@ -189,15 +191,19 @@ class TestMDBBusResetFault:
 
     @pytest.mark.asyncio
     async def test_recover_restores_all_devices_ready(self):
-        from unittest.mock import patch
-
         sim = MDBGatewaySimulator()
         client = AsyncMock()
         await sim._on_mdb_bus_reset_activate(client)
-        with patch("asyncio.sleep", new=AsyncMock()):
+        fake_sleep = AsyncMock()
+        with patch_module_sleep("simulators.mdb_gateway", fake_sleep):
             await sim._on_mdb_bus_reset_recover(client)
         for device in sim.devices:
             assert device["state"] == "ready"
+        # One recovery delay per device, each inside the documented range.
+        low, high = sim.BUS_RESET_RECOVERY_DELAY_RANGE
+        delays = [call.args[0] for call in fake_sleep.await_args_list]
+        assert len(delays) == len(sim.devices)
+        assert all(low <= d <= high for d in delays)
 
     async def test_bus_reset_excludes_all_payment_methods(self):
         sim = MDBGatewaySimulator()

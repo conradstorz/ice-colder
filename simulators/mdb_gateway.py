@@ -86,6 +86,7 @@ class MDBGatewaySimulator(ESP32Simulator):
 
     DEVICE_STATUS_INTERVAL = _DEVICE_STATUS_INTERVAL
     MAX_CASH_ATTEMPTS = 3
+    BUS_RESET_RECOVERY_DELAY_RANGE = (10.0, 30.0)  # seconds per device to come back
     REFUND_DELAY_RANGE = (0.5, 2.0)  # seconds the changer takes to pay out
     REFUND_RESULTS_MAX = 256  # idempotency cache bound, oldest evicted first
     SUPPORTED_COMMANDS = [
@@ -424,7 +425,7 @@ class MDBGatewaySimulator(ESP32Simulator):
 
     async def _on_mdb_bus_reset_recover(self, client: aiomqtt.Client) -> None:
         for device in self.devices:
-            await asyncio.sleep(random.uniform(10.0, 30.0))
+            await asyncio.sleep(random.uniform(*self.BUS_RESET_RECOVERY_DELAY_RANGE))
             await self._set_device_state(client, device["name"], "ready")
             logger.info(f"[mdb] Device restored: {device['name']}")
         logger.info("[mdb] Fault cleared: mdb_bus_reset")
