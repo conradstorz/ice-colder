@@ -22,6 +22,7 @@ from tests.fakes import FakeTaskRunner
 from tests.dispenser_fixtures import ICE as DISPENSER_ICE
 from tests.dispenser_fixtures import WATER as DISPENSER_WATER
 from tests import route_context
+from tests.browser_harness import live_server  # noqa: F401  (fixture shared by the browser tests)
 from tests.skip_policy import MISSING_TERMINALREPORTER_MARKER, build_skip_report
 from web_interface import auth as web_auth
 from web_interface import routes
