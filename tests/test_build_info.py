@@ -86,4 +86,7 @@ def test_vmc_status_carries_version():
     from services.build_info import BUILD_INFO
     from services.mqtt_messages import VMCStatus
 
-    assert VMCStatus(state="idle").version == BUILD_INFO.commit_short
+    assert (
+        VMCStatus(state="idle", version=BUILD_INFO.commit_short).version
+        == BUILD_INFO.commit_short
+    )

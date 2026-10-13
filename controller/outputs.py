@@ -35,13 +35,14 @@ from loguru import logger
 from config.config_model import Product
 from contracts.vending_machine import PaymentRefundCommand
 from controller.task_runner import TaskRunner
-from services.availability import Availability
 from services.display_controller import DisplayController
 from services.health_monitor import HealthMonitor
 from services.mqtt_messages import PaymentEnableCommand, VMCAlert, VMCStatus
+from services.build_info import BUILD_INFO
 from services.session_store import SessionSnapshot, SessionStore
 
 if TYPE_CHECKING:
+    from services.availability import Availability
     from services.mqtt_client import MQTTClient
 
 
@@ -159,6 +160,7 @@ class StatusOutputs:
             credit_escrow=self._credit_escrow(),
             selected_product=product.name if product else None,
             uptime_seconds=self.uptime_seconds,
+            version=BUILD_INFO.commit_short,
         )
         self._tasks.fire_and_forget(self._mqtt.publish("status", status, retain=True))
 

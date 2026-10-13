@@ -57,7 +57,16 @@ class TestOtherMessageBounds:
         assert again == cmd
 
     def test_vmc_status_has_version(self):
-        assert isinstance(VMCStatus(state="idle").version, str)
+        assert VMCStatus(state="idle", version="abc1234").version == "abc1234"
+
+    def test_vmc_status_version_is_required(self):
+        with pytest.raises(ValidationError):
+            VMCStatus(state="idle")
+
+    def test_contracts_module_has_no_runtime_build_info(self):
+        import services.mqtt_messages as mm
+
+        assert not hasattr(mm, "BUILD_INFO")
 
 
 class TestVMCDepositGuard:

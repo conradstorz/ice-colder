@@ -6,14 +6,14 @@ from __future__ import annotations
 import importlib.util
 import io
 import wave
-from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from web_interface.server import app
+from tests.paths import REPO_ROOT, STATIC_DIR, TEMPLATES_DIR
 
-ROOT = Path(__file__).resolve().parent.parent
-STATIC = ROOT / "web_interface" / "static"
+ROOT = REPO_ROOT
+STATIC = STATIC_DIR
 CLICK_WAV = STATIC / "click.wav"
 GENERATOR = ROOT / "scripts" / "make_click_wav.py"
 
@@ -63,7 +63,7 @@ def test_generator_is_reproducible(tmp_path):
 
 
 FEEDBACK_JS = STATIC / "feedback.js"
-BASE_HTML = ROOT / "web_interface" / "templates" / "base.html"
+BASE_HTML = TEMPLATES_DIR / "base.html"
 
 
 def test_feedback_js_exists_and_registers_pointerdown():

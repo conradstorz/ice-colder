@@ -57,12 +57,9 @@ def main(out_path: Path) -> None:
 
 
 if __name__ == "__main__":
-    default_out = (
-        Path(__file__).resolve().parent.parent
-        / "web_interface"
-        / "static"
-        / "click.wav"
-    )
+    from _repo import repo_root
+
+    default_out = repo_root() / "web_interface" / "static" / "click.wav"
     arg_path = Path(sys.argv[1]) if len(sys.argv) > 1 else default_out
     main(arg_path)
     print(len(arg_path.read_bytes()))

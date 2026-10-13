@@ -1,7 +1,6 @@
 """Tests for config/config_model.py — Pydantic configuration model."""
 
 import json
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -16,8 +15,7 @@ from config.config_model import (
     Channel,
     ReportsConfig,
 )
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
+from tests.paths import REPO_ROOT
 
 
 def test_default_config_model():

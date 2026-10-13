@@ -20,8 +20,7 @@ from pathlib import Path
 
 import pytest
 from fastapi import APIRouter
-
-ROUTES_DIR = Path(__file__).parent.parent / "web_interface" / "routes"
+from tests.paths import ROUTES_DIR, ROUTES_PACKAGE
 
 
 def _module_name(path: Path) -> str:
@@ -155,7 +154,7 @@ def test_no_nested_functions(module_name: str) -> None:
 
 @pytest.mark.parametrize("module_name", ROUTE_MODULES)
 def test_every_module_exposes_a_router(module_name: str) -> None:
-    module = importlib.import_module(f"web_interface.routes.{module_name}")
+    module = importlib.import_module(f"{ROUTES_PACKAGE}.{module_name}")
     if module_name in HELPER_MODULES:
         routers = [n for n, v in vars(module).items() if isinstance(v, APIRouter)]
         assert not routers, (

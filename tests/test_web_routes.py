@@ -3,7 +3,6 @@
 import re
 import subprocess
 import uuid
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,6 +11,7 @@ from contracts.vending_machine import FaultCode
 from services.access import ROLE_PERMISSIONS, AccessStore, Permission, Role, User
 from services.display_controller import DisplayController
 from tests.conftest import make_client, sign_in
+from tests.paths import REPO_ROOT, SCREEN_TEMPLATES, TEMPLATES_DIR
 from tests.dom_utils import (
     find_by_id,
     heading_texts,
@@ -3392,8 +3392,8 @@ class TestPillEndpoint:
 # origin/main for the two /screen templates the Global Constraints require
 # stay untouched all through part 2.
 
-_TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "web_interface" / "templates"
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+_TEMPLATES_DIR = TEMPLATES_DIR
+_REPO_ROOT = REPO_ROOT
 
 # The fifteen routes deleted from web_interface/routes/legacy.py (task-15
 # brief, executor resolution 1), each with the real method it answered —
@@ -3513,25 +3513,32 @@ class TestScreenTemplatesUnchanged:
     false defect for an environment problem."""
 
     @pytest.mark.parametrize(
-        "relpath",
-        [
-            "web_interface/templates/screen.html",
-            "web_interface/templates/partials/screen_body.html",
-        ],
+        "relpath,legacy",
+        SCREEN_TEMPLATES,
     )
-    def test_matches_origin_main(self, relpath):
-        diff_command = ["git", "diff", "--quiet", "origin/main", "--", relpath]
-        result = subprocess.run(
-            diff_command,
-            cwd=_REPO_ROOT,
-            capture_output=True,
-        )
-        if result.returncode not in (0, 1):
+    def test_matches_origin_main(self, relpath, legacy):
+        # Compare the working-tree bytes of the current path against the
+        # first of (current, *legacy) that exists at origin/main.
+        origin_path = None
+        result = None
+        for candidate in (relpath, *legacy):
+            result = subprocess.run(
+                ["git", "show", f"origin/main:{candidate}"],
+                cwd=_REPO_ROOT,
+                capture_output=True,
+            )
+            if result.returncode == 0:
+                origin_path = candidate
+                break
+        if origin_path is None:
             pytest.skip(
-                f"git diff against origin/main failed (rc={result.returncode}): "
+                f"git show origin/main failed (rc={result.returncode}): "
                 f"{result.stderr.decode(errors='replace')}"
             )
-        assert result.returncode == 0, (
-            f"{relpath} differs from origin/main — this file must stay "
-            "byte-identical for the whole of part 2"
+        current = (_REPO_ROOT / relpath).read_bytes()
+        assert current.replace(b"\r\n", b"\n") == result.stdout.replace(
+            b"\r\n", b"\n"
+        ), (
+            f"{relpath} differs from origin/main:{origin_path} — this file "
+            "must stay byte-identical for the whole of part 2"
         )

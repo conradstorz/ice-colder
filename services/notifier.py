@@ -7,14 +7,19 @@ Currently supports logging (always) and email (when configured).
 Deduplicates alerts to avoid flooding the owner.
 """
 
+from __future__ import annotations
+
 import asyncio
 from email.message import EmailMessage
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
 from config.config_model import _is_placeholder_host, ConfigModel, Channel
-from services.health_monitor import Alert
 from services.mailer import smtp_send
+
+if TYPE_CHECKING:
+    from services.health_monitor import Alert
 
 
 class Notifier:

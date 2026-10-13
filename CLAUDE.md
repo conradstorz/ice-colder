@@ -252,10 +252,9 @@ The Tests level (`web_interface/routes/tests_level/`) lets a tech prove a subsys
 - `reports.py` - five report queries (`by_period`, `by_product`, `by_method`, `collections`, `summary`); window presets (`7d`, `30d`, `90d`, `12m`, `all`) via `resolve_window` (unknown values fall back to `30d`); CSV rendering via `render_csv` (returns **bytes**); and report filename via `report_filename`. All functions are **synchronous** and called from routes through `asyncio.to_thread`; each calls `recorder.flush()` first
 - `report_scheduler.py` - a supervised loop with a **bounded sleep of at most 60 s**, re-reading the live `config` each pass so turning the schedule off stops the next send within a minute; **per-period de-duplication** via a `report_sent` event, matching **any** stored event for the period rather than only the most recent; and **at most one catch-up** at startup for the most recent completed period, never a backlog. A failed send waits for the next due occurrence rather than retrying every pass
 
-### Hardware (`hardware/`)
+### Hardware
 
-- `mdb_interface.py` - reference/simulation stub; real MDB communication happens on the ESP32 firmware and arrives over MQTT, not this module
-- `button_panel.py`, `camera_monitor.py`, `ice_maker.py` - hardware control modules
+There is no in-process hardware code; real MDB and I/O live on the ESP32 boards and arrive over MQTT (simulated by `simulators/`).
 
 ### Docker
 

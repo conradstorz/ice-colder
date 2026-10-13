@@ -46,14 +46,17 @@ caller supplies.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
 from contracts.vending_machine import FaultCode
 from controller.fault_registry import FaultRegistry
-from controller.outputs import StatusOutputs
 from controller.task_runner import TaskRunner
 from services.mqtt_messages import VMCAlert
+
+if TYPE_CHECKING:
+    from controller.outputs import StatusOutputs
 
 # Heartbeat loss per subsystem -> registry fault (ROADMAP §5, §8). Moved
 # here from controller/vmc.py verbatim.

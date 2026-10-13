@@ -32,20 +32,23 @@ alike) with the MQTT client, in the same order the thirteen individual
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from loguru import logger
 from pydantic import ValidationError
 
 from contracts.ice_maker_monitor import ChannelReading, CommandAck
 from contracts.vending_machine import SubsystemCapabilities
-from services.availability import Availability
-from services.health_monitor import HealthMonitor
 from services.mqtt_messages import (
     HardwareIO,
     IceMakerEvent,
     PaymentStatus,
     SensorReading,
 )
+
+if TYPE_CHECKING:
+    from services.availability import Availability
+    from services.health_monitor import HealthMonitor
 
 # Events logged to the ice maker log: power cycles, ice drops, out-of-spec.
 ICE_LOG_EVENTS = {

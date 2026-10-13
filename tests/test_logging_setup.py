@@ -2,11 +2,9 @@
 
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
-
-ROOT = Path(__file__).resolve().parents[1]
+from tests.paths import REPO_ROOT as ROOT
 
 
 def run_logging_script(tmp_path, script):
