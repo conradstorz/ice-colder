@@ -682,7 +682,7 @@ class TestCatalogChangedCalled:
 
 class TestLockBadge:
     def test_locked_badge_shown_on_list_and_detail(self, client, wired):
-        from contracts.vending_machine import FaultCode
+        from ice_contracts.board.vending_machine import FaultCode
 
         _cfg, vmc, _inv, _store = wired
         _add(client, "ICE-1", name="Ice", price="2.5")

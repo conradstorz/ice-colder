@@ -24,6 +24,8 @@ jobs:
           python-version: "3.12"
       - run: uv sync --locked
       - run: uv run ruff check .
+      - run: uv run lint-imports
+      - run: uv run python scripts/check_package_isolation.py
 
   test:
     runs-on: ubuntu-latest
@@ -126,6 +128,26 @@ jobs:
             type=sha,prefix=sha-
       - id: stamp
         run: echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+      # Smoke test: build the amd64 image into the local daemon and prove the
+      # package split holds inside it. Bare `python` must be the project venv's
+      # (otherwise the import checks below prove nothing), the shared packages
+      # must import, and ice_cloud must NOT be installed in the edge image.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: ice-colder:smoke
+      - name: Smoke-test the image
+        run: |
+          docker run --rm ice-colder:smoke python -c "import sys; assert sys.prefix.startswith('/app/.venv'), sys.prefix"
+          docker run --rm ice-colder:smoke python -c "import ice_contracts, ice_common"
+          if docker run --rm ice-colder:smoke python -c "import ice_cloud" 2> cloud.err; then
+            echo "::error::ice_cloud must not be importable in the edge image"
+            exit 1
+          fi
+          cat cloud.err
+          grep -q "ModuleNotFoundError: No module named 'ice_cloud'" cloud.err
       - uses: docker/build-push-action@v6
         with:
           context: .

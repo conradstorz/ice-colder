@@ -9,11 +9,11 @@ from unittest.mock import AsyncMock
 import aiomqtt
 import pytest
 
-from config.config_model import ConfigModel
-from contracts.vending_machine import SubsystemCapabilities
-from services.build_info import BUILD_INFO
-from services.mqtt_client import PROTOCOL_VERSIONS
-from contracts.common import SubsystemCommand
+from ice_common.config_model import ConfigModel
+from ice_contracts.board.vending_machine import SubsystemCapabilities
+from ice_common.build_info import BUILD_INFO
+from ice_common.mqtt_client import PROTOCOL_VERSIONS
+from ice_contracts.board.common import SubsystemCommand
 from tests.fakes import settle
 from simulators.base import (
     CommandOutcome,

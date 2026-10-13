@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from config.config_model import ConfigModel, PhysicalDetails
-from contracts.vending_machine import SubsystemCapabilities
-from contracts.common import ChannelDescriptor
+from ice_common.config_model import ConfigModel, PhysicalDetails
+from ice_contracts.board.vending_machine import SubsystemCapabilities
+from ice_contracts.board.common import ChannelDescriptor
 from services.dispensers import DispenserProfiles, dispensers_path
 from tests.dispenser_fixtures import GOOD, ICE, WATER
 

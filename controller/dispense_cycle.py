@@ -41,7 +41,7 @@ from uuid import uuid4
 
 from loguru import logger
 
-from contracts.vending_machine import (
+from ice_contracts.board.vending_machine import (
     DispenserOutcome,
     FaultCode,
     fault_for_outcome,
@@ -51,7 +51,7 @@ from controller.fault_service import FaultService
 from controller.task_runner import TaskRunner
 from services.command_dispatcher import CommandTimeout
 from services.event_recorder import SaleRecordingFailed
-from services.mqtt_messages import DispenseCommand
+from ice_contracts.board.mqtt_messages import DispenseCommand
 from services.session_store import SessionSnapshot
 
 if TYPE_CHECKING:

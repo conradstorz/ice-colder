@@ -1,6 +1,6 @@
 """Permissive truth table and payment/enable publishing."""
 
-from config.config_model import Product
+from ice_common.config_model import Product
 from services.availability import Availability
 
 
@@ -245,7 +245,7 @@ def _machine_fault(code: str, severity: str = "critical") -> dict:
 
 
 def test_each_payment_blocking_fault_disables_payment():
-    from contracts.vending_machine import PAYMENT_BLOCKING_FAULTS
+    from ice_contracts.board.vending_machine import PAYMENT_BLOCKING_FAULTS
 
     for fault in PAYMENT_BLOCKING_FAULTS:
         a, _ = _avail()
@@ -420,7 +420,7 @@ def test_command_inhibited_payment_device_error_blocks_sale_not_payment():
 
 
 def test_payment_blocking_faults_has_seven_members_including_svc_102():
-    from contracts.vending_machine import FaultCode, PAYMENT_BLOCKING_FAULTS
+    from ice_contracts.board.vending_machine import FaultCode, PAYMENT_BLOCKING_FAULTS
 
     assert len(PAYMENT_BLOCKING_FAULTS) == 7
     assert FaultCode.SVC_102 in PAYMENT_BLOCKING_FAULTS
@@ -433,7 +433,7 @@ def test_pre_existing_six_blocking_codes_are_unchanged_by_svc_102():
     scoped to exactly the six codes that predate SVC-102 (i.e. every member
     of PAYMENT_BLOCKING_FAULTS except SVC-102).
     """
-    from contracts.vending_machine import FaultCode, PAYMENT_BLOCKING_FAULTS
+    from ice_contracts.board.vending_machine import FaultCode, PAYMENT_BLOCKING_FAULTS
 
     pre_existing = PAYMENT_BLOCKING_FAULTS - {FaultCode.SVC_102}
     assert len(pre_existing) == 6
@@ -501,7 +501,7 @@ def test_test_sale_sellable_each_non_svc_102_blocking_fault_still_blocks_alone()
     """Every OTHER payment-blocking code, on its own (no SVC-102 at all),
     still blocks a test sale -- the exemption is scoped to SVC-102, not to
     "any sale requested through test_sale_sellable"."""
-    from contracts.vending_machine import FaultCode, PAYMENT_BLOCKING_FAULTS
+    from ice_contracts.board.vending_machine import FaultCode, PAYMENT_BLOCKING_FAULTS
 
     pre_existing = PAYMENT_BLOCKING_FAULTS - {FaultCode.SVC_102}
     assert len(pre_existing) > 0

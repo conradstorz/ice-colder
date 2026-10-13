@@ -7,7 +7,7 @@ dummy "task" object with `.done()`/`.cancel()` so `cancel_all()` and the
 deadline-cancel-on-confirm/retry paths have something real to call.
 """
 
-from contracts.vending_machine import PaymentRefundResult, RefundStatus
+from ice_contracts.board.vending_machine import PaymentRefundResult, RefundStatus
 from controller.refund_protocol import RefundProtocol
 
 

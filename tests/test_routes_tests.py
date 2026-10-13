@@ -15,9 +15,9 @@ import asyncio
 
 import pytest
 
-from config.config_model import Product
-from contracts.common import COMMAND_PARAM_VALIDATORS, CommandAck
-from contracts.vending_machine import FaultCode
+from ice_common.config_model import Product
+from ice_contracts.board.common import COMMAND_PARAM_VALIDATORS, CommandAck
+from ice_contracts.board.vending_machine import FaultCode
 from services.access import ROLE_PERMISSIONS, Role
 from services.command_dispatcher import CommandTimeout
 from services.config_store import add_product
@@ -473,7 +473,7 @@ class TestContractMatch:
     """
 
     def test_matching_contract_version(self, client, wire_subsystem):
-        from contracts.vending_machine import CONTRACT_VERSION
+        from ice_contracts.board.vending_machine import CONTRACT_VERSION
 
         wire_subsystem("vending", ["ping"], contract_version=CONTRACT_VERSION)
         resp = client.get("/tests")

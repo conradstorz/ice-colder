@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from contracts.common import CommandAck, SubsystemCommand
+from ice_contracts.board.common import CommandAck, SubsystemCommand
 from services.command_dispatcher import (
     CommandDispatcher,
     CommandTimeout,
@@ -460,7 +460,7 @@ async def test_water_valve_completion_awaits_second_completed_ack():
     and request_id, phase="completed" -- the choice documented in
     simulators/vending_machine.py's _handle_water_valve. The timeout is
     derived from `seconds`, not a fixed constant."""
-    from contracts.common import COMPLETION_TIMEOUTS
+    from ice_contracts.board.common import COMPLETION_TIMEOUTS
 
     mqtt = FakeMQTTClient()
     clock = FakeClock()
@@ -506,7 +506,7 @@ async def test_power_cycle_completion_timeout_scales_with_dwell_seconds():
     """The trap called out in the design: power_cycle's dwell_seconds can
     legitimately be 300s. A fixed completion timeout would spuriously fail
     that; this proves the actual wait derives from the parameter."""
-    from contracts.common import COMPLETION_TIMEOUTS
+    from ice_contracts.board.common import COMPLETION_TIMEOUTS
 
     mqtt = FakeMQTTClient()
     clock = FakeClock()

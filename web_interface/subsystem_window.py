@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from contracts.common import STANDARD_COMMANDS
+from ice_contracts.board.common import STANDARD_COMMANDS
 
 
 def _clock(ts: float | None, tz) -> str | None:

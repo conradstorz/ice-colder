@@ -5,7 +5,7 @@ import sys
 
 from loguru import logger
 
-from services.paths import LOG_DIR, LOG_FILE
+from ice_common.paths import LOG_DIR, LOG_FILE
 
 
 def setup_logging() -> None:

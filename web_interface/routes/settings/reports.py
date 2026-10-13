@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse
 from loguru import logger
 from pydantic import ValidationError
 
-from config.config_model import ReportsConfig
+from ice_common.config_model import ReportsConfig
 from services import config_store
 from services.access import Permission
 from web_interface import auth as web_auth

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 
-from config.config_model import ConfigModel
+from ice_common.config_model import ConfigModel
 from services.health_monitor import Alert
 from services.notifier import Notifier
 

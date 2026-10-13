@@ -15,16 +15,16 @@ import time
 import aiomqtt
 from loguru import logger
 
-from contracts.common import STANDARD_COMMANDS, SubsystemCommand
-from contracts.ice_maker_monitor import (
+from ice_contracts.board.common import STANDARD_COMMANDS, SubsystemCommand
+from ice_contracts.board.ice_maker_monitor import (
     CONTRACT_VERSION,
     ChannelDescriptor,
     ChannelReading,
     MonitorCapabilities,
 )
 from simulators.base import CommandOutcome, ESP32Simulator, FaultDef
-from services.build_info import BUILD_INFO
-from services.mqtt_messages import SensorReading, IceMakerEvent
+from ice_common.build_info import BUILD_INFO
+from ice_contracts.board.mqtt_messages import SensorReading, IceMakerEvent
 
 
 # Sensor definitions: name, target when compressor on, target when off, rate constant, noise amplitude

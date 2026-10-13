@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from contracts.ice_maker_monitor import (
+from ice_contracts.board.ice_maker_monitor import (
     CONTRACT_VERSION,
     ChannelDescriptor,
     ChannelReading,
@@ -11,13 +11,13 @@ from contracts.ice_maker_monitor import (
     MonitorCapabilities,
     MonitorCommand,
 )
-from contracts.common import (
+from ice_contracts.board.common import (
     ACK_TIMEOUT_SECONDS,
     COMPLETION_TIMEOUTS,
     TESTABLE_COMMANDS,
 )
-from contracts.common import CommandAck as CommonCommandAck
-from contracts.common import SubsystemCommand
+from ice_contracts.board.common import CommandAck as CommonCommandAck
+from ice_contracts.board.common import SubsystemCommand
 from services.dispensers import validate_document
 from tests.dispenser_fixtures import GOOD, ICE, WATER
 
@@ -236,8 +236,10 @@ class TestSharedCommandChannelIdentity:
         assert CommandAck is CommonCommandAck
 
     def test_importable_from_ice_maker_monitor_module(self):
-        from contracts.ice_maker_monitor import CommandAck as ImportedAck
-        from contracts.ice_maker_monitor import MonitorCommand as ImportedCommand
+        from ice_contracts.board.ice_maker_monitor import CommandAck as ImportedAck
+        from ice_contracts.board.ice_maker_monitor import (
+            MonitorCommand as ImportedCommand,
+        )
 
         assert ImportedCommand is SubsystemCommand
         assert ImportedAck is CommonCommandAck
@@ -270,7 +272,7 @@ class TestDispenseParamsValidator:
 
     def test_dispense_params_bare_slot_message_is_one_line(self):
         """Missing fields produce one-line operator-readable message."""
-        from contracts.common import _validate_dispense_params
+        from ice_contracts.board.common import _validate_dispense_params
 
         with pytest.raises(ValueError) as exc_info:
             _validate_dispense_params({"slot": 1})
@@ -283,7 +285,7 @@ class TestDispenseParamsValidator:
 
     def test_dispense_params_mismatch_message_is_one_line(self):
         """Mechanism/profile mismatch produces one-line operator-readable message."""
-        from contracts.common import _validate_dispense_params
+        from ice_contracts.board.common import _validate_dispense_params
 
         report = validate_document(GOOD, [ICE, WATER])
         profile = report.profiles[1]  # bagged_ice
@@ -326,7 +328,7 @@ class TestTestableCommands:
             assert "set_interval" not in commands, subsystem
 
     def test_subsystems_match_the_rest_of_the_codebase(self):
-        from contracts.vending_machine import EXPECTED_SUBSYSTEMS
+        from ice_contracts.board.vending_machine import EXPECTED_SUBSYSTEMS
 
         assert set(TESTABLE_COMMANDS) == set(EXPECTED_SUBSYSTEMS)
 
@@ -352,7 +354,7 @@ class TestCommandAck:
 
 class TestMonitorCapabilitiesIdentity:
     def test_is_a_subsystem_capabilities(self):
-        from contracts.vending_machine import SubsystemCapabilities
+        from ice_contracts.board.vending_machine import SubsystemCapabilities
 
         assert issubclass(MonitorCapabilities, SubsystemCapabilities)
 
@@ -386,7 +388,7 @@ class TestMonitorCapabilitiesIdentity:
         assert caps.hardware_id == "02:aa:bb:cc:dd:ee"
 
     def test_contract_version_is_1_4_0(self):
-        from contracts.ice_maker_monitor import CONTRACT_VERSION
+        from ice_contracts.board.ice_maker_monitor import CONTRACT_VERSION
 
         assert CONTRACT_VERSION == "1.4.0"
 

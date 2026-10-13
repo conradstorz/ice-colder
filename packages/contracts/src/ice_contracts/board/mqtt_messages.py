@@ -14,8 +14,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, model_validator
 
-from contracts.vending_machine import FaultCode, Mechanism
-from services.dispenser_schema import SlotProfile
+from ice_contracts.board.vending_machine import FaultCode, Mechanism
+from ice_contracts.board.dispenser_schema import SlotProfile
 
 
 def _utc_now() -> datetime:

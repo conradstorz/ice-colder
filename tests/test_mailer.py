@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from config.config_model import EmailGatewayConfig
+from ice_common.config_model import EmailGatewayConfig
 from services.mailer import SMTP_TIMEOUT_SECONDS, send_email, smtp_send
 
 

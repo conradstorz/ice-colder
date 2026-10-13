@@ -33,10 +33,10 @@ import annotated_types
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from pydantic.fields import FieldInfo
 
-from config.config_model import ConfigModel, Product
-from contracts.common import CHANNEL_ID_PATTERN
-from contracts.vending_machine import SubsystemCapabilities
-from services.dispenser_schema import (
+from ice_common.config_model import ConfigModel, Product
+from ice_contracts.board.common import CHANNEL_ID_PATTERN
+from ice_contracts.board.vending_machine import SubsystemCapabilities
+from ice_contracts.board.dispenser_schema import (
     CHANNEL_ID_DESCRIPTION,
     MECHANISM_FOR_KIND,
     SlotProfile,
@@ -44,7 +44,7 @@ from services.dispenser_schema import (
     sense_channels,
     worst_case_seconds,
 )
-from services.paths import fsync_dir
+from ice_common.paths import fsync_dir
 
 _SLOT_PROFILE_ADAPTER = TypeAdapter(SlotProfile)
 

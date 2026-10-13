@@ -32,18 +32,18 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
-from config.config_model import Product
-from contracts.vending_machine import PaymentRefundCommand
+from ice_common.config_model import Product
+from ice_contracts.board.vending_machine import PaymentRefundCommand
 from controller.task_runner import TaskRunner
 from services.display_controller import DisplayController
 from services.health_monitor import HealthMonitor
-from services.mqtt_messages import PaymentEnableCommand, VMCAlert, VMCStatus
-from services.build_info import BUILD_INFO
+from ice_contracts.board.mqtt_messages import PaymentEnableCommand, VMCAlert, VMCStatus
+from ice_common.build_info import BUILD_INFO
 from services.session_store import SessionSnapshot, SessionStore
 
 if TYPE_CHECKING:
     from services.availability import Availability
-    from services.mqtt_client import MQTTClient
+    from ice_common.mqtt_client import MQTTClient
 
 
 class StatusOutputs:

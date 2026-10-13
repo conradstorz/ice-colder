@@ -8,9 +8,9 @@ board's declared capabilities.
 
 import pytest
 
-from config.config_model import Product
-from contracts.vending_machine import SubsystemCapabilities
-from contracts.common import ChannelDescriptor
+from ice_common.config_model import Product
+from ice_contracts.board.vending_machine import SubsystemCapabilities
+from ice_contracts.board.common import ChannelDescriptor
 from services.dispensers import (
     Finding,
     ValidationReport,

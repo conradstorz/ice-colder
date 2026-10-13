@@ -15,8 +15,8 @@ import aiomqtt
 from loguru import logger
 from pydantic import BaseModel
 
-from config.config_model import MQTTConfig
-from services.mqtt_messages import VMCOnline
+from ice_common.config_model import MQTTConfig
+from ice_contracts.board.mqtt_messages import VMCOnline
 
 
 # Config string -> aiomqtt protocol enum. aiomqtt defaults to V311; the VMC

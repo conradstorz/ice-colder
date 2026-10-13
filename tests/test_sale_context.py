@@ -10,7 +10,7 @@ import dataclasses
 
 import pytest
 
-from config.config_model import Product
+from ice_common.config_model import Product
 from controller.sale_context import SaleContext
 
 PRODUCT = Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0, kind="ice")

@@ -14,7 +14,7 @@ Codes used:
 - ENV_101: severity=warning, scope=machine -> plain machine fault.
 """
 
-from contracts.vending_machine import FAULT_TABLE, FaultCode, Severity
+from ice_contracts.board.vending_machine import FAULT_TABLE, FaultCode, Severity
 from controller.fault_registry import FaultRegistry, severity_level
 
 
@@ -71,7 +71,7 @@ def test_raise_vend_failed_severity_does_not_lock():
 def test_raise_machine_scope_product_unavailable_severity_is_machine_fault():
     spec = FAULT_TABLE[FaultCode.PAY_101]
     assert spec.severity is Severity.product_unavailable
-    from contracts.vending_machine import Scope
+    from ice_contracts.board.vending_machine import Scope
 
     assert spec.scope is Scope.machine
 

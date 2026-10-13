@@ -18,9 +18,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from config.config_model import ConfigModel, PhysicalDetails, Product
-from contracts.common import ChannelDescriptor
-from contracts.vending_machine import FaultCode, SubsystemCapabilities
+from ice_common.config_model import ConfigModel, PhysicalDetails, Product
+from ice_contracts.board.common import ChannelDescriptor
+from ice_contracts.board.vending_machine import FaultCode, SubsystemCapabilities
 from controller.dispenser_gate import DispenserProfileGate
 from services.dispensers import DispenserProfiles
 from tests.dispenser_fixtures import profiles_for, render_profiles_toml

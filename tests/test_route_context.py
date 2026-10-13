@@ -4,7 +4,7 @@ cleanup): the snapshot/restore module the autouse fixture in
 between tests.
 """
 
-from config.config_model import ConfigModel
+from ice_common.config_model import ConfigModel
 from controller.machine import Machine
 from tests import route_context
 from web_interface import context

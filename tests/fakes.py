@@ -38,7 +38,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from config.config_model import ConfigModel, PhysicalDetails, Product
+from ice_common.config_model import ConfigModel, PhysicalDetails, Product
 from controller.machine import Machine
 from controller.task_runner import TaskRunner
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for

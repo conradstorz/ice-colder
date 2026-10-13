@@ -7,7 +7,7 @@ is the one test that does import VMC, purely to check SUBSCRIPTIONS names
 real VMC attributes and that the registered topic set hasn't changed.
 """
 
-from contracts.ice_maker_monitor import CONTRACT_VERSION
+from ice_contracts.board.ice_maker_monitor import CONTRACT_VERSION
 from controller.mqtt_inbound import SUBSCRIPTIONS, TelemetryRouter
 
 

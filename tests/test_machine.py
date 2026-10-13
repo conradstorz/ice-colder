@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import asyncio
 
-from config.config_model import ConfigModel, PhysicalDetails, Product
-from contracts.vending_machine import FaultCode
+from ice_common.config_model import ConfigModel, PhysicalDetails, Product
+from ice_contracts.board.vending_machine import FaultCode
 from controller.machine import Machine
 from controller.mqtt_inbound import SUBSCRIPTIONS
 from controller.vmc import VMC

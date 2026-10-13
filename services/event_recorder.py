@@ -28,14 +28,14 @@ from typing import Optional
 
 from loguru import logger
 
-from services.mqtt_messages import (
+from ice_contracts.board.mqtt_messages import (
     HardwareIO,
     IceMakerEvent,
     PaymentEvent,
     SensorReading,
     SubsystemHeartbeat,
 )
-from services.paths import DATA_DIR
+from ice_common.paths import DATA_DIR
 
 # Must match simulators/base.py HEARTBEAT_INTERVAL
 _HEARTBEAT_INTERVAL = 10.0

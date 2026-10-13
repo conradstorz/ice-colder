@@ -4,7 +4,7 @@ import sys
 
 from loguru import logger
 
-from config.config_model import ConfigModel
+from ice_common.config_model import ConfigModel
 from controller.machine import Machine
 from services.dispensers import (
     DispenserProfiles,

@@ -50,10 +50,10 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
-from contracts.vending_machine import FaultCode
+from ice_contracts.board.vending_machine import FaultCode
 from controller.fault_registry import FaultRegistry
 from controller.task_runner import TaskRunner
-from services.mqtt_messages import VMCAlert
+from ice_contracts.board.mqtt_messages import VMCAlert
 
 if TYPE_CHECKING:
     from controller.outputs import StatusOutputs

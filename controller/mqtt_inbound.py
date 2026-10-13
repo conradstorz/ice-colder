@@ -37,9 +37,9 @@ from typing import TYPE_CHECKING
 from loguru import logger
 from pydantic import ValidationError
 
-from contracts.ice_maker_monitor import ChannelReading, CommandAck
-from contracts.vending_machine import SubsystemCapabilities
-from services.mqtt_messages import (
+from ice_contracts.board.ice_maker_monitor import ChannelReading, CommandAck
+from ice_contracts.board.vending_machine import SubsystemCapabilities
+from ice_contracts.board.mqtt_messages import (
     HardwareIO,
     IceMakerEvent,
     PaymentStatus,

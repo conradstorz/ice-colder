@@ -5,7 +5,7 @@ import json
 import threading
 
 import pytest
-from config.config_model import Product
+from ice_common.config_model import Product
 from services.inventory_manager import InventoryManager
 
 
@@ -172,7 +172,7 @@ def test_save_is_thread_safe_under_concurrent_callers(tmp_inventory):
 
 
 async def test_decrement_without_persist_then_save_async(tmp_path):
-    from config.config_model import Product
+    from ice_common.config_model import Product
     from services.inventory_manager import InventoryManager
 
     path = tmp_path / "inventory.json"

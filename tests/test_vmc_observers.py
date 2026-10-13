@@ -19,8 +19,8 @@ import asyncio
 
 import pytest
 
-from config.config_model import Product
-from contracts.vending_machine import FaultCode
+from ice_common.config_model import Product
+from ice_contracts.board.vending_machine import FaultCode
 from tests.fakes import FakeMqtt, FakeTaskRunner, drain_pending, vmc_with_profiles
 
 ICE_1 = Product(sku="ICE-1", slot=0, kind="ice")

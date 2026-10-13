@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from contracts.generate import CONTRACTS, schema_for
+from ice_contracts.generate import CONTRACTS, schema_for
 
 _CASES = [
     (contract, name, schema_dir, models[name])

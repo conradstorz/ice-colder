@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from services.task_lifecycle import run_until_primary_exits
-from services.task_supervisor import supervise
+from ice_common.task_lifecycle import run_until_primary_exits
+from ice_common.task_supervisor import supervise
 from tests.fakes import settle
 
 

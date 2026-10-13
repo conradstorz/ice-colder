@@ -23,12 +23,12 @@ from pathlib import Path
 from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from config.config_model import ConfigModel
+from ice_common.config_model import ConfigModel
 from loguru import logger
 
-from contracts.vending_machine import FaultCode
+from ice_contracts.board.vending_machine import FaultCode
 from services.access import AccessStore
-from services.paths import LOG_FILE
+from ice_common.paths import LOG_FILE
 from web_interface import auth as web_auth
 from web_interface import templating
 

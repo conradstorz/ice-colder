@@ -4,16 +4,16 @@ import time
 from collections.abc import Callable
 from loguru import logger
 from services.payment_gateway_manager import PaymentGatewayManager
-from services.mqtt_messages import (
+from ice_contracts.board.mqtt_messages import (
     PaymentEvent,
     ButtonPress,
 )
-from contracts.vending_machine import (
+from ice_contracts.board.vending_machine import (
     DispenserOutcome,
     FaultCode,
     PaymentRefundResult,
 )
-from config.config_model import ConfigModel, Product
+from ice_common.config_model import ConfigModel, Product
 from services.availability import Availability
 from services.inventory_manager import InventoryManager
 from services.session_store import SessionSnapshot

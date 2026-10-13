@@ -4,7 +4,7 @@ import json
 
 from pydantic import SecretStr
 
-from config.config_model import ConfigModel
+from ice_common.config_model import ConfigModel
 from services.config_store import add_product, save_config
 
 
@@ -34,7 +34,7 @@ def test_save_config_round_trips_through_model_validate(tmp_path):
 
 
 def test_save_config_keeps_rolling_backup(tmp_path):
-    from config.config_model import Person
+    from ice_common.config_model import Person
 
     # First save with config A (owner name="Alice")
     cfg_a = ConfigModel()
@@ -97,7 +97,7 @@ def test_add_product_uses_module_config_path(tmp_path, monkeypatch):
 
 
 def test_delete_product_removes_and_saves(tmp_path):
-    from config.config_model import Product
+    from ice_common.config_model import Product
     from services.config_store import delete_product
 
     cfg = ConfigModel()
@@ -151,7 +151,7 @@ def test_save_config_env_var_overrides_config_path_attribute(tmp_path, monkeypat
 
 def test_add_product_auto_assigns_lowest_free_slot(tmp_path, monkeypatch):
     import services.config_store as cs
-    from config.config_model import Product
+    from ice_common.config_model import Product
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
     cfg = ConfigModel()
@@ -176,7 +176,7 @@ def test_add_product_with_explicit_slot(tmp_path, monkeypatch):
 
 def test_add_product_with_taken_slot_fails(tmp_path, monkeypatch):
     import services.config_store as cs
-    from config.config_model import Product
+    from ice_common.config_model import Product
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
     cfg = ConfigModel()
@@ -187,7 +187,7 @@ def test_add_product_with_taken_slot_fails(tmp_path, monkeypatch):
 
 def test_update_product_can_change_slot(tmp_path, monkeypatch):
     import services.config_store as cs
-    from config.config_model import Product
+    from ice_common.config_model import Product
     from services.config_store import update_product
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
@@ -227,7 +227,7 @@ def test_add_product_rejects_negative_slot(tmp_path, monkeypatch):
 
 def test_update_product_rejects_negative_slot(tmp_path, monkeypatch):
     import services.config_store as cs
-    from config.config_model import Product
+    from ice_common.config_model import Product
     from services.config_store import update_product
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
@@ -239,7 +239,7 @@ def test_update_product_rejects_negative_slot(tmp_path, monkeypatch):
 
 def test_update_product_rejects_slot_already_in_use(tmp_path, monkeypatch):
     import services.config_store as cs
-    from config.config_model import Product
+    from ice_common.config_model import Product
     from services.config_store import update_product
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
@@ -254,7 +254,7 @@ def test_update_product_rejects_slot_already_in_use(tmp_path, monkeypatch):
 
 def test_delete_product_leaves_other_slots_unchanged(tmp_path, monkeypatch):
     import services.config_store as cs
-    from config.config_model import Product
+    from ice_common.config_model import Product
     from services.config_store import delete_product
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")

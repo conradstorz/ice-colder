@@ -45,13 +45,13 @@ from typing import Optional, Protocol
 
 from loguru import logger
 
-from contracts.common import (
+from ice_contracts.board.common import (
     ACK_TIMEOUT_SECONDS,
     COMPLETION_TIMEOUTS,
     CommandAck,
     SubsystemCommand,
 )
-from contracts.vending_machine import DispenserOutcome
+from ice_contracts.board.vending_machine import DispenserOutcome
 
 # Terminal `hardware/dispenser` states — see DispenserOutcome. Any other
 # `state` string is an intermediate step (motor_active, fill_complete, ...)

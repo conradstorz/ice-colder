@@ -1055,7 +1055,7 @@ class TestTransfer:
 
 class TestMachineReport:
     def test_report_names_users_devices_and_code_count(self, store):
-        from config.config_model import ConfigModel
+        from ice_common.config_model import ConfigModel
 
         owner = store.create_user("Ada", "ada@example.com", Role.owner, "1379")
         store.create_user("Lee", "lee@example.com", Role.loader, "2468")
@@ -1070,7 +1070,7 @@ class TestMachineReport:
         assert "20" in report
 
     def test_report_never_contains_a_hash(self, store):
-        from config.config_model import ConfigModel
+        from ice_common.config_model import ConfigModel
 
         store.create_user("Ada", "ada@example.com", Role.owner, "1379")
         report = store.machine_report(ConfigModel())

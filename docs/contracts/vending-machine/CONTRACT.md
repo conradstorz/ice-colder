@@ -7,7 +7,7 @@ heartbeat/LWT rules and interlock MUSTs follow in Phase B (`ROADMAP.md`
 §4–§5, §9).
 
 The `schemas/*.schema.json` files are generated from
-`contracts/vending_machine.py` by `uv run python -m contracts.generate` and
+`packages/contracts/src/ice_contracts/board/vending_machine.py` by `uv run python -m ice_contracts.generate` and
 are the normative payload definitions.
 
 ## Topic map
@@ -16,7 +16,7 @@ All topics are relative to `vmc/{machine_id}/`.
 
 | Topic | Direction | Payload | Notes |
 |---|---|---|---|
-| `hardware/dispenser` | ESP32 → VMC | `DispenserStatus` (`services/mqtt_messages.py`) | `state` is a [`DispenserOutcome`](schemas/dispenser_outcome.schema.json) for terminal states, or a [`DispenseStep`](schemas/dispense_step.schema.json) (`agitate`/`fill`/`release`) for an intermediate step. `request_id` (v0.6.0) echoes the command-channel `dispense` request for both test runs and production sales (v1.0.0: production sales moved onto the command channel too — see `cmd/vending` below). `detail` (v1.0.0, optional) carries board-supplied text, e.g. `"stall 4.2 A"` or `"412 pulses"` |
+| `hardware/dispenser` | ESP32 → VMC | `DispenserStatus` (`packages/contracts/src/ice_contracts/board/mqtt_messages.py`) | `state` is a [`DispenserOutcome`](schemas/dispenser_outcome.schema.json) for terminal states, or a [`DispenseStep`](schemas/dispense_step.schema.json) (`agitate`/`fill`/`release`) for an intermediate step. `request_id` (v0.6.0) echoes the command-channel `dispense` request for both test runs and production sales (v1.0.0: production sales moved onto the command channel too — see `cmd/vending` below). `detail` (v1.0.0, optional) carries board-supplied text, e.g. `"stall 4.2 A"` or `"412 pulses"` |
 | `cmd/payment/refund` | VMC → gateway | [`PaymentRefundCommand`](schemas/payment_refund_command.schema.json) | QoS 1; `request_id` unique per refund |
 | `cmd/payment/refund/ack` | gateway → VMC | [`PaymentRefundResult`](schemas/payment_refund_result.schema.json) | QoS 1; exactly one per command; repeated `request_id` re-sends the stored result, never pays twice |
 | `cmd/payment/enable` | VMC → gateway | `PaymentEnableCommand {accept: bool}` | QoS 1; not retained; the VMC republishes on connect and whenever the `mdb` subsystem returns |
@@ -24,14 +24,14 @@ All topics are relative to `vmc/{machine_id}/`.
 | `cmd/vending/ack` | ESP32 → VMC | [`CommandAck`](schemas/command_ack.schema.json) | QoS 1; exactly one per command, correlated by `request_id`; idempotency: ESP32 keeps the last 32 `request_id`s and replays cached acks on duplicates |
 | `cmd/mdb` | VMC → gateway | [`SubsystemCommand`](schemas/subsystem_command.schema.json) | QoS 1; test and control commands; **answer deadline 10 seconds** |
 | `cmd/mdb/ack` | gateway → VMC | [`CommandAck`](schemas/command_ack.schema.json) | QoS 1; exactly one per command, correlated by `request_id`; idempotency: gateway keeps the last 32 `request_id`s and replays cached acks on duplicates |
-| `alerts` | VMC → world | `VMCAlert` (`services/mqtt_messages.py`) | carries a [`FaultCode`](schemas/fault_code.schema.json) when one applies |
+| `alerts` | VMC → world | `VMCAlert` (`packages/contracts/src/ice_contracts/board/mqtt_messages.py`) | carries a [`FaultCode`](schemas/fault_code.schema.json) when one applies |
 | `capabilities/<subsystem>` | subsystem → VMC | [`SubsystemCapabilities`](schemas/subsystem_capabilities.schema.json) | retained; MUST be published on connect and re-published on any change; `firmware`, `hardware_id`, `ip` identify the board; `commands` lists all commands the firmware supports (test, control, and production together) |
 
 ## Command channel
 
 Every subsystem (vending, mdb, ice_maker) subscribes to `vmc/<machine_id>/cmd/<subsystem>` and acknowledges on `vmc/<machine_id>/cmd/<subsystem>/ack`. The request and ack payloads are defined by the shared models [`SubsystemCommand`](schemas/subsystem_command.schema.json) and [`CommandAck`](schemas/command_ack.schema.json).
 
-A subsystem **must answer within 10 seconds** (`ACK_TIMEOUT_SECONDS` in `contracts/common.py`), or the VMC treats it as a timeout and may retry with the same `request_id`. **This 10-second deadline is for the ACK only.** Read "Two timeouts: accept vs. complete" below — as of v0.6.0 the ack for a long-running command means "I started this," not "I finished this."
+A subsystem **must answer within 10 seconds** (`ACK_TIMEOUT_SECONDS` in `packages/contracts/src/ice_contracts/board/common.py`), or the VMC treats it as a timeout and may retry with the same `request_id`. **This 10-second deadline is for the ACK only.** Read "Two timeouts: accept vs. complete" below — as of v0.6.0 the ack for a long-running command means "I started this," not "I finished this."
 
 ### Two timeouts: accept vs. complete (v0.6.0)
 
@@ -90,7 +90,7 @@ An unknown command answered with status `unsupported`.
 
 ### Vending-specific commands
 
-- **`dispense`** — parameters: [`DispenseCommand`](schemas/dispense_command.schema.json): `{slot: int, mechanism: "bagged_ice" | "water_fill", profile: <SlotProfile>}` — all three required, no defaults; `profile` is the slot's whole validated [`SlotProfile`](schemas/slot_profile.schema.json) (`services/dispenser_schema.py`), carried with every dispense so the board is stateless about configuration. `profile.mechanism` must equal `mechanism` or the payload is rejected. Runs the slot's mechanism one cycle, publishing `hardware/dispenser` with the outcome — identical whether this is a test run or a production sale (v1.0.0: there is no longer a separate production path). Acked and idempotent, like every other command channel command. **Long-running (v0.6.0): acks `phase="accepted"` as soon as the mechanism actually starts, then runs it; completion is the terminal `hardware/dispenser` report — see the completion table above.**
+- **`dispense`** — parameters: [`DispenseCommand`](schemas/dispense_command.schema.json): `{slot: int, mechanism: "bagged_ice" | "water_fill", profile: <SlotProfile>}` — all three required, no defaults; `profile` is the slot's whole validated [`SlotProfile`](schemas/slot_profile.schema.json) (`packages/contracts/src/ice_contracts/board/dispenser_schema.py`), carried with every dispense so the board is stateless about configuration. `profile.mechanism` must equal `mechanism` or the payload is rejected. Runs the slot's mechanism one cycle, publishing `hardware/dispenser` with the outcome — identical whether this is a test run or a production sale (v1.0.0: there is no longer a separate production path). Acked and idempotent, like every other command channel command. **Long-running (v0.6.0): acks `phase="accepted"` as soon as the mechanism actually starts, then runs it; completion is the terminal `hardware/dispenser` report — see the completion table above.**
 - **`water_valve`** — parameters: `{seconds: int, range 1–10}`. Opens the water valve for the specified duration. Validation failure (`seconds` outside [1, 10]) returns ack status `rejected` with detail message. **Long-running (v0.6.0): acks `phase="accepted"` once the valve has actually opened, then a second, `phase="completed"` ack once it has closed again — see the completion table above.**
 
 ### MDB-specific commands
@@ -105,7 +105,7 @@ A command whose parameters fail the contract's bounds (e.g., `water_valve` with 
 
 ### Capabilities advertisement
 
-`SubsystemCapabilities.commands` lists **every** command the firmware supports, including the three standard commands (`ping`, `self_test`, `force_report`), the actuator commands (`dispense`, `water_valve`, `bill_acceptor_test`, `coin_return_test`, `card_reader_test`), and any control commands (`set_interval` for the ice maker). The VMC maintains a server-side allowlist, `TESTABLE_COMMANDS` in `contracts/common.py`, containing exactly the standard commands and the test-mode actuator commands; this allowlist is separate from what firmware advertises. A test button in the dashboard appears only for a command that is both allowlisted and advertised by the subsystem, ensuring firmware that ignores the command channel remains unaffected and a crafted request cannot invoke a control command through the test UI.
+`SubsystemCapabilities.commands` lists **every** command the firmware supports, including the three standard commands (`ping`, `self_test`, `force_report`), the actuator commands (`dispense`, `water_valve`, `bill_acceptor_test`, `coin_return_test`, `card_reader_test`), and any control commands (`set_interval` for the ice maker). The VMC maintains a server-side allowlist, `TESTABLE_COMMANDS` in `packages/contracts/src/ice_contracts/board/common.py`, containing exactly the standard commands and the test-mode actuator commands; this allowlist is separate from what firmware advertises. A test button in the dashboard appears only for a command that is both allowlisted and advertised by the subsystem, ensuring firmware that ignores the command channel remains unaffected and a crafted request cannot invoke a control command through the test UI.
 
 ## Semantics fixed in 1.0.0 (breaking)
 
@@ -130,11 +130,11 @@ What broke, precisely:
 
 Full detail on the new wire shapes this introduced:
 
-- **`DispenseCommand`** (`services/mqtt_messages.py`) is the `dispense`
+- **`DispenseCommand`** (`packages/contracts/src/ice_contracts/board/mqtt_messages.py`) is the `dispense`
   command's params: `{slot: int (ge=0), mechanism: "bagged_ice" |
   "water_fill", profile: SlotProfile}` — all three required, no defaults.
   `profile` is the slot's whole validated `SlotProfile`
-  (`services/dispenser_schema.py`, plan 1), so the board is stateless
+  (`packages/contracts/src/ice_contracts/board/dispenser_schema.py`, plan 1), so the board is stateless
   about configuration and a `dispensers.toml` save mid-vend cannot affect
   an in-flight command. A payload whose `profile.mechanism` does not
   match `mechanism` is rejected.
@@ -188,7 +188,7 @@ Full detail on the new wire shapes this introduced:
 
 ## Semantics fixed in 0.7.0
 
-- `ChannelDescriptor` (`contracts/common.py`) gains two optional fields:
+- `ChannelDescriptor` (`packages/contracts/src/ice_contracts/board/common.py`) gains two optional fields:
   `direction` (`"input"` | `"output"`, default `"input"`) — output means
   something the board drives (motor, solenoid, relay, compressor), input
   means something it senses — and `driven_by` (`str | None`, default

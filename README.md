@@ -44,8 +44,8 @@ The startup lifecycle helpers can be imported without loading the VMC,
 configuration, or web application:
 
 ```python
-from services.task_lifecycle import run_until_primary_exits
-from services.task_supervisor import supervise
+from ice_common.task_lifecycle import run_until_primary_exits
+from ice_common.task_supervisor import supervise
 
 async def run():
     await run_until_primary_exits(

@@ -5,7 +5,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from config.config_model import (
+from ice_common.config_model import (
     ConfigModel,
     Product,
     PhysicalDetails,
@@ -174,7 +174,7 @@ def test_duplicate_slots_rejected():
 
 class TestDispenseTimeout:
     def test_default_is_120_seconds(self):
-        from config.config_model import ConfigModel
+        from ice_common.config_model import ConfigModel
 
         assert ConfigModel().physical.dispense_timeout_seconds == 120.0
 
@@ -182,7 +182,7 @@ class TestDispenseTimeout:
         import pytest
         from pydantic import ValidationError
 
-        from config.config_model import ConfigModel
+        from ice_common.config_model import ConfigModel
 
         with pytest.raises(ValidationError):
             ConfigModel.model_validate({"physical": {"dispense_timeout_seconds": 5}})
@@ -198,7 +198,7 @@ class TestDispenseTimeout:
 
 def test_product_kind_defaults_to_other_and_validates():
     from pydantic import ValidationError
-    from config.config_model import Product
+    from ice_common.config_model import Product
 
     assert Product().kind == "other"
     assert Product(kind="ice").kind == "ice"

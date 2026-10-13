@@ -27,19 +27,19 @@ import aiomqtt
 from loguru import logger
 from pydantic import BaseModel, ValidationError
 
-from config.config_model import ConfigModel
-from contracts.common import (
+from ice_common.config_model import ConfigModel
+from ice_contracts.board.common import (
     STANDARD_COMMANDS,
     ChannelDescriptor,
     CommandAck,
     SubsystemCommand,
 )
-from contracts.vending_machine import (
+from ice_contracts.board.vending_machine import (
     CONTRACT_VERSION as VENDING_CONTRACT_VERSION,
     SubsystemCapabilities,
 )
-from services.build_info import BUILD_INFO
-from services.mqtt_client import PROTOCOL_VERSIONS
+from ice_common.build_info import BUILD_INFO
+from ice_common.mqtt_client import PROTOCOL_VERSIONS
 
 
 RECOVERY_RANGES: dict[str, tuple[float, float]] = {

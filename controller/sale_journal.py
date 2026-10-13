@@ -12,8 +12,8 @@ from collections.abc import Callable
 
 from loguru import logger
 
-from config.config_model import Product
-from contracts.vending_machine import FaultCode
+from ice_common.config_model import Product
+from ice_contracts.board.vending_machine import FaultCode
 
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
 

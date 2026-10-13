@@ -21,15 +21,15 @@ import sys
 import pytest
 from pydantic import SecretStr
 
-from config.config_model import ConfigModel, Product
-from contracts.common import CommandAck
+from ice_common.config_model import ConfigModel, Product
+from ice_contracts.board.common import CommandAck
 from controller.machine import Machine
 from controller.vmc import VMC
 from tests.fakes import FakeTaskRunner
 from services.command_dispatcher import CommandDispatcher
 from services.health_monitor import HealthMonitor
-from services.mqtt_client import MQTTClient
-from services.mqtt_messages import (
+from ice_common.mqtt_client import MQTTClient
+from ice_contracts.board.mqtt_messages import (
     ButtonPress,
     DispenserStatus,
     PaymentEvent,

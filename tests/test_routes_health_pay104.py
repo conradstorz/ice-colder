@@ -32,7 +32,7 @@ import threading
 import httpx
 import pytest
 
-from contracts.vending_machine import FaultCode
+from ice_contracts.board.vending_machine import FaultCode
 from controller.machine import Machine
 from services.access import ROLE_PERMISSIONS, Permission, Role
 from services.config_store import add_product

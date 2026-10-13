@@ -6,8 +6,8 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
-from config.config_model import ConfigModel
-from contracts.vending_machine import FaultCode
+from ice_common.config_model import ConfigModel
+from ice_contracts.board.vending_machine import FaultCode
 from services.access import ROLE_PERMISSIONS, AccessStore, Permission, Role, User
 from services.display_controller import DisplayController
 from tests.conftest import make_client, sign_in
@@ -937,7 +937,7 @@ class TestHealthTabIdentity:
         return hm
 
     def test_vmc_row(self, client):
-        from services.build_info import BUILD_INFO
+        from ice_common.build_info import BUILD_INFO
 
         self._hm()
         r = client.get("/health")
@@ -993,7 +993,7 @@ class TestLogsContent:
     # the identical behavior against the new URL.
 
     def test_log_path_matches_logging_setup(self):
-        from services.paths import LOG_FILE
+        from ice_common.paths import LOG_FILE
         from web_interface import context as r
 
         assert r.LOG_PATH == LOG_FILE

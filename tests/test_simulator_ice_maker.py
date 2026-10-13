@@ -480,7 +480,7 @@ class TestAckedBounded:
 
     @pytest.mark.asyncio
     async def test_acked_stays_bounded(self):
-        from contracts.ice_maker_monitor import MonitorCommand
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
         from simulators.base import IDEMPOTENCY_CACHE_SIZE
 
         sim = IceMakerSimulator(machine_id="vmc-test")
@@ -497,7 +497,7 @@ class TestAckedBounded:
 
     @pytest.mark.asyncio
     async def test_acked_keeps_most_recent_entries(self):
-        from contracts.ice_maker_monitor import MonitorCommand
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
         from simulators.base import IDEMPOTENCY_CACHE_SIZE
 
         sim = IceMakerSimulator(machine_id="vmc-test")
@@ -522,7 +522,7 @@ class TestMonitorContract:
         return IceMakerSimulator(machine_id="vmc-test")
 
     def test_capabilities_lists_all_channels_and_commands(self):
-        from contracts.ice_maker_monitor import CONTRACT_VERSION
+        from ice_contracts.board.ice_maker_monitor import CONTRACT_VERSION
 
         caps = self._sim().build_capabilities()
         assert caps.contract_version == CONTRACT_VERSION
@@ -568,7 +568,7 @@ class TestMonitorContract:
 
     @pytest.mark.asyncio
     async def test_power_cycle_ok_then_lockout(self):
-        from contracts.ice_maker_monitor import MonitorCommand
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
 
         sim = self._sim()
         published = []
@@ -600,7 +600,7 @@ class TestMonitorContract:
 
     @pytest.mark.asyncio
     async def test_duplicate_request_id_reacks_without_reexecuting(self):
-        from contracts.ice_maker_monitor import MonitorCommand
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
 
         sim = self._sim()
         published = []
@@ -624,7 +624,7 @@ class TestMonitorContract:
 
     @pytest.mark.asyncio
     async def test_set_interval_changes_publish_interval(self):
-        from contracts.ice_maker_monitor import MonitorCommand
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
 
         sim = self._sim()
         sim.publish = AsyncMock()
@@ -641,7 +641,7 @@ class TestMonitorContract:
 
     @pytest.mark.asyncio
     async def test_set_interval_republishes_capabilities(self):
-        from contracts.ice_maker_monitor import MonitorCommand
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
 
         sim = self._sim()
         published = []
@@ -664,7 +664,7 @@ class TestMonitorContract:
 
     @pytest.mark.asyncio
     async def test_force_report_publishes_snapshot_and_acks(self):
-        from contracts.ice_maker_monitor import MonitorCommand
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
 
         sim = self._sim()
         published = []
@@ -701,8 +701,11 @@ class TestMonitorContract:
 
 class TestIceMakerCapabilitiesIdentity:
     def test_identity_fields_present(self):
-        from contracts.ice_maker_monitor import CONTRACT_VERSION, MonitorCapabilities
-        from services.build_info import BUILD_INFO
+        from ice_contracts.board.ice_maker_monitor import (
+            CONTRACT_VERSION,
+            MonitorCapabilities,
+        )
+        from ice_common.build_info import BUILD_INFO
         from simulators.ice_maker import IceMakerSimulator
 
         caps = IceMakerSimulator(machine_id="vmc-t").build_capabilities()
@@ -735,7 +738,7 @@ class TestStandardCommandsFromSharedLoop:
         which *does* publish the 12-topic sensor/telemetry snapshot — so
         this assertion distinguishes a genuine ping from that fallback.
         """
-        from contracts.ice_maker_monitor import MonitorCommand
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
 
         sim = IceMakerSimulator(machine_id="vmc-test")
         published = []
@@ -761,7 +764,7 @@ class TestStandardCommandsFromSharedLoop:
         """Against the pre-Task-8 fallback, `ack.result` is always None
         (the old `else` branch's CommandAck never set `result`), so
         `ack.result is not None` alone already fails there."""
-        from contracts.ice_maker_monitor import MonitorCommand
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
 
         sim = IceMakerSimulator(machine_id="vmc-test")
         sim.publish = AsyncMock()
@@ -786,7 +789,7 @@ class TestStandardCommandsFromSharedLoop:
         """Guards against a stale snapshot: activate a fault mid-flight and
         confirm the check that fails is the one just activated, not a fixed
         or empty set (the vacuous-fixture risk the brief warns about)."""
-        from contracts.ice_maker_monitor import MonitorCommand
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
 
         sim = IceMakerSimulator(machine_id="vmc-test")
         sim.publish = AsyncMock()
@@ -808,7 +811,7 @@ class TestStandardCommandsFromSharedLoop:
         touched `client.publish` on a force_report — only `self.publish`
         (for the sensor/telemetry snapshot and the ack) — so this assertion
         is false against the old implementation."""
-        from contracts.ice_maker_monitor import MonitorCommand
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
 
         sim = IceMakerSimulator(machine_id="vmc-test")
         sim.publish = AsyncMock()
@@ -832,7 +835,7 @@ class TestPowerCycleIdempotency:
         appended to `_pending_events`) rather than just comparing two acks:
         three identical requests must produce that side effect exactly
         once."""
-        from contracts.ice_maker_monitor import MonitorCommand
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
 
         sim = IceMakerSimulator(machine_id="vmc-test")
         sim.publish = AsyncMock()

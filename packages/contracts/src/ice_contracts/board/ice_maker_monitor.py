@@ -14,10 +14,10 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from contracts.common import CHANNEL_ID_PATTERN, ChannelDescriptor, _utc_now
-from contracts.common import CommandAck as CommandAck
-from contracts.common import SubsystemCommand as MonitorCommand
-from contracts.vending_machine import SubsystemCapabilities
+from ice_contracts.board.common import CHANNEL_ID_PATTERN, ChannelDescriptor, _utc_now
+from ice_contracts.board.common import CommandAck as CommandAck
+from ice_contracts.board.common import SubsystemCommand as MonitorCommand
+from ice_contracts.board.vending_machine import SubsystemCapabilities
 
 # 1.1.0 -> 1.2.0: minor bump. The command/ack models (MonitorCommand,
 # CommandAck) move to contracts/common.py as SubsystemCommand/CommandAck and

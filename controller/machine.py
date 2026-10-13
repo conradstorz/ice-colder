@@ -50,8 +50,8 @@ from dataclasses import asdict
 
 from loguru import logger
 
-from config.config_model import ConfigModel
-from contracts.vending_machine import FaultCode
+from ice_common.config_model import ConfigModel
+from ice_contracts.board.vending_machine import FaultCode
 from controller import mqtt_inbound
 from controller.dispense_cycle import DispenseCycle
 from controller.dispenser_gate import DispenserProfileGate

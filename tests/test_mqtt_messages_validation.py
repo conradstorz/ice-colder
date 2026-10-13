@@ -3,10 +3,15 @@
 import pytest
 from pydantic import ValidationError
 
-from config.config_model import ConfigModel
+from ice_common.config_model import ConfigModel
 from controller.machine import Machine
 from services.dispensers import validate_document
-from services.mqtt_messages import ButtonPress, DispenseCommand, PaymentEvent, VMCStatus
+from ice_contracts.board.mqtt_messages import (
+    ButtonPress,
+    DispenseCommand,
+    PaymentEvent,
+    VMCStatus,
+)
 from tests.dispenser_fixtures import GOOD, ICE, WATER
 
 
@@ -64,7 +69,7 @@ class TestOtherMessageBounds:
             VMCStatus(state="idle")
 
     def test_contracts_module_has_no_runtime_build_info(self):
-        import services.mqtt_messages as mm
+        import ice_contracts.board.mqtt_messages as mm
 
         assert not hasattr(mm, "BUILD_INFO")
 

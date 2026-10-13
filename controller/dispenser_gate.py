@@ -25,9 +25,9 @@ from collections.abc import Callable
 
 from loguru import logger
 
-from config.config_model import Product
-from contracts.vending_machine import FaultCode, SubsystemCapabilities
-from services.dispenser_schema import MECHANISM_FOR_KIND, SlotProfile
+from ice_common.config_model import Product
+from ice_contracts.board.vending_machine import FaultCode, SubsystemCapabilities
+from ice_contracts.board.dispenser_schema import MECHANISM_FOR_KIND, SlotProfile
 from services.dispensers import DispenserProfiles
 
 

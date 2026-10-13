@@ -18,8 +18,8 @@ import re
 
 import pytest
 
-from config.config_model import ConfigModel
-from services.dispenser_schema import AgitateStep
+from ice_common.config_model import ConfigModel
+from ice_contracts.board.dispenser_schema import AgitateStep
 from services.dispensers import validate_document
 from services.dispensers_doc import (
     _Table,
@@ -202,7 +202,7 @@ def test_on_during_comment_lists_owning_mechanism_steps():
     text = EXAMPLE_PATH.read_text(encoding="utf-8")
     assert "Steps for bagged_ice: agitate, fill, release." in text
 
-    from services.dispenser_schema import Accessory, WaterFillProfile
+    from ice_contracts.board.dispenser_schema import Accessory, WaterFillProfile
 
     lines: list[str] = []
     _render_table(

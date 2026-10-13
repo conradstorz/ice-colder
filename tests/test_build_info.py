@@ -4,7 +4,7 @@
 import subprocess
 from pathlib import Path
 
-from services.build_info import BuildInfo, resolve_build_info
+from ice_common.build_info import BuildInfo, resolve_build_info
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -83,8 +83,8 @@ def test_unknown_when_nothing(tmp_path):
 
 
 def test_vmc_status_carries_version():
-    from services.build_info import BUILD_INFO
-    from services.mqtt_messages import VMCStatus
+    from ice_common.build_info import BUILD_INFO
+    from ice_contracts.board.mqtt_messages import VMCStatus
 
     assert (
         VMCStatus(state="idle", version=BUILD_INFO.commit_short).version

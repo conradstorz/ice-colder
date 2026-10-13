@@ -15,8 +15,8 @@ import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
-from contracts.common import CommandAck
-from config.config_model import ConfigModel, PhysicalDetails, Product
+from ice_contracts.board.common import CommandAck
+from ice_common.config_model import ConfigModel, PhysicalDetails, Product
 from services.dispensers import DispenserProfiles
 
 ICE = Product(sku="ICE-10LB", slot=1, kind="ice")

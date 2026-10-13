@@ -13,7 +13,7 @@ import pytest
 import yaml
 
 import services.startup_dispensers as startup_dispensers
-from config.config_model import ConfigModel
+from ice_common.config_model import ConfigModel
 from services.dispensers import DispenserProfiles
 from tests.paths import REPO_ROOT
 

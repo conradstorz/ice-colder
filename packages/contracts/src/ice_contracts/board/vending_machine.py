@@ -17,7 +17,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from contracts.common import ChannelDescriptor, _utc_now
+from ice_contracts.board.common import ChannelDescriptor, _utc_now
 
 # 0.4.0 -> 0.5.0: minor bump, absorbing two additive changes. (1) SVC-102
 # (new FaultCode + FAULT_TABLE entry + PAYMENT_BLOCKING_FAULTS member,

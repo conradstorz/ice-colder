@@ -10,7 +10,7 @@ import copy
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from services.dispenser_schema import (
+from ice_contracts.board.dispenser_schema import (
     MECHANISM_FOR_KIND,
     SlotProfile,
     drive_channels,

@@ -10,10 +10,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pydantic import ValidationError
 
-from config.config_model import ConfigModel
-from contracts.common import SubsystemCommand
-from contracts.vending_machine import DispenserOutcome, SubsystemCapabilities
-from services.dispenser_schema import (
+from ice_common.config_model import ConfigModel
+from ice_contracts.board.common import SubsystemCommand
+from ice_contracts.board.vending_machine import DispenserOutcome, SubsystemCapabilities
+from ice_contracts.board.dispenser_schema import (
     Accessory,
     AgitateStep,
     BaggedIceProfile,
@@ -24,7 +24,7 @@ from services.dispenser_schema import (
     WaterFillTimed,
 )
 from services.dispensers import validate_document
-from services.mqtt_messages import DispenseCommand
+from ice_contracts.board.mqtt_messages import DispenseCommand
 from simulators.vending_machine import VendingMachineSimulator
 from tests.dispenser_fixtures import GOOD, ICE, WATER
 from tests.fakes import patch_module_sleep, settle

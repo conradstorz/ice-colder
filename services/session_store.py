@@ -20,7 +20,7 @@ from typing import Optional
 
 from loguru import logger
 
-from services.paths import DATA_DIR
+from ice_common.paths import DATA_DIR
 
 SESSION_PATH = DATA_DIR / "session.json"
 

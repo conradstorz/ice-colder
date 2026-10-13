@@ -10,7 +10,7 @@ The RPi decides *what* to show; the ESP32 decides *how* to render it.
 
 from loguru import logger
 
-from services.mqtt_messages import DisplayMode, DisplayCommand
+from ice_contracts.board.mqtt_messages import DisplayMode, DisplayCommand
 
 # Maps VMC FSM states to display modes
 _STATE_TO_MODE: dict[str, DisplayMode] = {

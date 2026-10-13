@@ -13,7 +13,7 @@ global around each test.
 
 import re
 
-from contracts.vending_machine import FaultCode
+from ice_contracts.board.vending_machine import FaultCode
 from services.access import ROLE_PERMISSIONS, Permission, Role
 from services.config_store import add_product
 from web_interface import context
