@@ -12,8 +12,8 @@ from pathlib import Path
 VMC_PATH = Path(__file__).resolve().parent.parent / "controller" / "vmc.py"
 
 # Budgets. Lower them when a stage lands; never raise them.
-CLASS_CODE_LINES = 697  # set to the measured value in Step 3
-FILE_LINES = 1582
+CLASS_CODE_LINES = 683  # set to the measured value in Step 3
+FILE_LINES = 1501
 LARGEST_METHOD_CODE_LINES = 64
 
 

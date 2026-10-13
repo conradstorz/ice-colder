@@ -1994,9 +1994,9 @@ async def test_expire_session_is_a_noop_while_dispensing():
     escrow_before = vmc.credit_escrow
 
     # The session timeout is cancelled synchronously on entering
-    # `dispensing` (`on_dispense_product` -> `_cancel_session_timeout`), so
+    # `dispensing` (`on_dispense_product` -> `SessionTimer.cancel`), so
     # a `FakeTaskRunner` never has a live "session_timeout" call to fire
-    # here -- but `_cancel_session_timeout` only prevents a *pending*
+    # here -- but `SessionTimer.cancel` only prevents a *pending*
     # callback from ever running; it cannot un-run one that the real event
     # loop had already resumed and begun executing synchronously the
     # instant before cancellation, so this guard (and this direct call
