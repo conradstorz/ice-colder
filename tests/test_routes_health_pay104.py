@@ -462,8 +462,12 @@ class TestRecordSaleExactlyOnce:
         never lets the second request's `pending_sale_for_recovery()`
         check run until the first request has fully finished (write +
         clear) inside the lock, so `record_sale` is only ever entered
-        once, the rendezvous wait times out harmlessly, and exactly one
-        row is written.
+        once (asserted via the arrival count, since the idempotent SQL
+        insert would yield one row even without the lock), the rendezvous
+        wait times out harmlessly, and exactly one row is written. The
+        bounded wait is kept: it is what makes the unfixed code reliably
+        reach two arrivals, and no public observable exists to await
+        instead.
         """
         vmc = pay104["vmc"]
         machine = pay104["machine"]
@@ -507,19 +511,23 @@ class TestRecordSaleExactlyOnce:
                 async_client.post("/health/faults/PAY-104/record-sale"),
             )
 
-        # The row count is the finding this test exists to prove -- assert
-        # it first, so an unfixed run fails on the duplicate itself rather
-        # than on a downstream symptom (e.g. the loser of the clear_fault
-        # race getting a 500 because the other request already cleared
-        # the fault out from under it).
+        # The arrival count is what actually guards `_pay104_lock`:
+        # record_sale(..., idempotent=True) dedupes on (ts, sku) in SQL, so
+        # the row count is 1 even with the lock removed. With the lock, the
+        # second request finds nothing pending and never reaches
+        # record_sale (n == 1); without it both race past the check (n == 2).
+        # Asserted first so an unfixed run fails on the race itself rather
+        # than on a downstream symptom (e.g. a 500 for the loser of the
+        # clear_fault race).
+        assert arrivals["n"] == 1, (
+            f"expected exactly one request to reach record_sale, "
+            f"got {arrivals['n']} (the _pay104_lock did not serialize them)"
+        )
         rows = _sales_rows(pay104["db_path"])
         assert len(rows) == 1, (
             f"expected exactly one sale row from two concurrent requests, "
             f"got {len(rows)}"
         )
-        # arrivals["n"] may be 1 (fixed: lock serialized the two requests,
-        # the second found nothing pending and never called record_sale)
-        # or 2 (unfixed: both raced past the check and both wrote).
 
         for resp in responses:
             assert resp.status_code == 200
