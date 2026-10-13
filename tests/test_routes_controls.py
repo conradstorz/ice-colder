@@ -129,17 +129,12 @@ class TestPostCommands:
         assert resp.status_code == 200
         assert "Shutdown command sent" in resp.text
 
-    def test_post_reset_with_no_vmc_returns_error_message(self, client):
+    def test_post_reset_with_no_vmc_returns_error_message(self, client, monkeypatch):
         """When vmc_instance is None, reset fails gracefully."""
-        assert context.vmc_instance is not None  # The fixture wires one
+        monkeypatch.setattr(context, "vmc_instance", None)
         resp = client.post("/controls/reset")
-        # The wired VMC is in idle, not error
         assert resp.status_code == 200
-        assert (
-            "Reset ignored" in resp.text
-            or "Reset complete" in resp.text
-            or "Reset failed" in resp.text
-        )
+        assert "Reset failed: VMC not available" in resp.text
 
     def test_post_unknown_command_does_not_500(self, client):
         resp = client.post("/controls/unknown")
@@ -171,15 +166,21 @@ class TestPostCommands:
         """Loader is 403 even with HX-Request header."""
         client = login_as(Role.loader, name="Loader")
         # The client already has HX-Request header set
-        resp = client.post("/controls/restart")
+        vmc = context.vmc_instance
+        vmc.error_occurred()
+        resp = client.post("/controls/reset")
         assert resp.status_code == 403
+        assert vmc.state == "error"
 
     def test_post_secretary_gets_403_even_with_htmx_header(self, login_as):
         """Secretary is 403 even with HX-Request header."""
         client = login_as(Role.secretary, name="Secretary")
         # The client already has HX-Request header set
-        resp = client.post("/controls/restart")
+        vmc = context.vmc_instance
+        vmc.error_occurred()
+        resp = client.post("/controls/reset")
         assert resp.status_code == 403
+        assert vmc.state == "error"
 
     def test_post_owner_can_execute_commands(self, client):
         """Owner can execute all commands."""
@@ -206,7 +207,19 @@ class TestResetStateLogic:
 
         resp = client.post("/controls/reset")
         assert resp.status_code == 200
-        # Reset returns a message based on VMC state
+        assert "Reset ignored" in resp.text
+        assert vmc.state == "idle"
+
+    def test_reset_from_error_returns_vmc_to_idle(self, client):
+        """The real effect of reset: a VMC in error goes back to idle."""
+        vmc = context.vmc_instance
+        vmc.error_occurred()
+        assert vmc.state == "error"
+
+        resp = client.post("/controls/reset")
+        assert resp.status_code == 200
+        assert "Reset complete" in resp.text
+        assert vmc.state == "idle"
 
 
 class TestConfirmUrlRoundTrip:
