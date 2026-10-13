@@ -24,6 +24,8 @@ testpaths = ["tests"]
 # Tooling only. The production image installs with --no-dev, so nothing here
 # may be imported by the application.
 dev = [
+    "import-linter>=2.15",
+    "libcst>=1.9.0",
     "pytest-asyncio>=1.3.0",
     "ruff>=0.11.2",
 ]
