@@ -46,7 +46,7 @@ AUTOMATIC_COMMANDS: frozenset[str] = frozenset({"ping", "self_test", "force_repo
 # own -- see contracts/vending_machine.py's EXPECTED_SUBSYSTEMS and
 # contracts/ice_maker_monitor.py's own CONTRACT_VERSION.
 #
-# No existing code computes this: web_interface/routes/health.py (the
+# No existing code computes this: web_interface/routes/health/subsystems.py (the
 # closest sibling, and the one the task brief points at for "reuse its
 # contract-mismatch determination") only ever *displays* the raw
 # contract_version string -- it has no mismatch predicate to reuse. This

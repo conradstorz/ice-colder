@@ -458,7 +458,7 @@ class TestRecordSaleExactlyOnce:
         for a second arrival before actually inserting, which widens the
         race window so the unfixed code reliably shows the bug rather
         than depending on scheduler luck. Against the fixed code, the
-        module-level `_pay104_lock` in web_interface/routes/health.py
+        module-level `_pay104_lock` in web_interface/routes/health/recovery.py
         never lets the second request's `pending_sale_for_recovery()`
         check run until the first request has fully finished (write +
         clear) inside the lock, so `record_sale` is only ever entered

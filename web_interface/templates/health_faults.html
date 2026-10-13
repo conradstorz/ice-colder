@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Faults · Vending Machine{% endblock %}
 {% block body %}
-{# `oob` is only ever true when routes/health.py's POST /health/faults/{key}/clear
+{# `oob` is only ever true when routes/health/faults.py's POST /health/faults/{key}/clear
    renders this same block standalone (Template.blocks["body"]) to refresh the
    whole list out-of-band after a clear -- the ordinary page GET always passes
    oob=False, since marking this div hx-swap-oob on a normal (boosted or full)

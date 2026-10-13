@@ -487,7 +487,7 @@ class TestEmailReport:
             )
             return True
 
-        monkeypatch.setattr(routes.reports, "send_email", fake_send_email)
+        monkeypatch.setattr(routes.reports.email, "send_email", fake_send_email)
         return calls
 
     def _configure_gateway(self, cfg):
@@ -575,7 +575,7 @@ class TestEmailReport:
         async def failing_send_email(*args, **kwargs):
             return False
 
-        monkeypatch.setattr(routes.reports, "send_email", failing_send_email)
+        monkeypatch.setattr(routes.reports.email, "send_email", failing_send_email)
 
         resp = client.post("/reports/email", data={"report": "product", "range": "30d"})
         assert resp.status_code == 200

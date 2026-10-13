@@ -49,7 +49,9 @@ ROUTER_ATTR = {"auth": "public"}
 
 # Helper sub-modules: shared code with no routes, so no router of their own.
 # The guard checks instead that no route decorator appears in them.
-HELPER_MODULES = frozenset({"products.helpers", "settings.secrets"})
+HELPER_MODULES = frozenset(
+    {"products.helpers", "reports.compute", "reports.helpers", "settings.secrets"}
+)
 
 _ROUTE_DECORATOR_ATTRS = frozenset(
     {
@@ -77,6 +79,7 @@ def test_discovery_finds_route_modules():
     assert "health.faults" in ROUTE_MODULES
     assert "settings.secrets" in ROUTE_MODULES
     assert "products.helpers" in ROUTE_MODULES
+    assert "reports.compute" in ROUTE_MODULES
 
 
 _FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
