@@ -268,3 +268,28 @@ class FakeAvailability:
 
     def set_transaction_certain(self, certain: bool) -> None:
         self.transaction_certain.append(certain)
+
+
+class _AsyncioWithSleep:
+    """Stand-in for the `asyncio` module that overrides only `sleep`."""
+
+    def __init__(self, sleep):
+        self.sleep = sleep
+
+    def __getattr__(self, name):
+        import asyncio
+
+        return getattr(asyncio, name)
+
+
+def patch_module_sleep(module_name: str, sleep):
+    """Patch `sleep` as seen by ONE module, leaving `asyncio.sleep` intact.
+
+    `patch("asyncio.sleep", ...)` mutates the shared asyncio module, so it
+    would also replace sleep for pytest-asyncio and the loop's own helpers.
+    Instead, rebind the module's own `asyncio` global to a proxy that
+    delegates everything but `sleep`. Use as a context manager.
+    """
+    from unittest.mock import patch
+
+    return patch(f"{module_name}.asyncio", new=_AsyncioWithSleep(sleep))
