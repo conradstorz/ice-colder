@@ -109,12 +109,18 @@ async def test_schedule_fires_callback_after_delay_and_returns_task():
     runner = TaskRunner()
     runner.attach(asyncio.get_running_loop())
     fired = []
+    done = asyncio.Event()
 
-    task = runner.schedule(0.02, lambda: fired.append(True))
+    def callback():
+        fired.append(True)
+        done.set()
+
+    task = runner.schedule(0.02, callback)
     assert task is not None
     # The callback must not fire before the delay elapses.
     assert fired == []
-    await asyncio.sleep(0.05)
+    # Bounded wait: returns as soon as the callback fires, no fixed margin.
+    await asyncio.wait_for(done.wait(), timeout=5)
     assert fired == [True]
 
 
