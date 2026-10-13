@@ -5,6 +5,7 @@ This ensures future tests cannot silently skip without an explicit policy entry.
 
 The declared legitimate-skip policy has exactly two categories:
 - MQTT integration skips when no broker is reachable on localhost:1883
+  (local runs only: forbidden when ICE_COLDER_REQUIRE_BROKER=1, as in CI)
 - POSIX-only file-mode skips on a non-POSIX host
 
 Note: The browser opt-in tests are deliberately NOT in this policy. CI sets
@@ -12,7 +13,13 @@ ICE_COLDER_BROWSER_TESTS=1 and installs Chrome + Node, so they MUST run in CI.
 If they skip there, the build should fail — the guard ensures this.
 """
 
+import os
 import re
+
+# Set to "1" in CI (ci.yml starts a mosquitto broker there). When set, the
+# "MQTT broker not available" skip is NOT legitimate: the e2e money-path tests
+# must run, so a skip means the broker step is broken and the build fails.
+REQUIRE_BROKER_ENV = "ICE_COLDER_REQUIRE_BROKER"
 
 
 # Legitimate skip reasons grouped by category, with reason patterns for matching.
@@ -26,16 +33,27 @@ LEGITIMATE_SKIP_REASONS = {
 }
 
 
-def is_skip_legitimate(skip_reason: str) -> bool:
+def broker_required() -> bool:
+    """True when the environment demands a live broker (CI)."""
+    return os.environ.get(REQUIRE_BROKER_ENV) == "1"
+
+
+def is_skip_legitimate(skip_reason: str, require_broker: bool | None = None) -> bool:
     """Check if a skip reason is in the legitimate skip policy.
 
     Args:
         skip_reason: The skip reason string to validate.
+        require_broker: When true, the MQTT-broker skip is rejected. Defaults
+            to the ICE_COLDER_REQUIRE_BROKER environment flag.
 
     Returns:
         True if the reason matches a legitimate skip pattern, False otherwise.
     """
-    for pattern in LEGITIMATE_SKIP_REASONS.values():
+    if require_broker is None:
+        require_broker = broker_required()
+    for name, pattern in LEGITIMATE_SKIP_REASONS.items():
+        if require_broker and name == "mqtt_broker_unavailable":
+            continue
         if pattern.fullmatch(skip_reason):
             return True
     return False
