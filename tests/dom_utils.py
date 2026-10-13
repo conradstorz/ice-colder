@@ -82,3 +82,33 @@ def parse_elements(html: str) -> list[Element]:
 
 def find_by_id(elements: list[Element], element_id: str) -> list[Element]:
     return [e for e in elements if e.attrs.get("id") == element_id]
+
+
+def title_text(html: str) -> str:
+    """Text of the document's <title> element. Fails loudly if absent, so a
+    missing/renamed title can never silently satisfy a containment check."""
+    import re
+
+    match = re.search(r"<title[^>]*>(.*?)</title>", html, flags=re.DOTALL)
+    assert match is not None, "no <title> element in the response"
+    return match.group(1).strip()
+
+
+def main_html(html: str) -> str:
+    """Inner HTML of <main>. Fails loudly (never slices from -1) if the
+    element cannot be located."""
+    import re
+
+    match = re.search(r"<main[^>]*>(.*)</main>", html, flags=re.DOTALL)
+    assert match is not None, "no <main>...</main> in the response"
+    return match.group(1)
+
+
+def heading_texts(html: str, tag: str = "h1") -> list[str]:
+    """Whitespace-normalised text of every <tag> inside <main>."""
+    import re
+
+    found = re.findall(
+        rf"<{tag}\b[^>]*>(.*?)</{tag}>", main_html(html), flags=re.DOTALL
+    )
+    return [" ".join(re.sub(r"<[^>]+>", "", f).split()) for f in found]

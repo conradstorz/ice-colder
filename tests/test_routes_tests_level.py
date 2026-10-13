@@ -19,6 +19,7 @@ Fixtures come from tests/conftest.py.
 import pytest
 from re import DOTALL, findall as re_findall, search as re_search
 from services.access import Role
+from tests.dom_utils import heading_texts, main_html, title_text
 
 
 class TestTestsPermissionGate:
@@ -68,11 +69,10 @@ class TestTestsShellRendering:
         )
 
     def test_title_tag(self, client):
-        """Page <title> includes Tests."""
+        """Page <title> element starts with Tests."""
         response = client.get("/tests")
         assert response.status_code == 200
-        assert "<title>" in response.text
-        assert "Tests" in response.text
+        assert title_text(response.text).startswith("Tests")
 
 
 class TestTestsBodyContent:
@@ -90,11 +90,10 @@ class TestTestsBodyContent:
         assert "Subsystem tests will arrive in a later release" not in response.text
 
     def test_heading_present(self, client):
-        """Body contains Tests heading."""
+        """<main> contains an <h1> reading Tests."""
         response = client.get("/tests")
         assert response.status_code == 200
-        assert "<h1" in response.text
-        assert ">Tests<" in response.text
+        assert heading_texts(response.text, "h1") == ["Tests"]
 
 
 class TestTestsNoActionsMixin:
@@ -211,9 +210,7 @@ class TestTestsLevel:
         response = client.get("/tests")
         assert response.status_code == 200
         # Check for card styling in the body
-        body = response.text[
-            response.text.find("<main") : response.text.find("</main>")
-        ]
+        body = main_html(response.text)
         assert "bg-white" in body or "rounded-xl" in body, (
             "Tests should use card styling"
         )
@@ -222,7 +219,5 @@ class TestTestsLevel:
         """Body contains no polling trigger attributes (no every Xs)."""
         response = client.get("/tests")
         assert response.status_code == 200
-        body = response.text[
-            response.text.find("<main") : response.text.find("</main>")
-        ]
+        body = main_html(response.text)
         assert "every " not in body, "Tests must not use polling triggers"
