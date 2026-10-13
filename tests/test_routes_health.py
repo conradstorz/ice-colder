@@ -571,6 +571,8 @@ class TestFaultClearFlow:
         client = login_as(Role.loader)
         resp = client.post(f"/health/faults/{key}/clear")
         assert resp.status_code == 403
+        # Post-condition: the fault remains active after the failed clear attempt
+        assert vmc.faults.is_locked(key)
 
     def test_product_scoped_fault_with_dotted_sku_gets_a_selector_safe_dom_id(
         self, wired, login_as
@@ -635,6 +637,8 @@ class TestFaultClearFlow:
         client = login_as(Role.tech)
         resp = client.post(f"/health/faults/{key}/clear", headers={"HX-Request": ""})
         assert resp.status_code == 403
+        # Post-condition: the fault remains active after the failed clear attempt
+        assert vmc.faults.is_locked(key)
 
     def test_post_clear_unknown_key_is_404(self, login_as):
         client = login_as(Role.tech)
