@@ -47,7 +47,7 @@ async def test_standby_from_interacting_with_user_refunds_and_idles():
     machine.attach_to_loop(asyncio.get_running_loop())
     client = RecordingClient()
     machine.set_mqtt_client(client)
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 1.00
 
@@ -106,7 +106,7 @@ async def test_standby_from_error_refunds_and_stays_in_error():
     machine.attach_to_loop(asyncio.get_running_loop())
     client = RecordingClient()
     machine.set_mqtt_client(client)
-    vmc.machine.set_state("error")
+    vmc.set_state("error")
     vmc.credit_escrow = 1.50
 
     granted, reason = machine.lease.begin_standby("user-1", "sess-1")
@@ -131,7 +131,7 @@ async def test_standby_refused_while_dispensing():
     machine.attach_to_loop(asyncio.get_running_loop())
     client = RecordingClient()
     machine.set_mqtt_client(client)
-    vmc.machine.set_state("dispensing")
+    vmc.set_state("dispensing")
     vmc.credit_escrow = 3.00
 
     granted, reason = machine.lease.begin_standby("user-1", "sess-1")

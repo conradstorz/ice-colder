@@ -203,7 +203,7 @@ class TestSaleRunner:
 
             def _on_state_change(state: str) -> None:
                 # _fail_vend's "no sellable products" branch forces idle
-                # via machine.set_state(), which (like _expire_session's
+                # via set_state(), which (like _expire_session's
                 # own use of it elsewhere) bypasses after_state_change, so
                 # that particular transition is never observed here --
                 # the explicit append below (after `await waiter`) covers
