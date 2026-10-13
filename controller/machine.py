@@ -210,7 +210,6 @@ class Machine:
             in_maintenance=lambda: self.lease.hold is not None,
             availability=lambda: self.availability,
             inventory=lambda: self.inventory,
-            recorder=lambda: self.event_recorder,
             dispense_factory=self._dispense_factory,
             journal=self._journal,
         )
