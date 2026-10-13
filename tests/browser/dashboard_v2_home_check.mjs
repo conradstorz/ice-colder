@@ -121,6 +121,25 @@ async function main() {
       return r.result.value;
     };
 
+    // Bounded poll: re-evaluate a page-side JS predicate every 50 ms until it
+    // is truthy. A fixed sleep proves nothing about whether a navigation or
+    // htmx swap actually happened (a slow swap would let the snapshot read the
+    // OLD page and pass vacuously), so every post-action wait goes through
+    // this and fails loudly, naming what never happened, on timeout.
+    const waitFor = async (label, predicateJs, timeoutMs = 8000) => {
+      const end = Date.now() + timeoutMs;
+      while (Date.now() < end) {
+        if (await evalJs(`Boolean(${predicateJs})`)) return;
+        await sleep(50);
+      }
+      throw new Error(`timed out after ${timeoutMs}ms waiting for: ${label} (predicate: ${predicateJs})`);
+    };
+    // Proves a navigation landed on `path` and its document finished loading.
+    const loadedAt = (path) =>
+      `location.pathname === ${JSON.stringify(path)} && document.readyState === 'complete'`;
+    // htmx adds .htmx-request while a request is in flight and removes it once settled.
+    const IDLE = `!document.querySelector('.htmx-request')`;
+
     await cmd("Page.enable");
     await cmd("Runtime.enable");
     await cmd("Network.enable");
@@ -132,7 +151,11 @@ async function main() {
     // or (per the original bug report) an HX-Redirect's location.href
     // assignment produces.
     await cmd("Page.navigate", { url: `${baseUrl}/` });
-    await sleep(2000); // let the three "load"-triggered polls land and settle
+    // Wait for the three "load"-triggered polls to land and settle: the pill
+    // placeholder replaced by a real state and no request in flight.
+    await waitFor("Home loaded and load-triggered polls settled",
+      `${loadedAt("/")} && ${IDLE} && document.querySelector('#pill') && document.querySelector('#pill').textContent.trim() !== '\u2026' && document.querySelector('main a[href]')`,
+      10000);
 
     out.mains = await evalJs(`document.querySelectorAll('main').length`);
     out.pills = await evalJs(`document.querySelectorAll('#pill').length`);
@@ -143,6 +166,9 @@ async function main() {
       samples.push(
         await evalJs(`(() => { const p = document.querySelector('#pill'); return p ? p.textContent.trim() : 'MISSING'; })()`),
       );
+      // Deliberate fixed sleep: this loop samples the pill over real elapsed
+      // time (~6 s) so the fragment's own every-5s self-swap happens before the
+      // late read below. There is no observable to poll for "5 seconds passed".
       await sleep(1200);
     }
     out.pillTextSamples = samples;
@@ -164,7 +190,12 @@ async function main() {
 }
 
 main()
-  .then(() => console.log(JSON.stringify(out)))
+  .then(() => {
+    console.log(JSON.stringify(out));
+    // Non-zero on a failed check too, not only on a thrown error, so a
+    // wrapper that looks only at the exit status cannot mistake it for a pass.
+    if (!out.ok) process.exitCode = 1;
+  })
   .catch((e) => {
     out.error = String((e && e.stack) || e);
     console.log(JSON.stringify(out));
