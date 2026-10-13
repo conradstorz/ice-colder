@@ -1,4 +1,4 @@
-"""Tests for the Settings levels (web_interface/routes/settings.py):
+"""Tests for the Settings levels (web_interface/routes/settings/):
 /settings, /settings/machine, /settings/contacts, /settings/payments,
 /settings/comms (+ /settings/comms/test), /settings/mqtt, /settings/web.
 

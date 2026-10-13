@@ -80,7 +80,7 @@ LEVEL_TESTS = Level(title="Tests", url="/tests", parent=LEVEL_HOME)
 # Task 13a: the Tests level's one static sub-level besides the
 # parameterized per-subsystem page (built at request time via Level.child,
 # same pattern as LEVEL_HEALTH_SUBSYSTEMS's per-subsystem detail page --
-# see web_interface/routes/health.py's subsystem_detail). Task 13b adds its
+# see web_interface/routes/health/subsystems.py's subsystem_detail). Task 13b adds its
 # own static sub-level constant(s) here for GET /tests/sale the same way.
 LEVEL_TESTS_LOG = Level(title="Test log", url="/tests/log", parent=LEVEL_TESTS)
 # Task 13b: the simulated-sale SKU picker (GET /tests/sale). No {sku}

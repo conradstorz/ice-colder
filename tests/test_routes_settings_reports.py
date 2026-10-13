@@ -1,4 +1,4 @@
-"""Tests for Settings > Reports (web_interface/routes/settings.py):
+"""Tests for Settings > Reports (web_interface/routes/settings/):
 GET/POST /settings/reports, gated `edit_contacts` per spec §4.1 (not
 `edit_secrets`) — the scheduled sales-summary email settings
 (config.reports / config_model.ReportsConfig).

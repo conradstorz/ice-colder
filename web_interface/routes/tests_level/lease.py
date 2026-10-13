@@ -124,7 +124,7 @@ async def tests_standby_confirm(
     request: Request, confirming: str | None = Query(default=None)
 ):
     """confirm_button.html's confirm_url contract (Task 3, matching
-    routes/health.py's fault_clear_confirm): absent or anything but
+    routes/health/faults.py's fault_clear_confirm): absent or anything but
     the literal string "false" renders the confirming (Confirm/Cancel)
     state; "false" renders the plain first-tap button. Re-renders the
     WHOLE service-state card (#tests-hold), not just the button --
