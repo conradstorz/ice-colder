@@ -61,6 +61,7 @@ from controller.fault_service import FaultService
 from controller.maintenance_lease import MaintenanceHold, MaintenanceLease
 from controller.outputs import StatusOutputs
 from controller.refund_protocol import RefundProtocol
+from controller.sale_journal import SaleJournal
 from controller.session_recovery import SessionRecovery
 from controller.task_runner import TaskRunner
 from controller.test_sale import TestSaleRunner
@@ -72,8 +73,8 @@ from services.health_monitor import HealthMonitor
 from services.inventory_manager import InventoryManager
 from services.session_store import SessionSnapshot, SessionStore
 
-# Bound logger for the transaction log -- mirrors controller/vmc.py's own
-# `txn_log` / controller/mqtt_inbound.py's `ice_log`: loguru's bind() only
+# Bound logger for the transaction log -- mirrors controller/mqtt_inbound.py's
+# `ice_log`: loguru's bind() only
 # attaches the `transaction` extra field, and sinks are resolved at log
 # time, so binding here at import is safe even though setup_logging() runs
 # later in main().
@@ -111,6 +112,10 @@ class Machine:
             selected_product=lambda: self.vmc.selected_product,
             pay104_active=lambda: self._faults.has(FaultCode.PAY_104),
             tasks=self._tasks,
+        )
+        self._journal = SaleJournal(
+            recorder=lambda: self._event_recorder,
+            message=self._outputs.message,
         )
         self._faults = FaultService(
             registry=self._registry,
@@ -205,8 +210,8 @@ class Machine:
             in_maintenance=lambda: self.lease.hold is not None,
             availability=lambda: self.availability,
             inventory=lambda: self.inventory,
-            recorder=lambda: self.event_recorder,
             dispense_factory=self._dispense_factory,
+            journal=self._journal,
         )
 
         # The test-sale runner, built after the VMC itself since it holds

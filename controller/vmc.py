@@ -26,15 +26,7 @@ from controller.refund_protocol import PendingRefund, RefundProtocol
 from controller.sale_context import SaleContext
 from controller.task_runner import TaskRunner
 from controller.dispenser_gate import DispenserProfileGate
-
-STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
-
-
-# Bound loggers — initialized lazily so sinks are installed before first use.
-# Module-level references are set by VMC.__init__() (after setup_logging() in main.py).
-# ice_log lives in controller/mqtt_inbound.py now, bound at import.
-txn_log = logger
-vend_log = logger
+from controller.sale_journal import STATE_CHANGE_PREFIX, SaleJournal  # noqa: F401  (tests import STATE_CHANGE_PREFIX from here)
 
 #: FSM transition table.
 #:
@@ -143,8 +135,8 @@ class VMC:
     construction path: `tasks` (`TaskRunner`), `escrow` (`EscrowLedger`),
     `refunds` (`RefundProtocol`), `faults` (`FaultService`), `outputs`
     (`StatusOutputs`), `gate` (`DispenserProfileGate`), a `DispenseCycle`
-    factory, and four read-only callables (`in_maintenance`,
-    `availability`, `inventory`, `recorder`). Everything the FSM
+    factory, and three read-only callables (`in_maintenance`,
+    `availability`, `inventory`). Everything the FSM
     publishes, persists, displays, or messages to the customer goes
     through `outputs` (`StatusOutputs`, its only outbound channel); every
     fault it raises or clears goes through `faults` (`FaultService`,
@@ -189,8 +181,8 @@ class VMC:
         in_maintenance: Callable[[], bool],
         availability: Callable[[], Availability | None],
         inventory: Callable[[], InventoryManager | None],
-        recorder: Callable[[], object | None],
         dispense_factory: Callable[[SaleContext], DispenseCycle],
+        journal: SaleJournal,
     ):
         """`controller/machine.py`'s `Machine` is the only construction
         path -- every collaborator parameter above is required. `Machine`
@@ -211,14 +203,14 @@ class VMC:
         `machine.lease`; the VMC never holds a reference to it at all,
         only this one boolean read.
 
-        `availability`/`inventory`/`recorder` are zero-arg callables
+        `availability`/`inventory` are zero-arg callables
         (`Machine` passes `lambda: self.availability`/
-        `lambda: self.inventory`/`lambda: self.event_recorder`) rather than
+        `lambda: self.inventory`) rather than
         the objects themselves, because the live instance is attached well
         after construction, via `Machine.set_availability`/
-        `set_inventory_manager`/`set_event_recorder`; every internal read
-        goes through `self._availability()`/`self._inventory()`/
-        `self._recorder()` so it always sees whatever is current.
+        `set_inventory_manager`; every internal read goes through
+        `self._availability()`/`self._inventory()` so it always sees
+        whatever is current.
 
         `dispense_factory` builds a fresh `DispenseCycle`
         (controller/dispense_cycle.py) for one sale's dispatch attempt --
@@ -231,9 +223,7 @@ class VMC:
         number, is what `on_dispense_failed` uses to tell a late callback
         from an earlier attempt apart from the current one.
         """
-        global txn_log, vend_log
-        txn_log = logger.bind(transaction=True)
-        vend_log = logger.bind(vending=True)
+        self._journal = journal
         logger.debug("Initializing VMC with pre-loaded ConfigModel")
 
         self.config_model = config
@@ -289,13 +279,12 @@ class VMC:
         # `TaskRunner()` for every production and non-timer-test caller.
         self._tasks = tasks
         self._session_timeout_task: asyncio.Task | None = None
-        # `self._inventory`/`self._availability`/`self._recorder` are
+        # `self._inventory`/`self._availability` are
         # always the zero-arg callables `Machine` passed in (see the
         # __init__ docstring above) -- never a plain attribute assigned by
         # a VMC-side `set_*` method, which does not exist.
         self._inventory: Callable[[], InventoryManager | None] = inventory
         self._availability: Callable[[], Availability | None] = availability
-        self._recorder: Callable[[], object | None] = recorder
         # Outbound side effects -- MQTT publishes, session persistence, the
         # customer display, and the dashboard's UI-refresh/message/QR
         # callbacks (controller/outputs.py's StatusOutputs) -- the FSM's
@@ -605,16 +594,13 @@ class VMC:
     async def on_payment_credit(self, topic: str, data: dict):
         """Handle payment credit from MDB ESP32."""
         event = PaymentEvent.model_validate(data)
-        logger.info(f"MQTT payment received: ${event.amount:.2f} via {event.method}")
-        txn_log.info(f"PAYMENT RECEIVED: ${event.amount:.2f} via {event.method}")
+        self._journal.payment_received(event.amount, event.method)
         self.deposit_funds(event.amount, payment_method=event.method)
 
     async def on_button_press(self, topic: str, data: dict):
         """Handle button press from ESP32."""
         press = ButtonPress.model_validate(data)
-        logger.info(f"MQTT button press: button {press.button}")
-        txn_log.info(f"BUTTON PRESS: button {press.button}")
-        vend_log.info(f"BUTTON PRESS: button {press.button}")
+        self._journal.button_press(press.button)
         self.select_product(press.button)
 
     def note_dispense_request(self, request_id: str, mechanism: str) -> None:
@@ -653,16 +639,10 @@ class VMC:
         double-failed.
         """
         if cycle is not self._cycle:
-            logger.warning(
-                f"late dispatch failure for a cycle that is no longer current "
-                f"ignored (code={code.value}, outcome={outcome!r})"
-            )
+            self._journal.late_failure_ignored(code, outcome)
             return
         if self.state != "dispensing":
-            logger.debug(
-                "Dispense failed after the sale already left 'dispensing'; "
-                "ignoring (not double-failing a settled sale)."
-            )
+            self._journal.failure_after_settled()
             return
         cycle.cancel()
         sku = self.selected_product.sku if self.selected_product else None
@@ -697,20 +677,14 @@ class VMC:
         try:
             outcome = DispenserOutcome(state)
         except ValueError:
-            vend_log.info(f"DISPENSER: slot {slot}, state: {state}")
+            self._journal.dispenser_step(slot, state)
             return
 
         if self.state != "dispensing":
-            logger.warning(
-                f"Ignoring dispenser outcome '{outcome.value}' outside dispensing "
-                f"state (current state: {self.state}, slot {slot})"
-            )
+            self._journal.dispenser_outcome_ignored(outcome.value, self.state, slot)
             return
         if self._cycle is None:
-            logger.warning(
-                f"Ignoring dispenser outcome '{outcome.value}' with no active "
-                f"dispense cycle (slot {slot})"
-            )
+            self._journal.dispenser_outcome_without_cycle(outcome.value, slot)
             return
 
         report = self._cycle.classify(data)
@@ -735,8 +709,7 @@ class VMC:
             # for a sale that already succeeded. _finish_dispensing's own
             # cancel() below is idempotent and stays as a backstop.
             self._cycle.cancel()
-            txn_log.info(f"DISPENSE SUCCESS: slot {slot}, product '{product_name}'")
-            vend_log.info(f"DISPENSE COMPLETE: slot {slot}, product '{product_name}'")
+            self._journal.dispense_success(slot, product_name)
             if self._sale is not None and self._sale.is_test:
                 # is_test lives on the sale (self._sale.is_test, set only
                 # by run_test_sale), not on the maintenance lease -- so a
@@ -783,14 +756,7 @@ class VMC:
         self._cycle.cancel()
         code = report.fault
         sku = self.selected_product.sku if self.selected_product else None
-        txn_log.error(
-            f"DISPENSE FAILED: slot {slot}, product '{product_name}', "
-            f"outcome: {report.outcome.value}, fault: {code.value}"
-        )
-        vend_log.error(
-            f"DISPENSE FAILED: slot {slot}, product '{product_name}', "
-            f"outcome: {report.outcome.value}, fault: {code.value}"
-        )
+        self._journal.dispense_failed(slot, product_name, report.outcome.value, code)
         self.raise_fault(code, sku=sku, outcome=report.outcome.value)
         # Captured BEFORE _fail_vend: it runs the vend_failed transition,
         # whose before-hook (on_vend_failed) fully clears self._sale (see
@@ -897,9 +863,7 @@ class VMC:
 
     @logger.catch()
     def on_start_interaction(self):
-        logger.info(
-            f"{STATE_CHANGE_PREFIX} Transitioning to interacting_with_user for product: {self.selected_product}"
-        )
+        self._journal.entering_interaction(self.selected_product)
         self._reset_session_timeout()
         self._outputs.display("interacting_with_user")
         self._outputs.refresh()
@@ -909,9 +873,7 @@ class VMC:
 
     @logger.catch()
     def on_dispense_product(self):
-        logger.info(
-            f"{STATE_CHANGE_PREFIX} Transitioning to dispensing for product: {self.selected_product}"
-        )
+        self._journal.entering_dispensing(self.selected_product)
         self._cancel_session_timeout()
         self._outputs.display("dispensing")
         self._outputs.refresh()
@@ -940,9 +902,7 @@ class VMC:
 
     @logger.catch()
     def on_complete_transaction(self):
-        logger.info(
-            f"{STATE_CHANGE_PREFIX} Completing transaction. Remaining escrow: ${self.credit_escrow:.2f}"
-        )
+        self._journal.completing(self.credit_escrow)
         dest = self._post_dispense_dest()
         # Clear the completed selection now — a stale reference here is what let a
         # late/duplicate MQTT dispenser fault (jammed/error, QoS 0, no dedup) issue a
@@ -965,9 +925,7 @@ class VMC:
 
     @logger.catch()
     def on_reset(self):
-        logger.info(
-            f"{STATE_CHANGE_PREFIX} Resetting to idle state. Previous selection: {self.selected_product}"
-        )
+        self._journal.resetting(self.selected_product)
         # Minor fix M3: an abnormal exit from 'dispensing' (reset/error)
         # must clear per-sale dispatch context the same way a normal
         # finish or a failed vend does, so a stray late hardware report or
@@ -995,11 +953,7 @@ class VMC:
         machine in ``error`` — a benign catalog edit shouldn't take the whole VMC
         offline until an admin reset.
         """
-        logger.info(
-            f"{STATE_CHANGE_PREFIX} Cancelling sale for product: {self.selected_product}. "
-            "Returning to idle without entering the error state."
-        )
-        txn_log.info("SALE CANCELLED: selected product removed from catalog")
+        self._journal.sale_cancelled(self.selected_product)
         self._cancel_session_timeout()
         if self._cycle is not None:
             self._cycle.cancel()
@@ -1050,49 +1004,16 @@ class VMC:
             # `EscrowLedger.consume_fifo` sets pending_sale_shares. Guard, not a
             # path — attribute to "unknown" rather than guess a method.
             price = product.price if product else 0.0
-            logger.warning(
-                "on_vend_failed: no pending_sale_shares recorded; crediting "
-                f"${price:.2f} back to escrow as 'unknown'"
-            )
+            self._journal.shares_missing(price)
             shares = {"unknown": round(price, 2)}
         else:
             price = round(sum(shares.values()), 2)
         now = time.time()
         self._escrow.restore(shares, now, price)
-        logger.error(
-            f"{STATE_CHANGE_PREFIX} Vend failed for '{name}' ({code.value}, {outcome}); "
-            f"${price:.2f} returned to escrow"
-        )
-        txn_log.error(
-            f"VEND FAILED: '{name}' {code.value} ({outcome}); ${price:.2f} returned to escrow"
-        )
-        recorder = self._recorder()
-        if recorder and not (self._sale is not None and self._sale.is_test):
-            # Copilot review (PR 22, id=4128088653): on_vend_failed is the
-            # one place that runs for every failed/timed-out vend,
-            # production or test (both on_dispenser_event's failure
-            # branch and on_dispense_failed reach it through _fail_vend ->
-            # the vend_failed transition -> this hook). Recording
-            # unconditionally here counted a failed or timed-out simulated
-            # sale in EventRecorder.get_summary()'s vends_failed KPI,
-            # contradicting the guarantee that a test sale moves nothing.
-            # run_test_sale's own test_run row (system-tests design §4) is
-            # what should represent this run, not a second, KPI-visible
-            # vend_failed row -- so this is skipped for a test sale while
-            # everything else in this method (restoring escrow, the
-            # customer message) still runs exactly as it does for a real
-            # vend.
-            recorder.record(
-                "vend_failed",
-                value=price,
-                metadata={"code": code.value, "sku": sku, "outcome": outcome},
-            )
+        is_test = self._sale is not None and self._sale.is_test
         self.selected_product = None
         self.last_insufficient_message = ""
-        self.send_customer_message(
-            f"Sorry, {name} could not be dispensed ({code.value}). "
-            f"Your ${price:.2f} credit has been kept."
-        )
+        self._journal.vend_failed(name, code, outcome, price, sku, is_test=is_test)
 
     def _fail_vend(self, code: FaultCode, outcome: str) -> None:
         """Run the vend_failed transition, then decide: choose again, or pay out."""
@@ -1113,12 +1034,9 @@ class VMC:
             # machine or leave via a refund command (system-tests design
             # §2.3): clear it here, directly, never through request_refund.
             cleared = self._escrow.take_all()
-            logger.debug(
-                f"test credit cleared directly, never refunded (${cleared:.2f}, "
-                f"{code.value}, {outcome})"
-            )
+            self._journal.test_credit_cleared(cleared, code, outcome)
         if not self._sellable_products():
-            txn_log.info("No sellable products remain; refunding and returning to idle")
+            self._journal.no_sellable_products()
             # A test sale's price, just restored to escrow by on_vend_failed
             # above, is not real money and must never leave via a real
             # refund command (system-tests design §2.3: "escrow is cleared
@@ -1142,12 +1060,7 @@ class VMC:
 
     @logger.catch()
     def on_error(self):
-        logger.error(
-            f"{STATE_CHANGE_PREFIX} Error encountered for product: {self.selected_product}. Transitioning to error state."
-        )
-        recorder = self._recorder()
-        if recorder:
-            recorder.record("error", value=1.0)
+        self._journal.error_entered(self.selected_product)
         # Minor fix M3: see on_reset's comment above -- same reasoning.
         # Unlike on_reset, on_error does NOT clear selected_product (the
         # log line above still prints it), so this is a genuine partial
@@ -1178,7 +1091,7 @@ class VMC:
     def deposit_funds(self, amount, payment_method="Simulated Payment"):
         logger.debug(f"Depositing funds: amount={amount:.2f}, method={payment_method}")
         if amount <= 0:
-            logger.warning(f"Ignoring non-positive deposit: {amount}")
+            self._journal.deposit_ignored(amount)
             return
         if self._in_maintenance() and payment_method != "test":
             # Payment is disabled for the whole lease (SVC-102 blocks it via
@@ -1208,26 +1121,19 @@ class VMC:
             # it either. Exploiting it already requires control of the
             # trusted MQTT bus, at which point far worse is possible, so
             # this is intentionally left as-is rather than redesigned.
-            logger.warning(
-                f"Credit ${amount:.2f} arrived during a maintenance lease; "
-                "refunding rather than escrowing"
-            )
+            self._journal.deposit_during_maintenance(amount)
             self._escrow.deposit(payment_method, amount, time.time())
             self.last_payment_method = payment_method
             self.request_refund(reason="maintenance")
             return
         availability = self._availability()
         if availability and not availability.payment_enabled:
-            logger.warning(
-                f"Credit ${amount:.2f} arrived while payment is disabled "
-                f"({', '.join(availability.payment_blocking_reasons())}); "
-                "escrowed"
+            self._journal.deposit_while_payment_disabled(
+                amount, availability.payment_blocking_reasons()
             )
         self._escrow.deposit(payment_method, amount, time.time())
         self.last_payment_method = payment_method
-        logger.info(
-            f"Deposited ${amount:.2f} via {payment_method}. New escrow: ${self.credit_escrow:.2f}"
-        )
+        self._journal.deposited(amount, payment_method, self.credit_escrow)
         # Arm/reset the safety-net timer on every deposit, not only once the
         # FSM has reached interacting_with_user. Money can arrive (via the
         # MDB gateway over MQTT) while still idle — before any button press,
@@ -1256,17 +1162,8 @@ class VMC:
             return
         amount = self._escrow.take_all()
         pending = self._refunds.begin(amount, reason)
-        logger.info(
-            f"Refund of ${amount:.2f} requested via {self.last_payment_method} "
-            f"(reason={reason}, request_id={pending.request_id})"
-        )
-        txn_log.info(
-            f"REFUND REQUESTED: ${amount:.2f} via {self.last_payment_method} "
-            f"reason={reason} request_id={pending.request_id}"
-        )
-        self.send_customer_message(
-            f"Refund of ${amount:.2f} requested via {self.last_payment_method}. "
-            "Please wait..."
+        self._journal.refund_requested(
+            amount, self.last_payment_method, reason, pending.request_id
         )
         self._outputs.refresh()
 
@@ -1277,40 +1174,17 @@ class VMC:
 
     def _refund_confirmed(self, pending: PendingRefund, amount_returned: float) -> None:
         self._outputs.persist()
-        txn_log.info(
-            f"REFUND CONFIRMED: ${amount_returned:.2f} request_id={pending.request_id}"
-        )
-        recorder = self._recorder()
-        if recorder:
-            recorder.record(
-                "refund",
-                value=amount_returned,
-                metadata={"request_id": pending.request_id, "reason": pending.reason},
-            )
-        self.send_customer_message(
-            f"Refund of ${amount_returned:.2f} issued via {self.last_payment_method}."
+        self._journal.refund_confirmed(
+            pending.request_id,
+            pending.reason,
+            amount_returned,
+            self.last_payment_method,
         )
 
     def _refund_failed(self, pending: PendingRefund, detail: str) -> None:
         self._outputs.persist()
-        txn_log.error(
-            f"REFUND FAILED: ${pending.amount:.2f} request_id={pending.request_id} "
-            f"reason={pending.reason} detail={detail}"
-        )
-        recorder = self._recorder()
-        if recorder:
-            recorder.record(
-                "refund_failed",
-                value=pending.amount,
-                metadata={
-                    "request_id": pending.request_id,
-                    "reason": pending.reason,
-                    "detail": detail,
-                },
-            )
-        self.send_customer_message(
-            f"We could not return ${pending.amount:.2f} automatically. "
-            f"Please contact support and quote {pending.request_id[:8]}."
+        self._journal.refund_failed(
+            pending.request_id, pending.reason, pending.amount, detail
         )
         self.raise_fault(FaultCode.PAY_103, outcome=detail)
 
@@ -1483,10 +1357,10 @@ class VMC:
     def select_product(self, product_index):
         logger.debug(f"Selecting product with index: {product_index}")
         if self.state not in ["idle", "interacting_with_user"]:
-            logger.warning("Cannot change selection; machine not ready.")
+            self._journal.selection_refused_not_ready()
             return
         if not (0 <= product_index < len(self.products)):
-            logger.error(f"Invalid product index: {product_index}")
+            self._journal.selection_refused_bad_index(product_index)
             return
 
         # `product_index` here is the physical button index (ButtonPress.button),
@@ -1494,13 +1368,7 @@ class VMC:
         candidate = self.products[product_index]
         locked_code = self._faults.lockouts.get(candidate.sku)
         if locked_code is not None:
-            txn_log.info(
-                f"LOCKED OUT: '{candidate.name}' ({locked_code.value}), customer rejected"
-            )
-            self.send_customer_message(
-                f"{candidate.name} is unavailable ({locked_code.value}). "
-                "Please choose another product."
-            )
+            self._journal.locked_out(candidate, locked_code)
             return
 
         availability = self._availability()
@@ -1521,33 +1389,15 @@ class VMC:
                 sellable, failing = availability.product_sellable(candidate)
             if not sellable:
                 reason = failing[0]
-                txn_log.info(
-                    f"UNAVAILABLE: '{candidate.name}' blocked by {reason}, customer rejected"
-                )
-                self.send_customer_message(
-                    f"{candidate.name} is unavailable right now ({reason}). "
-                    "Please try again later."
-                )
+                self._journal.unavailable(candidate, reason)
                 return
 
         self.selected_product = candidate
-        logger.info(
-            f"Selected product: {self.selected_product.name} at ${self.selected_product.price:.2f}"
-        )
-        txn_log.info(
-            f"PRODUCT SELECTED: '{self.selected_product.name}' (${self.selected_product.price:.2f}), button {product_index}"
-        )
-        vend_log.info(
-            f"PRODUCT SELECTED: '{self.selected_product.name}' (${self.selected_product.price:.2f}), button {product_index}"
-        )
+        self._journal.product_selected(self.selected_product, product_index)
 
         inventory = self._inventory()
         if inventory and not inventory.is_available(self.selected_product.sku):
-            logger.error(f"{self.selected_product.name} is sold out.")
-            txn_log.info(f"SOLD OUT: '{self.selected_product.name}', customer rejected")
-            self.send_customer_message(
-                f"{self.selected_product.name} is sold out. Please select another product."
-            )
+            self._journal.sold_out(self.selected_product)
             return
 
         if self.state == "idle":
@@ -1583,22 +1433,14 @@ class VMC:
             return
 
         if self.selected_product is None or self.selected_product not in self.products:
-            logger.error(
-                "Selected product no longer exists in the catalog; cancelling sale."
-            )
+            self._journal.catalog_lost_selection()
             self.cancel_sale()
             return
 
         price = self.selected_product.price if self.selected_product else 0
         if self.credit_escrow >= price:
-            logger.info(
-                f"{STATE_CHANGE_PREFIX} Escrow sufficient ({self.credit_escrow:.2f} >= {price:.2f}). Processing payment."
-            )
-            txn_log.info(
-                f"PAYMENT SUFFICIENT: ${self.credit_escrow:.2f} >= ${price:.2f} for '{self.selected_product.name}', charging ${price:.2f}"
-            )
-            self.send_customer_message(
-                "Sufficient funds received. Processing your payment..."
+            self._journal.payment_sufficient(
+                self.credit_escrow, price, self.selected_product
             )
             self._sale = self._sale.with_(shares=self._escrow.consume_fifo(price))
             self.credit_escrow -= price
@@ -1620,11 +1462,9 @@ class VMC:
                 f"Insufficient funds. Please insert an additional ${required:.2f}."
             )
             if message != self.last_insufficient_message:
-                logger.info(message)
-                txn_log.info(
-                    f"PAYMENT INSUFFICIENT: ${self.credit_escrow:.2f} < ${price:.2f} for '{self.selected_product.name}', need ${required:.2f} more"
+                self._journal.payment_insufficient(
+                    self.credit_escrow, price, self.selected_product, required, message
                 )
-                self.send_customer_message(message)
                 self.last_insufficient_message = message
             self._schedule(5.0, self.process_payment, label="process_payment")
 
@@ -1679,13 +1519,7 @@ class VMC:
         if self.state == "idle":
             if self.credit_escrow <= 0:
                 return
-            logger.info(
-                "Idle session timed out with stranded escrow; refunding "
-                f"${self.credit_escrow:.2f}."
-            )
-            txn_log.info(
-                f"SESSION TIMEOUT: refunding ${self.credit_escrow:.2f} (idle, no active selection)"
-            )
+            self._journal.session_timeout(self.credit_escrow, "idle")
             self.request_refund(reason="session_timeout")
             self.selected_product = None
             self.last_insufficient_message = ""
@@ -1695,14 +1529,7 @@ class VMC:
         if self.state == "error":
             if self.credit_escrow <= 0:
                 return
-            logger.info(
-                "Session timed out in error state with stranded escrow; "
-                f"refunding ${self.credit_escrow:.2f}."
-            )
-            txn_log.info(
-                f"SESSION TIMEOUT: refunding ${self.credit_escrow:.2f} "
-                "(error, deposited after on_error's own refund)"
-            )
+            self._journal.session_timeout(self.credit_escrow, "error")
             self.request_refund(reason="session_timeout")
             self.selected_product = None
             self.last_insufficient_message = ""
@@ -1711,8 +1538,7 @@ class VMC:
             return
         if self.state != "interacting_with_user":
             return
-        logger.info("Customer session timed out due to inactivity.")
-        txn_log.info(f"SESSION TIMEOUT: refunding ${self.credit_escrow:.2f}")
+        self._journal.session_timeout(self.credit_escrow, self.state)
         self.request_refund(reason="session_timeout")
         self.selected_product = None
         self.last_insufficient_message = ""
@@ -1738,7 +1564,7 @@ class VMC:
         product_name = (
             self.selected_product.name if self.selected_product else "Unknown"
         )
-        logger.info(f"{STATE_CHANGE_PREFIX} Finished dispensing: {product_name}")
+        self._journal.finished_dispensing(product_name)
         self.send_customer_message("Product dispensed. Enjoy your purchase!")
         inventory = self._inventory()
         if inventory and self.selected_product:
@@ -1746,8 +1572,8 @@ class VMC:
             if inventory.is_tracked(sku):
                 inventory.decrement(sku, persist=False)
                 self._tasks.fire_and_forget(inventory.save_async(), persistent=True)
-                logger.info(
-                    f"Inventory for {self.selected_product.name} updated: {inventory.get_count(sku)} remaining."
+                self._journal.inventory_updated(
+                    self.selected_product.name, inventory.get_count(sku)
                 )
         self.complete_transaction()
         self._outputs.persist()
