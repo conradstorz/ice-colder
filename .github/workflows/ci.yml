@@ -58,11 +58,29 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "24"
-      # e2e tests skip without a broker on localhost:1883; everything else
-      # runs, including the 4 opt-in browser tests (enabled below) — a guard
-      # step immediately after this one fails CI if any of them skip instead
-      # of running, so a broken Chrome/Node discovery can't hide behind a
-      # green suite.
+      # Anonymous mosquitto on localhost:1883 for tests/test_integration_e2e.py
+      # (sale, refund, jam lockout, overpay over real MQTT). GitHub `services:`
+      # cannot override the container command, and mosquitto 2.x refuses
+      # anonymous connections without a config, so run it as a step with an
+      # inline config. The image is pinned; the wait loop is bounded.
+      - name: Start MQTT broker (for the e2e tests)
+        run: |
+          printf 'listener 1883
+allow_anonymous true
+' > "$RUNNER_TEMP/mosquitto.conf"
+          docker run -d --name mosquitto -p 1883:1883             -v "$RUNNER_TEMP/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro"             eclipse-mosquitto:2.0.20
+          for i in $(seq 1 30); do
+            nc -z localhost 1883 && exit 0
+            sleep 1
+          done
+          docker logs mosquitto
+          echo "::error::mosquitto did not become ready on localhost:1883"
+          exit 1
+      # Everything runs, including the e2e tests (broker above) and the 4
+      # opt-in browser tests (enabled below) — the guard step immediately
+      # after this one fails CI if any of them skip instead of running (the
+      # broker skip is forbidden in CI via ICE_COLDER_REQUIRE_BROKER), so a
+      # broken broker or Chrome/Node discovery can't hide behind a green suite.
       - name: Run tests (including the opt-in browser tests)
         env:
           ICE_COLDER_BROWSER_TESTS: "1"
@@ -71,6 +89,8 @@ jobs:
           set -o pipefail
           uv run pytest -q -rs
       - name: Guard against unrecognised skips via the skip policy
+        env:
+          ICE_COLDER_REQUIRE_BROKER: "1"
         run: |
           uv run python tests/run_skip_guard.py skip-report.json
 

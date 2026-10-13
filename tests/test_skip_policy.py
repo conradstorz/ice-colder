@@ -27,6 +27,8 @@ ordering.
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from tests import conftest as skip_conftest
 from tests.run_skip_guard import check_report
 from tests.skip_policy import (
@@ -38,13 +40,28 @@ from tests.skip_policy import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_broker_requirement(monkeypatch):
+    """Isolate these tests from the CI-only ICE_COLDER_REQUIRE_BROKER flag."""
+    monkeypatch.delenv("ICE_COLDER_REQUIRE_BROKER", raising=False)
+
+
 class TestSkipLegitimacy:
     """Test the is_skip_legitimate discriminator."""
 
-    def test_mqtt_broker_skip_is_legitimate(self):
-        """MQTT broker skips are legitimate."""
+    def test_mqtt_broker_skip_is_legitimate_locally(self, monkeypatch):
+        """MQTT broker skips are legitimate when no broker is required."""
+        monkeypatch.delenv("ICE_COLDER_REQUIRE_BROKER", raising=False)
         reason = "Skipped: MQTT broker not available on localhost:1883"
         assert is_skip_legitimate(reason) is True
+
+    def test_mqtt_broker_skip_is_not_legitimate_when_broker_required(self, monkeypatch):
+        """CI sets ICE_COLDER_REQUIRE_BROKER=1: a broker skip must fail."""
+        monkeypatch.setenv("ICE_COLDER_REQUIRE_BROKER", "1")
+        reason = "Skipped: MQTT broker not available on localhost:1883"
+        assert is_skip_legitimate(reason) is False
+        assert is_skip_legitimate(reason, require_broker=False) is True
+        assert is_skip_legitimate("Skipped: POSIX file modes only") is True
 
     def test_posix_file_modes_skip_is_legitimate(self):
         """POSIX file mode skips are legitimate."""
@@ -70,8 +87,9 @@ class TestSkipLegitimacy:
 class TestSkipValidation:
     """Test the validate_skips function."""
 
-    def test_all_legitimate_skips_pass_validation(self):
+    def test_all_legitimate_skips_pass_validation(self, monkeypatch):
         """A list of only legitimate skips should pass validation."""
+        monkeypatch.delenv("ICE_COLDER_REQUIRE_BROKER", raising=False)
         skips = [
             {
                 "nodeid": "tests/test_access.py::Test::test_posix_1",

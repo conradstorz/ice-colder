@@ -8,7 +8,8 @@ These tests exercise the full transaction loop:
 Requirements:
   - mosquitto running on localhost:1883 (docker compose -f docker/docker-compose.yml up -d)
 
-Tests are skipped automatically if the broker is unreachable.
+Tests are skipped automatically if the broker is unreachable (locally only: CI
+starts a broker and its skip guard fails the build if these skip).
 """
 
 import asyncio
