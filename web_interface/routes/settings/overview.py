@@ -17,7 +17,7 @@ router = APIRouter()
 
 def _require_any(*permissions: Permission):
     """FastAPI dependency: a live session holding at least one of
-    *permissions*. Copied from web_interface/routes/products.py (not
+    *permissions*. Copied from web_interface/routes/products/helpers.py (not
     imported from — brief resolution 13 scopes this module to its own
     files); web_auth.require() is AND-only and GET /settings needs OR
     semantics (edit_contacts or edit_secrets)."""
