@@ -24,6 +24,7 @@ from controller.escrow_ledger import EscrowLedger
 from controller.outputs import StatusOutputs
 from controller.refund_protocol import PendingRefund, RefundProtocol
 from controller.sale_context import SaleContext
+from controller.session_timer import SessionTimer
 from controller.task_runner import TaskRunner
 from controller.dispenser_gate import DispenserProfileGate
 from controller.sale_journal import STATE_CHANGE_PREFIX, SaleJournal  # noqa: F401  (tests import STATE_CHANGE_PREFIX from here)
@@ -258,9 +259,7 @@ class VMC:
         # cycle's own identity -- not a sequence number -- is what
         # on_dispense_failed compares against to tell a late callback from
         # an earlier attempt apart from the current one.
-        self._dispense_factory: Callable[[SaleContext], DispenseCycle] = (
-            dispense_factory
-        )
+        self._dispense_factory = dispense_factory
         self._cycle: DispenseCycle | None = None
         self.last_insufficient_message = ""
         self.last_payment_method = "Simulated Payment"
@@ -279,7 +278,9 @@ class VMC:
         # than through a private task handle; defaults to a real
         # `TaskRunner()` for every production and non-timer-test caller.
         self._tasks = tasks
-        self._session_timeout_task: asyncio.Task | None = None
+        self._session_timer = SessionTimer(
+            tasks, lambda: self.session_timeout_seconds, self._expire_session
+        )
         # `self._inventory`/`self._availability`/`self._recorder` are
         # always the zero-arg callables `Machine` passed in (see the
         # __init__ docstring above) -- never a plain attribute assigned by
@@ -384,7 +385,7 @@ class VMC:
         do before it moved to `Machine` entirely."""
         if self._cycle is not None:
             self._cycle.cancel()
-        self._cancel_session_timeout()
+        self._session_timer.cancel()
 
     @property
     def outputs(self) -> StatusOutputs:
@@ -866,7 +867,7 @@ class VMC:
     @logger.catch()
     def on_start_interaction(self):
         self._journal.entering_interaction(self.selected_product)
-        self._reset_session_timeout()
+        self._session_timer.arm()
         self._outputs.display("interacting_with_user")
         self._outputs.refresh()
         self.send_customer_message(
@@ -876,7 +877,7 @@ class VMC:
     @logger.catch()
     def on_dispense_product(self):
         self._journal.entering_dispensing(self.selected_product)
-        self._cancel_session_timeout()
+        self._session_timer.cancel()
         self._outputs.display("dispensing")
         self._outputs.refresh()
         self.send_customer_message(
@@ -956,7 +957,7 @@ class VMC:
         offline until an admin reset.
         """
         self._journal.sale_cancelled(self.selected_product)
-        self._cancel_session_timeout()
+        self._session_timer.cancel()
         if self._cycle is not None:
             self._cycle.cancel()
         self._cycle = None
@@ -1049,13 +1050,13 @@ class VMC:
             # released.
             if not is_test:
                 self.request_refund(reason=code.value)
-            self._cancel_session_timeout()
+            self._session_timer.cancel()
             self.machine.set_state("idle")
             self._outputs.state_changed(self.state)
             self._outputs.display("idle")
         else:
             self.send_customer_message("Please choose another product.")
-            self._reset_session_timeout()
+            self._session_timer.arm()
             self._outputs.state_changed(self.state)
             self._outputs.display("interacting_with_user")
         self._outputs.refresh()
@@ -1144,7 +1145,7 @@ class VMC:
         # funds or select a product") already treats deposit-before-selection
         # as a normal entry point. Without arming here, escrow taken while
         # idle would never be refunded: see _expire_session's idle branch.
-        self._reset_session_timeout()
+        self._session_timer.arm()
         self._outputs.state_changed(self.state)
         self._outputs.refresh()
         self.send_customer_message(
@@ -1229,7 +1230,7 @@ class VMC:
         elif self.state == "idle":
             if not self._escrow.is_empty_within_tolerance:
                 self.request_refund(reason="maintenance")
-            self._cancel_session_timeout()
+            self._session_timer.cancel()
         elif self.state == "error":
             if not self._escrow.is_empty_within_tolerance:
                 self.request_refund(reason="maintenance")
@@ -1469,20 +1470,6 @@ class VMC:
                 )
                 self.last_insufficient_message = message
             self._schedule(5.0, self.process_payment, label="process_payment")
-
-    def _reset_session_timeout(self):
-        """Reset (or start) the customer session inactivity timer."""
-        if self._session_timeout_task and not self._session_timeout_task.done():
-            self._session_timeout_task.cancel()
-        self._session_timeout_task = self._schedule(
-            self.session_timeout_seconds, self._expire_session, label="session_timeout"
-        )
-
-    def _cancel_session_timeout(self):
-        """Cancel the session timeout (e.g., when dispensing starts)."""
-        if self._session_timeout_task and not self._session_timeout_task.done():
-            self._session_timeout_task.cancel()
-        self._session_timeout_task = None
 
     @logger.catch()
     def _expire_session(self):
