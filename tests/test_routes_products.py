@@ -1,4 +1,4 @@
-"""Tests for the Products levels (web_interface/routes/products.py):
+"""Tests for the Products levels (web_interface/routes/products/):
 /products, /products/new, /products/{sku}, /products/{sku}/catalog,
 /products/{sku}/placement, /products/{sku}/copy, /products/{sku}/delete.
 

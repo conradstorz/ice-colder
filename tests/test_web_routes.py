@@ -396,7 +396,7 @@ class TestStatusEndpoint:
 # (Task 15): both classes covered the old /inventory/{new,add,edit,update,
 # copy}/* catalog and placement routes in routes/legacy.py, deleted by this
 # task. Every behavior they proved is covered by the new /products/* routes
-# (web_interface/routes/products.py, Task 7) in tests/test_routes_products.py:
+# (web_interface/routes/products/, Task 7) in tests/test_routes_products.py:
 # TestCatalogWrites, TestPlacementWrites, TestCreateCopyDelete,
 # TestProductsListGating, TestCatalogGating and TestPlacementGating.
 
