@@ -690,56 +690,49 @@ class VMC:
             # or request_id mismatch) -- nothing left to do here.
             return
 
+        if report.success:
+            await self._dispense_succeeded(report, slot)
+        else:
+            self._dispense_failed_report(report, slot)
+
+    async def _dispense_succeeded(self, report, slot) -> None:
         product_name = (
             self.selected_product.name if self.selected_product else "Unknown"
         )
-        if report.success:
-            # Cancel the dispense_timeout timer here, before the
-            # test/production split and its own await (`_cycle.record()`
-            # suspends on a real asyncio.to_thread call). Once the board has
-            # reported a successful dispense the customer already has the
-            # product, so a `dispense_timeout` that fires during that
-            # suspension must never be allowed to fail this settled sale --
-            # on_dispense_failed's guards (`cycle is self._cycle` and
-            # `state == "dispensing"`) would otherwise both still pass,
-            # restoring the price to escrow and possibly issuing a refund
-            # for a sale that already succeeded. _finish_dispensing's own
-            # cancel() below is idempotent and stays as a backstop.
-            self._cycle.cancel()
-            self._journal.dispense_success(slot, product_name)
-            if self._sale is not None and self._sale.is_test:
-                # is_test lives on the sale (self._sale.is_test, set only
-                # by run_test_sale), not on the maintenance lease -- so a
-                # lease release or idle-timeout mid-run cannot flip this
-                # sale to production (system-tests design §2.3). Neither a
-                # `sale` row nor a `dispense` event is written; run_test_sale itself writes
-                # the `test_run` event once it observes this outcome via
-                # the sale-settled notification below.
-                # DispenseCycle.record's own bookkeeping (clearing
-                # pending_sale_shares) is replicated here since it is
-                # skipped entirely for a test sale.
+        # Cancel the dispense_timeout timer before the test/record split and
+        # its await (`_cycle.record()` suspends on asyncio.to_thread). The
+        # customer already has the product, so a timeout firing during that
+        # suspension must never fail this settled sale (on_dispense_failed's
+        # guards would still pass and restore the price to escrow).
+        # _finish_dispensing's own cancel() is an idempotent backstop.
+        self._cycle.cancel()
+        self._journal.dispense_success(slot, product_name)
+        if self._sale is not None and self._sale.is_test:
+            # is_test lives on the sale, not the maintenance lease, so a lease
+            # release mid-run cannot flip this sale to production. No `sale`
+            # row or `dispense` event is written; run_test_sale writes the
+            # `test_run` event on the sale-settled notification. Clearing
+            # pending_sale_shares (normally DispenseCycle.record's job) is
+            # replicated here because record is skipped for a test sale.
+            self._sale = self._sale.with_(shares=None)
+        else:
+            recorded = await self._cycle.record()
+            if recorded and self._sale is not None:
                 self._sale = self._sale.with_(shares=None)
-            else:
-                recorded = await self._cycle.record()
-                if recorded and self._sale is not None:
-                    self._sale = self._sale.with_(shares=None)
-                # A `False` return is the PAY-104 path: shares stay so the
-                # on-disk session snapshot remains the sale's only record.
-            if report.outcome is DispenserOutcome.door_open:
-                # door_open is a customer success (the ice/water was
-                # released) but a hardware fault in its own right -- the
-                # trap door failed to close, which is why ICE-402 is a
-                # PAYMENT_BLOCKING_FAULTS member. Raised after recording the
-                # sale (the customer did get their product) and before
-                # _finish_dispensing, matching the "success path plus a
-                # fault" shape the brief calls for.
-                sku = self.selected_product.sku if self.selected_product else None
-                self.raise_fault(
-                    FaultCode.ICE_402, sku=sku, outcome=report.outcome.value
-                )
-            self._settle("dispensed", None, self._finish_dispensing)
-            return
+            # A `False` return is the PAY-104 path: shares stay so the
+            # on-disk session snapshot remains the sale's only record.
+        if report.outcome is DispenserOutcome.door_open:
+            # A customer success (product released) that is also a hardware
+            # fault: the trap door failed to close (ICE-402 blocks payment).
+            # Raised after recording the sale, before _finish_dispensing.
+            sku = self.selected_product.sku if self.selected_product else None
+            self.raise_fault(FaultCode.ICE_402, sku=sku, outcome=report.outcome.value)
+        self._settle("dispensed", None, self._finish_dispensing)
 
+    def _dispense_failed_report(self, report, slot) -> None:
+        product_name = (
+            self.selected_product.name if self.selected_product else "Unknown"
+        )
         self._cycle.cancel()
         code = report.fault
         sku = self.selected_product.sku if self.selected_product else None
@@ -1088,6 +1081,19 @@ class VMC:
             self.send_customer_message("An error has occurred. Please contact support.")
 
     # --- Business Logic Methods ---
+    def _refund_maintenance_deposit(self, amount, payment_method) -> None:
+        """Send a coin that raced the payment-disable command straight back.
+
+        Trust boundary: `payment_method` is a raw string from the MQTT payment
+        subsystem, so a spoofed "test" can sit in escrow during a lease. It
+        cannot skip the sales table: recording is gated on `sale.is_test`,
+        which only `run_test_sale` sets, never on this string.
+        """
+        self._journal.deposit_during_maintenance(amount)
+        self._escrow.deposit(payment_method, amount, time.time())
+        self.last_payment_method = payment_method
+        self.request_refund(reason="maintenance")
+
     @logger.catch()
     def deposit_funds(self, amount, payment_method="Simulated Payment"):
         logger.debug(f"Depositing funds: amount={amount:.2f}, method={payment_method}")
@@ -1095,37 +1101,7 @@ class VMC:
             self._journal.deposit_ignored(amount)
             return
         if self._in_maintenance() and payment_method != "test":
-            # Payment is disabled for the whole lease (SVC-102 blocks it via
-            # availability), so this only covers the race between the
-            # disable command and a coin already in the mechanism -- still
-            # a customer's money, so it goes straight back out rather than
-            # into escrow, where it could otherwise become spendable after
-            # the hold ends. The one exception is `run_test_sale`'s own
-            # credit, deposited with method "test" -- the `and
-            # payment_method != "test"` guard above lets it fall through to
-            # the normal escrow path below instead of being refunded; it is
-            # the only credit accepted during a lease (system-tests design
-            # §2.3).
-            #
-            # Trust boundary (round-1 review, minor finding 2): payment_method
-            # here is `PaymentEvent.method`, a raw string arriving over MQTT
-            # from the trusted payment subsystem -- not authenticated
-            # end-to-end. Anyone who can already publish on that broker could
-            # spoof method="test" during a lease and have their credit sit in
-            # escrow instead of being auto-refunded. This is deliberately
-            # NOT a free-product path: whether a sale gets recorded to the
-            # ledger is gated on `self.sale.is_test` (set only inside
-            # run_test_sale, never by this string) and `pending_sale_for_
-            # recovery()`'s own `is_test` check -- a spoofed "test" deposit
-            # can sit unrefunded in escrow, but it cannot make a real sale
-            # skip the sales table, and it cannot make a test sale post to
-            # it either. Exploiting it already requires control of the
-            # trusted MQTT bus, at which point far worse is possible, so
-            # this is intentionally left as-is rather than redesigned.
-            self._journal.deposit_during_maintenance(amount)
-            self._escrow.deposit(payment_method, amount, time.time())
-            self.last_payment_method = payment_method
-            self.request_refund(reason="maintenance")
+            self._refund_maintenance_deposit(amount, payment_method)
             return
         availability = self._availability()
         if availability and not availability.payment_enabled:
@@ -1354,6 +1330,25 @@ class VMC:
             f"Virtual Payment Option ({current_gateway}): Scan the QR code above."
         )
 
+    def _refusal(self, candidate: Product) -> bool:
+        """Journal and message the refusal if `candidate` is locked out or unavailable; True when refused."""
+        locked_code = self._faults.lockouts.get(candidate.sku)
+        if locked_code is not None:
+            self._journal.locked_out(candidate, locked_code)
+            return True
+        availability = self._availability()
+        if availability:
+            # A test sale (sale.is_test, never the lease) is exempt from its
+            # own SVC-102 only; a customer press mid-lease is still refused.
+            if self._sale is not None and self._sale.is_test:
+                sellable, failing = availability.test_sale_sellable(candidate)
+            else:
+                sellable, failing = availability.product_sellable(candidate)
+            if not sellable:
+                self._journal.unavailable(candidate, failing[0])
+                return True
+        return False
+
     @logger.catch()
     def select_product(self, product_index):
         logger.debug(f"Selecting product with index: {product_index}")
@@ -1367,31 +1362,8 @@ class VMC:
         # `product_index` here is the physical button index (ButtonPress.button),
         # not the product's dispense `slot` — buttons stay positional for now.
         candidate = self.products[product_index]
-        locked_code = self._faults.lockouts.get(candidate.sku)
-        if locked_code is not None:
-            self._journal.locked_out(candidate, locked_code)
+        if self._refusal(candidate):
             return
-
-        availability = self._availability()
-        if availability:
-            # A maintenance test sale is exempt from the sale-blocking
-            # effect of its OWN SVC-102 lease fault -- and of SVC-102
-            # alone -- because test-ness lives on the sale
-            # (self.sale.is_test, set only by run_test_sale, which seeds
-            # the SaleContext with is_test=True before this method even
-            # runs), not on the lease: a real customer press reaching this
-            # method during a lease has no seeded context yet (self._sale
-            # is None, or belongs to a different, already-cleared sale) and
-            # is still refused by product_sellable like any other
-            # safety-blocked sale.
-            if self._sale is not None and self._sale.is_test:
-                sellable, failing = availability.test_sale_sellable(candidate)
-            else:
-                sellable, failing = availability.product_sellable(candidate)
-            if not sellable:
-                reason = failing[0]
-                self._journal.unavailable(candidate, reason)
-                return
 
         self.selected_product = candidate
         self._journal.product_selected(self.selected_product, product_index)
@@ -1471,68 +1443,30 @@ class VMC:
 
     @logger.catch()
     def _expire_session(self):
-        """Called when the session-timeout timer fires.
+        """Session-timeout timer fired: refund stranded credit and reset.
 
-        Three cases need the stranded-money guarantee to hold:
-
-        - ``interacting_with_user``: the customer walked away mid-session
-          (selected a product, or not) — unconditionally refund and reset,
-          exactly as before this fix. Handled even at zero escrow, so a
-          lingering selection is still cleared.
-        - ``idle`` with escrow > 0: money arrived (MQTT payment event) but
-          every selection attempt was refused before the FSM ever left idle
-          (e.g. the vending subsystem was offline) — or none was attempted
-          at all. Refund and stay idle; nothing else to reset.
-        - ``error`` with escrow > 0: ``on_error`` already refunds whatever
-          credit was present *at the moment it ran*, but ``deposit_funds``
-          arms/re-arms this same timer on every deposit regardless of FSM
-          state (see its docstring), so a credit that arrives *after*
-          ``on_error`` — the machine is still parked in ``error`` awaiting an
-          admin ``reset_state`` — is added to escrow with nothing left to
-          refund it: ``on_reset`` doesn't touch ``credit_escrow`` either.
-          Refund and stay in ``error``; the admin still has to clear the
-          fault that put the machine there.
-
-        ``dispensing`` is the only remaining no-op, and deliberately so: a
-        vend in flight must never be refunded out from under the customer.
-        A deposit that lands mid-vend still re-arms this timer, but by the
-        time it could fire the vend has already resolved — on success,
-        ``_post_dispense_dest`` lands on ``interacting_with_user`` whenever
-        that deposit left escrow positive, which this method's own branch
-        for that state then covers; on failure/timeout, ``_fail_vend``
-        explicitly re-arms (products remain) or refunds and forces ``idle``
-        (none do) before this timer could ever observe ``dispensing`` again.
+        Acts in `interacting_with_user` always (the customer walked away; also
+        clears a lingering selection), and in `idle` or `error` only when
+        escrow is positive (a deposit arrived after nothing could refund it).
+        `idle` and `error` stay put; `interacting_with_user` is forced to
+        `idle`. `dispensing` is a no-op: a vend in flight is never refunded
+        out from under the customer, and it resolves before this could re-fire.
         """
-        if self.state == "idle":
-            if self.credit_escrow <= 0:
-                return
-            self._journal.session_timeout(self.credit_escrow, "idle")
-            self.request_refund(reason="session_timeout")
-            self.selected_product = None
-            self.last_insufficient_message = ""
-            self._outputs.state_changed(self.state)
-            self._outputs.refresh()
+        state = self.state
+        if state == "dispensing":
             return
-        if self.state == "error":
-            if self.credit_escrow <= 0:
-                return
-            self._journal.session_timeout(self.credit_escrow, "error")
-            self.request_refund(reason="session_timeout")
-            self.selected_product = None
-            self.last_insufficient_message = ""
-            self._outputs.state_changed(self.state)
-            self._outputs.refresh()
+        if state != "interacting_with_user" and self.credit_escrow <= 0:
             return
-        if self.state != "interacting_with_user":
-            return
-        self._journal.session_timeout(self.credit_escrow, self.state)
+        self._journal.session_timeout(self.credit_escrow, state)
         self.request_refund(reason="session_timeout")
-        self.selected_product = None
-        self.last_insufficient_message = ""
-        # Manually transition back to idle (reset_state only works from error)
-        self.machine.set_state("idle")
-        self._outputs.state_changed(self.state)
-        self._outputs.display("idle")
+        self._drop_sale()
+        if state == "interacting_with_user":
+            # Manually transition back to idle (reset_state only works from error)
+            self.machine.set_state("idle")
+            self._outputs.state_changed(self.state)
+            self._outputs.display("idle")
+        else:
+            self._outputs.state_changed(self.state)
         self._outputs.refresh()
 
     @logger.catch()
