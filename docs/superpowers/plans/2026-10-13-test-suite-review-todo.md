@@ -10,7 +10,7 @@ Shared doc copy: https://claude.ai/code/artifact/af77f4a8-e9c8-471d-b989-10273df
 - When an item is done, change `- [ ]` to `- [x]` and append `— <commit sha>` or a one-line note. Commit this file alongside the fix.
 - A fixed test must fail against the bug it guards. Break the production code temporarily, watch the test go red, then restore it.
 - Lowering a number in `tests/private_access_budget.py` is fine. Raising one is not.
-- Open decision: item 2.1 (real broker in CI, or keep the skip). Ask the user before doing it.
+- Item 2.1 (a real broker in CI) was implemented under the user's "dispatch every verified item" instruction. It is unverified until CI runs: the e2e tests (2.1, 2.2, 3.8) have never executed anywhere. If CI goes red, reverting merge `06aa7bc` restores the old skip behaviour.
 
 ## 1. Tests that can't fail on the bug they guard
 
