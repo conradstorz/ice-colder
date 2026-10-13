@@ -138,7 +138,7 @@ async def test_late_dispenser_fault_after_completed_sale_is_ignored():
     machine = make_machine(price=2.50)
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 2.50
 
@@ -167,7 +167,7 @@ async def test_dispenser_jam_with_mismatched_slot_is_ignored():
     messages: list[str] = []
     vmc.outputs.set_message_callback(messages.append)
     vmc.selected_product = vmc.products[0]
-    vmc.machine.set_state("dispensing")
+    vmc.set_state("dispensing")
     vmc.credit_escrow = 0.0
 
     other_slot = vmc.products[0].slot + 1
@@ -186,7 +186,7 @@ async def test_dispense_complete_with_mismatched_slot_is_ignored():
     machine = make_machine(price=2.50)
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 2.50
 
@@ -207,7 +207,7 @@ async def test_dispense_complete_with_matching_slot_still_completes():
     machine = make_machine(price=2.50)
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 2.50
 
@@ -233,7 +233,7 @@ async def test_dispense_complete_records_event_via_recorder():
     machine.attach_to_loop(asyncio.get_running_loop())
     recorder = FakeEventRecorder()
     machine.set_event_recorder(recorder)
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 2.50
 
@@ -274,7 +274,7 @@ async def test_dispense_complete_does_not_double_record_event():
     machine.attach_to_loop(asyncio.get_running_loop())
     recorder = FakeEventRecorder()
     machine.set_event_recorder(recorder)
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 2.50
 
@@ -296,7 +296,7 @@ async def test_dispense_complete_with_mismatched_slot_does_not_record_event():
     machine.attach_to_loop(asyncio.get_running_loop())
     recorder = FakeEventRecorder()
     machine.set_event_recorder(recorder)
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 2.50
 
@@ -339,7 +339,7 @@ async def test_dispense_complete_records_sale_durably_before_fsm_returns_to_idle
             return real_recorder.record_sale(sku, name, slot, price, methods, ts=ts)
 
     machine.set_event_recorder(OrderCapturingRecorder())
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     # Real deposits through deposit_funds, not a direct credit_escrow
     # assignment -- bypassing the ledger trips the divergence guard and
@@ -402,7 +402,7 @@ async def test_dispense_complete_sale_record_failure_raises_data_101_but_complet
 
     recorder = FailingRecorder()
     machine.set_event_recorder(recorder)
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     vmc.deposit_funds(2.50, payment_method="cash_coin")
 
@@ -457,7 +457,7 @@ async def test_record_sale_totally_lost_preserves_pay104_recovery_not_data_101(
 
     recorder = TotallyFailingRecorder()
     machine.set_event_recorder(recorder)
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     vmc.deposit_funds(2.50, payment_method="cash_bill")
 
@@ -527,7 +527,7 @@ async def test_dispense_complete_records_price_from_shares_not_live_catalog_pric
             return real_recorder.record_sale(sku, name, slot, price, methods, ts=ts)
 
     machine.set_event_recorder(SaleOnlyRecorder())
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     vmc.deposit_funds(2.50, payment_method="cash_bill")
 
@@ -568,7 +568,7 @@ async def test_vend_failed_after_deduction_writes_no_sale_row_and_restores_credi
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
     machine.set_event_recorder(real_recorder)
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]  # ICE-1, price 2.50
     vmc.deposit_funds(2.50, payment_method="cash_bill")
 
@@ -609,7 +609,7 @@ async def test_vend_failed_restores_shares_total_not_live_catalog_price(tmp_path
     machine.set_event_recorder(real_recorder)
     messages: list[str] = []
     vmc.outputs.set_message_callback(messages.append)
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]  # ICE-1, price 2.50
     vmc.deposit_funds(2.50, payment_method="cash_bill")
 
@@ -667,7 +667,7 @@ async def test_pay_104_snapshot_exposes_pending_sale_after_crash_mid_dispense(
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
     machine.set_session_store(SessionStore(store_path))
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     vmc.deposit_funds(2.00, payment_method="cash_bill")
     vmc.deposit_funds(0.50, payment_method="card")
@@ -714,7 +714,7 @@ async def test_insufficient_funds_prompt_is_not_an_error_log():
     machine = make_machine(price=2.50)
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 0.50
     records: list[tuple[str, str]] = []
@@ -739,7 +739,7 @@ async def test_insufficient_funds_waits_without_charging():
     machine.attach_to_loop(asyncio.get_running_loop())
     messages: list[str] = []
     vmc.outputs.set_message_callback(messages.append)
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 1.00
 
@@ -769,7 +769,7 @@ async def test_sufficient_funds_charges_and_dispenses():
     machine = make_machine(price=2.50)
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 5.00
 
@@ -805,7 +805,7 @@ async def test_dispense_complete_with_no_remaining_credit_returns_to_idle():
     machine = make_machine(price=2.50)
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 2.50
 
@@ -826,7 +826,7 @@ async def test_product_deleted_mid_session_cancels_sale_without_error():
     machine.attach_to_loop(asyncio.get_running_loop())
     messages: list[str] = []
     vmc.outputs.set_message_callback(messages.append)
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 5.00
     vmc.products.clear()  # product deleted via the dashboard mid-session
@@ -846,7 +846,7 @@ async def test_sale_cancelled_then_new_sale_succeeds(tmp_path):
     machine = make_machine(price=2.50, tmp_path=tmp_path)
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 5.00
     vmc.products.clear()  # product deleted via the dashboard mid-session
@@ -1067,7 +1067,7 @@ class TestFaultRegistry:
 
 
 def _start_dispensing(vmc: VMC, index: int = 0):
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[index]
     vmc.credit_escrow = vmc.products[index].price
     vmc.process_payment()
@@ -1198,7 +1198,7 @@ class TestCreditLedger:
         machine = make_machine(price=2.50)
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        vmc.machine.set_state("interacting_with_user")
+        vmc.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[0]
         vmc.deposit_funds(2.00, payment_method="cash_bill")
         vmc.deposit_funds(1.00, payment_method="card")
@@ -1219,7 +1219,7 @@ class TestCreditLedger:
         machine = make_machine(price=2.50)
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        vmc.machine.set_state("interacting_with_user")
+        vmc.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[0]
         vmc.deposit_funds(2.50, payment_method="cash_coin")
 
@@ -1235,7 +1235,7 @@ class TestCreditLedger:
         machine = make_machine(price=2.50)
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        vmc.machine.set_state("interacting_with_user")
+        vmc.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[0]
         vmc.deposit_funds(1.00, payment_method="cash_coin")
         vmc.deposit_funds(1.00, payment_method="cash_coin")
@@ -1258,7 +1258,7 @@ class TestCreditLedger:
         machine = make_machine(price=2.50)
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        vmc.machine.set_state("interacting_with_user")
+        vmc.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[0]
         vmc.deposit_funds(2.00, payment_method="cash_bill")
         vmc.deposit_funds(0.50, payment_method="card")
@@ -1300,7 +1300,7 @@ class TestCreditLedger:
         machine = make_machine(price=2.50)
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        vmc.machine.set_state("interacting_with_user")
+        vmc.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[0]
         vmc.credit_escrow = 5.00  # escrow_credits stays [] -> diverges
 
@@ -1338,7 +1338,7 @@ class TestCreditLedger:
         machine = make_machine(price=2.50)
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        vmc.machine.set_state("interacting_with_user")
+        vmc.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[0]
         vmc.deposit_funds(2.51, payment_method="cash_coin")
 
@@ -1354,7 +1354,7 @@ class TestCreditLedger:
         machine2 = make_machine(price=1.00)
         vmc2 = machine2.vmc
         machine2.attach_to_loop(asyncio.get_running_loop())
-        vmc2.machine.set_state("interacting_with_user")
+        vmc2.set_state("interacting_with_user")
         vmc2.selected_product = vmc2.products[0]
         vmc2.escrow_credits = [Credit(method="cash_coin", amount=1.00, ts=0.0)]
         vmc2.credit_escrow = 1.00
@@ -1370,7 +1370,7 @@ class TestCreditLedger:
         machine3 = make_machine(price=1.00)
         vmc3 = machine3.vmc
         machine3.attach_to_loop(asyncio.get_running_loop())
-        vmc3.machine.set_state("interacting_with_user")
+        vmc3.set_state("interacting_with_user")
         vmc3.selected_product = vmc3.products[0]
         vmc3.escrow_credits = [Credit(method="cash_coin", amount=1.00, ts=0.0)]
         vmc3.credit_escrow = 1.01
@@ -1553,7 +1553,7 @@ class TestRefunds:
         machine.set_mqtt_client(client)
         messages: list[str] = []
         vmc.outputs.set_message_callback(messages.append)
-        vmc.machine.set_state("interacting_with_user")
+        vmc.set_state("interacting_with_user")
         vmc.credit_escrow = 1.25
 
         vmc.error_occurred()
@@ -1576,7 +1576,7 @@ class TestRefunds:
         machine.set_mqtt_client(client)
         messages: list[str] = []
         vmc.outputs.set_message_callback(messages.append)
-        vmc.machine.set_state("interacting_with_user")
+        vmc.set_state("interacting_with_user")
         vmc.credit_escrow = 0.0
 
         vmc.error_occurred()
@@ -2261,7 +2261,7 @@ async def test_dispense_snapshot_persisted_before_dispense_command(tmp_path):
         )
 
     dispatcher.send = send_and_check
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[0]
     vmc.credit_escrow = 2.50
 
@@ -2311,7 +2311,7 @@ class TestMakeIdleForService:
         machine.attach_to_loop(asyncio.get_running_loop())
         client = RecordingClient()
         machine.set_mqtt_client(client)
-        vmc.machine.set_state("dispensing")
+        vmc.set_state("dispensing")
         vmc.credit_escrow = 1.00
 
         result = vmc.make_idle_for_service()
@@ -2328,7 +2328,7 @@ class TestMakeIdleForService:
         machine.attach_to_loop(asyncio.get_running_loop())
         client = RecordingClient()
         machine.set_mqtt_client(client)
-        vmc.machine.set_state("interacting_with_user")
+        vmc.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[0]
         vmc.credit_escrow = 1.00
 
@@ -2375,7 +2375,7 @@ class TestMakeIdleForService:
         machine.attach_to_loop(asyncio.get_running_loop())
         client = RecordingClient()
         machine.set_mqtt_client(client)
-        vmc.machine.set_state("error")
+        vmc.set_state("error")
         vmc.credit_escrow = 1.25
 
         result = vmc.make_idle_for_service()
@@ -2413,7 +2413,7 @@ class TestMaintenanceLease:
         machine = make_machine2()
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        vmc.machine.set_state("interacting_with_user")
+        vmc.set_state("interacting_with_user")
 
         granted, reason = machine.lease.begin_maintenance("user-1", "sess-1")
 
@@ -3100,7 +3100,7 @@ class TestRunTestSale:
         assert released is True
 
         # A real (non-test) failed vend on the other SKU still moves it.
-        vmc.machine.set_state("interacting_with_user")
+        vmc.set_state("interacting_with_user")
         vmc.selected_product = vmc.products[1]
         vmc.deposit_funds(1.00, payment_method="cash_bill")
         vmc.process_payment()
@@ -3411,7 +3411,7 @@ class TestRunTestSale:
         vmc = machine.vmc
         machine.set_session_store(SessionStore(store_path))
 
-        vmc.machine.set_state("interacting_with_user")
+        vmc.set_state("interacting_with_user")
         product = vmc.products[0]  # ICE-1, price 2.50
         vmc.selected_product = product
         vmc.deposit_funds(2.00, payment_method="cash_bill")

@@ -78,7 +78,7 @@ def _start_sale(vmc, product) -> None:
     select_product's own FSM trigger (and so `_after_state_change`) --
     for tests that only care about the dispense-completion handlers, not
     the transition into 'dispensing' itself."""
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = product
     vmc.credit_escrow = product.price
     vmc.process_payment()

@@ -66,7 +66,7 @@ def _pay104_setup(
     store_path = tmp_path / "session.json"
     machine1 = Machine(config=cfg)
     vmc1 = machine1.vmc
-    vmc1.machine.set_state("interacting_with_user")
+    vmc1.set_state("interacting_with_user")
     product = next(p for p in vmc1.products if p.sku == sku)
     vmc1.selected_product = product
     for method, amount in deposits:

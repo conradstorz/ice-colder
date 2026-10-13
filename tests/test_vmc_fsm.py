@@ -2,8 +2,11 @@
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from config.config_model import ConfigModel
 from controller.machine import Machine
+from controller.vmc import InvalidTransition
 
 
 class TestInitialState:
@@ -128,3 +131,45 @@ class TestEventRecorder:
         vmc.error_occurred()
         recorder.record.assert_called_once_with("error", value=1.0)
         machine.cancel_pending_tasks()
+
+
+class TestExplicitTriggers:
+    def test_invalid_trigger_raises_and_keeps_state(self, vmc):
+        vmc.set_state("interacting_with_user")
+        with pytest.raises(InvalidTransition):
+            vmc.start_interaction()
+        assert vmc.state == "interacting_with_user"
+
+    @pytest.mark.parametrize(
+        "start", ["idle", "interacting_with_user", "dispensing", "error"]
+    )
+    def test_error_occurred_from_every_state(self, vmc, start):
+        vmc.set_state(start)
+        vmc.error_occurred()
+        assert vmc.state == "error"
+
+    @pytest.mark.parametrize(
+        ("credit", "expected"), [(5.0, "interacting_with_user"), (0.0, "idle")]
+    )
+    def test_complete_transaction_destination_follows_credit(
+        self, vmc, credit, expected
+    ):
+        vmc.credit_escrow = credit
+        vmc.set_state("dispensing")
+        vmc.complete_transaction()
+        assert vmc.state == expected
+
+    def test_set_state_runs_no_observer(self, vmc):
+        seen = MagicMock()
+        vmc.subscribe_state_change(seen)
+        vmc.set_state("dispensing")
+        assert vmc.state == "dispensing"
+        seen.assert_not_called()
+
+    def test_reset_state_from_idle_raises(self, vmc):
+        with pytest.raises(InvalidTransition):
+            vmc.reset_state()
+
+    def test_set_state_rejects_unknown_state(self, vmc):
+        with pytest.raises(ValueError):
+            vmc.set_state("bogus")

@@ -366,7 +366,7 @@ def _vmc_with_profiles(tmp_path, products=(ICE_1, WATER_1), *, tasks=None):
 
 
 def _start_sale(vmc, product) -> None:
-    vmc.machine.set_state("interacting_with_user")
+    vmc.set_state("interacting_with_user")
     vmc.selected_product = product
     vmc.credit_escrow = product.price
     vmc.process_payment()

@@ -2,7 +2,6 @@
 import asyncio
 import time
 from collections.abc import Callable
-from transitions import Machine
 from loguru import logger
 from services.payment_gateway_manager import PaymentGatewayManager
 from services.mqtt_messages import (
@@ -29,105 +28,15 @@ from controller.task_runner import TaskRunner
 from controller.dispenser_gate import DispenserProfileGate
 from controller.sale_journal import STATE_CHANGE_PREFIX, SaleJournal  # noqa: F401  (tests import STATE_CHANGE_PREFIX from here)
 
-#: FSM transition table.
-#:
-#:     idle --start_interaction--> interacting_with_user --dispense_product--> dispensing
-#:     dispensing --complete_transaction--> idle (no credit left)
-#:     dispensing --complete_transaction / vend_failed--> interacting_with_user
-#:     interacting_with_user --cancel_sale--> idle
-#:     (any state) --error_occurred--> error --reset_state--> idle
-#:
-#: Every hook named here is a `before` callback, so it runs before the state
-#: changes. The Machine's global `after_state_change="_after_state_change"`
-#: (set in `VMC.__init__`) then runs on every transition. `auto_transitions`
-#: is False, so there are no implicit `to_<state>()` triggers.
-#:
-#: This table is not the whole FSM. `_fail_vend` (the "no sellable products
-#: remain" branch) and `_expire_session` (session timeout in
-#: `interacting_with_user`) call `self.machine.set_state("idle")` directly,
-#: bypassing this table and every `before` hook, because `reset_state` only
-#: fires from `error`.
-#:
-#: Ordering matters when multiple transitions share the same trigger name.
-TRANSITIONS = [
-    {
-        "trigger": "start_interaction",
-        "source": "idle",
-        "dest": "interacting_with_user",
-        "before": "on_start_interaction",
-    },
-    {
-        "trigger": "dispense_product",
-        "source": "interacting_with_user",
-        "dest": "dispensing",
-        "before": "on_dispense_product",
-    },
-    #: The price was already deducted from escrow in `process_payment`, so
-    #: leftover credit means the customer stays to buy again; zero credit
-    #: returns to idle. `conditions` and `unless` on `has_credit` are
-    #: complementary, so exactly one entry matches. `transitions` tries
-    #: same-trigger entries in table order and the first whose conditions pass
-    #: wins; conditions are evaluated before `before` callbacks.
-    {
-        "trigger": "complete_transaction",
-        "source": "dispensing",
-        "dest": "interacting_with_user",
-        "conditions": "has_credit",
-        "before": "on_complete_transaction",
-    },
-    {
-        "trigger": "complete_transaction",
-        "source": "dispensing",
-        "dest": "idle",
-        "unless": "has_credit",
-        "before": "on_complete_transaction",
-    },
-    #: Abandons a live sale. Two callers: `process_payment`, when a catalog
-    #: edit removed the selected product from under the customer; and
-    #: `make_idle_for_service`, when maintenance standby takes the machine out
-    #: of service mid-session (it refunds with reason="maintenance" first, so
-    #: `on_cancel_sale`'s own refund finds nothing left).
-    {
-        "trigger": "cancel_sale",
-        "source": "interacting_with_user",
-        "dest": "idle",
-        "before": "on_cancel_sale",
-    },
-    #: Returns to `interacting_with_user`, not `idle`, on purpose:
-    #: `on_vend_failed` restores the sale's FIFO shares to escrow and the
-    #: product is locked out per `FAULT_TABLE`, so the customer can choose
-    #: another product. `_fail_vend` then decides whether they stay or are
-    #: refunded and forced to idle (when no sellable products remain).
-    {
-        "trigger": "vend_failed",
-        "source": "dispensing",
-        "dest": "interacting_with_user",
-        "before": "on_vend_failed",
-    },
-    #: Source "*" includes `error` itself, so firing this while already in
-    #: `error` is a self-transition that re-runs `on_error`. That is not
-    #: strictly idempotent: each run records another "error" event, logs, and
-    #: sends the customer message again, and requests a refund if escrow is
-    #: positive (nothing is refunded when escrow is already empty).
-    {
-        "trigger": "error_occurred",
-        "source": "*",
-        "dest": "error",
-        "before": "on_error",
-    },
-    {
-        "trigger": "reset_state",
-        "source": ["error"],
-        "dest": "idle",
-        "before": "on_reset",
-    },
-]
+
+class InvalidTransition(RuntimeError):
+    """A trigger fired from a state it is not defined for."""
 
 
 class VMC:
     """The vending machine's sale finite-state machine (states: `idle`,
-    `interacting_with_user`, `dispensing`, `error`; see `TRANSITIONS`
-    above).
+    `interacting_with_user`, `dispensing`, `error`; see the
+    trigger methods below).
 
     `VMC` holds no transport or service handle -- no MQTT client, health
     monitor, session store, event recorder, command dispatcher, display
@@ -360,16 +269,7 @@ class VMC:
             self.config_model.physical.dispense_timeout_seconds
         )
 
-        self.machine = Machine(
-            model=self,
-            states=VMC.states,
-            initial=VMC.states[0],
-            auto_transitions=False,
-            after_state_change="_after_state_change",
-        )
-
-        for t in TRANSITIONS:
-            self.machine.add_transition(**t)
+        self.state = VMC.states[0]
         logger.debug("FSM transitions set up successfully.")
 
         self.payment_gateway_manager = PaymentGatewayManager(
@@ -846,15 +746,69 @@ class VMC:
             except Exception:
                 logger.exception("sale-settled observer raised")
 
-    # --- FSM Callback Methods ---
-    def _after_state_change(self, *args, **kwargs):
-        """Runs after every FSM transition with self.state already updated.
+    # --- FSM triggers ---
+    # idle --start_interaction--> interacting_with_user --dispense_product--> dispensing
+    # dispensing --complete_transaction--> idle (no credit) or interacting_with_user
+    # dispensing --vend_failed--> interacting_with_user (product locked out)
+    # interacting_with_user --cancel_sale--> idle; any --error_occurred--> error --reset_state--> idle
+    # Each hook runs before the state changes; _after_state_change runs after. `set_state`
+    # bypasses both (`_fail_vend`, `_expire_session`: reset_state only fires from `error`).
+    def _transition(
+        self,
+        sources: frozenset[str] | None,
+        dest: str,
+        before: Callable[[], None],
+    ) -> None:
+        if sources is not None and self.state not in sources:
+            raise InvalidTransition(f"{dest!r} is not reachable from {self.state!r}")
+        before()
+        self.state = dest
+        self._after_state_change()
 
-        Accepts and ignores *args/**kwargs — the ``transitions`` library
-        forwards whatever arguments the trigger was called with (e.g.
-        ``vend_failed(code=..., outcome=...)``) to every callback list,
-        including ``after_state_change``.
-        """
+    def set_state(self, state: str) -> None:
+        """Force the state without running any hook or observer — the two
+        in-FSM bypasses (`_fail_vend`, `_expire_session`) and tests."""
+        if state not in self.states:
+            raise ValueError(f"unknown state {state!r}")
+        self.state = state
+
+    def start_interaction(self) -> None:
+        self._transition(
+            frozenset({"idle"}), "interacting_with_user", self.on_start_interaction
+        )
+
+    def dispense_product(self) -> None:
+        self._transition(
+            frozenset({"interacting_with_user"}), "dispensing", self.on_dispense_product
+        )
+
+    def complete_transaction(self) -> None:
+        # Price was already deducted from escrow; leftover credit keeps the customer.
+        dest = "interacting_with_user" if self.has_credit() else "idle"
+        self._transition(frozenset({"dispensing"}), dest, self.on_complete_transaction)
+
+    def cancel_sale(self) -> None:
+        self._transition(
+            frozenset({"interacting_with_user"}), "idle", self.on_cancel_sale
+        )
+
+    def vend_failed(self, *, code: FaultCode, outcome: str) -> None:
+        self._transition(
+            frozenset({"dispensing"}),
+            "interacting_with_user",
+            lambda: self.on_vend_failed(code, outcome),
+        )
+
+    def error_occurred(self) -> None:
+        # From any state, including `error` itself (re-runs on_error).
+        self._transition(None, "error", self.on_error)
+
+    def reset_state(self) -> None:
+        self._transition(frozenset({"error"}), "idle", self.on_reset)
+
+    # --- FSM Callback Methods ---
+    def _after_state_change(self):
+        """Runs after every FSM transition with self.state already updated."""
         self._outputs.state_changed(self.state)
         for cb in list(self._state_change_observers):
             try:
@@ -1042,7 +996,7 @@ class VMC:
             if not is_test:
                 self.request_refund(reason=code.value)
             self._session_timer.cancel()
-            self.machine.set_state("idle")
+            self.set_state("idle")
             self._outputs.state_changed(self.state)
             self._outputs.display("idle")
         else:
@@ -1462,7 +1416,7 @@ class VMC:
         self._drop_sale()
         if state == "interacting_with_user":
             # Manually transition back to idle (reset_state only works from error)
-            self.machine.set_state("idle")
+            self.set_state("idle")
             self._outputs.state_changed(self.state)
             self._outputs.display("idle")
         else:
