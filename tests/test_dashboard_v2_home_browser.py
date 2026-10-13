@@ -182,6 +182,10 @@ def test_home_dom_is_intact_in_a_real_browser(live_server):
         f"browser check produced no output; stderr: {result.stderr}"
     )
     payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert result.returncode == 0, (
+        f"browser checker exited {result.returncode}; "
+        f"stdout: {result.stdout!r}; stderr: {result.stderr!r}"
+    )
 
     assert payload.get("ok") is True, (
         "Dashboard v2 Home landing DOM is broken in a real browser: "

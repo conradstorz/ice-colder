@@ -120,6 +120,25 @@ async function main() {
       return r.result.value;
     };
 
+    // Bounded poll: re-evaluate a page-side JS predicate every 50 ms until it
+    // is truthy. A fixed sleep proves nothing about whether a navigation or
+    // htmx swap actually happened (a slow swap would let the snapshot read the
+    // OLD page and pass vacuously), so every post-action wait goes through
+    // this and fails loudly, naming what never happened, on timeout.
+    const waitFor = async (label, predicateJs, timeoutMs = 8000) => {
+      const end = Date.now() + timeoutMs;
+      while (Date.now() < end) {
+        if (await evalJs(`Boolean(${predicateJs})`)) return;
+        await sleep(50);
+      }
+      throw new Error(`timed out after ${timeoutMs}ms waiting for: ${label} (predicate: ${predicateJs})`);
+    };
+    // Proves a navigation landed on `path` and its document finished loading.
+    const loadedAt = (path) =>
+      `location.pathname === ${JSON.stringify(path)} && document.readyState === 'complete'`;
+    // htmx adds .htmx-request while a request is in flight and removes it once settled.
+    const IDLE = `!document.querySelector('.htmx-request')`;
+
     await cmd("Page.enable");
     await cmd("Runtime.enable");
     await cmd("Network.enable");
@@ -140,32 +159,38 @@ async function main() {
 
     // A real top-level navigation, exactly like a bookmark or reload.
     await cmd("Page.navigate", { url: `${baseUrl}/` });
-    await sleep(1200);
+    await waitFor("initial load of /", `${loadedAt("/")} && ${IDLE} && document.querySelector('a[href="/health"]')`);
     await snapshot("initial-home-load");
 
     // A boosted <a> click -- ordinary navigation, not a form and not a
     // self-polling widget. None of Home's tile links carry an explicit
     // hx-target; they rely entirely on <body>'s ambient default.
     await evalJs(`document.querySelector('a[href="/health"]').click()`);
-    await sleep(600);
+    await waitFor("boosted swap to /health settled", `${loadedAt("/health")} && ${IDLE} && document.querySelector('a[href="/health/logs"]')`);
     await snapshot("after-click-health-tile");
 
     // base.html's own Home link (in the bar) -- same ambient mechanism.
     await evalJs(`document.querySelector('a[href="/"]').click()`);
-    await sleep(600);
+    await waitFor("boosted swap back to / settled", `${loadedAt("/")} && ${IDLE} && document.querySelector('a[href="/health"]')`);
     await snapshot("after-click-home-link");
 
     // health_logs.html's Refresh button: a bare hx-get with no target of
     // its own, clicked twice to confirm it doesn't accumulate a fresh
     // nested <main> on every tap.
     await cmd("Page.navigate", { url: `${baseUrl}/health/logs` });
-    await sleep(800);
+    await waitFor("initial load of /health/logs", `${loadedAt("/health/logs")} && ${IDLE} && document.querySelector('button[hx-get="/health/logs"]')`);
     await snapshot("logs-initial-load");
-    await evalJs(`document.querySelector('button[hx-get="/health/logs"]').click()`);
-    await sleep(600);
+    await evalJs(`window.__mainBefore = document.querySelector('main'); document.querySelector('button[hx-get="/health/logs"]').click()`);
+    // The path does not change on a refresh, so the observable is the swap
+    // itself: the live <main> is replaced by a new element (outerHTML swap),
+    // or -- the regression this guards -- a nested <main> shows up inside it.
+    await waitFor("Refresh swap 1 settled", `(document.querySelector('main') !== window.__mainBefore || document.querySelector('main main')) && ${IDLE}`);
     await snapshot("after-refresh-click-1");
-    await evalJs(`document.querySelector('button[hx-get="/health/logs"]').click()`);
-    await sleep(600);
+    await evalJs(`window.__mainBefore = document.querySelector('main'); document.querySelector('button[hx-get="/health/logs"]').click()`);
+    // The path does not change on a refresh, so the observable is the swap
+    // itself: the live <main> is replaced by a new element (outerHTML swap),
+    // or -- the regression this guards -- a nested <main> shows up inside it.
+    await waitFor("Refresh swap 2 settled", `(document.querySelector('main') !== window.__mainBefore || document.querySelector('main main')) && ${IDLE}`);
     await snapshot("after-refresh-click-2");
 
     out.ok = out.steps.every((s) => s.mains === 1 && s.nestedMain === 0 && s.bars === 1);
@@ -177,7 +202,12 @@ async function main() {
 }
 
 main()
-  .then(() => console.log(JSON.stringify(out)))
+  .then(() => {
+    console.log(JSON.stringify(out));
+    // Non-zero on a failed check too, not only on a thrown error, so a
+    // wrapper that looks only at the exit status cannot mistake it for a pass.
+    if (!out.ok) process.exitCode = 1;
+  })
   .catch((e) => {
     out.error = String((e && e.stack) || e);
     console.log(JSON.stringify(out));

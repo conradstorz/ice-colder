@@ -123,6 +123,25 @@ async function main() {
       return r.result.value;
     };
 
+    // Bounded poll: re-evaluate a page-side JS predicate every 50 ms until it
+    // is truthy. A fixed sleep proves nothing about whether a navigation or
+    // htmx swap actually happened (a slow swap would let the snapshot read the
+    // OLD page and pass vacuously), so every post-action wait goes through
+    // this and fails loudly, naming what never happened, on timeout.
+    const waitFor = async (label, predicateJs, timeoutMs = 8000) => {
+      const end = Date.now() + timeoutMs;
+      while (Date.now() < end) {
+        if (await evalJs(`Boolean(${predicateJs})`)) return;
+        await sleep(50);
+      }
+      throw new Error(`timed out after ${timeoutMs}ms waiting for: ${label} (predicate: ${predicateJs})`);
+    };
+    // Proves a navigation landed on `path` and its document finished loading.
+    const loadedAt = (path) =>
+      `location.pathname === ${JSON.stringify(path)} && document.readyState === 'complete'`;
+    // htmx adds .htmx-request while a request is in flight and removes it once settled.
+    const IDLE = `!document.querySelector('.htmx-request')`;
+
     await cmd("Page.enable");
     await cmd("Runtime.enable");
     await cmd("Network.enable");
@@ -132,7 +151,9 @@ async function main() {
 
     // A genuine top-level navigation.
     await cmd("Page.navigate", { url: `${baseUrl}/` });
-    await sleep(2000); // let the load-triggered polls land and settle
+    await waitFor("Home loaded and load-triggered polls settled",
+      `${loadedAt("/")} && ${IDLE} && document.querySelector('#pill') && document.querySelector('#pill').textContent.trim() !== '\u2026' && document.querySelector('main a[href="/health"]')`,
+      10000);
 
     // 1. Spy on play() so we can prove the click-sound handler fired.
     await evalJs(`
@@ -169,13 +190,23 @@ async function main() {
     await cmd("Input.dispatchMouseEvent", {
       type: "mouseMoved", x: rect.x, y: rect.y,
     });
+    // Deliberate 20 ms pause: no observable exists for "headless Chrome has
+    // hit-tested the hovered target"; it is only a courtesy gap before the press.
     await sleep(20);
 
     // 4. Press.
     await cmd("Input.dispatchMouseEvent", {
       type: "mousePressed", x: rect.x, y: rect.y, button: "left", buttons: 1, clickCount: 1,
     });
-    await sleep(50);
+    // Bounded poll (non-throwing, so the assertion reports the value) for the
+    // :active press style to apply, instead of a fixed 50 ms guess.
+    {
+      const end = Date.now() + 1000;
+      while (Date.now() < end &&
+        (await evalJs(`getComputedStyle(document.querySelector('main a[href="/health"]')).filter`)) === "none") {
+        await sleep(50);
+      }
+    }
     out.pressFilter = await evalJs(
       `getComputedStyle(document.querySelector('main a[href="/health"]')).filter`,
     );
@@ -228,7 +259,12 @@ async function main() {
 }
 
 main()
-  .then(() => console.log(JSON.stringify(out)))
+  .then(() => {
+    console.log(JSON.stringify(out));
+    // Non-zero on a failed check too, not only on a thrown error, so a
+    // wrapper that looks only at the exit status cannot mistake it for a pass.
+    if (!out.ok) process.exitCode = 1;
+  })
   .catch((e) => {
     out.error = String((e && e.stack) || e);
     console.log(JSON.stringify(out));

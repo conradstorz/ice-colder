@@ -159,6 +159,10 @@ def test_owner_pin_never_reaches_the_confirmation_get_query_string(live_server):
         f"browser check produced no output; stderr: {result.stderr}"
     )
     payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert result.returncode == 0, (
+        f"browser checker exited {result.returncode}; "
+        f"stdout: {result.stdout!r}; stderr: {result.stderr!r}"
+    )
 
     assert not payload.get("error"), (
         f"browser check errored: {payload.get('error')}\nstderr: {result.stderr}"

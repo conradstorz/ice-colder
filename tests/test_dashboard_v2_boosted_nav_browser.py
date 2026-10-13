@@ -170,6 +170,10 @@ def test_boosted_navigation_does_not_nest_main(live_server):
         f"browser check produced no output; stderr: {result.stderr}"
     )
     payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert result.returncode == 0, (
+        f"browser checker exited {result.returncode}; "
+        f"stdout: {result.stdout!r}; stderr: {result.stderr!r}"
+    )
 
     assert payload.get("ok") is True, (
         "Boosted navigation nests <main> inside <main> in a real browser: "
