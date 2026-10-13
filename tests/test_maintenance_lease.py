@@ -342,7 +342,7 @@ def test_take_over_rearms_idle_timer_for_opportunistic_lease():
 
 def test_run_started_with_no_hold_raises():
     lease, *_ = make_lease()
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="no maintenance lease held"):
         lease.run_started()
 
 
