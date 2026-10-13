@@ -28,5 +28,5 @@ BUDGET: dict[str, int] = {
     "tests/test_simulator_vending.py": 53,
     "tests/test_test_sale_runner.py": 1,
     "tests/test_vmc_flows.py": 2,
-    "tests/test_web_routes.py": 11,
+    "tests/test_web_routes.py": 5,
 }
