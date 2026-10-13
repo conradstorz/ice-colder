@@ -58,7 +58,7 @@ class FaultRegistry:
     def __init__(self, product_name: Callable[[str | None], str | None]):
         # Bound method (or any callable) consulted at call time -- never
         # snapshotted -- so a catalog edit between raises is reflected
-        # immediately, matching VMC._product_name's own semantics.
+        # immediately; a removed product's name falls back to its sku.
         self._product_name = product_name
         self.lockouts: dict[str, FaultCode] = {}
         self.machine_faults: dict[FaultCode, float] = {}

@@ -121,7 +121,7 @@ class SessionRecovery:
         must record what was actually collected, not today's price. The
         product name is still looked up from the catalog by SKU for
         display, falling back to the SKU itself when the product no
-        longer exists (`_product_name` already does this).
+        longer exists -- reads the catalog straight off the config.
         """
         if not self._pay104_active():
             return None

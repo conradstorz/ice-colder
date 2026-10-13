@@ -227,9 +227,9 @@ class Machine:
         )
 
     def _product_name(self, sku: str | None) -> str | None:
-        """Shared by the fault registry and session recovery -- mirrors
-        `VMC._product_name` exactly, reading the catalog straight off the
-        `ConfigModel` rather than through the VMC."""
+        """Shared by the fault registry and session recovery, reading the
+        catalog straight off the `ConfigModel` rather than the VMC, and
+        falling back to the sku for a product that no longer exists."""
         if sku is None:
             return None
         return next((p.name for p in self._config.products if p.sku == sku), sku)

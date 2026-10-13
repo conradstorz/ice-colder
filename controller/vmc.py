@@ -348,6 +348,7 @@ class VMC:
         if self._sale is not None and self._sale.is_test:
             # is_test lives on the sale, not the lease, so a lease release cannot flip it
             # to production; record() is skipped, so no sale/dispense rows are written.
+            # A test sale skips record(); clear the shares here as record() would.
             self._sale = self._sale.with_(shares=None)
         else:
             recorded = await self._cycle.record()
@@ -355,6 +356,7 @@ class VMC:
                 self._sale = self._sale.with_(shares=None)
             # A `False` return is the PAY-104 path: shares stay so the
             # on-disk session snapshot remains the sale's only record.
+        # Raised after the sale is recorded and before _finish_dispensing, on purpose.
         if report.outcome is DispenserOutcome.door_open:
             # Customer success that is also a hardware fault (trap door did not close).
             sku = self.selected_product.sku if self.selected_product else None
