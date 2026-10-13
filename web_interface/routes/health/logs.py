@@ -26,6 +26,7 @@ async def logs_view(request: Request):
     # 10 was never the spec value.
     lines = await asyncio.to_thread(context.tail, context.LOG_PATH, 50)
     return templates.TemplateResponse(
+        request,
         "health_logs.html",
         context.template_context(request, level=LEVEL_HEALTH_LOGS, logs=lines),
     )

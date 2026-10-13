@@ -198,6 +198,7 @@ async def dashboard(request: Request):
     perms = principal.perms if principal else frozenset()
     tiles = _build_tiles(perms)
     return templates.TemplateResponse(
+        request,
         "home.html",
         context.template_context(request, level=LEVEL_HOME, tiles=tiles),
     )
@@ -223,6 +224,7 @@ async def pill(request: Request):
         top = _highest_priority_fault(snap["active_faults"])
         pill_state, pill_text = "fault", (top["code"] if top else "ISSUE")
     return templates.TemplateResponse(
+        request,
         "partials/pill.html",
         context.template_context(request, pill_state=pill_state, pill_text=pill_text),
     )
@@ -252,6 +254,7 @@ async def kpi_fragment(request: Request):
         summary = None
         average = None
     return templates.TemplateResponse(
+        request,
         "partials/kpi_fragment.html",
         context.template_context(request, summary=summary, average=average),
     )

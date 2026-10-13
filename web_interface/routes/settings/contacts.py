@@ -31,6 +31,7 @@ def _channels_from_form(values: list[str]) -> list[Channel]:
 def _render_contacts_form(request: Request, *, error: str | None):
     people = context.config.physical.people
     return templates.TemplateResponse(
+        request,
         "settings_contacts.html",
         context.template_context(
             request,

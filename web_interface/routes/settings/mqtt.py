@@ -37,6 +37,7 @@ def _render_mqtt_form(request: Request, *, error: str | None):
     mqtt = context.config.mqtt
     overrides = mqtt_env_overrides()
     return templates.TemplateResponse(
+        request,
         "settings_mqtt.html",
         context.template_context(
             request,

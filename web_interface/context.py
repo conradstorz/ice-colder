@@ -430,6 +430,7 @@ async def _render_status(request: Request):
         )
 
     return templating.templates.TemplateResponse(
+        request,
         "partials/status_fragment.html",
         template_context(
             request,

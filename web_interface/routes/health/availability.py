@@ -39,6 +39,7 @@ async def availability_view(request: Request):
         "water": avail.sale_available("water") if avail else (None, []),
     }
     return templates.TemplateResponse(
+        request,
         "health_availability.html",
         context.template_context(
             request,

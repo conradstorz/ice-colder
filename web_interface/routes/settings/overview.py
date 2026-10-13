@@ -107,6 +107,7 @@ async def settings_home(request: Request):
         },
     ]
     return templates.TemplateResponse(
+        request,
         "settings.html",
         context.template_context(request, level=LEVEL_SETTINGS, tiles=tiles),
     )

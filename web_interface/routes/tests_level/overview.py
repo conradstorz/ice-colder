@@ -38,6 +38,7 @@ async def tests_level(request: Request):
 
     principal = web_auth.current_principal(request)
     return templates.TemplateResponse(
+        request,
         "tests.html",
         context.template_context(
             request,

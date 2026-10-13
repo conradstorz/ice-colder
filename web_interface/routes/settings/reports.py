@@ -59,6 +59,7 @@ def _render_reports_form(
     context.config (spec: "not a silently clamped value")."""
     reports = context.config.reports
     return templates.TemplateResponse(
+        request,
         "settings_reports.html",
         context.template_context(
             request,

@@ -138,6 +138,7 @@ async def tests_standby_confirm(
     """
     principal = web_auth.current_principal(request)
     return templates.TemplateResponse(
+        request,
         "partials/tests_hold_banner.html",
         context.template_context(
             request,
@@ -188,6 +189,7 @@ async def tests_standby(request: Request):
         )
         refusal = None if granted else reason
     return templates.TemplateResponse(
+        request,
         "partials/tests_hold_banner.html",
         context.template_context(
             request, **_service_state(machine, principal, refusal=refusal)
@@ -217,6 +219,7 @@ async def tests_end(request: Request):
     if machine is not None:
         machine.lease.end_maintenance(principal.session.id)
     return templates.TemplateResponse(
+        request,
         "partials/tests_hold_banner.html",
         context.template_context(request, **_service_state(machine, principal)),
     )
@@ -241,6 +244,7 @@ async def tests_takeover(request: Request):
     if machine is not None:
         machine.lease.take_over_maintenance(principal.user.id, principal.session.id)
     return templates.TemplateResponse(
+        request,
         "partials/tests_hold_banner.html",
         context.template_context(request, **_service_state(machine, principal)),
     )

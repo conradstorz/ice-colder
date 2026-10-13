@@ -23,6 +23,7 @@ router = APIRouter()
 def _render_machine_form(request: Request, *, error: str | None):
     physical = context.config.physical
     return templates.TemplateResponse(
+        request,
         "settings_machine.html",
         context.template_context(
             request,

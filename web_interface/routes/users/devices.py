@@ -69,6 +69,7 @@ def _render_devices_page(request: Request, *, notice: str | None = None):
             }
         )
     return templates.TemplateResponse(
+        request,
         "devices.html",
         context.template_context(
             request, level=LEVEL_DEVICES, devices=rows, notice=notice

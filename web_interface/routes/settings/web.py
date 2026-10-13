@@ -23,6 +23,7 @@ router = APIRouter()
 def _render_web_form(request: Request, *, error: str | None):
     web = context.config.web
     return templates.TemplateResponse(
+        request,
         "settings_web.html",
         context.template_context(
             request,

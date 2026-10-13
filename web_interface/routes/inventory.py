@@ -140,6 +140,7 @@ async def inventory_view(request: Request):
     # — decided once here, never left to the template to sort out.
     ordered = [r for r in rows if r["tracked"]] + [r for r in rows if not r["tracked"]]
     return templates.TemplateResponse(
+        request,
         "inventory.html",
         context.template_context(request, level=LEVEL_INVENTORY, rows=ordered),
     )
@@ -185,6 +186,7 @@ async def adjust_inventory(request: Request, sku: str, delta: str = Form(...)):
     # One row, not the whole list (brief resolution 7) — a loader's
     # repeated taps must not scroll-jump the page on a tablet.
     return templates.TemplateResponse(
+        request,
         "partials/inventory_row.html",
         context.template_context(request, row=_row_for(product)),
     )
@@ -203,6 +205,7 @@ async def collect_confirm(
     state; "false" renders the plain first-tap button -- this is what its
     Cancel button sends via hx-vals."""
     return templates.TemplateResponse(
+        request,
         "partials/confirm_button.html",
         context.template_context(
             request,
@@ -289,6 +292,7 @@ async def collect_cash(request: Request):
     recorded_time = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
     return templates.TemplateResponse(
+        request,
         "partials/cash_collection_result.html",
         context.template_context(
             request,

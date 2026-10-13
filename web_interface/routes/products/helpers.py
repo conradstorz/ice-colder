@@ -115,6 +115,7 @@ def _render_product_form(
     else:
         level = LEVEL_PRODUCTS_NEW
     return templates.TemplateResponse(
+        request,
         "product_form.html",
         context.template_context(
             request,

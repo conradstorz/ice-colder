@@ -54,6 +54,7 @@ async def pay104_record_sale_confirm(
     """Same confirm_url contract as fault_clear_confirm above."""
     dom_key = dom_safe_key(FaultCode.PAY_104.value)
     return templates.TemplateResponse(
+        request,
         "partials/confirm_button.html",
         context.template_context(
             request,
@@ -254,6 +255,7 @@ async def pay104_discard_confirm(
 ):
     dom_key = dom_safe_key(FaultCode.PAY_104.value)
     return templates.TemplateResponse(
+        request,
         "partials/confirm_button.html",
         context.template_context(
             request,
