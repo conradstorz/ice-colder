@@ -1,5 +1,7 @@
-"""The sale FSM's single writer of log lines, event-recorder rows and the
-customer messages that accompany them, one method per sale event.
+"""The sale FSM's domain-event writer: the transaction/vending bound-sink log
+lines and their paired plain-logger lines, the event-recorder rows and the
+customer messages that accompany them, one method per sale event. Incidental
+debug tracing and the MQTT dispenser-event line stay at the call site.
 The strings, sinks and levels here are the log contract; do not reword them.
 Nothing in this module reads FSM state: callers pass in every value.
 """
@@ -17,8 +19,8 @@ STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
 
 
 class SaleJournal:
-    """Every log line, event-recorder row and adjacent customer message the
-    sale FSM emits, one method per event. `recorder` is read at each call."""
+    """Every domain-event log line, event-recorder row and adjacent customer
+    message the sale FSM emits, one method per event. `recorder` is read at each call."""
 
     def __init__(
         self,

@@ -67,12 +67,11 @@ class VMC:
         in_maintenance: Callable[[], bool],
         availability: Callable[[], Availability | None],
         inventory: Callable[[], InventoryManager | None],
-        recorder: Callable[[], object | None],
         dispense_factory: Callable[[SaleContext], DispenseCycle],
         journal: SaleJournal,
     ):
         """`Machine` (controller/machine.py) is the sole constructor and passes every
-        collaborator in. `in_maintenance`, `availability`, `inventory` and `recorder`
+        collaborator in. `in_maintenance`, `availability` and `inventory`
         are zero-arg callables read at call time, since the live instances are
         attached after construction. The maintenance lease reaches the VMC only
         through the `in_maintenance` boolean.
@@ -100,7 +99,6 @@ class VMC:
         )
         self._inventory: Callable[[], InventoryManager | None] = inventory
         self._availability: Callable[[], Availability | None] = availability
-        self._recorder: Callable[[], object | None] = recorder
         self._outputs = outputs
         self._in_maintenance: Callable[[], bool] = in_maintenance
         # True for exactly one run_test_sale call (double-submit guard).
