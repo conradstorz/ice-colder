@@ -18,7 +18,7 @@ import pytest
 
 from config.config_model import ConfigModel
 from services.access import Role
-from web_interface.routes import settings as settings_routes
+from services import config_store
 
 
 class TestReportsPageGating:
@@ -239,7 +239,7 @@ class TestReportsPage:
         def _raise(*args, **kwargs):
             raise OSError("disk full")
 
-        monkeypatch.setattr(settings_routes.config_store, "save_config", _raise)
+        monkeypatch.setattr(config_store, "save_config", _raise)
 
         resp = client.post(
             "/settings/reports",

@@ -4,7 +4,9 @@ The rule: every route module exposes a module-level `router`, no route
 handler is nested inside another function (a nested function counts only if
 it carries a decorator), and `build_router` must not exist. A
 `build_router(templates)` closure hides each handler from import, tracebacks
-and readers alike. Plain undecorated closures are allowed.
+and readers alike. Plain undecorated closures are allowed. A module listed in
+`HELPER_MODULES` is shared code with no routes: it must not expose an
+`APIRouter`, and must not carry a route decorator.
 
 The guard is closed: `ROUTE_MODULES` is discovered recursively from every `*.py`
 under the routes directory except the top-level `__init__.py`, as dotted names
@@ -45,12 +47,35 @@ def _path_for(module_name: str) -> Path:
 # `auth` is the one package whose router is the unauthenticated `public` one.
 ROUTER_ATTR = {"auth": "public"}
 
+# Helper sub-modules: shared code with no routes, so no router of their own.
+# The guard checks instead that no route decorator appears in them.
+HELPER_MODULES = frozenset({"settings.secrets"})
+
+_ROUTE_DECORATOR_ATTRS = frozenset(
+    {
+        "get",
+        "post",
+        "put",
+        "patch",
+        "delete",
+        "head",
+        "options",
+        "trace",
+        "api_route",
+        "route",
+        "websocket",
+        "websocket_route",
+    }
+)
+
 
 def test_discovery_finds_route_modules():
     """Guards the parametrised tests below: an empty discovery (e.g. a mistyped ROUTES_DIR) would skip them silently."""
     assert "auth" in ROUTE_MODULES
     assert "home" in ROUTE_MODULES
     assert "tests_level.commands" in ROUTE_MODULES
+    assert "health.faults" in ROUTE_MODULES
+    assert "settings.secrets" in ROUTE_MODULES
 
 
 _FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
@@ -88,6 +113,30 @@ def _hits(module_name: str) -> tuple[list[str], list[str]]:
     return build_router, [nested[k] for k in sorted(nested)]
 
 
+def _route_decorators_in(tree: ast.AST, rel: str) -> list[str]:
+    """`path:line` of every function decorated with a `.get/.post/...` call."""
+    hits = []
+    for node in ast.walk(tree):
+        if isinstance(node, _FUNCS):
+            for dec in node.decorator_list:
+                call = dec if isinstance(dec, ast.Call) else None
+                func = call.func if call else dec
+                if (
+                    isinstance(func, ast.Attribute)
+                    and func.attr in _ROUTE_DECORATOR_ATTRS
+                ):
+                    hits.append(f"{rel}:{node.lineno}")
+    return hits
+
+
+def _route_decorators(module_name: str) -> list[str]:
+    """`path:line` of every function decorated with a `.get/.post/...` call."""
+    path = _path_for(module_name)
+    rel = path.relative_to(ROUTES_DIR.parent.parent).as_posix()
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return _route_decorators_in(tree, rel)
+
+
 @pytest.mark.parametrize("module_name", ROUTE_MODULES)
 def test_no_build_router(module_name: str) -> None:
     build_router, _ = _hits(module_name)
@@ -103,7 +152,28 @@ def test_no_nested_functions(module_name: str) -> None:
 @pytest.mark.parametrize("module_name", ROUTE_MODULES)
 def test_every_module_exposes_a_router(module_name: str) -> None:
     module = importlib.import_module(f"web_interface.routes.{module_name}")
+    if module_name in HELPER_MODULES:
+        routers = [n for n, v in vars(module).items() if isinstance(v, APIRouter)]
+        assert not routers, (
+            f"helper {module_name} must not expose an APIRouter: {routers}"
+        )
+        decorated = _route_decorators(module_name)
+        assert not decorated, f"helper {module_name} defines routes: {decorated}"
+        return
     attr = ROUTER_ATTR.get(module_name, "router")
     assert isinstance(getattr(module, attr, None), APIRouter), (
         f"{module_name} must expose a module-level APIRouter named {attr!r}"
     )
+
+
+def test_route_decorators_in_finds_router_calls():
+    src = (
+        "r = object()\n"
+        "@r.get('/x')\ndef h(): ...\n"
+        "@r.post('/y')\nasync def g(): ...\n"
+        "@r.websocket('/ws')\nasync def w(): ...\n"
+        "@r.head('/h')\ndef hd(): ...\n"
+        "@other\ndef k(): ...\n"
+    )
+    hits = _route_decorators_in(ast.parse(src), "m.py")
+    assert hits == ["m.py:3", "m.py:5", "m.py:7", "m.py:9"]

@@ -16,7 +16,9 @@ import pytest
 
 from config.config_model import Channel, ConfigModel
 from services.access import Role
+from services import config_store
 from web_interface.routes import settings as settings_routes
+from web_interface.routes.settings import comms as settings_comms
 
 SECRET_MASK = settings_routes.SECRET_MASK
 
@@ -167,7 +169,7 @@ class TestMachinePage:
         def _raise(*args, **kwargs):
             raise OSError("disk full")
 
-        monkeypatch.setattr(settings_routes.config_store, "save_config", _raise)
+        monkeypatch.setattr(config_store, "save_config", _raise)
 
         resp = client.post(
             "/settings/machine",
@@ -358,7 +360,7 @@ class TestPaymentsPage:
         def _raise(*args, **kwargs):
             raise OSError("disk full")
 
-        monkeypatch.setattr(settings_routes.config_store, "save_config", _raise)
+        monkeypatch.setattr(config_store, "save_config", _raise)
 
         resp = client.post(
             "/settings/payments",
@@ -479,7 +481,7 @@ class TestCommsPage:
         def _raise(*args, **kwargs):
             raise OSError("disk full")
 
-        monkeypatch.setattr(settings_routes.config_store, "save_config", _raise)
+        monkeypatch.setattr(config_store, "save_config", _raise)
 
         resp = client.post(
             "/settings/comms",
@@ -515,7 +517,7 @@ class TestCommsPage:
             sent_to["to"] = to
             return True
 
-        monkeypatch.setattr(settings_routes, "send_email", _fake_send_email)
+        monkeypatch.setattr(settings_comms, "send_email", _fake_send_email)
 
         resp = client.post("/settings/comms/test")
         assert resp.status_code == 200
@@ -532,7 +534,7 @@ class TestCommsPage:
         async def _fake_send_email(*args, **kwargs):
             return False
 
-        monkeypatch.setattr(settings_routes, "send_email", _fake_send_email)
+        monkeypatch.setattr(settings_comms, "send_email", _fake_send_email)
 
         resp = client.post("/settings/comms/test")
         assert resp.status_code == 200
@@ -559,7 +561,7 @@ class TestCommsPage:
         async def _fake_send_email(*args, **kwargs):
             return True
 
-        monkeypatch.setattr(settings_routes, "send_email", _fake_send_email)
+        monkeypatch.setattr(settings_comms, "send_email", _fake_send_email)
 
         resp = client.post("/settings/comms/test")
         assert resp.status_code == 200
