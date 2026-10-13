@@ -20,6 +20,7 @@ counts.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from config.config_model import Product
 from contracts.common import CommandAck
@@ -480,7 +481,11 @@ def test_classify_jam_on_water_fill_maps_to_mechanism_error_code(tmp_path, caplo
 
     assert report.success is False
     assert report.fault is FaultCode.ICE_302
-    assert any("no fault mapped" in r.message.lower() for r in caplog.records)
+    assert any(
+        r.levelno == logging.ERROR
+        and "No fault mapped for mechanism='water_fill' outcome='jam'" in r.message
+        for r in caplog.records
+    )
 
 
 # --- record() ---
