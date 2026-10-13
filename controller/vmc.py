@@ -650,22 +650,16 @@ class VMC:
         cycle.cancel()
         sku = self.selected_product.sku if self.selected_product else None
         self.raise_fault(code, sku=sku, outcome=outcome)
-        # Captured BEFORE _fail_vend: it runs the vend_failed transition,
-        # whose before-hook (on_vend_failed) fully clears self._sale (see
-        # its own comment) before this call returns -- notifying with a
-        # None sale afterward would be useless to any observer.
-        sale = self._sale
-        self._fail_vend(code, outcome=outcome)
-        if sale is not None:
-            if outcome == "no_report":
-                # Kept as its own outcome ("timeout"), distinct from
-                # "vend_failed", even though it runs through the same
-                # vend_failed/PAY-102 transition above (system-tests
-                # design §2.3; see controller/test_sale.py's TestSaleResult
-                # docstring) -- DispenseCycle._timed_out's own outcome string.
-                self._notify_settled(sale, "timeout", None)
-            else:
-                self._notify_settled(sale, "vend_failed", code.value)
+        # "timeout" is kept as its own outcome, distinct from "vend_failed",
+        # even though it runs through the same vend_failed/PAY-102
+        # transition above (system-tests design §2.3; see
+        # controller/test_sale.py's TestSaleResult docstring) --
+        # DispenseCycle._timed_out's own outcome string.
+        self._settle(
+            "timeout" if outcome == "no_report" else "vend_failed",
+            None if outcome == "no_report" else code.value,
+            lambda: self._fail_vend(code, outcome=outcome),
+        )
 
     async def on_dispenser_event(self, topic: str, data: dict):
         """Handle dispenser status from ESP32.
@@ -743,17 +737,7 @@ class VMC:
                 self.raise_fault(
                     FaultCode.ICE_402, sku=sku, outcome=report.outcome.value
                 )
-            # Captured BEFORE _finish_dispensing: it runs the
-            # complete_transaction transition, whose before-hook
-            # (on_complete_transaction) clears self._sale (via
-            # selected_product = None) before this call returns. Fired
-            # AFTER _finish_dispensing, not before, so every one of the
-            # three settled-notification sites observes the same thing:
-            # an already-settled FSM, never 'dispensing' (decision 1).
-            sale = self._sale
-            self._finish_dispensing()
-            if sale is not None:
-                self._notify_settled(sale, "dispensed", None)
+            self._settle("dispensed", None, self._finish_dispensing)
             return
 
         self._cycle.cancel()
@@ -761,14 +745,35 @@ class VMC:
         sku = self.selected_product.sku if self.selected_product else None
         self._journal.dispense_failed(slot, product_name, report.outcome.value, code)
         self.raise_fault(code, sku=sku, outcome=report.outcome.value)
-        # Captured BEFORE _fail_vend: it runs the vend_failed transition,
-        # whose before-hook (on_vend_failed) fully clears self._sale (see
-        # its own comment) before this call returns -- notifying with a
-        # None sale afterward would be useless to any observer.
+        self._settle(
+            "vend_failed",
+            code.value,
+            lambda: self._fail_vend(code, outcome=report.outcome.value),
+        )
+
+    def _drop_sale(self) -> None:
+        """Forget the in-flight sale: cancel its cycle, clear the selection and the insufficient-funds memo."""
+        if self._cycle is not None:
+            self._cycle.cancel()
+        self._cycle = None
+        self.selected_product = None
+        self.last_insufficient_message = ""
+
+    def _settle(
+        self, outcome: str, fault_code: str | None, run: Callable[[], None]
+    ) -> None:
+        """Run the transition that clears `self._sale`, then notify observers.
+
+        The sale is captured BEFORE `run`: the transition's before-hook
+        (on_vend_failed / on_complete_transaction) clears `self._sale`, so
+        notifying with it afterward would hand observers None. Notification
+        fires AFTER `run`, so every settled-notification site observes an
+        already-settled FSM, never 'dispensing'.
+        """
         sale = self._sale
-        self._fail_vend(code, outcome=report.outcome.value)
+        run()
         if sale is not None:
-            self._notify_settled(sale, "vend_failed", code.value)
+            self._notify_settled(sale, outcome, fault_code)
 
     def _schedule(
         self, delay_seconds, callback, *, label: str = ""
@@ -937,11 +942,7 @@ class VMC:
         # selected_product to None clears the whole SaleContext (product,
         # shares, mechanism, request_id, is_test together), so there is
         # nothing left to clear separately afterward.
-        if self._cycle is not None:
-            self._cycle.cancel()
-        self._cycle = None
-        self.selected_product = None
-        self.last_insufficient_message = ""
+        self._drop_sale()
         self._outputs.display("idle")
         self._outputs.refresh()
 
@@ -958,12 +959,9 @@ class VMC:
         """
         self._journal.sale_cancelled(self.selected_product)
         self._session_timer.cancel()
-        if self._cycle is not None:
-            self._cycle.cancel()
-        self._cycle = None
+        # Refund first: it reads only escrow, never the selection or cycle.
         self.request_refund(reason="cancel")
-        self.selected_product = None
-        self.last_insufficient_message = ""
+        self._drop_sale()
         self._outputs.display("idle")
         self._outputs.refresh()
         self.send_customer_message(
