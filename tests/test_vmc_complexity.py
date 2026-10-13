@@ -14,9 +14,9 @@ VMC_PATH = Path(__file__).resolve().parent.parent / "controller" / "vmc.py"
 # Budgets. Lower them when a stage lands; never raise them.
 # Stage 3 moved the FSM table into the class (the only sanctioned upward move);
 # it goes down from here.
-CLASS_CODE_LINES = 711
-FILE_LINES = 1451
-LARGEST_METHOD_CODE_LINES = 56
+CLASS_CODE_LINES = 689
+FILE_LINES = 1005
+LARGEST_METHOD_CODE_LINES = 54
 
 
 def measure(path: Path = VMC_PATH) -> dict:

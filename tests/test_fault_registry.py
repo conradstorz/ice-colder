@@ -120,7 +120,7 @@ def test_message_formatting_without_product_name_or_outcome():
 
 def test_message_formatting_falls_back_to_sku_when_product_unknown():
     # product_name callable returns the sku itself when it has no better
-    # name (mirrors VMC._product_name's fallback for a removed product).
+    # name (falls back to the sku for a removed product).
     reg = make_registry()
     raised = reg.raise_fault(FaultCode.ICE_301, sku="GHOST-1")
     assert "product 'GHOST-1'" in raised.message

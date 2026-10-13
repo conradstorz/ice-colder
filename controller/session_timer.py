@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Callable
 
 from controller.task_runner import TaskRunner
@@ -21,7 +22,7 @@ class SessionTimer:
         self._tasks = tasks
         self._seconds = seconds
         self._on_expire = on_expire
-        self._task = None
+        self._task: asyncio.Task | None = None
 
     def arm(self) -> None:
         self.cancel()

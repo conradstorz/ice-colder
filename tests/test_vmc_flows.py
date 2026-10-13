@@ -2156,11 +2156,6 @@ async def test_session_file_written_during_sale_and_cleared_after(tmp_path):
     machine.cancel_pending_tasks()
 
 
-def test_reconcile_session_is_a_documented_stub():
-    vmc = make_vmc()
-    assert vmc.reconcile_session() is None
-
-
 # --- Finding A: FSM state published after the transition, not before ---
 
 
