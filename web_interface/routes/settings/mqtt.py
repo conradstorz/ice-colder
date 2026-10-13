@@ -16,7 +16,7 @@ from services.access import Permission
 from services.startup_config import mqtt_env_overrides
 from web_interface import auth as web_auth
 from web_interface import context
-from web_interface.levels import (
+from ice_ui.levels import (
     LEVEL_SETTINGS_MQTT,
 )
 from web_interface.routes.settings.secrets import (
@@ -24,7 +24,7 @@ from web_interface.routes.settings.secrets import (
     _secret_changed,
     _secret_placeholder,
 )
-from web_interface.templating import templates
+from ice_ui.templating import templates
 
 
 router = APIRouter()

@@ -1,4 +1,4 @@
-"""Tests for the pure Level data structure in web_interface/levels.py.
+"""Tests for the pure Level data structure in packages/ui/src/ice_ui/levels.py.
 
 Level is a frozen dataclass describing one node of the dashboard v2 navigation
 tree: a title, a URL, and a reference to its parent Level (or None for the
@@ -11,8 +11,8 @@ import inspect
 
 import pytest
 
-from web_interface import levels
-from web_interface.levels import Level
+from ice_ui import levels
+from ice_ui.levels import Level
 
 
 def _level_constants():

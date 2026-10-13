@@ -1,5 +1,5 @@
 """Opt-in, real-browser regression test for Copilot review comment
-4113241348 on PR 20 (web_interface/templates/users_codes.html:25).
+4113241348 on PR 20 (packages/ui/src/ice_ui/templates/users_codes.html:25).
 
 The claim: the owner's PIN `<input>` sits inside the same `<form>` as the
 confirm/cancel `hx-get` buttons rendered by partials/confirm_button.html, so

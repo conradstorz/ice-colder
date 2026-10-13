@@ -5,8 +5,8 @@ from fastapi import HTTPException, Request
 from services.access import Permission
 from web_interface import auth as web_auth
 from web_interface import context
-from web_interface.levels import LEVEL_PRODUCTS, LEVEL_PRODUCTS_NEW, Level
-from web_interface.templating import templates
+from ice_ui.levels import LEVEL_PRODUCTS, LEVEL_PRODUCTS_NEW, Level
+from ice_ui.templating import templates
 
 
 def _require_any(*permissions: Permission):

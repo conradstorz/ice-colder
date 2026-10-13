@@ -29,10 +29,10 @@ from services.access import Permission
 from services.command_dispatcher import CommandTimeout, CompletionTimeout
 from web_interface import auth as web_auth
 from web_interface import context
-from web_interface.levels import LEVEL_TESTS, Level
+from ice_ui.levels import LEVEL_TESTS, Level
 from web_interface.routes.health import _subsystem_summary
 from web_interface.routes.tests_level.lease import _acquire_lease_or_refusal
-from web_interface.templating import templates
+from ice_ui.templating import templates
 
 
 router = APIRouter()

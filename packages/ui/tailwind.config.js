@@ -2,9 +2,9 @@
  * Tailwind CSS v3.4.17 config for the ice-colder dashboard v2 shell.
  *
  * Built with the standalone Tailwind CLI (no Node project, no package.json):
- *   .tailwind/tailwindcss.exe -c web_interface/tailwind.config.js \
- *     -i web_interface/tailwind.input.css \
- *     -o web_interface/static/app.css --minify
+ *   .tailwind/tailwindcss.exe -c packages/ui/tailwind.config.js \
+ *     -i packages/ui/tailwind.input.css \
+ *     -o packages/ui/src/ice_ui/static/app.css --minify
  *
  * Light theme only (spec §3): slate-50 page background, white cards,
  * slate-800 top bar, green/amber/red status colors. `md` and `lg` are
@@ -17,7 +17,7 @@ module.exports = {
   // on the tablet never leaves a sticky hover state behind; mouse users see
   // no change. Spec 2026-09-30 §4.1.
   future: { hoverOnlyWhenSupported: true },
-  content: ["./web_interface/templates/**/*.html"],
+  content: ["./packages/ui/src/ice_ui/templates/**/*.html"],
   theme: {
     extend: {
       // md/lg are not Tailwind v3's defaults (768px / 1024px out of the
@@ -50,7 +50,7 @@ module.exports = {
   },
   // Tailwind's JIT purge drops any @layer base/components/utilities
   // selector that isn't found literally in a scanned template —
-  // `.touch-target` (web_interface/tailwind.input.css) is intentionally
+  // `.touch-target` (packages/ui/tailwind.input.css) is intentionally
   // defined ahead of any template using it (Task 4+ wires it into the
   // shell), so it is safelisted here to ship in the compiled app.css now
   // rather than silently disappearing until a future rebuild.
@@ -58,7 +58,7 @@ module.exports = {
   // adds that class at runtime (never in template source), so the scan
   // never finds it and both the busy-state opacity rule and its ::after
   // spinner in @layer base would be purged without this entry.
-  // `.ring-dashed` (web_interface/tailwind.input.css, subsystem-windows
+  // `.ring-dashed` (packages/ui/tailwind.input.css, subsystem-windows
   // design §4.7) is the same failure mode as `.touch-target` above: a
   // hand-written @layer components selector that no template literally
   // spells inside a scanned class="..." attribute wholesale (it's always

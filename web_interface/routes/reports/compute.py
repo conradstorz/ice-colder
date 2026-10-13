@@ -6,15 +6,15 @@ from fastapi import HTTPException, Request
 
 from services import reports as reports_service
 from web_interface import context
-from web_interface.filters import sku_url_segment
-from web_interface.levels import (
+from ice_ui.filters import sku_url_segment
+from ice_ui.levels import (
     LEVEL_REPORTS_COLLECTIONS,
     LEVEL_REPORTS_METHOD,
     LEVEL_REPORTS_PERIOD,
     LEVEL_REPORTS_PRODUCT,
     Level,
 )
-from web_interface.templating import templates
+from ice_ui.templating import templates
 from .helpers import (
     COLLECTIONS_HEADER,
     METHOD_HEADER,
@@ -125,7 +125,7 @@ async def _compute_product_sku(range_key: str, bucket_key: str, sku: str) -> dic
     # this by_period shape (and are simply absent for a no-sales SKU).
     # sku_url_segment: `sku` is an arbitrary catalog string, but this
     # becomes the breadcrumb/Back URL for a `{sku}` single-segment
-    # route -- see its docstring (web_interface/filters.py). The same
+    # route -- see its docstring (packages/ui/src/ice_ui/filters.py). The same
     # function backs the `sku_url_segment` Jinja filter used by
     # reports_product.html and reports_product_sku.html so all three
     # links for a SKU agree.

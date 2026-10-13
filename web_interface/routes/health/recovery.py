@@ -12,7 +12,7 @@ from ice_contracts.board.vending_machine import (
 from services.access import Permission
 from web_interface import auth as web_auth
 from web_interface import context
-from web_interface.templating import templates
+from ice_ui.templating import templates
 from web_interface.routes.health.faults import _render_fault_list_oob, dom_safe_key
 
 router = APIRouter()

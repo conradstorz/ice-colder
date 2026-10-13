@@ -34,7 +34,7 @@ from web_interface.context import (
 from web_interface.routes import auth as auth_routes
 from web_interface.routes import controls, health, home, inventory, products
 from web_interface.routes import reports, screen, settings, tests_level, users
-from web_interface.templating import templates
+from ice_ui.templating import templates
 
 __all__ = [
     "attach_routes",

@@ -4,9 +4,9 @@ from fastapi.responses import HTMLResponse
 from services.access import Permission
 from web_interface import auth as web_auth
 from web_interface import context
-from web_interface.levels import LEVEL_TESTS_SALE
+from ice_ui.levels import LEVEL_TESTS_SALE
 from web_interface.routes.tests_level.lease import _acquire_lease_or_refusal
-from web_interface.templating import templates
+from ice_ui.templating import templates
 
 
 router = APIRouter()
@@ -54,7 +54,7 @@ async def tests_sale_run(request: Request, sku: str = Form(...)):
     `{sku}` route segment exists anywhere under it), so there is no
     second SKU-in-a-URL escaping mechanism to invent here:
     `sku_url_segment`/`{sku:path}` exist specifically because a raw `/`
-    in a URL PATH segment 404s (see web_interface/filters.py's
+    in a URL PATH segment 404s (see packages/ui/src/ice_ui/filters.py's
     docstring); a form body has no such restriction, and FastAPI's
     `Form(...)` decodes it back to the exact original string,
     including any `/`. `tests_sale.html`'s `<option value="{{

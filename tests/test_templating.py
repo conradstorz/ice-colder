@@ -1,4 +1,4 @@
-from web_interface.templating import templates
+from ice_ui.templating import templates
 
 
 def test_filters_registered():

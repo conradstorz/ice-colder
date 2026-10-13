@@ -119,7 +119,7 @@ class TestPermissionGate:
 
 
 class TestBreadcrumbs:
-    """Breadcrumbs match the level tree (web_interface/levels.py)."""
+    """Breadcrumbs match the level tree (packages/ui/src/ice_ui/levels.py)."""
 
     def test_period_breadcrumb(self, client):
         resp = client.get("/reports/period")
@@ -356,7 +356,7 @@ class TestSkuUrlSafety:
     '%2F' -- see sku_url_segment's docstring) breaks routing outright.
     Every link built from a SKU (the product table row, the per-SKU
     page's own range/bucket tabs, and Level.child's breadcrumb/Back URL)
-    must go through the same web_interface.filters.sku_url_segment
+    must go through the same ice_ui.filters.sku_url_segment
     encoding, and the route must use {sku:path}, end to end: the link
     resolves, the page loads, and the breadcrumb Back still works.
     """

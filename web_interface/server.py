@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from . import routes
-from .templating import STATIC_DIR
+from ice_ui.templating import STATIC_DIR
 
 # No CORS middleware: the dashboard is same-origin (HTMX partials from this app).
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)

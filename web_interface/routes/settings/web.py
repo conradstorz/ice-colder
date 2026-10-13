@@ -8,10 +8,10 @@ from services import config_store
 from services.access import Permission
 from web_interface import auth as web_auth
 from web_interface import context
-from web_interface.levels import (
+from ice_ui.levels import (
     LEVEL_SETTINGS_WEB,
 )
-from web_interface.templating import templates
+from ice_ui.templating import templates
 
 
 router = APIRouter()

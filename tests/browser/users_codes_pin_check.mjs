@@ -1,5 +1,5 @@
 // Real-headless-Chrome check for Copilot review comment 4113241348 on PR 20
-// (web_interface/templates/users_codes.html:25): the owner's PIN input sits
+// (packages/ui/src/ice_ui/templates/users_codes.html:25): the owner's PIN input sits
 // inside the same <form> as the confirm/cancel hx-get buttons, so htmx
 // serializes that form for the GET requests too, putting the PIN in the
 // query string of /users/codes/regenerate/confirm (both the first tap and

@@ -5,8 +5,8 @@ from fastapi import APIRouter, Depends, Request
 from services import fsm_control
 from web_interface import auth as web_auth
 from web_interface import context
-from web_interface.levels import LEVEL_CONTROLS
-from web_interface.templating import templates
+from ice_ui.levels import LEVEL_CONTROLS
+from ice_ui.templating import templates
 from services.access import Permission
 
 
