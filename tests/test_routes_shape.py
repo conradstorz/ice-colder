@@ -52,7 +52,20 @@ ROUTER_ATTR = {"auth": "public"}
 HELPER_MODULES = frozenset({"settings.secrets"})
 
 _ROUTE_DECORATOR_ATTRS = frozenset(
-    {"get", "post", "put", "patch", "delete", "api_route"}
+    {
+        "get",
+        "post",
+        "put",
+        "patch",
+        "delete",
+        "head",
+        "options",
+        "trace",
+        "api_route",
+        "route",
+        "websocket",
+        "websocket_route",
+    }
 )
 
 
@@ -154,6 +167,13 @@ def test_every_module_exposes_a_router(module_name: str) -> None:
 
 
 def test_route_decorators_in_finds_router_calls():
-    src = "r = object()\n@r.get('/x')\ndef h(): ...\n@r.post('/y')\nasync def g(): ...\n@other\ndef k(): ...\n"
+    src = (
+        "r = object()\n"
+        "@r.get('/x')\ndef h(): ...\n"
+        "@r.post('/y')\nasync def g(): ...\n"
+        "@r.websocket('/ws')\nasync def w(): ...\n"
+        "@r.head('/h')\ndef hd(): ...\n"
+        "@other\ndef k(): ...\n"
+    )
     hits = _route_decorators_in(ast.parse(src), "m.py")
-    assert hits == ["m.py:3", "m.py:5"]
+    assert hits == ["m.py:3", "m.py:5", "m.py:7", "m.py:9"]

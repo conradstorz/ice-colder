@@ -52,7 +52,7 @@ No sub-router in either package has a parametrised path that would capture anoth
 
 ### 3. Shape guard
 
-`tests/test_routes_shape.py` gains `HELPER_MODULES = frozenset({"settings.secrets"})`: a sub-module of shared code with no routes. For a helper module `test_every_module_exposes_a_router` asserts instead that the module has **no** `APIRouter` attribute and that no function in it (at any depth) carries a decorator that is a call on an attribute named `get`, `post`, `put`, `patch`, `delete`, or `api_route` — so a route can never hide in a helper. The `build_router` and nested-function rules still apply to helpers. `test_discovery_finds_route_modules` also asserts `"health.faults"` and `"settings.secrets"` are discovered.
+`tests/test_routes_shape.py` gains `HELPER_MODULES = frozenset({"settings.secrets"})`: a sub-module of shared code with no routes. For a helper module `test_every_module_exposes_a_router` asserts instead that the module has **no** `APIRouter` attribute and that no function in it (at any depth) carries a decorator that is a call on an attribute named `get`, `post`, `put`, `patch`, `delete`, `head`, `options`, `trace`, `api_route`, `route`, `websocket`, or `websocket_route` — so a route can never hide in a helper. The `build_router` and nested-function rules still apply to helpers. `test_discovery_finds_route_modules` also asserts `"health.faults"` and `"settings.secrets"` are discovered.
 
 ### 4. Tests and documentation
 
