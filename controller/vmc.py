@@ -138,10 +138,8 @@ class VMC:
         logger.debug("Initializing VMC with pre-loaded ConfigModel")
 
         self.config_model = config
-        logger.debug(self.config_model.model_dump_json(exclude_none=True, indent=2))
 
         self.products = self.config_model.products
-        self.owner_contact = self.config_model.machine_owner
 
         # The in-flight sale (controller/sale_context.py's SaleContext):
         # product, consumed escrow shares, test-ness, dispenser mechanism,
@@ -295,13 +293,6 @@ class VMC:
         `.display_controller` are read directly; mutation only ever
         happens through a `Machine` `set_*` method."""
         return self._outputs
-
-    def reconcile_session(self) -> None:
-        """Future hook: query the payment gateway for held credit and clear
-        PAY-104 automatically. The contract has no credit query yet, so the
-        operator clears the fault from the dashboard after checking the machine.
-        """
-        return None
 
     def snapshot(self, state: str | None = None) -> SessionSnapshot:
         """Build a `SessionSnapshot` of the VMC's current live state.
@@ -460,11 +451,6 @@ class VMC:
         `run_test_sale` -- see `self._test_sale_in_progress`'s own
         comment."""
         return self._test_sale_in_progress
-
-    def _product_name(self, sku: str | None) -> str | None:
-        if sku is None:
-            return None
-        return next((p.name for p in self.products if p.sku == sku), sku)
 
     def _sellable_products(self) -> list:
         return [p for p in self.products if self._faults.is_locked(p.sku) is None]
@@ -1330,21 +1316,6 @@ class VMC:
             self.initiate_virtual_payment(self.selected_product.price)
             self._schedule(1.0, self.process_payment, label="process_payment")
         self._outputs.refresh()
-
-    @logger.catch()
-    def _update_selection_message(self):
-        price = self.selected_product.price if self.selected_product else 0
-        if self.selected_product:
-            if self.credit_escrow < price:
-                required = price - self.credit_escrow
-                message = f"Changed selection to {self.selected_product.name}. Insert additional ${required:.2f}."
-            else:
-                message = f"Changed selection to {self.selected_product.name}. Sufficient funds available."
-        else:
-            message = "No product selected."
-        logger.debug(f"Updated selection message: {message}")
-        self.send_customer_message(message)
-        self.last_insufficient_message = message
 
     @logger.catch()
     def process_payment(self):
