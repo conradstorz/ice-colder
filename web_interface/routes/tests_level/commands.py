@@ -357,6 +357,7 @@ async def tests_subsystem(request: Request, subsystem: str):
 
     level = Level.child(LEVEL_TESTS, subsystem, f"/tests/{subsystem}")
     return templates.TemplateResponse(
+        request,
         "tests_subsystem.html",
         context.template_context(
             request,
@@ -394,6 +395,7 @@ async def tests_run_all(request: Request):
     machine = context.machine_instance
     if machine is None:
         return templates.TemplateResponse(
+            request,
             "partials/test_run_all_table.html",
             context.template_context(request, rows=[], refusal="VMC not initialized"),
         )
@@ -401,6 +403,7 @@ async def tests_run_all(request: Request):
     refusal = _acquire_lease_or_refusal(machine, principal)
     if refusal:
         return templates.TemplateResponse(
+            request,
             "partials/test_run_all_table.html",
             context.template_context(request, rows=[], refusal=refusal),
         )
@@ -417,6 +420,7 @@ async def tests_run_all(request: Request):
             rows.append(await _run_command(name, command, {}, principal))
 
     return templates.TemplateResponse(
+        request,
         "partials/test_run_all_table.html",
         context.template_context(request, rows=rows, refusal=None),
     )
@@ -497,6 +501,7 @@ async def post_test_command(
         # taken (see _parse_command_params's docstring), so there is
         # nothing to release here.
         return templates.TemplateResponse(
+            request,
             "partials/test_refusal.html",
             context.template_context(request, reason=str(exc)),
         )
@@ -505,6 +510,7 @@ async def post_test_command(
     machine = context.machine_instance
     if machine is None:
         return templates.TemplateResponse(
+            request,
             "partials/test_refusal.html",
             context.template_context(request, reason="VMC not initialized"),
         )
@@ -512,12 +518,14 @@ async def post_test_command(
     refusal = _acquire_lease_or_refusal(machine, principal)
     if refusal:
         return templates.TemplateResponse(
+            request,
             "partials/test_refusal.html",
             context.template_context(request, reason=refusal),
         )
 
     result = await _run_command(subsystem, command, params, principal)
     return templates.TemplateResponse(
+        request,
         "partials/test_result_card.html",
         context.template_context(request, **result),
     )

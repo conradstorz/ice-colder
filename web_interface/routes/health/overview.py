@@ -74,6 +74,7 @@ async def health_home(request: Request):
     ]
 
     return templates.TemplateResponse(
+        request,
         "health.html",
         context.template_context(
             request,

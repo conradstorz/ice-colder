@@ -36,6 +36,7 @@ def _keypad(
     headers=None,
 ):
     return templates.TemplateResponse(
+        request,
         "partials/keypad.html",
         {
             "request": request,
@@ -58,6 +59,7 @@ async def login_page(request: Request):
     if context.access_store.setup_mode:
         return RedirectResponse("/setup", status_code=303)
     return templates.TemplateResponse(
+        request,
         "login.html",
         context.template_context(
             request,
@@ -146,6 +148,7 @@ def _enroll_page(
     user = context.access_store.get_user(user_id)
     gateway = context.config.communication.email_gateway if context.config else None
     return templates.TemplateResponse(
+        request,
         "enroll.html",
         context.template_context(
             request,

@@ -78,6 +78,7 @@ async def tests_log(request: Request):
     Task 13b's own new /tests/* GET routes must also respect.
     """
     return templates.TemplateResponse(
+        request,
         "tests_log.html",
         context.template_context(
             request, level=LEVEL_TESTS_LOG, runs=recent_test_runs(100)
@@ -122,6 +123,7 @@ async def post_verdict(
         # metadata itself only queues the merge for the writer thread.
         await asyncio.to_thread(context.event_recorder.flush)
     return templates.TemplateResponse(
+        request,
         "partials/test_verdict_recorded.html",
         context.template_context(request, run_id=run_id, verdict=verdict, note=note),
     )

@@ -65,7 +65,9 @@ def _screen_context(request: Request) -> dict:
     dependencies=[Depends(web_auth.require(Permission.view_status))],
 )
 async def screen(request: Request):
-    return templates.TemplateResponse("screen.html", context.template_context(request))
+    return templates.TemplateResponse(
+        request, "screen.html", context.template_context(request)
+    )
 
 
 @router.get(
@@ -82,4 +84,4 @@ async def screen_body(request: Request):
     else:
         ctx["money_24h"] = None
         ctx["vends_24h"] = None
-    return templates.TemplateResponse("partials/screen_body.html", ctx)
+    return templates.TemplateResponse(request, "partials/screen_body.html", ctx)

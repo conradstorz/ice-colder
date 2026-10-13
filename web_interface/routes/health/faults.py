@@ -160,6 +160,7 @@ async def faults_view(request: Request):
     perms = principal.perms if principal else frozenset()
     can_clear = Permission.clear_faults in perms
     return templates.TemplateResponse(
+        request,
         "health_faults.html",
         context.template_context(
             request,
@@ -184,6 +185,7 @@ async def fault_clear_confirm(
     (Confirm/Cancel) state; "false" renders the plain first-tap
     button -- this is what its Cancel button sends via hx-vals."""
     return templates.TemplateResponse(
+        request,
         "partials/confirm_button.html",
         context.template_context(
             request,

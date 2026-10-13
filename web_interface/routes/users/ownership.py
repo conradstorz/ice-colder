@@ -51,6 +51,7 @@ def _check_owner_pin(
 )
 async def codes_page(request: Request):
     return templates.TemplateResponse(
+        request,
         "users_codes.html",
         context.template_context(
             request,
@@ -77,6 +78,7 @@ async def codes_regenerate_confirm(
     — this is what its Cancel button sends via hx-vals (brief
     resolution 8)."""
     return templates.TemplateResponse(
+        request,
         "partials/codes_regenerate.html",
         context.template_context(
             request,
@@ -111,6 +113,7 @@ async def codes_regenerate(request: Request, pin: str = Form(...)):
             status_code = 429
             headers["Retry-After"] = str(retry_after)
         return templates.TemplateResponse(
+            request,
             "partials/codes_regenerate.html",
             context.template_context(
                 request, confirming=False, new_codes=None, error=message
@@ -122,6 +125,7 @@ async def codes_regenerate(request: Request, pin: str = Form(...)):
     # working immediately (AccessStore.generate_emergency_codes).
     new_codes = context.access_store.generate_emergency_codes()
     return templates.TemplateResponse(
+        request,
         "partials/codes_regenerate.html",
         context.template_context(
             request, confirming=False, new_codes=new_codes, error=None
@@ -149,6 +153,7 @@ def _render_ownership(
     # that shows a freshly-started transfer's plaintext code.
     resp_headers = {"Cache-Control": "no-store", **(headers or {})}
     return templates.TemplateResponse(
+        request,
         "users_ownership.html",
         context.template_context(
             request,

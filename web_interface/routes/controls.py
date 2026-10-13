@@ -20,6 +20,7 @@ router = APIRouter()
 async def get_controls(request: Request):
     """Render the Controls level with three command buttons."""
     return templates.TemplateResponse(
+        request,
         "controls.html",
         context.template_context(request, level=LEVEL_CONTROLS),
     )
@@ -46,6 +47,7 @@ async def get_confirm(request: Request, command: str):
     confirming = request.query_params.get("confirming", "true").lower() != "false"
 
     return templates.TemplateResponse(
+        request,
         "partials/confirm_command.html",
         context.template_context(
             request,
@@ -75,6 +77,7 @@ async def post_command(request: Request, command: str):
     """
     result = fsm_control.perform_command(command, context.vmc_instance)
     return templates.TemplateResponse(
+        request,
         "partials/command_result.html",
         context.template_context(request, result=result),
     )

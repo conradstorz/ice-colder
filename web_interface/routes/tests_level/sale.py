@@ -30,6 +30,7 @@ async def tests_sale_picker(request: Request):
         sorted(context.config.products, key=lambda p: p.slot) if context.config else []
     )
     return templates.TemplateResponse(
+        request,
         "tests_sale.html",
         context.template_context(request, level=LEVEL_TESTS_SALE, products=products),
     )
@@ -70,6 +71,7 @@ async def tests_sale_run(request: Request, sku: str = Form(...)):
     machine = context.machine_instance
     if machine is None:
         return templates.TemplateResponse(
+            request,
             "partials/test_refusal.html",
             context.template_context(request, reason="VMC not initialized"),
         )
@@ -77,6 +79,7 @@ async def tests_sale_run(request: Request, sku: str = Form(...)):
     refusal = _acquire_lease_or_refusal(machine, principal)
     if refusal:
         return templates.TemplateResponse(
+            request,
             "partials/test_refusal.html",
             context.template_context(request, reason=refusal),
         )
@@ -93,11 +96,13 @@ async def tests_sale_run(request: Request, sku: str = Form(...)):
         # sold out) or "no lease held" (a race against the check above).
         # Either way this is a refusal, not a 500.
         return templates.TemplateResponse(
+            request,
             "partials/test_refusal.html",
             context.template_context(request, reason=str(exc)),
         )
 
     return templates.TemplateResponse(
+        request,
         "partials/test_sale_result.html",
         context.template_context(request, result=result),
     )

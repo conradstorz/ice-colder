@@ -25,6 +25,7 @@ router = APIRouter()
 def _render_payments_form(request: Request, *, error: str | None):
     payment = context.config.payment
     return templates.TemplateResponse(
+        request,
         "settings_payments.html",
         context.template_context(
             request,

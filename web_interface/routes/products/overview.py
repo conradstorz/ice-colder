@@ -43,6 +43,7 @@ async def products_list(request: Request):
         for p in context.config.products
     ]
     return templates.TemplateResponse(
+        request,
         "products.html",
         context.template_context(request, level=LEVEL_PRODUCTS, products=rows),
     )
@@ -83,6 +84,7 @@ async def product_detail(request: Request, sku: str):
     ]
 
     return templates.TemplateResponse(
+        request,
         "product.html",
         context.template_context(
             request,

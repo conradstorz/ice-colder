@@ -26,6 +26,7 @@ def _setup_page(
     headers: dict | None = None,
 ):
     return templates.TemplateResponse(
+        request,
         "setup.html",
         context.template_context(
             request,
@@ -170,6 +171,7 @@ def _setup_codes_page(
     # cache entry from before Done can never be served stale either.
     resp_headers = {"Cache-Control": "no-store", **(headers or {})}
     return templates.TemplateResponse(
+        request,
         "setup_codes.html",
         context.template_context(
             request,
@@ -281,6 +283,7 @@ def _setup_review_response(request: Request, user):
         if user.id in d.trusted_user_ids
     )
     return templates.TemplateResponse(
+        request,
         "setup_review_user.html",
         context.template_context(
             request,

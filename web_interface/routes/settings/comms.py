@@ -26,6 +26,7 @@ router = APIRouter()
 def _render_comms_form(request: Request, *, error: str | None):
     comm = context.config.communication
     return templates.TemplateResponse(
+        request,
         "settings_comms.html",
         context.template_context(
             request,
@@ -115,6 +116,7 @@ async def send_test_email(request: Request):
     owner_email = context.config.physical.people.machine_owner.email
     if not gateway.is_configured:
         return templates.TemplateResponse(
+            request,
             "partials/comms_test_result.html",
             context.template_context(
                 request, test_status="not_configured", owner_email=owner_email
@@ -127,6 +129,7 @@ async def send_test_email(request: Request):
         "This is a test message from the ice-colder dashboard's Settings > Comms page.",
     )
     return templates.TemplateResponse(
+        request,
         "partials/comms_test_result.html",
         context.template_context(
             request,

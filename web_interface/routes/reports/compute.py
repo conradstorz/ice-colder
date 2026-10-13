@@ -239,5 +239,5 @@ def _render(request: Request, data: dict, *, email_notice=None, email_error=None
     if "total" in data:
         ctx["total"] = data["total"]
     return templates.TemplateResponse(
-        data["template"], context.template_context(request, **ctx)
+        request, data["template"], context.template_context(request, **ctx)
     )

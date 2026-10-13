@@ -71,6 +71,7 @@ def _window_context(name: str) -> dict:
 )
 async def subsystems_view(request: Request):
     return templates.TemplateResponse(
+        request,
         "health_subsystems.html",
         context.template_context(
             request, level=LEVEL_HEALTH_SUBSYSTEMS, subsystems=_subsystem_summary()
@@ -89,6 +90,7 @@ async def subsystem_detail(request: Request, name: str):
     row = _subsystem_summary()[name]
     level = Level.child(LEVEL_HEALTH_SUBSYSTEMS, name, f"/health/subsystems/{name}")
     return templates.TemplateResponse(
+        request,
         "health_subsystem.html",
         context.template_context(
             request,
@@ -115,6 +117,7 @@ async def subsystem_live(request: Request, name: str):
     if name not in EXPECTED_SUBSYSTEMS:
         raise HTTPException(status_code=404, detail=f"Unknown subsystem '{name}'")
     return templates.TemplateResponse(
+        request,
         "partials/subsystem_live.html",
         context.template_context(request, name=name, window=_window_context(name)),
     )

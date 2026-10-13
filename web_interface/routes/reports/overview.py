@@ -80,6 +80,7 @@ async def reports_level(request: Request, period: int = Query(default=24)):
     # If no recorder is wired, return the neutral placeholder inside the shell
     if not context.event_recorder:
         return templates.TemplateResponse(
+            request,
             "reports.html",
             context.template_context(
                 request,
@@ -102,6 +103,7 @@ async def reports_level(request: Request, period: int = Query(default=24)):
     )
 
     return templates.TemplateResponse(
+        request,
         "reports.html",
         context.template_context(
             request,

@@ -152,6 +152,7 @@ def _render_users_page(request: Request, *, notice: str | None = None):
         },
     ]
     return templates.TemplateResponse(
+        request,
         "users.html",
         context.template_context(
             request,
@@ -192,6 +193,7 @@ def _render_new_user_form(
         if r is not Role.owner or Permission.manage_ownership in principal.perms
     ]
     return templates.TemplateResponse(
+        request,
         "user_form.html",
         context.template_context(
             request,
@@ -297,6 +299,7 @@ def _render_user_detail(
         if target.id in d.trusted_user_ids
     )
     return templates.TemplateResponse(
+        request,
         "user.html",
         context.template_context(
             request,

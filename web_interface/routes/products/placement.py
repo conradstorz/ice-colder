@@ -35,6 +35,7 @@ async def placement_form(request: Request, sku: str):
         _product_level(product), "Placement", f"/products/{sku}/placement"
     )
     return templates.TemplateResponse(
+        request,
         "product_placement.html",
         context.template_context(
             request,
@@ -70,6 +71,7 @@ async def update_placement(
             _product_level(product), "Placement", f"/products/{sku}/placement"
         )
         return templates.TemplateResponse(
+            request,
             "product_placement.html",
             context.template_context(
                 request,

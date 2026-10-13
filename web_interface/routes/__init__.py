@@ -115,6 +115,7 @@ def attach_routes(app: FastAPI) -> None:
     ):
         if exc.status_code == 404:
             return templates.TemplateResponse(
+                request,
                 "error.html",
                 context.template_context(
                     request,
@@ -126,6 +127,7 @@ def attach_routes(app: FastAPI) -> None:
             )
         if exc.status_code == 403:
             return templates.TemplateResponse(
+                request,
                 "error.html",
                 context.template_context(
                     request,

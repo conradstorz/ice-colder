@@ -143,6 +143,7 @@ async def catalog_form(request: Request, sku: str):
     product = _get_or_404(sku)
     level = Level.child(_product_level(product), "Catalog", f"/products/{sku}/catalog")
     return templates.TemplateResponse(
+        request,
         "product_catalog.html",
         context.template_context(request, level=level, product=product, error=None),
     )
@@ -178,6 +179,7 @@ async def update_catalog(
             _product_level(product), "Catalog", f"/products/{sku}/catalog"
         )
         return templates.TemplateResponse(
+            request,
             "product_catalog.html",
             context.template_context(
                 request,
