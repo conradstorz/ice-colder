@@ -1,7 +1,7 @@
 # contracts/generate.py
 """Generate the contracts' JSON Schema files.
 
-Run after any model change: uv run python -m contracts.generate
+Run after any model change: uv run python -m ice_contracts.generate
 tests/test_contract_schemas.py fails if the committed files drift.
 """
 
