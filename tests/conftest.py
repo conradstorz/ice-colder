@@ -29,11 +29,29 @@ from web_interface.server import app
 
 _ISSUED_CLIENTS: list[TestClient] = []
 
+_HOST_ENV_OVERRIDES = (
+    "ICE_COLDER_CONFIG",
+    "ICE_COLDER_DISPENSERS",
+    "ICE_COLDER_TRUSTED_PROXIES",
+    "MQTT_BROKER_HOST",
+    "MQTT_USERNAME",
+    "MQTT_PASSWORD",
+)
+
 
 @pytest.fixture(autouse=True)
 def isolated_config_path(tmp_path, monkeypatch):
-    """Redirect config saves to a temp dir so no test can clobber config.json."""
+    """Redirect config saves to tmp and clear host env overrides.
+
+    the config store prefers ``ICE_COLDER_CONFIG`` over
+    ``CONFIG_PATH``, so an exported variable would send tests to the real
+    config. The dispensers path and the MQTT / trusted-proxy overrides read by
+    ``services.startup_config`` are cleared too; tests that need one set it
+    themselves with ``monkeypatch.setenv``.
+    """
     monkeypatch.setattr(config_store, "CONFIG_PATH", tmp_path / "config.json")
+    for name in _HOST_ENV_OVERRIDES:
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)
