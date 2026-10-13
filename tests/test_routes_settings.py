@@ -13,6 +13,7 @@ the skip count in that other file's suite drop on its own.
 """
 
 import pytest
+from pydantic import SecretStr
 
 from config.config_model import Channel, ConfigModel
 from services.access import Role
@@ -334,6 +335,8 @@ class TestPaymentsPage:
         resp = client.post("/settings/payments", data=data)
         assert resp.status_code == 200
         assert config_getter(cfg).get_secret_value() == "brand-new-secret-value"
+        assert "brand-new-secret-value" not in resp.text
+        assert "brand-new-secret-value" not in client.get("/settings/payments").text
 
     def test_paypal_none_renders_not_configured_and_post_is_a_noop(self, client, wired):
         cfg, _vmc, _inv, _store = wired
@@ -374,6 +377,7 @@ class TestPaymentsPage:
         assert resp.status_code == 200
         assert "Could not save changes" in resp.text
         assert cfg.payment.stripe.api_key.get_secret_value() == "fresh-key"
+        assert "fresh-key" not in resp.text
 
 
 class TestCommsPage:
@@ -399,10 +403,15 @@ class TestCommsPage:
         )
         assert resp.status_code == 403
 
-    def test_rendered_page_never_contains_real_secret_values(self, client):
+    def test_rendered_page_never_contains_real_secret_values(self, client, wired):
+        cfg, _vmc, _inv, _store = wired
+        # The default SMTP password ("password") collides with markup, so use a
+        # distinctive stored value to prove the page never renders it.
+        smtp_secret = "smtp-real-secret-xyz"
+        cfg.communication.email_gateway.password = SecretStr(smtp_secret)
         resp = client.get("/settings/comms")
         assert resp.status_code == 200
-        for secret in _REAL_DEFAULT_SECRETS:
+        for secret in [*_REAL_DEFAULT_SECRETS, smtp_secret]:
             assert secret not in resp.text
         assert resp.text.count(SECRET_MASK) >= 3  # email password, sid, token
 
@@ -449,6 +458,8 @@ class TestCommsPage:
         assert (
             cfg.communication.email_gateway.password.get_secret_value() == "new-smtp-pw"
         )
+        assert "new-smtp-pw" not in resp.text
+        assert "new-smtp-pw" not in client.get("/settings/comms").text
 
     def test_new_sms_secrets_overwrite(self, client, wired):
         cfg, _vmc, _inv, _store = wired
@@ -463,6 +474,10 @@ class TestCommsPage:
         assert (
             cfg.communication.sms_gateway.auth_token.get_secret_value() == "new-token"
         )
+        page = client.get("/settings/comms").text
+        for plaintext in ("new-sid", "new-token"):
+            assert plaintext not in resp.text
+            assert plaintext not in page
 
     def test_non_secret_fields_round_trip(self, client, wired, tmp_path):
         cfg, _vmc, _inv, _store = wired
@@ -595,7 +610,6 @@ class TestMqttPage:
     def test_password_masked_when_set(self, client, wired):
         cfg, _vmc, _inv, _store = wired
         cfg.mqtt.password = None
-        from pydantic import SecretStr
 
         cfg.mqtt.password = SecretStr("real-mqtt-secret")
         resp = client.get("/settings/mqtt")
@@ -668,6 +682,8 @@ class TestMqttPage:
         assert cfg.mqtt.broker_port == 1884
         assert cfg.mqtt.username == "newuser"
         assert cfg.mqtt.password.get_secret_value() == "fresh-mqtt-secret"
+        assert "fresh-mqtt-secret" not in resp.text
+        assert "fresh-mqtt-secret" not in client.get("/settings/mqtt").text
 
 
 class TestWebPage:
