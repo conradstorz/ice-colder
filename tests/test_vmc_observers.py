@@ -99,7 +99,6 @@ async def test_state_change_observer_sees_every_transition_in_order(tmp_path):
     runner.fire("process_payment")  # interacting_with_user -> dispensing
 
     assert seen == ["interacting_with_user", "dispensing"]
-    machine.cancel_pending_tasks()
 
 
 async def test_state_change_observer_stops_after_unsubscribe(tmp_path):
@@ -118,7 +117,6 @@ async def test_state_change_observer_stops_after_unsubscribe(tmp_path):
     assert vmc.state == "dispensing"
     # The transition happened -- it is simply no longer observed.
     assert seen == ["interacting_with_user"]
-    machine.cancel_pending_tasks()
 
 
 async def test_state_change_observer_raising_does_not_block_the_next(tmp_path):
@@ -136,7 +134,6 @@ async def test_state_change_observer_raising_does_not_block_the_next(tmp_path):
     vmc.select_product(0)
 
     assert seen == ["interacting_with_user"]
-    machine.cancel_pending_tasks()
 
 
 # --- subscribe_sale_settled ---
@@ -158,7 +155,6 @@ async def test_sale_settled_observer_fires_once_with_dispensed_on_complete(tmp_p
     assert outcome == "dispensed"
     assert fault_code is None
     assert sale.product is product
-    machine.cancel_pending_tasks()
 
 
 async def test_sale_settled_observer_fires_once_with_vend_failed_code_on_jam(
@@ -179,7 +175,6 @@ async def test_sale_settled_observer_fires_once_with_vend_failed_code_on_jam(
     assert outcome == "vend_failed"
     assert fault_code == "ICE-401"
     assert sale.product is product
-    machine.cancel_pending_tasks()
 
 
 async def test_sale_settled_observer_fires_once_with_timeout_on_dispense_timeout(
@@ -200,7 +195,6 @@ async def test_sale_settled_observer_fires_once_with_timeout_on_dispense_timeout
     assert outcome == "timeout"
     assert fault_code is None
     assert sale.product is product
-    machine.cancel_pending_tasks()
 
 
 async def test_sale_settled_observer_raising_does_not_block_the_next(tmp_path):
@@ -220,7 +214,6 @@ async def test_sale_settled_observer_raising_does_not_block_the_next(tmp_path):
     )
 
     assert len(calls) == 1
-    machine.cancel_pending_tasks()
 
 
 async def test_sale_settled_observer_never_fires_on_cancel_sale_or_reset(tmp_path):
@@ -250,7 +243,6 @@ async def test_sale_settled_observer_never_fires_on_cancel_sale_or_reset(tmp_pat
     vmc.reset_state()
     assert vmc.state == "idle"
     assert calls == []
-    machine.cancel_pending_tasks()
 
 
 # --- begin_test_sale / end_test_sale / find_product ---
@@ -264,7 +256,6 @@ async def test_find_product_returns_index_and_product_by_identity(tmp_path):
     assert product is vmc.products[1]
 
     assert vmc.find_product("NO-SUCH-SKU") == (None, None)
-    machine.cancel_pending_tasks()
 
 
 async def test_begin_test_sale_refuses_second_call_while_active(tmp_path):
@@ -280,7 +271,6 @@ async def test_begin_test_sale_refuses_second_call_while_active(tmp_path):
     # The refused call must not have perturbed the first call's state.
     assert vmc.selected_product is product
     assert vmc.sale is not None and vmc.sale.is_test is True
-    machine.cancel_pending_tasks()
 
 
 async def test_begin_test_sale_returns_false_for_locked_sku(tmp_path):
@@ -302,7 +292,6 @@ async def test_begin_test_sale_returns_false_for_locked_sku(tmp_path):
 
     vmc.end_test_sale()
     assert vmc.selected_product is None
-    machine.cancel_pending_tasks()
 
 
 async def test_begin_test_sale_clears_flag_and_sale_and_escrow_when_select_product_raises(
@@ -330,7 +319,6 @@ async def test_begin_test_sale_clears_flag_and_sale_and_escrow_when_select_produ
     assert vmc.test_sale_in_progress is False
     assert vmc.sale is None
     assert vmc.credit_escrow == 0.0
-    machine.cancel_pending_tasks()
 
 
 async def test_end_test_sale_clears_context_when_not_dispensing(tmp_path):
@@ -345,7 +333,6 @@ async def test_end_test_sale_clears_context_when_not_dispensing(tmp_path):
     assert vmc.sale is None
     assert vmc.test_sale_in_progress is False
     assert vmc.credit_escrow == 0.0
-    machine.cancel_pending_tasks()
 
 
 async def test_end_test_sale_leaves_context_while_still_dispensing(tmp_path):
@@ -362,7 +349,6 @@ async def test_end_test_sale_leaves_context_while_still_dispensing(tmp_path):
     assert vmc.sale is not None
     assert vmc.sale.is_test is True
     assert vmc.test_sale_in_progress is False
-    machine.cancel_pending_tasks()
 
 
 # --- _fail_vend's unconditional test-credit clear (decision 3) ---
@@ -388,4 +374,3 @@ async def test_failed_test_vend_leaves_escrow_at_zero_with_no_refund_published(
 
     vmc.end_test_sale()
     assert vmc.test_sale_in_progress is False
-    machine.cancel_pending_tasks()

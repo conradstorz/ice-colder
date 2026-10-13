@@ -55,6 +55,38 @@ def isolated_config_path(tmp_path, monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
+# Modules whose tests build a Machine through local helpers (make_machine,
+# _vmc_with_profiles, ...) rather than the `machine` fixture. Their machines
+# are tracked and cancelled at teardown so a failing assertion cannot leak
+# timers/tasks into later tests.
+_MACHINE_TRACKED_MODULES = frozenset(
+    {"test_vmc_flows", "test_vmc_dispense_profiles", "test_vmc_observers"}
+)
+
+
+@pytest.fixture(autouse=True)
+def _cancel_helper_built_machines(request, monkeypatch):
+    """Call `cancel_pending_tasks()` on every Machine a test builds, even when
+    an assertion fails first (cancel is idempotent). Active only for the
+    modules in `_MACHINE_TRACKED_MODULES`."""
+    if request.module.__name__.rsplit(".", 1)[-1] not in _MACHINE_TRACKED_MODULES:
+        yield
+        return
+    from controller.machine import Machine
+
+    built: list[Machine] = []
+    real_init = Machine.__init__
+
+    def tracking_init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        built.append(self)
+
+    monkeypatch.setattr(Machine, "__init__", tracking_init)
+    yield
+    for m in built:
+        m.cancel_pending_tasks()
+
+
 @pytest.fixture(autouse=True)
 def _isolated_route_context():
     """Restore every web_interface.context global after each test (Task 4,

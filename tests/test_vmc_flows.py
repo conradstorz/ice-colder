@@ -155,7 +155,6 @@ async def test_late_dispenser_fault_after_completed_sale_is_ignored():
 
     assert vmc.state == "idle"
     assert vmc.credit_escrow == 0.0  # no bogus refund credited
-    machine.cancel_pending_tasks()
 
 
 async def test_dispenser_jam_with_mismatched_slot_is_ignored():
@@ -200,7 +199,6 @@ async def test_dispense_complete_with_mismatched_slot_is_ignored():
 
     assert vmc.state == "dispensing"  # not finished — wrong slot
     assert vmc.selected_product is vmc.products[0]
-    machine.cancel_pending_tasks()
 
 
 async def test_dispense_complete_with_matching_slot_still_completes():
@@ -221,7 +219,6 @@ async def test_dispense_complete_with_matching_slot_still_completes():
 
     assert vmc.state == "idle"  # completed — matching slot
     assert vmc.selected_product is None
-    machine.cancel_pending_tasks()
 
 
 async def test_dispense_complete_records_event_via_recorder():
@@ -246,7 +243,6 @@ async def test_dispense_complete_records_event_via_recorder():
     )
 
     assert recorder.events == [("dispense", float(vmc.products[0].slot), None)]
-    machine.cancel_pending_tasks()
 
 
 async def test_dispense_complete_does_not_double_record_event():
@@ -287,7 +283,6 @@ async def test_dispense_complete_does_not_double_record_event():
     )
 
     assert recorder.events == [("dispense", float(vmc.products[0].slot), None)]
-    machine.cancel_pending_tasks()
 
 
 async def test_dispense_complete_with_mismatched_slot_does_not_record_event():
@@ -309,7 +304,6 @@ async def test_dispense_complete_with_mismatched_slot_does_not_record_event():
     )
 
     assert recorder.events == []
-    machine.cancel_pending_tasks()
 
 
 async def test_dispense_complete_records_sale_durably_before_fsm_returns_to_idle(
@@ -374,7 +368,6 @@ async def test_dispense_complete_records_sale_durably_before_fsm_returns_to_idle
     assert slot == vmc.products[0].slot
     assert price == pytest.approx(2.50)
     assert json.loads(methods_json) == {"cash_bill": 1.50, "card": 1.00}
-    machine.cancel_pending_tasks()
 
 
 async def test_dispense_complete_sale_record_failure_raises_data_101_but_completes_vend():
@@ -420,7 +413,6 @@ async def test_dispense_complete_sale_record_failure_raises_data_101_but_complet
     assert vmc.selected_product is None
     assert vmc.pending_sale_shares is None  # cleared even on the failure path
     assert "DATA-101" in {f["code"] for f in vmc.active_faults()}
-    machine.cancel_pending_tasks()
 
 
 async def test_record_sale_totally_lost_preserves_pay104_recovery_not_data_101(
@@ -492,7 +484,6 @@ async def test_record_sale_totally_lost_preserves_pay104_recovery_not_data_101(
     reloaded = SessionStore(store_path).load()
     assert reloaded is not None
     assert reloaded.pending_sale_shares == {"cash_bill": 2.50}
-    machine.cancel_pending_tasks()
 
 
 async def test_dispense_complete_records_price_from_shares_not_live_catalog_price(
@@ -553,7 +544,6 @@ async def test_dispense_complete_records_price_from_shares_not_live_catalog_pric
     assert methods == {"cash_bill": 2.50}
     # The row must record what was actually charged, not the edited price.
     assert price == pytest.approx(2.50)
-    machine.cancel_pending_tasks()
 
 
 async def test_vend_failed_after_deduction_writes_no_sale_row_and_restores_credits(
@@ -591,7 +581,6 @@ async def test_vend_failed_after_deduction_writes_no_sale_row_and_restores_credi
     with sqlite3.connect(str(tmp_path / "events.db")) as conn:
         count = conn.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
     assert count == 0  # no sale row for a vend that never completed
-    machine.cancel_pending_tasks()
 
 
 async def test_vend_failed_restores_shares_total_not_live_catalog_price(tmp_path):
@@ -645,7 +634,6 @@ async def test_vend_failed_restores_shares_total_not_live_catalog_price(tmp_path
         ).fetchone()
     assert row is not None
     assert row[0] == pytest.approx(2.50)
-    machine.cancel_pending_tasks()
 
 
 async def test_pay_104_snapshot_exposes_pending_sale_after_crash_mid_dispense(
@@ -688,7 +676,6 @@ async def test_pay_104_snapshot_exposes_pending_sale_after_crash_mid_dispense(
     assert reloaded.pending_sale_shares == {"cash_bill": 2.00, "card": 0.50}
     assert reloaded.selected_sku == "ICE-1"
     assert reloaded.dispense_slot == vmc.products[0].slot
-    machine2.cancel_pending_tasks()
 
 
 async def test_session_timeout_refunds_and_returns_to_idle():
@@ -748,7 +735,6 @@ async def test_insufficient_funds_waits_without_charging():
     assert vmc.state == "interacting_with_user"
     assert vmc.credit_escrow == 1.00
     assert any("Insufficient funds" in m for m in messages)
-    machine.cancel_pending_tasks()  # cancel the scheduled 5s retry
 
 
 async def test_sold_out_rejects_selection():
@@ -779,7 +765,6 @@ async def test_sufficient_funds_charges_and_dispenses():
 
     await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "complete"})
     assert vmc.state == "interacting_with_user"  # credit remains
-    machine.cancel_pending_tasks()
 
 
 async def test_dispense_complete_with_no_remaining_credit_returns_to_idle():
@@ -814,7 +799,6 @@ async def test_dispense_complete_with_no_remaining_credit_returns_to_idle():
 
     await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "complete"})
     assert vmc.state == "idle"  # no credit left
-    machine.cancel_pending_tasks()
 
 
 async def test_product_deleted_mid_session_cancels_sale_without_error():
@@ -837,7 +821,6 @@ async def test_product_deleted_mid_session_cancels_sale_without_error():
     assert vmc.credit_escrow == 0.0  # refunded, same as on_reset/_expire_session
     assert vmc.selected_product is None
     assert any("refund" in m.lower() for m in messages)
-    machine.cancel_pending_tasks()
 
 
 async def test_sale_cancelled_then_new_sale_succeeds(tmp_path):
@@ -869,7 +852,6 @@ async def test_sale_cancelled_then_new_sale_succeeds(tmp_path):
     vmc.credit_escrow = 2.50
     vmc.process_payment()
     assert vmc.state == "dispensing"
-    machine.cancel_pending_tasks()
 
 
 async def test_dispense_uses_product_slot_not_list_index(tmp_path):
@@ -1715,7 +1697,6 @@ async def test_vending_heartbeat_loss_raises_com_101_without_disabling_payment()
     monitor.record_heartbeat("vending", {"uptime_seconds": 5})
     assert "COM-101" not in {f["code"] for f in vmc.active_faults()}
     assert avail.sale_available("ice")[0] is True
-    machine.cancel_pending_tasks()
 
 
 async def test_ice_maker_loss_is_com_102_and_only_ice_blocked():
@@ -1729,7 +1710,6 @@ async def test_ice_maker_loss_is_com_102_and_only_ice_blocked():
     assert "COM-102" in {f["code"] for f in vmc.active_faults()}
     assert avail.sale_available("ice")[0] is False
     assert avail.payment_enabled is True
-    machine.cancel_pending_tasks()
 
 
 async def test_mdb_loss_is_pay_101_and_blocks_sales_not_payment():
@@ -1739,7 +1719,6 @@ async def test_mdb_loss_is_pay_101_and_blocks_sales_not_payment():
     assert "PAY-101" in {f["code"] for f in vmc.active_faults()}
     assert avail.payment_enabled is True
     assert "payment_alive" in avail.sale_available("ice")[1]
-    machine.cancel_pending_tasks()
 
 
 async def test_mqtt_disconnect_is_com_103_and_reconnect_republishes():
@@ -1751,7 +1730,6 @@ async def test_mqtt_disconnect_is_com_103_and_reconnect_republishes():
     machine.on_mqtt_connection(True)
     assert "COM-103" not in {f["code"] for f in vmc.active_faults()}
     assert len(await _enables(published)) == before + 1
-    machine.cancel_pending_tasks()
 
 
 async def test_payment_status_error_feeds_availability():
@@ -1764,7 +1742,6 @@ async def test_payment_status_error_feeds_availability():
     signal = monitor.get_summary()["signals"]["mdb"]["card_reader"]
     assert signal["value"] == 0.0
     assert signal["text"] == "error"
-    machine.cancel_pending_tasks()
 
 
 async def test_hardware_io_feeds_health_signal():
@@ -1775,7 +1752,6 @@ async def test_hardware_io_feeds_health_signal():
     )
     signal = monitor.get_summary()["signals"]["vending"]["fan"]
     assert signal["value"] == 1.0
-    machine.cancel_pending_tasks()
 
 
 async def test_ice_maker_power_event_feeds_health_signal():
@@ -1792,7 +1768,6 @@ async def test_ice_maker_power_event_feeds_health_signal():
     )
     signal = monitor.get_summary()["signals"]["ice_maker"]["compressor_run"]
     assert signal["value"] == 0.0
-    machine.cancel_pending_tasks()
 
 
 async def test_ice_maker_non_power_event_does_not_feed_compressor_signal():
@@ -1802,7 +1777,6 @@ async def test_ice_maker_non_power_event_does_not_feed_compressor_signal():
         "ice_maker/event", {"event": "needs_cleaning"}
     )
     assert "compressor_run" not in monitor.get_summary()["signals"].get("ice_maker", {})
-    machine.cancel_pending_tasks()
 
 
 async def test_water_flow_feeds_health_channel():
@@ -1813,7 +1787,6 @@ async def test_water_flow_feeds_health_channel():
     )
     channel = monitor.get_summary()["channels"]["water_flow"]
     assert channel["value"] == 12.5
-    machine.cancel_pending_tasks()
 
 
 async def test_signal_feeding_handlers_tolerate_missing_health_monitor():
@@ -1849,7 +1822,6 @@ async def test_signal_feeding_handlers_tolerate_missing_health_monitor():
     await machine.telemetry.handle_water_flow(
         "sensors/water_flow", {"location": "water_flow", "value": 5.0, "unit": "gal"}
     )
-    machine.cancel_pending_tasks()
 
 
 async def test_select_product_refused_when_kind_unavailable_names_reason():
@@ -1863,14 +1835,12 @@ async def test_select_product_refused_when_kind_unavailable_names_reason():
     assert vmc.state == "idle"
     assert vmc.selected_product is None
     assert "ice_maker_alive" in messages[-1]
-    machine.cancel_pending_tasks()
 
 
 async def test_deposit_while_disabled_is_escrowed_and_logged():
     vmc, monitor, avail, _, machine = _wired_vmc()
     vmc.deposit_funds(1.0, payment_method="cash_coin")
     assert vmc.credit_escrow == 1.0
-    machine.cancel_pending_tasks()
 
 
 def _boot_with(tmp_path, snap, *, tasks: TaskRunner | None = None):
@@ -1893,7 +1863,6 @@ async def test_pay_104_on_boot_leaves_payment_enabled(tmp_path):
     assert avail.payment_enabled is True
     assert avail.payment_blocking_reasons() == []
     assert store.load() is not None  # evidence kept until an admin clears it
-    machine.cancel_pending_tasks()
 
 
 async def test_pay_104_is_reported_as_a_warning():
@@ -1904,7 +1873,6 @@ async def test_pay_104_is_reported_as_a_warning():
     assert fault["severity"] == "warning"
     assert fault["scope"] == "machine"
     assert avail.payment_enabled is True
-    machine.cancel_pending_tasks()
 
 
 async def test_select_product_refused_while_vending_offline_but_payment_stays_on():
@@ -1927,7 +1895,6 @@ async def test_select_product_refused_while_vending_offline_but_payment_stays_on
     assert vmc.selected_product is None
     assert vmc.credit_escrow == 2.00
     assert vmc.state == "idle"
-    machine.cancel_pending_tasks()
 
 
 async def test_deposit_while_idle_arms_session_timeout():
@@ -1945,7 +1912,6 @@ async def test_deposit_while_idle_arms_session_timeout():
     vmc.deposit_funds(2.00)
 
     assert any(c.label == "session_timeout" for c in runner.scheduled)
-    machine.cancel_pending_tasks()
 
 
 async def test_deposit_while_idle_and_vending_offline_is_refunded_on_timeout():
@@ -1978,7 +1944,6 @@ async def test_deposit_while_idle_and_vending_offline_is_refunded_on_timeout():
     assert refund_cmds[0].reason == "session_timeout"
     assert vmc.credit_escrow == 0.0
     assert vmc.state == "idle"
-    machine.cancel_pending_tasks()
 
 
 async def test_expire_session_is_a_noop_while_dispensing():
@@ -2007,7 +1972,6 @@ async def test_expire_session_is_a_noop_while_dispensing():
     assert vmc.state == "dispensing"
     assert vmc.credit_escrow == escrow_before
     assert client.refund_commands() == []
-    machine.cancel_pending_tasks()
 
 
 async def test_deposit_after_on_error_refund_is_refunded_on_timeout():
@@ -2043,7 +2007,6 @@ async def test_deposit_after_on_error_refund_is_refunded_on_timeout():
     assert cmds[0].reason == "session_timeout"
     assert vmc.credit_escrow == 0.0
     assert vmc.state == "error"  # still needs an admin reset_state
-    machine.cancel_pending_tasks()
 
 
 async def test_hazard_fault_still_disables_payment():
@@ -2054,13 +2017,11 @@ async def test_hazard_fault_still_disables_payment():
     assert avail.payment_enabled is False
     assert avail.payment_blocking_reasons() == ["no_critical_fault"]
     assert (await _enables(published))[-1] is False
-    machine.cancel_pending_tasks()
 
 
 async def test_clean_boot_raises_nothing(tmp_path):
     vmc, avail, _, machine = _boot_with(tmp_path, None)
     assert vmc.active_faults() == []
-    machine.cancel_pending_tasks()
 
 
 async def test_boot_with_escrow_raises_pay_104_without_blocking(tmp_path):
@@ -2078,7 +2039,6 @@ async def test_boot_with_escrow_raises_pay_104_without_blocking(tmp_path):
         for e in rec.events
     )
     assert store.load() is not None  # kept as evidence until cleared
-    machine.cancel_pending_tasks()
 
 
 async def test_boot_mid_dispense_raises_pay_104(tmp_path):
@@ -2089,14 +2049,12 @@ async def test_boot_mid_dispense_raises_pay_104(tmp_path):
         ),
     )
     assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
-    machine.cancel_pending_tasks()
 
 
 async def test_boot_with_corrupt_file_raises_pay_104(tmp_path):
     (tmp_path / "session.json").write_text("garbage", encoding="utf-8")
     vmc, avail, _, machine = _boot_with(tmp_path, None)
     assert "PAY-104" in {f["code"] for f in vmc.active_faults()}
-    machine.cancel_pending_tasks()
 
 
 async def test_clearing_pay_104_removes_file_and_reenables(tmp_path):
@@ -2110,7 +2068,6 @@ async def test_clearing_pay_104_removes_file_and_reenables(tmp_path):
     assert store.load() is None
     rows = {r["name"]: r for r in avail.table()}
     assert rows["transaction_certain"]["state"] == "pass"
-    machine.cancel_pending_tasks()
 
 
 async def test_clear_pay_104_fails_closed_when_evidence_file_persists(tmp_path):
@@ -2123,7 +2080,6 @@ async def test_clear_pay_104_fails_closed_when_evidence_file_persists(tmp_path):
     assert avail.payment_enabled is True
     rows = {r["name"]: r for r in avail.table()}
     assert rows["transaction_certain"]["state"] == "fail"
-    machine.cancel_pending_tasks()
 
 
 async def test_session_file_written_during_sale_and_cleared_after(tmp_path):
@@ -2153,7 +2109,6 @@ async def test_session_file_written_during_sale_and_cleared_after(tmp_path):
     await runner.drain_persistence()
     assert vmc.state == "idle"
     assert store.load() is None
-    machine.cancel_pending_tasks()
 
 
 # --- Finding A: FSM state published after the transition, not before ---
@@ -2175,7 +2130,6 @@ async def test_error_occurred_and_reset_publish_destination_state_to_availabilit
 
     vmc.reset_state()
     assert avail.sale_available("water")[0] is True
-    machine.cancel_pending_tasks()
 
 
 async def test_status_publish_carries_destination_state():
@@ -2193,7 +2147,6 @@ async def test_status_publish_carries_destination_state():
     await asyncio.sleep(0)
     statuses = [p for t, p in published if t == "status"]
     assert statuses[-1].state == "error"
-    machine.cancel_pending_tasks()
 
 
 # --- Finding B: shutdown drains in-flight persistence writes ---
@@ -2210,7 +2163,6 @@ async def test_drain_persistence_awaits_pending_session_write(tmp_path):
     snap = store.load()
     assert snap is not None
     assert snap.credit_escrow == 1.0
-    machine.cancel_pending_tasks()
 
 
 async def test_cancel_pending_tasks_never_cancels_persistence(tmp_path):
@@ -2270,7 +2222,6 @@ async def test_dispense_snapshot_persisted_before_dispense_command(tmp_path):
     await machine.tasks.drain_persistence()
 
     assert any(c == "dispense" for _, c, _ in sent), f"sent so far: {sent!r}"
-    machine.cancel_pending_tasks()
 
 
 # --- Finding: retained status republished on MQTT (re)connect ---
@@ -2284,7 +2235,6 @@ async def test_status_republished_on_mqtt_connect():
     statuses = [p for t, p in published if t == "status"]
     assert statuses
     assert statuses[-1].state == "idle"
-    machine.cancel_pending_tasks()
 
 
 # --- Task 11: VMC.make_idle_for_service (lease-preconditions) -----------
