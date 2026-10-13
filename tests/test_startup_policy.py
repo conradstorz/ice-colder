@@ -259,9 +259,26 @@ def test_reconcile_corrupt_db_raises_data_102_and_vmc_stays_usable(
     assert "DATA-102" not in {f["code"] for f in vmc.active_faults()}
 
 
-def test_reconcile_never_raises_on_recorder_failure(monkeypatch):
+@pytest.mark.parametrize(
+    ("journal_text", "data_101_active"),
+    [
+        (None, False),  # journal file absent
+        ("", False),  # journal file empty
+        ('{"ts": 1, "sku": "ICE-1"}\n', True),  # journal still has rows
+    ],
+    ids=["absent", "empty", "non_empty"],
+)
+def test_reconcile_never_raises_on_recorder_failure(
+    tmp_path, monkeypatch, journal_text, data_101_active
+):
     """Neither fault may ever escape as an exception and unwind main() --
-    a reports/history problem must never stop the VMC or MQTT client."""
+    a reports/history problem must never stop the VMC or MQTT client. When
+    replay itself raises, DATA-101 is still decided from the journal's own
+    state (never from the real journal path on the developer's disk)."""
+    journal_path = tmp_path / "sales-journal.jsonl"
+    monkeypatch.setattr(event_recorder_module, "JOURNAL_PATH", journal_path)
+    if journal_text is not None:
+        journal_path.write_text(journal_text, encoding="utf-8")
 
     class ExplodingRecorder:
         db_was_corrupt = False
@@ -270,10 +287,13 @@ def test_reconcile_never_raises_on_recorder_failure(monkeypatch):
             raise RuntimeError("disk exploded")
 
     machine = Machine(config=ConfigModel())
+    # Pre-raise so the drained cases prove the fault is actively cleared.
+    machine.faults.raise_fault(FaultCode.DATA_101, outcome="pre-existing")
 
-    vmc = machine.vmc
     reconcile_sales_journal_faults(machine, ExplodingRecorder())  # must not raise
-    assert vmc.state == "idle"  # completely unaffected
+
+    assert machine.faults.has(FaultCode.DATA_101.value) is data_101_active
+    assert machine.vmc.state == "idle"  # completely unaffected
 
 
 def test_reconcile_raises_data_101_when_replay_commits_but_journal_rewrite_fails(
