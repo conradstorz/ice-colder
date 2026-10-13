@@ -140,6 +140,25 @@ async def _wait_until(predicate, timeout: float = 10.0):
     raise TimeoutError("condition not met within timeout")
 
 
+async def _stop_background_task(task: "asyncio.Task") -> None:
+    """Tear down a background task (e.g. ``mqtt_client.run()``) without
+    hiding a crash.
+
+    If the task already finished with an exception, re-raise it so the real
+    failure shows instead of an unrelated state-wait timeout. Otherwise
+    cancel it and swallow only the resulting ``CancelledError``.
+    """
+    if task.done() and not task.cancelled():
+        exc = task.exception()
+        if exc is not None:
+            raise exc
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
 async def _wait_for_state(vmc: VMC, target_state: str, timeout: float = 10.0):
     """Poll VMC state until it reaches target_state or timeout."""
     deadline = asyncio.get_running_loop().time() + timeout
@@ -295,11 +314,7 @@ class TestFullTransactionLoop:
                 assert vmc.credit_escrow == 0.0
 
             finally:
-                mqtt_task.cancel()
-                try:
-                    await mqtt_task
-                except (asyncio.CancelledError, Exception):
-                    pass
+                await _stop_background_task(mqtt_task)
 
     async def test_overpayment_returns_to_idle_with_change(self, tmp_path):
         """Overpayment: VMC dispenses and remaining credit is consumed or idle."""
@@ -373,11 +388,7 @@ class TestFullTransactionLoop:
                 assert abs(vmc.credit_escrow - 3.50) < 0.01
 
             finally:
-                mqtt_task.cancel()
-                try:
-                    await mqtt_task
-                except (asyncio.CancelledError, Exception):
-                    pass
+                await _stop_background_task(mqtt_task)
 
     async def test_insufficient_funds_waits_for_more(self, tmp_path):
         """Underpayment: VMC stays in interacting_with_user until enough is deposited."""
@@ -459,11 +470,7 @@ class TestFullTransactionLoop:
                 await _wait_for_state(vmc, "interacting_with_user", timeout=5.0)
 
             finally:
-                mqtt_task.cancel()
-                try:
-                    await mqtt_task
-                except (asyncio.CancelledError, Exception):
-                    pass
+                await _stop_background_task(mqtt_task)
 
     async def test_dispenser_fault_fails_vend_and_locks_product(self, tmp_path):
         """Dispenser jam during vend runs vend_failed: escrow restored, product locked."""
@@ -533,11 +540,7 @@ class TestFullTransactionLoop:
                 assert vmc.state != "error"
 
             finally:
-                mqtt_task.cancel()
-                try:
-                    await mqtt_task
-                except (asyncio.CancelledError, Exception):
-                    pass
+                await _stop_background_task(mqtt_task)
 
 
 class TestSensorAndHeartbeatRouting:
@@ -581,11 +584,7 @@ class TestSensorAndHeartbeatRouting:
                 assert abs(summary["temperatures"]["compressor"]["value"] - 65.3) < 0.1
 
             finally:
-                mqtt_task.cancel()
-                try:
-                    await mqtt_task
-                except (asyncio.CancelledError, Exception):
-                    pass
+                await _stop_background_task(mqtt_task)
 
     async def test_heartbeat_reaches_health_monitor(self):
         config = _make_config()
@@ -624,11 +623,7 @@ class TestSensorAndHeartbeatRouting:
                 assert "ice_maker" in summary["subsystems"]
 
             finally:
-                mqtt_task.cancel()
-                try:
-                    await mqtt_task
-                except (asyncio.CancelledError, Exception):
-                    pass
+                await _stop_background_task(mqtt_task)
 
 
 class TestFailedVendLoop:
@@ -727,11 +722,7 @@ class TestFailedVendLoop:
                 assert vmc.faults.lockouts == {}
             finally:
                 machine.cancel_pending_tasks()
-                mqtt_task.cancel()
-                try:
-                    await mqtt_task
-                except asyncio.CancelledError:
-                    pass
+                await _stop_background_task(mqtt_task)
 
 
 async def test_vending_heartbeat_loss_blocks_sale_not_payment_enable():
@@ -817,7 +808,7 @@ async def test_vending_heartbeat_loss_blocks_sale_not_payment_enable():
                 break
             seen.append(json.loads(msg.payload)["accept"])
 
-    run.cancel()
+    await _stop_background_task(run)
     machine.cancel_pending_tasks()
     assert seen  # payment/enable was published at least once (initial true)
     assert all(seen), "payment/enable must never go false on fulfillment-only loss"
