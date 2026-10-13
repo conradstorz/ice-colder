@@ -883,7 +883,9 @@ class TestEmptyDatabase:
         window = reports.resolve_window("30d", now=now)
 
         period_rows = reports.by_period(recorder, window, "day", tz=FIXED_TZ)
-        assert isinstance(period_rows, list)
+        # A 30-day window from (now - 30*86400) to now produces 31 day buckets:
+        # the floored start day plus 30 complete days through the current day.
+        assert len(period_rows) == 31
         for row in period_rows:
             assert row["revenue"] == 0.0
             assert row["vends"] == 0
@@ -903,8 +905,6 @@ class TestEmptyDatabase:
         assert summary["refunds"] == 0.0
         assert summary["by_method"] == []
         assert summary["cash_since_last_collection"] == 0.0
-        assert summary["revenue"] is not None
-        assert summary["cash_since_last_collection"] is not None
 
 
 # --------------------------------------------------------------------------
