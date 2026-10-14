@@ -267,6 +267,7 @@ source = { editable = "packages/cloud" }
 dependencies = [
     { name = "fastapi", extra = ["standard"] },
     { name = "ice-common" },
+    { name = "ice-contracts" },
     { name = "ice-ui" },
 ]
 
@@ -274,6 +275,7 @@ dependencies = [
 requires-dist = [
     { name = "fastapi", extras = ["standard"], specifier = ">=0.115.11" },
     { name = "ice-common", editable = "packages/common" },
+    { name = "ice-contracts", editable = "packages/contracts" },
     { name = "ice-ui", editable = "packages/ui" },
 ]
 
