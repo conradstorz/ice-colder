@@ -16,7 +16,11 @@ import asyncio
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
-from ice_contracts.board.vending_machine import PAYMENT_BLOCKING_FAULTS, FaultCode
+from ice_contracts.board.vending_machine import (
+    EXPECTED_SUBSYSTEMS,
+    PAYMENT_BLOCKING_FAULTS,
+    FaultCode,
+)
 from ice_contracts.cloud.report import (
     FaultView,
     HealthPageSummary,
@@ -26,11 +30,11 @@ from ice_contracts.cloud.report import (
     KpiWindow,
     PendingSaleView,
 )
+from ice_edge.monitoring.health_monitor import HealthMonitor
 
 if TYPE_CHECKING:
     from ice_edge.faults.availability import Availability
     from ice_edge.ledger.event_recorder import EventRecorder
-    from ice_edge.monitoring.health_monitor import HealthMonitor
     from ice_edge.sale.vmc import VMC
 
 # active_faults() reports fault codes as strings (FaultCode.value); compare
@@ -63,6 +67,45 @@ def fault_gate(fault: dict) -> str:
     if fault["scope"] == "product":
         return "fulfillment"
     return "alert"
+
+
+def faults_with_age(
+    vmc: VMC | None,
+    health_monitor: HealthMonitor | None,
+    pending_sale: Callable[[], dict | None],
+) -> list[dict]:
+    """vmc.active_faults() joined with the health monitor's `since_seconds`,
+    the derived `gate` and (PAY-104 only) `pending_sale()` -- the shared
+    source for the Faults level and the cloud report. A fault carries no age
+    when no monitor is wired; an empty list when no VMC is wired."""
+    if not vmc:
+        return []
+    faults = vmc.active_faults()
+    ages: dict[str, float | None] = {}
+    if health_monitor:
+        ages = {
+            f["key"]: f["since_seconds"]
+            for f in health_monitor.get_summary()["active_faults"]
+        }
+    for f in faults:
+        f["since_seconds"] = ages.get(f["key"])
+        f["gate"] = fault_gate(f)
+        # Only the machine-scope PAY-104 fault ever carries a pending sale.
+        f["pending_sale"] = (
+            pending_sale() if f["code"] == FaultCode.PAY_104.value else None
+        )
+    return faults
+
+
+def subsystem_rows(health_monitor: HealthMonitor | None) -> dict[str, dict]:
+    """One row per EXPECTED_SUBSYSTEMS entry: the live row when the monitor
+    has ever heard from that subsystem, else the neutral empty row (for every
+    subsystem when no monitor is wired)."""
+    live = health_monitor.get_summary()["subsystems"] if health_monitor else {}
+    return {
+        name: live.get(name, HealthMonitor.empty_subsystem_row())
+        for name in EXPECTED_SUBSYSTEMS
+    }
 
 
 async def build_health_summary(

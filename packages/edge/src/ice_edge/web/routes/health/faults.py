@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse
 
 from ice_contracts.board.vending_machine import FaultCode
 from ice_edge.access.access import Permission
-from ice_edge.views.health import fault_gate
+from ice_edge.views.health import faults_with_age
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
 from ice_ui.levels import (
@@ -50,32 +50,15 @@ def dom_safe_key(key: str) -> str:
 
 
 def _faults_with_age() -> list[dict]:
-    """vmc.active_faults() joined with health_monitor's since_seconds and
-    this module's derived gate, on `key` -- exactly the join
-    context._render_status already does for the same reason (executor
-    resolution 6). A fault renders without an age when no health monitor
-    is wired, rather than failing; an empty list when no VMC is wired."""
-    if not context.vmc_instance:
-        return []
-    faults = context.vmc_instance.active_faults()
-    ages: dict[str, float | None] = {}
-    if context.health_monitor:
-        ages = {
-            f["key"]: f["since_seconds"]
-            for f in context.health_monitor.get_summary()["active_faults"]
-        }
+    """The shared join (`ice_edge.views.health.faults_with_age`) plus this
+    page's selector-safe `dom_key`."""
+    faults = faults_with_age(
+        context.vmc_instance,
+        context.health_monitor,
+        lambda: context.machine_instance.pending_sale_for_recovery(),
+    )
     for f in faults:
-        f["since_seconds"] = ages.get(f["key"])
-        f["gate"] = fault_gate(f)
         f["dom_key"] = dom_safe_key(f["key"])
-        # Task 14: only the machine-scope PAY-104 fault ever carries a
-        # pending sale; every other fault (product-scope, or another
-        # machine-scope code) gets None, keeping its plain Clear button.
-        f["pending_sale"] = (
-            context.machine_instance.pending_sale_for_recovery()
-            if f["code"] == FaultCode.PAY_104.value
-            else None
-        )
     return faults
 
 

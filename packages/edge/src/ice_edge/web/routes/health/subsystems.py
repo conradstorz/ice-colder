@@ -9,7 +9,7 @@ from ice_contracts.board.vending_machine import (
     EXPECTED_SUBSYSTEMS,
 )
 from ice_edge.access.access import Permission
-from ice_edge.monitoring.health_monitor import HealthMonitor
+from ice_edge.views.health import subsystem_rows
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
 from ice_ui.levels import (
@@ -23,19 +23,8 @@ router = APIRouter()
 
 
 def _subsystem_summary() -> dict[str, dict]:
-    """One row per EXPECTED_SUBSYSTEMS entry: the live row from the health
-    monitor when it has ever heard from that subsystem, else the neutral
-    empty_subsystem_row() placeholder -- and the placeholder for every
-    subsystem when no health monitor is wired at all (rule 3)."""
-    live = (
-        context.health_monitor.get_summary()["subsystems"]
-        if context.health_monitor
-        else {}
-    )
-    return {
-        name: live.get(name, HealthMonitor.empty_subsystem_row())
-        for name in EXPECTED_SUBSYSTEMS
-    }
+    """One row per EXPECTED_SUBSYSTEMS entry (`ice_edge.views.health.subsystem_rows`)."""
+    return subsystem_rows(context.health_monitor)
 
 
 def _window_context(name: str) -> dict:

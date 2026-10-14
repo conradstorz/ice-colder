@@ -17,6 +17,7 @@ from ice_ui.bundle import build_bundle, ui_digest
 
 if TYPE_CHECKING:
     from ice_edge.app.machine import Machine
+    from ice_edge.sale.maintenance_lease import MaintenanceHold
 
 
 def utc_now() -> datetime:
@@ -30,17 +31,18 @@ async def run_uplink(
     *,
     sleep: Callable[[float], Awaitable[object]] = asyncio.sleep,
     now: Callable[[], datetime] = utc_now,
-    holder_name: Callable[[object], str | None] | None = None,
+    holder_name: Callable[[MaintenanceHold], str | None] | None = None,
 ) -> None:
     """Upload the UI bundle (retried once per interval until accepted), then
     post a report every ``config.cloud.report_interval_seconds`` (re-read each
     pass). ``seq`` increments per attempt; ``boot_id`` is fixed per call.
     Failures are logged and dropped; only cancellation ends the loop."""
     boot_id = str(uuid.uuid4())
+    digest, bundle = ui_digest(), build_bundle()
 
     while True:
         try:
-            if await uplink.put_ui_bundle(ui_digest(), build_bundle()):
+            if await uplink.put_ui_bundle(digest, bundle):
                 break
         except Exception:
             logger.exception("UI bundle upload attempt failed")

@@ -13,54 +13,24 @@ from typing import TYPE_CHECKING
 
 from ice_common.build_info import BUILD_INFO
 from ice_common.config_model import ConfigModel
-from ice_contracts.board.vending_machine import EXPECTED_SUBSYSTEMS, FaultCode
 from ice_contracts.cloud.report import (
     CLOUD_CONTRACT_VERSION,
     MachineReport,
     UiIdentity,
 )
-from ice_edge.monitoring.health_monitor import HealthMonitor
 from ice_edge.views.health import (
     build_fault_views,
     build_health_page_summary,
     build_health_summary,
     build_kpi_summary,
-    fault_gate,
+    subsystem_rows,
+    faults_with_age,
 )
 from ice_ui.bundle import ICE_UI_VERSION, ui_digest
 
 if TYPE_CHECKING:
     from ice_edge.app.machine import Machine
-
-
-def _faults_with_age(machine: Machine) -> list[dict]:
-    """active_faults() joined with the health monitor's ages, the gate and
-    (PAY-104 only) the pending sale -- the same join the Faults level does."""
-    faults = machine.vmc.active_faults()
-    monitor = machine.health_monitor
-    ages = (
-        {f["key"]: f["since_seconds"] for f in monitor.get_summary()["active_faults"]}
-        if monitor
-        else {}
-    )
-    for f in faults:
-        f["since_seconds"] = ages.get(f["key"])
-        f["gate"] = fault_gate(f)
-        f["pending_sale"] = (
-            machine.pending_sale_for_recovery()
-            if f["code"] == FaultCode.PAY_104.value
-            else None
-        )
-    return faults
-
-
-def _subsystem_rows(machine: Machine) -> dict[str, dict]:
-    monitor = machine.health_monitor
-    live = monitor.get_summary()["subsystems"] if monitor else {}
-    return {
-        name: live.get(name, HealthMonitor.empty_subsystem_row())
-        for name in EXPECTED_SUBSYSTEMS
-    }
+    from ice_edge.sale.maintenance_lease import MaintenanceHold
 
 
 async def build_machine_report(
@@ -70,7 +40,7 @@ async def build_machine_report(
     seq: int,
     boot_id: str,
     now: datetime,
-    holder_name: Callable[[object], str | None] | None = None,
+    holder_name: Callable[[MaintenanceHold], str | None] | None = None,
 ) -> MachineReport:
     """Snapshot *machine* as a ``MachineReport``.
 
@@ -106,8 +76,10 @@ async def build_machine_report(
         ui=UiIdentity(digest=ui_digest(), ice_ui_version=ICE_UI_VERSION),
         health=health,
         kpi=await build_kpi_summary(machine.event_recorder),
-        faults=build_fault_views(_faults_with_age(machine)),
+        faults=build_fault_views(
+            faults_with_age(machine.vmc, monitor, machine.pending_sale_for_recovery)
+        ),
         health_page=build_health_page_summary(
-            monitor.get_summary() if monitor else None, _subsystem_rows(machine)
+            monitor.get_summary() if monitor else None, subsystem_rows(monitor)
         ),
     )
