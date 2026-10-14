@@ -5,7 +5,7 @@ from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from ice_edge.access.access import AccessStore, Permission, Role
-from web_interface import auth, context
+from ice_edge.web import auth, context
 
 
 @pytest.fixture

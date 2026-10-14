@@ -29,9 +29,9 @@ from services.startup_config import (
     load_config,
     warn_if_setup_mode,
 )
-from web_interface.server import app
-from web_interface import routes
-from web_interface import auth as web_auth
+from ice_edge.web.server import app
+from ice_edge.web import routes
+from ice_edge.web import auth as web_auth
 
 
 @logger.catch()

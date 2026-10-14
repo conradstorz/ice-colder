@@ -13,7 +13,7 @@ import pytest
 from ice_edge.vend.dispenser_gate import DispenserProfileGate
 from ice_edge.access.access import Role
 from ice_edge.config import config_store
-from web_interface import context
+from ice_edge.web import context
 
 
 def _state(cfg, inv):
@@ -670,7 +670,7 @@ class TestCatalogChangedCalled:
     def test_route_tolerates_no_vmc_instance(self, client, wired, monkeypatch):
         """A test harness with no VMC wired at all must not crash the
         route -- context.vmc_instance can be None."""
-        from web_interface import context
+        from ice_edge.web import context
 
         monkeypatch.setattr(context, "vmc_instance", None)
         resp = client.post(

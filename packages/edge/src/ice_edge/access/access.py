@@ -724,7 +724,7 @@ class AccessStore:
         ``touch=False`` applies the exact same validity rules (and still
         forgets an expired session) but does not update ``last_active_at``.
         Dashboard v2's polling fragments (``/status``, ``/kpi``, ``/pill`` —
-        see ``web_interface/auth.POLLING_PATHS``) resolve sessions with
+        see ``ice_edge/web/auth.POLLING_PATHS``) resolve sessions with
         ``touch=False`` so an open tab merely polling for updates does not
         count as activity and cannot keep a session — or a standby
         maintenance lease bound to it — alive indefinitely.

@@ -93,7 +93,7 @@ def test_wire_dispenser_profiles_reaches_machine_gate_and_routes():
     `Machine` (nothing on the Machine side is mocked): the public
     `machine.gate.profiles` read and the routes-side `context` handle."""
     from controller.machine import Machine
-    from web_interface import context, routes
+    from ice_edge.web import context, routes
 
     cfg = ConfigModel()
     machine = Machine(config=cfg)

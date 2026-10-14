@@ -20,7 +20,7 @@ import pytest
 
 from ice_edge.access.access import Role
 from tests.conftest import make_client
-from web_interface import auth as web_auth
+from ice_edge.web import auth as web_auth
 
 _CODE_VALUE_RE = re.compile(r'class="[^"]*\bcode-value\b[^"]*">(\d{8})<')
 

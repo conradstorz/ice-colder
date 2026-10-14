@@ -13,8 +13,8 @@ import pytest
 
 from ice_edge.access.access import Role
 from ice_edge.ledger.event_recorder import EventRecorder
-from web_interface import context
-from web_interface.server import app
+from ice_edge.web import context
+from ice_edge.web.server import app
 
 
 @pytest.fixture
@@ -176,8 +176,8 @@ class TestCollectCashEndpoint:
 
         # Create a new client that doesn't have the HX-Request header
         from fastapi.testclient import TestClient
-        from web_interface.server import app
-        from web_interface import auth as web_auth
+        from ice_edge.web.server import app
+        from ice_edge.web import auth as web_auth
 
         bare_client = TestClient(app)
         # Copy the session and device cookies from the authenticated client

@@ -23,17 +23,17 @@ from ice_edge.hal.command_dispatcher import CommandTimeout
 from ice_edge.config.config_store import add_product
 from ice_edge.ledger.event_recorder import EventRecorder
 from tests.dispenser_fixtures import profiles_for
-from web_interface import auth as web_auth
-from web_interface import context
-from web_interface import routes
-from web_interface.routes.tests_level import (
+from ice_edge.web import auth as web_auth
+from ice_edge.web import context
+from ice_edge.web import routes
+from ice_edge.web.routes.tests_level import (
     POWER_CYCLE_DWELL_DEFAULT,
     POWER_CYCLE_DWELL_RANGE,
     WATER_VALVE_SECONDS_RANGE,
     contract_match,
 )
-from web_interface.routes.tests_level import recent_test_runs
-from web_interface.routes.tests_level import testable_commands as compute_testable
+from ice_edge.web.routes.tests_level import recent_test_runs
+from ice_edge.web.routes.tests_level import testable_commands as compute_testable
 
 # Imported under an alias: a bare `testable_commands` name starting with
 # "test" is collected by pytest as if it were a test function itself
@@ -1794,7 +1794,7 @@ class TestActuatorLeaseHeldForRealLifetime:
         self, wired, tmp_path
     ):
         from ice_edge.hal.command_dispatcher import CommandDispatcher
-        from web_interface.routes.tests_level import _run_command
+        from ice_edge.web.routes.tests_level import _run_command
 
         _cfg, vmc, _inv, store = wired
         principal = _direct_principal(store, store.owner())
@@ -1921,7 +1921,7 @@ class TestActuatorLeaseHeldForRealLifetime:
         lease can be released as soon as the single ack arrives -- no
         second wait, no behavioural change at all."""
         from ice_edge.hal.command_dispatcher import CommandDispatcher
-        from web_interface.routes.tests_level import _run_command
+        from ice_edge.web.routes.tests_level import _run_command
 
         _cfg, vmc, _inv, store = wired
         principal = _direct_principal(store, store.owner())

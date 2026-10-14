@@ -13,7 +13,7 @@ from tests.dom_utils import title_text
 
 import pytest
 from ice_edge.access.access import Role
-from web_interface import context
+from ice_edge.web import context
 
 # The period tabs are rendered as
 #   <a href="/reports?period={p}" class="...">{label}</a>
@@ -73,7 +73,7 @@ class TestReportsPeriodParameter:
         /reports renders the activity table (and reaches the period
         fallback logic) instead of the no-recorder placeholder."""
         from ice_edge.ledger.event_recorder import EventRecorder
-        from web_interface import context as r
+        from ice_edge.web import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
@@ -118,7 +118,7 @@ class TestReportsRecorderOffloading:
 
     def test_reports_offloads_to_thread(self, client, tmp_path, monkeypatch):
         from ice_edge.ledger.event_recorder import EventRecorder
-        from web_interface import context as r
+        from ice_edge.web import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
@@ -142,7 +142,7 @@ class TestReportsTableMarkup:
 
     def test_table_has_overflow_x_container(self, client, tmp_path):
         from ice_edge.ledger.event_recorder import EventRecorder
-        from web_interface import context as r
+        from ice_edge.web import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)

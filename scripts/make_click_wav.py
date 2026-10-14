@@ -59,7 +59,7 @@ def main(out_path: Path) -> None:
 if __name__ == "__main__":
     from _repo import repo_root
 
-    default_out = repo_root() / "web_interface" / "static" / "click.wav"
+    default_out = repo_root() / "packages" / "ui" / "src" / "ice_ui" / "static" / "click.wav"
     arg_path = Path(sys.argv[1]) if len(sys.argv) > 1 else default_out
     main(arg_path)
     print(len(arg_path.read_bytes()))

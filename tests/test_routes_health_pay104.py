@@ -38,8 +38,8 @@ from ice_edge.access.access import ROLE_PERMISSIONS, Permission, Role
 from ice_edge.config.config_store import add_product
 from ice_edge.ledger.event_recorder import EventRecorder
 from ice_edge.ledger.session_store import SessionStore
-from web_interface import context, routes
-from web_interface.server import app
+from ice_edge.web import context, routes
+from ice_edge.web.server import app
 
 
 def _pay104_setup(

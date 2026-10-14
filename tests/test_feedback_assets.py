@@ -9,7 +9,7 @@ import wave
 
 from fastapi.testclient import TestClient
 
-from web_interface.server import app
+from ice_edge.web.server import app
 from tests.paths import REPO_ROOT, STATIC_DIR, TEMPLATES_DIR
 
 ROOT = REPO_ROOT

@@ -11,7 +11,7 @@ import pytest
 
 from ice_edge.access.access import Role
 from ice_edge.config.config_store import add_product
-from web_interface import context
+from ice_edge.web import context
 
 
 def _add_tracked(wired, sku, *, name="Tracked Item", slot=1, count=5):

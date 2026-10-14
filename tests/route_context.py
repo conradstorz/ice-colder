@@ -10,8 +10,8 @@ autouse fixture a single place to do that for *all* of them, and a guard
 
 import inspect
 
-from web_interface import auth as web_auth
-from web_interface import context
+from ice_edge.web import auth as web_auth
+from ice_edge.web import context
 
 GLOBALS: tuple[str, ...] = (
     "config",

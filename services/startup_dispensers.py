@@ -12,7 +12,7 @@ from ice_edge.vend.dispensers import (
     ValidationReport,
     dispensers_path,
 )
-from web_interface import routes
+from ice_edge.web import routes
 
 
 def load_dispenser_profiles(config: ConfigModel) -> DispenserProfiles:

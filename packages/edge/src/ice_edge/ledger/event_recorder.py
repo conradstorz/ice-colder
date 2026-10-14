@@ -582,7 +582,7 @@ class EventRecorder:
         be deduplicated, because two genuine sales of the same SKU (two
         different customers, back to back) are a normal thing and each
         one is a real row. This flag exists for exactly one caller: the
-        PAY-104 recovery route (``web_interface/routes/health.py``), which
+        PAY-104 recovery route (``ice_edge/web/routes/health.py``), which
         has a caller-supplied, deterministic ``ts`` (the session
         snapshot's ``saved_at``, fixed at dispense time and never
         rewritten) to key on, making a second attempt against the same

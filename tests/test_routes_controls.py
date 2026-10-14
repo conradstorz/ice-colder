@@ -2,7 +2,7 @@
 
 import pytest
 from ice_edge.access.access import Role, ROLE_PERMISSIONS, Permission
-from web_interface import context
+from ice_edge.web import context
 
 
 class TestControlsPermissionGates:
@@ -147,8 +147,8 @@ class TestPostCommands:
         # Remove the HX-Request header by making a new request without it
         # The TestClient adds it by default, so we need to make a raw request
         from fastapi.testclient import TestClient
-        from web_interface.server import app
-        import web_interface.auth as web_auth
+        from ice_edge.web.server import app
+        import ice_edge.web.auth as web_auth
 
         raw_client = TestClient(app)
         # Copy cookies from the authenticated client

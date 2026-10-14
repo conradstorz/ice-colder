@@ -18,8 +18,8 @@ from pydantic import SecretStr
 from ice_common.config_model import Channel, ConfigModel
 from ice_edge.access.access import Role
 from ice_edge.config import config_store
-from web_interface.routes import settings as settings_routes
-from web_interface.routes.settings import comms as settings_comms
+from ice_edge.web.routes import settings as settings_routes
+from ice_edge.web.routes.settings import comms as settings_comms
 
 SECRET_MASK = settings_routes.SECRET_MASK
 

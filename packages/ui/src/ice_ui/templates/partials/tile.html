@@ -1,11 +1,11 @@
-{# web_interface/templates/partials/tile.html
+{# ice_edge/web/templates/partials/tile.html
 
    One tile in Home's grid (spec §1.3 / §2). Included from home.html inside
    a `{% for tile in tiles %}` loop — since Jinja's plain `{% include %}`
    shares the caller's context, this template reads the loop variable
    `tile` directly rather than taking it as an explicit include parameter.
 
-   `tile` is one of the dicts web_interface/routes/home.py's `_build_tiles`
+   `tile` is one of the dicts ice_edge/web/routes/home.py's `_build_tiles`
    returns:
      title       - str, tile heading (rendered at 20px / .text-tile-title)
      url         - str, the tile's link target

@@ -24,9 +24,9 @@ from tests.dispenser_fixtures import WATER as DISPENSER_WATER
 from tests import route_context
 from tests.browser_harness import live_server  # noqa: F401  (fixture shared by the browser tests)
 from tests.skip_policy import MISSING_TERMINALREPORTER_MARKER, build_skip_report
-from web_interface import auth as web_auth
-from web_interface import routes
-from web_interface.server import app
+from ice_edge.web import auth as web_auth
+from ice_edge.web import routes
+from ice_edge.web.server import app
 
 _ISSUED_CLIENTS: list[TestClient] = []
 

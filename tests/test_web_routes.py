@@ -18,10 +18,10 @@ from tests.dom_utils import (
     parse_elements,
     title_text,
 )
-from web_interface import auth as web_auth
-from web_interface import context
-from web_interface.server import app
-from web_interface import routes
+from ice_edge.web import auth as web_auth
+from ice_edge.web import context
+from ice_edge.web.server import app
+from ice_edge.web import routes
 
 # Emergency/transfer codes are 8 decimal digits, rendered by the templates
 # inside an element carrying the `code-value` hook class (see
@@ -639,7 +639,7 @@ class TestUnauthenticatedAccess:
 # reset-from-error path against the reset command's real target.
 class TestActionEndpoint:
     def test_reset_action_recovers_from_error(self, client):
-        from web_interface import context as r
+        from ice_edge.web import context as r
 
         r.vmc_instance.error_occurred()
         assert r.vmc_instance.state == "error"
@@ -670,7 +670,7 @@ class TestKpiEndpoint:
 
     def test_kpi_with_recorder(self, client, tmp_path):
         from ice_edge.ledger.event_recorder import EventRecorder
-        from web_interface import context as r
+        from ice_edge.web import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
@@ -695,7 +695,7 @@ class TestEventRecorderCallsOffloaded:
 
     def test_status_offloads_get_summary_to_thread(self, client, tmp_path, monkeypatch):
         from ice_edge.ledger.event_recorder import EventRecorder
-        from web_interface import context as r
+        from ice_edge.web import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
@@ -716,7 +716,7 @@ class TestEventRecorderCallsOffloaded:
         self, client, tmp_path, monkeypatch
     ):
         from ice_edge.ledger.event_recorder import EventRecorder
-        from web_interface import context as r
+        from ice_edge.web import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
@@ -757,7 +757,7 @@ class TestStatusHealthSignal:
 
     def test_status_with_recorder_no_errors(self, client, tmp_path):
         from ice_edge.ledger.event_recorder import EventRecorder
-        from web_interface import context as r
+        from ice_edge.web import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         r.set_event_recorder(recorder)
@@ -767,7 +767,7 @@ class TestStatusHealthSignal:
 
     def test_status_with_recorder_has_errors(self, client, tmp_path):
         from ice_edge.ledger.event_recorder import EventRecorder
-        from web_interface import context as r
+        from ice_edge.web import context as r
 
         recorder = EventRecorder(db_path=str(tmp_path / "test.db"))
         recorder.record("error")
@@ -994,7 +994,7 @@ class TestLogsContent:
 
     def test_log_path_matches_logging_setup(self):
         from ice_common.paths import LOG_FILE
-        from web_interface import context as r
+        from ice_edge.web import context as r
 
         assert r.LOG_PATH == LOG_FILE
         assert LOG_FILE.parts[-2:] == ("LOGS", "vmc.log")
@@ -1025,7 +1025,7 @@ class TestStillSellingBanner:
     def selling_client(self, client):
         from ice_edge.faults.availability import Availability
         from ice_edge.monitoring.health_monitor import HealthMonitor
-        from web_interface import context as r
+        from ice_edge.web import context as r
 
         avail = Availability()
         r.machine_instance.set_availability(avail)
@@ -1092,7 +1092,7 @@ class TestAvailabilityOnDashboard:
     def avail_client(self, client):
         from ice_edge.faults.availability import Availability
         from ice_edge.monitoring.health_monitor import HealthMonitor
-        from web_interface import context as r
+        from ice_edge.web import context as r
 
         avail = Availability()
         r.set_availability(avail)
@@ -1154,7 +1154,7 @@ class TestAvailabilityOnDashboard:
         assert resp.headers["location"] == "/login"
 
     def test_screen_body_neutral_when_unwired(self, client):
-        from web_interface import context as r
+        from ice_edge.web import context as r
 
         r.set_availability(None)
         r.set_health_monitor(None)
@@ -1363,7 +1363,7 @@ class TestLogin:
     def public(self, tmp_path):
         """A client with a seeded AccessStore and no session cookies."""
         from ice_edge.access.access import AccessStore, Role
-        from web_interface import auth as web_auth
+        from ice_edge.web import auth as web_auth
 
         # web_auth.backoff is a module-level singleton shared by every test
         # in the process. Unknown user_ids now collapse onto one bounded
@@ -1406,7 +1406,7 @@ class TestLogin:
         assert c.cookies.get("vmc_enroll")
 
     def test_correct_pin_on_a_trusted_device_logs_in(self, public):
-        from web_interface import auth as web_auth
+        from ice_edge.web import auth as web_auth
 
         c, store, owner = public
         device, token = store.create_device("Tablet", shared=True)
@@ -1516,7 +1516,7 @@ class TestEnrollment:
     @pytest.fixture
     def public(self, tmp_path):
         from ice_edge.access.access import AccessStore, Role
-        from web_interface import auth as web_auth
+        from ice_edge.web import auth as web_auth
 
         cfg = ConfigModel()
         store = AccessStore(path=tmp_path / "access.json")

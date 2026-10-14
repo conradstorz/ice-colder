@@ -7,7 +7,7 @@ between tests.
 from ice_common.config_model import ConfigModel
 from controller.machine import Machine
 from tests import route_context
-from web_interface import context
+from ice_edge.web import context
 
 
 def test_globals_covers_every_module_global():

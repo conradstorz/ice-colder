@@ -29,9 +29,9 @@ import pytest
 from ice_edge.access.access import Role
 from ice_edge.config.config_store import add_product
 from ice_edge.ledger.event_recorder import EventRecorder
-from web_interface import context as ctx
-from web_interface import routes
-from web_interface.routes import reports as reports_routes
+from ice_edge.web import context as ctx
+from ice_edge.web import routes
+from ice_edge.web.routes import reports as reports_routes
 
 
 @pytest.fixture

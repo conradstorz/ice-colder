@@ -519,7 +519,7 @@ def collections(recorder, limit: int = 50) -> list[dict]:
     later-inserted row win deterministic even when two rows share an
     identical `ts` (finite `time.time()` resolution makes that a real
     possibility -- see the identical hazard fixed in
-    `web_interface/routes/inventory.py` and `by_product`'s `id ASC`
+    `ice_edge/web/routes/inventory.py` and `by_product`'s `id ASC`
     precedent above), rather than falling back to SQLite's incidental,
     unguaranteed tie order. Without this, the row at index 0 -- the one
     given the *live* figure -- could be an older collection than one of

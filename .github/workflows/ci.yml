@@ -142,7 +142,7 @@ jobs:
         run: |
           docker run --rm ice-colder:smoke python -c "import sys; assert sys.prefix.startswith('/app/.venv'), sys.prefix"
           docker run --rm ice-colder:smoke python -c "import ice_contracts, ice_common"
-          docker run --rm ice-colder:smoke uv run python -c "import controller.machine, web_interface.server, simulators.vending_machine"
+          docker run --rm ice-colder:smoke uv run python -c "import controller.machine, ice_edge.web.server, simulators.vending_machine"
           if docker run --rm ice-colder:smoke python -c "import ice_cloud" 2> cloud.err; then
             echo "::error::ice_cloud must not be importable in the edge image"
             exit 1
