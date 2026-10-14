@@ -10,6 +10,7 @@ from ice_ui.levels import (
     LEVEL_HEALTH_AVAILABILITY,
 )
 from ice_ui.templating import templates
+from ice_ui.tiles import availability_line
 
 router = APIRouter()
 
@@ -17,11 +18,10 @@ router = APIRouter()
 def _availability_context_line(avail) -> str:
     """Availability tile's summary line on /health (resolution 8)."""
     if not avail:
-        return "—"
+        return availability_line(None, 0)
     if avail.payment_enabled:
-        return "Payment enabled"
-    n = len(avail.payment_blocking_reasons())
-    return f"Payment disabled ({n})"
+        return availability_line(True, 0)
+    return availability_line(False, len(avail.payment_blocking_reasons()))
 
 
 @router.get(

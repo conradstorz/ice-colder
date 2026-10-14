@@ -21,6 +21,13 @@ from ice_edge.faults.availability import Availability
 from ice_edge.ledger.event_recorder import EventRecorder
 from ice_edge.ledger.session_store import SessionStore
 from ice_edge.monitoring.health_monitor import HealthMonitor
+from ice_edge.views.health import (
+    build_fault_views,
+    build_health_page_summary,
+    build_health_summary,
+    build_kpi_summary,
+    fault_gate,
+)
 from ice_edge.web import context
 
 
@@ -147,10 +154,19 @@ def scenario(tmp_path):
     machine.cancel_pending_tasks()
 
 
-async def test_legacy_copy_equals_current_health_snapshot(scenario):
-    """The verbatim copy really is the code that ran: it agrees with today's
-    ``context.health_snapshot`` on this scenario."""
+def _freeze(monitor, monkeypatch):
+    """HealthMonitor.get_summary() rounds ``since_seconds`` off the clock; pin
+    one result so the legacy computation and the builder see the same ages."""
+    frozen = monitor.get_summary()
+    monkeypatch.setattr(monitor, "get_summary", lambda: frozen)
+    return frozen
+
+
+async def test_legacy_copy_equals_current_health_snapshot(scenario, monkeypatch):
+    """The verbatim copy really is the code that ran: it agrees with
+    ``context.health_snapshot`` (now a delegate) on this scenario."""
     machine, monitor, avail, recorder = scenario
+    _freeze(monitor, monkeypatch)
     context.set_machine_instance(machine)
     context.set_health_monitor(monitor)
     context.set_availability(avail)
@@ -163,8 +179,7 @@ async def test_legacy_copy_equals_current_health_snapshot(scenario):
         availability=avail,
         holder_name=context.holder_display_name,
     )
-    live = await context.health_snapshot()
-    live = live if isinstance(live, dict) else live.model_dump(mode="json")
+    live = (await context.health_snapshot()).model_dump(mode="json")
     assert live == legacy
     assert any(
         "errors in last 24h" in line or "error in last 24h" in line
@@ -173,3 +188,195 @@ async def test_legacy_copy_equals_current_health_snapshot(scenario):
     assert len(legacy["active_faults"]) == 2
     assert legacy["is_healthy"] is False
     assert all(f["since_seconds"] is not None for f in legacy["active_faults"])
+
+
+async def test_build_health_summary_equals_legacy_dict(scenario, monkeypatch):
+    """``model_dump(mode="json")`` of the new HealthSummary equals the legacy
+    dict exactly: HealthSummary carries exactly the legacy keys (cloud spec
+    section 6.2), so nothing is dropped or projected on this path."""
+    machine, monitor, avail, recorder = scenario
+    _freeze(monitor, monkeypatch)
+    legacy = await _legacy_snapshot(
+        vmc_instance=machine.vmc,
+        machine_instance=machine,
+        event_recorder=recorder,
+        health_monitor=monitor,
+        availability=avail,
+        holder_name=context.holder_display_name,
+    )
+    built = await build_health_summary(
+        vmc=machine.vmc,
+        event_recorder=recorder,
+        health_monitor=monitor,
+        availability=avail,
+        maintenance_holder=lambda: context.holder_display_name(
+            machine.maintenance_hold
+        ),
+    )
+    assert built.model_dump(mode="json") == legacy
+    assert built.maintenance is None
+    assert {f.code for f in built.active_faults} == {"PAY-104", "ICE-301"}
+
+
+async def test_build_health_summary_equals_legacy_under_maintenance_lease():
+    """SVC-102 active with a real hold: the issues line is replaced by the
+    holder's name, identically in both implementations."""
+    machine = Machine(config=ConfigModel())
+    try:
+        granted, _ = machine.lease.begin_maintenance("u-tech", "s-1")
+        assert granted
+        legacy = await _legacy_snapshot(
+            vmc_instance=machine.vmc,
+            machine_instance=machine,
+            event_recorder=None,
+            health_monitor=None,
+            availability=None,
+            holder_name=context.holder_display_name,
+        )
+        built = await build_health_summary(
+            vmc=machine.vmc,
+            event_recorder=None,
+            health_monitor=None,
+            availability=None,
+            maintenance_holder=lambda: context.holder_display_name(
+                machine.maintenance_hold
+            ),
+        )
+        assert built.model_dump(mode="json") == legacy
+        assert built.maintenance == "u-tech"
+        assert not any(i.startswith("SVC-102 ") for i in built.issues)
+    finally:
+        machine.cancel_pending_tasks()
+
+
+async def test_build_health_summary_without_vmc_equals_legacy():
+    legacy = await _legacy_snapshot(
+        vmc_instance=None,
+        machine_instance=None,
+        event_recorder=None,
+        health_monitor=None,
+        availability=None,
+        holder_name=context.holder_display_name,
+    )
+    built = await build_health_summary(
+        vmc=None,
+        event_recorder=None,
+        health_monitor=None,
+        availability=None,
+        maintenance_holder=lambda: None,
+    )
+    assert built.model_dump(mode="json") == legacy
+    assert built.vmc_missing is True
+
+
+def _legacy_faults_with_age(machine, monitor) -> list[dict]:
+    """Verbatim copy of ``_faults_with_age`` in
+    ``ice_edge.web.routes.health.faults`` (parameters instead of context
+    globals; ``dom_key`` stubbed with the raw key)."""
+    faults = machine.vmc.active_faults()
+    ages = {
+        f["key"]: f["since_seconds"] for f in monitor.get_summary()["active_faults"]
+    }
+    for f in faults:
+        f["since_seconds"] = ages.get(f["key"])
+        f["gate"] = fault_gate(f)
+        f["dom_key"] = f["key"]
+        f["pending_sale"] = (
+            machine.pending_sale_for_recovery()
+            if f["code"] == FaultCode.PAY_104.value
+            else None
+        )
+    return faults
+
+
+def test_build_fault_views_equals_projected_legacy_faults(scenario, monkeypatch):
+    """The legacy fault dicts also carry the edge-only ``dom_key`` and the
+    pending sale's ``name``/``slot``/``saved_at``; FaultView drops exactly
+    those (cloud spec section 6.4). So the expected value is each legacy dict
+    restricted to the FaultView fields, with ``pending_sale`` restricted to
+    ``sku``/``price``/``methods``."""
+    machine, monitor, _avail, _recorder = scenario
+    _freeze(monitor, monkeypatch)
+    legacy = _legacy_faults_with_age(machine, monitor)
+    fields = "key sku product code severity scope description since_seconds gate"
+    expected = []
+    for f in legacy:
+        row = {k: f[k] for k in fields.split()}
+        ps = f["pending_sale"]
+        row["pending_sale"] = (
+            {k: ps[k] for k in ("sku", "price", "methods")} if ps else None
+        )
+        expected.append(row)
+    # positive control: the keys being dropped really exist in the legacy shape
+    pay = next(f for f in legacy if f["code"] == "PAY-104")
+    assert {"name", "slot", "saved_at"} <= set(pay["pending_sale"])
+    assert "dom_key" in pay
+
+    built = build_fault_views(legacy)
+    assert [v.model_dump(mode="json") for v in built] == expected
+    assert next(v for v in built if v.code == "PAY-104").pending_sale is not None
+    assert next(v for v in built if v.code == "ICE-301").gate == "fulfillment"
+
+
+def test_build_fault_views_derives_gate_when_absent():
+    views = build_fault_views(
+        [
+            {
+                "key": "ICE-402",
+                "sku": None,
+                "product": None,
+                "code": "ICE-402",
+                "severity": "critical",
+                "scope": "machine",
+                "description": "d",
+            }
+        ]
+    )
+    assert views[0].gate == "safety"
+    assert views[0].since_seconds is None
+    assert views[0].pending_sale is None
+
+
+async def test_build_kpi_summary_projects_the_cards_keys(scenario):
+    _machine, _monitor, _avail, recorder = scenario
+    raw_summary = recorder.get_summary(24)
+    raw_average = recorder.get_historical_average(24)
+    kpi = await build_kpi_summary(recorder)
+    keys = ("money_in", "products_out", "vends_failed", "errors", "uptime_pct")
+    assert kpi.summary.model_dump() == {k: raw_summary[k] for k in keys}
+    akeys = ("money_in", "products_out", "errors", "uptime_pct")
+    assert kpi.average.model_dump() == {k: raw_average[k] for k in akeys}
+    assert kpi.summary.errors >= 1
+
+
+async def test_build_kpi_summary_without_recorder_is_all_none():
+    kpi = await build_kpi_summary(None)
+    assert kpi.summary is None
+    assert kpi.average is None
+
+
+def test_build_health_page_summary_projects_monitor_summary(scenario):
+    _machine, monitor, _avail, _recorder = scenario
+    raw = monitor.get_summary()
+    rows = {
+        "a": {"alive": True, "stale": False},
+        "b": {"alive": True, "stale": True},
+        "c": {"alive": False, "stale": False},
+    }
+    page = build_health_page_summary(raw, rows)
+    assert page.mqtt_connected == raw["mqtt_connected"]
+    assert page.vmc_state == raw["vmc_state"]
+    keys = ("commit", "commit_short", "source", "uptime_seconds", "machine_id")
+    assert page.vmc_build.model_dump() == {k: raw["vmc"][k] for k in keys}
+    assert (page.subsystems_ok, page.subsystems_total) == (1, 3)
+
+
+def test_build_health_page_summary_without_monitor():
+    page = build_health_page_summary(None, {})
+    assert page.model_dump() == {
+        "mqtt_connected": None,
+        "vmc_state": None,
+        "vmc_build": None,
+        "subsystems_ok": 0,
+        "subsystems_total": 0,
+    }

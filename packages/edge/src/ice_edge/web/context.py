@@ -17,7 +17,8 @@ request time via `from ice_edge.web import context` and `context.xxx`, not
 later.
 """
 
-import asyncio
+# Re-exported on purpose: tests spy on `context.asyncio.to_thread`.
+import asyncio  # noqa: F401
 from pathlib import Path
 
 from fastapi import HTTPException, Request
@@ -26,8 +27,9 @@ from fastapi.responses import HTMLResponse
 from ice_common.config_model import ConfigModel
 from loguru import logger
 
-from ice_contracts.board.vending_machine import FaultCode
+from ice_contracts.cloud.report import HealthSummary
 from ice_edge.access.access import AccessStore
+from ice_edge.views.health import build_health_summary
 from ice_common.paths import LOG_FILE
 from ice_edge.web import auth as web_auth
 from ice_ui import templating
@@ -287,122 +289,21 @@ def holder_display_name(hold) -> str | None:
     return hold.holder_user_id
 
 
-async def health_snapshot() -> dict:
+async def health_snapshot() -> HealthSummary:
     """The single health computation shared by /status's hero banner and
-    /pill's bar indicator (Task 5).
-
-    Returns a dict with keys `vmc_missing`, `status`, `is_healthy`,
-    `issues`, `active_faults`, `payment_enabled`, `payment_reasons`,
-    `machine_stopped` and `maintenance` — exactly the pieces
-    `_render_status` used to compute inline and
-    `partials/status_fragment.html` still receives unchanged. `is_healthy`
-    is the one predicate both the hero and the pill must agree on:
-    `len(issues) == 0 and payment_enabled is not False`, computed BEFORE
-    `maintenance` filters SVC-102's line out of `issues` below, so a
-    standby lease still shows amber/red exactly as it did before Task 3
-    (SVC-102 is a PAYMENT_BLOCKING_FAULTS member; it still disables
-    payment and still fails `is_healthy` — only its own line's wording is
-    replaced by the friendlier `maintenance` banner). `issues` accumulates,
-    in order: one line per active fault, an "errors in last 24h" line when
-    the event recorder has any, a stale-subsystems line, and an
-    out-of-range-temperature line — see the inline comments below for why
-    each one is folded in rather than computed separately.
-
-    `maintenance` (Task 3, system-tests design §2.2a) is the lease
-    holder's display name (`holder_display_name`, above) when SVC-102 is
-    both an active fault and a `MaintenanceHold` actually exists, else
-    None — both conditions, not just the fault, because a fault whose
-    hold has already released (a narrow race on the read) must not show a
-    stale holder name. `partials/status_fragment.html` reads this to swap
-    its title for "Out of service — maintenance by <name>" and drops the
-    SVC-102 line from `issues` so it isn't shown twice.
-
-    When no VMC is wired, `vmc_missing` is True and every other key is a
-    neutral placeholder (`is_healthy` None, empty lists) — callers must
-    check `vmc_missing` first rather than trust `is_healthy`, exactly as
-    `_render_status` already special-cased this before any of the fields
-    below existed.
-    """
-    if not vmc_instance:
-        return {
-            "vmc_missing": True,
-            "status": None,
-            "is_healthy": None,
-            "issues": [],
-            "active_faults": [],
-            "payment_enabled": None,
-            "payment_reasons": [],
-            "machine_stopped": None,
-            "maintenance": None,
-        }
-
-    status = vmc_instance.get_status()
-    issues: list[str] = []
-    active_faults = vmc_instance.active_faults()
-    for f in active_faults:
-        target = f["product"] or "machine"
-        issues.append(f"{f['code']} {f['description']} ({target})")
-        f["since_seconds"] = None
-
-    if event_recorder:
-        summary_24h = await asyncio.to_thread(event_recorder.get_summary, 24)
-        errors_24h = summary_24h["errors"]
-        if errors_24h > 0:
-            issues.append(
-                f"{errors_24h} error{'s' if errors_24h != 1 else ''} in last 24h"
-            )
-
-    if health_monitor:
-        health = health_monitor.get_summary()
-        ages = {f["key"]: f["since_seconds"] for f in health["active_faults"]}
-        for f in active_faults:
-            f["since_seconds"] = ages.get(f["key"])
-        stale = [name for name, sub in health["subsystems"].items() if sub["stale"]]
-        if stale:
-            issues.append(f"Stale subsystems: {', '.join(stale)}")
-        out_of_range = [
-            loc for loc, temp in health["temperatures"].items() if not temp["in_range"]
-        ]
-        if out_of_range:
-            issues.append(f"Temp issues: {', '.join(out_of_range)}")
-
-    payment_enabled = availability.payment_enabled if availability else None
-    payment_reasons = availability.payment_blocking_reasons() if availability else []
-
-    # A safety permissive (e.g. service_door_closed) can drive
-    # payment_enabled false without ever adding to `issues` — no fault is
-    # raised, just a permissive row failing. Fold that into the health
-    # predicate directly rather than reformatting payment_reasons (bare
-    # permissive names, not the fault table's human descriptions) into
-    # `issues`: the Payment panel in the template already renders those
-    # reasons whenever payment_enabled is false. `None` (no Availability
-    # attached) is unknown, not unhealthy, so it must not flip this.
-    is_healthy = len(issues) == 0 and payment_enabled is not False
-
-    # Task 3 (system-tests design §2.2a): fold SVC-102's line into a
-    # friendlier "who's holding it" banner instead of the raw fault
-    # description — but only after is_healthy above has already counted
-    # it, so the pill's amber/red state is unaffected.
-    maintenance = None
-    hold = machine_instance.maintenance_hold
-    if hold is not None and any(
-        f["code"] == FaultCode.SVC_102.value for f in active_faults
-    ):
-        maintenance = holder_display_name(hold)
-        svc102_prefix = f"{FaultCode.SVC_102.value} "
-        issues = [line for line in issues if not line.startswith(svc102_prefix)]
-
-    return {
-        "vmc_missing": False,
-        "status": status,
-        "is_healthy": is_healthy,
-        "issues": issues,
-        "active_faults": active_faults,
-        "payment_enabled": payment_enabled,
-        "payment_reasons": payment_reasons,
-        "machine_stopped": (None if payment_enabled is None else not payment_enabled),
-        "maintenance": maintenance,
-    }
+    /pill's bar indicator (Task 5): a one-line delegate onto
+    ``ice_edge.views.health.build_health_summary`` that passes this module's
+    live globals. See that function for the field semantics; the lease
+    holder's name comes from ``holder_display_name`` (below)."""
+    return await build_health_summary(
+        vmc=vmc_instance,
+        event_recorder=event_recorder,
+        health_monitor=health_monitor,
+        availability=availability,
+        maintenance_holder=lambda: holder_display_name(
+            machine_instance.maintenance_hold
+        ),
+    )
 
 
 async def _render_status(request: Request):
@@ -423,7 +324,7 @@ async def _render_status(request: Request):
     into the existing response shape.
     """
     snap = await health_snapshot()
-    if snap["vmc_missing"]:
+    if snap.vmc_missing:
         return HTMLResponse(
             '<div class="bg-red-50 rounded-xl border border-red-200 shadow-sm p-5">'
             '<p class="text-red-600 font-semibold">VMC not initialized</p></div>'
@@ -434,13 +335,13 @@ async def _render_status(request: Request):
         "partials/status_fragment.html",
         template_context(
             request,
-            status=snap["status"],
-            is_healthy=snap["is_healthy"],
-            issues=snap["issues"],
-            active_faults=snap["active_faults"],
-            payment_enabled=snap["payment_enabled"],
-            payment_reasons=snap["payment_reasons"],
-            machine_stopped=snap["machine_stopped"],
-            maintenance=snap["maintenance"],
+            status=snap.status,
+            is_healthy=snap.is_healthy,
+            issues=snap.issues,
+            active_faults=snap.active_faults,
+            payment_enabled=snap.payment_enabled,
+            payment_reasons=snap.payment_reasons,
+            machine_stopped=snap.machine_stopped,
+            maintenance=snap.maintenance,
         ),
     )

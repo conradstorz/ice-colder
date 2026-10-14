@@ -7,32 +7,17 @@ lives in its own sibling module (`health/`, `products/`, `inventory.py`,
 assembled by `routes/__init__.py::attach_routes`.
 """
 
-import asyncio
-
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 
 from ice_edge.access.access import Permission
 from ice_edge.web import auth as web_auth
+from ice_edge.views.health import build_kpi_summary
 from ice_edge.web import context
 from ice_ui.levels import LEVEL_HOME
 from ice_ui.templating import templates
-from ice_ui.tiles import build_tiles
-
-# Rank highest-first for the pill's "which fault do I name" choice (Task 5
-# brief, "Fault severity ranking"): critical > lockout > vend_failed >
-# product_unavailable > warning > info. Values are the string values of
-# ice_contracts.board.vending_machine.Severity; kept as plain strings here (rather
-# than importing the enum) since active_faults() already hands back
-# `severity` as that enum's `.value`.
-_SEVERITY_RANK = {
-    "critical": 0,
-    "lockout": 1,
-    "vend_failed": 2,
-    "product_unavailable": 3,
-    "warning": 4,
-    "info": 5,
-}
+from ice_ui.tiles import build_tiles, fault_count_line
+from ice_ui.views.health import pill_state
 
 
 def _fault_count_line() -> str:
@@ -40,9 +25,8 @@ def _fault_count_line() -> str:
     VMC is wired (executor resolution 3 — every tile-context source may be
     missing, and this must never crash)."""
     if not context.vmc_instance:
-        return "—"
-    n = len(context.vmc_instance.active_faults())
-    return f"{n} active fault{'s' if n != 1 else ''}"
+        return fault_count_line(None)
+    return fault_count_line(len(context.vmc_instance.active_faults()))
 
 
 def _product_count_line() -> str:
@@ -96,20 +80,6 @@ def _tile_lines() -> dict[str, str]:
     }
 
 
-def _highest_priority_fault(active_faults: list[dict]) -> dict | None:
-    """The fault the pill should name: highest severity first, ties broken
-    by active_faults()'s own order (product faults before machine faults —
-    ice_edge/sale/vmc.py:422). `min()` is stable, so among equal-ranked
-    entries it returns the first one encountered, which is exactly that
-    tie-break (Task 5 brief, "Fault severity ranking")."""
-    if not active_faults:
-        return None
-    return min(
-        active_faults,
-        key=lambda f: _SEVERITY_RANK.get(f["severity"], len(_SEVERITY_RANK)),
-    )
-
-
 router = APIRouter()
 
 
@@ -141,17 +111,11 @@ async def pill(request: Request):
     missing VMC exactly as /status does: a neutral grey pill, never a
     500 (executor resolution 3)."""
     snap = await context.health_snapshot()
-    if snap["vmc_missing"]:
-        pill_state, pill_text = "neutral", "—"
-    elif snap["is_healthy"]:
-        pill_state, pill_text = "ok", "OK"
-    else:
-        top = _highest_priority_fault(snap["active_faults"])
-        pill_state, pill_text = "fault", (top["code"] if top else "ISSUE")
+    state, text = pill_state(snap)
     return templates.TemplateResponse(
         request,
         "partials/pill.html",
-        context.template_context(request, pill_state=pill_state, pill_text=pill_text),
+        context.template_context(request, pill_state=state, pill_text=text),
     )
 
 
@@ -170,16 +134,9 @@ async def status_fragment(request: Request):
     dependencies=[Depends(web_auth.require(Permission.view_status))],
 )
 async def kpi_fragment(request: Request):
-    if context.event_recorder:
-        summary = await asyncio.to_thread(context.event_recorder.get_summary, 24)
-        average = await asyncio.to_thread(
-            context.event_recorder.get_historical_average, 24
-        )
-    else:
-        summary = None
-        average = None
+    kpi = await build_kpi_summary(context.event_recorder)
     return templates.TemplateResponse(
         request,
         "partials/kpi_fragment.html",
-        context.template_context(request, summary=summary, average=average),
+        context.template_context(request, summary=kpi.summary, average=kpi.average),
     )

@@ -6,11 +6,9 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
-from ice_contracts.board.vending_machine import (
-    PAYMENT_BLOCKING_FAULTS,
-    FaultCode,
-)
+from ice_contracts.board.vending_machine import FaultCode
 from ice_edge.access.access import Permission
+from ice_edge.views.health import fault_gate
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
 from ice_ui.levels import (
@@ -20,10 +18,6 @@ from ice_ui.templating import templates
 
 router = APIRouter()
 
-
-# active_faults() reports fault codes as strings (FaultCode.value); compare
-# against the contract's enum set once, here, rather than in fault_gate.
-_PAYMENT_BLOCKING_CODES = {code.value for code in PAYMENT_BLOCKING_FAULTS}
 
 # A fault's `key` is either a FaultCode.value (machine-scope, always drawn
 # from this fixed charset) or a product SKU (free text). Only characters in
@@ -53,33 +47,6 @@ def dom_safe_key(key: str) -> str:
     if _SELECTOR_SAFE_KEY_RE.fullmatch(key):
         return key
     return "h" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
-
-
-def fault_gate(fault: dict) -> str:
-    """Classify one active fault into "safety" / "fulfillment" / "alert".
-
-    Executor resolution 1 (task-6-brief.md): the spec asks for "the gate
-    class per fault", but no such mapping exists in the codebase --
-    ice_edge/faults/availability.py's Gate enum classifies permissive *rows*, not
-    faults, and ice_contracts/board/vending_machine.py's FAULT_TABLE carries
-    severity/scope but no gate. This derives it once, here, and nowhere
-    else (never inline in a template, never re-derived):
-
-      * code in PAYMENT_BLOCKING_FAULTS -> "safety" (those six codes are
-        exactly the ones that can inhibit payment -- see
-        ice_edge/faults/availability.py's Gate docstring)
-      * else scope == "product" -> "fulfillment" (blocks only that sale)
-      * else -> "alert" (blocks nothing)
-
-    A reversible part-2 stand-in: the spec never defined a fault-to-gate
-    mapping: a future task may add a real one (e.g. a `gate` field on
-    FaultSpec) and delete this function.
-    """
-    if fault["code"] in _PAYMENT_BLOCKING_CODES:
-        return "safety"
-    if fault["scope"] == "product":
-        return "fulfillment"
-    return "alert"
 
 
 def _faults_with_age() -> list[dict]:
