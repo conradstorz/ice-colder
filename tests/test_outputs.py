@@ -1,5 +1,5 @@
 # tests/test_outputs.py
-"""Unit tests for `controller.outputs.StatusOutputs`, in isolation from
+"""Unit tests for `ice_edge.sale.outputs.StatusOutputs`, in isolation from
 `VMC` -- no FSM. Every sink (MQTT, health, availability, session store,
 display) is a small fake that records what it was given; `tasks` is the
 real `tests.fakes.FakeTaskRunner`, attached to the running event loop so

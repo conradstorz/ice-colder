@@ -1,4 +1,4 @@
-"""Unit tests for web_interface/auth.py: cookies, client keying, require()."""
+"""Unit tests for ice_edge/web/auth.py: cookies, client keying, require()."""
 
 import pytest
 from fastapi import Depends, FastAPI

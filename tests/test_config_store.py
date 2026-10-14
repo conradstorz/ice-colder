@@ -1,4 +1,4 @@
-"""Tests for services/config_store.py — secret-preserving, atomic saves."""
+"""Tests for ice_edge/config/config_store.py — secret-preserving, atomic saves."""
 
 import json
 

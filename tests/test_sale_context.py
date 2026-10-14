@@ -1,5 +1,5 @@
 # tests/test_sale_context.py
-"""Unit tests for `controller.sale_context.SaleContext` (VMC public surface
+"""Unit tests for `ice_edge.sale.sale_context.SaleContext` (VMC public surface
 design, section 3, Task 4) -- construction defaults, `with_`'s
 replace-not-mutate semantics, and frozen-ness. VMC-level behavior (how each
 FSM callback replaces the in-flight sale) is covered in

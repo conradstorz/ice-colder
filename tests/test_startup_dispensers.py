@@ -1,5 +1,5 @@
 # tests/test_startup_dispensers.py
-"""Tests for `services/startup_dispensers.py` -- startup wiring for
+"""Tests for `ice_edge/app/startup_dispensers.py` -- startup wiring for
 `dispensers.toml`. `load_dispenser_profiles(config)` loads and logs a
 `DispenserProfiles` report without an event loop; a directory at the
 dispensers path mirrors `load_config`'s own directory-exit behaviour.
@@ -12,7 +12,7 @@ import ast
 import pytest
 import yaml
 
-import services.startup_dispensers as startup_dispensers
+import ice_edge.app.startup_dispensers as startup_dispensers
 from ice_common.config_model import ConfigModel
 from ice_edge.vend.dispensers import DispenserProfiles
 from tests.paths import REPO_ROOT
@@ -92,7 +92,7 @@ def test_wire_dispenser_profiles_reaches_machine_gate_and_routes():
     """One load reaches both consumers with the SAME object, through a real
     `Machine` (nothing on the Machine side is mocked): the public
     `machine.gate.profiles` read and the routes-side `context` handle."""
-    from controller.machine import Machine
+    from ice_edge.app.machine import Machine
     from ice_edge.web import context, routes
 
     cfg = ConfigModel()
@@ -112,7 +112,11 @@ def test_main_calls_wire_dispenser_profiles_after_set_health_monitor():
     partially): `main()` must pass the very name it assigned from
     `load_dispenser_profiles(...)` to `wire_dispenser_profiles(machine, ...)`,
     and that call must come after `machine.set_health_monitor(...)`."""
-    tree = ast.parse((REPO_ROOT / "main.py").read_text(encoding="utf-8"))
+    tree = ast.parse(
+        (
+            REPO_ROOT / "packages" / "edge" / "src" / "ice_edge" / "__main__.py"
+        ).read_text(encoding="utf-8")
+    )
     main_fn = next(
         n
         for n in ast.walk(tree)

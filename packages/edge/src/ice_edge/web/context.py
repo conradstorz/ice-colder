@@ -46,7 +46,7 @@ health_monitor = None
 
 
 def set_machine_instance(machine):
-    """Wire the composition root (controller/machine.py's `Machine`,
+    """Wire the composition root (ice_edge/app/machine.py's `Machine`,
     vmc-reduction plan, Task 6). Also sets `vmc_instance = machine.vmc` so
     the many existing `context.vmc_instance` reads across the routes
     package keep working unchanged."""
@@ -257,7 +257,7 @@ def _can_email_owner(owner) -> bool:
 # Spec §1.3 asks the Inventory tile for "products below their low-stock
 # line" without ever defining what that line is: there is no `low_stock`
 # field on Product, none in ConfigModel, and no threshold in
-# services/inventory_manager.py, and adding one would be a config.json
+# ice_edge/monitoring/inventory_manager.py, and adding one would be a config.json
 # schema change beyond what this part's spec lists (a hard stop — see
 # Task 5 executor resolution 1). This module-level constant is part 2's
 # reversible placeholder instead: a tracked product is "low" when its

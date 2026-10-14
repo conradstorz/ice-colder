@@ -22,7 +22,7 @@ from ice_ui.tiles import build_tiles
 # Rank highest-first for the pill's "which fault do I name" choice (Task 5
 # brief, "Fault severity ranking"): critical > lockout > vend_failed >
 # product_unavailable > warning > info. Values are the string values of
-# contracts.vending_machine.Severity; kept as plain strings here (rather
+# ice_contracts.board.vending_machine.Severity; kept as plain strings here (rather
 # than importing the enum) since active_faults() already hands back
 # `severity` as that enum's `.value`.
 _SEVERITY_RANK = {
@@ -99,7 +99,7 @@ def _tile_lines() -> dict[str, str]:
 def _highest_priority_fault(active_faults: list[dict]) -> dict | None:
     """The fault the pill should name: highest severity first, ties broken
     by active_faults()'s own order (product faults before machine faults —
-    controller/vmc.py:422). `min()` is stable, so among equal-ranked
+    ice_edge/sale/vmc.py:422). `min()` is stable, so among equal-ranked
     entries it returns the first one encountered, which is exactly that
     tie-break (Task 5 brief, "Fault severity ranking")."""
     if not active_faults:

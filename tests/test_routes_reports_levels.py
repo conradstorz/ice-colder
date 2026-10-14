@@ -207,7 +207,7 @@ class TestAllDayComboCapped:
     each -- per real DAY since the epoch, tens of thousands of rows and
     well over 100,000 queries on a long-lived machine, blocking the report
     worker and hammering the SD-card database for one request. Measured
-    directly against services.reports.by_period (bypassing the route, for
+    directly against ice_edge.reporting.reports.by_period (bypassing the route, for
     speed) before writing this fix: resolve_window("all") + bucket="day"
     produced 20,725 rows in 2.13s against an EMPTY database (2026-09-27);
     bucket="month" over the same window produced 682 rows in 0.07s -- both

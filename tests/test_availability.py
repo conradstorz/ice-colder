@@ -309,8 +309,8 @@ def test_ice_maker_loss_blocks_only_ice_and_never_payment():
 
 # --- SVC-102: maintenance lease is a safety row -----------------------------
 #
-# SVC-102 carries no bespoke code in services/availability.py. Membership in
-# contracts.vending_machine.PAYMENT_BLOCKING_FAULTS is the whole gate: raising
+# SVC-102 carries no bespoke code in ice_edge/faults/availability.py. Membership in
+# ice_contracts.board.vending_machine.PAYMENT_BLOCKING_FAULTS is the whole gate: raising
 # it fails the existing "no_critical_fault" permissive, which is already
 # wired with gate=Gate.safety, exactly like the six pre-existing codes. These
 # tests exercise that specific code end to end rather than relying only on
@@ -454,9 +454,9 @@ def test_pre_existing_six_blocking_codes_are_unchanged_by_svc_102():
 # whole-branch-fix-2: a maintenance test sale's own SVC-102 fault must not
 # block it, but every other payment-blocking code must still stop it exactly
 # like a real sale, and payment_enabled must never be affected either way.
-# Production path reached: services/availability.py's Availability.
+# Production path reached: ice_edge/faults/availability.py's Availability.
 # test_sale_sellable / product_sellable(ignore_faults=...) / sale_available
-# (ignore_faults=...) -- the same methods controller/vmc.py's
+# (ignore_faults=...) -- the same methods ice_edge/sale/vmc.py's
 # VMC.select_product calls when the in-flight sale's `sale.is_test` is True.
 
 

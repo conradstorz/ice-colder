@@ -34,8 +34,8 @@ from ice_common.logging_setup import setup_logging
 
 logger.info("existing-handler")
 assert sink.getvalue() == "existing-handler\\n"
-assert "controller.vmc" not in sys.modules
-assert "web_interface.server" not in sys.modules
+assert "ice_edge.sale.vmc" not in sys.modules
+assert "ice_edge.web.server" not in sys.modules
 """,
     )
     assert result.stdout == ""

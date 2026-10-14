@@ -402,7 +402,7 @@ class TestStatusEndpoint:
 # (Task 15): both classes covered the old /inventory/{new,add,edit,update,
 # copy}/* catalog and placement routes in routes/legacy.py, deleted by this
 # task. Every behavior they proved is covered by the new /products/* routes
-# (web_interface/routes/products/, Task 7) in tests/test_routes_products.py:
+# (ice_edge/web/routes/products/, Task 7) in tests/test_routes_products.py:
 # TestCatalogWrites, TestPlacementWrites, TestCreateCopyDelete,
 # TestProductsListGating, TestCatalogGating and TestPlacementGating.
 
@@ -1062,7 +1062,7 @@ class TestMaintenanceHero:
     """Task 3 (system-tests design §2.2a): while SVC-102 is active AND a
     MaintenanceHold exists, the /status hero swaps its title for "Out of
     service — maintenance by <name>" in place of the raw fault wording --
-    reaching web_interface.context.health_snapshot()'s `maintenance` field
+    reaching ice_edge.web.context.health_snapshot()'s `maintenance` field
     and partials/status_fragment.html's own override block.
     """
 
@@ -1470,7 +1470,7 @@ class TestLogin:
     def test_unknown_user_ids_share_one_bounded_backoff_subject(self, public):
         """A client minting a fresh random user_id on every request must not
         get a fresh, unthrottled back-off counter each time (Copilot review,
-        web_interface/routes.py:263): every id that names nobody collapses
+        ice_edge/web/routes.py:263): every id that names nobody collapses
         onto one bounded subject, so a failure against one fake id trips the
         delay for the very next fake id too.
         """
@@ -1975,7 +1975,7 @@ class TestSetupWizard:
     def test_setup_code_cannot_enroll_a_non_owner(self, anon, fresh_store):
         """The setup code is recovery for the owner's own lost step-1
         response (spec §3.1 step 1), not a general enrollment code —
-        Copilot review, web_interface/routes.py:474. Before Done, a tech
+        Copilot review, ice_edge/web/routes.py:474. Before Done, a tech
         must not be able to enroll their own device with the
         machine-visible setup code."""
         _cfg, store, _display = fresh_store
@@ -2085,7 +2085,7 @@ class TestSetupWizard:
     def test_codes_page_is_marked_no_store(self, anon, fresh_store):
         """A cacheable GET carrying plaintext recovery codes could be
         retained/replayed by a browser or proxy after Done (Copilot review,
-        web_interface/routes.py:647)."""
+        ice_edge/web/routes.py:647)."""
         _cfg, store, _display = fresh_store
         self._create_owner(anon, store)
         resp = anon.get("/setup/codes")
@@ -2327,7 +2327,7 @@ class TestUserManagement:
         owner — the owner holds manage_ownership, so it let the owner
         disable/delete their own account, which leaves setup_finalized true
         with no owner and no recovery short of deleting data/access.json
-        (Copilot review, web_interface/routes.py:1277)."""
+        (Copilot review, ice_edge/web/routes.py:1277)."""
         _cfg, _vmc, _inv, store = wired
         owner_client = login_as(Role.owner)
         owner = store.owner()
@@ -2417,7 +2417,7 @@ class TestUserManagement:
         """set_user_pin only drops device *trust*; resolve_session() doesn't
         re-check it, so without ending sessions here the old session would
         keep working until it idles out — contradicting the spec's "the
-        next login re-enrolls" (Copilot review, web_interface/routes.py:1493).
+        next login re-enrolls" (Copilot review, ice_edge/web/routes.py:1493).
         """
         _cfg, _vmc, _inv, store = wired
         owner = login_as(Role.owner)
@@ -2863,7 +2863,7 @@ class TestEmergencyCodeRegeneration:
 
     def test_regenerate_response_is_marked_no_store(self, client, wired):
         """The regenerated pool is plaintext, shown once — Copilot review,
-        web_interface/routes.py:647, extended to every response that renders
+        ice_edge/web/routes.py:647, extended to every response that renders
         plaintext codes, not just GET /setup/codes."""
         _cfg, _vmc, _inv, store = wired
         store.generate_emergency_codes()
@@ -3395,7 +3395,7 @@ class TestPillEndpoint:
 _TEMPLATES_DIR = TEMPLATES_DIR
 _REPO_ROOT = REPO_ROOT
 
-# The fifteen routes deleted from web_interface/routes/legacy.py (task-15
+# The fifteen routes deleted from ice_edge/web/routes/legacy.py (task-15
 # brief, executor resolution 1), each with the real method it answered —
 # posting GET to a POST-only route (or vice versa) would 405, not 404, and
 # that would prove nothing about the route being gone.

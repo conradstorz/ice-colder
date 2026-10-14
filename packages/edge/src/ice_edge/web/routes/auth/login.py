@@ -12,7 +12,7 @@ from ice_edge.web import context
 from ice_ui.templating import templates
 
 # Backoff subject for a user_id form value that names nobody. Copilot review
-# (web_interface/routes.py:263): the raw form value was used as the backoff
+# (ice_edge/web/routes.py:263): the raw form value was used as the backoff
 # subject before checking the user existed, so a client could mint a fresh
 # random id on every request and get a fresh, never-throttled counter while
 # still forcing verify_user_pin's dummy-hash scrypt cost — unbounded memory
@@ -333,7 +333,7 @@ async def enroll_device(request: Request, code: str = Form(...)):
         ):
             # Until Done, the setup code and the transfer code also enroll
             # the owner — and only the owner (Copilot review,
-            # web_interface/routes.py:474): spec §3.1 step 1 and §3.3
+            # ice_edge/web/routes.py:474): spec §3.1 step 1 and §3.3
             # step 4 both describe this as recovery for the owner whose
             # own step-1 response was lost, not a general-purpose code
             # any logged-in user can redeem. Without the owner check, a

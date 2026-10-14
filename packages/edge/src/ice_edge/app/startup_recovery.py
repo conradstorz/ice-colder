@@ -3,7 +3,7 @@
 from loguru import logger
 
 from ice_contracts.board.vending_machine import FaultCode
-from controller.machine import Machine
+from ice_edge.app.machine import Machine
 from ice_edge.ledger.event_recorder import EventRecorder
 from ice_edge.ledger import event_recorder as event_recorder_module
 

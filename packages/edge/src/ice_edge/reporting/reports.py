@@ -1,4 +1,4 @@
-# services/reports.py
+# ice_edge/reporting/reports.py
 """Sales report queries: windows, bucketing, per-product/method breakdowns,
 cash collections, and CSV rendering for the dashboard's Reports level.
 
@@ -7,7 +7,7 @@ See ``docs/superpowers/specs/2026-09-25-sales-reports-design.md`` §1.3 and
 
 Design notes / deliberate deviations (recorded here per the task brief):
 
-- ``is_cash`` lives in ``services/event_recorder.py`` (it is needed there by
+- ``is_cash`` lives in ``ice_edge/ledger/event_recorder.py`` (it is needed there by
   ``_insert_cash_collection`` before this module existed) and is re-exported
   from here under the same name so callers have one obvious home for report
   code. This module imports from ``event_recorder``, never the reverse, so
@@ -210,7 +210,7 @@ def by_period(
     `sales` side (revenue, vends) to that one SKU, and filters
     `failed_vends` to `vend_failed` events whose `metadata.sku` matches it
     (that key is populated by `VMC.on_vend_failed`, see
-    `controller/vmc.py`). `refunds` and `uptime_pct` are always `None` when
+    `ice_edge/sale/vmc.py`). `refunds` and `uptime_pct` are always `None` when
     `sku` is given, regardless of retention: a `refund` event's metadata
     carries only `{request_id, reason}` -- no SKU, because a refund pays
     back a customer's whole escrow, not one product -- and uptime is a

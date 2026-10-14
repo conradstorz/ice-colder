@@ -1,4 +1,4 @@
-"""Tests for the Products levels (web_interface/routes/products/):
+"""Tests for the Products levels (ice_edge/web/routes/products/):
 /products, /products/new, /products/{sku}, /products/{sku}/catalog,
 /products/{sku}/placement, /products/{sku}/copy, /products/{sku}/delete.
 
@@ -315,7 +315,7 @@ class TestPlacementWrites:
     def test_placement_post_with_slot_already_in_use_changes_nothing(
         self, client, wired
     ):
-        """Part 1's a2b8829 (Copilot review, web_interface/routes.py:1202):
+        """Part 1's a2b8829 (Copilot review, ice_edge/web/routes.py:1202):
         a rejected slot change must leave every field of this form — slot,
         count, and tracking — exactly as it was, not just the slot."""
         cfg, _vmc, inv, _store = wired

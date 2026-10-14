@@ -4,16 +4,16 @@ import time
 
 import pytest
 
-from services import startup_config
-from services.startup_config import warn_if_setup_mode
+from ice_edge.app import startup_config
+from ice_edge.app.startup_config import warn_if_setup_mode
 from ice_common.config_model import ConfigModel, WebConfig
 from ice_contracts.board.vending_machine import FaultCode
-from controller.machine import Machine
+from ice_edge.app.machine import Machine
 from ice_edge.access.access import AccessStore, Role
 from ice_edge.config.config_store import save_config
 from ice_edge.ledger.event_recorder import EventRecorder
 from ice_edge.ledger import event_recorder as event_recorder_module
-from services.startup_recovery import reconcile_sales_journal_faults
+from ice_edge.app.startup_recovery import reconcile_sales_journal_faults
 
 
 def test_env_overrides_mqtt_credentials_and_trusted_proxies(monkeypatch):
@@ -253,7 +253,7 @@ def test_reconcile_corrupt_db_raises_data_102_and_vmc_stays_usable(
     assert "DATA-102" in {f["code"] for f in vmc.active_faults()}
     # The VMC keeps working: its fault registry and FSM are untouched by the
     # data-layer problem (DATA-102 is deliberately absent from
-    # PAYMENT_BLOCKING_FAULTS -- see contracts/vending_machine.py).
+    # PAYMENT_BLOCKING_FAULTS -- see ice_contracts/board/vending_machine.py).
     assert vmc.state == "idle"
     assert vmc.clear_fault("DATA-102") is True
     assert "DATA-102" not in {f["code"] for f in vmc.active_faults()}

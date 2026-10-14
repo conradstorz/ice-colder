@@ -1,9 +1,9 @@
-# services/dispensers.py
+# ice_edge/vend/dispensers.py
 """Validation pipeline for the hand-edited `dispensers.toml` (plan:
 dispenser profiles, Task 3). Each `[slot.N]` table describes one physical
 dispense slot's mechanism; `validate_document` runs the whole §5.2
 pipeline -- TOML syntax, top-level shape, per-slot schema
-(`services/dispenser_schema.py`), then cross-checks against the product
+(`ice_contracts/board/dispenser_schema.py`), then cross-checks against the product
 catalog, channel roles, the dispense time budget and (optionally) the
 vending board's declared capabilities -- and returns a `ValidationReport`
 that never lets one bad slot sink the others.
@@ -71,7 +71,7 @@ _DISCRIMINATOR_TAGS = frozenset(
     }
 )
 
-# `_check_accessories_name_known_steps` (services/dispenser_schema.py, C6)
+# `_check_accessories_name_known_steps` (ice_contracts/board/dispenser_schema.py, C6)
 # raises its "must be consecutive" ValueError from a *profile*-level
 # `@model_validator(mode="after")`, so Pydantic's own `loc` for it is
 # always `()` (the whole model, not any nested field) -- there is no
@@ -892,7 +892,7 @@ def _check_declared_direction(
 def dispensers_path() -> Path:
     """Resolve the active `dispensers.toml` path from
     `ICE_COLDER_DISPENSERS` (read at call time, mirroring
-    `services.startup_config._config_path`), defaulting to `dispensers.toml` in
+    `ice_edge.app.startup_config._config_path`), defaulting to `dispensers.toml` in
     the current working directory."""
 
     return Path(os.environ.get("ICE_COLDER_DISPENSERS", "dispensers.toml"))
@@ -1055,7 +1055,7 @@ class DispenserProfiles:
                 os.fsync(f.fileno())
             # Copy (not rename) the live file to .bak *before* the single
             # replace below, so the live path is never briefly absent --
-            # matching services/config_store.py's save_config.
+            # matching ice_edge/config/config_store.py's save_config.
             if self.path.exists():
                 shutil.copy2(self.path, bak)
             os.replace(tmp, self.path)
@@ -1110,7 +1110,7 @@ def main(argv: list[str] | None = None) -> int:
     import sys
 
     parser = argparse.ArgumentParser(
-        prog="python -m services.dispensers",
+        prog="python -m ice_edge.vend.dispensers",
         description="Validate dispensers.toml against the product catalog",
     )
     parser.add_argument(

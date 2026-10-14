@@ -1,11 +1,11 @@
 # tests/test_dispense_cycle.py
-"""Unit tests for `controller.dispense_cycle.DispenseCycle`, in isolation
+"""Unit tests for `ice_edge.vend.dispense_cycle.DispenseCycle`, in isolation
 from `VMC` -- no FSM. `tasks` is the real `tests.fakes.FakeTaskRunner`,
 attached to the running event loop so `fire_and_forget` actually runs
 (awaited with a bare `asyncio.sleep(0)`) and `schedule()` is fired by
 label rather than by poking a private task handle.
 
-`FakeGate` stands in for `controller.dispenser_gate.DispenserProfileGate`
+`FakeGate` stands in for `ice_edge.vend.dispenser_gate.DispenserProfileGate`
 (a fixed `SlotProfile` or `None`), built from a real, loaded
 `DispenserProfiles` via `tests.dispenser_fixtures.profiles_for` so the
 `SlotProfile`/`DispenseCommand` the cycle builds is the real thing, not a

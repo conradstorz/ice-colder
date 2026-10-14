@@ -1,6 +1,6 @@
 """`/screen` and `/screen/body` — the read-only customer-facing screen.
 
-Moved verbatim from the old web_interface/routes.py (Task 1 executor
+Moved verbatim from the old ice_edge/web/routes.py (Task 1 executor
 resolution 2); no behavior change, no template touched.
 """
 

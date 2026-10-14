@@ -1,4 +1,4 @@
-"""Unit tests for controller/mqtt_inbound.py's TelemetryRouter.
+"""Unit tests for ice_edge/hal/mqtt_inbound.py's TelemetryRouter.
 
 These exercise the router in isolation -- no VMC instance -- with small
 fake health-monitor/availability objects that record calls, matching the

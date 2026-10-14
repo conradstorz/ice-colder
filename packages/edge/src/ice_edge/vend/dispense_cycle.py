@@ -1,9 +1,9 @@
-# controller/dispense_cycle.py
+# ice_edge/vend/dispense_cycle.py
 """The per-sale dispense conversation, as a standalone class.
 
-Extracted from ``controller.vmc.VMC`` as the seventh piece carved off the
-VMC god object, following the same pattern as ``controller/outputs.py``'s
-``StatusOutputs``, ``controller/fault_service.py``'s ``FaultService``, and
+Extracted from ``ice_edge.sale.vmc.VMC`` as the seventh piece carved off the
+VMC god object, following the same pattern as ``ice_edge/sale/outputs.py``'s
+``StatusOutputs``, ``ice_edge/faults/fault_service.py``'s ``FaultService``, and
 the other collaborators described in ``CLAUDE.md``'s "FSM Core" section.
 ``DispenseCycle`` owns exactly one sale's dispatch: minting the request id
 before any hardware report can race it, persisting the dispensing
@@ -58,8 +58,8 @@ if TYPE_CHECKING:
     from ice_edge.sale.outputs import StatusOutputs
     from ice_edge.sale.sale_context import SaleContext
 
-# Bound logger for the vending log -- mirrors controller/vmc.py's own
-# `vend_log` / controller/machine.py's `_txn_log`: loguru's bind() only
+# Bound logger for the vending log -- mirrors ice_edge/sale/vmc.py's own
+# `vend_log` / ice_edge/app/machine.py's `_txn_log`: loguru's bind() only
 # attaches the `vending` extra field, and sinks are resolved at log time,
 # so binding here at import is safe even though setup_logging() runs later
 # in main().
@@ -145,7 +145,7 @@ class DispenseCycle:
         dispensing snapshot, arm the no-report timeout, and hand the
         actual dispatch to a fire-and-forget task.
 
-        `on_dispense_product`'s own body (controller/vmc.py) minus the
+        `on_dispense_product`'s own body (ice_edge/sale/vmc.py) minus the
         defensive comment about FSM transition timing -- that concern
         belongs to the caller now (Task 8 calls this only once the
         `dispense_product` transition has actually committed).
@@ -205,7 +205,7 @@ class DispenseCycle:
         to move, then send the dispense command through the command
         dispatcher and await only its accepted ack -- never completion.
 
-        Today's `_persist_then_dispense` body (controller/vmc.py), with
+        Today's `_persist_then_dispense` body (ice_edge/sale/vmc.py), with
         `on_failed(self, ...)` in place of `_fail_dispense_async`.
         """
         try:
@@ -269,7 +269,7 @@ class DispenseCycle:
     @logger.catch()
     def _timed_out(self) -> None:
         """No terminal dispenser report arrived within the configured
-        timeout. Today's `_dispense_timed_out` body (controller/vmc.py),
+        timeout. Today's `_dispense_timed_out` body (ice_edge/sale/vmc.py),
         minus the FSM-state check and the fault-raising/vend-failing
         side effects, which belong to the caller now (Task 8) -- it is
         the caller's job to tell a timeout that outlived its own sale
@@ -301,7 +301,7 @@ class DispenseCycle:
 
         Today's slot-mismatch, request_id-mismatch, `door_open`, and
         `fault_for_outcome` logic from `on_dispenser_event`
-        (controller/vmc.py).
+        (ice_edge/sale/vmc.py).
         """
         state = data.get("state", "")
         slot = data.get("slot", "?")
@@ -378,7 +378,7 @@ class DispenseCycle:
         other than the one this cycle is dispensing must not finalize or
         fault this sale. No mismatch is reported when the event carries
         no slot (nothing to compare against). Today's
-        `_dispenser_event_slot_mismatch` body (controller/vmc.py), minus
+        `_dispenser_event_slot_mismatch` body (ice_edge/sale/vmc.py), minus
         the "no active selection" case -- a `DispenseCycle` always has a
         sale.
         """
@@ -393,7 +393,7 @@ class DispenseCycle:
         (`asyncio.to_thread`) so the loop is never blocked on the disk
         write. Both are skipped entirely when no recorder is attached.
 
-        Today's `_record_sale` body (controller/vmc.py), minus the
+        Today's `_record_sale` body (ice_edge/sale/vmc.py), minus the
         `pending_sale_shares` clearing -- `self.sale` is immutable and
         owned by the caller, which decides what happens to `shares` once
         this returns. Always returns normally: a storage problem must
@@ -467,7 +467,7 @@ class DispenseCycle:
 
     def cancel(self) -> None:
         """Cancel the dispense-timeout timer, if still live. Today's
-        `_cancel_dispense_timeout` body (controller/vmc.py)."""
+        `_cancel_dispense_timeout` body (ice_edge/sale/vmc.py)."""
         if self._timeout_task is not None and not self._timeout_task.done():
             self._timeout_task.cancel()
         self._timeout_task = None

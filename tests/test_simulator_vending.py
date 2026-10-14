@@ -595,7 +595,7 @@ class TestVendingCapabilities:
         """Review finding I1 (whole-branch review): `water_flow` must stay
         declared in gallons -- the only vending telemetry `sensors/
         water_flow` actually carries, and the only one the VMC subscribes
-        to (`controller/vmc.py`) -- while the per-fill flow-meter pulse
+        to (`ice_edge/sale/vmc.py`) -- while the per-fill flow-meter pulse
         count the water-fill mechanism simulates lives on its own
         `fill_pulses` channel. A regression that moves pulses back onto
         `water_flow` (as commit 69c5fe7 briefly did) would make a

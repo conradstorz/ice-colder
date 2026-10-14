@@ -1,4 +1,4 @@
-"""Tests for the Inventory restock level (web_interface/routes/inventory.py):
+"""Tests for the Inventory restock level (ice_edge/web/routes/inventory.py):
 GET /inventory and POST /inventory/{sku}/adjust.
 
 Owns the coverage GET /inventory lost from tests/test_web_routes.py when

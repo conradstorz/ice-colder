@@ -1,4 +1,4 @@
-"""Unit tests for controller.escrow_ledger.EscrowLedger -- ledger only, no VMC."""
+"""Unit tests for ice_edge.ledger.escrow_ledger.EscrowLedger -- ledger only, no VMC."""
 
 from ice_edge.ledger.escrow_ledger import EscrowLedger
 from ice_edge.ledger.session_store import Credit

@@ -981,7 +981,7 @@ class VendingMachineSimulator(ESP32Simulator):
         distinct from `water_flow`, which is cumulative gallons published
         by `_publish_sensors` on `sensors/water_flow` (the Home Assistant
         `water_flow_total` entity) and is the only vending telemetry the
-        VMC actually subscribes to today (`controller/vmc.py`). Nothing
+        VMC actually subscribes to today (`ice_edge/sale/vmc.py`). Nothing
         subscribes to `telemetry/vending/+` yet (review finding I1), so a
         subsystem window shows "never reported" for this channel until
         that per-slot telemetry work (spec §11) happens.
@@ -1163,10 +1163,10 @@ class VendingMachineSimulator(ESP32Simulator):
         runs the real sequence in the background (`_spawn_background`);
         its own completion is the terminal `hardware/dispenser` report
         `execute_profile` already publishes, carrying this command's
-        `request_id` so `services/command_dispatcher.py` can correlate
+        `request_id` so `ice_edge/hal/command_dispatcher.py` can correlate
         it -- there is no second ack for this command.
 
-        `COMMAND_PARAM_VALIDATORS["dispense"]` (contracts/common.py)
+        `COMMAND_PARAM_VALIDATORS["dispense"]` (ice_contracts/board/common.py)
         already validates `cmd.params` as a `DispenseCommand` before a
         `SubsystemCommand` built through the real wire path
         (`command_loop`) can even exist, so a `ValidationError` here only

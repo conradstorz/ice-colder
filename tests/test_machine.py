@@ -1,4 +1,4 @@
-"""Unit tests for controller/machine.py's `Machine` composition root (vmc-
+"""Unit tests for ice_edge/app/machine.py's `Machine` composition root (vmc-
 reduction plan, Task 5).
 
 These exercise `Machine` directly -- no routes, no real MQTT/health/
@@ -14,7 +14,7 @@ import asyncio
 
 from ice_common.config_model import ConfigModel, PhysicalDetails, Product
 from ice_contracts.board.vending_machine import FaultCode
-from controller.machine import Machine
+from ice_edge.app.machine import Machine
 from ice_edge.hal.mqtt_inbound import SUBSCRIPTIONS
 from ice_edge.sale.vmc import VMC
 from ice_edge.ledger.session_store import SessionSnapshot
@@ -237,7 +237,7 @@ class TestCancelPendingTasks:
 
     async def test_cancels_dispense_timeout(self, tmp_path):
         """Task 8: the dispense-timeout timer is now armed inside
-        `DispenseCycle.start` (controller/dispense_cycle.py), which only
+        `DispenseCycle.start` (ice_edge/vend/dispense_cycle.py), which only
         runs once `on_dispense_product` finds a loop attached AND a valid
         dispenser profile for the product -- unlike the pre-Task-8 VMC,
         where `process_payment` armed this timer itself, unconditionally,

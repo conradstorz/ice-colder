@@ -1,7 +1,7 @@
 # tests/test_fault_registry.py
-"""Unit tests for `controller.fault_registry.FaultRegistry`, in isolation
+"""Unit tests for `ice_edge.faults.fault_registry.FaultRegistry`, in isolation
 from `VMC` -- no FSM, no MQTT, no health monitor. Picks concrete codes
-from `contracts.vending_machine.FAULT_TABLE` and asserts against the
+from `ice_contracts.board.vending_machine.FAULT_TABLE` and asserts against the
 specs rather than hard-coding descriptions, so a future wording change to
 a description doesn't make this file lie.
 

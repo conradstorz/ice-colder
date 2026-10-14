@@ -32,7 +32,7 @@ import pytest
 import uvicorn
 
 from ice_common.config_model import ConfigModel
-from controller.machine import Machine
+from ice_edge.app.machine import Machine
 from ice_edge.access.access import AccessStore, Role
 from ice_edge.monitoring.inventory_manager import InventoryManager
 from ice_edge.web import routes

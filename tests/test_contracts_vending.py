@@ -248,7 +248,7 @@ def test_every_payment_blocking_fault_is_machine_scope_and_critical_except_svc_1
             # Deliberately not `critical`: SVC-102 is an operator-held
             # maintenance lease, not a hardware failure, and clears itself
             # when the lease is released — the opposite of `critical`'s
-            # "never auto-clears". See contracts/vending_machine.py.
+            # "never auto-clears". See ice_contracts/board/vending_machine.py.
             assert spec.severity is Severity.warning, code
         else:
             assert spec.severity is Severity.critical, code

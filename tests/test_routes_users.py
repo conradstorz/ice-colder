@@ -1,4 +1,4 @@
-"""Tests for the Users levels (web_interface/routes/users/): /users,
+"""Tests for the Users levels (ice_edge/web/routes/users/): /users,
 /users/{id}, /users/new, /devices, /users/codes, /users/ownership and their
 POSTs.
 

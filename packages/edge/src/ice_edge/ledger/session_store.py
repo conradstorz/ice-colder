@@ -39,7 +39,7 @@ SAVED_AT_FUTURE_SKEW_SECONDS = 5.0
 class Credit:
     """One deposit still sitting in escrow, in the raw method it arrived as.
 
-    Defined here rather than in controller/vmc.py because SessionSnapshot
+    Defined here rather than in ice_edge/sale/vmc.py because SessionSnapshot
     (below) has to serialise a list of these, and vmc.py already imports this
     module — the reverse import would be a cycle.
     """

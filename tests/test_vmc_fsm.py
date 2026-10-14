@@ -1,11 +1,11 @@
-"""Tests for controller/vmc.py — VMC finite state machine transitions."""
+"""Tests for ice_edge/sale/vmc.py — VMC finite state machine transitions."""
 
 from unittest.mock import MagicMock
 
 import pytest
 
 from ice_common.config_model import ConfigModel
-from controller.machine import Machine
+from ice_edge.app.machine import Machine
 from ice_edge.sale.vmc import InvalidTransition
 
 

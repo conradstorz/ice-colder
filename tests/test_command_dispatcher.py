@@ -1,5 +1,5 @@
 # tests/test_command_dispatcher.py
-"""Tests for services/command_dispatcher.py.
+"""Tests for ice_edge/hal/command_dispatcher.py.
 
 Every test drives the dispatcher exactly the way production code does: it
 calls ``send()``, and any ack is delivered by invoking the handler the
@@ -51,7 +51,7 @@ class FakeClock:
 
 
 class FakeMQTTClient:
-    """Mimics services/mqtt_client.py's MQTTClient just enough: register()
+    """Mimics ice_common/mqtt_client.py's MQTTClient just enough: register()
     records the handler, publish() records the call (dropped silently when
     not connected, like the real client), and deliver_ack() simulates an
     inbound message by calling the registered handler directly — the same
@@ -88,7 +88,7 @@ class FakeMQTTClient:
 
 def _dispense_params(slot: int) -> dict:
     """A valid `DispenseCommand.model_dump(mode="json")`-shaped params dict
-    for *slot* -- `contracts.common._validate_dispense_params` (plan:
+    for *slot* -- `ice_contracts.board.common._validate_dispense_params` (plan:
     dispenser profiles, Task 1) now requires the full slot/mechanism/
     profile shape for any `dispense` SubsystemCommand, so a bare
     `{"slot": N}` no longer validates."""
@@ -371,7 +371,7 @@ async def test_immediate_command_matches_send_exactly():
 async def test_dispense_completion_awaits_terminal_hardware_dispenser_report():
     """dispense's completion signal is NOT a second ack -- it is the
     terminal `hardware/dispenser` report, correlated by request_id
-    (contracts/common.py COMPLETION_TIMEOUTS, the completion-table
+    (ice_contracts/board/common.py COMPLETION_TIMEOUTS, the completion-table
     amendment). The accept ack alone must not resolve
     send_and_await_completion."""
     mqtt = FakeMQTTClient()

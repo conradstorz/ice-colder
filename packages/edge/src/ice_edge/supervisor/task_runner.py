@@ -1,12 +1,12 @@
 """Asyncio task plumbing: fire-and-forget tasks, delayed callbacks, and the
 persistent-task set drained (not cancelled) at shutdown.
 
-Extracted from ``controller.vmc.VMC`` following the same pattern as
-``controller/fault_registry.py``'s ``FaultRegistry``,
-``controller/escrow_ledger.py``'s ``EscrowLedger``,
-``controller/refund_protocol.py``'s ``RefundProtocol``,
-``controller/session_recovery.py``'s ``SessionRecovery`` and
-``controller/maintenance_lease.py``'s ``MaintenanceLease`` (see
+Extracted from ``ice_edge.sale.vmc.VMC`` following the same pattern as
+``ice_edge/faults/fault_registry.py``'s ``FaultRegistry``,
+``ice_edge/ledger/escrow_ledger.py``'s ``EscrowLedger``,
+``ice_edge/payment/refund_protocol.py``'s ``RefundProtocol``,
+``ice_edge/ledger/session_recovery.py``'s ``SessionRecovery`` and
+``ice_edge/sale/maintenance_lease.py``'s ``MaintenanceLease`` (see
 ``CLAUDE.md``'s "FSM Core" section). ``TaskRunner`` is pure event-loop
 bookkeeping with no domain knowledge whatsoever: it does not know about the
 FSM, MQTT, refunds, or sessions, only about ``asyncio.Task`` objects.
@@ -14,7 +14,7 @@ FSM, MQTT, refunds, or sessions, only about ``asyncio.Task`` objects.
 The VMC keeps a single ``TaskRunner`` instance (``self._tasks``) and exposes
 ``_schedule`` as a thin delegate so existing call sites and tests are
 unaffected. ``drain_persistence`` and ``cancel_pending_tasks`` live on
-``controller/machine.py``'s ``Machine`` instead: ``Machine.
+``ice_edge/app/machine.py``'s ``Machine`` instead: ``Machine.
 cancel_pending_tasks`` calls this class's ``cancel_pending()`` to clear the
 generic lists, then the VMC's own ``cancel_timers()`` (the dispense cycle's
 timer and the session timeout) and ``RefundProtocol.cancel_all()``.

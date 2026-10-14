@@ -1,5 +1,5 @@
 # tests/test_session_recovery.py
-"""Unit tests for `controller.session_recovery.SessionRecovery`, in
+"""Unit tests for `ice_edge.ledger.session_recovery.SessionRecovery`, in
 isolation from `VMC` -- no FSM, no MQTT, no health monitor. Uses a real
 `SessionStore` pointed at a `tmp_path` file and hand-built
 `SessionSnapshot`s.

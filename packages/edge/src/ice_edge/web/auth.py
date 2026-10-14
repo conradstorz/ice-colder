@@ -1,6 +1,6 @@
 """Session auth for the dashboard: cookies, session resolution, permissions.
 
-The state lives in services/access.py's AccessStore; this module is the FastAPI
+The state lives in ice_edge/access/access.py's AccessStore; this module is the FastAPI
 side of it. HTTP Basic auth is gone (Task 11) — a Backoff instance here
 enforces per-subject rate-limiting with exponential back-off and per-user
 budget for untrusted clients, and main.py hands it the trusted proxies.

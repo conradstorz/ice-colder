@@ -113,7 +113,7 @@ class Product(BaseModel):
         0, description="Starting inventory count (seeds inventory.json on first run)"
     )
     # Default (rather than required) so `Product()` keeps working where it's
-    # constructed with no args (web_interface/routes.py new/copy forms, tests).
+    # constructed with no args (ice_edge/web/routes.py new/copy forms, tests).
     # Uniqueness across a machine's catalog is enforced by
     # PhysicalDetails._check_unique_slots below, not here.
     slot: int = Field(
@@ -329,7 +329,7 @@ class MQTTConfig(BaseModel):
 
 class WebConfig(BaseModel):
     """Web dashboard binding. Authentication lives in ``data/access.json``
-    (named users, roles and PINs via ``services/access.py``), not here —
+    (named users, roles and PINs via ``ice_edge/access/access.py``), not here —
     this model carries no credential."""
 
     host: str = Field("0.0.0.0", description="Interface to bind the dashboard to")

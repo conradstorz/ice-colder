@@ -1,4 +1,4 @@
-"""Unit tests for `controller.task_runner.TaskRunner`, in isolation from
+"""Unit tests for `ice_edge.supervisor.task_runner.TaskRunner`, in isolation from
 `VMC` -- a real event loop (`asyncio_mode = "auto"` runs `async def` tests
 directly), no FSM, no MQTT, no domain knowledge at all.
 """

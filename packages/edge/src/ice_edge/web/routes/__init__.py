@@ -1,6 +1,6 @@
 """Route package for the web dashboard: one module per area.
 
-Splits what used to be a single web_interface/routes.py into an
+Splits what used to be a single ice_edge/web/routes.py into an
 area-per-module package. Each area module exposes a module-level `router`
 (`public` for auth), and `attach_routes(app)` includes them in order. Shared
 module state, its setters, and template_context now live in

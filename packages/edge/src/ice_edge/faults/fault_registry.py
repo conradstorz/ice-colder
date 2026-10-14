@@ -1,10 +1,10 @@
 """Fault registry: product-scope lockouts and machine-scope fault bookkeeping.
 
-Extracted from ``controller.vmc.VMC`` as the first step in breaking up the
+Extracted from ``ice_edge.sale.vmc.VMC`` as the first step in breaking up the
 VMC god object (~3100 lines). ``FaultRegistry`` owns the two dicts
 (``lockouts`` by sku, ``machine_faults`` by code), the severity -> alert
 level map, and the pure bookkeeping of raising/clearing/snapshotting a
-fault against ``contracts.vending_machine.FAULT_TABLE``. It knows nothing
+fault against ``ice_contracts.board.vending_machine.FAULT_TABLE``. It knows nothing
 about MQTT, the health monitor, the event recorder, the session store, or
 the maintenance lease -- those side effects and VMC-specific guards stay
 on ``VMC`` itself. See ``CLAUDE.md``'s "FSM Core" section.

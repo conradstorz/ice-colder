@@ -12,7 +12,7 @@ import pytest
 from pydantic import ValidationError
 
 from ice_common.config_model import ConfigModel, MQTTConfig, Product
-from controller.machine import Machine
+from ice_edge.app.machine import Machine
 from ice_edge.vend.dispensers import validate_document
 from ice_common.mqtt_client import (
     MQTTClient,

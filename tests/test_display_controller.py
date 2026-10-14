@@ -1,5 +1,5 @@
 # tests/test_display_controller.py
-"""Tests for services/display_controller.py — display mode management."""
+"""Tests for ice_edge/customer_ui/display_controller.py — display mode management."""
 
 import asyncio
 from unittest.mock import MagicMock, AsyncMock
@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, AsyncMock
 import pytest
 
 from ice_common.config_model import ConfigModel
-from controller.machine import Machine
+from ice_edge.app.machine import Machine
 from ice_edge.customer_ui.display_controller import DisplayController
 from ice_contracts.board.mqtt_messages import DisplayMode
 from tests.fakes import settle
@@ -206,7 +206,7 @@ class TestDisplayControllerSetupCode:
 
 
 class _FakeMQTTClient:
-    """Mimics MQTTClient.publish's "not connected" drop (services/mqtt_client.py
+    """Mimics MQTTClient.publish's "not connected" drop (ice_common/mqtt_client.py
     lines 104-106) without a real broker: a publish attempted while
     `connected` is False is silently swallowed, exactly like the real class."""
 

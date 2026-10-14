@@ -1,4 +1,4 @@
-# controller/sale_context.py
+# ice_edge/sale/sale_context.py
 """The in-flight sale (VMC public surface design, section 3).
 
 ``SaleContext`` is the single, frozen value object carrying everything about

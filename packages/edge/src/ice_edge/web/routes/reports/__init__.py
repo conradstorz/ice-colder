@@ -5,7 +5,7 @@ and the email action (Task 10) -- see docs/superpowers/specs/
 Design notes / deliberate deviations, recorded here per the task brief:
 
 - `/reports/product/{sku}` shows this SKU's sales **by period** (Task 10
-  follow-up, Finding 1): one row per bucket via `services.reports.by_period`
+  follow-up, Finding 1): one row per bucket via `ice_edge.reporting.reports.by_period`
   with its `sku=` filter, the same day/week/month bucketing and range/bucket
   tabs as `/reports/period`, plus a total row. The event-derived columns
   `refunds` and `uptime_pct` are always `None` (rendered `—`) on this page,
@@ -15,7 +15,7 @@ Design notes / deliberate deviations, recorded here per the task brief:
   misattribute a machine-wide figure to one product. `failed_vends` IS
   attributable per SKU (`vend_failed`'s metadata carries one, see
   `VMC.on_vend_failed`) and so is filtered and shown. See
-  `services/reports.py::by_period`'s docstring for the full reasoning.
+  `ice_edge/reporting/reports.py::by_period`'s docstring for the full reasoning.
   The catalog lookup (`_find_product`) still runs, and 404s, before any
   query -- a real SKU with zero sales in the window still renders 200 with
   an empty/zero table, never a 404 -- and the breadcrumb still uses the
@@ -23,7 +23,7 @@ Design notes / deliberate deviations, recorded here per the task brief:
   not carry one).
 - `GET /reports/collections` accepts `?range=` (the brief's Interfaces
   section lists it for all four level routes uniformly) but does not feed
-  it into `services.reports.collections`, which takes no window argument
+  it into `ice_edge.reporting.reports.collections`, which takes no window argument
   and is defined by design §3's own table as "last 50 collections newest
   first" with no range selector of its own. The query param is accepted
   (never a 422) and threaded through to the email form for interface

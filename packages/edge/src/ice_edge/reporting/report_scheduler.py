@@ -1,4 +1,4 @@
-# services/report_scheduler.py
+# ice_edge/reporting/report_scheduler.py
 """Scheduled sales-summary email.
 
 See ``docs/superpowers/specs/2026-09-25-sales-reports-design.md`` §4.1 (the
@@ -19,7 +19,7 @@ never a stale, previously computed interval.
 
 ``tz`` is optional and last on both ``run`` and ``compute_next_due``, and
 defaults to ``None`` on both -- production (``main.py``) passes neither
-argument and gets ``None`` all the way down to ``services.reports``'s
+argument and gets ``None`` all the way down to ``ice_edge.reporting.reports``'s
 ``to_local``/``_floor_to_bucket``/``_next_bucket``/``_bucket_key``, whose
 ``tz=None`` path means "resolve each epoch's offset through the OS, fresh,
 for that specific instant" (see ``to_local``'s own docstring) -- which is
@@ -114,7 +114,7 @@ the key.
 
 Every read of the events database goes through :func:`asyncio.to_thread`
 (``summary()`` and the ``report_sent`` lookup below), matching
-``services/reports.py``'s own convention of reading ``recorder.db_path`` (the
+``ice_edge/reporting/reports.py``'s own convention of reading ``recorder.db_path`` (the
 public read for the recorder's database file) at call time rather than
 caching it, since corrupt-database recovery can reassign the underlying path
 mid-process.
@@ -144,11 +144,11 @@ from typing import Awaitable, Callable, Optional
 from loguru import logger
 
 # `_floor_to_bucket`, `_next_bucket`, `_bucket_key` and
-# `_MAX_BUCKET_KEY_RETRIES` are underscore-private in services/reports.py
+# `_MAX_BUCKET_KEY_RETRIES` are underscore-private in ice_edge/reporting/reports.py
 # (`to_local` itself is public), but importing them here is a deliberate,
-# directed reuse -- not an accident -- for the same reason services/reports.py
+# directed reuse -- not an accident -- for the same reason ice_edge/reporting/reports.py
 # itself reads `recorder.db_path` across modules (see that module's docstring):
-# `services/reports.py` already contains the ONE correct, tested
+# `ice_edge/reporting/reports.py` already contains the ONE correct, tested
 # implementation of "re-derive true local midnight from an epoch instant,
 # DST-correct in both directions, advancing one real day at a time" (backing
 # `by_period`'s own bucket-boundary math -- see its module docstring and
@@ -210,7 +210,7 @@ def _advance_one_local_day(current: datetime, tz) -> datetime:
     true local midnight), re-derived from its own epoch instant rather than
     trusted-across-the-gap ``timedelta`` arithmetic.
 
-    This is a straight copy of ``services.reports.by_period``'s own
+    This is a straight copy of ``ice_edge.reporting.reports.by_period``'s own
     single-step advance-and-retry: compute the naive next-day candidate,
     convert its epoch back through ``to_local`` (which re-resolves the
     offset fresh for that specific instant), floor it, and -- since a
@@ -268,7 +268,7 @@ def _shift_local_day(reference: datetime, days_before: int, tz) -> datetime:
     Plain ``timedelta`` subtraction on an aware datetime keeps its existing
     tzinfo/offset attached to the shifted result without ever asking "is
     this still the right offset for the EARLIER date?" -- the exact failure
-    class ``services/reports.py``'s module docstring describes, and that
+    class ``ice_edge/reporting/reports.py``'s module docstring describes, and that
     this module's Finding 2 (see the module docstring) reproduced: a fixed
     offset carried across a DST boundary merges or splits a day by the
     transition's delta. Simply reusing ``to_local``/``_floor_to_bucket``
@@ -454,7 +454,7 @@ def compute_next_due(
     and the period it covers, or ``None`` when ``schedule == "off"``.
 
     ``tz`` -- optional and last, defaulting to ``None`` -- is the tzinfo
-    handed to ``services.reports``'s ``to_local``/``_floor_to_bucket`` for
+    handed to ``ice_edge.reporting.reports``'s ``to_local``/``_floor_to_bucket`` for
     every BACKWARD-walking boundary this function derives (see
     :func:`_shift_local_day` below). It is deliberately NOT derived from
     ``now.tzinfo``: ``now.tzinfo`` may be a frozen, date-invariant fixed
@@ -473,7 +473,7 @@ def compute_next_due(
 
     ``now`` is expected to already be in the local timezone the schedule's
     ``hour``/``weekday`` are meant against (mirroring how
-    ``services/reports.py`` treats an already-localized datetime). ``today``
+    ``ice_edge/reporting/reports.py`` treats an already-localized datetime). ``today``
     (same calendar day as ``now``) is re-derived via :func:`_true_local_today`
     rather than a plain floor of ``now``: the *calendar date* needs no DST
     care (a single reading of ``now`` cannot itself straddle a transition),
@@ -487,7 +487,7 @@ def compute_next_due(
     -- ``occurrence_day`` for a ``weekly`` schedule (up to 6 days back) and
     ``period_start`` for both schedules (1 or 7 days back) -- goes through
     :func:`_shift_local_day`, which re-derives that day's true local
-    midnight via ``services.reports``'s DST-correct
+    midnight via ``ice_edge.reporting.reports``'s DST-correct
     ``to_local``/``_floor_to_bucket`` rather than naive ``timedelta``
     subtraction, so a spring-forward or
     fall-back transition between the two dates cannot merge or split the
@@ -601,7 +601,7 @@ def period_already_sent(recorder, period_key: str) -> bool:
     it, not a replacement for it.
 
     Reads ``recorder.db_path`` (the public read for the recorder's database
-    file) at call time, never cached: see ``services/reports.py``'s module
+    file) at call time, never cached: see ``ice_edge/reporting/reports.py``'s module
     docstring for why (corrupt-database recovery can reassign the underlying
     path mid-process).
     """

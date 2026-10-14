@@ -1,4 +1,4 @@
-"""Size ratchet for controller/vmc.py (vmc-diet design §3.6).
+"""Size ratchet for ice_edge/sale/vmc.py (vmc-diet design §3.6).
 
 Counts, with ast + tokenize, the VMC class's code lines (non-blank,
 non-comment, non-docstring), the file's total lines, and the largest

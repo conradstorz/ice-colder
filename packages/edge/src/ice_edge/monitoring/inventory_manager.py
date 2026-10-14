@@ -1,4 +1,4 @@
-# services/inventory_manager.py
+# ice_edge/monitoring/inventory_manager.py
 """
 Persistent inventory tracking backed by inventory.json.
 

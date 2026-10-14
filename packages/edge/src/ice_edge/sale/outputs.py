@@ -2,11 +2,11 @@
 customer display, and the dashboard's UI-refresh/message/QR callbacks --
 the FSM's only outbound channel.
 
-Extracted from ``controller.vmc.VMC`` as the first piece carved off in the
+Extracted from ``ice_edge.sale.vmc.VMC`` as the first piece carved off in the
 vmc-reduction plan
 (docs/superpowers/specs/2026-10-10-vmc-sale-fsm-core-design.md), following
 the same pattern as
-``controller/fault_registry.py``'s ``FaultRegistry`` and the other
+``ice_edge/faults/fault_registry.py``'s ``FaultRegistry`` and the other
 collaborators described in ``CLAUDE.md``'s "FSM Core" section.
 ``StatusOutputs`` knows nothing about the FSM, escrow, or sales -- every
 sink (MQTT client, health monitor, availability, session store, display

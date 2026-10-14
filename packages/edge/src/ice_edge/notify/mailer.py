@@ -1,6 +1,6 @@
 """One place that sends email, so nothing in the app blocks on SMTP.
 
-Extracted from services/notifier.py, which now calls it. OTP delivery and the
+Extracted from ice_edge/notify/notifier.py, which now calls it. OTP delivery and the
 machine report use it too. A send never raises: the caller gets False and the
 UI offers the offline path instead (spec §6).
 """

@@ -1,8 +1,8 @@
 """Telemetry-only MQTT inbound handlers: the fifth piece carved off the VMC
-god object, following the same pattern as ``controller/fault_registry.py``'s
-``FaultRegistry``, ``controller/escrow_ledger.py``'s ``EscrowLedger``,
-``controller/refund_protocol.py``'s ``RefundProtocol`` and
-``controller/session_recovery.py``'s ``SessionRecovery`` (see ``CLAUDE.md``'s
+god object, following the same pattern as ``ice_edge/faults/fault_registry.py``'s
+``FaultRegistry``, ``ice_edge/ledger/escrow_ledger.py``'s ``EscrowLedger``,
+``ice_edge/payment/refund_protocol.py``'s ``RefundProtocol`` and
+``ice_edge/ledger/session_recovery.py``'s ``SessionRecovery`` (see ``CLAUDE.md``'s
 "FSM Core" section).
 
 ``TelemetryRouter`` holds every inbound MQTT handler that only reads/
@@ -216,7 +216,7 @@ class TelemetryRouter:
 #: `on_dispenser_event`, `on_refund_ack`) and `"telemetry"` for the other
 #: nine, whose `method_name` is the `TelemetryRouter`'s own `handle_*` name
 #: rather than the VMC forward that used to wrap it (vmc-reduction plan,
-#: Task 5). `Machine.set_mqtt_client` (controller/machine.py) is the sole
+#: Task 5). `Machine.set_mqtt_client` (ice_edge/app/machine.py) is the sole
 #: loop over this table, resolving each triple against the VMC or its
 #: `TelemetryRouter` depending on `owner`.
 SUBSCRIPTIONS: tuple[tuple[str, str, str], ...] = (

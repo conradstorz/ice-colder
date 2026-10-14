@@ -1,4 +1,4 @@
-"""Tests for the Settings levels (web_interface/routes/settings/):
+"""Tests for the Settings levels (ice_edge/web/routes/settings/):
 /settings, /settings/machine, /settings/contacts, /settings/payments,
 /settings/comms (+ /settings/comms/test), /settings/mqtt, /settings/web.
 
@@ -23,7 +23,7 @@ from ice_edge.web.routes.settings import comms as settings_comms
 
 SECRET_MASK = settings_routes.SECRET_MASK
 
-# The default secret *values* baked into config.config_model — none of
+# The default secret *values* baked into ice_common.config_model — none of
 # these must ever appear as a rendered *value* in a Payments or Comms page
 # (brief resolution 4 / the task's "grep for real default secret values"
 # check). Read straight out of a freshly constructed ConfigModel rather
@@ -32,7 +32,7 @@ SECRET_MASK = settings_routes.SECRET_MASK
 # check vacuous). "paypal_client_id"/"paypal_client_secret" are excluded
 # from this plain substring list on purpose: those two default secret
 # *values* happen to be spelled identically to their own field's HTML
-# id/name attribute (config.config_model's dummy PayPalConfig defaults),
+# id/name attribute (ice_common.config_model's dummy PayPalConfig defaults),
 # so a bare substring search would flag the harmless
 # id="paypal_client_secret" markup as a false positive. They are checked
 # separately below as a rendered `value="..."` instead, which only the

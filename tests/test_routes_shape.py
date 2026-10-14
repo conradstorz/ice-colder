@@ -1,4 +1,4 @@
-"""Shape guard for the route modules under web_interface/routes/.
+"""Shape guard for the route modules under ice_edge/web/routes/.
 
 The rule: every route module exposes a module-level `router`, no route
 handler is nested inside another function (a nested function counts only if

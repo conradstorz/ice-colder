@@ -1,4 +1,4 @@
-# services/display_controller.py
+# ice_edge/customer_ui/display_controller.py
 """
 Customer-facing display controller.
 

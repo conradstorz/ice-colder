@@ -1,4 +1,4 @@
-# services/config_store.py
+# ice_edge/config/config_store.py
 """
 Persists product catalog changes (add/update) back to config.json.
 

@@ -1,7 +1,7 @@
 """`TestSaleRunner`: runs one simulated sale through the real FSM without
 ever recording it as a production sale (system-tests design §2.3).
 
-Extracted from ``controller.vmc.VMC`` (Task 10 of the vmc-reduction plan,
+Extracted from ``ice_edge.sale.vmc.VMC`` (Task 10 of the vmc-reduction plan,
 following Task 9's observer hooks and test-sale seams) as the tenth piece
 carved off the VMC god object. ``run_test_sale`` moved out verbatim: it
 reads the VMC only through its public surface --
@@ -248,7 +248,7 @@ class TestSaleRunner:
                     # the existing `events` table via the same generic
                     # `record()` every other event type uses (`dispense`,
                     # `vend_failed`, `refund`, ...); nothing in
-                    # services/event_recorder.py needed changing for
+                    # ice_edge/ledger/event_recorder.py needed changing for
                     # that.
                     #
                     # Task 13b extended this metadata dict (originally

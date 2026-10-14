@@ -1,4 +1,4 @@
-"""Tests for services/access.py."""
+"""Tests for ice_edge/access/access.py."""
 
 import ast
 import hashlib
@@ -233,7 +233,7 @@ class TestHashing:
         """Guard against silently shipping a weaker production work factor.
 
         A session-scoped autouse fixture in conftest.py patches
-        services.access.SCRYPT_N to a tiny value for the whole test run, so
+        ice_edge.access.access.SCRYPT_N to a tiny value for the whole test run, so
         reading the live module attribute here would just confirm the
         fixture ran and prove nothing about production. Instead this parses
         the SCRYPT_N assignment straight out of the shipped source file on

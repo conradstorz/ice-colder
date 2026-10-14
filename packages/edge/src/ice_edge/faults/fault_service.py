@@ -1,9 +1,9 @@
 """Fault side effects: alerts, event-recorder rows, health/availability
 pushes, and the liveness/MQTT-connection fault mappings -- the third piece
 carved off the VMC god object, following the same pattern as
-``controller/fault_registry.py``'s ``FaultRegistry`` (the pure bookkeeping
-this class wraps), ``controller/outputs.py``'s ``StatusOutputs`` (the
-FSM's outbound channel, Task 1), and ``controller/task_runner.py``'s
+``ice_edge/faults/fault_registry.py``'s ``FaultRegistry`` (the pure bookkeeping
+this class wraps), ``ice_edge/sale/outputs.py``'s ``StatusOutputs`` (the
+FSM's outbound channel, Task 1), and ``ice_edge/supervisor/task_runner.py``'s
 ``TaskRunner`` (see ``CLAUDE.md``'s "FSM Core" section).
 
 ``FaultService`` owns ``raise_fault``/``clear_fault`` (today's
@@ -59,7 +59,7 @@ if TYPE_CHECKING:
     from ice_edge.sale.outputs import StatusOutputs
 
 # Heartbeat loss per subsystem -> registry fault (ROADMAP §5, §8). Moved
-# here from controller/vmc.py verbatim.
+# here from ice_edge/sale/vmc.py verbatim.
 _LIVENESS_FAULTS = {
     "vending": FaultCode.COM_101,
     "ice_maker": FaultCode.COM_102,
@@ -238,7 +238,7 @@ class FaultService:
 
     def clear_ice101_lockouts(self) -> None:
         """Clear every ICE-101 lockout -- invoked by the telemetry router
-        (controller/mqtt_inbound.py's `TelemetryRouter.handle_hardware_io`)
+        (ice_edge/hal/mqtt_inbound.py's `TelemetryRouter.handle_hardware_io`)
         when the vending ESP32 reports `bin_half_full` going true."""
         for sku, code in list(self._registry.lockouts.items()):
             if code is FaultCode.ICE_101:

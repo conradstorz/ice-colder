@@ -1,4 +1,4 @@
-# services/event_recorder.py
+# ice_edge/ledger/event_recorder.py
 """
 Event recorder — persists machine activity to SQLite for the dashboard.
 
@@ -99,10 +99,10 @@ def is_cash(method: str) -> bool:
     ``cash_coin`` and ``cash_bill``). Everything else (``card``, ``nfc``,
     ``test``, ...) is not cash.
 
-    Defined here rather than in ``services/reports.py`` (which this task
+    Defined here rather than in ``ice_edge/reporting/reports.py`` (which this task
     does not create) because both this module's ``expected_cash``
     computation and the future reports module need the same classification.
-    A later task adds ``services/reports.py`` and re-exports ``is_cash``
+    A later task adds ``ice_edge/reporting/reports.py`` and re-exports ``is_cash``
     from here as the public home for report code; ``reports`` will import
     from ``event_recorder``, never the reverse, so there is no cycle.
     """
@@ -135,7 +135,7 @@ def _atomic_write_text(path: Path, content: str) -> None:
     JOURNAL_PATH, since the lines it rewrites there can be the only
     remaining copy of a sale (see that method's docstring) -- matches the
     shape of ``_append_line`` above (flush + fsync) and
-    ``services/config_store.py``'s ``save_config`` (temp file + os.replace).
+    ``ice_edge/config/config_store.py``'s ``save_config`` (temp file + os.replace).
     """
     tmp_path = path.with_name(f"{path.name}.tmp")
     with open(tmp_path, "w", encoding="utf-8") as f:
@@ -887,7 +887,7 @@ class EventRecorder:
         caller's own read.
         """
         # `id DESC` breaks a tied `ts` deterministically (see
-        # `services/reports.py`'s `collections()` docstring for the
+        # `ice_edge/reporting/reports.py`'s `collections()` docstring for the
         # identical hazard). Benign either way here: two rows can only tie
         # on `ts` if they share the same timestamp, so whichever is picked
         # as "previous" yields an identical `WHERE sales.ts > ?` cutoff --
@@ -1071,7 +1071,7 @@ class EventRecorder:
 
         Note: "dispense" events are NOT recorded from a direct
         ``hardware/dispenser`` subscription here — only the VMC (see
-        ``controller.vmc.VMC.on_dispenser_event``) knows whether a
+        ``ice_edge.sale.vmc.VMC.on_dispenser_event``) knows whether a
         completion was actually accepted for the active sale (correct slot,
         state == dispensing). Recording directly from the raw MQTT topic would
         overcount products_out on duplicate/late completions the VMC ignores.

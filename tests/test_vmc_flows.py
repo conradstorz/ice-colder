@@ -21,7 +21,7 @@ from ice_contracts.board.vending_machine import (
     PaymentRefundCommand,
     fault_for_outcome,
 )
-from controller.machine import Machine
+from ice_edge.app.machine import Machine
 from ice_edge.supervisor.task_runner import TaskRunner
 from ice_edge.sale.vmc import VMC
 from ice_edge.faults.availability import Availability
@@ -386,7 +386,7 @@ async def test_dispense_complete_records_sale_durably_before_fsm_returns_to_idle
 
 async def test_dispense_complete_sale_record_failure_raises_data_101_but_completes_vend():
     """record_sale already journals the row and re-raises on failure
-    (services/event_recorder.py) -- the VMC must not journal it a second
+    (ice_edge/ledger/event_recorder.py) -- the VMC must not journal it a second
     time, only catch the exception, raise the alert-class DATA-101, and let
     the vend finish regardless. A storage problem must never fail the vend
     or stop the machine."""
@@ -434,7 +434,7 @@ async def test_record_sale_totally_lost_preserves_pay104_recovery_not_data_101(
 ):
     """Third rung of the durability ladder: the sales insert can fail AND
     the journal fallback can also fail (a full or read-only data volume) --
-    services.event_recorder.SaleRecordingFailed signals exactly that. The
+    ice_edge.ledger.event_recorder.SaleRecordingFailed signals exactly that. The
     vend must still complete (a storage problem must never fail the vend),
     but the sale must not simply vanish: this must raise PAY-104 (not the
     ordinary DATA-101) and must NOT clear pending_sale_shares, so the
@@ -504,7 +504,7 @@ async def test_dispense_complete_records_price_from_shares_not_live_catalog_pric
     tmp_path,
 ):
     """`selected_product` is the *live* catalog ``Product`` object -- the
-    same one `services/config_store.update_product` mutates in place. If an
+    same one `ice_edge/config/config_store.update_product` mutates in place. If an
     operator edits the price while a sale is mid-dispense, `product.price`
     at record time reflects the *new* price, not what the customer actually
     paid. The stored row must reflect `pending_sale_shares` (the money
@@ -541,7 +541,7 @@ async def test_dispense_complete_records_price_from_shares_not_live_catalog_pric
     assert vmc.pending_sale_shares == {"cash_bill": 2.50}
 
     # Operator edits the catalog price mid-flight, in place -- exactly what
-    # services/config_store.update_product does to the same live object.
+    # ice_edge/config/config_store.update_product does to the same live object.
     vmc.selected_product.price = 9.99
 
     await vmc.on_dispenser_event(
@@ -3096,7 +3096,7 @@ class TestRunTestSale:
 
     async def test_dispatch_timeout_resolves_test_sale_settlement_with_pay102(self):
         """Reaches on_dispense_failed via DispenseCycle._run's
-        CommandTimeout path (controller/dispense_cycle.py), never the
+        CommandTimeout path (ice_edge/vend/dispense_cycle.py), never the
         hardware-report path the tests above drive. Before
         on_dispense_failed notified the sale-settled observer on every
         failure path, a dispatcher-level failure (e.g. a dead
@@ -3568,7 +3568,7 @@ class TestRunTestSaleRunContext:
 
 def _test_run_vmc_with_availability(products=None):
     """Like `_test_run_vmc`, but with a REAL, UNMODIFIED
-    `services.availability.Availability` wired in -- not a stub, and with
+    `ice_edge.faults.availability.Availability` wired in -- not a stub, and with
     no method overridden -- so `avail.payment_enabled`, `sale_available`/
     `product_sellable`/`test_sale_sellable`, and the `SVC-102`
     clear-on-release path are all genuine production code, exactly as
@@ -3617,7 +3617,7 @@ class TestTestSaleAvailabilityExemption:
     """whole-branch-fix-2: a maintenance test sale is not blocked by its
     own SVC-102 fault, while every OTHER payment-blocking fault -- and any
     CUSTOMER (non-test) sale -- is still blocked exactly as before. Every
-    test here wires a REAL, unmodified `services.availability.Availability`
+    test here wires a REAL, unmodified `ice_edge.faults.availability.Availability`
     via `_test_run_vmc_with_availability`, wired the way `main.py` wires
     it -- never a stub, never an overridden method.
     """
@@ -3747,12 +3747,12 @@ class TestTestSaleAvailabilityExemption:
 class TestConcurrentTestSaleGuard:
     """Whole-branch-review Critical defect: a second, overlapping
     `run_test_sale` call from the same session -- reachable via
-    `web_interface/routes/tests_level/lease.py`'s `_acquire_lease_or_refusal`,
+    `ice_edge/web/routes/tests_level/lease.py`'s `_acquire_lease_or_refusal`,
     which deliberately proceeds WITHOUT reacquiring the lease for a
     session that already holds it ("a second command run in the same
     maintenance visit") -- used to silently overwrite the single-instance
     waiter/path attributes `run_test_sale` kept on the VMC at the time
-    (`controller/vmc.py`; Task 9 later made them local to each call, kept
+    (`ice_edge/sale/vmc.py`; Task 9 later made them local to each call, kept
     alive only by the `_test_sale_in_progress` guard below). That left the
     FIRST call's `await waiter`
     suspended forever on a Future nothing would ever resolve again, while

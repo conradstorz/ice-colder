@@ -211,7 +211,7 @@ class TestRegisterHandlers:
     def test_hardware_dispenser_not_registered(self, recorder):
         """The recorder must NOT listen on hardware/dispenser directly — only
         the VMC knows whether a completion was accepted for the active sale
-        (see controller.vmc.VMC.on_dispenser_event). A direct subscription
+        (see ice_edge.sale.vmc.VMC.on_dispenser_event). A direct subscription
         here would overcount products_out on duplicates/late completions the
         VMC ignores."""
         h = self._get_handlers(recorder)

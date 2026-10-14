@@ -1,4 +1,4 @@
-# services/notifier.py
+# ice_edge/notify/notifier.py
 """
 Owner notification service.
 

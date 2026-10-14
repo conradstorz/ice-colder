@@ -1,11 +1,11 @@
 """Maintenance lease lifecycle: the hold, its idle timer, and the standby
 session-liveness sweep.
 
-Extracted from ``controller.vmc.VMC`` as the sixth and last piece carved off
-the VMC god object, following ``controller/fault_registry.py``'s
-``FaultRegistry``, ``controller/escrow_ledger.py``'s ``EscrowLedger``,
-``controller/refund_protocol.py``'s ``RefundProtocol`` and
-``controller/session_recovery.py``'s ``SessionRecovery`` (see ``CLAUDE.md``'s
+Extracted from ``ice_edge.sale.vmc.VMC`` as the sixth and last piece carved off
+the VMC god object, following ``ice_edge/faults/fault_registry.py``'s
+``FaultRegistry``, ``ice_edge/ledger/escrow_ledger.py``'s ``EscrowLedger``,
+``ice_edge/payment/refund_protocol.py``'s ``RefundProtocol`` and
+``ice_edge/ledger/session_recovery.py``'s ``SessionRecovery`` (see ``CLAUDE.md``'s
 "FSM Core" section). ``MaintenanceLease`` owns the lease itself
 (``MaintenanceHold``), its idle timer, the standby sweep, and the
 grant/release/takeover/run accounting.
@@ -51,7 +51,7 @@ class MaintenanceHold:
     Never persisted (§6): it lives only on the live ``MaintenanceLease``
     (in turn held by the live VMC instance), so a restart clears it,
     matching the FSM's own reset semantics. It is not part of
-    ``SessionSnapshot`` / ``services/session_store.py`` and must stay that
+    ``SessionSnapshot`` / ``ice_edge/ledger/session_store.py`` and must stay that
     way.
 
     ``runs_in_flight`` and ``release_requested`` are what keep a release

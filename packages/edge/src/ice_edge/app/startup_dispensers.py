@@ -5,7 +5,7 @@ import sys
 from loguru import logger
 
 from ice_common.config_model import ConfigModel
-from controller.machine import Machine
+from ice_edge.app.machine import Machine
 from ice_edge.vend.dispensers import (
     DispenserProfiles,
     Finding,
@@ -92,8 +92,8 @@ def wire_dispenser_profiles(machine: Machine, profiles: DispenserProfiles) -> No
     the same two calls `main()` makes, just moved into a function, and
     changes none of `main()`'s own behaviour.
 
-    `web_interface.routes` is imported at module scope here: it does not
-    import anything that reaches back into `services.startup_dispensers`
+    `ice_edge.web.routes` is imported at module scope here: it does not
+    import anything that reaches back into `ice_edge.app.startup_dispensers`
     (verified empirically -- importing this module standalone succeeds),
     so there is no cycle to work around.
     """

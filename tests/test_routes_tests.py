@@ -8,7 +8,7 @@ InventoryManager and AccessStore (owner "Ada"); `login_as`/`client` sign in
 as a given role. A test that wires a HealthMonitor, EventRecorder or
 CommandDispatcher no longer tears it back down itself -- the autouse
 `_isolated_route_context` fixture (tests/conftest.py, tests/route_context.py)
-snapshots and restores every web_interface.context global around each test.
+snapshots and restores every ice_edge.web.context global around each test.
 """
 
 import asyncio
@@ -89,7 +89,7 @@ def wire_event_recorder(tmp_path):
 
 
 class FakeAckDispatcher:
-    """A services.command_dispatcher.CommandDispatcher stand-in for POST
+    """A ice_edge.hal.command_dispatcher.CommandDispatcher stand-in for POST
     route tests (Task 13b): returns a fixed ack, or times out
     unconditionally, instead of touching MQTT. `_retries` mirrors the real
     dispatcher's attribute name -- `_run_command` reads it via
@@ -113,7 +113,7 @@ class FakeAckDispatcher:
         )
 
     async def send_and_await_completion(self, subsystem, command, params=None):
-        """`_run_command` (web_interface/routes/tests_level/commands.py) now calls
+        """`_run_command` (ice_edge/web/routes/tests_level/commands.py) now calls
         this instead of `send` (completion-table amendment, 2026-09-29).
         This fake's ack always defaults `phase="completed"` (see `send`
         above), so delegating to `send` reproduces exactly what the real
@@ -176,8 +176,8 @@ def wire_dispatcher():
 class TestPermissionGates:
     """All three GET routes gate on run_tests: 200 for owner/tech, 403 for
     secretary/loader (run_tests is held by exactly owner and tech --
-    services/access.py's ROLE_PERMISSIONS). Reaches
-    the `web_interface/routes/tests_level/` package's `Depends(web_auth.require(...))`
+    ice_edge/access/access.py's ROLE_PERMISSIONS). Reaches
+    the `ice_edge/web/routes/tests_level/` package's `Depends(web_auth.require(...))`
     on each of the three routes.
 
     Mutation proof (dropping the dependency from GET /tests/log): removed
@@ -204,9 +204,9 @@ class TestPermissionGates:
 
 class TestDiscoveryIntersection:
     """GET /tests/{subsystem} renders a Run button only for a command that
-    is both server-allowlisted (contracts.common.TESTABLE_COMMANDS) and
+    is both server-allowlisted (ice_contracts.board.common.TESTABLE_COMMANDS) and
     advertised by that subsystem's capabilities -- reaches
-    web_interface/routes/tests_level/commands.py's `testable_commands` and the
+    ice_edge/web/routes/tests_level/commands.py's `testable_commands` and the
     tests_subsystem.html template's automatic/actuator loops.
 
     Mutation proof: changed `testable_commands` to `return set(advertised
@@ -244,7 +244,7 @@ class TestDiscoveryIntersection:
 
     def test_intersection_helper_directly(self):
         """Unit-level check of the helper itself, independent of HTML --
-        reaches contracts.common.TESTABLE_COMMANDS directly."""
+        reaches ice_contracts.board.common.TESTABLE_COMMANDS directly."""
         result = compute_testable("mdb", ["ping", "refund", "coin_return_test"])
         assert result == {"ping", "coin_return_test"}
         assert "refund" not in result
@@ -299,7 +299,7 @@ class TestLeaseNotTaken:
     """Entering /tests, or any subsystem's detail page, must never call
     machine.lease.begin_maintenance -- it only ever reads the read-only
     `maintenance_hold` property. Reaches
-    web_interface/routes/tests_level/overview.py's `tests_level` handler.
+    ice_edge/web/routes/tests_level/overview.py's `tests_level` handler.
 
     Mutation proof: added `context.vmc_instance.begin_maintenance(
     "mutation-test", "mutation-session")` as the first line inside the
@@ -382,8 +382,8 @@ class TestLeaseHolderDisplay:
 class TestStandby:
     """GET /tests/standby/confirm and POST /tests/standby: the two-tap
     "Take out of service" control that grants a session-bound standby
-    lease via machine.lease.begin_standby (controller/maintenance_lease.py). Reaches
-    web_interface/routes/tests_level/lease.py's tests_standby_confirm and
+    lease via machine.lease.begin_standby (ice_edge/sale/maintenance_lease.py). Reaches
+    ice_edge/web/routes/tests_level/lease.py's tests_standby_confirm and
     tests_standby handlers, and the service-state card
     (partials/tests_hold_banner.html) both re-render.
     """
@@ -457,7 +457,7 @@ class TestStandby:
 
 
 class TestContractMatch:
-    """Reaches `contract_match` (web_interface/routes/tests_level/commands.py) --
+    """Reaches `contract_match` (ice_edge/web/routes/tests_level/commands.py) --
     the one place this program computes a contract-version match; no
     sibling exists to reuse (see that function's docstring).
 
@@ -503,9 +503,9 @@ class TestContractMatch:
 
 
 class TestLog:
-    """Reaches web_interface/routes/tests_level/log.py's `recent_test_runs`
+    """Reaches ice_edge/web/routes/tests_level/log.py's `recent_test_runs`
     (a direct sqlite3 read against EventRecorder._db_path, following
-    services/reports.py's own documented deviation) and tests_log.html.
+    ice_edge/reporting/reports.py's own documented deviation) and tests_log.html.
     """
 
     def test_no_verdict_renders_verdict_none(self, client, wire_event_recorder):
@@ -529,7 +529,7 @@ class TestLog:
     def test_survives_a_row_missing_subsystem_command_params(
         self, client, wire_event_recorder
     ):
-        """The simulated-sale shape controller/test_sale.py's
+        """The simulated-sale shape ice_edge/sale/test_sale.py's
         TestSaleRunner.run_test_sale writes today: {sku, outcome,
         fault_code, path}, no run_id, no subsystem/command/params at all.
 
@@ -538,7 +538,7 @@ class TestLog:
         `meta.get("params")`) instead of `row.update(meta)`. Ran the whole
         TestLog class: 2 failed, 3 passed --
           FAILED test_survives_a_row_missing_subsystem_command_params
-            KeyError: 'subsystem' (web_interface/routes/tests_level/log.py)
+            KeyError: 'subsystem' (ice_edge/web/routes/tests_level/log.py)
             -- a real 500 traceback from inside the request, not merely a
             wrong assertion.
           FAILED test_verdict_pass_and_fail_render
@@ -632,7 +632,7 @@ class TestLog:
     ):
         """Same guarantee for run_test_sale's row shape (sku/outcome/
         fault_code/path, no subsystem/command) -- user_name and status are
-        present in that metadata shape too (controller/vmc.py's
+        present in that metadata shape too (ice_edge/sale/vmc.py's
         run_test_sale)."""
         wire_event_recorder.record(
             "test_run",
@@ -708,9 +708,9 @@ class TestSkuWithSlash:
 
 
 class TestParamRangesMatchContract:
-    """web_interface/routes/tests_level/commands.py's WATER_VALVE_SECONDS_RANGE and
+    """ice_edge/web/routes/tests_level/commands.py's WATER_VALVE_SECONDS_RANGE and
     POWER_CYCLE_DWELL_RANGE are a second literal copy of
-    contracts/common.py's COMMAND_PARAM_VALIDATORS bounds (that module
+    ice_contracts/board/common.py's COMMAND_PARAM_VALIDATORS bounds (that module
     exposes validator functions, not reusable constants, and is out of
     this task's file list -- see the comment above them in tests_level/commands.py). This
     test is what keeps the two from silently drifting apart: it calls the
@@ -718,12 +718,12 @@ class TestParamRangesMatchContract:
 
     Mutation proof: changed WATER_VALVE_SECONDS_RANGE to (1, 11) in
     tests_level/commands.py (simulating this constant having drifted from
-    contracts/common.py's real bound, still 1-10). test_water_valve_
+    ice_contracts/board/common.py's real bound, still 1-10). test_water_valve_
     seconds_range then failed -- not at the `pytest.raises` boundary
     check, but one line earlier, at the plain `validator({"seconds":
     hi})` call (hi now 11), which is expected to succeed:
       ValueError: water_valve requires seconds in [1, 10]
-      (contracts/common.py:70, inside _validate_water_valve)
+      (ice_contracts/board/common.py:70, inside _validate_water_valve)
     i.e. the widget's own upper bound is no longer a value the real
     contract actually accepts. The other three tests in this class kept
     passing (test_power_cycle_dwell_range_and_default checks a different
@@ -915,7 +915,7 @@ class TestCommandRunAndSalePermissionGates:
 
 
 class TestPostRequiresHtmx:
-    """require_htmx (web_interface/context.py) is the CSRF guard shared by
+    """require_htmx (ice_edge/web/context.py) is the CSRF guard shared by
     every mutating route in this app (this module's own docstring). Every
     POST route of this level is exercised below.
 
@@ -1514,7 +1514,7 @@ class TestDispenseSendsProfile:
     """Task 4: `_parse_command_params`'s "dispense" branch now looks up
     `context.machine_instance.gate.profile_for(product_for_slot)` and
     sends the whole validated profile alongside slot/mechanism -- matching
-    what `contracts.common.COMMAND_PARAM_VALIDATORS["dispense"]` (a bare
+    what `ice_contracts.board.common.COMMAND_PARAM_VALIDATORS["dispense"]` (a bare
     `DispenseCommand(slot, mechanism, profile)`) now requires on the wire.
     A slot whose product has no valid profile (no profiles wired at all,
     or a `kind="other"` product no profile ever covers) is refused
@@ -1724,7 +1724,7 @@ class TestSimulatedSaleFlow:
 
 
 class _FakeDispatcherMQTT:
-    """Minimal services.mqtt_client.MQTTClient stand-in, shaped like
+    """Minimal ice_common.mqtt_client.MQTTClient stand-in, shaped like
     tests/test_command_dispatcher.py's own fake: register() records a
     handler by topic_suffix, publish() records the call, deliver_ack() and
     deliver_dispenser_report() simulate an inbound message on each of the
@@ -1760,7 +1760,7 @@ def _dispense_params(slot: int, sku: str, tmp_path) -> dict:
     profile) for driving `_run_command` DIRECTLY in the tests below,
     bypassing `_parse_command_params` entirely -- matching what Task 4
     made the route itself build. Needed because
-    `contracts.common.COMMAND_PARAM_VALIDATORS["dispense"]` (reached via
+    `ice_contracts.board.common.COMMAND_PARAM_VALIDATORS["dispense"]` (reached via
     the REAL `CommandDispatcher`'s `SubsystemCommand` construction here,
     unlike the FakeAckDispatcher used elsewhere in this file) now rejects
     a bare `{"slot": n}`."""

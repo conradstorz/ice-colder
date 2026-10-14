@@ -1,5 +1,5 @@
 # tests/test_refund_protocol.py
-"""Unit tests for `controller.refund_protocol.RefundProtocol`, in isolation
+"""Unit tests for `ice_edge.payment.refund_protocol.RefundProtocol`, in isolation
 from `VMC` -- no FSM, no MQTT, no event recorder. `publish` and `schedule`
 are fake callables that record what they were given; the schedule fake
 captures its callback so a test can fire a deadline by hand, and returns a

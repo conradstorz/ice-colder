@@ -54,7 +54,7 @@ def _create_default_config(path: str) -> ConfigModel:
     """First run: blank defaults, persisted, then continue.
 
     No credential is generated here — authentication lives entirely in
-    ``data/access.json`` (services/access.py), created separately and
+    ``data/access.json`` (ice_edge/access/access.py), created separately and
     walked through the setup wizard at /setup.
     """
     defaults = ConfigModel()

@@ -7,7 +7,7 @@ InventoryManager and AccessStore (owner "Ada", PIN 1379, setup finalized);
 `login_as`/`client` sign in as a given role. A test that wires a
 HealthMonitor or Availability no longer tears it back down itself -- the
 autouse `_isolated_route_context` fixture (tests/conftest.py,
-tests/route_context.py) snapshots and restores every web_interface.context
+tests/route_context.py) snapshots and restores every ice_edge.web.context
 global around each test.
 """
 

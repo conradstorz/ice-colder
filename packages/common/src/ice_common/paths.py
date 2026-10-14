@@ -17,8 +17,8 @@ DATA_DIR = Path("data")
 def fsync_dir(directory: Path) -> None:
     """Flush a directory entry after a rename (no-op on Windows).
 
-    Shared by every atomic-save path (``services/config_store.py``,
-    ``services/dispensers.py``) so a rename's directory-entry update is
+    Shared by every atomic-save path (``ice_edge/config/config_store.py``,
+    ``ice_edge/vend/dispensers.py``) so a rename's directory-entry update is
     durable on POSIX before the caller reports success.
     """
     if os.name != "posix":

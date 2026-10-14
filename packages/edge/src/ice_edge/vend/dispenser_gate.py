@@ -1,12 +1,12 @@
-# controller/dispenser_gate.py
-"""Dispenser-profile gating: extracted from ``controller.vmc.VMC`` as the
+# ice_edge/vend/dispenser_gate.py
+"""Dispenser-profile gating: extracted from ``ice_edge.sale.vmc.VMC`` as the
 eighth piece carved off the VMC god object, following the same pattern as
-``controller/fault_registry.py``'s ``FaultRegistry``,
-``controller/escrow_ledger.py``'s ``EscrowLedger``,
-``controller/refund_protocol.py``'s ``RefundProtocol``,
-``controller/session_recovery.py``'s ``SessionRecovery``,
-``controller/mqtt_inbound.py``'s ``TelemetryRouter``, and
-``controller/maintenance_lease.py``'s ``MaintenanceLease`` (see
+``ice_edge/faults/fault_registry.py``'s ``FaultRegistry``,
+``ice_edge/ledger/escrow_ledger.py``'s ``EscrowLedger``,
+``ice_edge/payment/refund_protocol.py``'s ``RefundProtocol``,
+``ice_edge/ledger/session_recovery.py``'s ``SessionRecovery``,
+``ice_edge/hal/mqtt_inbound.py``'s ``TelemetryRouter``, and
+``ice_edge/sale/maintenance_lease.py``'s ``MaintenanceLease`` (see
 ``CLAUDE.md``'s "FSM Core" section). ``DispenserProfileGate`` owns the
 loaded ``DispenserProfiles`` object and the CFG-101/CFG-102 reconciliation
 that keeps a product's lockout, and the machine's file-error fault, in
@@ -151,7 +151,7 @@ class DispenserProfileGate:
         """Re-run the dispenser-profiles capabilities cross-check whenever
         the vending board's retained capabilities doc validates -- wired by
         `Machine` directly as the telemetry router's
-        (controller/mqtt_inbound.py's `TelemetryRouter.handle_capabilities`)
+        (ice_edge/hal/mqtt_inbound.py's `TelemetryRouter.handle_capabilities`)
         `on_capabilities_validated` callback, invoked only from its
         successful-validation branch.
 

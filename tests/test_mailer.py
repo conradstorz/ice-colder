@@ -1,4 +1,4 @@
-"""Tests for services/mailer.py."""
+"""Tests for ice_edge/notify/mailer.py."""
 
 import threading
 from email.message import EmailMessage
@@ -51,7 +51,9 @@ async def test_send_email_builds_the_message_and_reports_success(gateway):
 
 
 async def test_send_email_swallows_failures_and_returns_false(gateway, caplog):
-    with patch("ice_edge.notify.mailer.smtp_send", side_effect=OSError("no route to host")):
+    with patch(
+        "ice_edge.notify.mailer.smtp_send", side_effect=OSError("no route to host")
+    ):
         ok = await send_email(gateway, "ada@example.com", "Your code", "123456")
     assert ok is False
     assert "no route to host" in caplog.text

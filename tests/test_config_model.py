@@ -1,4 +1,4 @@
-"""Tests for config/config_model.py — Pydantic configuration model."""
+"""Tests for ice_common/config_model.py — Pydantic configuration model."""
 
 import json
 

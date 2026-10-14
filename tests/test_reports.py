@@ -25,7 +25,7 @@ def _dt(year, month, day, hour=0, minute=0, second=0):
 
 @pytest.fixture
 def fixed_now(monkeypatch):
-    """Pin `services.reports`' wall clock to 2026-10-13 12:00 -05:00.
+    """Pin `ice_edge.reporting.reports`' wall clock to 2026-10-13 12:00 -05:00.
 
     `by_period` derives its retention cutoff from `time.time()`; replacing
     the module's `time` binding (not the global clock) lets tests use
@@ -52,7 +52,7 @@ class _SyntheticDstTz(tzinfo):
     `fromutc` deliberately returns a datetime whose attached tzinfo is a
     plain, FROZEN `datetime.timezone` snapshot -- exactly what
     `datetime.astimezone(None)` returns in production (see
-    `services.reports.to_local`) -- rather than `self`. That is what
+    `ice_edge.reporting.reports.to_local`) -- rather than `self`. That is what
     makes this class reproduce the *specific* bug under review: code that
     calls `to_local` once and then advances by `timedelta` alone carries
     that stale, `dt`-independent snapshot forward and never re-derives the
@@ -174,7 +174,7 @@ def ticking_clock(monkeypatch):
     Same seam `tests/test_event_recorder.py` already uses
     (`monkeypatch.setattr(time, "time", ...)`) -- patching the shared
     `time` module's `time` attribute, which every caller that does
-    `import time; time.time()` (including `services.event_recorder`)
+    `import time; time.time()` (including `ice_edge.ledger.event_recorder`)
     then sees. Each call advances by 0.05s from one real `time.time()`
     captured at fixture setup, so successive calls are always strictly
     increasing with no wall-clock wait, regardless of OS clock
@@ -196,7 +196,7 @@ def ticking_clock(monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# is_cash (re-exported from services.event_recorder)
+# is_cash (re-exported from ice_edge.ledger.event_recorder)
 # --------------------------------------------------------------------------
 
 
@@ -996,7 +996,9 @@ class TestCollections:
         # explicit `ts` param so this does not depend on wall-clock luck.
         recorder.record_sale("A", "Alpha", 1, 1.00, {"cash": 1.00}, ts=frozen_ts - 10)
 
-        monkeypatch.setattr("ice_edge.ledger.event_recorder.time.time", lambda: frozen_ts)
+        monkeypatch.setattr(
+            "ice_edge.ledger.event_recorder.time.time", lambda: frozen_ts
+        )
         recorder.record_cash_collection("alice", "Alice")  # id=1
         recorder.record_cash_collection("bob", "Bob")  # id=2, the true newest
         recorder.flush()

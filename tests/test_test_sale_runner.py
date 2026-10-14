@@ -1,5 +1,5 @@
 # tests/test_test_sale_runner.py
-"""Tests for `controller/test_sale.py`'s `TestSaleRunner` (Task 10 of the
+"""Tests for `ice_edge/sale/test_sale.py`'s `TestSaleRunner` (Task 10 of the
 vmc-reduction plan): `run_test_sale` moved out of the VMC verbatim, onto
 the public seams Task 9 built (`find_product`/`begin_test_sale`/
 `end_test_sale`, `subscribe_state_change`/`subscribe_sale_settled`) plus

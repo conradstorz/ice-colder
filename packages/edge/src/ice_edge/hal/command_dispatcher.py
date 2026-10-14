@@ -1,4 +1,4 @@
-# services/command_dispatcher.py
+# ice_edge/hal/command_dispatcher.py
 """VMC-side dispatcher for the subsystem command channel (§2.1 of the
 system-tests design).
 
@@ -8,7 +8,7 @@ by ``request_id``. A single wildcard subscription (``cmd/+/ack``) is shared
 by every in-flight ``send()`` call; each call tracks only its own
 ``request_id`` and ignores every ack that is not it — including acks for
 commands this dispatcher never sent (the ice-maker's own pre-existing
-``cmd/ice_maker/ack`` handler in ``controller/vmc.py`` receives the same
+``cmd/ice_maker/ack`` handler in ``ice_edge/sale/vmc.py`` receives the same
 wildcard traffic; see the module docstring note below).
 
 On timeout, the command is retried exactly once with the **same**
@@ -23,12 +23,12 @@ sleeping for real. See ``Clock`` / ``_RealClock`` below.
 **Completion, not just acceptance (2026-09-29 amendment).** ``send()``
 above resolves on the FIRST ack for a ``request_id`` and nothing more — for
 a long-running command that ack now means "accepted", not "done"
-(``CommandAck.phase``, ``contracts/common.py``), so ``send()`` alone is not
+(``CommandAck.phase``, ``ice_contracts/board/common.py``), so ``send()`` alone is not
 enough to know a maintenance-lease-held test actually finished before the
 lease can safely release. ``send_and_await_completion()`` below reuses
 ``send()`` unchanged for the accept phase (so the ack timeout still fires
 in ~``ACK_TIMEOUT_SECONDS`` per attempt, exactly as before) and then, only
-for a command listed in ``contracts.common.COMPLETION_TIMEOUTS``, waits —
+for a command listed in ``ice_contracts.board.common.COMPLETION_TIMEOUTS``, waits —
 with a separate, per-command, params-derived timeout — for that command's
 own completion signal: a second ``phase="completed"`` ack on the same
 ``cmd/<subsystem>/ack`` topic (``water_valve``, ``power_cycle``), or
@@ -97,7 +97,7 @@ class CommandTimeout(Exception):
 class CompletionTimeout(Exception):
     """*command* on *subsystem* was accepted (its ack arrived), but no
     completion signal arrived within its own, separate completion timeout
-    (``contracts.common.COMPLETION_TIMEOUTS``).
+    (``ice_contracts.board.common.COMPLETION_TIMEOUTS``).
 
     Distinct from ``CommandTimeout`` on purpose: a caller (e.g.
     ``ice_edge/web/routes/tests_level/commands.py``'s ``_run_command``) needs to
@@ -199,7 +199,7 @@ class CommandDispatcher:
         stashes it in `self._early_completions` (bounded, oldest evicted
         first) instead, where it simply ages out unread; this handler is a
         pure addition alongside the VMC's own, pre-existing
-        `hardware/dispenser` listener (`controller/vmc.py`'s
+        `hardware/dispenser` listener (`ice_edge/sale/vmc.py`'s
         `on_dispenser_event`), which keeps working unchanged since both
         are registered on the same MQTT client and both simply receive
         every message on the topic.
@@ -324,7 +324,7 @@ class CommandDispatcher:
         ``request_id`` (finding C2) passes through to ``send()`` unchanged.
 
         For an immediate command (its ack's `phase` is "completed" — every
-        command NOT in `contracts.common.COMPLETION_TIMEOUTS`) this is
+        command NOT in `ice_contracts.board.common.COMPLETION_TIMEOUTS`) this is
         identical to `send()`: the ack IS completion, so every existing
         caller of `send()` — and `ping` in particular — is completely
         unaffected by this method's existence.
@@ -335,7 +335,7 @@ class CommandDispatcher:
         same `CommandTimeout` as before — this method adds a SECOND, SEPARATE
         wait after that succeeds, for the command's own completion signal,
         with its own timeout derived from *params*
-        (`contracts.common.COMPLETION_TIMEOUTS`). Raises `CommandTimeout` if
+        (`ice_contracts.board.common.COMPLETION_TIMEOUTS`). Raises `CommandTimeout` if
         the accept ack itself never arrives (from the reused `send()`
         call); raises `CompletionTimeout` if accepted but no completion
         signal arrives within its own timeout.

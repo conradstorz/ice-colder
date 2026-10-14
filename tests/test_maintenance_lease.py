@@ -1,4 +1,4 @@
-"""Unit tests for controller.maintenance_lease.MaintenanceLease -- the lease
+"""Unit tests for ice_edge.sale.maintenance_lease.MaintenanceLease -- the lease
 lifecycle extracted from VMC (sixth and last cut at the VMC god object; see
 CLAUDE.md's "FSM Core" section). These exercise the lease in isolation, with
 no VMC and no asyncio event loop: ``schedule`` is a fake that records

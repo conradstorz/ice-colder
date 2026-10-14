@@ -1,7 +1,7 @@
 """Escrow ledger: the FIFO credit ledger behind ``VMC.credit_escrow``.
 
-Extracted from ``controller.vmc.VMC`` as the second step in breaking up the
-VMC god object, following the same pattern as ``controller/fault_registry.py``'s
+Extracted from ``ice_edge.sale.vmc.VMC`` as the second step in breaking up the
+VMC god object, following the same pattern as ``ice_edge/faults/fault_registry.py``'s
 ``FaultRegistry`` (see ``CLAUDE.md``'s "FSM Core" section). ``EscrowLedger``
 owns ``total`` (the authoritative escrow amount) and ``credits`` (the FIFO
 list of ``Credit``) plus the pure bookkeeping to deposit, consume-FIFO,

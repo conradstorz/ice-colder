@@ -1,6 +1,6 @@
 # tests/test_dispenser_gate.py
-"""Unit tests for `controller.dispenser_gate.DispenserProfileGate` --
-extracted from `controller.vmc.VMC` (see CLAUDE.md's "Dispenser profiles"
+"""Unit tests for `ice_edge.vend.dispenser_gate.DispenserProfileGate` --
+extracted from `ice_edge.sale.vmc.VMC` (see CLAUDE.md's "Dispenser profiles"
 section). These exercise the gate in isolation: no `VMC` instance anywhere
 here. `FakeFaults` stands in for the fault-registry callables
 (`is_locked`/`has_machine_fault`/`raise_fault`/`clear_fault`) the gate is

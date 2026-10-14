@@ -1,7 +1,7 @@
 # tests/test_fault_service.py
-"""Unit tests for `controller.fault_service.FaultService`, in isolation
-from `VMC` -- no FSM. Uses a real `controller.fault_registry.FaultRegistry`
-and a real `controller.outputs.StatusOutputs` (sinks attached via the fakes
+"""Unit tests for `ice_edge.faults.fault_service.FaultService`, in isolation
+from `VMC` -- no FSM. Uses a real `ice_edge.faults.fault_registry.FaultRegistry`
+and a real `ice_edge.sale.outputs.StatusOutputs` (sinks attached via the fakes
 in `tests/fakes.py`: `FakeMqtt`, `FakeStore`, `FakeHealth`,
 `FakeAvailability`), plus a `FakeRecorder` standing in for the event
 recorder and plain closures for the other injected callables
@@ -9,7 +9,7 @@ recorder and plain closures for the other injected callables
 `fsm_state`).
 
 Codes used, picked the same way `tests/test_fault_registry.py` does --
-from `contracts.vending_machine.FAULT_TABLE` rather than invented ones:
+from `ice_contracts.board.vending_machine.FAULT_TABLE` rather than invented ones:
 - ICE_301: severity=lockout, scope=product -> locks a sku.
 - ICE_101: severity=product_unavailable, scope=product -> locks a sku;
   the one code `clear_ice101_lockouts` clears.
@@ -41,7 +41,7 @@ from tests.fakes import (
 
 
 class FakeRecorder:
-    """Stands in for `services.event_recorder.EventRecorder`: records every
+    """Stands in for `ice_edge.ledger.event_recorder.EventRecorder`: records every
     `record(kind, **kw)` call verbatim."""
 
     def __init__(self):

@@ -1,9 +1,9 @@
-"""Tests for services/fsm_control.py admin commands."""
+"""Tests for ice_edge/sale/fsm_control.py admin commands."""
 
 from unittest.mock import create_autospec
 
 from ice_common.config_model import ConfigModel
-from controller.machine import Machine
+from ice_edge.app.machine import Machine
 from ice_edge.sale.vmc import VMC
 from ice_edge.sale.fsm_control import perform_command
 

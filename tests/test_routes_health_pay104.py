@@ -33,7 +33,7 @@ import httpx
 import pytest
 
 from ice_contracts.board.vending_machine import FaultCode
-from controller.machine import Machine
+from ice_edge.app.machine import Machine
 from ice_edge.access.access import ROLE_PERMISSIONS, Permission, Role
 from ice_edge.config.config_store import add_product
 from ice_edge.ledger.event_recorder import EventRecorder
@@ -468,7 +468,7 @@ class TestRecordSaleExactlyOnce:
         for a second arrival before actually inserting, which widens the
         race window so the unfixed code reliably shows the bug rather
         than depending on scheduler luck. Against the fixed code, the
-        module-level `_pay104_lock` in web_interface/routes/health/recovery.py
+        module-level `_pay104_lock` in ice_edge/web/routes/health/recovery.py
         never lets the second request's `pending_sale_for_recovery()`
         check run until the first request has fully finished (write +
         clear) inside the lock, so `record_sale` is only ever entered
@@ -550,7 +550,7 @@ class TestRecordSaleExactlyOnce:
         stay active, but the sale must never be recorded a second time.
 
         Simulates the removal failure by monkeypatching the VMC's own
-        attached SessionStore's `clear()` (never services/session_store.py
+        attached SessionStore's `clear()` (never ice_edge/ledger/session_store.py
         itself) to always report failure, mirroring `VMC.clear_fault`'s
         own PAY-104 branch. Asserts the row was written exactly once, the
         fault is still active through the same `active_faults()` registry
@@ -721,7 +721,7 @@ class TestCrossRestartExactlyOnce:
     `DATA-101` (raised when the durable marker write fails) was "the
     operator's surviving signal" because it "outlives the process
     boundary the in-memory guard cannot cross". That is false --
-    `services/startup_recovery.py`'s `reconcile_sales_journal_faults` clears `DATA-101` on
+    `ice_edge/app/startup_recovery.py`'s `reconcile_sales_journal_faults` clears `DATA-101` on
     *every* boot whenever the *sales journal* is drained, and it cannot
     tell "drained because nothing needed recovering" apart from "drained
     because a PAY-104 marker write failed" (recording a sale that
@@ -744,7 +744,7 @@ class TestCrossRestartExactlyOnce:
     a brand new `VMC` (its own, empty `_recorded_pay104_keys`) and a
     brand new `EventRecorder`, both built fresh against the same config,
     the same on-disk session snapshot, and the same sqlite file, then
-    wired into `web_interface.routes` exactly as `main.py` wires a
+    wired into `ice_edge.web.routes` exactly as `main.py` wires a
     freshly booted process -- nothing from the pre-restart `VMC` is
     reachable from the route handlers afterward.
     """

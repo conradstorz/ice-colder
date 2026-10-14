@@ -165,7 +165,7 @@ async def update_catalog(
     kind: str = Form("other"),
 ):
     # This endpoint owns name/price/kind only. slot=None leaves the
-    # stored slot untouched (services/config_store.py update_product) —
+    # stored slot untouched (ice_edge/config/config_store.py update_product) —
     # a catalog POST can never smuggle a placement change through,
     # regardless of what a hostile form body contains (mirrors part 1's
     # a2b8829 guarantee for the placement side).

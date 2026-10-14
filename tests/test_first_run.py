@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from services import startup_config
+from ice_edge.app import startup_config
 
 
 def test_first_run_creates_config_and_continues(tmp_path, monkeypatch):

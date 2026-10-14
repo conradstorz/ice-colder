@@ -1,5 +1,5 @@
 # tests/test_report_scheduler.py
-"""Tests for services/report_scheduler.py.
+"""Tests for ice_edge/reporting/report_scheduler.py.
 
 See ``docs/superpowers/specs/2026-09-25-sales-reports-design.md`` §4.2.
 
@@ -243,7 +243,7 @@ def test_compute_next_due_weekly_on_a_later_weekday_same_cycle():
 
 # --------------------------------------------------------------------------
 # Finding 2 (Important): period_start/period_end must be the TRUE local day,
-# re-derived DST-correctly (via services.reports's helpers), not a naive
+# re-derived DST-correctly (via ice_edge.reporting.reports's helpers), not a naive
 # `timedelta` shifted under a stale offset snapshot.
 # --------------------------------------------------------------------------
 
@@ -349,7 +349,7 @@ def test_compute_next_due_threads_tz_param_not_now_tzinfo(monkeypatch):
     """The threading test -- this round's key evidence.
 
     Spies on ``report_scheduler.to_local`` (imported from
-    ``services.reports`` into this module's namespace, so patching the
+    ``ice_edge.reporting.reports`` into this module's namespace, so patching the
     module-level name here intercepts every call ``_advance_one_local_day``/
     ``_shift_local_day`` make) while still delegating to the real
     implementation, so ``compute_next_due``'s actual behaviour is
@@ -661,7 +661,7 @@ class _FakeClock:
 
 
 class _StubMailer:
-    """Async stand-in for ``services.mailer.send_email``. Records every
+    """Async stand-in for ``ice_edge.notify.mailer.send_email``. Records every
     call's arguments (never log text) so tests assert on behaviour."""
 
     def __init__(self, results=None):

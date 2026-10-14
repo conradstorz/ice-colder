@@ -1,5 +1,5 @@
 # tests/test_inventory_manager.py
-"""Tests for services/inventory_manager.py — persistent inventory tracking."""
+"""Tests for ice_edge/monitoring/inventory_manager.py — persistent inventory tracking."""
 
 import json
 import threading

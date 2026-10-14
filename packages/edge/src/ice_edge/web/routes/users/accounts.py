@@ -43,7 +43,7 @@ def _guard_owner_self_lockout(principal: web_auth.Principal, user_id: str) -> No
     delete their own account. Deleting the sole owner leaves setup_finalized
     true with no owner, and ensure_setup_mode()'s begin_setup() then raises
     AccessError("setup has already been finalized") instead of recovering
-    (Copilot review, web_interface/routes.py:1277). Disabling self is a
+    (Copilot review, ice_edge/web/routes.py:1277). Disabling self is a
     milder version of the same lockout. Called only by disable and delete,
     in addition to _guard_owner_target; reset-pin and enable carry no such
     risk. Moved verbatim from routes/legacy.py (task-12 brief resolution 4).
@@ -63,7 +63,7 @@ def _guard_owner_self_demotion(
 
     _guard_owner_target only blocks a *non-owner* from targeting the
     owner; the owner always holds manage_ownership, so it let the owner
-    demote themselves. services/access.py::update_user only blocks
+    demote themselves. ice_edge/access/access.py::update_user only blocks
     *creating a second* owner (it checks current_owner.id != user_id), not
     the sole owner giving theirs up. Doing so leaves the access store
     finalized but ownerless: no one holds manage_ownership, so emergency

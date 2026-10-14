@@ -164,7 +164,7 @@ def _setup_codes_page(
 ):
     # This page (and any re-render of it) always carries the plaintext
     # emergency-code pool while it is pending — Copilot review,
-    # web_interface/routes.py:647: a cacheable GET response would let a
+    # ice_edge/web/routes.py:647: a cacheable GET response would let a
     # browser or reverse proxy retain/replay it after Done, contrary to
     # the spec's one-time-display intent. no-store is unconditional
     # here rather than gated on `_pending_codes` being non-empty, so a

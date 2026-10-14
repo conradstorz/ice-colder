@@ -1,4 +1,4 @@
-"""Tests for controller/sale_journal.py — one method per sale event."""
+"""Tests for ice_edge/sale/sale_journal.py — one method per sale event."""
 
 import pytest
 from loguru import logger
@@ -423,7 +423,7 @@ def test_lifecycle_lines(harness):
 
 
 # -- cross-sink ordering ----------------------------------------------------
-# Each expectation is the order controller/vmc.py wrote these effects in before
+# Each expectation is the order ice_edge/sale/vmc.py wrote these effects in before
 # the journal existed: plain logger, then transaction/vending sinks, then the
 # recorder row, then the customer message.
 

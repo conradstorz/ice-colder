@@ -1,4 +1,4 @@
-# controller/vmc.py
+# ice_edge/sale/vmc.py
 import asyncio
 import time
 from collections.abc import Callable
@@ -70,7 +70,7 @@ class VMC:
         dispense_factory: Callable[[SaleContext], DispenseCycle],
         journal: SaleJournal,
     ):
-        """`Machine` (controller/machine.py) is the sole constructor and passes every
+        """`Machine` (ice_edge/app/machine.py) is the sole constructor and passes every
         collaborator in. `in_maintenance`, `availability` and `inventory`
         are zero-arg callables read at call time, since the live instances are
         attached after construction. The maintenance lease reaches the VMC only

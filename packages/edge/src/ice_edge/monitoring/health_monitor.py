@@ -1,4 +1,4 @@
-# services/health_monitor.py
+# ice_edge/monitoring/health_monitor.py
 """
 Periodic health monitor for VMC subsystems.
 

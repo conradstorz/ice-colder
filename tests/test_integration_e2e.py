@@ -23,7 +23,7 @@ from pydantic import SecretStr
 
 from ice_common.config_model import ConfigModel, Product
 from ice_contracts.board.common import CommandAck
-from controller.machine import Machine
+from ice_edge.app.machine import Machine
 from ice_edge.sale.vmc import VMC
 from tests.fakes import FakeTaskRunner
 from ice_edge.hal.command_dispatcher import CommandDispatcher
@@ -669,7 +669,7 @@ class TestFailedVendLoop:
 async def test_vending_heartbeat_loss_blocks_sale_not_payment_enable():
     """Live broker: vending LWT no longer withdraws payment/enable —
     `vending_alive` is a fulfillment-only permissive under the soft-faults
-    design (services/availability.py), so cmd/payment/enable stays true
+    design (ice_edge/faults/availability.py), so cmd/payment/enable stays true
     throughout. Heartbeat loss instead blocks `sale_available` for that
     product kind, and heartbeat recovery restores it."""
     from ice_edge.faults.availability import Availability

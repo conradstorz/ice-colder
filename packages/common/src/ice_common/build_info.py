@@ -1,4 +1,4 @@
-# services/build_info.py
+# ice_common/build_info.py
 """Which build is this? Resolved once at import, never raises.
 
 1. ICE_COLDER_COMMIT / ICE_COLDER_BUILD_TIME env (set by the Dockerfile from

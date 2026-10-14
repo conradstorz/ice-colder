@@ -87,7 +87,7 @@ class TestMonitorCapabilities:
         assert caps.commands == []
 
     def test_contract_version_constant(self):
-        # 1.1.0 -> 1.2.0: the command/ack models moved to contracts/common.py
+        # 1.1.0 -> 1.2.0: the command/ack models moved to ice_contracts/board/common.py
         # (SubsystemCommand/CommandAck) and the ack gained an optional
         # `result` field — additive, minor bump.
         # 1.3.0 -> 1.4.0: ChannelDescriptor gains direction/driven_by
@@ -226,7 +226,7 @@ class TestWireCompatibility:
 
 class TestSharedCommandChannelIdentity:
     """MonitorCommand/CommandAck must be the *same* class objects as
-    contracts.common's SubsystemCommand/CommandAck — an alias, not a
+    ice_contracts.board.common's SubsystemCommand/CommandAck — an alias, not a
     subclass or a copy — so every existing import site is unaffected."""
 
     def test_monitor_command_is_subsystem_command(self):

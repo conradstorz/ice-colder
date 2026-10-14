@@ -47,8 +47,8 @@ AUTOMATIC_COMMANDS: frozenset[str] = frozenset({"ping", "self_test", "force_repo
 # Which contract a subsystem's reported contract_version is compared
 # against for the /tests card's "contract match" field. "vending" and
 # "mdb" both speak the vending-machine contract; "ice_maker" speaks its
-# own -- see contracts/vending_machine.py's EXPECTED_SUBSYSTEMS and
-# contracts/ice_maker_monitor.py's own CONTRACT_VERSION.
+# own -- see ice_contracts/board/vending_machine.py's EXPECTED_SUBSYSTEMS and
+# ice_contracts/board/ice_maker_monitor.py's own CONTRACT_VERSION.
 #
 # No existing code computes this: ice_edge/web/routes/health/subsystems.py (the
 # closest sibling, and the one the task brief points at for "reuse its
@@ -84,7 +84,7 @@ def contract_match(subsystem: str, row: dict) -> bool | None:
 def testable_commands(subsystem: str, advertised) -> frozenset[str]:
     """Advertised ∩ allowlist (system-tests design §1.3).
 
-    `contracts.common.TESTABLE_COMMANDS` is the server-side allowlist;
+    `ice_contracts.board.common.TESTABLE_COMMANDS` is the server-side allowlist;
     `advertised` is a subsystem's `SubsystemCapabilities.commands` (which
     may list control commands, e.g. `refund`, that must never get a test
     button). A command exists as a test only when it is in both sets.
@@ -99,7 +99,7 @@ def testable_commands(subsystem: str, advertised) -> frozenset[str]:
 
 # Param-widget ranges for the actuator commands (system-tests design §1.3):
 # `water_valve`'s `seconds` and `power_cycle`'s `dwell_seconds`. These
-# literals mirror contracts/common.py's COMMAND_PARAM_VALIDATORS exactly --
+# literals mirror ice_contracts/board/common.py's COMMAND_PARAM_VALIDATORS exactly --
 # that module is outside this task's file list (see task-13a-report.md),
 # and it exposes validator *functions*, not reusable range constants, so a
 # second copy of the bounds is unavoidable here. Kept from silently
@@ -161,7 +161,7 @@ def _parse_command_params(
     turns that into a 400 before the maintenance lease is ever touched.
 
     For "dispense" specifically (Task 4, dispenser-profiles plan 2):
-    `contracts.common.COMMAND_PARAM_VALIDATORS["dispense"]` now requires a
+    `ice_contracts.board.common.COMMAND_PARAM_VALIDATORS["dispense"]` now requires a
     full `DispenseCommand(slot, mechanism, profile)` on the wire, so once
     the slot itself is known-good (in the current catalog) this also
     looks up that slot's product and its `dispenser_profile_for` result.
@@ -466,7 +466,7 @@ async def post_test_command(
     LIVE, freshly-read `_subsystem_summary()[subsystem]["commands"]`,
     never trusting anything the client claims about what buttons it
     was shown. `command` is not in `testable` for `refund` or
-    `payment/enable` on every subsystem (contracts.common.
+    `payment/enable` on every subsystem (ice_contracts.board.common.
     TESTABLE_COMMANDS never lists either, for any subsystem, whether
     or not that subsystem's capabilities doc happens to advertise it)
     -- 403, unconditionally, before the maintenance lease is ever

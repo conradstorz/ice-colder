@@ -1,8 +1,8 @@
 """Refund protocol: the request -> ack -> one retry -> terminal state machine.
 
-Extracted from ``controller.vmc.VMC`` as the third piece carved off the VMC
-god object, following the same pattern as ``controller/fault_registry.py``'s
-``FaultRegistry`` and ``controller/escrow_ledger.py``'s ``EscrowLedger`` (see
+Extracted from ``ice_edge.sale.vmc.VMC`` as the third piece carved off the VMC
+god object, following the same pattern as ``ice_edge/faults/fault_registry.py``'s
+``FaultRegistry`` and ``ice_edge/ledger/escrow_ledger.py``'s ``EscrowLedger`` (see
 ``CLAUDE.md``'s "FSM Core" section). ``RefundProtocol`` owns ``pending``
 (the in-flight ``PendingRefund`` dict, insertion-ordered) and the pure
 protocol of sending a refund command, arming/cancelling its ack deadline,

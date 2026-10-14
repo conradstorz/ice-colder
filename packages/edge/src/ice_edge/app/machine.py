@@ -73,7 +73,7 @@ from ice_edge.monitoring.health_monitor import HealthMonitor
 from ice_edge.monitoring.inventory_manager import InventoryManager
 from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
 
-# Bound logger for the transaction log -- mirrors controller/mqtt_inbound.py's
+# Bound logger for the transaction log -- mirrors ice_edge/hal/mqtt_inbound.py's
 # `ice_log`: loguru's bind() only
 # attaches the `transaction` extra field, and sinks are resolved at log
 # time, so binding here at import is safe even though setup_logging() runs
@@ -173,7 +173,7 @@ class Machine:
             on_bin_half_full=self._faults.clear_ice101_lockouts,
             on_capabilities_validated=self._gate.on_vending_capabilities,
         )
-        # Builds a fresh DispenseCycle (controller/dispense_cycle.py)
+        # Builds a fresh DispenseCycle (ice_edge/vend/dispense_cycle.py)
         # for one sale's dispatch attempt -- the cycle's own identity, not a
         # sequence number, is what VMC.on_dispense_failed uses to tell a
         # late callback from an earlier attempt apart from the current one.
@@ -348,7 +348,7 @@ class Machine:
     def set_mqtt_client(self, client) -> None:
         """Attach an MQTTClient instance for publishing status and receiving events."""
         self._outputs.attach_mqtt(client)
-        # SUBSCRIPTIONS (controller/mqtt_inbound.py) is the single source of
+        # SUBSCRIPTIONS (ice_edge/hal/mqtt_inbound.py) is the single source of
         # truth for which topics map to which handler, as (topic, owner,
         # method) triples -- owner "vmc" resolves against self.vmc, owner
         # "telemetry" against self._telemetry.
@@ -412,7 +412,7 @@ class Machine:
 
     def set_dispenser_profiles(self, profiles: DispenserProfiles) -> None:
         """Attach the loaded `DispenserProfiles` -- delegates to
-        `self._gate.attach` (controller/dispenser_gate.py)."""
+        `self._gate.attach` (ice_edge/vend/dispenser_gate.py)."""
         self._gate.attach(profiles)
 
     def set_session_liveness(self, predicate) -> None:

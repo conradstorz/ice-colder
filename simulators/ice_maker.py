@@ -529,7 +529,7 @@ class IceMakerSimulator(ESP32Simulator):
         (`publish_completion_ack`), published once `_finish_power_cycle`'s
         sleep elapses — alongside the existing `power_cycled`
         `ice_maker/event`, which stays as real telemetry for any other
-        listener; the ack is what `services/command_dispatcher.py`'s
+        listener; the ack is what `ice_edge/hal/command_dispatcher.py`'s
         completion-wait actually keys on.
         """
         now = time.monotonic()

@@ -1,5 +1,5 @@
 # tests/test_dispensers_cli.py
-"""Tests for the dispensers CLI (`python -m services.dispensers`)."""
+"""Tests for the dispensers CLI (`python -m ice_edge.vend.dispensers`)."""
 
 import json
 import tempfile

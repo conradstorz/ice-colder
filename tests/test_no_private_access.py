@@ -10,7 +10,7 @@ would have run -- a fault alert never published, a lockout never recorded,
 money moved without the FIFO ledger's bookkeeping -- so a test using it
 proves nothing about the production path it claims to exercise. The same
 goes for importing a private name directly out of another module (`from
-web_interface.routes.health import _faults_with_age`): it reaches past
+ice_edge.web.routes.health import _faults_with_age`): it reaches past
 whatever that module considers its public surface.
 
 This was originally a hardcoded check for `vmc._<name>`/`machine._<name>`
@@ -61,14 +61,14 @@ omitting files with zero hits.
    holds across a multi-line parenthesised import exactly as it does for
    a single-line one.
 
-**Guard 2: the VMC's own import boundary.** `controller/vmc.py` is the
+**Guard 2: the VMC's own import boundary.** `ice_edge/sale/vmc.py` is the
 sale FSM alone (see `CLAUDE.md`'s "FSM Core" section): it holds no
 transport or service handle, and every collaborator it needs is injected
-by `controller/machine.py`'s `Machine`. `test_vmc_has_no_forbidden_imports`
-parses `controller/vmc.py` with `ast` (so a `TYPE_CHECKING`-guarded import
+by `ice_edge/app/machine.py`'s `Machine`. `test_vmc_has_no_forbidden_imports`
+parses `ice_edge/sale/vmc.py` with `ast` (so a `TYPE_CHECKING`-guarded import
 is caught exactly like an ordinary one -- the VMC must not even *name*
-these types) and fails if it imports `controller.machine`,
-`controller.maintenance_lease`, `controller.test_sale`,
+these types) and fails if it imports `ice_edge.app.machine`,
+`ice_edge.sale.maintenance_lease`, `ice_edge.sale.test_sale`,
 `ice_common.mqtt_client`, `ice_edge.monitoring.health_monitor`, `ice_edge.ledger.session_store`,
 `ice_edge.ledger.event_recorder`, `ice_edge.hal.command_dispatcher`, or
 `ice_edge.customer_ui.display_controller`. One deliberate carve-out: `VMC.snapshot()`
@@ -77,9 +77,9 @@ plain value object, not a transport/service handle -- so importing exactly
 that one name from `ice_edge.ledger.session_store` is allowed; importing anything
 else from it (`SessionStore` itself, say) is not.
 `test_only_machine_imports_controller_machine` parses every other
-`controller/*.py` module and fails if any of them import `controller.machine`
--- `Machine` is the composition root; nothing under `controller/` may build
-one, or even name the module, besides `controller/machine.py` itself.
+`ice_edge` module outside `app/` and fails if any of them import `ice_edge.app.machine`
+-- `Machine` is the composition root; nothing under `ice_edge/` outside `app/` may build
+one, or even name the module, besides `ice_edge/app/machine.py` itself.
 """
 
 import ast
@@ -120,13 +120,13 @@ LOOKBACK_LINES = 3
 TESTS_DIR = TESTS_ROOT  # tests/ root, whichever subdirectory this file lives in
 THIS_FILE = Path(__file__).resolve()
 REPO_ROOT = TESTS_ROOT.parent
-CONTROLLER_DIR = REPO_ROOT / "controller"
+EDGE_SRC = REPO_ROOT / "packages" / "edge" / "src" / "ice_edge"
 
-#: Modules controller/vmc.py must never import -- transport/service
+#: Modules ice_edge/sale/vmc.py must never import -- transport/service
 #: handles, and the composition root itself. See this module's docstring,
 #: "Guard 2", for the one deliberate carve-out (SessionSnapshot).
 FORBIDDEN_VMC_IMPORTS = {
-    "controller.machine",
+    "ice_edge.app.machine",
     "ice_edge.sale.maintenance_lease",
     "ice_edge.sale.test_sale",
     "ice_common.mqtt_client",
@@ -279,7 +279,7 @@ def _find_forbidden_imports(tree: ast.AST) -> list[str]:
     """Return a human-readable violation string for every forbidden import
     in `tree`, matched two ways: `module` itself in `FORBIDDEN_VMC_IMPORTS`
     (an ordinary `import x`/`from x import ...`), or -- mirroring how
-    `test_only_machine_imports_controller_machine` catches `from controller
+    `test_only_machine_imports_controller_machine` catches `from ice_edge.app
     import machine` below -- a `from <package> import <name>` whose
     `f"{package}.{name}"` names a forbidden module, which `ast` never
     surfaces as a single dotted `module` string (e.g. `from ice_edge.ledger
@@ -303,7 +303,7 @@ def _find_forbidden_imports(tree: ast.AST) -> list[str]:
 
 
 def test_vmc_has_no_forbidden_imports():
-    """`controller/vmc.py` holds no transport or service handle -- see
+    """`ice_edge/sale/vmc.py` holds no transport or service handle -- see
     this module's docstring, "Guard 2", for the forbidden list and the
     one `SessionSnapshot` carve-out."""
     path = VMC_PATH
@@ -312,8 +312,8 @@ def test_vmc_has_no_forbidden_imports():
     violations = _find_forbidden_imports(tree)
 
     assert not violations, (
-        "controller/vmc.py imports a forbidden transport/service module -- "
-        "every such collaborator must be injected by controller/machine.py's "
+        "ice_edge/sale/vmc.py imports a forbidden transport/service module -- "
+        "every such collaborator must be injected by ice_edge/app/machine.py's "
         'Machine instead. See this file\'s module docstring, "Guard 2", for '
         "the allowlist.\n" + "\n".join(violations)
     )
@@ -420,7 +420,7 @@ def test_private_import_detection_via_ast(tmp_path):
     tmp = tmp_path / "import_sample.py"
     tmp.write_text(
         "sim._fault_state\n"
-        "from web_interface.routes.health import _fault_gate\n"
+        "from ice_edge.web.routes.health import _fault_gate\n"
         "import loguru as _loguru\n"
         "from services.widgets import _hidden as visible\n"
         "from tests.test_vmc_flows import (\n"
@@ -517,22 +517,22 @@ def test_budget_is_exact():
 
 
 def test_only_machine_imports_controller_machine():
-    """`controller/machine.py`'s `Machine` is the composition root; no
-    other module under `controller/` may build one, or even name the
+    """`ice_edge/app/machine.py`'s `Machine` is the composition root; no
+    other module under `ice_edge/` (outside `app/`) may build one, or even name the
     module."""
     violations = []
-    for path in sorted(CONTROLLER_DIR.glob("*.py")):
-        if path.name == "machine.py":
+    for path in sorted(EDGE_SRC.rglob("*.py")):
+        if (EDGE_SRC / "app") in path.parents or path.name == "__main__.py":
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for module, names in _iter_imports(tree):
-            if module == "controller.machine":
-                violations.append(f"{path.name}: from controller.machine import ...")
-            elif module == "controller" and names and "machine" in names:
-                violations.append(f"{path.name}: from controller import machine")
+            if module == "ice_edge.app.machine":
+                violations.append(f"{path.name}: from ice_edge.app.machine import ...")
+            elif module == "ice_edge.app" and names and "machine" in names:
+                violations.append(f"{path.name}: from ice_edge.app import machine")
 
     assert not violations, (
-        "Only controller/machine.py may import controller.machine -- it is "
+        "Only ice_edge/app/machine.py may import ice_edge.app.machine -- it is "
         "the composition root.\n" + "\n".join(violations)
     )
 

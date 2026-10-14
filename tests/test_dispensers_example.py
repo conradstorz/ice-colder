@@ -1,8 +1,8 @@
 # tests/test_dispensers_example.py
 """Tests for the self-documenting `dispensers.example.toml` generator (plan:
-dispenser profiles, Task 5). `services.dispensers_doc.render_example()`
+dispenser profiles, Task 5). `ice_edge.vend.dispensers_doc.render_example()`
 produces the example from the Task 2 schema models
-(`services/dispenser_schema.py`) so the shipped documentation cannot drift
+(`ice_contracts/board/dispenser_schema.py`) so the shipped documentation cannot drift
 from the schema it illustrates; these tests guard byte-identity with the
 committed file, that the example validates cleanly against the example
 catalog, that every generated comment reads like operator language rather
@@ -69,7 +69,7 @@ def test_no_python_identifiers_in_comments():
     no `_`-prefixed identifier, no `.py`, no `Pydantic`. The header block
     (above `schema_version`) is exempt from the `.py` check alone -- it
     legitimately names `scripts/gen_dispensers_example.py` and
-    `services/dispenser_schema.py` as the regeneration instructions."""
+    `ice_contracts/board/dispenser_schema.py` as the regeneration instructions."""
 
     text = EXAMPLE_PATH.read_text(encoding="utf-8")
     lines = text.splitlines()

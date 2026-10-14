@@ -84,7 +84,7 @@ async def update_placement(
         )
 
     if inventory_count < 0:
-        # Mirror services/config_store.py's slot < 0 guard: reject the
+        # Mirror ice_edge/config/config_store.py's slot < 0 guard: reject the
         # whole write and leave the stored count unchanged (part 1's
         # 231fe36) rather than let a negative stock level corrupt
         # InventoryManager.
@@ -107,7 +107,7 @@ async def update_placement(
         # negative or already in use. A rejected slot change must leave
         # every field of this form — slot, count, and tracking —
         # exactly as it was, not just the slot (part 1's a2b8829,
-        # Copilot review web_interface/routes.py:1202): checked before
+        # Copilot review ice_edge/web/routes.py:1202): checked before
         # any InventoryManager write below.
         return _rerender("That slot is already in use.")
 

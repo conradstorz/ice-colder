@@ -1,11 +1,11 @@
 """Guard tests for `tests/route_context.py` (Task 4, VMC-reduction tests
 cleanup): the snapshot/restore module the autouse fixture in
-`tests/conftest.py` uses to isolate every `web_interface.context` global
+`tests/conftest.py` uses to isolate every `ice_edge.web.context` global
 between tests.
 """
 
 from ice_common.config_model import ConfigModel
-from controller.machine import Machine
+from ice_edge.app.machine import Machine
 from tests import route_context
 from ice_edge.web import context
 

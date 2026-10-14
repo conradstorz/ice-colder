@@ -60,14 +60,14 @@ def fault_gate(fault: dict) -> str:
 
     Executor resolution 1 (task-6-brief.md): the spec asks for "the gate
     class per fault", but no such mapping exists in the codebase --
-    services/availability.py's Gate enum classifies permissive *rows*, not
-    faults, and contracts/vending_machine.py's FAULT_TABLE carries
+    ice_edge/faults/availability.py's Gate enum classifies permissive *rows*, not
+    faults, and ice_contracts/board/vending_machine.py's FAULT_TABLE carries
     severity/scope but no gate. This derives it once, here, and nowhere
     else (never inline in a template, never re-derived):
 
       * code in PAYMENT_BLOCKING_FAULTS -> "safety" (those six codes are
         exactly the ones that can inhibit payment -- see
-        services/availability.py's Gate docstring)
+        ice_edge/faults/availability.py's Gate docstring)
       * else scope == "product" -> "fulfillment" (blocks only that sale)
       * else -> "alert" (blocks nothing)
 

@@ -470,7 +470,9 @@ class TestConcurrentCollectionsShowOwnRow:
         _seed_sales(recorder_with_db, [{"cash_coin": 7.25}])
 
         frozen_ts = time.time()
-        monkeypatch.setattr("ice_edge.ledger.event_recorder.time.time", lambda: frozen_ts)
+        monkeypatch.setattr(
+            "ice_edge.ledger.event_recorder.time.time", lambda: frozen_ts
+        )
 
         owner_client = login_as(Role.owner)
         secretary_client = login_as(Role.secretary)

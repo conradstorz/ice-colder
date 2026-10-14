@@ -26,7 +26,7 @@ def recent_test_runs(limit: int = 100) -> list[dict]:
 
     Reads `context.event_recorder.db_path` -- `EventRecorder`'s public
     read-only property for the live database file -- at call time rather
-    than caching it, the same convention services/reports.py's module
+    than caching it, the same convention ice_edge/reporting/reports.py's module
     docstring documents (that module reads the same public property, at
     call time, for the same reason: `EventRecorder._quarantine_corrupt_db`
     can reassign the underlying path mid-process after a corruption

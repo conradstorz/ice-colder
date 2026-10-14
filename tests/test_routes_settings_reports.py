@@ -1,10 +1,10 @@
-"""Tests for Settings > Reports (web_interface/routes/settings/):
+"""Tests for Settings > Reports (ice_edge/web/routes/settings/):
 GET/POST /settings/reports, gated `edit_contacts` per spec §4.1 (not
 `edit_secrets`) — the scheduled sales-summary email settings
 (config.reports / config_model.ReportsConfig).
 
 Fixture style copied from tests/test_routes_settings.py: `wired` seeds a
-ConfigModel + AccessStore into web_interface.routes' module state,
+ConfigModel + AccessStore into ice_edge.web.routes' module state,
 `login_as(role)` signs a client in, `client` is an owner-authenticated
 client, and the autouse `isolated_config_path` fixture (tests/conftest.py)
 redirects config_store.CONFIG_PATH to `tmp_path / "config.json"`, so
@@ -260,7 +260,7 @@ class TestReportsPage:
 
 def test_reports_config_defaults_are_not_secrets():
     """Confirms the brief's masking claim directly: none of ReportsConfig's
-    fields is a SecretStr, so services/config_store.py's type-based
+    fields is a SecretStr, so ice_edge/config/config_store.py's type-based
     masking has nothing to do here and needed no update."""
     cfg = ConfigModel()
     for value in (

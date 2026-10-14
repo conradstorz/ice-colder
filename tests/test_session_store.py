@@ -224,7 +224,7 @@ async def test_save_async_writes_in_order(tmp_path):
 
 
 def test_saved_at_survives_round_trip_across_a_process_boundary(tmp_path):
-    """PAY-104 recovery (controller/vmc.py's _pay104_sale_key) keys on the
+    """PAY-104 recovery (ice_edge/sale/vmc.py's _pay104_sale_key) keys on the
     exact saved_at value read back from disk being the same instant that was
     written -- not a value rewritten in place on reload. Reload with a
     freshly constructed SessionStore (not the one that wrote it) to prove
