@@ -33,6 +33,7 @@ from ice_edge.views.health import build_health_summary
 from ice_common.paths import LOG_FILE
 from ice_edge.web import auth as web_auth
 from ice_ui import templating
+from ice_ui.views.health import VMC_MISSING_HTML
 
 config: ConfigModel = None
 
@@ -325,10 +326,7 @@ async def _render_status(request: Request):
     """
     snap = await health_snapshot()
     if snap.vmc_missing:
-        return HTMLResponse(
-            '<div class="bg-red-50 rounded-xl border border-red-200 shadow-sm p-5">'
-            '<p class="text-red-600 font-semibold">VMC not initialized</p></div>'
-        )
+        return HTMLResponse(VMC_MISSING_HTML)
 
     return templating.templates.TemplateResponse(
         request,

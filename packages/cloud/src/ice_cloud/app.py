@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from ice_cloud import ingest
+from ice_cloud import ingest, portal
 from ice_cloud.store import SnapshotStore
 from ice_cloud.ui_registry import UiRegistry
 
@@ -25,4 +25,5 @@ def create_app(*, data_dir: Path, now: Callable[[], datetime] = utc_now) -> Fast
     app.state.registry = UiRegistry(data_dir, cloud_templates=CLOUD_TEMPLATES_DIR)
     app.state.now = now
     app.include_router(ingest.router)
+    app.include_router(portal.router)
     return app

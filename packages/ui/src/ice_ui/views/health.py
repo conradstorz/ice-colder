@@ -19,6 +19,7 @@ from ice_contracts.cloud.report import (
 
 __all__ = [
     "SEVERITY_RANK",
+    "VMC_MISSING_HTML",
     "ActiveFaultView",
     "FaultBase",
     "FaultView",
@@ -27,6 +28,13 @@ __all__ = [
     "highest_priority_fault",
     "pill_state",
 ]
+
+# The /status fragment when no VMC is wired (``health.vmc_missing``); shared so
+# the machine and the cloud portal answer identically.
+VMC_MISSING_HTML = (
+    '<div class="bg-red-50 rounded-xl border border-red-200 shadow-sm p-5">'
+    '<p class="text-red-600 font-semibold">VMC not initialized</p></div>'
+)
 
 # Rank highest-first for the pill's "which fault do I name" choice:
 # critical > lockout > vend_failed > product_unavailable > warning > info.
