@@ -25,7 +25,7 @@ from ice_contracts.board.vending_machine import (
     CONTRACT_VERSION as VENDING_CONTRACT_VERSION,
 )
 from ice_contracts.board.vending_machine import EXPECTED_SUBSYSTEMS
-from services.access import Permission
+from ice_edge.access.access import Permission
 from ice_edge.hal.command_dispatcher import CommandTimeout, CompletionTimeout
 from web_interface import auth as web_auth
 from web_interface import context

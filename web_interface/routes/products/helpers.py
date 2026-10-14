@@ -2,7 +2,7 @@
 
 from fastapi import HTTPException, Request
 
-from services.access import Permission
+from ice_edge.access.access import Permission
 from web_interface import auth as web_auth
 from web_interface import context
 from ice_ui.levels import LEVEL_PRODUCTS, LEVEL_PRODUCTS_NEW, Level

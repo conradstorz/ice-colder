@@ -10,13 +10,13 @@ import pytest
 from fastapi.testclient import TestClient
 from loguru import logger as _loguru
 
-import services.access as access
+import ice_edge.access.access as access
 import ice_edge.config.config_store as config_store
 from ice_common.config_model import ConfigModel, PhysicalDetails
 from controller.machine import Machine
-from services.access import AccessStore, Role, User
+from ice_edge.access.access import AccessStore, Role, User
 from services.dispensers import DispenserProfiles
-from services.inventory_manager import InventoryManager
+from ice_edge.monitoring.inventory_manager import InventoryManager
 from tests.dispenser_fixtures import GOOD as DISPENSER_GOOD
 from tests.fakes import FakeTaskRunner
 from tests.dispenser_fixtures import ICE as DISPENSER_ICE

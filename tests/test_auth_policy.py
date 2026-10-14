@@ -1,6 +1,6 @@
 import pytest
 
-from services.auth_policy import (
+from ice_edge.access.auth_policy import (
     is_loopback,
     pin_problem,
 )

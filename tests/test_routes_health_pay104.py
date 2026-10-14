@@ -34,7 +34,7 @@ import pytest
 
 from ice_contracts.board.vending_machine import FaultCode
 from controller.machine import Machine
-from services.access import ROLE_PERMISSIONS, Permission, Role
+from ice_edge.access.access import ROLE_PERMISSIONS, Permission, Role
 from ice_edge.config.config_store import add_product
 from ice_edge.ledger.event_recorder import EventRecorder
 from ice_edge.ledger.session_store import SessionStore

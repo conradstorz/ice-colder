@@ -4,8 +4,8 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from services import reports as reports_service
-from services.access import Permission
-from services.mailer import send_email
+from ice_edge.access.access import Permission
+from ice_edge.notify.mailer import send_email
 from web_interface import auth as web_auth
 from web_interface import context
 from .compute import (

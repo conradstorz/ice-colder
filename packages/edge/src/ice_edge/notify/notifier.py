@@ -16,10 +16,10 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 from ice_common.config_model import _is_placeholder_host, ConfigModel, Channel
-from services.mailer import smtp_send
+from ice_edge.notify.mailer import smtp_send
 
 if TYPE_CHECKING:
-    from services.health_monitor import Alert
+    from ice_edge.monitoring.health_monitor import Alert
 
 
 class Notifier:

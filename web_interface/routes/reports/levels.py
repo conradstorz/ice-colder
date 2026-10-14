@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
 
 from services import reports as reports_service
-from services.access import Permission
+from ice_edge.access.access import Permission
 from web_interface import auth as web_auth
 from .compute import (
     _compute_collections,

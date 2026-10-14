@@ -69,7 +69,7 @@ parses `controller/vmc.py` with `ast` (so a `TYPE_CHECKING`-guarded import
 is caught exactly like an ordinary one -- the VMC must not even *name*
 these types) and fails if it imports `controller.machine`,
 `controller.maintenance_lease`, `controller.test_sale`,
-`ice_common.mqtt_client`, `services.health_monitor`, `ice_edge.ledger.session_store`,
+`ice_common.mqtt_client`, `ice_edge.monitoring.health_monitor`, `ice_edge.ledger.session_store`,
 `ice_edge.ledger.event_recorder`, `ice_edge.hal.command_dispatcher`, or
 `ice_edge.customer_ui.display_controller`. One deliberate carve-out: `VMC.snapshot()`
 constructs and returns a `ice_edge.ledger.session_store.SessionSnapshot` -- a
@@ -130,7 +130,7 @@ FORBIDDEN_VMC_IMPORTS = {
     "controller.maintenance_lease",
     "controller.test_sale",
     "ice_common.mqtt_client",
-    "services.health_monitor",
+    "ice_edge.monitoring.health_monitor",
     "ice_edge.ledger.session_store",
     "ice_edge.ledger.event_recorder",
     "ice_edge.hal.command_dispatcher",

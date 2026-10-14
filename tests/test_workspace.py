@@ -16,7 +16,7 @@ def test_remote_viewer_permissions_is_view_status_only():
 
 def test_services_access_reexports_the_same_permission():
     import ice_contracts.access as contracts_access
-    import services.access as legacy_access
+    import ice_edge.access.access as legacy_access
 
     assert legacy_access.Permission is contracts_access.Permission
     assert legacy_access.Role is contracts_access.Role

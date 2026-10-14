@@ -27,7 +27,7 @@ from controller.vmc import VMC
 from services.availability import Availability
 from ice_edge.hal.command_dispatcher import CommandTimeout
 from ice_edge.ledger.event_recorder import EventRecorder, SaleRecordingFailed
-from services.health_monitor import HealthMonitor
+from ice_edge.monitoring.health_monitor import HealthMonitor
 from ice_contracts.board.mqtt_messages import PaymentEnableCommand
 from ice_edge.ledger.session_store import Credit, SessionSnapshot, SessionStore
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for

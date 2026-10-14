@@ -7,7 +7,7 @@ from web_interface import auth as web_auth
 from web_interface import context
 from ice_ui.levels import LEVEL_CONTROLS
 from ice_ui.templating import templates
-from services.access import Permission
+from ice_edge.access.access import Permission
 
 
 router = APIRouter()

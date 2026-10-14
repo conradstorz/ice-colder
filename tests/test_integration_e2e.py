@@ -27,7 +27,7 @@ from controller.machine import Machine
 from controller.vmc import VMC
 from tests.fakes import FakeTaskRunner
 from ice_edge.hal.command_dispatcher import CommandDispatcher
-from services.health_monitor import HealthMonitor
+from ice_edge.monitoring.health_monitor import HealthMonitor
 from ice_common.mqtt_client import MQTTClient
 from ice_contracts.board.mqtt_messages import (
     ButtonPress,

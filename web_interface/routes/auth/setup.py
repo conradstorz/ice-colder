@@ -3,13 +3,13 @@
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from services.access import (
+from ice_edge.access.access import (
     OwnerExistsError,
     Permission,
     Role,
 )
-from services.auth_policy import pin_problem
-from services.mailer import send_email
+from ice_edge.access.auth_policy import pin_problem
+from ice_edge.notify.mailer import send_email
 from web_interface import auth as web_auth
 from web_interface import context
 from ice_ui.templating import templates

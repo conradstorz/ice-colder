@@ -3,7 +3,7 @@ import time
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
 
-from services.access import Permission
+from ice_edge.access.access import Permission
 from web_interface import auth as web_auth
 from web_interface import context
 from ice_ui.templating import templates

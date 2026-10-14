@@ -9,7 +9,7 @@ executor resolution 2, for the itemised arithmetic.
 
 import pytest
 
-from services.access import Role
+from ice_edge.access.access import Role
 from ice_edge.config.config_store import add_product
 from web_interface import context
 

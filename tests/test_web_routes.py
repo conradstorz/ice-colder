@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from ice_common.config_model import ConfigModel
 from ice_contracts.board.vending_machine import FaultCode
-from services.access import ROLE_PERMISSIONS, AccessStore, Permission, Role, User
+from ice_edge.access.access import ROLE_PERMISSIONS, AccessStore, Permission, Role, User
 from ice_edge.customer_ui.display_controller import DisplayController
 from tests.conftest import make_client, sign_in
 from tests.paths import REPO_ROOT, SCREEN_TEMPLATES, TEMPLATES_DIR
@@ -852,7 +852,7 @@ class TestFaultsUI:
     # touch-target fix.
 
     def test_status_shows_fault_age_when_health_monitor_set(self, client):
-        from services.health_monitor import HealthMonitor
+        from ice_edge.monitoring.health_monitor import HealthMonitor
 
         hm = HealthMonitor()
         routes.set_health_monitor(hm)
@@ -930,7 +930,7 @@ class TestFaultsUI:
 
 class TestHealthTabIdentity:
     def _hm(self):
-        from services.health_monitor import HealthMonitor
+        from ice_edge.monitoring.health_monitor import HealthMonitor
 
         hm = HealthMonitor(machine_id="vmc-test")
         routes.set_health_monitor(hm)
@@ -1024,7 +1024,7 @@ class TestStillSellingBanner:
     @pytest.fixture
     def selling_client(self, client):
         from services.availability import Availability
-        from services.health_monitor import HealthMonitor
+        from ice_edge.monitoring.health_monitor import HealthMonitor
         from web_interface import context as r
 
         avail = Availability()
@@ -1091,7 +1091,7 @@ class TestAvailabilityOnDashboard:
     @pytest.fixture
     def avail_client(self, client):
         from services.availability import Availability
-        from services.health_monitor import HealthMonitor
+        from ice_edge.monitoring.health_monitor import HealthMonitor
         from web_interface import context as r
 
         avail = Availability()
@@ -1362,7 +1362,7 @@ class TestLogin:
     @pytest.fixture
     def public(self, tmp_path):
         """A client with a seeded AccessStore and no session cookies."""
-        from services.access import AccessStore, Role
+        from ice_edge.access.access import AccessStore, Role
         from web_interface import auth as web_auth
 
         # web_auth.backoff is a module-level singleton shared by every test
@@ -1383,7 +1383,7 @@ class TestLogin:
         web_auth.backoff.set_trusted_proxies([])
 
     def test_login_page_lists_enabled_users_only(self, public):
-        from services.access import Role
+        from ice_edge.access.access import Role
 
         c, store, owner = public
         hidden = store.create_user("Hidden", None, Role.tech, "2468")
@@ -1444,7 +1444,7 @@ class TestLogin:
         path — that only happens when the submitted id names an enabled
         user, which would let an attacker enumerate accounts without a PIN.
         """
-        from services.access import Role
+        from ice_edge.access.access import Role
 
         c, store, owner = public
         disabled = store.create_user("Bob", None, Role.tech, "1111")
@@ -1502,7 +1502,7 @@ class TestLogin:
         assert resp.status_code == 403
 
     def test_login_page_redirects_to_setup_when_no_owner_exists(self, tmp_path):
-        from services.access import AccessStore
+        from ice_edge.access.access import AccessStore
 
         routes.set_config_object(ConfigModel())
         routes.set_access_store(AccessStore(path=tmp_path / "access.json"))
@@ -1515,7 +1515,7 @@ class TestLogin:
 class TestEnrollment:
     @pytest.fixture
     def public(self, tmp_path):
-        from services.access import AccessStore, Role
+        from ice_edge.access.access import AccessStore, Role
         from web_interface import auth as web_auth
 
         cfg = ConfigModel()
@@ -2487,7 +2487,7 @@ class TestOwnershipTransfer:
         """
         _cfg, _vmc, _inv, store = wired
         collider = uuid.UUID("12345678-abcd-4abc-8abc-abcdefabcdef")
-        monkeypatch.setattr("services.access.uuid.uuid4", lambda: collider)
+        monkeypatch.setattr("ice_edge.access.access.uuid.uuid4", lambda: collider)
         colliding_user = store.create_user(
             "Collider", "collider@example.com", Role.tech, "1111"
         )

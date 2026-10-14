@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
 from loguru import logger
 
-from services.access import Permission
+from ice_edge.access.access import Permission
 from ice_edge.config.config_store import (
     save_config,
     update_product,

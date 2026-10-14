@@ -18,7 +18,7 @@ Fixtures come from tests/conftest.py.
 
 import pytest
 from re import DOTALL, findall as re_findall, search as re_search
-from services.access import Role
+from ice_edge.access.access import Role
 from tests.dom_utils import heading_texts, main_html, title_text
 
 

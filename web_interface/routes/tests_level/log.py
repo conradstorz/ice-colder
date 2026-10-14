@@ -7,7 +7,7 @@ import time
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from services.access import Permission
+from ice_edge.access.access import Permission
 from web_interface import auth as web_auth
 from web_interface import context
 from ice_ui.levels import LEVEL_TESTS_LOG

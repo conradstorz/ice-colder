@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-import services.access as access
-from services.access import (
+import ice_edge.access.access as access
+from ice_edge.access.access import (
     BACKOFF_CAP_SECONDS,
     ROLE_PERMISSIONS,
     AccessError,
@@ -452,7 +452,7 @@ class TestStorePersistence:
         def boom(*args, **kwargs):
             raise OSError("simulated os.replace failure")
 
-        monkeypatch.setattr("services.access.os.replace", boom)
+        monkeypatch.setattr("ice_edge.access.access.os.replace", boom)
         with pytest.raises(OSError):
             store.create_user("Bob", None, Role.tech, "2468")
         assert list(store.path.parent.glob("*.tmp")) == []
@@ -518,7 +518,7 @@ class TestUsers:
         u = store.create_user("Ada", None, Role.owner, "1379")
         store.set_user_disabled(u.id, True)
 
-        monkeypatch.setattr("services.access.hashlib.scrypt", spy)
+        monkeypatch.setattr("ice_edge.access.access.hashlib.scrypt", spy)
         assert store.verify_user_pin(u.id, "1379") is False
         assert store.verify_user_pin("no-such-user", "1379") is False
         assert len(calls) == 2
@@ -563,7 +563,7 @@ class TestUsers:
         def boom(*args, **kwargs):
             raise OSError("simulated os.replace failure")
 
-        monkeypatch.setattr("services.access.os.replace", boom)
+        monkeypatch.setattr("ice_edge.access.access.os.replace", boom)
         with pytest.raises(OSError):
             store.set_user_disabled(u.id, True)
 

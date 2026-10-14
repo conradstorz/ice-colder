@@ -18,7 +18,7 @@ import pytest
 from ice_common.config_model import Product
 from ice_contracts.board.common import COMMAND_PARAM_VALIDATORS, CommandAck
 from ice_contracts.board.vending_machine import FaultCode
-from services.access import ROLE_PERMISSIONS, Role
+from ice_edge.access.access import ROLE_PERMISSIONS, Role
 from ice_edge.hal.command_dispatcher import CommandTimeout
 from ice_edge.config.config_store import add_product
 from ice_edge.ledger.event_recorder import EventRecorder
@@ -54,7 +54,7 @@ _TESTS_GET_ROUTES = ["/tests", "/tests/log", "/tests/vending"]
 def wire_subsystem():
     """Wire a fresh HealthMonitor into routes for one test, with a helper
     to record one subsystem's heartbeat + capabilities in one call."""
-    from services.health_monitor import HealthMonitor
+    from ice_edge.monitoring.health_monitor import HealthMonitor
 
     hm = HealthMonitor()
     routes.set_health_monitor(hm)
@@ -270,7 +270,7 @@ class TestNoTestsAdvertised:
 
     def test_alive_but_nothing_advertised(self, client, wired):
         _cfg, vmc, _inv, _store = wired
-        from services.health_monitor import HealthMonitor
+        from ice_edge.monitoring.health_monitor import HealthMonitor
 
         hm = HealthMonitor()
         hm.record_heartbeat(
@@ -493,7 +493,7 @@ class TestContractMatch:
         assert "Contract unknown" in resp.text
 
     def test_helper_returns_none_for_unseen_row(self):
-        from services.health_monitor import HealthMonitor
+        from ice_edge.monitoring.health_monitor import HealthMonitor
 
         row = HealthMonitor.empty_subsystem_row()
         assert contract_match("vending", row) is None

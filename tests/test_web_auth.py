@@ -4,7 +4,7 @@ import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from services.access import AccessStore, Permission, Role
+from ice_edge.access.access import AccessStore, Permission, Role
 from web_interface import auth, context
 
 

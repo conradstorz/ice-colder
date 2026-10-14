@@ -12,7 +12,7 @@ import re
 from tests.dom_utils import title_text
 
 import pytest
-from services.access import Role
+from ice_edge.access.access import Role
 from web_interface import context
 
 # The period tabs are rendered as

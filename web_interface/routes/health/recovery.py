@@ -9,7 +9,7 @@ from loguru import logger
 from ice_contracts.board.vending_machine import (
     FaultCode,
 )
-from services.access import Permission
+from ice_edge.access.access import Permission
 from web_interface import auth as web_auth
 from web_interface import context
 from ice_ui.templating import templates

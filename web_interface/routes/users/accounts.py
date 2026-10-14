@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from services.access import AccessError, OwnerExistsError, Permission, Role
-from services.auth_policy import pin_problem
+from ice_edge.access.access import AccessError, OwnerExistsError, Permission, Role
+from ice_edge.access.auth_policy import pin_problem
 from web_interface import auth as web_auth
 from web_interface import context
 from ice_ui.levels import (

@@ -14,7 +14,7 @@ from typing import Optional
 
 from fastapi import HTTPException, Request
 
-from services.access import (
+from ice_edge.access.access import (
     ROLE_PERMISSIONS,
     AccessStore,
     Backoff,

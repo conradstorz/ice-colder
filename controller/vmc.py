@@ -15,7 +15,7 @@ from ice_contracts.board.vending_machine import (
 )
 from ice_common.config_model import ConfigModel, Product
 from services.availability import Availability
-from services.inventory_manager import InventoryManager
+from ice_edge.monitoring.inventory_manager import InventoryManager
 from ice_edge.ledger.session_store import SessionSnapshot
 from controller.dispense_cycle import DispenseCycle, DispenseReport
 from controller.fault_service import FaultService

@@ -1,7 +1,7 @@
 """Tests for the Controls level (Task 10): restart, reset, shutdown with two-tap confirm."""
 
 import pytest
-from services.access import Role, ROLE_PERMISSIONS, Permission
+from ice_edge.access.access import Role, ROLE_PERMISSIONS, Permission
 from web_interface import context
 
 

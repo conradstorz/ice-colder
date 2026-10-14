@@ -69,8 +69,8 @@ from controller.vmc import VMC
 from services.availability import Availability
 from services.dispensers import DispenserProfiles
 from ice_edge.customer_ui.display_controller import DisplayController
-from services.health_monitor import HealthMonitor
-from services.inventory_manager import InventoryManager
+from ice_edge.monitoring.health_monitor import HealthMonitor
+from ice_edge.monitoring.inventory_manager import InventoryManager
 from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
 
 # Bound logger for the transaction log -- mirrors controller/mqtt_inbound.py's

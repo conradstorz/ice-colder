@@ -14,7 +14,7 @@ global around each test.
 import re
 
 from ice_contracts.board.vending_machine import FaultCode
-from services.access import ROLE_PERMISSIONS, Permission, Role
+from ice_edge.access.access import ROLE_PERMISSIONS, Permission, Role
 from ice_edge.config.config_store import add_product
 from web_interface import context
 from web_interface import routes
@@ -110,7 +110,7 @@ class TestSubsystemsLevel:
         assert resp.text.count("Never seen") >= 3
 
     def test_lists_every_expected_subsystem_when_monitor_wired_but_silent(self, client):
-        from services.health_monitor import HealthMonitor
+        from ice_edge.monitoring.health_monitor import HealthMonitor
 
         hm = HealthMonitor()
         routes.set_health_monitor(hm)
@@ -131,7 +131,7 @@ class TestSubsystemDetailLevel:
         assert "Back" in resp.text
 
     def test_identity_fields_render(self, client):
-        from services.health_monitor import HealthMonitor
+        from ice_edge.monitoring.health_monitor import HealthMonitor
 
         hm = HealthMonitor()
         hm.record_heartbeat("mdb", {"subsystem": "mdb", "uptime_seconds": 5})
@@ -168,7 +168,7 @@ class TestSubsystemDetailLevel:
         on the ice-maker page and vice versa -- the whole point of the
         board's own capabilities document being the only source of what
         its window shows (spec §3)."""
-        from services.health_monitor import HealthMonitor
+        from ice_edge.monitoring.health_monitor import HealthMonitor
 
         hm = HealthMonitor()
         hm.record_capabilities(
@@ -220,7 +220,7 @@ class TestSubsystemDetailLevel:
         """Task 7 brief, test (b): an MDB device declares a binary channel
         whose readiness word is carried as `text`; off (value 0.0) renders
         the red fill."""
-        from services.health_monitor import HealthMonitor
+        from ice_edge.monitoring.health_monitor import HealthMonitor
 
         hm = HealthMonitor()
         hm.record_capabilities(
@@ -252,7 +252,7 @@ class TestSubsystemDetailLevel:
         """Task 7 brief, test (c): a signal recorded with no heartbeat ever
         is not alive -- state must be "none" (gray), never rendered as if
         live, even though a reading exists."""
-        from services.health_monitor import HealthMonitor
+        from ice_edge.monitoring.health_monitor import HealthMonitor
 
         hm = HealthMonitor()
         hm.record_capabilities(
@@ -283,7 +283,7 @@ class TestSubsystemDetailLevel:
         dispense renders ring-dashed and the word "inhibited"; a fan row
         with no driven_by (autonomous) does not."""
         from services.availability import Availability
-        from services.health_monitor import HealthMonitor
+        from ice_edge.monitoring.health_monitor import HealthMonitor
 
         hm = HealthMonitor()
         hm.record_capabilities(
@@ -337,7 +337,7 @@ class TestSubsystemDetailLevel:
         tests/test_health_monitor.py's TestCapabilitiesOnlyLiveness/stale
         tests for the mechanism) must render its cached signal as gray, not
         as the green/red it last reported."""
-        from services.health_monitor import HealthMonitor
+        from ice_edge.monitoring.health_monitor import HealthMonitor
 
         hm = HealthMonitor(subsystem_timeout=-1.0)
         hm.record_capabilities(
@@ -372,7 +372,7 @@ class TestSubsystemDetailLevel:
         (OS-local, DST-aware per timestamp) rather than a fixed offset --
         checked here only as a well-formed local clock string, with no
         assumption about which offset is in effect."""
-        from services.health_monitor import HealthMonitor
+        from ice_edge.monitoring.health_monitor import HealthMonitor
 
         hm = HealthMonitor()
         hm.record_capabilities(
@@ -403,7 +403,7 @@ class TestSubsystemDetailLevel:
         payload with a non-string channel_id must be treated as malformed
         (same fail-safe path as a non-dict entry), not reach
         signals.get(channel_id) and raise TypeError."""
-        from services.health_monitor import HealthMonitor
+        from ice_edge.monitoring.health_monitor import HealthMonitor
 
         hm = HealthMonitor()
         hm.record_capabilities(
@@ -454,7 +454,7 @@ class TestSubsystemLiveFragment:
         assert "Controls" in resp.text
 
     def test_requires_view_status(self, login_as):
-        from services.access import Role
+        from ice_edge.access.access import Role
 
         client = login_as(Role.loader)
         resp = client.get("/health/subsystems/vending/live")
@@ -477,7 +477,7 @@ class TestFaultsLevel:
 
     def test_a_raised_fault_appears_with_age_and_gate(self, wired, client):
         _cfg, vmc, _inv, _store = wired
-        from services.health_monitor import HealthMonitor
+        from ice_edge.monitoring.health_monitor import HealthMonitor
 
         hm = HealthMonitor()
         routes.set_health_monitor(hm)

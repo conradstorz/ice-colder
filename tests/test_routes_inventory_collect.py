@@ -11,7 +11,7 @@ import time
 import httpx
 import pytest
 
-from services.access import Role
+from ice_edge.access.access import Role
 from ice_edge.ledger.event_recorder import EventRecorder
 from web_interface import context
 from web_interface.server import app

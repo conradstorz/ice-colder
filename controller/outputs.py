@@ -36,7 +36,7 @@ from ice_common.config_model import Product
 from ice_contracts.board.vending_machine import PaymentRefundCommand
 from ice_edge.supervisor.task_runner import TaskRunner
 from ice_edge.customer_ui.display_controller import DisplayController
-from services.health_monitor import HealthMonitor
+from ice_edge.monitoring.health_monitor import HealthMonitor
 from ice_contracts.board.mqtt_messages import PaymentEnableCommand, VMCAlert, VMCStatus
 from ice_common.build_info import BUILD_INFO
 from ice_edge.ledger.session_store import SessionSnapshot, SessionStore

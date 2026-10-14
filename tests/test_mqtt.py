@@ -464,7 +464,7 @@ class TestVMCMQTTWiring:
 
 class TestMonitorContractHandlers:
     def _machine_with_monitor(self):
-        from services.health_monitor import HealthMonitor
+        from ice_edge.monitoring.health_monitor import HealthMonitor
 
         machine = Machine(config=ConfigModel())
         monitor = HealthMonitor()
@@ -531,7 +531,7 @@ class TestMonitorContractHandlers:
         )  # must not raise
 
     async def test_capabilities_forwarded_to_health_monitor(self):
-        from services.health_monitor import HealthMonitor
+        from ice_edge.monitoring.health_monitor import HealthMonitor
 
         machine = Machine(config=ConfigModel())
         hm = HealthMonitor()
@@ -552,7 +552,7 @@ class TestMonitorContractHandlers:
         assert row["alive"] is False
 
     async def test_malformed_capabilities_still_forwarded_raw(self):
-        from services.health_monitor import HealthMonitor
+        from ice_edge.monitoring.health_monitor import HealthMonitor
 
         machine = Machine(config=ConfigModel())
         hm = HealthMonitor()

@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock
 
 
 from ice_common.config_model import ConfigModel
-from services.health_monitor import Alert
-from services.notifier import Notifier
+from ice_edge.monitoring.health_monitor import Alert
+from ice_edge.notify.notifier import Notifier
 
 
 def _notifier_with_mock():
@@ -67,7 +67,7 @@ async def test_cooldown_expires_and_resends(monkeypatch):
     clock = [1000.0]
     fake_loop = SimpleNamespace(time=lambda: clock[0])
     monkeypatch.setattr(
-        "services.notifier.asyncio",
+        "ice_edge.notify.notifier.asyncio",
         SimpleNamespace(get_running_loop=lambda: fake_loop),
     )
 

@@ -9,8 +9,8 @@ import pytest
 from loguru import logger
 
 from ice_common.config_model import ConfigModel
-from services.health_monitor import HealthMonitor, SubsystemStatus, Alert
-from services.notifier import Notifier
+from ice_edge.monitoring.health_monitor import HealthMonitor, SubsystemStatus, Alert
+from ice_edge.notify.notifier import Notifier
 
 
 # ── SubsystemStatus tests ────────────────────────────────────

@@ -18,7 +18,7 @@ import re
 
 import pytest
 
-from services.access import Role
+from ice_edge.access.access import Role
 from tests.conftest import make_client
 from web_interface import auth as web_auth
 

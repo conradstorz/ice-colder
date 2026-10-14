@@ -6,8 +6,8 @@ from loguru import logger
 from pydantic import SecretStr
 
 from ice_edge.config import config_store
-from services.access import Permission
-from services.mailer import send_email
+from ice_edge.access.access import Permission
+from ice_edge.notify.mailer import send_email
 from web_interface import auth as web_auth
 from web_interface import context
 from ice_ui.levels import (

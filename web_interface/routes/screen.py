@@ -10,8 +10,8 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 
 from ice_contracts.board.vending_machine import EXPECTED_SUBSYSTEMS
-from services.access import Permission
-from services.health_monitor import HealthMonitor
+from ice_edge.access.access import Permission
+from ice_edge.monitoring.health_monitor import HealthMonitor
 from web_interface import auth as web_auth
 from web_interface import context
 from ice_ui.templating import templates

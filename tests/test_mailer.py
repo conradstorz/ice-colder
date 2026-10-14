@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from ice_common.config_model import EmailGatewayConfig
-from services.mailer import SMTP_TIMEOUT_SECONDS, send_email, smtp_send
+from ice_edge.notify.mailer import SMTP_TIMEOUT_SECONDS, send_email, smtp_send
 
 
 @pytest.fixture
@@ -22,7 +22,7 @@ def gateway():
 
 def test_smtp_send_uses_starttls_login_and_the_timeout(gateway):
     msg = EmailMessage()
-    with patch("services.mailer.smtplib.SMTP") as smtp:
+    with patch("ice_edge.notify.mailer.smtplib.SMTP") as smtp:
         server = smtp.return_value.__enter__.return_value
         smtp_send(gateway, msg)
     smtp.assert_called_once_with("smtp.test.local", 587, timeout=SMTP_TIMEOUT_SECONDS)
@@ -40,7 +40,7 @@ async def test_send_email_builds_the_message_and_reports_success(gateway):
         sent["subject"] = msg["Subject"]
         sent["body"] = msg.get_content()
 
-    with patch("services.mailer.smtp_send", side_effect=fake_send):
+    with patch("ice_edge.notify.mailer.smtp_send", side_effect=fake_send):
         ok = await send_email(gateway, "ada@example.com", "Your code", "123456")
 
     assert ok is True
@@ -51,7 +51,7 @@ async def test_send_email_builds_the_message_and_reports_success(gateway):
 
 
 async def test_send_email_swallows_failures_and_returns_false(gateway, caplog):
-    with patch("services.mailer.smtp_send", side_effect=OSError("no route to host")):
+    with patch("ice_edge.notify.mailer.smtp_send", side_effect=OSError("no route to host")):
         ok = await send_email(gateway, "ada@example.com", "Your code", "123456")
     assert ok is False
     assert "no route to host" in caplog.text
@@ -66,7 +66,7 @@ async def test_send_email_never_blocks_the_loop(gateway):
         nonlocal send_thread_id
         send_thread_id = threading.get_ident()
 
-    with patch("services.mailer.smtp_send", side_effect=fake_send):
+    with patch("ice_edge.notify.mailer.smtp_send", side_effect=fake_send):
         assert await send_email(gateway, "a@b.c", "s", "b") is True
 
     # Verify the send ran in a different thread (the executor thread pool)
@@ -85,7 +85,7 @@ async def test_send_email_without_attachments_remains_single_part(gateway):
         nonlocal sent_msg
         sent_msg = msg
 
-    with patch("services.mailer.smtp_send", side_effect=capture_msg):
+    with patch("ice_edge.notify.mailer.smtp_send", side_effect=capture_msg):
         ok = await send_email(gateway, "ada@example.com", "Test", "Hello world")
 
     assert ok is True
@@ -105,7 +105,7 @@ async def test_send_email_with_one_csv_attachment_becomes_multipart(gateway):
         nonlocal sent_msg
         sent_msg = msg
 
-    with patch("services.mailer.smtp_send", side_effect=capture_msg):
+    with patch("ice_edge.notify.mailer.smtp_send", side_effect=capture_msg):
         ok = await send_email(
             gateway,
             "ada@example.com",
@@ -145,7 +145,7 @@ async def test_send_email_with_two_attachments(gateway):
         nonlocal sent_msg
         sent_msg = msg
 
-    with patch("services.mailer.smtp_send", side_effect=capture_msg):
+    with patch("ice_edge.notify.mailer.smtp_send", side_effect=capture_msg):
         ok = await send_email(
             gateway,
             "ada@example.com",
@@ -180,7 +180,7 @@ async def test_send_email_rejects_malformed_mime_type(gateway, caplog):
     """A mime type without '/' returns False and logs an error."""
     bad_data = b"some data"
 
-    with patch("services.mailer.smtp_send") as mock_send:
+    with patch("ice_edge.notify.mailer.smtp_send") as mock_send:
         ok = await send_email(
             gateway,
             "ada@example.com",
@@ -203,7 +203,7 @@ async def test_send_email_with_wrong_length_attachment_tuple_returns_false(
     gateway, caplog
 ):
     """A 2-tuple instead of a (filename, payload, mime_type) 3-tuple must not raise."""
-    with patch("services.mailer.smtp_send") as mock_send:
+    with patch("ice_edge.notify.mailer.smtp_send") as mock_send:
         ok = await send_email(
             gateway,
             "ada@example.com",
@@ -219,7 +219,7 @@ async def test_send_email_with_wrong_length_attachment_tuple_returns_false(
 
 async def test_send_email_with_bare_tuple_attachments_returns_false(gateway, caplog):
     """A bare tuple instead of a list of tuples must not raise."""
-    with patch("services.mailer.smtp_send") as mock_send:
+    with patch("ice_edge.notify.mailer.smtp_send") as mock_send:
         ok = await send_email(
             gateway,
             "ada@example.com",
@@ -235,7 +235,7 @@ async def test_send_email_with_bare_tuple_attachments_returns_false(gateway, cap
 
 async def test_send_email_with_bytes_mime_type_returns_false(gateway, caplog):
     """A mime_type given as bytes instead of str must not raise."""
-    with patch("services.mailer.smtp_send") as mock_send:
+    with patch("ice_edge.notify.mailer.smtp_send") as mock_send:
         ok = await send_email(
             gateway,
             "ada@example.com",
@@ -251,7 +251,7 @@ async def test_send_email_with_bytes_mime_type_returns_false(gateway, caplog):
 
 async def test_send_email_with_non_bytes_payload_returns_false(gateway, caplog):
     """A payload given as str instead of bytes must not raise."""
-    with patch("services.mailer.smtp_send") as mock_send:
+    with patch("ice_edge.notify.mailer.smtp_send") as mock_send:
         ok = await send_email(
             gateway,
             "ada@example.com",

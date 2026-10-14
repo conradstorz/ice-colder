@@ -12,7 +12,7 @@ from loguru import logger
 from pydantic import SecretStr
 
 from ice_edge.config import config_store
-from services.access import Permission
+from ice_edge.access.access import Permission
 from services.startup_config import mqtt_env_overrides
 from web_interface import auth as web_auth
 from web_interface import context

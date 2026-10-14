@@ -9,7 +9,7 @@ from services.startup_config import warn_if_setup_mode
 from ice_common.config_model import ConfigModel, WebConfig
 from ice_contracts.board.vending_machine import FaultCode
 from controller.machine import Machine
-from services.access import AccessStore, Role
+from ice_edge.access.access import AccessStore, Role
 from ice_edge.config.config_store import save_config
 from ice_edge.ledger.event_recorder import EventRecorder
 from ice_edge.ledger import event_recorder as event_recorder_module

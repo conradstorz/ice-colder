@@ -3,10 +3,10 @@
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from services.access import (
+from ice_edge.access.access import (
     OTP_DIGITS,
 )
-from services.mailer import send_email
+from ice_edge.notify.mailer import send_email
 from web_interface import auth as web_auth
 from web_interface import context
 from ice_ui.templating import templates

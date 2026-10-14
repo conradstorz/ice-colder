@@ -12,7 +12,7 @@ import asyncio
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 
-from services.access import Permission
+from ice_edge.access.access import Permission
 from web_interface import auth as web_auth
 from web_interface import context
 from ice_ui.levels import LEVEL_HOME

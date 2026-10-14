@@ -10,7 +10,7 @@ from ice_contracts.board.vending_machine import (
     PAYMENT_BLOCKING_FAULTS,
     FaultCode,
 )
-from services.access import Permission
+from ice_edge.access.access import Permission
 from web_interface import auth as web_auth
 from web_interface import context
 from ice_ui.levels import (

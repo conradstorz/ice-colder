@@ -202,7 +202,7 @@ FastAPI app (`server.py`) with Jinja2 templates and HTMX-driven partials. `route
 
 **The v2 shell** (`base.html` + `packages/ui/src/ice_ui/levels.py`) replaces the tabbed dashboard. Every level is a real URL and every level has its own breadcrumb trail and Back button that goes to the parent, not through history. `base.html` defines three blocks: `title` (for `<title>`), `body` (the sole content of `<main>`, where your level goes), and `bar_variant` (the bar header, not to be overridden). The bar itself uses `hx-swap-oob="true"` to deliver an out-of-band swap on every response, so a boosted navigation updates it with no reload. The navigation tree is a hierarchy of 24 named levels plus three parameterized ones (a product SKU, a subsystem name, a user id). Each level is defined in `packages/ui/src/ice_ui/levels.py` as a frozen dataclass with `title`, `url`, `parent`, and properties `crumbs`, `parent_url`, plus a classmethod `Level.child(parent, title, url)` for parameterized levels.
 
-The tree, every URL with the permission that gates it (`Permission.<x>` from `services/access.py`; "A or B" is `_require_any(A, B)`, a local OR-semantics dependency defined in `products/helpers.py` and `settings/overview.py` — `web_auth.require()` itself is AND-only):
+The tree, every URL with the permission that gates it (`Permission.<x>` from `packages/edge/src/ice_edge/access/access.py`; "A or B" is `_require_any(A, B)`, a local OR-semantics dependency defined in `products/helpers.py` and `settings/overview.py` — `web_auth.require()` itself is AND-only):
 
 | URL | Gate |
 |---|---|
@@ -263,7 +263,7 @@ The tree, every URL with the permission that gates it (`Permission.<x>` from `se
 
 `tests/route_context.py` gives the test suite one place to snapshot and restore every mutable `web_interface.context` global, instead of each test hand-rolling its own `routes.set_X(None)` teardown. `GLOBALS` names all 13 of them; `snapshot()`/`restore()` save and put values back via plain `setattr`, then resync `web_interface.auth`'s own access-store reference, reset the login back-off, and clear its trusted-proxy list (`web_auth` keeps state `context`'s globals don't reach); `discoverable_globals()` walks `vars(context)` for every non-dunder, non-callable, non-module/class, non-ALL_CAPS name, so adding a 14th global to `context.py` without adding it to `GLOBALS` fails `tests/test_route_context.py`'s `test_globals_covers_every_module_global` guard. `tests/conftest.py`'s autouse `_isolated_route_context` fixture snapshots before every test and restores after, so the old hand-rolled teardowns are gone; a `set_X(None)` call that remains in a test is a pre-action setup asserting behaviour with that dependency absent, never cleanup.
 
-The dashboard uses cookie-based session auth via `services/access.py`'s `AccessStore`,
+The dashboard uses cookie-based session auth via `packages/edge/src/ice_edge/access/access.py`'s `AccessStore`,
 persisted in `data/access.json` (mode 0600). Users have four roles (`owner`,
 `secretary`, `tech`, `loader`) and a 4–8 digit PIN. First login on a new device
 requires a second factor: a 6-digit OTP sent by email (when
