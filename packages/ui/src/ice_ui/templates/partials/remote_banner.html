@@ -1,0 +1,15 @@
+{# Remote-viewing banner (cloud spec section 4). Included from base.html only
+   when the cloud portal passes `remote`; the machine never does. Reads
+   remote.machine_id, last_report_local, age_text, stale, ui_mismatch,
+   report_digest and portal_digest. #}
+<div id="remote-banner" role="status"
+     class="px-4 py-2 text-sm border-b border-amber-200 bg-amber-50 text-amber-900">
+  <span class="font-semibold">Remote view</span>
+  <span class="font-mono text-xs">{{ remote.machine_id }}</span>
+  {% if remote.stale %}
+  <div class="font-medium">Offline — showing last report from {{ remote.last_report_local }} ({{ remote.age_text }} ago)</div>
+  {% endif %}
+  {% if remote.ui_mismatch %}
+  <div class="font-medium">UI version mismatch: machine {{ remote.report_digest[:8] }}, portal {{ remote.portal_digest[:8] }}</div>
+  {% endif %}
+</div>
