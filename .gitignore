@@ -209,3 +209,6 @@ docker-compose.override.yml
 # Claude Code agent worktrees and personal editor settings
 .claude/worktrees/
 .vscode/
+
+# Cloud portal stub data (cloud spec section 9)
+cloud_data/

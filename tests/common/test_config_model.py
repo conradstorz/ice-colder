@@ -278,3 +278,24 @@ class TestReportsConfig:
             "ops@example.com",
             "owner2@example.com",
         ]
+
+
+def test_cloud_config_defaults_off_and_missing_key_loads():
+    from ice_common.config_model import CloudConfig, ConfigModel
+
+    cfg = ConfigModel.model_validate({})
+    assert cfg.cloud == CloudConfig()
+    assert cfg.cloud.enabled is False
+    assert cfg.cloud.url == "http://127.0.0.1:26124"
+    assert cfg.cloud.report_interval_seconds == 60
+
+
+def test_cloud_report_interval_is_bounded():
+    from pydantic import ValidationError
+
+    from ice_common.config_model import CloudConfig
+
+    with pytest.raises(ValidationError):
+        CloudConfig(report_interval_seconds=9)
+    with pytest.raises(ValidationError):
+        CloudConfig(report_interval_seconds=3601)

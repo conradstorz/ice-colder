@@ -6,11 +6,9 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
-from ice_contracts.board.vending_machine import (
-    PAYMENT_BLOCKING_FAULTS,
-    FaultCode,
-)
+from ice_contracts.board.vending_machine import FaultCode
 from ice_edge.access.access import Permission
+from ice_edge.views.health import faults_with_age
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
 from ice_ui.levels import (
@@ -20,10 +18,6 @@ from ice_ui.templating import templates
 
 router = APIRouter()
 
-
-# active_faults() reports fault codes as strings (FaultCode.value); compare
-# against the contract's enum set once, here, rather than in fault_gate.
-_PAYMENT_BLOCKING_CODES = {code.value for code in PAYMENT_BLOCKING_FAULTS}
 
 # A fault's `key` is either a FaultCode.value (machine-scope, always drawn
 # from this fixed charset) or a product SKU (free text). Only characters in
@@ -55,60 +49,16 @@ def dom_safe_key(key: str) -> str:
     return "h" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
 
 
-def fault_gate(fault: dict) -> str:
-    """Classify one active fault into "safety" / "fulfillment" / "alert".
-
-    Executor resolution 1 (task-6-brief.md): the spec asks for "the gate
-    class per fault", but no such mapping exists in the codebase --
-    ice_edge/faults/availability.py's Gate enum classifies permissive *rows*, not
-    faults, and ice_contracts/board/vending_machine.py's FAULT_TABLE carries
-    severity/scope but no gate. This derives it once, here, and nowhere
-    else (never inline in a template, never re-derived):
-
-      * code in PAYMENT_BLOCKING_FAULTS -> "safety" (those six codes are
-        exactly the ones that can inhibit payment -- see
-        ice_edge/faults/availability.py's Gate docstring)
-      * else scope == "product" -> "fulfillment" (blocks only that sale)
-      * else -> "alert" (blocks nothing)
-
-    A reversible part-2 stand-in: the spec never defined a fault-to-gate
-    mapping: a future task may add a real one (e.g. a `gate` field on
-    FaultSpec) and delete this function.
-    """
-    if fault["code"] in _PAYMENT_BLOCKING_CODES:
-        return "safety"
-    if fault["scope"] == "product":
-        return "fulfillment"
-    return "alert"
-
-
 def _faults_with_age() -> list[dict]:
-    """vmc.active_faults() joined with health_monitor's since_seconds and
-    this module's derived gate, on `key` -- exactly the join
-    context._render_status already does for the same reason (executor
-    resolution 6). A fault renders without an age when no health monitor
-    is wired, rather than failing; an empty list when no VMC is wired."""
-    if not context.vmc_instance:
-        return []
-    faults = context.vmc_instance.active_faults()
-    ages: dict[str, float | None] = {}
-    if context.health_monitor:
-        ages = {
-            f["key"]: f["since_seconds"]
-            for f in context.health_monitor.get_summary()["active_faults"]
-        }
+    """The shared join (`ice_edge.views.health.faults_with_age`) plus this
+    page's selector-safe `dom_key`."""
+    faults = faults_with_age(
+        context.vmc_instance,
+        context.health_monitor,
+        lambda: context.machine_instance.pending_sale_for_recovery(),
+    )
     for f in faults:
-        f["since_seconds"] = ages.get(f["key"])
-        f["gate"] = fault_gate(f)
         f["dom_key"] = dom_safe_key(f["key"])
-        # Task 14: only the machine-scope PAY-104 fault ever carries a
-        # pending sale; every other fault (product-scope, or another
-        # machine-scope code) gets None, keeping its plain Clear button.
-        f["pending_sale"] = (
-            context.machine_instance.pending_sale_for_recovery()
-            if f["code"] == FaultCode.PAY_104.value
-            else None
-        )
     return faults
 
 

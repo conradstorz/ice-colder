@@ -1,0 +1,22 @@
+# dev only — no auth (cloud spec §8)
+name: ice_cloud
+
+# Cloud portal stub. From the repository root:
+#   docker compose -f docker/docker-compose.cloud.yml up --build
+# The container binds 0.0.0.0 so the port mapping can reach it; the host side
+# of the mapping stays on loopback, so the portal is never exposed to the LAN.
+
+services:
+  cloud:
+    build:
+      context: ..
+      dockerfile: packages/cloud/Dockerfile
+    container_name: ice-cloud
+    environment:
+      - ICE_CLOUD_HOST=0.0.0.0
+      - ICE_CLOUD_DATA=/app/cloud_data
+    ports:
+      - "127.0.0.1:26124:26124"
+    volumes:
+      - ../cloud_data:/app/cloud_data
+    restart: unless-stopped

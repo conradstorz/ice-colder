@@ -43,7 +43,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv sync --locked
-      # Pinned, explicit Chrome build for the four opt-in browser tests below —
+      # Pinned, explicit Chrome build for the five opt-in browser tests below —
       # deliberately not whatever ubuntu-latest happens to ship, which changes
       # without notice. Chrome for Testing has archived per-major downloads
       # since ~113; 130 is a stable, comfortably-available pin.
@@ -76,7 +76,7 @@ jobs:
           docker logs mosquitto
           echo "::error::mosquitto did not become ready on localhost:1883"
           exit 1
-      # Everything runs, including the e2e tests (broker above) and the 4
+      # Everything runs, including the e2e tests (broker above) and the 5
       # opt-in browser tests (enabled below) — the guard step immediately
       # after this one fails CI if any of them skip instead of running (the
       # broker skip is forbidden in CI via ICE_COLDER_REQUIRE_BROKER), so a
@@ -101,6 +101,7 @@ jobs:
       - run: docker network create harbor
       - run: docker compose --env-file .env.example -f docker-compose.yml config -q
       - run: docker compose --env-file .env.example -f docker/docker-compose.prod.yml config -q
+      - run: docker compose --env-file .env.example -f docker/docker-compose.cloud.yml config -q
 
   image:
     # PRs: prove the image builds. main: publish it for Watchtower on the sim host.
@@ -149,6 +150,15 @@ jobs:
           fi
           cat cloud.err
           grep -q "ModuleNotFoundError: No module named 'ice_cloud'" cloud.err
+      # The cloud portal stub image (dev only, no auth). Built on every PR and
+      # never published. Its own Dockerfile.dockerignore (next to the Dockerfile)
+      # replaces the root .dockerignore, which excludes packages/cloud.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/cloud/Dockerfile
+          platforms: linux/amd64
+          push: false
       - uses: docker/build-push-action@v6
         with:
           context: .

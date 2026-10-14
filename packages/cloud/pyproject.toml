@@ -5,11 +5,13 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi[standard]>=0.115.11",
     "ice-common",
+    "ice-contracts",
     "ice-ui",
 ]
 
 [tool.uv.sources]
 ice-common = { workspace = true }
+ice-contracts = { workspace = true }
 ice-ui = { workspace = true }
 
 [build-system]

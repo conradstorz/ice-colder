@@ -106,9 +106,9 @@ tests/         one package; conftest.py + helpers stay at root
 | Run a single test | `uv run pytest tests/test_file.py::test_name` |
 | Lint/format | `ruff check --fix .` then `ruff format .` |
 | Build Tailwind CSS | `.tailwind/tailwindcss.exe -c packages/ui/tailwind.config.js -i packages/ui/tailwind.input.css -o packages/ui/src/ice_ui/static/app.css --minify` |
-| Run the opt-in browser tests locally | `ICE_COLDER_BROWSER_TESTS=1 uv run pytest tests/edge/web/test_dashboard_v2_home_browser.py tests/edge/web/test_dashboard_v2_boosted_nav_browser.py tests/edge/web/test_users_codes_pin_browser.py tests/edge/web/test_touch_feedback_browser.py` |
+| Run the opt-in browser tests locally | `ICE_COLDER_BROWSER_TESTS=1 uv run pytest tests/edge/web/test_dashboard_v2_home_browser.py tests/edge/web/test_dashboard_v2_boosted_nav_browser.py tests/edge/web/test_users_codes_pin_browser.py tests/edge/web/test_touch_feedback_browser.py tests/cloud/test_banner_boosted_browser.py` |
 
-**Browser tests:** `tests/edge/web/test_dashboard_v2_home_browser.py`, `tests/edge/web/test_dashboard_v2_boosted_nav_browser.py`, `tests/edge/web/test_users_codes_pin_browser.py` and `tests/edge/web/test_touch_feedback_browser.py` drive real headless Chrome via `tests/browser/*.mjs` checker scripts (Node standard library only). They're skipped unless `ICE_COLDER_BROWSER_TESTS=1` is set **and** a Chrome/Chromium binary (honoring `CHROME_PATH` first) plus a `node` executable are both found, so a machine without Chrome still runs the rest of the suite clean. CI sets the flag and installs a pinned Chrome and Node so these four run on every push/PR; a guard step in `ci.yml` fails the build if any of them skip instead of passing.
+**Browser tests:** `tests/edge/web/test_dashboard_v2_home_browser.py`, `tests/edge/web/test_dashboard_v2_boosted_nav_browser.py`, `tests/edge/web/test_users_codes_pin_browser.py` and `tests/edge/web/test_touch_feedback_browser.py` drive real headless Chrome via `tests/browser/*.mjs` checker scripts (Node standard library only). They're skipped unless `ICE_COLDER_BROWSER_TESTS=1` is set **and** a Chrome/Chromium binary (honoring `CHROME_PATH` first) plus a `node` executable are both found, so a machine without Chrome still runs the rest of the suite clean. CI sets the flag and installs a pinned Chrome and Node so these five (the four above plus `tests/cloud/test_banner_boosted_browser.py`, which checks the cloud remote banner never stacks on boosted navigation) run on every push/PR; a guard step in `ci.yml` fails the build if any of them skip instead of passing.
 
 **Tailwind:** The binary is [v3.4.17 standalone CLI](https://github.com/tailwindlabs/tailwindcss/releases/download/v3.4.17/tailwindcss-windows-x64.exe); a Linux or macOS checkout needs the matching asset from the same release. The binary is gitignored (`.tailwind/`, ~40 MB); `packages/ui/src/ice_ui/static/app.css` is **committed**. `tests/ui/test_static_css.py` fails CI when a template uses a class the committed file lacks — but that test only checks that classes templates *use* are present, never that unused ones are *absent*. Rebuild and commit `app.css` by hand whenever templates change; a stale file (leftover classes from a deleted template, or a missing rebuild after one) passes CI silently and only a manual rebuild catches it.
 
@@ -130,7 +130,7 @@ handles process-level restarts). Neither helper imports application components.
 
 ### Configuration (`packages/common/src/ice_common/config_model.py`, `config.json`)
 
-All configuration is a single Pydantic `ConfigModel` loaded from `config.json`. The model has seven top-level sections: `version`, `physical` (machine details, people, products), `payment` (Stripe, PayPal, MDB), `communication` (email, SMS, Snapchat gateways), `mqtt` (broker connection), `web` (dashboard host/port/trusted proxies), and `reports` (scheduled sales-summary email: `schedule` off/daily/weekly, `hour` 0–23, `weekday` Monday-based 0–6, `extra_recipients`) — plus the scalar `machine_id` field. The reports section is edited at **`/settings/reports`** gated on `edit_contacts`. `ConfigModel` exposes convenience properties (e.g., `config.products`, `config.machine_owner`, `config.stripe`) so consumers don't need to navigate the nested structure. Missing keys are filled from Pydantic defaults at load time. Saves via
+All configuration is a single Pydantic `ConfigModel` loaded from `config.json`. The model has eight top-level sections: `version`, `physical` (machine details, people, products), `payment` (Stripe, PayPal, MDB), `communication` (email, SMS, Snapchat gateways), `mqtt` (broker connection), `web` (dashboard host/port/trusted proxies), and `reports` (scheduled sales-summary email: `schedule` off/daily/weekly, `hour` 0–23, `weekday` Monday-based 0–6, `extra_recipients`), and `cloud` (optional uplink: `enabled` default **false**, `url` default `http://127.0.0.1:26124`, `report_interval_seconds` 10–3600, default 60) — plus the scalar `machine_id` field. The reports section is edited at **`/settings/reports`** gated on `edit_contacts`. `ConfigModel` exposes convenience properties (e.g., `config.products`, `config.machine_owner`, `config.stripe`) so consumers don't need to navigate the nested structure. Missing keys are filled from Pydantic defaults at load time. Saves via
 `packages/edge/src/ice_edge/config/config_store.py` are atomic (tmp + rename), write real secret values,
 and keep a rolling `config.json.bak`.
 
@@ -145,6 +145,10 @@ relying on a bind-mount targeting `config.json` directly (which would let
 Docker create it as a directory on a fresh clone, since the file is
 gitignored). If the resolved config path exists but is a directory, startup
 logs a clear error and exits with code 1 rather than papering over it.
+
+### Cloud uplink (`ice_edge/uplink/`)
+
+Off unless `config.cloud.enabled`. `ice_edge/__main__.py` then adds a supervised `uplink` task running `run_uplink`: it `PUT`s the `ice_ui` bundle once (retried each interval until accepted), then forever `POST`s a `MachineReport` (built by `build_machine_report` from the `ice_edge.views.health` builders; a pure read) to `{url}/api/v1/machines/{machine_id}/report`, re-reading `report_interval_seconds` each pass. `HttpUplink` has a 5 s timeout and never raises (failure logs a warning and returns `False`); there is no outbox, each report supersedes the last, and a sale is never blocked. `ice_edge.uplink` sits above `views` and below `app`/`web`, so it imports `Machine` only under `TYPE_CHECKING`.
 
 ### Dispenser profiles (`dispensers.toml`)
 
@@ -387,6 +391,16 @@ trusted-proxies list) without mutating the live `ConfigModel` — so an env-only
 applied to the dashboard's login back-off via
 `routes.backoff.set_trusted_proxies(...)`, called after
 `routes.set_config_object(...)` so the env value wins.
+
+## Cloud (`ice_cloud`)
+
+A runnable, **dev-only, no-auth** fleet portal stub: `packages/cloud`, spec `docs/superpowers/specs/2026-10-13-cloud-monitoring-server-design.md`. It binds `127.0.0.1` by default (compose maps `127.0.0.1:26124`); never expose it beyond localhost until auth and mTLS exist (spec §8).
+
+- Machines push `MachineReport`s (`POST /api/v1/machines/{id}/report`) and UI bundles (`PUT /api/v1/ui-bundles/{digest}`) from `ice_edge.uplink` (`cloud.enabled` defaults to false); data lives in `ICE_CLOUD_DATA` (default `./cloud_data`, gitignored).
+- The portal renders the machine's **own** `ice_ui` templates from the last stored report at the same paths (`/`, `/status`, `/pill`, `/kpi`, `/health`, `/health/faults`), read-only (`REMOTE_VIEWER_PERMISSIONS`), under an Offline banner when the report is older than 3 x its interval. Any other page is 404 "Not available remotely yet".
+- Reported UI digest = installed `ice_ui` -> installed UI; a cached uploaded bundle -> rendered in a `SandboxedEnvironment`; unknown -> installed UI plus a mismatch banner.
+- `tests/cloud/test_ui_parity.py` is the executable form of the parity rule: edge and cloud must render identical `<main>` (full pages) or body (fragments). `ice_cloud` may import `ice_ui`, `ice_common` and `ice_contracts`, never `ice_edge` or `ice_sims` (import-linter).
+- Run: `uv run python -m ice_cloud`; image: `docker build -f packages/cloud/Dockerfile .` (its own `Dockerfile.dockerignore` overrides the root `.dockerignore`, which excludes `packages/cloud`).
 
 ## Fault Codes and Severity
 

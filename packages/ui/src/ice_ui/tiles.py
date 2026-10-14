@@ -14,6 +14,10 @@ from ice_contracts.access import Permission
 from ice_ui.levels import (
     LEVEL_CONTROLS,
     LEVEL_HEALTH,
+    LEVEL_HEALTH_AVAILABILITY,
+    LEVEL_HEALTH_FAULTS,
+    LEVEL_HEALTH_LOGS,
+    LEVEL_HEALTH_SUBSYSTEMS,
     LEVEL_INVENTORY,
     LEVEL_PRODUCTS,
     LEVEL_REPORTS,
@@ -126,3 +130,70 @@ REPORT_TILES = [
         "coming_soon": False,
     },
 ]
+
+
+def fault_count_line(count: int | None) -> str:
+    """The active-fault count tile line; an em dash when the count is
+    unknown (no VMC wired on the machine; ``health.vmc_missing`` remotely)."""
+    if count is None:
+        return "—"
+    return f"{count} active fault{'s' if count != 1 else ''}"
+
+
+def availability_line(payment_enabled: bool | None, reasons: int) -> str:
+    """The Availability tile line: "Payment enabled", "Payment disabled (n)"
+    where n is the number of blocking reasons, or an em dash when no
+    Availability is wired (``payment_enabled is None``)."""
+    if payment_enabled is None:
+        return "—"
+    if payment_enabled:
+        return "Payment enabled"
+    return f"Payment disabled ({reasons})"
+
+
+def health_tiles(
+    *,
+    subsystems: str,
+    faults: str,
+    availability: str,
+    logs: str,
+    perms: frozenset,
+) -> list[dict]:
+    """The four /health sub-tiles (shape matches partials/tile.html).
+
+    Each argument is that tile's context line. Logs is the only tile whose
+    ``enabled`` depends on the viewer: it needs ``Permission.view_logs``."""
+    return [
+        {
+            "title": "Subsystems",
+            "url": LEVEL_HEALTH_SUBSYSTEMS.url,
+            "icon": "health",
+            "context": subsystems,
+            "enabled": True,
+            "coming_soon": False,
+        },
+        {
+            "title": "Faults",
+            "url": LEVEL_HEALTH_FAULTS.url,
+            "icon": "health",
+            "context": faults,
+            "enabled": True,
+            "coming_soon": False,
+        },
+        {
+            "title": "Availability",
+            "url": LEVEL_HEALTH_AVAILABILITY.url,
+            "icon": "health",
+            "context": availability,
+            "enabled": True,
+            "coming_soon": False,
+        },
+        {
+            "title": "Logs",
+            "url": LEVEL_HEALTH_LOGS.url,
+            "icon": "health",
+            "context": logs,
+            "enabled": Permission.view_logs in perms,
+            "coming_soon": False,
+        },
+    ]

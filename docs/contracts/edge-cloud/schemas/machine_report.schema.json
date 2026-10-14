@@ -1,0 +1,643 @@
+{
+  "$defs": {
+    "ActiveFaultView": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "sku": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sku"
+        },
+        "product": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Product"
+        },
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "severity": {
+          "title": "Severity",
+          "type": "string"
+        },
+        "scope": {
+          "title": "Scope",
+          "type": "string"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "since_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Since Seconds"
+        }
+      },
+      "required": [
+        "key",
+        "sku",
+        "product",
+        "code",
+        "severity",
+        "scope",
+        "description",
+        "since_seconds"
+      ],
+      "title": "ActiveFaultView",
+      "type": "object"
+    },
+    "BuildView": {
+      "additionalProperties": false,
+      "properties": {
+        "commit": {
+          "title": "Commit",
+          "type": "string"
+        },
+        "commit_short": {
+          "title": "Commit Short",
+          "type": "string"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "uptime_seconds": {
+          "title": "Uptime Seconds",
+          "type": "integer"
+        },
+        "machine_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Machine Id"
+        }
+      },
+      "required": [
+        "commit",
+        "commit_short",
+        "source",
+        "uptime_seconds",
+        "machine_id"
+      ],
+      "title": "BuildView",
+      "type": "object"
+    },
+    "FaultView": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "sku": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sku"
+        },
+        "product": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Product"
+        },
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "severity": {
+          "title": "Severity",
+          "type": "string"
+        },
+        "scope": {
+          "title": "Scope",
+          "type": "string"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "since_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Since Seconds"
+        },
+        "gate": {
+          "enum": [
+            "safety",
+            "fulfillment",
+            "alert"
+          ],
+          "title": "Gate",
+          "type": "string"
+        },
+        "pending_sale": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PendingSaleView"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "key",
+        "sku",
+        "product",
+        "code",
+        "severity",
+        "scope",
+        "description",
+        "since_seconds",
+        "gate",
+        "pending_sale"
+      ],
+      "title": "FaultView",
+      "type": "object"
+    },
+    "HealthPageSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "mqtt_connected": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Mqtt Connected"
+        },
+        "vmc_state": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Vmc State"
+        },
+        "vmc_build": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BuildView"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "subsystems_ok": {
+          "title": "Subsystems Ok",
+          "type": "integer"
+        },
+        "subsystems_total": {
+          "title": "Subsystems Total",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "mqtt_connected",
+        "vmc_state",
+        "vmc_build",
+        "subsystems_ok",
+        "subsystems_total"
+      ],
+      "title": "HealthPageSummary",
+      "type": "object"
+    },
+    "HealthSummary": {
+      "additionalProperties": false,
+      "description": "Typed form of the edge's health_snapshot() dict.",
+      "properties": {
+        "vmc_missing": {
+          "title": "Vmc Missing",
+          "type": "boolean"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StatusView"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "is_healthy": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Is Healthy"
+        },
+        "issues": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Issues",
+          "type": "array"
+        },
+        "active_faults": {
+          "items": {
+            "$ref": "#/$defs/ActiveFaultView"
+          },
+          "title": "Active Faults",
+          "type": "array"
+        },
+        "payment_enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Payment Enabled"
+        },
+        "payment_reasons": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Payment Reasons",
+          "type": "array"
+        },
+        "machine_stopped": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Machine Stopped"
+        },
+        "maintenance": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Maintenance"
+        }
+      },
+      "required": [
+        "vmc_missing",
+        "status",
+        "is_healthy",
+        "issues",
+        "active_faults",
+        "payment_enabled",
+        "payment_reasons",
+        "machine_stopped",
+        "maintenance"
+      ],
+      "title": "HealthSummary",
+      "type": "object"
+    },
+    "KpiAverage": {
+      "additionalProperties": false,
+      "properties": {
+        "money_in": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Money In"
+        },
+        "products_out": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Products Out"
+        },
+        "errors": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Errors"
+        },
+        "uptime_pct": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Uptime Pct"
+        }
+      },
+      "required": [
+        "money_in",
+        "products_out",
+        "errors",
+        "uptime_pct"
+      ],
+      "title": "KpiAverage",
+      "type": "object"
+    },
+    "KpiSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "summary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/KpiWindow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "average": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/KpiAverage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "summary",
+        "average"
+      ],
+      "title": "KpiSummary",
+      "type": "object"
+    },
+    "KpiWindow": {
+      "additionalProperties": false,
+      "properties": {
+        "money_in": {
+          "title": "Money In",
+          "type": "number"
+        },
+        "products_out": {
+          "title": "Products Out",
+          "type": "integer"
+        },
+        "vends_failed": {
+          "title": "Vends Failed",
+          "type": "integer"
+        },
+        "errors": {
+          "title": "Errors",
+          "type": "integer"
+        },
+        "uptime_pct": {
+          "title": "Uptime Pct",
+          "type": "number"
+        }
+      },
+      "required": [
+        "money_in",
+        "products_out",
+        "vends_failed",
+        "errors",
+        "uptime_pct"
+      ],
+      "title": "KpiWindow",
+      "type": "object"
+    },
+    "PendingSaleView": {
+      "additionalProperties": false,
+      "properties": {
+        "sku": {
+          "title": "Sku",
+          "type": "string"
+        },
+        "price": {
+          "title": "Price",
+          "type": "number"
+        },
+        "methods": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Methods",
+          "type": "object"
+        }
+      },
+      "required": [
+        "sku",
+        "price",
+        "methods"
+      ],
+      "title": "PendingSaleView",
+      "type": "object"
+    },
+    "StatusView": {
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "title": "State",
+          "type": "string"
+        },
+        "selected_product": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Selected Product"
+        },
+        "credit_escrow": {
+          "title": "Credit Escrow",
+          "type": "number"
+        },
+        "last_payment_method": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Last Payment Method"
+        }
+      },
+      "required": [
+        "state",
+        "selected_product",
+        "credit_escrow",
+        "last_payment_method"
+      ],
+      "title": "StatusView",
+      "type": "object"
+    },
+    "UiIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Digest",
+          "type": "string"
+        },
+        "ice_ui_version": {
+          "title": "Ice Ui Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "digest",
+        "ice_ui_version"
+      ],
+      "title": "UiIdentity",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "contract": {
+      "const": "0.1.0",
+      "title": "Contract",
+      "type": "string"
+    },
+    "machine_id": {
+      "pattern": "^[A-Za-z0-9_.-]{1,64}$",
+      "title": "Machine Id",
+      "type": "string"
+    },
+    "sent_at": {
+      "format": "date-time",
+      "title": "Sent At",
+      "type": "string"
+    },
+    "boot_id": {
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "title": "Boot Id",
+      "type": "string"
+    },
+    "seq": {
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "report_interval_seconds": {
+      "maximum": 3600,
+      "minimum": 10,
+      "title": "Report Interval Seconds",
+      "type": "integer"
+    },
+    "edge_build": {
+      "title": "Edge Build",
+      "type": "string"
+    },
+    "ui": {
+      "$ref": "#/$defs/UiIdentity"
+    },
+    "health": {
+      "$ref": "#/$defs/HealthSummary"
+    },
+    "kpi": {
+      "$ref": "#/$defs/KpiSummary"
+    },
+    "faults": {
+      "items": {
+        "$ref": "#/$defs/FaultView"
+      },
+      "title": "Faults",
+      "type": "array"
+    },
+    "health_page": {
+      "$ref": "#/$defs/HealthPageSummary"
+    }
+  },
+  "required": [
+    "contract",
+    "machine_id",
+    "sent_at",
+    "boot_id",
+    "seq",
+    "report_interval_seconds",
+    "edge_build",
+    "ui",
+    "health",
+    "kpi",
+    "faults",
+    "health_page"
+  ],
+  "title": "MachineReport",
+  "type": "object"
+}

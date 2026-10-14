@@ -19,7 +19,8 @@ from ice_edge.web.routes.health import (
     recovery,
     subsystems,
 )
-from ice_edge.web.routes.health.faults import dom_safe_key, fault_gate
+from ice_edge.views.health import fault_gate
+from ice_edge.web.routes.health.faults import dom_safe_key
 from ice_edge.web.routes.health.subsystems import _subsystem_summary
 
 __all__ = ["_subsystem_summary", "dom_safe_key", "fault_gate", "router"]

@@ -18,6 +18,8 @@ from ice_contracts.board.mqtt_messages import (
     SubsystemHeartbeat,
 )
 
+from ice_contracts.cloud.report import MachineReport
+from ice_contracts.cloud.ui import BundleManifest
 from ice_contracts.board.common import CommandAck, SubsystemCommand
 from ice_contracts.board.ice_maker_monitor import (
     ChannelDescriptor,
@@ -77,9 +79,17 @@ VENDING_MODELS = {
     "command_ack": CommandAck,
 }
 
+EDGE_CLOUD_SCHEMA_DIR = _REPO_ROOT / "docs/contracts/edge-cloud/schemas"
+
+EDGE_CLOUD_MODELS = {
+    "machine_report": MachineReport,
+    "bundle_manifest": BundleManifest,
+}
+
 CONTRACTS: dict[str, tuple[Path, dict]] = {
     "ice-maker-monitor": (SCHEMA_DIR, MODELS),
     "vending-machine": (VENDING_SCHEMA_DIR, VENDING_MODELS),
+    "edge-cloud": (EDGE_CLOUD_SCHEMA_DIR, EDGE_CLOUD_MODELS),
 }
 
 
