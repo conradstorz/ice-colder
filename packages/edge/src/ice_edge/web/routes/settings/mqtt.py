@@ -1,5 +1,5 @@
 """MQTT env overrides (brief resolution 6): the shared
-`ice_edge.app.startup_config.mqtt_env_overrides()` helper identifies active
+`ice_edge.config.env_overrides.mqtt_env_overrides()` helper identifies active
 fields at request time. The startup loader separately applies those values
 to a copy of `config.mqtt`, so an env-only MQTT_PASSWORD is never written
 back into config.json by a later save. Keeping this helper in a service
@@ -13,7 +13,7 @@ from pydantic import SecretStr
 
 from ice_edge.config import config_store
 from ice_edge.access.access import Permission
-from ice_edge.app.startup_config import mqtt_env_overrides
+from ice_edge.config.env_overrides import mqtt_env_overrides
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
 from ice_ui.levels import (
