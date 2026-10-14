@@ -20,8 +20,8 @@ import pytest
 
 from ice_common.config_model import ConfigModel
 from ice_contracts.board.dispenser_schema import AgitateStep
-from services.dispensers import validate_document
-from services.dispensers_doc import (
+from ice_edge.vend.dispensers import validate_document
+from ice_edge.vend.dispensers_doc import (
     _Table,
     _join_sentence,
     _render_table,

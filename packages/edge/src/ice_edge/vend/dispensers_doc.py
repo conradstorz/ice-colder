@@ -58,7 +58,7 @@ from ice_contracts.board.dispenser_schema import (
 # is a plain, correctness-neutral operation (no exclusivity to lose), so it
 # is not worth re-solving here. No import cycle -- dispensers.py does not
 # import this module.
-from services.dispensers import _unwrap_annotated
+from ice_edge.vend.dispensers import _unwrap_annotated
 
 _EN_DASH = "–"
 _GE = "≥"

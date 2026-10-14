@@ -18,12 +18,12 @@ import pytest
 from ice_common.config_model import ConfigModel, PhysicalDetails, Product
 from ice_contracts.board.common import ChannelDescriptor, CommandAck
 from ice_contracts.board.vending_machine import FaultCode, SubsystemCapabilities
-from controller.dispense_cycle import DispenseCycle
+from ice_edge.vend.dispense_cycle import DispenseCycle
 from controller.machine import Machine
 from controller.vmc import VMC
-from services.availability import Availability
+from ice_edge.faults.availability import Availability
 from ice_edge.hal.command_dispatcher import CommandTimeout
-from services.dispensers import DispenserProfiles
+from ice_edge.vend.dispensers import DispenserProfiles
 from tests.dispenser_fixtures import profiles_for, render_profiles_toml
 from tests.fakes import FakeMqtt, FakeTaskRunner, drain_pending, vmc_with_profiles
 

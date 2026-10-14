@@ -25,7 +25,7 @@ import logging
 from ice_common.config_model import Product
 from ice_contracts.board.common import CommandAck
 from ice_contracts.board.vending_machine import DispenserOutcome, FaultCode
-from controller.dispense_cycle import DispenseCycle, DispenseReport
+from ice_edge.vend.dispense_cycle import DispenseCycle, DispenseReport
 from controller.outputs import StatusOutputs
 from controller.sale_context import SaleContext
 from ice_edge.hal.command_dispatcher import CommandTimeout

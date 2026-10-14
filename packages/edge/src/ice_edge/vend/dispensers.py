@@ -1144,7 +1144,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Handle --example first (no file I/O needed)
     if args.example:
-        from services.dispensers_doc import render_example
+        from ice_edge.vend.dispensers_doc import render_example
 
         example_text = render_example()
         sys.stdout.write(example_text)

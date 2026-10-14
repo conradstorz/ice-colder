@@ -14,7 +14,7 @@ import yaml
 
 import services.startup_dispensers as startup_dispensers
 from ice_common.config_model import ConfigModel
-from services.dispensers import DispenserProfiles
+from ice_edge.vend.dispensers import DispenserProfiles
 from tests.paths import REPO_ROOT
 
 COMPOSE_PATH = REPO_ROOT / "docker-compose.yml"

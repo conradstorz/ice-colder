@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from services import reports as reports_service
+from ice_edge.reporting import reports as reports_service
 from ice_edge.access.access import Permission
 from ice_edge.notify.mailer import send_email
 from web_interface import auth as web_auth

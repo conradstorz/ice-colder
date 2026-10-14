@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from services.dispensers import main
+from ice_edge.vend.dispensers import main
 from tests.dispenser_fixtures import GOOD
 
 BAD = """\
@@ -183,7 +183,7 @@ def test_example_prints_generator_output(capsys):
     result = main(["--example"])
     assert result == 0
 
-    from services.dispensers_doc import render_example
+    from ice_edge.vend.dispensers_doc import render_example
 
     output = capsys.readouterr().out
     assert output == render_example()

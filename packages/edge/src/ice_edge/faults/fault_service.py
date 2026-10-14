@@ -51,7 +51,7 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 from ice_contracts.board.vending_machine import FaultCode
-from controller.fault_registry import FaultRegistry
+from ice_edge.faults.fault_registry import FaultRegistry
 from ice_edge.supervisor.task_runner import TaskRunner
 from ice_contracts.board.mqtt_messages import VMCAlert
 

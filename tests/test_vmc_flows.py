@@ -24,7 +24,7 @@ from ice_contracts.board.vending_machine import (
 from controller.machine import Machine
 from ice_edge.supervisor.task_runner import TaskRunner
 from controller.vmc import VMC
-from services.availability import Availability
+from ice_edge.faults.availability import Availability
 from ice_edge.hal.command_dispatcher import CommandTimeout
 from ice_edge.ledger.event_recorder import EventRecorder, SaleRecordingFailed
 from ice_edge.monitoring.health_monitor import HealthMonitor

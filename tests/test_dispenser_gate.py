@@ -21,8 +21,8 @@ from types import SimpleNamespace
 from ice_common.config_model import ConfigModel, PhysicalDetails, Product
 from ice_contracts.board.common import ChannelDescriptor
 from ice_contracts.board.vending_machine import FaultCode, SubsystemCapabilities
-from controller.dispenser_gate import DispenserProfileGate
-from services.dispensers import DispenserProfiles
+from ice_edge.vend.dispenser_gate import DispenserProfileGate
+from ice_edge.vend.dispensers import DispenserProfiles
 from tests.dispenser_fixtures import profiles_for, render_profiles_toml
 
 ICE_1 = Product(sku="ICE-1", slot=0, kind="ice")

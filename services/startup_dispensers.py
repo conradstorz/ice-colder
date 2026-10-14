@@ -6,7 +6,7 @@ from loguru import logger
 
 from ice_common.config_model import ConfigModel
 from controller.machine import Machine
-from services.dispensers import (
+from ice_edge.vend.dispensers import (
     DispenserProfiles,
     Finding,
     ValidationReport,

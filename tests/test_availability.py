@@ -1,7 +1,7 @@
 """Permissive truth table and payment/enable publishing."""
 
 from ice_common.config_model import Product
-from services.availability import Availability
+from ice_edge.faults.availability import Availability
 
 
 class Recorder:

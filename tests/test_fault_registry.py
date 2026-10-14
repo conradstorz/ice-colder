@@ -15,7 +15,7 @@ Codes used:
 """
 
 from ice_contracts.board.vending_machine import FAULT_TABLE, FaultCode, Severity
-from controller.fault_registry import FaultRegistry, severity_level
+from ice_edge.faults.fault_registry import FaultRegistry, severity_level
 
 
 def make_registry(names: dict[str, str] | None = None) -> FaultRegistry:

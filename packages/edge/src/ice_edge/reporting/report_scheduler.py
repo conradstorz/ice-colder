@@ -160,7 +160,7 @@ from loguru import logger
 # "phantom non-advance" subtlety `_bucket_key`/`_MAX_BUCKET_KEY_RETRIES`
 # guard against), rather than one, tested implementation two callers share.
 # Do not "fix" this by re-inlining the arithmetic.
-from services.reports import (
+from ice_edge.reporting.reports import (
     _MAX_BUCKET_KEY_RETRIES,
     _bucket_key,
     _floor_to_bucket,

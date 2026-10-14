@@ -42,7 +42,7 @@ from ice_common.build_info import BUILD_INFO
 from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
 
 if TYPE_CHECKING:
-    from services.availability import Availability
+    from ice_edge.faults.availability import Availability
     from ice_common.mqtt_client import MQTTClient
 
 

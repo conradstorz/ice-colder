@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from services import reports as reports_service
+from ice_edge.reporting import reports as reports_service
 from web_interface import context
 
 # Bucket defaults per range preset (design §3's "By period" row): day for

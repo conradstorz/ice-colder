@@ -23,7 +23,7 @@ from ice_contracts.board.mqtt_messages import (
     VMCAlert,
     VMCStatus,
 )
-from services.payment_gateway_manager import PaymentGatewayManager
+from ice_edge.payment.payment_gateway_manager import PaymentGatewayManager
 from ice_edge.ledger.session_store import SessionSnapshot
 from tests.fakes import (
     FakeAvailability,

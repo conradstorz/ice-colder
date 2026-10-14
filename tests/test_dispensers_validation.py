@@ -11,7 +11,7 @@ import pytest
 from ice_common.config_model import Product
 from ice_contracts.board.vending_machine import SubsystemCapabilities
 from ice_contracts.board.common import ChannelDescriptor
-from services.dispensers import (
+from ice_edge.vend.dispensers import (
     Finding,
     ValidationReport,
     _dedupe_union_findings,

@@ -1023,7 +1023,7 @@ class TestStillSellingBanner:
 
     @pytest.fixture
     def selling_client(self, client):
-        from services.availability import Availability
+        from ice_edge.faults.availability import Availability
         from ice_edge.monitoring.health_monitor import HealthMonitor
         from web_interface import context as r
 
@@ -1068,7 +1068,7 @@ class TestMaintenanceHero:
 
     @pytest.fixture
     def maintenance_client(self, client):
-        from services.availability import Availability
+        from ice_edge.faults.availability import Availability
 
         avail = Availability()
         context.machine_instance.set_availability(avail)
@@ -1090,7 +1090,7 @@ class TestMaintenanceHero:
 class TestAvailabilityOnDashboard:
     @pytest.fixture
     def avail_client(self, client):
-        from services.availability import Availability
+        from ice_edge.faults.availability import Availability
         from ice_edge.monitoring.health_monitor import HealthMonitor
         from web_interface import context as r
 

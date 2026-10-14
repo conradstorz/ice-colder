@@ -18,7 +18,7 @@ from ice_contracts.board.common import (
 )
 from ice_contracts.board.common import CommandAck as CommonCommandAck
 from ice_contracts.board.common import SubsystemCommand
-from services.dispensers import validate_document
+from ice_edge.vend.dispensers import validate_document
 from tests.dispenser_fixtures import GOOD, ICE, WATER
 
 

@@ -282,7 +282,7 @@ class TestSubsystemDetailLevel:
         heartbeat lost, dispense is inhibited -- an output driven by
         dispense renders ring-dashed and the word "inhibited"; a fan row
         with no driven_by (autonomous) does not."""
-        from services.availability import Availability
+        from ice_edge.faults.availability import Availability
         from ice_edge.monitoring.health_monitor import HealthMonitor
 
         hm = HealthMonitor()
@@ -688,7 +688,7 @@ class TestAvailabilityLevel:
         assert "unknown" in resp.text.lower()
 
     def test_lists_permissives_with_not_instrumented(self, client):
-        from services.availability import Availability
+        from ice_edge.faults.availability import Availability
 
         avail = Availability()
         routes.set_availability(avail)
@@ -698,7 +698,7 @@ class TestAvailabilityLevel:
         assert "vending_alive" in resp.text
 
     def test_shows_payment_enabled_and_per_kind(self, client):
-        from services.availability import Availability
+        from ice_edge.faults.availability import Availability
 
         avail = Availability()
         routes.set_availability(avail)

@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from controller.dispenser_gate import DispenserProfileGate
+from ice_edge.vend.dispenser_gate import DispenserProfileGate
 from controller.maintenance_lease import MaintenanceLease
 from controller.sale_context import SaleContext
 from ice_edge.supervisor.task_runner import TaskRunner

@@ -26,8 +26,8 @@ from __future__ import annotations
 import asyncio
 
 from ice_contracts.board.vending_machine import FaultCode
-from controller.fault_registry import FaultRegistry
-from controller.fault_service import FaultService
+from ice_edge.faults.fault_registry import FaultRegistry
+from ice_edge.faults.fault_service import FaultService
 from controller.outputs import StatusOutputs
 from ice_contracts.board.mqtt_messages import VMCAlert
 from ice_edge.ledger.session_store import SessionSnapshot

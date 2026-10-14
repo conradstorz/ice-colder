@@ -8,7 +8,7 @@ deadline-cancel-on-confirm/retry paths have something real to call.
 """
 
 from ice_contracts.board.vending_machine import PaymentRefundResult, RefundStatus
-from controller.refund_protocol import RefundProtocol
+from ice_edge.payment.refund_protocol import RefundProtocol
 
 
 class FakeTask:

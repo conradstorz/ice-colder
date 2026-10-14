@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from services import reports
+from ice_edge.reporting import reports
 from ice_edge.ledger.event_recorder import EventRecorder
 
 # A fixed, DST-free offset -- deliberately not the machine's own timezone, so

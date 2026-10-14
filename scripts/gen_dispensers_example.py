@@ -18,7 +18,7 @@ from _repo import repo_root
 _REPO_ROOT = repo_root()
 sys.path.insert(0, str(_REPO_ROOT))
 
-from services.dispensers_doc import render_example  # noqa: E402
+from ice_edge.vend.dispensers_doc import render_example  # noqa: E402
 
 
 def main() -> None:

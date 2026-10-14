@@ -46,8 +46,8 @@ from ice_contracts.board.vending_machine import (
     FaultCode,
     fault_for_outcome,
 )
-from controller.dispenser_gate import DispenserProfileGate
-from controller.fault_service import FaultService
+from ice_edge.vend.dispenser_gate import DispenserProfileGate
+from ice_edge.faults.fault_service import FaultService
 from ice_edge.supervisor.task_runner import TaskRunner
 from ice_edge.hal.command_dispatcher import CommandTimeout
 from ice_edge.ledger.event_recorder import SaleRecordingFailed

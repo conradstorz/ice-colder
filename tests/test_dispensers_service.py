@@ -12,7 +12,7 @@ import pytest
 from ice_common.config_model import ConfigModel, PhysicalDetails
 from ice_contracts.board.vending_machine import SubsystemCapabilities
 from ice_contracts.board.common import ChannelDescriptor
-from services.dispensers import DispenserProfiles, dispensers_path
+from ice_edge.vend.dispensers import DispenserProfiles, dispensers_path
 from tests.dispenser_fixtures import GOOD, ICE, WATER
 
 
@@ -278,7 +278,7 @@ def test_save_never_leaves_live_file_absent(tmp_path, monkeypatch):
     def raise_on_replace(src, dst):
         raise OSError("disk full")
 
-    monkeypatch.setattr("services.dispensers.os.replace", raise_on_replace)
+    monkeypatch.setattr("ice_edge.vend.dispensers.os.replace", raise_on_replace)
 
     new_text = GOOD.replace("run_seconds        = 4.0", "run_seconds        = 5.0")
     with pytest.raises(OSError):
@@ -307,7 +307,7 @@ def test_save_cleanup_failure_never_masks_the_original_error(tmp_path, monkeypat
     def raise_on_unlink(self, *args, **kwargs):
         raise OSError("cannot delete tmp file")
 
-    monkeypatch.setattr("services.dispensers.os.replace", raise_on_replace)
+    monkeypatch.setattr("ice_edge.vend.dispensers.os.replace", raise_on_replace)
     monkeypatch.setattr(Path, "unlink", raise_on_unlink)
 
     new_text = GOOD.replace("run_seconds        = 4.0", "run_seconds        = 5.0")
@@ -398,7 +398,7 @@ def test_save_fsyncs_directory(tmp_path, monkeypatch):
     def mock_fsync_dir(directory):
         fsync_calls.append(directory)
 
-    monkeypatch.setattr("services.dispensers.fsync_dir", mock_fsync_dir)
+    monkeypatch.setattr("ice_edge.vend.dispensers.fsync_dir", mock_fsync_dir)
 
     new_text = GOOD.replace("run_seconds        = 4.0", "run_seconds        = 5.0")
     report = profiles.save_text(new_text, expected_digest=digest)

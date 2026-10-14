@@ -47,7 +47,7 @@ from ice_contracts.board.mqtt_messages import (
 )
 
 if TYPE_CHECKING:
-    from services.availability import Availability
+    from ice_edge.faults.availability import Availability
     from ice_edge.monitoring.health_monitor import HealthMonitor
 
 # Events logged to the ice maker log: power cycles, ice drops, out-of-spec.

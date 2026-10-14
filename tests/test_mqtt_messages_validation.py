@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from ice_common.config_model import ConfigModel
 from controller.machine import Machine
-from services.dispensers import validate_document
+from ice_edge.vend.dispensers import validate_document
 from ice_contracts.board.mqtt_messages import (
     ButtonPress,
     DispenseCommand,

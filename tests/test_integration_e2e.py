@@ -672,7 +672,7 @@ async def test_vending_heartbeat_loss_blocks_sale_not_payment_enable():
     design (services/availability.py), so cmd/payment/enable stays true
     throughout. Heartbeat loss instead blocks `sale_available` for that
     product kind, and heartbeat recovery restores it."""
-    from services.availability import Availability
+    from ice_edge.faults.availability import Availability
 
     cfg = ConfigModel()
     cfg.machine_id = "e2e-enable"

@@ -10,7 +10,7 @@ executor resolution 1) — this file owns only the new /products/* routes.
 
 import pytest
 
-from controller.dispenser_gate import DispenserProfileGate
+from ice_edge.vend.dispenser_gate import DispenserProfileGate
 from ice_edge.access.access import Role
 from ice_edge.config import config_store
 from web_interface import context

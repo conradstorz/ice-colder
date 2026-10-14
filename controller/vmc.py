@@ -3,7 +3,7 @@ import asyncio
 import time
 from collections.abc import Callable
 from loguru import logger
-from services.payment_gateway_manager import PaymentGatewayManager
+from ice_edge.payment.payment_gateway_manager import PaymentGatewayManager
 from ice_contracts.board.mqtt_messages import (
     PaymentEvent,
     ButtonPress,
@@ -14,18 +14,18 @@ from ice_contracts.board.vending_machine import (
     PaymentRefundResult,
 )
 from ice_common.config_model import ConfigModel, Product
-from services.availability import Availability
+from ice_edge.faults.availability import Availability
 from ice_edge.monitoring.inventory_manager import InventoryManager
 from ice_edge.ledger.session_store import SessionSnapshot
-from controller.dispense_cycle import DispenseCycle, DispenseReport
-from controller.fault_service import FaultService
+from ice_edge.vend.dispense_cycle import DispenseCycle, DispenseReport
+from ice_edge.faults.fault_service import FaultService
 from ice_edge.ledger.escrow_ledger import EscrowLedger
 from controller.outputs import StatusOutputs
-from controller.refund_protocol import PendingRefund, RefundProtocol
+from ice_edge.payment.refund_protocol import PendingRefund, RefundProtocol
 from controller.sale_context import SaleContext
 from controller.session_timer import SessionTimer
 from ice_edge.supervisor.task_runner import TaskRunner
-from controller.dispenser_gate import DispenserProfileGate
+from ice_edge.vend.dispenser_gate import DispenserProfileGate
 from controller.sale_journal import STATE_CHANGE_PREFIX, SaleJournal  # noqa: F401  (tests import STATE_CHANGE_PREFIX from here)
 
 

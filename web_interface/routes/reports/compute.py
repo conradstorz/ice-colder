@@ -4,7 +4,7 @@ import asyncio
 
 from fastapi import HTTPException, Request
 
-from services import reports as reports_service
+from ice_edge.reporting import reports as reports_service
 from web_interface import context
 from ice_ui.filters import sku_url_segment
 from ice_ui.levels import (

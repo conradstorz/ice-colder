@@ -28,7 +28,7 @@ from loguru import logger
 from ice_common.config_model import Product
 from ice_contracts.board.vending_machine import FaultCode, SubsystemCapabilities
 from ice_contracts.board.dispenser_schema import MECHANISM_FOR_KIND, SlotProfile
-from services.dispensers import DispenserProfiles
+from ice_edge.vend.dispensers import DispenserProfiles
 
 
 class DispenserProfileGate:

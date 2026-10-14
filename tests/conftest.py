@@ -15,7 +15,7 @@ import ice_edge.config.config_store as config_store
 from ice_common.config_model import ConfigModel, PhysicalDetails
 from controller.machine import Machine
 from ice_edge.access.access import AccessStore, Role, User
-from services.dispensers import DispenserProfiles
+from ice_edge.vend.dispensers import DispenserProfiles
 from ice_edge.monitoring.inventory_manager import InventoryManager
 from tests.dispenser_fixtures import GOOD as DISPENSER_GOOD
 from tests.fakes import FakeTaskRunner

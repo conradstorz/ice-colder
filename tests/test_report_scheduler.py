@@ -40,7 +40,7 @@ from datetime import datetime, timedelta, timezone, tzinfo
 import pytest
 
 from ice_common.config_model import ConfigModel
-from services import report_scheduler
+from ice_edge.reporting import report_scheduler
 from ice_edge.ledger.event_recorder import EventRecorder
 
 # A fixed, deterministic offset -- not the machine's own timezone -- so every
