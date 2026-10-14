@@ -1,1 +1,1 @@
-"""ice_cloud: cloud/fleet backend (section 8). Populated in PR 5."""
+"""ice_cloud: the cloud/fleet portal stub (dev only, no auth). See docs/superpowers/specs/2026-10-13-cloud-monitoring-server-design.md."""
