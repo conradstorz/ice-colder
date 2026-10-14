@@ -1,0 +1,19 @@
+# Build-context filter for packages/cloud/Dockerfile (BuildKit prefers
+# <Dockerfile>.dockerignore over the root .dockerignore, which excludes
+# packages/cloud because the edge image does not contain it).
+**/__pycache__
+**/.venv
+**/.git
+**/.env
+**/node_modules
+cloud_data
+data
+LOGS
+tests
+docs
+firmware
+README.md
+# The cloud image needs neither the edge nor the sims source, only their
+# manifests (workspace resolution).
+packages/edge/src
+packages/sims/src

@@ -392,6 +392,16 @@ applied to the dashboard's login back-off via
 `routes.backoff.set_trusted_proxies(...)`, called after
 `routes.set_config_object(...)` so the env value wins.
 
+## Cloud (`ice_cloud`)
+
+A runnable, **dev-only, no-auth** fleet portal stub: `packages/cloud`, spec `docs/superpowers/specs/2026-10-13-cloud-monitoring-server-design.md`. It binds `127.0.0.1` by default (compose maps `127.0.0.1:26124`); never expose it beyond localhost until auth and mTLS exist (spec §8).
+
+- Machines push `MachineReport`s (`POST /api/v1/machines/{id}/report`) and UI bundles (`PUT /api/v1/ui-bundles/{digest}`) from `ice_edge.uplink` (`cloud.enabled` defaults to false); data lives in `ICE_CLOUD_DATA` (default `./cloud_data`, gitignored).
+- The portal renders the machine's **own** `ice_ui` templates from the last stored report at the same paths (`/`, `/status`, `/pill`, `/kpi`, `/health`, `/health/faults`), read-only (`REMOTE_VIEWER_PERMISSIONS`), under an Offline banner when the report is older than 3 x its interval. Any other page is 404 "Not available remotely yet".
+- Reported UI digest = installed `ice_ui` -> installed UI; a cached uploaded bundle -> rendered in a `SandboxedEnvironment`; unknown -> installed UI plus a mismatch banner.
+- `tests/cloud/test_ui_parity.py` is the executable form of the parity rule: edge and cloud must render identical `<main>` (full pages) or body (fragments). `ice_cloud` may import `ice_ui`, `ice_common` and `ice_contracts`, never `ice_edge` or `ice_sims` (import-linter).
+- Run: `uv run python -m ice_cloud`; image: `docker build -f packages/cloud/Dockerfile .` (its own `Dockerfile.dockerignore` overrides the root `.dockerignore`, which excludes `packages/cloud`).
+
 ## Fault Codes and Severity
 
 `DATA-101` (sale write failed; held in fallback file) and `DATA-102` (event database was reset after corruption; history before the reset is lost) are both **alert-class** (`Severity.warning`, `Scope.machine`) and are **deliberately absent from `PAYMENT_BLOCKING_FAULTS`**. Neither fault can ever stop the machine taking money. Both are registered in `packages/contracts/src/ice_contracts/board/vending_machine.py`.

@@ -101,6 +101,7 @@ jobs:
       - run: docker network create harbor
       - run: docker compose --env-file .env.example -f docker-compose.yml config -q
       - run: docker compose --env-file .env.example -f docker/docker-compose.prod.yml config -q
+      - run: docker compose --env-file .env.example -f docker/docker-compose.cloud.yml config -q
 
   image:
     # PRs: prove the image builds. main: publish it for Watchtower on the sim host.
@@ -149,6 +150,15 @@ jobs:
           fi
           cat cloud.err
           grep -q "ModuleNotFoundError: No module named 'ice_cloud'" cloud.err
+      # The cloud portal stub image (dev only, no auth). Built on every PR and
+      # never published. Its own Dockerfile.dockerignore (next to the Dockerfile)
+      # replaces the root .dockerignore, which excludes packages/cloud.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/cloud/Dockerfile
+          platforms: linux/amd64
+          push: false
       - uses: docker/build-push-action@v6
         with:
           context: .
