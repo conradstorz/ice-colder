@@ -186,7 +186,7 @@ class CommandAck(BaseModel):
 
 
 # Standard commands every subsystem answers (§1.2). Public (not
-# underscore-prefixed): simulators/base.py imports this directly so the
+# underscore-prefixed): packages/sims/src/ice_sims/base.py imports this directly so the
 # three standard handlers it registers on every subsystem
 # (register_command("ping", ...) etc. in ESP32Simulator.__init__) and the
 # commands a subsystem's capabilities document actually *advertises* can
@@ -197,7 +197,7 @@ class CommandAck(BaseModel):
 # routes' advertised-∩-allowlist intersection silently dropped every
 # automatic test.
 #
-# A tuple (not a frozenset): simulators/base.py splices this, in order,
+# A tuple (not a frozenset): packages/sims/src/ice_sims/base.py splices this, in order,
 # into the front of every SubsystemCapabilities.commands list, and
 # capabilities tests assert on that list's exact contents; a set's
 # iteration order is not a contract to build a wire payload from.
@@ -249,7 +249,7 @@ TESTABLE_COMMANDS: dict[str, frozenset[str]] = {
 
 DISPENSE_COMPLETION_TIMEOUT_SECONDS = 120.0  # dispense has no caller-chosen
 # duration parameter to derive from; 120 s is a fixed margin over the worst
-# case in `simulators/vending_machine.py` today (the 90 s auger-jam path).
+# case in `packages/sims/src/ice_sims/vending_machine.py` today (the 90 s auger-jam path).
 
 WATER_VALVE_COMPLETION_MARGIN_SECONDS = 5.0  # added to `seconds` (1-10):
 # 6-15 s total, comfortably above the valve's own open duration.

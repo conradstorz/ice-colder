@@ -47,7 +47,7 @@ services:
       - com.centurylinklabs.watchtower.enable=true
       - harbor.kind=internal
     container_name: ice-colder-sim-ice-maker
-    command: ["uv", "run", "python", "-m", "simulators.ice_maker", "--broker", "mosquitto"]
+    command: ["uv", "run", "python", "-m", "ice_sims.ice_maker", "--broker", "mosquitto"]
     volumes:
       - ./data:/app/data:ro
     environment:
@@ -70,7 +70,7 @@ services:
       - com.centurylinklabs.watchtower.enable=true
       - harbor.kind=internal
     container_name: ice-colder-sim-mdb
-    command: ["uv", "run", "python", "-m", "simulators.mdb_gateway", "--broker", "mosquitto"]
+    command: ["uv", "run", "python", "-m", "ice_sims.mdb_gateway", "--broker", "mosquitto"]
     volumes:
       - ./data:/app/data:ro
     environment:
@@ -93,7 +93,7 @@ services:
       - com.centurylinklabs.watchtower.enable=true
       - harbor.kind=internal
     container_name: ice-colder-sim-vending
-    command: ["uv", "run", "python", "-m", "simulators.vending_machine", "--broker", "mosquitto"]
+    command: ["uv", "run", "python", "-m", "ice_sims.vending_machine", "--broker", "mosquitto"]
     volumes:
       - ./data:/app/data:ro
     environment:

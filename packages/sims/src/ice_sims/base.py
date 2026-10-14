@@ -1,4 +1,4 @@
-# simulators/base.py
+# ice_sims/base.py
 """
 Base class for ESP32 simulator processes.
 
@@ -496,7 +496,7 @@ class ESP32Simulator(ABC):
 
         Call from a subclass's __init__ (after `super().__init__()`) to add
         a command beyond the built-in ping/self_test/force_report — this is
-        the only extension point subclasses need; `simulators/base.py`
+        the only extension point subclasses need; `ice_sims/base.py`
         itself never has to change for a new command.
 
         `handler` is an async callable ``(client, cmd) -> CommandOutcome |

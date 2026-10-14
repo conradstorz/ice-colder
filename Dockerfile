@@ -34,7 +34,6 @@ ENV ICE_COLDER_COMMIT=$VCS_REF \
 
 # Copy application code
 COPY packages/ packages/
-COPY simulators/ simulators/
 
 # Install the workspace members themselves, then make the project venv the
 # default interpreter: bare `python` must be /app/.venv's, not the slim

@@ -62,7 +62,7 @@ version enforcement, no transport security.
 - **Dispenser profiles.** `dispensers.toml`, validated against the catalog and board capabilities. The
   profile is sent inside each `dispense` command. Mechanism-specific outcomes (bagged ice, water fill) map
   to faults and lockouts (`CFG-101`/`CFG-102`).
-- **Simulators.** `simulators/` covers the vending board, ice-maker monitor and MDB gateway, with fault
+- **Simulators.** `packages/sims/src/ice_sims/` covers the vending board, ice-maker monitor and MDB gateway, with fault
   injection and an idempotency cache. They run end-to-end in Compose and in tests.
 - **Access control.**
   - Four roles (`owner`, `secretary`, `tech`, `loader`) with permission-gated routes.
@@ -85,10 +85,10 @@ version enforcement, no transport security.
 | Failed vend restores credit and locks out the slot | `vend_failed` restores FIFO shares; `FAULT_TABLE` product lockouts |
 | Coded faults with severity, scope, auto-clear; truth table deriving what is allowed | `FaultRegistry`/`FaultService`; `services/availability.py` three gates |
 | Hybrid board model: domain verbs + edge-pushed profiles + declared channels | `dispense` with an inline `SlotProfile`; capabilities `channels[]` with `direction`/`driven_by`; profiles validated against capabilities |
-| Idempotent commands; retry reuses the same id; receiver replays cached ack (32) | `CommandDispatcher` same-id retry; `simulators/base.py` 32-entry ack cache |
+| Idempotent commands; retry reuses the same id; receiver replays cached ack (32) | `CommandDispatcher` same-id retry; `packages/sims/src/ice_sims/base.py` 32-entry ack cache |
 | Heartbeat every 10 s, last-will offline | `HEARTBEAT_INTERVAL = 10.0`; LWT `online` |
 | Retained capabilities document at boot | `capabilities/<subsystem>` retained |
-| Simulators implement every board so the stack runs without hardware | `simulators/` + Compose + tests |
+| Simulators implement every board so the stack runs without hardware | `ice_sims` + Compose + tests |
 | Contract tests on message schemas | Pydantic → JSON Schema generation with a drift test |
 | Role-based access, server-side checks, controls not rendered when not permitted | `require(Permission)` on every route; `perms` in templates |
 | Offline-capable local logins | Emergency codes; PIN auth needs no network |

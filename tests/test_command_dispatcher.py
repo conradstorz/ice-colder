@@ -458,7 +458,7 @@ async def test_dispense_non_complete_terminal_state_resolves_as_failed():
 async def test_water_valve_completion_awaits_second_completed_ack():
     """water_valve's completion signal IS a second ack on the same topic
     and request_id, phase="completed" -- the choice documented in
-    simulators/vending_machine.py's _handle_water_valve. The timeout is
+    ice_sims/vending_machine.py's _handle_water_valve. The timeout is
     derived from `seconds`, not a fixed constant."""
     from ice_contracts.board.common import COMPLETION_TIMEOUTS
 

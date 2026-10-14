@@ -1,4 +1,4 @@
-# simulators/mdb_gateway.py
+# ice_sims/mdb_gateway.py
 """
 MDB payment gateway simulator.
 
@@ -6,7 +6,7 @@ Simulates MDB bus devices (coin acceptor, bill validator, card reader).
 Watches VMC status via MQTT and reactively inserts payments when a
 customer interaction is detected.
 
-Run: uv run python -m simulators.mdb_gateway [--broker HOST] [--port PORT] [--machine-id ID]
+Run: uv run python -m ice_sims.mdb_gateway [--broker HOST] [--port PORT] [--machine-id ID]
 """
 
 import asyncio
@@ -17,7 +17,7 @@ import aiomqtt
 from loguru import logger
 from pydantic import ValidationError
 
-from simulators.base import ESP32Simulator, FaultDef
+from ice_sims.base import ESP32Simulator, FaultDef
 from ice_contracts.board.mqtt_messages import (
     PaymentEnableCommand,
     PaymentEvent,

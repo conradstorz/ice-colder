@@ -1,4 +1,4 @@
-# simulators/vending_machine.py
+# ice_sims/vending_machine.py
 """
 Vending machine interface simulator.
 
@@ -17,7 +17,7 @@ longer a separate, legacy dispense topic or a board-side notion of "ice
 vs. water by product name" -- the profile says exactly which channels to
 drive and how.
 
-Run: uv run python -m simulators.vending_machine [--broker HOST] [--port PORT] [--machine-id ID]
+Run: uv run python -m ice_sims.vending_machine [--broker HOST] [--port PORT] [--machine-id ID]
 """
 
 import asyncio
@@ -33,7 +33,7 @@ from pydantic import ValidationError
 from ice_contracts.board.common import ChannelDescriptor, SubsystemCommand
 from ice_contracts.board.ice_maker_monitor import ChannelReading
 from ice_contracts.board.vending_machine import DispenserOutcome, DispenseStep
-from simulators.base import CommandOutcome, ESP32Simulator, FaultDef
+from ice_sims.base import CommandOutcome, ESP32Simulator, FaultDef
 from ice_contracts.board.dispenser_schema import (
     Accessory,
     IceFillBySensor,
@@ -520,7 +520,7 @@ class VendingMachineSimulator(ESP32Simulator):
         self, client: aiomqtt.Client, channel: str, amps: float
     ) -> None:
         """Publish one current-sense reading on the generic telemetry path
-        (matching simulators/ice_maker.py's own `telemetry/<subsystem>/
+        (matching ice_sims/ice_maker.py's own `telemetry/<subsystem>/
         <channel_id>` convention) -- there is no per-slot current topic of
         its own."""
         await self.publish(
@@ -1205,7 +1205,7 @@ class VendingMachineSimulator(ESP32Simulator):
         (`command_loop` -> `SubsystemCommand.model_validate` ->
         `handle_command`) always has `seconds` in [1, 10] already. An
         out-of-range value never gets this far any more: `command_loop`
-        (`simulators/base.py`) now acks it "rejected" itself, from the raw
+        (`ice_sims/base.py`) now acks it "rejected" itself, from the raw
         payload, before a `SubsystemCommand` instance — and therefore this
         handler — ever exists. This handler no longer re-checks the range;
         doing so would only re-validate something the loop has already

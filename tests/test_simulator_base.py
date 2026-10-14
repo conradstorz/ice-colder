@@ -1,5 +1,5 @@
 # tests/test_simulator_base.py
-"""Tests for simulators/base.py — ESP32Simulator base class."""
+"""Tests for ice_sims/base.py — ESP32Simulator base class."""
 
 import asyncio
 import json
@@ -15,7 +15,7 @@ from ice_common.build_info import BUILD_INFO
 from ice_common.mqtt_client import PROTOCOL_VERSIONS
 from ice_contracts.board.common import SubsystemCommand
 from tests.fakes import settle
-from simulators.base import (
+from ice_sims.base import (
     CommandOutcome,
     ESP32Simulator,
     FaultDef,
@@ -851,7 +851,7 @@ class TestLoadConfig:
 
 class TestContractTransport:
     def test_build_will_targets_heartbeat_with_offline_marker(self):
-        from simulators.ice_maker import IceMakerSimulator
+        from ice_sims.ice_maker import IceMakerSimulator
 
         sim = IceMakerSimulator(machine_id="vmc-test")
         will = sim._build_will()
@@ -866,7 +866,7 @@ class TestContractTransport:
     async def test_publish_passes_retain_flag(self):
         from unittest.mock import AsyncMock
 
-        from simulators.ice_maker import IceMakerSimulator
+        from ice_sims.ice_maker import IceMakerSimulator
 
         sim = IceMakerSimulator(machine_id="vmc-test")
         client = AsyncMock()
@@ -877,7 +877,7 @@ class TestContractTransport:
     async def test_publish_defaults_to_qos_1(self):
         from unittest.mock import AsyncMock
 
-        from simulators.ice_maker import IceMakerSimulator
+        from ice_sims.ice_maker import IceMakerSimulator
 
         sim = IceMakerSimulator(machine_id="vmc-test")
         client = AsyncMock()
@@ -959,7 +959,7 @@ class TestSimulatorProtocolVersion:
 
     @staticmethod
     async def _connect_kwargs(monkeypatch, cfg=None, **sim_kwargs) -> dict:
-        import simulators.base as base
+        import ice_sims.base as base
 
         captured: dict = {}
 
@@ -1278,7 +1278,7 @@ class TestCommandOutcome:
 class TestRegisterCommandHook:
     def test_register_command_does_not_require_editing_base(self):
         """The whole point of the hook: a subclass adds a command from its
-        own __init__ with no change to simulators/base.py."""
+        own __init__ with no change to ice_sims/base.py."""
         sim = ConcreteSimulator()
         assert "brew" not in sim._commands
         sim.register_command("brew", AsyncMock(return_value=None))

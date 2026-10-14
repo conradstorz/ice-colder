@@ -451,7 +451,7 @@ def _check_accessories_name_known_steps(
                 )
         # Copilot review (PR #32) finding C6: on_during must name a
         # *contiguous* run of this mechanism's steps -- the simulator
-        # (simulators/vending_machine.py) reduces on_during to a single
+        # (packages/sims/src/ice_sims/vending_machine.py) reduces on_during to a single
         # first/last span when deciding when the accessory is active, so
         # ["agitate", "release"] would silently also cover "fill" at
         # runtime. Caught here, at the schema, rather than left for the

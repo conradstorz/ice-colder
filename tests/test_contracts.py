@@ -442,7 +442,7 @@ class TestCompletionTimeouts:
         timeout_fn = COMPLETION_TIMEOUTS[("vending", "dispense")]
         # No caller-chosen duration to derive from — same value regardless
         # of params, and well above the 90s worst case (auger jam) in
-        # simulators/vending_machine.py today.
+        # ice_sims/vending_machine.py today.
         assert timeout_fn({}) == 120.0
         assert timeout_fn({"slot": 3}) == 120.0
 

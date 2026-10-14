@@ -376,14 +376,20 @@ name = "ice-sims"
 version = "0.1.0"
 source = { editable = "packages/sims" }
 dependencies = [
+    { name = "aiomqtt" },
     { name = "ice-common" },
+    { name = "ice-contracts" },
     { name = "loguru" },
+    { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "aiomqtt", specifier = ">=2.3.0" },
     { name = "ice-common", editable = "packages/common" },
+    { name = "ice-contracts", editable = "packages/contracts" },
     { name = "loguru", specifier = ">=0.7.3" },
+    { name = "pydantic", specifier = ">=2.10.6" },
 ]
 
 [[package]]

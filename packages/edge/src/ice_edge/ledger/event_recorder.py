@@ -37,7 +37,7 @@ from ice_contracts.board.mqtt_messages import (
 )
 from ice_common.paths import DATA_DIR
 
-# Must match simulators/base.py HEARTBEAT_INTERVAL
+# Must match packages/sims/src/ice_sims/base.py HEARTBEAT_INTERVAL
 _HEARTBEAT_INTERVAL = 10.0
 
 # get_historical_average only covers prior *complete* periods, so its result

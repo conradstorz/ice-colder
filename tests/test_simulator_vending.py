@@ -25,7 +25,7 @@ from ice_contracts.board.dispenser_schema import (
 )
 from ice_edge.vend.dispensers import validate_document
 from ice_contracts.board.mqtt_messages import DispenseCommand
-from simulators.vending_machine import VendingMachineSimulator
+from ice_sims.vending_machine import VendingMachineSimulator
 from tests.dispenser_fixtures import GOOD, ICE, WATER
 from tests.fakes import patch_module_sleep, settle
 from tests.paths import REPO_ROOT
@@ -371,7 +371,7 @@ class TestZeroProducts:
             if len(sleep_calls) >= 3:
                 raise asyncio.CancelledError
 
-        with patch_module_sleep("simulators.vending_machine", fake_sleep):
+        with patch_module_sleep("ice_sims.vending_machine", fake_sleep):
             with pytest.raises(asyncio.CancelledError):
                 await sim._customer_loop(client)
 
@@ -391,8 +391,8 @@ class TestZeroProducts:
             if len(sleep_calls) >= 5:
                 raise asyncio.CancelledError
 
-        with patch_module_sleep("simulators.vending_machine", fake_sleep):
-            with patch("simulators.vending_machine.logger") as mock_logger:
+        with patch_module_sleep("ice_sims.vending_machine", fake_sleep):
+            with patch("ice_sims.vending_machine.logger") as mock_logger:
                 with pytest.raises(asyncio.CancelledError):
                     await sim._customer_loop(client)
                 assert mock_logger.warning.call_count == 1
@@ -425,7 +425,7 @@ class TestZeroProducts:
             if len(sleep_calls) >= 2:
                 raise asyncio.CancelledError
 
-        with patch_module_sleep("simulators.vending_machine", fake_sleep):
+        with patch_module_sleep("ice_sims.vending_machine", fake_sleep):
             with pytest.raises(asyncio.CancelledError):
                 await sim._customer_loop(client)
 
@@ -519,7 +519,7 @@ class TestVendingCapabilities:
         """Every HARDWARE_DEVICES key must be a declared binary channel
         (guards a device added to the sim but never declared), and the
         output set is exactly the eight actuators -- never the sensors."""
-        from simulators.vending_machine import HARDWARE_DEVICES
+        from ice_sims.vending_machine import HARDWARE_DEVICES
 
         caps = _make_sim().build_capabilities()
         by_id = {c.channel_id: c for c in caps.channels}
@@ -566,7 +566,7 @@ class TestVendingCapabilities:
         """Analog channels publish on SENSOR_PUBLISH_INTERVAL; every binary
         channel (and the two current channels) is declared at 1.0s per the
         brief."""
-        from simulators.vending_machine import SENSOR_PUBLISH_INTERVAL
+        from ice_sims.vending_machine import SENSOR_PUBLISH_INTERVAL
 
         caps = _make_sim().build_capabilities()
         by_id = {c.channel_id: c for c in caps.channels}
@@ -1288,7 +1288,7 @@ class TestLegacyDispenseTopicRemoved:
         assert not hasattr(sim, "_dispense_command")
 
     def test_no_cmd_dispense_string_in_module(self):
-        import simulators.vending_machine as module
+        import ice_sims.vending_machine as module
 
         source = Path(module.__file__).read_text(encoding="utf-8")
         assert "cmd/dispense" not in source
@@ -1348,7 +1348,7 @@ class TestWaterValveCommand:
         client = AsyncMock()
         sim.publish = AsyncMock()
         cmd = _make_command("water_valve", {"seconds": 1})
-        with patch_module_sleep("simulators.vending_machine", AsyncMock()):
+        with patch_module_sleep("ice_sims.vending_machine", AsyncMock()):
             await sim.handle_command(client, cmd)
 
             ack = sim.publish.await_args_list[-1].args[2]
@@ -1368,7 +1368,7 @@ class TestWaterValveCommand:
         client = AsyncMock()
         sim.publish = AsyncMock()
         cmd = _make_command("water_valve", {"seconds": 10})
-        with patch_module_sleep("simulators.vending_machine", AsyncMock()):
+        with patch_module_sleep("ice_sims.vending_machine", AsyncMock()):
             await sim.handle_command(client, cmd)
 
             ack = sim.publish.await_args_list[-1].args[2]

@@ -2,7 +2,7 @@
 """Tests for simulators/mdb_gateway.py — MDB payment gateway simulation."""
 
 import pytest
-from simulators.mdb_gateway import MDBGatewaySimulator, PaymentStrategy
+from ice_sims.mdb_gateway import MDBGatewaySimulator, PaymentStrategy
 from unittest.mock import AsyncMock
 
 from tests.fakes import patch_module_sleep
@@ -195,7 +195,7 @@ class TestMDBBusResetFault:
         client = AsyncMock()
         await sim._on_mdb_bus_reset_activate(client)
         fake_sleep = AsyncMock()
-        with patch_module_sleep("simulators.mdb_gateway", fake_sleep):
+        with patch_module_sleep("ice_sims.mdb_gateway", fake_sleep):
             await sim._on_mdb_bus_reset_recover(client)
         for device in sim.devices:
             assert device["state"] == "ready"

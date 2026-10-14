@@ -1,11 +1,11 @@
-# simulators/ice_maker.py
+# ice_sims/ice_maker.py
 """
 Ice maker temperature monitoring simulator.
 
 Models a simplified refrigeration cycle with 10 temperature sensors (including two hot gas valves).
 The compressor cycles on/off and all temperatures respond with thermal lag.
 
-Run: uv run python -m simulators.ice_maker [--broker HOST] [--port PORT] [--machine-id ID]
+Run: uv run python -m ice_sims.ice_maker [--broker HOST] [--port PORT] [--machine-id ID]
 """
 
 import asyncio
@@ -22,7 +22,7 @@ from ice_contracts.board.ice_maker_monitor import (
     ChannelReading,
     MonitorCapabilities,
 )
-from simulators.base import CommandOutcome, ESP32Simulator, FaultDef
+from ice_sims.base import CommandOutcome, ESP32Simulator, FaultDef
 from ice_common.build_info import BUILD_INFO
 from ice_contracts.board.mqtt_messages import SensorReading, IceMakerEvent
 

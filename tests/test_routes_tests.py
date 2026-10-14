@@ -1333,9 +1333,9 @@ class TestRunAll:
         nothing), because the advertised-∩-allowlist intersection was
         empty for the three automatic commands.
         """
-        from simulators.ice_maker import IceMakerSimulator
-        from simulators.mdb_gateway import MDBGatewaySimulator
-        from simulators.vending_machine import VendingMachineSimulator
+        from ice_sims.ice_maker import IceMakerSimulator
+        from ice_sims.mdb_gateway import MDBGatewaySimulator
+        from ice_sims.vending_machine import VendingMachineSimulator
 
         wire_subsystem(
             "vending",

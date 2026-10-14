@@ -5,7 +5,7 @@ import math
 import pytest
 from unittest.mock import AsyncMock
 
-from simulators.ice_maker import IceMakerSimulator, ThermalSensor, SENSOR_DEFS
+from ice_sims.ice_maker import IceMakerSimulator, ThermalSensor, SENSOR_DEFS
 
 
 class TestThermalSensor:
@@ -481,7 +481,7 @@ class TestAckedBounded:
     @pytest.mark.asyncio
     async def test_acked_stays_bounded(self):
         from ice_contracts.board.ice_maker_monitor import MonitorCommand
-        from simulators.base import IDEMPOTENCY_CACHE_SIZE
+        from ice_sims.base import IDEMPOTENCY_CACHE_SIZE
 
         sim = IceMakerSimulator(machine_id="vmc-test")
         sim.publish = AsyncMock()
@@ -498,7 +498,7 @@ class TestAckedBounded:
     @pytest.mark.asyncio
     async def test_acked_keeps_most_recent_entries(self):
         from ice_contracts.board.ice_maker_monitor import MonitorCommand
-        from simulators.base import IDEMPOTENCY_CACHE_SIZE
+        from ice_sims.base import IDEMPOTENCY_CACHE_SIZE
 
         sim = IceMakerSimulator(machine_id="vmc-test")
         sim.publish = AsyncMock()
@@ -706,7 +706,7 @@ class TestIceMakerCapabilitiesIdentity:
             MonitorCapabilities,
         )
         from ice_common.build_info import BUILD_INFO
-        from simulators.ice_maker import IceMakerSimulator
+        from ice_sims.ice_maker import IceMakerSimulator
 
         caps = IceMakerSimulator(machine_id="vmc-t").build_capabilities()
         assert isinstance(caps, MonitorCapabilities)

@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Layout
 
-The repo is a uv workspace (`packages/*`). **Migration in progress:** `ice_contracts`, `ice_common`, `ice_ui` and `ice_edge` are populated (the former `controller/`, `services/`, `config/` and `web_interface/` roots are gone; `main.py` is `ice_edge/__main__.py`); `simulators/` still lives at the repo root and moves into `ice_sims` in a later PR. Board-contract generation: `uv run python -m ice_contracts.generate`.
+The repo is a uv workspace (`packages/*`). **Migration in progress:** `ice_contracts`, `ice_common`, `ice_ui`, `ice_edge` and `ice_sims` are populated (the former `controller/`, `services/`, `config/` and `web_interface/` roots are gone; `main.py` is `ice_edge/__main__.py`); the former `simulators/` root is now `ice_sims`. Board-contract generation: `uv run python -m ice_contracts.generate`.
 
 ### Target layout
 
@@ -329,7 +329,7 @@ The Tests level (`packages/edge/src/ice_edge/web/routes/tests_level/`) lets a te
   (`routes.set_command_dispatcher`); it registers `cmd/+/ack` **once** and
   correlates each ack to its command by `request_id`. A timeout retries
   **exactly once, with the same `request_id`** — never a fresh one — because
-  every subsystem (`simulators/base.py`) caches its last 32 acked
+  every subsystem (`packages/sims/src/ice_sims/base.py`) caches its last 32 acked
   `request_id`s and replays the cached ack instead of re-running the
   handler, so a retry with a new id would repeat a real-world side effect
   (a second `dispense` cycle) instead of just asking again. Raises
@@ -344,7 +344,7 @@ The Tests level (`packages/edge/src/ice_edge/web/routes/tests_level/`) lets a te
 
 ### Hardware
 
-There is no in-process hardware code; real MDB and I/O live on the ESP32 boards and arrive over MQTT (simulated by `simulators/`).
+There is no in-process hardware code; real MDB and I/O live on the ESP32 boards and arrive over MQTT (simulated by `packages/sims/src/ice_sims/`).
 
 ### Docker
 
