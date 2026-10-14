@@ -20,7 +20,7 @@ from ice_contracts.board.common import ChannelDescriptor, CommandAck
 from ice_contracts.board.vending_machine import FaultCode, SubsystemCapabilities
 from ice_edge.vend.dispense_cycle import DispenseCycle
 from controller.machine import Machine
-from controller.vmc import VMC
+from ice_edge.sale.vmc import VMC
 from ice_edge.faults.availability import Availability
 from ice_edge.hal.command_dispatcher import CommandTimeout
 from ice_edge.vend.dispensers import DispenserProfiles

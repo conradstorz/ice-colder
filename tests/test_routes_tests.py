@@ -1681,7 +1681,7 @@ class TestSimulatedSaleFlow:
         cfg, _vmc, _inv, _store = wired
         add_product(cfg, "ICE-1", "Ice Bag", 2.50, slot=0)
 
-        from controller.test_sale import TestSaleResult
+        from ice_edge.sale.test_sale import TestSaleResult
 
         async def fake_run_test_sale(sku, *, user_id=None, user_name=None):
             assert sku == "ICE-1"

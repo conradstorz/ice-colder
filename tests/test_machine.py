@@ -16,7 +16,7 @@ from ice_common.config_model import ConfigModel, PhysicalDetails, Product
 from ice_contracts.board.vending_machine import FaultCode
 from controller.machine import Machine
 from ice_edge.hal.mqtt_inbound import SUBSCRIPTIONS
-from controller.vmc import VMC
+from ice_edge.sale.vmc import VMC
 from ice_edge.ledger.session_store import SessionSnapshot
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
 from tests.fakes import FakeAvailability, FakeTaskRunner
@@ -134,7 +134,7 @@ class TestConstruction:
         callable actually tracks `machine.lease.hold` rather than some
         stale snapshot, by flipping the hold directly (no timers, no
         event loop needed) and reading the callable's result each time."""
-        from controller.maintenance_lease import MaintenanceHold
+        from ice_edge.sale.maintenance_lease import MaintenanceHold
 
         machine = Machine(ConfigModel())
         # private: asserts VMC's internal `_in_maintenance` callable

@@ -11,7 +11,7 @@ import time
 import pytest
 from loguru import logger
 
-from controller.maintenance_lease import MaintenanceHold, MaintenanceLease
+from ice_edge.sale.maintenance_lease import MaintenanceHold, MaintenanceLease
 
 
 @pytest.fixture

@@ -300,7 +300,7 @@ class TestCommandAck:
 
 class TestSubscriptionsTable:
     def test_every_vmc_owner_method_is_a_vmc_attribute(self):
-        from controller.vmc import VMC
+        from ice_edge.sale.vmc import VMC
 
         for _, owner, name in SUBSCRIPTIONS:
             if owner == "vmc":

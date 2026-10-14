@@ -20,13 +20,13 @@ from ice_edge.ledger.session_store import SessionSnapshot
 from ice_edge.vend.dispense_cycle import DispenseCycle, DispenseReport
 from ice_edge.faults.fault_service import FaultService
 from ice_edge.ledger.escrow_ledger import EscrowLedger
-from controller.outputs import StatusOutputs
+from ice_edge.sale.outputs import StatusOutputs
 from ice_edge.payment.refund_protocol import PendingRefund, RefundProtocol
-from controller.sale_context import SaleContext
-from controller.session_timer import SessionTimer
+from ice_edge.sale.sale_context import SaleContext
+from ice_edge.sale.session_timer import SessionTimer
 from ice_edge.supervisor.task_runner import TaskRunner
 from ice_edge.vend.dispenser_gate import DispenserProfileGate
-from controller.sale_journal import STATE_CHANGE_PREFIX, SaleJournal  # noqa: F401  (tests import STATE_CHANGE_PREFIX from here)
+from ice_edge.sale.sale_journal import STATE_CHANGE_PREFIX, SaleJournal  # noqa: F401  (tests import STATE_CHANGE_PREFIX from here)
 
 
 class InvalidTransition(RuntimeError):

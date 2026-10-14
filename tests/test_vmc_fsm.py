@@ -6,7 +6,7 @@ import pytest
 
 from ice_common.config_model import ConfigModel
 from controller.machine import Machine
-from controller.vmc import InvalidTransition
+from ice_edge.sale.vmc import InvalidTransition
 
 
 class TestInitialState:

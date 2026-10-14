@@ -16,7 +16,7 @@ import asyncio
 
 from ice_common.config_model import Product
 from ice_contracts.board.vending_machine import PaymentRefundCommand
-from controller.outputs import StatusOutputs
+from ice_edge.sale.outputs import StatusOutputs
 from ice_contracts.board.mqtt_messages import (
     AlertLevel,
     PaymentEnableCommand,

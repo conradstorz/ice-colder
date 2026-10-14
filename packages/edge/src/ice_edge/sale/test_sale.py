@@ -23,12 +23,12 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from ice_edge.vend.dispenser_gate import DispenserProfileGate
-from controller.maintenance_lease import MaintenanceLease
-from controller.sale_context import SaleContext
+from ice_edge.sale.maintenance_lease import MaintenanceLease
+from ice_edge.sale.sale_context import SaleContext
 from ice_edge.supervisor.task_runner import TaskRunner
 
 if TYPE_CHECKING:
-    from controller.vmc import VMC
+    from ice_edge.sale.vmc import VMC
 
 
 @dataclass

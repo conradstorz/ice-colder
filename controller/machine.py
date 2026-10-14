@@ -58,14 +58,14 @@ from ice_edge.vend.dispenser_gate import DispenserProfileGate
 from ice_edge.ledger.escrow_ledger import EscrowLedger
 from ice_edge.faults.fault_registry import FaultRegistry
 from ice_edge.faults.fault_service import FaultService
-from controller.maintenance_lease import MaintenanceHold, MaintenanceLease
-from controller.outputs import StatusOutputs
+from ice_edge.sale.maintenance_lease import MaintenanceHold, MaintenanceLease
+from ice_edge.sale.outputs import StatusOutputs
 from ice_edge.payment.refund_protocol import RefundProtocol
-from controller.sale_journal import SaleJournal
+from ice_edge.sale.sale_journal import SaleJournal
 from ice_edge.ledger.session_recovery import SessionRecovery
 from ice_edge.supervisor.task_runner import TaskRunner
-from controller.test_sale import TestSaleRunner
-from controller.vmc import VMC
+from ice_edge.sale.test_sale import TestSaleRunner
+from ice_edge.sale.vmc import VMC
 from ice_edge.faults.availability import Availability
 from ice_edge.vend.dispensers import DispenserProfiles
 from ice_edge.customer_ui.display_controller import DisplayController

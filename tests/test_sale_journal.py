@@ -5,7 +5,7 @@ from loguru import logger
 
 from ice_common.config_model import Product
 from ice_contracts.board.vending_machine import FaultCode
-from controller.sale_journal import STATE_CHANGE_PREFIX, SaleJournal
+from ice_edge.sale.sale_journal import STATE_CHANGE_PREFIX, SaleJournal
 
 
 class Sink:

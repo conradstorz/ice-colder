@@ -11,7 +11,7 @@ import dataclasses
 import pytest
 
 from ice_common.config_model import Product
-from controller.sale_context import SaleContext
+from ice_edge.sale.sale_context import SaleContext
 
 PRODUCT = Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0, kind="ice")
 OTHER_PRODUCT = Product(sku="WATER-1", name="Water", price=1.00, slot=1, kind="water")

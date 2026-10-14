@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends, Request
 
-from services import fsm_control
+from ice_edge.sale import fsm_control
 from web_interface import auth as web_auth
 from web_interface import context
 from ice_ui.levels import LEVEL_CONTROLS

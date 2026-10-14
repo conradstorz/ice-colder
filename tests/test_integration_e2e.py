@@ -24,7 +24,7 @@ from pydantic import SecretStr
 from ice_common.config_model import ConfigModel, Product
 from ice_contracts.board.common import CommandAck
 from controller.machine import Machine
-from controller.vmc import VMC
+from ice_edge.sale.vmc import VMC
 from tests.fakes import FakeTaskRunner
 from ice_edge.hal.command_dispatcher import CommandDispatcher
 from ice_edge.monitoring.health_monitor import HealthMonitor

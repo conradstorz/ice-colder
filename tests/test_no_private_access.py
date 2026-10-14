@@ -89,13 +89,13 @@ import sys
 from pathlib import Path
 
 try:
-    from tests.paths import TESTS_ROOT
+    from tests.paths import TESTS_ROOT, VMC_PATH
 except ModuleNotFoundError:  # run as `python tests/.../test_no_private_access.py`
     for _parent in Path(__file__).resolve().parents:
         if (_parent / "pyproject.toml").is_file():
             sys.path.insert(0, str(_parent))
             break
-    from tests.paths import TESTS_ROOT
+    from tests.paths import TESTS_ROOT, VMC_PATH
 
 #: An attribute name that counts as private: a single leading underscore
 #: followed by a lowercase letter (dunders such as `__class__` never match).
@@ -127,8 +127,8 @@ CONTROLLER_DIR = REPO_ROOT / "controller"
 #: "Guard 2", for the one deliberate carve-out (SessionSnapshot).
 FORBIDDEN_VMC_IMPORTS = {
     "controller.machine",
-    "controller.maintenance_lease",
-    "controller.test_sale",
+    "ice_edge.sale.maintenance_lease",
+    "ice_edge.sale.test_sale",
     "ice_common.mqtt_client",
     "ice_edge.monitoring.health_monitor",
     "ice_edge.ledger.session_store",
@@ -306,7 +306,7 @@ def test_vmc_has_no_forbidden_imports():
     """`controller/vmc.py` holds no transport or service handle -- see
     this module's docstring, "Guard 2", for the forbidden list and the
     one `SessionSnapshot` carve-out."""
-    path = CONTROLLER_DIR / "vmc.py"
+    path = VMC_PATH
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
     violations = _find_forbidden_imports(tree)
@@ -321,19 +321,19 @@ def test_vmc_has_no_forbidden_imports():
 
 def test_forbidden_import_check_catches_package_submodule_form():
     """Negative self-test for `_find_forbidden_imports`: `from ice_edge.ledger
-    import session_store` and `from controller import maintenance_lease`
+    import session_store` and `from ice_edge.sale import maintenance_lease`
     name forbidden modules via the `from <package> import <name>` form,
     not as a single dotted `module` string -- without the package-form
     check in `_find_forbidden_imports`, both slip past undetected."""
     tree = ast.parse(
-        "from ice_edge.ledger import session_store\nfrom controller import maintenance_lease\n"
+        "from ice_edge.ledger import session_store\nfrom ice_edge.sale import maintenance_lease\n"
     )
 
     violations = _find_forbidden_imports(tree)
 
     assert violations == [
         "from ice_edge.ledger import session_store",
-        "from controller import maintenance_lease",
+        "from ice_edge.sale import maintenance_lease",
     ]
 
 

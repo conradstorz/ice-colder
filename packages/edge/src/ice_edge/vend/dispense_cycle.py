@@ -55,8 +55,8 @@ from ice_contracts.board.mqtt_messages import DispenseCommand
 from ice_edge.ledger.session_store import SessionSnapshot
 
 if TYPE_CHECKING:
-    from controller.outputs import StatusOutputs
-    from controller.sale_context import SaleContext
+    from ice_edge.sale.outputs import StatusOutputs
+    from ice_edge.sale.sale_context import SaleContext
 
 # Bound logger for the vending log -- mirrors controller/vmc.py's own
 # `vend_log` / controller/machine.py's `_txn_log`: loguru's bind() only

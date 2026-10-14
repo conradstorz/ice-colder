@@ -1,17 +1,17 @@
 from controller.machine import Machine
-from services.command_dispatcher import CommandDispatcher
+from ice_edge.hal.command_dispatcher import CommandDispatcher
 from ice_common.mqtt_client import MQTTClient
-from services.health_monitor import HealthMonitor
-from services.notifier import Notifier
-from services.display_controller import DisplayController
-from services.inventory_manager import InventoryManager
-from services.event_recorder import EventRecorder
-from services.availability import Availability
-from services.session_store import SessionStore
+from ice_edge.monitoring.health_monitor import HealthMonitor
+from ice_edge.notify.notifier import Notifier
+from ice_edge.customer_ui.display_controller import DisplayController
+from ice_edge.monitoring.inventory_manager import InventoryManager
+from ice_edge.ledger.event_recorder import EventRecorder
+from ice_edge.faults.availability import Availability
+from ice_edge.ledger.session_store import SessionStore
 from ice_common.build_info import BUILD_INFO
 from ice_common.logging_setup import setup_logging
-from services.mailer import send_email
-from services import report_scheduler
+from ice_edge.notify.mailer import send_email
+from ice_edge.reporting import report_scheduler
 from services.startup_dispensers import load_dispenser_profiles, wire_dispenser_profiles
 from services.startup_recovery import reconcile_sales_journal_faults
 from ice_common.task_lifecycle import run_until_primary_exits
@@ -23,7 +23,7 @@ import sys
 from loguru import logger
 
 import uvicorn
-from services.access import AccessStore
+from ice_edge.access.access import AccessStore
 from services.startup_config import (
     apply_env_overrides,
     load_config,

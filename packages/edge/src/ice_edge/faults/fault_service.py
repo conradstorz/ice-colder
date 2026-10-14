@@ -56,7 +56,7 @@ from ice_edge.supervisor.task_runner import TaskRunner
 from ice_contracts.board.mqtt_messages import VMCAlert
 
 if TYPE_CHECKING:
-    from controller.outputs import StatusOutputs
+    from ice_edge.sale.outputs import StatusOutputs
 
 # Heartbeat loss per subsystem -> registry fault (ROADMAP §5, §8). Moved
 # here from controller/vmc.py verbatim.

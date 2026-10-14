@@ -28,7 +28,7 @@ import asyncio
 from ice_contracts.board.vending_machine import FaultCode
 from ice_edge.faults.fault_registry import FaultRegistry
 from ice_edge.faults.fault_service import FaultService
-from controller.outputs import StatusOutputs
+from ice_edge.sale.outputs import StatusOutputs
 from ice_contracts.board.mqtt_messages import VMCAlert
 from ice_edge.ledger.session_store import SessionSnapshot
 from tests.fakes import (

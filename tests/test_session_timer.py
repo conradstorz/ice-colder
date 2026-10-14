@@ -1,4 +1,4 @@
-from controller.session_timer import SessionTimer
+from ice_edge.sale.session_timer import SessionTimer
 from tests.fakes import FakeTaskRunner
 
 

@@ -4,8 +4,8 @@ from unittest.mock import create_autospec
 
 from ice_common.config_model import ConfigModel
 from controller.machine import Machine
-from controller.vmc import VMC
-from services.fsm_control import perform_command
+from ice_edge.sale.vmc import VMC
+from ice_edge.sale.fsm_control import perform_command
 
 
 def test_reset_recovers_vmc_from_error():
