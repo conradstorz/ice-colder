@@ -365,6 +365,21 @@ class ReportsConfig(BaseModel):
     )
 
 
+class CloudConfig(BaseModel):
+    """Optional uplink to the cloud monitoring server (`config.cloud`).
+
+    Off by default: a machine with no `cloud` key never talks to the cloud.
+    """
+
+    enabled: bool = Field(False, description="Upload reports to the cloud server")
+    url: str = Field(
+        "http://127.0.0.1:26124", description="Base URL of the cloud server"
+    )
+    report_interval_seconds: int = Field(
+        60, ge=10, le=3600, description="Seconds between uploaded reports"
+    )
+
+
 class ConfigModel(BaseModel):
     """
     Top-level configuration for the Vending Machine Controller
@@ -393,6 +408,10 @@ class ConfigModel(BaseModel):
     reports: ReportsConfig = Field(
         default_factory=ReportsConfig,
         description="Scheduled sales-summary email settings",
+    )
+    cloud: CloudConfig = Field(
+        default_factory=CloudConfig,
+        description="Optional uplink to the cloud monitoring server (off by default)",
     )
 
     model_config = ConfigDict(extra="ignore")

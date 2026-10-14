@@ -112,5 +112,10 @@
     "host": "0.0.0.0",
     "port": 26123,
     "trusted_proxies": []
+  },
+  "cloud": {
+    "enabled": false,
+    "url": "http://127.0.0.1:26124",
+    "report_interval_seconds": 60
   }
 }

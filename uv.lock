@@ -354,6 +354,7 @@ version = "0.1.0"
 source = { editable = "packages/edge" }
 dependencies = [
     { name = "fastapi", extra = ["standard"] },
+    { name = "httpx" },
     { name = "ice-common" },
     { name = "ice-ui" },
     { name = "loguru" },
@@ -364,6 +365,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", extras = ["standard"], specifier = ">=0.115.11" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "ice-common", editable = "packages/common" },
     { name = "ice-ui", editable = "packages/ui" },
     { name = "loguru", specifier = ">=0.7.3" },

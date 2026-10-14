@@ -32,6 +32,9 @@ from ice_edge.app.startup_config import (
     load_config,
     warn_if_setup_mode,
 )
+from ice_edge.uplink.client import HttpUplink
+from ice_edge.uplink.loop import run_uplink
+from ice_edge.web.context import holder_display_name
 from ice_edge.web.server import app
 from ice_edge.web import routes
 from ice_edge.web import auth as web_auth
@@ -161,19 +164,35 @@ async def main():
     logger.info(
         "Entering main event loop with web server, MQTT client, and health monitor"
     )
-    try:
-        await run_until_primary_exits(
-            server.serve(),
-            supervise("MQTT client", mqtt.run),
-            supervise("health monitor", health.run),
-            supervise(
-                "report scheduler",
-                lambda: report_scheduler.run(
-                    live_config, recorder, send_email, report_scheduler.local_now
-                ),
+    background = [
+        supervise("MQTT client", mqtt.run),
+        supervise("health monitor", health.run),
+        supervise(
+            "report scheduler",
+            lambda: report_scheduler.run(
+                live_config, recorder, send_email, report_scheduler.local_now
             ),
+        ),
+    ]
+    uplink = None
+    if live_config.cloud.enabled:
+        # Off by default. Uploads run in this supervised task with a 5 s
+        # timeout and never block a sale.
+        uplink = HttpUplink(live_config.cloud.url, live_config.machine_id)
+        background.append(
+            supervise(
+                "uplink",
+                lambda: run_uplink(
+                    machine, live_config, uplink, holder_name=holder_display_name
+                ),
+            )
         )
+        logger.info(f"Cloud uplink enabled, reporting to {live_config.cloud.url}")
+    try:
+        await run_until_primary_exits(server.serve(), *background)
     finally:
+        if uplink is not None:
+            await uplink.aclose()
         await machine.drain_persistence()
         logger.info("Shutdown: drained persistence tasks")
         machine.cancel_pending_tasks()

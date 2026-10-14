@@ -130,7 +130,7 @@ handles process-level restarts). Neither helper imports application components.
 
 ### Configuration (`packages/common/src/ice_common/config_model.py`, `config.json`)
 
-All configuration is a single Pydantic `ConfigModel` loaded from `config.json`. The model has seven top-level sections: `version`, `physical` (machine details, people, products), `payment` (Stripe, PayPal, MDB), `communication` (email, SMS, Snapchat gateways), `mqtt` (broker connection), `web` (dashboard host/port/trusted proxies), and `reports` (scheduled sales-summary email: `schedule` off/daily/weekly, `hour` 0–23, `weekday` Monday-based 0–6, `extra_recipients`) — plus the scalar `machine_id` field. The reports section is edited at **`/settings/reports`** gated on `edit_contacts`. `ConfigModel` exposes convenience properties (e.g., `config.products`, `config.machine_owner`, `config.stripe`) so consumers don't need to navigate the nested structure. Missing keys are filled from Pydantic defaults at load time. Saves via
+All configuration is a single Pydantic `ConfigModel` loaded from `config.json`. The model has eight top-level sections: `version`, `physical` (machine details, people, products), `payment` (Stripe, PayPal, MDB), `communication` (email, SMS, Snapchat gateways), `mqtt` (broker connection), `web` (dashboard host/port/trusted proxies), and `reports` (scheduled sales-summary email: `schedule` off/daily/weekly, `hour` 0–23, `weekday` Monday-based 0–6, `extra_recipients`), and `cloud` (optional uplink: `enabled` default **false**, `url` default `http://127.0.0.1:26124`, `report_interval_seconds` 10–3600, default 60) — plus the scalar `machine_id` field. The reports section is edited at **`/settings/reports`** gated on `edit_contacts`. `ConfigModel` exposes convenience properties (e.g., `config.products`, `config.machine_owner`, `config.stripe`) so consumers don't need to navigate the nested structure. Missing keys are filled from Pydantic defaults at load time. Saves via
 `packages/edge/src/ice_edge/config/config_store.py` are atomic (tmp + rename), write real secret values,
 and keep a rolling `config.json.bak`.
 
@@ -145,6 +145,10 @@ relying on a bind-mount targeting `config.json` directly (which would let
 Docker create it as a directory on a fresh clone, since the file is
 gitignored). If the resolved config path exists but is a directory, startup
 logs a clear error and exits with code 1 rather than papering over it.
+
+### Cloud uplink (`ice_edge/uplink/`)
+
+Off unless `config.cloud.enabled`. `ice_edge/__main__.py` then adds a supervised `uplink` task running `run_uplink`: it `PUT`s the `ice_ui` bundle once (retried each interval until accepted), then forever `POST`s a `MachineReport` (built by `build_machine_report` from the `ice_edge.views.health` builders; a pure read) to `{url}/api/v1/machines/{machine_id}/report`, re-reading `report_interval_seconds` each pass. `HttpUplink` has a 5 s timeout and never raises (failure logs a warning and returns `False`); there is no outbox, each report supersedes the last, and a sale is never blocked. `ice_edge.uplink` sits above `views` and below `app`/`web`, so it imports `Machine` only under `TYPE_CHECKING`.
 
 ### Dispenser profiles (`dispensers.toml`)
 
