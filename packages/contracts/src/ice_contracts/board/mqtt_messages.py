@@ -1,4 +1,4 @@
-# services/mqtt_messages.py
+# ice_contracts/board/mqtt_messages.py
 """
 Pydantic models for all MQTT message payloads.
 
@@ -88,7 +88,7 @@ class DispenserStatus(BaseModel):
         None,
         description=(
             "Echoed from the command-channel `dispense` request for both "
-            "test runs and production sales (contracts/common.py "
+            "test runs and production sales (ice_contracts/board/common.py "
             "COMPLETION_TIMEOUTS; plan 2 moves production sales onto the "
             "same command channel, so this is no longer test-only). The "
             "VMC logs a mismatch but keys completion on `slot` and FSM "

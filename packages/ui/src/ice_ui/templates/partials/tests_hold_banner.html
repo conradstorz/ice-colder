@@ -1,10 +1,10 @@
-{# web_interface/templates/partials/tests_hold_banner.html
+{# ice_edge/web/templates/partials/tests_hold_banner.html
 
    Task 3 (system-tests design §2.2a): the service-state card. Always
    rendered on /tests now (tests.html no longer wraps it in `{% if hold %}`)
    and re-rendered, outerHTML, by every route that changes what it shows --
    GET /tests/standby/confirm, POST /tests/standby, POST /tests/end and
-   POST /tests/takeover -- via web_interface/routes/tests_level/lease.py's shared
+   POST /tests/takeover -- via ice_edge/web/routes/tests_level/lease.py's shared
    `_service_state()` context builder, so none of them can render a
    different shape for the same VMC state.
 

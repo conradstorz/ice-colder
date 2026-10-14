@@ -1,6 +1,6 @@
 """The static navigation tree for the dashboard v2 shell.
 
-This is a pure data module: no FastAPI, no Jinja, no `web_interface.context`
+This is a pure data module: no FastAPI, no Jinja, no `ice_edge.web.context`
 import. It defines `Level`, a frozen dataclass describing one node of the
 navigation hierarchy (a title, a URL, and a reference to its parent), plus a
 module-level constant for each of the 29 named levels in spec §2.
@@ -80,12 +80,12 @@ LEVEL_TESTS = Level(title="Tests", url="/tests", parent=LEVEL_HOME)
 # Task 13a: the Tests level's one static sub-level besides the
 # parameterized per-subsystem page (built at request time via Level.child,
 # same pattern as LEVEL_HEALTH_SUBSYSTEMS's per-subsystem detail page --
-# see web_interface/routes/health/subsystems.py's subsystem_detail). Task 13b adds its
+# see ice_edge/web/routes/health/subsystems.py's subsystem_detail). Task 13b adds its
 # own static sub-level constant(s) here for GET /tests/sale the same way.
 LEVEL_TESTS_LOG = Level(title="Test log", url="/tests/log", parent=LEVEL_TESTS)
 # Task 13b: the simulated-sale SKU picker (GET /tests/sale). No {sku}
 # segment exists under it -- the SKU is a POST form field, never a URL
-# segment (see web_interface/routes/tests_level/sale.py's tests_sale_run).
+# segment (see ice_edge/web/routes/tests_level/sale.py's tests_sale_run).
 LEVEL_TESTS_SALE = Level(title="Simulated sale", url="/tests/sale", parent=LEVEL_TESTS)
 
 LEVEL_USERS = Level(title="Users", url="/users", parent=LEVEL_HOME)

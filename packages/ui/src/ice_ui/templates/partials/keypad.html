@@ -1,4 +1,4 @@
-{# web_interface/templates/partials/keypad.html — PIN entry, swapped into #login-form.
+{# ice_edge/web/templates/partials/keypad.html — PIN entry, swapped into #login-form.
 
    Task 14: restyled to the shell's touch rules (spec §3 — keys at least
    48px tall with 8px gaps), using the existing `touch-target` (48px
@@ -22,7 +22,7 @@
    fragment (it has no <main>) and blank the failure paths above. So that
    third case is retargeted per-response instead, via HX-Retarget/
    HX-Reselect headers set only on that response in
-   web_interface/routes/auth/login.py's _enrollment_response — see its comment
+   ice_edge/web/routes/auth/login.py's _enrollment_response — see its comment
    for the mechanism. #}
 <form id="login-form"
       hx-post="/login"

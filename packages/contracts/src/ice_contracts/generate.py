@@ -1,4 +1,4 @@
-# contracts/generate.py
+# ice_contracts/generate.py
 """Generate the contracts' JSON Schema files.
 
 Run after any model change: uv run python -m ice_contracts.generate
@@ -56,7 +56,7 @@ MODELS = {
     # generated file is docs/contracts/ice-maker-monitor/schemas/
     # monitor_command.schema.json, which real ice-maker firmware may already
     # reference. MonitorCommand is an alias for SubsystemCommand (the same
-    # class object, contracts/ice_maker_monitor.py), so this generates the
+    # class object, ice_contracts/board/ice_maker_monitor.py), so this generates the
     # identical schema either way.
     "monitor_command": SubsystemCommand,
     "command_ack": CommandAck,

@@ -34,11 +34,6 @@ ENV ICE_COLDER_COMMIT=$VCS_REF \
 
 # Copy application code
 COPY packages/ packages/
-COPY controller/ controller/
-COPY services/ services/
-COPY simulators/ simulators/
-COPY web_interface/ web_interface/
-COPY main.py ./
 
 # Install the workspace members themselves, then make the project venv the
 # default interpreter: bare `python` must be /app/.venv's, not the slim
@@ -53,4 +48,4 @@ RUN mkdir -p LOGS
 
 EXPOSE 26123
 
-CMD ["uv", "run", "python", "main.py"]
+CMD ["uv", "run", "python", "-m", "ice_edge"]

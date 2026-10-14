@@ -6,7 +6,7 @@ A comprehensive vending machine controller project
 **Local:**
 ```
 uv sync
-uv run python main.py
+uv run python -m ice_edge
 ```
 
 **Docker (local dev, builds your checkout):**

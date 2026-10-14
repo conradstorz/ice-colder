@@ -10,13 +10,13 @@ import pytest
 from fastapi.testclient import TestClient
 from loguru import logger as _loguru
 
-import services.access as access
-import services.config_store as config_store
+import ice_edge.access.access as access
+import ice_edge.config.config_store as config_store
 from ice_common.config_model import ConfigModel, PhysicalDetails
-from controller.machine import Machine
-from services.access import AccessStore, Role, User
-from services.dispensers import DispenserProfiles
-from services.inventory_manager import InventoryManager
+from ice_edge.app.machine import Machine
+from ice_edge.access.access import AccessStore, Role, User
+from ice_edge.vend.dispensers import DispenserProfiles
+from ice_edge.monitoring.inventory_manager import InventoryManager
 from tests.dispenser_fixtures import GOOD as DISPENSER_GOOD
 from tests.fakes import FakeTaskRunner
 from tests.dispenser_fixtures import ICE as DISPENSER_ICE
@@ -24,9 +24,9 @@ from tests.dispenser_fixtures import WATER as DISPENSER_WATER
 from tests import route_context
 from tests.browser_harness import live_server  # noqa: F401  (fixture shared by the browser tests)
 from tests.skip_policy import MISSING_TERMINALREPORTER_MARKER, build_skip_report
-from web_interface import auth as web_auth
-from web_interface import routes
-from web_interface.server import app
+from ice_edge.web import auth as web_auth
+from ice_edge.web import routes
+from ice_edge.web.server import app
 
 _ISSUED_CLIENTS: list[TestClient] = []
 
@@ -47,7 +47,7 @@ def isolated_config_path(tmp_path, monkeypatch):
     the config store prefers ``ICE_COLDER_CONFIG`` over
     ``CONFIG_PATH``, so an exported variable would send tests to the real
     config. The dispensers path and the MQTT / trusted-proxy overrides read by
-    ``services.startup_config`` are cleared too; tests that need one set it
+    ``ice_edge.app.startup_config`` are cleared too; tests that need one set it
     themselves with ``monkeypatch.setenv``.
     """
     monkeypatch.setattr(config_store, "CONFIG_PATH", tmp_path / "config.json")
@@ -72,7 +72,7 @@ def _cancel_helper_built_machines(request, monkeypatch):
     if request.module.__name__.rsplit(".", 1)[-1] not in _MACHINE_TRACKED_MODULES:
         yield
         return
-    from controller.machine import Machine
+    from ice_edge.app.machine import Machine
 
     built: list[Machine] = []
     real_init = Machine.__init__
@@ -89,7 +89,7 @@ def _cancel_helper_built_machines(request, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolated_route_context():
-    """Restore every web_interface.context global after each test (Task 4,
+    """Restore every ice_edge.web.context global after each test (Task 4,
     tests-b-route-context), whatever a test or the fixtures it used wired
     into it. See tests/route_context.py."""
     snap = route_context.snapshot()
@@ -101,7 +101,7 @@ def _isolated_route_context():
 def _fast_scrypt():
     """Lower the PIN/secret hashing cost for the whole test session.
 
-    services.access._scrypt reads SCRYPT_N from the module at call time, so
+    ice_edge.access.access._scrypt reads SCRYPT_N from the module at call time, so
     patching the module attribute here is enough to speed up hash_pin,
     verify_pin, hash_secret and verify_secret everywhere — no AccessStore
     constructor plumbing needed. Session-scoped so the (measured) 213.8 ms
@@ -268,7 +268,7 @@ def anonymous(wired):
 
 @pytest.fixture
 def machine():
-    """The composition root (`controller/machine.py`'s `Machine`) built
+    """The composition root (`ice_edge/app/machine.py`'s `Machine`) built
     fresh for a test, with a real `TaskRunner`. `vmc` below yields
     `machine.vmc` and depends on this fixture, so a test taking both
     shares the same `Machine` instance.

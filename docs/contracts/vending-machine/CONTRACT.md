@@ -243,5 +243,5 @@ Full detail on the new wire shapes this introduced:
 
 ## Reference implementation
 
-`simulators/vending_machine.py` publishes the outcomes; `simulators/mdb_gateway.py`
+`packages/sims/src/ice_sims/vending_machine.py` publishes the outcomes; `packages/sims/src/ice_sims/mdb_gateway.py`
 answers refunds (including the `changer_empty` failure path).

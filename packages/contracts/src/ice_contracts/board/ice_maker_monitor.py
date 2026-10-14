@@ -1,11 +1,11 @@
-# contracts/ice_maker_monitor.py
+# ice_contracts/board/ice_maker_monitor.py
 """
 Shared contract models for the ice-maker monitor interface (v1.4.0).
 
 These models are the machine-readable source of truth for the interface
 between ice-colder (the VMC) and the external brand-specific monitor
 project. JSON Schemas are generated from them into
-docs/contracts/ice-maker-monitor/schemas/ by contracts/generate.py.
+docs/contracts/ice-maker-monitor/schemas/ by ice_contracts/generate.py.
 Breaking changes require a major CONTRACT_VERSION bump.
 """
 
@@ -20,7 +20,7 @@ from ice_contracts.board.common import SubsystemCommand as MonitorCommand
 from ice_contracts.board.vending_machine import SubsystemCapabilities
 
 # 1.1.0 -> 1.2.0: minor bump. The command/ack models (MonitorCommand,
-# CommandAck) move to contracts/common.py as SubsystemCommand/CommandAck and
+# CommandAck) move to ice_contracts/board/common.py as SubsystemCommand/CommandAck and
 # are re-exported here under their original names — same classes, wire
 # format unchanged except the ack's new optional `result` field. Additive,
 # so today's ice-maker firmware and the VMC's current ack handler still
@@ -37,7 +37,7 @@ from ice_contracts.board.vending_machine import SubsystemCapabilities
 # are unaffected; their single ack is still both accept and completion.
 #
 # 1.3.0 -> 1.4.0 (2026-09-30): minor bump, additive. `ChannelDescriptor`
-# (contracts/common.py) gains `direction` ("input" | "output", default
+# (ice_contracts/board/common.py) gains `direction` ("input" | "output", default
 # "input") and `driven_by` (str | None, default None) so a board's
 # capabilities document can say which channels it drives versus senses,
 # and which command's refusal inhibits an output. Both fields are
@@ -78,9 +78,9 @@ class ChannelReading(BaseModel):
 
 
 # MonitorCommand and CommandAck are no longer defined here: they are
-# contracts.common.SubsystemCommand and contracts.common.CommandAck,
+# ice_contracts.board.common.SubsystemCommand and ice_contracts.board.common.CommandAck,
 # imported and re-exported above under their original names so every
-# existing `from contracts.ice_maker_monitor import MonitorCommand` (and
+# existing `from ice_contracts.board.ice_maker_monitor import MonitorCommand` (and
 # `CommandAck`) keeps working — they are the same class objects, not
-# subclasses or copies. See contracts/common.py for the shared subsystem
+# subclasses or copies. See ice_contracts/board/common.py for the shared subsystem
 # command channel (§1.1 of the system-tests design) and its param registry.

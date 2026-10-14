@@ -17,7 +17,7 @@ from pathlib import Path
 
 from ice_contracts.board.common import CommandAck
 from ice_common.config_model import ConfigModel, PhysicalDetails, Product
-from services.dispensers import DispenserProfiles
+from ice_edge.vend.dispensers import DispenserProfiles
 
 ICE = Product(sku="ICE-10LB", slot=1, kind="ice")
 WATER = Product(sku="WATER-1GAL", slot=2, kind="water")
@@ -25,7 +25,7 @@ WATER = Product(sku="WATER-1GAL", slot=2, kind="water")
 GOOD = """\
 # dispensers.toml — physical dispense parameters, one table per slot.
 # Generated reference: dispensers.example.toml. Validate with
-#   uv run python -m services.dispensers --check
+#   uv run python -m ice_edge.vend.dispensers --check
 schema_version = 1
 
 [slot.1]
@@ -150,7 +150,7 @@ def render_profiles_toml(products: Sequence[Product]) -> str:
 
 
 class FakeDispatcher:
-    """Fake `services.command_dispatcher.CommandDispatcher` for VMC-level
+    """Fake `ice_edge.hal.command_dispatcher.CommandDispatcher` for VMC-level
     dispense tests (plan: dispenser profiles, Task 3). Records every
     `send()` call (subsystem, command, params) in `sent` -- never the
     pydantic `DispenseCommand`, matching what a production sale actually

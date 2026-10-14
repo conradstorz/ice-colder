@@ -1,4 +1,4 @@
-"""`FakeTaskRunner`: a drop-in for `controller.task_runner.TaskRunner` that
+"""`FakeTaskRunner`: a drop-in for `ice_edge.supervisor.task_runner.TaskRunner` that
 lets a test fire a timer by the label the VMC (or one of its extracted
 collaborators, `RefundProtocol`/`MaintenanceLease`) armed it with, instead of
 reaching into a private per-timer task handle on the VMC (VMC public
@@ -39,10 +39,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ice_common.config_model import ConfigModel, PhysicalDetails, Product
-from controller.machine import Machine
-from controller.task_runner import TaskRunner
+from ice_edge.app.machine import Machine
+from ice_edge.supervisor.task_runner import TaskRunner
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
-from services.session_store import SessionSnapshot
+from ice_edge.ledger.session_store import SessionSnapshot
 
 
 @dataclass

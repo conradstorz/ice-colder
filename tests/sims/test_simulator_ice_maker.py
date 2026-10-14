@@ -1,0 +1,857 @@
+# tests/test_simulator_ice_maker.py
+"""Tests for simulators/ice_maker.py — ice maker temperature simulation."""
+
+import math
+import pytest
+from unittest.mock import AsyncMock
+
+from ice_sims.ice_maker import IceMakerSimulator, ThermalSensor, SENSOR_DEFS
+
+
+class TestThermalSensor:
+    def test_initial_value(self):
+        sensor = ThermalSensor(
+            name="test", target_on=50.0, target_off=30.0, rate=0.1, noise=0.0
+        )
+        # Initial value is target_off (compressor starts off)
+        assert sensor.value == 30.0
+
+    def test_moves_toward_target_on(self):
+        sensor = ThermalSensor(
+            name="test", target_on=50.0, target_off=30.0, rate=0.5, noise=0.0
+        )
+        initial = sensor.value
+        sensor.update(compressor_on=True, dt=1.0)
+        # Should move toward 50.0 from 30.0
+        assert sensor.value > initial
+
+    def test_moves_toward_target_off(self):
+        sensor = ThermalSensor(
+            name="test", target_on=50.0, target_off=30.0, rate=0.5, noise=0.0
+        )
+        sensor._value = 50.0  # start at on-target
+        sensor.update(compressor_on=False, dt=1.0)
+        # Should move toward 30.0 from 50.0
+        assert sensor.value < 50.0
+
+    def test_noise_adds_variation(self):
+        sensor = ThermalSensor(
+            name="test", target_on=50.0, target_off=30.0, rate=0.0, noise=1.0
+        )
+        values = set()
+        for _ in range(20):
+            sensor.update(compressor_on=False, dt=1.0)
+            values.add(round(sensor.value, 2))
+        # With noise=1.0 and rate=0.0, values should vary
+        assert len(values) > 1
+
+    def test_rate_zero_stays_put_without_noise(self):
+        sensor = ThermalSensor(
+            name="test", target_on=50.0, target_off=30.0, rate=0.0, noise=0.0
+        )
+        sensor.update(compressor_on=True, dt=1.0)
+        assert sensor.value == 30.0  # no movement
+
+
+class TestSensorDefs:
+    def test_all_ten_sensors_defined(self):
+        assert len(SENSOR_DEFS) == 10
+
+    def test_expected_sensor_names(self):
+        names = {s["name"] for s in SENSOR_DEFS}
+        expected = {
+            "water_inlet",
+            "water_bath",
+            "compressor",
+            "exhaust_air",
+            "ambient_air",
+            "refrigerant_high",
+            "refrigerant_low",
+            "purge_water",
+            "hot_gas_valve_1",
+            "hot_gas_valve_2",
+        }
+        assert names == expected
+
+
+class TestIceMakerSimulator:
+    def test_creates_with_defaults(self):
+        sim = IceMakerSimulator()
+        assert sim.subsystem_name == "ice_maker"
+        assert len(sim.sensors) == 10
+
+    def test_compressor_starts_off(self):
+        sim = IceMakerSimulator()
+        assert sim.compressor_on is False
+
+    def test_tick_updates_all_sensors(self):
+        sim = IceMakerSimulator()
+        initial_values = {s.name: s.value for s in sim.sensors}
+        sim.tick(dt=5.0)
+        # At least some sensors should have changed (noise)
+        changed = sum(
+            1
+            for s in sim.sensors
+            if round(s.value, 4) != round(initial_values[s.name], 4)
+        )
+        assert changed > 0
+
+    def test_compressor_cycles(self):
+        sim = IceMakerSimulator()
+        dt = 5.0
+        assert sim.compressor_on is False
+        # Derive tick count from off-cycle constant to guard against changes
+        off_seconds = sim.COMPRESSOR_OFF_TIME
+        ticks_to_boundary = math.ceil(off_seconds / dt)
+        # Verify compressor is still OFF one tick before the boundary
+        for _ in range(ticks_to_boundary - 1):
+            sim.tick(dt=dt)
+        assert sim.compressor_on is False, (
+            f"Compressor should still be OFF before boundary (at {ticks_to_boundary - 1} ticks)"
+        )
+        # One more tick to cross the boundary
+        sim.tick(dt=dt)
+        assert sim.compressor_on is True
+
+
+class TestHADiscovery:
+    def test_returns_12_entities(self):
+        sim = IceMakerSimulator()
+        entities = sim.ha_discovery_entities()
+        assert len(entities) == 12
+
+    def test_ten_temperature_sensors(self):
+        sim = IceMakerSimulator()
+        entities = sim.ha_discovery_entities()
+        temp_sensors = [e for e in entities if e.get("device_class") == "temperature"]
+        assert len(temp_sensors) == 10
+
+    def test_hot_gas_valve_entities(self):
+        sim = IceMakerSimulator()
+        ids = [e["object_id"] for e in sim.ha_discovery_entities()]
+        assert "hot_gas_valve_1_temp" in ids
+        assert "hot_gas_valve_2_temp" in ids
+        assert "hot_gas_valve_temp" not in ids
+
+    def test_temperature_sensor_fields(self):
+        sim = IceMakerSimulator()
+        entities = sim.ha_discovery_entities()
+        temp = next(e for e in entities if e["object_id"] == "water_inlet_temp")
+        assert temp["component"] == "sensor"
+        assert temp["name"] == "Ice Maker Water Inlet Temperature"
+        assert temp["state_topic_suffix"] == "sensors/temp/water_inlet"
+        assert temp["value_template"] == "{{ value_json.value }}"
+        assert temp["unit_of_measurement"] == "\u00b0C"
+        assert temp["state_class"] == "measurement"
+        assert temp["expire_after"] == 30
+
+    def test_compressor_binary_sensor(self):
+        sim = IceMakerSimulator()
+        entities = sim.ha_discovery_entities()
+        comp = next(e for e in entities if e["object_id"] == "compressor")
+        assert comp["component"] == "binary_sensor"
+        assert comp["name"] == "Ice Maker Compressor"
+        assert comp["device_class"] == "running"
+        assert comp["state_topic_suffix"] == "ice_maker/event"
+        assert comp["payload_on"] == "ON"
+        assert comp["payload_off"] == "OFF"
+
+    def test_uptime_sensor(self):
+        sim = IceMakerSimulator()
+        entities = sim.ha_discovery_entities()
+        uptime = next(e for e in entities if e["object_id"] == "uptime")
+        assert uptime["component"] == "sensor"
+        assert uptime["name"] == "Ice Maker Uptime"
+        assert uptime["device_class"] == "duration"
+        assert uptime["unit_of_measurement"] == "s"
+        assert uptime["state_class"] == "total_increasing"
+        assert uptime["state_topic_suffix"] == "heartbeat/ice_maker"
+
+    def test_all_state_topic_suffixes_are_valid(self):
+        """Verify every entity points to a topic the simulator actually publishes to."""
+        sim = IceMakerSimulator()
+        entities = sim.ha_discovery_entities()
+        valid_prefixes = {"sensors/temp/", "ice_maker/event", "heartbeat/ice_maker"}
+        for entity in entities:
+            suffix = entity["state_topic_suffix"]
+            assert any(suffix.startswith(p) or suffix == p for p in valid_prefixes), (
+                f"Unexpected state_topic_suffix: {suffix}"
+            )
+
+    def test_all_object_ids_unique(self):
+        sim = IceMakerSimulator()
+        entities = sim.ha_discovery_entities()
+        ids = [e["object_id"] for e in entities]
+        assert len(ids) == len(set(ids))
+
+    @pytest.mark.asyncio
+    async def test_discovery_publishes_all_entities(self):
+        """Smoke test: the base class publishes all 12 ice maker entities."""
+        sim = IceMakerSimulator(machine_id="vmc-test")
+        client = AsyncMock()
+        await sim._publish_ha_discovery(client)
+        assert client.publish.call_count == 12
+        topics = [call.args[0] for call in client.publish.call_args_list]
+        # All should be under homeassistant/
+        assert all(t.startswith("homeassistant/") for t in topics)
+        # All should contain the machine_id
+        assert all("vmc-test_ice_maker" in t for t in topics)
+        # All should be retained
+        assert all(
+            call.kwargs.get("retain") is True for call in client.publish.call_args_list
+        )
+
+
+class TestIceMakerFaultRegistration:
+    def test_five_faults_registered(self):
+        sim = IceMakerSimulator()
+        assert len(sim.fault_defs) == 5
+
+    def test_fault_names(self):
+        sim = IceMakerSimulator()
+        names = {f.name for f in sim.fault_defs}
+        assert names == {
+            "compressor_overtemp",
+            "low_refrigerant",
+            "water_inlet_blocked",
+            "defrost_stuck_1",
+            "defrost_stuck_2",
+        }
+
+    def test_sensor_by_name(self):
+        sim = IceMakerSimulator()
+        sensor = sim.sensor_by_name("compressor")
+        assert sensor.name == "compressor"
+
+    def test_sensor_by_name_raises_for_unknown(self):
+        sim = IceMakerSimulator()
+        with pytest.raises(StopIteration):
+            sim.sensor_by_name("nonexistent")
+
+
+class TestCompressorOvertempFault:
+    @pytest.mark.asyncio
+    async def test_activate_forces_compressor_off(self):
+        sim = IceMakerSimulator()
+        sim.compressor_on = True
+        client = AsyncMock()
+        await sim._on_compressor_overtemp_activate(client)
+        assert sim.compressor_on is False
+
+    @pytest.mark.asyncio
+    async def test_activate_overrides_refrigerant_high_targets(self):
+        sim = IceMakerSimulator()
+        client = AsyncMock()
+        await sim._on_compressor_overtemp_activate(client)
+        sensor = sim.sensor_by_name("refrigerant_high")
+        assert sensor.target_on == 95.0
+        assert sensor.target_off == 95.0
+
+    @pytest.mark.asyncio
+    async def test_recover_restores_refrigerant_high_targets(self):
+        sim = IceMakerSimulator()
+        client = AsyncMock()
+        await sim._on_compressor_overtemp_activate(client)
+        await sim._on_compressor_overtemp_recover(client)
+        original = next(d for d in SENSOR_DEFS if d["name"] == "refrigerant_high")
+        sensor = sim.sensor_by_name("refrigerant_high")
+        assert sensor.target_on == original["target_on"]
+        assert sensor.target_off == original["target_off"]
+
+    @pytest.mark.asyncio
+    async def test_activate_publishes_halt_event(self):
+        sim = IceMakerSimulator()
+        published = []
+
+        async def capture_publish(client, suffix, payload, retain=False, qos=1):
+            published.append((suffix, payload))
+
+        sim.publish = capture_publish
+        client = AsyncMock()
+        await sim._on_compressor_overtemp_activate(client)
+        assert any("ice_maker/event" in s for s, _ in published)
+
+    async def test_tick_halts_compressor_cycling_during_fault(self):
+        sim = IceMakerSimulator()
+        # Manually activate the already-registered fault
+        client = AsyncMock()
+        fault = next(f for f in sim.fault_defs if f.name == "compressor_overtemp")
+        await sim.activate_fault(client, fault, recover_in=9e9)
+        # Advance well past compressor off time
+        dt = 5.0
+        off_seconds = sim.COMPRESSOR_OFF_TIME
+        ticks_to_boundary = math.ceil(off_seconds / dt)
+        # Advance 200% of the off-cycle duration to ensure we're well past
+        for _ in range(ticks_to_boundary * 2):
+            sim.tick(dt=dt)
+        # compressor should not have flipped (still False)
+        assert sim.compressor_on is False
+
+
+class TestLowRefrigerantFault:
+    @pytest.mark.asyncio
+    async def test_activate_pins_refrigerant_low_target(self):
+        sim = IceMakerSimulator()
+        client = AsyncMock()
+        await sim._on_low_refrigerant_activate(client)
+        sensor = sim.sensor_by_name("refrigerant_low")
+        assert sensor.target_on == 10.0
+        assert sensor.target_off == 10.0
+
+    @pytest.mark.asyncio
+    async def test_recover_restores_refrigerant_low_targets(self):
+        sim = IceMakerSimulator()
+        client = AsyncMock()
+        await sim._on_low_refrigerant_activate(client)
+        await sim._on_low_refrigerant_recover(client)
+        original = next(d for d in SENSOR_DEFS if d["name"] == "refrigerant_low")
+        sensor = sim.sensor_by_name("refrigerant_low")
+        assert sensor.target_on == original["target_on"]
+        assert sensor.target_off == original["target_off"]
+
+    @pytest.mark.asyncio
+    async def test_activate_publishes_halt_event(self):
+        sim = IceMakerSimulator()
+        published = []
+
+        async def capture_publish(client, suffix, payload, retain=False, qos=1):
+            published.append((suffix, payload))
+
+        sim.publish = capture_publish
+        client = AsyncMock()
+        await sim._on_low_refrigerant_activate(client)
+        assert any("ice_maker/event" in s for s, _ in published)
+
+    async def test_tick_allows_compressor_cycling_during_low_refrigerant(self):
+        sim = IceMakerSimulator()
+        # Manually activate the already-registered fault
+        client = AsyncMock()
+        fault = next(f for f in sim.fault_defs if f.name == "low_refrigerant")
+        await sim.activate_fault(client, fault, recover_in=9e9)
+        # Advance past the off-cycle, derived from simulator constant
+        dt = 5.0
+        off_seconds = sim.COMPRESSOR_OFF_TIME
+        ticks_to_boundary = math.ceil(off_seconds / dt)
+        # Verify still OFF one tick before boundary
+        for _ in range(ticks_to_boundary - 1):
+            sim.tick(dt=dt)
+        assert sim.compressor_on is False, (
+            f"Compressor should still be OFF before boundary (at {ticks_to_boundary - 1} ticks)"
+        )
+        # One more tick to cross the boundary
+        sim.tick(dt=dt)
+        # Compressor should have turned on (cycling continues under low_refrigerant)
+        assert sim.compressor_on is True
+
+
+class TestWaterInletBlockedFault:
+    @pytest.mark.asyncio
+    async def test_activate_pins_water_bath_target(self):
+        sim = IceMakerSimulator()
+        client = AsyncMock()
+        await sim._on_water_inlet_blocked_activate(client)
+        sensor = sim.sensor_by_name("water_bath")
+        assert sensor.target_on == 20.0
+        assert sensor.target_off == 20.0
+
+    @pytest.mark.asyncio
+    async def test_recover_restores_water_bath_targets(self):
+        sim = IceMakerSimulator()
+        client = AsyncMock()
+        await sim._on_water_inlet_blocked_activate(client)
+        await sim._on_water_inlet_blocked_recover(client)
+        original = next(d for d in SENSOR_DEFS if d["name"] == "water_bath")
+        sensor = sim.sensor_by_name("water_bath")
+        assert sensor.target_on == original["target_on"]
+        assert sensor.target_off == original["target_off"]
+
+    @pytest.mark.asyncio
+    async def test_activate_publishes_halt_event(self):
+        sim = IceMakerSimulator()
+        published = []
+
+        async def capture_publish(client, suffix, payload, retain=False, qos=1):
+            published.append((suffix, payload))
+
+        sim.publish = capture_publish
+        client = AsyncMock()
+        await sim._on_water_inlet_blocked_activate(client)
+        assert any("ice_maker/event" in s for s, _ in published)
+
+
+class TestDefrostStuckPerValve:
+    @staticmethod
+    def _fault_def(sim, valve: int):
+        return next(f for f in sim.fault_defs if f.name == f"defrost_stuck_{valve}")
+
+    @classmethod
+    async def _force_active(cls, sim, valve: int, client) -> None:
+        await sim.activate_fault(client, cls._fault_def(sim, valve), recover_in=9e9)
+
+    @pytest.mark.asyncio
+    async def test_activate_pins_only_that_valve(self):
+        sim = IceMakerSimulator()
+        client = AsyncMock()
+        await self._fault_def(sim, 1).on_activate(client)
+        v1 = sim.sensor_by_name("hot_gas_valve_1")
+        assert v1.target_on == 95.0
+        assert v1.target_off == 95.0
+        original = next(d for d in SENSOR_DEFS if d["name"] == "hot_gas_valve_2")
+        v2 = sim.sensor_by_name("hot_gas_valve_2")
+        assert v2.target_on == original["target_on"]
+        assert v2.target_off == original["target_off"]
+
+    @pytest.mark.asyncio
+    async def test_recover_restores_only_that_valve(self):
+        sim = IceMakerSimulator()
+        client = AsyncMock()
+        await self._fault_def(sim, 2).on_activate(client)
+        await self._fault_def(sim, 2).on_recover(client)
+        original = next(d for d in SENSOR_DEFS if d["name"] == "hot_gas_valve_2")
+        v2 = sim.sensor_by_name("hot_gas_valve_2")
+        assert v2.target_on == original["target_on"]
+        assert v2.target_off == original["target_off"]
+
+    @pytest.mark.asyncio
+    async def test_activate_and_recover_publish_no_events(self):
+        """Dumb machine: a stuck valve never self-reports."""
+        sim = IceMakerSimulator()
+        published = []
+
+        async def capture_publish(client, suffix, payload, retain=False, qos=1):
+            published.append((suffix, payload))
+
+        sim.publish = capture_publish
+        client = AsyncMock()
+        await self._fault_def(sim, 1).on_activate(client)
+        await self._fault_def(sim, 1).on_recover(client)
+        assert published == []
+
+    async def test_compressor_keeps_cycling_while_valve_stuck(self):
+        sim = IceMakerSimulator()
+        await self._force_active(sim, 1, AsyncMock())
+        dt = 5.0
+        off_seconds = sim.COMPRESSOR_OFF_TIME
+        ticks_to_boundary = math.ceil(off_seconds / dt)
+        # Verify still OFF one tick before boundary
+        for _ in range(ticks_to_boundary - 1):
+            sim.tick(dt=dt)
+        assert sim.compressor_on is False, (
+            f"Compressor should still be OFF before boundary (at {ticks_to_boundary - 1} ticks)"
+        )
+        # One more tick to cross the boundary and turn on
+        sim.tick(dt=dt)
+        assert sim.compressor_on is True
+
+    def test_harvests_alternate_when_healthy(self):
+        sim = IceMakerSimulator()
+        for _ in range(2 * 180):  # 1800s = two harvest intervals
+            sim.tick(dt=5.0)
+        drops = [e for e in sim._pending_events if e.event == "ice_dropped"]
+        assert [e.detail for e in drops] == ["evaporator_1", "evaporator_2"]
+
+    async def test_stuck_valve_turn_fails_other_succeeds(self):
+        sim = IceMakerSimulator()
+        await self._force_active(sim, 1, AsyncMock())
+        for _ in range(2 * 180):
+            sim.tick(dt=5.0)
+        fails = [e for e in sim._pending_events if e.event == "failed_cycle"]
+        drops = [e for e in sim._pending_events if e.event == "ice_dropped"]
+        assert [e.detail for e in fails] == ["hot_gas_valve_1_stuck"]
+        assert [e.detail for e in drops] == ["evaporator_2"]
+
+    async def test_both_stuck_yields_only_failed_cycles(self):
+        sim = IceMakerSimulator()
+        client = AsyncMock()
+        await self._force_active(sim, 1, client)
+        await self._force_active(sim, 2, client)
+        for _ in range(2 * 180):
+            sim.tick(dt=5.0)
+        drops = [e for e in sim._pending_events if e.event == "ice_dropped"]
+        fails = [e for e in sim._pending_events if e.event == "failed_cycle"]
+        assert drops == []
+        assert len(fails) == 2
+
+
+class TestAckedBounded:
+    """`_acked` and its size cap are now the base class's (Task 6):
+    `IDEMPOTENCY_CACHE_SIZE` (32), not the ice maker's former private
+    `_ACKED_MAX` (256, deleted along with `_acked` itself)."""
+
+    @pytest.mark.asyncio
+    async def test_acked_stays_bounded(self):
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
+        from ice_sims.base import IDEMPOTENCY_CACHE_SIZE
+
+        sim = IceMakerSimulator(machine_id="vmc-test")
+        sim.publish = AsyncMock()
+        client = AsyncMock()
+        limit = IDEMPOTENCY_CACHE_SIZE
+        for i in range(limit + 50):
+            cmd = MonitorCommand(
+                request_id=f"req-{i:08d}",
+                command="force_report",
+            )
+            await sim.handle_command(client, cmd)
+        assert len(sim._acked) <= limit
+
+    @pytest.mark.asyncio
+    async def test_acked_keeps_most_recent_entries(self):
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
+        from ice_sims.base import IDEMPOTENCY_CACHE_SIZE
+
+        sim = IceMakerSimulator(machine_id="vmc-test")
+        sim.publish = AsyncMock()
+        client = AsyncMock()
+        limit = IDEMPOTENCY_CACHE_SIZE
+        total = limit + 50
+        for i in range(total):
+            cmd = MonitorCommand(
+                request_id=f"req-{i:08d}",
+                command="force_report",
+            )
+            await sim.handle_command(client, cmd)
+        # The oldest requests should have been evicted...
+        assert "req-00000000" not in sim._acked
+        # ...while the most recent ones remain.
+        assert f"req-{total - 1:08d}" in sim._acked
+
+
+class TestMonitorContract:
+    def _sim(self):
+        return IceMakerSimulator(machine_id="vmc-test")
+
+    def test_capabilities_lists_all_channels_and_commands(self):
+        from ice_contracts.board.ice_maker_monitor import CONTRACT_VERSION
+
+        caps = self._sim().build_capabilities()
+        assert caps.contract_version == CONTRACT_VERSION
+        ids = [c.channel_id for c in caps.channels]
+        # 10 temps + compressor_current + bin_level + the new binary
+        # `compressor_run` output (spec §4.2). Named distinctly from the
+        # pre-existing "compressor" temperature sensor (coordinator
+        # decision, 2026-09-30: channel ids must be unique per board) --
+        # see test_channel_ids_are_unique below.
+        assert len(ids) == 13
+        assert "hot_gas_valve_1" in ids
+        assert "compressor_current" in ids
+        assert "bin_level" in ids
+
+        temp_channels = [c for c in caps.channels if c.kind == "temperature"]
+        assert len(temp_channels) == 10
+        assert all(c.direction == "input" for c in temp_channels)
+        assert "compressor" in {c.channel_id for c in temp_channels}
+
+        compressor_run = next(
+            c for c in caps.channels if c.channel_id == "compressor_run"
+        )
+        assert compressor_run.kind == "binary"
+        assert compressor_run.direction == "output"
+        assert compressor_run.driven_by is None
+
+        # Copilot review (PR 22, id=4128088689): ping/self_test were
+        # missing from this hand-written list even though both handlers
+        # are registered for every subsystem -- now prepended, and
+        # force_report comes along with them instead of being listed
+        # twice.
+        assert caps.commands == [
+            "ping",
+            "self_test",
+            "force_report",
+            "power_cycle",
+            "set_interval",
+        ]
+
+    def test_channel_ids_are_unique(self):
+        ids = [c.channel_id for c in self._sim().build_capabilities().channels]
+        assert len(ids) == len(set(ids))
+
+    @pytest.mark.asyncio
+    async def test_power_cycle_ok_then_lockout(self):
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
+
+        sim = self._sim()
+        published = []
+
+        async def capture(client, suffix, payload, retain=False, qos=1):
+            published.append((suffix, payload))
+
+        sim.publish = capture
+        client = AsyncMock()
+        cmd = MonitorCommand(
+            request_id="req-00000001",
+            command="power_cycle",
+            params={"dwell_seconds": 5},
+        )
+        await sim.handle_command(client, cmd)
+        acks = [p for s, p in published if s == "cmd/ice_maker/ack"]
+        assert acks[-1].status == "ok"
+        assert sim.compressor_on is False
+
+        cmd2 = MonitorCommand(
+            request_id="req-00000002",
+            command="power_cycle",
+            params={"dwell_seconds": 5},
+        )
+        await sim.handle_command(client, cmd2)
+        acks = [p for s, p in published if s == "cmd/ice_maker/ack"]
+        assert acks[-1].status == "rejected"
+        assert acks[-1].detail == "lockout"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_request_id_reacks_without_reexecuting(self):
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
+
+        sim = self._sim()
+        published = []
+
+        async def capture(client, suffix, payload, retain=False, qos=1):
+            published.append((suffix, payload))
+
+        sim.publish = capture
+        client = AsyncMock()
+        cmd = MonitorCommand(
+            request_id="req-00000003",
+            command="set_interval",
+            params={"interval_seconds": 7},
+        )
+        await sim.handle_command(client, cmd)
+        first_ack_count = len(published)
+        sim._publish_interval = 99.0  # would change again if re-executed
+        await sim.handle_command(client, cmd)
+        assert len(published) == first_ack_count + 1  # re-acked
+        assert sim._publish_interval == 99.0  # NOT re-executed
+
+    @pytest.mark.asyncio
+    async def test_set_interval_changes_publish_interval(self):
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
+
+        sim = self._sim()
+        sim.publish = AsyncMock()
+        client = AsyncMock()
+        await sim.handle_command(
+            client,
+            MonitorCommand(
+                request_id="req-00000004",
+                command="set_interval",
+                params={"interval_seconds": 30},
+            ),
+        )
+        assert sim._publish_interval == 30.0
+
+    @pytest.mark.asyncio
+    async def test_set_interval_republishes_capabilities(self):
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
+
+        sim = self._sim()
+        published = []
+
+        async def capture(client, suffix, payload, retain=False, qos=1):
+            published.append((suffix, retain))
+
+        sim.publish = capture
+        client = AsyncMock()
+        await sim.handle_command(
+            client,
+            MonitorCommand(
+                request_id="req-00000006",
+                command="set_interval",
+                params={"interval_seconds": 60},
+            ),
+        )
+        assert ("capabilities/ice_maker", True) in published
+        assert published[-1][0] == "cmd/ice_maker/ack"
+
+    @pytest.mark.asyncio
+    async def test_force_report_publishes_snapshot_and_acks(self):
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
+
+        sim = self._sim()
+        published = []
+
+        async def capture(client, suffix, payload, retain=False, qos=1):
+            published.append((suffix, payload))
+
+        sim.publish = capture
+        client = AsyncMock()
+        await sim.handle_command(
+            client,
+            MonitorCommand(request_id="req-00000005", command="force_report"),
+        )
+        suffixes = [s for s, _ in published]
+        assert sum(s.startswith("sensors/temp/") for s in suffixes) == 10
+        assert "telemetry/ice_maker/compressor_current" in suffixes
+        assert "telemetry/ice_maker/bin_level" in suffixes
+        assert suffixes[-1] == "cmd/ice_maker/ack"
+
+    @pytest.mark.asyncio
+    async def test_snapshot_publishes_readings_at_qos_0(self):
+        sim = self._sim()
+        client = AsyncMock()
+        await sim._publish_snapshot(client)
+        reading_calls = [
+            call
+            for call in client.publish.call_args_list
+            if "sensors/temp/" in call.args[0] or "telemetry/" in call.args[0]
+        ]
+        assert len(reading_calls) >= 12
+        for call in reading_calls:
+            assert call.kwargs.get("qos") == 0
+
+
+class TestIceMakerCapabilitiesIdentity:
+    def test_identity_fields_present(self):
+        from ice_contracts.board.ice_maker_monitor import (
+            CONTRACT_VERSION,
+            MonitorCapabilities,
+        )
+        from ice_common.build_info import BUILD_INFO
+        from ice_sims.ice_maker import IceMakerSimulator
+
+        caps = IceMakerSimulator(machine_id="vmc-t").build_capabilities()
+        assert isinstance(caps, MonitorCapabilities)
+        assert caps.contract_version == CONTRACT_VERSION == "1.4.0"
+        assert caps.firmware == BUILD_INFO.commit_short
+        assert caps.hardware_id is not None
+        assert caps.commands == [
+            "ping",
+            "self_test",
+            "force_report",
+            "power_cycle",
+            "set_interval",
+        ]
+
+
+class TestStandardCommandsFromSharedLoop:
+    """ping/self_test/force_report come free from simulators.base (Task 6) and
+    did not exist as distinct ice-maker behaviour before Task 8 — the old
+    `handle_command`'s `else` branch treated *any* unrecognised command
+    (including a hypothetical "ping") as `force_report`, so these tests are
+    written to fail against that fallback, not just to fail on import."""
+
+    @pytest.mark.asyncio
+    async def test_ping_acks_ok_with_no_snapshot_side_effect(self):
+        """A real ping is a round trip only — no sensor snapshot published.
+
+        Against the pre-Task-8 ice maker, an unrecognised command such as
+        "ping" fell into the `else` branch and was treated as force_report,
+        which *does* publish the 12-topic sensor/telemetry snapshot — so
+        this assertion distinguishes a genuine ping from that fallback.
+        """
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
+
+        sim = IceMakerSimulator(machine_id="vmc-test")
+        published = []
+
+        async def capture(client, suffix, payload, retain=False, qos=1):
+            published.append((suffix, payload))
+
+        sim.publish = capture
+        client = AsyncMock()
+        await sim.handle_command(
+            client, MonitorCommand(request_id="req-ping00001", command="ping")
+        )
+        suffixes = [s for s, _ in published]
+        assert suffixes[-1] == "cmd/ice_maker/ack"
+        assert not any(s.startswith("sensors/temp/") for s in suffixes)
+        assert not any(s.startswith("telemetry/ice_maker/") for s in suffixes)
+        ack = published[-1][1]
+        assert ack.status == "ok"
+        assert ack.result is None
+
+    @pytest.mark.asyncio
+    async def test_self_test_result_has_checks_for_all_five_faults(self):
+        """Against the pre-Task-8 fallback, `ack.result` is always None
+        (the old `else` branch's CommandAck never set `result`), so
+        `ack.result is not None` alone already fails there."""
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
+
+        sim = IceMakerSimulator(machine_id="vmc-test")
+        sim.publish = AsyncMock()
+        client = AsyncMock()
+        await sim.handle_command(
+            client, MonitorCommand(request_id="req-selftest01", command="self_test")
+        )
+        ack = sim.publish.call_args_list[-1].args[2]
+        assert ack.result is not None
+        checks = ack.result["checks"]
+        assert {c["name"] for c in checks} == {
+            "compressor_overtemp",
+            "low_refrigerant",
+            "water_inlet_blocked",
+            "defrost_stuck_1",
+            "defrost_stuck_2",
+        }
+        assert all(c["pass"] for c in checks)
+
+    @pytest.mark.asyncio
+    async def test_self_test_fails_exactly_the_injected_fault(self):
+        """Guards against a stale snapshot: activate a fault mid-flight and
+        confirm the check that fails is the one just activated, not a fixed
+        or empty set (the vacuous-fixture risk the brief warns about)."""
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
+
+        sim = IceMakerSimulator(machine_id="vmc-test")
+        sim.publish = AsyncMock()
+        client = AsyncMock()
+        fault = next(f for f in sim.fault_defs if f.name == "low_refrigerant")
+        await sim.activate_fault(client, fault)
+        await sim.handle_command(
+            client, MonitorCommand(request_id="req-selftest02", command="self_test")
+        )
+        ack = sim.publish.call_args_list[-1].args[2]
+        failing = {c["name"] for c in ack.result["checks"] if not c["pass"]}
+        assert failing == {"low_refrigerant"}
+
+    @pytest.mark.asyncio
+    async def test_force_report_now_also_republishes_the_heartbeat(self):
+        """New in the base class's force_report (Task 6): the heartbeat is
+        republished via `client.publish` directly, ahead of the subclass's
+        own telemetry. The pre-Task-8 ice maker's `handle_command` never
+        touched `client.publish` on a force_report — only `self.publish`
+        (for the sensor/telemetry snapshot and the ack) — so this assertion
+        is false against the old implementation."""
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
+
+        sim = IceMakerSimulator(machine_id="vmc-test")
+        sim.publish = AsyncMock()
+        client = AsyncMock()
+        await sim.handle_command(
+            client,
+            MonitorCommand(request_id="req-forcerep01", command="force_report"),
+        )
+        heartbeat_calls = [
+            c
+            for c in client.publish.call_args_list
+            if "heartbeat/ice_maker" in c.args[0]
+        ]
+        assert len(heartbeat_calls) == 1
+
+
+class TestPowerCycleIdempotency:
+    @pytest.mark.asyncio
+    async def test_duplicate_request_id_does_not_power_cycle_twice(self):
+        """Counts the observable side effect (the commanded power_off event
+        appended to `_pending_events`) rather than just comparing two acks:
+        three identical requests must produce that side effect exactly
+        once."""
+        from ice_contracts.board.ice_maker_monitor import MonitorCommand
+
+        sim = IceMakerSimulator(machine_id="vmc-test")
+        sim.publish = AsyncMock()
+        client = AsyncMock()
+        cmd = MonitorCommand(
+            request_id="req-duppc0001",
+            command="power_cycle",
+            params={"dwell_seconds": 5},
+        )
+        await sim.handle_command(client, cmd)
+        await sim.handle_command(client, cmd)
+        await sim.handle_command(client, cmd)
+
+        power_off_events = [
+            e
+            for e in sim._pending_events
+            if e.event == "power_off" and e.detail == "commanded power_cycle"
+        ]
+        assert len(power_off_events) == 1

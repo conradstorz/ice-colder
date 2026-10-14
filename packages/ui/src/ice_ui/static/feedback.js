@@ -4,7 +4,7 @@
  * (no <audio> markup in base.html), so a boosted navigation's outerHTML
  * swap of <main> can never duplicate it. The TAPPABLE selector below must
  * match, token for token, the selector list used in
- * web_interface/tailwind.input.css for the :active press-state CSS
+ * ice_edge/web/tailwind.input.css for the :active press-state CSS
  * (Task 3).
  *
  * ES5 syntax, no dependencies -- vendored alongside htmx for the offline

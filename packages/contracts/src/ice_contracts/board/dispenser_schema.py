@@ -1,4 +1,4 @@
-# services/dispenser_schema.py
+# ice_contracts/board/dispenser_schema.py
 """Pydantic v2 models for one `[slot.N]` table of the hand-edited
 `dispensers.toml` (plan: dispenser profiles). Each table describes the
 physical parameters of one dispense slot: how its mechanism agitates/fills/
@@ -61,7 +61,7 @@ def _reject_unmonitored(value: str) -> str:
 
 # Every MQTT channel id referenced by a dispenser profile (motor, solenoid,
 # valve, sensor, accessory) reuses the same slug pattern as the rest of the
-# system (contracts/common.py). The literal "unmonitored" is syntactically a
+# system (ice_contracts/board/common.py). The literal "unmonitored" is syntactically a
 # valid channel id under that pattern, so it's rejected separately here --
 # `current_channel`'s `ChannelId | UNMONITORED` union still accepts it
 # through the `UNMONITORED` arm, which never calls this validator.
@@ -72,8 +72,8 @@ ChannelId = Annotated[
 ]
 
 # The one place this wording is spelled out -- both the generated example's
-# comments (services/dispensers_doc.py) and the humanized validation error
-# for a bad channel id (services/dispensers.py) read it from here, so they
+# comments (ice_edge/vend/dispensers_doc.py) and the humanized validation error
+# for a bad channel id (ice_edge/vend/dispensers.py) read it from here, so they
 # can never drift apart.
 CHANNEL_ID_DESCRIPTION = "lowercase letters, digits and underscores, 1–64 characters"
 
@@ -451,7 +451,7 @@ def _check_accessories_name_known_steps(
                 )
         # Copilot review (PR #32) finding C6: on_during must name a
         # *contiguous* run of this mechanism's steps -- the simulator
-        # (simulators/vending_machine.py) reduces on_during to a single
+        # (packages/sims/src/ice_sims/vending_machine.py) reduces on_during to a single
         # first/last span when deciding when the accessory is active, so
         # ["agitate", "release"] would silently also cover "fill" at
         # runtime. Caught here, at the schema, rather than left for the

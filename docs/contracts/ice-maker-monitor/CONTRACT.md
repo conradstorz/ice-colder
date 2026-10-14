@@ -307,7 +307,7 @@ The VMC's own completion timeout for `power_cycle` is **`dwell_seconds` + a 30-s
 
 ## Reference implementation
 
-The ice-colder repository's `simulators/ice_maker.py` is the reference
+The ice-colder repository's `packages/sims/src/ice_sims/ice_maker.py` is the reference
 implementation of this contract: it announces retained capabilities, publishes
 the `compressor_current` and `bin_level` telemetry channels alongside its
 temperature sensors, and handles `power_cycle`, `force_report`, and

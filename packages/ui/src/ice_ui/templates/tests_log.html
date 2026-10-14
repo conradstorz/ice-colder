@@ -12,7 +12,7 @@
 
   {% for run in runs %}
   {# Each `test_run` event's metadata comes in one of two shapes (see
-     web_interface/routes/tests_level/log.py's recent_test_runs):
+     ice_edge/web/routes/tests_level/log.py's recent_test_runs):
        - a subsystem command run: subsystem/command/params/run_id/verdict/note
        - controller/test_sale.py's TestSaleRunner.run_test_sale:
          sku/outcome/fault_code/path, no run_id, no subsystem/command/params

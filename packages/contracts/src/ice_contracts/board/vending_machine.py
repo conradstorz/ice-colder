@@ -5,7 +5,7 @@ Terminal dispenser outcomes, the fault-code registry, the refund
 command/ack, and the general subsystem-capabilities self-description
 exchanged between ice-colder (the VMC) and the vending ESP32 / MDB payment
 gateway / ice-maker monitor. JSON Schemas are generated from these models
-into docs/contracts/vending-machine/schemas/ by contracts/generate.py.
+into docs/contracts/vending-machine/schemas/ by ice_contracts/generate.py.
 The VMC and the simulators both import from here so the two sides cannot
 drift apart silently. Breaking changes require a major CONTRACT_VERSION
 bump; adding a FaultCode or an enum member is a minor bump.
@@ -31,13 +31,13 @@ from ice_contracts.board.common import ChannelDescriptor, _utc_now
 # ack payload with no `phase` key still validates and means exactly what
 # it always meant). A long-running actuator command (`dispense`,
 # `water_valve`) now acks "accepted" as soon as it starts, and reports
-# completion separately -- see `contracts/common.py`'s COMPLETION_TIMEOUTS
+# completion separately -- see `ice_contracts/board/common.py`'s COMPLETION_TIMEOUTS
 # and docs/contracts/vending-machine/CONTRACT.md's completion table. No
 # existing field changed shape or meaning; every present-day ack and
 # command payload still validates unchanged.
 #
 # 0.6.0 -> 0.7.0 (2026-09-30): minor bump, additive. `ChannelDescriptor`
-# (contracts/common.py) gains `direction` ("input" | "output", default
+# (ice_contracts/board/common.py) gains `direction` ("input" | "output", default
 # "input") and `driven_by` (str | None, default None) so a board's
 # capabilities document can say which channels it drives versus senses,
 # and which command's refusal inhibits an output. Both fields are
@@ -313,7 +313,7 @@ FAULT_TABLE: dict[FaultCode, FaultSpec] = {
 # frozenset on purpose.
 #
 # SVC-102 is the one member here that is not `critical`: it is a deliberate
-# operator-held maintenance lease (services/availability.py's `safety` gate),
+# operator-held maintenance lease (ice_edge/faults/availability.py's `safety` gate),
 # not a hardware failure, and it clears itself the moment the lease is
 # released — the opposite of `critical`'s "never auto-clears". `warning` is
 # the closest fit of the existing severities (it already covers every other
@@ -333,7 +333,7 @@ PAYMENT_BLOCKING_FAULTS: frozenset[FaultCode] = frozenset(
 )
 
 # The two dispense mechanisms a slot profile can declare (plan 1,
-# services/dispenser_schema.py's SlotProfile discriminator). Kept here,
+# ice_contracts/board/dispenser_schema.py's SlotProfile discriminator). Kept here,
 # not imported from services, so contracts never depends on services.
 Mechanism = Literal["bagged_ice", "water_fill"]
 

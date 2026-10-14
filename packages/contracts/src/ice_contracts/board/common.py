@@ -1,4 +1,4 @@
-# contracts/common.py
+# ice_contracts/board/common.py
 """Pieces shared by every contract module. Contracts import from here, never
 from each other.
 
@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 CHANNEL_ID_PATTERN = r"^[a-z0-9_]{1,64}$"
 
 # A subsystem must ack within this many seconds of a command being sent, or
-# the dispatcher (services/command_dispatcher.py, a later task) treats it as
+# the dispatcher (ice_edge/hal/command_dispatcher.py, a later task) treats it as
 # a timeout. The contract owns this constant so the dispatcher and the docs
 # cannot drift apart.
 ACK_TIMEOUT_SECONDS = 10.0
@@ -82,8 +82,8 @@ def _validate_water_valve(params: dict) -> None:
 
 
 def _validate_dispense_params(params: dict) -> None:
-    # Lazy import: services/mqtt_messages.py imports contracts.vending_machine
-    # (and, through services.dispenser_schema, contracts.common), so a
+    # Lazy import: ice_contracts/board/mqtt_messages.py imports ice_contracts.board.vending_machine
+    # (and, through ice_contracts.board.dispenser_schema, ice_contracts.board.common), so a
     # module-level import here would be a contracts -> services cycle.
     from ice_contracts.board.mqtt_messages import DispenseCommand
 
@@ -186,7 +186,7 @@ class CommandAck(BaseModel):
 
 
 # Standard commands every subsystem answers (§1.2). Public (not
-# underscore-prefixed): simulators/base.py imports this directly so the
+# underscore-prefixed): packages/sims/src/ice_sims/base.py imports this directly so the
 # three standard handlers it registers on every subsystem
 # (register_command("ping", ...) etc. in ESP32Simulator.__init__) and the
 # commands a subsystem's capabilities document actually *advertises* can
@@ -197,7 +197,7 @@ class CommandAck(BaseModel):
 # routes' advertised-∩-allowlist intersection silently dropped every
 # automatic test.
 #
-# A tuple (not a frozenset): simulators/base.py splices this, in order,
+# A tuple (not a frozenset): packages/sims/src/ice_sims/base.py splices this, in order,
 # into the front of every SubsystemCapabilities.commands list, and
 # capabilities tests assert on that list's exact contents; a set's
 # iteration order is not a contract to build a wire payload from.
@@ -243,13 +243,13 @@ TESTABLE_COMMANDS: dict[str, frozenset[str]] = {
 # handler rather than assumed, the three MDB actuator commands
 # (`bill_acceptor_test`/`coin_return_test`/`card_reader_test`, all a single
 # counter increment with no `await asyncio.sleep`). A command's presence
-# here is what `services/command_dispatcher.py`'s
+# here is what `ice_edge/hal/command_dispatcher.py`'s
 # `send_and_await_completion` uses to decide whether to wait past the
 # accept ack at all -- data, not a per-command `if` branch.
 
 DISPENSE_COMPLETION_TIMEOUT_SECONDS = 120.0  # dispense has no caller-chosen
 # duration parameter to derive from; 120 s is a fixed margin over the worst
-# case in `simulators/vending_machine.py` today (the 90 s auger-jam path).
+# case in `packages/sims/src/ice_sims/vending_machine.py` today (the 90 s auger-jam path).
 
 WATER_VALVE_COMPLETION_MARGIN_SECONDS = 5.0  # added to `seconds` (1-10):
 # 6-15 s total, comfortably above the valve's own open duration.

@@ -1,9 +1,9 @@
 # scripts/gen_dispensers_example.py
 """Writes `dispensers.example.toml` from
-`services.dispensers_doc.render_example()`.
+`ice_edge.vend.dispensers_doc.render_example()`.
 
-Run this after editing `services/dispenser_schema.py` (a field's
-description/unit/range) or `services/dispensers_doc.py`'s sample values, so
+Run this after editing `ice_contracts/board/dispenser_schema.py` (a field's
+description/unit/range) or `ice_edge/vend/dispensers_doc.py`'s sample values, so
 the committed example never drifts from the schema it documents:
 
     uv run python scripts/gen_dispensers_example.py
@@ -18,7 +18,7 @@ from _repo import repo_root
 _REPO_ROOT = repo_root()
 sys.path.insert(0, str(_REPO_ROOT))
 
-from services.dispensers_doc import render_example  # noqa: E402
+from ice_edge.vend.dispensers_doc import render_example  # noqa: E402
 
 
 def main() -> None:

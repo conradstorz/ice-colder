@@ -1,17 +1,17 @@
-"""Snapshot/restore for every mutable `web_interface.context` global.
+"""Snapshot/restore for every mutable `ice_edge.web.context` global.
 
 Route tests wire a fresh config/VMC/access store/etc. into
-`web_interface.context` through its `set_*` functions, then used to tear
+`ice_edge.web.context` through its `set_*` functions, then used to tear
 each one back down by hand. This module gives `tests/conftest.py`'s
 autouse fixture a single place to do that for *all* of them, and a guard
 (`discoverable_globals`) that fails loudly if a 14th global is added to
-`web_interface/context.py` without being added here too.
+`ice_edge/web/context.py` without being added here too.
 """
 
 import inspect
 
-from web_interface import auth as web_auth
-from web_interface import context
+from ice_edge.web import auth as web_auth
+from ice_edge.web import context
 
 GLOBALS: tuple[str, ...] = (
     "config",
@@ -62,7 +62,7 @@ def restore(snap: dict[str, object]) -> None:
     beyond the one global they appear to own (`set_machine_instance` also
     sets `vmc_instance`; `set_access_store` also pokes `web_auth`).
 
-    `web_interface.auth` keeps its own module-level access-store reference
+    `ice_edge.web.auth` keeps its own module-level access-store reference
     (`_store`, synced by `context.set_access_store`'s call to
     `web_auth.set_access_store`) that a plain `setattr` on `context` never
     touches, so it is re-synced here directly. The login back-off

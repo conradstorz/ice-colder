@@ -32,11 +32,11 @@ import pytest
 import uvicorn
 
 from ice_common.config_model import ConfigModel
-from controller.machine import Machine
-from services.access import AccessStore, Role
-from services.inventory_manager import InventoryManager
-from web_interface import routes
-from web_interface.server import app
+from ice_edge.app.machine import Machine
+from ice_edge.access.access import AccessStore, Role
+from ice_edge.monitoring.inventory_manager import InventoryManager
+from ice_edge.web import routes
+from ice_edge.web.server import app
 
 ENV_FLAG = "ICE_COLDER_BROWSER_TESTS"
 NODE_SCRIPT_DIR = Path(__file__).parent / "browser"
@@ -72,7 +72,7 @@ def free_port() -> int:
 
 
 def web_auth_backoff_reset() -> None:
-    from web_interface import auth as web_auth
+    from ice_edge.web import auth as web_auth
 
     web_auth.backoff.reset()
     web_auth.backoff.set_trusted_proxies([])

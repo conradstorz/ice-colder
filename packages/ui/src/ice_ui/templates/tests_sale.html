@@ -2,7 +2,7 @@
 {% block title %}Simulated sale · Vending Machine{% endblock %}
 
 {# GET /tests/sale (this page) never takes the maintenance lease -- only
-   POST /tests/sale (submitted below) does, via web_interface/routes/
+   POST /tests/sale (submitted below) does, via ice_edge/web/routes/
    tests_level/lease.py's _acquire_lease_or_refusal. The SKU travels as a plain
    POST form field (name="sku"), never a URL segment -- see
    tests_sale_run's own docstring for why that makes a SKU containing "/"

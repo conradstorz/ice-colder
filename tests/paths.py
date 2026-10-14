@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import controller.vmc
-import web_interface.routes
+import ice_edge.sale.vmc
+import ice_edge.web.routes
 from ice_ui.templating import STATIC_DIR, TEMPLATES_DIR
 
 
@@ -19,9 +19,9 @@ def _repo_root() -> Path:
 REPO_ROOT = _repo_root()
 # The tests/ root; this module stays there when tests move into subdirectories.
 TESTS_ROOT = Path(__file__).resolve().parent
-ROUTES_DIR = Path(web_interface.routes.__file__).parent
-ROUTES_PACKAGE = web_interface.routes.__name__
-VMC_PATH = Path(controller.vmc.__file__)
+ROUTES_DIR = Path(ice_edge.web.routes.__file__).parent
+ROUTES_PACKAGE = ice_edge.web.routes.__name__
+VMC_PATH = Path(ice_edge.sale.vmc.__file__)
 
 # (current repo-relative path, legacy paths to try at origin/main)
 SCREEN_TEMPLATES: list[tuple[str, tuple[str, ...]]] = [
