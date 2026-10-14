@@ -12,7 +12,7 @@
   <script src="/static/feedback.js" defer></script>
 </head>
 <body class="bg-slate-50 text-gray-900 font-sans text-base min-h-screen"
-      hx-boost="true" hx-target="main" hx-swap="outerHTML show:top">{% if remote %}{% include "partials/remote_banner.html" %}{% endif %}
+      hx-boost="true" hx-target="main" hx-swap="outerHTML show:top">
 
   {# Ambient swap style is outerHTML, not innerHTML, because every level
      response is a full document (this same base.html re-rendered): htmx's
@@ -32,7 +32,7 @@
      swap updates the bar via the OOB match on #bar; a full page load just
      renders it in place and ignores hx-swap-oob, per §1.1. #}
   <header id="bar" hx-swap-oob="true"
-          class="h-14 bg-slate-800 text-white flex items-center gap-2 px-3 sticky top-0 z-20">
+          class="h-14 bg-slate-800 text-white flex items-center gap-2 px-3 sticky top-0 z-20">{% if remote %}{% include "partials/remote_banner.html" %}{% endif %}
     {% block bar_variant %}
       {% set show_home = level and level.parent is not none %}
       {% set show_back = (level is none) or show_home %}

@@ -165,3 +165,29 @@ def test_sandbox_blocks_unsafe_template_in_uploaded_bundle(cloud, tmp_path):
     select(cloud, "m-0042")
     with pytest.raises(Exception, match="unsafe"):
         cloud.get("/health/faults")
+
+
+def test_post_to_unserved_path_is_the_same_404_page(cloud):
+    r = cloud.post("/logout")
+    assert r.status_code == 404
+    assert "Not available remotely yet" in r.text
+
+
+def test_banner_renders_inside_the_oob_swapped_bar(cloud):
+    from tests.dom_utils import find_by_id, parse_elements
+
+    push(cloud, make_report())
+    select(cloud, "m-0042")
+    for path in ("/", "/health", "/health/faults"):
+        html = cloud.get(path).text
+        els = parse_elements(html)
+        (banner,) = find_by_id(els, "remote-banner")
+        (bar,) = find_by_id(els, "bar")
+        assert bar.attrs.get("hx-swap-oob") == "true"
+        assert banner.is_within("header"), path
+
+
+def test_fragments_without_selection_do_not_redirect_htmx_polls(cloud):
+    for path in ("/status", "/pill", "/kpi"):
+        assert cloud.get(path, headers={"HX-Request": "true"}).status_code == 204
+        assert cloud.get(path).status_code == 303

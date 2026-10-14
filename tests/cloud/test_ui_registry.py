@@ -4,6 +4,7 @@ import pytest
 from jinja2.sandbox import SandboxedEnvironment
 
 from ice_cloud.ui_registry import UiRegistry
+from tests.cloud.reports import make_report
 from ice_ui.bundle import INSTALLED_ROOT, BundleError, build_bundle, ui_digest
 
 MARKER = "MARKER-FROM-MACHINE-UI"
@@ -43,6 +44,20 @@ def marked_bundle(tmp_path):
     return digest, data
 
 
+def _render_fragment(resolved) -> str:
+    return resolved.templates.get_template("partials/status_fragment.html").render(
+        request=None,
+        status=make_report().health.status,
+        is_healthy=True,
+        issues=[],
+        active_faults=[],
+        payment_enabled=True,
+        payment_reasons=[],
+        machine_stopped=False,
+        maintenance=None,
+    )
+
+
 def test_installed_digest_is_not_a_mismatch(registry):
     resolved = registry.resolve(ui_digest())
     assert resolved.mismatch is False
@@ -68,18 +83,9 @@ def test_registered_bundle_renders_its_own_template_sandboxed(registry, marked_b
     resolved = registry.resolve(digest)
     assert resolved.mismatch is False
     assert isinstance(resolved.templates.env, SandboxedEnvironment)
-    source = resolved.templates.env.loader.get_source(
-        resolved.templates.env, "partials/status_fragment.html"
-    )[0]
-    assert MARKER in source
+    assert MARKER in _render_fragment(resolved)
     # The installed UI is untouched.
-    installed = registry.resolve(ui_digest())
-    assert (
-        MARKER
-        not in installed.templates.env.loader.get_source(
-            installed.templates.env, "partials/status_fragment.html"
-        )[0]
-    )
+    assert MARKER not in _render_fragment(registry.resolve(ui_digest()))
     assert resolved.static_dir.name == "static"
     assert resolved.templates is registry.resolve(digest).templates
 

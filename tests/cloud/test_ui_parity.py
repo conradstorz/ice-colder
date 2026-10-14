@@ -155,3 +155,45 @@ async def test_parity_pages_are_not_vacuous(edge_and_report, tmp_path):
         health = main_html(cloud.get("/health").text)
         assert "2/3 OK" in health and "Payment" in health
         assert "Clear" not in faults and "Record sale" not in faults
+
+
+@pytest.mark.parametrize("stale", [False, True], ids=["online", "stale"])
+async def test_parity_when_the_machine_has_no_vmc(edge_and_report, tmp_path, stale):
+    """vmc_missing end to end: /status serves VMC_MISSING_HTML, the pill is
+    neutral, /health shows '0 active faults' and '—' for availability, KPI
+    cards are placeholders -- identically on the edge and in the cloud."""
+    from ice_contracts.cloud.report import HealthSummary, KpiSummary
+    from ice_edge.views.health import build_health_page_summary, subsystem_rows
+
+    edge, report = edge_and_report
+    # Unwire through the context setters, not monkeypatch: the autouse
+    # route-context restore runs before monkeypatch teardown and would be
+    # undone by it.
+    context.set_machine_instance(None)
+    context.set_health_monitor(None)
+    context.set_availability(None)
+    context.set_event_recorder(None)
+    report = report.model_copy(
+        update={
+            "health": HealthSummary(
+                vmc_missing=True,
+                status=None,
+                is_healthy=None,
+                issues=[],
+                active_faults=[],
+                payment_enabled=None,
+                payment_reasons=[],
+                machine_stopped=None,
+                maintenance=None,
+            ),
+            "kpi": KpiSummary(summary=None, average=None),
+            "faults": [],
+            "health_page": build_health_page_summary(None, subsystem_rows(None)),
+        }
+    )
+    now = NOW + timedelta(hours=1) if stale else NOW
+    with _cloud_client(tmp_path, report, now) as cloud:
+        _assert_parity(edge, cloud, stale=stale)
+        assert "VMC not initialized" in cloud.get("/status").text
+        assert "0 active faults" in main_html(cloud.get("/health").text)
+        assert "—" in cloud.get("/pill").text

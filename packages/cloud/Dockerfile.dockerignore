@@ -7,6 +7,12 @@
 **/.env
 **/node_modules
 cloud_data
+.tailwind
+.superpowers
+.claude
+colder-docker
+tmp
+.venv
 data
 LOGS
 tests

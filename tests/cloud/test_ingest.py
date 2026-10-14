@@ -50,3 +50,21 @@ def test_bundle_with_wrong_digest_in_url_is_400(client):
     r = client.put(f"/api/v1/ui-bundles/{'b' * 64}", content=build_bundle())
     assert r.status_code == 400
     assert "digest" in r.json()["detail"]
+
+
+def test_oversize_bundle_is_rejected_before_extraction(client, tmp_path):
+    big = b"\0" * (20 * 1024 * 1024 + 1)
+    r = client.put(f"/api/v1/ui-bundles/{'d' * 64}", content=big)
+    assert r.status_code == 400
+    assert "too large" in r.json()["detail"]
+    assert not (tmp_path / "ui").exists()
+
+
+def test_oversize_bundle_without_content_length_is_cut_off(client):
+    def body():
+        for _ in range(21):
+            yield b"\0" * (1024 * 1024)
+
+    r = client.put(f"/api/v1/ui-bundles/{'d' * 64}", content=body())
+    assert r.status_code == 400
+    assert "too large" in r.json()["detail"]

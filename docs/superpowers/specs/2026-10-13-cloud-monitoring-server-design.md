@@ -63,7 +63,9 @@ stub is the smallest thing on the path to them that is useful on its own.
   the fault-count formatter over `len(report.faults)` (`"—"` when `health.vmc_missing`). The other seven
   lines may be passed as `""`; disabled tiles are not rendered.
 - **Health sub-tiles** (`/health`): the portal calls `health_tiles(...)` with Subsystems →
-  `"{subsystems_ok}/{subsystems_total} OK"` from `health_page`; Faults → the fault-count formatter;
+  `"{subsystems_ok}/{subsystems_total} OK"` from `health_page`; Faults → the fault-count formatter over `len(report.faults)` (not `"—"`: the edge route
+  formats `len(faults)`, which is `0` with no VMC, so a machine with `health.vmc_missing` reads
+  "0 active faults" here on both sides, for byte parity; only the Home Health tile shows `"—"`);
   Availability → the availability formatter over `health.payment_enabled` and
   `len(health.payment_reasons)`; Logs is disabled (no `view_logs`). Subsystems and Availability link to
   pages the portal answers with "Not available remotely yet" (§5).
@@ -125,7 +127,11 @@ portal renders its own UI when it matches, and the machine's own UI when it can.
   An online machine's report is at most `3 × report_interval_seconds` old, so the error is small; a stale
   machine carries the banner, which states the age.
 - **Banner partial.** `base.html` gains one `{% if remote %}{% include "partials/remote_banner.html" %}{% endif %}`
-  as the first child of `<body>`. The edge never passes `remote`, so the machine's own pages are
+  **inside `<header id="bar">`**, the element `base.html` already re-sends with `hx-swap-oob="true"` on
+  every response. A banner that is a plain `<body>` child would be inserted again on every boosted
+  navigation (`<body>` has `hx-boost`, `hx-target="main"`, `hx-swap="outerHTML"`) and stack; inside
+  the bar it is replaced on each navigation and dropped when `remote` is absent. The partial is
+  `position:fixed` at the viewport bottom because the bar is a fixed-height flex row. The edge never passes `remote`, so the machine's own pages are
   byte-identical (golden test, Task 12). `remote` carries `machine_id`, `last_report_local`, `age_text`,
   `stale`, `ui_mismatch`, `report_digest` and `portal_digest`. The mismatch line reads
   "UI version mismatch: machine <report_digest[:8]>, portal <portal_digest[:8]>".
@@ -138,14 +144,15 @@ portal renders its own UI when it matches, and the machine's own UI when it can.
   - The cookie is a selection, not a credential: `HttpOnly`, `SameSite=Lax`, value = `machine_id`.
   - `POST /fleet/select/{machine_id}` returns 303 to `/`; an unknown machine returns 404.
   - With no cookie (or a cookie naming a machine with no stored report), every machine page returns 303
-    to `/fleet`.
+    to `/fleet`; the polled fragments (`/status`, `/pill`, `/kpi`) return 204 to an htmx request instead,
+    since htmx would follow the redirect and swap the whole fleet page into the fragment's slot.
 - A per-machine URL prefix was rejected for the stub because it would change every template.
 - `/static/{path}` is served from the selected machine's resolved UI, with `Path.resolve()` containment
   (an escape returns 404). With no machine selected, it serves the installed `ice_ui` static, so
   `/fleet` styles correctly.
 - **Served paths.** `GET /fleet`, `POST /fleet/select/{machine_id}`, and the machine pages `GET /`,
   `/status`, `/pill`, `/kpi`, `/health`, `/health/faults`, each with the **same template name and context
-  keys** as the edge route. Any other GET renders `not_remote.html` ("Not available remotely yet") with
+  keys** as the edge route. Any other GET or POST renders `not_remote.html` ("Not available remotely yet") with
   404. `base.html`'s Lock button posts to `/logout`, which the portal does not serve (404); acceptable for
   the stub.
 - `current_user` is a `RemoteViewer(display_name="Fleet viewer")`. `base.html` reads no attribute of

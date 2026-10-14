@@ -33,12 +33,20 @@ def test_no_banner_without_remote():
     assert "remote-banner" not in _render()
 
 
-def test_banner_is_first_child_of_body():
+def test_banner_is_inside_the_oob_swapped_bar():
+    """Boosted navigation swaps #bar out-of-band on every response, so a
+    banner inside it is replaced (never stacked) and dropped when absent."""
+    from tests.dom_utils import find_by_id, parse_elements
+
     html = _render(remote=_remote())
-    body_open = html.index("<body")
-    body_tag_end = html.index(">", html.index("hx-swap", body_open)) + 1
-    assert html[body_tag_end:].lstrip().startswith('<div id="remote-banner"')
-    assert html.index("remote-banner") < html.index('<header id="bar"')
+    els = parse_elements(html)
+    (banner,) = find_by_id(els, "remote-banner")
+    (bar,) = find_by_id(els, "bar")
+    assert bar.attrs.get("hx-swap-oob") == "true"
+    assert banner.is_within("header")
+    assert html.index('<header id="bar"') < html.index("remote-banner")
+    assert html.index("remote-banner") < html.index("</header>")
+    assert html.count('id="remote-banner"') == 1
 
 
 def test_fresh_report_shows_machine_only():

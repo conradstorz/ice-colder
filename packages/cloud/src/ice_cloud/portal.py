@@ -101,6 +101,17 @@ def _to_fleet() -> RedirectResponse:
     return RedirectResponse("/fleet", status_code=303)
 
 
+def _no_selection_for_fragment(request: Request) -> Response:
+    """A polled fragment (/status, /pill, /kpi) with no machine selected.
+
+    htmx follows a 303 and would swap the whole /fleet page into the
+    fragment's slot, so an htmx request gets 204 (htmx swaps nothing); a plain
+    request still gets the spec's 303 to /fleet."""
+    if request.headers.get("HX-Request") == "true":
+        return Response(status_code=204)
+    return _to_fleet()
+
+
 def _fault_count(report: MachineReport) -> str:
     return fault_count_line(None if report.health.vmc_missing else len(report.faults))
 
@@ -154,7 +165,7 @@ async def home(request: Request):
 async def status_fragment(request: Request):
     report = _selected(request)
     if report is None:
-        return _to_fleet()
+        return _no_selection_for_fragment(request)
     if report.health.vmc_missing:
         return HTMLResponse(VMC_MISSING_HTML)
     ui = _resolve(request, report)
@@ -184,7 +195,7 @@ async def status_fragment(request: Request):
 async def pill(request: Request):
     report = _selected(request)
     if report is None:
-        return _to_fleet()
+        return _no_selection_for_fragment(request)
     ui = _resolve(request, report)
     state, text = pill_state(report.health)
     return ui.templates.TemplateResponse(
@@ -200,7 +211,7 @@ async def pill(request: Request):
 async def kpi_fragment(request: Request):
     report = _selected(request)
     if report is None:
-        return _to_fleet()
+        return _no_selection_for_fragment(request)
     ui = _resolve(request, report)
     return ui.templates.TemplateResponse(
         request,
@@ -286,6 +297,7 @@ async def static_file(request: Request, path: str):
 
 
 @router.get("/{path:path}", response_class=HTMLResponse)
+@router.post("/{path:path}", response_class=HTMLResponse)
 async def not_remote(request: Request, path: str):
     report = _selected(request)
     ui = _resolve(request, report)
