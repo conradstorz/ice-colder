@@ -44,21 +44,29 @@ stub is the smallest thing on the path to them that is useful on its own.
   `perms` lack, so the remote viewer sees no Clear, Record sale, or Discard button, with no template edit.
 - **Package boundary.** `ice_edge` and `ice_cloud` are import-linter siblings and may not import each
   other; both may import `ice_ui` and `ice_contracts`. Any computation both sides need therefore moves
-  down into `ice_ui` (Task 12):
-  - the pill's severity ranking and highest-priority-fault choice (today `_SEVERITY_RANK` and
-    `_highest_priority_fault` in `ice_edge/web/routes/home.py`);
-  - the tile context-line formatters (`"{n} active fault(s)"`, `_availability_context_line`'s
-    `"Payment enabled"` / `"Payment disabled ({n})"` / `"—"`).
+  down into `ice_ui` (Task 12's move list), so the cloud never re-implements it:
+  - `pill_state(health) -> tuple[str, str]` — the pill's three-way logic from `ice_edge/web/routes/home.py`,
+    including its severity ranking (`_SEVERITY_RANK`, `_highest_priority_fault`):
+    `("neutral", "—")` when `vmc_missing`; `("ok", "OK")` when `is_healthy`; otherwise
+    `("fault", <top fault's code>)`, or `("fault", "ISSUE")` when there is no active fault;
+  - `health_tiles(...)` in `ice_ui.tiles` — the `/health` four-tile list built inline today in
+    `ice_edge/web/routes/health/overview.py` (titles Subsystems / Faults / Availability / Logs, their
+    `LEVEL_HEALTH_*` urls, icon `"health"`, `coming_soon=False`, Logs enabled only with `view_logs`),
+    taking the four context lines and `perms`;
+  - the tile context-line formatters, with the edge's missing-data behaviour exactly:
+    - fault count: `"{n} active fault(s)"`, or `"—"` when no VMC is wired (remotely: `health.vmc_missing`);
+    - availability: `"Payment enabled"`, `"Payment disabled ({n})"`, or `"—"` when no Availability is
+      wired (remotely: `health.payment_enabled is None`).
   `fault_gate` stays on the edge: the edge precomputes `gate` into each `FaultView` (§6).
 - **Home tiles.** The portal's `GET /` calls `ice_ui.tiles.build_tiles(REMOTE_VIEWER_PERMISSIONS, lines)`
   and never keeps its own tile table. With `{view_status}` only the **Health** tile is enabled; its line is
-  the shared formatter applied to `len(report.faults)`. The other seven lines may be passed as `""`;
-  disabled tiles are not rendered.
-- **Health sub-tiles** (`/health`): Subsystems → `"{subsystems_ok}/{subsystems_total} OK"` from
-  `health_page`; Faults → the fault-count formatter over `len(report.faults)`; Availability → the
-  availability formatter over `health.payment_enabled` and `len(health.payment_reasons)`; Logs →
-  `enabled=False` (no `view_logs`). Subsystems and Availability link to pages the portal answers with
-  "Not available remotely yet" (§5).
+  the fault-count formatter over `len(report.faults)` (`"—"` when `health.vmc_missing`). The other seven
+  lines may be passed as `""`; disabled tiles are not rendered.
+- **Health sub-tiles** (`/health`): the portal calls `health_tiles(...)` with Subsystems →
+  `"{subsystems_ok}/{subsystems_total} OK"` from `health_page`; Faults → the fault-count formatter;
+  Availability → the availability formatter over `health.payment_enabled` and
+  `len(health.payment_reasons)`; Logs is disabled (no `view_logs`). Subsystems and Availability link to
+  pages the portal answers with "Not available remotely yet" (§5).
 
 ## 3. UI version: "both"
 
@@ -185,10 +193,11 @@ even ones no template reads.
 | `machine_stopped` | `bool \| None` | `status_fragment.html` (tri-state) |
 | `maintenance` | `str \| None` | `status_fragment.html` (holder display name) |
 
-`StatusView` is all four `VMC.get_status()` keys: `state: str`, `selected_product: str | None` (not read
-by a template; kept for parity), `credit_escrow: float`, `last_payment_method: str | None`.
+`StatusView` is all four `VMC.get_status()` keys: `state: str`, `selected_product: str | None` (the
+selected product's **name**, not its sku; not read by a template; kept for parity), `credit_escrow: float`, `last_payment_method: str | None`.
 
-`ActiveFaultView` is the seven `FaultService.active_faults()` keys plus the `since_seconds` that
+`FaultBase` holds the seven `active_faults()` keys; `ActiveFaultView` (here) and `FaultView` (§6.4) both
+extend it, so the shared keys are defined once. `ActiveFaultView` is the seven `FaultService.active_faults()` keys plus the `since_seconds` that
 `health_snapshot` joins in — and nothing else (parity):
 `key: str`, `sku: str | None`, `product: str | None`, `code: str`, `severity: str` (a `Severity` value),
 `scope: str` (`"product"` | `"machine"`), `description: str`, `since_seconds: float | None`
@@ -214,7 +223,7 @@ All KPI values are time-relative (24 h ending at `sent_at`).
 The keys `FaultService.active_faults()` emits plus the optional `pending_sale` that `health_faults.html`
 reads — **plus `since_seconds` and `gate`**, which that template also reads (the brief omitted them):
 
-`key`, `sku`, `product`, `code`, `severity`, `scope`, `description` (as §6.2);
+`key`, `sku`, `product`, `code`, `severity`, `scope`, `description` (inherited from `FaultBase`, §6.2);
 `since_seconds: float | None`; `gate: Literal["safety", "fulfillment", "alert"]` (computed on the edge
 by `fault_gate`); `pending_sale: PendingSaleView | None`.
 
@@ -231,7 +240,8 @@ and `saved_at`; the builder drops them. `dom_key` is excluded: the template read
 
 - `mqtt_connected: bool | None`, `vmc_state: str | None`;
 - `vmc_build: BuildView | None` — `commit: str`, `commit_short: str`, `source: str`,
-  `uptime_seconds: int` (time-relative), `machine_id: str | None`. `None` when no health monitor
+  `uptime_seconds: int` (time-relative), `machine_id: str | None` — the five keys `health.html` reads;
+  `get_summary()["vmc"]`'s `build_time` and `python_version` are dropped. `None` when no health monitor
   (`health.html` then hides the identity strip);
 - `subsystems_ok: int`, `subsystems_total: int` — the Subsystems tile's counts.
 
@@ -242,7 +252,7 @@ and `saved_at`; the builder drops them. `dom_key` is excluded: the template read
   "contract": "0.1.0", "machine_id": "m-0042", "sent_at": "2026-10-13T14:05:00Z",
   "boot_id": "6f1c2a7e-3d4b-4e0a-9b51-2c8f0d7a1e93", "seq": 118,
   "report_interval_seconds": 60, "edge_build": "6fa3512",
-  "ui": {"digest": "3b9f…(64 hex)…", "ice_ui_version": "0.1.0"},
+  "ui": {"digest": "3b9f0c2d8e41a7b65f90d3c1e28a4b7f6d05c9e1a3b2f48d7e6c5a0b9d1f2e3a", "ice_ui_version": "0.1.0"},
   "health": {
     "vmc_missing": false,
     "status": {"state": "idle", "selected_product": null, "credit_escrow": 0.0,
@@ -265,7 +275,7 @@ and `saved_at`; the builder drops them. `dom_key` is excluded: the template read
               "since_seconds": 412.3, "gate": "fulfillment", "pending_sale": null}],
   "health_page": {
     "mqtt_connected": true, "vmc_state": "idle",
-    "vmc_build": {"commit": "6fa3512c0e…", "commit_short": "6fa3512", "source": "image",
+    "vmc_build": {"commit": "6fa3512c0e9d4b7a1f2e3c5d6b8a9f0e1d2c3b4a", "commit_short": "6fa3512", "source": "image",
                   "uptime_seconds": 10820, "machine_id": "m-0042"},
     "subsystems_ok": 3, "subsystems_total": 3
   }
@@ -294,6 +304,8 @@ v0.1.0's `seq` is only a supersede marker; it is not a watermark and nothing is 
 
 ## 8. Security (stub)
 
+The stub is for development only: it must not be deployed anywhere reachable from beyond localhost.
+
 There is no authentication. `ice_cloud` binds to `127.0.0.1` by default and its compose file is marked
 dev-only. Auth and mTLS (spec §4) are **required before any deployment beyond localhost**.
 
@@ -309,8 +321,10 @@ Known exposures this accepts, all closed by that requirement:
 - Separate image `packages/cloud/Dockerfile` (the edge pattern, `--package ice-cloud` only), port 26124.
 - Data dir `ICE_CLOUD_DATA` (default `./cloud_data`, gitignored), holding `machines/` and `ui/`.
 - Bind host `ICE_CLOUD_HOST` (default `127.0.0.1`).
-- `docker/docker-compose.cloud.yml` sets `ICE_CLOUD_HOST=0.0.0.0`, mounts `./cloud_data`, and starts with
-  `# dev only — no auth (cloud spec §8)`.
+- `docker/docker-compose.cloud.yml` sets `ICE_CLOUD_HOST=0.0.0.0` (needed inside the container so the
+  port mapping can reach the server), mounts `./cloud_data`, and starts with
+  `# dev only — no auth (cloud spec §8)`. Its port mapping is `127.0.0.1:26124:26124`: the host side stays
+  loopback-only, so the container's `0.0.0.0` bind never exposes the portal to the LAN.
 - CI builds the image on every PR and never publishes it. The `compose-config` job also checks the cloud
   compose file.
 
