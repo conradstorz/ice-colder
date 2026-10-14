@@ -60,7 +60,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "24"
-      # Anonymous mosquitto on localhost:1883 for tests/test_integration_e2e.py
+      # Anonymous mosquitto on localhost:1883 for tests/integration/test_integration_e2e.py
       # (sale, refund, jam lockout, overpay over real MQTT). GitHub `services:`
       # cannot override the container command, and mosquitto 2.x refuses
       # anonymous connections without a config, so run it as a step with an

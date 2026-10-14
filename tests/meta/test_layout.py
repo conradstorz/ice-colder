@@ -3,7 +3,7 @@
 import ast
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 EDGE = ROOT / "packages" / "edge" / "src" / "ice_edge"
 
 EDGE_LAYERS = [

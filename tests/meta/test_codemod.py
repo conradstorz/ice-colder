@@ -15,7 +15,7 @@ from scripts.refactor.move_map import (
     TEST_MOVES,
 )
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 
 
 def rw(src: str) -> tuple[str, list[str]]:

@@ -17,7 +17,7 @@ import asyncio
 
 import pytest
 
-from tests.test_vmc_observers import _vmc_with_profiles
+from tests.edge.sale.test_vmc_observers import _vmc_with_profiles
 
 
 class FakeEventRecorder:

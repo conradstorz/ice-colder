@@ -53,6 +53,46 @@ type = "forbidden"
 source_modules = ["ice_ui"]
 forbidden_modules = ["ice_common"]
 
+[[tool.importlinter.contracts]]
+name = "Edge layers: app > web > uplink > views > sale > ... (runtime imports only)"
+type = "layers"
+layers = [
+    "ice_edge.app",
+    "ice_edge.web",
+    "ice_edge.uplink",
+    "ice_edge.views",
+    "ice_edge.sale",
+    "ice_edge.vend | ice_edge.payment | ice_edge.reporting",
+    "ice_edge.faults | ice_edge.notify",
+    "ice_edge.monitoring | ice_edge.access",
+    "ice_edge.ledger | ice_edge.customer_ui | ice_edge.hal | ice_edge.config",
+    "ice_edge.supervisor | ice_edge.cctv",
+]
+
+[[tool.importlinter.contracts]]
+name = "The VMC holds no transport or service handle (direct imports only)"
+type = "forbidden"
+source_modules = ["ice_edge.sale.vmc"]
+forbidden_modules = [
+    "ice_edge.app",
+    "ice_edge.sale.test_sale",
+    "ice_edge.sale.maintenance_lease",
+    "ice_common.mqtt_client",
+    "ice_edge.monitoring.health_monitor",
+    "ice_edge.ledger.event_recorder",
+    "ice_edge.hal.command_dispatcher",
+    "ice_edge.customer_ui.display_controller",
+    "ice_edge.ledger.session_store",
+]
+allow_indirect_imports = true
+# The plain SessionSnapshot value object that snapshot() constructs.
+ignore_imports = ["ice_edge.sale.vmc -> ice_edge.ledger.session_store"]
+
+[[tool.importlinter.contracts]]
+name = "Top packages are mutually independent"
+type = "independence"
+modules = ["ice_edge", "ice_cloud", "ice_sims"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
