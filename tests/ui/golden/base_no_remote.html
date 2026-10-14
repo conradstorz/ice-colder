@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vending Machine</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js"></script>
+  
+  <script src="/static/feedback.js" defer></script>
+</head>
+<body class="bg-slate-50 text-gray-900 font-sans text-base min-h-screen"
+      hx-boost="true" hx-target="main" hx-swap="outerHTML show:top">
+
+  
+
+  
+  <header id="bar" hx-swap-oob="true"
+          class="h-14 bg-slate-800 text-white flex items-center gap-2 px-3 sticky top-0 z-20">
+    
+      
+      
+      
+      
+
+      
+      <a href="/"
+         class="touch-target px-3 rounded-md text-sm font-medium text-white hover:bg-slate-700 shrink-0">Home</a>
+      
+      
+      <a href="/health"
+         class="touch-target px-3 rounded-md text-sm font-medium text-white hover:bg-slate-700 shrink-0">Back</a>
+      
+
+      <nav class="flex-1 min-w-0 flex items-center gap-1 overflow-hidden" aria-label="Breadcrumb">
+        
+          
+          <a href="/"
+             class="shrink-0 text-sm text-slate-300 hover:text-white whitespace-nowrap max-md:hidden">Home</a>
+          <span class="shrink-0 text-slate-500 max-md:hidden" aria-hidden="true">/</span>
+          
+        
+          
+          <a href="/health"
+             class="shrink-0 text-sm text-slate-300 hover:text-white whitespace-nowrap">Health</a>
+          <span class="shrink-0 text-slate-500" aria-hidden="true">/</span>
+          
+        
+          
+          <span class="shrink-0 text-sm font-semibold text-white truncate" aria-current="page">Faults</span>
+          
+        
+      </nav>
+
+      <a href="/health/faults" class="touch-target px-2 shrink-0" aria-label="System health">
+        
+        <span id="pill" hx-get="/pill" hx-trigger="load, every 5s" hx-swap="outerHTML" hx-target="this"
+              class="inline-flex items-center rounded-full bg-slate-400 text-white text-xs font-semibold uppercase tracking-wide px-2 py-1">…</span>
+      </a>
+
+      <button hx-post="/logout"
+              class="touch-target px-3 rounded-md text-sm font-medium text-white hover:bg-slate-700 shrink-0">Lock</button>
+    
+  </header>
+
+  <main class="max-w-5xl mx-auto px-4 py-4">
+    
+  </main>
+
+</body>
+</html>
