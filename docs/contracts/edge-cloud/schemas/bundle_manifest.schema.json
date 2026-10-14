@@ -1,0 +1,67 @@
+{
+  "$defs": {
+    "LevelEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string"
+        },
+        "parent_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Parent Url"
+        }
+      },
+      "required": [
+        "title",
+        "url",
+        "parent_url"
+      ],
+      "title": "LevelEntry",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "format": {
+      "const": 1,
+      "title": "Format",
+      "type": "integer"
+    },
+    "digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Digest",
+      "type": "string"
+    },
+    "ice_ui_version": {
+      "title": "Ice Ui Version",
+      "type": "string"
+    },
+    "levels": {
+      "items": {
+        "$ref": "#/$defs/LevelEntry"
+      },
+      "title": "Levels",
+      "type": "array"
+    }
+  },
+  "required": [
+    "format",
+    "digest",
+    "ice_ui_version",
+    "levels"
+  ],
+  "title": "BundleManifest",
+  "type": "object"
+}
