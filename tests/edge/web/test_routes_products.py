@@ -680,6 +680,73 @@ class TestCatalogChangedCalled:
         assert resp.status_code == 200
 
 
+class TestRoutesTolerateMissingMachine:
+    """Every mutating products route guards `context.machine_instance`
+    before telling the gate the catalog changed; with no Machine wired the
+    write must still succeed and persist."""
+
+    @staticmethod
+    def _saved():
+        return config_store.CONFIG_PATH.read_text(encoding="utf-8")
+
+    def test_create_persists_without_machine(self, client, wired):
+        cfg, _vmc, inv, _store = wired
+        context.set_machine_instance(None)
+        resp = client.post(
+            "/products/new",
+            data={"sku": "NM-NEW", "name": "No Machine", "price": "1.00"},
+        )
+        assert resp.status_code == 200
+        assert resp.headers["hx-redirect"] == "/products/NM-NEW"
+        assert any(p.sku == "NM-NEW" for p in cfg.products)
+        assert "NM-NEW" in inv.get_all()
+        assert "NM-NEW" in self._saved()
+
+    def test_catalog_update_persists_without_machine(self, client, wired):
+        cfg, _vmc, _inv, _store = wired
+        _add(client, "NM-CAT", name="Old Name", price="1.00")
+        context.set_machine_instance(None)
+        resp = client.post(
+            "/products/NM-CAT/catalog",
+            data={"name": "New Name", "price": "3.50", "kind": "water"},
+        )
+        assert resp.status_code == 200
+        assert resp.headers["hx-redirect"] == "/products/NM-CAT"
+        updated = next(p for p in cfg.products if p.sku == "NM-CAT")
+        assert (updated.name, updated.price, updated.kind) == (
+            "New Name",
+            3.50,
+            "water",
+        )
+        assert "New Name" in self._saved()
+
+    def test_delete_persists_without_machine(self, client, wired):
+        cfg, _vmc, inv, _store = wired
+        _add(client, "NM-DEL", name="Doomed", price="1.00")
+        context.set_machine_instance(None)
+        resp = client.post("/products/NM-DEL/delete")
+        assert resp.status_code == 200
+        assert resp.headers["hx-redirect"] == "/products"
+        assert not any(p.sku == "NM-DEL" for p in cfg.products)
+        assert "NM-DEL" not in inv.get_all()
+        assert "NM-DEL" not in self._saved()
+
+    def test_placement_persists_without_machine(self, client, wired):
+        cfg, _vmc, inv, _store = wired
+        _add(client, "NM-PLC", name="Placed", price="2.00", slot="1")
+        context.set_machine_instance(None)
+        resp = client.post(
+            "/products/NM-PLC/placement",
+            data={"slot": "8", "inventory_count": "15", "track_inventory": "on"},
+        )
+        assert resp.status_code == 200
+        assert resp.headers["hx-redirect"] == "/products/NM-PLC"
+        assert next(p for p in cfg.products if p.sku == "NM-PLC").slot == 8
+        assert inv.get_count("NM-PLC") == 15
+        assert inv.is_tracked("NM-PLC") is True
+        assert '"slot": 8' in self._saved()
+
+
 class TestLockBadge:
     def test_locked_badge_shown_on_list_and_detail(self, client, wired):
         from ice_contracts.board.vending_machine import FaultCode
