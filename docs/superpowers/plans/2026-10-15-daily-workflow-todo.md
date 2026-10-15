@@ -80,7 +80,7 @@ Tasks 2 and 6 touch the contract version and the VMC's collaborators, so give th
 
 Source: `2026-10-13-test-suite-followups-todo.md`, which is still uncommitted. **Its file paths predate the workspace reorg** (`tests/test_web_routes.py` is now under `tests/edge/web/`, `services/` is now `ice_edge/...`, and so on). Fix the paths first.
 
-- [ ] B.0 Commit the follow-ups todo, with its paths updated to the new layout (quick win)
+- [x] B.0 Commit the follow-ups todo, with its paths updated to the new layout (quick win)
 - [ ] B.1 §1 Coverage gaps (1.1–1.5); deep work, and 1.3, the DST fall-back hang in `by_period`, is a real bug, so do it first
 - [ ] B.2 §2 Proof gaps (2.1–2.3): get red runs for fixes that never had one
 - [ ] B.3 §3 e2e timing (3.1–3.3); 3.3 is passive, so watch CI and record any flakes
@@ -103,4 +103,4 @@ One item per week, alternating between the two tracks. The output is research or
 
 Newest entry first. Format: `YYYY-MM-DD — done: … | stopped at: … | next: …`
 
-- 2026-10-15 — done: created this file | stopped at: — | next: A.0 / B.0
+- 2026-10-15 — done: created this file; B.0 (follow-ups paths updated and committed) | stopped at: B.0 | next: A.0 or B.1 (start with 1.3, the DST hang)
