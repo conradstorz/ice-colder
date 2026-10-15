@@ -1,5 +1,6 @@
-"""Touch-feedback assets: the click sound, its generator, and (Task 2) the
-script and base.html wiring. See docs/superpowers/specs/2026-09-30-touch-feedback-design.md §4.2–4.4."""
+"""Touch-feedback assets: the click sound, its generator, and the
+no-<audio>-markup guard (script behaviour is proven in real Chrome by
+tests/edge/web/test_touch_feedback_browser.py). See docs/superpowers/specs/2026-09-30-touch-feedback-design.md §4.2–4.4."""
 
 from __future__ import annotations
 
@@ -62,27 +63,7 @@ def test_generator_is_reproducible(tmp_path):
     )
 
 
-FEEDBACK_JS = STATIC / "feedback.js"
 BASE_HTML = TEMPLATES_DIR / "base.html"
-
-
-def test_feedback_js_exists_and_registers_pointerdown():
-    src = FEEDBACK_JS.read_text(encoding="utf-8")
-    assert "pointerdown" in src
-    assert "touchstart" in src
-    assert 'new Audio("/static/click.wav")' in src
-    assert 'preload = "auto"' in src
-    assert ".play()" in src
-
-
-def test_base_html_loads_feedback_script_in_head():
-    html = BASE_HTML.read_text(encoding="utf-8")
-    assert '<script src="/static/feedback.js" defer></script>' in html
-    # the script must load after htmx so htmx-request styling and the sound
-    # both exist by the time the first swap can happen
-    assert html.index("htmx.min.js") < html.index("feedback.js")
-    assert "<audio" not in html
-    assert html.index("feedback.js") < html.index("</head>")
 
 
 def test_boosted_swap_cannot_duplicate_audio():
