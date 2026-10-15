@@ -600,6 +600,115 @@ class TestPermissionMatrix:
         else:
             assert resp.status_code == 403, (role, resp.status_code)
 
+    # The three routes below are mutating POSTs whose dummy-body sweep in
+    # test_matrix would have real side effects (an email sent, the emergency
+    # code pool replaced, commands dispatched to boards), so each gets its own
+    # test with the side effect stubbed. Allowed roles are hand-written from
+    # CLAUDE.md's gate table crossed with TestPermissionTable, never derived
+    # from ROLE_PERMISSIONS.
+
+    @pytest.mark.parametrize("role", list(Role))
+    def test_matrix_reports_email(self, login_as, wired, monkeypatch, role):
+        """POST /reports/email is gated on view_reports: owner, secretary."""
+        cfg, _vmc, _inv, _store = wired
+        cfg.communication.email_gateway.smtp_server = "smtp.real.local"
+        sent = []
+
+        async def fake_send_email(gateway, to, subject, body, attachments=None):
+            sent.append(to)
+            return True
+
+        monkeypatch.setattr(
+            "ice_edge.web.routes.reports.email.send_email", fake_send_email
+        )
+        client = login_as(role)
+        resp = client.post(
+            "/reports/email",
+            data={"report": "period"},
+            headers={"HX-Request": "true"},
+        )
+        if role in _OWNER_SECRETARY:
+            assert resp.status_code == 200, (role, resp.status_code, resp.text[:300])
+            assert len(sent) == 1, role
+        else:
+            assert resp.status_code == 403, (role, resp.status_code)
+            assert sent == [], role
+
+    @pytest.mark.parametrize("role", list(Role))
+    def test_matrix_codes_regenerate(self, login_as, wired, monkeypatch, role):
+        """POST /users/codes/regenerate is gated on manage_ownership: owner
+        only. A secretary has manage_users but not manage_ownership."""
+        _cfg, _vmc, _inv, store = wired
+        calls = []
+
+        def fake_generate():
+            calls.append(1)
+            return ["AAAA-BBBB"]
+
+        monkeypatch.setattr(store, "generate_emergency_codes", fake_generate)
+        client = login_as(role)
+        # Each role posts its own PIN so the owner's succeeds past the PIN
+        # check; a denied role never reaches it.
+        pin = "1379" if role is Role.owner else "2468"
+        resp = client.post(
+            "/users/codes/regenerate",
+            data={"pin": pin},
+            headers={"HX-Request": "true"},
+        )
+        if role in _OWNER:
+            assert resp.status_code == 200, (role, resp.status_code, resp.text[:300])
+            assert len(calls) == 1, role
+        else:
+            assert resp.status_code == 403, (role, resp.status_code)
+            assert calls == [], role
+
+    @pytest.mark.parametrize("role", list(Role))
+    def test_matrix_tests_run_all(self, login_as, wired, monkeypatch, role):
+        """POST /tests/run-all is gated on run_tests: owner, tech. One alive
+        subsystem is wired so a permitted role really dispatches."""
+        from ice_edge.monitoring.health_monitor import HealthMonitor
+
+        _cfg, vmc, _inv, _store = wired
+        hm = HealthMonitor()
+        hm.record_heartbeat("vending", {"subsystem": "vending", "uptime_seconds": 5})
+        hm.record_capabilities(
+            "vending",
+            {
+                "subsystem": "vending",
+                "firmware": "abc1234",
+                "contract_version": "0.6.0",
+                "brand": "ice-colder",
+                "model": "sim",
+                "hardware_id": "02:11:22:33:44:55",
+                "ip": "172.18.0.7",
+                "commands": ["ping", "self_test"],
+            },
+        )
+        routes.set_health_monitor(hm)
+
+        class _StubDispatcher:
+            _retries = 1
+
+            def __init__(self):
+                self.calls = []
+
+            async def send_and_await_completion(self, subsystem, command, params=None):
+                from ice_edge.hal.command_dispatcher import CommandAck
+
+                self.calls.append((subsystem, command))
+                return CommandAck(request_id="a" * 8, command=command, status="ok")
+
+        dispatcher = _StubDispatcher()
+        routes.set_command_dispatcher(dispatcher)
+        client = login_as(role)
+        resp = client.post("/tests/run-all", headers={"HX-Request": "true"})
+        if role in _OWNER_TECH:
+            assert resp.status_code == 200, (role, resp.status_code, resp.text[:300])
+            assert dispatcher.calls, role
+        else:
+            assert resp.status_code == 403, (role, resp.status_code)
+            assert dispatcher.calls == [], role
+
 
 class TestUnauthenticatedAccess:
     """No session at all: Task 8's redirect/401 behavior, routed through by
