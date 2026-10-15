@@ -78,14 +78,56 @@ Tasks 2 and 6 touch the contract version and the VMC's collaborators, so give th
 
 ### Stream B — Test-suite follow-ups
 
-Source: `2026-10-13-test-suite-followups-todo.md`, which is still uncommitted. **Its file paths predate the workspace reorg** (`tests/test_web_routes.py` is now under `tests/edge/web/`, `services/` is now `ice_edge/...`, and so on). Fix the paths first.
+These items were folded in from `2026-10-13-test-suite-followups-todo.md`, which was triaged against the code on 2026-10-15 and then retired (it is in git history, `5b7a3a1`). That file was the follow-up list to the closed review todo, PR #73.
 
-- [x] B.0 Commit the follow-ups todo, with its paths updated to the new layout (quick win)
-- [ ] B.1 §1 Coverage gaps (1.1–1.5); deep work, and 1.3, the DST fall-back hang in `by_period`, is a real bug, so do it first
-- [ ] B.2 §2 Proof gaps (2.1–2.3): get red runs for fixes that never had one
-- [ ] B.3 §3 e2e timing (3.1–3.3); 3.3 is passive, so watch CI and record any flakes
-- [ ] B.4 §4 Private-access ratchet (4.1–4.14): one file per quick-win session, budgets only go down
-- [ ] B.5 §5 Second review pass (5.1–5.2)
+**Rules for this stream:**
+- Confirm each gap against the code before fixing it. If it no longer holds, tick it with `— rejected: <reason>`.
+- A fixed test must fail against the bug it guards. Break the production code, watch the test go red, then restore it.
+- Never raise a number in `tests/private_access_budget.py` or `tests/meta/test_vmc_complexity.py`; lower it whenever a fix drops the count.
+- Run the e2e tests only against a broker (CI has one). Never start Docker on this workstation.
+- Tick finished items here with `— <commit sha>`.
+
+**Resolved at triage:**
+- [x] B.0 Commit the follow-ups todo with post-reorg paths — `5b7a3a1`
+- [x] The `by_period` DST fall-back hang (was 1.3) — rejected: `reports.py` now bounds the loop with `_MAX_BUCKET_KEY_RETRIES` plus a forced-progress guard, so it can no longer hang
+- [x] Watch the first ~10 e2e CI runs for flakes (was 3.3) — 14 consecutive `ci.yml` runs (2026-10-13 to 10-14) succeeded, with one cancelled and no flakes
+
+**Coverage gaps**
+- [ ] B.1 Permission matrix (`tests/edge/web/test_web_routes.py`, `_MATRIX_ROUTES`): add role-denial cases for `POST /reports/email`, `POST /users/codes/regenerate` and `POST /tests/run-all`. Stub the mailer, the regenerate and the dispatcher side effects, then assert that a denied role gets 403 and nothing else happens.
+- [ ] B.2 `packages/edge/src/ice_edge/web/routes/products/catalog.py:131,191,233` and `placement.py:120` guard on `context.machine_instance`, but no test sets it to None. Add one test per mutating products route with the machine set to None, asserting a 200 and that the change was saved.
+- [ ] B.3 `tests/ui/test_feedback_assets.py` (`test_feedback_js_exists_and_registers_pointerdown`, `test_base_html_loads_feedback_script_in_head`, `test_boosted_swap_cannot_duplicate_audio`) and `tests/ui/test_templating.py::test_base_template_loads` check for substrings in source text. Delete whatever the touch-feedback browser test already covers, and keep the asset checks (a valid WAV, a reproducible generator, the files being served).
+
+**Proof gaps** (these fixes never had a red run)
+- [ ] B.4 `tests/edge/web/test_web_routes.py`: the `/login/enroll` status pinned to 401, and the idle-clock `>` check. Mutate each one (the route returns 403; the refresh writes an older `last_active_at`), watch the test go red, and record it.
+- [ ] B.5 `tests/edge/sale/test_vmc_flows.py`: `test_on_error_without_credit_says_contact_support_only` and `test_deposit_funds_test_method_accepted_other_methods_refunded`. Prove the `drain_pending` negative assertion isn't vacuous: use a mutation that causes a delayed stray refund, or add a positive control.
+- [ ] B.6 `tests/sims/test_simulator_ice_maker.py`: show that the "still off one tick before the boundary" assertion fails when the compressor turns on early, by changing the transition condition rather than `COMPRESSOR_OFF_TIME`.
+
+**e2e timing** (`tests/integration/test_integration_e2e.py`)
+- [ ] B.7 Line 216, `await asyncio.sleep(0.3)` (CLAUDE.md's "deliberate residual fixed sleep"): replace it with a public observable, or a bounded poll on the sale's settled state, and update CLAUDE.md.
+- [ ] B.8 Lines 140, 169, 275, 293, 362: check that each poll loop has a bound and a clear failure message, and that none is a fixed wait in disguise.
+
+**Private-access ratchet** (quick wins, one file per session). Counts were verified on 2026-10-15. Each item is done at 0, or at a floor where every remaining hit carries a `# private: <reason>` marker.
+- [ ] B.9 `tests/sims/test_simulator_vending.py`: 53
+- [ ] B.10 `tests/sims/test_simulator_base.py`: 38
+- [ ] B.11 `tests/sims/test_simulator_ice_maker.py`: 28
+- [ ] B.12 `tests/sims/test_simulator_mdb.py`: 23
+- [ ] B.13 `tests/edge/monitoring/test_health_monitor.py`: 19
+- [ ] B.14 `tests/common/test_mqtt.py`: 19
+- [ ] B.15 `tests/edge/ledger/test_event_recorder.py`: 13 (includes the `EventRecorder.__new__` harness at ~1029-1050, which bypasses `__init__`)
+- [ ] B.16 `tests/edge/access/test_access.py`: 7 (`_failures`, `_sessions`)
+- [ ] B.17 `tests/edge/reporting/test_report_scheduler.py`: 5
+- [ ] B.18 `tests/edge/web/test_web_routes.py`: 5
+- [ ] B.19 `tests/edge/hal/test_command_dispatcher.py`: 4
+- [ ] B.20 `tests/edge/web/test_routes_tests.py`: 3
+- [ ] B.21 `tests/edge/web/test_route_context.py`: 2 (`getattr(context, "_pending_codes")` at lines 20 and 31; give `context` a public accessor)
+- [ ] B.22 The budget-1 and budget-2 files: `tests/fakes.py`, `tests/contracts/test_contracts.py`, `tests/edge/vend/test_dispensers_{example,service,validation}.py`, `tests/edge/monitoring/test_inventory_manager.py`, `tests/edge/sale/test_{maintenance_standby,test_sale_runner,vmc_flows}.py`, `tests/edge/notify/test_notifier.py`
+
+**Second review pass**
+- [ ] B.23 The original review sampled files rather than reading every test. Read these in full against the same checklist (assertions that can't fail, mirrored expectations, vacuous negatives, leaked state, wall-clock waits): `tests/edge/ledger/test_event_recorder.py`, `tests/sims/test_simulator_{vending,base}.py`, `tests/edge/reporting/test_report_scheduler.py`, `tests/edge/hal/test_command_dispatcher.py`, `tests/edge/access/test_access.py`. Add the findings here as new B items.
+- [ ] B.24 Re-check the old review items rejected as low or speculative, in case later changes made them real: 2.8 (complexity budget), 2.14 (`discoverable_globals`), 3.5 (the `tz=None` path), 4.9 (the TOML comment checks), 4.11 (the level-count pin). The original todo is in git history (`2026-10-13-test-suite-review-todo.md`).
+
+**Parked** (not actionable yet)
+- `packages/edge/src/ice_edge/sale/fsm_control.py`: `restart` and `shutdown` are logging stubs, and `tests/edge/sale/test_fsm_control.py` pins only their messages. When real behaviour lands, replace those tests with assertions on the effect (patch the exit or signal call).
 
 ### Weekly slot — Firmware and cloud hardening
 
@@ -103,4 +145,5 @@ One item per week, alternating between the two tracks. The output is research or
 
 Newest entry first. Format: `YYYY-MM-DD — done: … | stopped at: … | next: …`
 
+- 2026-10-15 — done: triaged the follow-ups todo (two items already resolved), folded the rest into Stream B, retired the file | stopped at: — | next: A.0 or B.1
 - 2026-10-15 — done: created this file; B.0 (follow-ups paths updated and committed) | stopped at: B.0 | next: A.0 or B.1 (start with 1.3, the DST hang)
