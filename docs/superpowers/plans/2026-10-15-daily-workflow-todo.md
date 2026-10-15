@@ -93,9 +93,9 @@ These items were folded in from `2026-10-13-test-suite-followups-todo.md`, which
 - [x] Watch the first ~10 e2e CI runs for flakes (was 3.3) — 14 consecutive `ci.yml` runs (2026-10-13 to 10-14) succeeded, with one cancelled and no flakes
 
 **Coverage gaps**
-- [ ] B.1 Permission matrix (`tests/edge/web/test_web_routes.py`, `_MATRIX_ROUTES`): add role-denial cases for `POST /reports/email`, `POST /users/codes/regenerate` and `POST /tests/run-all`. Stub the mailer, the regenerate and the dispatcher side effects, then assert that a denied role gets 403 and nothing else happens.
-- [ ] B.2 `packages/edge/src/ice_edge/web/routes/products/catalog.py:131,191,233` and `placement.py:120` guard on `context.machine_instance`, but no test sets it to None. Add one test per mutating products route with the machine set to None, asserting a 200 and that the change was saved.
-- [ ] B.3 `tests/ui/test_feedback_assets.py` (`test_feedback_js_exists_and_registers_pointerdown`, `test_base_html_loads_feedback_script_in_head`, `test_boosted_swap_cannot_duplicate_audio`) and `tests/ui/test_templating.py::test_base_template_loads` check for substrings in source text. Delete whatever the touch-feedback browser test already covers, and keep the asset checks (a valid WAV, a reproducible generator, the files being served).
+- [x] B.1 Permission matrix (`tests/edge/web/test_web_routes.py`, `_MATRIX_ROUTES`): add role-denial cases for `POST /reports/email`, `POST /users/codes/regenerate` and `POST /tests/run-all`. Stub the mailer, the regenerate and the dispatcher side effects, then assert that a denied role gets 403 and nothing else happens. — `d5a47e5` (PR #79)
+- [x] B.2 `packages/edge/src/ice_edge/web/routes/products/catalog.py:131,191,233` and `placement.py:120` guard on `context.machine_instance`, but no test sets it to None. Add one test per mutating products route with the machine set to None, asserting a 200 and that the change was saved. — `8ef8b5f` (PR #79)
+- [x] B.3 `tests/ui/test_feedback_assets.py` (`test_feedback_js_exists_and_registers_pointerdown`, `test_base_html_loads_feedback_script_in_head`, `test_boosted_swap_cannot_duplicate_audio`) and `tests/ui/test_templating.py::test_base_template_loads` check for substrings in source text. Delete whatever the touch-feedback browser test already covers, and keep the asset checks (a valid WAV, a reproducible generator, the files being served). — `29010f4` (PR #79; kept `test_boosted_swap_cannot_duplicate_audio`, which no browser test covers)
 
 **Proof gaps** (these fixes never had a red run)
 - [ ] B.4 `tests/edge/web/test_web_routes.py`: the `/login/enroll` status pinned to 401, and the idle-clock `>` check. Mutate each one (the route returns 403; the refresh writes an older `last_active_at`), watch the test go red, and record it.
@@ -144,6 +144,8 @@ One item per week, alternating between the two tracks. The output is research or
 ## Progress log
 
 Newest entry first. Format: `YYYY-MM-DD — done: … | stopped at: … | next: …`
+
+- 2026-10-15 — done: B.1–B.3 (coverage gaps), PR #79 open | stopped at: B.3 | next: merge #79; A.0 or B.4 (proof gaps)
 
 - 2026-10-15 — done: triaged the follow-ups todo (two items already resolved), folded the rest into Stream B, retired the file | stopped at: — | next: A.0 or B.1
 - 2026-10-15 — done: created this file; B.0 (follow-ups paths updated and committed) | stopped at: B.0 | next: A.0 or B.1 (start with 1.3, the DST hang)
