@@ -1,6 +1,8 @@
 # ice-colder
 A comprehensive vending machine controller project
 
+**New here? Read the [project overview](docs/OVERVIEW.md)** for everything the project does, with links to the detailed design documents.
+
 ## Running
 
 **Local:**
