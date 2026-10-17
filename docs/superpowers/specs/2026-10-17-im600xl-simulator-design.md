@@ -131,12 +131,12 @@ clears the faults itself** from the same `hardware/io` transitions, through `Fau
 | `sump_high` true | `WTR-104` | machine |
 | `water_pressure_ok` false | `WTR-105` | machine (alert; the `water_pressure_ok` row blocks water) |
 | `ro_tank_empty` true | `WTR-106` | machine (alert; the `ro_tank_ok` row blocks water) |
-| `ro_production` on longer than `physical.ro_max_run_seconds` (default 3600) | `WTR-107` | machine; cleared when `ro_production` next turns off |
+| `ro_production` on longer than `physical.ro_max_run_seconds` (default 3600) | `WTR-107` | machine; survives `ro_production` turning off (the board's cutoff confirms the overrun), cleared when `ro_tank_full` reports true or by an operator |
 
 The fault clears when the input recovers; a `hardware`-raised fault is never cleared by recovery of a
 different input. All four are machine-scope, so no input ever raises or clears a product lockout. A
 `WTR-106` raised by a water vend's `bin_empty` outcome (§3.3) is cleared by the next `ro_tank_empty`
-false report, or by an operator. `WTR-107` is detection only: stopping the RO pump at its limit is the board's job (§5.2).
+false report, or by an operator. `WTR-107` is detection only: stopping the RO pump at its limit is the board's job (§5.2). The board's cutoff must be longer than `ro_max_run_seconds`, or the edge never sees the overrun.
 `ConfigModel.physical` gains `ro_max_run_seconds: float = 3600` (60–86400).
 
 ## 5. Simulator (`ice_sims.vending`)
@@ -173,7 +173,8 @@ Declared exactly as the I/O list's channel-id column:
   binary flow-sensor publishing goes away. Each vend drains the simulated RO tank by its volume.
 - **RO fill loop:** a simulated tank level (gallons) with full and empty thresholds; `ro_production`
   runs while the tank is not full, refilling at a fixed rate, and the board turns it off at its own maximum
-  run time (the firmware safety limit). `ro_tank_full`/`ro_tank_empty` follow the level. All three are
+  run time (the firmware safety limit, longer than the edge's `ro_max_run_seconds`). The cutoff latches the pump
+  off until a reset (in the simulator, recovery of the `ro_fill_stuck` injection). `ro_tank_full`/`ro_tank_empty` follow the level. All three are
   published on `hardware/io`; the edge derives `WTR-106`/`WTR-107` from them (§4.3).
 - **Environment:** `ambient` drifts on `sensors/temp/ambient`; `heater_power` follows a hysteresis on it.
 - **Inputs:** `water_pressure_ok` (normally true), `sump_high` and `service_door` (normally false) are
@@ -215,7 +216,7 @@ matching `button` values.
   `set_hardware_io` devices drive their rows and gates; each §4.3 input raises and clears its machine-scope
   fault and touches no product lockout (a pre-existing vend-failure lockout survives the input's raise and
   recovery); `ro_production` held on past `ro_max_run_seconds` raises
-  `WTR-107` and turning it off clears it.
+  `WTR-107`, turning it off leaves it active, and `ro_tank_full` clears it.
 - **Simulator:** exact channel list and `driven_by` map; catch energized before agitate and released at
   drop; water vend pulse count and tank drain; RO loop fill and its run-time cutoff; each new fault injection;
   HA entities match the channels.

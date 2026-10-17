@@ -55,7 +55,10 @@
 | `dispensers.example.toml`, `config.example.json`, `tests/dispenser_fixtures.py` | IM600XL samples |
 | `tests/sims/vending_profiles.py` (new) | simulator-local profile fixtures (contract models only) |
 | `tests/integration/test_im600xl_capabilities.py` (new) | simulator capabilities × edge validation cross-check |
-| `tests/async_helpers.py` (new) | edge-free `settle`/`patch_module_sleep`, re-exported by `tests/fakes.py` |
+| `tests/async_helpers.py` (new) | edge-free `settle`/`patch_module_sleep`/`_AsyncioWithSleep`, re-exported by `tests/fakes.py` |
+| `tests/repo_root.py` (new) | edge-free `REPO_ROOT`/`TESTS_ROOT`, re-exported by `tests/paths.py` |
+| `tests/sims/test_simulator_base.py`, `test_simulator_mdb.py` | import helpers from `tests.async_helpers` |
+| `tests/private_access_budget.py` | budgets for the split simulator test files |
 | `tests/meta/test_test_isolation.py` (new) | import-following check: `tests/sims` ↛ `ice_edge`, `tests/edge` ↛ `ice_sims` |
 | `CLAUDE.md`, `docs/hardware/im600xl-io-list.md`, `ROADMAP.md` | docs |
 
@@ -305,7 +308,7 @@ The retry policy is its own collaborator; `FaultService` gains only a generic ob
       def on_hardware_io(self, device: str, state: bool) -> None: ...
       def cancel(self) -> None: ...   # drops the ro_overrun timer
   ```
-- State faults are **driven by `INPUT_FAULTS`** (Task 1), not a local mapping: for the entry whose `channel == device`, `state == faulted_when` → `raise_fault(code)` (no `sku`), otherwise clear it. A device not in the table and not `ro_production` is ignored. `ro_production` (`VendingChannel.ro_production`) true → arm `ro_overrun` for `ro_max_run_seconds()`; on fire → `raise_fault(WTR_107)`; false → cancel the timer and clear `WTR_107` if active. Clears use `clear_fault(code.value, by="hardware")` (the machine-fault key `FaultService.parse_key` accepts) and are skipped when `not faults.has(code)`; raising an already-active fault is not repeated (check `faults.has(code)` first) so a re-published retained state does not spam alerts. Recovery of one input never clears another input's code.
+- State faults are **driven by `INPUT_FAULTS`** (Task 1), not a local mapping: for the entry whose `channel == device`, `state == faulted_when` → `raise_fault(code)` (no `sku`), otherwise clear it. A device not in the table and not `ro_production`/`ro_tank_full` is ignored. `ro_production` (`VendingChannel.ro_production`) true → arm `ro_overrun` for `ro_max_run_seconds()` (re-arming cancels the previous handle); on fire → `raise_fault(WTR_107)`; false → cancel a pending timer but **leave an active `WTR_107` raised**. `ro_tank_full` true → clear `WTR_107` if active. Rationale: the board stops the pump at its own firmware limit (§5.2), so pump-off is exactly when an overrun is confirmed, not resolved; only the tank reaching full (or an operator) proves the RO path works again. The edge limit must be shorter than the board's cutoff for the alert to fire at all; that ordering is a deployment rule (documented in Task 12), and the simulator honours it (Task 11). Clears use `clear_fault(code.value, by="hardware")` (the machine-fault key `FaultService.parse_key` accepts) and are skipped when `not faults.has(code)`; raising an already-active fault is not repeated (check `faults.has(code)` first) so a re-published retained state does not spam alerts. Recovery of one input never clears another input's code.
 - Imports: `ice_contracts`, `ice_common`, `ice_edge.faults`, `ice_edge.supervisor` only (layer rule).
 
 - [ ] **Step 1: Write failing tests**
@@ -313,7 +316,7 @@ The retry policy is its own collaborator; `FaultService` gains only a generic ob
   - Pressure recovery does not clear a WTR-106 held by an empty tank (independent machine codes).
   - A water sku already locked by `WTR-101` (a vend failure) is still locked by `WTR-101` after `water_pressure_ok` false then true.
   - Repeating the same failing state does not raise a second alert (count `publish_alert` calls or recorder rows).
-  - `ro_production` true then `runner.fire("ro_overrun")` raises WTR-107; `ro_production` false clears it and cancels a still-pending timer; an `ro_production` true/false/true sequence leaves one pending timer.
+  - `ro_production` true then `runner.fire("ro_overrun")` raises WTR-107; a following `ro_production` false leaves WTR-107 active; `ro_tank_full` true then clears it. `ro_production` false before the timer fires cancels it and raises nothing; an `ro_production` true/false/true sequence leaves one pending timer; `ro_tank_full` true with no WTR-107 active records nothing.
   - An unknown device is ignored.
   - Machine-level: a `hardware/io/sump_high` message reaches `on_hardware_io` once.
   - Config: `ro_max_run_seconds` default 3600; 59 and 86401 rejected.
@@ -328,32 +331,47 @@ The retry policy is its own collaborator; `FaultService` gains only a generic ob
 
 Today one 1309-line class holds the channel table, fault registrations, profile execution, the sensor loop, the customer loop and HA discovery. Tasks 10 and 11 would otherwise add the RO tank, climate, new inputs, the catch release and five fault injections to it. This task moves code only; every existing simulator test passes with at most import-path and patch-target changes.
 
+**Depends on Task 2** (the `BUTTON_CHANNELS` snapshot below only exists once Task 2 has landed).
+
 **Files:**
 - Create: `packages/sims/src/ice_sims/vending/__init__.py` (re-exports `VendingMachineSimulator`)
 - Create: `packages/sims/src/ice_sims/vending/channels.py` — the one declarative channel table. Each row: id, kind, direction, `driven_by`, idle default (binary only), and a `role` (`"button"`, `"sensor"`, `"output"`…). Derives `CHANNELS` (the `ChannelDescriptor` list), `HARDWARE_DEVICES` (binary ids → idle default) and `BUTTON_CHANNELS` (ids with role `"button"`) from it; ids with edge meaning use `VendingChannel` values. No MQTT, no I/O.
-- Create: `packages/sims/src/ice_sims/vending/dispense.py` — `execute_profile` and the per-mechanism runners (`_run_bagged_ice`, `_run_water_fill`, `_pump_water_pulses`, `_publish_fill_pulses`, accessory span/lag handling, `_RunContext`). Talks to the board through a narrow port, not the simulator class:
+- Create: `packages/sims/src/ice_sims/vending/dispense.py` — `execute_profile` and the per-mechanism runners (`_run_bagged_ice`, `_run_water_fill`, `_pump_water_pulses`, `_publish_fill_pulses`, accessory span/lag handling, `_RunContext`). Talks to the board through a narrow port, not the simulator class. The port is everything the dispense code touches on `self` today (`vending_machine.py:670-1196`: `set_hw`, `publish`, `_publish_current`, `sleep`, `_spawn_background`, `active_fault_names`, `subsystem_name`):
   ```python
   class BoardPort(Protocol):
+      subsystem_name: str
       async def set_hw(self, device: str, state: bool) -> None: ...
-      async def publish(self, topic: str, payload: BaseModel) -> None: ...
+      async def publish(self, topic_suffix: str, payload: BaseModel) -> None: ...
+      async def publish_current(self, channel: str, amps: float) -> None: ...  # removed in Task 10
       async def sleep(self, seconds: float) -> None: ...
+      def spawn(self, coro: Coroutine[Any, Any, None]) -> asyncio.Task: ...   # sim._spawn_background
       def active_faults(self) -> set[str]: ...
   ```
-  The simulator does **not** implement this itself: `ESP32Simulator.publish(client, topic, payload)` (`base.py:244`) and `set_hw(client, device, state)` are called with a client by the heartbeat, capabilities, alert and fault-callback paths, so their signatures stay. Instead a small adapter in `simulator.py`, `_Board(sim, client)`, implements `BoardPort` — forwarding to `sim.set_hw(client, ...)`, `sim.publish(client, ...)`, `sim.sleep(...)` and `sim.active_fault_names` — and the dispense and customer handlers build one per call.
+  The simulator does **not** implement this itself: `ESP32Simulator.publish(client, topic_suffix, payload)` (`base.py:244`) and `set_hw(client, device, state)` are called with a client by the heartbeat, capabilities, alert and fault-callback paths, so their signatures stay. Instead a small adapter in `simulator.py`, `_Board(sim, client)`, implements `BoardPort` by forwarding, and the dispense and customer handlers build one per call. `_Board` is **stateless**.
+- **Cross-run state lives on a long-lived object, never on `_Board` or `_RunContext`:**
+  ```python
+  class Dispenser:
+      def __init__(self) -> None: ...         # owns pending_lag_off: dict[str, asyncio.Task]
+      async def execute_profile(self, board: BoardPort, cmd: DispenseCommand, ...) -> ...: ...
+  ```
+  The simulator builds **one** `Dispenser` in `__init__` and passes a fresh `_Board` to each call. `_pending_lag_off` moves onto it unchanged: the Copilot C4 fix (PR #32) depends on a new run finding and cancelling a *previous* run's lag-off for the same channel, so the dict must outlive any single `execute_profile` call. A test pins this: two back-to-back runs on the same `Dispenser`, each through its own `_Board`, where the second run's accessory is not switched off by the first run's lag.
 - Create: `packages/sims/src/ice_sims/vending/customer.py` — the customer loop and arrival-rate helpers (`_arrival_factor`, `_compute_idle_time`); takes the button ids and a `BoardPort`, reads nothing else.
 - Create: `packages/sims/src/ice_sims/vending/faults.py` — `vending_fault_defs(sim) -> list[FaultDef]`: every `FaultDef` and its activate/recover callbacks, **moved unchanged** (same bodies, same `sim.set_hw(client, ...)` calls). Callbacks that act on model state arrive with the models in Task 11, not here.
 - Create: `packages/sims/src/ice_sims/vending/ha.py` — `ha_discovery_entities(channels) -> list[dict]` (today's hard-coded entities unchanged in this task).
 - Create: `packages/sims/src/ice_sims/vending/simulator.py` — `VendingMachineSimulator(ESP32Simulator)` plus the `_Board` adapter: composes the above, registers commands and faults, runs the loops. Owns publishing and the `_hw` dict; holds no sequencing or physics logic itself.
 - Modify: `packages/sims/src/ice_sims/vending_machine.py` → thin entry module: re-exports `VendingMachineSimulator`, `HARDWARE_DEVICES`, `SENSOR_PUBLISH_INTERVAL` and keeps `if __name__ == "__main__": ESP32Simulator.entry_point(VendingMachineSimulator)`, so `docker-compose.yml:96`, the CI smoke import (`ci.yml:146`), `ice_sims/__main__.py` and `tests/edge/web/test_routes_tests.py:1338` keep working unchanged.
-- Create: `tests/async_helpers.py` — move `settle` and `patch_module_sleep` here from `tests/fakes.py` (which imports `ice_edge.app.machine` at l.42, so any simulator test importing `tests.fakes` pulls in edge code); `tests/fakes.py` re-exports both so edge tests are untouched. Simulator tests import from `tests.async_helpers`.
-- Create: `tests/meta/test_test_isolation.py` — parses every `tests/sims/**/*.py` with `ast`, follows `tests.*` imports transitively, and fails if any reachable module imports `ice_edge`; the same walk over `tests/edge/**` fails on `ice_sims`. Allowlist (shrink-only, like the private-access budget): `tests/sims/test_simulator_vending.py` until Task 10 and `tests/edge/web/test_routes_tests.py` until Task 12.
-- Test: `tests/sims/test_simulator_vending.py` (patch targets and helper imports only); new `tests/sims/test_vending_channels.py`, `tests/sims/test_vending_dispense.py` (moved/split tests as convenient)
+- Create: `tests/async_helpers.py` — move `settle`, `patch_module_sleep` **and the `_AsyncioWithSleep` proxy it builds** (`tests/fakes.py:297`) here from `tests/fakes.py`. `tests/fakes.py` imports `ice_edge.app.machine` (l.42) and `tests.dispenser_fixtures` (l.44, which imports `ice_edge.vend.dispensers`), so any simulator test that imports `tests.fakes` pulls in edge code. `tests/fakes.py` re-exports all three, so edge tests are untouched. Imports: stdlib only.
+- Create: `tests/repo_root.py` — move `_repo_root`, `REPO_ROOT` and `TESTS_ROOT` here from `tests/paths.py`. `tests/paths.py` imports `ice_edge.sale.vmc` and `ice_edge.web.routes` (l.7-8) and re-exports both names, so its other importers are untouched. Imports: `pathlib` only.
+- Modify: every simulator test that reaches edge code through a helper — `tests/sims/test_simulator_base.py:17` (`settle`) and `tests/sims/test_simulator_mdb.py:8` (`patch_module_sleep`) import from `tests.async_helpers`; `tests/sims/test_simulator_vending.py` l.30 imports from `tests.async_helpers` and l.31 imports `REPO_ROOT` from `tests.repo_root`. After this task, `tests/sims/test_simulator_vending.py` reaches `ice_edge` only through its own l.26 and l.29 imports, which Task 10 removes.
+- Create: `tests/meta/test_test_isolation.py` — parses every `tests/sims/**/*.py` with `ast`, follows `tests.*` imports transitively, and fails if any reachable module imports `ice_edge`; the same walk over `tests/edge/**` fails on `ice_sims`. Allowlist (shrink-only, like the private-access budget): `tests/sims/test_simulator_vending.py` until Task 10 and `tests/edge/web/test_routes_tests.py` until Task 12. The walk follows import statements only. `tests/conftest.py` still imports `ice_edge` at run time for every test, and that is out of scope: the rule is that no simulator test *names* edge code, not that edge code is never loaded.
+- Modify: `tests/private_access_budget.py` — moving tests out of `tests/sims/test_simulator_vending.py` (budget 53) lowers its count, and the ratchet fails under budget as well as over. Set each touched file to its new count from `uv run python tests/meta/test_no_private_access.py`. A new file starts at an implicit budget of 0, so a moved test that reaches `sim._x` must either switch to a public seam (`sim.sleep`, `sim.active_fault_names`, the `Dispenser`) or carry a `# private: <reason>` marker. Do not add a new file to `BUDGET` with a non-zero count.
+- Test: `tests/sims/test_simulator_vending.py`, `test_simulator_base.py`, `test_simulator_mdb.py` (patch targets and helper imports only); new `tests/sims/test_vending_channels.py`, `tests/sims/test_vending_dispense.py` (moved/split tests as convenient)
 
 **Interfaces:**
-- Patch points: tests that patch `ice_sims.vending_machine`'s module `sleep`/`logger` (`test_simulator_vending.py` l.374, 394-395, 428) move to the `sim.sleep` seam or to the module that now calls it. Prefer `sim.sleep`; patching a module global in the wrong module would silently stop working.
+- Patch points. Every test that patches a module global of `ice_sims.vending_machine` must move, because after the split the thin entry module calls nothing, so the patch applies to nothing. It does not fail cleanly: a real `asyncio.sleep` (the 10 s sensor loop, the 30–90 s customer idle) hangs the test, and a patched `logger` makes the assertion vacuous. The full list in `tests/sims/test_simulator_vending.py`: `patch_module_sleep("ice_sims.vending_machine", …)` at l.374, 394, 428, 1351, 1371, and `patch("ice_sims.vending_machine.logger")` at l.395. Retarget each one to the module that now makes the call (`ice_sims.vending.simulator` for the sensor loop and `_handle_water_valve`, `ice_sims.vending.customer` for the customer loop), or switch it to `sim.sleep`. Afterwards, `grep -rn '"ice_sims.vending_machine' tests` prints only import lines.
 - `dispense.py`, `customer.py`, `channels.py`, `ha.py` do not import `simulator.py` (one direction only: `simulator → others`). Add a test that asserts this with `ast` over the package, like `tests/meta/test_routes_shape.py` does for routes.
 
-- [ ] **Step 1: Write the structural tests** — `channels.CHANNELS`, `HARDWARE_DEVICES` and `BUTTON_CHANNELS` equal today's values (snapshot them from the current module before moving); the in-package import-direction test; the test-isolation meta test (with its two-entry allowlist); `dispense.execute_profile` runs a profile against a fake `BoardPort` (a list recorder plus a no-op sleep) and yields the same `set_hw`/publish sequence the class-level test sees today; the simulator's `dispense` command handler drives `execute_profile` through a `_Board`.
+- [ ] **Step 1: Write the structural tests** — `channels.CHANNELS`, `HARDWARE_DEVICES` and `BUTTON_CHANNELS` equal today's values (snapshot them from the current module before moving); the in-package import-direction test; the test-isolation meta test (with its two-entry allowlist); `Dispenser.execute_profile` runs a profile against a fake `BoardPort` (a list recorder, a no-op sleep and a `spawn` that records tasks) and yields the same `set_hw`/publish sequence the class-level test sees today; the simulator's `dispense` command handler drives its one `Dispenser` through a fresh `_Board`; the back-to-back lag-off test above; the private-access ratchet passes with the updated budgets.
 - [ ] **Step 2: Move the code.** No behaviour, timing or message change. `git diff --stat` should be dominated by moves.
 - [ ] **Step 3: Full suite green**; `uv run python -c "import ice_sims.vending_machine"` exits 0; `uv run python -m ice_sims.vending_machine --help` still prints usage.
 - [ ] **Step 4: Commit** — `refactor(sims): split the vending simulator into channel, dispense, customer, fault and HA modules`
@@ -373,7 +391,7 @@ Today one 1309-line class holds the channel table, fault registrations, profile 
 **Interfaces:**
 - Channel set, kinds and `driven_by` exactly as spec §5.1 (inputs, outputs, counter `fill_pulses`, temperature `ambient`). `HARDWARE_DEVICES` holds every binary channel with its idle default: `water_pressure_ok=True`, everything else `False`. All derived from the one table.
 - **Declared-channel enforcement** (a real board cannot drive a channel it does not have): before any motion, `execute_profile` checks `drive_channels(profile)` ⊆ declared outputs and `sense_channels(profile)` ⊆ declared inputs/counters. On a miss it publishes a terminal `error` `DispenserStatus` naming the channel, drives nothing, and the command completes as failed. The edge's capability cross-check (`CFG-101`) stops such a profile from ever being sent, so this path is defensive and never seen in normal flow.
-- Bagged ice honours all three release variants; for `ReleaseByCatch` the catch channel is set `True` before the agitate step and `False` at release, then the step waits `drop_seconds`; any failure path sets it `False`. Current sense is `unmonitored` (no current telemetry published).
+- Bagged ice honours all three release variants; for `ReleaseByCatch` the catch channel is set `True` before the agitate step and `False` at release, then the step waits `drop_seconds`; any failure path sets it `False`. Current sense is `unmonitored` (no current telemetry published), so `BoardPort.publish_current` and its `_Board` forward are deleted.
 - Water fill counts `fill_pulses` against the profile target; it no longer publishes a binary flow-sensor `hardware/io` message.
 - Fault injection: remove `door_stuck_open` and `bag_drop_solenoid_stuck`; `ice_bin_empty` makes the fill run to its max time and report `bin_empty`, touching no bin channel.
 - `ha.ha_discovery_entities(channels)` derives binary entities from the binary rows and a temperature entity from `ambient`.
@@ -400,7 +418,7 @@ Today one 1309-line class holds the channel table, fault registrations, profile 
 - Create: `packages/sims/src/ice_sims/vending/ro_tank.py` (pure model)
 - Create: `packages/sims/src/ice_sims/vending/climate.py` (pure model; replaces the cabinet-temperature/heater code in the sensor loop)
 - Modify: `packages/sims/src/ice_sims/vending/simulator.py` (sensor loop: tick the models, publish their changes; the static inputs)
-- Modify: `packages/sims/src/ice_sims/vending/dispense.py` (a completed water vend calls `ro_tank.draw(volume)` through a port method, not by touching tank state)
+- Modify: `packages/sims/src/ice_sims/vending/dispense.py` (a completed water vend calls `await board.draw_water(gallons)`, a new `BoardPort` method; it never touches tank state). `_Board.draw_water` calls `sim.ro_tank.draw(gallons)` and publishes the returned changes on `hardware/io/<id>`.
 - Modify: `packages/sims/src/ice_sims/vending/faults.py` (five new injections)
 - Test: `tests/sims/test_vending_ro_tank.py`, `tests/sims/test_vending_climate.py` (new, synchronous), `tests/sims/test_simulator_vending.py`
 
@@ -414,7 +432,9 @@ Today one 1309-line class holds the channel table, fault registrations, profile 
       level_gal: float
       fill_blocked: bool = False      # ro_tank_empty injection
       fill_stuck: bool = False        # ro_fill_stuck injection: pump on, level does not rise
+      cutoff_latched: bool = False    # firmware max-run cutoff tripped; pump held off
       def tick(self) -> dict[str, bool]: ...   # ro_production / ro_tank_full / ro_tank_empty that changed
+      def reset_cutoff(self) -> None: ...      # clears the latch and the run-tick count
       def draw(self, gallons: float) -> dict[str, bool]: ...
       def outputs(self) -> dict[str, bool]: ... # current values, for the periodic re-publish
 
@@ -423,12 +443,13 @@ Today one 1309-line class holds the channel table, fault registrations, profile 
       ambient_c: float; heater_on_below_c: float = 5.0; heater_off_above_c: float = 10.0
       def tick(self, drift_c: float) -> dict[str, bool]: ...   # heater_power if it changed
   ```
-  `RoTank.tick`: `ro_production` on while below full and run-ticks under the max, off otherwise (at the max the run stops until the level drops below full again); `ro_tank_full`/`ro_tank_empty` follow the level. Keys are `VendingChannel` values. The simulator passes `random.gauss(0, 0.3)` as `drift_c`, so `Climate` itself is deterministic.
+  `RoTank.tick`: `ro_production` on while below full and not `cutoff_latched`, off otherwise; `ro_tank_full`/`ro_tank_empty` follow the level. Run ticks count consecutive ticks with the pump on and reset whenever it turns off. When the count reaches `max_run_ticks` the pump turns off and `cutoff_latched` is set (a field, default `False`). A latched pump stays off on every later `tick`, even below full, which is what a stuck fill that never reached full needs. The latch clears only through `reset_cutoff()`. The simulator calls `reset_cutoff()` when the `ro_fill_stuck` injection recovers, standing in for a technician's power cycle. `draw` never clears it.
+  Limit ordering: the default `max_run_ticks × SENSOR_PUBLISH_INTERVAL` is **longer** than the edge's default `ro_max_run_seconds` (3600 s), e.g. 400 ticks × 10 s = 4000 s, so the edge's `ro_overrun` fires before the board's cutoff (Task 8). A test asserts `max_run_ticks * SENSOR_PUBLISH_INTERVAL > PhysicalDetails().ro_max_run_seconds`. That test imports `ice_common` only, which simulator tests are allowed to do. Keys are `VendingChannel` values. The simulator passes `random.gauss(0, 0.3)` as `drift_c`, so `Climate` itself is deterministic.
 - Simulator: each sensor tick publishes the models' changes on `hardware/io/<id>`, `ambient` on `sensors/temp/ambient`, and re-publishes `water_pressure_ok`, `sump_high`, `service_door` and the RO outputs on the periodic re-publish today's code does for retained state.
-- New fault injections in `faults.py` (same registration pattern as existing ones), each flipping model or input state and recovering it: `ro_tank_empty` (level to 0, `fill_blocked`), `low_pressure` (`water_pressure_ok=False`), `sump_high`, `service_door_open`, `ro_fill_stuck` (`fill_stuck` — the edge's `ro_overrun` detects it).
+- New fault injections in `faults.py` (same registration pattern as existing ones), each flipping model or input state and recovering it: `ro_tank_empty` (level to 0, `fill_blocked`), `low_pressure` (`water_pressure_ok=False`), `sump_high`, `service_door_open`, `ro_fill_stuck` (`fill_stuck`; recovery clears it and calls `reset_cutoff()`. The edge's `ro_overrun` raises WTR-107 before the board's cutoff, and WTR-107 stays active until `ro_tank_full`).
 
 - [ ] **Step 1: Write failing tests**
-  - `RoTank` (plain sync tests): from empty, ticking turns `ro_production` on, then `ro_tank_full` true and `ro_production` off; `draw` past empty sets `ro_tank_empty` true; with small `max_run_ticks` and `fill_stuck`, `ro_production` turns off at the limit; `tick` returns only changed keys.
+  - `RoTank` (plain sync tests): from empty, ticking turns `ro_production` on, then `ro_tank_full` true and `ro_production` off; `draw` past empty sets `ro_tank_empty` true; with small `max_run_ticks` and `fill_stuck`, `ro_production` turns off at the limit and **stays off** on further ticks below full; `draw` does not restart it; `reset_cutoff()` does; the default limit-ordering assertion above; `tick` returns only changed keys.
   - `Climate`: drift below 5 °C turns `heater_power` on; above 10 °C off; between, no change.
   - Simulator: a completed water vend lowers the tank by the profile volume; each new fault's activate/recover publishes the expected `hardware/io` states.
 - [ ] **Step 2: Run; expect failures.**
@@ -444,8 +465,8 @@ Today one 1309-line class holds the channel table, fault registrations, profile 
 - Create: `tests/integration/test_im600xl_capabilities.py` — the one place simulator and edge code meet (no broker needed, so it never skips)
 - Move: the simulator-backed test in `tests/edge/web/test_routes_tests.py` (l.1326-1350, which builds all three simulators' `build_capabilities().commands`) into `tests/integration/test_simulator_commands.py`; remove the last test-isolation allowlist entry
 - Modify: `tests/integration/test_integration_e2e.py` (ice and water sale with the IM600XL capabilities)
-- Modify: `CLAUDE.md` — vending contract 2.0.0 (Fault Codes section, including `WTR-105` re-scoped to machine/`warning` and the rule that input-driven faults never lock a product), `VendingChannel`/`INPUT_FAULTS`, timer labels now eight (`ice_retry_cooldown`, `ro_overrun`), `warn_if_no_buttons`, `Product.button` and named `ButtonPress`, `IceRetry`, `InputFaults`, `FaultService.subscribe_fault_change`, `TelemetryRouter.subscribe_capabilities`/`subscribe_hardware_io`, `Availability.bin_instrumented`, two new `physical` config fields, the `ice_sims.vending` module split and simulator channel set, and the isolation rule that simulator tests never import `ice_edge`
-- Modify: `docs/hardware/im600xl-io-list.md` §7 — mark each divergence resolved, linking the spec
+- Modify: `CLAUDE.md` — vending contract 2.0.0 (Fault Codes section, including `WTR-105` re-scoped to machine/`warning` and the rule that input-driven faults never lock a product), `VendingChannel`/`INPUT_FAULTS`, timer labels now eight (`ice_retry_cooldown`, `ro_overrun`), `warn_if_no_buttons`, `Product.button` and named `ButtonPress`, WTR-107 semantics (raised by the edge's `ro_overrun`, survives pump-off, cleared by `ro_tank_full` or an operator) and the deployment rule that firmware's RO cutoff must be longer than `physical.ro_max_run_seconds`, `IceRetry`, `InputFaults`, `FaultService.subscribe_fault_change`, `TelemetryRouter.subscribe_capabilities`/`subscribe_hardware_io`, `Availability.bin_instrumented`, two new `physical` config fields, the `ice_sims.vending` module split and simulator channel set, and the isolation rule that simulator tests never import `ice_edge`
+- Modify: `docs/hardware/im600xl-io-list.md` §7 — mark each divergence resolved, linking the spec; in the RO fill row (§5), state that the firmware cutoff must be longer than the edge's `ro_max_run_seconds` and latches until power cycle
 - Modify: `ROADMAP.md` §3 — `water_pressure_ok`, `no_leak` (sump), RO tank now instrumented; bin level not instrumented on this machine
 - Modify: `docs/OVERVIEW.md` — link the spec under Simulators
 
