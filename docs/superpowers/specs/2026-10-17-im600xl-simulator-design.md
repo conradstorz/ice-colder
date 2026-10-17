@@ -163,8 +163,8 @@ Declared exactly as the I/O list's channel-id column:
 ## 6. Profiles and generated reference
 
 `dispensers_doc.py` sample values and the regenerated `dispensers.example.toml` describe the IM600XL:
-slot 1 bagged ice (`IceFillBySensor` on `auger_motor`/`bag_full_sensor`, agitate on `agitator_motor`,
-`ReleaseByCatch` on `trap_door_catch`, accessory `bag_fan`), slots 2 and 3 water 1 gal and 5 gal
+slot 0 bagged ice (`IceFillBySensor` on `auger_motor`/`bag_full_sensor`, agitate on `agitator_motor`,
+`ReleaseByCatch` on `trap_door_catch`, accessory `bag_fan`), slots 1 and 2 water 1 gal and 5 gal
 (`WaterFillByVolume` on `water_valve_solenoid`/`fill_pulses`). The example `config.json` products get
 matching `button` values.
 
