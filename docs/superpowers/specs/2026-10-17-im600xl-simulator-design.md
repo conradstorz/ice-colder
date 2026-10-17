@@ -22,8 +22,15 @@ inputs it does have.
 | D3 | How a named button selects a product | **Catalog field.** `Product.button` names a button channel id; the board reports the channel id; the edge looks the product up. |
 | D4 | Trap-door catch (energized = hold) | A new bagged-ice release variant, `ReleaseByCatch`. |
 | D5 | Sump high | Reports `WTR-104` (leak/overflow). It is critical and in `PAYMENT_BLOCKING_FAULTS`, so a flooded sump stops all sales. |
-| D6 | RO tank empty | New `WTR-106`, water products unavailable, does not block payment. |
+| D6 | RO tank empty | New `WTR-106`, a machine-scope **warning** (alert only). Water sales are blocked by the `ro_tank_ok` availability row, not by a product lockout. Does not block payment. |
 | D7 | RO production overrun | New `WTR-107`, warning only. |
+| D8 | Low water pressure | Existing `WTR-105` is re-scoped from product/`product_unavailable` to machine/`warning`. Water sales are blocked by the `water_pressure_ok` row. |
+
+**Why D6/D8 are machine-scope alerts.** `FaultRegistry.lockouts` holds one code per sku: `raise_fault` overwrites
+a different code and `clear_fault(sku)` removes whatever code is there. Input-driven product lockouts would
+overwrite a vend-failure lockout (e.g. `WTR-101`) and then unlock the sku when the input recovered, with the
+original fault unresolved. Input-driven faults therefore never touch product lockouts; the availability rows
+(§4.3) do the blocking, and the faults only alert.
 
 ## 3. Contract (`ice_contracts.board`, vending-machine **1.0.0 → 2.0.0**)
 
@@ -57,11 +64,14 @@ drive/sense conflict check, and `drop_seconds` counts toward `worst_case_seconds
 
 | Code | Severity | Scope | Description | Payment-blocking |
 |---|---|---|---|---|
-| `WTR-106` (new) | `product_unavailable` | product | RO storage tank empty | No |
+| `WTR-105` (changed) | `warning` (was `product_unavailable`) | machine (was product) | Water pressure or treatment status failed | No |
+| `WTR-106` (new) | `warning` | machine | RO storage tank empty | No |
 | `WTR-107` (new) | `warning` | machine | RO production ran past its maximum time without the tank reporting full | No |
 
 `OUTCOME_FAULTS[("water_fill", bin_empty)]` changes from `ICE-101` to `WTR-106`. `PAYMENT_BLOCKING_FAULTS`
 is unchanged (seven codes). Existing codes take on these inputs: sump → `WTR-104`, low pressure → `WTR-105`.
+A water vend reporting `bin_empty` therefore raises a machine-scope warning and locks no product; the next
+water sale is blocked only if the board reports `ro_tank_empty`.
 Low ambient temperature uses the existing health-monitor temperature alert; wiring `ENV-101` is out of scope.
 
 ### 3.4 Docs
@@ -115,12 +125,14 @@ clears the faults itself** from the same `hardware/io` transitions, through `Fau
 | Input | Fault | Scope handling |
 |---|---|---|
 | `sump_high` true | `WTR-104` | machine |
-| `water_pressure_ok` false | `WTR-105` | product: every `kind == "water"` sku |
-| `ro_tank_empty` true | `WTR-106` | product: every `kind == "water"` sku |
+| `water_pressure_ok` false | `WTR-105` | machine (alert; the `water_pressure_ok` row blocks water) |
+| `ro_tank_empty` true | `WTR-106` | machine (alert; the `ro_tank_ok` row blocks water) |
 | `ro_production` on longer than `physical.ro_max_run_seconds` (default 3600) | `WTR-107` | machine; cleared when `ro_production` next turns off |
 
 The fault clears when the input recovers; a `hardware`-raised fault is never cleared by recovery of a
-different input. `WTR-107` is detection only: stopping the RO pump at its limit is the board's job (§5.2).
+different input. All four are machine-scope, so no input ever raises or clears a product lockout. A
+`WTR-106` raised by a water vend's `bin_empty` outcome (§3.3) is cleared by the next `ro_tank_empty`
+false report, or by an operator. `WTR-107` is detection only: stopping the RO pump at its limit is the board's job (§5.2).
 `ConfigModel.physical` gains `ro_max_run_seconds: float = 3600` (60–86400).
 
 ## 5. Simulator (`ice_sims.vending_machine`)
@@ -171,6 +183,10 @@ matching `button` values.
 ## 7. Error handling
 
 - A `ButtonPress` with an unknown or unassigned button: refused with a journal line; the sale is unaffected.
+- An existing `config.json` with no `button` on any product (every deployment before 2.0.0): the edge logs a
+  startup warning naming the problem, and presses select nothing until the operator sets each product's
+  Button. There is no automatic positional migration, because the old index order is not a reliable mapping to
+  the IM600XL's named buttons.
 - A `dispensers.toml` naming a removed channel: today's capability cross-check reports it (`CFG-101` for
   that slot) — no new path.
 - A catch-release ice vend that times out in fill: `bin_empty`/`timeout` outcome as today; the board
@@ -184,8 +200,9 @@ matching `button` values.
 - **Edge:** button → product lookup (hit, unknown, duplicate rejected in config); test sale still selects
   by product; `ice_available` not instrumented when the board lacks `bin_half_full`; `ice_retry_cooldown`
   fires and clears via `FakeTaskRunner`, re-raise re-arms, operator clear cancels; the three new
-  `set_hardware_io` devices drive their rows and gates; each §4.3 input raises and clears its fault, water
-  codes land on every water sku and no other; `ro_production` held on past `ro_max_run_seconds` raises
+  `set_hardware_io` devices drive their rows and gates; each §4.3 input raises and clears its machine-scope
+  fault and touches no product lockout (a pre-existing vend-failure lockout survives the input's raise and
+  recovery); `ro_production` held on past `ro_max_run_seconds` raises
   `WTR-107` and turning it off clears it.
 - **Simulator:** exact channel list and `driven_by` map; catch energized before agitate and released at
   drop; water vend pulse count and tank drain; RO loop fill and its run-time cutoff; each new fault injection;
@@ -195,7 +212,7 @@ matching `button` values.
 
 ## 9. Documentation updates
 
-`CLAUDE.md` (contract version, timer labels now seven, fault codes, simulator channels, buttons);
+`CLAUDE.md` (contract version, timer labels now eight, fault codes, simulator channels, buttons);
 the I/O list §7 (divergences resolved); `ROADMAP.md` §3 (rows now instrumented).
 
 ## 10. Out of scope
