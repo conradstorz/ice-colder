@@ -4,7 +4,13 @@
 
 **Goal:** Make the vending simulator, the vending board contract and the edge match the real Kooler Ice IM600XL I/O list.
 
-**Architecture:** Contract first (new release variant, fault codes, named buttons, 2.0.0), then the edge learns to run without a bin sensor and to derive water faults from `hardware/io`, then the simulator is rebuilt on the IM600XL channel set, then generated references and docs follow. Each task leaves `uv run pytest` green.
+**Architecture:** Contract first (new release variant, fault codes, well-known input channels, named buttons, 2.0.0), then the IM600XL dispenser fixtures (so nothing downstream leans on removed channels), then the edge learns to run without a bin sensor and to derive water faults from `hardware/io` through small single-purpose collaborators, then the simulator is split into isolated modules **before** it is rebuilt on the IM600XL channel set, then cross-checks and docs follow. Each task leaves `uv run pytest` green.
+
+**Isolation principle (applies to every task).** One concern per module, one module per task where possible:
+- The only code the simulator and the edge share is `ice_contracts`. A channel id that carries edge semantics is a contract constant, never a string literal repeated on both sides.
+- Simulator physical models (RO tank, climate) are pure: no MQTT, no `sleep`, no `_hw` dict. The simulator class composes them and owns publishing.
+- Simulator tests import `ice_contracts`, `ice_common`, `ice_sims` and edge-free test helpers only — never `ice_edge`, directly or through a `tests.*` helper. Edge tests never import `ice_sims`. A check that needs both sides (simulator capabilities × edge validation) lives in `tests/integration/`. Both directions are enforced by an import-following meta test (Task 9), not by grep.
+- Edge timer policies (`ice_retry_cooldown`, `ro_overrun`) are separate collaborators in `ice_edge.faults`, peers of each other; `FaultService` keeps fault state and its side effects, and gains only a generic observer hook.
 
 **Tech Stack:** Python 3.12, Pydantic v2, asyncio, aiomqtt, FastAPI/Jinja/HTMX, pytest, uv.
 
@@ -16,8 +22,8 @@
 
 - Vending-machine `CONTRACT_VERSION` goes **1.0.0 → 2.0.0** (Task 2). Ice-maker-monitor and edge-cloud contracts are untouched.
 - `PAYMENT_BLOCKING_FAULTS` stays **seven** codes; `WTR-105`, `WTR-106` and `WTR-107` are not members.
-- Input-driven faults (`WTR-104`..`WTR-107`) are all **machine-scope** and never raise or clear a product lockout. `FaultRegistry.lockouts` holds one code per sku (`raise_fault` overwrites, `clear_fault(sku)` pops whatever is there), so an input-driven product lockout would clobber a vend-failure lockout and then unlock it on recovery. Water sales are blocked by the availability rows (Task 4), not by lockouts (spec D6/D8).
-- Channel ids match `CHANNEL_ID_PATTERN = r"^[a-z0-9_]{1,64}$"`.
+- Input-driven faults (`WTR-104`..`WTR-107`) are all **machine-scope** and never raise or clear a product lockout. `FaultRegistry.lockouts` holds one code per sku (`raise_fault` overwrites, `clear_fault(sku)` pops whatever is there), so an input-driven product lockout would clobber a vend-failure lockout and then unlock it on recovery. Water sales are blocked by the availability rows (Task 6), not by lockouts (spec D6/D8).
+- Channel ids match `CHANNEL_ID_PATTERN = r"^[a-z0-9_]{1,64}$"`. Ids with edge meaning come from `ice_contracts.board.vending_machine.VendingChannel` (Task 1); no new string literal for them in `ice_edge` or `ice_sims`.
 - New config fields: `physical.ice_retry_cooldown_seconds: float = 1800` (60–86400), `physical.ro_max_run_seconds: float = 3600` (60–86400).
 - New timer labels: `ice_retry_cooldown`, `ro_overrun` (fired in tests with `runner.fire(label)` on `FakeTaskRunner`). No wall-clock waits in tests.
 - Tests and routes never touch `_private` attributes of `vmc`/`machine`; new test files have a private-access budget of 0 (`tests/meta/test_no_private_access.py`). `tests/meta/test_vmc_complexity.py` budgets for `vmc.py` must not be exceeded — keep new logic out of `vmc.py` where possible.
@@ -31,29 +37,37 @@
 | File | Change |
 |---|---|
 | `packages/contracts/src/ice_contracts/board/dispenser_schema.py` | `ReleaseByCatch` |
-| `packages/contracts/src/ice_contracts/board/vending_machine.py` | `WTR-105` re-scoped, `WTR-106`, `WTR-107`, `OUTCOME_FAULTS`, version 2.0.0 |
+| `packages/contracts/src/ice_contracts/board/vending_machine.py` | `WTR-105` re-scoped, `WTR-106`, `WTR-107`, `OUTCOME_FAULTS`, `VendingChannel`, `INPUT_FAULTS`, version 2.0.0 |
 | `packages/contracts/src/ice_contracts/board/mqtt_messages.py` | `ButtonPress.button: str` |
 | `docs/contracts/vending-machine/CONTRACT.md` + `schemas/` | 2.0.0 section, regenerated |
 | `packages/edge/src/ice_edge/vend/dispensers.py`, `dispensers_doc.py` | catch channel in cross-checks; IM600XL sample |
 | `packages/common/src/ice_common/config_model.py` | `Product.button`, two `physical` fields |
 | `packages/edge/src/ice_edge/sale/vmc.py`, `sale_journal.py` | button lookup, select by product |
 | `packages/edge/src/ice_edge/web/routes/products/catalog.py`, `packages/ui/src/ice_ui/templates/product_form.html`, `product_catalog.html` | Button field |
+| `packages/edge/src/ice_edge/hal/mqtt_inbound.py` | `TelemetryRouter` subscriber lists for capabilities and hardware IO |
 | `packages/edge/src/ice_edge/faults/availability.py` | bin-instrumented flag, three rows |
-| `packages/edge/src/ice_edge/faults/fault_service.py` | `ice_retry_cooldown` |
+| `packages/edge/src/ice_edge/faults/fault_service.py` | `subscribe_fault_change` observer hook only |
+| `packages/edge/src/ice_edge/faults/ice_retry.py` (new) | `IceRetry`: `ice_retry_cooldown` policy |
 | `packages/edge/src/ice_edge/faults/input_faults.py` (new) | `InputFaults`: `hardware/io` → WTR-104/105/106/107 |
-| `packages/edge/src/ice_edge/hal/mqtt_inbound.py`, `packages/edge/src/ice_edge/app/machine.py` | wiring |
-| `packages/sims/src/ice_sims/vending_machine.py` | IM600XL channels and behaviour |
+| `packages/edge/src/ice_edge/app/machine.py` | wiring only |
+| `packages/sims/src/ice_sims/vending/` (new package) | `channels`, `dispense`, `customer`, `faults`, `ro_tank`, `climate`, `simulator` |
+| `packages/sims/src/ice_sims/vending_machine.py` | becomes the thin entry module (`python -m ice_sims.vending_machine`, compose, CI smoke import) |
 | `dispensers.example.toml`, `config.example.json`, `tests/dispenser_fixtures.py` | IM600XL samples |
+| `tests/sims/vending_profiles.py` (new) | simulator-local profile fixtures (contract models only) |
+| `tests/integration/test_im600xl_capabilities.py` (new) | simulator capabilities × edge validation cross-check |
+| `tests/async_helpers.py` (new) | edge-free `settle`/`patch_module_sleep`, re-exported by `tests/fakes.py` |
+| `tests/meta/test_test_isolation.py` (new) | import-following check: `tests/sims` ↛ `ice_edge`, `tests/edge` ↛ `ice_sims` |
 | `CLAUDE.md`, `docs/hardware/im600xl-io-list.md`, `ROADMAP.md` | docs |
 
 ---
 
-### Task 1: `ReleaseByCatch` and water fault codes (contract, additive)
+### Task 1: Contract additions — `ReleaseByCatch`, water fault codes, well-known input channels
 
 **Files:**
 - Modify: `packages/contracts/src/ice_contracts/board/dispenser_schema.py` (release union near l.245; `drive_channels`, `sense_channels`, `worst_case_seconds` helpers)
-- Modify: `packages/contracts/src/ice_contracts/board/vending_machine.py` (`FaultCode`, `FAULT_TABLE`, `OUTCOME_FAULTS` l.346-357)
+- Modify: `packages/contracts/src/ice_contracts/board/vending_machine.py` (`FaultCode`, `FAULT_TABLE`, `OUTCOME_FAULTS` l.346-357; new `VendingChannel`, `InputFault`, `INPUT_FAULTS`)
 - Modify: `packages/edge/src/ice_edge/vend/dispensers.py` only if its drive/sense/budget checks do not already go through the schema helpers
+- Modify: `packages/edge/src/ice_edge/faults/availability.py`, `packages/edge/src/ice_edge/hal/mqtt_inbound.py`: replace the existing `"bin_half_full"` literals with `VendingChannel.bin_half_full` (no behaviour change)
 - Regenerate: `docs/contracts/vending-machine/schemas/*.json`, `dispensers.example.toml` (only if the generator's output changes from the new variant's documentation)
 - Test: `tests/contracts/test_dispenser_schema.py`, `tests/contracts/test_contracts_vending.py`, `tests/edge/vend/test_dispensers_validation.py`
 
@@ -62,6 +76,28 @@
 - Produces: `FaultCode.WTR_106 = "WTR-106"` (`warning`, `Scope.machine`, "RO storage tank empty"), `FaultCode.WTR_107 = "WTR-107"` (`warning`, `Scope.machine`, "RO production overran its maximum run time"). `OUTCOME_FAULTS[("water_fill", DispenserOutcome.bin_empty)] == FaultCode.WTR_106`.
 - Changes: `FAULT_TABLE[WTR_105]` from `product_unavailable`/`Scope.product` to `warning`/`Scope.machine` (description unchanged). Nothing raises WTR-105 today (`grep -rn WTR_105 packages` finds only the table), so no caller changes.
 - Docstring of `ReleaseByCatch` states §3.2's MUSTs (energize before agitate, hold through fill, de-energize to drop, leave off between vends, de-energize on fault).
+- Produces (the single source for channel ids that carry edge semantics, so the simulator and the edge can never disagree on a string):
+  ```python
+  class VendingChannel(str, Enum):          # same enum style as FaultCode
+      bin_half_full = "bin_half_full"
+      sump_high = "sump_high"
+      water_pressure_ok = "water_pressure_ok"
+      ro_tank_empty = "ro_tank_empty"
+      ro_tank_full = "ro_tank_full"
+      ro_production = "ro_production"
+      service_door = "service_door"
+
+  @dataclass(frozen=True)
+  class InputFault:
+      channel: VendingChannel
+      faulted_when: bool       # the reported state that means "faulted"
+      code: FaultCode
+
+  INPUT_FAULTS: tuple[InputFault, ...]   # sump_high/True/WTR_104, water_pressure_ok/False/WTR_105,
+                                         # ro_tank_empty/True/WTR_106
+  ```
+  `ro_production`'s WTR-107 is a duration rule, not a state, so it is not in `INPUT_FAULTS` (Task 8 owns it). These are optional channels: a board that declares none of them is valid. Customer button ids are deliberately **not** here — they carry no edge meaning beyond the catalog mapping (Task 2).
+- `CONTRACT.md`: list `VendingChannel` and `INPUT_FAULTS` in the section Task 2 writes.
 
 - [ ] **Step 1: Write failing tests**
   - `ReleaseByCatch` parses from a `[slot.N.release]` table with `proof = "catch"`; rejects `drop_seconds` 0.4 and 30.1; rejects an extra field (strict model).
@@ -69,10 +105,11 @@
   - `validate_document` reports a drive/sense conflict when `catch_channel` equals the fill `sensor_channel`.
   - With capabilities declaring `trap_door_catch` as an `input`, `validate_document` reports a direction error for it.
   - `FAULT_TABLE` rows for WTR-105/WTR-106/WTR-107 are all `warning`/`Scope.machine`; none is in `PAYMENT_BLOCKING_FAULTS`; `len(PAYMENT_BLOCKING_FAULTS) == 7`; water `bin_empty` maps to WTR-106 and bagged-ice `bin_empty` still maps to ICE-101.
+  - Every `VendingChannel` value matches `CHANNEL_ID_PATTERN`; every `INPUT_FAULTS` code is `Scope.machine`; `INPUT_FAULTS` channels are unique.
 - [ ] **Step 2: Run them; expect failures** — `uv run pytest tests/contracts tests/edge/vend -q`
-- [ ] **Step 3: Implement** the variant, helper updates, codes and mapping. Update the existing assertion at `tests/contracts/test_contracts_vending.py:75` (water `bin_empty → ICE-101`). A water vend's `bin_empty` now raises a machine-scope warning and locks no product; update any VMC vend-failure test that expected that sku locked.
+- [ ] **Step 3: Implement** the variant, helper updates, codes, mapping and channel table. Update the existing assertion at `tests/contracts/test_contracts_vending.py:75` (water `bin_empty → ICE-101`). A water vend's `bin_empty` now raises a machine-scope warning and locks no product; update any VMC vend-failure test that expected that sku locked. `grep -rn '"bin_half_full"' packages/edge/src` prints nothing afterwards.
 - [ ] **Step 4: Regenerate** schemas and the dispenser example; run the full suite — all pass (schema drift tests included).
-- [ ] **Step 5: Commit** — `feat(contracts): ReleaseByCatch release variant and WTR-106/WTR-107`
+- [ ] **Step 5: Commit** — `feat(contracts): ReleaseByCatch, WTR-106/WTR-107, well-known vending input channels`
 
 ---
 
@@ -81,11 +118,11 @@
 **Files:**
 - Modify: `packages/contracts/src/ice_contracts/board/mqtt_messages.py:66-71` (`ButtonPress`)
 - Modify: `packages/contracts/src/ice_contracts/board/vending_machine.py` (`CONTRACT_VERSION = "2.0.0"`)
-- Modify: `docs/contracts/vending-machine/CONTRACT.md` (new "Semantics fixed in 2.0.0 (breaking)" section: §3.1–3.3 of the spec)
+- Modify: `docs/contracts/vending-machine/CONTRACT.md` (new "Semantics fixed in 2.0.0 (breaking)" section: §3.1–3.3 of the spec, plus Task 1's `VendingChannel`/`INPUT_FAULTS`)
 - Modify: `packages/common/src/ice_common/config_model.py` (`Product.button`; `PhysicalDetails` unique-button validator beside `_check_unique_slots` l.176)
 - Modify: `packages/edge/src/ice_edge/sale/vmc.py` (`on_button_press` l.272-276; `select_product` l.876-891; `begin_test_sale` l.819-820)
 - Modify: `packages/edge/src/ice_edge/sale/sale_journal.py` (replace `selection_refused_bad_index` with `selection_refused_unknown_button`)
-- Modify: `packages/sims/src/ice_sims/vending_machine.py`: add the three binary input channels `button_ice`, `button_water_1gal`, `button_water_5gal` to `_VENDING_CHANNELS` (additive; Task 7 reworks the rest of the list). `_customer_loop` (l.1246-1297) presses a random **declared** button — a binary `input` channel whose id starts with `button_` — and the indecisive second press picks a different declared button. It no longer reads the product catalog at all (drop `num_buttons`/`_pick_button`'s catalog dependency): a real board knows its buttons, not the edge's catalog, and a button the catalog does not map exercises the edge's unknown-button path (spec §5.2)
+- Modify: `packages/sims/src/ice_sims/vending_machine.py` — **minimum needed to keep the simulator valid against the new `ButtonPress`, nothing more** (the customer loop moves to its own module in Task 9): add a module-level `BUTTON_CHANNELS = ("button_ice", "button_water_1gal", "button_water_5gal")`, declare each as a binary `input` in `_VENDING_CHANNELS`, and make `_customer_loop` press a random id from `BUTTON_CHANNELS` (the indecisive second press picks a different one). Drop `num_buttons`/`_pick_button` and the loop's catalog reload: a real board knows its buttons, not the edge's catalog, and a button the catalog does not map exercises the edge's unknown-button path (spec §5.2)
 - Modify: `packages/edge/src/ice_edge/app/startup_config.py` (new `warn_if_no_buttons(config)`, beside `warn_if_setup_mode` l.88) and `packages/edge/src/ice_edge/__main__.py` (call it after `load_config()`, next to the `warn_if_setup_mode` call l.67)
 - Modify: `config.example.json` products: `SAMPLE-ICE` (slot 0) → `"button_ice"`, `SAMPLE-WATER-SM` (slot 1, 1 gal) → `"button_water_1gal"`, `SAMPLE-WATER-LG` (slot 2, 5 gal) → `"button_water_5gal"`
 - Test: `tests/contracts/test_mqtt_messages_validation.py` (ButtonPress), `tests/common/test_config_model.py`, `tests/edge/app/test_startup_policy.py` (where `warn_if_setup_mode` is tested), `tests/edge/sale/test_vmc_flows.py`, `tests/edge/sale/test_vmc_observers.py`, `tests/edge/sale/test_vmc_dispense_profiles.py` (every `vmc.select_product(<int>)`), `tests/integration/test_integration_e2e.py` (l.384, 431, 473, 525 `ButtonPress(button=<int>)` and l.614 `json.dumps({"button": 0})`), `tests/sims/test_simulator_vending.py`
@@ -103,8 +140,8 @@
   - Config: two products with `button="button_ice"` fail to load with a message naming `button_ice`; two products with `button=None` load.
   - VMC: a `hardware/buttons` payload `{"button": "button_water_5gal"}` selects the product whose `button` is that id; an unknown id leaves state `idle`/unchanged and logs the refusal; a locked-out product's button is refused as before.
   - Test sale still selects its product (existing `run_test_sale` tests pass unmodified apart from index removal).
-  - Simulator: one customer-loop press publishes a `ButtonPress` whose `button` is one of the three declared `button_*` ids, whatever the catalog holds; the indecisive second press names a different declared id.
-  - The existing channel-list tests (`tests/sims/test_simulator_vending.py` l.491-563) gain the three `button_*` inputs; Task 7 rewrites them fully.
+  - Simulator: one customer-loop press publishes a `ButtonPress` whose `button` is in `BUTTON_CHANNELS`, whatever the catalog holds (including an empty catalog); the indecisive second press names a different id.
+  - The existing channel-list tests (`tests/sims/test_simulator_vending.py` l.491-563) gain the three `button_*` inputs; Task 10 rewrites them fully.
   - `warn_if_no_buttons`: products with no buttons → one warning; some unassigned → info naming them; all assigned → nothing above debug; empty catalog → no warning.
   - `CONTRACT_VERSION == "2.0.0"`.
 - [ ] **Step 2: Run; expect failures.**
@@ -134,18 +171,65 @@
 
 ---
 
-### Task 4: Availability without a bin sensor, plus RO/pressure/sump rows
+### Task 4: IM600XL dispenser profiles and fixtures
+
+Moved ahead of the simulator work so that no simulator task has to keep removed channels alive for old fixtures.
+
+**Files:**
+- Modify: `packages/edge/src/ice_edge/vend/dispensers_doc.py` sample values (l.517-650)
+- Regenerate: `dispensers.example.toml` (`uv run python scripts/gen_dispensers_example.py`)
+- Modify: `tests/dispenser_fixtures.py` (add an IM600XL fixture set — `IM600XL_ICE`, `IM600XL_WATER_1GAL`, `IM600XL_WATER_5GAL` products and an `IM600XL_GOOD` TOML; keep the existing `GOOD`/`ICE`/`WATER` used by edge tests)
+- Create: `tests/sims/vending_profiles.py` — simulator-local fixtures: the same three IM600XL profiles built directly as `ice_contracts.board.dispenser_schema` models (or parsed with `tomllib` + a `TypeAdapter(SlotProfile)`), plus a helper `dispense_command(slot) -> DispenseCommand`. Imports `ice_contracts` only — no `ice_edge`, no `tests.dispenser_fixtures`
+- Test: `tests/edge/vend/test_dispensers_example.py`, `tests/edge/vend/test_dispensers_cli.py`, `tests/sims/test_vending_profiles.py` (new, small)
+
+**Interfaces:**
+- Sample (§6): slot 0 bagged ice — agitate `agitator_motor` (current `unmonitored`), `IceFillBySensor` on `auger_motor`/`bag_full_sensor`, `ReleaseByCatch` on `trap_door_catch`, accessory `bag_fan`; slots 1 and 2 water 1 gal and 5 gal — `WaterFillByVolume` on `water_valve_solenoid`/`fill_pulses`. Slots and skus agree with `config.example.json` (Task 2).
+- `tests/sims/vending_profiles.py` and `IM600XL_GOOD` describe the same three profiles; a test asserts they are equal after parsing, so the two fixture homes cannot drift.
+
+- [ ] **Step 1: Write failing tests** — the generated example validates clean (`ValidationReport.ok`) against `config.example.json`'s catalog; `IM600XL_GOOD` validates clean against the IM600XL products; the simulator-local profiles equal the parsed `IM600XL_GOOD` slots. (The cross-check against the simulator's capabilities waits for Task 10 and lives in `tests/integration/`, Task 12.)
+- [ ] **Step 2: Run; expect failure.**
+- [ ] **Step 3: Update the sample and fixtures; regenerate the example.**
+- [ ] **Step 4: Full suite green** (byte-drift test included). Also run `uv run python -m ice_edge.vend.dispensers --example` and confirm it prints the new example.
+- [ ] **Step 5: Commit** — `feat(dispensers): IM600XL sample profiles and fixtures`
+
+---
+
+### Task 5: `TelemetryRouter` subscriber lists (refactor, no behaviour change)
+
+Lets new consumers of vending capabilities and hardware IO attach without growing a closure in `Machine` or a callback parameter per consumer.
+
+**Files:**
+- Modify: `packages/edge/src/ice_edge/hal/mqtt_inbound.py` (`TelemetryRouter.__init__` l.74-87, `handle_hardware_io` l.89, the capabilities handler)
+- Modify: `packages/edge/src/ice_edge/app/machine.py` (~l.173: router construction)
+- Test: `tests/edge/hal/test_mqtt_inbound.py`, `tests/edge/app/test_machine.py`
+
+**Interfaces:**
+- Replaces the `on_capabilities_validated` constructor parameter with `TelemetryRouter.subscribe_capabilities(cb: Callable[[str, SubsystemCapabilities], None]) -> Callable[[], None]` (returns unsubscribe), same shape as `VMC.subscribe_state_change`.
+- Adds `TelemetryRouter.subscribe_hardware_io(cb: Callable[[str, bool], None]) -> Callable[[], None]`; `handle_hardware_io` calls every subscriber with `(device, state)` for each validated message, after the existing availability/health handling.
+- Subscribers run in subscription order; a raising subscriber is logged and never stops the rest (same rule as the VMC observers). `on_bin_half_full` stays as it is. (Task 6 adds replay-on-subscribe for capabilities.)
+- `Machine` subscribes `self._gate.on_vending_capabilities` at construction (today's only consumer).
+
+- [ ] **Step 1: Write failing tests** — two capability subscribers both receive a validated message, in order; a raising first subscriber does not stop the second; unsubscribe stops delivery; a hardware-io subscriber receives `(device, state)` once per message; an invalid payload reaches no subscriber.
+- [ ] **Step 2: Run; expect failures.**
+- [ ] **Step 3: Implement.** Existing gate-reconcile-on-capabilities tests pass unmodified.
+- [ ] **Step 4: Full suite green.**
+- [ ] **Step 5: Commit** — `refactor(hal): subscriber lists for capabilities and hardware IO`
+
+---
+
+### Task 6: Availability without a bin sensor, plus RO/pressure/sump rows
 
 **Files:**
 - Modify: `packages/edge/src/ice_edge/faults/availability.py` (rows l.131-165, `set_hardware_io` l.232, `_refresh_ice_available` l.243)
-- Modify: `packages/edge/src/ice_edge/app/machine.py` (~l.173: `on_capabilities_validated` calls both the gate and availability)
-- Test: `tests/edge/faults/test_availability.py`, `tests/edge/hal/test_mqtt_inbound.py`
+- Modify: `packages/edge/src/ice_edge/app/machine.py` (`set_availability`: subscribe availability to capabilities)
+- Test: `tests/edge/faults/test_availability.py`, `tests/edge/app/test_machine.py`
 
 **Interfaces:**
 - Produces: `Availability.set_bin_instrumented(instrumented: bool) -> None` and read-only property `Availability.bin_instrumented -> bool` (default `True`, preserving today's behaviour until a vending capabilities doc says otherwise). When `False`, the `ice_available` row reads not-instrumented/PASS with detail `"no bin sensor"`; `bin_half_full` reports are then ignored for that row.
-- Produces: `Availability.on_vending_capabilities(subsystem: str, caps: SubsystemCapabilities) -> None` — for `subsystem == "vending"`, calls `set_bin_instrumented(any(c.channel_id == "bin_half_full" for c in caps.channels))`.
-- Produces rows: new `ro_tank_ok` (`Applies.water`, `Gate.fulfillment`, starts not-instrumented); `water_pressure_ok` and `no_leak` keep their names/applies/gates but become instrumented on their first `hardware/io` report. `set_hardware_io`: `ro_tank_empty` → `ro_tank_ok` fails while true ("RO tank empty"); `water_pressure_ok` → row fails while false ("low water pressure"); `sump_high` → `no_leak` fails while true ("sump high").
-- `Machine` wires `on_capabilities_validated` (today `self._gate.on_vending_capabilities`, `machine.py:174`) to a closure calling `self._gate.on_vending_capabilities(...)` then `availability.on_vending_capabilities(...)` when availability is attached (`self._outputs.availability`, the public attribute `FaultService` already reads).
+- Produces: `Availability.on_vending_capabilities(subsystem: str, caps: SubsystemCapabilities) -> None` — for `subsystem == "vending"`, calls `set_bin_instrumented(any(c.channel_id == VendingChannel.bin_half_full for c in caps.channels))`.
+- Produces rows: new `ro_tank_ok` (`Applies.water`, `Gate.fulfillment`, starts not-instrumented); `water_pressure_ok` and `no_leak` keep their names/applies/gates but become instrumented on their first `hardware/io` report. `set_hardware_io` keys on `VendingChannel` values: `ro_tank_empty` → `ro_tank_ok` fails while true ("RO tank empty"); `water_pressure_ok` → row fails while false ("low water pressure"); `sump_high` → `no_leak` fails while true ("sump high").
+- `Machine.set_availability(a)` calls `self._telemetry.subscribe_capabilities(a.on_vending_capabilities)` (keeping the unsubscribe so a replaced availability is unsubscribed first). No combined closure.
+- **Late-subscriber replay.** `capabilities/vending` is retained, so it can be delivered before a subscriber attaches; a missed doc would leave `bin_instrumented=True` and ice UNKNOWN-blocked forever on a machine with no bin sensor. `subscribe_capabilities` therefore immediately calls the new subscriber once per already-validated document the router holds (the same store behind `machine.subsystem_capabilities`). Today `__main__.py` attaches availability (l.85) before `mqtt.run` starts (l.168), so this guards tests, replacement and future reordering rather than a live bug.
 
 - [ ] **Step 1: Write failing tests**
   - Fresh `Availability`: `ice_available` still UNKNOWN (today's behaviour).
@@ -153,7 +237,8 @@
   - With caps declaring `bin_half_full`: behaviour identical to today (false → fails).
   - `ro_tank_empty=True` fails water and not ice and does not change `payment_enabled()`; `water_pressure_ok=False` likewise; `sump_high=True` fails water and makes `payment_enabled()` false (safety); each recovers on the opposite state.
   - Before any report, the three rows are not-instrumented and pass.
-  - Inbound: a validated `capabilities/vending` message reaches both the dispenser gate and availability (machine-level test).
+  - Machine-level: a validated `capabilities/vending` message reaches both the dispenser gate and availability; calling `set_availability` twice leaves one availability subscribed.
+  - Order: deliver a no-bin `capabilities/vending` message **first**, attach availability **second** → `bin_instrumented` is `False` and ice is sellable.
 - [ ] **Step 2: Run; expect failures.**
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Full suite green.**
@@ -161,40 +246,55 @@
 
 ---
 
-### Task 5: ICE-101 auto-retry cooldown
+### Task 7: ICE-101 auto-retry cooldown (`IceRetry`)
+
+The retry policy is its own collaborator; `FaultService` gains only a generic observer hook.
 
 **Files:**
 - Modify: `packages/common/src/ice_common/config_model.py` (`physical.ice_retry_cooldown_seconds`)
-- Modify: `packages/edge/src/ice_edge/faults/fault_service.py` (`__init__`, `raise_fault`, `clear_fault`, `clear_ice101_lockouts` l.239)
-- Modify: `packages/edge/src/ice_edge/app/machine.py` (FaultService construction)
-- Test: `tests/edge/faults/test_fault_service.py`, using `machine_fake_time`
+- Modify: `packages/edge/src/ice_edge/faults/fault_service.py` (`subscribe_fault_change`; `clear_ice101_lockouts` l.239 gains `by`)
+- Create: `packages/edge/src/ice_edge/faults/ice_retry.py`
+- Modify: `packages/edge/src/ice_edge/app/machine.py` (build `IceRetry`, subscribe it)
+- Test: `tests/edge/faults/test_fault_service.py`, `tests/edge/faults/test_ice_retry.py` (new), using `machine_fake_time`
 
 **Interfaces:**
-- Consumes: `Availability.bin_instrumented` (Task 4).
-- `FaultService.__init__` gains keyword-only `bin_instrumented: Callable[[], bool]` and `ice_retry_cooldown_seconds: Callable[[], float]`. `Machine` passes `lambda: (a.bin_instrumented if (a := self._outputs.availability) else True)` and `lambda: self._config.physical.ice_retry_cooldown_seconds`.
-- Behaviour: `raise_fault(ICE_101, sku=...)` when `not bin_instrumented()` arms (or re-arms, calling `.cancel()` on the previous handle) `self._tasks.schedule(seconds, callback, label="ice_retry_cooldown")`, which returns a cancellable task (`FakeTask` under `FakeTaskRunner`). On fire: `clear_ice101_lockouts(by="cooldown")`. `clear_ice101_lockouts` gains `by: str = "auto"` (today's hard-coded value, so the `bin_half_full` path records exactly what it does now) and passes it through to `clear_fault`. An operator `clear_fault` that removes the last ICE-101 lockout cancels the timer. No extra shutdown hook: `TaskRunner.cancel_pending` (called by `Machine.cancel_pending_tasks`) already cancels every `schedule()` task.
+- Produces: `FaultService.subscribe_fault_change(cb: Callable[[FaultChange], None]) -> Callable[[], None]`, where `FaultChange` is a frozen dataclass `(action: Literal["raised", "cleared"], code: FaultCode, sku: str | None, by: str | None)`. Called after a raise or clear has taken effect and its existing side effects ran; same ordering/raising-subscriber rules as the VMC observers. Generic — no ICE-101 knowledge in `FaultService`.
+- Changes: `clear_ice101_lockouts(by: str = "auto")` (today's hard-coded value, so the `bin_half_full` path records exactly what it does now), passed through to `clear_fault`.
+- Produces:
+  ```python
+  class IceRetry:
+      def __init__(self, *, faults: FaultService, tasks: TaskRunner,
+                   bin_instrumented: Callable[[], bool],
+                   cooldown_seconds: Callable[[], float]) -> None: ...
+      def on_fault_change(self, change: FaultChange) -> None: ...
+      @property
+      def pending(self) -> bool: ...   # read-only, for tests
+  ```
+- Behaviour: an `ICE-101` `raised` change while `not bin_instrumented()` arms (or re-arms, cancelling the previous handle) `tasks.schedule(cooldown_seconds(), ..., label="ice_retry_cooldown")`. On fire: `faults.clear_ice101_lockouts(by="cooldown")`. An `ICE-101` `cleared` change that leaves no ICE-101 lockout (`faults.lockouts`) cancels the timer — including the cooldown's own clear, harmlessly. No shutdown hook: `TaskRunner.cancel_pending` (called by `Machine.cancel_pending_tasks`) already cancels every `schedule()` task.
+- `Machine` builds it with `bin_instrumented=lambda: (a.bin_instrumented if (a := self._outputs.availability) else True)` and `cooldown_seconds=lambda: self._config.physical.ice_retry_cooldown_seconds`, then `self._faults.subscribe_fault_change(self._ice_retry.on_fault_change)`.
+- Imports: `ice_contracts`, `ice_common`, `ice_edge.faults`, `ice_edge.supervisor` only.
 
-- [ ] **Step 1: Write failing tests** (on `machine_fake_time`, availability attached, bin not instrumented)
-  - Raising ICE-101 for the ice sku arms `ice_retry_cooldown`; `runner.fire("ice_retry_cooldown")` clears the lockout and records `lockout_cleared` with `by="cooldown"`.
+- [ ] **Step 1: Write failing tests**
+  - `FaultService`: a subscriber sees `raised` then `cleared` for a product lockout and for a machine fault, with the right `code`/`sku`/`by`; a raising subscriber does not break the raise.
+  - `IceRetry` (on `machine_fake_time`, availability attached, bin not instrumented): raising ICE-101 for the ice sku arms `ice_retry_cooldown`; `runner.fire("ice_retry_cooldown")` clears the lockout and records `lockout_cleared` with `by="cooldown"`.
   - Raising again after it fired re-arms; raising twice before it fires leaves exactly one pending `ice_retry_cooldown`.
   - Operator `clear_fault` on the ICE-101 key cancels the pending timer.
-  - With the bin instrumented, raising ICE-101 arms nothing (today's `bin_half_full` auto-clear still works).
+  - With the bin instrumented, raising ICE-101 arms nothing (today's `bin_half_full` auto-clear still works and records `by="auto"`).
   - Config: default 1800; 59 and 86401 rejected.
 - [ ] **Step 2: Run; expect failures.**
 - [ ] **Step 3: Implement.**
-- [ ] **Step 4: Full suite green.**
+- [ ] **Step 4: Full suite green; `uv run lint-imports` passes.**
 - [ ] **Step 5: Commit** — `feat(faults): ICE-101 clears after a cooldown when the bin is not instrumented`
 
 ---
 
-### Task 6: `InputFaults` — water faults from `hardware/io`
+### Task 8: `InputFaults` — water faults from `hardware/io`
 
 **Files:**
 - Create: `packages/edge/src/ice_edge/faults/input_faults.py`
 - Modify: `packages/common/src/ice_common/config_model.py` (`physical.ro_max_run_seconds`)
-- Modify: `packages/edge/src/ice_edge/hal/mqtt_inbound.py` (`TelemetryRouter.__init__` gains `on_hardware_io`; `handle_hardware_io` l.89 calls it for every validated message)
-- Modify: `packages/edge/src/ice_edge/app/machine.py` (build `InputFaults`, wire `on_hardware_io`; its timer is `self._tasks.schedule(..., label="ro_overrun")`, so `TaskRunner.cancel_pending` already covers shutdown)
-- Test: `tests/edge/faults/test_input_faults.py` (new), `tests/edge/hal/test_mqtt_inbound.py`
+- Modify: `packages/edge/src/ice_edge/app/machine.py` (build `InputFaults`; `self._telemetry.subscribe_hardware_io(self._input_faults.on_hardware_io)`; its timer is `self._tasks.schedule(..., label="ro_overrun")`, so `TaskRunner.cancel_pending` already covers shutdown)
+- Test: `tests/edge/faults/test_input_faults.py` (new), `tests/edge/app/test_machine.py`
 
 **Interfaces:**
 - Produces:
@@ -205,17 +305,17 @@
       def on_hardware_io(self, device: str, state: bool) -> None: ...
       def cancel(self) -> None: ...   # drops the ro_overrun timer
   ```
-- Mapping (§4.3), every code machine-scope and raised with no `sku`: `sump_high` true → `raise_fault(WTR_104)`, false → clear it. `water_pressure_ok` false → `raise_fault(WTR_105)`, true → clear it. `ro_tank_empty` true → `raise_fault(WTR_106)`, false → clear it. `ro_production` true → arm `ro_overrun` timer for `ro_max_run_seconds()`; on fire → `raise_fault(WTR_107)`; `ro_production` false → cancel the timer and clear `WTR_107` if active. Clears use `clear_fault(code.value, by="hardware")` (the machine-fault key `FaultService.parse_key` accepts) and are skipped when `not faults.has(code)`; raising an already-active fault is not repeated (check `faults.has(code)` first) so a re-published retained state does not spam alerts. Recovery of one input never clears another input's code.
-- `TelemetryRouter(..., on_hardware_io: Callable[[str, bool], None])`; `Machine` passes `self._input_faults.on_hardware_io`.
-- `InputFaults` imports only from `ice_contracts`, `ice_common` and `ice_edge.faults`/`ice_edge.supervisor` (layer rule).
+- State faults are **driven by `INPUT_FAULTS`** (Task 1), not a local mapping: for the entry whose `channel == device`, `state == faulted_when` → `raise_fault(code)` (no `sku`), otherwise clear it. A device not in the table and not `ro_production` is ignored. `ro_production` (`VendingChannel.ro_production`) true → arm `ro_overrun` for `ro_max_run_seconds()`; on fire → `raise_fault(WTR_107)`; false → cancel the timer and clear `WTR_107` if active. Clears use `clear_fault(code.value, by="hardware")` (the machine-fault key `FaultService.parse_key` accepts) and are skipped when `not faults.has(code)`; raising an already-active fault is not repeated (check `faults.has(code)` first) so a re-published retained state does not spam alerts. Recovery of one input never clears another input's code.
+- Imports: `ice_contracts`, `ice_common`, `ice_edge.faults`, `ice_edge.supervisor` only (layer rule).
 
 - [ ] **Step 1: Write failing tests**
-  - Each input raises its machine-scope code and the opposite state clears it; `faults.lockouts` is unchanged throughout. WTR-104 makes `payment_enabled()` false (via availability's active-fault push); WTR-105/WTR-106 leave it true.
+  - Parametrized over `INPUT_FAULTS`: each input raises its machine-scope code and the opposite state clears it; `faults.lockouts` is unchanged throughout. WTR-104 makes `payment_enabled()` false (via availability's active-fault push); WTR-105/WTR-106 leave it true.
   - Pressure recovery does not clear a WTR-106 held by an empty tank (independent machine codes).
   - A water sku already locked by `WTR-101` (a vend failure) is still locked by `WTR-101` after `water_pressure_ok` false then true.
   - Repeating the same failing state does not raise a second alert (count `publish_alert` calls or recorder rows).
   - `ro_production` true then `runner.fire("ro_overrun")` raises WTR-107; `ro_production` false clears it and cancels a still-pending timer; an `ro_production` true/false/true sequence leaves one pending timer.
-  - Inbound: a `hardware/io/sump_high` message reaches `on_hardware_io` once.
+  - An unknown device is ignored.
+  - Machine-level: a `hardware/io/sump_high` message reaches `on_hardware_io` once.
   - Config: `ro_max_run_seconds` default 3600; 59 and 86401 rejected.
 - [ ] **Step 2: Run; expect failures.**
 - [ ] **Step 3: Implement.**
@@ -224,96 +324,140 @@
 
 ---
 
-### Task 7: Simulator — IM600XL channels, vends and Home Assistant
+### Task 9: Simulator — split `vending_machine.py` into isolated modules (refactor, no behaviour change)
+
+Today one 1309-line class holds the channel table, fault registrations, profile execution, the sensor loop, the customer loop and HA discovery. Tasks 10 and 11 would otherwise add the RO tank, climate, new inputs, the catch release and five fault injections to it. This task moves code only; every existing simulator test passes with at most import-path and patch-target changes.
 
 **Files:**
-- Modify: `packages/sims/src/ice_sims/vending_machine.py` (`HARDWARE_DEVICES` l.53-71, `_VENDING_CHANNELS` l.80-206, `_run_bagged_ice` l.888-975, `_run_water_fill` l.1070-1151, `_handle_water_valve` l.1197, `ha_discovery_entities` l.434-507, fault registrations l.309-432 for the two removals and `ice_bin_empty`)
-- Test: `tests/sims/test_simulator_vending.py` (rewrite the channel-list tests l.491-563 and every assertion on removed ids)
+- Create: `packages/sims/src/ice_sims/vending/__init__.py` (re-exports `VendingMachineSimulator`)
+- Create: `packages/sims/src/ice_sims/vending/channels.py` — the one declarative channel table. Each row: id, kind, direction, `driven_by`, idle default (binary only), and a `role` (`"button"`, `"sensor"`, `"output"`…). Derives `CHANNELS` (the `ChannelDescriptor` list), `HARDWARE_DEVICES` (binary ids → idle default) and `BUTTON_CHANNELS` (ids with role `"button"`) from it; ids with edge meaning use `VendingChannel` values. No MQTT, no I/O.
+- Create: `packages/sims/src/ice_sims/vending/dispense.py` — `execute_profile` and the per-mechanism runners (`_run_bagged_ice`, `_run_water_fill`, `_pump_water_pulses`, `_publish_fill_pulses`, accessory span/lag handling, `_RunContext`). Talks to the board through a narrow port, not the simulator class:
+  ```python
+  class BoardPort(Protocol):
+      async def set_hw(self, device: str, state: bool) -> None: ...
+      async def publish(self, topic: str, payload: BaseModel) -> None: ...
+      async def sleep(self, seconds: float) -> None: ...
+      def active_faults(self) -> set[str]: ...
+  ```
+  The simulator does **not** implement this itself: `ESP32Simulator.publish(client, topic, payload)` (`base.py:244`) and `set_hw(client, device, state)` are called with a client by the heartbeat, capabilities, alert and fault-callback paths, so their signatures stay. Instead a small adapter in `simulator.py`, `_Board(sim, client)`, implements `BoardPort` — forwarding to `sim.set_hw(client, ...)`, `sim.publish(client, ...)`, `sim.sleep(...)` and `sim.active_fault_names` — and the dispense and customer handlers build one per call.
+- Create: `packages/sims/src/ice_sims/vending/customer.py` — the customer loop and arrival-rate helpers (`_arrival_factor`, `_compute_idle_time`); takes the button ids and a `BoardPort`, reads nothing else.
+- Create: `packages/sims/src/ice_sims/vending/faults.py` — `vending_fault_defs(sim) -> list[FaultDef]`: every `FaultDef` and its activate/recover callbacks, **moved unchanged** (same bodies, same `sim.set_hw(client, ...)` calls). Callbacks that act on model state arrive with the models in Task 11, not here.
+- Create: `packages/sims/src/ice_sims/vending/ha.py` — `ha_discovery_entities(channels) -> list[dict]` (today's hard-coded entities unchanged in this task).
+- Create: `packages/sims/src/ice_sims/vending/simulator.py` — `VendingMachineSimulator(ESP32Simulator)` plus the `_Board` adapter: composes the above, registers commands and faults, runs the loops. Owns publishing and the `_hw` dict; holds no sequencing or physics logic itself.
+- Modify: `packages/sims/src/ice_sims/vending_machine.py` → thin entry module: re-exports `VendingMachineSimulator`, `HARDWARE_DEVICES`, `SENSOR_PUBLISH_INTERVAL` and keeps `if __name__ == "__main__": ESP32Simulator.entry_point(VendingMachineSimulator)`, so `docker-compose.yml:96`, the CI smoke import (`ci.yml:146`), `ice_sims/__main__.py` and `tests/edge/web/test_routes_tests.py:1338` keep working unchanged.
+- Create: `tests/async_helpers.py` — move `settle` and `patch_module_sleep` here from `tests/fakes.py` (which imports `ice_edge.app.machine` at l.42, so any simulator test importing `tests.fakes` pulls in edge code); `tests/fakes.py` re-exports both so edge tests are untouched. Simulator tests import from `tests.async_helpers`.
+- Create: `tests/meta/test_test_isolation.py` — parses every `tests/sims/**/*.py` with `ast`, follows `tests.*` imports transitively, and fails if any reachable module imports `ice_edge`; the same walk over `tests/edge/**` fails on `ice_sims`. Allowlist (shrink-only, like the private-access budget): `tests/sims/test_simulator_vending.py` until Task 10 and `tests/edge/web/test_routes_tests.py` until Task 12.
+- Test: `tests/sims/test_simulator_vending.py` (patch targets and helper imports only); new `tests/sims/test_vending_channels.py`, `tests/sims/test_vending_dispense.py` (moved/split tests as convenient)
 
 **Interfaces:**
-- Channel set, kinds and `driven_by` exactly as spec §5.1 (inputs, outputs, counter `fill_pulses`, temperature `ambient`). `HARDWARE_DEVICES` holds every binary channel with its idle default: `water_pressure_ok=True`, everything else `False`.
-- **Legacy channels:** the simulator no longer *declares* `door_sensor`, `bag_drop_solenoid`, `water_flow_sensor` or `vending_now_light`, but it still *drives* any channel a profile names, because `set_hw` (`vending_machine.py:512`) publishes any device id without checking the declared list. That is what keeps the `tests/dispenser_fixtures.py` profiles (migrated only in Task 9) running here. Keep it that way: do not add a declared-channel check to `set_hw` or `execute_profile`. A `ReleaseBySensor` profile still gets its simulated door-sensor response on the profile's `sensor_channel`. Those undeclared channels are not added to `HARDWARE_DEVICES`.
+- Patch points: tests that patch `ice_sims.vending_machine`'s module `sleep`/`logger` (`test_simulator_vending.py` l.374, 394-395, 428) move to the `sim.sleep` seam or to the module that now calls it. Prefer `sim.sleep`; patching a module global in the wrong module would silently stop working.
+- `dispense.py`, `customer.py`, `channels.py`, `ha.py` do not import `simulator.py` (one direction only: `simulator → others`). Add a test that asserts this with `ast` over the package, like `tests/meta/test_routes_shape.py` does for routes.
+
+- [ ] **Step 1: Write the structural tests** — `channels.CHANNELS`, `HARDWARE_DEVICES` and `BUTTON_CHANNELS` equal today's values (snapshot them from the current module before moving); the in-package import-direction test; the test-isolation meta test (with its two-entry allowlist); `dispense.execute_profile` runs a profile against a fake `BoardPort` (a list recorder plus a no-op sleep) and yields the same `set_hw`/publish sequence the class-level test sees today; the simulator's `dispense` command handler drives `execute_profile` through a `_Board`.
+- [ ] **Step 2: Move the code.** No behaviour, timing or message change. `git diff --stat` should be dominated by moves.
+- [ ] **Step 3: Full suite green**; `uv run python -c "import ice_sims.vending_machine"` exits 0; `uv run python -m ice_sims.vending_machine --help` still prints usage.
+- [ ] **Step 4: Commit** — `refactor(sims): split the vending simulator into channel, dispense, customer, fault and HA modules`
+
+---
+
+### Task 10: Simulator — IM600XL channels, vends and Home Assistant
+
+**Files:**
+- Modify: `packages/sims/src/ice_sims/vending/channels.py` (the table, spec §5.1)
+- Modify: `packages/sims/src/ice_sims/vending/dispense.py` (`ReleaseByCatch`; declared-channel enforcement; water fill drops the flow-sensor publish; current sense unmonitored)
+- Modify: `packages/sims/src/ice_sims/vending/faults.py` (remove `door_stuck_open`, `bag_drop_solenoid_stuck`; `ice_bin_empty` reworked)
+- Modify: `packages/sims/src/ice_sims/vending/ha.py` (entities derived from the table)
+- Modify: `packages/sims/src/ice_sims/vending/simulator.py` (`_handle_water_valve` drives the declared valve channel only)
+- Test: `tests/sims/test_simulator_vending.py`, `tests/sims/test_vending_channels.py`, `tests/sims/test_vending_dispense.py` — switch every profile to `tests/sims/vending_profiles.py` (Task 4) and **remove the `ice_edge.vend.dispensers` and `tests.dispenser_fixtures` imports** (`test_simulator_vending.py` l.26, l.29)
+
+**Interfaces:**
+- Channel set, kinds and `driven_by` exactly as spec §5.1 (inputs, outputs, counter `fill_pulses`, temperature `ambient`). `HARDWARE_DEVICES` holds every binary channel with its idle default: `water_pressure_ok=True`, everything else `False`. All derived from the one table.
+- **Declared-channel enforcement** (a real board cannot drive a channel it does not have): before any motion, `execute_profile` checks `drive_channels(profile)` ⊆ declared outputs and `sense_channels(profile)` ⊆ declared inputs/counters. On a miss it publishes a terminal `error` `DispenserStatus` naming the channel, drives nothing, and the command completes as failed. The edge's capability cross-check (`CFG-101`) stops such a profile from ever being sent, so this path is defensive and never seen in normal flow.
 - Bagged ice honours all three release variants; for `ReleaseByCatch` the catch channel is set `True` before the agitate step and `False` at release, then the step waits `drop_seconds`; any failure path sets it `False`. Current sense is `unmonitored` (no current telemetry published).
-- Water fill counts `fill_pulses` against the profile target; it no longer publishes a binary flow-sensor `hardware/io` message. `_handle_water_valve` drives the profile/declared valve channel only.
+- Water fill counts `fill_pulses` against the profile target; it no longer publishes a binary flow-sensor `hardware/io` message.
 - Fault injection: remove `door_stuck_open` and `bag_drop_solenoid_stuck`; `ice_bin_empty` makes the fill run to its max time and report `bin_empty`, touching no bin channel.
-- `ha_discovery_entities` derives binary entities from the binary channels and a temperature entity from `ambient`.
+- `ha.ha_discovery_entities(channels)` derives binary entities from the binary rows and a temperature entity from `ambient`.
 
 - [ ] **Step 1: Write failing tests**
-  - Ordered channel-id list, output set, `driven_by` map and `HARDWARE_DEVICES` keys equal the §5.1 set; none of the removed ids appear.
+  - Ordered channel-id list, output set, `driven_by` map and `HARDWARE_DEVICES` keys equal the §5.1 set; none of the removed ids appear; every `VendingChannel` the IM600XL has is declared under that exact id.
   - A `ReleaseByCatch` ice vend publishes `trap_door_catch=True` before the first `agitator_motor=True`, `trap_door_catch=False` after `bag_full_sensor=True`, and ends `complete`; an injected `auger_jam` ends with the catch `False`.
-  - A water vend for a 5 gal profile reports `fill_pulses` reaching the target and `complete`; no `hardware/io/water_flow_sensor` is published.
+  - A water vend for the 5 gal profile reports `fill_pulses` reaching the target and `complete`; no `hardware/io/water_flow_sensor` is published.
+  - A profile naming an undeclared channel (`door_sensor`) ends `error` with no `set_hw` call; a profile driving a declared *input* ends `error`.
   - `ice_bin_empty` yields `bin_empty` without any `bin_half_full` publish.
   - HA entity object ids equal the binary channel ids plus `ambient`.
-  - Existing profiles using `ReleaseBySensor`/`ReleaseTimed` (from `tests/dispenser_fixtures.py`) still run to `complete`.
-  - The simulator's `capabilities/vending` document validates against `tests/dispenser_fixtures.py` profiles **with errors** for the removed channels (expected until Task 9) — assert nothing about this here; Task 9 owns the clean validation.
+  - Remove `tests/sims/test_simulator_vending.py` from the test-isolation allowlist; the meta test passes.
+  - Before implementing, `grep -rn "build_capabilities()" tests packages` outside `tests/sims`: any caller that validates profiles against the vending simulator's channels must move to the IM600XL fixtures here (today only `tests/edge/web/test_routes_tests.py:1342`, which reads `.commands` and is unaffected).
 - [ ] **Step 2: Run; expect failures.**
 - [ ] **Step 3: Implement.**
-- [ ] **Step 4: Full suite green** — if `tests/integration/test_integration_e2e.py` depended on `bin_half_full`, Task 4's capability path must now make ice sellable; fix the test's expectations, not the edge.
+- [ ] **Step 4: Full suite green** — if `tests/integration/test_integration_e2e.py` depended on `bin_half_full`, Task 6's capability path must now make ice sellable; fix the test's expectations, not the edge.
 - [ ] **Step 5: Commit** — `feat(sims): vending simulator declares the IM600XL channel set`
 
 ---
 
-### Task 8: Simulator — RO loop, environment, inputs and new fault injections
+### Task 11: Simulator — RO tank, climate, inputs and new fault injections
 
 **Files:**
-- Modify: `packages/sims/src/ice_sims/vending_machine.py` (`_publish_sensors` l.532-567; fault registrations; water vend tank drain)
-- Test: `tests/sims/test_simulator_vending.py`
+- Create: `packages/sims/src/ice_sims/vending/ro_tank.py` (pure model)
+- Create: `packages/sims/src/ice_sims/vending/climate.py` (pure model; replaces the cabinet-temperature/heater code in the sensor loop)
+- Modify: `packages/sims/src/ice_sims/vending/simulator.py` (sensor loop: tick the models, publish their changes; the static inputs)
+- Modify: `packages/sims/src/ice_sims/vending/dispense.py` (a completed water vend calls `ro_tank.draw(volume)` through a port method, not by touching tank state)
+- Modify: `packages/sims/src/ice_sims/vending/faults.py` (five new injections)
+- Test: `tests/sims/test_vending_ro_tank.py`, `tests/sims/test_vending_climate.py` (new, synchronous), `tests/sims/test_simulator_vending.py`
 
 **Interfaces:**
-- Simulated RO tank: `self.ro_tank_gallons: float`, class constants `RO_TANK_CAPACITY_GAL`, `RO_TANK_FULL_GAL`, `RO_TANK_EMPTY_GAL`, `RO_FILL_GAL_PER_TICK`, `RO_MAX_RUN_TICKS` (pick realistic values; tests may override per instance). Each sensor tick: `ro_production` on while below full and run-ticks under the max, off otherwise (and at the max the run stops until the level drops below full again); `ro_tank_full`/`ro_tank_empty` follow the level; changes are published on `hardware/io/<id>`. A completed water vend subtracts its volume.
-- `ambient` drifts and publishes on `sensors/temp/ambient`; `heater_power` hysteresis keeps the old thresholds (on below 5 °C, off above 10 °C).
-- `water_pressure_ok`, `sump_high`, `service_door` published on change (and on the periodic re-publish today's code does for retained state).
-- New fault injections (same registration pattern as existing ones): `ro_tank_empty` (forces level to 0 and blocks fill), `low_pressure` (`water_pressure_ok=False`), `sump_high`, `service_door_open`, `ro_fill_stuck` (`ro_production` stays on, level does not rise — the edge's `ro_overrun` detects it). Each recover restores the normal state.
+- Pure models — no MQTT, no `sleep`, no `_hw`; each returns the state changes for the simulator to publish:
+  ```python
+  @dataclass
+  class RoTank:
+      capacity_gal: float; full_gal: float; empty_gal: float
+      fill_gal_per_tick: float; max_run_ticks: int
+      level_gal: float
+      fill_blocked: bool = False      # ro_tank_empty injection
+      fill_stuck: bool = False        # ro_fill_stuck injection: pump on, level does not rise
+      def tick(self) -> dict[str, bool]: ...   # ro_production / ro_tank_full / ro_tank_empty that changed
+      def draw(self, gallons: float) -> dict[str, bool]: ...
+      def outputs(self) -> dict[str, bool]: ... # current values, for the periodic re-publish
+
+  @dataclass
+  class Climate:
+      ambient_c: float; heater_on_below_c: float = 5.0; heater_off_above_c: float = 10.0
+      def tick(self, drift_c: float) -> dict[str, bool]: ...   # heater_power if it changed
+  ```
+  `RoTank.tick`: `ro_production` on while below full and run-ticks under the max, off otherwise (at the max the run stops until the level drops below full again); `ro_tank_full`/`ro_tank_empty` follow the level. Keys are `VendingChannel` values. The simulator passes `random.gauss(0, 0.3)` as `drift_c`, so `Climate` itself is deterministic.
+- Simulator: each sensor tick publishes the models' changes on `hardware/io/<id>`, `ambient` on `sensors/temp/ambient`, and re-publishes `water_pressure_ok`, `sump_high`, `service_door` and the RO outputs on the periodic re-publish today's code does for retained state.
+- New fault injections in `faults.py` (same registration pattern as existing ones), each flipping model or input state and recovering it: `ro_tank_empty` (level to 0, `fill_blocked`), `low_pressure` (`water_pressure_ok=False`), `sump_high`, `service_door_open`, `ro_fill_stuck` (`fill_stuck` — the edge's `ro_overrun` detects it).
 
 - [ ] **Step 1: Write failing tests**
-  - From empty, ticking fills the tank: `ro_production` on, then `ro_tank_full` true and `ro_production` off.
-  - A water vend drains the tank by its volume; draining past empty sets `ro_tank_empty` true.
-  - With `RO_MAX_RUN_TICKS` small and `ro_fill_stuck` active, `ro_production` turns off at the limit.
-  - Ambient below 5 °C turns `heater_power` on; above 10 °C off.
-  - Each new fault's activate/recover publishes the expected `hardware/io` states.
+  - `RoTank` (plain sync tests): from empty, ticking turns `ro_production` on, then `ro_tank_full` true and `ro_production` off; `draw` past empty sets `ro_tank_empty` true; with small `max_run_ticks` and `fill_stuck`, `ro_production` turns off at the limit; `tick` returns only changed keys.
+  - `Climate`: drift below 5 °C turns `heater_power` on; above 10 °C off; between, no change.
+  - Simulator: a completed water vend lowers the tank by the profile volume; each new fault's activate/recover publishes the expected `hardware/io` states.
 - [ ] **Step 2: Run; expect failures.**
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Full suite green.**
-- [ ] **Step 5: Commit** — `feat(sims): RO tank loop, ambient heater, water and door inputs`
+- [ ] **Step 5: Commit** — `feat(sims): RO tank and climate models, water and door inputs`
 
 ---
 
-### Task 9: IM600XL dispenser profiles and fixtures
+### Task 12: Cross-checks, end-to-end and documentation
 
 **Files:**
-- Modify: `packages/edge/src/ice_edge/vend/dispensers_doc.py` sample values (l.517-650)
-- Regenerate: `dispensers.example.toml` (`uv run python scripts/gen_dispensers_example.py`)
-- Modify: `tests/dispenser_fixtures.py` (add an IM600XL fixture set; keep the existing ones used by other tests)
-- Test: `tests/edge/vend/test_dispensers_example.py`, `tests/edge/vend/test_dispensers_cli.py`
-
-**Interfaces:**
-- Sample (§6): slot 0 bagged ice — agitate `agitator_motor` (current `unmonitored`), `IceFillBySensor` on `auger_motor`/`bag_full_sensor`, `ReleaseByCatch` on `trap_door_catch`, accessory `bag_fan`; slots 1 and 2 water 1 gal and 5 gal — `WaterFillByVolume` on `water_valve_solenoid`/`fill_pulses`. Slots and skus agree with `config.example.json` (Task 2).
-
-- [ ] **Step 1: Write failing test** — the generated example validates clean (`ValidationReport.ok`) against `config.example.json`'s catalog **and** against the simulator's capabilities (`build_capabilities` from Task 7's channels).
-- [ ] **Step 2: Run; expect failure.**
-- [ ] **Step 3: Update the sample; regenerate the example.**
-- [ ] **Step 4: Full suite green** (byte-drift test included). Also run `uv run python -m ice_edge.vend.dispensers --example` and confirm it prints the new example.
-- [ ] **Step 5: Commit** — `feat(dispensers): IM600XL sample profiles`
-
----
-
-### Task 10: End-to-end check and documentation
-
-**Files:**
+- Create: `tests/integration/test_im600xl_capabilities.py` — the one place simulator and edge code meet (no broker needed, so it never skips)
+- Move: the simulator-backed test in `tests/edge/web/test_routes_tests.py` (l.1326-1350, which builds all three simulators' `build_capabilities().commands`) into `tests/integration/test_simulator_commands.py`; remove the last test-isolation allowlist entry
 - Modify: `tests/integration/test_integration_e2e.py` (ice and water sale with the IM600XL capabilities)
-- Modify: `CLAUDE.md` — vending contract 2.0.0 (Fault Codes section, including `WTR-105` re-scoped to machine/`warning` and the rule that input-driven faults never lock a product), timer labels now eight (`ice_retry_cooldown`, `ro_overrun`), `warn_if_no_buttons`, `Product.button` and named `ButtonPress`, `InputFaults`, `Availability.bin_instrumented`, two new `physical` config fields, simulator channel set
+- Modify: `CLAUDE.md` — vending contract 2.0.0 (Fault Codes section, including `WTR-105` re-scoped to machine/`warning` and the rule that input-driven faults never lock a product), `VendingChannel`/`INPUT_FAULTS`, timer labels now eight (`ice_retry_cooldown`, `ro_overrun`), `warn_if_no_buttons`, `Product.button` and named `ButtonPress`, `IceRetry`, `InputFaults`, `FaultService.subscribe_fault_change`, `TelemetryRouter.subscribe_capabilities`/`subscribe_hardware_io`, `Availability.bin_instrumented`, two new `physical` config fields, the `ice_sims.vending` module split and simulator channel set, and the isolation rule that simulator tests never import `ice_edge`
 - Modify: `docs/hardware/im600xl-io-list.md` §7 — mark each divergence resolved, linking the spec
 - Modify: `ROADMAP.md` §3 — `water_pressure_ok`, `no_leak` (sump), RO tank now instrumented; bin level not instrumented on this machine
 - Modify: `docs/OVERVIEW.md` — link the spec under Simulators
 
 **Interfaces:** none new.
 
-- [ ] **Step 1: Write the e2e tests** in the **existing harness**, which runs a real broker and the edge but no simulator: each test publishes the board's messages itself (`hardware/buttons`, `hardware/dispenser`, `hardware/io/...`), as the current tests do. Do not build a simulator-in-the-loop harness here. To stand in for the IM600XL board, publish `VendingMachineSimulator(machine_id=...).build_capabilities()` (the real Task 7 channel set) on `capabilities/vending` before the sale. Use `_wire_dispenser_runtime` with the IM600XL fixture set from Task 9, so profiles validate against those capabilities with no `CFG-101`. Tests:
+- [ ] **Step 1: Write the cross-check** (`test_im600xl_capabilities.py`): `VendingMachineSimulator(machine_id=...).build_capabilities()` validates `dispensers.example.toml` and `IM600XL_GOOD` clean (`validate_document(..., capabilities=...)` → `ok`) against `config.example.json`'s catalog; every `INPUT_FAULTS` channel and `VendingChannel.ro_production` is declared by the simulator; `bin_half_full` is not.
+- [ ] **Step 2: Write the e2e tests** in the **existing harness**, which runs a real broker and the edge but no simulator: each test publishes the board's messages itself (`hardware/buttons`, `hardware/dispenser`, `hardware/io/...`), as the current tests do. Do not build a simulator-in-the-loop harness here. To stand in for the IM600XL board, publish `VendingMachineSimulator(machine_id=...).build_capabilities()` on `capabilities/vending` before the sale. Use `_wire_dispenser_runtime` with the IM600XL fixture set from Task 4, so profiles validate against those capabilities with no `CFG-101`. Tests:
   - Credit, then `ButtonPress(button="button_ice")`, then a `complete` `hardware/dispenser` report → one ice sale recorded, and no `hardware/io/bin_half_full` was ever published in that test.
   - Credit, then `button_water_1gal`, then `complete` → one water sale.
   - `hardware/io/sump_high` true → `payment_enabled()` false and `WTR-104` active; false → payment re-enabled and the fault cleared.
   - `hardware/io/water_pressure_ok` false → water refused, ice still sellable, `faults.lockouts` unchanged; true → water sellable again.
-- [ ] **Step 2: Run it** (`uv run pytest tests/integration -q`). These skip without a broker on `localhost:1883`; a local skip is not a pass. Confirm on CI's integration job, where a skip fails the build. Fix only test-harness issues; any product defect goes back to its task.
-- [ ] **Step 3: Update the docs.**
-- [ ] **Step 4: Full verification** — `uv run pytest`, `ruff check .`, `ruff format --check .`, `uv run lint-imports`, `uv run python scripts/check_package_isolation.py`, `uv run python -m ice_contracts.generate` leaves no diff.
-- [ ] **Step 5: Commit** — `docs: IM600XL simulator — contract 2.0.0, inputs, timers`
+- [ ] **Step 3: Run them** (`uv run pytest tests/integration -q`). The e2e tests skip without a broker on `localhost:1883`; a local skip is not a pass. Confirm on CI's integration job, where a skip fails the build. The cross-check must pass locally. Fix only test-harness issues; any product defect goes back to its task.
+- [ ] **Step 4: Update the docs.**
+- [ ] **Step 5: Full verification** — `uv run pytest`, `ruff check .`, `ruff format --check .`, `uv run lint-imports`, `uv run python scripts/check_package_isolation.py`, `uv run python -m ice_contracts.generate` leaves no diff, `tests/meta/test_test_isolation.py` passes with an empty allowlist.
+- [ ] **Step 6: Commit** — `docs: IM600XL simulator — contract 2.0.0, inputs, timers, simulator modules`

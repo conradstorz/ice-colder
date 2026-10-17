@@ -98,8 +98,9 @@ with `uv run python -m ice_contracts.generate`.
 - `Availability` learns from the vending board's validated capabilities whether `bin_half_full` is
   declared. If it is not, the `ice_available` row becomes **not instrumented** (passes, detail "no bin
   sensor"), so ice stays sellable. A board that does declare it keeps today's behaviour.
-- `FaultService` arms a labelled timer, **`ice_retry_cooldown`**, whenever it raises `ICE-101` while the bin
-  is not instrumented. When it fires, the `ICE-101` lockouts clear (`by="cooldown"`, recorded as today's
+- A dedicated `ice_edge.faults.ice_retry.IceRetry` collaborator (notified through a generic
+  `FaultService.subscribe_fault_change` hook, so `FaultService` itself carries no retry policy) arms a labelled
+  timer, **`ice_retry_cooldown`**, whenever `ICE-101` is raised while the bin is not instrumented. When it fires, the `ICE-101` lockouts clear (`by="cooldown"`, recorded as today's
   `lockout_cleared` row). A further timed-out fill raises `ICE-101` again and re-arms the timer. Clearing by
   an operator cancels the timer. The timer is not persisted; after a restart an `ICE-101` lockout (itself
   not persisted) is simply gone.
@@ -118,6 +119,9 @@ with `uv run python -m ice_contracts.generate`.
 
 Rows for inputs the board does not declare stay "not instrumented", as today.
 
+The input channel ids and their state→fault mapping are contract constants (`ice_contracts.board.vending_machine`:
+`VendingChannel`, `INPUT_FAULTS`), so the simulator and the edge share names only through the contract.
+
 The edge does not consume board alerts (there is no `alert/vending` subscription), so the **edge raises and
 clears the faults itself** from the same `hardware/io` transitions, through `FaultService.raise_fault` /
 `clear_fault` (`by="hardware"`):
@@ -135,7 +139,15 @@ different input. All four are machine-scope, so no input ever raises or clears a
 false report, or by an operator. `WTR-107` is detection only: stopping the RO pump at its limit is the board's job (§5.2).
 `ConfigModel.physical` gains `ro_max_run_seconds: float = 3600` (60–86400).
 
-## 5. Simulator (`ice_sims.vending_machine`)
+## 5. Simulator (`ice_sims.vending`)
+
+The simulator is first split, with no behaviour change, into isolated modules under `ice_sims.vending`:
+one declarative channel table (`channels`), profile execution behind a narrow board port (`dispense`), the
+customer loop (`customer`), fault injection (`faults`), Home Assistant entities (`ha`), pure physical models
+(`ro_tank`, `climate`: no MQTT, no sleep), and the composing `simulator` class that alone owns publishing.
+`ice_sims.vending_machine` stays as the thin entry module. Simulator tests never import `ice_edge`; the
+simulator-capabilities × edge-validation check lives in `tests/integration/`. The simulator refuses (terminal
+`error`) a profile naming a channel it does not declare, as a real board would.
 
 ### 5.1 Channels
 
