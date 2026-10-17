@@ -40,7 +40,11 @@ dispenser (1- and 5-gallon), an autonomous cash/MDB payment system, a freeze-pro
 customer display. The guiding safety rule: **the computer supervises, but it is never the only thing that
 stops a motor, closes a valve, or limits a heater** — hardwired interlocks do that.
 
-→ [ROADMAP §1 The machine](../ROADMAP.md#1-the-machine) · [ROADMAP §2 Responsibility split](../ROADMAP.md#2-responsibility-split)
+The real machine is a Kooler Ice IM600XL; its first-iteration inputs and outputs, from replacing its
+Siemens PLC, are listed in the [IM600XL I/O list](hardware/im600xl-io-list.md).
+
+→ [ROADMAP §1 The machine](../ROADMAP.md#1-the-machine) · [ROADMAP §2 Responsibility split](../ROADMAP.md#2-responsibility-split) ·
+[IM600XL I/O list](hardware/im600xl-io-list.md)
 
 ## Architecture at a glance
 
@@ -284,6 +288,8 @@ Not yet built: real firmware and hardware, real payment gateways, CCTV, and a pr
 **Architecture** — [Reference architecture](vending-system-reference-architecture.md) ·
 [Layer contracts](superpowers/specs/2026-10-13-layer-contracts-design.md) ·
 [Gap analysis](aspirational-gap-analysis.md)
+
+**Hardware** — [IM600XL iteration 1 I/O list](hardware/im600xl-io-list.md)
 
 **Design specs** (`docs/superpowers/specs/`, each with a matching plan in
 [`docs/superpowers/plans/`](superpowers/plans/))
