@@ -25,6 +25,12 @@ inputs it does have.
 | D6 | RO tank empty | New `WTR-106`, a machine-scope **warning** (alert only). Water sales are blocked by the `ro_tank_ok` availability row, not by a product lockout. Does not block payment. |
 | D7 | RO production overrun | New `WTR-107`, warning only. |
 | D8 | Low water pressure | Existing `WTR-105` is re-scoped from product/`product_unavailable` to machine/`warning`. Water sales are blocked by the `water_pressure_ok` row. |
+| D9 | How inbound telemetry reaches its consumers | **The `TelemetryRouter` becomes pure fan-out** (§4.4): it validates, logs and publishes to typed subscriber lists; it holds no health, availability or fault handle. Health, availability, the dispenser gate and the two new fault collaborators subscribe. |
+| D10 | Who owns ICE-101 clearing | One collaborator, `IcePolicy` (§4.2), owns both clears: the bin-sensor clear (moved out of the router) and the new cooldown clear. |
+| D11 | Alert key of a machine-scope fault raised with a sku | Keyed by **scope** in `FaultRegistry`: a machine-scope code is always `"<code>:machine"` and its sku is dropped, whoever raised it (§4.5). |
+| D12 | `sensors/water_flow` | **Removed** from the contract, the edge and the simulator (§3.4). Volume is the `fill_pulses` counter. |
+| D13 | Availability rows versus faults for the water inputs | Both stay (rows block, faults alert), but the edge row table is keyed by `VendingChannel` and a test pins it to `INPUT_FAULTS` (§4.3), so neither side can grow a channel the other lacks. |
+| D14 | Simulator order of work | The module split lands **first**, before any contract or behaviour change, so every feature edit lands once in its final module (§5). |
 
 **Why D6/D8 are machine-scope alerts.** `FaultRegistry.lockouts` holds one code per sku: `raise_fault` overwrites
 a different code and `clear_fault(sku)` removes whatever code is there. Input-driven product lockouts would
@@ -74,9 +80,16 @@ A water vend reporting `bin_empty` therefore raises a machine-scope warning and 
 water sale is blocked only if the board reports `ro_tank_empty`.
 Low ambient temperature uses the existing health-monitor temperature alert; wiring `ENV-101` is out of scope.
 
-### 3.4 Docs
+### 3.4 Removed topic: `sensors/water_flow`
 
-`CONTRACT.md` gets a "Semantics fixed in 2.0.0 (breaking)" section covering 3.1–3.3; schemas are regenerated
+The cumulative-gallons reading on `sensors/water_flow` is removed from the contract (breaking). The IM600XL
+meters volume with the `fill_pulses` counter on `telemetry/vending/<id>`, which the edge already receives.
+The edge drops its subscription and handler, and the health monitor its `water_flow` channel; the simulator
+stops publishing it. `SensorReading` itself stays (it carries `sensors/temp/+`).
+
+### 3.5 Docs
+
+`CONTRACT.md` gets a "Semantics fixed in 2.0.0 (breaking)" section covering 3.1–3.4; schemas are regenerated
 with `uv run python -m ice_contracts.generate`.
 
 ## 4. Edge
@@ -98,12 +111,18 @@ with `uv run python -m ice_contracts.generate`.
 - `Availability` learns from the vending board's validated capabilities whether `bin_half_full` is
   declared. If it is not, the `ice_available` row becomes **not instrumented** (passes, detail "no bin
   sensor"), so ice stays sellable. A board that does declare it keeps today's behaviour.
-- A dedicated `ice_edge.faults.ice_retry.IceRetry` collaborator (notified through a generic
-  `FaultService.subscribe_fault_change` hook, so `FaultService` itself carries no retry policy) arms a labelled
-  timer, **`ice_retry_cooldown`**, whenever `ICE-101` is raised while the bin is not instrumented. When it fires, the `ICE-101` lockouts clear (`by="cooldown"`, recorded as today's
-  `lockout_cleared` row). A further timed-out fill raises `ICE-101` again and re-arms the timer. Clearing by
-  an operator cancels the timer. The timer is not persisted; after a restart an `ICE-101` lockout (itself
-  not persisted) is simply gone.
+- A dedicated `ice_edge.faults.ice_policy.IcePolicy` collaborator owns **every** ICE-101 clear (D10). It
+  subscribes to the router's hardware-IO fan-out (§4.4): `bin_half_full` reporting true clears the ICE-101
+  lockouts (`by="auto"`, today's behaviour, moved out of the router). It also subscribes to a generic
+  `FaultService.subscribe_fault_change` hook (so `FaultService` itself carries no retry policy) and arms a
+  labelled timer, **`ice_retry_cooldown`**, whenever `ICE-101` is raised while the bin is not instrumented.
+  When it fires, it drops its own timer handle first, then clears the `ICE-101` lockouts (`by="cooldown"`,
+  recorded as today's `lockout_cleared` row), so the `cleared` change it receives back finds nothing pending.
+  A further timed-out fill raises `ICE-101` again and re-arms the timer. Clearing by an operator cancels the
+  timer. The timer is not persisted; after a restart an `ICE-101` lockout (itself not persisted) is simply
+  gone.
+- `Availability.ice_available` keeps an active ICE-101 **above** the not-instrumented branch: a locked-out
+  bin fails the row whether or not the board has a bin sensor.
 - `ConfigModel.physical` gains `ice_retry_cooldown_seconds: float = 1800` (60–86400).
 
 ### 4.3 Water and service inputs
@@ -120,7 +139,12 @@ with `uv run python -m ice_contracts.generate`.
 Rows for inputs the board does not declare stay "not instrumented", as today.
 
 The input channel ids and their state→fault mapping are contract constants (`ice_contracts.board.vending_machine`:
-`VendingChannel`, `INPUT_FAULTS`), so the simulator and the edge share names only through the contract.
+`VendingChannel`, `INPUT_FAULTS`), so the simulator and the edge share names only through the contract. The
+channel→row mapping is an edge concern and stays in `availability.py`, as one module-level table keyed by
+`VendingChannel` (row name, faulted state, detail) that `set_hardware_io` iterates — no per-device if-chain.
+A test asserts that table's keys equal the `INPUT_FAULTS` channels plus `bin_half_full` and `service_door`
+(D13), so a channel added to one side without the other fails the suite, and no edge row name enters the
+contract.
 
 The edge does not consume board alerts (there is no `alert/vending` subscription), so the **edge raises and
 clears the faults itself** from the same `hardware/io` transitions, through `FaultService.raise_fault` /
@@ -139,13 +163,57 @@ different input. All four are machine-scope, so no input ever raises or clears a
 false report, or by an operator. `WTR-107` is detection only: stopping the RO pump at its limit is the board's job (§5.2). The board's cutoff must be longer than `ro_max_run_seconds`, or the edge never sees the overrun.
 `ConfigModel.physical` gains `ro_max_run_seconds: float = 3600` (60–86400).
 
+### 4.4 Telemetry fan-out (D9)
+
+`ice_edge.hal.mqtt_inbound.TelemetryRouter` becomes a pure boundary: each `handle_*` validates the payload,
+writes the wire-level log line, and publishes to a typed subscriber list. It is constructed with nothing
+(it owns the capabilities store) and holds no health, availability, gate or fault reference. Seven
+subscribe methods, each returning an unsubscribe callable:
+
+| Method | Callback | Notes |
+|---|---|---|
+| `subscribe_hardware_io` | `(device: str, state: bool)` | `hardware/io/+` |
+| `subscribe_payment_status` | `(device: str, state: str)` | `payment/status` |
+| `subscribe_sensor` | `(location: str, value: float)` | `sensors/temp/+` |
+| `subscribe_heartbeat` | `(subsystem: str, data: dict, alive: bool)` | the last-will `uptime_seconds == -1` decode stays in the router (wire convention) |
+| `subscribe_ice_maker_event` | `(event: IceMakerEvent)` | `ice_maker/event` |
+| `subscribe_telemetry` | `(channel_id: str, value: float)` | `telemetry/ice_maker/+` |
+| `subscribe_capabilities` | `(subsystem: str, data: dict, caps: SubsystemCapabilities \| None)` | **replays** every stored document to a new subscriber; `caps` is `None` for a document that failed validation (health still records the raw document; the gate and availability ignore it) |
+
+`cmd/ice_maker/ack` only logs and has no subscribe method. Subscribers run in subscription order; a raising
+subscriber is logged and never stops the rest. That rule is implemented once, in `ice_common.observers.Subscribers`,
+which `FaultService.subscribe_fault_change` also uses (the VMC's two inline observer lists are out of scope).
+
+Consumers, each wired by `Machine` with explicit `subscribe_*` calls:
+
+- `ice_edge.monitoring.health_telemetry.HealthTelemetry` — an adapter owning every payload→`HealthMonitor`
+  call that is inline in the router today (`record_signal`, `record_temperature`, `record_heartbeat`,
+  `mark_offline`, `record_capabilities`, `record_channel`, the ice-maker log line). `HealthMonitor` itself
+  is unchanged.
+- `Availability.set_hardware_io` and `Availability.on_vending_capabilities` (§4.2).
+- `DispenserProfileGate.on_vending_capabilities` (as today, via subscription instead of a constructor callback).
+- `InputFaults.on_hardware_io` (§4.3) and `IcePolicy.on_hardware_io` (§4.2).
+
+`Machine.subsystem_capabilities` keeps returning the raw-document dict, now owned by the router.
+
+### 4.5 Alert keys follow scope (D11)
+
+`FaultRegistry.raise_fault` builds `alert_key` from the code's **scope**: product-scope → `"<code>:<sku>"`,
+machine-scope → `"<code>:machine"` with `RaisedFault.sku = None`, whatever `sku` the caller passed. Today a
+machine-scope code raised from the vend-failure path with a sku (after §3.3, a water `bin_empty` → `WTR-106`)
+would raise the health alert under one key and clear it under another; the health alert, the MQTT alert and
+`FaultChange` now agree. Callers are unchanged.
+
 ## 5. Simulator (`ice_sims.vending`)
 
-The simulator is first split, with no behaviour change, into isolated modules under `ice_sims.vending`:
-one declarative channel table (`channels`), profile execution behind a narrow board port (`dispense`), the
-customer loop (`customer`), fault injection (`faults`), Home Assistant entities (`ha`), pure physical models
-(`ro_tank`, `climate`: no MQTT, no sleep), and the composing `simulator` class that alone owns publishing.
-`ice_sims.vending_machine` stays as the thin entry module. Simulator tests never import `ice_edge`; the
+The simulator is split **first** (D14), with no behaviour change and before any contract task, into isolated
+modules under `ice_sims.vending`: the board port protocol (`board`), one declarative channel table
+(`channels`), profile execution against the port (`dispense`), the customer loop (`customer`), fault
+injection (`faults`), Home Assistant entities (`ha`), pure physical models (`ro_tank`, `climate`: no MQTT,
+no sleep), and the composing `simulator` class that alone owns publishing and the MQTT client. Every module
+but `simulator` talks to the board only through `BoardPort`; fault injections are plain `(activate, recover)`
+pairs over a `BoardPort`, adapted to the base class's `FaultDef` by `simulator` alone. An `ast` test pins the
+one import direction (`simulator → the rest`). `ice_sims.vending_machine` stays as the thin entry module. Simulator tests never import `ice_edge`; the
 simulator-capabilities × edge-validation check lives in `tests/integration/`. The simulator refuses (terminal
 `error`) a profile naming a channel it does not declare, as a real board would.
 
@@ -211,9 +279,13 @@ matching `button` values.
   includes `drop_seconds`; `catch_channel` participates in conflict checks; new fault table rows; regenerated
   schemas drift-tested.
 - **Edge:** button → product lookup (hit, unknown, duplicate rejected in config); test sale still selects
-  by product; `ice_available` not instrumented when the board lacks `bin_half_full`; `ice_retry_cooldown`
-  fires and clears via `FakeTaskRunner`, re-raise re-arms, operator clear cancels; the three new
-  `set_hardware_io` devices drive their rows and gates; each §4.3 input raises and clears its machine-scope
+  by product; `ice_available` not instrumented when the board lacks `bin_half_full`, and still failing while
+  ICE-101 is active; `ice_retry_cooldown` fires and clears via `FakeTaskRunner`, re-raise re-arms, operator
+  clear cancels; `bin_half_full` true still clears ICE-101 (`by="auto"`) through `IcePolicy`; every router
+  subscription delivers in order, isolates a raising subscriber, replays capabilities on subscribe, and
+  unsubscribes; a machine-scope code raised with a sku clears its health alert when cleared by code; the
+  availability row table's keys equal `INPUT_FAULTS` plus the bin and door channels; a `drop_seconds` finding
+  reports path `release.drop_seconds`; the three new `set_hardware_io` devices drive their rows and gates; each §4.3 input raises and clears its machine-scope
   fault and touches no product lockout (a pre-existing vend-failure lockout survives the input's raise and
   recovery); `ro_production` held on past `ro_max_run_seconds` raises
   `WTR-107`, turning it off leaves it active, and `ro_tank_full` clears it.
@@ -225,7 +297,8 @@ matching `button` values.
 
 ## 9. Documentation updates
 
-`CLAUDE.md` (contract version, timer labels now eight, fault codes, simulator channels, buttons);
+`CLAUDE.md` (contract version, timer labels now eight, fault codes, simulator channels, buttons, the
+router fan-out and its consumers, `IcePolicy`, `InputFaults`, the alert-key rule, `sensors/water_flow` gone);
 the I/O list §7 (divergences resolved); `ROADMAP.md` §3 (rows now instrumented).
 
 ## 10. Out of scope
