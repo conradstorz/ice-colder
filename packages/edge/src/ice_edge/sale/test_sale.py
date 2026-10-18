@@ -154,7 +154,7 @@ class TestSaleRunner:
         real ``cmd/payment/refund``: test money is not real money and this
         is not a refund (system-tests design §2.3).
         """
-        _, product = self._vmc.find_product(sku)
+        product = self._vmc.find_product(sku)
         if product is None:
             raise ValueError(f"run_test_sale: unknown product sku {sku!r}")
 

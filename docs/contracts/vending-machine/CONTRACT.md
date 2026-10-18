@@ -1,4 +1,4 @@
-# Vending Machine Contract — v1.0.0
+# Vending Machine Contract — v2.0.0
 
 This document and the JSON Schema files in `schemas/` define the interface
 between the ice-colder VMC and the vending ESP32 firmware plus the MDB
@@ -106,6 +106,52 @@ A command whose parameters fail the contract's bounds (e.g., `water_valve` with 
 ### Capabilities advertisement
 
 `SubsystemCapabilities.commands` lists **every** command the firmware supports, including the three standard commands (`ping`, `self_test`, `force_report`), the actuator commands (`dispense`, `water_valve`, `bill_acceptor_test`, `coin_return_test`, `card_reader_test`), and any control commands (`set_interval` for the ice maker). The VMC maintains a server-side allowlist, `TESTABLE_COMMANDS` in `packages/contracts/src/ice_contracts/board/common.py`, containing exactly the standard commands and the test-mode actuator commands; this allowlist is separate from what firmware advertises. A test button in the dashboard appears only for a command that is both allowlisted and advertised by the subsystem, ensuring firmware that ignores the command channel remains unaffected and a crafted request cannot invoke a control command through the test UI.
+
+## Semantics fixed in 2.0.0 (breaking)
+
+Major bump: `ButtonPress.button` changes type on the wire, and a topic is removed.
+
+- **`ButtonPress.button` is a channel id, not a list position.** It was
+  `int` (`ge=0`, the product's index in the VMC's catalog); it is now a
+  `str` matching `CHANNEL_ID_PATTERN`, the id of the button input that was
+  pressed (for example `"button_ice"`). Every button a board can report MUST
+  be declared in its capabilities as a binary input channel. The VMC maps a
+  button to a product through `Product.button` in its own catalog (no
+  physical button = `None`); an id no product claims is logged and ignored,
+  never an error. Button ids are deliberately not in `VendingChannel`: they
+  carry no meaning to the edge beyond that catalog mapping.
+- **`ReleaseByCatch`** is a third member of the `ReleaseStep` union
+  (`proof: "catch"`, `catch_channel`, `drop_seconds` 0.5-30 s). The board
+  MUST energize the catch before any motion of the ice sequence (before
+  agitate) and hold it through the fill; the release step de-energizes it to
+  drop the bag, waits `drop_seconds`, then reports the step complete. The
+  catch is left de-energized between vends, and a fault anywhere in the
+  sequence also de-energizes it. `catch_channel` is a drive channel for the
+  drive/sense conflict check and `drop_seconds` counts toward
+  `worst_case_seconds`. `ReleaseBySensor` and `ReleaseTimed` are unchanged.
+- **Fault codes.** `WTR-105` is now a machine-scope `warning` (was a
+  product-scope `product_unavailable`). New machine-scope warnings:
+  `WTR-106` (RO storage tank empty) and `WTR-107` (RO production ran past
+  its maximum time without the tank reporting full). None is payment-blocking;
+  `PAYMENT_BLOCKING_FAULTS` is unchanged (seven codes).
+  `OUTCOME_FAULTS[("water_fill", bin_empty)]` changes from `ICE-101` to
+  `WTR-106`, so a water vend reporting `bin_empty` raises a machine-scope
+  warning and locks no product. The alert key of a machine-scope fault is
+  always `"<code>:machine"`, whoever raised it and whether or not a sku was
+  supplied.
+- **`VendingChannel` and `INPUT_FAULTS`.** `VendingChannel` names the channel
+  ids on the vending board that carry meaning to the edge (`bin_half_full`,
+  `sump_high`, `water_pressure_ok`, `ro_tank_empty`, `ro_tank_full`,
+  `ro_production`, `service_door`); all are optional, and a board declaring
+  none of them is valid. `INPUT_FAULTS` maps a binary input's faulted state to
+  its code: `sump_high` true -> `WTR-104`, `water_pressure_ok` false ->
+  `WTR-105`, `ro_tank_empty` true -> `WTR-106`. (`WTR-107` is a duration
+  rule on `ro_production`, so it is not listed.)
+- **`sensors/water_flow` is removed.** The cumulative-gallons reading is no
+  longer part of the contract; volume is metered by the `fill_pulses`
+  counter on `telemetry/vending/<id>`. The VMC drops its subscription and
+  handler and the health monitor its `water_flow` channel. `SensorReading`
+  stays (it carries `sensors/temp/+`).
 
 ## Semantics fixed in 1.0.0 (breaking)
 

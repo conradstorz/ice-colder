@@ -155,7 +155,7 @@ def test_select_product_refuses_cfg101_locked(tmp_path):
 
     messages = []
     vmc.outputs.set_message_callback(messages.append)
-    vmc.select_product(2)  # "X"
+    vmc.select_product(vmc.products[2])  # "X"
 
     assert vmc.selected_product is None
     assert "CFG-101" in messages[-1]

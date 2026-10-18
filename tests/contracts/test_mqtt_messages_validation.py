@@ -33,9 +33,16 @@ class TestPaymentEventBounds:
 
 
 class TestOtherMessageBounds:
-    def test_button_press_rejects_negative_index(self):
+    @pytest.mark.parametrize("bad", [0, -1, "Bad-Id", ""])
+    def test_button_press_rejects_non_channel_ids(self, bad):
         with pytest.raises(ValidationError):
-            ButtonPress(button=-1)
+            ButtonPress(button=bad)
+
+    def test_button_press_round_trips_a_named_button(self):
+        press = ButtonPress(button="button_ice")
+        again = ButtonPress.model_validate_json(press.model_dump_json())
+        assert again.button == "button_ice"
+        assert again.action == "pressed"
 
     def test_dispense_command_requires_mechanism_and_profile(self):
         report = validate_document(GOOD, [ICE, WATER])
