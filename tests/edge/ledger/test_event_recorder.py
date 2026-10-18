@@ -766,6 +766,31 @@ class TestRecordSaleIdempotentParam:
         assert len(rows) == 2  # both plain inserts landed, no deduplication
 
 
+class TestFreshDatabaseWal:
+    """Issue #95: WAL must be set at init, not inside the first sale."""
+
+    def test_fresh_database_is_wal_after_construction(self, tmp_path):
+        db = tmp_path / "e.db"
+        EventRecorder(db_path=str(db))
+        conn = sqlite3.connect(db)
+        try:
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        finally:
+            conn.close()
+
+    def test_sale_right_after_kpi_event_on_fresh_db_succeeds(
+        self, tmp_path, journal_path
+    ):
+        rec = EventRecorder(db_path=str(tmp_path / "e.db"))
+        rec.record("dispense", value=1.0)
+        rec.record_sale("SKU1", "Ice", 0, 2.00, {"cash": 2.00}, ts=1000.0)
+        rec.flush()
+        with sqlite3.connect(rec.db_path) as conn:
+            rows = conn.execute("SELECT sku, price FROM sales").fetchall()
+        assert rows == [("SKU1", 2.00)]
+        assert not journal_path.exists()
+
+
 class TestRecordSaleFailureJournal:
     def test_failed_insert_appends_exactly_one_fsynced_journal_line(
         self, tmp_path, monkeypatch, journal_path

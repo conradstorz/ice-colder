@@ -223,7 +223,7 @@ class EventRecorder:
       handlers never block on SD-card writes. ``record_cash_collection()``
       rides the same queue for the same reason.
     - ``record_sale()`` is synchronous and durable: it opens its own
-      connection (WAL mode, synchronous=NORMAL) and returns only once the
+      connection (synchronous=NORMAL; the file is WAL, set at init) and returns only once the
       row is committed, because the caller (the VMC's dispense path) must
       know the sale is on disk before it resumes. It deliberately does not
       use the writer queue.
@@ -405,6 +405,12 @@ class EventRecorder:
         # important on Windows, where a rename fails while a handle is open.
         conn = sqlite3.connect(self._db_path)
         try:
+            # journal_mode=WAL is a persistent property of the file. It must
+            # be set here, before the writer thread's connection exists:
+            # changing it needs an exclusive lock and fails ("database is
+            # locked") if done later while that connection holds a write
+            # transaction (issue #95).
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS events (
                     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -447,8 +453,9 @@ class EventRecorder:
 
     @staticmethod
     def _configure_sale_connection(conn: sqlite3.Connection) -> None:
-        """WAL + synchronous=NORMAL, shared by record_sale and replay_sales_journal."""
-        conn.execute("PRAGMA journal_mode=WAL")
+        """synchronous=NORMAL, shared by record_sale and replay_sales_journal.
+
+        WAL is persistent on the file and set once in ``_init_db``."""
         conn.execute("PRAGMA synchronous=NORMAL")
 
     @staticmethod
@@ -563,12 +570,12 @@ class EventRecorder:
         and a single long-lived ``sqlite3.Connection`` is not safe to reuse
         across threads without an explicit lock serializing every caller
         behind it -- which would also defeat the purpose of using a thread
-        pool. A fresh connection per call needs no lock and each call's WAL
-        + synchronous=NORMAL setup is cheap next to a disk fsync.
+        pool. A fresh connection per call needs no lock and each call's
+        synchronous=NORMAL setup is cheap next to a disk fsync.
 
         ``journal_mode=WAL`` is a persistent property of the database file,
-        not of this connection -- once set here it also applies to the
-        writer thread's long-lived connection to the same file.
+        set once in ``_init_db`` (never here: changing it mid-flight fails
+        while the writer thread's connection holds a transaction).
 
         ``idempotent`` (default ``False``, last parameter, opt-in): when
         ``True``, routes through ``_insert_sale_row``'s ``INSERT ... SELECT
