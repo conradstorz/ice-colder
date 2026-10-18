@@ -68,6 +68,17 @@ Topics, all under `vmc/{machine_id}/`:
 | `cmd/mdb`, `cmd/mdb/ack` | edge → board, board → edge | existing | `SubsystemCommand` / `CommandAck` (§6) |
 | `heartbeat/mdb`, `capabilities/mdb` | board → edge | unchanged | `SubsystemHeartbeat`, `SubsystemCapabilities` (device detail lives in `payment/state`, not in `channels`) |
 
+**Deviations recorded during implementation** (rather than silently drifting from the text above):
+
+- `CONTRACT.md` is hand-written and `schemas/` generated, matching the two existing contracts;
+  `generate.py` does not emit Markdown. The bullet above that says it emits `CONTRACT.md` is superseded.
+- The 3.0.0 removal of the legacy vending-contract payment models lands with spec 3 (edge migration),
+  when their last importer disappears; this plan ships the additive 2.1.0 instead so `ice_edge` and
+  `ice_sims` keep working unchanged in between. `TESTABLE_COMMANDS["mdb"]` likewise flips in spec 2 with
+  the simulator that advertises the new commands (`payment.MDB_TESTABLE_COMMANDS` is defined now).
+- `VendRequestParams.session_id` and `PayoutParams.sale_id` default to `None`, so omitting the key is
+  equivalent to sending `null` (price-first `vend_request`; payout with no sale attached).
+
 ### 3.1 Delivery
 
 - `boot_id`: random 8–32 char id minted at board boot. `seq`: `StrictInt ≥ 1`, monotonic within a

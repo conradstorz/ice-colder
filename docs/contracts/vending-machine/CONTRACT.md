@@ -1,4 +1,4 @@
-# Vending Machine Contract — v2.0.0
+# Vending Machine Contract — v2.1.0
 
 This document and the JSON Schema files in `schemas/` define the interface
 between the ice-colder VMC and the vending ESP32 firmware plus the MDB
@@ -17,9 +17,11 @@ All topics are relative to `vmc/{machine_id}/`.
 | Topic | Direction | Payload | Notes |
 |---|---|---|---|
 | `hardware/dispenser` | ESP32 → VMC | `DispenserStatus` (`packages/contracts/src/ice_contracts/board/mqtt_messages.py`) | `state` is a [`DispenserOutcome`](schemas/dispenser_outcome.schema.json) for terminal states, or a [`DispenseStep`](schemas/dispense_step.schema.json) (`agitate`/`fill`/`release`) for an intermediate step. `request_id` (v0.6.0) echoes the command-channel `dispense` request for both test runs and production sales (v1.0.0: production sales moved onto the command channel too — see `cmd/vending` below). `detail` (v1.0.0, optional) carries board-supplied text, e.g. `"stall 4.2 A"` or `"412 pulses"` |
-| `cmd/payment/refund` | VMC → gateway | [`PaymentRefundCommand`](schemas/payment_refund_command.schema.json) | QoS 1; `request_id` unique per refund |
-| `cmd/payment/refund/ack` | gateway → VMC | [`PaymentRefundResult`](schemas/payment_refund_result.schema.json) | QoS 1; exactly one per command; repeated `request_id` re-sends the stored result, never pays twice |
-| `cmd/payment/enable` | VMC → gateway | `PaymentEnableCommand {accept: bool}` | QoS 1; not retained; the VMC republishes on connect and whenever the `mdb` subsystem returns |
+| `payment/credit` | gateway → VMC | `PaymentEvent` (`packages/contracts/src/ice_contracts/board/mqtt_messages.py`) | **Deprecated** — superseded by [`../payment/CONTRACT.md`](../payment/CONTRACT.md); removed in 3.0.0 once the edge and simulator migrate. A credit event carrying a float dollar amount and a free-text method |
+| `payment/status` | gateway → VMC | `PaymentStatus` (`packages/contracts/src/ice_contracts/board/mqtt_messages.py`) | **Deprecated** — superseded by [`../payment/CONTRACT.md`](../payment/CONTRACT.md); removed in 3.0.0 once the edge and simulator migrate. Free-text payment device status |
+| `cmd/payment/refund` | VMC → gateway | [`PaymentRefundCommand`](schemas/payment_refund_command.schema.json) | **Deprecated** — superseded by [`../payment/CONTRACT.md`](../payment/CONTRACT.md); removed in 3.0.0 once the edge and simulator migrate. QoS 1; `request_id` unique per refund |
+| `cmd/payment/refund/ack` | gateway → VMC | [`PaymentRefundResult`](schemas/payment_refund_result.schema.json) | **Deprecated** — superseded by [`../payment/CONTRACT.md`](../payment/CONTRACT.md); removed in 3.0.0 once the edge and simulator migrate. QoS 1; exactly one per command; repeated `request_id` re-sends the stored result, never pays twice |
+| `cmd/payment/enable` | VMC → gateway | `PaymentEnableCommand {accept: bool}` | **Deprecated** — superseded by [`../payment/CONTRACT.md`](../payment/CONTRACT.md); removed in 3.0.0 once the edge and simulator migrate. QoS 1; not retained; the VMC republishes on connect and whenever the `mdb` subsystem returns |
 | `cmd/vending` | VMC → ESP32 | [`SubsystemCommand`](schemas/subsystem_command.schema.json) | QoS 1; test and control commands with per-subsystem params; **answer deadline 10 seconds** |
 | `cmd/vending/ack` | ESP32 → VMC | [`CommandAck`](schemas/command_ack.schema.json) | QoS 1; exactly one per command, correlated by `request_id`; idempotency: ESP32 keeps the last 32 `request_id`s and replays cached acks on duplicates |
 | `cmd/mdb` | VMC → gateway | [`SubsystemCommand`](schemas/subsystem_command.schema.json) | QoS 1; test and control commands; **answer deadline 10 seconds** |
@@ -95,6 +97,8 @@ An unknown command answered with status `unsupported`.
 
 ### MDB-specific commands
 
+**Deprecated** — superseded by [`../payment/CONTRACT.md`](../payment/CONTRACT.md); removed in 3.0.0 once the edge and simulator migrate. The new `cmd/mdb` command set (`set_policy`, `payout`, `vend_request`, `vend_result`, `end_session`, `return_escrow`, `device_reset`) is defined there.
+
 - **`bill_acceptor_test`** — no parameters. Cycles the bill acceptor's stacker motor; ack status `ok` with no result.
 - **`coin_return_test`** — no parameters. Actuates the coin return; ack status `ok` with no result.
 - **`card_reader_test`** — no parameters. Asks the card reader to run its own diagnostic; ack status `ok` with **`result`** carrying the reader's status text as a dict (e.g. `{"status": "reader OK, firmware 3.2"}`) — the only MDB command whose ack carries a `result`.
@@ -106,6 +110,19 @@ A command whose parameters fail the contract's bounds (e.g., `water_valve` with 
 ### Capabilities advertisement
 
 `SubsystemCapabilities.commands` lists **every** command the firmware supports, including the three standard commands (`ping`, `self_test`, `force_report`), the actuator commands (`dispense`, `water_valve`, `bill_acceptor_test`, `coin_return_test`, `card_reader_test`), and any control commands (`set_interval` for the ice maker). The VMC maintains a server-side allowlist, `TESTABLE_COMMANDS` in `packages/contracts/src/ice_contracts/board/common.py`, containing exactly the standard commands and the test-mode actuator commands; this allowlist is separate from what firmware advertises. A test button in the dashboard appears only for a command that is both allowlisted and advertised by the subsystem, ensuring firmware that ignores the command channel remains unaffected and a crafted request cannot invoke a control command through the test UI.
+
+## 2.1.0 (2026-10-18, additive)
+
+- `FaultCode` gains `PAY-105` (payment event gap: a `seq` gap, an unseen
+  `boot_id` starting above 1, or an unknown event kind; the cash count may be
+  off) and `PAY-106` / `PAY-107` / `PAY-108` (coin changer / bill validator /
+  cashless reader fault). All four are machine-scope `warning`.
+- None is in `PAYMENT_BLOCKING_FAULTS`, which stays at seven codes.
+- The MDB payment interface now has its own contract, `ice_contracts.board.payment`
+  1.0.0 ([`../payment/CONTRACT.md`](../payment/CONTRACT.md)). The legacy
+  payment models and topics above are deprecated but unchanged; their
+  removal is the major bump to 3.0.0, deferred until the edge and simulator
+  have migrated, so `ice_edge` and `ice_sims` keep working in between.
 
 ## Semantics fixed in 2.0.0 (breaking)
 
