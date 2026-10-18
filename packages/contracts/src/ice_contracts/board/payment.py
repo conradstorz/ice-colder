@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field, StrictInt, model_validator
 
 from ice_contracts.board.common import STANDARD_COMMANDS, _utc_now
 
-CONTRACT_VERSION = "1.0.0"
+CONTRACT_VERSION = "1.1.0"
 
 # Relative to `vmc/<machine_id>/`.
 PAYMENT_EVENT_TOPIC = "payment/event"
@@ -411,6 +411,11 @@ class DeviceResetParams(BaseModel):
     device: Device
 
 
+class CashSaleParams(BaseModel):
+    cents: PositiveCents
+    sale_id: Optional[str] = None
+
+
 PAYMENT_COMMANDS: tuple[str, ...] = (
     "set_policy",
     "payout",
@@ -419,6 +424,7 @@ PAYMENT_COMMANDS: tuple[str, ...] = (
     "end_session",
     "return_escrow",
     "device_reset",
+    "cash_sale",
 )
 
 # `return_escrow` takes no params, so it has no model.
@@ -429,6 +435,7 @@ PARAM_MODELS: dict[str, type[BaseModel]] = {
     "vend_result": VendResultParams,
     "end_session": EndSessionParams,
     "device_reset": DeviceResetParams,
+    "cash_sale": CashSaleParams,
 }
 
 # The future testable set for the `mdb` subsystem. `TESTABLE_COMMANDS["mdb"]`

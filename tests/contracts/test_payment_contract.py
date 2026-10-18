@@ -17,6 +17,7 @@ from ice_contracts.board.payment import (
     MDB_TESTABLE_COMMANDS,
     PARAM_MODELS,
     PAYMENT_COMMANDS,
+    CashSaleParams,
     DeviceResetParams,
     PayoutParams,
     PayoutReason,
@@ -97,7 +98,7 @@ def _envelope(event: dict, **over) -> dict:
 
 
 def test_contract_version():
-    assert CONTRACT_VERSION == "1.0.0"
+    assert CONTRACT_VERSION == "1.1.0"
 
 
 def test_topics():
@@ -555,6 +556,15 @@ class TestParamModels:
         assert {o.value for o in VendOutcome} == {"success", "failure"}
         VendResultParams(session_id="s1", request_id="req-00001", outcome="success")
 
+    def test_cash_sale_params(self):
+        assert CashSaleParams(cents=250).sale_id is None
+        assert CashSaleParams(cents=250, sale_id="s-1").sale_id == "s-1"
+
+    @pytest.mark.parametrize("cents", [0, 2.5, "250"])
+    def test_cash_sale_rejects_bad_cents(self, cents):
+        with pytest.raises(ValidationError):
+            CashSaleParams(cents=cents)
+
     def test_device_reset_rejects_unknown_device(self):
         DeviceResetParams(device="coin")
         with pytest.raises(ValidationError):
@@ -569,6 +579,21 @@ class TestCommandChannelRegistration:
     def test_every_param_model_has_a_validator(self):
         for key in PARAM_MODELS:
             assert key in COMMAND_PARAM_VALIDATORS
+
+    def test_cash_sale_is_a_registered_command(self):
+        assert "cash_sale" in PAYMENT_COMMANDS
+        for command in PAYMENT_COMMANDS:
+            if command != "return_escrow":
+                assert command in COMMAND_PARAM_VALIDATORS
+
+    def test_cash_sale_float_error_message(self):
+        with pytest.raises(ValidationError) as ei:
+            _cmd("cash_sale", {"cents": 2.5})
+        assert "cash_sale params invalid" in ei.value.errors()[0]["msg"]
+
+    def test_cash_sale_has_no_completion_timeout(self):
+        assert ("mdb", "cash_sale") not in COMPLETION_TIMEOUTS
+        _cmd("cash_sale", {"cents": 250, "sale_id": "s-1"})
 
     def test_param_models_cover_all_commands_but_return_escrow(self):
         assert set(PARAM_MODELS) == set(PAYMENT_COMMANDS) - {"return_escrow"}
@@ -647,6 +672,7 @@ def test_generate_registers_payment_contract():
         "vend_result_params",
         "end_session_params",
         "device_reset_params",
+        "cash_sale_params",
         "device_status",
         "payout_reason",
     }

@@ -156,6 +156,7 @@ COMMAND_PARAM_VALIDATORS: dict[str, Callable[[dict], None]] = {
     "vend_result": _payment_params_validator("vend_result"),
     "end_session": _payment_params_validator("end_session"),
     "device_reset": _payment_params_validator("device_reset"),
+    "cash_sale": _payment_params_validator("cash_sale"),
 }
 
 

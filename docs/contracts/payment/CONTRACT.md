@@ -1,4 +1,4 @@
-# Payment Contract — v1.0.0
+# Payment Contract — v1.1.0
 
 This document, together with the JSON Schema files in `schemas/`, defines the
 interface between the ice-colder VMC (the edge) and the MDB payment board: the
@@ -20,7 +20,12 @@ which are deprecated.
 ## Identity & versioning
 
 - The contract is versioned with [semver](https://semver.org/), starting at
-  **1.0.0** (`CONTRACT_VERSION` in `payment.py`).
+  **1.0.0**; the current version is **1.1.0** (`CONTRACT_VERSION` in
+  `payment.py`).
+- **1.1.0 (additive).** New command `cash_sale{cents, sale_id}`: the edge tells
+  the board a sale completed so the board lowers its `escrow_cents` by `cents`
+  (clamped at zero) and, when a cashless reader is present, sends MDB CASH SALE
+  to it. A 1.0.0 board simply does not advertise the command.
 - The board reports the contract version it implements in
   `capabilities/mdb.contract_version`.
 - **Minor** version bump: additive, backward-compatible change (new optional
@@ -45,6 +50,10 @@ All topics are relative to `vmc/{machine_id}/`.
 | `cmd/mdb` | edge → board | 1 / not retained | `SubsystemCommand` (vending contract, [schema](../vending-machine/schemas/subsystem_command.schema.json)); per-command params below |
 | `cmd/mdb/ack` | board → edge | 1 / not retained | `CommandAck` (vending contract, [schema](../vending-machine/schemas/command_ack.schema.json)) |
 | `heartbeat/mdb`, `capabilities/mdb` | board → edge | unchanged | `SubsystemHeartbeat`, `SubsystemCapabilities`; device detail lives in `payment/state`, not in `channels` |
+
+The board stays source-agnostic: it reports and lowers only the cash it holds
+in escrow, while the edge may also hold virtual-gateway credit that never
+touches these topics.
 
 Topic constants: `PAYMENT_EVENT_TOPIC`, `PAYMENT_EVENT_ACK_TOPIC`,
 `PAYMENT_STATE_TOPIC` in `payment.py`.
@@ -209,6 +218,7 @@ registered in `COMPLETION_TIMEOUTS`.
 | `end_session` | [`EndSessionParams`](schemas/end_session_params.schema.json): `session_id` | ack only → `session_ended{reason: edge}` |
 | `return_escrow` | `{}` (no params model) | ack only → `bill_returned{reason: edge}` if a bill was held, else ack `ok` with `detail: "no_bill"` |
 | `device_reset` | [`DeviceResetParams`](schemas/device_reset_params.schema.json): `device`: `coin` \| `bill` \| `cashless` | ack only → `device_status` once the device answers |
+| `cash_sale` | [`CashSaleParams`](schemas/cash_sale_params.schema.json): `cents` (> 0), `sale_id: str \| null` (default `null`) | ack only; board lowers `escrow_cents` by `cents`, clamped at zero (ack `ok` with `detail: "clamped"` when it clamps), and sends MDB CASH SALE to the reader when present |
 | `ping`, `self_test`, `force_report` | standard | unchanged |
 
 Two params default to `null`: `PayoutParams.sale_id` (no sale attached) and
@@ -226,7 +236,7 @@ today but the old contract never listed.
 |---|---|---|---|---|
 | mdb | `payout` | **long-running** | ack `phase="accepted"`, then a terminal `payout_result` event | fixed 60 s (`PAYOUT_COMPLETION_TIMEOUT_SECONDS`) |
 | mdb | `vend_request` | **long-running** | ack `phase="accepted"`, then `vend_approved` or `vend_denied` | fixed 45 s (`VEND_REQUEST_COMPLETION_TIMEOUT_SECONDS`) |
-| mdb | `set_policy`, `vend_result`, `end_session`, `return_escrow`, `device_reset`, `ping`, `self_test`, `force_report` | immediate | the ack itself | — (10 s ack deadline only) |
+| mdb | `set_policy`, `vend_result`, `end_session`, `return_escrow`, `device_reset`, `cash_sale`, `ping`, `self_test`, `force_report` | immediate | the ack itself | — (10 s ack deadline only) |
 
 **Board-side rules fixed by the contract:**
 
@@ -271,7 +281,8 @@ smallest enabled coin (an edge rule, recorded in the edge-migration spec).
 
 1. **Cash, pay-first.** `coin_accepted` / `bill_stacked` → edge escrow →
    button → dispense → if escrow > price, `payout{change, sale_id}` →
-   `payout_result`. Leftover becomes change at once; it is not held as a
+   `payout_result`; the edge also sends `cash_sale{price, sale_id}` once the
+   dispense completes. Leftover becomes change at once; it is not held as a
    balance. (The old leftover-stays-escrowed multi-vend is dropped: it makes
    the exact-change state unreasonable. A customer who wants two items pays
    again.)

@@ -27,6 +27,7 @@ from ice_contracts.board.ice_maker_monitor import (
     MonitorCapabilities,
 )
 from ice_contracts.board.payment import (
+    CashSaleParams,
     DeviceResetParams,
     DeviceStatus,
     EndSessionParams,
@@ -114,6 +115,7 @@ PAYMENT_MODELS = {
     "vend_result_params": VendResultParams,
     "end_session_params": EndSessionParams,
     "device_reset_params": DeviceResetParams,
+    "cash_sale_params": CashSaleParams,
     "device_status": DeviceStatus,
     "payout_reason": PayoutReason,
 }

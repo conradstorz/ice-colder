@@ -1,0 +1,26 @@
+{
+  "properties": {
+    "cents": {
+      "exclusiveMinimum": 0,
+      "title": "Cents",
+      "type": "integer"
+    },
+    "sale_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sale Id"
+    }
+  },
+  "required": [
+    "cents"
+  ],
+  "title": "CashSaleParams",
+  "type": "object"
+}
