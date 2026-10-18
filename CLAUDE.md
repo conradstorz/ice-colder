@@ -315,7 +315,12 @@ The Tests level (`packages/edge/src/ice_edge/web/routes/tests_level/`) lets a te
   publish — answering whether the VMC would currently refuse `dispense`,
   `water_valve`, or `payment/enable`; a subsystem window's output/input
   signal is inhibited iff its declared `driven_by` names a command this
-  returns true for.
+  returns true for. `bin_instrumented` (default true; `on_vending_capabilities`
+  sets it false when the vending board declares no `bin_half_full` channel)
+  makes `ice_available` pass with "no bin sensor" (ICE-101 still fails it
+  first). The module-level `_INPUT_ROWS` table maps `VendingChannel` -> row
+  (`sump_high`->`no_leak`, `water_pressure_ok`, `ro_tank_empty`->`ro_tank_ok`,
+  `service_door`); a test pins its keys to the contract's `INPUT_FAULTS`.
 - `health_monitor.py` - per-board signal store (subsystem-windows design):
   `record_signal(subsystem, channel_id, value, *, text=None)` tracks each
   declared channel's latest value plus binary transition/dwell timing
