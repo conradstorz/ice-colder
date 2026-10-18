@@ -176,7 +176,13 @@ async def catalog_form(request: Request, sku: str):
     return templates.TemplateResponse(
         request,
         "product_catalog.html",
-        context.template_context(request, level=level, product=product, error=None),
+        context.template_context(
+            request,
+            level=level,
+            product=product,
+            error=None,
+            button_value=product.button or "",
+        ),
     )
 
 
@@ -237,6 +243,7 @@ async def update_catalog(
                 level=level,
                 product=product,
                 error="Could not save changes.",
+                button_value=button,
             ),
         )
     if context.machine_instance:
