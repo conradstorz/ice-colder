@@ -437,6 +437,48 @@ static void test_master_enable_dropped_refuses_dispense(void) {
     for (int ch = 0; ch < kOutputCount; ++ch) TEST_ASSERT_EQUAL(0, count_output_on(r, ch));
 }
 
+static int health_events(const Rig& r, const char* text) {
+    int n = 0;
+    for (int i = 0; i < r.pub.count; ++i)
+        if (r.pub.events[i].type == EventType::Health && strcmp(r.pub.events[i].text, text) == 0) ++n;
+    return n;
+}
+
+static void test_sustained_master_enable_drop_emits_one_health_event(void) {
+    Rig r;
+    r.set_in(In::RoTankFull, false);  // the pump wants to run
+    r.core.vmc_seen();
+    r.io.current.master_enable = false;
+    for (int i = 0; i < 50; ++i) r.tick();
+    TEST_ASSERT_EQUAL(1, health_events(r, "master_enable_dropped"));
+    TEST_ASSERT_EQUAL(1, r.count(EventType::Health));
+    TEST_ASSERT_EQUAL(0, count_output_on(r, static_cast<int>(Out::RoProduction)));
+}
+
+static void test_master_enable_drop_with_vmc_silent_emits_one_event_per_detail(void) {
+    Rig r;
+    r.set_in(In::RoTankFull, false);
+    r.io.current.master_enable = false;  // VMC never seen: also silent
+    for (int i = 0; i < 50; ++i) r.tick();
+    TEST_ASSERT_TRUE(r.count(EventType::Health) <= 2);
+    TEST_ASSERT_TRUE(r.count(EventType::Health) >= 1);
+}
+
+static void test_trip_clears_then_second_onset_emits_again(void) {
+    Rig r;
+    r.set_in(In::RoTankFull, false);
+    r.core.vmc_seen();
+    r.io.current.master_enable = false;
+    for (int i = 0; i < 20; ++i) r.tick();
+    TEST_ASSERT_EQUAL(1, health_events(r, "master_enable_dropped"));
+    r.io.current.master_enable = true;
+    for (int i = 0; i < 20; ++i) r.tick();
+    TEST_ASSERT_EQUAL(1, health_events(r, "master_enable_dropped"));
+    r.io.current.master_enable = false;
+    for (int i = 0; i < 20; ++i) r.tick();
+    TEST_ASSERT_EQUAL(2, health_events(r, "master_enable_dropped"));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_accepted_after_catch_written);
@@ -458,5 +500,8 @@ int main(int, char**) {
     RUN_TEST(test_heater_bound_holds_through_sustained_trip);
     RUN_TEST(test_service_door_refuses_dispense_without_energizing);
     RUN_TEST(test_master_enable_dropped_refuses_dispense);
+    RUN_TEST(test_sustained_master_enable_drop_emits_one_health_event);
+    RUN_TEST(test_master_enable_drop_with_vmc_silent_emits_one_event_per_detail);
+    RUN_TEST(test_trip_clears_then_second_onset_emits_again);
     return UNITY_END();
 }

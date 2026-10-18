@@ -61,12 +61,6 @@ void Core::tick() {
 void Core::on_trip(uint32_t now, const char* detail) {
     if (dispenser_.state() == Dispenser::State::Running) dispenser_.abort(now, detail, guard_, pub_);
     cancel_valve(detail);
-    if (!trip_active_ || strcmp(trip_detail_, detail) != 0) {
-        Event e = {};
-        e.type = EventType::Health;
-        copy_text(e.text, sizeof(e.text), detail);
-        pub_.publish(e);
-    }
 }
 
 void Core::step(uint32_t now) {
@@ -78,6 +72,9 @@ void Core::step(uint32_t now) {
     if (io_ok_) scanner_.scan(raw_, now, pub_);
 
     static const char* const kLatching[3] = {"io_failure", "sump_high", "service_door"};
+    const bool prev_active = trip_active_;
+    char prev_detail[sizeof(trip_detail_)];
+    memcpy(prev_detail, trip_detail_, sizeof(prev_detail));
     TripReason why = {};
     const bool tripped =
         interlocks_.trip(scanner_, raw_, io_ok_, vmc_, guard_.any_motion(), guard_.any_on(), now, why);
@@ -85,7 +82,7 @@ void Core::step(uint32_t now) {
     bool skip_ro = false;
     bool io_failure = false;
     if (tripped) {
-        const bool onset = !trip_active_ || strcmp(trip_detail_, why.detail) != 0;
+        const bool onset = !prev_active || strcmp(prev_detail, why.detail) != 0;
         offline_only = strcmp(why.detail, "vmc_offline") == 0;
         io_failure = strcmp(why.detail, "io_failure") == 0;
         skip_ro = !offline_only && strcmp(why.detail, "service_door") != 0;
@@ -116,14 +113,30 @@ void Core::step(uint32_t now) {
 
     // Motion-conditioned rules see this step's requests only now: re-check before anything is written.
     TripReason why2 = {};
-    if (interlocks_.trip(scanner_, raw_, io_ok_, vmc_, guard_.any_motion(), guard_.any_on(), now, why2) &&
-        (!tripped || strcmp(why2.detail, why.detail) != 0)) {
+    const bool tripped2 =
+        interlocks_.trip(scanner_, raw_, io_ok_, vmc_, guard_.any_motion(), guard_.any_on(), now, why2);
+    if (tripped2 && (!tripped || strcmp(why2.detail, why.detail) != 0)) {
         step_trip_ = why2.detail;
         on_trip(now, why2.detail);
         guard_.all_off();
+    }
+
+    // One decision per tick: the effective trip is the second check's if it trips, else the first's.
+    if (tripped || tripped2) {
+        const char* detail = tripped2 ? why2.detail : why.detail;
+        if (!prev_active || strcmp(prev_detail, detail) != 0) {
+            Event e = {};
+            e.type = EventType::Health;
+            copy_text(e.text, sizeof(e.text), detail);
+            pub_.publish(e);
+        }
         trip_active_ = true;
-        copy_text(trip_detail_, sizeof(trip_detail_), why2.detail);
-        health_.set_latched(one_of(why2.detail, kLatching, 3));
+        copy_text(trip_detail_, sizeof(trip_detail_), detail);
+        health_.set_latched(one_of(detail, kLatching, 3));
+    } else {
+        trip_active_ = false;
+        trip_detail_[0] = '\0';
+        health_.set_latched(false);
     }
 
     if (io_ok_ && raw_.ambient_valid && (!temp_sent_ || now - last_temp_ms_ >= cfg_.temp_publish_ms)) {
