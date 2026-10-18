@@ -162,6 +162,15 @@ class PhysicalDetails(BaseModel):
             "WTR-107; must be shorter than the board's own cutoff"
         ),
     )
+    ice_retry_cooldown_seconds: float = Field(
+        1800.0,
+        ge=60,
+        le=86400,
+        description=(
+            "Seconds after an ICE-101 (no ice) lockout before it clears itself "
+            "and sales retry; used only when the vending board has no bin sensor"
+        ),
+    )
     location: Location = Field(
         default_factory=Location, description="Machine physical location"
     )

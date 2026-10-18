@@ -17,10 +17,6 @@ class BoardPort(Protocol):
 
     async def publish(self, topic_suffix: str, payload: BaseModel) -> None: ...
 
-    async def publish_current(
-        self, channel: str, amps: float
-    ) -> None: ...  # removed in Task 10
-
     async def sleep(self, seconds: float) -> None: ...
 
     def spawn(self, coro: Coroutine[Any, Any, None]) -> asyncio.Task: ...

@@ -2,10 +2,10 @@
 """
 Vending machine interface simulator.
 
-Simulates the physical vending hardware: product buttons, ice dispense
-(auger motor, agitator motor, fan, bag full sensor, bag drop solenoid),
-water dispense (water valve solenoid, water flow sensor), ice bin half-full
-detector, cabinet temperature sensor, and cabinet heater relay.
+Simulates the Kooler Ice IM600XL's vending board: customer buttons, the
+ice path (agitator, auger, bag fan, trap-door catch, bag-full sensor), the
+water path (valve solenoid, flow-meter pulse counter) and the service
+inputs. The channel set is the one declarative table in `channels`.
 
 Dispensing itself (plan: dispenser profiles, Task 5) is driven entirely by
 the command channel: the VMC sends a `dispense` command on
@@ -25,7 +25,6 @@ Run: uv run python -m ice_sims.vending_machine [--broker HOST] [--port PORT] [--
 """
 
 import asyncio
-import random
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any
 
@@ -34,12 +33,8 @@ from loguru import logger
 from pydantic import BaseModel, ValidationError
 
 from ice_contracts.board.common import SubsystemCommand
-from ice_contracts.board.ice_maker_monitor import ChannelReading
-from ice_contracts.board.mqtt_messages import (
-    DispenseCommand,
-    HardwareIO,
-    SensorReading,
-)
+from ice_contracts.board.vending_machine import VendingChannel
+from ice_contracts.board.mqtt_messages import DispenseCommand, HardwareIO
 from ice_sims.base import CommandOutcome, ESP32Simulator, FaultDef
 from ice_sims.vending.channels import (
     CHANNELS,
@@ -50,6 +45,14 @@ from ice_sims.vending.customer import Customers
 from ice_sims.vending.dispense import Dispenser
 from ice_sims.vending.faults import InjectedFault, vending_faults
 from ice_sims.vending.ha import ha_discovery_entities
+
+
+# Inputs whose standing state is republished every sensor interval.
+_PERIODIC_INPUTS: tuple[str, ...] = (
+    VendingChannel.water_pressure_ok.value,
+    VendingChannel.sump_high.value,
+    VendingChannel.service_door.value,
+)
 
 
 class _Board:
@@ -66,9 +69,6 @@ class _Board:
 
     async def publish(self, topic_suffix: str, payload: BaseModel) -> None:
         await self._sim.publish(self._client, topic_suffix, payload)
-
-    async def publish_current(self, channel: str, amps: float) -> None:
-        await self._sim._publish_current(self._client, channel, amps)
 
     async def sleep(self, seconds: float) -> None:
         await self._sim.sleep(seconds)
@@ -129,10 +129,6 @@ class VendingMachineSimulator(ESP32Simulator):
         # lag-off state (Copilot review PR #32, finding C4); every call
         # gets a fresh, stateless `_Board`.
         self._dispenser = Dispenser()
-        self._cabinet_temp: float = 22.0  # starting cabinet temperature °C
-        self._water_flow_total: float = (
-            0.0  # cumulative gallons (HA water_flow_total entity on sensors/water_flow)
-        )
 
         for fault in vending_faults():
             self.register_fault(_fault_def(self, fault))
@@ -161,54 +157,13 @@ class VendingMachineSimulator(ESP32Simulator):
             client, f"hardware/io/{device}", HardwareIO(device=device, state=state)
         )
 
-    async def _publish_current(
-        self, client: aiomqtt.Client, channel: str, amps: float
-    ) -> None:
-        """Publish one current-sense reading on the generic telemetry path
-        (matching ice_sims/ice_maker.py's own `telemetry/<subsystem>/
-        <channel_id>` convention) -- there is no per-slot current topic of
-        its own."""
-        await self.publish(
-            client,
-            f"telemetry/{self.subsystem_name}/{channel}",
-            ChannelReading(channel_id=channel, value=amps),
-        )
-
     async def _publish_sensors(self, client: aiomqtt.Client):
-        """Periodically publish cabinet temperature, water flow, and bin level."""
+        """Periodically republish the standing service inputs (so a late
+        subscriber learns their state). Temperature arrives with the
+        environment model (Task 11); nothing publishes `sensors/water_flow`."""
         while True:
-            # Simulate cabinet temperature drift
-            self._cabinet_temp += random.gauss(0, 0.3)
-            # Heater kicks in below 5°C
-            if self._cabinet_temp < 5.0 and not self._hw["heater_relay"]:
-                await self.set_hw(client, "heater_relay", True)
-            elif self._cabinet_temp > 10.0 and self._hw["heater_relay"]:
-                await self.set_hw(client, "heater_relay", False)
-
-            # If water valve stuck open, keep incrementing flow
-            if self._hw.get("water_flow_sensor") and self._hw.get(
-                "water_valve_solenoid"
-            ):
-                self._water_flow_total += 0.1 * SENSOR_PUBLISH_INTERVAL
-
-            await self.publish(
-                client,
-                "sensors/temp/cabinet",
-                SensorReading(location="cabinet", value=round(self._cabinet_temp, 2)),
-            )
-            await self.publish(
-                client,
-                "sensors/water_flow",
-                SensorReading(
-                    location="water_flow",
-                    value=round(self._water_flow_total, 2),
-                    unit="gal",
-                ),
-            )
-
-            # Publish current bin level state
-            await self.set_hw(client, "bin_half_full", self._hw["bin_half_full"])
-
+            for channel in _PERIODIC_INPUTS:
+                await self.set_hw(client, channel, self._hw[channel])
             await asyncio.sleep(SENSOR_PUBLISH_INTERVAL)
 
     async def execute_profile(
@@ -298,17 +253,14 @@ class VendingMachineSimulator(ESP32Simulator):
         async def _run() -> None:
             try:
                 await self.set_hw(client, "water_valve_solenoid", True)
-                await self.set_hw(client, "water_flow_sensor", True)
                 await asyncio.sleep(seconds)
             finally:
                 # Copilot review (PR 22): the shutdown belongs here, not
                 # after the sleep, so a cancelled task (MQTT disconnect) or
-                # either hardware update raising still closes the valve and
-                # clears the flow sensor instead of leaving them enabled
-                # indefinitely. Idempotent to call even when the opening
-                # updates never completed (or never ran at all).
+                # the hardware update raising still closes the valve
+                # instead of leaving it open indefinitely. Idempotent to
+                # call even when the opening update never completed.
                 await self.set_hw(client, "water_valve_solenoid", False)
-                await self.set_hw(client, "water_flow_sensor", False)
             await self.publish_completion_ack(client, cmd, {"seconds": seconds})
 
         self._spawn_background(_run())
