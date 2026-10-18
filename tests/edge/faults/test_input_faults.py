@@ -153,3 +153,38 @@ async def test_hardware_io_message_reaches_input_faults_once(mach):
     await drain_pending(runner)
     assert len(_alerts(mqtt)) == 1
     assert m.faults.has(FaultCode.WTR_104)
+
+
+async def test_input_faults_wired_once_per_machine(mach):
+    """The live ro_overrun timer count is the real guard: a double
+    subscription would arm two timers (one per consumer). The raise
+    notification check is incidental, since a second raise of an already
+    active code is skipped and cannot reveal a duplicate subscriber."""
+    m, runner = mach
+    changes = []
+    m.faults.subscribe_fault_change(changes.append)
+    await _io(m, VendingChannel.sump_high, True)
+    await _io(m, VendingChannel.ro_production, True)
+    raised = [c for c in changes if c.action == "raised"]
+    assert [c.code for c in raised] == [FaultCode.WTR_104]
+    assert len([c for c in runner.scheduled if c.label == "ro_overrun"]) == 1
+
+
+async def test_pump_off_leaves_no_firable_overrun_timer(mach):
+    m, runner = mach
+    await _io(m, VendingChannel.ro_production, True)
+    await _io(m, VendingChannel.ro_production, False)
+    with pytest.raises(LookupError):
+        runner.fire("ro_overrun")
+    assert not m.faults.has(FaultCode.WTR_107)
+
+
+async def test_wtr105_clears_on_recovery_and_never_blocks_payment(mach):
+    m, _ = mach
+    await _io(m, VendingChannel.water_pressure_ok, False)
+    assert m.faults.has(FaultCode.WTR_105)
+    assert m.availability.payment_blocking_reasons() == []
+    assert m.availability.payment_enabled
+    await _io(m, VendingChannel.water_pressure_ok, True)
+    assert not m.faults.has(FaultCode.WTR_105)
+    assert m.availability.payment_blocking_reasons() == []

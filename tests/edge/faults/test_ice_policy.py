@@ -1,5 +1,13 @@
+import pytest
 from ice_common.config_model import ConfigModel
-from ice_contracts.board.vending_machine import FaultCode, VendingChannel
+from ice_contracts.board.common import ChannelDescriptor
+from ice_contracts.board.vending_machine import (
+    CONTRACT_VERSION,
+    FaultCode,
+    SubsystemCapabilities,
+    VendingChannel,
+)
+from pydantic import ValidationError
 from ice_edge.faults.fault_service import FaultChange
 from ice_edge.faults.ice_policy import IcePolicy
 from ice_edge.faults.availability import Availability
@@ -13,10 +21,12 @@ class FakeTasks:
 class FakeFaults:
     def __init__(self):
         self.cleared = 0
+        self.cleared_by = []
         self.lockouts = {}
 
     def clear_ice101_lockouts(self, by="auto"):
         self.cleared += 1
+        self.cleared_by.append(by)
 
 
 def make_policy(faults):
@@ -32,6 +42,7 @@ def test_bin_half_full_true_clears_ice101():
     faults = FakeFaults()
     make_policy(faults).on_hardware_io(VendingChannel.bin_half_full, True)
     assert faults.cleared == 1
+    assert faults.cleared_by == ["auto"]
 
 
 def test_bin_half_full_false_clears_nothing():
@@ -80,7 +91,6 @@ async def test_raise_arms_and_fire_clears_with_by_cooldown(machine_fake_time):
     assert machine.faults.is_locked("A1") is None
     assert cleared_by(rec) == ["cooldown"]
     assert labels(runner) == []
-    assert labels(runner) == []
 
 
 async def test_raise_again_after_fire_rearms(machine_fake_time):
@@ -90,7 +100,6 @@ async def test_raise_again_after_fire_rearms(machine_fake_time):
     runner.fire("ice_retry_cooldown")
     machine.faults.raise_fault(FaultCode.ICE_101, sku="A1")
     assert labels(runner) == ["ice_retry_cooldown"]
-    assert len(labels(runner)) == 1
 
 
 async def test_raise_twice_leaves_one_pending(machine_fake_time):
@@ -106,7 +115,6 @@ async def test_operator_clear_cancels_timer(machine_fake_time):
     machine.set_availability(uninstrumented())
     machine.faults.raise_fault(FaultCode.ICE_101, sku="A1")
     machine.faults.clear_fault("A1")
-    assert labels(runner) == []
     assert labels(runner) == []
 
 
@@ -147,9 +155,6 @@ def test_non_ice_change_ignored():
 
 
 def test_cooldown_config_bounds():
-    import pytest
-    from pydantic import ValidationError
-
     assert ConfigModel().physical.ice_retry_cooldown_seconds == 1800
     for bad in (59, 86401):
         with pytest.raises(ValidationError):
@@ -159,12 +164,6 @@ def test_cooldown_config_bounds():
 
 
 async def _send_vending_caps(machine, *channel_ids):
-    from ice_contracts.board.common import ChannelDescriptor
-    from ice_contracts.board.vending_machine import (
-        CONTRACT_VERSION,
-        SubsystemCapabilities,
-    )
-
     caps = SubsystemCapabilities(
         subsystem="vending",
         contract_version=CONTRACT_VERSION,

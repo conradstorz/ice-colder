@@ -157,7 +157,7 @@ def _render_product_form(
             inventory_count=inventory_count,
             tracked=tracked,
             error=error,
-            button=button or "",
+            button_value=button or "",
         ),
         status_code=status_code,
     )

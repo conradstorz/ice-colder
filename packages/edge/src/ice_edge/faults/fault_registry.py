@@ -96,7 +96,7 @@ class FaultRegistry:
         elif spec.scope is Scope.machine:
             self.machine_faults.setdefault(code, time.monotonic())
 
-        name = self._product_name(sku)
+        name = self._product_name(sku) if spec.scope is Scope.product else None
         message = f"{code.value} {spec.description}"
         if name:
             message += f" — product '{name}'"

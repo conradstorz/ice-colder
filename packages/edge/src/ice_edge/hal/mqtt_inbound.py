@@ -117,8 +117,14 @@ class TelemetryRouter:
         logger.debug(f"MQTT sensor [{topic}]: {data}")
         location = data.get("location", topic.split("/")[-1] if "/" in topic else topic)
         value = data.get("value")
-        if value is not None:
-            self._sensor.publish(location, float(value))
+        if value is None:
+            return
+        try:
+            reading = float(value)
+        except (TypeError, ValueError):
+            logger.warning(f"MQTT sensor [{topic}]: non-numeric value {value!r}")
+            return
+        self._sensor.publish(location, reading)
 
     async def handle_heartbeat(self, topic: str, data: dict) -> None:
         """Handle heartbeat from ESP32 subsystem (uptime -1 is the MQTT last will)."""

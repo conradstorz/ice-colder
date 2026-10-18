@@ -94,7 +94,8 @@ def test_no_python_identifiers_in_comments():
 def test_discriminator_comments_list_every_variant():
     """A discriminator field's comment must name every tag in its union,
     not just the live variant's own tag -- `mechanism`, ice `fill.proof`,
-    `release.proof`, and water `fill.proof` each have exactly two."""
+    `release.proof` (three: door_sensor, timed, catch), and water
+    `fill.proof` each name their whole union."""
 
     text = EXAMPLE_PATH.read_text(encoding="utf-8")
 
@@ -265,3 +266,13 @@ def test_missing_sample_value_fails_loudly():
         _render_table(AgitateStep, sample_without_run_seconds, [], ["x"])
 
     assert "AgitateStep.run_seconds" in str(exc_info.value)
+
+
+def test_every_non_live_variant_gets_an_alternate_block():
+    """The live release is `catch`; both other release variants must appear
+    as commented alternates (the union has three members, not two)."""
+
+    text = EXAMPLE_PATH.read_text(encoding="utf-8")
+    assert '# If proof = "timed" instead, the fields are:' in text
+    assert '# If proof = "door_sensor" instead, the fields are:' in text
+    assert '# If proof = "catch" instead' not in text
