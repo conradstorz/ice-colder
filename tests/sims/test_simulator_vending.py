@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from ice_common.config_model import ConfigModel
 from ice_contracts.board.common import SubsystemCommand
-from ice_contracts.board.vending_machine import DispenserOutcome, SubsystemCapabilities
+from ice_contracts.board.vending_machine import DispenserOutcome
 from ice_contracts.board.dispenser_schema import (
     Accessory,
     AgitateStep,
@@ -23,13 +23,11 @@ from ice_contracts.board.dispenser_schema import (
     WaterFillProfile,
     WaterFillTimed,
 )
-from ice_edge.vend.dispensers import validate_document
 from ice_contracts.board.mqtt_messages import ButtonPress, DispenseCommand
-from ice_sims.vending.channels import BUTTON_CHANNELS
+from ice_sims.vending.channels import BUTTON_CHANNELS, CHANNELS, HARDWARE_DEVICES
 from ice_sims.vending_machine import VendingMachineSimulator
-from tests.dispenser_fixtures import GOOD, ICE, WATER
 from tests.async_helpers import patch_module_sleep, settle
-from tests.repo_root import REPO_ROOT
+from tests.sims.vending_profiles import IM600XL_PROFILES
 
 
 _REAL_SLEEP = asyncio.sleep  # captured before any test patches asyncio.sleep
@@ -101,24 +99,14 @@ def _make_sim(**kwargs) -> VendingMachineSimulator:
     return VendingMachineSimulator(config=_make_config(), **kwargs)
 
 
-# Profiles reused across the fault/step-sequence tests below, built from
-# the shared fixture TOML (tests/dispenser_fixtures.py) rather than
-# hand-rolled models: `GOOD`'s slot 1 (bagged ice, bag_full_sensor +
-# door_sensor proofs, both accessories) and slot 2 (water, flow_volume
-# proof) are the only fixtures with the exact shapes this task's tests
-# need, and validating them here is itself a free consistency check that
-# the new channels (bag_fan, vending_now_light, door_sensor) actually
-# match what GOOD references.
-_GOOD_REPORT = validate_document(GOOD, [ICE, WATER])
-assert _GOOD_REPORT.ok, _GOOD_REPORT.render_text()
-ICE_PROFILE = _GOOD_REPORT.profiles[1]
-WATER_PROFILE = _GOOD_REPORT.profiles[2]
+# The IM600XL profiles (simulator-local contract models, no edge code):
+# slot 0 bagged ice released by the trap-door catch, slot 1 water 1 gal.
+ICE_PROFILE = IM600XL_PROFILES[0]
+WATER_PROFILE = IM600XL_PROFILES[1]
 
 _ICE_FAULTS = {
     "motor_stall",
     "auger_jam",
-    "bag_drop_solenoid_stuck",
-    "door_stuck_open",
     "ice_bin_empty",
 }
 
@@ -160,28 +148,16 @@ class TestInit:
         )
         VendingMachineSimulator(config=config)
 
-    def test_hardware_state_initialized(self):
+    def test_hardware_state_initialized_to_the_idle_defaults(self):
         sim = _make_sim()
-        assert sim._hw["auger_motor"] is False
-        assert sim._hw["agitator_motor"] is False
-        assert sim._hw["fan"] is False
-        assert sim._hw["bag_full_sensor"] is False
-        assert sim._hw["bag_drop_solenoid"] is False
-        assert sim._hw["water_valve_solenoid"] is False
-        assert sim._hw["water_flow_sensor"] is False
-        assert sim._hw["bin_half_full"] is True
-        assert sim._hw["heater_relay"] is False
-        assert sim._hw["bag_fan"] is False
-        assert sim._hw["vending_now_light"] is False
-        assert sim._hw["door_sensor"] is False
+        assert sim._hw == HARDWARE_DEVICES
+        assert sim._hw["water_pressure_ok"] is True
+        assert [d for d, state in sim._hw.items() if state] == ["water_pressure_ok"]
 
-    def test_cabinet_temp_initialized(self):
+    def test_hardware_state_is_a_copy_of_the_table(self):
         sim = _make_sim()
-        assert sim._cabinet_temp == 22.0
-
-    def test_water_flow_starts_at_zero(self):
-        sim = _make_sim()
-        assert sim._water_flow_total == 0.0
+        sim._hw["auger_motor"] = True
+        assert HARDWARE_DEVICES["auger_motor"] is False
 
 
 class TestButtonSelection:
@@ -193,57 +169,36 @@ class TestButtonSelection:
 
 
 class TestHADiscovery:
-    def test_returns_12_entities(self):
-        sim = _make_sim()
-        entities = sim.ha_discovery_entities()
-        assert len(entities) == 12
+    def test_entity_ids_are_the_binary_channels_plus_ambient_and_uptime(self):
+        entities = _make_sim().ha_discovery_entities()
+        binary = {c.channel_id for c in CHANNELS if c.kind == "binary"}
+        # Customer buttons arrive as ButtonPress events and never publish a
+        # hardware/io state, so they get no entity.
+        assert {e["object_id"] for e in entities} == (
+            (binary - set(BUTTON_CHANNELS)) | {"ambient", "uptime"}
+        )
 
-    def test_binary_sensor_count(self):
-        sim = _make_sim()
-        entities = sim.ha_discovery_entities()
+    def test_binary_entities_follow_hardware_io(self):
+        entities = _make_sim().ha_discovery_entities()
         binary = [e for e in entities if e["component"] == "binary_sensor"]
-        assert len(binary) == 9
+        assert len(binary) == 13
+        for entity in binary:
+            assert entity["state_topic_suffix"] == f"hardware/io/{entity['object_id']}"
 
-    def test_binary_sensor_names(self):
-        sim = _make_sim()
-        entities = sim.ha_discovery_entities()
-        binary_ids = {
-            e["object_id"] for e in entities if e["component"] == "binary_sensor"
-        }
-        expected = {
-            "auger_motor",
-            "agitator_motor",
-            "fan",
-            "bag_full_sensor",
-            "bag_drop_solenoid",
-            "water_valve_solenoid",
-            "water_flow_sensor",
-            "bin_half_full",
-            "heater_relay",
-        }
-        assert binary_ids == expected
-
-    def test_cabinet_temp_sensor(self):
-        sim = _make_sim()
-        entities = sim.ha_discovery_entities()
-        temp = next(e for e in entities if e["object_id"] == "cabinet_temp")
+    def test_ambient_temperature_sensor(self):
+        entities = _make_sim().ha_discovery_entities()
+        temp = next(e for e in entities if e["object_id"] == "ambient")
         assert temp["component"] == "sensor"
         assert temp["device_class"] == "temperature"
         assert temp["unit_of_measurement"] == "°C"
-        assert temp["state_topic_suffix"] == "sensors/temp/cabinet"
+        assert temp["state_topic_suffix"] == "sensors/temp/ambient"
 
-    def test_water_flow_sensor(self):
-        sim = _make_sim()
-        entities = sim.ha_discovery_entities()
-        flow = next(e for e in entities if e["object_id"] == "water_flow_total")
-        assert flow["component"] == "sensor"
-        assert flow["device_class"] == "water"
-        assert flow["unit_of_measurement"] == "gal"
-        assert flow["state_class"] == "total_increasing"
+    def test_no_removed_entities(self):
+        ids = {e["object_id"] for e in _make_sim().ha_discovery_entities()}
+        assert not ids & {"cabinet_temp", "water_flow_total", "fan", "heater_relay"}
 
     def test_uptime_sensor(self):
-        sim = _make_sim()
-        entities = sim.ha_discovery_entities()
+        entities = _make_sim().ha_discovery_entities()
         uptime = next(e for e in entities if e["object_id"] == "uptime")
         assert uptime["component"] == "sensor"
         assert uptime["name"] == "Vending Machine Uptime"
@@ -251,28 +206,25 @@ class TestHADiscovery:
         assert uptime["state_topic_suffix"] == "heartbeat/vending"
 
     def test_all_object_ids_unique(self):
-        sim = _make_sim()
-        entities = sim.ha_discovery_entities()
+        entities = _make_sim().ha_discovery_entities()
         ids = [e["object_id"] for e in entities]
         assert len(ids) == len(set(ids))
 
 
 class TestVendingFaultRegistration:
-    def test_ten_faults_registered(self):
+    def test_eight_faults_registered(self):
         sim = VendingMachineSimulator()
-        assert len(sim.fault_defs) == 10
+        assert len(sim.fault_defs) == 8
 
     def test_fault_names(self):
         sim = VendingMachineSimulator()
         names = {f.name for f in sim.fault_defs}
         assert names == {
             "auger_jam",
-            "bag_drop_solenoid_stuck",
             "water_valve_stuck_open",
             "ice_bin_empty",
             "motor_stall",
             "no_water_flow",
-            "door_stuck_open",
             "flow_runaway",
             "slow_flow",
             # low_flow (finding C7): a flow rate below
@@ -301,7 +253,7 @@ class TestAugerJamFault:
 
 class TestWaterValveStuckOpenFault:
     @pytest.mark.asyncio
-    async def test_activate_sets_valve_and_flow_sensor_on(self):
+    async def test_activate_sets_the_valve_on(self):
         sim = VendingMachineSimulator()
         set_hw_calls = []
 
@@ -311,11 +263,10 @@ class TestWaterValveStuckOpenFault:
         sim.set_hw = capture_set_hw
         client = AsyncMock()
         await _fault(sim, "water_valve_stuck_open").on_activate(client)
-        assert ("water_valve_solenoid", True) in set_hw_calls
-        assert ("water_flow_sensor", True) in set_hw_calls
+        assert set_hw_calls == [("water_valve_solenoid", True)]
 
     @pytest.mark.asyncio
-    async def test_recover_closes_valve_and_flow_sensor(self):
+    async def test_recover_closes_the_valve(self):
         sim = VendingMachineSimulator()
         set_hw_calls = []
 
@@ -325,37 +276,49 @@ class TestWaterValveStuckOpenFault:
         sim.set_hw = capture_set_hw
         client = AsyncMock()
         await _fault(sim, "water_valve_stuck_open").on_recover(client)
-        assert ("water_valve_solenoid", False) in set_hw_calls
-        assert ("water_flow_sensor", False) in set_hw_calls
+        assert set_hw_calls == [("water_valve_solenoid", False)]
 
 
 class TestIceBinEmptyFault:
     @pytest.mark.asyncio
-    async def test_activate_sets_bin_half_full_false(self):
+    async def test_touches_no_bin_channel(self):
         sim = VendingMachineSimulator()
         set_hw_calls = []
 
         async def capture_set_hw(client, device, state):
             set_hw_calls.append((device, state))
-            sim._hw[device] = state
 
         sim.set_hw = capture_set_hw
         client = AsyncMock()
         await _fault(sim, "ice_bin_empty").on_activate(client)
-        assert ("bin_half_full", False) in set_hw_calls
-
-    @pytest.mark.asyncio
-    async def test_recover_restores_bin_half_full(self):
-        sim = VendingMachineSimulator()
-        set_hw_calls = []
-
-        async def capture_set_hw(client, device, state):
-            set_hw_calls.append((device, state))
-
-        sim.set_hw = capture_set_hw
-        client = AsyncMock()
         await _fault(sim, "ice_bin_empty").on_recover(client)
-        assert ("bin_half_full", True) in set_hw_calls
+        assert set_hw_calls == []
+
+
+class TestSensorLoop:
+    @pytest.mark.asyncio
+    async def test_publishes_the_standing_inputs_and_no_temperature_or_flow(self):
+        sim = _make_sim()
+        topics: list[str] = []
+
+        async def capture_publish(client, topic, payload):
+            topics.append(topic)
+
+        sim.publish = capture_publish
+
+        async def stop(seconds):
+            raise asyncio.CancelledError
+
+        with patch_module_sleep("ice_sims.vending.simulator", stop):
+            with pytest.raises(asyncio.CancelledError):
+                # private: the periodic sensor loop has no public entry point
+                await sim._publish_sensors(AsyncMock())
+
+        assert topics == [
+            "hardware/io/water_pressure_ok",
+            "hardware/io/sump_high",
+            "hardware/io/service_door",
+        ]
 
 
 class TestCustomerPresses:
@@ -462,41 +425,34 @@ class TestVendingCapabilities:
         assert caps.contract_version == "2.0.0"
 
     def test_channels_match_spec_table_in_order(self):
-        """Spec §4.2's eleven-row vending table, copied exactly, in
-        declaration order, plus the six dispenser-profile channels (plan:
-        dispenser profiles, Task 5) appended at the end -- the dashboard
-        renders channels in whatever order build_capabilities lists them."""
+        """Spec §5.1, copied exactly -- the dashboard renders channels in
+        whatever order build_capabilities lists them."""
         caps = _make_sim().build_capabilities()
-        ids = [c.channel_id for c in caps.channels]
-        assert ids == [
-            "cabinet",
-            "water_flow",
+        assert [c.channel_id for c in caps.channels] == [
+            "bag_full_sensor",
             "button_ice",
             "button_water_1gal",
             "button_water_5gal",
-            "bag_full_sensor",
-            "water_flow_sensor",
-            "bin_half_full",
-            "auger_motor",
+            "ro_tank_full",
+            "ro_tank_empty",
+            "water_pressure_ok",
+            "sump_high",
+            "service_door",
             "agitator_motor",
-            "bag_drop_solenoid",
-            "water_valve_solenoid",
-            "fan",
-            "heater_relay",
+            "auger_motor",
             "bag_fan",
-            "vending_now_light",
-            "door_sensor",
-            "agitator_current",
-            "auger_current",
+            "trap_door_catch",
+            "water_valve_solenoid",
+            "ro_production",
+            "heater_power",
             "fill_pulses",
+            "ambient",
         ]
 
     def test_channel_directions_match_hardware_role(self):
         """Every HARDWARE_DEVICES key must be a declared binary channel
         (guards a device added to the sim but never declared), and the
-        output set is exactly the eight actuators -- never the sensors."""
-        from ice_sims.vending_machine import HARDWARE_DEVICES
-
+        output set is exactly the seven actuators -- never the sensors."""
         caps = _make_sim().build_capabilities()
         by_id = {c.channel_id: c for c in caps.channels}
         assert set(HARDWARE_DEVICES) <= set(by_id)
@@ -505,86 +461,48 @@ class TestVendingCapabilities:
 
         outputs = {c.channel_id for c in caps.channels if c.direction == "output"}
         assert outputs == {
-            "auger_motor",
             "agitator_motor",
-            "bag_drop_solenoid",
-            "water_valve_solenoid",
-            "fan",
-            "heater_relay",
+            "auger_motor",
             "bag_fan",
-            "vending_now_light",
+            "trap_door_catch",
+            "water_valve_solenoid",
+            "ro_production",
+            "heater_power",
         }
 
     def test_driven_by_matches_spec_table(self):
         caps = _make_sim().build_capabilities()
         driven_by = {c.channel_id: c.driven_by for c in caps.channels}
-        assert driven_by == {
-            "cabinet": None,
-            "water_flow": None,
-            "button_ice": None,
-            "button_water_1gal": None,
-            "button_water_5gal": None,
-            "bag_full_sensor": None,
-            "water_flow_sensor": None,
-            "bin_half_full": None,
-            "auger_motor": "dispense",
+        assert {k: v for k, v in driven_by.items() if v} == {
             "agitator_motor": "dispense",
-            "bag_drop_solenoid": "dispense",
-            "water_valve_solenoid": "water_valve",
-            "fan": None,
-            "heater_relay": None,
+            "auger_motor": "dispense",
             "bag_fan": "dispense",
-            "vending_now_light": "dispense",
-            "door_sensor": None,
-            "agitator_current": None,
-            "auger_current": None,
-            "fill_pulses": None,
+            "trap_door_catch": "dispense",
+            "water_valve_solenoid": "water_valve",
         }
+        assert set(driven_by) == {c.channel_id for c in CHANNELS}
 
     def test_channel_intervals(self):
-        """Analog channels publish on SENSOR_PUBLISH_INTERVAL; every binary
-        channel (and the two current channels) is declared at 1.0s per the
-        brief."""
+        """The temperature channel publishes on SENSOR_PUBLISH_INTERVAL;
+        every binary channel and the pulse counter is declared at 1.0 s."""
         from ice_sims.vending_machine import SENSOR_PUBLISH_INTERVAL
 
         caps = _make_sim().build_capabilities()
         by_id = {c.channel_id: c for c in caps.channels}
-        assert by_id["cabinet"].interval_seconds == SENSOR_PUBLISH_INTERVAL
-        assert by_id["water_flow"].interval_seconds == SENSOR_PUBLISH_INTERVAL
-        for channel_id in (
-            "bag_full_sensor",
-            "water_flow_sensor",
-            "bin_half_full",
-            "auger_motor",
-            "agitator_motor",
-            "bag_drop_solenoid",
-            "water_valve_solenoid",
-            "fan",
-            "heater_relay",
-            "bag_fan",
-            "vending_now_light",
-            "door_sensor",
-            "agitator_current",
-            "auger_current",
-            "fill_pulses",
-        ):
-            assert by_id[channel_id].interval_seconds == 1.0
+        assert by_id["ambient"].interval_seconds == SENSOR_PUBLISH_INTERVAL
+        for channel in caps.channels:
+            if channel.channel_id != "ambient":
+                assert channel.interval_seconds == 1.0
 
-    def test_water_flow_stays_gallons_pulses_move_to_fill_pulses(self):
-        """Review finding I1 (whole-branch review): `water_flow` must stay
-        declared in gallons -- the only vending telemetry `sensors/
-        water_flow` actually carries, and the only one the VMC subscribes
-        to (`ice_edge/sale/vmc.py`) -- while the per-fill flow-meter pulse
-        count the water-fill mechanism simulates lives on its own
-        `fill_pulses` channel. A regression that moves pulses back onto
-        `water_flow` (as commit 69c5fe7 briefly did) would make a
-        subsystem window show gallons under a "pulses" label."""
+    def test_fill_pulses_is_the_only_volume_metering(self):
+        """The IM600XL meters volume with the `fill_pulses` counter; the
+        cumulative-gallons `water_flow` channel is gone (spec §3.4)."""
         caps = _make_sim().build_capabilities()
         by_id = {c.channel_id: c for c in caps.channels}
-        assert by_id["water_flow"].unit == "gal"
-        assert by_id["water_flow"].kind == "counter"
+        assert "water_flow" not in by_id
         assert by_id["fill_pulses"].unit == "pulses"
         assert by_id["fill_pulses"].kind == "counter"
+        assert by_id["ambient"].kind == "temperature"
 
 
 class TestExecuteProfile:
@@ -606,32 +524,33 @@ class TestExecuteProfile:
                 hw_events.append((payload.device, payload.state))
 
         sim.publish = capture_publish
-        cmd = DispenseCommand(slot=1, mechanism="bagged_ice", profile=ICE_PROFILE)
+        cmd = DispenseCommand(slot=0, mechanism="bagged_ice", profile=ICE_PROFILE)
 
         await sim.execute_profile(client, cmd, request_id="req-ice-1")
 
         assert states == ["agitate", "fill", "release", "complete"]
 
-        assert ("agitator_motor", True) in hw_events
-        assert ("auger_motor", True) in hw_events
-        assert ("bag_drop_solenoid", True) in hw_events
+        # The catch is energized before any motion and held through the fill.
+        assert hw_events[0] == ("trap_door_catch", True)
+        assert hw_events.index(("trap_door_catch", True)) < hw_events.index(
+            ("agitator_motor", True)
+        )
+        # ... and released (de-energized) only after the bag is full.
+        assert hw_events.index(("bag_full_sensor", True)) < hw_events.index(
+            ("trap_door_catch", False)
+        )
 
-        # bag_fan's on_during is ["fill"] -- it must turn on before the
-        # fill step's own motor does.
-        fan_on_idx = hw_events.index(("bag_fan", True))
-        auger_on_idx = hw_events.index(("auger_motor", True))
-        assert fan_on_idx < auger_on_idx
+        # bag_fan's on_during is ["agitate", "fill"] -- on before the
+        # agitator, off again by the end.
+        assert hw_events.index(("bag_fan", True)) < hw_events.index(
+            ("agitator_motor", True)
+        )
         assert ("bag_fan", False) in hw_events
 
-        # vending_now_light's on_during is ["all"] -- on for the whole
-        # run, so it is the very first hardware/io event.
-        assert hw_events[0] == ("vending_now_light", True)
-        assert ("vending_now_light", False) in hw_events
-
         # Every output this run drove ends up off.
-        assert ("agitator_motor", False) in hw_events
-        assert ("auger_motor", False) in hw_events
-        assert ("bag_drop_solenoid", False) in hw_events
+        for channel in ("agitator_motor", "auger_motor", "trap_door_catch"):
+            assert [s for d, s in hw_events if d == channel][-1] is False
+        assert sim.dispenser.pending_lag_off == {}
 
     @pytest.mark.asyncio
     async def test_timed_fill_runs_exactly_max_run_seconds(self):
@@ -662,7 +581,7 @@ class TestExecuteProfile:
                 current_channel="unmonitored",
             ),
             release=ReleaseTimed(
-                proof="timed", solenoid_channel="bag_drop_solenoid", pulse_seconds=1.0
+                proof="timed", solenoid_channel="trap_door_catch", pulse_seconds=1.0
             ),
         )
         cmd = DispenseCommand(slot=3, mechanism="bagged_ice", profile=profile)
@@ -677,8 +596,6 @@ class TestExecuteProfile:
         [
             ("motor_stall", DispenserOutcome.error),
             ("auger_jam", DispenserOutcome.timeout),
-            ("bag_drop_solenoid_stuck", DispenserOutcome.jam),
-            ("door_stuck_open", DispenserOutcome.door_open),
             ("no_water_flow", DispenserOutcome.no_flow),
             ("flow_runaway", DispenserOutcome.over_dispense),
             ("slow_flow", DispenserOutcome.timeout),
@@ -710,7 +627,7 @@ class TestExecuteProfile:
         assert DispenserOutcome(terminal[-1]) is expected
 
         if fault == "ice_bin_empty":
-            assert terminal == ["bin_empty"]
+            assert terminal == ["agitate", "fill", "bin_empty"]
 
     @pytest.mark.asyncio
     async def test_water_fill_by_volume_stops_within_over_dispense_percent(self):
@@ -835,7 +752,7 @@ class TestExecuteProfile:
         fill = WaterFillByVolume(
             proof="flow_volume",
             valve_channel="water_valve_solenoid",
-            flow_sensor_channel="water_flow_sensor",
+            flow_sensor_channel="fill_pulses",
             target_volume_ml=210,
             pulses_per_liter=450.0,
             min_flow_ml_per_second=20.0,
@@ -921,7 +838,7 @@ class TestExecuteProfile:
             fill=fill,
             accessories={
                 "light": Accessory(
-                    channel="vending_now_light",
+                    channel="heater_power",
                     on_during=["all"],
                     lead_seconds=0.0,
                     lag_seconds=2.0,
@@ -938,7 +855,7 @@ class TestExecuteProfile:
         light_off_time = next(
             t
             for kind, val, t in events
-            if kind == "io" and val == ("vending_now_light", False)
+            if kind == "io" and val == ("heater_power", False)
         )
 
         assert complete_time == pytest.approx(1.0)
@@ -975,7 +892,7 @@ class TestExecuteProfile:
                     lag_seconds=0.0,
                 ),
                 "b": Accessory(
-                    channel="vending_now_light",
+                    channel="heater_power",
                     on_during=["fill"],
                     lead_seconds=2.0,
                     lag_seconds=0.0,
@@ -1026,7 +943,7 @@ class TestExecuteProfile:
             fill=fill,
             accessories={
                 "light": Accessory(
-                    channel="vending_now_light",
+                    channel="heater_power",
                     on_during=["all"],
                     lead_seconds=0.0,
                     lag_seconds=5.0,
@@ -1040,7 +957,7 @@ class TestExecuteProfile:
         await _REAL_SLEEP(0)
         # Run 1 has published its terminal report and is now blocked (via
         # the gate) in its own lag-off wait; the accessory is still on.
-        assert ("vending_now_light", True) in hw_events
+        assert ("heater_power", True) in hw_events
         assert not task1.done()
 
         task2 = asyncio.ensure_future(sim.execute_profile(client, cmd))
@@ -1051,61 +968,21 @@ class TestExecuteProfile:
         # Run 2's _enter_step cancelled run 1's pending lag-off; run 1's
         # own end-of-run sweep must not have turned the accessory off.
         assert task1.done()
-        assert ("vending_now_light", False) not in hw_events
+        assert ("heater_power", False) not in hw_events
         assert not task2.done()  # run 2 now blocked on its own lag-off
 
         gate.set()
         await asyncio.wait_for(task2, timeout=2.0)
-        assert ("vending_now_light", False) in hw_events
-
-    @pytest.mark.asyncio
-    async def test_bag_drop_solenoid_stuck_leaves_solenoid_on(self):
-        """I2: `drive_off` used to run unconditionally before the fault
-        check, so the IO sequence on `bag_drop_solenoid` was identical to
-        a successful release. With the fault active, the solenoid must
-        stay driven on (the last IO event for that channel is `True`) and
-        the outcome must be `jam` with a detail describing the stuck
-        solenoid; recovering the fault then publishes the solenoid off."""
-        sim = _make_sim()
-        sim.sleep = AsyncMock()
-        client = AsyncMock()
-        io_events = []
-        terminal = []
-
-        async def capture_publish(c, topic, payload):
-            if topic == "hardware/dispenser" and hasattr(payload, "state"):
-                terminal.append((payload.state, payload.detail))
-            elif topic.startswith("hardware/io/"):
-                io_events.append((payload.device, payload.state))
-
-        sim.publish = capture_publish
-        fault = next(f for f in sim.fault_defs if f.name == "bag_drop_solenoid_stuck")
-        await sim.activate_fault(client, fault)
-        cmd = DispenseCommand(slot=1, mechanism="bagged_ice", profile=ICE_PROFILE)
-
-        await sim.execute_profile(client, cmd)
-
-        assert terminal[-1] == ("jam", "bag release solenoid stuck on")
-        solenoid_events = [
-            state for device, state in io_events if device == "bag_drop_solenoid"
-        ]
-        assert solenoid_events, "bag_drop_solenoid never drove on"
-        assert solenoid_events[-1] is True
-
-        io_events.clear()
-        await _fault(sim, "bag_drop_solenoid_stuck").on_recover(client)
-        assert ("bag_drop_solenoid", False) in io_events
+        assert ("heater_power", False) in hw_events
 
     @pytest.mark.asyncio
     async def test_failed_run_turns_every_accessory_off(self):
         """motor_stall aborts mid-agitate, before fill is ever reached --
-        vending_now_light (on_during=["all"]) still turned on at the very
-        start, and must still end up off immediately (no lag wait, since
-        this run never reached a `complete` outcome). The two documented
-        exceptions to "every accessory/output off" are `water_valve_stuck_open`
-        (valve/flow sensor) and `bag_drop_solenoid_stuck` (release solenoid,
-        see test_bag_drop_solenoid_stuck_leaves_solenoid_on) -- neither
-        fault is active here, so they don't apply to this run."""
+        bag_fan (on_during agitate and fill) already turned on, and must
+        still end up off immediately (no lag wait, since this run never
+        reached a `complete` outcome), as must the trap-door catch. The one
+        documented exception to "every accessory/output off" is
+        `water_valve_stuck_open` (the valve), which is not active here."""
         sim = _make_sim()
         sim.sleep = AsyncMock()
         client = AsyncMock()
@@ -1122,11 +999,11 @@ class TestExecuteProfile:
 
         await sim.execute_profile(client, cmd)
 
-        assert ("vending_now_light", True) in hw_events
-        assert ("vending_now_light", False) in hw_events
+        assert ("bag_fan", True) in hw_events
+        assert ("bag_fan", False) in hw_events
         assert ("agitator_motor", False) in hw_events
-        # bag_fan's on_during is ["fill"], never reached -- never even on.
-        assert ("bag_fan", True) not in hw_events
+        assert ("trap_door_catch", False) in hw_events
+        assert ("auger_motor", True) not in hw_events
 
 
 class TestDispenseCommand:
@@ -1277,39 +1154,6 @@ class TestLegacyDispenseTopicRemoved:
             assert "cmd/dispense" not in path.read_text(encoding="utf-8"), path
 
 
-class TestExampleToml:
-    @pytest.mark.xfail(
-        strict=True,
-        reason="the example now describes the IM600XL; the simulator is "
-        "rebuilt to match in Task 10 (remove this marker then)",
-    )
-    def test_example_toml_validates_with_zero_warnings_against_simulator_capabilities(
-        self,
-    ):
-        """The simulator's own declared channels must be enough to clear
-        every capabilities-cross-check warning for the shipped example --
-        confirming the five new channels (bag_fan, vending_now_light,
-        door_sensor, agitator_current, auger_current) are declared with
-        the right direction for what the example actually drives/senses.
-        """
-        caps = SubsystemCapabilities(
-            subsystem="vending",
-            firmware="sim",
-            contract_version="1.0.0",
-            channels=VendingMachineSimulator.CHANNELS,
-        )
-        raw = json.loads(
-            (REPO_ROOT / "config.example.json").read_text(encoding="utf-8")
-        )
-        config = ConfigModel.model_validate(raw)
-        text = (REPO_ROOT / "dispensers.example.toml").read_text(encoding="utf-8")
-
-        report = validate_document(text, config.products, capabilities=caps)
-
-        assert report.errors == []
-        assert report.warnings == []
-
-
 class TestWaterValveCommand:
     """`water_valve` acks ok in [1, 10]; outside it, `command_loop`
     (`simulators/base.py`) now acks "rejected" itself from the raw wire
@@ -1349,6 +1193,27 @@ class TestWaterValveCommand:
         completed_ack = sim.publish.await_args_list[-1].args[2]
         assert completed_ack.phase == "completed"
         assert completed_ack.result == {"seconds": 1}
+
+    @pytest.mark.asyncio
+    async def test_drives_only_the_declared_valve_channel(self):
+        sim = _make_sim()
+        client = AsyncMock()
+        io_events = []
+
+        async def capture_publish(c, topic, payload):
+            if topic.startswith("hardware/io/"):
+                io_events.append((payload.device, payload.state))
+
+        sim.publish = capture_publish
+        cmd = _make_command("water_valve", {"seconds": 1})
+        with patch_module_sleep("ice_sims.vending.simulator", AsyncMock()):
+            await sim.handle_command(client, cmd)
+            await _drain_background(sim)
+
+        assert io_events == [
+            ("water_valve_solenoid", True),
+            ("water_valve_solenoid", False),
+        ]
 
     @pytest.mark.asyncio
     async def test_seconds_ten_acks_ok(self):
@@ -1501,14 +1366,12 @@ class TestWaterValveCommand:
         # first slice and parks at the real asyncio.sleep.
         await settle()  # let it open the valve and reach the real asyncio.sleep
         assert sim._hw["water_valve_solenoid"] is True
-        assert sim._hw["water_flow_sensor"] is True
 
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
 
         assert sim._hw["water_valve_solenoid"] is False
-        assert sim._hw["water_flow_sensor"] is False
 
     @pytest.mark.asyncio
     async def test_hardware_update_raising_still_closes_valve(self):
@@ -1536,9 +1399,9 @@ class TestWaterValveCommand:
         async def _flaky_set_hw(client, device, state):
             nonlocal call_count
             call_count += 1
-            if call_count == 2:  # the water_flow_sensor True update
-                raise RuntimeError("simulated MQTT publish failure")
             await real_set_hw(client, device, state)
+            if call_count == 1:  # the valve-open update fails after taking effect
+                raise RuntimeError("simulated MQTT publish failure")
 
         sim.set_hw = _flaky_set_hw
 
@@ -1550,7 +1413,6 @@ class TestWaterValveCommand:
             await task
 
         assert sim._hw["water_valve_solenoid"] is False
-        assert sim._hw["water_flow_sensor"] is False
 
     def test_real_wire_construction_rejects_before_reaching_the_handler(self):
         """Documents the adjacent base.py behaviour (see class docstring):

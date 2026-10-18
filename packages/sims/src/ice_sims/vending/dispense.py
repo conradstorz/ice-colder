@@ -13,13 +13,17 @@ from dataclasses import dataclass
 from ice_contracts.board.dispenser_schema import (
     Accessory,
     IceFillBySensor,
+    ReleaseByCatch,
     ReleaseBySensor,
     WaterFillByVolume,
+    drive_channels,
+    sense_channels,
 )
 from ice_contracts.board.ice_maker_monitor import ChannelReading
 from ice_contracts.board.mqtt_messages import DispenseCommand, DispenserStatus
 from ice_contracts.board.vending_machine import DispenserOutcome, DispenseStep
 from ice_sims.vending.board import BoardPort
+from ice_sims.vending.channels import INPUT_CHANNELS, OUTPUT_CHANNELS
 
 # Bagged ice runs all three steps in order; water only ever runs "fill".
 _BAGGED_ICE_STEPS: tuple[str, ...] = (
@@ -29,13 +33,11 @@ _BAGGED_ICE_STEPS: tuple[str, ...] = (
 )
 _WATER_STEPS: tuple[str, ...] = (DispenseStep.fill.value,)
 
-# A plausible steady-state current reading for a monitored, healthy motor.
-_DEFAULT_CURRENT_AMPS = 2.0
-# Fallback stall-current reading when `motor_stall` is injected on a motor
-# whose profile says its current sense is "unmonitored" -- the fault is a
-# simulator-level test injection, independent of whether this particular
-# profile claims to monitor current, so there is always a plausible number
-# to put in the terminal report's `detail`.
+# Stall-current reading put in the terminal report's `detail` when
+# `motor_stall` is injected on a motor whose profile says its current sense
+# is "unmonitored" (the IM600XL has no current channels, so this board never
+# publishes current telemetry; the fault is a simulator-level injection and
+# there is still a plausible number to report).
 _DEFAULT_STALL_AMPS = 10.0
 
 # Number of pulse increments a `flow_volume` water fill publishes over its
@@ -103,6 +105,20 @@ class Dispenser:
         present = [s for s in step_names if s in accessory.on_during]
         return present[0], present[-1]
 
+    @staticmethod
+    def _undeclared_channels(profile) -> str | None:
+        """A detail naming every channel the profile drives that is not a
+        declared output or senses that is not a declared input/counter, or
+        None when the profile fits this board."""
+        bad_drive = sorted(drive_channels(profile) - OUTPUT_CHANNELS)
+        bad_sense = sorted(sense_channels(profile) - INPUT_CHANNELS)
+        parts = []
+        if bad_drive:
+            parts.append("drives undeclared output channel " + ", ".join(bad_drive))
+        if bad_sense:
+            parts.append("senses undeclared input channel " + ", ".join(bad_sense))
+        return "; ".join(parts) or None
+
     async def execute_profile(
         self,
         board: BoardPort,
@@ -162,17 +178,36 @@ class Dispenser:
         run can exist yet before this run's own terminal report is ever
         published.
 
-        `water_valve_stuck_open` deliberately leaves the valve/flow sensor
-        energised (its own `on_activate` already did this, independent of
-        any particular run); `bag_drop_solenoid_stuck` does the same for
-        the release solenoid (review finding I2) by calling `_leave_on`
-        instead of `_drive_off` the moment the fault is detected, which
-        quietly drops that channel out of `driven_on` -- so neither needs
-        special-casing in the sweep below.
+        `water_valve_stuck_open` deliberately leaves the valve energised
+        (its own `on_activate` already did this, independent of any
+        particular run), so the sweep below skips `driven_on` entirely
+        while it is active.
+
+        Every output this run drove, the trap-door catch included, is in
+        `driven_on` until it is explicitly driven off, so every exit path
+        (success, a fault outcome, an exception) de-energizes it before
+        the terminal report goes out.
         """
         profile = cmd.profile
         slot = cmd.slot
         active = board.active_faults()
+
+        # A real board cannot drive a channel it does not have. The edge's
+        # capability cross-check (CFG-101) keeps such a profile from ever
+        # being sent, so this is defensive; nothing is driven or published
+        # before it.
+        undeclared = self._undeclared_channels(profile)
+        if undeclared:
+            await board.publish(
+                "hardware/dispenser",
+                DispenserStatus(
+                    slot=slot,
+                    state=DispenserOutcome.error.value,
+                    request_id=request_id,
+                    detail=undeclared,
+                ),
+            )
+            return
 
         step_names = (
             _BAGGED_ICE_STEPS if profile.mechanism == "bagged_ice" else _WATER_STEPS
@@ -314,20 +349,19 @@ class Dispenser:
         """agitate -> fill -> release. Returns (outcome, detail)."""
         profile = ctx.profile
         active = ctx.active
-        if "ice_bin_empty" in active:
-            # Checked before anything else is touched -- no accessory,
-            # motor, or publish happens on this path (plan resolution 2).
-            return DispenserOutcome.bin_empty, None
+        release = profile.release
+
+        # ReleaseByCatch: energize the catch before any motion of the
+        # sequence and hold it through the fill. It sits in `driven_on`, so
+        # every exit path below (and an exception) de-energizes it.
+        if isinstance(release, ReleaseByCatch):
+            await ctx.drive_on(release.catch_channel)
 
         # --- agitate ---
         await ctx.enter_step(DispenseStep.agitate.value)
         await ctx.publish_step(DispenseStep.agitate.value)
         agitate = profile.agitate
         await ctx.drive_on(agitate.motor_channel)
-        if agitate.current_channel != "unmonitored":
-            await ctx.board.publish_current(
-                agitate.current_channel, _DEFAULT_CURRENT_AMPS
-            )
         if "motor_stall" in active:
             amps = (
                 agitate.stall_current_amps + 1.0
@@ -346,8 +380,14 @@ class Dispenser:
         await ctx.publish_step(DispenseStep.fill.value)
         fill = profile.fill
         await ctx.drive_on(fill.motor_channel)
-        if fill.current_channel != "unmonitored":
-            await ctx.board.publish_current(fill.current_channel, _DEFAULT_CURRENT_AMPS)
+
+        if "ice_bin_empty" in active:
+            # No ice to move: the fill runs to its maximum time and the
+            # board reports an empty bin. No bin channel is touched.
+            await ctx.board.sleep(fill.max_run_seconds)
+            await ctx.drive_off(fill.motor_channel)
+            ctx.exit_step(DispenseStep.fill.value)
+            return DispenserOutcome.bin_empty, None
 
         if isinstance(fill, IceFillBySensor):
             if "auger_jam" in active:
@@ -366,48 +406,32 @@ class Dispenser:
         # --- release ---
         await ctx.enter_step(DispenseStep.release.value)
         await ctx.publish_step(DispenseStep.release.value)
-        release = profile.release
-        await ctx.drive_on(release.solenoid_channel)
-        await ctx.board.sleep(release.pulse_seconds)
-
-        if isinstance(release, ReleaseBySensor) and "bag_drop_solenoid_stuck" in active:
-            # The release solenoid stays energised -- it's stuck, not
-            # released (review finding I2) -- so it is left out of the
-            # end-of-run sweep rather than driven off.
-            ctx.leave_on(release.solenoid_channel)
-            ctx.exit_step(DispenseStep.release.value)
-            return DispenserOutcome.jam, "bag release solenoid stuck on"
-
-        await ctx.drive_off(release.solenoid_channel)
-
-        if isinstance(release, ReleaseBySensor):
-            if "door_stuck_open" in active:
+        if isinstance(release, ReleaseByCatch):
+            # De-energize to drop the bag, then give the door time to fall
+            # open and close itself.
+            await ctx.drive_off(release.catch_channel)
+            await ctx.board.sleep(release.drop_seconds)
+        else:
+            await ctx.drive_on(release.solenoid_channel)
+            await ctx.board.sleep(release.pulse_seconds)
+            await ctx.drive_off(release.solenoid_channel)
+            if isinstance(release, ReleaseBySensor):
                 await ctx.board.set_hw(release.sensor_channel, True)
-                await ctx.board.sleep(release.close_timeout_seconds)
-                ctx.exit_step(DispenseStep.release.value)
-                return DispenserOutcome.door_open, None
-            await ctx.board.set_hw(release.sensor_channel, True)
-            await ctx.board.sleep(1.0)
-            await ctx.board.set_hw(release.sensor_channel, False)
-            if isinstance(fill, IceFillBySensor):
-                await ctx.board.set_hw(fill.sensor_channel, False)
+                await ctx.board.sleep(1.0)
+                await ctx.board.set_hw(release.sensor_channel, False)
+
+        # The bag has dropped: the bag-full sensor clears.
+        if isinstance(fill, IceFillBySensor):
+            await ctx.board.set_hw(fill.sensor_channel, False)
 
         ctx.exit_step(DispenseStep.release.value)
         return DispenserOutcome.complete, None
 
     async def _publish_fill_pulses(self, board: BoardPort, pulses: float) -> None:
         """Publish the flow meter's cumulative pulse count for one
-        `flow_volume` fill on the generic telemetry path (same convention
-        as `_publish_current`), on the dedicated `fill_pulses` channel --
-        distinct from `water_flow`, which is cumulative gallons published
-        by `_publish_sensors` on `sensors/water_flow` (the Home Assistant
-        `water_flow_total` entity) and is the only vending telemetry the
-        VMC actually subscribes to today (`ice_edge/sale/vmc.py`). Nothing
-        subscribes to `telemetry/vending/+` yet (review finding I1), so a
-        subsystem window shows "never reported" for this channel until
-        that per-slot telemetry work (spec §11) happens.
-        `self._water_flow_total` is `_publish_sensors`' own state and is
-        deliberately left untouched here."""
+        `flow_volume` fill on the generic telemetry path, on the dedicated
+        `fill_pulses` channel. This is the board's only volume metering:
+        nothing publishes `sensors/water_flow` any more (spec §3.4)."""
         await board.publish(
             f"telemetry/{board.subsystem_name}/fill_pulses",
             ChannelReading(channel_id="fill_pulses", value=pulses),
@@ -499,10 +523,7 @@ class Dispenser:
         await ctx.drive_on(fill.valve_channel)
 
         if isinstance(fill, WaterFillByVolume):
-            await ctx.board.set_hw(fill.flow_sensor_channel, True)
-
             if "no_water_flow" in active:
-                await ctx.board.set_hw(fill.flow_sensor_channel, False)
                 await ctx.board.sleep(fill.no_flow_grace_seconds)
                 await ctx.drive_off(fill.valve_channel)
                 ctx.exit_step(DispenseStep.fill.value)
@@ -527,12 +548,11 @@ class Dispenser:
             volume_ml = pulses / fill.pulses_per_liter * 1000.0
 
             if "water_valve_stuck_open" in active:
-                # Valve/flow sensor stay energised (see execute_profile's
+                # The valve stays energised (see execute_profile's
                 # docstring) -- matches the fault's existing effect.
                 ctx.exit_step(DispenseStep.fill.value)
                 return DispenserOutcome.complete, None
 
-            await ctx.board.set_hw(fill.flow_sensor_channel, False)
             await ctx.drive_off(fill.valve_channel)
             ctx.exit_step(DispenseStep.fill.value)
 
