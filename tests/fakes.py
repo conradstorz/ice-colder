@@ -41,6 +41,7 @@ from pathlib import Path
 from ice_common.config_model import ConfigModel, PhysicalDetails, Product
 from ice_edge.app.machine import Machine
 from ice_edge.supervisor.task_runner import TaskRunner
+from tests.async_helpers import patch_module_sleep, settle  # noqa: F401  (re-exported)
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
 from ice_edge.ledger.session_store import SessionSnapshot
 
@@ -170,13 +171,6 @@ class FakeTaskRunner:
             call.callback()
 
 
-async def settle(turns: int = 3) -> None:
-    """Yield to the loop `turns` times so fire-and-forget tasks with no real I/O run to completion.
-    Replaces `await asyncio.sleep(0.01)`-style waits; never waits on the clock."""
-    for _ in range(turns):
-        await asyncio.sleep(0)
-
-
 async def drain_pending(runner: FakeTaskRunner) -> None:
     """Await every fire-and-forget task `runner` has launched (including any
     they spawn in turn) until none is live. Use before a NEGATIVE assertion
@@ -292,31 +286,6 @@ class FakeAvailability:
 
     def set_transaction_certain(self, certain: bool) -> None:
         self.transaction_certain.append(certain)
-
-
-class _AsyncioWithSleep:
-    """Stand-in for the `asyncio` module that overrides only `sleep`."""
-
-    def __init__(self, sleep):
-        self.sleep = sleep
-
-    def __getattr__(self, name):
-        import asyncio
-
-        return getattr(asyncio, name)
-
-
-def patch_module_sleep(module_name: str, sleep):
-    """Patch `sleep` as seen by ONE module, leaving `asyncio.sleep` intact.
-
-    `patch("asyncio.sleep", ...)` mutates the shared asyncio module, so it
-    would also replace sleep for pytest-asyncio and the loop's own helpers.
-    Instead, rebind the module's own `asyncio` global to a proxy that
-    delegates everything but `sleep`. Use as a context manager.
-    """
-    from unittest.mock import patch
-
-    return patch(f"{module_name}.asyncio", new=_AsyncioWithSleep(sleep))
 
 
 def vmc_with_profiles(

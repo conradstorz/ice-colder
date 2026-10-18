@@ -7,18 +7,9 @@ from pathlib import Path
 import ice_edge.sale.vmc
 import ice_edge.web.routes
 from ice_ui.templating import STATIC_DIR, TEMPLATES_DIR
+from tests.repo_root import REPO_ROOT, TESTS_ROOT  # noqa: F401  (re-exported)
 
 
-def _repo_root() -> Path:
-    for parent in Path(__file__).resolve().parents:
-        if (parent / "pyproject.toml").is_file() and (parent / "uv.lock").is_file():
-            return parent
-    raise RuntimeError("repo root not found")
-
-
-REPO_ROOT = _repo_root()
-# The tests/ root; this module stays there when tests move into subdirectories.
-TESTS_ROOT = Path(__file__).resolve().parent
 ROUTES_DIR = Path(ice_edge.web.routes.__file__).parent
 ROUTES_PACKAGE = ice_edge.web.routes.__name__
 VMC_PATH = Path(ice_edge.sale.vmc.__file__)

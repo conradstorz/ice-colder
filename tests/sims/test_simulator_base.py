@@ -14,7 +14,7 @@ from ice_contracts.board.vending_machine import SubsystemCapabilities
 from ice_common.build_info import BUILD_INFO
 from ice_common.mqtt_client import PROTOCOL_VERSIONS
 from ice_contracts.board.common import SubsystemCommand
-from tests.fakes import settle
+from tests.async_helpers import settle
 from ice_sims.base import (
     CommandOutcome,
     ESP32Simulator,
