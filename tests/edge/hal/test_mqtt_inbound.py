@@ -154,22 +154,6 @@ class TestSensor:
         )  # must not raise
 
 
-class TestWaterFlow:
-    async def test_records_water_flow_channel(self):
-        health = FakeHealth()
-        router = _router(health=health)
-        await router.handle_water_flow(
-            "sensors/water_flow", {"location": "water_flow", "value": 1.2}
-        )
-        assert health.channels == [("water_flow", 1.2)]
-
-    async def test_noop_without_health(self):
-        router = _router()
-        await router.handle_water_flow(
-            "sensors/water_flow", {"location": "water_flow", "value": 1.2}
-        )  # must not raise
-
-
 class TestHeartbeat:
     async def test_uptime_minus_one_marks_offline(self):
         health = FakeHealth()
@@ -309,9 +293,9 @@ class TestSubscriptionsTable:
     def test_every_telemetry_owner_method_is_a_router_attribute(self):
         for _, owner, name in SUBSCRIPTIONS:
             if owner == "telemetry":
-                assert hasattr(TelemetryRouter, name), (
-                    f"TelemetryRouter has no attribute {name!r}"
-                )
+                assert hasattr(
+                    TelemetryRouter, name
+                ), f"TelemetryRouter has no attribute {name!r}"
 
     def test_subscriptions_table_unchanged(self):
         # The full (topic, owner, method) triple, in order -- not just the
@@ -331,6 +315,5 @@ class TestSubscriptionsTable:
             ("hardware/io/+", "telemetry", "handle_hardware_io"),
             ("cmd/payment/refund/ack", "vmc", "on_refund_ack"),
             ("payment/status", "telemetry", "handle_payment_status"),
-            ("sensors/water_flow", "telemetry", "handle_water_flow"),
         )
-        assert len(SUBSCRIPTIONS) == 13
+        assert len(SUBSCRIPTIONS) == 12

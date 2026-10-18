@@ -1,40 +1,31 @@
 # ice_sims/vending/customer.py
 """Simulated customer arrivals for the vending board.
 
-Moved verbatim from the simulator class (int buttons, `num_buttons`,
-catalog reload included); a later task replaces the int-based button model.
+A real board knows its own buttons, not the edge's product catalog, so the
+customer presses ids from `BUTTON_CHANNELS`; a button the catalog does not map
+exercises the edge's unknown-button path.
 """
 
 import asyncio
 import random
-from collections.abc import Callable
 from datetime import datetime
 
 from loguru import logger
 
 from ice_contracts.board.mqtt_messages import ButtonPress
 from ice_sims.vending.board import BoardPort
+from ice_sims.vending.channels import BUTTON_CHANNELS
 
 
 class Customers:
     """Generates the button-press traffic a real customer would."""
 
-    def __init__(
-        self,
-        *,
-        num_buttons: int,
-        reload_products: Callable[[], int],
-        idle_min: float,
-        idle_max: float,
-    ) -> None:
-        self.num_buttons = num_buttons
-        # Reloads the config and returns the (possibly new) product count.
-        self._reload_products = reload_products
+    def __init__(self, *, idle_min: float, idle_max: float) -> None:
         self.idle_min = idle_min
         self.idle_max = idle_max
 
-    def pick_button(self) -> int:
-        return random.randint(0, self.num_buttons - 1)
+    def pick_button(self, exclude: str | None = None) -> str:
+        return random.choice([b for b in BUTTON_CHANNELS if b != exclude])
 
     def arrival_factor(self, hour: int | None = None) -> float:
         """Return an idle-time multiplier based on time of day.
@@ -75,23 +66,7 @@ class Customers:
         depended entirely on that now-deleted topic/queue and is gone
         with it.
         """
-        warned_no_products = False
         while True:
-            if self.num_buttons == 0:
-                if not warned_no_products:
-                    logger.warning(
-                        "[vending] No products configured — no buttons to press"
-                    )
-                    warned_no_products = True
-                products = self._reload_products()
-                if products:
-                    self.num_buttons = products
-                    logger.info(
-                        f"[vending] Products loaded: {self.num_buttons} products"
-                    )
-                await asyncio.sleep(self.idle_min)
-                continue
-
             idle_time = self.compute_idle_time(board.active_faults())
             logger.info(f"[vending] Waiting {idle_time:.0f}s for next customer")
             await asyncio.sleep(idle_time)
@@ -104,10 +79,6 @@ class Customers:
             # Indecisive customer (20%): changes their mind
             if random.random() < 0.20:
                 await asyncio.sleep(random.uniform(5.0, 15.0))
-                other_buttons = [b for b in range(self.num_buttons) if b != button]
-                if other_buttons:
-                    button = random.choice(other_buttons)
-                    await board.publish("hardware/buttons", ButtonPress(button=button))
-                    logger.info(
-                        f"[vending] Indecisive customer changed to button {button}"
-                    )
+                button = self.pick_button(exclude=button)
+                await board.publish("hardware/buttons", ButtonPress(button=button))
+                logger.info(f"[vending] Indecisive customer changed to button {button}")

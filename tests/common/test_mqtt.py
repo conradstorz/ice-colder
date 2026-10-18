@@ -52,7 +52,7 @@ class TestInboundSchemas:
         assert e.method == "cash"
 
     def test_button_press_defaults(self):
-        b = ButtonPress(button=2)
+        b = ButtonPress(button="button_ice")
         assert b.action == "pressed"
 
     def test_dispenser_status(self):
@@ -418,7 +418,7 @@ class TestVMCMQTTWiring:
         machine = _make_machine()
         mock_client = MagicMock()
         machine.set_mqtt_client(mock_client)
-        assert mock_client.register.call_count == 13
+        assert mock_client.register.call_count == 12
 
     def test_publish_status_without_client_does_nothing(self):
         machine = _make_machine()
@@ -450,14 +450,16 @@ class TestVMCMQTTWiring:
     @pytest.mark.asyncio
     async def test_handle_mqtt_button_selects_product(self):
         config = ConfigModel()
-        config.physical.products = [Product(sku="T-1", name="Test", price=1.0)]
+        config.physical.products = [
+            Product(sku="T-1", name="Test", price=1.0, button="button_ice")
+        ]
         machine = Machine(config=config)
         vmc = machine.vmc
         loop = asyncio.get_running_loop()
         machine.attach_to_loop(loop)
 
-        # button 0 should select the first configured product
-        await vmc.on_button_press("hardware/buttons", {"button": 0})
+        # button_ice selects the product mapped to it
+        await vmc.on_button_press("hardware/buttons", {"button": "button_ice"})
         assert vmc.selected_product is not None
         assert vmc.state == "interacting_with_user"
 

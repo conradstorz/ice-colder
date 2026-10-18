@@ -43,7 +43,6 @@ from ice_contracts.board.mqtt_messages import (
     HardwareIO,
     IceMakerEvent,
     PaymentStatus,
-    SensorReading,
 )
 
 if TYPE_CHECKING:
@@ -128,14 +127,6 @@ class TelemetryRouter:
             value = data.get("value")
             if value is not None:
                 health.record_temperature(location, float(value))
-
-    async def handle_water_flow(self, topic: str, data: dict) -> None:
-        """Handle water flow sensor readings from the vending ESP32."""
-        reading = SensorReading.model_validate(data)
-        logger.debug(f"MQTT water flow [{topic}]: {reading.value}{reading.unit}")
-        health = self._health()
-        if health:
-            health.record_channel("water_flow", reading.value)
 
     async def handle_heartbeat(self, topic: str, data: dict) -> None:
         """Handle heartbeat from ESP32 subsystem."""
@@ -232,5 +223,4 @@ SUBSCRIPTIONS: tuple[tuple[str, str, str], ...] = (
     ("hardware/io/+", "telemetry", "handle_hardware_io"),
     ("cmd/payment/refund/ack", "vmc", "on_refund_ack"),
     ("payment/status", "telemetry", "handle_payment_status"),
-    ("sensors/water_flow", "telemetry", "handle_water_flow"),
 )

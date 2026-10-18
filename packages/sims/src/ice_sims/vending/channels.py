@@ -25,7 +25,7 @@ class ChannelRow:
     kind: Kind
     description: str
     interval_seconds: float
-    role: Literal["sensor", "output"]  # "button" arrives in Task 3
+    role: Literal["sensor", "output", "button"]
     unit: str = ""
     direction: Literal["input", "output"] = "input"
     driven_by: str | None = None
@@ -79,6 +79,30 @@ CHANNEL_ROWS: tuple[ChannelRow, ...] = (
         "sensor",
         unit="gal",
     ),
+    ChannelRow(
+        "button_ice",
+        "binary",
+        "Bagged ice customer button",
+        _BINARY_CHANNEL_INTERVAL,
+        "button",
+        idle=False,
+    ),
+    ChannelRow(
+        "button_water_1gal",
+        "binary",
+        "1 gallon water customer button",
+        _BINARY_CHANNEL_INTERVAL,
+        "button",
+        idle=False,
+    ),
+    ChannelRow(
+        "button_water_5gal",
+        "binary",
+        "5 gallon water customer button",
+        _BINARY_CHANNEL_INTERVAL,
+        "button",
+        idle=False,
+    ),
     _binary_in("bag_full_sensor", "Ice bag full sensor"),
     _binary_in("water_flow_sensor", "Water flow sensor"),
     # assume the bin starts with ice
@@ -123,6 +147,11 @@ CHANNEL_ROWS: tuple[ChannelRow, ...] = (
 )
 
 CHANNELS: list[ChannelDescriptor] = [row.descriptor() for row in CHANNEL_ROWS]
+
+# Customer-button ids; the board knows these, not the edge's catalog.
+BUTTON_CHANNELS: tuple[str, ...] = tuple(
+    row.id for row in CHANNEL_ROWS if row.role == "button"
+)
 
 # All binary hardware devices and their idle states.
 HARDWARE_DEVICES: dict[str, bool] = {

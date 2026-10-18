@@ -5,8 +5,8 @@ import time
 import pytest
 
 from ice_edge.app import startup_config
-from ice_edge.app.startup_config import warn_if_setup_mode
-from ice_common.config_model import ConfigModel, WebConfig
+from ice_edge.app.startup_config import warn_if_no_buttons, warn_if_setup_mode
+from ice_common.config_model import ConfigModel, Product, WebConfig
 from ice_contracts.board.vending_machine import FaultCode
 from ice_edge.app.machine import Machine
 from ice_edge.access.access import AccessStore, Role
@@ -362,3 +362,37 @@ def test_reconcile_raises_data_101_when_replay_commits_but_journal_rewrite_fails
     # And the journal file itself is still non-empty, proving the alert
     # matches reality rather than being raised blindly.
     assert journal_path.read_text(encoding="utf-8").strip()
+
+
+def _config_with(*products: Product) -> ConfigModel:
+    cfg = ConfigModel()
+    cfg.physical.products = list(products)
+    return cfg
+
+
+def test_warn_if_no_buttons_warns_once_when_no_product_has_one(caplog):
+    caplog.set_level("DEBUG")
+    warn_if_no_buttons(_config_with(Product(sku="A", slot=0), Product(sku="B", slot=1)))
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "no product has a customer button" in warnings[0].message.lower()
+
+
+def test_warn_if_no_buttons_names_unassigned_products_at_info(caplog):
+    caplog.set_level("DEBUG")
+    warn_if_no_buttons(
+        _config_with(
+            Product(sku="A", slot=0, button="button_ice"), Product(sku="LOOSE", slot=1)
+        )
+    )
+    records = [r for r in caplog.records if r.levelno >= 20]
+    assert [r.levelname for r in records] == ["INFO"]
+    assert "LOOSE" in records[0].message
+    assert "A," not in records[0].message
+
+
+def test_warn_if_no_buttons_quiet_when_all_assigned_or_catalog_empty(caplog):
+    caplog.set_level("DEBUG")
+    warn_if_no_buttons(_config_with(Product(sku="A", slot=0, button="button_ice")))
+    warn_if_no_buttons(_config_with())
+    assert [r for r in caplog.records if r.levelno >= 20] == []

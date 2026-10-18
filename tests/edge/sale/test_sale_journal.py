@@ -107,13 +107,13 @@ def test_payment_received_goes_to_logger_and_transaction_log(harness):
 
 def test_product_selected_fans_out_to_all_three_sinks(harness):
     journal, _, _, sink = harness
-    journal.product_selected(PRODUCT, 0)
+    journal.product_selected(PRODUCT)
     assert sink.lines() == [("INFO", "Selected product: Ice at $2.50")]
     assert sink.lines(sink="transaction") == [
-        ("INFO", "PRODUCT SELECTED: 'Ice' ($2.50), button 0")
+        ("INFO", "PRODUCT SELECTED: 'Ice' ($2.50), sku ICE")
     ]
     assert sink.lines(sink="vending") == [
-        ("INFO", "PRODUCT SELECTED: 'Ice' ($2.50), button 0")
+        ("INFO", "PRODUCT SELECTED: 'Ice' ($2.50), sku ICE")
     ]
 
 
@@ -199,10 +199,12 @@ def test_refund_failed_row_and_message(harness):
 
 def test_button_press_three_sinks(harness):
     journal, _, _, sink = harness
-    journal.button_press(2)
-    assert sink.lines() == [("INFO", "MQTT button press: button 2")]
-    assert sink.lines(sink="transaction") == [("INFO", "BUTTON PRESS: button 2")]
-    assert sink.lines(sink="vending") == [("INFO", "BUTTON PRESS: button 2")]
+    journal.button_press("button_ice")
+    assert sink.lines() == [("INFO", "MQTT button press: button button_ice")]
+    assert sink.lines(sink="transaction") == [
+        ("INFO", "BUTTON PRESS: button button_ice")
+    ]
+    assert sink.lines(sink="vending") == [("INFO", "BUTTON PRESS: button button_ice")]
 
 
 def test_deposit_logs(harness):
@@ -226,10 +228,10 @@ def test_deposit_logs(harness):
 def test_selection_refusals(harness):
     journal, _, _, sink = harness
     journal.selection_refused_not_ready()
-    journal.selection_refused_bad_index(7)
+    journal.selection_refused_unknown_button("button_x")
     assert sink.lines() == [
         ("WARNING", "Cannot change selection; machine not ready."),
-        ("ERROR", "Invalid product index: 7"),
+        ("WARNING", "Button 'button_x' is not mapped to any product"),
     ]
 
 

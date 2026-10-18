@@ -60,7 +60,7 @@ from ice_contracts.board.common import ChannelDescriptor, _utc_now
 # `DispenserStatus.request_id` is now always set for a production sale,
 # not test runs only. See docs/contracts/vending-machine/CONTRACT.md's
 # "Semantics fixed in 1.0.0 (breaking)" section for the full list.
-CONTRACT_VERSION = "1.0.0"
+CONTRACT_VERSION = "2.0.0"
 
 
 class DispenserOutcome(str, Enum):

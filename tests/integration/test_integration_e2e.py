@@ -80,7 +80,7 @@ pytestmark = [
 def _make_config() -> ConfigModel:
     """Create a minimal config for testing with known products.
 
-    `kind`/`slot` are set (and match each product's button index) so a
+    `kind`/`slot` are set (and each product has a `button` id) so a
     dispense actually reaches the vending simulator through the real
     `DispenseCommand`/`DispenserProfiles` path (review finding I2) rather
     than taking the `CFG-101` "no valid profile" branch -- `select_product`
@@ -100,6 +100,7 @@ def _make_config() -> ConfigModel:
                     "price": 2.00,
                     "kind": "ice",
                     "slot": 0,
+                    "button": "button_ice",
                 },
                 {
                     "sku": "ICE-LG",
@@ -107,6 +108,7 @@ def _make_config() -> ConfigModel:
                     "price": 3.50,
                     "kind": "ice",
                     "slot": 1,
+                    "button": "button_ice_lg",
                 },
                 {
                     "sku": "WATER",
@@ -114,6 +116,7 @@ def _make_config() -> ConfigModel:
                     "price": 1.50,
                     "kind": "water",
                     "slot": 2,
+                    "button": "button_water_1gal",
                 },
             ],
         },
@@ -296,9 +299,9 @@ class _MessageCollector:
         """Exactly one ``dispense`` per sale: one per expected request_id and
         no extras (a same-request_id retry or a second sale's command)."""
         got = [d["request_id"] for d in self.dispenses]
-        assert got == request_ids, (
-            f"expected exactly one dispense per sale {request_ids}, got {got}"
-        )
+        assert (
+            got == request_ids
+        ), f"expected exactly one dispense per sale {request_ids}, got {got}"
 
 
 class _E2E:
@@ -377,11 +380,11 @@ class TestFullTransactionLoop:
         async with _e2e_harness("e2e-simulator", tmp_path, with_health=True) as h:
             vmc, prefix, sim_client = h.vmc, h.prefix, h.sim_client
 
-            # 1. Simulate button press (button 0 = Small Ice, $2.00)
+            # 1. Simulate button press (button_ice = Small Ice, $2.00)
             assert vmc.state == "idle"
             await sim_client.publish(
                 f"{prefix}/hardware/buttons",
-                ButtonPress(button=0).model_dump_json(),
+                ButtonPress(button="button_ice").model_dump_json(),
             )
 
             # VMC should transition to interacting_with_user
@@ -428,7 +431,7 @@ class TestFullTransactionLoop:
             # Button press for Water ($1.50)
             await sim_client.publish(
                 f"{prefix}/hardware/buttons",
-                ButtonPress(button=2).model_dump_json(),
+                ButtonPress(button="button_water_1gal").model_dump_json(),
             )
             await _wait_for_state(vmc, "interacting_with_user", timeout=5.0)
 
@@ -470,7 +473,7 @@ class TestFullTransactionLoop:
             # Button press for Large Ice ($3.50)
             await sim_client.publish(
                 f"{prefix}/hardware/buttons",
-                ButtonPress(button=1).model_dump_json(),
+                ButtonPress(button="button_ice_lg").model_dump_json(),
             )
             await _wait_for_state(vmc, "interacting_with_user", timeout=5.0)
 
@@ -519,10 +522,10 @@ class TestFullTransactionLoop:
         async with _e2e_harness("e2e-sim-error", tmp_path) as h:
             vmc, prefix, sim_client = h.vmc, h.prefix, h.sim_client
 
-            # Button + payment (button 0 = Small Ice, ICE-SM, $2.00)
+            # Button + payment (button_ice = Small Ice, ICE-SM, $2.00)
             await sim_client.publish(
                 f"{prefix}/hardware/buttons",
-                ButtonPress(button=0).model_dump_json(),
+                ButtonPress(button="button_ice").model_dump_json(),
             )
             await _wait_for_state(vmc, "interacting_with_user", timeout=5.0)
 
@@ -611,7 +614,7 @@ class TestFailedVendLoop:
 
             async def sale(outcome: str):
                 await sim_client.publish(
-                    f"{prefix}/hardware/buttons", json.dumps({"button": 0})
+                    f"{prefix}/hardware/buttons", json.dumps({"button": "button_ice"})
                 )
                 await _wait_for_state(vmc, "interacting_with_user")
                 await sim_client.publish(
