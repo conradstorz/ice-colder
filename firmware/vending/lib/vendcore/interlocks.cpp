@@ -17,6 +17,16 @@ void OutputGuard::all_off() {
     }
 }
 
+void OutputGuard::republish_all(Publisher& pub) const {
+    for (int i = 0; i < kOutputCount; ++i) {
+        Event e = {};
+        e.type = EventType::OutputChanged;
+        e.channel = static_cast<uint8_t>(kBinaryInputCount + i);
+        e.state = written_[i];
+        pub.publish(e);
+    }
+}
+
 void OutputGuard::apply(uint32_t now_ms, bool (&out)[kOutputCount], Publisher& pub) {
     for (int i = 0; i < kOutputCount; ++i) {
         if (want_[i] && now_ms - on_since_[i] > max_on_[i]) {

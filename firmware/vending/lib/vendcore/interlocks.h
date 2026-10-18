@@ -14,6 +14,8 @@ public:
     // Sets the desired state of one output. Idempotent; the on-timer starts when desired goes off->on.
     void request(Out o, bool on, uint32_t max_on_ms, uint32_t now_ms);
     void all_off();
+    // One OutputChanged per output carrying its current written state (force_report).
+    void republish_all(Publisher& pub) const;
     // Forces overdue outputs off (clearing their desired state), writes the array, and emits one
     // OutputChanged per output whose written state changed since the last apply.
     void apply(uint32_t now_ms, bool (&out)[kOutputCount], Publisher& pub);
