@@ -15,6 +15,7 @@ from ice_contracts.board.vending_machine import VendingChannel
 
 SENSOR_PUBLISH_INTERVAL = 10.0  # seconds between periodic sensor publishes
 _BINARY_CHANNEL_INTERVAL = 1.0
+BUTTON_PREFIX = "button_"  # shared by the button rows and the HA entity builder
 
 Kind = Literal["temperature", "current", "voltage", "level", "binary", "counter"]
 
@@ -63,6 +64,7 @@ def _binary_out(id: str, description: str, driven_by: str | None = None) -> Chan
 
 
 def _button(id: str, description: str) -> ChannelRow:
+    assert id.startswith(BUTTON_PREFIX)
     return ChannelRow(
         id,
         "binary",
@@ -104,7 +106,7 @@ CHANNEL_ROWS: tuple[ChannelRow, ...] = (
         VendingChannel.ro_production.value,
         "RO production (inlet solenoid and booster pump; autonomous)",
     ),
-    _binary_out("heater_power", "Cabinet heater power (autonomous)"),
+    _binary_out(VendingChannel.heater_power.value, "Cabinet heater power (autonomous)"),
     ChannelRow(
         "fill_pulses",
         "counter",

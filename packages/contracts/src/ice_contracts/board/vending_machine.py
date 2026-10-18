@@ -356,7 +356,9 @@ class VendingChannel(str, Enum):
 
     The single source for these strings, so the simulator and the edge can
     never disagree. All are optional: a board that declares none of them
-    is valid."""
+    is valid. The enum also names sim-only channels the edge does not
+    interpret (e.g. `heater_power`). Adding a member is additive and needs
+    no contract version bump."""
 
     bin_half_full = "bin_half_full"
     sump_high = "sump_high"
@@ -364,6 +366,7 @@ class VendingChannel(str, Enum):
     ro_tank_empty = "ro_tank_empty"
     ro_tank_full = "ro_tank_full"
     ro_production = "ro_production"
+    heater_power = "heater_power"
     service_door = "service_door"
 
 

@@ -1564,3 +1564,37 @@ class TestRoTankAndClimateWiring:
         assert ("ro_production", True) in seen
         assert ("heater_power", True) in seen
         assert "sensors/temp/ambient" in topics
+
+
+class TestCustomersLiveBounds:
+    def test_idle_bounds_read_after_construction(self):
+        sim = VendingMachineSimulator()
+        sim.IDLE_MIN = 1.0
+        sim.IDLE_MAX = 2.0
+        for _ in range(50):
+            # private: Customers.compute_idle_time is public, but this must prove the simulator's lambda wiring, which only sim._compute_idle_time reaches
+            assert 1.0 <= sim._compute_idle_time(hour=9) <= 2.0
+
+
+class TestVendingHaEntities:
+    def test_buttons_excluded_and_heater_present(self):
+        ids = {
+            e["object_id"] for e in VendingMachineSimulator().ha_discovery_entities()
+        }
+        assert not {i for i in ids if i.startswith("button_")}
+        assert {"heater_power", "ambient", "uptime"} <= ids
+
+    def test_custom_channel_list_excludes_only_buttons(self):
+        from ice_contracts.board.common import ChannelDescriptor
+        from ice_sims.vending.ha import ha_discovery_entities
+
+        def ch(cid):
+            return ChannelDescriptor(
+                channel_id=cid, kind="binary", description=cid, interval_seconds=1.0
+            )
+
+        ids = {
+            e["object_id"] for e in ha_discovery_entities([ch("button_x"), ch("lamp")])
+        }
+        assert "lamp" in ids
+        assert "button_x" not in ids

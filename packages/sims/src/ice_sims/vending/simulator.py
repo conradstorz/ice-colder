@@ -26,8 +26,7 @@ Run: uv run python -m ice_sims.vending_machine [--broker HOST] [--port PORT] [--
 
 import asyncio
 import random
-from collections.abc import Awaitable, Callable, Coroutine
-from typing import Any
+from collections.abc import Awaitable, Callable
 
 import aiomqtt
 from loguru import logger
@@ -92,9 +91,6 @@ class _Board:
         for channel, state in self._sim.ro_tank.draw(gallons).items():
             await self._sim.set_hw(self._client, channel, state)
 
-    def spawn(self, coro: Coroutine[Any, Any, None]) -> asyncio.Task:
-        return self._sim._spawn_background(coro)
-
     def active_faults(self) -> set[str]:
         return self._sim.active_fault_names
 
@@ -141,7 +137,9 @@ class VendingMachineSimulator(ESP32Simulator):
         self.sleep = sleep or asyncio.sleep
         self.register_command("dispense", self._handle_dispense)
         self.register_command("water_valve", self._handle_water_valve)
-        self._customers = Customers(idle_min=self.IDLE_MIN, idle_max=self.IDLE_MAX)
+        self._customers = Customers(
+            idle_min=lambda: self.IDLE_MIN, idle_max=lambda: self.IDLE_MAX
+        )
         # Hardware state
         self._hw: dict[str, bool] = dict(HARDWARE_DEVICES)
         # The one long-lived dispenser: it owns the cross-run accessory
@@ -195,11 +193,11 @@ class VendingMachineSimulator(ESP32Simulator):
                 **self.ro_tank.outputs(),
                 **self.climate.outputs(),
             }
-            for channel in (*_PERIODIC_INPUTS, *changes):
+            # Publish order: standing service inputs and changed outputs
+            # first, then the remaining unchanged outputs.
+            order = dict.fromkeys((*_PERIODIC_INPUTS, *changes, *standing))
+            for channel in order:
                 await self.set_hw(client, channel, standing[channel])
-            for channel, state in standing.items():
-                if channel not in _PERIODIC_INPUTS and channel not in changes:
-                    await self.set_hw(client, channel, state)
             await self.publish(
                 client,
                 "sensors/temp/ambient",

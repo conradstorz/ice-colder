@@ -919,25 +919,6 @@ async def _im600xl_harness(sim_id: str, tmp_path, *, recorder=None):
         yield h
 
 
-def _recorder(tmp_path) -> EventRecorder:
-    """A real `EventRecorder` on a fresh database, already in WAL mode.
-
-    `record_sale` switches the file to WAL itself, but that PRAGMA fails
-    with "database is locked" (DATA-101) whenever the writer thread's
-    connection holds the `dispense` KPI event's open transaction, which is
-    the case on the first sale against a database not yet in WAL mode. The
-    mode is persistent, so setting it up front here keeps these tests about
-    the IM600XL path rather than that race (reported separately)."""
-    path = tmp_path / "events.db"
-    recorder = EventRecorder(db_path=str(path))
-    conn = sqlite3.connect(path)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-    finally:
-        conn.close()
-    return recorder
-
-
 def _sales(recorder: EventRecorder) -> list[tuple[str, float]]:
     recorder.flush()
     conn = sqlite3.connect(recorder.db_path)
@@ -976,7 +957,7 @@ class TestIM600XLSales:
     a real broker: no bin sensor, named buttons, input-driven faults."""
 
     async def test_ice_sale_without_a_bin_sensor(self, tmp_path):
-        recorder = _recorder(tmp_path)
+        recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
         async with _im600xl_harness(
             "e2e-im600xl-ice", tmp_path, recorder=recorder
         ) as h:
@@ -988,7 +969,7 @@ class TestIM600XLSales:
             assert "hardware/io/bin_half_full" not in h.published
 
     async def test_water_sale(self, tmp_path):
-        recorder = _recorder(tmp_path)
+        recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
         async with _im600xl_harness(
             "e2e-im600xl-water", tmp_path, recorder=recorder
         ) as h:
