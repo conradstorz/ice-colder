@@ -267,12 +267,16 @@ class FakeAvailability:
         self.publisher = None
         self.hardware_io: list[tuple[str, bool]] = []
         self.payment_devices: list[tuple[str, str]] = []
+        self.capabilities: list[tuple] = []
 
     def set_hardware_io(self, device: str, state: bool) -> None:
         self.hardware_io.append((device, state))
 
     def set_payment_device(self, device: str, state: str) -> None:
         self.payment_devices.append((device, state))
+
+    def on_vending_capabilities(self, subsystem, data, caps) -> None:
+        self.capabilities.append((subsystem, data, caps))
 
     def set_publisher(self, publisher) -> None:
         self.publisher = publisher
