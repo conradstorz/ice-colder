@@ -1,0 +1,14 @@
+{
+  "enum": [
+    "change",
+    "session_timeout",
+    "cancel",
+    "vend_failed",
+    "maintenance",
+    "admin",
+    "error",
+    "customer"
+  ],
+  "title": "PayoutReason",
+  "type": "string"
+}

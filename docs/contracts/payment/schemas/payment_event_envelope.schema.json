@@ -1,0 +1,492 @@
+{
+  "$defs": {
+    "BillEscrowed": {
+      "properties": {
+        "kind": {
+          "const": "bill_escrowed",
+          "default": "bill_escrowed",
+          "title": "Kind",
+          "type": "string"
+        },
+        "cents": {
+          "description": "Bill value in cents",
+          "exclusiveMinimum": 0,
+          "title": "Cents",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cents"
+      ],
+      "title": "BillEscrowed",
+      "type": "object"
+    },
+    "BillReturnReason": {
+      "enum": [
+        "policy",
+        "edge_silent",
+        "customer",
+        "edge",
+        "timeout"
+      ],
+      "title": "BillReturnReason",
+      "type": "string"
+    },
+    "BillReturned": {
+      "properties": {
+        "kind": {
+          "const": "bill_returned",
+          "default": "bill_returned",
+          "title": "Kind",
+          "type": "string"
+        },
+        "cents": {
+          "description": "Bill value in cents",
+          "exclusiveMinimum": 0,
+          "title": "Cents",
+          "type": "integer"
+        },
+        "reason": {
+          "$ref": "#/$defs/BillReturnReason"
+        }
+      },
+      "required": [
+        "cents",
+        "reason"
+      ],
+      "title": "BillReturned",
+      "type": "object"
+    },
+    "BillStacked": {
+      "properties": {
+        "kind": {
+          "const": "bill_stacked",
+          "default": "bill_stacked",
+          "title": "Kind",
+          "type": "string"
+        },
+        "cents": {
+          "description": "Bill value in cents",
+          "exclusiveMinimum": 0,
+          "title": "Cents",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cents"
+      ],
+      "title": "BillStacked",
+      "type": "object"
+    },
+    "CashCollected": {
+      "properties": {
+        "kind": {
+          "const": "cash_collected",
+          "default": "cash_collected",
+          "title": "Kind",
+          "type": "string"
+        },
+        "device": {
+          "$ref": "#/$defs/Device"
+        }
+      },
+      "required": [
+        "device"
+      ],
+      "title": "CashCollected",
+      "type": "object"
+    },
+    "CoinAccepted": {
+      "properties": {
+        "kind": {
+          "const": "coin_accepted",
+          "default": "coin_accepted",
+          "title": "Kind",
+          "type": "string"
+        },
+        "cents": {
+          "description": "Coin value in cents",
+          "exclusiveMinimum": 0,
+          "title": "Cents",
+          "type": "integer"
+        },
+        "routed": {
+          "$ref": "#/$defs/CoinRoute",
+          "description": "Where the coin was routed"
+        }
+      },
+      "required": [
+        "cents",
+        "routed"
+      ],
+      "title": "CoinAccepted",
+      "type": "object"
+    },
+    "CoinRoute": {
+      "enum": [
+        "tubes",
+        "cashbox"
+      ],
+      "title": "CoinRoute",
+      "type": "string"
+    },
+    "Device": {
+      "enum": [
+        "coin",
+        "bill",
+        "cashless"
+      ],
+      "title": "Device",
+      "type": "string"
+    },
+    "DeviceStatus": {
+      "enum": [
+        "ready",
+        "disabled",
+        "busy",
+        "jammed",
+        "full",
+        "empty",
+        "tilt",
+        "offline",
+        "error"
+      ],
+      "title": "DeviceStatus",
+      "type": "string"
+    },
+    "DeviceStatusEvent": {
+      "properties": {
+        "kind": {
+          "const": "device_status",
+          "default": "device_status",
+          "title": "Kind",
+          "type": "string"
+        },
+        "device": {
+          "$ref": "#/$defs/Device"
+        },
+        "status": {
+          "$ref": "#/$defs/DeviceStatus"
+        },
+        "mdb_status": {
+          "anyOf": [
+            {
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mdb Status"
+        }
+      },
+      "required": [
+        "device",
+        "status"
+      ],
+      "title": "DeviceStatusEvent",
+      "type": "object"
+    },
+    "EscrowReturnPressed": {
+      "properties": {
+        "kind": {
+          "const": "escrow_return_pressed",
+          "default": "escrow_return_pressed",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "title": "EscrowReturnPressed",
+      "type": "object"
+    },
+    "PayoutResult": {
+      "properties": {
+        "kind": {
+          "const": "payout_result",
+          "default": "payout_result",
+          "title": "Kind",
+          "type": "string"
+        },
+        "request_id": {
+          "maxLength": 64,
+          "minLength": 8,
+          "title": "Request Id",
+          "type": "string"
+        },
+        "requested_cents": {
+          "exclusiveMinimum": 0,
+          "title": "Requested Cents",
+          "type": "integer"
+        },
+        "paid_cents": {
+          "minimum": 0,
+          "title": "Paid Cents",
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/PayoutStatus"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        }
+      },
+      "required": [
+        "request_id",
+        "requested_cents",
+        "paid_cents",
+        "status"
+      ],
+      "title": "PayoutResult",
+      "type": "object"
+    },
+    "PayoutStatus": {
+      "enum": [
+        "ok",
+        "partial",
+        "failed"
+      ],
+      "title": "PayoutStatus",
+      "type": "string"
+    },
+    "SessionBegun": {
+      "properties": {
+        "kind": {
+          "const": "session_begun",
+          "default": "session_begun",
+          "title": "Kind",
+          "type": "string"
+        },
+        "session_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        },
+        "funds_cents": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Funds Cents"
+        }
+      },
+      "required": [
+        "session_id",
+        "funds_cents"
+      ],
+      "title": "SessionBegun",
+      "type": "object"
+    },
+    "SessionEndReason": {
+      "enum": [
+        "complete",
+        "cancelled",
+        "reader",
+        "edge",
+        "timeout"
+      ],
+      "title": "SessionEndReason",
+      "type": "string"
+    },
+    "SessionEnded": {
+      "properties": {
+        "kind": {
+          "const": "session_ended",
+          "default": "session_ended",
+          "title": "Kind",
+          "type": "string"
+        },
+        "session_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        },
+        "reason": {
+          "$ref": "#/$defs/SessionEndReason"
+        }
+      },
+      "required": [
+        "session_id",
+        "reason"
+      ],
+      "title": "SessionEnded",
+      "type": "object"
+    },
+    "VendApproved": {
+      "properties": {
+        "kind": {
+          "const": "vend_approved",
+          "default": "vend_approved",
+          "title": "Kind",
+          "type": "string"
+        },
+        "session_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        },
+        "request_id": {
+          "maxLength": 64,
+          "minLength": 8,
+          "title": "Request Id",
+          "type": "string"
+        },
+        "cents": {
+          "exclusiveMinimum": 0,
+          "title": "Cents",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "session_id",
+        "request_id",
+        "cents"
+      ],
+      "title": "VendApproved",
+      "type": "object"
+    },
+    "VendDenied": {
+      "properties": {
+        "kind": {
+          "const": "vend_denied",
+          "default": "vend_denied",
+          "title": "Kind",
+          "type": "string"
+        },
+        "session_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        },
+        "request_id": {
+          "maxLength": 64,
+          "minLength": 8,
+          "title": "Request Id",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "request_id",
+        "reason"
+      ],
+      "title": "VendDenied",
+      "type": "object"
+    }
+  },
+  "description": "Board -> edge event on `payment/event`.",
+  "properties": {
+    "event_id": {
+      "maxLength": 64,
+      "minLength": 8,
+      "title": "Event Id",
+      "type": "string"
+    },
+    "boot_id": {
+      "maxLength": 32,
+      "minLength": 8,
+      "title": "Boot Id",
+      "type": "string"
+    },
+    "seq": {
+      "minimum": 1,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "ts": {
+      "format": "date-time",
+      "title": "Ts",
+      "type": "string"
+    },
+    "event": {
+      "discriminator": {
+        "mapping": {
+          "bill_escrowed": "#/$defs/BillEscrowed",
+          "bill_returned": "#/$defs/BillReturned",
+          "bill_stacked": "#/$defs/BillStacked",
+          "cash_collected": "#/$defs/CashCollected",
+          "coin_accepted": "#/$defs/CoinAccepted",
+          "device_status": "#/$defs/DeviceStatusEvent",
+          "escrow_return_pressed": "#/$defs/EscrowReturnPressed",
+          "payout_result": "#/$defs/PayoutResult",
+          "session_begun": "#/$defs/SessionBegun",
+          "session_ended": "#/$defs/SessionEnded",
+          "vend_approved": "#/$defs/VendApproved",
+          "vend_denied": "#/$defs/VendDenied"
+        },
+        "propertyName": "kind"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/CoinAccepted"
+        },
+        {
+          "$ref": "#/$defs/BillEscrowed"
+        },
+        {
+          "$ref": "#/$defs/BillStacked"
+        },
+        {
+          "$ref": "#/$defs/BillReturned"
+        },
+        {
+          "$ref": "#/$defs/EscrowReturnPressed"
+        },
+        {
+          "$ref": "#/$defs/PayoutResult"
+        },
+        {
+          "$ref": "#/$defs/SessionBegun"
+        },
+        {
+          "$ref": "#/$defs/VendApproved"
+        },
+        {
+          "$ref": "#/$defs/VendDenied"
+        },
+        {
+          "$ref": "#/$defs/SessionEnded"
+        },
+        {
+          "$ref": "#/$defs/DeviceStatusEvent"
+        },
+        {
+          "$ref": "#/$defs/CashCollected"
+        }
+      ],
+      "title": "Event"
+    }
+  },
+  "required": [
+    "event_id",
+    "boot_id",
+    "seq",
+    "event"
+  ],
+  "title": "PaymentEventEnvelope",
+  "type": "object"
+}

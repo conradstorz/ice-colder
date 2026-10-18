@@ -1,0 +1,27 @@
+{
+  "description": "Edge -> board acknowledgement on `payment/event/ack`.",
+  "properties": {
+    "boot_id": {
+      "maxLength": 32,
+      "minLength": 8,
+      "title": "Boot Id",
+      "type": "string"
+    },
+    "seq": {
+      "minimum": 1,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "timestamp": {
+      "format": "date-time",
+      "title": "Timestamp",
+      "type": "string"
+    }
+  },
+  "required": [
+    "boot_id",
+    "seq"
+  ],
+  "title": "PaymentEventAck",
+  "type": "object"
+}

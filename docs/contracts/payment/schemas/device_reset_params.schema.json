@@ -1,0 +1,23 @@
+{
+  "$defs": {
+    "Device": {
+      "enum": [
+        "coin",
+        "bill",
+        "cashless"
+      ],
+      "title": "Device",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "device": {
+      "$ref": "#/$defs/Device"
+    }
+  },
+  "required": [
+    "device"
+  ],
+  "title": "DeviceResetParams",
+  "type": "object"
+}

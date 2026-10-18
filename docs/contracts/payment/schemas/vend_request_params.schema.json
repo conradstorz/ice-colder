@@ -1,0 +1,33 @@
+{
+  "properties": {
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
+    },
+    "cents": {
+      "exclusiveMinimum": 0,
+      "title": "Cents",
+      "type": "integer"
+    },
+    "item": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Item",
+      "type": "string"
+    }
+  },
+  "required": [
+    "cents",
+    "item"
+  ],
+  "title": "VendRequestParams",
+  "type": "object"
+}

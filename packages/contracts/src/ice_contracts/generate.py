@@ -26,6 +26,19 @@ from ice_contracts.board.ice_maker_monitor import (
     ChannelReading,
     MonitorCapabilities,
 )
+from ice_contracts.board.payment import (
+    DeviceResetParams,
+    DeviceStatus,
+    EndSessionParams,
+    PaymentEventAck,
+    PaymentEventEnvelope,
+    PaymentState,
+    PayoutParams,
+    PayoutReason,
+    SetPolicyParams,
+    VendRequestParams,
+    VendResultParams,
+)
 from ice_contracts.board.vending_machine import (
     DispenserOutcome,
     DispenseStep,
@@ -86,10 +99,28 @@ EDGE_CLOUD_MODELS = {
     "bundle_manifest": BundleManifest,
 }
 
+PAYMENT_SCHEMA_DIR = _REPO_ROOT / "docs/contracts/payment/schemas"
+
+# The envelope schema embeds all twelve event bodies via $defs.
+PAYMENT_MODELS = {
+    "payment_event_envelope": PaymentEventEnvelope,
+    "payment_event_ack": PaymentEventAck,
+    "payment_state": PaymentState,
+    "set_policy_params": SetPolicyParams,
+    "payout_params": PayoutParams,
+    "vend_request_params": VendRequestParams,
+    "vend_result_params": VendResultParams,
+    "end_session_params": EndSessionParams,
+    "device_reset_params": DeviceResetParams,
+    "device_status": DeviceStatus,
+    "payout_reason": PayoutReason,
+}
+
 CONTRACTS: dict[str, tuple[Path, dict]] = {
     "ice-maker-monitor": (SCHEMA_DIR, MODELS),
     "vending-machine": (VENDING_SCHEMA_DIR, VENDING_MODELS),
     "edge-cloud": (EDGE_CLOUD_SCHEMA_DIR, EDGE_CLOUD_MODELS),
+    "payment": (PAYMENT_SCHEMA_DIR, PAYMENT_MODELS),
 }
 
 

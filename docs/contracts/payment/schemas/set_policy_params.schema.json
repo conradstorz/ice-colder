@@ -1,0 +1,67 @@
+{
+  "properties": {
+    "policy_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Policy Id",
+      "type": "string"
+    },
+    "accept": {
+      "title": "Accept",
+      "type": "boolean"
+    },
+    "max_escrow_cents": {
+      "exclusiveMinimum": 0,
+      "title": "Max Escrow Cents",
+      "type": "integer"
+    },
+    "coin_enabled": {
+      "items": {
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "title": "Coin Enabled",
+      "type": "array"
+    },
+    "bill_enabled": {
+      "items": {
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "title": "Bill Enabled",
+      "type": "array"
+    },
+    "cashless_enabled": {
+      "title": "Cashless Enabled",
+      "type": "boolean"
+    },
+    "change_threshold_cents": {
+      "minimum": 0,
+      "title": "Change Threshold Cents",
+      "type": "integer"
+    },
+    "edge_timeout_s": {
+      "maximum": 120,
+      "minimum": 5,
+      "title": "Edge Timeout S",
+      "type": "integer"
+    },
+    "return_bill_on_lever": {
+      "title": "Return Bill On Lever",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "policy_id",
+    "accept",
+    "max_escrow_cents",
+    "coin_enabled",
+    "bill_enabled",
+    "cashless_enabled",
+    "change_threshold_cents",
+    "edge_timeout_s",
+    "return_bill_on_lever"
+  ],
+  "title": "SetPolicyParams",
+  "type": "object"
+}

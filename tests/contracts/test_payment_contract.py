@@ -535,3 +535,30 @@ class TestTestableAndTimeouts:
         # Spec 2 flips TESTABLE_COMMANDS["mdb"] to MDB_TESTABLE_COMMANDS;
         # delete this assertion there rather than "fixing" it.
         assert "bill_acceptor_test" in TESTABLE_COMMANDS["mdb"]
+
+
+def test_generate_registers_payment_contract():
+    from ice_contracts.generate import CONTRACTS, schema_for
+
+    assert "payment" in CONTRACTS
+    assert set(CONTRACTS["payment"][1]) == {
+        "payment_event_envelope",
+        "payment_event_ack",
+        "payment_state",
+        "set_policy_params",
+        "payout_params",
+        "vend_request_params",
+        "vend_result_params",
+        "end_session_params",
+        "device_reset_params",
+        "device_status",
+        "payout_reason",
+    }
+    defs = schema_for(PaymentEventEnvelope)["$defs"]
+    consts = [
+        d["properties"]["kind"]["const"]
+        for d in defs.values()
+        if "const" in d.get("properties", {}).get("kind", {})
+    ]
+    assert len(consts) == 12
+    assert set(consts) == set(EVENT_KINDS)

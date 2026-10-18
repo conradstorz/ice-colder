@@ -1,0 +1,15 @@
+{
+  "properties": {
+    "session_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id"
+  ],
+  "title": "EndSessionParams",
+  "type": "object"
+}

@@ -1,0 +1,46 @@
+{
+  "$defs": {
+    "PayoutReason": {
+      "enum": [
+        "change",
+        "session_timeout",
+        "cancel",
+        "vend_failed",
+        "maintenance",
+        "admin",
+        "error",
+        "customer"
+      ],
+      "title": "PayoutReason",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "cents": {
+      "exclusiveMinimum": 0,
+      "title": "Cents",
+      "type": "integer"
+    },
+    "reason": {
+      "$ref": "#/$defs/PayoutReason"
+    },
+    "sale_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sale Id"
+    }
+  },
+  "required": [
+    "cents",
+    "reason"
+  ],
+  "title": "PayoutParams",
+  "type": "object"
+}
