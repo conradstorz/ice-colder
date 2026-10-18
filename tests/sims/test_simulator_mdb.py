@@ -5,7 +5,7 @@ import pytest
 from ice_sims.mdb_gateway import MDBGatewaySimulator, PaymentStrategy
 from unittest.mock import AsyncMock
 
-from tests.fakes import patch_module_sleep
+from tests.async_helpers import patch_module_sleep
 
 from ice_contracts.board.common import SubsystemCommand, TESTABLE_COMMANDS
 from ice_contracts.board.vending_machine import PaymentRefundCommand, RefundStatus

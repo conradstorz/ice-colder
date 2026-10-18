@@ -27,8 +27,8 @@ from ice_edge.vend.dispensers import validate_document
 from ice_contracts.board.mqtt_messages import DispenseCommand
 from ice_sims.vending_machine import VendingMachineSimulator
 from tests.dispenser_fixtures import GOOD, ICE, WATER
-from tests.fakes import patch_module_sleep, settle
-from tests.paths import REPO_ROOT
+from tests.async_helpers import patch_module_sleep, settle
+from tests.repo_root import REPO_ROOT
 
 
 _REAL_SLEEP = asyncio.sleep  # captured before any test patches asyncio.sleep
@@ -88,6 +88,12 @@ def _make_config() -> ConfigModel:
             }
         }
     )
+
+
+def _fault(sim, name: str):
+    """The registered `FaultDef` named *name* (its `on_activate`/`on_recover`
+    take a client, like the pre-split `sim._on_<name>_*` methods did)."""
+    return next(f for f in sim.fault_defs if f.name == name)
 
 
 def _make_sim(**kwargs) -> VendingMachineSimulator:
@@ -291,7 +297,7 @@ class TestAugerJamFault:
         sim = VendingMachineSimulator()
         client = AsyncMock()
         # Should complete without error
-        await sim._on_auger_jam_recover(client)
+        await _fault(sim, "auger_jam").on_recover(client)
 
 
 class TestWaterValveStuckOpenFault:
@@ -305,7 +311,7 @@ class TestWaterValveStuckOpenFault:
 
         sim.set_hw = capture_set_hw
         client = AsyncMock()
-        await sim._on_water_valve_stuck_open_activate(client)
+        await _fault(sim, "water_valve_stuck_open").on_activate(client)
         assert ("water_valve_solenoid", True) in set_hw_calls
         assert ("water_flow_sensor", True) in set_hw_calls
 
@@ -319,7 +325,7 @@ class TestWaterValveStuckOpenFault:
 
         sim.set_hw = capture_set_hw
         client = AsyncMock()
-        await sim._on_water_valve_stuck_open_recover(client)
+        await _fault(sim, "water_valve_stuck_open").on_recover(client)
         assert ("water_valve_solenoid", False) in set_hw_calls
         assert ("water_flow_sensor", False) in set_hw_calls
 
@@ -336,7 +342,7 @@ class TestIceBinEmptyFault:
 
         sim.set_hw = capture_set_hw
         client = AsyncMock()
-        await sim._on_ice_bin_empty_activate(client)
+        await _fault(sim, "ice_bin_empty").on_activate(client)
         assert ("bin_half_full", False) in set_hw_calls
 
     @pytest.mark.asyncio
@@ -349,7 +355,7 @@ class TestIceBinEmptyFault:
 
         sim.set_hw = capture_set_hw
         client = AsyncMock()
-        await sim._on_ice_bin_empty_recover(client)
+        await _fault(sim, "ice_bin_empty").on_recover(client)
         assert ("bin_half_full", True) in set_hw_calls
 
 
@@ -371,7 +377,7 @@ class TestZeroProducts:
             if len(sleep_calls) >= 3:
                 raise asyncio.CancelledError
 
-        with patch_module_sleep("ice_sims.vending_machine", fake_sleep):
+        with patch_module_sleep("ice_sims.vending.customer", fake_sleep):
             with pytest.raises(asyncio.CancelledError):
                 await sim._customer_loop(client)
 
@@ -391,8 +397,8 @@ class TestZeroProducts:
             if len(sleep_calls) >= 5:
                 raise asyncio.CancelledError
 
-        with patch_module_sleep("ice_sims.vending_machine", fake_sleep):
-            with patch("ice_sims.vending_machine.logger") as mock_logger:
+        with patch_module_sleep("ice_sims.vending.customer", fake_sleep):
+            with patch("ice_sims.vending.customer.logger") as mock_logger:
                 with pytest.raises(asyncio.CancelledError):
                     await sim._customer_loop(client)
                 assert mock_logger.warning.call_count == 1
@@ -425,7 +431,7 @@ class TestZeroProducts:
             if len(sleep_calls) >= 2:
                 raise asyncio.CancelledError
 
-        with patch_module_sleep("ice_sims.vending_machine", fake_sleep):
+        with patch_module_sleep("ice_sims.vending.customer", fake_sleep):
             with pytest.raises(asyncio.CancelledError):
                 await sim._customer_loop(client)
 
@@ -1114,7 +1120,7 @@ class TestExecuteProfile:
         assert solenoid_events[-1] is True
 
         io_events.clear()
-        await sim._on_bag_drop_solenoid_stuck_recover(client)
+        await _fault(sim, "bag_drop_solenoid_stuck").on_recover(client)
         assert ("bag_drop_solenoid", False) in io_events
 
     @pytest.mark.asyncio
@@ -1290,8 +1296,12 @@ class TestLegacyDispenseTopicRemoved:
     def test_no_cmd_dispense_string_in_module(self):
         import ice_sims.vending_machine as module
 
-        source = Path(module.__file__).read_text(encoding="utf-8")
-        assert "cmd/dispense" not in source
+        package_dir = Path(module.__file__).parent
+        sources = [Path(module.__file__)] + sorted(
+            (package_dir / "vending").glob("*.py")
+        )
+        for path in sources:
+            assert "cmd/dispense" not in path.read_text(encoding="utf-8"), path
 
 
 class TestExampleToml:
@@ -1348,7 +1358,7 @@ class TestWaterValveCommand:
         client = AsyncMock()
         sim.publish = AsyncMock()
         cmd = _make_command("water_valve", {"seconds": 1})
-        with patch_module_sleep("ice_sims.vending_machine", AsyncMock()):
+        with patch_module_sleep("ice_sims.vending.simulator", AsyncMock()):
             await sim.handle_command(client, cmd)
 
             ack = sim.publish.await_args_list[-1].args[2]
@@ -1368,7 +1378,7 @@ class TestWaterValveCommand:
         client = AsyncMock()
         sim.publish = AsyncMock()
         cmd = _make_command("water_valve", {"seconds": 10})
-        with patch_module_sleep("ice_sims.vending_machine", AsyncMock()):
+        with patch_module_sleep("ice_sims.vending.simulator", AsyncMock()):
             await sim.handle_command(client, cmd)
 
             ack = sim.publish.await_args_list[-1].args[2]
