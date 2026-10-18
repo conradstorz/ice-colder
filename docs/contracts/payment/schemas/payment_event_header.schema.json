@@ -1,0 +1,40 @@
+{
+  "description": "Lenient view of an event envelope: everything but the body is typed.\n\n`PaymentEventEnvelope.event` is a closed union, so an envelope carrying a\n`kind` from a newer 1.x board fails strict validation as a whole. The edge\ntherefore parses this header FIRST and acks from its `boot_id`/`seq`, then\nparses the body with `PaymentEventEnvelope`. If that fails because of an\nunknown `kind`, the edge logs it, acks it (already done) and counts it\ntoward PAY-105's detail.",
+  "properties": {
+    "event_id": {
+      "maxLength": 64,
+      "minLength": 8,
+      "title": "Event Id",
+      "type": "string"
+    },
+    "boot_id": {
+      "maxLength": 32,
+      "minLength": 8,
+      "title": "Boot Id",
+      "type": "string"
+    },
+    "seq": {
+      "minimum": 1,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "ts": {
+      "format": "date-time",
+      "title": "Ts",
+      "type": "string"
+    },
+    "event": {
+      "description": "Event body, any shape",
+      "title": "Event",
+      "type": "object"
+    }
+  },
+  "required": [
+    "event_id",
+    "boot_id",
+    "seq",
+    "event"
+  ],
+  "title": "PaymentEventHeader",
+  "type": "object"
+}

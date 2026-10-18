@@ -87,33 +87,33 @@ class SessionEndReason(str, Enum):
 
 
 class CoinAccepted(BaseModel):
-    kind: Literal["coin_accepted"] = "coin_accepted"
+    kind: Literal["coin_accepted"]
     cents: PositiveCents = Field(..., description="Coin value in cents")
     routed: CoinRoute = Field(..., description="Where the coin was routed")
 
 
 class BillEscrowed(BaseModel):
-    kind: Literal["bill_escrowed"] = "bill_escrowed"
+    kind: Literal["bill_escrowed"]
     cents: PositiveCents = Field(..., description="Bill value in cents")
 
 
 class BillStacked(BaseModel):
-    kind: Literal["bill_stacked"] = "bill_stacked"
+    kind: Literal["bill_stacked"]
     cents: PositiveCents = Field(..., description="Bill value in cents")
 
 
 class BillReturned(BaseModel):
-    kind: Literal["bill_returned"] = "bill_returned"
+    kind: Literal["bill_returned"]
     cents: PositiveCents = Field(..., description="Bill value in cents")
     reason: BillReturnReason
 
 
 class EscrowReturnPressed(BaseModel):
-    kind: Literal["escrow_return_pressed"] = "escrow_return_pressed"
+    kind: Literal["escrow_return_pressed"]
 
 
 class PayoutResult(BaseModel):
-    kind: Literal["payout_result"] = "payout_result"
+    kind: Literal["payout_result"]
     request_id: str = Field(..., min_length=8, max_length=64)
     requested_cents: PositiveCents
     paid_cents: Cents
@@ -136,40 +136,40 @@ class PayoutResult(BaseModel):
 
 
 class SessionBegun(BaseModel):
-    kind: Literal["session_begun"] = "session_begun"
+    kind: Literal["session_begun"]
     session_id: str = Field(..., min_length=1, max_length=64)
     funds_cents: Optional[Cents]
 
 
 class VendApproved(BaseModel):
-    kind: Literal["vend_approved"] = "vend_approved"
+    kind: Literal["vend_approved"]
     session_id: str = Field(..., min_length=1, max_length=64)
     request_id: str = Field(..., min_length=8, max_length=64)
     cents: PositiveCents
 
 
 class VendDenied(BaseModel):
-    kind: Literal["vend_denied"] = "vend_denied"
+    kind: Literal["vend_denied"]
     session_id: str = Field(..., min_length=1, max_length=64)
     request_id: str = Field(..., min_length=8, max_length=64)
     reason: str
 
 
 class SessionEnded(BaseModel):
-    kind: Literal["session_ended"] = "session_ended"
+    kind: Literal["session_ended"]
     session_id: str = Field(..., min_length=1, max_length=64)
     reason: SessionEndReason
 
 
 class DeviceStatusEvent(BaseModel):
-    kind: Literal["device_status"] = "device_status"
+    kind: Literal["device_status"]
     device: Device
     status: DeviceStatus
     mdb_status: Optional[Annotated[StrictInt, Field(ge=0, le=255)]] = None
 
 
 class CashCollected(BaseModel):
-    kind: Literal["cash_collected"] = "cash_collected"
+    kind: Literal["cash_collected"]
     device: Device
 
 
@@ -217,11 +217,42 @@ class PaymentEventEnvelope(BaseModel):
     event: PaymentEventBody
 
 
-class PaymentEventAck(BaseModel):
-    """Edge -> board acknowledgement on `payment/event/ack`."""
+class PaymentEventHeader(BaseModel):
+    """Lenient view of an event envelope: everything but the body is typed.
 
+    `PaymentEventEnvelope.event` is a closed union, so an envelope carrying a
+    `kind` from a newer 1.x board fails strict validation as a whole. The edge
+    therefore parses this header FIRST and acks from its `boot_id`/`seq`, then
+    parses the body with `PaymentEventEnvelope`. If that fails because of an
+    unknown `kind`, the edge logs it, acks it (already done) and counts it
+    toward PAY-105's detail.
+    """
+
+    event_id: str = Field(..., min_length=8, max_length=64)
     boot_id: str = Field(..., min_length=8, max_length=32)
     seq: Annotated[StrictInt, Field(ge=1)]
+    ts: datetime = Field(default_factory=_utc_now)
+    event: dict = Field(..., description="Event body, any shape")
+
+
+class PaymentEventAck(BaseModel):
+    """Edge -> board acknowledgement on `payment/event/ack`.
+
+    Cumulative, but only within `boot_id`: it covers log entries with the SAME
+    `boot_id` and `seq` <= this one. Entries from an earlier boot stay in the
+    board's log until acked under their own `boot_id` (the board replays them
+    first, in order).
+    """
+
+    boot_id: str = Field(
+        ...,
+        min_length=8,
+        max_length=32,
+        description="Boot whose log entries this ack covers; earlier boots are unaffected",
+    )
+    seq: Annotated[StrictInt, Field(ge=1)] = Field(
+        ..., description="Covers entries of this boot_id with seq <= this"
+    )
     timestamp: datetime = Field(default_factory=_utc_now)
 
 

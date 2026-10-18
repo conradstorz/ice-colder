@@ -85,7 +85,8 @@ Topics, all under `vmc/{machine_id}/`:
   `boot_id`, starting at 1.
 - The board appends every event to a flash-backed log before publishing it and removes it only when an
   ack with `seq ≥` its own arrives. On reconnect or reboot it republishes the whole unacked log in order
-  before anything new.
+  before anything new. An ack covers only log entries with the SAME `boot_id`; entries from an earlier
+  boot stay in the log until acked under their own `boot_id` (the board replays them first, in order).
 - The edge dedupes on `event_id`, processes in `seq` order, and acks after processing (not on receipt).
   It never blocks a sale waiting for its own ack to be delivered.
 - A `seq` gap within a known `boot_id`, or a never-seen `boot_id` whose first event has `seq > 1`, raises
@@ -276,7 +277,7 @@ audit, cashless level 2/3 options beyond always-idle, a second cashless reader (
 
 - Every model round-trips through JSON with ints intact; a float or numeric string in any `Cents` field
   fails validation.
-- The event union accepts exactly the twelve `kind`s above and rejects an unknown one at the envelope.
+- The event union accepts exactly the twelve `kind`s above and the strict envelope rejects an unknown `kind`; `PaymentEventHeader` parses any envelope so the edge can still ack it.
 - Every enum (`DeviceStatus`, `PayoutReason`, `bill_returned.reason`, `session_ended.reason`,
   `inhibited_reason`, `payout_result.status`) is pinned by a test so a value cannot drift from this doc.
 - `COMMAND_PARAM_VALIDATORS` has entries for every §6 command with params; `COMPLETION_TIMEOUTS` has

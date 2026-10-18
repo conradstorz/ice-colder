@@ -40,7 +40,7 @@ All topics are relative to `vmc/{machine_id}/`.
 | Topic | Direction | QoS / retain | Payload |
 |---|---|---|---|
 | `payment/event` | board → edge | 1 / not retained | [`PaymentEventEnvelope`](schemas/payment_event_envelope.schema.json) |
-| `payment/event/ack` | edge → board | 1 / not retained | [`PaymentEventAck`](schemas/payment_event_ack.schema.json) `{boot_id, seq}` — cumulative: "I have processed every event with this `boot_id` and `seq` <= this" |
+| `payment/event/ack` | edge → board | 1 / not retained | [`PaymentEventAck`](schemas/payment_event_ack.schema.json) `{boot_id, seq, timestamp}` — cumulative within one boot: "I have processed every event with this `boot_id` and `seq` <= this" |
 | `payment/state` | board → edge | 1 / **retained** | [`PaymentState`](schemas/payment_state.schema.json) |
 | `cmd/mdb` | edge → board | 1 / not retained | `SubsystemCommand` (vending contract, [schema](../vending-machine/schemas/subsystem_command.schema.json)); per-command params below |
 | `cmd/mdb/ack` | board → edge | 1 / not retained | `CommandAck` (vending contract, [schema](../vending-machine/schemas/command_ack.schema.json)) |
@@ -54,8 +54,11 @@ Topic constants: `PAYMENT_EVENT_TOPIC`, `PAYMENT_EVENT_ACK_TOPIC`,
 - `boot_id` is a random 8–32 character id minted at board boot. `seq` is a
   `StrictInt >= 1`, monotonic within a `boot_id`, starting at 1.
 - The board appends every event to a flash-backed log before publishing it
-  and removes it only when an ack with `seq >=` its own arrives. On reconnect
-  or reboot it republishes the whole unacked log in order before anything new.
+  and removes it only when an ack with the SAME `boot_id` and `seq >=` its own
+  arrives. An ack covers only log entries with its own `boot_id`; entries from
+  an earlier boot stay in the log until acked under their own `boot_id`. On
+  reconnect or reboot the board republishes the whole unacked log in order
+  (earlier boots first) before anything new.
 - The edge dedupes on `event_id`, processes in `seq` order, and acks
   cumulatively **after processing** (not on receipt). It never blocks a sale
   waiting for its own ack to be delivered.
@@ -64,7 +67,12 @@ Topic constants: `PAYMENT_EVENT_TOPIC`, `PAYMENT_EVENT_ACK_TOPIC`,
   `warning`, not payment-blocking). The edge still processes what it has; the
   fault tells the operator the cash count may be off.
 - An unknown `event.kind` (a newer board) is logged, acked so the stream is
-  not blocked, and counted in `PAY-105`'s detail.
+  not blocked, and counted in `PAY-105`'s detail. The strict
+  `PaymentEventEnvelope` rejects such an envelope as a whole, so the edge
+  parses [`PaymentEventHeader`](schemas/payment_event_header.schema.json)
+  (`event_id`, `boot_id`, `seq`, `ts`, and `event` as any object) first and
+  acks from it, then parses the body with `PaymentEventEnvelope`; a body
+  failure caused by an unknown `kind` is logged and counted, not retried.
 
 ## Fail-safe on edge silence
 
@@ -92,6 +100,11 @@ PaymentEventEnvelope
   ts:       datetime
   event:    PaymentEventBody   # discriminated union on `kind`
 ```
+
+Nullable fields in events and state are required-but-nullable: the board
+emits an explicit `null`, never omits the key. The only exceptions are
+`vend_request.session_id` and `payout.sale_id` (command params), which may be
+omitted. Every event body's `kind` is required.
 
 Enums: `Device` = `coin` | `bill` | `cashless`; `DeviceStatus` = `ready` |
 `disabled` | `busy` | `jammed` | `full` | `empty` | `tilt` | `offline` |

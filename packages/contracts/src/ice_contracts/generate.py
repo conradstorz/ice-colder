@@ -32,6 +32,7 @@ from ice_contracts.board.payment import (
     EndSessionParams,
     PaymentEventAck,
     PaymentEventEnvelope,
+    PaymentEventHeader,
     PaymentState,
     PayoutParams,
     PayoutReason,
@@ -104,6 +105,7 @@ PAYMENT_SCHEMA_DIR = _REPO_ROOT / "docs/contracts/payment/schemas"
 # The envelope schema embeds all twelve event bodies via $defs.
 PAYMENT_MODELS = {
     "payment_event_envelope": PaymentEventEnvelope,
+    "payment_event_header": PaymentEventHeader,
     "payment_event_ack": PaymentEventAck,
     "payment_state": PaymentState,
     "set_policy_params": SetPolicyParams,

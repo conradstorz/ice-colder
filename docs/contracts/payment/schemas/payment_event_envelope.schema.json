@@ -4,7 +4,6 @@
       "properties": {
         "kind": {
           "const": "bill_escrowed",
-          "default": "bill_escrowed",
           "title": "Kind",
           "type": "string"
         },
@@ -16,6 +15,7 @@
         }
       },
       "required": [
+        "kind",
         "cents"
       ],
       "title": "BillEscrowed",
@@ -36,7 +36,6 @@
       "properties": {
         "kind": {
           "const": "bill_returned",
-          "default": "bill_returned",
           "title": "Kind",
           "type": "string"
         },
@@ -51,6 +50,7 @@
         }
       },
       "required": [
+        "kind",
         "cents",
         "reason"
       ],
@@ -61,7 +61,6 @@
       "properties": {
         "kind": {
           "const": "bill_stacked",
-          "default": "bill_stacked",
           "title": "Kind",
           "type": "string"
         },
@@ -73,6 +72,7 @@
         }
       },
       "required": [
+        "kind",
         "cents"
       ],
       "title": "BillStacked",
@@ -82,7 +82,6 @@
       "properties": {
         "kind": {
           "const": "cash_collected",
-          "default": "cash_collected",
           "title": "Kind",
           "type": "string"
         },
@@ -91,6 +90,7 @@
         }
       },
       "required": [
+        "kind",
         "device"
       ],
       "title": "CashCollected",
@@ -100,7 +100,6 @@
       "properties": {
         "kind": {
           "const": "coin_accepted",
-          "default": "coin_accepted",
           "title": "Kind",
           "type": "string"
         },
@@ -116,6 +115,7 @@
         }
       },
       "required": [
+        "kind",
         "cents",
         "routed"
       ],
@@ -158,7 +158,6 @@
       "properties": {
         "kind": {
           "const": "device_status",
-          "default": "device_status",
           "title": "Kind",
           "type": "string"
         },
@@ -184,6 +183,7 @@
         }
       },
       "required": [
+        "kind",
         "device",
         "status"
       ],
@@ -194,11 +194,13 @@
       "properties": {
         "kind": {
           "const": "escrow_return_pressed",
-          "default": "escrow_return_pressed",
           "title": "Kind",
           "type": "string"
         }
       },
+      "required": [
+        "kind"
+      ],
       "title": "EscrowReturnPressed",
       "type": "object"
     },
@@ -206,7 +208,6 @@
       "properties": {
         "kind": {
           "const": "payout_result",
-          "default": "payout_result",
           "title": "Kind",
           "type": "string"
         },
@@ -243,6 +244,7 @@
         }
       },
       "required": [
+        "kind",
         "request_id",
         "requested_cents",
         "paid_cents",
@@ -264,7 +266,6 @@
       "properties": {
         "kind": {
           "const": "session_begun",
-          "default": "session_begun",
           "title": "Kind",
           "type": "string"
         },
@@ -288,6 +289,7 @@
         }
       },
       "required": [
+        "kind",
         "session_id",
         "funds_cents"
       ],
@@ -309,7 +311,6 @@
       "properties": {
         "kind": {
           "const": "session_ended",
-          "default": "session_ended",
           "title": "Kind",
           "type": "string"
         },
@@ -324,6 +325,7 @@
         }
       },
       "required": [
+        "kind",
         "session_id",
         "reason"
       ],
@@ -334,7 +336,6 @@
       "properties": {
         "kind": {
           "const": "vend_approved",
-          "default": "vend_approved",
           "title": "Kind",
           "type": "string"
         },
@@ -357,6 +358,7 @@
         }
       },
       "required": [
+        "kind",
         "session_id",
         "request_id",
         "cents"
@@ -368,7 +370,6 @@
       "properties": {
         "kind": {
           "const": "vend_denied",
-          "default": "vend_denied",
           "title": "Kind",
           "type": "string"
         },
@@ -390,6 +391,7 @@
         }
       },
       "required": [
+        "kind",
         "session_id",
         "request_id",
         "reason"

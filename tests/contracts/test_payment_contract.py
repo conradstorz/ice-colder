@@ -37,10 +37,13 @@ from ice_contracts.board.payment import (
     InhibitReason,
     PaymentEventAck,
     PaymentEventEnvelope,
+    PaymentEventHeader,
     PaymentState,
     PayoutResult,
     PayoutStatus,
+    SessionBegun,
     SessionEndReason,
+    DeviceStatusEvent,
     TubeLevel,
 )
 
@@ -108,9 +111,10 @@ class TestCents:
         c = CoinAccepted(kind="coin_accepted", cents=25, routed="tubes")
         assert c.cents == 25
 
-    def test_kind_defaults_and_is_emitted(self):
-        c = CoinAccepted(cents=25, routed="tubes")
-        assert c.kind == "coin_accepted"
+    def test_kind_required_and_is_emitted(self):
+        with pytest.raises(ValidationError):
+            CoinAccepted(cents=25, routed="tubes")
+        c = CoinAccepted(kind="coin_accepted", cents=25, routed="tubes")
         assert c.model_dump(mode="json")["kind"] == "coin_accepted"
 
     def test_float_rejected(self):
@@ -151,13 +155,25 @@ class TestEventUnion:
                 _envelope({"kind": "coin_rejected", "cents": 25})
             )
 
+    def test_kind_is_required_in_schema(self):
+        from ice_contracts.generate import schema_for
+
+        defs = schema_for(PaymentEventEnvelope)["$defs"]
+        checked = 0
+        for d in defs.values():
+            if "kind" in d.get("properties", {}):
+                assert "kind" in d["required"]
+                checked += 1
+        assert checked == 12
+
     def test_event_kinds_order(self):
         assert EVENT_KINDS == EXPECTED_KINDS
 
     def test_event_kinds_match_union_members(self):
         union = get_args(payment.PaymentEventBody)[0]
         members = get_args(union)
-        assert {m.model_fields["kind"].default for m in members} == set(EVENT_KINDS)
+        kinds = {get_args(m.model_fields["kind"].annotation)[0] for m in members}
+        assert kinds == set(EVENT_KINDS)
         assert len(members) == len(EVENT_KINDS) == 12
 
 
@@ -192,9 +208,72 @@ class TestEnvelope:
         assert env.ts.utcoffset() == timedelta(0)
 
 
+class TestEnvelopeLimits:
+    EVENT = {"kind": "escrow_return_pressed"}
+
+    def test_event_id_65_rejected(self):
+        with pytest.raises(ValidationError):
+            PaymentEventEnvelope.model_validate(
+                _envelope(self.EVENT, event_id="e" * 65)
+            )
+
+    def test_request_id_7_rejected(self):
+        with pytest.raises(ValidationError):
+            PayoutResult(
+                kind="payout_result",
+                request_id="1234567",
+                requested_cents=1,
+                paid_cents=1,
+                status="ok",
+            )
+
+    def test_session_id_65_rejected(self):
+        with pytest.raises(ValidationError):
+            SessionBegun(kind="session_begun", session_id="s" * 65, funds_cents=1)
+
+    def test_policy_id_65_rejected(self):
+        with pytest.raises(ValidationError):
+            SetPolicyParams(**{**VALID_POLICY, "policy_id": "p" * 65})
+
+    def test_funds_cents_required_but_nullable(self):
+        with pytest.raises(ValidationError):
+            SessionBegun(kind="session_begun", session_id="s1")
+        assert (
+            SessionBegun(
+                kind="session_begun", session_id="s1", funds_cents=None
+            ).funds_cents
+            is None
+        )
+
+    @pytest.mark.parametrize("value", [256, -1])
+    def test_mdb_status_bounds(self, value):
+        with pytest.raises(ValidationError):
+            DeviceStatusEvent(
+                kind="device_status", device="coin", status="ready", mdb_status=value
+            )
+
+
+class TestEventHeader:
+    FUTURE = {"kind": "future_thing", "x": 1}
+
+    def test_header_parses_unknown_kind(self):
+        h = PaymentEventHeader.model_validate(_envelope(self.FUTURE))
+        assert h.boot_id == BOOT_ID and h.seq == 1
+        assert h.event["kind"] == "future_thing"
+
+    def test_strict_envelope_still_rejects_it(self):
+        with pytest.raises(ValidationError):
+            PaymentEventEnvelope.model_validate(_envelope(self.FUTURE))
+
+    def test_header_rejects_bad_seq(self):
+        with pytest.raises(ValidationError):
+            PaymentEventHeader.model_validate(_envelope(self.FUTURE, seq=0))
+
+
 class TestPayoutResultConsistency:
     def _make(self, status, requested, paid):
         return PayoutResult(
+            kind="payout_result",
             request_id="req-00001",
             requested_cents=requested,
             paid_cents=paid,
@@ -508,6 +587,22 @@ class TestCommandChannelRegistration:
         with pytest.raises(ValidationError):
             _cmd("set_policy", {})
 
+    @pytest.mark.parametrize(
+        "command,params",
+        [
+            ("vend_request", {"cents": 0, "item": "x"}),
+            (
+                "vend_result",
+                {"session_id": "s1", "request_id": "short", "outcome": "success"},
+            ),
+            ("end_session", {}),
+        ],
+    )
+    def test_bad_params_rejected_end_to_end(self, command, params):
+        with pytest.raises(ValidationError) as ei:
+            _cmd(command, params)
+        assert f"{command} params invalid" in ei.value.errors()[0]["msg"]
+
     def test_valid_commands_construct(self):
         _cmd("payout", {"cents": 100, "reason": "change"})
         _cmd("set_policy", VALID_POLICY)
@@ -543,6 +638,7 @@ def test_generate_registers_payment_contract():
     assert "payment" in CONTRACTS
     assert set(CONTRACTS["payment"][1]) == {
         "payment_event_envelope",
+        "payment_event_header",
         "payment_event_ack",
         "payment_state",
         "set_policy_params",
