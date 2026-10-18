@@ -114,7 +114,7 @@ own cloud uplink.
 |---|---|---|---|
 | Ice vend | IC5 | IC1–IC4 | Energize the catch (IC4) and the bag fan (IC3), run the agitator (IC1) and auger (IC2) until bag full (IC5), stop the motors, then release the catch to drop the bag. A maximum fill time applies even if IC5 never trips. Step order and overlap are *verify* (record one factory vend); timings come from `dispensers.toml`. |
 | Water vend | W1, W2, W4, W7–W9 | W3 | Open the valve until the target pulse count for the selected volume is reached; maximum dispense time applies. Volume comes from calibrated pulses per gallon, never time alone. |
-| RO fill | W6, W7 | W5 | Run RO production whenever the tank is **not full**. This is new firmware logic (the PLC did it before), so it needs a maximum run time and a fault if the tank never reports full. |
+| RO fill | W6, W7 | W5 | Run RO production whenever the tank is **not full**. This is new firmware logic (the PLC did it before), so it needs a maximum run time and a fault if the tank never reports full. The firmware cutoff must be **longer** than the edge's `physical.ro_max_run_seconds` (so the edge raises `WTR-107` first) and latches the pump off until power is cycled. |
 | Freeze protection | E2 (if confirmed) | E1 | Switch the heater on below a threshold; rule to be confirmed against the PLC's behavior. |
 
 ## 6. Not instrumented, and what that costs
@@ -129,21 +129,24 @@ The machine has **no** sensor for these, and iteration 1 does not add any:
 | 24 V control-power / mains monitor | `PWR-*` faults can only be inferred (for example, from a board reboot), not measured. |
 | Motor current | The agitator/auger current channels the simulator models do not exist; a jammed motor shows only as a fill timeout. |
 
-## 7. Divergences to resolve later
+## 7. Divergences (resolved)
 
-This document changes nothing else. These are the places the repo disagrees with the real machine:
+This document changes nothing else. These were the places the repo disagreed with the real machine; each is resolved by the [IM600XL simulator design](../superpowers/specs/2026-10-17-im600xl-simulator-design.md):
 
 - **Simulator and contract.** The vending simulator declares channels this machine lacks (`cabinet` as an
   in-cabinet sensor, `bin_half_full`, `door_sensor` as a release-gate sensor, `fan`, `vending_now_light`,
   `agitator_current`, `auger_current`) and lacks channels it has (W1, W2, W5–W9, C1, C6). Its
   `bag_drop_solenoid` has the opposite sense from IC4. ICE-101's auto-clear depends on `bin_half_full`,
   which has no real counterpart.
+  **Resolved:** [spec §5](../superpowers/specs/2026-10-17-im600xl-simulator-design.md#5-simulator-ice_simsvending) (the simulator's channel table now matches this document's channel-id column; `bin_half_full` is gone) and [§4.2](../superpowers/specs/2026-10-17-im600xl-simulator-design.md#42-ice-availability-without-a-bin-sensor) (ICE-101 retries on a cooldown).
 - **ROADMAP.** §1 and §3–§4 assume a bag-present sensor, trap-door limits, a leak input, water-treatment
   health and 24 V power monitoring. §10's open questions on the bag sensor, trap door, and leak/pressure/door
   inputs are now answered by this document.
+  **Resolved:** [spec §4.3](../superpowers/specs/2026-10-17-im600xl-simulator-design.md#43-water-and-service-inputs) (leak, pressure, door and RO tank inputs now drive faults and availability) and [§9](../superpowers/specs/2026-10-17-im600xl-simulator-design.md#9-documentation-updates) (ROADMAP updated).
 - **Customer screen.** [The customer-screen contract](../superpowers/specs/2026-10-14-customer-screen-contract-design.md)
   (D1) makes a browser kiosk the first renderer. The real machine's screen will be the I²C character LCD
   (C3) — the "dedicated display board" that spec defers.
+  **Resolved** as a deliberate non-change: the kiosk stays the first renderer; the LCD is out of scope in [spec §10](../superpowers/specs/2026-10-17-im600xl-simulator-design.md#10-out-of-scope).
 
 ## 8. Open items to verify at the machine
 

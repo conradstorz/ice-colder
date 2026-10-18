@@ -98,6 +98,8 @@ Implemented in `services/availability.py`: known inputs are evaluated, inputs
 the firmware cannot report yet are listed as not instrumented and pass until
 Phase B/D.
 
+On the IM600XL, `water_pressure_ok`, `no_leak` (the sump-high input) and the RO tank (`ro_tank_ok`, from `ro_tank_empty`) are now instrumented and evaluated from the board's `hardware/io` inputs (see `docs/hardware/im600xl-io-list.md` and the [IM600XL simulator design](docs/superpowers/specs/2026-10-17-im600xl-simulator-design.md)). Bin level is not instrumented on this machine: it has no bin sensor, so `ice_available` passes with "no bin sensor" and ICE-101 clears itself after a retry cooldown.
+
 Each permissive carries a gate. Only `safety` rows — an active hazard fault
 (`PAYMENT_BLOCKING_FAULTS`), an open service door, a leak, a proven-open trap
 door, bad 24 V control power — inhibit `cmd/payment/enable`. Subsystem

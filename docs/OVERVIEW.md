@@ -237,7 +237,8 @@ without hardware. The ice-maker simulator announces itself to Home Assistant via
 → [ESP32 simulators](superpowers/specs/2026-04-12-esp32-simulators-design.md) ·
 [Simulator fault injection](superpowers/specs/2026-04-19-simulator-fault-injection-design.md) ·
 [Dual hot-gas valves](superpowers/specs/2026-09-13-dual-hot-gas-valves-design.md) ·
-[Home Assistant MQTT discovery](superpowers/specs/2026-04-14-ha-mqtt-discovery-ice-maker-design.md)
+[Home Assistant MQTT discovery](superpowers/specs/2026-04-14-ha-mqtt-discovery-ice-maker-design.md) ·
+[IM600XL vending simulator](superpowers/specs/2026-10-17-im600xl-simulator-design.md)
 
 ## Running and deploying
 
@@ -324,3 +325,4 @@ Not yet built: real firmware and hardware, real payment gateways, CCTV, and a pr
 | 2026-10-13 | [Cloud monitoring server](superpowers/specs/2026-10-13-cloud-monitoring-server-design.md) |
 | 2026-10-13 | [Layer contracts](superpowers/specs/2026-10-13-layer-contracts-design.md) |
 | 2026-10-14 | [Customer screen contract](superpowers/specs/2026-10-14-customer-screen-contract-design.md) |
+| 2026-10-17 | [IM600XL simulator](superpowers/specs/2026-10-17-im600xl-simulator-design.md) |
