@@ -15,6 +15,7 @@ from ice_contracts.board.dispenser_schema import (
     IceFillBySensor,
     ReleaseByCatch,
     ReleaseBySensor,
+    SlotProfile,
     WaterFillByVolume,
     drive_channels,
     sense_channels,
@@ -108,7 +109,7 @@ class Dispenser:
         return present[0], present[-1]
 
     @staticmethod
-    def _undeclared_channels(profile) -> str | None:
+    def _undeclared_channels(profile: SlotProfile) -> str | None:
         """A detail naming every channel the profile drives that is not a
         declared output or senses that is not a declared input/counter, or
         None when the profile fits this board."""

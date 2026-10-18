@@ -3,8 +3,9 @@
 
 from dataclasses import dataclass, field
 
+from ice_contracts.board.vending_machine import VendingChannel
 
-_HEATER = "heater_power"
+_HEATER = VendingChannel.heater_power.value
 
 
 @dataclass
