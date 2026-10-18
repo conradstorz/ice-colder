@@ -1,4 +1,4 @@
-// Dispenser state machine. Task 5: bagged ice. Task 6 adds water fill.
+// Dispenser state machine: bagged ice and water fill.
 #pragma once
 
 #include <stdint.h>
@@ -35,7 +35,7 @@ public:
     void finish();  // Done -> Idle
 
 private:
-    enum class Phase : uint8_t { Lead, Agitate, Fill, RelCatch, RelPulse, RelOpen, RelClose, Tail, Water };
+    enum class Phase : uint8_t { Lead, Agitate, Fill, RelCatch, RelPulse, RelOpen, RelClose, Tail, WFill, WSettle };
     enum class AccState : uint8_t { Pending, On, Off };
 
     void set_out(int channel, bool on);
@@ -43,6 +43,10 @@ private:
     void end_step(uint8_t bit, uint32_t now);
     void enter_fill(uint32_t now, Publisher& pub);
     void enter_release(uint32_t now, Publisher& pub);
+    void enter_water(uint32_t now, const InputScanner& in, Publisher& pub);
+    void water_fill_tick(uint32_t now, const InputScanner& in, Publisher& pub, bool& again);
+    void water_valve_off(uint32_t now);
+    uint32_t window_pulses(uint32_t now, uint32_t delta) const;
     void emit_step(Step s, Publisher& pub);
     void end_run(Outcome o, const char* detail, Publisher& pub);
 
@@ -63,6 +67,18 @@ private:
     uint32_t acc_off_at_[4] = {};
     char fill_detail_[48] = {};
     bool fill_empty_ = false;
+
+    // Water fill. All counts are deltas from pulse_base_ (the counter is uint32_t and may wrap).
+    // The ring holds one (time, delta) sample per tick, for the trailing-1000 ms flow rate; it
+    // assumes ticks no faster than ~8 ms apart (128 samples span 1 s).
+    static constexpr int kRing = 128;
+    struct Sample { uint32_t t; uint32_t delta; };
+    Sample ring_[kRing] = {};
+    int ring_head_ = 0, ring_n_ = 0;
+    uint32_t pulse_base_ = 0, target_pulses_ = 0, limit_pulses_ = 0;
+    uint32_t water_ms_ = 0, last_pulse_ms_ = 0, last_delta_ = 0;
+    uint32_t next_tel_ms_ = 0, below_since_ms_ = 0;
+    bool below_ = false;
 };
 
 }  // namespace vendcore

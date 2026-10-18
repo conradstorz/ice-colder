@@ -97,6 +97,7 @@ bool Dispenser::start(const Command& cmd, uint32_t now_ms) {
     fill_empty_ = false;
     agitate_ms_ = to_ms(p_.agitate.run_s);
     fill_ms_ = to_ms(p_.ice.max_run_s);
+    water_ms_ = to_ms(p_.water.max_fill_s);
     drop_ms_ = to_ms(p_.release.drop_s);
     pulse_ms_ = to_ms(p_.release.pulse_s);
     open_ms_ = to_ms(p_.release.open_timeout_s);
@@ -109,12 +110,9 @@ bool Dispenser::start(const Command& cmd, uint32_t now_ms) {
     }
     state_ = State::Running;
     phase_start_ = now_ms;
-    if (cmd.mechanism == Mechanism::WaterFill || p_.mechanism == Mechanism::WaterFill) {
-        phase_ = Phase::Water;  // Task 6 replaces this stub
-        return true;
-    }
-    if (p_.release.proof == Release::ByCatch) set_out(p_.release.channel, true);
-    const uint8_t first_bit = p_.agitate.motor >= 0 ? kBitAgitate : kBitFill;
+    const bool water = p_.mechanism == Mechanism::WaterFill;
+    if (!water && p_.release.proof == Release::ByCatch) set_out(p_.release.channel, true);
+    const uint8_t first_bit = !water && p_.agitate.motor >= 0 ? kBitAgitate : kBitFill;
     lead_ms_ = 0;
     begin_step(first_bit);
     for (int i = 0; i < p_.acc_count; ++i) {
@@ -132,6 +130,109 @@ void Dispenser::enter_fill(uint32_t now, Publisher& pub) {
     begin_step(kBitFill);
     set_out(p_.ice.motor, true);
     emit_step(Step::Fill, pub);
+}
+
+void Dispenser::enter_water(uint32_t now, const InputScanner& in, Publisher& pub) {
+    phase_ = Phase::WFill;
+    phase_start_ = now;
+    begin_step(kBitFill);
+    set_out(p_.water.valve, true);
+    emit_step(Step::Fill, pub);
+    ring_head_ = ring_n_ = 0;
+    pulse_base_ = in.pulses();
+    last_delta_ = 0;
+    last_pulse_ms_ = now;
+    next_tel_ms_ = now + 1000;
+    below_ = false;
+    const float ppl = p_.water.pulses_per_l;
+    target_pulses_ = static_cast<uint32_t>(p_.water.target_ml * ppl / 1000.0f + 0.5f);
+    limit_pulses_ = static_cast<uint32_t>(static_cast<float>(target_pulses_) * (1.0f + p_.water.over_pct / 100.0f));
+}
+
+void Dispenser::water_valve_off(uint32_t now) {
+    set_out(p_.water.valve, false);
+    end_step(kBitFill, now);
+}
+
+// Pulses seen in the trailing 1000 ms: now's delta minus the delta at the latest sample at least
+// 1000 ms old (fill start, delta 0, when none is that old).
+uint32_t Dispenser::window_pulses(uint32_t now, uint32_t delta) const {
+    uint32_t base = 0;
+    for (int i = 0; i < ring_n_; ++i) {
+        const Sample& s = ring_[(ring_head_ + kRing - ring_n_ + i) % kRing];
+        if (!reached(now - 1000u, s.t)) break;
+        base = s.delta;
+    }
+    return delta - base;
+}
+
+void Dispenser::water_fill_tick(uint32_t now, const InputScanner& in, Publisher& pub, bool& again) {
+    if (p_.water.proof == WaterFill::Timed) {
+        if (reached(now, phase_start_ + water_ms_)) {
+            copy_text(fill_detail_, sizeof(fill_detail_), "max_fill_s reached");
+            water_valve_off(now);
+            phase_ = Phase::Tail;
+            again = true;
+        }
+        return;
+    }
+    const uint32_t delta = in.pulses() - pulse_base_;
+    if (phase_ == Phase::WSettle) {
+        if (delta != last_delta_) {
+            last_delta_ = delta;
+            last_pulse_ms_ = now;
+        }
+        if (delta > limit_pulses_) {
+            char d[48];
+            snprintf(d, sizeof(d), "%lu pulses, target %lu", static_cast<unsigned long>(delta),
+                     static_cast<unsigned long>(target_pulses_));
+            end_run(Outcome::OverDispense, d, pub);
+        } else if (reached(now, last_pulse_ms_ + 1000u)) {
+            snprintf(fill_detail_, sizeof(fill_detail_), "%lu pulses", static_cast<unsigned long>(delta));
+            phase_ = Phase::Tail;
+            again = true;
+        }
+        return;
+    }
+    ring_[ring_head_] = {now, delta};
+    ring_head_ = (ring_head_ + 1) % kRing;
+    if (ring_n_ < kRing) ++ring_n_;
+    last_delta_ = delta;
+    if (delta >= target_pulses_) {
+        water_valve_off(now);
+        last_pulse_ms_ = now;
+        phase_ = Phase::WSettle;
+        again = true;
+        return;
+    }
+    if (reached(now, phase_start_ + water_ms_)) {
+        end_run(Outcome::Timeout, "max_fill_s reached", pub);
+        return;
+    }
+    const float ppl = p_.water.pulses_per_l;
+    const float rate = ppl > 0.0f ? static_cast<float>(window_pulses(now, delta)) * 1000.0f / ppl : 0.0f;
+    if (rate < p_.water.min_flow_ml_s) {
+        if (!below_) {
+            below_ = true;
+            below_since_ms_ = now;
+        }
+        if (now - below_since_ms_ > to_ms(p_.water.no_flow_grace_s)) {
+            end_run(Outcome::NoFlow, "no flow", pub);
+            return;
+        }
+    } else {
+        below_ = false;
+    }
+    if (reached(now, next_tel_ms_)) {
+        next_tel_ms_ += 1000;
+        Event e = {};
+        e.type = EventType::Telemetry;
+        e.channel = static_cast<uint8_t>(channel_index("fill_pulses"));
+        e.value = delta;
+        copy_text(e.request_id, sizeof(e.request_id), request_id_);
+        e.slot = slot_;
+        pub.publish(e);
+    }
 }
 
 void Dispenser::enter_release(uint32_t now, Publisher& pub) {
@@ -160,12 +261,15 @@ void Dispenser::tick(uint32_t now, const InputScanner& in, bool (&outputs)[kOutp
         for (bool again = true; again && state_ == State::Running;) {
             again = false;
             switch (phase_) {
-                case Phase::Water:
-                    end_run(Outcome::Error, "water fill not implemented", pub);
+                case Phase::WFill:
+                case Phase::WSettle:
+                    water_fill_tick(now, in, pub, again);
                     break;
                 case Phase::Lead:
                     if (reached(now, phase_start_ + lead_ms_)) {
-                        if (p_.agitate.motor >= 0) {
+                        if (p_.mechanism == Mechanism::WaterFill) {
+                            enter_water(now, in, pub);
+                        } else if (p_.agitate.motor >= 0) {
                             phase_ = Phase::Agitate;
                             phase_start_ = now;
                             set_out(p_.agitate.motor, true);
