@@ -10,17 +10,22 @@ from ice_contracts.board import payment
 from ice_contracts.board.payment import (
     CONTRACT_VERSION,
     EVENT_KINDS,
+    STATE_REPUBLISH_SECONDS,
     BillReturnReason,
     BillStacked,
     CoinAccepted,
     CoinRoute,
     Device,
+    DeviceState,
     DeviceStatus,
+    InhibitReason,
     PaymentEventAck,
     PaymentEventEnvelope,
+    PaymentState,
     PayoutResult,
     PayoutStatus,
     SessionEndReason,
+    TubeLevel,
 )
 
 EVENT_ID = "evt-00001"
@@ -255,3 +260,155 @@ class TestAck:
     def test_seq_zero_rejected(self):
         with pytest.raises(ValidationError):
             PaymentEventAck(boot_id=BOOT_ID, seq=0)
+
+
+def state_dict() -> dict:
+    return {
+        "boot_id": BOOT_ID,
+        "seq_last": 7,
+        "currency": "USD",
+        "policy_id": "pol-1",
+        "accepting": True,
+        "inhibited_reason": None,
+        "escrow_cents": 150,
+        "bill_in_escrow_cents": 500,
+        "devices": {
+            "coin": {
+                "present": True,
+                "status": "ready",
+                "level": 3,
+                "model": "C1",
+                "serial": "SN1",
+                "denominations": [5, 10, 25, 100],
+                "enabled": [5, 10, 25],
+            },
+            "bill": {
+                "present": True,
+                "status": "ready",
+                "denominations": [100, 500, 1000],
+                "enabled": [100, 500],
+            },
+            "cashless": {"present": False, "status": "offline"},
+        },
+        "tubes": [
+            {"cents": 5, "count": 10, "full": False},
+            {"cents": 25, "count": 0, "full": False},
+        ],
+        "exact_change": False,
+        "stacker": {"count": 12, "full": False},
+        "session": {
+            "session_id": "s1",
+            "funds_cents": 1000,
+            "started_ts": "2026-01-01T00:00:00Z",
+        },
+    }
+
+
+class TestPaymentState:
+    def test_valid_round_trip_keeps_ints(self):
+        st = PaymentState.model_validate(state_dict())
+        again = PaymentState.model_validate_json(st.model_dump_json())
+        assert again == st
+        dumped = again.model_dump(mode="json")
+        assert type(dumped["escrow_cents"]) is int
+        assert type(dumped["bill_in_escrow_cents"]) is int
+        assert type(dumped["tubes"][0]["cents"]) is int
+        assert type(dumped["session"]["funds_cents"]) is int
+        assert dumped["devices"]["coin"]["enabled"] == [5, 10, 25]
+
+    def test_currency_other_rejected(self):
+        with pytest.raises(ValidationError):
+            PaymentState.model_validate({**state_dict(), "currency": "EUR"})
+
+    def test_accepting_with_reason_rejected(self):
+        with pytest.raises(ValidationError) as exc:
+            PaymentState.model_validate(
+                {**state_dict(), "accepting": True, "inhibited_reason": "policy"}
+            )
+        assert "\n" not in exc.value.errors()[0]["msg"]
+
+    def test_not_accepting_without_reason_rejected(self):
+        with pytest.raises(ValidationError) as exc:
+            PaymentState.model_validate(
+                {**state_dict(), "accepting": False, "inhibited_reason": None}
+            )
+        assert "\n" not in exc.value.errors()[0]["msg"]
+
+    def test_not_accepting_with_reason_valid(self):
+        st = PaymentState.model_validate(
+            {**state_dict(), "accepting": False, "inhibited_reason": "edge_silent"}
+        )
+        assert st.inhibited_reason == InhibitReason.edge_silent
+
+    def test_float_escrow_rejected(self):
+        with pytest.raises(ValidationError):
+            PaymentState.model_validate({**state_dict(), "escrow_cents": 1.5})
+
+    def test_seq_last_zero_valid(self):
+        assert (
+            PaymentState.model_validate({**state_dict(), "seq_last": 0}).seq_last == 0
+        )
+
+    def test_short_boot_id_rejected(self):
+        with pytest.raises(ValidationError):
+            PaymentState.model_validate({**state_dict(), "boot_id": "short"})
+
+    def test_nullable_fields(self):
+        st = PaymentState.model_validate(
+            {
+                **state_dict(),
+                "policy_id": None,
+                "bill_in_escrow_cents": None,
+                "stacker": None,
+                "session": None,
+            }
+        )
+        assert st.session is None and st.stacker is None
+
+    def test_ts_defaults_to_utc(self):
+        st = PaymentState.model_validate(state_dict())
+        assert st.ts.utcoffset() == timedelta(0)
+
+    def test_republish_constant(self):
+        assert STATE_REPUBLISH_SECONDS == 30
+
+
+class TestDeviceState:
+    def test_enabled_not_subset_rejected(self):
+        with pytest.raises(ValidationError) as exc:
+            DeviceState(
+                present=True,
+                status="ready",
+                denominations=[100, 200],
+                enabled=[500],
+            )
+        assert "\n" not in exc.value.errors()[0]["msg"]
+
+    def test_level_four_rejected(self):
+        with pytest.raises(ValidationError):
+            DeviceState(present=True, status="ready", level=4)
+
+    def test_defaults(self):
+        d = DeviceState(present=False, status="offline")
+        assert d.level is None and d.model is None and d.serial is None
+        assert d.denominations == [] and d.enabled == []
+
+
+class TestTubeLevel:
+    def test_negative_count_rejected(self):
+        with pytest.raises(ValidationError):
+            TubeLevel(cents=25, count=-1, full=False)
+
+    def test_zero_cents_rejected(self):
+        with pytest.raises(ValidationError):
+            TubeLevel(cents=0, count=1, full=False)
+
+
+class TestInhibitReason:
+    def test_values(self):
+        assert {m.value for m in InhibitReason} == {
+            "no_policy",
+            "edge_silent",
+            "policy",
+            "device_fault",
+        }

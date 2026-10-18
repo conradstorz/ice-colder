@@ -223,3 +223,101 @@ class PaymentEventAck(BaseModel):
     boot_id: str = Field(..., min_length=8, max_length=32)
     seq: Annotated[StrictInt, Field(ge=1)]
     timestamp: datetime = Field(default_factory=_utc_now)
+
+
+# --- Retained state -----------------------------------------------------------
+
+# The board republishes the retained `payment/state` document on change, on
+# `force_report`, and every this-many seconds. A retained document never means
+# the board is alive: heartbeats stay the liveness source.
+STATE_REPUBLISH_SECONDS = 30
+
+
+class InhibitReason(str, Enum):
+    no_policy = "no_policy"
+    edge_silent = "edge_silent"
+    policy = "policy"
+    device_fault = "device_fault"
+
+
+class TubeLevel(BaseModel):
+    cents: PositiveCents = Field(..., description="Coin denomination of this tube")
+    count: Annotated[StrictInt, Field(ge=0)] = Field(
+        ..., description="Coins currently in the tube"
+    )
+    full: bool = Field(..., description="Tube reports full")
+
+
+class StackerState(BaseModel):
+    count: Annotated[StrictInt, Field(ge=0)] = Field(
+        ..., description="Bills in the stacker"
+    )
+    full: bool = Field(..., description="Stacker reports full")
+
+
+class CashlessSession(BaseModel):
+    session_id: str = Field(..., min_length=1, max_length=64)
+    funds_cents: Optional[Cents] = Field(
+        ..., description="Funds available on the session, if known"
+    )
+    started_ts: datetime = Field(..., description="When the session began")
+
+
+class DeviceState(BaseModel):
+    present: bool = Field(..., description="Device detected on the MDB bus")
+    status: DeviceStatus
+    level: Optional[Literal[1, 2, 3]] = Field(None, description="MDB feature level")
+    model: Optional[str] = None
+    serial: Optional[str] = None
+    denominations: list[PositiveCents] = Field(
+        default_factory=list, description="Denominations the device can accept"
+    )
+    enabled: list[PositiveCents] = Field(
+        default_factory=list, description="Denominations currently enabled"
+    )
+
+    @model_validator(mode="after")
+    def _check_enabled(self):
+        if not set(self.enabled) <= set(self.denominations):
+            raise ValueError("enabled denominations must be a subset of denominations")
+        return self
+
+
+class PaymentDevices(BaseModel):
+    coin: DeviceState
+    bill: DeviceState
+    cashless: DeviceState
+
+
+class PaymentState(BaseModel):
+    """Retained board state on `payment/state`.
+
+    Republished on change, on `force_report`, and every
+    `STATE_REPUBLISH_SECONDS`. A retained document never means the board is
+    alive (heartbeats do).
+    """
+
+    boot_id: str = Field(..., min_length=8, max_length=32)
+    seq_last: Annotated[StrictInt, Field(ge=0)] = Field(
+        ..., description="Last event seq sent this boot (0 = none yet)"
+    )
+    currency: Literal["USD"] = "USD"
+    policy_id: Optional[str] = Field(..., min_length=1, max_length=64)
+    accepting: bool = Field(..., description="Board is accepting money")
+    inhibited_reason: Optional[InhibitReason]
+    escrow_cents: Cents
+    bill_in_escrow_cents: Optional[Cents]
+    devices: PaymentDevices
+    tubes: list[TubeLevel]
+    exact_change: bool
+    stacker: Optional[StackerState]
+    session: Optional[CashlessSession]
+    ts: datetime = Field(default_factory=_utc_now)
+
+    @model_validator(mode="after")
+    def _check_accepting(self):
+        if self.accepting != (self.inhibited_reason is None):
+            raise ValueError(
+                "accepting is true if and only if inhibited_reason is None"
+            )
+        return self
