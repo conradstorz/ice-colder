@@ -13,6 +13,12 @@ PROFILE = json.loads(
     )
 )
 PARAMS = {"slot": 0, "mechanism": "bagged_ice", "profile": PROFILE}
+WATER_PROFILE = json.loads(
+    (REPO_ROOT / "firmware/vending/test/fixtures/profile_water_1gal.json").read_text(
+        encoding="utf-8"
+    )
+)
+WATER_PARAMS = {"slot": 1, "mechanism": "water_fill", "profile": WATER_PROFILE}
 DISPENSER = "hardware/dispenser"
 OUTCOMES = {o.value for o in DispenserOutcome}
 
@@ -49,6 +55,23 @@ async def test_steps_in_order_then_one_complete_report(board):
     assert steps[0] == DispenseStep.agitate.value
     assert states[-1] == DispenserOutcome.complete.value
     assert sum(s in OUTCOMES for s in states) == 1
+
+
+@pytest.mark.requires_sim
+async def test_water_fill_dispense_completes(board):
+    """A flow_volume fill: accepted, `fill` step, flow telemetry only during the fill, then complete."""
+    since = board.mark()
+    rid = await board.send("dispense", WATER_PARAMS)
+    (ack,) = await board.acks(rid, 1, 5)
+    assert (ack.status, ack.phase) == ("ok", "accepted")
+    terminal = await board.wait_for(
+        DISPENSER, lambda p: _mine(rid)(p) and p["state"] in OUTCOMES, 150, since=since
+    )
+    assert terminal["state"] == DispenserOutcome.complete.value
+    assert terminal["request_id"] == rid
+    states = [p["state"] for p in board.history(DISPENSER, since) if _mine(rid)(p)]
+    assert DispenseStep.fill.value in states
+    assert board.history("telemetry/vending/fill_pulses", since)
 
 
 async def test_second_dispense_while_busy_is_rejected(board):

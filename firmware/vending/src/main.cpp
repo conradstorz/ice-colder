@@ -26,8 +26,8 @@ extern "C" void app_main(void) {
     console_start(settings);
 
     QueueHandle_t cmd_q = xQueueCreate(8, sizeof(CmdItem));
-    QueueHandle_t evt_q = xQueueCreate(64, sizeof(vendcore::Event));
-    QueueHandle_t ack_q = xQueueCreate(8, sizeof(vendcore::Ack));
+    QueueHandle_t evt_q = xQueueCreate(128, sizeof(vendcore::Event));
+    QueueHandle_t ack_q = xQueueCreate(16, sizeof(vendcore::Ack));
     start_sequencer(cmd_q, evt_q, ack_q, settings);
     start_comms(cmd_q, evt_q, ack_q, settings);
     for (;;) {

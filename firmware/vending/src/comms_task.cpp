@@ -153,6 +153,17 @@ void inflight_remove(const char* id) {
     if (i >= 0) g.inflight_used[i] = false;
 }
 
+void publish_heartbeat() {
+    static char buf[96];
+    static char topic[160];
+    char iso[24];
+    const WireCtx ctx = make_ctx(iso, sizeof(iso));
+    char tail[48];
+    snprintf(tail, sizeof(tail), "heartbeat/%s", kSubsystem);
+    const size_t n = heartbeat_json(uptime_s(), buf, sizeof(buf));
+    if (n > 0 && topic_join(ctx, tail, topic, sizeof(topic)) > 0) send(topic, buf, n, false, Prio::Normal);
+}
+
 void handle_command(const RxItem& rx) {
     static CmdItem item;  // Decoded is large; keep it off the stack
     item.decoded = decode_command(rx.data, rx.len);  // only caller: not reentrant
@@ -177,6 +188,13 @@ void handle_command(const RxItem& rx) {
     if (!push_cmd(item)) return;
     if (!inflight_add(item.decoded.cmd.request_id))
         ESP_LOGW(TAG, "in-flight set full; duplicate suppression off for %s", item.decoded.cmd.request_id);
+    if (item.decoded.result == Decode::Ok && item.decoded.cmd.kind == CmdKind::ForceReport) {
+        // force_report also refreshes the retained documents and the heartbeat, not just the telemetry.
+        g.caps_pending = true;
+        g.ha_next = 0;
+        g.ha_zero_logged = -1;
+        publish_heartbeat();
+    }
 }
 
 void handle_online(const RxItem& rx) {
@@ -276,7 +294,6 @@ void send_event(const Event& e) {
 void comms_main(void*) {
     uint32_t last_hb = 0;
     uint32_t last_drop_log = 0;
-    bool was_connected = false;
     for (;;) {
         static RxItem rx;
         // ack_q first: a retry arriving now must find the first ack already cached.
@@ -294,15 +311,10 @@ void comms_main(void*) {
             on_connect();
             last_hb = uptime_s();
         }
-        // The board cannot hear the VMC without a broker, so broker loss is VMC silence.
-        const bool up = mqtt_connected();
-        if (was_connected && !up) {
-            static CmdItem off;
-            off.kind = CmdItem::VmcOnline;
-            off.online = false;
-            push_cmd(off);
-        }
-        was_connected = up;
+        // Broker loss does NOT mark the VMC offline (spec section 7, decision D6): a vend in flight
+        // finishes on its own bounded timers, new commands cannot arrive without a broker, and the
+        // retained `online` topic corrects the state on reconnect. Only the in-flight set is
+        // cleared on reconnect (on_connect), since acks queued across the gap may be lost.
         inflight_expire();
         const uint32_t dropped = g.rx_dropped.load();
         if (dropped != g.rx_dropped_logged && uptime_s() - last_drop_log >= kRxDropLogMs / 1000) {
@@ -320,14 +332,7 @@ void comms_main(void*) {
             flush_ring();
             if (uptime_s() - last_hb >= kHeartbeatMs / 1000) {
                 last_hb = uptime_s();
-                static char buf[96];
-                static char topic[160];
-                char iso[24];
-                const WireCtx ctx = make_ctx(iso, sizeof(iso));
-                char tail[48];
-                snprintf(tail, sizeof(tail), "heartbeat/%s", kSubsystem);
-                const size_t n = heartbeat_json(uptime_s(), buf, sizeof(buf));
-                if (n > 0 && topic_join(ctx, tail, topic, sizeof(topic)) > 0) send(topic, buf, n, false, Prio::Normal);
+                publish_heartbeat();
             }
         }
         vTaskDelay(pdMS_TO_TICKS(20));

@@ -80,14 +80,19 @@ bool Interlocks::trip(const InputScanner& in, const InputSnapshot& raw, bool io_
                       bool motion, bool any_on, uint32_t now_ms, TripReason& why) const {
     if (!io_ok) {
         why.detail = "io_failure";
+        why.kind = TripReason::Trip::IoFailure;
     } else if (!raw.master_enable && any_on) {
         why.detail = "master_enable_dropped";
+        why.kind = TripReason::Trip::MasterEnableDropped;
     } else if (in.state(In::SumpHigh)) {
         why.detail = "sump_high";
+        why.kind = TripReason::Trip::SumpHigh;
     } else if (in.state(In::ServiceDoor) && motion) {
         why.detail = "service_door";
+        why.kind = TripReason::Trip::ServiceDoor;
     } else if (vmc.silent(now_ms)) {
         why.detail = "vmc_offline";
+        why.kind = TripReason::Trip::VmcOffline;
     } else {
         return false;
     }

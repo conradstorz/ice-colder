@@ -18,8 +18,29 @@ struct Args {
     Settings settings;
 };
 
+// One-slot holding buffer: an ack refused by a full ack_q is retried on the next tick; only a second
+// consecutive refusal loses it (a first ack is what the edge's command timeout depends on).
+vendcore::Ack g_held;
+bool g_have_held = false;
+
+void flush_held(QueueHandle_t q) {
+    if (!g_have_held) return;
+    if (xQueueSend(q, &g_held, 0) == pdTRUE) {
+        g_have_held = false;
+    }
+}
+
 void send_ack(QueueHandle_t q, const vendcore::Ack& a) {
-    if (xQueueSend(q, &a, 0) != pdTRUE) ESP_LOGW(TAG, "ack queue full, dropped %s", a.request_id);
+    flush_held(q);
+    if (g_have_held) {  // still stuck: the older ack goes first, so this one cannot be queued behind it
+        ESP_LOGE(TAG, "ack queue full, dropped %s", a.request_id);
+        return;
+    }
+    if (xQueueSend(q, &a, 0) != pdTRUE) {
+        g_held = a;
+        g_have_held = true;
+        ESP_LOGW(TAG, "ack queue full, holding %s for retry", a.request_id);
+    }
 }
 
 // submit() and tick() both run here, on this one task: the core has no locking.
@@ -55,6 +76,7 @@ void sequencer_main(void* arg) {
     esp_task_wdt_add(nullptr);
     TickType_t last = xTaskGetTickCount();
     for (;;) {
+        flush_held(args.ack_q);
         drain_commands(core, args.cmd_q, args.ack_q);
         core.tick();
         vendcore::Ack done;

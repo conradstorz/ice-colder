@@ -25,12 +25,6 @@ const char* kind_name(CmdKind k) {
     }
 }
 
-bool one_of(const char* s, const char* const* set, int n) {
-    for (int i = 0; i < n; ++i)
-        if (strcmp(s, set[i]) == 0) return true;
-    return false;
-}
-
 constexpr int kValve = static_cast<int>(Out::WaterValve);
 
 }  // namespace
@@ -71,33 +65,27 @@ void Core::step(uint32_t now) {
     }
     if (io_ok_) scanner_.scan(raw_, now, pub_);
 
-    static const char* const kLatching[3] = {"io_failure", "sump_high", "service_door"};
+    using Trip = TripReason::Trip;
     const bool prev_active = trip_active_;
-    char prev_detail[sizeof(trip_detail_)];
-    memcpy(prev_detail, trip_detail_, sizeof(prev_detail));
+    const Trip prev_kind = trip_kind_;
+    // Latching conditions come straight from the inputs, never from which rule happened to win the
+    // first-match order (sump_high and master_enable_dropped alternate under heater demand).
+    bool latched = !io_ok_ || scanner_.state(In::SumpHigh) ||
+                   (scanner_.state(In::ServiceDoor) && guard_.any_motion());
     TripReason why = {};
     const bool tripped =
         interlocks_.trip(scanner_, raw_, io_ok_, vmc_, guard_.any_motion(), guard_.any_on(), now, why);
     bool offline_only = false;
     bool skip_ro = false;
-    bool io_failure = false;
     if (tripped) {
-        const bool onset = !prev_active || strcmp(prev_detail, why.detail) != 0;
-        offline_only = strcmp(why.detail, "vmc_offline") == 0;
-        io_failure = strcmp(why.detail, "io_failure") == 0;
-        skip_ro = !offline_only && strcmp(why.detail, "service_door") != 0;
+        const bool onset = !prev_active || prev_kind != why.kind;
+        offline_only = why.kind == Trip::VmcOffline;
+        skip_ro = !offline_only && why.kind != Trip::ServiceDoor;
         step_trip_ = why.detail;
         on_trip(now, why.detail);
         // vmc_offline holds for as long as the VMC is silent: force everything off at onset only, so
         // the autonomous RO/heater loops keep their own max-on timers running afterwards.
         if (!offline_only || onset) guard_.all_off();
-        trip_active_ = true;
-        copy_text(trip_detail_, sizeof(trip_detail_), why.detail);
-        health_.set_latched(one_of(why.detail, kLatching, 3));
-    } else {
-        trip_active_ = false;
-        trip_detail_[0] = '\0';
-        health_.set_latched(false);
     }
 
     if (!tripped || offline_only) {
@@ -109,34 +97,40 @@ void Core::step(uint32_t now) {
     } else {
         ro_.tick(scanner_, guard_, now, pub_);
     }
-    if (!io_failure) freeze_.tick(raw_, guard_, now);
+    // The heater coil common runs through the master relay, so a latching interlock (which drops it)
+    // leaves the heater unpowered: request it off rather than fight the relay.
+    if (latched) {
+        freeze_.hold_off(guard_, now);
+    } else {
+        freeze_.tick(raw_, guard_, now);
+    }
 
     // Motion-conditioned rules see this step's requests only now: re-check before anything is written.
     TripReason why2 = {};
     const bool tripped2 =
         interlocks_.trip(scanner_, raw_, io_ok_, vmc_, guard_.any_motion(), guard_.any_on(), now, why2);
-    if (tripped2 && (!tripped || strcmp(why2.detail, why.detail) != 0)) {
+    if (tripped2 && (!tripped || why2.kind != why.kind)) {
         step_trip_ = why2.detail;
         on_trip(now, why2.detail);
         guard_.all_off();
     }
+    if (tripped2 && (why2.kind == Trip::SumpHigh || why2.kind == Trip::ServiceDoor)) latched = true;
+    health_.set_latched(latched);
 
     // One decision per tick: the effective trip is the second check's if it trips, else the first's.
     if (tripped || tripped2) {
-        const char* detail = tripped2 ? why2.detail : why.detail;
-        if (!prev_active || strcmp(prev_detail, detail) != 0) {
+        const TripReason& eff = tripped2 ? why2 : why;
+        if (!prev_active || prev_kind != eff.kind) {
             Event e = {};
             e.type = EventType::Health;
-            copy_text(e.text, sizeof(e.text), detail);
+            copy_text(e.text, sizeof(e.text), eff.detail);
             pub_.publish(e);
         }
         trip_active_ = true;
-        copy_text(trip_detail_, sizeof(trip_detail_), detail);
-        health_.set_latched(one_of(detail, kLatching, 3));
+        trip_kind_ = eff.kind;
     } else {
         trip_active_ = false;
-        trip_detail_[0] = '\0';
-        health_.set_latched(false);
+        trip_kind_ = Trip::None;
     }
 
     if (io_ok_ && raw_.ambient_valid && (!temp_sent_ || now - last_temp_ms_ >= cfg_.temp_publish_ms)) {

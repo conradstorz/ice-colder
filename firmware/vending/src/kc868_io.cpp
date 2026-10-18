@@ -85,6 +85,15 @@ esp_err_t Kc868Io::init_pulse_counter() {
     if (err != ESP_OK) return err;
     err = pcnt_channel_set_edge_action(ch, PCNT_CHANNEL_EDGE_ACTION_INCREASE, PCNT_CHANNEL_EDGE_ACTION_HOLD);
     if (err != ESP_OK) return err;
+    // Open-collector flow meters need the internal pull-up on the pulse input.
+    err = gpio_set_pull_mode(static_cast<gpio_num_t>(kc868::kGpioFlowPulse), GPIO_PULLUP_ONLY);
+    if (err != ESP_OK) return err;
+    // accum_count only works if the driver sees the high-limit event: it adds high_limit to its
+    // software accumulator in that ISR. Without this watch point the hardware counter wraps at 32767
+    // (~73 L at 450 pulses/L) and a fill straddling the wrap ends short. Count-up only, so no
+    // low-limit watch point. Must be added before pcnt_unit_enable.
+    err = pcnt_unit_add_watch_point(pcnt_, kPcntHigh);
+    if (err != ESP_OK) return err;
     err = pcnt_unit_enable(pcnt_);
     if (err != ESP_OK) return err;
     err = pcnt_unit_clear_count(pcnt_);

@@ -92,7 +92,7 @@ private:
     bool suppress_completion_ = false;  // submit() returns the valve outcome directly: no ring push
 
     bool trip_active_ = false;
-    char trip_detail_[24] = {};
+    TripReason::Trip trip_kind_ = TripReason::Trip::None;
     const char* step_trip_ = nullptr;  // trip detail seen by the most recent step(), else nullptr
 
     bool valve_active_ = false;

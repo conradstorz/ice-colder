@@ -395,9 +395,12 @@ static void test_ro_loop_and_heater_run_autonomously(void) {
     r.tick();
     TEST_ASSERT_TRUE(r.io.last_outputs[static_cast<int>(Out::RoProduction)]);
     TEST_ASSERT_TRUE(r.io.last_outputs[static_cast<int>(Out::Heater)]);
-    r.set_in(In::SumpHigh, true);  // sump stops the pump, not the heater
+    r.set_in(In::SumpHigh, true);  // sump stops the pump; the heater coil rides the master relay, so it goes too
     r.run_to(200);
     TEST_ASSERT_FALSE(r.io.last_outputs[static_cast<int>(Out::RoProduction)]);
+    TEST_ASSERT_FALSE(r.io.last_outputs[static_cast<int>(Out::Heater)]);
+    r.set_in(In::SumpHigh, false);
+    r.run_to(400);
     TEST_ASSERT_TRUE(r.io.last_outputs[static_cast<int>(Out::Heater)]);
 }
 
@@ -410,23 +413,53 @@ static int count_output_on(const Rig& r, int channel_out) {
     return n;
 }
 
-static void test_heater_bound_holds_through_sustained_trip(void) {
-    Rig r;
+// A silent VMC trips vmc_offline without latching, so the autonomous heater keeps running; after 24 h
+// of continuous cold it rests exactly 5 min and comes back (the guard's forced latch never fires).
+static int health_events(const Rig& r, const char* text) {
+    int n = 0;
+    for (int i = 0; i < r.pub.count; ++i)
+        if (r.pub.events[i].type == EventType::Health && strcmp(r.pub.events[i].text, text) == 0) ++n;
+    return n;
+}
+
+static void test_heater_duty_cycles_through_sustained_vmc_offline(void) {
+    Rig r;  // VMC never seen: vmc_offline holds for the whole run
     r.io.current.ambient_c = 1.0f;
-    r.tick();
-    r.tick();
+    int off_ticks = 0;
+    bool seen_on = false;
+    for (uint32_t t = 1000; t <= 87000000; t += 1000) {
+        r.clk.t = t;
+        r.core.tick();
+        const bool on = r.io.last_outputs[static_cast<int>(Out::Heater)];
+        if (seen_on && !on) ++off_ticks;
+        if (on) seen_on = true;
+        if (t == 43200000) TEST_ASSERT_TRUE(on);
+    }
+    TEST_ASSERT_EQUAL(300, off_ticks);
     TEST_ASSERT_TRUE(r.io.last_outputs[static_cast<int>(Out::Heater)]);
+}
+
+// Cold ambient + sump_high: the trip used to alternate sump_high <-> master_enable_dropped (the heater
+// request dropped the master relay), kicking the watchdog every other tick. Now the heater is held off
+// while the latching condition holds, so Health stays not-ok and the master relay is never exercised.
+static void test_sump_high_with_cold_ambient_holds_heater_off_and_unhealthy(void) {
+    Rig r;
+    r.core.vmc_seen();
+    r.io.current.ambient_c = 1.0f;
     r.set_in(In::SumpHigh, true);
-    for (int i = 0; i < 12; ++i) {  // 12 x 10 s: past the 24 h bound
-        r.clk.t += 10000000;
+    r.tick();
+    TEST_ASSERT_FALSE(r.core.health().ok());
+    const int kicks = r.io.kicks;
+    r.io.current.master_enable = false;  // what the board does if the heater were ever energized
+    for (int i = 0; i < 50; ++i) {
         r.core.vmc_seen();
         r.tick();
+        TEST_ASSERT_FALSE(r.core.health().ok());
     }
-    TEST_ASSERT_FALSE(r.io.last_outputs[static_cast<int>(Out::Heater)]);
-    r.clk.t += 100;
-    r.core.vmc_seen();
-    r.tick();
-    TEST_ASSERT_FALSE(r.io.last_outputs[static_cast<int>(Out::Heater)]);
+    TEST_ASSERT_EQUAL(kicks, r.io.kicks);
+    TEST_ASSERT_EQUAL(0, count_output_on(r, static_cast<int>(Out::Heater)));
+    TEST_ASSERT_EQUAL(1, r.count(EventType::Health));
+    TEST_ASSERT_EQUAL(1, health_events(r, "sump_high"));
 }
 
 static void test_service_door_refuses_dispense_without_energizing(void) {
@@ -456,12 +489,6 @@ static void test_master_enable_dropped_refuses_dispense(void) {
     for (int ch = 0; ch < kOutputCount; ++ch) TEST_ASSERT_EQUAL(0, count_output_on(r, ch));
 }
 
-static int health_events(const Rig& r, const char* text) {
-    int n = 0;
-    for (int i = 0; i < r.pub.count; ++i)
-        if (r.pub.events[i].type == EventType::Health && strcmp(r.pub.events[i].text, text) == 0) ++n;
-    return n;
-}
 
 static void test_sustained_master_enable_drop_emits_one_health_event(void) {
     Rig r;
@@ -517,7 +544,8 @@ int main(int, char**) {
     RUN_TEST(test_ping_unsupported_rejected);
     RUN_TEST(test_dropped_events_counted);
     RUN_TEST(test_ro_loop_and_heater_run_autonomously);
-    RUN_TEST(test_heater_bound_holds_through_sustained_trip);
+    RUN_TEST(test_heater_duty_cycles_through_sustained_vmc_offline);
+    RUN_TEST(test_sump_high_with_cold_ambient_holds_heater_off_and_unhealthy);
     RUN_TEST(test_service_door_refuses_dispense_without_energizing);
     RUN_TEST(test_master_enable_dropped_refuses_dispense);
     RUN_TEST(test_sustained_master_enable_drop_emits_one_health_event);

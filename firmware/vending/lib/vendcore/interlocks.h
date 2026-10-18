@@ -46,7 +46,9 @@ private:
 };
 
 struct TripReason {
-    const char* detail;  // "io_failure", "master_enable_dropped", "sump_high", "service_door", "vmc_offline"
+    const char* detail;  // wire text for the Health event / outcome: "io_failure", "master_enable_dropped", ...
+    enum class Trip : uint8_t { None, IoFailure, MasterEnableDropped, SumpHigh, ServiceDoor, VmcOffline };
+    Trip kind = Trip::None;  // what the core branches on; never compare detail strings
 };
 
 class Interlocks {
