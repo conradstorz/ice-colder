@@ -44,7 +44,7 @@ from ice_contracts.board.dispenser_schema import (
     IceFillStep,
     IceFillTimed,
     MECHANISM_FOR_KIND,
-    ReleaseBySensor,
+    ReleaseByCatch,
     ReleaseStep,
     ReleaseTimed,
     SlotProfile,
@@ -502,11 +502,12 @@ def _render_table(
 
 
 # --------------------------------------------------------------------------
-# Hand-authored sample data -- three slots matching config.example.json:
-# slot 0 bagged ice (sensor proofs, unmonitored current, two accessories),
-# slot 1 water fill by volume (1 gallon = 3785 ml), slot 2 water fill timed
-# (so both water fill variants appear live). Values are chosen so every
-# slot's worst_case_seconds stays comfortably under 120 s - 5 s margin.
+# Hand-authored sample data -- the Kooler Ice IM600XL, three slots matching
+# config.example.json: slot 0 bagged ice (bag-full sensor fill, catch
+# release, unmonitored current, one accessory), slot 1 water fill by volume
+# (1 gallon = 3785 ml), slot 2 water fill by volume (5 gallons = 18927 ml).
+# The "other" variant of each union is a commented block. Values are chosen
+# so every slot's worst_case_seconds stays comfortably under 120 s.
 # --------------------------------------------------------------------------
 
 _SLOT_0_AGITATE = _Table(
@@ -545,14 +546,11 @@ _SLOT_0_FILL = _UnionTable(
 
 _SLOT_0_RELEASE = _UnionTable(
     live=_Table(
-        ReleaseBySensor,
+        ReleaseByCatch,
         {
-            "proof": "door_sensor",
-            "solenoid_channel": "bag_drop_solenoid",
-            "sensor_channel": "door_sensor",
-            "pulse_seconds": 1.0,
-            "open_timeout_seconds": 5.0,
-            "close_timeout_seconds": 5.0,
+            "proof": "catch",
+            "catch_channel": "trap_door_catch",
+            "drop_seconds": 2.0,
         },
     ),
     other=_Table(
@@ -581,21 +579,11 @@ _SLOT_0 = {
                 "lag_seconds": 2.0,
             },
         ),
-        "vending_now_light": _Table(
-            Accessory,
-            {
-                "channel": "vending_now_light",
-                "on_during": ["all"],
-                "lead_seconds": 0.0,
-                "lag_seconds": 0.0,
-            },
-        ),
     },
 }
 
 # worst_case_seconds(slot 0) = agitate.run_seconds (8) + fill.max_run_seconds
-# (45) + release.pulse_seconds (1) + release.open_timeout_seconds (5) +
-# release.close_timeout_seconds (5) + max accessory lag (2) = 66 s.
+# (45) + release.drop_seconds (2) + max accessory lag (2) = 57 s.
 
 _SLOT_1_FILL = _UnionTable(
     live=_Table(
@@ -603,7 +591,7 @@ _SLOT_1_FILL = _UnionTable(
         {
             "proof": "flow_volume",
             "valve_channel": "water_valve_solenoid",
-            "flow_sensor_channel": "water_flow_sensor",
+            "flow_sensor_channel": "fill_pulses",
             "target_volume_ml": 3785.0,
             "pulses_per_liter": 450.0,
             "min_flow_ml_per_second": 10.0,
@@ -634,24 +622,24 @@ _SLOT_1 = {
 
 _SLOT_2_FILL = _UnionTable(
     live=_Table(
-        WaterFillTimed,
-        {
-            "proof": "timed",
-            "valve_channel": "water_valve_solenoid",
-            "max_fill_seconds": 90.0,
-        },
-    ),
-    other=_Table(
         WaterFillByVolume,
         {
             "proof": "flow_volume",
             "valve_channel": "water_valve_solenoid",
-            "flow_sensor_channel": "water_flow_sensor",
+            "flow_sensor_channel": "fill_pulses",
             "target_volume_ml": 18927.0,
             "pulses_per_liter": 450.0,
             "min_flow_ml_per_second": 10.0,
             "no_flow_grace_seconds": 5.0,
             "over_dispense_percent": 5.0,
+            "max_fill_seconds": 90.0,
+        },
+    ),
+    other=_Table(
+        WaterFillTimed,
+        {
+            "proof": "timed",
+            "valve_channel": "water_valve_solenoid",
             "max_fill_seconds": 90.0,
         },
     ),
@@ -664,8 +652,8 @@ _SLOT_2 = {
     "accessories": {},
 }
 
-# worst_case_seconds(slot 2) = fill.max_fill_seconds (90) = 90 s (the timed
-# variant has no no_flow_grace_seconds field).
+# worst_case_seconds(slot 2) = fill.max_fill_seconds (90) +
+# fill.no_flow_grace_seconds (5) = 95 s.
 
 
 # Derived from MECHANISM_FOR_KIND (never hand-typed) so the header can

@@ -1278,6 +1278,11 @@ class TestLegacyDispenseTopicRemoved:
 
 
 class TestExampleToml:
+    @pytest.mark.xfail(
+        strict=True,
+        reason="the example now describes the IM600XL; the simulator is "
+        "rebuilt to match in Task 10 (remove this marker then)",
+    )
     def test_example_toml_validates_with_zero_warnings_against_simulator_capabilities(
         self,
     ):
