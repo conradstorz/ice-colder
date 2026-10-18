@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import json
 import os
+import sqlite3
 import sys
 
 import pytest
@@ -35,7 +36,12 @@ from ice_contracts.board.mqtt_messages import (
     PaymentEvent,
     SensorReading,
 )
-from tests.dispenser_fixtures import profiles_for
+from ice_contracts.board.vending_machine import FaultCode
+from ice_edge.faults.availability import Availability
+from ice_edge.ledger.event_recorder import EventRecorder
+from ice_edge.vend.dispensers import DispenserProfiles
+from ice_sims.vending_machine import VendingMachineSimulator
+from tests.dispenser_fixtures import IM600XL_GOOD, profiles_for
 
 # Windows needs SelectorEventLoop for aiomqtt
 if sys.platform == "win32":
@@ -176,7 +182,11 @@ async def _wait_for_state(vmc: VMC, target_state: str, timeout: float = 10.0):
 
 
 def _wire_dispenser_runtime(
-    machine: Machine, mqtt_client: MQTTClient, config: ConfigModel, tmp_path
+    machine: Machine,
+    mqtt_client: MQTTClient,
+    config: ConfigModel,
+    tmp_path,
+    profile_text: str | None = None,
 ) -> CommandDispatcher:
     """Attach a loaded `DispenserProfiles` and a real `CommandDispatcher` --
     constructed exactly as `main.py` does (`CommandDispatcher(mqtt_client)`,
@@ -184,8 +194,17 @@ def _wire_dispenser_runtime(
     subscribes) -- so a production dispense actually reaches `cmd/vending`
     instead of taking the `CFG-101` "no valid profile" branch (review
     finding I2). Must be called before the caller creates the
-    `mqtt_client.run()` task."""
-    profiles = profiles_for(config.physical.products, tmp_path)
+    `mqtt_client.run()` task. *profile_text*, when given, is written to
+    `dispensers.toml` verbatim (the IM600XL set) in place of the generated
+    generic profiles."""
+    if profile_text is None:
+        profiles = profiles_for(config.physical.products, tmp_path)
+    else:
+        path = tmp_path / "dispensers.toml"
+        path.write_text(profile_text, encoding="utf-8")
+        profiles = DispenserProfiles(config, path=path)
+        report = profiles.load()
+        assert report.ok, report.render_text()
     machine.set_dispenser_profiles(profiles)
     dispatcher = CommandDispatcher(mqtt_client)
     machine.set_command_dispatcher(dispatcher)
@@ -307,7 +326,22 @@ class _MessageCollector:
 class _E2E:
     """Everything one e2e test needs, built by :func:`_e2e_harness`."""
 
-    def __init__(self, config, prefix, machine, health, sim_client, collector):
+    def __init__(
+        self,
+        config,
+        prefix,
+        machine,
+        health,
+        sim_client,
+        collector,
+        mqtt_client=None,
+        availability=None,
+    ):
+        self.mqtt_client = mqtt_client
+        self.availability = availability
+        # Topic suffixes published through `publish()`, so a test can assert
+        # a board message was never sent.
+        self.published: list[str] = []
         self.config = config
         self.prefix = prefix
         self.machine = machine
@@ -315,6 +349,10 @@ class _E2E:
         self.health = health
         self.sim_client = sim_client
         self.collector = collector
+
+    async def publish(self, suffix: str, payload: str) -> None:
+        self.published.append(suffix)
+        await self.sim_client.publish(f"{self.prefix}/{suffix}", payload)
 
 
 @contextlib.asynccontextmanager
@@ -327,6 +365,9 @@ async def _e2e_harness(
     with_health: bool = False,
     wire_dispenser: bool = True,
     tasks=None,
+    profile_text: str | None = None,
+    availability: Availability | None = None,
+    recorder: EventRecorder | None = None,
 ):
     """Shared e2e setup/teardown: MQTT client, Machine, optional
     HealthMonitor, a separate simulator client (*sim_id*) subscribed to
@@ -348,12 +389,26 @@ async def _e2e_harness(
         machine.set_mqtt_client(mqtt_client)
         if health is not None:
             machine.set_health_monitor(health)
+        if availability is not None:
+            machine.set_availability(availability)
+            # As main.py chains it: liveness/connection state reaches the
+            # permissive table only through these callbacks.
+            mqtt_client.set_connection_callback(
+                lambda connected: (
+                    health.update_mqtt_status(connected) if health else None,
+                    machine.on_mqtt_connection(connected),
+                )
+            )
+        if recorder is not None:
+            machine.set_event_recorder(recorder)
         if wire_dispenser:
             # Review finding I2: without a loaded DispenserProfiles and a
             # real CommandDispatcher, on_dispense_product takes the
             # CFG-101 "no valid profile" branch and never publishes
             # anything on cmd/vending at all.
-            _wire_dispenser_runtime(machine, mqtt_client, config, tmp_path)
+            _wire_dispenser_runtime(
+                machine, mqtt_client, config, tmp_path, profile_text
+            )
 
         collector = _MessageCollector(sim_client.messages)
         collector.start()
@@ -364,7 +419,19 @@ async def _e2e_harness(
                     break
                 await asyncio.sleep(0.1)
             assert mqtt_client.connected, "MQTT client failed to connect"
-            yield _E2E(config, prefix, machine, health, sim_client, collector)
+            # `connected` flips true before the topic subscribes finish; a
+            # non-retained publish sent in that window is never received.
+            await _wait_until(lambda: mqtt_client.subscribed)
+            yield _E2E(
+                config,
+                prefix,
+                machine,
+                health,
+                sim_client,
+                collector,
+                mqtt_client,
+                availability,
+            )
         finally:
             try:
                 await _stop_background_task(mqtt_task)
@@ -756,3 +823,220 @@ async def test_vending_heartbeat_loss_blocks_sale_not_payment_enable():
     machine.cancel_pending_tasks()
     assert seen  # payment/enable was published at least once (initial true)
     assert all(seen), "payment/enable must never go false on fulfillment-only loss"
+
+
+# --- Kooler Ice IM600XL: the simulator's capabilities stand in for the board ---
+
+
+def _im600xl_config() -> ConfigModel:
+    """The e2e config with the IM600XL product set (`IM600XL_PRODUCTS`' skus
+    and slots, so `IM600XL_GOOD` validates against its catalog) and the
+    panel's button ids, on its own machine id so no broker state is shared
+    with the generic tests."""
+    config = ConfigModel(
+        machine_id="e2e-im600xl",
+        physical={
+            "common_name": "E2E IM600XL",
+            "serial_number": "e2e-im600xl",
+            "products": [
+                {
+                    "sku": "SAMPLE-ICE",
+                    "name": "Bagged Ice",
+                    "price": 2.00,
+                    "kind": "ice",
+                    "slot": 0,
+                    "button": "button_ice",
+                },
+                {
+                    "sku": "SAMPLE-WATER-SM",
+                    "name": "Water 1 gal",
+                    "price": 1.50,
+                    "kind": "water",
+                    "slot": 1,
+                    "button": "button_water_1gal",
+                },
+                {
+                    "sku": "SAMPLE-WATER-LG",
+                    "name": "Water 5 gal",
+                    "price": 4.00,
+                    "kind": "water",
+                    "slot": 2,
+                    "button": "button_water_5gal",
+                },
+            ],
+        },
+        mqtt={
+            "broker_host": "localhost",
+            "broker_port": 1883,
+            "client_id": "e2e-im600xl-vmc",
+            "reconnect_interval": 1.0,
+        },
+    )
+    if _MQTT_AUTH["username"]:
+        config.mqtt.username = _MQTT_AUTH["username"]
+    if _MQTT_AUTH["password"]:
+        config.mqtt.password = SecretStr(_MQTT_AUTH["password"])
+    return config
+
+
+@contextlib.asynccontextmanager
+async def _im600xl_harness(sim_id: str, tmp_path, *, recorder=None):
+    """`_e2e_harness` for the IM600XL: the real-profile set, a health
+    monitor and an `Availability` wired, then the board brought up --
+    heartbeats, a ready payment device, and the simulator's own capabilities
+    document published (not retained, so no state outlives the test) -- until
+    ice is sellable with no `bin_half_full` ever published."""
+    availability = Availability()
+    async with _e2e_harness(
+        sim_id,
+        tmp_path,
+        config=_im600xl_config(),
+        subscribe=("cmd/vending", "cmd/payment/enable"),
+        with_health=True,
+        profile_text=IM600XL_GOOD,
+        availability=availability,
+        recorder=recorder,
+    ) as h:
+        for name in ("vending", "mdb", "ice_maker"):
+            await h.publish(
+                f"heartbeat/{name}",
+                json.dumps({"subsystem": name, "uptime_seconds": 1}),
+            )
+        await h.publish(
+            "payment/status", json.dumps({"device": "coin_acceptor", "state": "ready"})
+        )
+        board = VendingMachineSimulator(machine_id=h.config.machine_id)
+        await h.publish(
+            "capabilities/vending", board.build_capabilities().model_dump_json()
+        )
+        await _wait_until(
+            lambda: availability.bin_instrumented is False
+            and availability.sale_available("ice")[0]
+            and availability.sale_available("water")[0]
+        )
+        # The IM600XL profiles validated against the declared channels.
+        assert h.vmc.faults.lockouts == {}
+        yield h
+
+
+def _recorder(tmp_path) -> EventRecorder:
+    """A real `EventRecorder` on a fresh database, already in WAL mode.
+
+    `record_sale` switches the file to WAL itself, but that PRAGMA fails
+    with "database is locked" (DATA-101) whenever the writer thread's
+    connection holds the `dispense` KPI event's open transaction, which is
+    the case on the first sale against a database not yet in WAL mode. The
+    mode is persistent, so setting it up front here keeps these tests about
+    the IM600XL path rather than that race (reported separately)."""
+    path = tmp_path / "events.db"
+    recorder = EventRecorder(db_path=str(path))
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    finally:
+        conn.close()
+    return recorder
+
+
+def _sales(recorder: EventRecorder) -> list[tuple[str, float]]:
+    recorder.flush()
+    conn = sqlite3.connect(recorder.db_path)
+    try:
+        return conn.execute("SELECT sku, price FROM sales ORDER BY id").fetchall()
+    finally:
+        conn.close()
+
+
+async def _im600xl_sale(h: _E2E, button: str, amount: float, slot: int) -> str:
+    """Press *button*, pay *amount*, accept the dispense and report it
+    `complete`; returns the dispense request_id."""
+    await h.publish("hardware/buttons", ButtonPress(button=button).model_dump_json())
+    await _wait_for_state(h.vmc, "interacting_with_user", timeout=5.0)
+    await h.publish(
+        "payment/credit",
+        PaymentEvent(amount=amount, method="cash_bill").model_dump_json(),
+    )
+    await _wait_for_state(h.vmc, "dispensing", timeout=5.0)
+    dispense_msg = await h.collector.next_dispense()
+    assert dispense_msg["params"]["slot"] == slot
+    request_id = dispense_msg["request_id"]
+    await _ack_dispense(h.sim_client, h.prefix, request_id)
+    await h.publish(
+        "hardware/dispenser",
+        DispenserStatus(
+            slot=slot, state="complete", request_id=request_id
+        ).model_dump_json(),
+    )
+    await _wait_for_state(h.vmc, "idle", timeout=5.0)
+    return request_id
+
+
+class TestIM600XLSales:
+    """The IM600XL's declared channels, published as the board would, through
+    a real broker: no bin sensor, named buttons, input-driven faults."""
+
+    async def test_ice_sale_without_a_bin_sensor(self, tmp_path):
+        recorder = _recorder(tmp_path)
+        async with _im600xl_harness(
+            "e2e-im600xl-ice", tmp_path, recorder=recorder
+        ) as h:
+            request_id = await _im600xl_sale(h, "button_ice", 2.00, slot=0)
+
+            assert h.vmc.credit_escrow == 0.0
+            h.collector.assert_one_dispense_per_sale([request_id])
+            assert _sales(recorder) == [("SAMPLE-ICE", 2.00)]
+            assert "hardware/io/bin_half_full" not in h.published
+
+    async def test_water_sale(self, tmp_path):
+        recorder = _recorder(tmp_path)
+        async with _im600xl_harness(
+            "e2e-im600xl-water", tmp_path, recorder=recorder
+        ) as h:
+            request_id = await _im600xl_sale(h, "button_water_1gal", 1.50, slot=1)
+
+            assert h.vmc.credit_escrow == 0.0
+            h.collector.assert_one_dispense_per_sale([request_id])
+            assert _sales(recorder) == [("SAMPLE-WATER-SM", 1.50)]
+
+    async def test_sump_high_withdraws_payment_and_recovery_restores_it(self, tmp_path):
+        async with _im600xl_harness("e2e-im600xl-sump", tmp_path) as h:
+            avail, faults = h.availability, h.vmc.faults
+            assert avail.payment_enabled is True
+
+            await h.publish(
+                "hardware/io/sump_high",
+                json.dumps({"device": "sump_high", "state": True}),
+            )
+            await _wait_until(lambda: faults.has(FaultCode.WTR_104.value))
+            assert avail.payment_enabled is False
+            assert faults.lockouts == {}
+
+            await h.publish(
+                "hardware/io/sump_high",
+                json.dumps({"device": "sump_high", "state": False}),
+            )
+            await _wait_until(lambda: not faults.has(FaultCode.WTR_104.value))
+            assert avail.payment_enabled is True
+
+    async def test_low_water_pressure_refuses_water_not_ice(self, tmp_path):
+        async with _im600xl_harness("e2e-im600xl-pressure", tmp_path) as h:
+            avail, faults = h.availability, h.vmc.faults
+            products = {p.sku: p for p in h.config.physical.products}
+            ice, water = products["SAMPLE-ICE"], products["SAMPLE-WATER-SM"]
+
+            await h.publish(
+                "hardware/io/water_pressure_ok",
+                json.dumps({"device": "water_pressure_ok", "state": False}),
+            )
+            await _wait_until(lambda: not avail.product_sellable(water)[0])
+            assert "water_pressure_ok" in avail.product_sellable(water)[1]
+            assert avail.product_sellable(ice)[0] is True
+            assert avail.payment_enabled is True
+            assert faults.lockouts == {}
+
+            await h.publish(
+                "hardware/io/water_pressure_ok",
+                json.dumps({"device": "water_pressure_ok", "state": True}),
+            )
+            await _wait_until(lambda: avail.product_sellable(water)[0])
+            assert faults.lockouts == {}
