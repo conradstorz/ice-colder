@@ -18,6 +18,7 @@ from loguru import logger
 from ice_contracts.board.vending_machine import (
     PAYMENT_BLOCKING_FAULTS,
     FaultCode,
+    SubsystemCapabilities,
     VendingChannel,
 )
 
@@ -92,6 +93,32 @@ _BAD_DEVICE_STATES = {"error", "offline"}
 _TEST_SALE_EXEMPT_FAULTS: frozenset[str] = frozenset({FaultCode.SVC_102.value})
 
 
+@dataclass(frozen=True)
+class _InputRow:
+    """How one vending input channel drives one availability row."""
+
+    row: str
+    faulted_when: bool  # the reported state that fails the row
+    detail: str
+
+
+# The one channel -> row table. Keyed by the contract's `VendingChannel`; a
+# test pins its keys to `INPUT_FAULTS` plus the service door, so the contract
+# and the edge cannot drift. Input faults never touch product lockouts: water
+# sales are blocked by these rows, and `sump_high` reaches payment through the
+# safety-gated `no_leak` row.
+_INPUT_ROWS: dict[VendingChannel, _InputRow] = {
+    VendingChannel.sump_high: _InputRow("no_leak", True, "sump high"),
+    VendingChannel.water_pressure_ok: _InputRow(
+        "water_pressure_ok", False, "low water pressure"
+    ),
+    VendingChannel.ro_tank_empty: _InputRow("ro_tank_ok", True, "RO tank empty"),
+    VendingChannel.service_door: _InputRow(
+        "service_door_closed", True, "service door open"
+    ),
+}
+
+
 def _inst(
     name: str,
     applies: Applies,
@@ -124,6 +151,7 @@ class Availability:
         self._recorder = None
         self._payment_devices: dict[str, str] = {}
         self._bin_half_full: Optional[bool] = None
+        self._bin_instrumented = True
         self._ice_101_active = False
         self._last_published: Optional[bool] = None
         # The exact set of PAYMENT_BLOCKING_FAULTS codes currently active,
@@ -163,6 +191,7 @@ class Availability:
             _stub("trap_door_closed", Applies.ice, gate=Gate.safety),
             _stub("control_power_ok", Applies.both, gate=Gate.safety),
             _stub("water_pressure_ok", Applies.water),
+            _stub("ro_tank_ok", Applies.water),
             _stub("water_treatment_ok", Applies.water),
             _stub("no_leak", Applies.water, gate=Gate.safety),
             _stub("water_valve_closed", Applies.water, gate=Gate.safety),
@@ -233,21 +262,51 @@ class Availability:
         self._refresh_ice_available()
         self._recompute()
 
+    @property
+    def bin_instrumented(self) -> bool:
+        return self._bin_instrumented
+
+    def set_bin_instrumented(self, instrumented: bool) -> None:
+        self._bin_instrumented = instrumented
+        self._refresh_ice_available()
+        self._recompute()
+
+    def on_vending_capabilities(
+        self, subsystem: str, data: dict, caps: SubsystemCapabilities | None
+    ) -> None:
+        """Capabilities subscriber: a vending board that declares no bin
+        sensor leaves the ice row not-instrumented instead of unknown."""
+        if subsystem != "vending" or caps is None:
+            return
+        self.set_bin_instrumented(
+            any(c.channel_id == VendingChannel.bin_half_full for c in caps.channels)
+        )
+
     def set_hardware_io(self, device: str, state: bool) -> None:
         if device == VendingChannel.bin_half_full:
             self._bin_half_full = state
             self._refresh_ice_available()
             self._recompute()
-        elif device == VendingChannel.service_door:
-            self._set_bool("service_door_closed", not state, "service door open")
+            return
+        try:
+            spec = _INPUT_ROWS[VendingChannel(device)]
+        except (KeyError, ValueError):
+            return
+        self._rows[spec.row].instrumented = True
+        self._set_bool(spec.row, state != spec.faulted_when, spec.detail)
 
     def set_transaction_certain(self, certain: bool) -> None:
         self._set_bool("transaction_certain", certain, "PAY-104 active")
 
     def _refresh_ice_available(self) -> None:
         row = self._rows["ice_available"]
+        # A board with no bin sensor makes this row not-instrumented (spec
+        # 4.3); the state/detail precedence below is unchanged.
+        row.instrumented = self._bin_instrumented
         if self._ice_101_active:
             row.state, row.detail = PermissiveState.FAIL, "ICE-101 active"
+        elif not self._bin_instrumented:
+            row.state, row.detail = PermissiveState.PASS, "no bin sensor"
         elif self._bin_half_full is None:
             row.state, row.detail = PermissiveState.UNKNOWN, "no bin report yet"
         elif self._bin_half_full:

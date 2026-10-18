@@ -388,6 +388,9 @@ class Machine:
         self._unsubscribe_availability = [
             self._telemetry.subscribe_hardware_io(availability.set_hardware_io),
             self._telemetry.subscribe_payment_status(availability.set_payment_device),
+            self._telemetry.subscribe_capabilities(
+                availability.on_vending_capabilities
+            ),
         ]
         availability.set_fsm_state(self._vmc.state)
         availability.set_active_faults(self._faults.active_faults())

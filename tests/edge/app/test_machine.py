@@ -366,3 +366,36 @@ class TestTelemetryWiring:
         )
         assert first.hardware_io == []
         assert second.hardware_io == [("door", True)]
+
+    async def test_vending_capabilities_reach_gate_and_availability(self):
+        machine = Machine(ConfigModel())
+        av = FakeAvailability()
+        machine.set_availability(av)
+        await machine.telemetry.handle_capabilities(
+            "capabilities/vending", _caps("vending")
+        )
+        assert [(s, c.firmware) for s, _d, c in av.capabilities] == [
+            ("vending", "0.1.0")
+        ]
+
+    async def test_set_availability_twice_leaves_one_capabilities_subscriber(self):
+        machine = Machine(ConfigModel())
+        first, second = FakeAvailability(), FakeAvailability()
+        machine.set_availability(first)
+        machine.set_availability(second)
+        await machine.telemetry.handle_capabilities(
+            "capabilities/vending", _caps("vending")
+        )
+        assert first.capabilities == []
+        assert len(second.capabilities) == 1
+
+    async def test_capabilities_delivered_before_availability_still_apply(self):
+        from ice_edge.faults.availability import Availability
+
+        machine = Machine(ConfigModel())
+        await machine.telemetry.handle_capabilities(
+            "capabilities/vending", _caps("vending")
+        )
+        av = Availability()
+        machine.set_availability(av)
+        assert av.bin_instrumented is False
