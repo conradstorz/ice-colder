@@ -224,9 +224,9 @@ class EventRecorder:
       rides the same queue for the same reason.
     - ``record_sale()`` is synchronous and durable: it opens its own
       connection (synchronous=NORMAL; the file is WAL, set at init) and
-      returns only once the row is committed, because the caller (the VMC's dispense path) must
-      know the sale is on disk before it resumes. It deliberately does not
-      use the writer queue.
+      returns only once the row is committed, because the caller (the
+      VMC's dispense path) must know the sale is on disk before it
+      resumes. It deliberately does not use the writer queue.
     """
 
     def __init__(
