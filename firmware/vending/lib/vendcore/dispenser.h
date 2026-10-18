@@ -6,6 +6,7 @@
 #include "channels.h"
 #include "command.h"
 #include "inputs.h"
+#include "interlocks.h"
 #include "ports.h"
 #include "profile.h"
 
@@ -24,10 +25,11 @@ public:
 
     // False unless Idle (a Done run must be finish()ed first).
     bool start(const Command& cmd, uint32_t now_ms);
-    // Writes all seven outputs while Running or Done; leaves them alone when Idle.
+    // Requests the five outputs it owns (agitator, auger, bag fan, catch, water valve) from the guard
+    // each tick while Running or Done, each bounded by the profile's worst case + 1 s; Idle: no requests.
     // The Outcome event carries the Outcome ordinal in `value` and the detail in `text`.
-    void tick(uint32_t now_ms, const InputScanner& in, bool (&outputs)[kOutputCount], Publisher& pub);
-    void abort(uint32_t now_ms, const char* detail, Publisher& pub);  // Outcome::Error, all off
+    void tick(uint32_t now_ms, const InputScanner& in, OutputGuard& guard, Publisher& pub);
+    void abort(uint32_t now_ms, const char* detail, OutputGuard& guard, Publisher& pub);  // Outcome::Error, all off
     bool first_actuator_on() const { return first_actuator_on_; }     // for the accepted ack
     State state() const { return state_; }
     const char* request_id() const { return request_id_; }
@@ -38,6 +40,7 @@ private:
     enum class Phase : uint8_t { Lead, Agitate, Fill, RelCatch, RelPulse, RelOpen, RelClose, Tail, WFill, WSettle };
     enum class AccState : uint8_t { Pending, On, Off };
 
+    void request_all(uint32_t now, OutputGuard& guard);
     void set_out(int channel, bool on);
     void begin_step(uint8_t bit);
     void end_step(uint8_t bit, uint32_t now);
@@ -55,6 +58,7 @@ private:
     SlotProfile p_ = {};
     char request_id_[65] = {};
     uint8_t slot_ = 0;
+    uint32_t bound_ms_ = 0;
     bool on_[kOutputCount] = {};
     bool first_actuator_on_ = false;
 

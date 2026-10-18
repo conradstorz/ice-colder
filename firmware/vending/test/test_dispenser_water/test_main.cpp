@@ -9,6 +9,7 @@
 #include "command.h"
 #include "dispenser.h"
 #include "inputs.h"
+#include "interlocks.h"
 
 using namespace vendcore;
 
@@ -30,6 +31,7 @@ struct Rig {
     InputScanner sc{high_active(), 0};
     VecPublisher pub;
     InputSnapshot raw = {};
+    OutputGuard guard;
     bool out[kOutputCount] = {};
     uint32_t t = 0;
     uint32_t dt = 10;  // tick period in ms
@@ -43,7 +45,8 @@ struct Rig {
     }
     void tick() {
         sc.scan(raw, t, pub);
-        d.tick(t, sc, out, pub);
+        d.tick(t, sc, guard, pub);
+        guard.apply(t, out, pub);
         for (int i = 0; i < kOutputCount; ++i) {
             if (out[i] && !prev[i] && on_at[i] < 0) on_at[i] = (int32_t)t;
             if (!out[i] && prev[i]) off_at[i] = (int32_t)t;
@@ -288,7 +291,9 @@ static void test_abort_mid_fill(void) {
     Rig r;
     r.d.start(make_cmd(kFixture_profile_water_1gal), 0);
     r.run_to(500);
-    r.d.abort(r.t, "abort", r.pub);
+    r.d.abort(r.t, "abort", r.guard, r.pub);
+    r.guard.apply(r.t, r.out, r.pub);
+    TEST_ASSERT_TRUE(r.all_off());
     r.tick();
     TEST_ASSERT_TRUE(r.all_off());
     TEST_ASSERT_EQUAL(1, r.outcomes());

@@ -91,6 +91,7 @@ bool Dispenser::start(const Command& cmd, uint32_t now_ms) {
     p_ = cmd.profile;
     copy_text(request_id_, sizeof(request_id_), cmd.request_id);
     slot_ = cmd.slot;
+    bound_ms_ = to_ms(worst_case_seconds(p_)) + 1000;
     memset(on_, 0, sizeof(on_));
     first_actuator_on_ = false;
     fill_detail_[0] = '\0';
@@ -260,7 +261,7 @@ void Dispenser::enter_release(uint32_t now, Publisher& pub) {
     }
 }
 
-void Dispenser::tick(uint32_t now, const InputScanner& in, bool (&outputs)[kOutputCount], Publisher& pub) {
+void Dispenser::tick(uint32_t now, const InputScanner& in, OutputGuard& guard, Publisher& pub) {
     if (state_ == State::Idle) return;
     if (state_ == State::Running) {
         // Accessory lags.
@@ -373,14 +374,23 @@ void Dispenser::tick(uint32_t now, const InputScanner& in, bool (&outputs)[kOutp
             }
         }
     }
-    // Running or Done: drive every output from the internal image.
-    for (int i = 0; i < kOutputCount; ++i) outputs[i] = on_[i];
-    if (!first_actuator_on_) {
-        for (int i = 0; i < kOutputCount; ++i) first_actuator_on_ |= on_[i];
+    // Running or Done: request the outputs this machine owns from the internal image.
+    request_all(now, guard);
+}
+
+void Dispenser::request_all(uint32_t now, OutputGuard& guard) {
+    static constexpr Out kOwned[5] = {Out::Agitator, Out::Auger, Out::BagFan, Out::TrapDoorCatch, Out::WaterValve};
+    for (Out o : kOwned) {
+        const bool on = on_[static_cast<int>(o)];
+        guard.request(o, on, bound_ms_, now);
+        if (on) first_actuator_on_ = true;
     }
 }
 
-void Dispenser::abort(uint32_t, const char* detail, Publisher& pub) { end_run(Outcome::Error, detail, pub); }
+void Dispenser::abort(uint32_t now, const char* detail, OutputGuard& guard, Publisher& pub) {
+    end_run(Outcome::Error, detail, pub);
+    if (state_ != State::Idle) request_all(now, guard);
+}
 
 void Dispenser::finish() {
     if (state_ == State::Done) state_ = State::Idle;
