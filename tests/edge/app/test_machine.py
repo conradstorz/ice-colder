@@ -264,3 +264,105 @@ class TestCancelPendingTasks:
         machine.cancel_pending_tasks()
 
         assert not any(c.label == "dispense_timeout" for c in runner.scheduled)
+
+
+def _caps(subsystem: str = "vending") -> dict:
+    from ice_contracts.board.vending_machine import CONTRACT_VERSION
+
+    return {
+        "subsystem": subsystem,
+        "contract_version": CONTRACT_VERSION,
+        "brand": "BrandX",
+        "model": "VM-1",
+        "firmware": "0.1.0",
+        "channels": [],
+        "commands": [],
+    }
+
+
+class TestTelemetryWiring:
+    async def test_bin_half_full_true_clears_ice101_lockout(self):
+        machine = Machine(_config(Product(sku="A", price=1.0, slot=1, kind="ice")))
+        machine.faults.raise_fault(FaultCode.ICE_101, sku="A")
+        assert machine.faults.is_locked("A") is FaultCode.ICE_101
+
+        await machine.telemetry.handle_hardware_io(
+            "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
+        )
+
+        assert machine.faults.is_locked("A") is None
+
+    async def test_bin_half_full_false_keeps_lockout(self):
+        machine = Machine(_config(Product(sku="A", price=1.0, slot=1, kind="ice")))
+        machine.faults.raise_fault(FaultCode.ICE_101, sku="A")
+
+        await machine.telemetry.handle_hardware_io(
+            "hardware/io/bin_half_full", {"device": "bin_half_full", "state": False}
+        )
+
+        assert machine.faults.is_locked("A") is FaultCode.ICE_101
+
+    async def test_validated_vending_capabilities_reach_the_gate(self):
+        from types import SimpleNamespace
+
+        class Profiles:
+            report = SimpleNamespace(file_error=False)
+
+            def __init__(self):
+                self.calls = []
+
+            def set_capabilities(self, caps):
+                self.calls.append(caps)
+
+        machine = Machine(ConfigModel())
+        machine.gate.profiles = Profiles()
+        await machine.telemetry.handle_capabilities(
+            "capabilities/vending", _caps("vending")
+        )
+        assert len(machine.gate.profiles.calls) == 1
+        assert machine.gate.profiles.calls[0].firmware == "0.1.0"
+
+        # A malformed doc arrives with caps=None and never reaches the gate.
+        await machine.telemetry.handle_capabilities(
+            "capabilities/vending", {"subsystem": "vending", "bad": 1}
+        )
+        assert len(machine.gate.profiles.calls) == 1
+
+    async def test_subsystem_capabilities_holds_raw_document(self):
+        machine = Machine(ConfigModel())
+        doc = _caps("vending")
+        await machine.telemetry.handle_capabilities("capabilities/vending", doc)
+        assert machine.subsystem_capabilities["vending"] == doc
+        assert machine.subsystem_capabilities is machine.telemetry.capabilities
+
+    async def test_capabilities_before_attach_are_replayed_to_new_subscriber(self):
+        machine = Machine(ConfigModel())
+        doc = _caps("vending")
+        await machine.telemetry.handle_capabilities("capabilities/vending", doc)
+        probe = []
+        machine.telemetry.subscribe_capabilities(lambda s, d, c: probe.append((s, d)))
+        assert probe == [("vending", doc)]
+
+    async def test_set_availability_routes_hardware_io_and_payment_status(self):
+        machine = Machine(ConfigModel())
+        av = FakeAvailability()
+        machine.set_availability(av)
+        await machine.telemetry.handle_hardware_io(
+            "hardware/io/door", {"device": "door", "state": True}
+        )
+        await machine.telemetry.handle_payment_status(
+            "payment/status", {"device": "coin_acceptor", "state": "ready"}
+        )
+        assert av.hardware_io == [("door", True)]
+        assert av.payment_devices == [("coin_acceptor", "ready")]
+
+    async def test_set_availability_twice_leaves_one_subscribed(self):
+        machine = Machine(ConfigModel())
+        first, second = FakeAvailability(), FakeAvailability()
+        machine.set_availability(first)
+        machine.set_availability(second)
+        await machine.telemetry.handle_hardware_io(
+            "hardware/io/door", {"device": "door", "state": True}
+        )
+        assert first.hardware_io == []
+        assert second.hardware_io == [("door", True)]

@@ -146,14 +146,13 @@ class DispenserProfileGate:
         self.reconcile()
 
     def on_vending_capabilities(
-        self, subsystem: str, caps: SubsystemCapabilities
+        self, subsystem: str, data: dict, caps: SubsystemCapabilities | None
     ) -> None:
         """Re-run the dispenser-profiles capabilities cross-check whenever
-        the vending board's retained capabilities doc validates -- wired by
-        `Machine` directly as the telemetry router's
-        (ice_edge/hal/mqtt_inbound.py's `TelemetryRouter.handle_capabilities`)
-        `on_capabilities_validated` callback, invoked only from its
-        successful-validation branch.
+        the vending board's retained capabilities doc validates -- subscribed
+        by `Machine` to the telemetry router's capabilities fan-out
+        (`TelemetryRouter.subscribe_capabilities`); a document that failed
+        validation arrives with `caps=None` and is ignored.
 
         Dispenser profiles (plan: dispenser profiles, Task 2): the vending
         board's declared channel directions feed the profiles' own
@@ -163,6 +162,8 @@ class DispenserProfileGate:
         never overwrite previously-good capabilities with something that
         would wrongly downgrade real slot errors back to warnings.
         """
+        if caps is None:
+            return
         if subsystem == "vending" and self.profiles is not None:
             self.profiles.set_capabilities(caps)
             self.reconcile()
