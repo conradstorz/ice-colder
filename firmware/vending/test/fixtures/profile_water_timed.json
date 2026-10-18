@@ -1,0 +1,5 @@
+{
+  "mechanism": "water_fill",
+  "product_sku": "water-5gal",
+  "fill": {"proof": "timed", "valve_channel": "water_valve_solenoid", "max_fill_seconds": 30}
+}

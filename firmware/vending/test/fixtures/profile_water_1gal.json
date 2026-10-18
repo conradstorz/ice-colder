@@ -1,0 +1,5 @@
+{
+  "mechanism": "water_fill",
+  "product_sku": "water-1gal",
+  "fill": {"proof": "flow_volume", "valve_channel": "water_valve_solenoid", "flow_sensor_channel": "fill_pulses", "target_volume_ml": 3785, "pulses_per_liter": 450, "min_flow_ml_per_second": 20, "no_flow_grace_seconds": 3, "over_dispense_percent": 5, "max_fill_seconds": 120}
+}

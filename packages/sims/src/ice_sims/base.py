@@ -159,6 +159,11 @@ class ESP32Simulator(ABC):
         self.register_command("force_report", self._handle_force_report)
 
     @property
+    def client_id(self) -> str:
+        """The MQTT client id this simulator connects with."""
+        return f"sim-{self.subsystem_name}"
+
+    @property
     def topic_prefix(self) -> str:
         return f"vmc/{self.machine_id}"
 
@@ -858,7 +863,7 @@ class ESP32Simulator(ABC):
                 async with aiomqtt.Client(
                     hostname=self.broker,
                     port=self.port,
-                    identifier=f"sim-{self.subsystem_name}",
+                    identifier=self.client_id,
                     will=self._build_will(),
                     username=self.username,
                     password=self.password,

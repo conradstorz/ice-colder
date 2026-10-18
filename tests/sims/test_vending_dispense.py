@@ -215,7 +215,9 @@ async def test_dispense_handler_drives_its_one_dispenser_through_a_fresh_board()
             timestamp=datetime.now(timezone.utc),
         )
         await sim.handle_command(client, cmd)
-    await settle()
+        # Finish this run first: the busy flag is set at accept time, so a
+        # back-to-back second dispense would (correctly) be rejected.
+        await settle()
 
     assert run.await_count == 2
     first, second = run.await_args_list

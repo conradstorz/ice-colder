@@ -21,6 +21,7 @@ downloads/
 eggs/
 .eggs/
 lib/
+!firmware/vending/lib/
 lib64/
 parts/
 sdist/
@@ -212,3 +213,9 @@ docker-compose.override.yml
 
 # Cloud portal stub data (cloud spec section 9)
 cloud_data/
+
+# PlatformIO
+.pio/
+sdkconfig.*
+!sdkconfig.defaults
+firmware/vending/managed_components/

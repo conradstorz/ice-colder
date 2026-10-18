@@ -1,0 +1,7 @@
+{
+  "mechanism": "bagged_ice",
+  "product_sku": "ice-bag", "bogus": 1,
+  "agitate": {"motor_channel": "agitator_motor", "run_seconds": 2, "stall_current_amps": "unmonitored", "current_channel": "unmonitored"},
+  "fill": {"proof": "timed", "motor_channel": "auger_motor", "max_run_seconds": 10, "stall_current_amps": "unmonitored", "current_channel": "unmonitored"},
+  "release": {"proof": "timed", "solenoid_channel": "trap_door_catch", "pulse_seconds": 1.5}
+}
