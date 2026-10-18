@@ -356,6 +356,7 @@ generated schemas.
 
 ### Phase D — Vending ESP32 firmware
 
+- In progress: `docs/superpowers/specs/2026-10-17-vending-esp32-firmware-design.md`.
 - Implements the Phase B contract with every §4 interlock and every bounded
   runtime in firmware.
 - Safe idle on loss of VMC heartbeat.
@@ -367,6 +368,7 @@ generated schemas.
 
 ### Phase E — Bench prototype
 
+- The checklist is `firmware/docs/vending-board-interface.md` section 8.
 - Tabletop panel: ESP32, 24 V supply, interposing relays, switches simulating
   every sensor, lamps for every output, a pulse generator for the flow meter.
 - Run the real VMC against the bench ESP32 and against the simulators with

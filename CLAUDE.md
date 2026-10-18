@@ -51,7 +51,7 @@ packages/
                                            auth, templates/                           [PR 5]
   sims/        src/ice_sims/    simulated board layer: base, ice_maker, mdb_gateway, vending_machine (thin entry),
                                 vending/ (board, channels, dispense, customer, faults, ha, ro_tank, climate, simulator)
-firmware/      README.md — field-device/board layer home (ESPHome configs later)
+firmware/      README.md, docs/vending-board-interface.md, vending/ (ESP-IDF/PlatformIO project) — field-device/board layer
 scripts/       repo tooling (stays at root): _repo.py, gen_dispensers_example.py, make_click_wav.py,
                check_package_isolation.py, refactor/{move_map.py,codemod.py}
 tests/         one package; conftest.py + helpers stay at root
@@ -59,6 +59,8 @@ tests/         one package; conftest.py + helpers stay at root
    edge/{app,web,views,uplink,sale,vend,payment,reporting,faults,notify,monitoring,access,ledger,
          customer_ui,hal,config,supervisor}/
 ```
+
+**`firmware/`.** `firmware/vending/` is the vending ESP32 firmware: C++ on ESP-IDF built with PlatformIO (reference board KinCony KC868-A8; spec `docs/superpowers/specs/2026-10-17-vending-esp32-firmware-design.md`, wiring and bench checklist `firmware/docs/vending-board-interface.md`). All logic lives in `lib/vendcore`, a pure C++ library behind `Clock`/`IoPort`/`Publisher` ports with no ESP-IDF or Arduino includes, so `pio test -e native` runs it on the host; `src/` holds only the ESP-IDF tasks and the KC868 drivers, and the pin map is `boards/kc868-a8.h`. The CI `firmware` job runs `pio run -e kc868-a8` and `pio test -e native`. `tests/firmware/` is an opt-in conformance suite that drives a vending board over MQTT: it is skipped unless `ICE_COLDER_BOARD_TESTS=1`, reads the broker from `ICE_COLDER_BOARD_BROKER` (`host[:port]`, default `localhost:1883`), and targets real hardware when `ICE_COLDER_BOARD_MACHINE_ID` is set, otherwise the in-process vending simulator under a fresh machine id. Tests marked `requires_sim` need the simulator to drive sensors and are skipped against hardware; that skip reason is the one legitimate board skip in `tests/skip_policy.py`, and the opt-in skip is deliberately not, because CI sets the flag and runs the suite against the simulator. `tests/firmware/test_golden_wire.py` always runs (no flag) and validates the golden JSON that `pio test -e native -f test_wire` writes into `firmware/vending/test/golden/`. Writing the suite also fixed two simulator contract gaps: a concurrent `dispense` is now rejected as busy, and `force_report` republishes capabilities and I/O.
 
 ### Package dependency rules (enforced by `uv run lint-imports` and `scripts/check_package_isolation.py`)
 
@@ -76,7 +78,7 @@ tests/         one package; conftest.py + helpers stay at root
 
 | Aspirational section | Lives in |
 |---|---|
-| Field device layer (contracts spec §2) | `firmware/` (future), simulated by `ice_sims` |
+| Field device layer (contracts spec §2) | `firmware/vending/`, simulated by `ice_sims` |
 | Board ↔ edge contract (spec §3) | `ice_contracts.board` + `docs/contracts/{vending-machine,ice-maker-monitor}` |
 | Edge §2.1 HAL | `ice_edge.hal` |
 | Edge §2.2 sale FSM | `ice_edge.sale` |
@@ -108,6 +110,8 @@ tests/         one package; conftest.py + helpers stay at root
 | Run a single test | `uv run pytest tests/test_file.py::test_name` |
 | Lint/format | `ruff check --fix .` then `ruff format .` |
 | Build Tailwind CSS | `.tailwind/tailwindcss.exe -c packages/ui/tailwind.config.js -i packages/ui/tailwind.input.css -o packages/ui/src/ice_ui/static/app.css --minify` |
+| Build the vending firmware | `pio run -e kc868-a8` (from `firmware/vending/`) |
+| Run the firmware host tests | `pio test -e native` (from `firmware/vending/`) |
 | Run the opt-in browser tests locally | `ICE_COLDER_BROWSER_TESTS=1 uv run pytest tests/edge/web/test_dashboard_v2_home_browser.py tests/edge/web/test_dashboard_v2_boosted_nav_browser.py tests/edge/web/test_users_codes_pin_browser.py tests/edge/web/test_touch_feedback_browser.py tests/cloud/test_banner_boosted_browser.py` |
 
 **Browser tests:** `tests/edge/web/test_dashboard_v2_home_browser.py`, `tests/edge/web/test_dashboard_v2_boosted_nav_browser.py`, `tests/edge/web/test_users_codes_pin_browser.py` and `tests/edge/web/test_touch_feedback_browser.py` drive real headless Chrome via `tests/browser/*.mjs` checker scripts (Node standard library only). They're skipped unless `ICE_COLDER_BROWSER_TESTS=1` is set **and** a Chrome/Chromium binary (honoring `CHROME_PATH` first) plus a `node` executable are both found, so a machine without Chrome still runs the rest of the suite clean. CI sets the flag and installs a pinned Chrome and Node so these five (the four above plus `tests/cloud/test_banner_boosted_browser.py`, which checks the cloud remote banner never stacks on boosted navigation) run on every push/PR; a guard step in `ci.yml` fails the build if any of them skip instead of passing.

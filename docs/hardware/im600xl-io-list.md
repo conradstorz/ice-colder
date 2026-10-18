@@ -27,6 +27,8 @@ Sources: [Kooler Ice IM600XL product page](https://koolerice.com/machine_model/i
 
 ## 2. Discrete I/O
 
+The board point each channel lands on (relay, expander input or GPIO) is in the channel map of [`firmware/docs/vending-board-interface.md`](../../firmware/docs/vending-board-interface.md).
+
 Columns:
 
 - **Type** — electrical type; *assumed* entries are unconfirmed (see §8).
