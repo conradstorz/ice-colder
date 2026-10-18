@@ -132,17 +132,21 @@ switched by a board relay directly.
 
 - **VMC liveness.** `CoreConfig::silence_ms` defaults to **0** (silence timer disabled). Liveness is
   the VMC's retained `online` document (its LWT flips it false), any inbound command marks the VMC
-  seen, and the board's own broker loss marks the VMC offline. A non-zero `silence_ms` re-enables
+  seen, and the board's own broker loss does not (a vend in flight finishes on its own timers; new
+  commands cannot arrive without a broker, and the retained `online` document corrects the state on
+  reconnect). A non-zero `silence_ms` re-enables
   the spec's 30 s silence timer but requires the edge to publish `online` periodically, which it
   currently does not. **Open decision for the edge:** publish `online` on an interval, or keep the
   timer disabled.
 - **Interlock trips.** On `vmc_offline` the outputs are dropped at trip onset and a running dispense
   ends `error` with detail `vmc_offline`; the RO loop and freeze protection then keep running
   autonomously. On `sump_high`, `io_failure`, `master_enable_dropped` and `service_door` (with motion)
-  the outputs are held off every tick; RO is skipped on the first three; the heater runs unless
-  `io_failure`.
+  the outputs are held off every tick; RO is skipped on the first three; the heater is off while a
+  latching interlock holds (`sump_high`, `io_failure`, `service_door` with motion), because its coil
+  common runs through the master relay. The heater is duty-cycled: after 24 h of continuous cold it
+  rests 5 min, then runs again (the 24 h software bound sits above that, so it never latches it off).
 - **Bounded runtimes.** Each output has a software max-on bound: the dispenser profile's worst case
-  plus 1 s, the RO max run (default 90 min) plus 1 s, and 24 h for the heater. The water valve's
+  plus 1 s, the RO max run (default 90 min) plus 1 s, and 24 h plus 60 s for the heater. The water valve's
   bound is its commanded duration plus 500 ms.
 - **Refused dispense.** A dispense refused by an interlock inside the accept step produces both an
   `Outcome` event with `error` on `hardware/dispenser` and a `failed` ack, so the edge sees the
@@ -185,8 +189,11 @@ back on `vmc/<machine_id>/cmd/vending/ack`.
   (I/O list section 8: W6/W7, W8, W9, C6, IC5 and broken-wire items).
 - [ ] **A lamp per relay.** Lamps on relays 1-7. Confirm each lamp tracks its output channel's
   `hardware/io` event, and relay 8 never energizes.
-- [ ] **Pulse generator on GPIO 32.** Feed a known pulse count; confirm `fill_pulses` on
-  `telemetry/vending` reports it (the calibration is I/O list section 8, W4 item).
+- [ ] **Flow meter on GPIO 32.** Telemetry flows only during a fill: run a `water_fill` dispense with
+  `firmware/vending/test/fixtures/profile_water_1gal.json` and confirm `fill_pulses` on
+  `telemetry/vending` reports the pulses (the calibration is I/O list section 8, W4 item). Also run
+  fills totalling more than 32767 pulses, then one more fill, and confirm it still ends `complete`
+  with a correct volume (the counter must accumulate past 16 bits).
 - [ ] **Ambient.** DS18B20 on GPIO 14; confirm `ambient` telemetry and the heater lamp at the 3 C on /
   6 C off thresholds (E1 and E2 are **assumed**, I/O list section 8, E1 and E2 items).
 - [ ] **Watchdog reset-hold test.** Hold the ESP32 in reset (EN low). The master-enable relay drops
@@ -202,7 +209,7 @@ back on `vmc/<machine_id>/cmd/vending/ack`.
 - [ ] **One `water_valve 3`.** Send `water_valve` with `{"seconds": 3}`; confirm `accepted`, the valve
   lamp on for 3 s, then the `completed` ack.
 - [ ] **LWT on power-off.** Remove board power; the broker publishes the `vending` heartbeat will
-  (`uptime_seconds` of -1) after the broker's keep-alive expires (15 s keep-alive on the board).
+  (`uptime_seconds` of -1) after the broker's keep-alive grace (about 1.5 x 15 s).
 - [ ] **Silence handling.** Stop the VMC (its `online` document goes false); confirm outputs drop and
   the RO loop and heater keep running (section 6).
 

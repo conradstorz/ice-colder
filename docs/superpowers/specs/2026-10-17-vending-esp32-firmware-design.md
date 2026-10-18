@@ -156,7 +156,7 @@ All topics under `vmc/<machine_id>/`.
 
 | Topic | When | Payload |
 |---|---|---|
-| `capabilities/vending` (retained) | connect, `force_report` | `SubsystemCapabilities`: `contract_version: "2.0.0"`, `firmware` = semver plus git sha, `hardware_id` = MAC, `ip`, the 17 `ChannelDescriptor`s of the IM600XL design §5.1 with `direction` and `driven_by`, `commands: ["ping", "self_test", "force_report", "dispense", "water_valve"]` |
+| `capabilities/vending` (retained) | connect, `force_report` | `SubsystemCapabilities`: `contract_version: "2.0.0"`, `firmware` = semver plus git sha, `hardware_id` = MAC, `ip`, the 18 `ChannelDescriptor`s of the IM600XL design §5.1 with `direction` and `driven_by`, `commands: ["ping", "self_test", "force_report", "dispense", "water_valve"]` |
 | `heartbeat/vending` | every 10 s; LWT `uptime_seconds: -1` | `SubsystemHeartbeat` |
 | `hardware/buttons` | each debounced press | `ButtonPress {button: "<channel id>", action: "pressed"}` (the 2.0.0 string form) |
 | `hardware/io/<channel>` | every change, every 60 s, and on `force_report` | `HardwareIO {device, state}` for the nine binary inputs and the seven outputs' commanded state |
@@ -232,3 +232,17 @@ From the I/O list §8, each affects only the pin map or a default, never the arc
 (24 VDC assumed), IC5 sensor type, W6/W7/W9/C6 switch normal states (polarity table), W8 trip line,
 E1's switch-on rule (hysteresis defaults), E2's existence and type (DS18B20 assumed), each input's
 broken-wire state.
+
+## 11 As built (deviations)
+
+- 18 channels are declared (the original text said 17).
+- Relay polarity is fail-safe normally-closed wiring, per the interface doc section 3.
+- `silence_ms` defaults to 0; VMC liveness is the retained `online` document and its LWT.
+- Only the onset of `vmc_offline` drops outputs; the RO loop and heater continue afterwards.
+- Watchdog kick pulses are 10 ms, not 500 ms.
+- Each output's max-on bound is the profile worst case plus 1 s, not plus 10 %.
+- An interlock refusal inside the accept step produces both an `error` outcome and a `failed` ack (a double report).
+- The heater is held off while a latching interlock holds, since its coil common runs through the master relay.
+- The heater is duty-cycled: after 24 h of continuous cold it rests 5 min, then runs again.
+- `fill_pulses` telemetry is published only during a fill, as a per-fill count, matching the simulator.
+- Broker loss does not abort a vend in flight (decision D6); the section 8 xfail plan is moot.

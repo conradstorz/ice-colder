@@ -107,10 +107,13 @@ jobs:
         with:
           path: ~/.platformio
           key: pio-${{ hashFiles('firmware/vending/platformio.ini') }}
+          restore-keys: pio-
       - run: pio run -e kc868-a8
         working-directory: firmware/vending
       - run: pio test -e native
         working-directory: firmware/vending
+      - name: Golden wire files are up to date
+        run: git diff --exit-code -- firmware/vending/test/golden
 
   compose-config:
     runs-on: ubuntu-latest
