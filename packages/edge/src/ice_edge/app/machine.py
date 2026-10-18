@@ -171,7 +171,15 @@ class Machine:
         # The router is a pure fan-out; every consumer is subscribed here.
         self._telemetry = mqtt_inbound.TelemetryRouter()
         self._health_telemetry = HealthTelemetry(lambda: self._outputs.health)
-        self._ice_policy = IcePolicy(faults=self._faults)
+        self._ice_policy = IcePolicy(
+            faults=self._faults,
+            tasks=self._tasks,
+            bin_instrumented=lambda: (
+                a.bin_instrumented if (a := self._outputs.availability) else True
+            ),
+            cooldown_seconds=lambda: self._config.physical.ice_retry_cooldown_seconds,
+        )
+        self._faults.subscribe_fault_change(self._ice_policy.on_fault_change)
         self._telemetry.subscribe_hardware_io(self._health_telemetry.on_hardware_io)
         self._telemetry.subscribe_payment_status(
             self._health_telemetry.on_payment_status
