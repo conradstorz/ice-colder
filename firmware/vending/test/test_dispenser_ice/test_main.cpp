@@ -263,6 +263,88 @@ static void test_step_events_in_order(void) {
     TEST_ASSERT_EQUAL(3, n);
 }
 
+// Timed fill (agitate 2 s, fill 10 s) then a door_sensor release: pulse 1.5 s, open timeout 2 s,
+// close timeout 3 s. Solenoid = trap_door_catch, door sensor = service_door.
+static const char* const kDoorSensorProfile = R"JSON({
+  "mechanism": "bagged_ice",
+  "product_sku": "ice-bag",
+  "agitate": {"motor_channel": "agitator_motor", "run_seconds": 2, "stall_current_amps": "unmonitored", "current_channel": "unmonitored"},
+  "fill": {"proof": "timed", "motor_channel": "auger_motor", "max_run_seconds": 10, "stall_current_amps": "unmonitored", "current_channel": "unmonitored"},
+  "release": {"proof": "door_sensor", "solenoid_channel": "trap_door_catch", "sensor_channel": "service_door", "pulse_seconds": 1.5, "open_timeout_seconds": 2, "close_timeout_seconds": 3}
+})JSON";
+
+static void set_door(Rig& r, bool v) { r.raw.binary[static_cast<int>(In::ServiceDoor)] = v; }
+
+static void test_by_sensor_release_complete(void) {
+    Rig r;
+    Command c = make_cmd(kDoorSensorProfile);
+    r.d.start(c, 0);
+    r.run_to(13490);
+    TEST_ASSERT_EQUAL_INT32(12000, r.on_at[kCatch]);
+    TEST_ASSERT_TRUE(r.out[kCatch]);
+    r.run_to(13500);
+    TEST_ASSERT_EQUAL_INT32(13500, r.off_at[kCatch]);  // solenoid on for exactly pulse_s
+    set_door(r, true);
+    r.run_to(14000);
+    TEST_ASSERT_EQUAL(0, r.outcomes());
+    set_door(r, false);
+    r.run_to(14010);
+    TEST_ASSERT_EQUAL(1, r.outcomes());
+    TEST_ASSERT_EQUAL((int)Outcome::Complete, (int)r.outcome()->value);
+    TEST_ASSERT_TRUE(r.all_off());
+    r.run_to(30000);
+    TEST_ASSERT_EQUAL(1, r.outcomes());
+}
+
+static void test_by_sensor_door_never_opens_is_error(void) {
+    Rig r;
+    Command c = make_cmd(kDoorSensorProfile);
+    r.d.start(c, 0);
+    r.run_to(15490);  // pulse ends 13500 + open_timeout 2 s
+    TEST_ASSERT_EQUAL(0, r.outcomes());
+    r.run_to(15500);
+    TEST_ASSERT_EQUAL(1, r.outcomes());
+    TEST_ASSERT_EQUAL((int)Outcome::Error, (int)r.outcome()->value);
+    TEST_ASSERT_EQUAL_STRING("door did not open", r.outcome()->text);
+    TEST_ASSERT_TRUE(r.all_off());
+    r.run_to(30000);
+    TEST_ASSERT_EQUAL(1, r.outcomes());
+}
+
+static void test_by_sensor_door_never_closes_is_door_open(void) {
+    Rig r;
+    Command c = make_cmd(kDoorSensorProfile);
+    r.d.start(c, 0);
+    r.run_to(13990);
+    set_door(r, true);  // seen open at 14000; close timeout 3 s
+    r.run_to(16990);
+    TEST_ASSERT_EQUAL(0, r.outcomes());
+    r.run_to(17000);
+    TEST_ASSERT_EQUAL(1, r.outcomes());
+    TEST_ASSERT_EQUAL((int)Outcome::DoorOpen, (int)r.outcome()->value);
+    TEST_ASSERT_EQUAL_STRING("door did not close", r.outcome()->text);
+    TEST_ASSERT_TRUE(r.all_off());
+    r.run_to(30000);
+    TEST_ASSERT_EQUAL(1, r.outcomes());
+}
+
+static void test_no_agitate_goes_straight_to_fill(void) {
+    Rig r;
+    Command c = make_cmd(kFixture_profile_ice_timed);
+    c.profile.agitate.motor = -1;  // the parser requires an agitate block; the engine skips it at -1
+    r.d.start(c, 0);
+    r.run_to(100);
+    TEST_ASSERT_TRUE(r.out[kAuger]);
+    TEST_ASSERT_FALSE(r.out[kAgit]);
+    int steps = 0;
+    for (int i = 0; i < r.pub.count; ++i) {
+        if (r.pub.events[i].type != EventType::Step) continue;
+        TEST_ASSERT_TRUE(strcmp(r.pub.events[i].text, "agitate") != 0);
+        if (steps++ == 0) TEST_ASSERT_EQUAL_STRING("fill", r.pub.events[i].text);
+    }
+    TEST_ASSERT_EQUAL(1, steps);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_names);
@@ -276,5 +358,9 @@ int main(int, char**) {
     RUN_TEST(test_first_actuator_on);
     RUN_TEST(test_start_while_running_or_done_refused_then_finish);
     RUN_TEST(test_step_events_in_order);
+    RUN_TEST(test_by_sensor_release_complete);
+    RUN_TEST(test_by_sensor_door_never_opens_is_error);
+    RUN_TEST(test_by_sensor_door_never_closes_is_door_open);
+    RUN_TEST(test_no_agitate_goes_straight_to_fill);
     return UNITY_END();
 }

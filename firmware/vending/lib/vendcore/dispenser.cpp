@@ -225,13 +225,18 @@ void Dispenser::tick(uint32_t now, const InputScanner& in, bool (&outputs)[kOutp
                         again = true;
                     }
                     break;
+                // BySensor release. Timeout origins: the open timeout runs from the end of the
+                // solenoid pulse (phase_start_ set there); the close timeout runs from the tick
+                // the door was first seen open. A door that never opens means no release happened,
+                // so it is a dispense Error (the edge treats door_open as "bag released, door stuck
+                // open" and credits the sale); a door that opens but never closes is DoorOpen.
                 case Phase::RelOpen:
                     if (is_binary_input(p_.release.sensor) && in.state(in_from_index(p_.release.sensor))) {
                         phase_ = Phase::RelClose;
                         phase_start_ = now;
                         again = true;
                     } else if (reached(now, phase_start_ + open_ms_)) {
-                        end_run(Outcome::DoorOpen, "door did not open", pub);
+                        end_run(Outcome::Error, "door did not open", pub);
                     }
                     break;
                 case Phase::RelClose:
