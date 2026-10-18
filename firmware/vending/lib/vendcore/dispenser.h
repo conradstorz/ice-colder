@@ -69,12 +69,16 @@ private:
     bool fill_empty_ = false;
 
     // Water fill. All counts are deltas from pulse_base_ (the counter is uint32_t and may wrap).
-    // The ring holds one (time, delta) sample per tick, for the trailing-1000 ms flow rate; it
-    // assumes ticks no faster than ~8 ms apart (128 samples span 1 s).
-    static constexpr int kRing = 128;
-    struct Sample { uint32_t t; uint32_t delta; };
-    Sample ring_[kRing] = {};
-    int ring_head_ = 0, ring_n_ = 0;
+    // Flow-rate window: time-bucketed ring, independent of tick period. Bucket index is
+    // (now_ms / kBucketMs) % kBuckets; each bucket keeps the cumulative pulse delta at the last tick
+    // that landed in it plus its epoch (now_ms / kBucketMs), so buckets left over from a previous
+    // lap (epoch more than kBuckets old) are recognised as stale. 128 x 10 ms covers 1280 ms.
+    static constexpr uint32_t kBucketMs = 10;
+    static constexpr uint32_t kBuckets = 128;
+    static constexpr uint32_t kSettleMaxMs = 5000;  // Settle ends at most this long after valve-off
+    struct Bucket { uint32_t epoch; uint32_t delta; bool used; };
+    Bucket buckets_[kBuckets] = {};
+    uint32_t settle_start_ms_ = 0;
     uint32_t pulse_base_ = 0, target_pulses_ = 0, limit_pulses_ = 0;
     uint32_t water_ms_ = 0, last_pulse_ms_ = 0, last_delta_ = 0;
     uint32_t next_tel_ms_ = 0, below_since_ms_ = 0;

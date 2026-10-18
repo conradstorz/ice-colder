@@ -32,6 +32,7 @@ struct Rig {
     InputSnapshot raw = {};
     bool out[kOutputCount] = {};
     uint32_t t = 0;
+    uint32_t dt = 10;  // tick period in ms
     // First tick time each output was seen on / last seen turning off (-1 = never).
     int32_t on_at[kOutputCount];
     int32_t off_at[kOutputCount];
@@ -48,7 +49,7 @@ struct Rig {
             if (!out[i] && prev[i]) off_at[i] = (int32_t)t;
             prev[i] = out[i];
         }
-        t += 10;
+        t += dt;
     }
     // Tick every 10 ms through time `until` inclusive.
     void run_to(uint32_t until) {
@@ -294,6 +295,55 @@ static void test_abort_mid_fill(void) {
     TEST_ASSERT_EQUAL((int)Outcome::Error, (int)r.outcome()->value);
 }
 
+static void test_no_flow_trips_with_5ms_ticks(void) {
+    Rig r;
+    r.dt = 5;
+    r.d.start(make_cmd(kFixture_profile_water_1gal), 0);
+    while (r.t < 3000) {
+        r.raw.pulses = r.t / 10;  // 100 pulses/s = 222 ml/s
+        r.tick();
+    }
+    r.run_to(5000);  // flow stopped at 3000; the window drains by ~4000
+    TEST_ASSERT_EQUAL(0, r.outcomes());
+    r.run_to(7200);  // below the floor from ~4000, grace 3 s
+    TEST_ASSERT_EQUAL(1, r.outcomes());
+    TEST_ASSERT_EQUAL((int)Outcome::NoFlow, (int)r.outcome()->value);
+    TEST_ASSERT_TRUE(r.all_off());
+}
+
+static void test_complete_with_20ms_ticks(void) {
+    Rig r;
+    r.dt = 20;
+    r.d.start(make_cmd(kFixture_profile_water_1gal), 0);
+    r.ramp(6000, 5, 1703);  // 250 pulses/s per 20 ms tick pair; cap 1703
+    TEST_ASSERT_EQUAL(1, r.outcomes());
+    TEST_ASSERT_EQUAL((int)Outcome::Complete, (int)r.outcome()->value);
+    TEST_ASSERT_EQUAL_STRING("1703 pulses", r.outcome()->text);
+    TEST_ASSERT_TRUE(r.all_off());
+}
+
+static void test_settle_capped_at_5s_under_trickle(void) {
+    Rig r;
+    r.d.start(make_cmd(kFixture_profile_water_1gal), 0);
+    r.ramp(3400, 5, 1703);
+    r.raw.pulses = 1703;
+    r.tick();  // t = 3410: valve off
+    TEST_ASSERT_EQUAL_INT32(3410, r.off_at[kValve]);
+    while (r.t < 3410 + 5000) {
+        // one pulse every 900 ms after valve-off
+        r.raw.pulses = 1703 + (r.t - 3410) / 900;
+        r.tick();
+    }
+    TEST_ASSERT_EQUAL(0, r.outcomes());
+    r.raw.pulses = 1703 + (r.t - 3410) / 900;
+    r.tick();  // t = 8410
+    TEST_ASSERT_EQUAL(1, r.outcomes());
+    TEST_ASSERT_EQUAL((int)Outcome::Complete, (int)r.outcome()->value);
+    TEST_ASSERT_EQUAL_STRING("1708 pulses", r.outcome()->text);
+    r.run_to(12000);
+    TEST_ASSERT_EQUAL(1, r.outcomes());
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_valve_opens_on_start);
@@ -309,5 +359,8 @@ int main(int, char**) {
     RUN_TEST(test_accessory_follows_valve_with_lead_and_lag);
     RUN_TEST(test_timed_water_runs_max_fill_then_complete);
     RUN_TEST(test_abort_mid_fill);
+    RUN_TEST(test_no_flow_trips_with_5ms_ticks);
+    RUN_TEST(test_complete_with_20ms_ticks);
+    RUN_TEST(test_settle_capped_at_5s_under_trickle);
     return UNITY_END();
 }

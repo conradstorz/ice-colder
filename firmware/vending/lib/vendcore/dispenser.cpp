@@ -138,7 +138,7 @@ void Dispenser::enter_water(uint32_t now, const InputScanner& in, Publisher& pub
     begin_step(kBitFill);
     set_out(p_.water.valve, true);
     emit_step(Step::Fill, pub);
-    ring_head_ = ring_n_ = 0;
+    memset(buckets_, 0, sizeof(buckets_));
     pulse_base_ = in.pulses();
     last_delta_ = 0;
     last_pulse_ms_ = now;
@@ -154,16 +154,29 @@ void Dispenser::water_valve_off(uint32_t now) {
     end_step(kBitFill, now);
 }
 
-// Pulses seen in the trailing 1000 ms: now's delta minus the delta at the latest sample at least
-// 1000 ms old (fill start, delta 0, when none is that old).
+// Pulses seen in the trailing ~1000 ms: delta minus the base, where the base is the newest bucket at
+// least 100 epochs (1000 ms) old, else the oldest valid earlier bucket, else the fill start (0).
 uint32_t Dispenser::window_pulses(uint32_t now, uint32_t delta) const {
-    uint32_t base = 0;
-    for (int i = 0; i < ring_n_; ++i) {
-        const Sample& s = ring_[(ring_head_ + kRing - ring_n_ + i) % kRing];
-        if (!reached(now - 1000u, s.t)) break;
-        base = s.delta;
+    const uint32_t cur = now / kBucketMs;
+    bool have_old = false, have_any = false;
+    uint32_t old_age = 0, any_age = 0, old_delta = 0, any_delta = 0;
+    for (uint32_t i = 0; i < kBuckets; ++i) {
+        const Bucket& b = buckets_[i];
+        if (!b.used) continue;
+        const uint32_t age = cur - b.epoch;
+        if (age >= kBuckets || age == 0) continue;  // stale (previous lap) or the current tick's bucket
+        if (age >= 100u && (!have_old || age < old_age)) {
+            have_old = true;
+            old_age = age;
+            old_delta = b.delta;
+        }
+        if (!have_any || age > any_age) {
+            have_any = true;
+            any_age = age;
+            any_delta = b.delta;
+        }
     }
-    return delta - base;
+    return delta - (have_old ? old_delta : have_any ? any_delta : 0u);
 }
 
 void Dispenser::water_fill_tick(uint32_t now, const InputScanner& in, Publisher& pub, bool& again) {
@@ -187,20 +200,19 @@ void Dispenser::water_fill_tick(uint32_t now, const InputScanner& in, Publisher&
             snprintf(d, sizeof(d), "%lu pulses, target %lu", static_cast<unsigned long>(delta),
                      static_cast<unsigned long>(target_pulses_));
             end_run(Outcome::OverDispense, d, pub);
-        } else if (reached(now, last_pulse_ms_ + 1000u)) {
+        } else if (reached(now, last_pulse_ms_ + 1000u) || reached(now, settle_start_ms_ + kSettleMaxMs)) {
             snprintf(fill_detail_, sizeof(fill_detail_), "%lu pulses", static_cast<unsigned long>(delta));
             phase_ = Phase::Tail;
             again = true;
         }
         return;
     }
-    ring_[ring_head_] = {now, delta};
-    ring_head_ = (ring_head_ + 1) % kRing;
-    if (ring_n_ < kRing) ++ring_n_;
+    buckets_[(now / kBucketMs) % kBuckets] = {now / kBucketMs, delta, true};
     last_delta_ = delta;
     if (delta >= target_pulses_) {
         water_valve_off(now);
         last_pulse_ms_ = now;
+        settle_start_ms_ = now;
         phase_ = Phase::WSettle;
         again = true;
         return;
