@@ -25,6 +25,7 @@ Run: uv run python -m ice_sims.vending_machine [--broker HOST] [--port PORT] [--
 """
 
 import asyncio
+import random
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any
 
@@ -34,17 +35,23 @@ from pydantic import BaseModel, ValidationError
 
 from ice_contracts.board.common import SubsystemCommand
 from ice_contracts.board.vending_machine import VendingChannel
-from ice_contracts.board.mqtt_messages import DispenseCommand, HardwareIO
+from ice_contracts.board.mqtt_messages import (
+    DispenseCommand,
+    HardwareIO,
+    SensorReading,
+)
 from ice_sims.base import CommandOutcome, ESP32Simulator, FaultDef
 from ice_sims.vending.channels import (
     CHANNELS,
     HARDWARE_DEVICES,
     SENSOR_PUBLISH_INTERVAL,
 )
+from ice_sims.vending.climate import Climate
 from ice_sims.vending.customer import Customers
 from ice_sims.vending.dispense import Dispenser
 from ice_sims.vending.faults import InjectedFault, vending_faults
 from ice_sims.vending.ha import ha_discovery_entities
+from ice_sims.vending.ro_tank import RoTank
 
 
 # Inputs whose standing state is republished every sensor interval.
@@ -72,6 +79,18 @@ class _Board:
 
     async def sleep(self, seconds: float) -> None:
         await self._sim.sleep(seconds)
+
+    @property
+    def ro_tank(self) -> RoTank:
+        return self._sim.ro_tank
+
+    @property
+    def climate(self) -> Climate:
+        return self._sim.climate
+
+    async def draw_water(self, gallons: float) -> None:
+        for channel, state in self._sim.ro_tank.draw(gallons).items():
+            await self._sim.set_hw(self._client, channel, state)
 
     def spawn(self, coro: Coroutine[Any, Any, None]) -> asyncio.Task:
         return self._sim._spawn_background(coro)
@@ -129,6 +148,10 @@ class VendingMachineSimulator(ESP32Simulator):
         # lag-off state (Copilot review PR #32, finding C4); every call
         # gets a fresh, stateless `_Board`.
         self._dispenser = Dispenser()
+        # The two pure physical models the sensor loop ticks; the water
+        # vend and the fault injections reach them through `_Board`.
+        self.ro_tank = RoTank.default()
+        self.climate = Climate(ambient_c=22.0)
 
         for fault in vending_faults():
             self.register_fault(_fault_def(self, fault))
@@ -158,12 +181,32 @@ class VendingMachineSimulator(ESP32Simulator):
         )
 
     async def _publish_sensors(self, client: aiomqtt.Client):
-        """Periodically republish the standing service inputs (so a late
-        subscriber learns their state). Temperature arrives with the
-        environment model (Task 11); nothing publishes `sensors/water_flow`."""
+        """Each pass: tick the RO tank and climate models, publish their
+        changes first, then re-publish the standing state (service inputs,
+        RO outputs, heater) so a late subscriber learns it, and publish
+        `ambient`. Nothing publishes `sensors/water_flow`."""
         while True:
-            for channel in _PERIODIC_INPUTS:
-                await self.set_hw(client, channel, self._hw[channel])
+            changes = {
+                **self.ro_tank.tick(),
+                **self.climate.tick(random.gauss(0, 0.3)),
+            }
+            standing = {
+                **{c: self._hw[c] for c in _PERIODIC_INPUTS},
+                **self.ro_tank.outputs(),
+                **self.climate.outputs(),
+            }
+            for channel in (*_PERIODIC_INPUTS, *changes):
+                await self.set_hw(client, channel, standing[channel])
+            for channel, state in standing.items():
+                if channel not in _PERIODIC_INPUTS and channel not in changes:
+                    await self.set_hw(client, channel, state)
+            await self.publish(
+                client,
+                "sensors/temp/ambient",
+                SensorReading(
+                    location="ambient", value=round(self.climate.ambient_c, 2)
+                ),
+            )
             await asyncio.sleep(SENSOR_PUBLISH_INTERVAL)
 
     async def execute_profile(

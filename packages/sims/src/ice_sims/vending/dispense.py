@@ -44,6 +44,8 @@ _DEFAULT_STALL_AMPS = 10.0
 # nominal run (review finding I3) -- at least 4, per the brief.
 _WATER_FLOW_INCREMENTS = 4
 
+_ML_PER_GALLON = 3785.411784
+
 
 @dataclass
 class _RunContext:
@@ -325,6 +327,13 @@ class Dispenser:
         if "water_valve_stuck_open" not in active:
             for channel in list(driven_on):
                 await board.set_hw(channel, False)
+
+        if (
+            outcome is DispenserOutcome.complete
+            and profile.mechanism == "water_fill"
+            and isinstance(profile.fill, WaterFillByVolume)
+        ):
+            await board.draw_water(profile.fill.target_volume_ml / _ML_PER_GALLON)
 
         await board.publish(
             "hardware/dispenser",
