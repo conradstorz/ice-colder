@@ -8,14 +8,14 @@
 
 **Tech Stack:** C++17, PlatformIO (`platform = espressif32`, `framework = espidf`; `platform = native` for host tests), Unity test framework, ArduinoJson 7 (header-only, works on both envs), ESP-IDF 5.x (`esp-mqtt`, `driver/i2c_master.h`, `driver/pulse_cnt.h`, `onewire_bus` + `ds18b20` managed components, NVS), Python 3.12 + pytest + aiomqtt for the conformance suite.
 
-**Spec:** [`docs/superpowers/specs/2026-10-17-vending-esp32-firmware-design.md`](../specs/2026-10-17-vending-esp32-firmware-design.md). Section references (§) are to the spec. Hardware tags (IC4, W7…) are from [`docs/hardware/im600xl-io-list.md`](../../hardware/im600xl-io-list.md). The 2.0.0 contract shapes (`ButtonPress.button: str`, `ReleaseByCatch`, the 17-channel list) are defined in the [IM600XL simulator design](../specs/2026-10-17-im600xl-simulator-design.md) §3 and §5.1; that plan is **fully merged to `main`** (contract 2.0.0, PR #96), so Task 12 runs its 2.0.0 checks for real against the simulator with no `xfail` marks.
+**Spec:** [`docs/superpowers/specs/2026-10-17-vending-esp32-firmware-design.md`](../specs/2026-10-17-vending-esp32-firmware-design.md). Section references (§) are to the spec. Hardware tags (IC4, W7…) are from [`docs/hardware/im600xl-io-list.md`](../../hardware/im600xl-io-list.md). The 2.0.0 contract shapes (`ButtonPress.button: str`, `ReleaseByCatch`, the 18-channel list) are defined in the [IM600XL simulator design](../specs/2026-10-17-im600xl-simulator-design.md) §3 and §5.1; that plan is **fully merged to `main`** (contract 2.0.0, PR #96), so Task 12 runs its 2.0.0 checks for real against the simulator with no `xfail` marks.
 
 **Plan style:** each task gives files, interfaces and the tests to write. Implementers write the code bodies, matching surrounding style. C++ signatures below are the contract between tasks; bodies are the implementer's.
 
 ## Global Constraints
 
 - The board implements vending-machine contract **2.0.0**: `capabilities/vending` carries `contract_version: "2.0.0"`, `ButtonPress.button` is a channel-id **string**, `ReleaseByCatch` (`proof: "catch"`, `catch_channel`, `drop_seconds` 0.5–30) is a valid release step, and `sensors/water_flow` is never published.
-- The 17 channels, exactly (spec §4.2 / IM600XL §5.1): binary inputs `bag_full_sensor`, `button_ice`, `button_water_1gal`, `button_water_5gal`, `ro_tank_full`, `ro_tank_empty`, `water_pressure_ok`, `sump_high`, `service_door`; binary outputs `agitator_motor`, `auger_motor`, `bag_fan`, `trap_door_catch`, `water_valve_solenoid`, `ro_production`, `heater_power`; counter `fill_pulses`; temperature `ambient`. `driven_by`: the four ice outputs → `"dispense"`, `water_valve_solenoid` → `"water_valve"`, others `null`. Commands: `["ping", "self_test", "force_report", "dispense", "water_valve"]`.
+- The 18 channels, exactly (spec §4.2 / IM600XL §5.1): binary inputs `bag_full_sensor`, `button_ice`, `button_water_1gal`, `button_water_5gal`, `ro_tank_full`, `ro_tank_empty`, `water_pressure_ok`, `sump_high`, `service_door`; binary outputs `agitator_motor`, `auger_motor`, `bag_fan`, `trap_door_catch`, `water_valve_solenoid`, `ro_production`, `heater_power`; counter `fill_pulses`; temperature `ambient`. `driven_by`: the four ice outputs → `"dispense"`, `water_valve_solenoid` → `"water_valve"`, others `null`. Commands: `["ping", "self_test", "force_report", "dispense", "water_valve"]`.
 - Every channel id and command name in C++ comes from one table, `vendcore/channels.h` (Task 2); no string literal for them anywhere else in `firmware/`.
 - `vendcore` has **no** ESP-IDF, FreeRTOS or Arduino include, and no dynamic allocation after construction (fixed-capacity containers; ArduinoJson documents sized at compile time). A native-env test must compile and run every vendcore header.
 - All timing in `vendcore` is in milliseconds as `uint32_t` from the injected `Clock`; nothing calls a system clock or sleeps.
@@ -102,7 +102,7 @@ Nothing in `firmware/` builds today and the machine has neither PlatformIO nor a
   enum class Kind : uint8_t { Binary, Counter, Temperature };
   enum class Dir : uint8_t { Input, Output };
   struct Channel { const char* id; Kind kind; Dir dir; const char* driven_by; const char* unit; const char* description; float interval_s; };
-  constexpr Channel kChannels[17] = { /* spec §4.2 order: 9 inputs, 7 outputs, fill_pulses, ambient */ };
+  constexpr Channel kChannels[18] = { /* spec §4.2 order: 9 inputs, 7 outputs, fill_pulses, ambient */ };
   constexpr const char* kCommands[5] = {"ping", "self_test", "force_report", "dispense", "water_valve"};
   constexpr const char* kSubsystem = "vending";
   int channel_index(const char* id);             // -1 when undeclared
@@ -381,7 +381,7 @@ The JSON the board emits is host-testable and must validate against the Python c
   struct WireCtx { const char* machine_id; const char* hardware_id; const char* ip; const char* firmware; };
   size_t topic_for(const Event& e, const WireCtx&, char* out, size_t cap);      // "vmc/<id>/hardware/io/<ch>" etc.
   size_t payload_for(const Event& e, const WireCtx&, uint32_t uptime_s, char* out, size_t cap);
-  size_t capabilities_json(const WireCtx&, char* out, size_t cap);              // SubsystemCapabilities, 17 channels, 5 commands
+  size_t capabilities_json(const WireCtx&, char* out, size_t cap);              // SubsystemCapabilities, 18 channels, 5 commands
   size_t heartbeat_json(uint32_t uptime_s, char* out, size_t cap);              // {"subsystem":"vending","uptime_seconds":N}
   size_t lwt_json(char* out, size_t cap);                                       // uptime_seconds -1
   size_t ack_json(const Ack&, char* out, size_t cap);
@@ -398,7 +398,7 @@ The JSON the board emits is host-testable and must validate against the Python c
 - Consumes: `Event`, `Ack`, `AckCache`, `decode_command`, `kChannels`, `kContractVersion`, queues and `CmdItem` (Task 10).
 - Produces: the golden JSON files; a complete, flashable firmware.
 
-- [ ] **Step 1: Write the wire tests** — `topic_for` for each event type is the exact contract topic; `capabilities_json` has 17 channels in table order with the right `direction`/`driven_by`/`kind`/`unit`/`interval_seconds`, `contract_version` `"2.0.0"`, `subsystem` `"vending"`, the 5 commands; `heartbeat_json`/`lwt_json` exact; `ack_json` emits `phase` always and omits `detail`/`result` when empty; `ButtonPressed` payload's `button` is the id string; golden files are written.
+- [ ] **Step 1: Write the wire tests** — `topic_for` for each event type is the exact contract topic; `capabilities_json` has 18 channels in table order with the right `direction`/`driven_by`/`kind`/`unit`/`interval_seconds`, `contract_version` `"2.0.0"`, `subsystem` `"vending"`, the 5 commands; `heartbeat_json`/`lwt_json` exact; `ack_json` emits `phase` always and omits `detail`/`result` when empty; `ButtonPressed` payload's `button` is the id string; golden files are written.
 - [ ] **Step 2–4:** fail, implement, pass; `pio run -e kc868-a8` builds.
 - [ ] **Step 5: Flash if a board is on hand** against the LAN broker: capabilities retained, heartbeat every 10 s, `ping` acked. Record the result in the commit body.
 - [ ] **Step 6: Commit** — `feat(firmware): contract wire serializers, MQTT comms task and golden JSON`
@@ -424,8 +424,8 @@ Opt-in like the browser tests: skipped unless `ICE_COLDER_BOARD_TESTS=1`, and th
       async def collect(self, suffix: str, seconds: float) -> list[dict]
   ```
 - Create the test modules (each a handful of tests):
-  - `test_golden_wire.py` — **always runs, no flag** (pure file validation): every `firmware/vending/test/golden/*.json` validates against its Pydantic model (`SubsystemCapabilities`, `SubsystemHeartbeat`, `CommandAck`, `HardwareIO`, `ButtonPress`, `DispenserStatus`, `SensorReading`); the capabilities golden lists exactly the 17 ids; the `ButtonPress` golden must validate with `button` as a channel-id string (2.0.0 is on `main`).
-  - `test_capabilities.py` — retained doc validates; `subsystem == "vending"`; commands ⊇ the five; channel ids == the 17 exactly (the simulator on `main` already declares them).
+  - `test_golden_wire.py` — **always runs, no flag** (pure file validation): every `firmware/vending/test/golden/*.json` validates against its Pydantic model (`SubsystemCapabilities`, `SubsystemHeartbeat`, `CommandAck`, `HardwareIO`, `ButtonPress`, `DispenserStatus`, `SensorReading`); the capabilities golden lists exactly the 18 ids; the `ButtonPress` golden must validate with `button` as a channel-id string (2.0.0 is on `main`).
+  - `test_capabilities.py` — retained doc validates; `subsystem == "vending"`; commands ⊇ the five; channel ids == the 18 exactly (the simulator on `main` already declares them).
   - `test_liveness.py` — two heartbeats ≤ 12 s apart; `uptime_seconds` increases; on the simulator target, stopping its client makes the LWT `-1` arrive (`requires_sim`).
   - `test_standard_commands.py` — `ping` one `ok/completed`; `self_test` result has a non-empty `checks` list each with `name`, `pass`, `detail`; `force_report` is acked and a `capabilities/vending` and ≥ 1 `hardware/io/+` message follow within 5 s.
   - `test_idempotency.py` — same `request_id` twice for `ping` → two identical acks and (`requires_sim`) no second handler run; a duplicate `water_valve` after completion replays `completed`, not `accepted`.
