@@ -321,3 +321,15 @@ def test_products_without_buttons_load():
 def test_product_button_must_be_a_channel_id():
     with pytest.raises(ValidationError):
         Product(button="Bad-Id")
+
+
+class TestRoMaxRunSeconds:
+    def test_default(self):
+        assert ConfigModel().physical.ro_max_run_seconds == 3600.0
+
+    @pytest.mark.parametrize("bad", [59, 86401])
+    def test_out_of_range_rejected(self, bad):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            ConfigModel.model_validate({"physical": {"ro_max_run_seconds": bad}})
