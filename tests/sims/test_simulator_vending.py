@@ -212,9 +212,9 @@ class TestHADiscovery:
 
 
 class TestVendingFaultRegistration:
-    def test_eight_faults_registered(self):
+    def test_thirteen_faults_registered(self):
         sim = VendingMachineSimulator()
-        assert len(sim.fault_defs) == 8
+        assert len(sim.fault_defs) == 13
 
     def test_fault_names(self):
         sim = VendingMachineSimulator()
@@ -233,6 +233,11 @@ class TestVendingFaultRegistration:
             # triggered explicitly (test, or an operator), never rolled
             # at random.
             "low_flow",
+            "ro_tank_empty",
+            "low_pressure",
+            "sump_high",
+            "service_door_open",
+            "ro_fill_stuck",
         }
 
 
@@ -297,7 +302,7 @@ class TestIceBinEmptyFault:
 
 class TestSensorLoop:
     @pytest.mark.asyncio
-    async def test_publishes_the_standing_inputs_and_no_temperature_or_flow(self):
+    async def test_publishes_the_standing_state_and_ambient_but_no_flow(self):
         sim = _make_sim()
         topics: list[str] = []
 
@@ -314,11 +319,16 @@ class TestSensorLoop:
                 # private: the periodic sensor loop has no public entry point
                 await sim._publish_sensors(AsyncMock())
 
-        assert topics == [
+        assert topics[:3] == [
             "hardware/io/water_pressure_ok",
             "hardware/io/sump_high",
             "hardware/io/service_door",
         ]
+        assert "sensors/temp/ambient" in topics
+        assert "hardware/io/ro_production" in topics
+        assert "hardware/io/ro_tank_full" in topics
+        assert "hardware/io/ro_tank_empty" in topics
+        assert not any("water_flow" in t for t in topics)
 
 
 class TestCustomerPresses:
@@ -1448,3 +1458,109 @@ class TestCommandChannelCapabilities:
         caps = _make_sim().build_capabilities()
         assert "dispense" in caps.commands
         assert "water_valve" in caps.commands
+
+
+def _capture_io(sim) -> list[tuple[str, bool]]:
+    """Replace `sim.publish` with a recorder of `hardware/io` states."""
+    seen: list[tuple[str, bool]] = []
+
+    async def capture_publish(client, topic, payload):
+        if topic.startswith("hardware/io/"):
+            seen.append((payload.device, payload.state))
+
+    sim.publish = capture_publish
+    return seen
+
+
+class TestRoTankAndClimateWiring:
+    @pytest.mark.asyncio
+    async def test_a_completed_water_vend_lowers_the_tank_by_the_profile_volume(self):
+        sim = _make_sim()
+        sim.sleep = FakeClock()
+        seen = _capture_io(sim)
+        before = sim.ro_tank.level_gal
+        cmd = DispenseCommand(slot=1, mechanism="water_fill", profile=WATER_PROFILE)
+
+        await sim.execute_profile(AsyncMock(), cmd)
+
+        assert before - sim.ro_tank.level_gal == pytest.approx(3785.0 / 3785.411784)
+        assert ("ro_tank_full", False) not in seen  # 80 gal start: never full
+
+    @pytest.mark.asyncio
+    async def test_a_vend_that_drains_the_tank_publishes_ro_tank_empty(self):
+        sim = _make_sim()
+        sim.sleep = FakeClock()
+        sim.ro_tank.level_gal = sim.ro_tank.empty_gal + 0.5
+        seen = _capture_io(sim)
+        cmd = DispenseCommand(slot=1, mechanism="water_fill", profile=WATER_PROFILE)
+
+        await sim.execute_profile(AsyncMock(), cmd)
+
+        assert ("ro_tank_empty", True) in seen
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "name, expected",
+        [
+            (
+                "low_pressure",
+                [("water_pressure_ok", False), ("water_pressure_ok", True)],
+            ),
+            ("sump_high", [("sump_high", True), ("sump_high", False)]),
+            ("service_door_open", [("service_door", True), ("service_door", False)]),
+        ],
+    )
+    async def test_input_faults_publish_their_io_states(self, name, expected):
+        sim = _make_sim()
+        seen = _capture_io(sim)
+        await _fault(sim, name).on_activate(AsyncMock())
+        await _fault(sim, name).on_recover(AsyncMock())
+        assert seen == expected
+
+    @pytest.mark.asyncio
+    async def test_ro_tank_empty_fault_empties_the_tank_and_recovers(self):
+        sim = _make_sim()
+        seen = _capture_io(sim)
+        await _fault(sim, "ro_tank_empty").on_activate(AsyncMock())
+        assert sim.ro_tank.level_gal == 0.0
+        assert ("ro_tank_empty", True) in seen
+        await _fault(sim, "ro_tank_empty").on_recover(AsyncMock())
+        assert not sim.ro_tank.fill_blocked
+
+    @pytest.mark.asyncio
+    async def test_ro_fill_stuck_recovery_resets_the_cutoff(self):
+        sim = _make_sim()
+        _capture_io(sim)
+        await _fault(sim, "ro_fill_stuck").on_activate(AsyncMock())
+        assert sim.ro_tank.fill_stuck
+        sim.ro_tank.cutoff_latched = True
+        await _fault(sim, "ro_fill_stuck").on_recover(AsyncMock())
+        assert not sim.ro_tank.fill_stuck
+        assert not sim.ro_tank.cutoff_latched
+
+    @pytest.mark.asyncio
+    async def test_sensor_pass_ticks_the_models_and_publishes_changes(self):
+        sim = _make_sim()
+        seen = _capture_io(sim)
+        sim.climate.ambient_c = 4.9
+        topics: list[str] = []
+        capture_io = sim.publish
+
+        async def record_topics(client, topic, payload):
+            topics.append(topic)
+            await capture_io(client, topic, payload)
+
+        sim.publish = record_topics
+
+        async def stop(seconds):
+            raise asyncio.CancelledError
+
+        with patch_module_sleep("ice_sims.vending.simulator", stop):
+            with patch("ice_sims.vending.simulator.random.gauss", return_value=0.0):
+                with pytest.raises(asyncio.CancelledError):
+                    # private: the periodic sensor loop has no public entry point
+                    await sim._publish_sensors(AsyncMock())
+
+        assert ("ro_production", True) in seen
+        assert ("heater_power", True) in seen
+        assert "sensors/temp/ambient" in topics

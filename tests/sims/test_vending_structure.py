@@ -33,7 +33,12 @@ def test_leaf_modules_never_import_the_simulator_or_base():
 
 def test_board_imports_nothing_from_the_package():
     imports = _imported_modules(PACKAGE_DIR / "board.py")
-    assert not {m for m in imports if m.startswith("ice_sims")}
+    # Only the two pure models its `ro_tank`/`climate` handles are typed with.
+    allowed = {"ice_sims.vending.ro_tank", "ice_sims.vending.climate"}
+    ours = {m for m in imports if m.startswith("ice_sims")}
+    assert all(any(m == a or m.startswith(a + ".") for a in allowed) for m in ours), (
+        ours
+    )
 
 
 def test_faults_import_only_board_and_contracts():

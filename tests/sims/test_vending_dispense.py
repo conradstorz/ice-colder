@@ -37,6 +37,10 @@ class ListBoard:
         self.spawned: list[asyncio.Task] = []
         self._faults = faults or set()
         self._gate = gate
+        self.draws: list[float] = []
+
+    async def draw_water(self, gallons: float) -> None:
+        self.draws.append(gallons)
 
     async def set_hw(self, device: str, state: bool) -> None:
         self.events.append(("hw", device, state))
@@ -356,6 +360,7 @@ async def test_water_vend_counts_fill_pulses_to_the_target(slot, gallons):
     assert readings[-1][1] == pytest.approx(450.0 * gallons, rel=0.001)
     assert "sensors/water_flow" not in [e[1] for e in board.events if e[0] == "publish"]
     assert {d for d, _ in _hw_events(board)} == {"water_valve_solenoid"}
+    assert board.draws == [pytest.approx(gallons / 3.785411784, rel=0.001)]
 
 
 @pytest.mark.asyncio

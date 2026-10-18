@@ -2,6 +2,8 @@
 
 import pytest
 
+from ice_sims.vending.ro_tank import RoTank
+from ice_sims.vending.climate import Climate
 from ice_sims.vending.faults import InjectedFault, vending_faults
 from ice_sims.vending.simulator import VendingMachineSimulator
 
@@ -14,6 +16,11 @@ VENDING_FAULTS = [
     ("flow_runaway", "short", 0.0006, "warning"),
     ("slow_flow", "short", 0.0006, "warning"),
     ("low_flow", "short", 0.0, "warning"),
+    ("ro_tank_empty", "long", 0.0003, "warning"),
+    ("low_pressure", "medium", 0.0004, "warning"),
+    ("sump_high", "medium", 0.0003, "warning"),
+    ("service_door_open", "short", 0.0006, "warning"),
+    ("ro_fill_stuck", "long", 0.0002, "warning"),
 ]
 
 
@@ -24,9 +31,16 @@ class RecordingBoard:
 
     def __init__(self) -> None:
         self.set_hw_calls: list[tuple[str, bool]] = []
+        self.ro_tank = RoTank.default()
+        self.climate = Climate(ambient_c=22.0)
+        self.draws: list[float] = []
 
     async def set_hw(self, device: str, state: bool) -> None:
         self.set_hw_calls.append((device, state))
+
+    async def draw_water(self, gallons: float) -> None:
+        self.draws.append(gallons)
+        self.ro_tank.draw(gallons)
 
     async def publish(self, topic_suffix, payload) -> None:
         raise AssertionError("fault injection must not publish directly")
@@ -95,4 +109,50 @@ async def test_log_only_faults_touch_no_hardware():
     ):
         await _by_name(name).activate(board)
         await _by_name(name).recover(board)
+    assert board.set_hw_calls == []
+
+
+@pytest.mark.asyncio
+async def test_ro_tank_empty_drains_and_blocks_filling_then_recovers():
+    board = RecordingBoard()
+    fault = _by_name("ro_tank_empty")
+    await fault.activate(board)
+    assert board.ro_tank.level_gal == 0.0
+    assert board.ro_tank.fill_blocked
+    await fault.recover(board)
+    assert not board.ro_tank.fill_blocked
+    assert board.set_hw_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "channel", "active_state", "idle_state"),
+    [
+        ("low_pressure", "water_pressure_ok", False, True),
+        ("sump_high", "sump_high", True, False),
+        ("service_door_open", "service_door", True, False),
+    ],
+)
+async def test_input_faults_flip_their_input_and_restore_it(
+    name, channel, active_state, idle_state
+):
+    board = RecordingBoard()
+    await _by_name(name).activate(board)
+    await _by_name(name).recover(board)
+    assert board.set_hw_calls == [(channel, active_state), (channel, idle_state)]
+
+
+@pytest.mark.asyncio
+async def test_ro_fill_stuck_sticks_the_level_and_recovery_resets_the_cutoff():
+    board = RecordingBoard()
+    board.ro_tank.max_run_ticks = 2
+    fault = _by_name("ro_fill_stuck")
+    await fault.activate(board)
+    assert board.ro_tank.fill_stuck
+    board.ro_tank.tick()
+    board.ro_tank.tick()
+    assert board.ro_tank.cutoff_latched
+    await fault.recover(board)
+    assert not board.ro_tank.fill_stuck
+    assert not board.ro_tank.cutoff_latched
     assert board.set_hw_calls == []
