@@ -17,7 +17,7 @@ from tests.repo_root import REPO_ROOT, TESTS_ROOT
 
 # Shrink-only: remove an entry when its task lands, never add one.
 SIMS_ALLOWLIST: set[str] = set()
-EDGE_ALLOWLIST = {"tests/edge/web/test_routes_tests.py"}  # until Task 12
+EDGE_ALLOWLIST: set[str] = set()
 
 
 def _imports(path: Path) -> set[str]:
