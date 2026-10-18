@@ -79,6 +79,12 @@ void on_eth(void*, esp_event_base_t, int32_t id, void*) {
 }
 
 // KC868-A8 LAN8720 wiring (Kincony documentation); every pin: verify against schematic.
+bool eth_ok(esp_err_t e, const char* what) {
+    if (e == ESP_OK) return true;
+    ESP_LOGE(TAG, "ethernet %s failed: %s; board runs without network", what, esp_err_to_name(e));
+    return false;
+}
+
 void start_eth() {
     constexpr gpio_num_t kPhyPower = GPIO_NUM_12;  // verify against schematic
     constexpr int kMdc = 23;                        // verify against schematic
@@ -101,10 +107,10 @@ void start_eth() {
     esp_eth_phy_t* phy = esp_eth_phy_new_lan87xx(&phy_cfg);
     esp_eth_config_t ecfg = ETH_DEFAULT_CONFIG(mac, phy);
     esp_eth_handle_t eth = nullptr;
-    ESP_ERROR_CHECK(esp_eth_driver_install(&ecfg, &eth));
-    ESP_ERROR_CHECK(esp_netif_attach(netif, esp_eth_new_netif_glue(eth)));
-    ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, on_eth, nullptr));
-    ESP_ERROR_CHECK(esp_eth_start(eth));
+    if (!eth_ok(esp_eth_driver_install(&ecfg, &eth), "driver install")) return;
+    if (!eth_ok(esp_netif_attach(netif, esp_eth_new_netif_glue(eth)), "netif attach")) return;
+    if (!eth_ok(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, on_eth, nullptr), "event register")) return;
+    eth_ok(esp_eth_start(eth), "start");
 }
 }  // namespace
 

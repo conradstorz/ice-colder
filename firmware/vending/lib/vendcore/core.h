@@ -17,7 +17,12 @@ namespace vendcore {
 
 struct CoreConfig {
     Polarity polarity;
-    uint32_t silence_ms = 30000;
+    // VMC silence timer. 0 (default) = disabled: liveness is the retained `online` topic (the
+    // VMC's LWT flips it false) plus any inbound command marking the VMC seen. The edge publishes
+    // `online` only on connect and sends commands only while selling, so a pure silence timer would
+    // trip during every idle spell and every dispense longer than the timeout. A non-zero value
+    // re-enables the timer and requires the edge to publish `online` periodically.
+    uint32_t silence_ms = 0;
     uint32_t ro_max_run_ms = 5400000;
     float heater_on_c = 3.0f, heater_off_c = 6.0f;
     uint32_t io_republish_ms = 60000;

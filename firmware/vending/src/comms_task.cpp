@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <atomic>
+
 #include "ack_cache.h"
 #include "channels.h"
 #include "command.h"
@@ -20,6 +22,8 @@ using namespace vendcore;
 namespace {
 const char* TAG = "comms";
 constexpr uint32_t kHeartbeatMs = 10000;
+constexpr int kInflightMax = 8;
+constexpr uint32_t kRxDropLogMs = 10000;
 
 struct RxItem {
     char topic[96];
@@ -33,6 +37,14 @@ struct Comms {
     AckCache cache;
     OutboundRing ring;
     uint32_t dropped_no_request_id = 0;
+    std::atomic<uint32_t> rx_dropped{0};  // written by the MQTT task, logged by the comms task
+    uint32_t rx_dropped_logged = 0;
+    // Request ids pushed to cmd_q whose first ack has not yet been drained from ack_q.
+    char inflight[kInflightMax][65] = {};
+    bool inflight_used[kInflightMax] = {};
+    bool caps_pending = false;  // retained capabilities publish not yet accepted
+    bool subs_pending = false;
+    int ha_next = 0;            // next HA discovery entry to publish
     char t_cmd[96], t_online[96], t_ack[96];
 };
 Comms g;
@@ -65,7 +77,7 @@ void flush_ring() {
 void on_message(const char* topic, size_t tl, const char* data, size_t dl) {  // MQTT client task
     static RxItem item;
     if (tl >= sizeof(item.topic) || dl >= sizeof(item.data)) {
-        ESP_LOGW(TAG, "inbound message too large; dropped");
+        g.rx_dropped.fetch_add(1);
         return;
     }
     memcpy(item.topic, topic, tl);
@@ -73,7 +85,7 @@ void on_message(const char* topic, size_t tl, const char* data, size_t dl) {  //
     memcpy(item.data, data, dl);
     item.data[dl] = '\0';
     item.len = static_cast<uint16_t>(dl);
-    xQueueSend(g.rx_q, &item, 0);
+    if (xQueueSend(g.rx_q, &item, 0) != pdTRUE) g.rx_dropped.fetch_add(1);
 }
 
 void publish_ack(const Ack& a) {
@@ -86,13 +98,40 @@ void publish_ack(const Ack& a) {
     send(g.t_ack, buf, n, false, Prio::Normal);
 }
 
-void push_cmd(const CmdItem& item) {
-    if (xQueueSend(g.cmd_q, &item, 0) != pdTRUE) ESP_LOGW(TAG, "cmd queue full, dropped item kind %d", item.kind);
+bool push_cmd(const CmdItem& item) {
+    if (xQueueSend(g.cmd_q, &item, 0) == pdTRUE) return true;
+    ESP_LOGW(TAG, "cmd queue full, dropped item kind %d", item.kind);
+    return false;
+}
+
+int inflight_find(const char* id) {
+    for (int i = 0; i < kInflightMax; ++i)
+        if (g.inflight_used[i] && strcmp(g.inflight[i], id) == 0) return i;
+    return -1;
+}
+
+bool inflight_add(const char* id) {
+    for (int i = 0; i < kInflightMax; ++i) {
+        if (g.inflight_used[i]) continue;
+        snprintf(g.inflight[i], sizeof(g.inflight[i]), "%s", id);
+        g.inflight_used[i] = true;
+        return true;
+    }
+    return false;
+}
+
+void inflight_remove(const char* id) {
+    const int i = inflight_find(id);
+    if (i >= 0) g.inflight_used[i] = false;
 }
 
 void handle_command(const RxItem& rx) {
     static CmdItem item;  // Decoded is large; keep it off the stack
     item.decoded = decode_command(rx.data, rx.len);  // only caller: not reentrant
+    // Any inbound command proves the VMC is alive. VmcSeen goes first: the sequencer drains cmd_q
+    // FIFO, and a Decoded ahead of it would be judged against a stale "silent" VMC.
+    item.kind = CmdItem::VmcSeen;
+    push_cmd(item);
     if (item.decoded.result == Decode::NoRequestId) {
         ++g.dropped_no_request_id;
         ESP_LOGW(TAG, "command without a usable request_id dropped (%u so far)", static_cast<unsigned>(g.dropped_no_request_id));
@@ -102,10 +141,14 @@ void handle_command(const RxItem& rx) {
         publish_ack(*hit);  // retry of an acked command: replay, never re-run
         return;
     }
+    if (inflight_find(item.decoded.cmd.request_id) >= 0) {
+        ESP_LOGD(TAG, "duplicate of in-flight command %s ignored", item.decoded.cmd.request_id);
+        return;
+    }
     item.kind = CmdItem::Decoded;
-    push_cmd(item);
-    item.kind = CmdItem::VmcSeen;
-    push_cmd(item);
+    if (!push_cmd(item)) return;
+    if (!inflight_add(item.decoded.cmd.request_id))
+        ESP_LOGW(TAG, "in-flight set full; duplicate suppression off for %s", item.decoded.cmd.request_id);
 }
 
 void handle_online(const RxItem& rx) {
@@ -120,25 +163,60 @@ void handle_online(const RxItem& rx) {
     push_cmd(item);
 }
 
-void on_connect() {
+// Retained capabilities and the HA discovery set; retried from the loop until all of it is accepted.
+void publish_retained() {
     static char payload[4096];
     static char topic[160];
     char iso[24];
     const WireCtx ctx = make_ctx(iso, sizeof(iso));
-    size_t n = capabilities_json(ctx, payload, sizeof(payload));
-    char cap_tail[48];
-    snprintf(cap_tail, sizeof(cap_tail), "capabilities/%s", kSubsystem);
-    if (n > 0 && topic_join(ctx, cap_tail, topic, sizeof(topic)) > 0) mqtt_publish(topic, payload, n, true);
+    if (g.caps_pending) {
+        const size_t n = capabilities_json(ctx, payload, sizeof(payload));
+        char cap_tail[48];
+        snprintf(cap_tail, sizeof(cap_tail), "capabilities/%s", kSubsystem);
+        if (n == 0) {
+            ESP_LOGW(TAG, "capabilities_json produced nothing; will retry");
+            return;
+        }
+        if (topic_join(ctx, cap_tail, topic, sizeof(topic)) == 0 || !mqtt_publish(topic, payload, n, true)) {
+            ESP_LOGW(TAG, "capabilities publish failed; will retry");
+            return;
+        }
+        g.caps_pending = false;
+    }
+    while (g.ha_next < ha_discovery_count()) {
+        const size_t pn = ha_discovery(g.ha_next, ctx, topic, sizeof(topic), payload, sizeof(payload));
+        if (pn > 0 && !mqtt_publish(topic, payload, pn, true)) {
+            ESP_LOGW(TAG, "HA discovery %d publish failed; will retry", g.ha_next);
+            return;
+        }
+        ++g.ha_next;
+    }
+}
+
+void subscribe_all() {
+    bool ok = mqtt_subscribe(g.t_cmd);
+    if (!mqtt_subscribe(g.t_online)) ok = false;
+    if (!ok) ESP_LOGW(TAG, "subscribe failed; will retry");
+    g.subs_pending = !ok;
+}
+
+void on_connect() {
+    static char payload[96];
+    static char topic[160];
+    char iso[24];
+    const WireCtx ctx = make_ctx(iso, sizeof(iso));
+    g.caps_pending = true;
+    g.ha_next = 0;
+    publish_retained();
     char hb_tail[48];
     snprintf(hb_tail, sizeof(hb_tail), "heartbeat/%s", kSubsystem);
-    n = heartbeat_json(uptime_s(), payload, sizeof(payload));
-    if (n > 0 && topic_join(ctx, hb_tail, topic, sizeof(topic)) > 0) mqtt_publish(topic, payload, n, false);
-    for (int i = 0; i < ha_discovery_count(); ++i) {
-        const size_t pn = ha_discovery(i, ctx, topic, sizeof(topic), payload, sizeof(payload));
-        if (pn > 0) mqtt_publish(topic, payload, pn, true);
+    const size_t n = heartbeat_json(uptime_s(), payload, sizeof(payload));
+    if (n == 0 || topic_join(ctx, hb_tail, topic, sizeof(topic)) == 0) {
+        ESP_LOGW(TAG, "connect heartbeat did not serialize");
+    } else if (!mqtt_publish(topic, payload, n, false)) {
+        ESP_LOGW(TAG, "connect heartbeat publish failed");
     }
-    mqtt_subscribe(g.t_cmd);
-    mqtt_subscribe(g.t_online);
+    subscribe_all();
     CmdItem fr = {};
     fr.kind = CmdItem::ForceReport;
     push_cmd(fr);
@@ -163,8 +241,16 @@ void send_event(const Event& e) {
 
 void comms_main(void*) {
     uint32_t last_hb = 0;
+    uint32_t last_drop_log = 0;
     for (;;) {
         static RxItem rx;
+        // ack_q first: a retry arriving now must find the first ack already cached.
+        static Ack ack;
+        while (xQueueReceive(g.ack_q, &ack, 0) == pdTRUE) {
+            g.cache.put(ack);
+            inflight_remove(ack.request_id);
+            publish_ack(ack);
+        }
         while (xQueueReceive(g.rx_q, &rx, 0) == pdTRUE) {
             if (strcmp(rx.topic, g.t_cmd) == 0) handle_command(rx);
             else if (strcmp(rx.topic, g.t_online) == 0) handle_online(rx);
@@ -173,10 +259,15 @@ void comms_main(void*) {
             on_connect();
             last_hb = uptime_s();
         }
-        static Ack ack;
-        while (xQueueReceive(g.ack_q, &ack, 0) == pdTRUE) {
-            g.cache.put(ack);
-            publish_ack(ack);
+        const uint32_t dropped = g.rx_dropped.load();
+        if (dropped != g.rx_dropped_logged && uptime_s() - last_drop_log >= kRxDropLogMs / 1000) {
+            ESP_LOGW(TAG, "inbound messages dropped: %u total", static_cast<unsigned>(dropped));
+            g.rx_dropped_logged = dropped;
+            last_drop_log = uptime_s();
+        }
+        if (mqtt_connected()) {
+            if (g.caps_pending || g.ha_next < ha_discovery_count()) publish_retained();
+            if (g.subs_pending) subscribe_all();
         }
         static Event ev;
         while (xQueueReceive(g.evt_q, &ev, 0) == pdTRUE) send_event(ev);

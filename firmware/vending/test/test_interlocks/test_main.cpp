@@ -109,7 +109,7 @@ static void test_any_motion(void) {
 }
 
 static void test_liveness(void) {
-    VmcLiveness v;
+    VmcLiveness v(30000);
     TEST_ASSERT_TRUE(v.silent(0));  // never heard
     v.seen(1000);
     TEST_ASSERT_FALSE(v.silent(30999));
@@ -123,11 +123,20 @@ static void test_liveness(void) {
     TEST_ASSERT_TRUE(v.silent(80001));
 }
 
+static void test_liveness_disabled(void) {
+    VmcLiveness v(0);
+    TEST_ASSERT_TRUE(v.silent(0));  // never heard
+    v.set_online(true, 1000);
+    TEST_ASSERT_FALSE(v.silent(100000000));
+    v.set_online(false, 100000001);
+    TEST_ASSERT_TRUE(v.silent(100000001));
+}
+
 struct TripRig {
     InputScanner sc{high_active(), 0};
     VecPublisher pub;
     InputSnapshot raw = {};
-    VmcLiveness vmc;
+    VmcLiveness vmc{30000};
     Interlocks il;
     TripRig() {
         raw.master_enable = true;
@@ -219,6 +228,7 @@ int main(int, char**) {
     RUN_TEST(test_all_off_keeps_forced_latch);
     RUN_TEST(test_any_motion);
     RUN_TEST(test_liveness);
+    RUN_TEST(test_liveness_disabled);
     RUN_TEST(test_clean_state_no_trip);
     RUN_TEST(test_each_rule);
     RUN_TEST(test_priority);

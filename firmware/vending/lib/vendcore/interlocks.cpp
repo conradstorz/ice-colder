@@ -70,7 +70,11 @@ void VmcLiveness::set_online(bool online, uint32_t now_ms) {
     }
 }
 
-bool VmcLiveness::silent(uint32_t now_ms) const { return !online_ || now_ms - last_seen_ > silence_ms_; }
+bool VmcLiveness::silent(uint32_t now_ms) const {
+    if (!online_) return true;
+    if (silence_ms_ == 0) return false;  // silence timer disabled: liveness is the online topic alone
+    return now_ms - last_seen_ > silence_ms_;
+}
 
 bool Interlocks::trip(const InputScanner& in, const InputSnapshot& raw, bool io_ok, const VmcLiveness& vmc,
                       bool motion, bool any_on, uint32_t now_ms, TripReason& why) const {

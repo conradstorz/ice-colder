@@ -171,6 +171,17 @@ static void test_vmc_offline(void) {
     TEST_ASSERT_EQUAL(1, r.count(EventType::Outcome));
 }
 
+static void test_silence_disabled(void) {
+    Rig r;  // default silence_ms == 0
+    r.tick();
+    r.core.vmc_online(true);
+    r.run_to(600000);
+    TEST_ASSERT_TRUE(r.core.submit(dispense("req-0001")).phase == Phase::Accepted);
+    r.core.vmc_online(false);
+    Ack a = r.core.submit(dispense("req-0002"));
+    TEST_ASSERT_TRUE(a.status == AckStatus::Rejected);
+}
+
 static void test_water_valve_test(void) {
     Rig r;
     r.core.vmc_seen();
@@ -485,6 +496,7 @@ int main(int, char**) {
     RUN_TEST(test_full_ice_run);
     RUN_TEST(test_second_dispense_busy);
     RUN_TEST(test_vmc_offline);
+    RUN_TEST(test_silence_disabled);
     RUN_TEST(test_water_valve_test);
     RUN_TEST(test_sump_high_mid_run);
     RUN_TEST(test_sump_high_valve_test_fails_the_completion);

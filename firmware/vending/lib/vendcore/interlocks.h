@@ -33,6 +33,7 @@ private:
 
 class VmcLiveness {
 public:
+    // silence_ms == 0 disables the silence timer: silent() is then just !online_.
     explicit VmcLiveness(uint32_t silence_ms = 30000) : silence_ms_(silence_ms) {}
     void seen(uint32_t now_ms);
     void set_online(bool online, uint32_t now_ms);
