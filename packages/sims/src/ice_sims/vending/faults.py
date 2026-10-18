@@ -39,35 +39,23 @@ async def _on_auger_jam_recover(board: BoardPort) -> None:
     logger.info("[vending] Fault cleared: auger_jam")
 
 
-async def _on_bag_drop_solenoid_stuck_activate(board: BoardPort) -> None:
-    logger.warning("[vending] FAULT: bag drop solenoid stuck")
-
-
-async def _on_bag_drop_solenoid_stuck_recover(board: BoardPort) -> None:
-    await board.set_hw("bag_full_sensor", False)
-    await board.set_hw("bag_drop_solenoid", False)
-    logger.info("[vending] Fault cleared: bag_drop_solenoid_stuck")
-
-
 async def _on_water_valve_stuck_open_activate(board: BoardPort) -> None:
     await board.set_hw("water_valve_solenoid", True)
-    await board.set_hw("water_flow_sensor", True)
     logger.warning("[vending] FAULT: water valve stuck open — flow incrementing")
 
 
 async def _on_water_valve_stuck_open_recover(board: BoardPort) -> None:
     await board.set_hw("water_valve_solenoid", False)
-    await board.set_hw("water_flow_sensor", False)
     logger.info("[vending] Fault cleared: water_valve_stuck_open")
 
 
 async def _on_ice_bin_empty_activate(board: BoardPort) -> None:
-    await board.set_hw("bin_half_full", False)
+    # The IM600XL has no bin sensor: the fault shows up only as a fill that
+    # runs to its maximum time (see `dispense`), so no channel is touched.
     logger.warning("[vending] FAULT: ice bin empty")
 
 
 async def _on_ice_bin_empty_recover(board: BoardPort) -> None:
-    await board.set_hw("bin_half_full", True)
     logger.info("[vending] Fault cleared: ice_bin_empty")
 
 
@@ -85,14 +73,6 @@ async def _on_no_water_flow_activate(board: BoardPort) -> None:
 
 async def _on_no_water_flow_recover(board: BoardPort) -> None:
     logger.info("[vending] Fault cleared: no_water_flow")
-
-
-async def _on_door_stuck_open_activate(board: BoardPort) -> None:
-    logger.warning("[vending] FAULT: release gate door stuck open")
-
-
-async def _on_door_stuck_open_recover(board: BoardPort) -> None:
-    logger.info("[vending] Fault cleared: door_stuck_open")
 
 
 async def _on_flow_runaway_activate(board: BoardPort) -> None:
@@ -132,15 +112,6 @@ def vending_faults() -> list[InjectedFault]:
             severity="warning",
         ),
         InjectedFault(
-            name="bag_drop_solenoid_stuck",
-            category="medium",
-            probability=0.0008,
-            activate=_on_bag_drop_solenoid_stuck_activate,
-            recover=_on_bag_drop_solenoid_stuck_recover,
-            message="Bag drop solenoid stuck — bag not releasing",
-            severity="warning",
-        ),
-        InjectedFault(
             name="water_valve_stuck_open",
             category="short",
             probability=0.0012,
@@ -175,15 +146,6 @@ def vending_faults() -> list[InjectedFault]:
             recover=_on_no_water_flow_recover,
             message="No water flow detected after valve opened",
             severity="warning",
-        ),
-        InjectedFault(
-            name="door_stuck_open",
-            category="medium",
-            probability=0.0006,
-            activate=_on_door_stuck_open_activate,
-            recover=_on_door_stuck_open_recover,
-            message="Release gate door stuck open",
-            severity="critical",
         ),
         InjectedFault(
             name="flow_runaway",
