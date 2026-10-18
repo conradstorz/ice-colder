@@ -426,3 +426,24 @@ def test_reads_delegate_to_the_registry():
     assert service.active_faults() == registry.snapshot()
     assert service.parse_key("ICE-301") is FaultCode.ICE_301
     assert service.parse_key("not-a-code") is None
+
+
+async def test_machine_scope_fault_is_keyed_and_alerted_without_a_sku():
+    mqtt = FakeMqtt()
+    health = FakeHealth()
+    service, registry, _outputs, runner, _recorder, _tx = make_service(
+        mqtt=mqtt, health=health
+    )
+    runner.attach(asyncio.get_running_loop())
+
+    service.raise_fault(FaultCode.WTR_106, sku="W-1")
+    await asyncio.sleep(0)
+
+    assert registry.lockouts == {}
+    key, _level, _source, _message, code, product_sku = health.raised_alerts[0]
+    assert (key, code, product_sku) == ("WTR-106:machine", "WTR-106", None)
+    assert mqtt.published[0][1].product_sku is None
+
+    service.clear_fault("WTR-106")
+    await asyncio.sleep(0)
+    assert health.cleared_alerts == ["WTR-106:machine"]

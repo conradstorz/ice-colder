@@ -15,7 +15,11 @@ from typing import Callable, Optional
 
 from loguru import logger
 
-from ice_contracts.board.vending_machine import PAYMENT_BLOCKING_FAULTS, FaultCode
+from ice_contracts.board.vending_machine import (
+    PAYMENT_BLOCKING_FAULTS,
+    FaultCode,
+    VendingChannel,
+)
 
 
 class PermissiveState(str, Enum):
@@ -230,11 +234,11 @@ class Availability:
         self._recompute()
 
     def set_hardware_io(self, device: str, state: bool) -> None:
-        if device == "bin_half_full":
+        if device == VendingChannel.bin_half_full:
             self._bin_half_full = state
             self._refresh_ice_available()
             self._recompute()
-        elif device == "service_door":
+        elif device == VendingChannel.service_door:
             self._set_bool("service_door_closed", not state, "service door open")
 
     def set_transaction_certain(self, certain: bool) -> None:

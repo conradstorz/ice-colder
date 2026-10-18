@@ -101,7 +101,7 @@ def test_discriminator_comments_list_every_variant():
     for expected in (
         "One of: bagged_ice, water_fill.",
         "One of: bag_full_sensor, timed.",
-        "One of: door_sensor, timed.",
+        "One of: door_sensor, timed, catch.",
         "One of: flow_volume, timed.",
     ):
         assert expected in text, f"missing {expected!r}"

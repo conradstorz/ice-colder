@@ -242,7 +242,39 @@ class ReleaseTimed(_StrictModel):
     )
 
 
-ReleaseStep = Annotated[ReleaseBySensor | ReleaseTimed, Field(discriminator="proof")]
+class ReleaseByCatch(_StrictModel):
+    """The release step of a bagged-ice slot whose bag is held by an
+    energized catch (a hold-to-fill electromagnet) rather than pulsed free.
+
+    The VMC MUST: energize the catch before the agitate step starts; hold
+    it energized through the whole fill; de-energize it to drop the bag
+    (`drop_seconds` is the dwell before the dispense is considered
+    complete); leave it de-energized between vends; and de-energize it on
+    any fault or abort."""
+
+    proof: Literal["catch"] = Field(
+        ...,
+        description=(
+            "This release step holds the bag with an energized catch and "
+            "drops it by de-energizing."
+        ),
+    )
+    catch_channel: ChannelId = Field(
+        ..., description="The channel that drives the bag catch."
+    )
+    drop_seconds: Annotated[float, Field(ge=0.5, le=30)] = Field(
+        ...,
+        description=(
+            "How long the catch stays de-energized to let the bag drop "
+            "before the release is considered done."
+        ),
+        json_schema_extra={"unit": "s"},
+    )
+
+
+ReleaseStep = Annotated[
+    ReleaseBySensor | ReleaseTimed | ReleaseByCatch, Field(discriminator="proof")
+]
 
 
 class WaterFillByVolume(_StrictModel):
@@ -490,11 +522,11 @@ def worst_case_seconds(profile: SlotProfile) -> float:
     max_lag = max(lags) if lags else 0.0
 
     if isinstance(profile, BaggedIceProfile):
-        total = (
-            profile.agitate.run_seconds
-            + profile.fill.max_run_seconds
-            + profile.release.pulse_seconds
-        )
+        total = profile.agitate.run_seconds + profile.fill.max_run_seconds
+        if isinstance(profile.release, ReleaseByCatch):
+            total += profile.release.drop_seconds
+        else:
+            total += profile.release.pulse_seconds
         if isinstance(profile.release, ReleaseBySensor):
             total += (
                 profile.release.open_timeout_seconds
@@ -516,7 +548,10 @@ def drive_channels(profile: SlotProfile) -> set[str]:
     if isinstance(profile, BaggedIceProfile):
         channels.add(profile.agitate.motor_channel)
         channels.add(profile.fill.motor_channel)
-        channels.add(profile.release.solenoid_channel)
+        if isinstance(profile.release, ReleaseByCatch):
+            channels.add(profile.release.catch_channel)
+        else:
+            channels.add(profile.release.solenoid_channel)
     else:
         channels.add(profile.fill.valve_channel)
 

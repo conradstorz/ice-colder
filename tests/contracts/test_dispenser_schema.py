@@ -326,3 +326,41 @@ def test_drive_and_sense_channels():
 
 def test_mechanism_for_kind():
     assert MECHANISM_FOR_KIND == {"ice": "bagged_ice", "water": "water_fill"}
+
+
+def _catch_release(**over) -> dict:
+    rel = {"proof": "catch", "catch_channel": "trap_door_catch", "drop_seconds": 2.0}
+    rel.update(over)
+    return rel
+
+
+def _with_catch(**over) -> dict:
+    return _set_path(_bagged_ice(), "release", _catch_release(**over))
+
+
+def test_release_by_catch_parses():
+    profile = _SLOT_PROFILE.validate_python(_with_catch())
+    assert profile.release.proof == "catch"
+    assert profile.release.catch_channel == "trap_door_catch"
+
+
+@pytest.mark.parametrize("bad", [0.4, 30.1])
+def test_release_by_catch_rejects_out_of_range_drop_seconds(bad):
+    with pytest.raises(ValidationError):
+        _SLOT_PROFILE.validate_python(_with_catch(drop_seconds=bad))
+
+
+def test_release_by_catch_rejects_extra_field():
+    with pytest.raises(ValidationError):
+        _SLOT_PROFILE.validate_python(_with_catch(pulse_seconds=1.0))
+
+
+def test_catch_channel_is_a_drive_channel_and_not_a_solenoid():
+    profile = _SLOT_PROFILE.validate_python(_with_catch())
+    assert "trap_door_catch" in drive_channels(profile)
+
+
+def test_worst_case_seconds_grows_by_exactly_drop_seconds():
+    long = _SLOT_PROFILE.validate_python(_with_catch(drop_seconds=5.0))
+    short = _SLOT_PROFILE.validate_python(_with_catch(drop_seconds=4.0))
+    assert worst_case_seconds(long) - worst_case_seconds(short) == pytest.approx(1.0)

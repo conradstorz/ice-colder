@@ -6,7 +6,9 @@ from pydantic import ValidationError
 from ice_contracts.board.vending_machine import (
     CONTRACT_VERSION,
     FAULT_TABLE,
+    INPUT_FAULTS,
     OUTCOME_FAULTS,
+    PAYMENT_BLOCKING_FAULTS,
     DispenserOutcome,
     DispenseStep,
     FaultCode,
@@ -15,6 +17,7 @@ from ice_contracts.board.vending_machine import (
     RefundStatus,
     Scope,
     Severity,
+    VendingChannel,
     fault_for_outcome,
 )
 from ice_contracts.board.vending_machine import (
@@ -72,7 +75,7 @@ def test_outcome_mapping_matches_spec():
         OUTCOME_FAULTS[("bagged_ice", DispenserOutcome.bin_empty)] is FaultCode.ICE_101
     )
     assert (
-        OUTCOME_FAULTS[("water_fill", DispenserOutcome.bin_empty)] is FaultCode.ICE_101
+        OUTCOME_FAULTS[("water_fill", DispenserOutcome.bin_empty)] is FaultCode.WTR_106
     )
     assert len(OUTCOME_FAULTS) == 10
 
@@ -327,3 +330,33 @@ def test_cfg_faults_are_registered_and_never_block_payment():
     assert FAULT_TABLE[FaultCode.CFG_102].scope is Scope.machine
     assert FaultCode.CFG_101 not in PAYMENT_BLOCKING_FAULTS
     assert FaultCode.CFG_102 not in PAYMENT_BLOCKING_FAULTS
+
+
+@pytest.mark.parametrize(
+    "code", [FaultCode.WTR_105, FaultCode.WTR_106, FaultCode.WTR_107]
+)
+def test_water_input_faults_are_machine_warnings_and_never_block_payment(code):
+    spec = FAULT_TABLE[code]
+    assert spec.severity is Severity.warning
+    assert spec.scope is Scope.machine
+    assert code not in PAYMENT_BLOCKING_FAULTS
+    assert len(PAYMENT_BLOCKING_FAULTS) == 7
+
+
+def test_vending_channel_values_match_the_channel_id_pattern():
+    from ice_contracts.board.common import CHANNEL_ID_PATTERN
+    import re
+
+    for channel in VendingChannel:
+        assert re.match(CHANNEL_ID_PATTERN, channel.value)
+
+
+def test_input_faults_are_machine_scope_with_unique_channels():
+    assert all(FAULT_TABLE[f.code].scope is Scope.machine for f in INPUT_FAULTS)
+    channels = [f.channel for f in INPUT_FAULTS]
+    assert len(channels) == len(set(channels))
+    assert {(f.channel, f.faulted_when, f.code) for f in INPUT_FAULTS} == {
+        (VendingChannel.sump_high, True, FaultCode.WTR_104),
+        (VendingChannel.water_pressure_ok, False, FaultCode.WTR_105),
+        (VendingChannel.ro_tank_empty, True, FaultCode.WTR_106),
+    }
