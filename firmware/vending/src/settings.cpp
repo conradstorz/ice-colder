@@ -66,7 +66,7 @@ void settings_defaults(Settings& s) {
     copy(s.machine_id, sizeof(s.machine_id), VEND_DEFAULT_MACHINE_ID);
     s.mqtt_port = VEND_DEFAULT_MQTT_PORT;
     const vendcore::Polarity p = kc868::default_polarity();
-    for (int i = 0; i < 9; ++i) s.polarity[i] = p.active_low[i] ? 1 : 0;
+    for (int i = 0; i < vendcore::kBinaryInputCount; ++i) s.polarity[i] = p.active_low[i] ? 1 : 0;
 }
 
 esp_err_t settings_load(Settings& s) {
@@ -81,7 +81,7 @@ esp_err_t settings_load(Settings& s) {
     nvs_get_u16(h, "mqtt_port", &s.mqtt_port);
     uint8_t eth = 0;
     if (nvs_get_u8(h, "use_eth", &eth) == ESP_OK) s.use_eth = eth != 0;
-    uint8_t blob[9];
+    uint8_t blob[vendcore::kBinaryInputCount];
     size_t blen = sizeof(blob);
     if (nvs_get_blob(h, "polarity", blob, &blen) == ESP_OK && blen == sizeof(blob)) {
         memcpy(s.polarity, blob, sizeof(blob));
@@ -105,10 +105,10 @@ bool settings_set(const char* key, const char* value) {
         }
     } else if (strcmp(key, "use_eth") == 0) {
         if (strcmp(value, "0") == 0 || strcmp(value, "1") == 0) err = nvs_set_u8(h, key, value[0] == '1');
-    } else if (strcmp(key, "polarity") == 0 && strlen(value) == 9) {
-        uint8_t blob[9];
+    } else if (strcmp(key, "polarity") == 0 && strlen(value) == static_cast<size_t>(vendcore::kBinaryInputCount)) {
+        uint8_t blob[vendcore::kBinaryInputCount];
         bool ok = true;
-        for (int i = 0; i < 9; ++i) {
+        for (int i = 0; i < vendcore::kBinaryInputCount; ++i) {
             ok = ok && (value[i] == '0' || value[i] == '1');
             blob[i] = value[i] == '1';
         }
@@ -133,6 +133,6 @@ void settings_show(const Settings& s) {
         printf("%s = %s\n", k.key, k.secret ? (v[0] ? "********" : "") : v);
     }
     printf("mqtt_port = %u\nuse_eth = %d\npolarity = ", static_cast<unsigned>(s.mqtt_port), s.use_eth ? 1 : 0);
-    for (int i = 0; i < 9; ++i) putchar(s.polarity[i] ? '1' : '0');
+    for (int i = 0; i < vendcore::kBinaryInputCount; ++i) putchar(s.polarity[i] ? '1' : '0');
     printf("  (1 = active_low, in input channel order)\n");
 }

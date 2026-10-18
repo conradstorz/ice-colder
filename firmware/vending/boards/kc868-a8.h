@@ -21,10 +21,12 @@ constexpr bool kRelayActiveLow = true;  // verify against KC868-A8-schematic.pdf
 constexpr int kGpioServiceDoor = 13;  // C6 service door switch, pull-up; verify against KC868-A8-schematic.pdf
 constexpr int kGpioOneWire = 14;      // E2 ambient DS18B20; verify against KC868-A8-schematic.pdf
 constexpr int kGpioFlowPulse = 32;    // W4 flow meter pulses; verify against KC868-A8-schematic.pdf
+// No I/O-list tag: board-side signal (VMC-independent external watchdog), not an IM600XL point.
 constexpr int kGpioWatchdogKick = 33; // external watchdog kick, 50 us pulse; verify against KC868-A8-schematic.pdf
-constexpr int kGpioMasterEnable = 34; // master-enable readback; ADC1 channel 6
-constexpr float kMasterEnableThresholdV = 1.5f;
-// Raw 12-bit count for 1.5 V at 12 dB attenuation (about 3.1 V full scale, uncalibrated).
+constexpr int kAdcMasterEnable = 34;  // master-enable readback; ADC1 channel 6; verify against KC868-A8-schematic.pdf
+constexpr float kMasterEnableThresholdV = 1.5f;  // verify against KC868-A8-schematic.pdf
+// Raw 12-bit count for 1.5 V at 12 dB attenuation (about 3.1 V full scale, uncalibrated);
+// verify against KC868-A8-schematic.pdf.
 constexpr int kMasterEnableRawThreshold = 1980;
 
 // Relay bit per output (index = vendcore::Out ordinal).
@@ -52,20 +54,32 @@ constexpr uint8_t kInputBit[vendcore::kBinaryInputCount] = {
     0xFF,  // ServiceDoor      C6 (GPIO)
 };  // every bit: verify against KC868-A8-schematic.pdf
 
-// Default polarity: active_low true = raw 0 means asserted. Buttons (W1, W2, C1, normally
-// open) and IC5 are active-high; W6-W9 and C6 default active-low so an open circuit reads
-// as faulted (survey pending, I/O list section 8).
+// Default polarity: active_low true = raw 0 means asserted. The KC868-A8 inputs are
+// opto-isolated dry-contact inputs: a closed contact drives the pin low (raw 0); an open
+// contact or broken wire reads raw 1 (pull-up). Every fault input must be wired
+// normally-closed so a broken wire reads as the fault. Contact types are pending the
+// I/O list section 8 survey (W6/W7/W8/W9/C6 contact types, IC4 sensor type); verify
+// against KC868-A8-schematic.pdf.
 inline vendcore::Polarity default_polarity() {
     vendcore::Polarity p = {};
-    p.active_low[static_cast<int>(vendcore::In::BagFull)] = false;          // IC5
-    p.active_low[static_cast<int>(vendcore::In::ButtonIce)] = false;        // C1
-    p.active_low[static_cast<int>(vendcore::In::ButtonWater1)] = false;     // W1
-    p.active_low[static_cast<int>(vendcore::In::ButtonWater5)] = false;     // W2
-    p.active_low[static_cast<int>(vendcore::In::RoTankFull)] = true;        // W6
-    p.active_low[static_cast<int>(vendcore::In::RoTankEmpty)] = true;       // W7
-    p.active_low[static_cast<int>(vendcore::In::WaterPressureOk)] = true;   // W8
-    p.active_low[static_cast<int>(vendcore::In::SumpHigh)] = true;          // W9
-    p.active_low[static_cast<int>(vendcore::In::ServiceDoor)] = true;       // C6
+    // IC4 bag-full sensor, closed = bag full; open = not full (fill runs to max_run_s -> bin_empty, visible fault).
+    p.active_low[static_cast<int>(vendcore::In::BagFull)] = true;
+    // C1 ice button, NO momentary; closed = pressed, open = idle.
+    p.active_low[static_cast<int>(vendcore::In::ButtonIce)] = true;
+    // W1 1 gal button, NO momentary; closed = pressed, open = idle.
+    p.active_low[static_cast<int>(vendcore::In::ButtonWater1)] = true;
+    // W2 5 gal button, NO momentary; closed = pressed, open = idle.
+    p.active_low[static_cast<int>(vendcore::In::ButtonWater5)] = true;
+    // W6 RO tank full, wired NC: closed while not full; open = full (pump stops, no overflow).
+    p.active_low[static_cast<int>(vendcore::In::RoTankFull)] = false;
+    // W7 RO tank empty, wired NC: closed while water present; open = empty.
+    p.active_low[static_cast<int>(vendcore::In::RoTankEmpty)] = false;
+    // W8 water pressure OK, closed = pressure OK; open = not OK.
+    p.active_low[static_cast<int>(vendcore::In::WaterPressureOk)] = true;
+    // W9 sump high float, wired NC: closed while normal; open = high water.
+    p.active_low[static_cast<int>(vendcore::In::SumpHigh)] = false;
+    // C6 service door switch, wired NC: closed while the door is closed; open = door open.
+    p.active_low[static_cast<int>(vendcore::In::ServiceDoor)] = false;
     return p;
 }
 

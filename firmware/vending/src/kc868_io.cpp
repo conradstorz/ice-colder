@@ -5,6 +5,7 @@
 #include "ds18b20.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "../boards/kc868-a8.h"
@@ -13,6 +14,9 @@
 namespace {
 const char* TAG = "kc868_io";
 constexpr int kI2cTimeoutMs = 5;
+constexpr int64_t kRelayRefreshUs = 250000;
+constexpr int64_t kWarnIntervalUs = 1000000;
+constexpr int kI2cResetAfter = 10;
 constexpr int kPcntHigh = 32767;
 constexpr uint32_t kOneWirePeriodMs = 10000;
 }  // namespace
@@ -101,7 +105,25 @@ esp_err_t Kc868Io::init_adc() {
 
 bool Kc868Io::read(vendcore::InputSnapshot& out) {
     uint8_t bits = 0;
-    if (i2c_master_receive(inputs_, &bits, 1, kI2cTimeoutMs) != ESP_OK) return false;
+    const bool inputs_ok = i2c_master_receive(inputs_, &bits, 1, kI2cTimeoutMs) == ESP_OK;
+    note_i2c(inputs_ok);
+    // A PCF8574 read returns its pin state: the relay expander must echo what we last wrote.
+    uint8_t relay_back = 0;
+    const bool relays_ok = i2c_master_receive(relays_, &relay_back, 1, kI2cTimeoutMs) == ESP_OK;
+    note_i2c(relays_ok);
+    const int64_t now = esp_timer_get_time();
+    if (!relays_ok || (last_relay_byte_ >= 0 && relay_back != static_cast<uint8_t>(last_relay_byte_))) {
+        if (now - last_warn_us_ >= kWarnIntervalUs) {
+            last_warn_us_ = now;
+            if (relays_ok) {
+                ESP_LOGW(TAG, "relay readback 0x%02X != written 0x%02X", relay_back, last_relay_byte_);
+            } else {
+                ESP_LOGW(TAG, "relay expander read failed");
+            }
+        }
+        return false;
+    }
+    if (!inputs_ok) return false;
     for (int i = 0; i < vendcore::kBinaryInputCount; ++i) {
         const uint8_t b = kc868::kInputBit[i];
         out.binary[i] = b == 0xFF ? gpio_get_level(static_cast<gpio_num_t>(kc868::kGpioServiceDoor)) != 0
@@ -126,13 +148,30 @@ bool Kc868Io::write_outputs(const bool (&on)[vendcore::kOutputCount]) {
         const uint8_t mask = static_cast<uint8_t>(1U << kc868::kRelayBit[i]);
         byte = kc868::kRelayActiveLow ? static_cast<uint8_t>(byte & ~mask) : static_cast<uint8_t>(byte | mask);
     }
-    if (byte == last_relay_byte_) return true;
-    if (i2c_master_transmit(relays_, &byte, 1, kI2cTimeoutMs) != ESP_OK) {
+    const int64_t now = esp_timer_get_time();
+    // Write on change, and re-transmit at least every 250 ms to heal a glitched expander.
+    if (byte == last_relay_byte_ && now - last_relay_tx_us_ < kRelayRefreshUs) return true;
+    const bool ok = i2c_master_transmit(relays_, &byte, 1, kI2cTimeoutMs) == ESP_OK;
+    note_i2c(ok);
+    if (!ok) {
         last_relay_byte_ = -1;  // retry on the next call
         return false;
     }
     last_relay_byte_ = byte;
+    last_relay_tx_us_ = now;
     return true;
+}
+
+void Kc868Io::note_i2c(bool ok) {
+    if (ok) {
+        i2c_fail_count_ = 0;
+        return;
+    }
+    if (++i2c_fail_count_ >= kI2cResetAfter) {
+        ESP_LOGW(TAG, "%d consecutive I2C failures; resetting bus", i2c_fail_count_);
+        i2c_master_bus_reset(bus_);
+        i2c_fail_count_ = 0;
+    }
 }
 
 void Kc868Io::kick_watchdog() {

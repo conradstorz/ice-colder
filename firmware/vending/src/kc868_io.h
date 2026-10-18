@@ -24,6 +24,8 @@ private:
     esp_err_t init_pulse_counter();
     esp_err_t init_adc();
     static void onewire_task(void* arg);
+    // Counts consecutive failed expander transactions; resets the I2C bus after 10.
+    void note_i2c(bool ok);
 
     i2c_master_bus_handle_t bus_ = nullptr;
     i2c_master_dev_handle_t relays_ = nullptr;
@@ -31,6 +33,9 @@ private:
     pcnt_unit_handle_t pcnt_ = nullptr;
     adc_oneshot_unit_handle_t adc_ = nullptr;
     int last_relay_byte_ = -1;  // -1 forces the next write
+    int64_t last_relay_tx_us_ = 0;  // time of the last successful relay transmit
+    int64_t last_warn_us_ = -1000000;
+    int i2c_fail_count_ = 0;
     volatile float ambient_c_ = 0.0f;
     volatile bool ambient_valid_ = false;
 };

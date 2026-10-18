@@ -3,6 +3,7 @@
 #include "core.h"
 #include "esp_clock.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_task_wdt.h"
 #include "../boards/kc868-a8.h"
 #include "kc868_io.h"
@@ -40,8 +41,10 @@ void sequencer_main(void* arg) {
     static EspClock clock;
     static QueuePublisher pub(args.evt_q);
     if (io.begin() != ESP_OK) {
-        ESP_LOGE(TAG, "board I/O init failed; sequencer not started");
-        vTaskDelete(nullptr);
+        // Fail-safe: never kick the external watchdog; reboot and retry.
+        ESP_LOGE(TAG, "board I/O init failed; rebooting in 5 s");
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        esp_restart();
     }
     vendcore::CoreConfig cfg;
     for (int i = 0; i < vendcore::kBinaryInputCount; ++i) {
