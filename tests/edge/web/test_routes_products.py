@@ -762,3 +762,96 @@ class TestLockBadge:
         detail_resp = client.get("/products/ICE-1")
         assert "locked" in detail_resp.text.lower()
         assert "ICE-301" in detail_resp.text
+
+
+class TestProductButton:
+    """The catalog forms expose Product.button (the customer button id)."""
+
+    def test_create_with_button_stores_it(self, client, wired):
+        cfg, _vmc, _inv, _store = wired
+        resp = _add(client, "BTN-1", button="button_ice")
+        assert resp.status_code == 200
+        product = next(p for p in cfg.products if p.sku == "BTN-1")
+        assert product.button == "button_ice"
+
+    def test_update_to_blank_stores_none(self, client, wired):
+        cfg, _vmc, _inv, _store = wired
+        _add(client, "BTN-2", button="button_ice")
+        resp = client.post(
+            "/products/BTN-2/catalog",
+            data={"name": "Item", "price": "1.00", "kind": "other", "button": ""},
+        )
+        assert resp.status_code == 200
+        product = next(p for p in cfg.products if p.sku == "BTN-2")
+        assert product.button is None
+
+    def test_update_sets_button(self, client, wired):
+        cfg, _vmc, _inv, _store = wired
+        _add(client, "BTN-3")
+        resp = client.post(
+            "/products/BTN-3/catalog",
+            data={
+                "name": "Item",
+                "price": "1.00",
+                "kind": "other",
+                "button": "button_water",
+            },
+        )
+        assert resp.status_code == 200
+        assert next(p for p in cfg.products if p.sku == "BTN-3").button == (
+            "button_water"
+        )
+
+    def test_duplicate_button_is_400_and_changes_nothing(self, client, wired):
+        cfg, _vmc, inv, _store = wired
+        _add(client, "BTN-4", button="button_ice")
+        _add(client, "BTN-5")
+        before = _state(cfg, inv)
+        resp = client.post(
+            "/products/BTN-5/catalog",
+            data={
+                "name": "Item",
+                "price": "1.00",
+                "kind": "other",
+                "button": "button_ice",
+            },
+        )
+        assert resp.status_code == 400
+        assert "button_ice" in resp.text
+        assert "already" in resp.text
+        assert next(p for p in cfg.products if p.sku == "BTN-5").button is None
+        assert _state(cfg, inv) == before
+        dup = _add(client, "BTN-6", button="button_ice")
+        assert dup.status_code == 400
+        assert not any(p.sku == "BTN-6" for p in cfg.products)
+
+    def test_invalid_button_id_is_400(self, client, wired):
+        cfg, _vmc, _inv, _store = wired
+        _add(client, "BTN-7")
+        resp = client.post(
+            "/products/BTN-7/catalog",
+            data={
+                "name": "Item",
+                "price": "1.00",
+                "kind": "other",
+                "button": "Button Ice",
+            },
+        )
+        assert resp.status_code == 400
+        assert next(p for p in cfg.products if p.sku == "BTN-7").button is None
+        bad = _add(client, "BTN-8", button="Button Ice")
+        assert bad.status_code == 400
+        assert not any(p.sku == "BTN-8" for p in cfg.products)
+
+    def test_catalog_form_shows_current_value(self, client, wired):
+        _add(client, "BTN-9", button="button_ice")
+        resp = client.get("/products/BTN-9/catalog")
+        assert resp.status_code == 200
+        assert 'name="button" value="button_ice"' in resp.text
+
+    def test_copy_form_has_empty_button_field(self, client, wired):
+        _add(client, "BTN-10", button="button_ice")
+        resp = client.get("/products/BTN-10/copy")
+        assert resp.status_code == 200
+        assert 'name="button" value=""' in resp.text
+        assert 'value="button_ice"' not in resp.text

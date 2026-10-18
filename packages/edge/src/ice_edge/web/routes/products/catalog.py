@@ -17,6 +17,7 @@ from ice_ui.levels import Level
 from ice_ui.templating import templates
 
 from .helpers import (
+    _clean_button,
     _get_or_404,
     _inventory_count,
     _is_tracked,
@@ -46,6 +47,7 @@ async def new_product_form(request: Request):
         inventory_count=0,
         tracked=False,
         error=None,
+        button="",
     )
 
 
@@ -68,8 +70,26 @@ async def create_product(
     track_inventory: str | None = Form(None),
     mode: str = Form("new"),
     source_sku: str = Form(""),
+    button: str = Form(""),
 ):
     tracked = track_inventory is not None
+    parsed_button, button_error = _clean_button(button)
+    if button_error:
+        return _render_product_form(
+            request,
+            mode=mode,
+            source_sku=source_sku,
+            sku=sku,
+            name=name,
+            price=price,
+            kind=kind,
+            slot=slot,
+            inventory_count=inventory_count,
+            tracked=tracked,
+            error=button_error,
+            button=button,
+            status_code=400,
+        )
 
     if inventory_count < 0:
         logger.warning(
@@ -87,6 +107,7 @@ async def create_product(
             slot=slot,
             inventory_count=inventory_count,
             tracked=tracked,
+            button=button,
             error="Inventory count cannot be negative.",
         )
 
@@ -104,10 +125,19 @@ async def create_product(
             slot=slot,
             inventory_count=inventory_count,
             tracked=tracked,
+            button=button,
             error="Slot must be a whole number.",
         )
 
-    success = add_product(context.config, sku, name, price, slot=parsed_slot, kind=kind)
+    success = add_product(
+        context.config,
+        sku,
+        name,
+        price,
+        slot=parsed_slot,
+        kind=kind,
+        button=parsed_button,
+    )
     if not success:
         return _render_product_form(
             request,
@@ -120,6 +150,7 @@ async def create_product(
             slot=slot,
             inventory_count=inventory_count,
             tracked=tracked,
+            button=button,
             error=(
                 "Could not add product — the SKU may already exist, or "
                 "the slot is invalid or already in use."
@@ -163,14 +194,34 @@ async def update_catalog(
     name: str = Form(...),
     price: float = Form(...),
     kind: str = Form("other"),
+    button: str = Form(""),
 ):
-    # This endpoint owns name/price/kind only. slot=None leaves the
+    # This endpoint owns name/price/kind/button only. slot=None leaves the
     # stored slot untouched (ice_edge/config/config_store.py update_product) —
     # a catalog POST can never smuggle a placement change through,
     # regardless of what a hostile form body contains (mirrors part 1's
     # a2b8829 guarantee for the placement side).
     product = _get_or_404(sku)
-    success = update_product(context.config, sku, name, price, slot=None, kind=kind)
+    parsed_button, button_error = _clean_button(button, own_sku=sku)
+    if button_error:
+        level = Level.child(
+            _product_level(product), "Catalog", f"/products/{sku}/catalog"
+        )
+        return templates.TemplateResponse(
+            request,
+            "product_catalog.html",
+            context.template_context(
+                request,
+                level=level,
+                product=product,
+                error=button_error,
+                button_value=button,
+            ),
+            status_code=400,
+        )
+    success = update_product(
+        context.config, sku, name, price, slot=None, kind=kind, button=parsed_button
+    )
     if not success:
         # The only way update_product can fail with slot=None is an
         # unknown SKU — a race with a concurrent delete, since
@@ -213,6 +264,7 @@ async def copy_product_form(request: Request, sku: str):
         inventory_count=_inventory_count(sku),
         tracked=_is_tracked(sku),
         error=None,
+        button="",
     )
 
 
