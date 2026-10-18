@@ -86,6 +86,15 @@ class TestSensor:
         await router.handle_sensor("sensors/temp/freezer", {"location": "freezer"})
         assert seen == []
 
+    @pytest.mark.parametrize("bad", ["warm", "", [1], {"x": 1}])
+    async def test_non_numeric_value_reaches_nobody(self, bad):
+        router, seen = TelemetryRouter(), []
+        router.subscribe_sensor(lambda loc, v: seen.append((loc, v)))
+        await router.handle_sensor(
+            "sensors/temp/freezer", {"location": "freezer", "value": bad}
+        )
+        assert seen == []
+
 
 class TestHeartbeat:
     async def test_normal_uptime_is_alive(self):
