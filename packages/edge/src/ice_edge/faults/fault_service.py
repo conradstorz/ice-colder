@@ -237,9 +237,9 @@ class FaultService:
             self.raise_fault(FaultCode.COM_103, outcome="disconnected")
 
     def clear_ice101_lockouts(self) -> None:
-        """Clear every ICE-101 lockout -- invoked by the telemetry router
-        (ice_edge/hal/mqtt_inbound.py's `TelemetryRouter.handle_hardware_io`)
-        when the vending ESP32 reports `bin_half_full` going true."""
+        """Clear every ICE-101 lockout -- invoked by `IcePolicy`
+        (ice_edge/faults/ice_policy.py) when the vending ESP32 reports
+        `bin_half_full` going true."""
         for sku, code in list(self._registry.lockouts.items()):
             if code is FaultCode.ICE_101:
                 self.clear_fault(sku, by="auto")

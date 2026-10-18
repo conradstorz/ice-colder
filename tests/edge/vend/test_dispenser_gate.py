@@ -274,7 +274,7 @@ def test_on_vending_capabilities_ignores_non_vending_subsystems():
     gate, _ = make_gate([])
     gate.profiles = _FakeProfiles()
 
-    gate.on_vending_capabilities("ice_maker", _capabilities())
+    gate.on_vending_capabilities("ice_maker", {}, _capabilities())
 
     assert gate.profiles.set_capabilities_calls == []
 
@@ -283,7 +283,7 @@ def test_on_vending_capabilities_noops_with_no_profiles():
     gate, _ = make_gate([])
     assert gate.profiles is None
 
-    gate.on_vending_capabilities("vending", _capabilities())  # must not raise
+    gate.on_vending_capabilities("vending", {}, _capabilities())  # must not raise
 
     assert gate.profiles is None
 
@@ -303,7 +303,7 @@ def test_on_vending_capabilities_reruns_cross_checks_for_vending(tmp_path):
         contract_version="1.0.0",
         channels=[],
     )
-    gate.on_vending_capabilities("vending", incomplete)
+    gate.on_vending_capabilities("vending", {}, incomplete)
 
     assert faults.lockouts["ICE-1"] is FaultCode.CFG_101
 
