@@ -293,9 +293,9 @@ class TestSubscriptionsTable:
     def test_every_telemetry_owner_method_is_a_router_attribute(self):
         for _, owner, name in SUBSCRIPTIONS:
             if owner == "telemetry":
-                assert hasattr(
-                    TelemetryRouter, name
-                ), f"TelemetryRouter has no attribute {name!r}"
+                assert hasattr(TelemetryRouter, name), (
+                    f"TelemetryRouter has no attribute {name!r}"
+                )
 
     def test_subscriptions_table_unchanged(self):
         # The full (topic, owner, method) triple, in order -- not just the

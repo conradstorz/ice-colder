@@ -299,9 +299,9 @@ class _MessageCollector:
         """Exactly one ``dispense`` per sale: one per expected request_id and
         no extras (a same-request_id retry or a second sale's command)."""
         got = [d["request_id"] for d in self.dispenses]
-        assert (
-            got == request_ids
-        ), f"expected exactly one dispense per sale {request_ids}, got {got}"
+        assert got == request_ids, (
+            f"expected exactly one dispense per sale {request_ids}, got {got}"
+        )
 
 
 class _E2E:

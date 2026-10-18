@@ -61,9 +61,9 @@ def _tmp_profiles_dir(tmp_path: Path | None) -> Path:
     fixture through."""
     if tmp_path is not None:
         return tmp_path
-    assert (
-        _profiles_tmp_base is not None
-    ), "_profiles_tmp_base_dir fixture (module-scoped, autouse) did not run"
+    assert _profiles_tmp_base is not None, (
+        "_profiles_tmp_base_dir fixture (module-scoped, autouse) did not run"
+    )
     return Path(tempfile.mkdtemp(dir=_profiles_tmp_base))
 
 
@@ -2673,9 +2673,9 @@ class TestMaintenanceLease:
         enable_true = [
             p for t, p in published if t == "cmd/payment/enable" and p.accept is True
         ]
-        assert (
-            len(enable_true) == 1
-        ), "expected exactly one re-enable, not a double release"
+        assert len(enable_true) == 1, (
+            "expected exactly one re-enable, not a double release"
+        )
 
         # A stray extra release call must be a no-op: clear_fault's own
         # "already cleared" guard stops it from re-pushing availability, so
