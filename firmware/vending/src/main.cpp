@@ -1,4 +1,5 @@
 #include "ack_cache.h"
+#include "comms_task.h"
 #include "console.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -28,7 +29,7 @@ extern "C" void app_main(void) {
     QueueHandle_t evt_q = xQueueCreate(64, sizeof(vendcore::Event));
     QueueHandle_t ack_q = xQueueCreate(8, sizeof(vendcore::Ack));
     start_sequencer(cmd_q, evt_q, ack_q, settings);
-    // Comms (Task 11) starts here, consuming evt_q/ack_q and feeding cmd_q.
+    start_comms(cmd_q, evt_q, ack_q, settings);
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
