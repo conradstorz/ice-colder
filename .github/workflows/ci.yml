@@ -94,6 +94,23 @@ jobs:
         run: |
           uv run python tests/run_skip_guard.py skip-report.json
 
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv tool install platformio
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ hashFiles('firmware/vending/platformio.ini') }}
+      - run: pio run -e kc868-a8
+        working-directory: firmware/vending
+      - run: pio test -e native
+        working-directory: firmware/vending
+
   compose-config:
     runs-on: ubuntu-latest
     steps:
