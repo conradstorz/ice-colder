@@ -127,8 +127,14 @@ Decoded decode_command(const char* json, size_t len) {
     g_arena.reset();
     JsonDocument doc(&g_arena);
     DeserializationError err = deserializeJson(doc, json, len);
-    if (err != DeserializationError::Ok || !doc.is<JsonObject>()) {
+    if (err != DeserializationError::Ok) {
+        d.result = Decode::NoRequestId;
         set_detail(d, "invalid JSON");
+        return d;
+    }
+    if (!doc.is<JsonObject>()) {
+        d.result = Decode::NoRequestId;
+        set_detail(d, "payload root is not a JSON object");
         return d;
     }
     JsonVariantConst rid = doc["request_id"];

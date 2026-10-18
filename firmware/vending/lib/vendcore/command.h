@@ -1,5 +1,7 @@
 // Decodes one inbound command message (contract Command model:
 // {"command", "request_id", "params"}). No heap use after static setup.
+// decode_command uses one static arena and must be called from a single task
+// (it is not reentrant).
 #pragma once
 
 #include <stddef.h>

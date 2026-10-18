@@ -86,6 +86,17 @@ static void test_dispense_missing(void) {
                              e.detail);
 }
 
+static void test_invalid_json_is_no_request_id(void) {
+    TEST_ASSERT_TRUE(dec(R"({"command":"ping",)").result == Decode::NoRequestId);
+    TEST_ASSERT_EQUAL_STRING("invalid JSON", dec(R"({"command":"ping",)").detail);
+}
+
+static void test_non_object_root_is_no_request_id(void) {
+    TEST_ASSERT_TRUE(dec(R"([{"command":"ping","request_id":"abcdefgh"}])").result == Decode::NoRequestId);
+    TEST_ASSERT_EQUAL_STRING("payload root is not a JSON object",
+                             dec(R"([{"command":"ping","request_id":"abcdefgh"}])").detail);
+}
+
 static void test_dispense_invalid(void) {
     TEST_ASSERT_TRUE(dispense("-1", "bagged_ice", kFixture_profile_ice_catch).result == Decode::Rejected);
     TEST_ASSERT_TRUE(dispense("1", "plasma", kFixture_profile_ice_catch).result == Decode::Rejected);
@@ -105,5 +116,7 @@ int main(int, char**) {
     RUN_TEST(test_dispense_ok);
     RUN_TEST(test_dispense_missing);
     RUN_TEST(test_dispense_invalid);
+    RUN_TEST(test_invalid_json_is_no_request_id);
+    RUN_TEST(test_non_object_root_is_no_request_id);
     return UNITY_END();
 }
