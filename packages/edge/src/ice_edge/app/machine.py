@@ -184,6 +184,10 @@ class Machine:
         self._telemetry.subscribe_telemetry(self._health_telemetry.on_telemetry)
         self._telemetry.subscribe_capabilities(self._health_telemetry.on_capabilities)
         self._telemetry.subscribe_capabilities(self._gate.on_vending_capabilities)
+        # Dispatch order for hardware IO is health, then policy here, then
+        # availability (attached later by set_availability). Each consumer is
+        # independent and availability recomputes idempotently on every input,
+        # so delivery order within one message is not a correctness invariant.
         self._telemetry.subscribe_hardware_io(self._ice_policy.on_hardware_io)
         self._unsubscribe_availability: list[Callable[[], None]] = []
         # Builds a fresh DispenseCycle (ice_edge/vend/dispense_cycle.py)

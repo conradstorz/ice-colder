@@ -1,3 +1,5 @@
+from loguru import logger
+
 from ice_common.observers import Subscribers
 
 
@@ -14,14 +16,23 @@ def test_delivers_in_subscription_order():
 def test_raising_subscriber_is_logged_and_rest_still_run():
     subs: Subscribers[[int]] = Subscribers()
     seen: list[int] = []
+    errors: list[str] = []
 
     def boom(n: int) -> None:
         raise RuntimeError("boom")
 
-    subs.subscribe(boom)
-    subs.subscribe(seen.append)
-    subs.publish(7)
+    handle = logger.add(
+        lambda m: errors.append(str(m)), level="ERROR", format="{message}"
+    )
+    try:
+        subs.subscribe(boom)
+        subs.subscribe(seen.append)
+        subs.publish(7)
+    finally:
+        logger.remove(handle)
     assert seen == [7]
+    assert len(errors) == 1
+    assert "raised" in errors[0]
 
 
 def test_unsubscribe_stops_delivery():

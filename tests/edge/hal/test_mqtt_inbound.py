@@ -7,6 +7,7 @@ SUBSCRIPTIONS names real attributes.
 """
 
 import pytest
+from pydantic import ValidationError
 
 from ice_contracts.board.ice_maker_monitor import CONTRACT_VERSION
 from ice_edge.hal.mqtt_inbound import SUBSCRIPTIONS, TelemetryRouter
@@ -36,7 +37,7 @@ class TestHardwareIO:
     async def test_invalid_payload_reaches_nobody(self):
         router, seen = TelemetryRouter(), []
         router.subscribe_hardware_io(lambda d, s: seen.append((d, s)))
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             await router.handle_hardware_io("hardware/io/door", {"device": "door"})
         assert seen == []
 
@@ -58,7 +59,7 @@ class TestPaymentStatus:
     async def test_invalid_payload_reaches_nobody(self):
         router, seen = TelemetryRouter(), []
         router.subscribe_payment_status(lambda d, s: seen.append((d, s)))
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             await router.handle_payment_status("payment/status", {"device": "x"})
         assert seen == []
 
@@ -112,7 +113,7 @@ class TestIceMakerEvent:
     async def test_invalid_payload_reaches_nobody(self):
         router, seen = TelemetryRouter(), []
         router.subscribe_ice_maker_event(seen.append)
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             await router.handle_ice_maker_event("ice_maker/event", {})
         assert seen == []
 
@@ -129,7 +130,7 @@ class TestTelemetry:
     async def test_invalid_payload_reaches_nobody(self):
         router, seen = TelemetryRouter(), []
         router.subscribe_telemetry(lambda c, v: seen.append((c, v)))
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             await router.handle_telemetry("telemetry/ice_maker/x", {"value": 1})
         assert seen == []
 
