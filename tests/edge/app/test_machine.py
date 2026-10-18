@@ -164,13 +164,13 @@ class TestConstruction:
 
 
 class TestSetMqttClient:
-    def test_registers_the_thirteen_topics_in_order_to_bound_methods(self):
+    def test_registers_the_twelve_topics_in_order_to_bound_methods(self):
         machine = Machine(ConfigModel())
         mqtt = RecordingMqtt()
         machine.set_mqtt_client(mqtt)
 
         assert machine.mqtt_client is mqtt
-        assert len(mqtt.registered) == 13
+        assert len(mqtt.registered) == 12
         for (topic, handler), (expected_topic, owner, name) in zip(
             mqtt.registered, SUBSCRIPTIONS
         ):

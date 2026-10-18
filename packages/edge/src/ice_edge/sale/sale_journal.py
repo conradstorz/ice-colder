@@ -47,7 +47,7 @@ class SaleJournal:
         logger.info(f"MQTT payment received: ${amount:.2f} via {method}")
         self._txn.info(f"PAYMENT RECEIVED: ${amount:.2f} via {method}")
 
-    def button_press(self, button) -> None:
+    def button_press(self, button: str) -> None:
         logger.info(f"MQTT button press: button {button}")
         self._txn.info(f"BUTTON PRESS: button {button}")
         self._vend.info(f"BUTTON PRESS: button {button}")
@@ -77,8 +77,8 @@ class SaleJournal:
     def selection_refused_not_ready(self) -> None:
         logger.warning("Cannot change selection; machine not ready.")
 
-    def selection_refused_bad_index(self, index) -> None:
-        logger.error(f"Invalid product index: {index}")
+    def selection_refused_unknown_button(self, button: str) -> None:
+        logger.warning(f"Button '{button}' is not mapped to any product")
 
     def locked_out(self, product: Product, code: FaultCode) -> None:
         self._txn.info(
@@ -98,11 +98,11 @@ class SaleJournal:
             "Please try again later."
         )
 
-    def product_selected(self, product: Product, button) -> None:
+    def product_selected(self, product: Product) -> None:
         logger.info(f"Selected product: {product.name} at ${product.price:.2f}")
         text = (
             f"PRODUCT SELECTED: '{product.name}' (${product.price:.2f}), "
-            f"button {button}"
+            f"sku {product.sku}"
         )
         self._txn.info(text)
         self._vend.info(text)

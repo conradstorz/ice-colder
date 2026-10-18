@@ -85,6 +85,29 @@ def load_config() -> ConfigModel:
     return config_model
 
 
+def warn_if_no_buttons(config: ConfigModel) -> None:
+    """Migration aid: log which products have no customer button. Never raises
+    or edits the config.
+
+    Configs saved before ``Product.button`` existed have none assigned, and a
+    press maps to a product only by ``button``, so every press would be ignored.
+    """
+    products = config.products
+    if not products:
+        return
+    unassigned = [p.sku for p in products if p.button is None]
+    if len(unassigned) == len(products):
+        logger.warning(
+            "No product has a customer button; button presses will select "
+            "nothing — set Product → Button"
+        )
+    elif unassigned:
+        logger.info(
+            f"Products with no customer button (not selectable by button): "
+            f"{', '.join(unassigned)}"
+        )
+
+
 def warn_if_setup_mode(store: AccessStore) -> None:
     """Log the dashboard's access-store health at startup. Never exits: a
     dashboard-only problem must never stop the machine selling.

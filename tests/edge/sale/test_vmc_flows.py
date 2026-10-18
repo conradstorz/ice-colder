@@ -70,8 +70,22 @@ def _tmp_profiles_dir(tmp_path: Path | None) -> Path:
 def two_products() -> tuple[Product, ...]:
     """Fresh each call -- tests mutate prices, so never share instances."""
     return (
-        Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0, kind="ice"),
-        Product(sku="WATER-1", name="Water", price=1.00, slot=1, kind="water"),
+        Product(
+            sku="ICE-1",
+            name="Ice Bag",
+            price=2.50,
+            slot=0,
+            kind="ice",
+            button="button_ice",
+        ),
+        Product(
+            sku="WATER-1",
+            name="Water",
+            price=1.00,
+            slot=1,
+            kind="water",
+            button="button_water_5gal",
+        ),
     )
 
 
@@ -95,7 +109,15 @@ def make_machine(
     cfg.physical.products = (
         list(products)
         if products is not None
-        else [Product(sku="ICE-1", name="Ice Bag", price=price, kind="ice")]
+        else [
+            Product(
+                sku="ICE-1",
+                name="Ice Bag",
+                price=price,
+                kind="ice",
+                button="button_ice",
+            )
+        ]
     )
     machine = Machine(config=cfg, tasks=tasks)
     profiles = profiles_for(cfg.physical.products, _tmp_profiles_dir(tmp_path))
@@ -763,7 +785,7 @@ async def test_sold_out_rejects_selection():
     messages: list[str] = []
     vmc.outputs.set_message_callback(messages.append)
 
-    vmc.select_product(0)
+    vmc.select_product(vmc.products[0])
 
     assert vmc.state == "idle"
     assert any("sold out" in m.lower() for m in messages)
@@ -863,7 +885,7 @@ async def test_sale_cancelled_then_new_sale_succeeds(tmp_path):
     # profiles and isn't about that.
     new_product = Product(sku="ICE-1", name="Ice Bag 2", price=2.50, kind="ice")
     vmc.products.append(new_product)
-    vmc.select_product(0)
+    vmc.select_product(vmc.products[0])
     assert vmc.state == "interacting_with_user"
     assert vmc.selected_product is new_product
 
@@ -959,7 +981,7 @@ class TestFaultRegistry:
         vmc.outputs.set_message_callback(messages.append)
         vmc.raise_fault(FaultCode.ICE_301, sku="ICE-1")
 
-        vmc.select_product(0)
+        vmc.select_product(vmc.products[0])
 
         assert vmc.state == "idle"
         assert vmc.selected_product is None
@@ -1026,20 +1048,6 @@ class TestFaultRegistry:
         client = FakeClient()
         machine.set_mqtt_client(client)
         assert "hardware/io/+" in client.topics
-
-    def test_water_flow_handler_is_registered(self):
-        machine = make_machine(products=two_products())
-
-        class FakeClient:
-            def __init__(self):
-                self.topics = []
-
-            def register(self, topic, handler):
-                self.topics.append(topic)
-
-        client = FakeClient()
-        machine.set_mqtt_client(client)
-        assert "sensors/water_flow" in client.topics
 
 
 def _start_dispensing(vmc: VMC, index: int = 0):
@@ -1780,16 +1788,6 @@ async def test_ice_maker_non_power_event_does_not_feed_compressor_signal():
     assert "compressor_run" not in monitor.get_summary()["signals"].get("ice_maker", {})
 
 
-async def test_water_flow_feeds_health_channel():
-    vmc, monitor, avail, _, machine = _wired_vmc()
-    _all_alive(monitor, machine)
-    await machine.telemetry.handle_water_flow(
-        "sensors/water_flow", {"location": "water_flow", "value": 12.5, "unit": "gal"}
-    )
-    channel = monitor.get_summary()["channels"]["water_flow"]
-    assert channel["value"] == 12.5
-
-
 async def test_signal_feeding_handlers_tolerate_missing_health_monitor():
     cfg = ConfigModel()
     cfg.physical.products = [
@@ -1820,9 +1818,6 @@ async def test_signal_feeding_handlers_tolerate_missing_health_monitor():
     await machine.telemetry.handle_ice_maker_event(
         "ice_maker/event", {"event": "power_on"}
     )
-    await machine.telemetry.handle_water_flow(
-        "sensors/water_flow", {"location": "water_flow", "value": 5.0, "unit": "gal"}
-    )
 
 
 async def test_select_product_refused_when_kind_unavailable_names_reason():
@@ -1832,7 +1827,7 @@ async def test_select_product_refused_when_kind_unavailable_names_reason():
     monitor.mark_offline("ice_maker")
     messages = []
     vmc.outputs.set_message_callback(messages.append)
-    vmc.select_product(0)  # ICE-1
+    vmc.select_product(vmc.products[0])  # ICE-1
     assert vmc.state == "idle"
     assert vmc.selected_product is None
     assert "ice_maker_alive" in messages[-1]
@@ -1892,7 +1887,7 @@ async def test_select_product_refused_while_vending_offline_but_payment_stays_on
 
     assert avail.payment_enabled is True
     vmc.deposit_funds(2.00)
-    vmc.select_product(0)
+    vmc.select_product(vmc.products[0])
     assert vmc.selected_product is None
     assert vmc.credit_escrow == 2.00
     assert vmc.state == "idle"
@@ -1932,7 +1927,7 @@ async def test_deposit_while_idle_and_vending_offline_is_refunded_on_timeout():
 
     assert avail.payment_enabled is True
     vmc.deposit_funds(2.00)
-    vmc.select_product(0)
+    vmc.select_product(vmc.products[0])
     assert vmc.selected_product is None
     assert vmc.credit_escrow == 2.00
     assert vmc.state == "idle"
@@ -2100,7 +2095,7 @@ async def test_session_file_written_during_sale_and_cleared_after(tmp_path):
     snap = store.load()
     assert snap is not None and snap.credit_escrow == 2.5
 
-    vmc.select_product(0)
+    vmc.select_product(vmc.products[0])
     runner.fire("process_payment")
     await runner.drain_persistence()
     assert vmc.state == "dispensing"
@@ -3160,7 +3155,7 @@ class TestRunTestSale:
 
         vmc.deposit_funds(1.00, payment_method="cash_coin")
         vmc.deposit_funds(1.50, payment_method="card")
-        vmc.select_product(1)  # WATER-1, price 1.00
+        vmc.select_product(vmc.products[1])  # WATER-1, price 1.00
         vmc.process_payment()
         assert vmc.state == "dispensing"
         assert vmc.pending_sale_shares == {"cash_coin": 1.00}
@@ -3738,7 +3733,9 @@ class TestTestSaleAvailabilityExemption:
         await asyncio.sleep(0)
         assert (vmc.sale is not None and vmc.sale.is_test) is False
 
-        vmc.select_product(0)  # a real customer button press, index 0 = ICE-1
+        vmc.select_product(
+            vmc.products[0]
+        )  # a real customer button press, index 0 = ICE-1
 
         assert vmc.selected_product is None
         assert vmc.state == "idle"
@@ -3943,3 +3940,39 @@ class TestConcurrentTestSaleGuard:
         assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
         await asyncio.sleep(0)
         assert avail.payment_enabled is True
+
+
+# --- named customer buttons (contract 2.0.0) ---
+
+
+async def test_button_press_selects_the_product_mapped_to_it():
+    machine = make_machine(products=two_products())
+    vmc = machine.vmc
+    await vmc.on_button_press("hardware/buttons", {"button": "button_water_5gal"})
+    assert vmc.selected_product.sku == "WATER-1"
+    assert vmc.state == "interacting_with_user"
+
+
+async def test_unknown_button_changes_nothing_and_logs_the_refusal():
+    from loguru import logger
+
+    machine = make_machine(products=two_products())
+    vmc = machine.vmc
+    seen: list[str] = []
+    sink_id = logger.add(lambda m: seen.append(str(m)), level="WARNING")
+    try:
+        await vmc.on_button_press("hardware/buttons", {"button": "button_nope"})
+    finally:
+        logger.remove(sink_id)
+    assert vmc.state == "idle"
+    assert vmc.selected_product is None
+    assert any("button_nope" in line for line in seen)
+
+
+async def test_locked_out_product_button_is_refused():
+    machine = make_machine(products=two_products())
+    vmc = machine.vmc
+    vmc.raise_fault(FaultCode.ICE_301, sku="ICE-1", outcome="timeout")
+    await vmc.on_button_press("hardware/buttons", {"button": "button_ice"})
+    assert vmc.state == "idle"
+    assert vmc.selected_product is None

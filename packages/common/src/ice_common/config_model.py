@@ -50,6 +50,8 @@ from pydantic import (
     model_validator,
 )
 
+from ice_contracts.board.common import CHANNEL_ID_PATTERN
+
 
 # 1) First, an enum of supported communication channels
 class Channel(str, Enum):
@@ -121,6 +123,14 @@ class Product(BaseModel):
         ge=0,
         description="Physical dispenser slot / motor index on the vending ESP32",
     )
+    button: Optional[str] = Field(
+        None,
+        pattern=CHANNEL_ID_PATTERN,
+        description=(
+            "Customer button id on the vending board (e.g. button_ice) that "
+            "selects this product; None = no physical button"
+        ),
+    )
     kind: Literal["ice", "water", "other"] = Field(
         "other",
         description=(
@@ -182,6 +192,17 @@ class PhysicalDetails(BaseModel):
                 f"Duplicate product slot(s) found: {duplicates}. "
                 "Each product must have a unique 'slot' (physical dispenser "
                 "slot / motor index)."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_unique_buttons(self) -> "PhysicalDetails":
+        buttons = [p.button for p in self.products if p.button is not None]
+        duplicates = sorted({b for b in buttons if buttons.count(b) > 1})
+        if duplicates:
+            raise ValueError(
+                f"Duplicate product button(s) found: {duplicates}. "
+                "Each button may select only one product."
             )
         return self
 

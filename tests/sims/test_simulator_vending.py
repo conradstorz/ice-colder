@@ -24,7 +24,8 @@ from ice_contracts.board.dispenser_schema import (
     WaterFillTimed,
 )
 from ice_edge.vend.dispensers import validate_document
-from ice_contracts.board.mqtt_messages import DispenseCommand
+from ice_contracts.board.mqtt_messages import ButtonPress, DispenseCommand
+from ice_sims.vending.channels import BUTTON_CHANNELS
 from ice_sims.vending_machine import VendingMachineSimulator
 from tests.dispenser_fixtures import GOOD, ICE, WATER
 from tests.async_helpers import patch_module_sleep, settle
@@ -152,14 +153,12 @@ class TestInit:
     def test_creates_with_config(self):
         sim = _make_sim()
         assert sim.subsystem_name == "vending"
-        assert sim.num_buttons == 3
 
     def test_single_product_config(self):
         config = ConfigModel.model_validate(
             {"physical": {"products": [{"sku": "T-1", "name": "Test", "price": 1.0}]}}
         )
-        sim = VendingMachineSimulator(config=config)
-        assert sim.num_buttons == 1
+        VendingMachineSimulator(config=config)
 
     def test_hardware_state_initialized(self):
         sim = _make_sim()
@@ -189,7 +188,7 @@ class TestButtonSelection:
     def test_random_button_in_range(self):
         sim = _make_sim()
         buttons = {sim._pick_button() for _ in range(100)}
-        assert buttons.issubset({0, 1, 2})
+        assert buttons.issubset(set(BUTTON_CHANNELS))
         assert len(buttons) > 1  # should hit at least 2 of 3
 
 
@@ -359,71 +358,13 @@ class TestIceBinEmptyFault:
         assert ("bin_half_full", True) in set_hw_calls
 
 
-class TestZeroProducts:
+class TestCustomerPresses:
     @pytest.mark.asyncio
-    async def test_customer_loop_with_no_products_does_not_crash(self):
-        sim = VendingMachineSimulator(config=ConfigModel())
-        assert sim.num_buttons == 0
+    @pytest.mark.parametrize("config", [None, ConfigModel()], ids=["sample", "empty"])
+    async def test_press_is_a_declared_button_whatever_the_catalog_holds(self, config):
+        sim = VendingMachineSimulator(config=config) if config else _make_sim()
         client = AsyncMock()
         sim.publish = AsyncMock()
-        # The zero-products branch reloads config every iteration; keep it
-        # deterministic (still zero products) rather than hitting the real
-        # filesystem/env var.
-        sim.load_config = lambda path: ConfigModel()
-        sleep_calls = []
-
-        async def fake_sleep(seconds):
-            sleep_calls.append(seconds)
-            if len(sleep_calls) >= 3:
-                raise asyncio.CancelledError
-
-        with patch_module_sleep("ice_sims.vending.customer", fake_sleep):
-            with pytest.raises(asyncio.CancelledError):
-                await sim._customer_loop(client)
-
-        assert len(sleep_calls) == 3
-        sim.publish.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_customer_loop_logs_no_products_once(self):
-        sim = VendingMachineSimulator(config=ConfigModel())
-        client = AsyncMock()
-        sim.publish = AsyncMock()
-        sim.load_config = lambda path: ConfigModel()
-        sleep_calls = []
-
-        async def fake_sleep(seconds):
-            sleep_calls.append(seconds)
-            if len(sleep_calls) >= 5:
-                raise asyncio.CancelledError
-
-        with patch_module_sleep("ice_sims.vending.customer", fake_sleep):
-            with patch("ice_sims.vending.customer.logger") as mock_logger:
-                with pytest.raises(asyncio.CancelledError):
-                    await sim._customer_loop(client)
-                assert mock_logger.warning.call_count == 1
-
-    @pytest.mark.asyncio
-    async def test_customer_loop_reloads_config_and_picks_up_new_products(self):
-        sim = VendingMachineSimulator(config=ConfigModel())
-        assert sim.num_buttons == 0
-        client = AsyncMock()
-        sim.publish = AsyncMock()
-
-        first_config = ConfigModel()
-        second_config = ConfigModel.model_validate(
-            {
-                "physical": {
-                    "products": [
-                        {"sku": "A", "name": "Bagged Ice", "price": 1.0, "slot": 0},
-                        {"sku": "B", "name": "Small Water", "price": 1.0, "slot": 1},
-                    ]
-                }
-            }
-        )
-        call_results = iter([first_config, second_config, second_config, second_config])
-        sim.load_config = lambda path: next(call_results)
-
         sleep_calls = []
 
         async def fake_sleep(seconds):
@@ -432,10 +373,36 @@ class TestZeroProducts:
                 raise asyncio.CancelledError
 
         with patch_module_sleep("ice_sims.vending.customer", fake_sleep):
-            with pytest.raises(asyncio.CancelledError):
-                await sim._customer_loop(client)
+            with patch("ice_sims.vending.customer.random.random", return_value=0.9):
+                with pytest.raises(asyncio.CancelledError):
+                    await sim._customer_loop(client)
 
-        assert sim.num_buttons == 2
+        sim.publish.assert_called_once()
+        press = sim.publish.call_args.args[-1]
+        assert isinstance(press, ButtonPress)
+        assert press.button in BUTTON_CHANNELS
+
+    @pytest.mark.asyncio
+    async def test_indecisive_second_press_names_a_different_button(self):
+        sim = _make_sim()
+        client = AsyncMock()
+        sim.publish = AsyncMock()
+        sleep_calls = []
+
+        async def fake_sleep(seconds):
+            sleep_calls.append(seconds)
+            if len(sleep_calls) >= 3:
+                raise asyncio.CancelledError
+
+        with patch_module_sleep("ice_sims.vending.customer", fake_sleep):
+            with patch("ice_sims.vending.customer.random.random", return_value=0.0):
+                with pytest.raises(asyncio.CancelledError):
+                    await sim._customer_loop(client)
+
+        first, second = (c.args[-1].button for c in sim.publish.call_args_list)
+        assert first in BUTTON_CHANNELS
+        assert second in BUTTON_CHANNELS
+        assert second != first
 
 
 class TestCustomerBehaviours:
@@ -492,7 +459,7 @@ class TestVendingCapabilities:
             "water_valve",
             "payment/enable",
         ]
-        assert caps.contract_version == "1.0.0"
+        assert caps.contract_version == "2.0.0"
 
     def test_channels_match_spec_table_in_order(self):
         """Spec §4.2's eleven-row vending table, copied exactly, in
@@ -504,6 +471,9 @@ class TestVendingCapabilities:
         assert ids == [
             "cabinet",
             "water_flow",
+            "button_ice",
+            "button_water_1gal",
+            "button_water_5gal",
             "bag_full_sensor",
             "water_flow_sensor",
             "bin_half_full",
@@ -551,6 +521,9 @@ class TestVendingCapabilities:
         assert driven_by == {
             "cabinet": None,
             "water_flow": None,
+            "button_ice": None,
+            "button_water_1gal": None,
+            "button_water_5gal": None,
             "bag_full_sensor": None,
             "water_flow_sensor": None,
             "bin_half_full": None,
