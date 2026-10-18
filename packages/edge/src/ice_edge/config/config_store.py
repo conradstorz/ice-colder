@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 from pydantic import SecretStr
@@ -86,6 +87,9 @@ def _lowest_free_slot(products) -> int:
     return slot
 
 
+_UNSET: Any = object()
+
+
 def add_product(
     config: ConfigModel,
     sku: str,
@@ -93,6 +97,7 @@ def add_product(
     price: float,
     slot: int | None = None,
     kind: str = "other",
+    button: str | None = None,
 ) -> bool:
     if any(p.sku == sku for p in config.products):
         logger.warning(f"Cannot add product: SKU '{sku}' already exists")
@@ -112,7 +117,9 @@ def add_product(
         return False
 
     kind = _clean_kind(kind)
-    new_product = Product(sku=sku, name=name, price=price, slot=slot, kind=kind)
+    new_product = Product(
+        sku=sku, name=name, price=price, slot=slot, kind=kind, button=button
+    )
     config.products.append(new_product)
     save_config(config)
     logger.info(
@@ -128,7 +135,10 @@ def update_product(
     price: float,
     slot: int | None = None,
     kind: str | None = None,
+    button: str | None = _UNSET,  # type: ignore[assignment]
 ) -> bool:
+    """*button* left at its default leaves the stored button alone; None
+    clears it."""
     if kind is not None:
         kind = _clean_kind(kind)
     for p in config.products:
@@ -156,6 +166,8 @@ def update_product(
                 changes["slot"] = (p.slot, slot)
             if kind is not None and p.kind != kind:
                 changes["kind"] = (p.kind, kind)
+            if button is not _UNSET and p.button != button:
+                changes["button"] = (p.button, button)
 
             if changes:
                 p.name = name
@@ -164,6 +176,8 @@ def update_product(
                     p.slot = slot
                 if kind is not None:
                     p.kind = kind
+                if button is not _UNSET:
+                    p.button = button
                 save_config(config)
                 change_summary = ", ".join(
                     f"{field}: {old!r} -> {new!r}"
