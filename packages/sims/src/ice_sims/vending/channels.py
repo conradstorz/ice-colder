@@ -104,7 +104,7 @@ CHANNEL_ROWS: tuple[ChannelRow, ...] = (
         VendingChannel.ro_production.value,
         "RO production (inlet solenoid and booster pump; autonomous)",
     ),
-    _binary_out("heater_power", "Cabinet heater power (autonomous)"),
+    _binary_out(VendingChannel.heater_power.value, "Cabinet heater power (autonomous)"),
     ChannelRow(
         "fill_pulses",
         "counter",

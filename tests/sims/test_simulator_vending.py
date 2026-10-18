@@ -1564,3 +1564,22 @@ class TestRoTankAndClimateWiring:
         assert ("ro_production", True) in seen
         assert ("heater_power", True) in seen
         assert "sensors/temp/ambient" in topics
+
+
+class TestCustomersLiveBounds:
+    def test_idle_bounds_read_after_construction(self):
+        sim = VendingMachineSimulator()
+        sim.IDLE_MIN = 1.0
+        sim.IDLE_MAX = 2.0
+        for _ in range(50):
+            # private: no public seam for the idle draw
+            assert 1.0 <= sim._compute_idle_time(hour=9) <= 2.0
+
+
+class TestVendingHaEntities:
+    def test_buttons_excluded_and_heater_present(self):
+        ids = {
+            e["object_id"] for e in VendingMachineSimulator().ha_discovery_entities()
+        }
+        assert not {i for i in ids if i.startswith("button_")}
+        assert {"heater_power", "ambient", "uptime"} <= ids

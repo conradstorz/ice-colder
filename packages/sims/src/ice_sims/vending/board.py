@@ -3,9 +3,7 @@
 modules (dispense, customer, faults) talk to, instead of the simulator
 class. No I/O; the only package imports are the two pure models its handles are typed with."""
 
-import asyncio
-from collections.abc import Coroutine
-from typing import Any, Protocol
+from typing import Protocol
 
 from pydantic import BaseModel
 
@@ -25,7 +23,5 @@ class BoardPort(Protocol):
     async def publish(self, topic_suffix: str, payload: BaseModel) -> None: ...
 
     async def sleep(self, seconds: float) -> None: ...
-
-    def spawn(self, coro: Coroutine[Any, Any, None]) -> asyncio.Task: ...
 
     def active_faults(self) -> set[str]: ...

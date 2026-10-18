@@ -364,6 +364,7 @@ class VendingChannel(str, Enum):
     ro_tank_empty = "ro_tank_empty"
     ro_tank_full = "ro_tank_full"
     ro_production = "ro_production"
+    heater_power = "heater_power"
     service_door = "service_door"
 
 
