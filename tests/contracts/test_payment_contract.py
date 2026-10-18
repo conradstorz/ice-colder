@@ -7,7 +7,23 @@ import pytest
 from pydantic import ValidationError
 
 from ice_contracts.board import payment
+from ice_contracts.board.common import (
+    COMMAND_PARAM_VALIDATORS,
+    COMPLETION_TIMEOUTS,
+    TESTABLE_COMMANDS,
+    SubsystemCommand,
+)
 from ice_contracts.board.payment import (
+    MDB_TESTABLE_COMMANDS,
+    PARAM_MODELS,
+    PAYMENT_COMMANDS,
+    DeviceResetParams,
+    PayoutParams,
+    PayoutReason,
+    SetPolicyParams,
+    VendOutcome,
+    VendRequestParams,
+    VendResultParams,
     CONTRACT_VERSION,
     EVENT_KINDS,
     STATE_REPUBLISH_SECONDS,
@@ -412,3 +428,110 @@ class TestInhibitReason:
             "policy",
             "device_fault",
         }
+
+
+VALID_POLICY = {
+    "policy_id": "pol-1",
+    "accept": True,
+    "max_escrow_cents": 2000,
+    "coin_enabled": [5, 10, 25],
+    "bill_enabled": [100, 500],
+    "cashless_enabled": False,
+    "change_threshold_cents": 100,
+    "edge_timeout_s": 30,
+    "return_bill_on_lever": True,
+}
+
+
+class TestParamModels:
+    def test_valid_set_policy(self):
+        assert SetPolicyParams(**VALID_POLICY).edge_timeout_s == 30
+
+    @pytest.mark.parametrize("value", [4, 121, 30.0])
+    def test_edge_timeout_bounds_and_strictness(self, value):
+        with pytest.raises(ValidationError):
+            SetPolicyParams(**{**VALID_POLICY, "edge_timeout_s": value})
+
+    def test_payout_zero_cents_rejected(self):
+        with pytest.raises(ValidationError):
+            PayoutParams(cents=0, reason="change")
+
+    def test_payout_reasons(self):
+        assert {r.value for r in PayoutReason} == {
+            "change",
+            "session_timeout",
+            "cancel",
+            "vend_failed",
+            "maintenance",
+            "admin",
+            "error",
+            "customer",
+        }
+
+    def test_vend_request_price_first(self):
+        p = VendRequestParams(session_id=None, cents=250, item="button_ice")
+        assert p.session_id is None
+
+    def test_vend_result_outcomes(self):
+        assert {o.value for o in VendOutcome} == {"success", "failure"}
+        VendResultParams(session_id="s1", request_id="req-00001", outcome="success")
+
+    def test_device_reset_rejects_unknown_device(self):
+        DeviceResetParams(device="coin")
+        with pytest.raises(ValidationError):
+            DeviceResetParams(device="hopper")
+
+
+def _cmd(command, params):
+    return SubsystemCommand(request_id="r-12345678", command=command, params=params)
+
+
+class TestCommandChannelRegistration:
+    def test_every_param_model_has_a_validator(self):
+        for key in PARAM_MODELS:
+            assert key in COMMAND_PARAM_VALIDATORS
+
+    def test_param_models_cover_all_commands_but_return_escrow(self):
+        assert set(PARAM_MODELS) == set(PAYMENT_COMMANDS) - {"return_escrow"}
+
+    def test_invalid_payout_error_is_one_line(self):
+        with pytest.raises(ValidationError) as ei:
+            _cmd("payout", {"cents": 1.0, "reason": "change"})
+        text = ei.value.errors()[0]["msg"]
+        assert "payout params invalid" in text
+        assert len(text.splitlines()) == 1
+
+    def test_return_escrow_takes_no_params(self):
+        _cmd("return_escrow", {})
+
+    def test_set_policy_missing_fields_rejected(self):
+        with pytest.raises(ValidationError):
+            _cmd("set_policy", {})
+
+    def test_valid_commands_construct(self):
+        _cmd("payout", {"cents": 100, "reason": "change"})
+        _cmd("set_policy", VALID_POLICY)
+
+
+class TestTestableAndTimeouts:
+    def test_mdb_testable_commands(self):
+        assert MDB_TESTABLE_COMMANDS == {
+            "ping",
+            "self_test",
+            "force_report",
+            "device_reset",
+            "payout",
+        }
+
+    def test_completion_timeouts(self):
+        assert COMPLETION_TIMEOUTS[("mdb", "payout")]({}) == 60.0
+        assert COMPLETION_TIMEOUTS[("mdb", "vend_request")]({"cents": 250}) == 45.0
+
+    def test_ack_only_commands_have_no_completion_timeout(self):
+        assert ("mdb", "vend_result") not in COMPLETION_TIMEOUTS
+        assert ("mdb", "set_policy") not in COMPLETION_TIMEOUTS
+
+    def test_testable_commands_flip_is_spec_2(self):
+        # Spec 2 flips TESTABLE_COMMANDS["mdb"] to MDB_TESTABLE_COMMANDS;
+        # delete this assertion there rather than "fixing" it.
+        assert "bill_acceptor_test" in TESTABLE_COMMANDS["mdb"]

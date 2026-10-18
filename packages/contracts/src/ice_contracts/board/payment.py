@@ -25,7 +25,7 @@ from typing import Annotated, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, StrictInt, model_validator
 
-from ice_contracts.board.common import _utc_now
+from ice_contracts.board.common import STANDARD_COMMANDS, _utc_now
 
 CONTRACT_VERSION = "1.0.0"
 
@@ -321,3 +321,96 @@ class PaymentState(BaseModel):
                 "accepting is true if and only if inhibited_reason is None"
             )
         return self
+
+
+# --- Commands (edge -> board, on the shared `cmd/mdb` channel) ----------------
+
+
+class PayoutReason(str, Enum):
+    change = "change"
+    session_timeout = "session_timeout"
+    cancel = "cancel"
+    vend_failed = "vend_failed"
+    maintenance = "maintenance"
+    admin = "admin"
+    error = "error"
+    customer = "customer"
+
+
+class VendOutcome(str, Enum):
+    success = "success"
+    failure = "failure"
+
+
+class SetPolicyParams(BaseModel):
+    policy_id: str = Field(..., min_length=1, max_length=64)
+    accept: bool
+    max_escrow_cents: PositiveCents
+    coin_enabled: list[PositiveCents]
+    bill_enabled: list[PositiveCents]
+    cashless_enabled: bool
+    change_threshold_cents: Cents
+    edge_timeout_s: Annotated[StrictInt, Field(ge=5, le=120)]
+    return_bill_on_lever: bool
+
+
+class PayoutParams(BaseModel):
+    cents: PositiveCents
+    reason: PayoutReason
+    sale_id: Optional[str] = None
+
+
+class VendRequestParams(BaseModel):
+    session_id: Optional[str] = None
+    cents: PositiveCents
+    item: str = Field(..., min_length=1, max_length=64)
+
+
+class VendResultParams(BaseModel):
+    session_id: str = Field(..., min_length=1, max_length=64)
+    request_id: str = Field(..., min_length=8, max_length=64)
+    outcome: VendOutcome
+
+
+class EndSessionParams(BaseModel):
+    session_id: str = Field(..., min_length=1, max_length=64)
+
+
+class DeviceResetParams(BaseModel):
+    device: Device
+
+
+PAYMENT_COMMANDS: tuple[str, ...] = (
+    "set_policy",
+    "payout",
+    "vend_request",
+    "vend_result",
+    "end_session",
+    "return_escrow",
+    "device_reset",
+)
+
+# `return_escrow` takes no params, so it has no model.
+PARAM_MODELS: dict[str, type[BaseModel]] = {
+    "set_policy": SetPolicyParams,
+    "payout": PayoutParams,
+    "vend_request": VendRequestParams,
+    "vend_result": VendResultParams,
+    "end_session": EndSessionParams,
+    "device_reset": DeviceResetParams,
+}
+
+# The future testable set for the `mdb` subsystem. `TESTABLE_COMMANDS["mdb"]`
+# in common.py is flipped to this by spec 2, not here.
+MDB_TESTABLE_COMMANDS: frozenset[str] = frozenset(STANDARD_COMMANDS) | {
+    "device_reset",
+    "payout",
+}
+
+# Fixed completion timeouts (durations, not money), read by
+# `common.COMPLETION_TIMEOUTS`.
+PAYOUT_COMPLETION_TIMEOUT_SECONDS = 60.0
+VEND_REQUEST_COMPLETION_TIMEOUT_SECONDS = 45.0
+
+DEFAULT_EDGE_TIMEOUT_SECONDS = 30
+EDGE_IDLE_PING_SECONDS = 10
