@@ -1,0 +1,36 @@
+{
+  "$defs": {
+    "VendOutcome": {
+      "enum": [
+        "success",
+        "failure"
+      ],
+      "title": "VendOutcome",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "session_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+    },
+    "request_id": {
+      "maxLength": 64,
+      "minLength": 8,
+      "title": "Request Id",
+      "type": "string"
+    },
+    "outcome": {
+      "$ref": "#/$defs/VendOutcome"
+    }
+  },
+  "required": [
+    "session_id",
+    "request_id",
+    "outcome"
+  ],
+  "title": "VendResultParams",
+  "type": "object"
+}

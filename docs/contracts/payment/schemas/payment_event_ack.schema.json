@@ -1,0 +1,29 @@
+{
+  "description": "Edge -> board acknowledgement on `payment/event/ack`.\n\nCumulative, but only within `boot_id`: it covers log entries with the SAME\n`boot_id` and `seq` <= this one. Entries from an earlier boot stay in the\nboard's log until acked under their own `boot_id` (the board replays them\nfirst, in order).",
+  "properties": {
+    "boot_id": {
+      "description": "Boot whose log entries this ack covers; earlier boots are unaffected",
+      "maxLength": 32,
+      "minLength": 8,
+      "title": "Boot Id",
+      "type": "string"
+    },
+    "seq": {
+      "description": "Covers entries of this boot_id with seq <= this",
+      "minimum": 1,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "timestamp": {
+      "format": "date-time",
+      "title": "Timestamp",
+      "type": "string"
+    }
+  },
+  "required": [
+    "boot_id",
+    "seq"
+  ],
+  "title": "PaymentEventAck",
+  "type": "object"
+}

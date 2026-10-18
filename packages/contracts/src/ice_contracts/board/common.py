@@ -124,11 +124,38 @@ def _validate_dispense_params(params: dict) -> None:
         raise ValueError(msg) from exc
 
 
+def _payment_params_validator(command: str) -> Callable[[dict], None]:
+    """Validator for one MDB payment command, using its model in
+    `ice_contracts.board.payment.PARAM_MODELS`."""
+
+    def validate(params: dict) -> None:
+        # Lazy import: payment.py imports this module at module level.
+        from ice_contracts.board.payment import PARAM_MODELS
+
+        try:
+            PARAM_MODELS[command].model_validate(params)
+        except ValidationError as exc:
+            e = exc.errors()[0]
+            loc_str = ".".join(str(x) for x in e.get("loc", []))
+            msg_str = e.get("msg", "validation error")
+            raise ValueError(
+                f"{command} params invalid: {loc_str} — {msg_str}"
+            ) from exc
+
+    return validate
+
+
 COMMAND_PARAM_VALIDATORS: dict[str, Callable[[dict], None]] = {
     "power_cycle": _validate_power_cycle,
     "set_interval": _validate_set_interval,
     "water_valve": _validate_water_valve,
     "dispense": _validate_dispense_params,
+    "set_policy": _payment_params_validator("set_policy"),
+    "payout": _payment_params_validator("payout"),
+    "vend_request": _payment_params_validator("vend_request"),
+    "vend_result": _payment_params_validator("vend_result"),
+    "end_session": _payment_params_validator("end_session"),
+    "device_reset": _payment_params_validator("device_reset"),
 }
 
 
@@ -275,6 +302,19 @@ def _power_cycle_completion_timeout(params: dict) -> float:
     return float(dwell) + POWER_CYCLE_COMPLETION_MARGIN_SECONDS
 
 
+def _payout_completion_timeout(params: dict) -> float:
+    # Lazy import: payment.py imports this module at module level.
+    from ice_contracts.board.payment import PAYOUT_COMPLETION_TIMEOUT_SECONDS
+
+    return PAYOUT_COMPLETION_TIMEOUT_SECONDS
+
+
+def _vend_request_completion_timeout(params: dict) -> float:
+    from ice_contracts.board.payment import VEND_REQUEST_COMPLETION_TIMEOUT_SECONDS
+
+    return VEND_REQUEST_COMPLETION_TIMEOUT_SECONDS
+
+
 # (subsystem, command) -> params -> completion timeout, seconds. Absence of
 # an entry means "immediate" (see the module note above). Every long-running
 # entry in TESTABLE_COMMANDS must have a matching entry here --
@@ -285,4 +325,6 @@ COMPLETION_TIMEOUTS: dict[tuple[str, str], Callable[[dict], float]] = {
     ("vending", "dispense"): _dispense_completion_timeout,
     ("vending", "water_valve"): _water_valve_completion_timeout,
     ("ice_maker", "power_cycle"): _power_cycle_completion_timeout,
+    ("mdb", "payout"): _payout_completion_timeout,
+    ("mdb", "vend_request"): _vend_request_completion_timeout,
 }

@@ -1,5 +1,5 @@
 {
-  "description": "VMC -> payment gateway, published on cmd/payment/refund (QoS 1).",
+  "description": "**Deprecated** (2026-10-18): superseded by ice_contracts.board.payment; removed, with a 3.0.0 bump, when ice_edge/ice_sims stop importing it (payment spec 3).\n\nVMC -> payment gateway, published on cmd/payment/refund (QoS 1).",
   "properties": {
     "request_id": {
       "description": "Opaque correlation key, unique per refund; UUID4 hex by the VMC",

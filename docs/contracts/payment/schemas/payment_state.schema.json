@@ -1,0 +1,333 @@
+{
+  "$defs": {
+    "CashlessSession": {
+      "properties": {
+        "session_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        },
+        "funds_cents": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Funds available on the session, if known",
+          "title": "Funds Cents"
+        },
+        "started_ts": {
+          "description": "When the session began",
+          "format": "date-time",
+          "title": "Started Ts",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "funds_cents",
+        "started_ts"
+      ],
+      "title": "CashlessSession",
+      "type": "object"
+    },
+    "DeviceState": {
+      "properties": {
+        "present": {
+          "description": "Device detected on the MDB bus",
+          "title": "Present",
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/DeviceStatus"
+        },
+        "level": {
+          "anyOf": [
+            {
+              "enum": [
+                1,
+                2,
+                3
+              ],
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "MDB feature level",
+          "title": "Level"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "serial": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Serial"
+        },
+        "denominations": {
+          "description": "Denominations the device can accept",
+          "items": {
+            "exclusiveMinimum": 0,
+            "type": "integer"
+          },
+          "title": "Denominations",
+          "type": "array"
+        },
+        "enabled": {
+          "description": "Denominations currently enabled",
+          "items": {
+            "exclusiveMinimum": 0,
+            "type": "integer"
+          },
+          "title": "Enabled",
+          "type": "array"
+        }
+      },
+      "required": [
+        "present",
+        "status"
+      ],
+      "title": "DeviceState",
+      "type": "object"
+    },
+    "DeviceStatus": {
+      "enum": [
+        "ready",
+        "disabled",
+        "busy",
+        "jammed",
+        "full",
+        "empty",
+        "tilt",
+        "offline",
+        "error"
+      ],
+      "title": "DeviceStatus",
+      "type": "string"
+    },
+    "InhibitReason": {
+      "enum": [
+        "no_policy",
+        "edge_silent",
+        "policy",
+        "device_fault"
+      ],
+      "title": "InhibitReason",
+      "type": "string"
+    },
+    "PaymentDevices": {
+      "properties": {
+        "coin": {
+          "$ref": "#/$defs/DeviceState"
+        },
+        "bill": {
+          "$ref": "#/$defs/DeviceState"
+        },
+        "cashless": {
+          "$ref": "#/$defs/DeviceState"
+        }
+      },
+      "required": [
+        "coin",
+        "bill",
+        "cashless"
+      ],
+      "title": "PaymentDevices",
+      "type": "object"
+    },
+    "StackerState": {
+      "properties": {
+        "count": {
+          "description": "Bills in the stacker",
+          "minimum": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "full": {
+          "description": "Stacker reports full",
+          "title": "Full",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "count",
+        "full"
+      ],
+      "title": "StackerState",
+      "type": "object"
+    },
+    "TubeLevel": {
+      "properties": {
+        "cents": {
+          "description": "Coin denomination of this tube",
+          "exclusiveMinimum": 0,
+          "title": "Cents",
+          "type": "integer"
+        },
+        "count": {
+          "description": "Coins currently in the tube",
+          "minimum": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "full": {
+          "description": "Tube reports full",
+          "title": "Full",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "cents",
+        "count",
+        "full"
+      ],
+      "title": "TubeLevel",
+      "type": "object"
+    }
+  },
+  "description": "Retained board state on `payment/state`.\n\nRepublished on change, on `force_report`, and every\n`STATE_REPUBLISH_SECONDS`. A retained document never means the board is\nalive (heartbeats do).",
+  "properties": {
+    "boot_id": {
+      "maxLength": 32,
+      "minLength": 8,
+      "title": "Boot Id",
+      "type": "string"
+    },
+    "seq_last": {
+      "description": "Last event seq sent this boot (0 = none yet)",
+      "minimum": 0,
+      "title": "Seq Last",
+      "type": "integer"
+    },
+    "currency": {
+      "const": "USD",
+      "default": "USD",
+      "title": "Currency",
+      "type": "string"
+    },
+    "policy_id": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Policy Id"
+    },
+    "accepting": {
+      "description": "Board is accepting money",
+      "title": "Accepting",
+      "type": "boolean"
+    },
+    "inhibited_reason": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/InhibitReason"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "escrow_cents": {
+      "minimum": 0,
+      "title": "Escrow Cents",
+      "type": "integer"
+    },
+    "bill_in_escrow_cents": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Bill In Escrow Cents"
+    },
+    "devices": {
+      "$ref": "#/$defs/PaymentDevices"
+    },
+    "tubes": {
+      "items": {
+        "$ref": "#/$defs/TubeLevel"
+      },
+      "title": "Tubes",
+      "type": "array"
+    },
+    "exact_change": {
+      "title": "Exact Change",
+      "type": "boolean"
+    },
+    "stacker": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StackerState"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "session": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CashlessSession"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ts": {
+      "format": "date-time",
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "boot_id",
+    "seq_last",
+    "policy_id",
+    "accepting",
+    "inhibited_reason",
+    "escrow_cents",
+    "bill_in_escrow_cents",
+    "devices",
+    "tubes",
+    "exact_change",
+    "stacker",
+    "session"
+  ],
+  "title": "PaymentState",
+  "type": "object"
+}

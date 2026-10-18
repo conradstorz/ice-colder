@@ -394,11 +394,13 @@ class TestMonitorCapabilitiesIdentity:
 
 
 class TestCompletionTimeouts:
-    """2026-09-29 completion-table amendment: every long-running command
-    must have a COMPLETION_TIMEOUTS entry, and every entry must actually be
-    a testable command — the two tables cannot drift apart the way
-    TESTABLE_COMMANDS and SubsystemCapabilities.commands did before
-    (Copilot review, PR 22, id=4128088689)."""
+    """2026-09-29 completion-table amendment: every long-running *testable*
+    command has a COMPLETION_TIMEOUTS entry; a long-running control command
+    may have one too (the dispatcher's `send_and_await_completion` reads this
+    table for production commands as well, e.g. `dispense`). The two tables
+    cannot drift apart the way TESTABLE_COMMANDS and
+    SubsystemCapabilities.commands did before (Copilot review, PR 22,
+    id=4128088689)."""
 
     # Verified against each simulator handler (not assumed): the three
     # standard commands and the three mdb actuator commands all finish
@@ -418,10 +420,15 @@ class TestCompletionTimeouts:
         ("ice_maker", "self_test"),
         ("ice_maker", "force_report"),
     }
-    _LONG_RUNNING = {
+    _LONG_RUNNING_TESTABLE = {
         ("vending", "dispense"),
         ("vending", "water_valve"),
         ("ice_maker", "power_cycle"),
+    }
+    # Control commands (never testable, or testable only from spec 2 on).
+    _LONG_RUNNING_CONTROL = {
+        ("mdb", "payout"),
+        ("mdb", "vend_request"),
     }
 
     def test_every_testable_command_is_classified(self):
@@ -430,10 +437,12 @@ class TestCompletionTimeouts:
             for subsystem, commands in TESTABLE_COMMANDS.items()
             for command in commands
         }
-        assert all_testable == self._IMMEDIATE | self._LONG_RUNNING
+        assert all_testable == self._IMMEDIATE | self._LONG_RUNNING_TESTABLE
 
     def test_long_running_commands_have_completion_timeouts(self):
-        assert set(COMPLETION_TIMEOUTS) == self._LONG_RUNNING
+        assert set(COMPLETION_TIMEOUTS) == (
+            self._LONG_RUNNING_TESTABLE | self._LONG_RUNNING_CONTROL
+        )
 
     def test_immediate_commands_have_no_completion_timeout(self):
         assert self._IMMEDIATE.isdisjoint(COMPLETION_TIMEOUTS)
@@ -460,3 +469,9 @@ class TestCompletionTimeouts:
         # spuriously fail that legitimate case. This must scale with it.
         timeout_fn = COMPLETION_TIMEOUTS[("ice_maker", "power_cycle")]
         assert timeout_fn({"dwell_seconds": dwell}) == expected
+
+    def test_payout_and_vend_request_timeouts_are_fixed(self):
+        assert COMPLETION_TIMEOUTS[("mdb", "payout")]({}) == 60.0
+        assert COMPLETION_TIMEOUTS[("mdb", "payout")]({"cents": 500}) == 60.0
+        assert COMPLETION_TIMEOUTS[("mdb", "vend_request")]({}) == 45.0
+        assert COMPLETION_TIMEOUTS[("mdb", "vend_request")]({"cents": 250}) == 45.0

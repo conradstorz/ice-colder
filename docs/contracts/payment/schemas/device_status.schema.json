@@ -1,0 +1,15 @@
+{
+  "enum": [
+    "ready",
+    "disabled",
+    "busy",
+    "jammed",
+    "full",
+    "empty",
+    "tilt",
+    "offline",
+    "error"
+  ],
+  "title": "DeviceStatus",
+  "type": "string"
+}
