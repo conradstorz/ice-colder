@@ -156,8 +156,10 @@ async def test_hardware_io_message_reaches_input_faults_once(mach):
 
 
 async def test_input_faults_wired_once_per_machine(mach):
-    """A double subscription would double the live ro_overrun timers (each
-    consumer arms its own) and could double the raise notifications."""
+    """The live ro_overrun timer count is the real guard: a double
+    subscription would arm two timers (one per consumer). The raise
+    notification check is incidental, since a second raise of an already
+    active code is skipped and cannot reveal a duplicate subscriber."""
     m, runner = mach
     changes = []
     m.faults.subscribe_fault_change(changes.append)
@@ -181,7 +183,7 @@ async def test_wtr105_clears_on_recovery_and_never_blocks_payment(mach):
     m, _ = mach
     await _io(m, VendingChannel.water_pressure_ok, False)
     assert m.faults.has(FaultCode.WTR_105)
-    assert not any("105" in r for r in m.availability.payment_blocking_reasons())
+    assert m.availability.payment_blocking_reasons() == []
     assert m.availability.payment_enabled
     await _io(m, VendingChannel.water_pressure_ok, True)
     assert not m.faults.has(FaultCode.WTR_105)
