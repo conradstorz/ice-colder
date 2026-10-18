@@ -1,0 +1,8 @@
+{
+  "mechanism": "bagged_ice",
+  "product_sku": "ice-bag",
+  "agitate": {"motor_channel": "agitator_motor", "run_seconds": 2, "stall_current_amps": "unmonitored", "current_channel": "unmonitored"},
+  "fill": {"proof": "bag_full_sensor", "motor_channel": "auger_motor", "sensor_channel": "bag_full_sensor", "max_run_seconds": 20, "stall_current_amps": "unmonitored", "current_channel": "unmonitored"},
+  "release": {"proof": "catch", "catch_channel": "trap_door_catch", "drop_seconds": 3},
+  "accessories": {"fan": {"channel": "bag_fan", "on_during": ["agitate", "fill"], "lead_seconds": 1, "lag_seconds": 2}}
+}
