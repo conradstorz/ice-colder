@@ -45,6 +45,7 @@ from ice_contracts.board.dispenser_schema import (
     IceFillTimed,
     MECHANISM_FOR_KIND,
     ReleaseByCatch,
+    ReleaseBySensor,
     ReleaseStep,
     ReleaseTimed,
     SlotProfile,
@@ -120,17 +121,15 @@ _UNION_TAG_TABLE: list[tuple[frozenset[type], list[str]]] = [
 _SLOT_PROFILE_TAGS = _UNION_TAG_TABLE[0][1]
 
 
-def _variant_tags_for(cls_a: type, cls_b: type) -> list[str]:
+def _variant_tags_for(*classes: type) -> list[str]:
     """The full, declaration-ordered tag list for the one discriminated
-    union that has both `cls_a` and `cls_b` as members."""
+    union that has every one of `classes` as a member."""
 
     for members, tags in _UNION_TAG_TABLE:
-        if cls_a in members and cls_b in members:
+        if all(cls in members for cls in classes):
             return tags
-    raise ValueError(
-        f"no known discriminated union has both {{{cls_a.__name__}, "
-        f"{cls_b.__name__}}} as members"
-    )
+    names = ", ".join(cls.__name__ for cls in classes)
+    raise ValueError(f"no known discriminated union has all of {{{names}}} as members")
 
 
 def _scan_bounds(
@@ -331,8 +330,8 @@ def _toml_scalar(value: Any) -> str:
 # --------------------------------------------------------------------------
 # Sample-value containers. `_Table` is one sub-model's worth of hand-picked
 # values (keyed by field name); `_UnionTable` is a discriminated-union
-# field's live variant plus the other variant's sample values (rendered as
-# a trailing commented block).
+# field's live variant plus every other variant's sample values (each
+# rendered as a trailing commented block).
 # --------------------------------------------------------------------------
 
 
@@ -345,7 +344,7 @@ class _Table:
 @dataclass(frozen=True)
 class _UnionTable:
     live: _Table
-    other: _Table
+    others: tuple[_Table, ...]
 
 
 # The "mechanism" field's other tag is never shown inline (unlike "proof",
@@ -446,7 +445,7 @@ def _render_table(
         elif isinstance(value, _UnionTable):
             lines.append("")
             lines.append(_comment_for(field_info))
-            tags = _variant_tags_for(value.live.cls, value.other.cls)
+            tags = _variant_tags_for(value.live.cls, *(o.cls for o in value.others))
             _render_table(
                 value.live.cls,
                 value.live.values,
@@ -455,26 +454,31 @@ def _render_table(
                 discriminator_tags=tags,
             )
 
-            other_cls = value.other.cls
-            disc = _discriminator_name(other_cls)
-            other_tag_values = _literal_values(other_cls.model_fields[disc].annotation)
-            if other_tag_values is None:
-                raise ValueError(f"{other_cls.__name__}.{disc} has no Literal values")
-            other_tag = other_tag_values[0]
-            lines.append("")
-            lines.append(f'# If {disc} = "{other_tag}" instead, the fields are:')
-            for fname in _ordered_field_names(other_cls):
-                finfo = other_cls.model_fields[fname]
-                if fname not in value.other.values:
-                    raise KeyError(
-                        f"{other_cls.__name__}.{fname} has no sample value "
-                        "in dispensers_doc.py"
+            for other in value.others:
+                other_cls = other.cls
+                disc = _discriminator_name(other_cls)
+                other_tag_values = _literal_values(
+                    other_cls.model_fields[disc].annotation
+                )
+                if other_tag_values is None:
+                    raise ValueError(
+                        f"{other_cls.__name__}.{disc} has no Literal values"
                     )
-                if fname in ("mechanism", "proof"):
-                    lines.append(_comment_for(finfo, variant_tags=tags))
-                else:
-                    lines.append(_comment_for(finfo))
-                lines.append(f"# {fname} = {_toml_scalar(value.other.values[fname])}")
+                other_tag = other_tag_values[0]
+                lines.append("")
+                lines.append(f'# If {disc} = "{other_tag}" instead, the fields are:')
+                for fname in _ordered_field_names(other_cls):
+                    finfo = other_cls.model_fields[fname]
+                    if fname not in other.values:
+                        raise KeyError(
+                            f"{other_cls.__name__}.{fname} has no sample value "
+                            "in dispensers_doc.py"
+                        )
+                    if fname in ("mechanism", "proof"):
+                        lines.append(_comment_for(finfo, variant_tags=tags))
+                    else:
+                        lines.append(_comment_for(finfo))
+                    lines.append(f"# {fname} = {_toml_scalar(other.values[fname])}")
 
         else:  # dict[str, _Table]
             lines.append("")
@@ -532,15 +536,17 @@ _SLOT_0_FILL = _UnionTable(
             "max_run_seconds": 45.0,
         },
     ),
-    other=_Table(
-        IceFillTimed,
-        {
-            "stall_current_amps": "unmonitored",
-            "current_channel": "unmonitored",
-            "proof": "timed",
-            "motor_channel": "auger_motor",
-            "max_run_seconds": 45.0,
-        },
+    others=(
+        _Table(
+            IceFillTimed,
+            {
+                "stall_current_amps": "unmonitored",
+                "current_channel": "unmonitored",
+                "proof": "timed",
+                "motor_channel": "auger_motor",
+                "max_run_seconds": 45.0,
+            },
+        ),
     ),
 )
 
@@ -553,13 +559,26 @@ _SLOT_0_RELEASE = _UnionTable(
             "drop_seconds": 2.0,
         },
     ),
-    other=_Table(
-        ReleaseTimed,
-        {
-            "proof": "timed",
-            "solenoid_channel": "bag_drop_solenoid",
-            "pulse_seconds": 1.0,
-        },
+    others=(
+        _Table(
+            ReleaseTimed,
+            {
+                "proof": "timed",
+                "solenoid_channel": "bag_drop_solenoid",
+                "pulse_seconds": 1.0,
+            },
+        ),
+        _Table(
+            ReleaseBySensor,
+            {
+                "proof": "door_sensor",
+                "solenoid_channel": "bag_drop_solenoid",
+                "sensor_channel": "bag_door_sensor",
+                "pulse_seconds": 1.0,
+                "open_timeout_seconds": 3.0,
+                "close_timeout_seconds": 5.0,
+            },
+        ),
     ),
 )
 
@@ -600,13 +619,15 @@ _SLOT_1_FILL = _UnionTable(
             "max_fill_seconds": 90.0,
         },
     ),
-    other=_Table(
-        WaterFillTimed,
-        {
-            "proof": "timed",
-            "valve_channel": "water_valve_solenoid",
-            "max_fill_seconds": 90.0,
-        },
+    others=(
+        _Table(
+            WaterFillTimed,
+            {
+                "proof": "timed",
+                "valve_channel": "water_valve_solenoid",
+                "max_fill_seconds": 90.0,
+            },
+        ),
     ),
 )
 
@@ -635,13 +656,15 @@ _SLOT_2_FILL = _UnionTable(
             "max_fill_seconds": 90.0,
         },
     ),
-    other=_Table(
-        WaterFillTimed,
-        {
-            "proof": "timed",
-            "valve_channel": "water_valve_solenoid",
-            "max_fill_seconds": 90.0,
-        },
+    others=(
+        _Table(
+            WaterFillTimed,
+            {
+                "proof": "timed",
+                "valve_channel": "water_valve_solenoid",
+                "max_fill_seconds": 90.0,
+            },
+        ),
     ),
 )
 
