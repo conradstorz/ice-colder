@@ -109,6 +109,7 @@ tests/         one package; conftest.py + helpers stay at root
 | Run all tests | `uv run pytest` |
 | Run a single test | `uv run pytest tests/test_file.py::test_name` |
 | Lint/format | `ruff check --fix .` then `ruff format .` |
+| Build the vending firmware and flash an attached KC868-A8 (exits 0 with a message when no board is attached) | `uv run python scripts/flash_vending.py` |
 | Build Tailwind CSS | `.tailwind/tailwindcss.exe -c packages/ui/tailwind.config.js -i packages/ui/tailwind.input.css -o packages/ui/src/ice_ui/static/app.css --minify` |
 | Build the vending firmware | `pio run -e kc868-a8` (from `firmware/vending/`) |
 | Run the firmware host tests | `pio test -e native` (from `firmware/vending/`) |

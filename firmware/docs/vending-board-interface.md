@@ -159,6 +159,11 @@ switched by a board relay directly.
 
 ## 7. Provisioning
 
+Flashing: from the repository root, `uv run python scripts/flash_vending.py` builds the `kc868-a8`
+environment, finds the one attached USB-serial bridge (CH340/CH9102, CP210x, FTDI or Espressif), and
+uploads to it; it exits 0 with a message when no board is attached, asks for `--port` when several are,
+and takes `--no-build` and `--monitor`.
+
 Compile-time defaults come from the `VEND_DEFAULT_*` flags documented in
 `firmware/vending/platformio.ini`; the USB serial console (115200 baud, prompt `vend> `) overrides
 them and persists to NVS namespace `vend`. There is no captive portal and no OTA.

@@ -14,12 +14,13 @@ motors, dispensers) and talk to the edge controller over MQTT.
 
 ## Build, test, flash
 
-Run from `firmware/vending/`. Install PlatformIO with `uv tool install platformio`. The host tests
+Run from `firmware/vending/` (or add `-d firmware/vending` from the repo root). Install PlatformIO with `uv tool install platformio`. The host tests
 need a host `g++` on PATH (on Windows, WinLibs: `winget install BrechtSanders.WinLibs.POSIX.UCRT`).
 
 | Task | Command |
 |---|---|
 | Build the firmware | `pio run -e kc868-a8` |
+| Build and flash whatever board is plugged in (from the repo root) | `uv run python scripts/flash_vending.py` (`--port COMx`, `--no-build`, `--monitor`) |
 | Host unit tests | `pio test -e native` |
 | Refresh the golden wire JSON | `pio test -e native -f test_wire` |
 | Flash over USB | `pio run -e kc868-a8 -t upload` |
