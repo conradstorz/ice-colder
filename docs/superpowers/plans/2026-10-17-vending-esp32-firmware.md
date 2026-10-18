@@ -8,7 +8,7 @@
 
 **Tech Stack:** C++17, PlatformIO (`platform = espressif32`, `framework = espidf`; `platform = native` for host tests), Unity test framework, ArduinoJson 7 (header-only, works on both envs), ESP-IDF 5.x (`esp-mqtt`, `driver/i2c_master.h`, `driver/pulse_cnt.h`, `onewire_bus` + `ds18b20` managed components, NVS), Python 3.12 + pytest + aiomqtt for the conformance suite.
 
-**Spec:** [`docs/superpowers/specs/2026-10-17-vending-esp32-firmware-design.md`](../specs/2026-10-17-vending-esp32-firmware-design.md). Section references (§) are to the spec. Hardware tags (IC4, W7…) are from [`docs/hardware/im600xl-io-list.md`](../../hardware/im600xl-io-list.md). The 2.0.0 contract shapes (`ButtonPress.button: str`, `ReleaseByCatch`, the 17-channel list) are defined in the [IM600XL simulator design](../specs/2026-10-17-im600xl-simulator-design.md) §3 and §5.1; that plan is **not yet implemented**, and this plan does not depend on it except where Task 12 says so.
+**Spec:** [`docs/superpowers/specs/2026-10-17-vending-esp32-firmware-design.md`](../specs/2026-10-17-vending-esp32-firmware-design.md). Section references (§) are to the spec. Hardware tags (IC4, W7…) are from [`docs/hardware/im600xl-io-list.md`](../../hardware/im600xl-io-list.md). The 2.0.0 contract shapes (`ButtonPress.button: str`, `ReleaseByCatch`, the 17-channel list) are defined in the [IM600XL simulator design](../specs/2026-10-17-im600xl-simulator-design.md) §3 and §5.1; that plan is **fully merged to `main`** (contract 2.0.0, PR #96), so Task 12 runs its 2.0.0 checks for real against the simulator with no `xfail` marks.
 
 **Plan style:** each task gives files, interfaces and the tests to write. Implementers write the code bodies, matching surrounding style. C++ signatures below are the contract between tasks; bodies are the implementer's.
 
@@ -424,13 +424,13 @@ Opt-in like the browser tests: skipped unless `ICE_COLDER_BOARD_TESTS=1`, and th
       async def collect(self, suffix: str, seconds: float) -> list[dict]
   ```
 - Create the test modules (each a handful of tests):
-  - `test_golden_wire.py` — **always runs, no flag** (pure file validation): every `firmware/vending/test/golden/*.json` validates against its Pydantic model (`SubsystemCapabilities`, `SubsystemHeartbeat`, `CommandAck`, `HardwareIO`, `ButtonPress`, `DispenserStatus`, `SensorReading`); the capabilities golden lists exactly the 17 ids; `ButtonPress` golden is marked `xfail(strict=True, reason="2.0.0 ButtonPress.button is int until IM600XL Task 3")`.
-  - `test_capabilities.py` — retained doc validates; `subsystem == "vending"`; commands ⊇ the five; channel ids == the 17 (`xfail(strict=True)` against the simulator until IM600XL Task 10; a `BOARD_IS_2_0_0 = not is_sim or "ro_tank_empty" in ids` helper decides at runtime so the mark lifts itself when the simulator catches up).
+  - `test_golden_wire.py` — **always runs, no flag** (pure file validation): every `firmware/vending/test/golden/*.json` validates against its Pydantic model (`SubsystemCapabilities`, `SubsystemHeartbeat`, `CommandAck`, `HardwareIO`, `ButtonPress`, `DispenserStatus`, `SensorReading`); the capabilities golden lists exactly the 17 ids; the `ButtonPress` golden must validate with `button` as a channel-id string (2.0.0 is on `main`).
+  - `test_capabilities.py` — retained doc validates; `subsystem == "vending"`; commands ⊇ the five; channel ids == the 17 exactly (the simulator on `main` already declares them).
   - `test_liveness.py` — two heartbeats ≤ 12 s apart; `uptime_seconds` increases; on the simulator target, stopping its client makes the LWT `-1` arrive (`requires_sim`).
   - `test_standard_commands.py` — `ping` one `ok/completed`; `self_test` result has a non-empty `checks` list each with `name`, `pass`, `detail`; `force_report` is acked and a `capabilities/vending` and ≥ 1 `hardware/io/+` message follow within 5 s.
   - `test_idempotency.py` — same `request_id` twice for `ping` → two identical acks and (`requires_sim`) no second handler run; a duplicate `water_valve` after completion replays `completed`, not `accepted`.
   - `test_water_valve.py` — `seconds=2` → `accepted` then `completed` within 7 s; `seconds=0` and `11` → `rejected` with a detail mentioning `seconds`.
-  - `test_dispense.py` — the catch profile fixture from `firmware/vending/test/fixtures/profile_ice_catch.json`: `accepted`, then `hardware/dispenser` steps, then one terminal report carrying the `request_id` within 120 s (`requires_sim` for the sensor-driven `complete`; on hardware only the `accepted` ack and the first `agitate` step are asserted); a second dispense during the first → `rejected` with `"busy"`; `ReleaseByCatch` is `xfail(strict=True)` against the simulator until IM600XL Task 2.
+  - `test_dispense.py` — the catch profile fixture from `firmware/vending/test/fixtures/profile_ice_catch.json`: `accepted`, then `hardware/dispenser` steps, then one terminal report carrying the `request_id` within 120 s (`requires_sim` for the sensor-driven `complete`; on hardware only the `accepted` ack and the first `agitate` step are asserted); a second dispense during the first → `rejected` with `"busy"`; `ReleaseByCatch` is accepted by the simulator on `main`.
   - `test_rejections.py` — unknown command → `unsupported`; missing `request_id` → no ack within 3 s and no error; `dispense` missing `profile` → `rejected`.
 - Modify: `tests/skip_policy.py` — docstring paragraph for the board suite mirroring the browser-test paragraph; the one new entry above.
 - Modify: `.github/workflows/ci.yml` — `ICE_COLDER_BOARD_TESTS: "1"` in the test job's env (the broker step already runs before it).
@@ -439,7 +439,7 @@ Opt-in like the browser tests: skipped unless `ICE_COLDER_BOARD_TESTS=1`, and th
 **Interfaces:**
 - Consumes: the golden files (Task 11), the simulator, the contract models.
 
-- [ ] **Step 1: Write the suite.** Run `uv run pytest tests/firmware -q` without the flag: everything but `test_golden_wire.py` skips with the opt-in reason. Run with `ICE_COLDER_BOARD_TESTS=1` and a local mosquitto (`docker compose -f docker/docker-compose.yml up -d mosquitto` through the `hpz440` context, or any broker on `localhost:1883`): the simulator target passes, the 2.0.0-only checks xfail.
+- [ ] **Step 1: Write the suite.** Run `uv run pytest tests/firmware -q` without the flag: everything but `test_golden_wire.py` skips with the opt-in reason. Run with `ICE_COLDER_BOARD_TESTS=1` and a local mosquitto (`docker compose -f docker/docker-compose.yml up -d mosquitto` through the `hpz440` context, or any broker on `localhost:1883`): the simulator target passes.
 - [ ] **Step 2: Run the skip guard** the way CI does: `ICE_COLDER_REQUIRE_BROKER=1 uv run python tests/run_skip_guard.py skip-report.json` after a flagged run — green.
 - [ ] **Step 3: `uv run pytest`** whole suite green; `ruff check --fix .`; `ruff format .`.
 - [ ] **Step 4: Commit** — `test(firmware): opt-in board conformance suite and golden wire validation`
@@ -463,5 +463,5 @@ Opt-in like the browser tests: skipped unless `ICE_COLDER_BOARD_TESTS=1`, and th
 ## Self-review
 
 - **Spec coverage:** §3 layout → Tasks 1, 13; §4.1–4.4 → Tasks 10, 13; §5.1 Dispenser → 5–6, Interlocks/OutputGuard → 7, RoLoop/FreezeProtect → 8; §5.2 comms → 11; §5.3 queues → 10–11; §5.4 ack phases → 9, 11; §6 topics, fail-safe, NVS → 9–11; §7 error table → 3 (no-id drop, unsupported, rejected), 9 (busy, vmc_offline, trips), 11 (ring buffer on broker loss); §8 host tests → 2–9, conformance → 12, bench → 13; §9 docs → 13; §10 open items → pin-map comments and interface doc.
-- **Known deferral:** the `xfail(strict=True)` marks in Task 12 come off in the IM600XL plan's Tasks 2, 3 and 10; each mark's `reason` names that task so the removal is found by grep.
+- **Former deferral, now moot:** the IM600XL plan merged before execution began, so Task 12 carries no `xfail` marks.
 - **Type consistency:** `Decoded`/`Ack`/`Event` are defined once (Tasks 2–3) and used by name in 9–11; `Dispenser::tick` takes `OutputGuard&` from Task 7 on (Task 5–6 tests migrate in Task 7, stated there).
