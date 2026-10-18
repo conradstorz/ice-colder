@@ -156,3 +156,61 @@ def test_cooldown_config_bounds():
             ConfigModel.model_validate(
                 {"physical": {"ice_retry_cooldown_seconds": bad}}
             )
+
+
+async def _send_vending_caps(machine, *channel_ids):
+    from ice_contracts.board.common import ChannelDescriptor
+    from ice_contracts.board.vending_machine import (
+        CONTRACT_VERSION,
+        SubsystemCapabilities,
+    )
+
+    caps = SubsystemCapabilities(
+        subsystem="vending",
+        contract_version=CONTRACT_VERSION,
+        brand="B",
+        model="M",
+        firmware="0.1.0",
+        channels=[
+            ChannelDescriptor(
+                channel_id=c, kind="binary", interval_seconds=10, direction="input"
+            )
+            for c in channel_ids
+        ],
+    )
+    await machine.telemetry.handle_capabilities(
+        "capabilities/vending", caps.model_dump(mode="json")
+    )
+
+
+async def test_no_bin_caps_after_raise_arms_and_fire_clears_by_cooldown(
+    machine_fake_time,
+):
+    machine, runner = machine_fake_time
+    machine.set_availability(Availability())  # default: assumed instrumented
+    rec = Rec()
+    machine.set_event_recorder(rec)
+    machine.faults.raise_fault(FaultCode.ICE_101, sku="A1")
+    assert labels(runner) == []
+    await _send_vending_caps(machine, "button_ice")
+    assert labels(runner) == ["ice_retry_cooldown"]
+    runner.fire("ice_retry_cooldown")
+    assert machine.faults.is_locked("A1") is None
+    assert cleared_by(rec) == ["cooldown"]
+
+
+async def test_bin_caps_cancel_pending_timer(machine_fake_time):
+    machine, runner = machine_fake_time
+    machine.set_availability(uninstrumented())
+    machine.faults.raise_fault(FaultCode.ICE_101, sku="A1")
+    assert labels(runner) == ["ice_retry_cooldown"]
+    await _send_vending_caps(machine, VendingChannel.bin_half_full)
+    assert labels(runner) == []
+    assert machine.faults.is_locked("A1") is not None
+
+
+async def test_no_bin_caps_without_ice101_arms_nothing(machine_fake_time):
+    machine, runner = machine_fake_time
+    machine.set_availability(Availability())
+    await _send_vending_caps(machine, "button_ice")
+    assert labels(runner) == []

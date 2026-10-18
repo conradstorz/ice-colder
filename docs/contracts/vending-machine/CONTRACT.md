@@ -153,6 +153,30 @@ Major bump: `ButtonPress.button` changes type on the wire, and a topic is remove
   handler and the health monitor its `water_flow` channel. `SensorReading`
   stays (it carries `sensors/temp/+`).
 
+### Upgrading to vending contract 2.0.0
+
+An already-deployed machine keeps its gitignored `data/config.json` and
+`data/dispensers.toml`, and both predate 2.0.0. Until they are updated:
+
+- **Every product has `button = null`**, so every customer button press is
+  refused as unclaimed. The only signal is the `warn_if_no_buttons` warning
+  in the startup log.
+- **Old dispenser profiles name channels the IM600XL board does not declare**
+  (`bag_drop_solenoid`, `door_sensor`, `water_flow_sensor`,
+  `vending_now_light`). Once its capabilities arrive the validator reports
+  "not declared by the vending board" and every product is locked with
+  `CFG-101`.
+
+Operator steps:
+
+1. Re-seed `dispensers.toml` from the committed `dispensers.example.toml`
+   (keep a copy of the old file; carry over only timings you tuned).
+2. Assign each product's button on the Products catalog form
+   (`/products/{sku}/catalog`, field "button"), or copy the `button` values
+   from `config.example.json`.
+3. Restart, then check the log for a `warn_if_no_buttons` warning and
+   `/health/faults` for `CFG-101` on any product; both should be absent.
+
 ## Semantics fixed in 1.0.0 (breaking)
 
 Major bump (Copilot review, PR #32): the runtime wiring below shipped at

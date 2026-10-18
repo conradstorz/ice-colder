@@ -825,6 +825,36 @@ class TestProductButton:
         assert dup.status_code == 400
         assert not any(p.sku == "BTN-6" for p in cfg.products)
 
+    def test_placement_edit_leaves_button_unchanged(self, client, wired):
+        cfg, _vmc, _inv, _store = wired
+        _add(client, "BTN-7", button="button_ice", slot="1")
+        resp = client.post(
+            "/products/BTN-7/placement",
+            data={"slot": "2", "inventory_count": "4", "track_inventory": "on"},
+        )
+        assert resp.status_code == 200
+        product = next(p for p in cfg.products if p.sku == "BTN-7")
+        assert product.slot == 2
+        assert product.button == "button_ice"
+
+    def test_catalog_edit_of_name_and_price_keeps_button(self, client, wired):
+        cfg, _vmc, _inv, _store = wired
+        _add(client, "BTN-8", button="button_ice")
+        resp = client.post(
+            "/products/BTN-8/catalog",
+            data={
+                "name": "Renamed",
+                "price": "2.50",
+                "kind": "other",
+                "button": "button_ice",
+            },
+        )
+        assert resp.status_code == 200
+        product = next(p for p in cfg.products if p.sku == "BTN-8")
+        assert product.name == "Renamed"
+        assert product.price == 2.50
+        assert product.button == "button_ice"
+
     def test_invalid_button_id_is_400(self, client, wired):
         cfg, _vmc, _inv, _store = wired
         _add(client, "BTN-7")
