@@ -58,11 +58,11 @@ constexpr uint8_t kInputBit[vendcore::kBinaryInputCount] = {
 // opto-isolated dry-contact inputs: a closed contact drives the pin low (raw 0); an open
 // contact or broken wire reads raw 1 (pull-up). Every fault input must be wired
 // normally-closed so a broken wire reads as the fault. Contact types are pending the
-// I/O list section 8 survey (W6/W7/W8/W9/C6 contact types, IC4 sensor type); verify
+// I/O list section 8 survey (W6/W7/W8/W9/C6 contact types, IC5 sensor type); verify
 // against KC868-A8-schematic.pdf.
 inline vendcore::Polarity default_polarity() {
     vendcore::Polarity p = {};
-    // IC4 bag-full sensor, closed = bag full; open = not full (fill runs to max_run_s -> bin_empty, visible fault).
+    // IC5 bag-full sensor, closed = bag full; open = not full (fill runs to max_run_s -> bin_empty, visible fault).
     p.active_low[static_cast<int>(vendcore::In::BagFull)] = true;
     // C1 ice button, NO momentary; closed = pressed, open = idle.
     p.active_low[static_cast<int>(vendcore::In::ButtonIce)] = true;
