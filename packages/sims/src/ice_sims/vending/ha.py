@@ -2,6 +2,7 @@
 """Home Assistant discovery entities for the vending board."""
 
 from ice_contracts.board.common import ChannelDescriptor
+from ice_sims.vending.channels import BUTTON_PREFIX
 
 # HA device classes for the channels where "running" / "occupancy" would
 # mislead; every other output is "running" and every other input "occupancy".
@@ -13,7 +14,7 @@ _DEVICE_CLASSES = {
 
 def _is_button(channel: ChannelDescriptor) -> bool:
     # Customer buttons are the binary inputs the board names `button_*`.
-    return channel.channel_id.startswith("button_")
+    return channel.channel_id.startswith(BUTTON_PREFIX)
 
 
 def _title(channel_id: str) -> str:

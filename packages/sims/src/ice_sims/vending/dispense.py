@@ -12,10 +12,10 @@ from dataclasses import dataclass
 
 from ice_contracts.board.dispenser_schema import (
     Accessory,
-    SlotProfile,
     IceFillBySensor,
     ReleaseByCatch,
     ReleaseBySensor,
+    SlotProfile,
     WaterFillByVolume,
     drive_channels,
     sense_channels,
