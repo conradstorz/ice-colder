@@ -218,3 +218,4 @@ cloud_data/
 .pio/
 sdkconfig.*
 !sdkconfig.defaults
+firmware/vending/managed_components/
