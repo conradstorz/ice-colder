@@ -1,301 +1,188 @@
 """Unit tests for ice_edge/hal/mqtt_inbound.py's TelemetryRouter.
 
-These exercise the router in isolation -- no VMC instance -- with small
-fake health-monitor/availability objects that record calls, matching the
-pattern this task's brief asked for. `TestSubscriptionsTable` at the bottom
-is the one test that does import VMC, purely to check SUBSCRIPTIONS names
-real VMC attributes and that the registered topic set hasn't changed.
+The router validates and fans out; these tests attach recording subscribers
+and check each topic reaches them with the documented arguments.
+`TestSubscriptionsTable` at the bottom imports VMC purely to check
+SUBSCRIPTIONS names real attributes.
 """
+
+import pytest
 
 from ice_contracts.board.ice_maker_monitor import CONTRACT_VERSION
 from ice_edge.hal.mqtt_inbound import SUBSCRIPTIONS, TelemetryRouter
 
 
-class FakeHealth:
-    """Records every call a real HealthMonitor would have acted on."""
-
-    def __init__(self):
-        self.signals: list[tuple] = []
-        self.temperatures: list[tuple] = []
-        self.channels: list[tuple] = []
-        self.heartbeats: list[tuple] = []
-        self.offline: list[str] = []
-        self.capabilities: list[tuple] = []
-
-    def record_signal(self, subsystem, channel_id, value, *, text=None):
-        self.signals.append((subsystem, channel_id, value, text))
-
-    def record_temperature(self, location, value):
-        self.temperatures.append((location, value))
-
-    def record_channel(self, channel_id, value):
-        self.channels.append((channel_id, value))
-
-    def record_heartbeat(self, subsystem, payload=None):
-        self.heartbeats.append((subsystem, payload))
-
-    def mark_offline(self, subsystem):
-        self.offline.append(subsystem)
-
-    def record_capabilities(self, subsystem, caps):
-        self.capabilities.append((subsystem, caps))
-
-
-class FakeAvailability:
-    """Records every call a real Availability would have acted on."""
-
-    def __init__(self):
-        self.hardware_io: list[tuple] = []
-        self.payment_devices: list[tuple] = []
-
-    def set_hardware_io(self, device, state):
-        self.hardware_io.append((device, state))
-
-    def set_payment_device(self, device, state):
-        self.payment_devices.append((device, state))
-
-
-def _router(
-    *,
-    health=None,
-    availability=None,
-    capabilities=None,
-    on_bin_half_full=None,
-    on_capabilities_validated=None,
-):
-    return TelemetryRouter(
-        health=lambda: health,
-        availability=lambda: availability,
-        capabilities=capabilities if capabilities is not None else {},
-        on_bin_half_full=on_bin_half_full or (lambda: None),
-        on_capabilities_validated=on_capabilities_validated or (lambda s, c: None),
-    )
+def _caps_payload(subsystem="ice_maker"):
+    return {
+        "subsystem": subsystem,
+        "contract_version": CONTRACT_VERSION,
+        "brand": "BrandX",
+        "model": "IM-500",
+        "firmware": "0.1.0",
+        "channels": [],
+        "commands": ["power_cycle"],
+    }
 
 
 class TestHardwareIO:
-    async def test_forwards_to_availability_and_records_vending_signal(self):
-        health, avail = FakeHealth(), FakeAvailability()
-        router = _router(health=health, availability=avail)
+    async def test_publishes_device_and_state(self):
+        router, seen = TelemetryRouter(), []
+        router.subscribe_hardware_io(lambda d, s: seen.append((d, s)))
         await router.handle_hardware_io(
             "hardware/io/door", {"device": "door", "state": True}
         )
-        assert avail.hardware_io == [("door", True)]
-        assert health.signals == [("vending", "door", 1.0, None)]
+        assert seen == [("door", True)]
 
-    async def test_bin_half_full_true_fires_callback(self):
-        calls = []
-        router = _router(on_bin_half_full=lambda: calls.append(True))
-        await router.handle_hardware_io(
-            "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
-        )
-        assert calls == [True]
+    async def test_invalid_payload_reaches_nobody(self):
+        router, seen = TelemetryRouter(), []
+        router.subscribe_hardware_io(lambda d, s: seen.append((d, s)))
+        with pytest.raises(Exception):
+            await router.handle_hardware_io("hardware/io/door", {"device": "door"})
+        assert seen == []
 
-    async def test_bin_half_full_false_does_not_fire_callback(self):
-        calls = []
-        router = _router(on_bin_half_full=lambda: calls.append(True))
-        await router.handle_hardware_io(
-            "hardware/io/bin_half_full", {"device": "bin_half_full", "state": False}
-        )
-        assert calls == []
-
-    async def test_other_device_true_does_not_fire_callback(self):
-        calls = []
-        router = _router(on_bin_half_full=lambda: calls.append(True))
-        await router.handle_hardware_io(
+    async def test_no_subscribers_is_fine(self):
+        await TelemetryRouter().handle_hardware_io(
             "hardware/io/door", {"device": "door", "state": True}
         )
-        assert calls == []
-
-    async def test_noop_without_health_or_availability(self):
-        router = _router()
-        await router.handle_hardware_io(
-            "hardware/io/door", {"device": "door", "state": True}
-        )  # must not raise
 
 
 class TestPaymentStatus:
-    async def test_records_mdb_signal_with_text_and_feeds_availability(self):
-        health, avail = FakeHealth(), FakeAvailability()
-        router = _router(health=health, availability=avail)
+    async def test_publishes_device_and_state(self):
+        router, seen = TelemetryRouter(), []
+        router.subscribe_payment_status(lambda d, s: seen.append((d, s)))
         await router.handle_payment_status(
             "payment/status", {"device": "coin_acceptor", "state": "ready"}
         )
-        assert avail.payment_devices == [("coin_acceptor", "ready")]
-        assert health.signals == [("mdb", "coin_acceptor", 1.0, "ready")]
+        assert seen == [("coin_acceptor", "ready")]
 
-    async def test_not_ready_records_zero(self):
-        health = FakeHealth()
-        router = _router(health=health)
-        await router.handle_payment_status(
-            "payment/status", {"device": "bill_acceptor", "state": "error"}
-        )
-        assert health.signals == [("mdb", "bill_acceptor", 0.0, "error")]
-
-    async def test_noop_without_health_or_availability(self):
-        router = _router()
-        await router.handle_payment_status(
-            "payment/status", {"device": "coin_acceptor", "state": "ready"}
-        )  # must not raise
+    async def test_invalid_payload_reaches_nobody(self):
+        router, seen = TelemetryRouter(), []
+        router.subscribe_payment_status(lambda d, s: seen.append((d, s)))
+        with pytest.raises(Exception):
+            await router.handle_payment_status("payment/status", {"device": "x"})
+        assert seen == []
 
 
 class TestSensor:
-    async def test_records_temperature(self):
-        health = FakeHealth()
-        router = _router(health=health)
+    async def test_publishes_location_and_float_value(self):
+        router, seen = TelemetryRouter(), []
+        router.subscribe_sensor(lambda loc, v: seen.append((loc, v)))
         await router.handle_sensor(
-            "sensors/temp/freezer", {"location": "freezer", "value": -5.0}
+            "sensors/temp/freezer", {"location": "freezer", "value": -5}
         )
-        assert health.temperatures == [("freezer", -5.0)]
+        assert seen == [("freezer", -5.0)]
+        assert isinstance(seen[0][1], float)
 
-    async def test_noop_without_health(self):
-        router = _router()
-        await router.handle_sensor(
-            "sensors/temp/freezer", {"location": "freezer", "value": -5.0}
-        )  # must not raise
+    async def test_location_falls_back_to_topic_tail(self):
+        router, seen = TelemetryRouter(), []
+        router.subscribe_sensor(lambda loc, v: seen.append((loc, v)))
+        await router.handle_sensor("sensors/temp/freezer", {"value": 1.5})
+        assert seen == [("freezer", 1.5)]
 
-
-class TestWaterFlow:
-    async def test_records_water_flow_channel(self):
-        health = FakeHealth()
-        router = _router(health=health)
-        await router.handle_water_flow(
-            "sensors/water_flow", {"location": "water_flow", "value": 1.2}
-        )
-        assert health.channels == [("water_flow", 1.2)]
-
-    async def test_noop_without_health(self):
-        router = _router()
-        await router.handle_water_flow(
-            "sensors/water_flow", {"location": "water_flow", "value": 1.2}
-        )  # must not raise
+    async def test_missing_value_reaches_nobody(self):
+        router, seen = TelemetryRouter(), []
+        router.subscribe_sensor(lambda loc, v: seen.append((loc, v)))
+        await router.handle_sensor("sensors/temp/freezer", {"location": "freezer"})
+        assert seen == []
 
 
 class TestHeartbeat:
-    async def test_uptime_minus_one_marks_offline(self):
-        health = FakeHealth()
-        router = _router(health=health)
-        await router.handle_heartbeat(
-            "heartbeat/ice_maker", {"subsystem": "ice_maker", "uptime_seconds": -1}
-        )
-        assert health.offline == ["ice_maker"]
-        assert health.heartbeats == []
-
-    async def test_normal_uptime_records_heartbeat(self):
-        health = FakeHealth()
-        router = _router(health=health)
+    async def test_normal_uptime_is_alive(self):
+        router, seen = TelemetryRouter(), []
+        router.subscribe_heartbeat(lambda s, d, a: seen.append((s, d, a)))
         payload = {"subsystem": "ice_maker", "uptime_seconds": 10}
         await router.handle_heartbeat("heartbeat/ice_maker", payload)
-        assert health.heartbeats == [("ice_maker", payload)]
-        assert health.offline == []
+        assert seen == [("ice_maker", payload, True)]
 
-    async def test_noop_without_health(self):
-        router = _router()
-        await router.handle_heartbeat(
-            "heartbeat/ice_maker", {"subsystem": "ice_maker", "uptime_seconds": 10}
-        )  # must not raise
-
-
-class TestCapabilities:
-    def _valid_payload(self, subsystem="ice_maker"):
-        return {
-            "subsystem": subsystem,
-            "contract_version": CONTRACT_VERSION,
-            "brand": "BrandX",
-            "model": "IM-500",
-            "firmware": "0.1.0",
-            "channels": [],
-            "commands": ["power_cycle"],
-        }
-
-    async def test_valid_doc_stores_records_and_fires_callback(self):
-        health = FakeHealth()
-        store: dict[str, dict] = {}
-        calls = []
-        router = _router(
-            health=health,
-            capabilities=store,
-            on_capabilities_validated=lambda s, c: calls.append((s, c)),
-        )
-        payload = self._valid_payload()
-        await router.handle_capabilities("capabilities/ice_maker", payload)
-        assert store["ice_maker"] == payload
-        assert health.capabilities == [("ice_maker", payload)]
-        assert len(calls) == 1
-        assert calls[0][0] == "ice_maker"
-        assert calls[0][1].firmware == "0.1.0"
-
-    async def test_malformed_doc_stores_raw_and_skips_callback(self):
-        health = FakeHealth()
-        store: dict[str, dict] = {}
-        calls = []
-        router = _router(
-            health=health,
-            capabilities=store,
-            on_capabilities_validated=lambda s, c: calls.append((s, c)),
-        )
-        payload = {"subsystem": "vending", "whatever": 1}
-        await router.handle_capabilities("capabilities/vending", payload)
-        assert store["vending"] == payload
-        assert health.capabilities == [("vending", payload)]
-        assert calls == []
-
-    async def test_noop_without_health(self):
-        store: dict[str, dict] = {}
-        router = _router(capabilities=store)
-        payload = self._valid_payload(subsystem="mdb")
-        await router.handle_capabilities("capabilities/mdb", payload)
-        assert store["mdb"] == payload  # must not raise
+    async def test_uptime_minus_one_is_last_will(self):
+        router, seen = TelemetryRouter(), []
+        router.subscribe_heartbeat(lambda s, d, a: seen.append((s, d, a)))
+        payload = {"subsystem": "ice_maker", "uptime_seconds": -1}
+        await router.handle_heartbeat("heartbeat/ice_maker", payload)
+        assert seen == [("ice_maker", payload, False)]
 
 
 class TestIceMakerEvent:
-    async def test_power_on_records_compressor_run_high(self):
-        health = FakeHealth()
-        router = _router(health=health)
+    async def test_publishes_validated_event(self):
+        router, seen = TelemetryRouter(), []
+        router.subscribe_ice_maker_event(seen.append)
         await router.handle_ice_maker_event("ice_maker/event", {"event": "power_on"})
-        assert health.signals == [("ice_maker", "compressor_run", 1.0, None)]
+        assert [e.event for e in seen] == ["power_on"]
 
-    async def test_power_off_records_compressor_run_low(self):
-        health = FakeHealth()
-        router = _router(health=health)
-        await router.handle_ice_maker_event("ice_maker/event", {"event": "power_off"})
-        assert health.signals == [("ice_maker", "compressor_run", 0.0, None)]
-
-    async def test_other_event_does_not_record_signal(self):
-        health = FakeHealth()
-        router = _router(health=health)
-        await router.handle_ice_maker_event("ice_maker/event", {"event": "ice_dropped"})
-        assert health.signals == []
-
-    async def test_noop_without_health(self):
-        router = _router()
-        await router.handle_ice_maker_event(
-            "ice_maker/event", {"event": "power_on"}
-        )  # must not raise
+    async def test_invalid_payload_reaches_nobody(self):
+        router, seen = TelemetryRouter(), []
+        router.subscribe_ice_maker_event(seen.append)
+        with pytest.raises(Exception):
+            await router.handle_ice_maker_event("ice_maker/event", {})
+        assert seen == []
 
 
 class TestTelemetry:
-    async def test_records_channel(self):
-        health = FakeHealth()
-        router = _router(health=health)
+    async def test_publishes_channel_and_value(self):
+        router, seen = TelemetryRouter(), []
+        router.subscribe_telemetry(lambda c, v: seen.append((c, v)))
         await router.handle_telemetry(
             "telemetry/ice_maker/bin_level", {"channel_id": "bin_level", "value": 42.0}
         )
-        assert health.channels == [("bin_level", 42.0)]
+        assert seen == [("bin_level", 42.0)]
 
-    async def test_noop_without_health(self):
-        router = _router()
-        await router.handle_telemetry(
-            "telemetry/ice_maker/bin_level", {"channel_id": "bin_level", "value": 42.0}
-        )  # must not raise
+    async def test_invalid_payload_reaches_nobody(self):
+        router, seen = TelemetryRouter(), []
+        router.subscribe_telemetry(lambda c, v: seen.append((c, v)))
+        with pytest.raises(Exception):
+            await router.handle_telemetry("telemetry/ice_maker/x", {"value": 1})
+        assert seen == []
+
+
+class TestCapabilities:
+    async def test_valid_doc_stores_and_publishes_with_caps(self):
+        router, seen = TelemetryRouter(), []
+        router.subscribe_capabilities(lambda s, d, c: seen.append((s, d, c)))
+        payload = _caps_payload()
+        await router.handle_capabilities("capabilities/ice_maker", payload)
+        assert router.capabilities["ice_maker"] == payload
+        assert len(seen) == 1
+        assert seen[0][0] == "ice_maker" and seen[0][1] == payload
+        assert seen[0][2].firmware == "0.1.0"
+
+    async def test_malformed_doc_stores_raw_and_publishes_none_caps(self):
+        router, seen = TelemetryRouter(), []
+        router.subscribe_capabilities(lambda s, d, c: seen.append((s, d, c)))
+        payload = {"subsystem": "vending", "whatever": 1}
+        await router.handle_capabilities("capabilities/vending", payload)
+        assert router.capabilities["vending"] == payload
+        assert seen == [("vending", payload, None)]
+
+    async def test_two_subscribers_receive_in_order(self):
+        router, order = TelemetryRouter(), []
+        router.subscribe_capabilities(lambda s, d, c: order.append("first"))
+        router.subscribe_capabilities(lambda s, d, c: order.append("second"))
+        await router.handle_capabilities("capabilities/mdb", _caps_payload("mdb"))
+        assert order == ["first", "second"]
+
+    async def test_late_subscriber_gets_replay(self):
+        router, seen = TelemetryRouter(), []
+        payload = _caps_payload("vending")
+        await router.handle_capabilities("capabilities/vending", payload)
+        router.subscribe_capabilities(lambda s, d, c: seen.append((s, d, c)))
+        assert len(seen) == 1
+        assert seen[0][0] == "vending" and seen[0][2] is not None
+
+    async def test_replay_goes_only_to_the_new_subscriber(self):
+        router, early, late = TelemetryRouter(), [], []
+        router.subscribe_capabilities(lambda s, d, c: early.append(s))
+        await router.handle_capabilities("capabilities/mdb", _caps_payload("mdb"))
+        router.subscribe_capabilities(lambda s, d, c: late.append(s))
+        assert early == ["mdb"]
+        assert late == ["mdb"]
 
 
 class TestCommandAck:
     async def test_logs_without_error(self):
-        router = _router()
-        await router.handle_command_ack(
+        await TelemetryRouter().handle_command_ack(
             "cmd/ice_maker/ack",
             {"request_id": "req-00000001", "command": "power_cycle", "status": "ok"},
-        )  # must not raise
+        )
 
 
 class TestSubscriptionsTable:
@@ -313,11 +200,10 @@ class TestSubscriptionsTable:
                     f"TelemetryRouter has no attribute {name!r}"
                 )
 
-    def test_subscriptions_table_unchanged(self):
-        # The full (topic, owner, method) triple, in order -- not just the
-        # topic set -- so a transposition (e.g. payment/status paired with
-        # handle_water_flow) fails this test even though both the topic set
-        # and every method name would still be valid on their own.
+    def test_subscriptions_table(self):
+        # The full (topic, owner, method) triple, in order, so a transposition
+        # fails even though every method name would still be valid alone.
+        # sensors/water_flow is gone (spec 3.4).
         assert SUBSCRIPTIONS == (
             ("payment/credit", "vmc", "on_payment_credit"),
             ("hardware/buttons", "vmc", "on_button_press"),
@@ -331,6 +217,5 @@ class TestSubscriptionsTable:
             ("hardware/io/+", "telemetry", "handle_hardware_io"),
             ("cmd/payment/refund/ack", "vmc", "on_refund_ack"),
             ("payment/status", "telemetry", "handle_payment_status"),
-            ("sensors/water_flow", "telemetry", "handle_water_flow"),
         )
-        assert len(SUBSCRIPTIONS) == 13
+        assert len(SUBSCRIPTIONS) == 12

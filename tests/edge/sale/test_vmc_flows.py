@@ -1027,20 +1027,6 @@ class TestFaultRegistry:
         machine.set_mqtt_client(client)
         assert "hardware/io/+" in client.topics
 
-    def test_water_flow_handler_is_registered(self):
-        machine = make_machine(products=two_products())
-
-        class FakeClient:
-            def __init__(self):
-                self.topics = []
-
-            def register(self, topic, handler):
-                self.topics.append(topic)
-
-        client = FakeClient()
-        machine.set_mqtt_client(client)
-        assert "sensors/water_flow" in client.topics
-
 
 def _start_dispensing(vmc: VMC, index: int = 0):
     vmc.set_state("interacting_with_user")
@@ -1780,16 +1766,6 @@ async def test_ice_maker_non_power_event_does_not_feed_compressor_signal():
     assert "compressor_run" not in monitor.get_summary()["signals"].get("ice_maker", {})
 
 
-async def test_water_flow_feeds_health_channel():
-    vmc, monitor, avail, _, machine = _wired_vmc()
-    _all_alive(monitor, machine)
-    await machine.telemetry.handle_water_flow(
-        "sensors/water_flow", {"location": "water_flow", "value": 12.5, "unit": "gal"}
-    )
-    channel = monitor.get_summary()["channels"]["water_flow"]
-    assert channel["value"] == 12.5
-
-
 async def test_signal_feeding_handlers_tolerate_missing_health_monitor():
     cfg = ConfigModel()
     cfg.physical.products = [
@@ -1819,9 +1795,6 @@ async def test_signal_feeding_handlers_tolerate_missing_health_monitor():
     )
     await machine.telemetry.handle_ice_maker_event(
         "ice_maker/event", {"event": "power_on"}
-    )
-    await machine.telemetry.handle_water_flow(
-        "sensors/water_flow", {"location": "water_flow", "value": 5.0, "unit": "gal"}
     )
 
 

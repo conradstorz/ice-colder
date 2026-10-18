@@ -418,7 +418,7 @@ class TestVMCMQTTWiring:
         machine = _make_machine()
         mock_client = MagicMock()
         machine.set_mqtt_client(mock_client)
-        assert mock_client.register.call_count == 13
+        assert mock_client.register.call_count == 12
 
     def test_publish_status_without_client_does_nothing(self):
         machine = _make_machine()

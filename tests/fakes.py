@@ -265,6 +265,14 @@ class FakeAvailability:
         self.republish_calls = 0
         self.transaction_certain: list[bool] = []
         self.publisher = None
+        self.hardware_io: list[tuple[str, bool]] = []
+        self.payment_devices: list[tuple[str, str]] = []
+
+    def set_hardware_io(self, device: str, state: bool) -> None:
+        self.hardware_io.append((device, state))
+
+    def set_payment_device(self, device: str, state: str) -> None:
+        self.payment_devices.append((device, state))
 
     def set_publisher(self, publisher) -> None:
         self.publisher = publisher

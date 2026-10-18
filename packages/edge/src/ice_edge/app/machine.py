@@ -46,6 +46,7 @@ live FSM state at all.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import asdict
 
 from loguru import logger
@@ -58,6 +59,8 @@ from ice_edge.vend.dispenser_gate import DispenserProfileGate
 from ice_edge.ledger.escrow_ledger import EscrowLedger
 from ice_edge.faults.fault_registry import FaultRegistry
 from ice_edge.faults.fault_service import FaultService
+from ice_edge.faults.ice_policy import IcePolicy
+from ice_edge.monitoring.health_telemetry import HealthTelemetry
 from ice_edge.sale.maintenance_lease import MaintenanceHold, MaintenanceLease
 from ice_edge.sale.outputs import StatusOutputs
 from ice_edge.payment.refund_protocol import RefundProtocol
@@ -103,7 +106,6 @@ class Machine:
         self._event_recorder = None
         self._command_dispatcher = None
         self._inventory: InventoryManager | None = None
-        self._subsystem_capabilities: dict[str, dict] = {}
 
         self._outputs = StatusOutputs(
             snapshot=lambda state: self.vmc.snapshot(state),
@@ -166,13 +168,24 @@ class Machine:
             product_name=self._product_name,
             pay104_active=lambda: self._faults.has(FaultCode.PAY_104),
         )
-        self._telemetry = mqtt_inbound.TelemetryRouter(
-            health=lambda: self._outputs.health,
-            availability=lambda: self._outputs.availability,
-            capabilities=self._subsystem_capabilities,
-            on_bin_half_full=self._faults.clear_ice101_lockouts,
-            on_capabilities_validated=self._gate.on_vending_capabilities,
+        # The router is a pure fan-out; every consumer is subscribed here.
+        self._telemetry = mqtt_inbound.TelemetryRouter()
+        self._health_telemetry = HealthTelemetry(lambda: self._outputs.health)
+        self._ice_policy = IcePolicy(faults=self._faults)
+        self._telemetry.subscribe_hardware_io(self._health_telemetry.on_hardware_io)
+        self._telemetry.subscribe_payment_status(
+            self._health_telemetry.on_payment_status
         )
+        self._telemetry.subscribe_sensor(self._health_telemetry.on_sensor)
+        self._telemetry.subscribe_heartbeat(self._health_telemetry.on_heartbeat)
+        self._telemetry.subscribe_ice_maker_event(
+            self._health_telemetry.on_ice_maker_event
+        )
+        self._telemetry.subscribe_telemetry(self._health_telemetry.on_telemetry)
+        self._telemetry.subscribe_capabilities(self._health_telemetry.on_capabilities)
+        self._telemetry.subscribe_capabilities(self._gate.on_vending_capabilities)
+        self._telemetry.subscribe_hardware_io(self._ice_policy.on_hardware_io)
+        self._unsubscribe_availability: list[Callable[[], None]] = []
         # Builds a fresh DispenseCycle (ice_edge/vend/dispense_cycle.py)
         # for one sale's dispatch attempt -- the cycle's own identity, not a
         # sequence number, is what VMC.on_dispense_failed uses to tell a
@@ -319,7 +332,7 @@ class Machine:
 
     @property
     def subsystem_capabilities(self) -> dict[str, dict]:
-        return self._subsystem_capabilities
+        return self._telemetry.capabilities
 
     # --- wiring methods (moved verbatim from the VMC) ---
 
@@ -366,6 +379,12 @@ class Machine:
     def set_availability(self, availability: Availability) -> None:
         """Attach the permissive table; it publishes cmd/payment/enable through us."""
         self._outputs.attach_availability(availability)
+        for unsubscribe in self._unsubscribe_availability:
+            unsubscribe()
+        self._unsubscribe_availability = [
+            self._telemetry.subscribe_hardware_io(availability.set_hardware_io),
+            self._telemetry.subscribe_payment_status(availability.set_payment_device),
+        ]
         availability.set_fsm_state(self._vmc.state)
         availability.set_active_faults(self._faults.active_faults())
         availability.set_publisher(self._outputs.publish_payment_enable)
