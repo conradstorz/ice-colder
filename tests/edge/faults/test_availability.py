@@ -536,3 +536,171 @@ def test_no_active_faults_ignore_faults_is_a_no_op():
     product = Product(sku="ICE-1", kind="ice")
     assert a.test_sale_sellable(product) == (True, [])
     assert a.product_sellable(product) == (True, [])
+
+
+# --- IM600XL: no bin sensor, RO tank / pressure / sump rows ---
+
+
+def _vending_caps(*channel_ids: str):
+    from ice_contracts.board.common import ChannelDescriptor
+    from ice_contracts.board.vending_machine import (
+        CONTRACT_VERSION,
+        SubsystemCapabilities,
+    )
+
+    return SubsystemCapabilities(
+        subsystem="vending",
+        contract_version=CONTRACT_VERSION,
+        brand="B",
+        model="M",
+        firmware="0.1.0",
+        channels=[
+            ChannelDescriptor(
+                channel_id=c, kind="binary", interval_seconds=10, direction="input"
+            )
+            for c in channel_ids
+        ],
+        commands=[],
+    )
+
+
+def _row(a: Availability, name: str) -> dict:
+    return {r["name"]: r for r in a.table()}[name]
+
+
+def _all_good_no_bin(a: Availability) -> None:
+    _all_good(a)
+    a.on_vending_capabilities("vending", {}, _vending_caps("service_door"))
+
+
+def test_fresh_availability_keeps_ice_available_unknown():
+    a, _ = _avail()
+    assert a.bin_instrumented is True
+    assert _row(a, "ice_available")["state"] == "unknown"
+
+
+def test_no_bin_sensor_makes_ice_sellable_with_detail():
+    a, _ = _avail()
+    _all_good(a)
+    a.set_hardware_io("bin_half_full", False)
+    assert a.sale_available("ice")[0] is False
+    a2, _ = _avail()
+    a2.set_mqtt_connected(True)
+    a2.set_subsystem_alive("vending", True)
+    a2.set_subsystem_alive("mdb", True)
+    a2.set_subsystem_alive("ice_maker", True)
+    a2.set_payment_device("coin_acceptor", "ready")
+    a2.set_fsm_state("idle")
+    a2.on_vending_capabilities("vending", {}, _vending_caps("service_door"))
+    assert a2.bin_instrumented is False
+    assert a2.sale_available("ice") == (True, [])
+    assert _row(a2, "ice_available")["detail"] == "no bin sensor"
+    a2.set_hardware_io("bin_half_full", False)
+    assert a2.sale_available("ice") == (True, [])
+
+
+def test_no_bin_sensor_still_fails_on_ice_101():
+    a, _ = _avail()
+    _all_good_no_bin(a)
+    a.set_active_faults([_machine_fault("ICE-101", severity="warning")])
+    ok, failing = a.sale_available("ice")
+    assert ok is False and "ice_available" in failing
+    assert _row(a, "ice_available")["detail"] == "ICE-101 active"
+    a.set_active_faults([])
+    assert a.sale_available("ice")[0] is True
+
+
+def test_ice_available_row_flips_instrumented_with_bin_sensor_presence():
+    a, _ = _avail()
+    _all_good(a)
+    assert _row(a, "ice_available")["instrumented"] is True
+    a.on_vending_capabilities("vending", {}, _vending_caps("service_door"))
+    assert _row(a, "ice_available")["instrumented"] is False
+    assert _row(a, "ice_available")["detail"] == "no bin sensor"
+    a.on_vending_capabilities("vending", {}, _vending_caps("bin_half_full"))
+    assert _row(a, "ice_available")["instrumented"] is True
+
+
+def test_ice_101_precedence_holds_on_not_instrumented_ice_row():
+    a, _ = _avail()
+    _all_good_no_bin(a)
+    assert _row(a, "ice_available")["instrumented"] is False
+    a.set_active_faults([_machine_fault("ICE-101", severity="warning")])
+    row = _row(a, "ice_available")
+    assert row["state"] == "fail"
+    assert row["detail"] == "ICE-101 active"
+
+
+def test_caps_declaring_bin_behave_as_today_and_none_changes_nothing():
+    a, _ = _avail()
+    _all_good(a)
+    a.on_vending_capabilities("vending", {}, _vending_caps("bin_half_full"))
+    assert a.bin_instrumented is True
+    a.set_hardware_io("bin_half_full", False)
+    assert a.sale_available("ice")[0] is False
+    a.on_vending_capabilities("vending", {}, None)
+    assert a.bin_instrumented is True
+    b, _ = _avail()
+    b.on_vending_capabilities("vending", {}, _vending_caps())
+    assert b.bin_instrumented is False
+    b.on_vending_capabilities("vending", {}, None)
+    assert b.bin_instrumented is False
+    b.on_vending_capabilities("mdb", {}, _vending_caps("bin_half_full"))
+    assert b.bin_instrumented is False
+
+
+def test_new_input_rows_start_not_instrumented_and_pass():
+    a, _ = _avail()
+    for name in ("ro_tank_ok", "water_pressure_ok", "no_leak"):
+        row = _row(a, name)
+        assert row["instrumented"] is False
+        assert row["state"] == "pass"
+    assert _row(a, "ro_tank_ok")["applies_to"] == "water"
+    assert _row(a, "ro_tank_ok")["gate"] == "fulfillment"
+
+
+def test_ro_tank_empty_blocks_water_only_and_recovers():
+    a, _ = _avail()
+    _all_good_no_bin(a)
+    a.set_hardware_io("ro_tank_empty", True)
+    assert a.sale_available("water") == (False, ["ro_tank_ok"])
+    assert a.sale_available("ice")[0] is True
+    assert a.payment_enabled is True
+    assert _row(a, "ro_tank_ok")["instrumented"] is True
+    a.set_hardware_io("ro_tank_empty", False)
+    assert a.sale_available("water")[0] is True
+
+
+def test_low_water_pressure_blocks_water_only_and_recovers():
+    a, _ = _avail()
+    _all_good_no_bin(a)
+    a.set_hardware_io("water_pressure_ok", False)
+    assert a.sale_available("water") == (False, ["water_pressure_ok"])
+    assert a.sale_available("ice")[0] is True
+    assert a.payment_enabled is True
+    a.set_hardware_io("water_pressure_ok", True)
+    assert a.sale_available("water")[0] is True
+
+
+def test_sump_high_is_a_safety_fault_and_recovers():
+    a, published = _avail()
+    _all_good_no_bin(a)
+    a.set_hardware_io("sump_high", True)
+    assert a.sale_available("water")[0] is False
+    assert a.payment_enabled is False
+    assert a.payment_blocking_reasons() == ["no_leak"]
+    assert published[-1] is False
+    a.set_hardware_io("sump_high", False)
+    assert a.payment_enabled is True
+    assert a.sale_available("water")[0] is True
+
+
+def test_input_rows_table_matches_contract_input_faults():
+    from ice_contracts.board.vending_machine import INPUT_FAULTS, VendingChannel
+    from ice_edge.faults.availability import (
+        _INPUT_ROWS,  # private: pinning the edge row table against the contract
+    )
+
+    assert set(_INPUT_ROWS) == {f.channel for f in INPUT_FAULTS} | {
+        VendingChannel.service_door
+    }

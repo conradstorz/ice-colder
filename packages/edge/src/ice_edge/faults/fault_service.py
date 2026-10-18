@@ -46,10 +46,12 @@ caller supplies.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal
 
 from loguru import logger
 
+from ice_common.observers import Subscribers
 from ice_contracts.board.vending_machine import FaultCode
 from ice_edge.faults.fault_registry import FaultRegistry
 from ice_edge.supervisor.task_runner import TaskRunner
@@ -65,6 +67,18 @@ _LIVENESS_FAULTS = {
     "ice_maker": FaultCode.COM_102,
     "mdb": FaultCode.PAY_101,
 }
+
+
+@dataclass(frozen=True)
+class FaultChange:
+    """One raise or clear that has taken effect. ``sku`` is the registry's
+    ``RaisedFault.sku`` (``None`` for a machine-scope code); ``by`` is who
+    cleared it (``None`` for a raise)."""
+
+    action: Literal["raised", "cleared"]
+    code: FaultCode
+    sku: str | None
+    by: str | None
 
 
 class FaultService:
@@ -93,6 +107,13 @@ class FaultService:
         self._lacks_valid_profile = lacks_valid_profile
         self._set_transaction_certain = set_transaction_certain
         self._fsm_state = fsm_state
+        self._changes: Subscribers[[FaultChange]] = Subscribers()
+
+    def subscribe_fault_change(
+        self, cb: Callable[[FaultChange], None]
+    ) -> Callable[[], None]:
+        """Observe every raise/clear after it took effect; returns unsubscribe."""
+        return self._changes.subscribe(cb)
 
     # --- mutators ---
 
@@ -136,6 +157,7 @@ class FaultService:
             )
         )
         self.push_active_faults()
+        self._changes.publish(FaultChange("raised", code, raised.sku, None))
 
     def clear_fault(self, key: str, by: str = "admin") -> bool:
         """Clear a fault by key (SKU for product faults, code string for machine faults)."""
@@ -203,8 +225,10 @@ class FaultService:
             if health:
                 health.clear_alert(f"{code.value}:machine")
             logger.info(f"Machine fault {code.value} cleared ({by})")
+            sku = None
         self.push_active_faults()
         self._outputs.state_changed(self._fsm_state())
+        self._changes.publish(FaultChange("cleared", code, sku, by))
         return True
 
     # --- inbound event handlers ---
@@ -236,13 +260,13 @@ class FaultService:
         else:
             self.raise_fault(FaultCode.COM_103, outcome="disconnected")
 
-    def clear_ice101_lockouts(self) -> None:
+    def clear_ice101_lockouts(self, by: str = "auto") -> None:
         """Clear every ICE-101 lockout -- invoked by `IcePolicy`
         (ice_edge/faults/ice_policy.py) when the vending ESP32 reports
         `bin_half_full` going true."""
         for sku, code in list(self._registry.lockouts.items()):
             if code is FaultCode.ICE_101:
-                self.clear_fault(sku, by="auto")
+                self.clear_fault(sku, by=by)
 
     # --- reads re-exposed from the registry ---
 

@@ -153,6 +153,15 @@ class PhysicalDetails(BaseModel):
             "commanding a dispense; expiry is a failed vend (PAY-102)"
         ),
     )
+    ice_retry_cooldown_seconds: float = Field(
+        1800.0,
+        ge=60,
+        le=86400,
+        description=(
+            "Seconds after an ICE-101 (no ice) lockout before it clears itself "
+            "and sales retry; used only when the vending board has no bin sensor"
+        ),
+    )
     location: Location = Field(
         default_factory=Location, description="Machine physical location"
     )
