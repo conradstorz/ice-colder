@@ -27,7 +27,7 @@ import asyncio
 
 from ice_contracts.board.vending_machine import FaultCode
 from ice_edge.faults.fault_registry import FaultRegistry
-from ice_edge.faults.fault_service import FaultService
+from ice_edge.faults.fault_service import FaultChange, FaultService
 from ice_edge.sale.outputs import StatusOutputs
 from ice_contracts.board.mqtt_messages import VMCAlert
 from ice_edge.ledger.session_store import SessionSnapshot
@@ -409,6 +409,48 @@ async def test_clear_ice101_lockouts_clears_only_ice101():
 
     assert registry.is_locked("A1") is None
     assert registry.is_locked("B1") is FaultCode.ICE_301
+
+
+# --- subscribe_fault_change ---
+
+
+async def test_fault_change_subscriber_sees_raise_and_clear():
+    service, _registry, _outputs, runner, _recorder, _tx = make_service()
+    runner.attach(asyncio.get_running_loop())
+    seen: list[FaultChange] = []
+    service.subscribe_fault_change(seen.append)
+
+    service.raise_fault(FaultCode.ICE_101, sku="A1")
+    service.clear_fault("A1", by="cooldown")
+    service.raise_fault(FaultCode.COM_103, sku="A1")
+    service.clear_fault(FaultCode.COM_103.value, by="auto")
+
+    assert seen == [
+        FaultChange("raised", FaultCode.ICE_101, "A1", None),
+        FaultChange("cleared", FaultCode.ICE_101, "A1", "cooldown"),
+        FaultChange("raised", FaultCode.COM_103, None, None),
+        FaultChange("cleared", FaultCode.COM_103, None, "auto"),
+    ]
+
+
+async def test_raising_fault_subscriber_does_not_break_raise():
+    service, registry, _outputs, runner, _recorder, _tx = make_service()
+    runner.attach(asyncio.get_running_loop())
+
+    def boom(change):
+        raise RuntimeError("x")
+
+    service.subscribe_fault_change(boom)
+    service.raise_fault(FaultCode.ICE_301, sku="A1")
+    assert registry.is_locked("A1") is FaultCode.ICE_301
+
+
+async def test_clear_ice101_lockouts_passes_by():
+    service, _registry, _outputs, runner, recorder, _tx = make_service()
+    runner.attach(asyncio.get_running_loop())
+    service.raise_fault(FaultCode.ICE_101, sku="A1")
+    service.clear_ice101_lockouts(by="cooldown")
+    assert recorder.rows[-1][1]["metadata"]["by"] == "cooldown"
 
 
 # --- reads re-exposed from the registry ---
