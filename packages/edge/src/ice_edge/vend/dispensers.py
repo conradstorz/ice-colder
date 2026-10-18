@@ -67,6 +67,7 @@ _DISCRIMINATOR_TAGS = frozenset(
         "bag_full_sensor",
         "timed",
         "door_sensor",
+        "catch",
         "flow_volume",
     }
 )

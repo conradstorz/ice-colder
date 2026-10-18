@@ -124,7 +124,7 @@ class FaultService:
                     "vmc",
                     raised.message,
                     code=code.value,
-                    product_sku=sku,
+                    product_sku=raised.sku,
                 )
             )
         self._outputs.publish_alert(
@@ -132,7 +132,7 @@ class FaultService:
                 level=raised.level,
                 message=raised.message,
                 code=code,
-                product_sku=sku,
+                product_sku=raised.sku,
             )
         )
         self.push_active_faults()

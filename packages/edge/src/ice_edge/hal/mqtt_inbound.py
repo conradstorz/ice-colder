@@ -38,7 +38,7 @@ from loguru import logger
 from pydantic import ValidationError
 
 from ice_contracts.board.ice_maker_monitor import ChannelReading, CommandAck
-from ice_contracts.board.vending_machine import SubsystemCapabilities
+from ice_contracts.board.vending_machine import SubsystemCapabilities, VendingChannel
 from ice_contracts.board.mqtt_messages import (
     HardwareIO,
     IceMakerEvent,
@@ -96,7 +96,7 @@ class TelemetryRouter:
         health = self._health()
         if health:
             health.record_signal("vending", hw.device, 1.0 if hw.state else 0.0)
-        if hw.device == "bin_half_full" and hw.state:
+        if hw.device == VendingChannel.bin_half_full and hw.state:
             self._on_bin_half_full()
         else:
             logger.debug(f"MQTT hardware IO: {hw.device}={hw.state}")

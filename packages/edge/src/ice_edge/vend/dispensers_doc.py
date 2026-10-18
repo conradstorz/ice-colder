@@ -122,15 +122,14 @@ _SLOT_PROFILE_TAGS = _UNION_TAG_TABLE[0][1]
 
 def _variant_tags_for(cls_a: type, cls_b: type) -> list[str]:
     """The full, declaration-ordered tag list for the one discriminated
-    union whose members are exactly `{cls_a, cls_b}`."""
+    union that has both `cls_a` and `cls_b` as members."""
 
-    key = frozenset((cls_a, cls_b))
     for members, tags in _UNION_TAG_TABLE:
-        if members == key:
+        if cls_a in members and cls_b in members:
             return tags
     raise ValueError(
-        f"no known discriminated union has exactly {{{cls_a.__name__}, "
-        f"{cls_b.__name__}}} as its members"
+        f"no known discriminated union has both {{{cls_a.__name__}, "
+        f"{cls_b.__name__}}} as members"
     )
 
 

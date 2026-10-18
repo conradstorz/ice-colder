@@ -11,6 +11,7 @@ drift apart silently. Breaking changes require a major CONTRACT_VERSION
 bump; adding a FaultCode or an enum member is a minor bump.
 """
 
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Literal, Optional
@@ -106,6 +107,8 @@ class FaultCode(str, Enum):
     WTR_103 = "WTR-103"
     WTR_104 = "WTR-104"
     WTR_105 = "WTR-105"
+    WTR_106 = "WTR-106"
+    WTR_107 = "WTR-107"
     ENV_101 = "ENV-101"
     ENV_102 = "ENV-102"
     ENV_103 = "ENV-103"
@@ -206,9 +209,19 @@ FAULT_TABLE: dict[FaultCode, FaultSpec] = {
         description="Leak / overflow detected",
     ),
     FaultCode.WTR_105: FaultSpec(
-        severity=Severity.product_unavailable,
-        scope=Scope.product,
+        severity=Severity.warning,
+        scope=Scope.machine,
         description="Water pressure or treatment status failed",
+    ),
+    FaultCode.WTR_106: FaultSpec(
+        severity=Severity.warning,
+        scope=Scope.machine,
+        description="RO storage tank empty",
+    ),
+    FaultCode.WTR_107: FaultSpec(
+        severity=Severity.warning,
+        scope=Scope.machine,
+        description="RO production overran its maximum run time",
     ),
     FaultCode.ENV_101: FaultSpec(
         severity=Severity.warning,
@@ -337,12 +350,47 @@ PAYMENT_BLOCKING_FAULTS: frozenset[FaultCode] = frozenset(
 # not imported from services, so contracts never depends on services.
 Mechanism = Literal["bagged_ice", "water_fill"]
 
+
+class VendingChannel(str, Enum):
+    """Channel ids on the vending board that carry meaning to the edge.
+
+    The single source for these strings, so the simulator and the edge can
+    never disagree. All are optional: a board that declares none of them
+    is valid."""
+
+    bin_half_full = "bin_half_full"
+    sump_high = "sump_high"
+    water_pressure_ok = "water_pressure_ok"
+    ro_tank_empty = "ro_tank_empty"
+    ro_tank_full = "ro_tank_full"
+    ro_production = "ro_production"
+    service_door = "service_door"
+
+
+@dataclass(frozen=True)
+class InputFault:
+    """A binary input channel whose reported state raises a fault."""
+
+    channel: VendingChannel
+    faulted_when: bool  # the reported state that means "faulted"
+    code: FaultCode
+
+
+# `ro_production`'s WTR-107 is a duration rule, not a state, so it is not
+# listed here. Every code is machine-scope and never locks a product.
+INPUT_FAULTS: tuple[InputFault, ...] = (
+    InputFault(VendingChannel.sump_high, True, FaultCode.WTR_104),
+    InputFault(VendingChannel.water_pressure_ok, False, FaultCode.WTR_105),
+    InputFault(VendingChannel.ro_tank_empty, True, FaultCode.WTR_106),
+)
+
+
 # Which fault a terminal dispenser outcome raises, keyed by (mechanism,
 # outcome). `complete` is never a key -- fault_for_outcome raises KeyError
 # if asked for it. Not every (mechanism, outcome) combination appears:
 # `no_flow`/`over_dispense` are water-only outcomes and `jam`/`door_open`
 # are bagged-ice-only outcomes, matching what each mechanism's board can
-# actually report (spec §6.4). `bin_empty` maps to ICE-101 for both.
+# actually report (spec §6.4). `bin_empty` maps to ICE-101 for bagged ice and WTR-106 for water.
 OUTCOME_FAULTS: dict[tuple[str, DispenserOutcome], FaultCode] = {
     ("bagged_ice", DispenserOutcome.timeout): FaultCode.ICE_301,
     ("bagged_ice", DispenserOutcome.error): FaultCode.ICE_302,
@@ -353,7 +401,7 @@ OUTCOME_FAULTS: dict[tuple[str, DispenserOutcome], FaultCode] = {
     ("water_fill", DispenserOutcome.timeout): FaultCode.WTR_101,
     ("water_fill", DispenserOutcome.error): FaultCode.ICE_302,
     ("bagged_ice", DispenserOutcome.bin_empty): FaultCode.ICE_101,
-    ("water_fill", DispenserOutcome.bin_empty): FaultCode.ICE_101,
+    ("water_fill", DispenserOutcome.bin_empty): FaultCode.WTR_106,
 }
 
 

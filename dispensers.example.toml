@@ -75,7 +75,7 @@ current_channel = "unmonitored"
 
 # How this slot opens and closes its release gate.
 [slot.0.release]
-# This release step is proven open/closed by a sensor. One of: door_sensor, timed.
+# This release step is proven open/closed by a sensor. One of: door_sensor, timed, catch.
 proof = "door_sensor"
 # The channel that drives the release-gate solenoid. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 solenoid_channel = "bag_drop_solenoid"
@@ -89,7 +89,7 @@ open_timeout_seconds = 5
 close_timeout_seconds = 5
 
 # If proof = "timed" instead, the fields are:
-# This release step is proven open/closed by elapsed time. One of: door_sensor, timed.
+# This release step is proven open/closed by elapsed time. One of: door_sensor, timed, catch.
 # proof = "timed"
 # The channel that drives the release-gate solenoid. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 # solenoid_channel = "bag_drop_solenoid"

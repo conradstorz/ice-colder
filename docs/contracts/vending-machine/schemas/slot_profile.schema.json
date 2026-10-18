@@ -146,6 +146,7 @@
           "description": "How this slot opens and closes its release gate.",
           "discriminator": {
             "mapping": {
+              "catch": "#/$defs/ReleaseByCatch",
               "door_sensor": "#/$defs/ReleaseBySensor",
               "timed": "#/$defs/ReleaseTimed"
             },
@@ -157,6 +158,9 @@
             },
             {
               "$ref": "#/$defs/ReleaseTimed"
+            },
+            {
+              "$ref": "#/$defs/ReleaseByCatch"
             }
           ],
           "title": "Release"
@@ -315,6 +319,39 @@
         "max_run_seconds"
       ],
       "title": "IceFillTimed",
+      "type": "object"
+    },
+    "ReleaseByCatch": {
+      "additionalProperties": false,
+      "description": "The release step of a bagged-ice slot whose bag is held by an\nenergized catch (a hold-to-fill electromagnet) rather than pulsed free.\n\nThe VMC MUST: energize the catch before the agitate step starts; hold\nit energized through the whole fill; de-energize it to drop the bag\n(`drop_seconds` is the dwell before the dispense is considered\ncomplete); leave it de-energized between vends; and de-energize it on\nany fault or abort.",
+      "properties": {
+        "proof": {
+          "const": "catch",
+          "description": "This release step holds the bag with an energized catch and drops it by de-energizing.",
+          "title": "Proof",
+          "type": "string"
+        },
+        "catch_channel": {
+          "description": "The channel that drives the bag catch.",
+          "pattern": "^[a-z0-9_]{1,64}$",
+          "title": "Catch Channel",
+          "type": "string"
+        },
+        "drop_seconds": {
+          "description": "How long the catch stays de-energized to let the bag drop before the release is considered done.",
+          "maximum": 30.0,
+          "minimum": 0.5,
+          "title": "Drop Seconds",
+          "type": "number",
+          "unit": "s"
+        }
+      },
+      "required": [
+        "proof",
+        "catch_channel",
+        "drop_seconds"
+      ],
+      "title": "ReleaseByCatch",
       "type": "object"
     },
     "ReleaseBySensor": {

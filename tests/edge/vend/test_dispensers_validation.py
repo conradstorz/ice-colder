@@ -597,3 +597,51 @@ def test_unknown_root_key_table_form_suggests_slot():
     assert matches[0].line == len(GOOD.splitlines()) + 1
     # other slots are still examined
     assert set(report.profiles.keys()) == {1, 2}
+
+
+def _catch_document(catch_channel="trap_door_catch", drop_seconds="2.0") -> str:
+    start = GOOD.index("[slot.1.release]")
+    end = GOOD.index("[slot.1.accessories", start)
+    release = (
+        "[slot.1.release]\n"
+        'proof = "catch"\n'
+        f'catch_channel = "{catch_channel}"\n'
+        f"drop_seconds = {drop_seconds}\n\n"
+    )
+    return GOOD[:start] + release + GOOD[end:]
+
+
+def test_catch_release_document_is_valid():
+    report = validate_document(_catch_document(), [ICE, WATER])
+    assert not report.errors, report.render_text()
+
+
+def test_catch_channel_conflicting_with_a_sensor_is_a_drive_sense_conflict():
+    doc = _catch_document(catch_channel="bag_full_sensor")
+    report = validate_document(doc, [ICE, WATER])
+    assert any(
+        "both a drive and a sensor" in f.message for f in report.findings if f.slot == 1
+    )
+
+
+def test_catch_drop_seconds_finding_path_has_no_discriminator_tag():
+    report = validate_document(_catch_document(drop_seconds="0.4"), [ICE, WATER])
+    paths = [f.path for f in report.findings if f.slot == 1 and f.path]
+    assert paths == ["release.drop_seconds"]
+
+
+def test_catch_channel_declared_as_input_is_a_direction_error():
+    caps = _good_capabilities()
+    caps.channels.append(
+        ChannelDescriptor(
+            channel_id="trap_door_catch",
+            kind="binary",
+            interval_seconds=1.0,
+            direction="input",
+        )
+    )
+    report = validate_document(_catch_document(), [ICE, WATER], capabilities=caps)
+    assert any(
+        "trap_door_catch" in f.message and "declared as input" in f.message
+        for f in report.findings
+    )

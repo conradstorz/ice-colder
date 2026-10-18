@@ -103,7 +103,13 @@ class FaultRegistry:
         if outcome:
             message += f" (reported: {outcome})"
 
-        alert_key = f"{code.value}:{sku or 'machine'}"
+        if spec.scope is Scope.machine:
+            # A machine-scope fault has no product: one alert key per code,
+            # whatever sku the caller happened to pass.
+            sku = None
+            alert_key = f"{code.value}:machine"
+        else:
+            alert_key = f"{code.value}:{sku or 'machine'}"
         level = _SEVERITY_LEVEL[spec.severity]
         return RaisedFault(
             code=code,
