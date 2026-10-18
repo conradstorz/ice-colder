@@ -1,7 +1,10 @@
 """Helpers shared by the Products sub-modules; no routes of its own."""
 
+import re
+
 from fastapi import HTTPException, Request
 
+from ice_contracts.board.common import CHANNEL_ID_PATTERN
 from ice_edge.access.access import Permission
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
@@ -30,6 +33,28 @@ def _require_any(*permissions: Permission):
         return principal
 
     return dependency
+
+
+def _clean_button(
+    raw: str | None, *, own_sku: str = ""
+) -> tuple[str | None, str | None]:
+    """Parse the form's button field into (button, error).
+
+    Blank means no physical button (None). A value outside the channel-id
+    pattern, or already used by another product, yields an error message.
+    """
+    button = (raw or "").strip()
+    if not button:
+        return None, None
+    if not re.fullmatch(CHANNEL_ID_PATTERN, button):
+        return None, (
+            "Button must be a channel id: lowercase letters, digits and "
+            "underscores, 1-64 characters (e.g. button_ice)."
+        )
+    for p in context.config.products:
+        if p.button == button and p.sku != own_sku:
+            return None, f"Button {button} is already used by {p.sku}."
+    return button, None
 
 
 def _locked_skus() -> dict[str, str]:
@@ -97,6 +122,8 @@ def _render_product_form(
     inventory_count: int,
     tracked: bool,
     error: str | None,
+    button: str | None = None,
+    status_code: int = 200,
 ):
     if mode == "copy" and source_sku:
         source_product = _find_product(source_sku)
@@ -130,5 +157,7 @@ def _render_product_form(
             inventory_count=inventory_count,
             tracked=tracked,
             error=error,
+            button=button or "",
         ),
+        status_code=status_code,
     )
