@@ -153,6 +153,15 @@ class PhysicalDetails(BaseModel):
             "commanding a dispense; expiry is a failed vend (PAY-102)"
         ),
     )
+    ro_max_run_seconds: float = Field(
+        3600.0,
+        ge=60,
+        le=86400,
+        description=(
+            "Seconds the RO pump may run continuously before the VMC raises "
+            "WTR-107; must be shorter than the board's own cutoff"
+        ),
+    )
     location: Location = Field(
         default_factory=Location, description="Machine physical location"
     )
