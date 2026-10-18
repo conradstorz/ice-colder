@@ -61,7 +61,11 @@ class RoTank:
 
     def tick(self) -> dict[str, bool]:
         if self.level_gal < self.full_gal and not self.cutoff_latched:
-            self.run_ticks += 1
+            # A blocked feed (no source water) is not a stuck fill: only a pump
+            # that runs without the level rising (fill_stuck) counts toward the
+            # max-run cutoff.
+            if not self.fill_blocked:
+                self.run_ticks += 1
             if not (self.fill_blocked or self.fill_stuck):
                 self.level_gal = min(
                     self.capacity_gal, self.level_gal + self.fill_gal_per_tick

@@ -338,6 +338,8 @@ class Dispenser:
             and profile.mechanism == "water_fill"
             and isinstance(profile.fill, WaterFillByVolume)
         ):
+            # A timed fill declares no volume, so it draws nothing from the
+            # RO tank (known simplification).
             await board.draw_water(profile.fill.target_volume_ml / _ML_PER_GALLON)
 
         await board.publish(

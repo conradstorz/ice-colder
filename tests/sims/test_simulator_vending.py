@@ -1543,13 +1543,24 @@ class TestRoTankAndClimateWiring:
         sim = _make_sim()
         seen = _capture_io(sim)
         sim.climate.ambient_c = 4.9
+        topics: list[str] = []
+        capture_io = sim.publish
+
+        async def record_topics(client, topic, payload):
+            topics.append(topic)
+            await capture_io(client, topic, payload)
+
+        sim.publish = record_topics
 
         async def stop(seconds):
             raise asyncio.CancelledError
 
         with patch_module_sleep("ice_sims.vending.simulator", stop):
-            with pytest.raises(asyncio.CancelledError):
-                # private: the periodic sensor loop has no public entry point
-                await sim._publish_sensors(AsyncMock())
+            with patch("ice_sims.vending.simulator.random.gauss", return_value=0.0):
+                with pytest.raises(asyncio.CancelledError):
+                    # private: the periodic sensor loop has no public entry point
+                    await sim._publish_sensors(AsyncMock())
 
         assert ("ro_production", True) in seen
+        assert ("heater_power", True) in seen
+        assert "sensors/temp/ambient" in topics

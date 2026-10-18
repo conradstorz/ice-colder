@@ -1,5 +1,6 @@
 """`RoTank` -- the pure RO storage-tank model (synchronous)."""
 
+from ice_common.config_model import PhysicalDetails
 from ice_sims.vending.channels import SENSOR_PUBLISH_INTERVAL
 from ice_sims.vending.ro_tank import RoTank
 
@@ -103,6 +104,19 @@ def test_fill_blocked_keeps_the_tank_empty():
 
 
 def test_default_limit_outlasts_the_edge_ro_overrun_limit():
-    edge_limit_seconds = 3600
+    edge_limit_seconds = PhysicalDetails().ro_max_run_seconds
     default = RoTank.default()
     assert default.max_run_ticks * SENSOR_PUBLISH_INTERVAL > edge_limit_seconds
+
+
+def test_blocked_feed_never_trips_the_cutoff_and_fill_resumes():
+    tank = _tank(max_run_ticks=3, fill_blocked=True)
+    for _ in range(10):
+        tank.tick()
+    assert not tank.cutoff_latched
+    assert tank.run_ticks == 0
+    assert tank.level_gal == 0.0
+    tank.fill_blocked = False
+    tank.tick()
+    assert tank.level_gal > 0.0
+    assert tank.outputs()["ro_production"] is True
