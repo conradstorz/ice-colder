@@ -66,6 +66,7 @@ class BoardClient:
         self._messages: list[tuple[str, dict]] = []
         self._cond = asyncio.Condition()
         self._reader: asyncio.Task | None = None
+        self._reader_error: BaseException | None = None
 
     async def __aenter__(self) -> "BoardClient":
         await self._client.__aenter__()
@@ -81,6 +82,20 @@ class BoardClient:
         await self._client.__aexit__(*exc)
 
     async def _read(self) -> None:
+        try:
+            await self._pump()
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            self._reader_error = exc
+            async with self._cond:
+                self._cond.notify_all()
+
+    def _check_reader(self) -> None:
+        if self._reader_error is not None:
+            raise self._reader_error
+
+    async def _pump(self) -> None:
         async for msg in self._client.messages:
             topic = str(msg.topic)
             try:
@@ -126,6 +141,7 @@ class BoardClient:
                 found = self._find(suffix, predicate, since)
                 if found is not None:
                     return found
+                self._check_reader()
                 if not await self._wait(deadline):
                     raise TimeoutError(f"no matching message on {suffix} in {timeout}s")
 
@@ -159,6 +175,7 @@ class BoardClient:
                 ]
                 if len(got) >= count:
                     return got[:count]
+                self._check_reader()
                 if not await self._wait(deadline):
                     raise TimeoutError(
                         f"{len(got)}/{count} acks for {request_id} in {timeout}s"

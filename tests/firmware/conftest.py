@@ -3,7 +3,9 @@
 Targets (``ICE_COLDER_BOARD_BROKER`` = ``host[:port]``, default ``localhost:1883``):
 - ``ICE_COLDER_BOARD_MACHINE_ID`` set: hardware target on that broker/machine.
 - unset: simulator target; the vending simulator runs in-process (own thread
-  and event loop, session-long) on that broker with a fresh ``machine_id``.
+  and event loop, package-long) on that broker with a fresh ``machine_id``. It is
+  package-scoped so it disconnects before other test packages start their own
+  ``sim-vending`` (the client id is fixed).
 """
 
 from __future__ import annotations
@@ -59,6 +61,7 @@ class Target:
     port: int
     machine_id: str
     is_sim: bool
+    client_id: str | None = None
 
 
 async def _clear_retained(host: str, port: int, machine_id: str) -> None:
@@ -91,7 +94,7 @@ async def _wait_until_answering(host: str, port: int, machine_id: str) -> None:
     raise RuntimeError(f"board {machine_id} did not answer ping")
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="package")
 def target():
     host, port = broker_address()
     if not _is_sim():
@@ -122,19 +125,19 @@ def target():
     assert ready.wait(10)
     try:
         asyncio.run(_wait_until_answering(host, port, machine_id))
-        yield Target(host, port, machine_id, True)
+        yield Target(host, port, machine_id, True, sim.client_id)
     finally:
         state["loop"].call_soon_threadsafe(state["task"].cancel)
         thread.join(10)
         asyncio.run(_clear_retained(host, port, machine_id))
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="package")
 def machine_id(target) -> str:
     return target.machine_id
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="package")
 def is_sim(target) -> bool:
     return target.is_sim
 

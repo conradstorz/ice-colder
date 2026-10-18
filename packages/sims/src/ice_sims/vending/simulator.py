@@ -273,8 +273,11 @@ class VendingMachineSimulator(ESP32Simulator):
         if self._dispensing:
             return CommandOutcome(status="rejected", detail="busy")
 
+        # Set synchronously, before the background task exists, so a second
+        # dispense arriving before the task first runs is rejected as busy.
+        self._dispensing = True
+
         async def _run() -> None:
-            self._dispensing = True
             try:
                 await self.execute_profile(
                     client, dispense_cmd, request_id=cmd.request_id

@@ -7,8 +7,6 @@ from ice_contracts.board.mqtt_messages import SubsystemHeartbeat
 from tests.firmware.board_client import mqtt_auth
 
 HEARTBEAT = "heartbeat/vending"
-# The simulator's fixed MQTT client id (ice_sims.base.ESP32Simulator.run).
-SIM_CLIENT_ID = "sim-vending"
 
 
 async def test_heartbeats_arrive_within_twelve_seconds_with_rising_uptime(board):
@@ -33,7 +31,7 @@ async def test_unclean_disconnect_publishes_the_lwt(board, target):
     async with aiomqtt.Client(
         hostname=target.host,
         port=target.port,
-        identifier=SIM_CLIENT_ID,
+        identifier=target.client_id,
         **mqtt_auth(),
     ):
         pass
