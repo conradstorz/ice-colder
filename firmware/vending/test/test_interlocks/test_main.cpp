@@ -76,6 +76,25 @@ static void test_all_off(void) {
     TEST_ASSERT_FALSE(g.any_on());
 }
 
+static void test_all_off_keeps_forced_latch(void) {
+    OutputGuard g;
+    VecPublisher pub;
+    bool out[kOutputCount] = {};
+    g.request(Out::Agitator, true, 500, 0);
+    g.apply(0, out, pub);
+    TEST_ASSERT_TRUE(out[kAgit]);
+    g.apply(510, out, pub);  // max-on exceeded: forced off
+    TEST_ASSERT_FALSE(out[kAgit]);
+    g.all_off();  // clears the desired state only; the latch survives
+    g.request(Out::Agitator, true, 500, 520);
+    g.apply(520, out, pub);
+    TEST_ASSERT_FALSE(out[kAgit]);
+    g.request(Out::Agitator, false, 500, 530);  // only request(off) clears the latch
+    g.request(Out::Agitator, true, 500, 540);
+    g.apply(540, out, pub);
+    TEST_ASSERT_TRUE(out[kAgit]);
+}
+
 static void test_any_motion(void) {
     OutputGuard g;
     TEST_ASSERT_FALSE(g.any_motion());
@@ -197,6 +216,7 @@ int main(int, char**) {
     RUN_TEST(test_max_on_forces_off);
     RUN_TEST(test_apply_emits_only_changes);
     RUN_TEST(test_all_off);
+    RUN_TEST(test_all_off_keeps_forced_latch);
     RUN_TEST(test_any_motion);
     RUN_TEST(test_liveness);
     RUN_TEST(test_clean_state_no_trip);

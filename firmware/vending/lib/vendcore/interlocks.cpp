@@ -14,7 +14,6 @@ void OutputGuard::request(Out o, bool on, uint32_t max_on_ms, uint32_t now_ms) {
 void OutputGuard::all_off() {
     for (int i = 0; i < kOutputCount; ++i) {
         want_[i] = false;
-        forced_[i] = false;
     }
 }
 
