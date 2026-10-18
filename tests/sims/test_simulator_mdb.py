@@ -335,7 +335,7 @@ class TestMDBCapabilities:
             "coin_return_test",
             "card_reader_test",
         ]
-        assert caps.contract_version == "1.0.0"
+        assert caps.contract_version == "2.0.0"
 
     def test_channels_are_binary_inputs_driven_by_payment_enable(self):
         sim = MDBGatewaySimulator()

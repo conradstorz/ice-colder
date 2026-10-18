@@ -20,6 +20,7 @@ from ice_edge.ledger.session_store import SessionSnapshot
 from ice_edge.vend.dispense_cycle import DispenseCycle, DispenseReport
 from ice_edge.faults.fault_service import FaultService
 from ice_edge.ledger.escrow_ledger import EscrowLedger
+from ice_edge.sale.buttons import product_for_button
 from ice_edge.sale.outputs import StatusOutputs
 from ice_edge.payment.refund_protocol import PendingRefund, RefundProtocol
 from ice_edge.sale.sale_context import SaleContext
@@ -273,7 +274,11 @@ class VMC:
         """Handle button press from ESP32."""
         press = ButtonPress.model_validate(data)
         self._journal.button_press(press.button)
-        self.select_product(press.button)
+        product = product_for_button(self.products, press.button)
+        if product is None:
+            self._journal.selection_refused_unknown_button(press.button)
+            return
+        self.select_product(product)
 
     def note_dispense_request(self, request_id: str, mechanism: str) -> None:
         """Record the `request_id`/`mechanism` a `DispenseCycle` minted for the in-flight sale."""
@@ -785,13 +790,9 @@ class VMC:
                 self.request_refund(reason="maintenance")
         return True
 
-    def find_product(self, sku: str) -> tuple[int | None, Product | None]:
-        """Returns `(button_index, product)` for `sku` in the live catalog, or
-        `(None, None)`; enumerating prevents collisions between value-equal products."""
-        for index, product in enumerate(self.products):
-            if product.sku == sku:
-                return index, product
-        return None, None
+    def find_product(self, sku: str) -> Product | None:
+        """The product with `sku` in the live catalog, or `None`."""
+        return next((p for p in self.products if p.sku == sku), None)
 
     def begin_test_sale(self, product: Product) -> bool:
         """Seed and select a simulated sale for `product`; True once it is selected.
@@ -816,8 +817,7 @@ class VMC:
                 product=product, is_test=True, started_at=time.time()
             )
             self.deposit_funds(round(product.price, 2), payment_method="test")
-            index, _ = self.find_product(product.sku)
-            self.select_product(index)
+            self.select_product(product)
         except BaseException:
             self._escrow.take_all()
             self._test_sale_in_progress = False
@@ -873,23 +873,18 @@ class VMC:
         return False
 
     @logger.catch()
-    def select_product(self, product_index):
-        logger.debug(f"Selecting product with index: {product_index}")
+    def select_product(self, product: Product) -> None:
+        logger.debug(f"Selecting product: {product.sku}")
         if self.state not in ["idle", "interacting_with_user"]:
             self._journal.selection_refused_not_ready()
             return
-        if not (0 <= product_index < len(self.products)):
-            self._journal.selection_refused_bad_index(product_index)
-            return
 
-        # `product_index` here is the physical button index (ButtonPress.button),
-        # not the product's dispense `slot` — buttons stay positional for now.
-        candidate = self.products[product_index]
+        candidate = product
         if self._refusal(candidate):
             return
 
         self.selected_product = candidate
-        self._journal.product_selected(self.selected_product, product_index)
+        self._journal.product_selected(self.selected_product)
 
         inventory = self._inventory()
         if inventory and not inventory.is_available(self.selected_product.sku):

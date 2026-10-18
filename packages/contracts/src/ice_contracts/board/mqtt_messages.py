@@ -14,6 +14,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+from ice_contracts.board.common import CHANNEL_ID_PATTERN
 from ice_contracts.board.vending_machine import FaultCode, Mechanism
 from ice_contracts.board.dispenser_schema import SlotProfile
 
@@ -66,7 +67,11 @@ class PaymentStatus(BaseModel):
 class ButtonPress(BaseModel):
     """Physical button press from button panel ESP32."""
 
-    button: int = Field(..., ge=0, description="Button index")
+    button: str = Field(
+        ...,
+        pattern=CHANNEL_ID_PATTERN,
+        description="Button id (slug, e.g. button_ice); the edge maps it to a product",
+    )
     action: str = Field("pressed", description="Action type")
     timestamp: datetime = Field(default_factory=_utc_now)
 

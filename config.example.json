@@ -42,6 +42,7 @@
         "track_inventory": false,
         "inventory_count": 0,
         "slot": 0,
+        "button": "button_ice",
         "kind": "ice"
       },
       {
@@ -53,6 +54,7 @@
         "track_inventory": false,
         "inventory_count": 0,
         "slot": 1,
+        "button": "button_water_1gal",
         "kind": "water"
       },
       {
@@ -64,6 +66,7 @@
         "track_inventory": false,
         "inventory_count": 0,
         "slot": 2,
+        "button": "button_water_5gal",
         "kind": "water"
       }
     ]

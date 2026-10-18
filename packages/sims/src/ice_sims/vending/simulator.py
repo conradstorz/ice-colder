@@ -122,13 +122,7 @@ class VendingMachineSimulator(ESP32Simulator):
         self.sleep = sleep or asyncio.sleep
         self.register_command("dispense", self._handle_dispense)
         self.register_command("water_valve", self._handle_water_valve)
-        self._customers = Customers(
-            num_buttons=len(self.config.products),
-            reload_products=self._reload_products,
-            idle_min=self.IDLE_MIN,
-            idle_max=self.IDLE_MAX,
-        )
-        logger.info(f"[vending] {self.num_buttons} products")
+        self._customers = Customers(idle_min=self.IDLE_MIN, idle_max=self.IDLE_MAX)
         # Hardware state
         self._hw: dict[str, bool] = dict(HARDWARE_DEVICES)
         # The one long-lived dispenser: it owns the cross-run accessory
@@ -144,22 +138,14 @@ class VendingMachineSimulator(ESP32Simulator):
             self.register_fault(_fault_def(self, fault))
 
     @property
-    def num_buttons(self) -> int:
-        return self._customers.num_buttons
-
-    @property
     def dispenser(self) -> Dispenser:
         return self._dispenser
-
-    def _reload_products(self) -> int:
-        self.config = self.load_config(self._config_path)
-        return len(self.config.products)
 
     def ha_discovery_entities(self) -> list[dict]:
         """Return HA discovery definitions for vending machine hardware."""
         return ha_discovery_entities(self.CHANNELS)
 
-    def _pick_button(self) -> int:
+    def _pick_button(self) -> str:
         return self._customers.pick_button()
 
     def _arrival_factor(self, hour: int | None = None) -> float:

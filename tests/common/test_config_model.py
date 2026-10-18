@@ -299,3 +299,25 @@ def test_cloud_report_interval_is_bounded():
         CloudConfig(report_interval_seconds=9)
     with pytest.raises(ValidationError):
         CloudConfig(report_interval_seconds=3601)
+
+
+def test_duplicate_product_buttons_fail_naming_the_button():
+    with pytest.raises(ValidationError, match="button_ice"):
+        PhysicalDetails(
+            products=[
+                Product(sku="A", slot=0, button="button_ice"),
+                Product(sku="B", slot=1, button="button_ice"),
+            ]
+        )
+
+
+def test_products_without_buttons_load():
+    details = PhysicalDetails(
+        products=[Product(sku="A", slot=0), Product(sku="B", slot=1)]
+    )
+    assert [p.button for p in details.products] == [None, None]
+
+
+def test_product_button_must_be_a_channel_id():
+    with pytest.raises(ValidationError):
+        Product(button="Bad-Id")

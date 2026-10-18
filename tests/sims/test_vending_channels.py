@@ -1,7 +1,12 @@
 """The vending channel table is a declarative snapshot of the pre-split values."""
 
 from ice_contracts.board.common import ChannelDescriptor
-from ice_sims.vending.channels import CHANNEL_ROWS, CHANNELS, HARDWARE_DEVICES
+from ice_sims.vending.channels import (
+    BUTTON_CHANNELS,
+    CHANNEL_ROWS,
+    CHANNELS,
+    HARDWARE_DEVICES,
+)
 from ice_sims.vending.simulator import VendingMachineSimulator
 
 # Captured from ice_sims/vending_machine.py before the split.
@@ -21,6 +26,33 @@ EXPECTED_CHANNELS = [
         "unit": "gal",
         "description": "Cumulative water dispensed",
         "interval_seconds": 10.0,
+        "direction": "input",
+        "driven_by": None,
+    },
+    {
+        "channel_id": "button_ice",
+        "kind": "binary",
+        "unit": "",
+        "description": "Bagged ice customer button",
+        "interval_seconds": 1.0,
+        "direction": "input",
+        "driven_by": None,
+    },
+    {
+        "channel_id": "button_water_1gal",
+        "kind": "binary",
+        "unit": "",
+        "description": "1 gallon water customer button",
+        "interval_seconds": 1.0,
+        "direction": "input",
+        "driven_by": None,
+    },
+    {
+        "channel_id": "button_water_5gal",
+        "kind": "binary",
+        "unit": "",
+        "description": "5 gallon water customer button",
+        "interval_seconds": 1.0,
         "direction": "input",
         "driven_by": None,
     },
@@ -162,6 +194,9 @@ EXPECTED_CHANNELS = [
     },
 ]
 EXPECTED_HARDWARE_DEVICES = {
+    "button_ice": False,
+    "button_water_1gal": False,
+    "button_water_5gal": False,
     "auger_motor": False,
     "agitator_motor": False,
     "fan": False,
@@ -194,7 +229,7 @@ def test_entry_module_reexports_same_objects():
 
 def test_every_row_has_a_role_and_idle_only_on_binary():
     for row in CHANNEL_ROWS:
-        assert row.role in {"sensor", "output"}
+        assert row.role in {"sensor", "output", "button"}
         assert (row.idle is not None) == (row.kind == "binary")
         assert (row.role == "output") == (row.direction == "output")
 
@@ -202,3 +237,12 @@ def test_every_row_has_a_role_and_idle_only_on_binary():
 def test_simulator_declares_the_table():
     assert VendingMachineSimulator.CHANNELS is CHANNELS
     assert all(isinstance(c, ChannelDescriptor) for c in CHANNELS)
+
+
+def test_button_channels_derive_from_button_role_rows():
+    assert BUTTON_CHANNELS == ("button_ice", "button_water_1gal", "button_water_5gal")
+    assert BUTTON_CHANNELS == tuple(r.id for r in CHANNEL_ROWS if r.role == "button")
+    declared = {c.channel_id: c for c in CHANNELS}
+    for button in BUTTON_CHANNELS:
+        assert declared[button].kind == "binary"
+        assert declared[button].direction == "input"

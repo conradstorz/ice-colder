@@ -60,7 +60,7 @@ async def test_state_change_observer_sees_every_transition_in_order(tmp_path):
     vmc.subscribe_state_change(seen.append)
 
     vmc.deposit_funds(product.price, payment_method="cash")
-    vmc.select_product(0)  # idle -> interacting_with_user (real trigger)
+    vmc.select_product(vmc.products[0])  # idle -> interacting_with_user (real trigger)
     runner.fire("process_payment")  # interacting_with_user -> dispensing
 
     assert seen == ["interacting_with_user", "dispensing"]
@@ -73,7 +73,7 @@ async def test_state_change_observer_stops_after_unsubscribe(tmp_path):
     unsubscribe = vmc.subscribe_state_change(seen.append)
 
     vmc.deposit_funds(product.price, payment_method="cash")
-    vmc.select_product(0)
+    vmc.select_product(vmc.products[0])
     assert seen == ["interacting_with_user"]
 
     unsubscribe()
@@ -96,7 +96,7 @@ async def test_state_change_observer_raising_does_not_block_the_next(tmp_path):
     vmc.subscribe_state_change(seen.append)
 
     vmc.deposit_funds(product.price, payment_method="cash")
-    vmc.select_product(0)
+    vmc.select_product(vmc.products[0])
 
     assert seen == ["interacting_with_user"]
 
@@ -197,7 +197,7 @@ async def test_sale_settled_observer_never_fires_on_cancel_sale_or_reset(tmp_pat
     vmc.subscribe_sale_settled(lambda *a: calls.append(a))
 
     vmc.deposit_funds(product.price, payment_method="cash")
-    vmc.select_product(0)
+    vmc.select_product(vmc.products[0])
     assert vmc.state == "interacting_with_user"
 
     vmc.cancel_sale()
@@ -214,14 +214,11 @@ async def test_sale_settled_observer_never_fires_on_cancel_sale_or_reset(tmp_pat
 # --- begin_test_sale / end_test_sale / find_product ---
 
 
-async def test_find_product_returns_index_and_product_by_identity(tmp_path):
+async def test_find_product_returns_product_by_identity(tmp_path):
     machine, vmc, dispatcher, client, runner = _vmc_with_profiles(tmp_path)
 
-    index, product = vmc.find_product("WATER-1")
-    assert index == 1
-    assert product is vmc.products[1]
-
-    assert vmc.find_product("NO-SUCH-SKU") == (None, None)
+    assert vmc.find_product("WATER-1") is vmc.products[1]
+    assert vmc.find_product("nope") is None
 
 
 async def test_begin_test_sale_refuses_second_call_while_active(tmp_path):
