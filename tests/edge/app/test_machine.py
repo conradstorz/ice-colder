@@ -399,3 +399,22 @@ class TestTelemetryWiring:
         av = Availability()
         machine.set_availability(av)
         assert av.bin_instrumented is False
+
+
+class TestInputFaultsWiring:
+    async def test_sump_high_message_raises_wtr_104_once(self):
+        from tests.fakes import FakeMqtt, drain_pending
+
+        runner = FakeTaskRunner()
+        machine = Machine(ConfigModel(), tasks=runner)
+        machine.attach_to_loop(asyncio.get_running_loop())
+        mqtt = FakeMqtt()
+        machine.set_mqtt_client(mqtt)
+
+        await machine.telemetry.handle_hardware_io(
+            "hardware/io/sump_high", {"device": "sump_high", "state": True}
+        )
+        await drain_pending(runner)
+
+        assert machine.faults.has(FaultCode.WTR_104)
+        assert len([1 for t, _, _ in mqtt.published if t == "alerts"]) == 1

@@ -60,6 +60,7 @@ from ice_edge.ledger.escrow_ledger import EscrowLedger
 from ice_edge.faults.fault_registry import FaultRegistry
 from ice_edge.faults.fault_service import FaultService
 from ice_edge.faults.ice_policy import IcePolicy
+from ice_edge.faults.input_faults import InputFaults
 from ice_edge.monitoring.health_telemetry import HealthTelemetry
 from ice_edge.sale.maintenance_lease import MaintenanceHold, MaintenanceLease
 from ice_edge.sale.outputs import StatusOutputs
@@ -197,6 +198,12 @@ class Machine:
         # independent and availability recomputes idempotently on every input,
         # so delivery order within one message is not a correctness invariant.
         self._telemetry.subscribe_hardware_io(self._ice_policy.on_hardware_io)
+        self._input_faults = InputFaults(
+            faults=self._faults,
+            tasks=self._tasks,
+            ro_max_run_seconds=lambda: self._config.physical.ro_max_run_seconds,
+        )
+        self._telemetry.subscribe_hardware_io(self._input_faults.on_hardware_io)
         self._unsubscribe_availability: list[Callable[[], None]] = []
         # Builds a fresh DispenseCycle (ice_edge/vend/dispense_cycle.py)
         # for one sale's dispatch attempt -- the cycle's own identity, not a
