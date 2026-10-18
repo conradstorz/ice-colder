@@ -193,6 +193,7 @@ class Machine:
         self._telemetry.subscribe_telemetry(self._health_telemetry.on_telemetry)
         self._telemetry.subscribe_capabilities(self._health_telemetry.on_capabilities)
         self._telemetry.subscribe_capabilities(self._gate.on_vending_capabilities)
+        self._telemetry.subscribe_capabilities(self._ice_policy.on_vending_capabilities)
         # Dispatch order for hardware IO is health, then policy here, then
         # availability (attached later by set_availability). Each consumer is
         # independent and availability recomputes idempotently on every input,

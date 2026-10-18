@@ -50,6 +50,11 @@ class Gate(str, Enum):
     alert = "alert"
 
 
+def declares_bin_sensor(caps: SubsystemCapabilities) -> bool:
+    """True when the vending board declares the ``bin_half_full`` channel."""
+    return any(c.channel_id == VendingChannel.bin_half_full for c in caps.channels)
+
+
 @dataclass
 class Permissive:
     name: str
@@ -278,9 +283,7 @@ class Availability:
         sensor leaves the ice row not-instrumented instead of unknown."""
         if subsystem != "vending" or caps is None:
             return
-        self.set_bin_instrumented(
-            any(c.channel_id == VendingChannel.bin_half_full for c in caps.channels)
-        )
+        self.set_bin_instrumented(declares_bin_sensor(caps))
 
     def set_hardware_io(self, device: str, state: bool) -> None:
         if device == VendingChannel.bin_half_full:

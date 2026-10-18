@@ -6,6 +6,11 @@ bin sensor nothing can say ice is back, so each ICE-101 raise arms a
 ``ice_retry_cooldown`` timer that clears the lockouts and lets the next sale
 try again (``by="cooldown"``). An operator clear that leaves no ICE-101
 lockout cancels the timer.
+
+If the bin-sensor declaration changes after an ICE-101 was raised (the
+capabilities document arrives late, or is replaced), ``on_bin_instrumented``
+re-evaluates: losing the sensor arms the cooldown for lockouts already held;
+gaining one cancels a pending timer, since the sensor now owns the clear.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ import asyncio
 from collections.abc import Callable
 
 from ice_contracts.board.vending_machine import FaultCode, VendingChannel
+from ice_edge.faults.availability import declares_bin_sensor
 from ice_edge.faults.fault_service import FaultChange, FaultService
 from ice_edge.supervisor.task_runner import TaskRunner
 
@@ -42,6 +48,25 @@ class IcePolicy:
     def on_hardware_io(self, device: str, state: bool) -> None:
         if device == VendingChannel.bin_half_full and state:
             self._faults.clear_ice101_lockouts()
+
+    def on_vending_capabilities(self, subsystem: str, data: dict, caps) -> None:
+        """Capabilities subscriber; same derivation as Availability's."""
+        if subsystem == "vending" and caps is not None:
+            self.on_bin_instrumented(declares_bin_sensor(caps))
+
+    def on_bin_instrumented(self, instrumented: bool) -> None:
+        """The vending board's bin-sensor declaration changed.
+
+        False with an ICE-101 lockout held and no timer pending arms the
+        cooldown (the raise already passed while the sensor was assumed).
+        True cancels a pending timer: ``bin_half_full`` now clears instead.
+        """
+        if instrumented:
+            self._cancel()
+        elif self._timer is None and any(
+            c is FaultCode.ICE_101 for c in self._faults.lockouts.values()
+        ):
+            self._arm()
 
     def on_fault_change(self, change: FaultChange) -> None:
         if change.code is not FaultCode.ICE_101:
