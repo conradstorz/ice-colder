@@ -236,10 +236,10 @@ broken-wire state.
 ## 11 As built (deviations)
 
 - 18 channels are declared (the original text said 17).
-- Relay polarity is fail-safe normally-closed wiring, per the interface doc section 3.
+- Input polarity defaults assume fail-safe normally-closed wiring of every fault input, per the interface doc section 3.
 - `silence_ms` defaults to 0; VMC liveness is the retained `online` document and its LWT.
 - Only the onset of `vmc_offline` drops outputs; the RO loop and heater continue afterwards.
-- Watchdog kick pulses are 10 ms, not 500 ms.
+- The watchdog is kicked (a 50 µs pulse) on every healthy 10 ms tick, not every 500 ms.
 - Each output's max-on bound is the profile worst case plus 1 s, not plus 10 %.
 - An interlock refusal inside the accept step produces both an `error` outcome and a `failed` ack (a double report).
 - The heater is held off while a latching interlock holds, since its coil common runs through the master relay.
