@@ -180,8 +180,8 @@ class Dispenser:
 
         `water_valve_stuck_open` deliberately leaves the valve energised
         (its own `on_activate` already did this, independent of any
-        particular run), so the sweep below skips `driven_on` entirely
-        while it is active.
+        particular run), so the sweep below skips the water-valve channel
+        (and only that channel) while it is active.
 
         Every output this run drove, the trap-door catch included, is in
         `driven_on` until it is explicitly driven off, so every exit path
@@ -305,6 +305,13 @@ class Dispenser:
         outcome: DispenserOutcome
         detail: str | None
 
+        # The stuck-open injection exempts only the water valve from the
+        # sweep; every other driven channel (the trap-door catch included)
+        # is always de-energised.
+        kept_on: set[str] = set()
+        if profile.mechanism != "bagged_ice" and "water_valve_stuck_open" in active:
+            kept_on.add(profile.fill.valve_channel)
+
         try:
             if profile.mechanism == "bagged_ice":
                 outcome, detail = await self._run_bagged_ice(ctx)
@@ -315,16 +322,14 @@ class Dispenser:
                 task.cancel()
             if accessory_tasks:
                 await asyncio.gather(*accessory_tasks, return_exceptions=True)
-            if "water_valve_stuck_open" not in active:
-                for channel in list(driven_on):
-                    await board.set_hw(channel, False)
+            for channel in list(driven_on - kept_on):
+                await board.set_hw(channel, False)
             for channel in list(accessory_on):
                 await board.set_hw(channel, False)
             raise
 
-        if "water_valve_stuck_open" not in active:
-            for channel in list(driven_on):
-                await board.set_hw(channel, False)
+        for channel in list(driven_on - kept_on):
+            await board.set_hw(channel, False)
 
         await board.publish(
             "hardware/dispenser",

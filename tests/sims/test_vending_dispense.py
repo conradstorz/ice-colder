@@ -272,6 +272,18 @@ async def test_every_failure_path_de_energizes_the_catch(fault):
 
 
 @pytest.mark.asyncio
+async def test_a_stuck_water_valve_never_leaves_the_catch_energized():
+    board = ListBoard(faults={"water_valve_stuck_open", "motor_stall"})
+
+    await Dispenser().execute_profile(board, dispense_command(0))
+
+    catch = [s for d, s in _hw_events(board) if d == "trap_door_catch"]
+    assert catch[0] is True
+    assert catch[-1] is False
+    assert _statuses(board)[-1] == "error"  # the stall's failure outcome
+
+
+@pytest.mark.asyncio
 async def test_a_cancelled_catch_vend_de_energizes_the_catch():
     gate = asyncio.Event()
     board = ListBoard(gate=gate)
