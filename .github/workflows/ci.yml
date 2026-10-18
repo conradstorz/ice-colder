@@ -84,6 +84,7 @@ jobs:
       - name: Run tests (including the opt-in browser tests)
         env:
           ICE_COLDER_BROWSER_TESTS: "1"
+          ICE_COLDER_BOARD_TESTS: "1"
           CHROME_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
         run: |
           set -o pipefail

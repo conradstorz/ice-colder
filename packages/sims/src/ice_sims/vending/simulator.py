@@ -140,6 +140,9 @@ class VendingMachineSimulator(ESP32Simulator):
         # affects `_handle_water_valve`'s own bare `asyncio.sleep` call).
         self.sleep = sleep or asyncio.sleep
         self.register_command("dispense", self._handle_dispense)
+        # True while a dispense profile runs; a second dispense is rejected
+        # "busy", as the board firmware does (vending ESP32 design 7).
+        self._dispensing = False
         self.register_command("water_valve", self._handle_water_valve)
         self._customers = Customers(idle_min=self.IDLE_MIN, idle_max=self.IDLE_MAX)
         # Hardware state
@@ -209,6 +212,17 @@ class VendingMachineSimulator(ESP32Simulator):
             )
             await asyncio.sleep(SENSOR_PUBLISH_INTERVAL)
 
+    async def _force_report_extra(self, client: aiomqtt.Client) -> None:
+        """Contract force_report: republish capabilities and every reading now."""
+        await self._publish_capabilities(client)
+        for channel, state in self._hw.items():
+            await self.set_hw(client, channel, state)
+        await self.publish(
+            client,
+            "sensors/temp/ambient",
+            SensorReading(location="ambient", value=round(self.climate.ambient_c, 2)),
+        )
+
     async def execute_profile(
         self,
         client: aiomqtt.Client,
@@ -256,9 +270,19 @@ class VendingMachineSimulator(ESP32Simulator):
             )
             return CommandOutcome(status="rejected", detail=first_line)
 
-        self._spawn_background(
-            self.execute_profile(client, dispense_cmd, request_id=cmd.request_id)
-        )
+        if self._dispensing:
+            return CommandOutcome(status="rejected", detail="busy")
+
+        async def _run() -> None:
+            self._dispensing = True
+            try:
+                await self.execute_profile(
+                    client, dispense_cmd, request_id=cmd.request_id
+                )
+            finally:
+                self._dispensing = False
+
+        self._spawn_background(_run())
         return CommandOutcome(
             status="ok",
             result={"slot": dispense_cmd.slot, "mechanism": dispense_cmd.mechanism},
