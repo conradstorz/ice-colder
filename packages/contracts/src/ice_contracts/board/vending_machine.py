@@ -60,7 +60,11 @@ from ice_contracts.board.common import ChannelDescriptor, _utc_now
 # `DispenserStatus.request_id` is now always set for a production sale,
 # not test runs only. See docs/contracts/vending-machine/CONTRACT.md's
 # "Semantics fixed in 1.0.0 (breaking)" section for the full list.
-CONTRACT_VERSION = "2.0.0"
+#
+# 2.0.0 -> 2.1.0 (2026-10-18): minor bump, additive. PAY-105..108 for the
+# payment contract (ice_contracts.board.payment, spec
+# 2026-10-18-payment-contract-design.md). Not payment-blocking.
+CONTRACT_VERSION = "2.1.0"
 
 
 class DispenserOutcome(str, Enum):
@@ -116,6 +120,10 @@ class FaultCode(str, Enum):
     PAY_102 = "PAY-102"
     PAY_103 = "PAY-103"
     PAY_104 = "PAY-104"
+    PAY_105 = "PAY-105"
+    PAY_106 = "PAY-106"
+    PAY_107 = "PAY-107"
+    PAY_108 = "PAY-108"
     PWR_101 = "PWR-101"
     PWR_102 = "PWR-102"
     COM_101 = "COM-101"
@@ -257,6 +265,26 @@ FAULT_TABLE: dict[FaultCode, FaultSpec] = {
         severity=Severity.warning,
         scope=Scope.machine,
         description="Transaction uncertain after VMC restart; operator must reconcile",
+    ),
+    FaultCode.PAY_105: FaultSpec(
+        severity=Severity.warning,
+        scope=Scope.machine,
+        description="Payment event gap; cash count may be off (board replay missed or unknown event kind)",
+    ),
+    FaultCode.PAY_106: FaultSpec(
+        severity=Severity.warning,
+        scope=Scope.machine,
+        description="Coin changer fault",
+    ),
+    FaultCode.PAY_107: FaultSpec(
+        severity=Severity.warning,
+        scope=Scope.machine,
+        description="Bill validator fault",
+    ),
+    FaultCode.PAY_108: FaultSpec(
+        severity=Severity.warning,
+        scope=Scope.machine,
+        description="Cashless reader fault",
     ),
     FaultCode.PWR_101: FaultSpec(
         severity=Severity.info,
@@ -425,13 +453,17 @@ def fault_for_outcome(mechanism: str, outcome: DispenserOutcome) -> FaultCode:
 
 
 class RefundStatus(str, Enum):
+    """**Deprecated** (2026-10-18): superseded by ice_contracts.board.payment; removed, with a 3.0.0 bump, when ice_edge/ice_sims stop importing it (payment spec 3)."""
+
     ok = "ok"
     failed = "failed"
     unsupported = "unsupported"
 
 
 class PaymentRefundCommand(BaseModel):
-    """VMC -> payment gateway, published on cmd/payment/refund (QoS 1)."""
+    """**Deprecated** (2026-10-18): superseded by ice_contracts.board.payment; removed, with a 3.0.0 bump, when ice_edge/ice_sims stop importing it (payment spec 3).
+
+    VMC -> payment gateway, published on cmd/payment/refund (QoS 1)."""
 
     request_id: str = Field(
         ...,
@@ -448,7 +480,9 @@ class PaymentRefundCommand(BaseModel):
 
 
 class PaymentRefundResult(BaseModel):
-    """Payment gateway -> VMC, published on cmd/payment/refund/ack (QoS 1).
+    """**Deprecated** (2026-10-18): superseded by ice_contracts.board.payment; removed, with a 3.0.0 bump, when ice_edge/ice_sims stop importing it (payment spec 3).
+
+    Payment gateway -> VMC, published on cmd/payment/refund/ack (QoS 1).
 
     Exactly one per command; a repeated request_id is answered with the
     previously computed result and never paid twice.

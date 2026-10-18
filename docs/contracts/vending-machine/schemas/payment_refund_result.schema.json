@@ -1,6 +1,7 @@
 {
   "$defs": {
     "RefundStatus": {
+      "description": "**Deprecated** (2026-10-18): superseded by ice_contracts.board.payment; removed, with a 3.0.0 bump, when ice_edge/ice_sims stop importing it (payment spec 3).",
       "enum": [
         "ok",
         "failed",
@@ -10,7 +11,7 @@
       "type": "string"
     }
   },
-  "description": "Payment gateway -> VMC, published on cmd/payment/refund/ack (QoS 1).\n\nExactly one per command; a repeated request_id is answered with the\npreviously computed result and never paid twice.",
+  "description": "**Deprecated** (2026-10-18): superseded by ice_contracts.board.payment; removed, with a 3.0.0 bump, when ice_edge/ice_sims stop importing it (payment spec 3).\n\nPayment gateway -> VMC, published on cmd/payment/refund/ack (QoS 1).\n\nExactly one per command; a repeated request_id is answered with the\npreviously computed result and never paid twice.",
   "properties": {
     "request_id": {
       "description": "Echoed from the command",

@@ -40,7 +40,9 @@ class SensorReading(BaseModel):
 
 
 class PaymentEvent(BaseModel):
-    """Credit inserted or payment status change from MDB ESP32."""
+    """**Deprecated** (2026-10-18): superseded by ice_contracts.board.payment; removed, with a 3.0.0 bump, when ice_edge/ice_sims stop importing it (payment spec 3).
+
+    Credit inserted or payment status change from MDB ESP32."""
 
     amount: float = Field(
         ...,
@@ -53,7 +55,9 @@ class PaymentEvent(BaseModel):
 
 
 class PaymentStatus(BaseModel):
-    """MDB device readiness status."""
+    """**Deprecated** (2026-10-18): superseded by ice_contracts.board.payment; removed, with a 3.0.0 bump, when ice_edge/ice_sims stop importing it (payment spec 3).
+
+    MDB device readiness status."""
 
     device: str = Field(
         ..., description="Device name (e.g., 'coin_acceptor', 'card_reader')"
@@ -167,7 +171,9 @@ class DispenseCommand(BaseModel):
 
 
 class PaymentEnableCommand(BaseModel):
-    """Enable or disable payment acceptance."""
+    """**Deprecated** (2026-10-18): superseded by ice_contracts.board.payment; removed, with a 3.0.0 bump, when ice_edge/ice_sims stop importing it (payment spec 3).
+
+    Enable or disable payment acceptance."""
 
     accept: bool = Field(..., description="True to accept payments, False to disable")
 

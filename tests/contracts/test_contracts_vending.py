@@ -34,7 +34,22 @@ def test_contract_version():
     # 0.8.0 -> 1.0.0: major bump (Copilot review, PR #32) -- wire-breaking:
     # `dispense` params now require mechanism+profile, `cmd/dispense` is
     # removed, and DispenserStatus.request_id is now always set for sales.
-    assert CONTRACT_VERSION == "2.0.0"
+    # 1.0.0 -> 2.0.0: ButtonPress.button is a channel id (breaking).
+    # 2.0.0 -> 2.1.0: PAY-105..108 for the payment contract (additive).
+    assert CONTRACT_VERSION == "2.1.0"
+
+
+def test_payment_contract_faults_registered():
+    for name in ("PAY-105", "PAY-106", "PAY-107", "PAY-108"):
+        code = FaultCode(name)
+        spec = FAULT_TABLE[code]
+        assert spec.severity is Severity.warning
+        assert spec.scope is Scope.machine
+        assert code not in PAYMENT_BLOCKING_FAULTS
+
+
+def test_payment_blocking_faults_still_seven():
+    assert len(PAYMENT_BLOCKING_FAULTS) == 7
 
 
 def test_every_fault_code_has_a_table_entry():
@@ -197,7 +212,7 @@ class TestSubsystemCapabilities:
             )
 
     def test_contract_version_bumped(self):
-        assert CONTRACT_VERSION == "2.0.0"
+        assert CONTRACT_VERSION == "2.1.0"
 
     def test_expected_subsystems(self):
         assert EXPECTED_SUBSYSTEMS == ("vending", "mdb", "ice_maker")
@@ -221,7 +236,7 @@ def test_pay_104_is_a_machine_warning():
 def test_contract_version_bumped_for_new_code():
     from ice_contracts.board.vending_machine import CONTRACT_VERSION
 
-    assert CONTRACT_VERSION == "2.0.0"
+    assert CONTRACT_VERSION == "2.1.0"
 
 
 def test_payment_blocking_faults_is_exactly_the_six_hazards_plus_svc_102():
