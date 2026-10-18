@@ -221,3 +221,29 @@ def test_snapshot_preserves_insertion_order_within_each_group():
 
     snap = reg.snapshot()
     assert [row["key"] for row in snap] == ["ICE-1", "W-1", "ENV-101", "WTR-103"]
+
+
+# --- alert key and message follow scope ---
+
+
+def test_product_scope_alert_key_uses_sku():
+    reg = make_registry()
+    raised = reg.raise_fault(FaultCode.ICE_301, sku="X")
+    assert raised.alert_key == "ICE-301:X"
+    assert raised.sku == "X"
+    assert "product 'X'" in raised.message
+
+
+def test_machine_scope_alert_key_ignores_sku():
+    reg = make_registry()
+    with_sku = reg.raise_fault(FaultCode.ENV_101, sku="X")
+    without_sku = reg.raise_fault(FaultCode.ENV_101)
+    assert with_sku.alert_key == "ENV-101:machine"
+    assert without_sku.alert_key == "ENV-101:machine"
+    assert with_sku.sku is None
+
+
+def test_machine_scope_message_has_no_product_suffix():
+    reg = make_registry()
+    raised = reg.raise_fault(FaultCode.ENV_101, sku="X")
+    assert "product" not in raised.message
