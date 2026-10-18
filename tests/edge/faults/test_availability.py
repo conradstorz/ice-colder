@@ -610,6 +610,27 @@ def test_no_bin_sensor_still_fails_on_ice_101():
     assert a.sale_available("ice")[0] is True
 
 
+def test_ice_available_row_flips_instrumented_with_bin_sensor_presence():
+    a, _ = _avail()
+    _all_good(a)
+    assert _row(a, "ice_available")["instrumented"] is True
+    a.on_vending_capabilities("vending", {}, _vending_caps("service_door"))
+    assert _row(a, "ice_available")["instrumented"] is False
+    assert _row(a, "ice_available")["detail"] == "no bin sensor"
+    a.on_vending_capabilities("vending", {}, _vending_caps("bin_half_full"))
+    assert _row(a, "ice_available")["instrumented"] is True
+
+
+def test_ice_101_precedence_holds_on_not_instrumented_ice_row():
+    a, _ = _avail()
+    _all_good_no_bin(a)
+    assert _row(a, "ice_available")["instrumented"] is False
+    a.set_active_faults([_machine_fault("ICE-101", severity="warning")])
+    row = _row(a, "ice_available")
+    assert row["state"] == "fail"
+    assert row["detail"] == "ICE-101 active"
+
+
 def test_caps_declaring_bin_behave_as_today_and_none_changes_nothing():
     a, _ = _avail()
     _all_good(a)

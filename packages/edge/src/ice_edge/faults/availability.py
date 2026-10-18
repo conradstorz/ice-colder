@@ -300,6 +300,9 @@ class Availability:
 
     def _refresh_ice_available(self) -> None:
         row = self._rows["ice_available"]
+        # A board with no bin sensor makes this row not-instrumented (spec
+        # 4.3); the state/detail precedence below is unchanged.
+        row.instrumented = self._bin_instrumented
         if self._ice_101_active:
             row.state, row.detail = PermissiveState.FAIL, "ICE-101 active"
         elif not self._bin_instrumented:
