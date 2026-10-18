@@ -114,6 +114,18 @@ void Core::step(uint32_t now) {
     }
     if (!io_failure) freeze_.tick(raw_, guard_, now);
 
+    // Motion-conditioned rules see this step's requests only now: re-check before anything is written.
+    TripReason why2 = {};
+    if (interlocks_.trip(scanner_, raw_, io_ok_, vmc_, guard_.any_motion(), guard_.any_on(), now, why2) &&
+        (!tripped || strcmp(why2.detail, why.detail) != 0)) {
+        step_trip_ = why2.detail;
+        on_trip(now, why2.detail);
+        guard_.all_off();
+        trip_active_ = true;
+        copy_text(trip_detail_, sizeof(trip_detail_), why2.detail);
+        health_.set_latched(one_of(why2.detail, kLatching, 3));
+    }
+
     if (io_ok_ && raw_.ambient_valid && (!temp_sent_ || now - last_temp_ms_ >= cfg_.temp_publish_ms)) {
         publish_temperature();
         temp_sent_ = true;
@@ -127,7 +139,7 @@ void Core::step(uint32_t now) {
         force_report_ = false;
         scanner_.republish_all(pub_);
         guard_.republish_all(pub_);
-        if (raw_.ambient_valid) publish_temperature();
+        if (io_ok_ && raw_.ambient_valid) publish_temperature();
     }
 
     guard_.apply(now, out_, pub_);
@@ -141,6 +153,11 @@ void Core::publish_temperature() {
     e.channel = static_cast<uint8_t>(channel_index("ambient"));
     e.fvalue = raw_.ambient_c;
     pub_.publish(e);
+}
+
+bool Core::dispense_output_written() const {
+    return out_[static_cast<int>(Out::Agitator)] || out_[static_cast<int>(Out::Auger)] ||
+           out_[static_cast<int>(Out::BagFan)] || out_[static_cast<int>(Out::TrapDoorCatch)] || out_[kValve];
 }
 
 void Core::valve_tick(uint32_t now) {
@@ -172,6 +189,7 @@ void Core::cancel_valve(const char* detail) {
 }
 
 void Core::push_completion(const Ack& a) {
+    if (suppress_completion_) return;
     if (ring_count_ == kRing) {  // full: drop the oldest
         ring_head_ = (ring_head_ + 1) % kRing;
         --ring_count_;
@@ -232,7 +250,7 @@ Ack Core::submit(const Decoded& d) {
     if (c.kind == CmdKind::Dispense) {
         dispenser_.start(c, now);
         step(now);
-        if (dispenser_.first_actuator_on()) {
+        if (dispense_output_written()) {
             Ack a = make_ack(c, AckStatus::Ok, "");
             a.phase = Phase::Accepted;
             return a;
@@ -245,12 +263,14 @@ Ack Core::submit(const Decoded& d) {
         return make_ack(c, AckStatus::Failed, step_trip_ != nullptr ? step_trip_ : "failed");
     }
 
+    suppress_completion_ = true;
     valve_active_ = true;
     copy_text(valve_id_, sizeof(valve_id_), c.request_id);
     valve_start_ms_ = now;
     valve_ms_ = static_cast<uint32_t>(c.valve_seconds) * 1000u;
     step(now);
     if (valve_active_ && out_[kValve]) {
+        suppress_completion_ = false;
         Ack a = make_ack(c, AckStatus::Ok, "");
         a.phase = Phase::Accepted;
         return a;
@@ -258,7 +278,7 @@ Ack Core::submit(const Decoded& d) {
     // Ended in the same step: the caller gets the failure here, not again through poll_completion.
     const char* why = step_trip_ != nullptr ? step_trip_ : "actuator_not_started";
     if (valve_active_) cancel_valve(why);
-    if (ring_count_ > 0) --ring_count_;
+    suppress_completion_ = false;
     return make_ack(c, AckStatus::Failed, why);
 }
 
@@ -290,11 +310,13 @@ void Core::self_test(Ack& out) const {
     out.phase = Phase::Completed;
     size_t n = static_cast<size_t>(snprintf(out.result_json, sizeof(out.result_json), "{\"checks\":["));
     for (int i = 0; i < 6; ++i) {
+        if (n >= sizeof(out.result_json) - 1) break;
         n += static_cast<size_t>(snprintf(out.result_json + n, sizeof(out.result_json) - n,
                                           "%s{\"name\":\"%s\",\"pass\":%s,\"detail\":\"%s\"}", i ? "," : "",
                                           checks[i].name, checks[i].pass ? "true" : "false", checks[i].detail));
+        if (n > sizeof(out.result_json) - 1) n = sizeof(out.result_json) - 1;
     }
-    snprintf(out.result_json + n, sizeof(out.result_json) - n, "]}");
+    if (n < sizeof(out.result_json)) snprintf(out.result_json + n, sizeof(out.result_json) - n, "]}");
 }
 
 }  // namespace vendcore

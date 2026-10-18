@@ -3,10 +3,10 @@
 namespace vendcore {
 
 void OutputGuard::request(Out o, bool on, uint32_t max_on_ms, uint32_t now_ms) {
+    (void)now_ms;
     const int i = static_cast<int>(o);
     if (!on) forced_[i] = false;
     if (on && forced_[i]) return;
-    if (on && !want_[i]) on_since_[i] = now_ms;
     want_[i] = on;
     max_on_[i] = max_on_ms;
 }
@@ -29,6 +29,7 @@ void OutputGuard::republish_all(Publisher& pub) const {
 
 void OutputGuard::apply(uint32_t now_ms, bool (&out)[kOutputCount], Publisher& pub) {
     for (int i = 0; i < kOutputCount; ++i) {
+        if (want_[i] && !written_[i]) on_since_[i] = now_ms;  // timer runs on the written off->on edge
         if (want_[i] && now_ms - on_since_[i] > max_on_[i]) {
             want_[i] = false;
             forced_[i] = true;

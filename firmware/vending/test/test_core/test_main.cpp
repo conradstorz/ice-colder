@@ -382,6 +382,61 @@ static void test_ro_loop_and_heater_run_autonomously(void) {
     TEST_ASSERT_TRUE(r.io.last_outputs[static_cast<int>(Out::Heater)]);
 }
 
+static int count_output_on(const Rig& r, int channel_out) {
+    int n = 0;
+    for (int i = 0; i < r.pub.count; ++i) {
+        const Event& e = r.pub.events[i];
+        if (e.type == EventType::OutputChanged && e.channel == kBinaryInputCount + channel_out && e.state) ++n;
+    }
+    return n;
+}
+
+static void test_heater_bound_holds_through_sustained_trip(void) {
+    Rig r;
+    r.io.current.ambient_c = 1.0f;
+    r.tick();
+    r.tick();
+    TEST_ASSERT_TRUE(r.io.last_outputs[static_cast<int>(Out::Heater)]);
+    r.set_in(In::SumpHigh, true);
+    for (int i = 0; i < 12; ++i) {  // 12 x 10 s: past the 24 h bound
+        r.clk.t += 10000000;
+        r.core.vmc_seen();
+        r.tick();
+    }
+    TEST_ASSERT_FALSE(r.io.last_outputs[static_cast<int>(Out::Heater)]);
+    r.clk.t += 100;
+    r.core.vmc_seen();
+    r.tick();
+    TEST_ASSERT_FALSE(r.io.last_outputs[static_cast<int>(Out::Heater)]);
+}
+
+static void test_service_door_refuses_dispense_without_energizing(void) {
+    Rig r;
+    r.core.vmc_seen();
+    r.set_in(In::ServiceDoor, true);
+    r.tick();
+    Ack a = r.core.submit(dispense("req-0001"));
+    TEST_ASSERT_TRUE(a.phase != Phase::Accepted);
+    TEST_ASSERT_TRUE(a.status == AckStatus::Failed);
+    TEST_ASSERT_EQUAL_STRING("service_door", a.detail);
+    TEST_ASSERT_EQUAL(0, count_output_on(r, kCatch));
+    TEST_ASSERT_FALSE(r.io.last_outputs[kCatch]);
+    TEST_ASSERT_EQUAL(1, r.count(EventType::Outcome));
+    TEST_ASSERT_EQUAL_STRING("service_door", r.find(EventType::Outcome)->text);
+}
+
+static void test_master_enable_dropped_refuses_dispense(void) {
+    Rig r;
+    r.core.vmc_seen();
+    r.io.current.master_enable = false;
+    r.tick();
+    Ack a = r.core.submit(dispense("req-0001"));
+    TEST_ASSERT_TRUE(a.phase != Phase::Accepted);
+    TEST_ASSERT_TRUE(a.status == AckStatus::Failed);
+    TEST_ASSERT_TRUE(r.all_off());
+    for (int ch = 0; ch < kOutputCount; ++ch) TEST_ASSERT_EQUAL(0, count_output_on(r, ch));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_accepted_after_catch_written);
@@ -400,5 +455,8 @@ int main(int, char**) {
     RUN_TEST(test_ping_unsupported_rejected);
     RUN_TEST(test_dropped_events_counted);
     RUN_TEST(test_ro_loop_and_heater_run_autonomously);
+    RUN_TEST(test_heater_bound_holds_through_sustained_trip);
+    RUN_TEST(test_service_door_refuses_dispense_without_energizing);
+    RUN_TEST(test_master_enable_dropped_refuses_dispense);
     return UNITY_END();
 }

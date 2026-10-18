@@ -54,6 +54,7 @@ private:
 
     void step(uint32_t now);
     void on_trip(uint32_t now, const char* detail);
+    bool dispense_output_written() const;
     void valve_tick(uint32_t now);
     void cancel_valve(const char* detail);
     void push_completion(const Ack& a);
@@ -83,6 +84,7 @@ private:
     uint32_t last_temp_ms_ = 0;
     bool temp_sent_ = false;
     bool force_report_ = false;
+    bool suppress_completion_ = false;  // submit() returns the valve outcome directly: no ring push
 
     bool trip_active_ = false;
     char trip_detail_[24] = {};

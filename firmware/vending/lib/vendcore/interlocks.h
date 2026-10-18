@@ -11,7 +11,8 @@ namespace vendcore {
 
 class OutputGuard {
 public:
-    // Sets the desired state of one output. Idempotent; the on-timer starts when desired goes off->on.
+    // Sets the desired state of one output. Idempotent. The max-on timer starts when apply() writes the output off->on,
+    // so an all_off()/request(on) pair within one step does not restart it.
     void request(Out o, bool on, uint32_t max_on_ms, uint32_t now_ms);
     void all_off();
     // One OutputChanged per output carrying its current written state (force_report).
