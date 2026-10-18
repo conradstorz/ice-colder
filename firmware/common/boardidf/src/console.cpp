@@ -1,4 +1,4 @@
-#include "console.h"
+#include "boardidf/console.h"
 
 #include <stdio.h>
 
@@ -46,14 +46,20 @@ void add(const char* name, const char* help, esp_console_cmd_func_t fn) {
 }
 }  // namespace
 
-void console_start(const Settings& settings) {
+void console_start(const BoardIdentity& id, const Settings& settings) {
     g_settings = &settings;
     esp_console_repl_t* repl = nullptr;
     esp_console_repl_config_t rc = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
-    rc.prompt = "vend> ";
+    rc.prompt = id.console_prompt;
     esp_console_dev_uart_config_t uc = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
     if (esp_console_new_repl_uart(&uc, &rc, &repl) != ESP_OK) return;
-    add("set", "set <key> <value> (polarity: 9 chars of 0/1, 1 = active_low)", cmd_set);
+    static char set_help[160];
+    int n = snprintf(set_help, sizeof(set_help), "set <key> <value>");
+    for (int i = 0; i < settings_extra_count() && n > 0 && n < static_cast<int>(sizeof(set_help)); ++i) {
+        n += snprintf(set_help + n, sizeof(set_help) - n, "%s%s%s", i == 0 ? " (" : "; ", settings_extra(i)->help,
+                      i == settings_extra_count() - 1 ? ")" : "");
+    }
+    add("set", set_help, cmd_set);
     add("show", "print settings, secrets masked", cmd_show);
     add("erase", "erase all stored settings", cmd_erase);
     add("reboot", "restart", cmd_reboot);

@@ -1,4 +1,4 @@
-#include "net.h"
+#include "boardidf/net.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -71,6 +71,7 @@ void start_wifi(const Settings& s) {
     ESP_ERROR_CHECK(esp_wifi_start());
 }
 
+#if CONFIG_ETH_USE_ESP32_EMAC
 void on_eth(void*, esp_event_base_t, int32_t id, void*) {
     if (id == ETHERNET_EVENT_DISCONNECTED) {
         g_up = false;
@@ -112,9 +113,10 @@ void start_eth() {
     if (!eth_ok(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, on_eth, nullptr), "event register")) return;
     eth_ok(esp_eth_start(eth), "start");
 }
+#endif  // CONFIG_ETH_USE_ESP32_EMAC
 }  // namespace
 
-void net_start(const Settings& settings) {
+void net_start(const BoardIdentity& id, const Settings& settings) {
     uint8_t mac[6] = {};
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     snprintf(g_hwid, sizeof(g_hwid), "esp32-%02x%02x%02x%02x%02x%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
@@ -130,7 +132,15 @@ void net_start(const Settings& settings) {
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, on_got_ip, nullptr));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_LOST_IP, on_lost_ip, nullptr));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_LOST_IP, on_lost_ip, nullptr));
-    if (settings.use_eth) start_eth(); else start_wifi(settings);
+    #if CONFIG_ETH_USE_ESP32_EMAC
+    if (id.ethernet_supported && settings.use_eth) {
+        start_eth();
+    } else
+#endif
+    {
+        (void)id;
+        start_wifi(settings);
+    }
 
     esp_sntp_config_t sntp = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
     ESP_ERROR_CHECK(esp_netif_sntp_init(&sntp));

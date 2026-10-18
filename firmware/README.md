@@ -26,7 +26,7 @@ need a host `g++` on PATH (on Windows, WinLibs: `winget install BrechtSanders.Wi
 | Flash over USB | `pio run -e kc868-a8 -t upload` |
 | Serial monitor / console | `pio device monitor` |
 
-Compile-time defaults (`-DVEND_DEFAULT_WIFI_SSID=...` and the rest) are listed in
+Compile-time defaults (`-DBOARD_DEFAULT_WIFI_SSID=...` and the rest) are listed in
 `vending/platformio.ini`. The app partition is `partitions_singleapp_large.csv`.
 
 ## Console

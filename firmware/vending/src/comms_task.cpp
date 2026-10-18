@@ -6,12 +6,12 @@
 #include <atomic>
 
 #include "ack_cache.h"
+#include "boardidf/mqtt_publisher.h"
+#include "boardidf/net.h"
 #include "channels.h"
 #include "command.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "mqtt_publisher.h"
-#include "net.h"
 #include "outbound_ring.h"
 #include "queues.h"
 #include "version.h"
@@ -340,7 +340,8 @@ void comms_main(void*) {
 }
 }  // namespace
 
-void start_comms(QueueHandle_t cmd_q, QueueHandle_t evt_q, QueueHandle_t ack_q, const Settings& settings) {
+void start_comms(QueueHandle_t cmd_q, QueueHandle_t evt_q, QueueHandle_t ack_q, const BoardIdentity& id,
+                const Settings& settings) {
     g.cmd_q = cmd_q;
     g.evt_q = evt_q;
     g.ack_q = ack_q;
@@ -354,7 +355,7 @@ void start_comms(QueueHandle_t cmd_q, QueueHandle_t evt_q, QueueHandle_t ack_q, 
     snprintf(tail, sizeof(tail), "cmd/%s/ack", kSubsystem);
     topic_join(ctx, tail, g.t_ack, sizeof(g.t_ack));
     topic_join(ctx, "online", g.t_online, sizeof(g.t_online));
-    net_start(settings);
-    mqtt_start(settings, on_message);
+    net_start(id, settings);
+    mqtt_start(id, settings, on_message);
     xTaskCreatePinnedToCore(comms_main, "comms", 8192, nullptr, 5, nullptr, 0);
 }

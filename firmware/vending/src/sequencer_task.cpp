@@ -7,6 +7,7 @@
 #include "esp_task_wdt.h"
 #include "../boards/kc868-a8.h"
 #include "kc868_io.h"
+#include "polarity_setting.h"
 #include "queues.h"
 
 namespace {
@@ -15,7 +16,6 @@ constexpr TickType_t kPeriod = pdMS_TO_TICKS(10);
 
 struct Args {
     QueueHandle_t cmd_q, evt_q, ack_q;
-    Settings settings;
 };
 
 // One-slot holding buffer: an ack refused by a full ack_q is retried on the next tick; only a second
@@ -68,8 +68,10 @@ void sequencer_main(void* arg) {
         esp_restart();
     }
     vendcore::CoreConfig cfg;
+    uint8_t polarity[kPolarityCount];
+    polarity_load(polarity);
     for (int i = 0; i < vendcore::kBinaryInputCount; ++i) {
-        cfg.polarity.active_low[i] = args.settings.polarity[i] != 0;
+        cfg.polarity.active_low[i] = polarity[i] != 0;
     }
     static vendcore::Core core(cfg, clock, io, pub);
 
@@ -87,8 +89,8 @@ void sequencer_main(void* arg) {
 }
 }  // namespace
 
-void start_sequencer(QueueHandle_t cmd_q, QueueHandle_t evt_q, QueueHandle_t ack_q, const Settings& settings) {
+void start_sequencer(QueueHandle_t cmd_q, QueueHandle_t evt_q, QueueHandle_t ack_q) {
     static Args args;
-    args = Args{cmd_q, evt_q, ack_q, settings};
+    args = Args{cmd_q, evt_q, ack_q};
     xTaskCreatePinnedToCore(sequencer_main, "sequencer", 8192, &args, 20, nullptr, 1);
 }

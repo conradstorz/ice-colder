@@ -2,11 +2,12 @@
 
 #include <stddef.h>
 
-#include "settings.h"
+#include "boardidf/board_identity.h"
+#include "boardidf/settings.h"
 
-// Brings up Wi-Fi STA (or LAN8720 Ethernet when settings.use_eth), reconnects on
-// loss, and starts SNTP. Non-blocking: poll net_up().
-void net_start(const Settings& settings);
+// Brings up Wi-Fi STA (or Ethernet when id.ethernet_supported && settings.use_eth), reconnects
+// on loss, and starts SNTP. Non-blocking: poll net_up().
+void net_start(const BoardIdentity& id, const Settings& settings);
 bool net_up();
 // Dotted-quad of the active netif; empty string until an address is held.
 const char* net_ip();

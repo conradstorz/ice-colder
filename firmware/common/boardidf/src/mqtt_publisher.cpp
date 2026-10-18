@@ -1,14 +1,13 @@
-#include "mqtt_publisher.h"
+#include "boardidf/mqtt_publisher.h"
 
 #include <stdio.h>
 #include <string.h>
 
 #include <atomic>
 
-#include "channels.h"
 #include "esp_log.h"
 #include "mqtt_client.h"
-#include "wire.h"
+#include "boardcore/board_wire.h"
 
 namespace {
 const char* TAG = "mqtt";
@@ -58,20 +57,20 @@ void on_event(void*, esp_event_base_t, int32_t id, void* data) {
 }
 }  // namespace
 
-void mqtt_start(const Settings& s, MqttMessageCb on_message) {
+void mqtt_start(const BoardIdentity& id, const Settings& s, MqttMessageCb on_message) {
     g_on_message = on_message;
     if (s.mqtt_host[0] == '\0') {
         ESP_LOGW(TAG, "no mqtt_host configured; MQTT stays down");
         return;
     }
-    vendcore::WireCtx ctx;
+    boardcore::WireCtx ctx;
     ctx.machine_id = s.machine_id;
     char lwt_tail[48];
-    snprintf(lwt_tail, sizeof(lwt_tail), "heartbeat/%s", vendcore::kSubsystem);
-    vendcore::topic_join(ctx, lwt_tail, g_lwt_topic, sizeof(g_lwt_topic));
-    const size_t n = vendcore::lwt_json(g_lwt_msg, sizeof(g_lwt_msg));
+    snprintf(lwt_tail, sizeof(lwt_tail), "heartbeat/%s", id.subsystem);
+    boardcore::topic_join(ctx, lwt_tail, g_lwt_topic, sizeof(g_lwt_topic));
+    const size_t n = boardcore::lwt_json(id.subsystem, g_lwt_msg, sizeof(g_lwt_msg));
     snprintf(g_uri, sizeof(g_uri), "mqtt://%s:%u", s.mqtt_host, static_cast<unsigned>(s.mqtt_port));
-    snprintf(g_client_id, sizeof(g_client_id), "vending-%s", s.machine_id);
+    snprintf(g_client_id, sizeof(g_client_id), "%s-%s", id.subsystem, s.machine_id);
 
     esp_mqtt_client_config_t cfg = {};
     cfg.broker.address.uri = g_uri;
