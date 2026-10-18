@@ -84,6 +84,76 @@ max_fill_seconds       = 90.0      # 1–600; WTR-101 if volume not reached
 """
 
 
+# Kooler Ice IM600XL set (sample profiles; the simulator-local twin is
+# tests/sims/vending_profiles.py and a test keeps the two equal).
+IM600XL_ICE = Product(sku="SAMPLE-ICE", slot=0, kind="ice")
+IM600XL_WATER_1GAL = Product(sku="SAMPLE-WATER-SM", slot=1, kind="water")
+IM600XL_WATER_5GAL = Product(sku="SAMPLE-WATER-LG", slot=2, kind="water")
+IM600XL_PRODUCTS = [IM600XL_ICE, IM600XL_WATER_1GAL, IM600XL_WATER_5GAL]
+
+IM600XL_GOOD = """schema_version = 1
+
+[slot.0]
+mechanism   = "bagged_ice"
+product_sku = "SAMPLE-ICE"
+
+[slot.0.agitate]
+motor_channel      = "agitator_motor"
+run_seconds        = 8.0
+stall_current_amps = "unmonitored"
+current_channel    = "unmonitored"
+
+[slot.0.fill]
+motor_channel      = "auger_motor"
+proof              = "bag_full_sensor"
+sensor_channel     = "bag_full_sensor"
+max_run_seconds    = 45.0
+stall_current_amps = "unmonitored"
+current_channel    = "unmonitored"
+
+[slot.0.release]
+proof           = "catch"
+catch_channel   = "trap_door_catch"
+drop_seconds    = 2.0
+
+[slot.0.accessories.bag_fan]
+channel      = "bag_fan"
+on_during    = ["agitate", "fill"]
+lead_seconds = 0.0
+lag_seconds  = 2.0
+
+[slot.1]
+mechanism   = "water_fill"
+product_sku = "SAMPLE-WATER-SM"
+
+[slot.1.fill]
+proof                  = "flow_volume"
+valve_channel          = "water_valve_solenoid"
+flow_sensor_channel    = "fill_pulses"
+target_volume_ml       = 3785.0
+pulses_per_liter       = 450.0
+min_flow_ml_per_second = 10.0
+no_flow_grace_seconds  = 5.0
+over_dispense_percent  = 5.0
+max_fill_seconds       = 90.0
+
+[slot.2]
+mechanism   = "water_fill"
+product_sku = "SAMPLE-WATER-LG"
+
+[slot.2.fill]
+proof                  = "flow_volume"
+valve_channel          = "water_valve_solenoid"
+flow_sensor_channel    = "fill_pulses"
+target_volume_ml       = 18927.0
+pulses_per_liter       = 450.0
+min_flow_ml_per_second = 10.0
+no_flow_grace_seconds  = 5.0
+over_dispense_percent  = 5.0
+max_fill_seconds       = 90.0
+"""
+
+
 def _ice_table(slot: int, sku: str) -> str:
     """A minimal valid bagged-ice `[slot.N]` table: sensor proofs (not
     timed), `"unmonitored"` current throughout, no accessories."""

@@ -75,18 +75,12 @@ current_channel = "unmonitored"
 
 # How this slot opens and closes its release gate.
 [slot.0.release]
-# This release step is proven open/closed by a sensor. One of: door_sensor, timed, catch.
-proof = "door_sensor"
-# The channel that drives the release-gate solenoid. Allowed: lowercase letters, digits and underscores, 1–64 characters.
-solenoid_channel = "bag_drop_solenoid"
-# The channel that reports the release gate's state. Allowed: lowercase letters, digits and underscores, 1–64 characters.
-sensor_channel = "door_sensor"
-# How long the solenoid is pulsed to open the gate. Unit: s. Range: 0.1–10.
-pulse_seconds = 1
-# The longest the VMC waits for the door sensor to report open before treating the release as failed. Unit: s. Range: 0.5–30.
-open_timeout_seconds = 5
-# The longest the VMC waits for the door sensor to report closed again before treating the release as failed. Unit: s. Range: 0.5–60.
-close_timeout_seconds = 5
+# This release step holds the bag with an energized catch and drops it by de-energizing. One of: door_sensor, timed, catch.
+proof = "catch"
+# The channel that drives the bag catch. Allowed: lowercase letters, digits and underscores, 1–64 characters.
+catch_channel = "trap_door_catch"
+# How long the catch stays de-energized to let the bag drop before the release is considered done. Unit: s. Range: 0.5–30.
+drop_seconds = 2
 
 # If proof = "timed" instead, the fields are:
 # This release step is proven open/closed by elapsed time. One of: door_sensor, timed, catch.
@@ -108,17 +102,6 @@ lead_seconds = 0
 # How long after its step(s) end this accessory stays on. Unit: s. Range: 0–30.
 lag_seconds = 2
 
-# "vending_now_light" is this slot's own name for this accessory -- call it whatever you like.
-[slot.0.accessories.vending_now_light]
-# The channel that drives this accessory. Allowed: lowercase letters, digits and underscores, 1–64 characters.
-channel = "vending_now_light"
-# Which steps this accessory runs during, as a consecutive run of step names (no gaps), or ["all"] to run for the whole slot cycle. At least one entry. Steps for bagged_ice: agitate, fill, release.
-on_during = ["all"]
-# How long before its step(s) start this accessory turns on. Unit: s. Range: 0–30.
-lead_seconds = 0
-# How long after its step(s) end this accessory stays on. Unit: s. Range: 0–30.
-lag_seconds = 0
-
 # ----------------------------------------------------------------------
 # Slot 1 -- water, fill proven by a flow meter (SAMPLE-WATER-SM)
 # ----------------------------------------------------------------------
@@ -136,7 +119,7 @@ proof = "flow_volume"
 # The channel that drives the fill valve. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 valve_channel = "water_valve_solenoid"
 # The channel that reports flow-meter pulses. Allowed: lowercase letters, digits and underscores, 1–64 characters.
-flow_sensor_channel = "water_flow_sensor"
+flow_sensor_channel = "fill_pulses"
 # The volume this slot dispenses on a successful fill. Unit: ml. Range: 50–50000.
 target_volume_ml = 3785
 # The flow meter's calibration constant. Unit: pulses/L. Range: greater than 0.
@@ -173,31 +156,31 @@ product_sku = "SAMPLE-WATER-LG"
 
 # How this slot fills the cup/bottle.
 [slot.2.fill]
-# This fill step is proven complete by elapsed time. One of: flow_volume, timed.
-proof = "timed"
+# This fill step is proven complete by a flow meter. One of: flow_volume, timed.
+proof = "flow_volume"
 # The channel that drives the fill valve. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 valve_channel = "water_valve_solenoid"
-# How long the fill valve stays open for this step. Unit: s. Range: 1–600.
+# The channel that reports flow-meter pulses. Allowed: lowercase letters, digits and underscores, 1–64 characters.
+flow_sensor_channel = "fill_pulses"
+# The volume this slot dispenses on a successful fill. Unit: ml. Range: 50–50000.
+target_volume_ml = 18927
+# The flow meter's calibration constant. Unit: pulses/L. Range: greater than 0.
+pulses_per_liter = 450
+# The slowest flow rate still considered "flowing"; below this, the no-flow grace timer starts. Unit: ml/s. Range: greater than 0.
+min_flow_ml_per_second = 10
+# How long flow may stay below the minimum rate (a clogged valve, an empty supply) before the VMC treats the fill as failed. Unit: s. Range: 0.5–30.
+no_flow_grace_seconds = 5
+# How far past the target volume the VMC tolerates (a sticking valve closing late) before treating the fill as a fault rather than a successful dispense. Unit: %. Range: 0–50.
+over_dispense_percent = 5
+# The longest the fill valve is allowed to stay open before the VMC gives up on this step even if the target volume was never reached. Unit: s. Range: 1–600.
 max_fill_seconds = 90
 
-# If proof = "flow_volume" instead, the fields are:
-# This fill step is proven complete by a flow meter. One of: flow_volume, timed.
-# proof = "flow_volume"
+# If proof = "timed" instead, the fields are:
+# This fill step is proven complete by elapsed time. One of: flow_volume, timed.
+# proof = "timed"
 # The channel that drives the fill valve. Allowed: lowercase letters, digits and underscores, 1–64 characters.
 # valve_channel = "water_valve_solenoid"
-# The channel that reports flow-meter pulses. Allowed: lowercase letters, digits and underscores, 1–64 characters.
-# flow_sensor_channel = "water_flow_sensor"
-# The volume this slot dispenses on a successful fill. Unit: ml. Range: 50–50000.
-# target_volume_ml = 18927
-# The flow meter's calibration constant. Unit: pulses/L. Range: greater than 0.
-# pulses_per_liter = 450
-# The slowest flow rate still considered "flowing"; below this, the no-flow grace timer starts. Unit: ml/s. Range: greater than 0.
-# min_flow_ml_per_second = 10
-# How long flow may stay below the minimum rate (a clogged valve, an empty supply) before the VMC treats the fill as failed. Unit: s. Range: 0.5–30.
-# no_flow_grace_seconds = 5
-# How far past the target volume the VMC tolerates (a sticking valve closing late) before treating the fill as a fault rather than a successful dispense. Unit: %. Range: 0–50.
-# over_dispense_percent = 5
-# The longest the fill valve is allowed to stay open before the VMC gives up on this step even if the target volume was never reached. Unit: s. Range: 1–600.
+# How long the fill valve stays open for this step. Unit: s. Range: 1–600.
 # max_fill_seconds = 90
 
 # Devices that run alongside this slot's steps, by name.
