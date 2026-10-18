@@ -24,6 +24,8 @@ const char* TAG = "comms";
 constexpr uint32_t kHeartbeatMs = 10000;
 constexpr int kInflightMax = 8;
 constexpr uint32_t kRxDropLogMs = 10000;
+constexpr uint32_t kRetryLogMs = 10000;
+constexpr uint32_t kInflightMaxAgeS = 120;
 
 struct RxItem {
     char topic[96];
@@ -42,6 +44,10 @@ struct Comms {
     // Request ids pushed to cmd_q whose first ack has not yet been drained from ack_q.
     char inflight[kInflightMax][65] = {};
     bool inflight_used[kInflightMax] = {};
+    uint32_t inflight_since_s[kInflightMax] = {};
+    uint32_t last_retry_log_s = 0;
+    bool retry_logged = false;
+    int ha_zero_logged = -1;  // last HA index already reported as empty
     bool caps_pending = false;  // retained capabilities publish not yet accepted
     bool subs_pending = false;
     int ha_next = 0;            // next HA discovery entry to publish
@@ -50,6 +56,15 @@ struct Comms {
 Comms g;
 
 uint32_t uptime_s() { return static_cast<uint32_t>(esp_timer_get_time() / 1000000); }
+
+// Connect-time retry warnings repeat every 20 ms loop pass; allow one per kRetryLogMs.
+bool retry_log_due() {
+    const uint32_t now = uptime_s();
+    if (g.retry_logged && now - g.last_retry_log_s < kRetryLogMs / 1000) return false;
+    g.retry_logged = true;
+    g.last_retry_log_s = now;
+    return true;
+}
 
 WireCtx make_ctx(char* iso, size_t iso_cap) {
     WireCtx c;
@@ -115,9 +130,22 @@ bool inflight_add(const char* id) {
         if (g.inflight_used[i]) continue;
         snprintf(g.inflight[i], sizeof(g.inflight[i]), "%s", id);
         g.inflight_used[i] = true;
+        g.inflight_since_s[i] = uptime_s();
         return true;
     }
     return false;
+}
+
+// An ack lost to a full ack_q would otherwise pin its slot forever, so the set is cleared on every
+// (re)connect and any entry older than kInflightMaxAgeS is dropped.
+void inflight_clear() {
+    for (int i = 0; i < kInflightMax; ++i) g.inflight_used[i] = false;
+}
+
+void inflight_expire() {
+    const uint32_t now = uptime_s();
+    for (int i = 0; i < kInflightMax; ++i)
+        if (g.inflight_used[i] && now - g.inflight_since_s[i] >= kInflightMaxAgeS) g.inflight_used[i] = false;
 }
 
 void inflight_remove(const char* id) {
@@ -174,19 +202,23 @@ void publish_retained() {
         char cap_tail[48];
         snprintf(cap_tail, sizeof(cap_tail), "capabilities/%s", kSubsystem);
         if (n == 0) {
-            ESP_LOGW(TAG, "capabilities_json produced nothing; will retry");
+            if (retry_log_due()) ESP_LOGW(TAG, "capabilities_json produced nothing; will retry");
             return;
         }
         if (topic_join(ctx, cap_tail, topic, sizeof(topic)) == 0 || !mqtt_publish(topic, payload, n, true)) {
-            ESP_LOGW(TAG, "capabilities publish failed; will retry");
+            if (retry_log_due()) ESP_LOGW(TAG, "capabilities publish failed; will retry");
             return;
         }
         g.caps_pending = false;
     }
     while (g.ha_next < ha_discovery_count()) {
         const size_t pn = ha_discovery(g.ha_next, ctx, topic, sizeof(topic), payload, sizeof(payload));
+        if (pn == 0 && g.ha_zero_logged != g.ha_next) {
+            g.ha_zero_logged = g.ha_next;
+            ESP_LOGW(TAG, "HA discovery %d produced nothing; skipped", g.ha_next);
+        }
         if (pn > 0 && !mqtt_publish(topic, payload, pn, true)) {
-            ESP_LOGW(TAG, "HA discovery %d publish failed; will retry", g.ha_next);
+            if (retry_log_due()) ESP_LOGW(TAG, "HA discovery %d publish failed; will retry", g.ha_next);
             return;
         }
         ++g.ha_next;
@@ -196,7 +228,7 @@ void publish_retained() {
 void subscribe_all() {
     bool ok = mqtt_subscribe(g.t_cmd);
     if (!mqtt_subscribe(g.t_online)) ok = false;
-    if (!ok) ESP_LOGW(TAG, "subscribe failed; will retry");
+    if (!ok && retry_log_due()) ESP_LOGW(TAG, "subscribe failed; will retry");
     g.subs_pending = !ok;
 }
 
@@ -207,6 +239,8 @@ void on_connect() {
     const WireCtx ctx = make_ctx(iso, sizeof(iso));
     g.caps_pending = true;
     g.ha_next = 0;
+    g.ha_zero_logged = -1;
+    inflight_clear();
     publish_retained();
     char hb_tail[48];
     snprintf(hb_tail, sizeof(hb_tail), "heartbeat/%s", kSubsystem);
@@ -242,6 +276,7 @@ void send_event(const Event& e) {
 void comms_main(void*) {
     uint32_t last_hb = 0;
     uint32_t last_drop_log = 0;
+    bool was_connected = false;
     for (;;) {
         static RxItem rx;
         // ack_q first: a retry arriving now must find the first ack already cached.
@@ -259,6 +294,16 @@ void comms_main(void*) {
             on_connect();
             last_hb = uptime_s();
         }
+        // The board cannot hear the VMC without a broker, so broker loss is VMC silence.
+        const bool up = mqtt_connected();
+        if (was_connected && !up) {
+            static CmdItem off;
+            off.kind = CmdItem::VmcOnline;
+            off.online = false;
+            push_cmd(off);
+        }
+        was_connected = up;
+        inflight_expire();
         const uint32_t dropped = g.rx_dropped.load();
         if (dropped != g.rx_dropped_logged && uptime_s() - last_drop_log >= kRxDropLogMs / 1000) {
             ESP_LOGW(TAG, "inbound messages dropped: %u total", static_cast<unsigned>(dropped));

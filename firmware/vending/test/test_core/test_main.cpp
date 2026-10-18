@@ -177,9 +177,17 @@ static void test_silence_disabled(void) {
     r.core.vmc_online(true);
     r.run_to(600000);
     TEST_ASSERT_TRUE(r.core.submit(dispense("req-0001")).phase == Phase::Accepted);
+    // Let the first run finish: "busy" is checked before "vmc_offline", so a still-busy
+    // dispenser would reject the second submit for the wrong reason.
+    r.set_in(In::BagFull, true);
+    const uint32_t deadline = r.clk.t + 60000;
+    while (r.clk.t < deadline && r.count(EventType::Outcome) == 0) r.tick();
+    TEST_ASSERT_EQUAL(1, r.count(EventType::Outcome));
+    r.tick();
     r.core.vmc_online(false);
     Ack a = r.core.submit(dispense("req-0002"));
     TEST_ASSERT_TRUE(a.status == AckStatus::Rejected);
+    TEST_ASSERT_EQUAL_STRING("vmc_offline", a.detail);
 }
 
 static void test_water_valve_test(void) {
