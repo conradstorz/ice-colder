@@ -542,9 +542,9 @@ async def test_dispense_complete_records_price_from_shares_not_live_catalog_pric
         test_dispense_complete_records_sale_durably_before_fsm_returns_to_idle's
         OrderCapturingRecorder above. The "dispense" event this test doesn't
         care about is otherwise queued to the real recorder's background
-        writer thread, which can race record_sale's own fresh WAL
-        connection for the same db file; that race is a pre-existing,
-        unrelated timing issue outside the scope of this fix.
+        writer thread. The old first-sale WAL race (issue #95) is fixed
+        (WAL is set at init); the wrapper is kept only to keep this test
+        about the recorded price, not the queue.
         """
 
         def record(self, event_type, value=1.0, metadata=None):

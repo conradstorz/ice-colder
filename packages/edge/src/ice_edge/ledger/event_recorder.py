@@ -223,8 +223,8 @@ class EventRecorder:
       handlers never block on SD-card writes. ``record_cash_collection()``
       rides the same queue for the same reason.
     - ``record_sale()`` is synchronous and durable: it opens its own
-      connection (synchronous=NORMAL; the file is WAL, set at init) and returns only once the
-      row is committed, because the caller (the VMC's dispense path) must
+      connection (synchronous=NORMAL; the file is WAL, set at init) and
+      returns only once the row is committed, because the caller (the VMC's dispense path) must
       know the sale is on disk before it resumes. It deliberately does not
       use the writer queue.
     """
@@ -410,7 +410,13 @@ class EventRecorder:
             # changing it needs an exclusive lock and fails ("database is
             # locked") if done later while that connection holds a write
             # transaction (issue #95).
-            conn.execute("PRAGMA journal_mode=WAL")
+            mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()
+            if not mode or str(mode[0]).lower() != "wal":
+                logger.warning(
+                    "EventRecorder: database refused WAL mode (got {}); "
+                    "the first-sale 'database is locked' race may recur",
+                    mode[0] if mode else None,
+                )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS events (
                     id         INTEGER PRIMARY KEY AUTOINCREMENT,

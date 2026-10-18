@@ -791,6 +791,36 @@ class TestFreshDatabaseWal:
         assert not journal_path.exists()
 
 
+class TestWalRefusedWarning:
+    def test_warns_when_wal_is_refused(self, tmp_path, monkeypatch):
+        from loguru import logger
+
+        real_connect = sqlite3.connect
+
+        class _NoWal:
+            def __init__(self, conn):
+                self._c = conn
+
+            def execute(self, sql, *a):
+                if "journal_mode=WAL" in sql:
+                    return self._c.execute("SELECT 'delete'")
+                return self._c.execute(sql, *a)
+
+            def __getattr__(self, name):
+                return getattr(self._c, name)
+
+        monkeypatch.setattr(
+            sqlite3, "connect", lambda *a, **k: _NoWal(real_connect(*a, **k))
+        )
+        messages: list[str] = []
+        sink = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+        try:
+            EventRecorder(db_path=str(tmp_path / "e.db"))
+        finally:
+            logger.remove(sink)
+        assert any("refused WAL" in m for m in messages)
+
+
 class TestRecordSaleFailureJournal:
     def test_failed_insert_appends_exactly_one_fsynced_journal_line(
         self, tmp_path, monkeypatch, journal_path
@@ -1022,6 +1052,9 @@ class TestCorruptDatabaseRecovery:
         assert backup.exists()
         assert backup.name.startswith("events.db.corrupt-")
         assert backup.read_bytes() == garbage
+        # The recreated database is WAL too (issue #95).
+        with sqlite3.connect(rec.db_path) as conn:
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert not (backup == db_path)
 
         # A fresh, valid database now lives at the original path.
