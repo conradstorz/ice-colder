@@ -1,8 +1,8 @@
-#include "outbound_ring.h"
+#include "boardcore/outbound_ring.h"
 
 #include <string.h>
 
-namespace vendcore {
+namespace boardcore {
 
 void OutboundRing::erase_at(int pos) {
     for (int i = pos; i + 1 < count_; ++i) {
@@ -52,4 +52,4 @@ bool OutboundRing::push(const char* topic, const char* payload, size_t len, bool
     return true;
 }
 
-}  // namespace vendcore
+}  // namespace boardcore

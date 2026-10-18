@@ -1,1 +1,1 @@
-{"name": "vendcore", "version": "0.1.0"}
+{"name": "vendcore", "version": "0.1.0", "dependencies": {"boardcore": "*"}}

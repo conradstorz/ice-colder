@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "boardcore/json_writer.h"
 #include "channels.h"
 #include "dispenser.h"
 #include "version.h"
@@ -10,65 +11,7 @@
 namespace vendcore {
 namespace {
 
-// Appends into a caller buffer; any overflow poisons the whole result.
-struct W {
-    char* buf;
-    size_t cap;
-    size_t len = 0;
-    bool bad = false;
-
-    W(char* b, size_t c) : buf(b), cap(c) {
-        if (cap > 0) buf[0] = '\0';
-    }
-    void raw(const char* s) {
-        const size_t n = strlen(s);
-        if (bad || len + n + 1 > cap) {
-            bad = true;
-            return;
-        }
-        memcpy(buf + len, s, n + 1);
-        len += n;
-    }
-    void ch(char c) {
-        const char s[2] = {c, '\0'};
-        raw(s);
-    }
-    void str(const char* s) {  // quoted, escaped
-        ch('"');
-        for (; s != nullptr && *s != '\0'; ++s) {
-            const unsigned char c = static_cast<unsigned char>(*s);
-            if (c == '"' || c == '\\') {
-                ch('\\');
-                ch(static_cast<char>(c));
-            } else if (c < 0x20) {
-                ch(' ');
-            } else {
-                ch(static_cast<char>(c));
-            }
-        }
-        ch('"');
-    }
-    void key(const char* k) {
-        str(k);
-        ch(':');
-    }
-    void field(const char* k, const char* v) {  // ,"k":"v"  (caller supplies the leading comma)
-        key(k);
-        str(v);
-    }
-    void num(long v) {
-        char t[24];
-        snprintf(t, sizeof(t), "%ld", v);
-        raw(t);
-    }
-    void flt(float v) {
-        char t[32];
-        snprintf(t, sizeof(t), "%.2f", static_cast<double>(v));
-        raw(t);
-    }
-    void boolean(bool b) { raw(b ? "true" : "false"); }
-    size_t done() const { return bad ? 0 : len; }
-};
+using W = boardcore::JsonWriter;
 
 // Closes the object, adding "timestamp" when the board has wall-clock time.
 size_t close_obj(W& w, const WireCtx& ctx) {
@@ -78,16 +21,6 @@ size_t close_obj(W& w, const WireCtx& ctx) {
     }
     w.ch('}');
     return w.done();
-}
-
-const char* ack_status(AckStatus s) {
-    switch (s) {
-        case AckStatus::Ok: return "ok";
-        case AckStatus::Rejected: return "rejected";
-        case AckStatus::Failed: return "failed";
-        case AckStatus::Unsupported: return "unsupported";
-    }
-    return "failed";
 }
 
 bool is_button(int idx) {
@@ -134,11 +67,6 @@ int entity_channel(int n) {
 }
 
 }  // namespace
-
-size_t topic_join(const WireCtx& ctx, const char* tail, char* out, size_t cap) {
-    const int n = snprintf(out, cap, "vmc/%s/%s", ctx.machine_id, tail);
-    return (n > 0 && static_cast<size_t>(n) < cap) ? static_cast<size_t>(n) : 0;
-}
 
 size_t topic_for(const Event& e, const WireCtx& ctx, char* out, size_t cap) {
     const bool by_channel = e.type == EventType::InputChanged || e.type == EventType::OutputChanged ||
@@ -265,49 +193,10 @@ size_t capabilities_json(const WireCtx& ctx, char* out, size_t cap) {
 }
 
 size_t heartbeat_json(uint32_t uptime_s, char* out, size_t cap) {
-    W w(out, cap);
-    w.ch('{');
-    w.field("subsystem", kSubsystem);
-    w.ch(',');
-    w.key("uptime_seconds");
-    w.num(static_cast<long>(uptime_s));
-    w.ch('}');
-    return w.done();
+    return boardcore::heartbeat_json(kSubsystem, uptime_s, out, cap);
 }
 
-size_t lwt_json(char* out, size_t cap) {
-    W w(out, cap);
-    w.ch('{');
-    w.field("subsystem", kSubsystem);
-    w.ch(',');
-    w.key("uptime_seconds");
-    w.num(-1);
-    w.ch('}');
-    return w.done();
-}
-
-size_t ack_json(const Ack& a, char* out, size_t cap) {
-    W w(out, cap);
-    w.ch('{');
-    w.field("request_id", a.request_id);
-    w.ch(',');
-    w.field("command", a.command);
-    w.ch(',');
-    w.field("status", ack_status(a.status));
-    w.ch(',');
-    w.field("phase", a.phase == Phase::Accepted ? "accepted" : "completed");
-    if (a.detail[0] != '\0') {
-        w.ch(',');
-        w.field("detail", a.detail);
-    }
-    if (a.result_json[0] != '\0') {
-        w.ch(',');
-        w.key("result");
-        w.raw(a.result_json);
-    }
-    w.ch('}');
-    return w.done();
-}
+size_t lwt_json(char* out, size_t cap) { return boardcore::lwt_json(kSubsystem, out, cap); }
 
 int ha_discovery_count() {
     int n = 0;

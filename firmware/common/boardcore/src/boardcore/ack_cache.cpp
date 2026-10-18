@@ -1,8 +1,8 @@
-#include "ack_cache.h"
+#include "boardcore/ack_cache.h"
 
 #include <string.h>
 
-namespace vendcore {
+namespace boardcore {
 
 const Ack* AckCache::find(const char* request_id) const {
     if (request_id == nullptr) return nullptr;
@@ -24,4 +24,4 @@ void AckCache::put(const Ack& a) {
     if (count_ < kCapacity) ++count_;
 }
 
-}  // namespace vendcore
+}  // namespace boardcore
