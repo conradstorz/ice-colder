@@ -15,6 +15,7 @@
       <span class="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">{{ vmc_build.source }}</span>
       <span class="text-xs text-gray-400">up {{ vmc_build.uptime_seconds|humanize_seconds }}</span>
       <span class="font-mono text-xs text-gray-500">{{ vmc_build.machine_id or "—" }}</span>
+      {% if cloud_fingerprint %}<span class="font-mono text-xs text-gray-500" title="Cloud fingerprint">{{ cloud_fingerprint }}</span>{% endif %}
     </div>
   </div>
   {% endif %}

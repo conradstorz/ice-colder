@@ -29,6 +29,7 @@ from loguru import logger
 
 from ice_contracts.cloud.report import HealthSummary
 from ice_edge.access.access import AccessStore
+from ice_edge.uplink.identity import MachineIdentity
 from ice_edge.views.health import build_health_summary
 from ice_common.paths import LOG_FILE
 from ice_edge.web import auth as web_auth
@@ -121,6 +122,14 @@ def set_access_store(store: AccessStore | None) -> None:
     global access_store
     access_store = store
     web_auth.set_access_store(store)
+
+
+machine_identity: MachineIdentity | None = None
+
+
+def set_machine_identity(identity: MachineIdentity | None) -> None:
+    global machine_identity
+    machine_identity = identity
 
 
 display_controller = None
