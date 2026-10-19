@@ -54,8 +54,11 @@ def _matches(pattern: str, suffix: str) -> bool:
 
 
 class BoardClient:
-    def __init__(self, host: str, port: int, machine_id: str):
+    def __init__(
+        self, host: str, port: int, machine_id: str, subsystem: str = SUBSYSTEM
+    ):
         self.machine_id = machine_id
+        self.subsystem = subsystem
         self._prefix = f"vmc/{machine_id}/"
         self._client = aiomqtt.Client(
             hostname=host,
@@ -152,13 +155,17 @@ class BoardClient:
         await self._client.publish(self._prefix + suffix, json.dumps(payload), qos=1)
 
     async def send(
-        self, command: str, params: dict | None = None, request_id: str | None = None
+        self,
+        command: str,
+        params: dict | None = None,
+        request_id: str | None = None,
+        timestamp: str | None = None,
     ) -> str:
         request_id = request_id or f"req-{uuid.uuid4().hex[:12]}"
-        await self.publish_raw(
-            f"cmd/{SUBSYSTEM}",
-            {"request_id": request_id, "command": command, "params": params or {}},
-        )
+        payload = {"request_id": request_id, "command": command, "params": params or {}}
+        if timestamp is not None:
+            payload["timestamp"] = timestamp
+        await self.publish_raw(f"cmd/{self.subsystem}", payload)
         return request_id
 
     async def acks(
@@ -171,7 +178,8 @@ class BoardClient:
                 got = [
                     CommandAck.model_validate(p)
                     for s, p in self._messages[since:]
-                    if s == f"cmd/{SUBSYSTEM}/ack" and p.get("request_id") == request_id
+                    if s == f"cmd/{self.subsystem}/ack"
+                    and p.get("request_id") == request_id
                 ]
                 if len(got) >= count:
                     return got[:count]

@@ -3,13 +3,17 @@
 The policy is default-deny: any skip reason not in this policy fails the guard.
 This ensures future tests cannot silently skip without an explicit policy entry.
 
-The declared legitimate-skip policy has exactly three categories:
+The declared legitimate-skip policy has exactly four categories:
 - MQTT integration skips when no broker is reachable on localhost:1883
   (local runs only: forbidden when ICE_COLDER_REQUIRE_BROKER=1, as in CI)
 - POSIX-only file-mode skips on a non-POSIX host
 - board conformance tests that need the simulator to drive sensors, skipped
   when pointed at real hardware (CI runs the simulator target, where this
   never fires)
+- MDB board conformance tests (tests/firmware/mdb/) that need real hardware:
+  there is no MDB simulator yet (it ships with spec 2), so without
+  ICE_COLDER_BOARD_MACHINE_ID they cannot run anywhere, CI included. Only the
+  golden-wire test in that package runs without hardware.
 
 Note: The browser opt-in tests are deliberately NOT in this policy. CI sets
 ICE_COLDER_BROWSER_TESTS=1 and installs Chrome + Node, so they MUST run in CI.
@@ -40,6 +44,10 @@ LEGITIMATE_SKIP_REASONS = {
     "posix_file_modes_only": re.compile(r"^Skipped: POSIX file modes only$"),
     "board_sensor_drive_requires_sim": re.compile(
         r"^Skipped: needs the simulator to drive sensors$"
+    ),
+    "mdb_board_needs_hardware": re.compile(
+        r"^Skipped: MDB board conformance needs hardware until the MDB simulator "
+        r"ships \(set ICE_COLDER_BOARD_MACHINE_ID\)$"
     ),
 }
 
