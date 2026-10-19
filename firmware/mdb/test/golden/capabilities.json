@@ -1,0 +1,1 @@
+{"subsystem":"mdb","firmware":"0.1.0","contract_version":"1.1.0","brand":"ice-colder","model":"mdb-s3","hardware_id":"esp32-a0b1c2d3e4f5","ip":"192.168.1.60","channels":[],"commands":["ping","self_test","force_report","set_policy","payout","vend_request","vend_result","end_session","return_escrow","device_reset","cash_sale"]}

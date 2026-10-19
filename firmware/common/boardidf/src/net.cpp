@@ -1,3 +1,5 @@
+#include "sdkconfig.h"
+
 #include "boardidf/net.h"
 
 #include <stdio.h>
