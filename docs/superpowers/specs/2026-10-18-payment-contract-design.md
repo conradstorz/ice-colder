@@ -88,7 +88,9 @@ Topics, all under `vmc/{machine_id}/`:
   before anything new. An ack covers only log entries with the SAME `boot_id`; entries from an earlier
   boot stay in the log until acked under their own `boot_id` (the board replays them first, in order).
 - The edge dedupes on `event_id`, processes in `seq` order, and acks after processing (not on receipt).
-  It never blocks a sale waiting for its own ack to be delivered.
+  It never blocks a sale waiting for its own ack to be delivered. A duplicate `event_id` is not
+  reprocessed but is acked again; the board's replay and lost-ack recovery depend on it (clarified by
+  firmware spec 4).
 - A `seq` gap within a known `boot_id`, or a never-seen `boot_id` whose first event has `seq > 1`, raises
   `PAY-105 payment event gap` (machine scope, `warning`, not payment-blocking). The edge still processes
   what it has; the fault tells the operator the cash count may be off.

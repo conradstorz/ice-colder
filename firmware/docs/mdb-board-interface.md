@@ -29,6 +29,8 @@ the edge with at-least-once delivery. It implements `ice_contracts.board.payment
   `force_report` are acked by the bus task through `Master::submit`, not by the comms task. A command is never acked `failed` while it is
   still queued on the bus: it is acked `accepted`, or `ok` with `detail: "queued"` for immediate
   commands.
+- `vend_request` is acked `rejected` with `detail: "price_scale"` when `cents` is not a multiple of the
+  reader's scale factor (no event is emitted).
 
 ## 2. Carrier board and power
 
@@ -131,8 +133,10 @@ uv run python scripts/flash_board.py mdb [--port COMx] [--no-build] [--monitor] 
 | `--provision FILE.toml` | after upload, send `set <key> <value>` for each key, `reboot`, and re-verify |
 | `--verify-only` | skip build and upload; verify (and provision) only |
 
+Plug the native USB connector (not the UART connector) for flashing, console and provisioning.
+
 Behaviour: the tool builds `esp32-s3-devkitc-1` in `firmware/mdb`, finds the one attached board by
-USB-serial vendor id (CH340/CH9102, CP210x, FTDI or the Espressif native USB id), and uploads with one
+the Espressif native USB vendor id (`303A`; the vending target also accepts CH340/CH9102, CP210x and FTDI bridges), and uploads with one
 retry after a 2 s pause. An S3 that re-enumerates on another port after reset is found again by its USB
 serial number; a busy port (monitor open) is reported, not retried into; a failed build never attempts
 an upload. After upload it waits up to 15 s for the `firmware <version>` boot banner, runs `show`, and
@@ -182,7 +186,10 @@ envelopes queued before a reconnect so the order holds. The payout idempotency s
 repeated id. Escrow itself is RAM only and restarts at 0 on every boot, so the edge reconciles against
 the replayed events of the previous `boot_id`. The guard against a payout after a reboot is that
 `payout` and `vend_request` are rejected `no_policy` until a `set_policy` has been acked in the current
-boot; edge silence does not clear that, so a payout after silence still works. A `coin_enabled` or
+boot; edge silence does not clear that, so a payout after silence still works. The gate orders a
+retried payout after `set_policy`; idempotency across a reboot depends on the persisted payout store,
+so a payout whose result was not yet persisted when power was cut can be repaid by the edge's retry.
+This is a bench and spec-3 item. A `coin_enabled` or
 `bill_enabled` with 17 entries is rejected (the decoder caps at 16) and leaves the board at `no_policy`.
 
 **All flash work happens in a quiet window.** The ledger task requests a window; the bus task parks
@@ -253,6 +260,8 @@ acks come back on `cmd/mdb/ack`.
   survivable.
 - [ ] **Log pressure.** Stop acking and confirm acceptance inhibits at 192 pending with `device_fault`,
   `self_test` reports `event_log_full`, the LED goes white-blinking, and acceptance resumes at 128.
+- [ ] **Payout across a reboot.** Cut power between a payout's dispense and its persisted result, then
+  let the edge retry; confirm whether the changer is paid twice (see section 7).
 - [ ] **Power cut mid-session.** Cut power with a session open and a bill escrowed; confirm the
   validator returns the bill, the next boot has a new `boot_id`, unacked events replay first, and the
   board stays at `no_policy` until `set_policy`. Cut power during an NVS write and confirm the log
@@ -263,7 +272,9 @@ acks come back on `cmd/mdb/ack`.
 - [ ] **Wi-Fi PHY calibration.** Wi-Fi init writes PHY calibration data before the bus task starts;
   confirm no MDB transaction is missed around Wi-Fi bring-up.
 - [ ] **L2 payout-busy timing.** On a real level 2 changer, run multi-coin payouts and confirm the
-  0x02 payout-busy wait: `paid_cents` exact for every denomination mix, no payout timeout.
+  0x02 payout-busy wait: `paid_cents` exact for every denomination mix, no payout timeout. Watch the
+  first-POLL race: a changer may answer the first POLL after a DISPENSE ACK with a plain ACK before
+  it reports busy.
 - [ ] **Replay ack storm.** With an old-boot backlog in the log, have the edge ack the whole backlog
   at once while commands keep arriving; confirm acks coalesce, commands are never dropped, and the log
   drains.

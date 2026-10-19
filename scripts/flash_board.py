@@ -32,8 +32,10 @@ EXIT_FAILED = 2
 EXIT_USAGE = 3
 
 # USB vendor ids of the serial bridges found on ESP32 dev boards: QinHeng (CH340/CH9102),
-# Silicon Labs (CP210x), FTDI, Espressif (native USB-serial/JTAG).
-KNOWN_VIDS = frozenset({"1A86", "10C4", "0403", "303A"})
+# Silicon Labs (CP210x), FTDI.
+BRIDGE_VIDS = frozenset({"1A86", "10C4", "0403"})
+# Espressif (native USB-serial/JTAG).
+NATIVE_USB_VIDS = frozenset({"303A"})
 
 PROVISION_KEYS = (
     "wifi_ssid",
@@ -65,11 +67,18 @@ class Target:
     project_dir: Path
     env: str
     prompt: str
+    vids: frozenset[str]
 
 
 TARGETS: dict[str, Target] = {
-    "vending": Target("vending", Path("firmware/vending"), "kc868-a8", "vend> "),
-    "mdb": Target("mdb", Path("firmware/mdb"), "esp32-s3-devkitc-1", "mdb> "),
+    "vending": Target(
+        "vending", Path("firmware/vending"), "kc868-a8", "vend> ", BRIDGE_VIDS
+    ),
+    # The MDB board's console and flashing both live on the S3's native USB port; a DevKitC's
+    # UART bridge connector (if also plugged in) must not count as a second board.
+    "mdb": Target(
+        "mdb", Path("firmware/mdb"), "esp32-s3-devkitc-1", "mdb> ", NATIVE_USB_VIDS
+    ),
 }
 
 
@@ -126,9 +135,9 @@ def parse_device_list(text: str) -> list[SerialPort]:
     ]
 
 
-def candidate_boards(ports: list[SerialPort]) -> list[SerialPort]:
-    """The ports whose USB vendor id is a known ESP32 serial bridge."""
-    return [p for p in ports if p.vid in KNOWN_VIDS]
+def candidate_boards(ports: list[SerialPort], target: Target) -> list[SerialPort]:
+    """The ports whose USB vendor id is one the target's board enumerates with."""
+    return [p for p in ports if p.vid in target.vids]
 
 
 def find_port_by_serial(ports: list[SerialPort], serial: str) -> SerialPort | None:
@@ -363,8 +372,35 @@ def _read_until(ser, needle: str, timeout_s: float) -> str:
     return buf
 
 
-def verify(port: str, target: Target, timeout_s: float = 15.0) -> bool:
-    """Reset the board, wait for its boot banner, run ``show``, compare the version."""
+def verify(port: str | SerialPort, target: Target, timeout_s: float = 15.0) -> bool:
+    """Reset the board, wait for its boot banner, run ``show``, compare the version.
+
+    A serial error mid-read (an S3 re-enumerating after reset) is retried once on the port found
+    again by USB serial number; a second one returns unverified with a message, never a traceback.
+    """
+    try:
+        import serial  # type: ignore[import-not-found]
+
+        errors: tuple[type[BaseException], ...] = (serial.SerialException,)
+    except ImportError:
+        errors = ()
+    sp = port if isinstance(port, SerialPort) else SerialPort(port, "", "")
+    for attempt in (1, 2):
+        try:
+            return _verify_once(sp.port, target, timeout_s)
+        except errors as e:
+            if attempt == 2:
+                print(
+                    f"serial error on {sp.port} ({e}); board left unverified",
+                    file=sys.stderr,
+                )
+                return False
+            print(f"serial error on {sp.port} ({e}); looking for the board again")
+            sp = _refind(sp)
+    return False
+
+
+def _verify_once(port: str, target: Target, timeout_s: float) -> bool:
     try:
         want = expected_version(REPO_ROOT / target.project_dir)
     except FileNotFoundError as e:
@@ -435,7 +471,7 @@ def _select_port(opts: Options) -> tuple[SerialPort | None, int]:
             if p.port == opts.port:
                 return p, EXIT_VERIFIED
         return SerialPort(opts.port, "", ""), EXIT_VERIFIED
-    boards = candidate_boards(ports)
+    boards = candidate_boards(ports, opts.target)
     if not boards:
         seen = ", ".join(p.port for p in ports) or "none"
         print(f"no board attached (serial ports seen: {seen}); nothing flashed")
@@ -508,7 +544,7 @@ def main(argv: list[str] | None = None) -> int:
             port = _refind(port)
         elif step == "verify":
             assert port is not None
-            verified = verify(port.port, target)
+            verified = verify(port, target)
         elif step == "provision":
             assert port is not None
             if not provision(port.port, target, values):

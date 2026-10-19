@@ -87,7 +87,21 @@ def test_candidates_keep_only_known_bridges() -> None:
             {"port": "COM7", "description": "S3", "hwid": "USB VID:PID=303A:1001"},
         )
     )
-    assert [p.port for p in candidate_boards(ports)] == ["COM5", "/dev/ttyUSB0", "COM7"]
+    assert [p.port for p in candidate_boards(ports, TARGETS["vending"])] == [
+        "COM5",
+        "/dev/ttyUSB0",
+    ]
+    assert [p.port for p in candidate_boards(ports, TARGETS["mdb"])] == ["COM7"]
+
+
+def test_mdb_with_both_devkitc_ports_plugged_in_has_one_candidate() -> None:
+    ports = parse_device_list(
+        _listing(
+            {"port": "COM5", "description": "UART", "hwid": "USB VID:PID=10C4:EA60"},
+            {"port": "COM7", "description": "S3", "hwid": "USB VID:PID=303A:1001"},
+        )
+    )
+    assert [p.port for p in candidate_boards(ports, TARGETS["mdb"])] == ["COM7"]
 
 
 def test_entries_without_port_are_dropped() -> None:

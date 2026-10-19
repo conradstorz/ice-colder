@@ -70,7 +70,9 @@ Topic constants: `PAYMENT_EVENT_TOPIC`, `PAYMENT_EVENT_ACK_TOPIC`,
   (earlier boots first) before anything new.
 - The edge dedupes on `event_id`, processes in `seq` order, and acks
   cumulatively **after processing** (not on receipt). It never blocks a sale
-  waiting for its own ack to be delivered.
+  waiting for its own ack to be delivered. A duplicate `event_id` is not
+  reprocessed but is acked again (the board's replay and lost-ack recovery
+  depend on it).
 - A `seq` gap within a known `boot_id`, or a never-seen `boot_id` whose first
   event has `seq > 1`, raises `PAY-105` (payment event gap; machine scope,
   `warning`, not payment-blocking). The edge still processes what it has; the
@@ -217,7 +219,7 @@ registered in `COMPLETION_TIMEOUTS`.
 |---|---|---|
 | `set_policy` | [`SetPolicyParams`](schemas/set_policy_params.schema.json): `policy_id` (1–64), `accept: bool`, `max_escrow_cents` (> 0), `coin_enabled: [PositiveCents]`, `bill_enabled: [PositiveCents]`, `cashless_enabled: bool`, `change_threshold_cents` (>= 0), `edge_timeout_s` (5–120), `return_bill_on_lever: bool` | ack only; `state.policy_id` echoes it |
 | `payout` | [`PayoutParams`](schemas/payout_params.schema.json): `cents` (> 0), `reason`: [`PayoutReason`](schemas/payout_reason.schema.json), `sale_id: str \| null` (default `null`) | ack `accepted`, then `payout_result` (completion timeout 60 s) |
-| `vend_request` | [`VendRequestParams`](schemas/vend_request_params.schema.json): `session_id: str \| null` (default `null`; omitting the key means price-first), `cents` (> 0), `item` (1–64) | ack `accepted`, then `vend_approved` / `vend_denied` (completion timeout 45 s) |
+| `vend_request` | [`VendRequestParams`](schemas/vend_request_params.schema.json): `session_id: str \| null` (default `null`; omitting the key means price-first), `cents` (> 0), `item` (1–64) | ack `accepted`, then `vend_approved` / `vend_denied` (completion timeout 45 s); rejected with `detail: "price_scale"` when `cents` is not a multiple of the reader's scale factor |
 | `vend_result` | [`VendResultParams`](schemas/vend_result_params.schema.json): `session_id`, `request_id` (of the approved vend), `outcome`: `success` \| `failure` | ack only; board sends SESSION COMPLETE → `session_ended{complete}` |
 | `end_session` | [`EndSessionParams`](schemas/end_session_params.schema.json): `session_id` | ack only → `session_ended{reason: edge}` |
 | `return_escrow` | `{}` (no params model) | ack only → `bill_returned{reason: edge}` if a bill was held, else ack `ok` with `detail: "no_bill"` |

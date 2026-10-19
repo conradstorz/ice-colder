@@ -409,5 +409,7 @@ confirmed at the machine; whether the Nayax reader offers always-idle.
   is a Master `rejected` ack with no event; a reader-initiated JUST RESET clears always-idle state;
   MDB model and serial text is ASCII only (other bytes become `?`); `sale_id` and `session_id` are
   capped at 64 characters.
+- **Edge re-acks duplicates.** The board's replay and stall recovery require the edge to ack a duplicate
+  `event_id` again without reprocessing it; this is now in the payment contract (Delivery).
 - **New bench items.** L2 payout-busy timing on a real changer; a replay ack storm with an old-boot
   backlog (interface doc section 9).

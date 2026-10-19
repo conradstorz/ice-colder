@@ -204,7 +204,12 @@ void drain_acks() {
             have = true;
         }
         portEXIT_CRITICAL(&g_ack_mux);
-        if (have && xQueueSend(g.q.ack_in_q, &item, 0) != pdTRUE) coalesce_ack(item.boot_id, item.seq);
+        if (!have) continue;
+        if (xQueueSend(g.q.ack_in_q, &item, 0) != pdTRUE) {
+            // Stop at the first refusal: a later slot must not overtake this (older) one.
+            coalesce_ack(item.boot_id, item.seq);
+            break;
+        }
     }
 }
 

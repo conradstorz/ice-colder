@@ -4,9 +4,11 @@
 // Stalled-log replay: acks normally arrive on their own, but one lost for good (the edge never saw
 // the event, or its ack never reached us) would leave entries pending forever, and the log pressure
 // that follows would keep cash acceptance inhibited. So while connected, if events are pending and
-// nothing has been erased for kStallReplayMs, the ledger asks for a full replay (the same request a
-// reconnect makes), at most once per kStallReplayMs. A replay can duplicate events the edge already
-// has; the edge dedupes on (boot_id, seq), and its re-ack is what finally clears the log.
+// nothing has been erased for the current interval, the ledger asks for a full replay (the same
+// request a reconnect makes). The interval backs off exponentially while nothing gets erased
+// (30 s, 60 s, 120 s, then capped at 300 s) and resets to 30 s when an ack erases something. A replay
+// can duplicate events the edge already has; the edge dedupes on event_id and re-acks, and that
+// re-ack is what finally clears the log.
 #include "ledger_task.h"
 
 #include <stdio.h>
@@ -36,6 +38,8 @@ constexpr uint32_t kPayoutsRetryMs = 500;
 constexpr int kAppendsPerPass = 8;
 constexpr int kSweepKeysPerStep = 2;
 constexpr uint32_t kStallReplayMs = 30000;
+constexpr uint32_t kStallReplayMaxMs = 300000;
+uint32_t g_stall_interval_ms = kStallReplayMs;
 
 Queues g_q;
 NvsLogStore g_store;
@@ -135,7 +139,10 @@ void handle_acks() {
         const int before = g_log.pending();
         g_log.acked(a.boot_id, a.seq);
         const int erased = before - g_log.pending();
-        if (erased > 0) g_stall_since_ms = now_ms();
+        if (erased > 0) {
+            g_stall_since_ms = now_ms();
+            g_stall_interval_ms = kStallReplayMs;
+        }
         if (g_replay_next >= 0) g_replay_next = g_replay_next > erased ? g_replay_next - erased : 0;
     }
 }
@@ -155,10 +162,11 @@ void check_stalled_log() {
         g_stall_since_ms = now;  // nothing to wait on, or a replay is already under way
         return;
     }
-    if (now - g_stall_since_ms < kStallReplayMs) return;
+    if (now - g_stall_since_ms < g_stall_interval_ms) return;
     g_stall_since_ms = now;
     ESP_LOGW(TAG, "%d events pending with no ack for %u s; requesting a replay", g_log.pending(),
-             static_cast<unsigned>(kStallReplayMs / 1000));
+             static_cast<unsigned>(g_stall_interval_ms / 1000));
+    g_stall_interval_ms = g_stall_interval_ms * 2 > kStallReplayMaxMs ? kStallReplayMaxMs : g_stall_interval_ms * 2;
     ledger_connected();
 }
 
