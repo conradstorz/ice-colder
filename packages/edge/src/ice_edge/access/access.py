@@ -28,6 +28,7 @@ from ice_common.backoff import (  # noqa: F401  (re-exported for existing import
     BUDGET_WINDOW_SECONDS,
     Backoff,
 )
+from ice_common.observers import Subscribers
 from ice_common.paths import DATA_DIR
 from ice_contracts.access import (  # noqa: F401  (re-exported for existing importers)
     ROLE_PERMISSIONS,
@@ -43,6 +44,7 @@ SCRYPT_DKLEN = 32
 EMERGENCY_CODE_COUNT = 20
 CODE_DIGITS = 8
 TRANSFER_TTL_DAYS = 7
+LINK_TTL_DAYS = 7
 
 
 def _scrypt(value: str, salt: bytes) -> bytes:
@@ -202,6 +204,7 @@ class AccessStore:
         # enroll token -> (user_id, client, expires_at)
         self._enroll_tokens: dict[str, tuple[str, str, float]] = {}
         self._raw_extra: dict = {}
+        self._claim_code_subscribers: Subscribers[[]] = Subscribers()
         self._setup_plaintext: str | None = None
         self.load()
 
@@ -220,6 +223,7 @@ class AccessStore:
         self._emergency_codes: list[dict] = []
         self._setup: dict = {}
         self._pending_transfer: dict | None = None
+        self._pending_link: dict | None = None
         self._raw_extra = {}
         self.corrupt = False
         if not self._path.exists():
@@ -256,6 +260,7 @@ class AccessStore:
             self._emergency_codes = list(raw.get("emergency_codes", []))
             self._setup = dict(raw.get("setup", {}))
             self._pending_transfer = raw.get("pending_transfer") or None
+            self._pending_link = raw.get("pending_link") or None
             self._raw_extra = {
                 k: v
                 for k, v in raw.items()
@@ -266,6 +271,7 @@ class AccessStore:
                     "emergency_codes",
                     "setup",
                     "pending_transfer",
+                    "pending_link",
                 )
             }
         except Exception as e:
@@ -275,6 +281,7 @@ class AccessStore:
             self._emergency_codes = []
             self._setup = {}
             self._pending_transfer = None
+            self._pending_link = None
             logger.error(
                 f"AccessStore: {self._path} is unreadable or invalid ({e}); the "
                 "dashboard will serve an error page. The VMC and MQTT client "
@@ -326,6 +333,7 @@ class AccessStore:
         doc["emergency_codes"] = [dict(c) for c in self._emergency_codes]
         doc["setup"] = dict(self._setup)
         doc["pending_transfer"] = self._pending_transfer
+        doc["pending_link"] = self._pending_link
         return doc
 
     def save(self) -> None:
@@ -753,6 +761,7 @@ class AccessStore:
         self._setup = {"setup_code_hash": hash_secret(code), "finalized": False}
         self._commit()
         self._setup_plaintext = code
+        self._claim_code_subscribers.publish()
         return code
 
     def verify_setup_code(self, code: str) -> bool:
@@ -765,6 +774,7 @@ class AccessStore:
         self._setup = {"setup_code_hash": None, "finalized": True}
         self._setup_plaintext = None
         self._commit()
+        self._claim_code_subscribers.publish()
 
     # --- ownership transfer ---
 
@@ -791,6 +801,7 @@ class AccessStore:
         self._require_user(started_by_user_id)
         code = generate_code(CODE_DIGITS)
         now = self._wall()
+        self._pending_link = None
         self._pending_transfer = {
             "transfer_code_hash": hash_secret(code),
             "started_at": now.isoformat(),
@@ -798,6 +809,7 @@ class AccessStore:
             "started_by_user_id": started_by_user_id,
         }
         self._commit()
+        self._claim_code_subscribers.publish()
         logger.warning("AccessStore: ownership transfer started")
         return code
 
@@ -810,6 +822,7 @@ class AccessStore:
     def cancel_transfer(self) -> None:
         self._pending_transfer = None
         self._commit()
+        self._claim_code_subscribers.publish()
 
     def complete_transfer(self, name: str, email: str | None, pin: str) -> User:
         """Swap the owner in one write.
@@ -855,9 +868,70 @@ class AccessStore:
         }
         self._pending_transfer = None
         self._commit()
+        self._claim_code_subscribers.publish()
         self.end_all_sessions()
         logger.warning(f"AccessStore: ownership transferred to {name}")
         return new_owner
+
+    # --- link to cloud ---
+
+    @property
+    def pending_link(self) -> dict | None:
+        """The live link code record, or None once it has expired."""
+        pending = self._pending_link
+        if pending is None:
+            return None
+        try:
+            expires = datetime.fromisoformat(pending["expires_at"])
+        except (KeyError, ValueError):
+            return None
+        if self._wall() > expires:
+            return None
+        return pending
+
+    def start_link(self, started_by_user_id: str) -> str:
+        """Mint a link-to-cloud code (8 digits, shown once, 7-day expiry)."""
+        self._require_user(started_by_user_id)
+        if self.pending_transfer is not None:
+            raise AccessError("an ownership transfer is pending")
+        code = generate_code(CODE_DIGITS)
+        now = self._wall()
+        self._pending_link = {
+            "code_hash": hash_secret(code),
+            "started_at": now.isoformat(),
+            "expires_at": (now + timedelta(days=LINK_TTL_DAYS)).isoformat(),
+        }
+        self._commit()
+        self._claim_code_subscribers.publish()
+        return code
+
+    def cancel_link(self) -> None:
+        self._pending_link = None
+        self._commit()
+        self._claim_code_subscribers.publish()
+
+    # --- cloud claim code ---
+
+    def cloud_claim_code(self) -> tuple[str, str | None] | None:
+        """The live claim code as (hash, expires_at ISO or None for no expiry).
+
+        Priority: a live transfer, else a live link, else the unfinalised
+        setup code.
+        """
+        transfer = self.pending_transfer
+        if transfer is not None:
+            return transfer["transfer_code_hash"], transfer["expires_at"]
+        link = self.pending_link
+        if link is not None:
+            return link["code_hash"], link["expires_at"]
+        setup_hash = self._setup.get("setup_code_hash")
+        if setup_hash and not self.setup_finalized:
+            return setup_hash, None
+        return None
+
+    def subscribe_claim_code_change(self, cb: Callable[[], None]) -> Callable[[], None]:
+        """Call ``cb`` (no payload; read ``cloud_claim_code()``) after each change."""
+        return self._claim_code_subscribers.subscribe(cb)
 
     # --- machine report ---
 
