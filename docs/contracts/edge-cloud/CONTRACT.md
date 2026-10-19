@@ -9,4 +9,28 @@
 
 ## 0.2.0: machine identity
 
-Machines now authenticate with an Ed25519 key. Requests carry the headers `X-Ice-Machine`, `X-Ice-Timestamp` and `X-Ice-Signature`. New endpoints: `POST /api/v1/machines/register` (body `RegisterMachine`, reply `RegisterResponse`) and `POST|DELETE /api/v1/machines/{fingerprint}/claim-code` (body `ClaimCodeNotice`). The report path is now keyed by fingerprint. `MachineReport.contract` is `"0.2.0"`; the report body is otherwise unchanged. Models: `ice_contracts.cloud.identity` (`RegisterMachine`, `RegisterResponse`, `ClaimCodeNotice`).
+Machines authenticate with an Ed25519 key they generate (`data/cloud_identity.json`). Machine identity is the **fingerprint**, the lower-case hex SHA-256 of the raw 32-byte public key; the config `machine_id` is only a display label. Models: `ice_contracts.cloud.identity` (`RegisterMachine{public_key_b64, label}`, `RegisterResponse{fingerprint, claimed}`, `ClaimCodeNotice{claim_code_hash, expires_at | null}`; null = a setup code that never expires). Signing helpers: `ice_contracts.cloud.signing`.
+
+**Signature.** Every `/api/v1/machines/*` request and the bundle `PUT` carries:
+
+| Header | Value |
+|---|---|
+| `X-Ice-Machine` | full fingerprint |
+| `X-Ice-Timestamp` | ISO-8601 UTC, seconds; must be within 300 s of the server clock |
+| `X-Ice-Signature` | base64 Ed25519 signature over `"{METHOD}\n{path}\n{timestamp}\n{sha256_hex(body)}"` (UTF-8) |
+
+`path` is the request path only (no scheme, host or query), exactly as the cloud app sees it (`request.url.path`); a deployment behind a path prefix must strip the prefix at the proxy.
+
+**Endpoints** (prefix `/api/v1`):
+
+| Request | Success | Notes |
+|---|---|---|
+| `POST /machines/register` (`RegisterMachine`, signed with the key in the body) | 200 `RegisterResponse` | First call inserts an unclaimed machine; a repeat updates `label` and `last_seen_at` only. The header fingerprint must equal the body key's. |
+| `POST /machines/{fingerprint}/report` (`MachineReport`, `contract` `"0.2.0"`) | 204 | Path fingerprint must equal the authenticated machine's. Report body otherwise unchanged. |
+| `POST /machines/{fingerprint}/claim-code` (`ClaimCodeNotice`) | 204 | Sets the live claim-code hash. |
+| `DELETE /machines/{fingerprint}/claim-code` | 204 | Clears it. |
+| `PUT /ui-bundles/{digest}` (bundle zip) | 201 new, 200 already held | Requires a registered machine. 400 with `{"detail"}` for an invalid bundle. |
+
+**Errors.** Any authentication failure (missing header, stale timestamp, unknown fingerprint, bad signature, path fingerprint mismatch) is **401 with an empty body**. A body over the limit is **413 with an empty body**, decided as bytes arrive, before routing or auth: 20 MiB for the bundle `PUT`, 256 KiB for every other request. An invalid body is 422, except on `register`, where it is 401.
+
+**Claiming** is not part of this machine contract: the owner enters the short fingerprint and the code minted at the machine on the cloud's `/claim` page; the cloud compares against the hash received in the claim-code notice.

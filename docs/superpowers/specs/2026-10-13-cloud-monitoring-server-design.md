@@ -311,6 +311,8 @@ v0.1.0's `seq` is only a supersede marker; it is not a watermark and nothing is 
 
 ## 8. Security (stub)
 
+> Superseded by [`2026-10-19-cloud-identity-tenancy-design.md`](2026-10-19-cloud-identity-tenancy-design.md): the cloud now authenticates machines and people, and the localhost-only rule below no longer applies once it is deployed behind HTTPS.
+
 The stub is for development only: it must not be deployed anywhere reachable from beyond localhost.
 
 There is no authentication. `ice_cloud` binds to `127.0.0.1` by default and its compose file is marked

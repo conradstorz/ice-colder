@@ -40,7 +40,7 @@ Decisions about money and sales live on the edge. The boards do what they are to
 
 - **Boards.** Two ESP32 microcontrollers inside the machine. The vending board drives the motors, valves, fan, trap door and heater and reads the buttons and sensors. The MDB board talks to the coin changer, bill validator and card reader over the vending industry's MDB bus. Each board owns its own hardwired safety interlocks, so the computer is never the only thing that stops a motor.
 - **Edge controller.** A Python program running on a small computer in the machine. It runs the sale, keeps the money ledger, decides what counts as a fault, records sales, serves the operator dashboard on a tablet and sends alerts by email. Boards and the edge talk over MQTT, a lightweight message bus, through a broker that runs alongside the edge.
-- **Cloud.** A small fleet portal the owner can open from anywhere. The edge pushes a status report to it every minute. It shows the same pages as the machine's own dashboard, read-only. Today it is a development stub with no login, so it only listens on the local machine.
+- **Cloud.** A small fleet portal the owner can open from anywhere. The edge pushes a status report to it every minute. It shows the same pages as the machine's own dashboard, read-only. Each machine proves who it is with a key it generates, the owner signs in with Google and claims the machine with a code shown at the machine, and owners can invite technicians to see it.
 
 Every command from the edge to a board carries a request id, and a board remembers the ids it has already handled. A retry after a lost reply is answered from memory, so a bag of ice is never dropped twice.
 
