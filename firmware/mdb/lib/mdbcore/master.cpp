@@ -424,7 +424,9 @@ Ack Master::do_payout(const Command& c) {
     // Retry of a payout the driver still holds: queued, running, or ended with its PayoutResult
     // held back by a full sink. Never `failed` (rule 5: failed is final); the result event decides.
     if (strcmp(active_payout_, c.request_id) == 0) return make_ack(c, AckStatus::Ok, "in_progress", Phase::Accepted);
-    if (changer_.payout_in_progress()) return make_ack(c, AckStatus::Rejected, "busy");
+    // A different payout while A is queued, running, or has its result held by a full sink: busy,
+    // and A's id stays so its retry is still answered.
+    if (changer_.payout_in_progress() || active_payout_[0] != '\0') return make_ack(c, AckStatus::Rejected, "busy");
 
     result_seen_ = false;
     copy_str(active_payout_, sizeof(active_payout_), c.request_id);
@@ -453,6 +455,12 @@ Ack Master::do_payout(const Command& c) {
 Ack Master::do_vend_request(const Command& c) {
     if (expired(c)) return make_ack(c, AckStatus::Rejected, "expired");
     if (c.cents == 0) return make_ack(c, AckStatus::Rejected, "cents");
+    // A vend the reader still holds (pending or approved) owns vend_req_id_. The edge's retry of it is
+    // accepted; any other request is busy; neither may touch the in-flight id.
+    if (cashless_.vend_active()) {
+        if (strcmp(vend_req_id_, c.request_id) == 0) return make_ack(c, AckStatus::Ok, "in_progress", Phase::Accepted);
+        return make_ack(c, AckStatus::Rejected, "busy");
+    }
     char sid[17];
     bool funds_known = false;
     uint32_t funds = 0;
@@ -466,10 +474,16 @@ Ack Master::do_vend_request(const Command& c) {
 
     denied_seen_ = false;
     denied_detail_[0] = '\0';
+    // The id must be set before the call (a price_scale denial is emitted synchronously), and any
+    // refusal puts the previous one back.
+    char prev_id[sizeof(vend_req_id_)];
+    memcpy(prev_id, vend_req_id_, sizeof(prev_id));
+    const uint16_t prev_item = request_item_;
     copy_str(vend_req_id_, sizeof(vend_req_id_), c.request_id);
     request_item_ = item_number(c.item);
     if (!cashless_.vend_request(c.cents, request_item_, c.request_id)) {
-        vend_req_id_[0] = '\0';
+        memcpy(vend_req_id_, prev_id, sizeof(prev_id));
+        request_item_ = prev_item;
         return make_ack(c, AckStatus::Rejected, "busy");
     }
     // Like the payout: queued only. Accept once the reader ACKed VEND REQUEST on the bus.

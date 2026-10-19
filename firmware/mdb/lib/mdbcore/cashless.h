@@ -36,6 +36,8 @@ public:
     bool enable_pending() const { return enable_dirty_; }  // a READER enable/disable is not ACKed yet
     // True once the reader ACKed the VEND REQUEST of the current request (false again after a denial).
     bool vend_command_sent() const { return vend_sent_; }
+    // A vend is held by the reader: requested (queued or sent) or approved and awaiting its result.
+    bool vend_active() const { return vend_ != Vend::None; }
     // A vend_result / end_session action chain is still queued (not every command ACKed yet).
     bool action_pending() const { return action_ != Action::None; }
     // The reader NAKed a command of the chain started by the last vend_result / end_session.

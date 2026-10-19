@@ -391,6 +391,27 @@ static void test_l3_chunked_payout_stops_at_a_short_chunk(void) {
     TEST_ASSERT_EQUAL_INT(1, r.dev.n_payouts);
 }
 
+// The 30 s payout timeout is per chunk: a long payout never gets cut off while coins keep leaving.
+static void test_l3_payout_timeout_restarts_for_every_chunk(void) {
+    Rig r;
+    r.dev.tubes[2] = 100;
+    r.dev.busy_polls = 3;
+    r.bring_up();
+    TEST_ASSERT_TRUE(r.ch.request_payout(1500, "req-00000024"));  // two chunks: 255 + 45 units
+    for (int i = 0; i < 10 && r.dev.n_payouts < 1; ++i) r.ch.step();
+    TEST_ASSERT_EQUAL_INT(1, r.dev.n_payouts);
+    r.clock.advance_ms(25000);  // the first chunk takes 25 s
+    for (int i = 0; i < 20 && r.dev.n_payouts < 2; ++i) r.ch.step();
+    TEST_ASSERT_EQUAL_INT(2, r.dev.n_payouts);
+    r.clock.advance_ms(10000);  // the second takes 10 s: 35 s in all, but only 10 s for this chunk
+    r.steps(20);
+    TEST_ASSERT_FALSE(r.ch.payout_in_progress());
+    const PaymentEvent* e = r.sink.first(EventKind::PayoutResult);
+    TEST_ASSERT_NOT_NULL(e);
+    TEST_ASSERT_EQUAL(PayoutStatus::Ok, e->payout_status);
+    TEST_ASSERT_EQUAL_UINT32(1500, e->paid_cents);
+}
+
 static void test_enabled_never_exceeds_denominations(void) {
     Rig r;
     static const uint32_t some[3] = {5, 200, 100};
@@ -638,6 +659,7 @@ int main(int, char**) {
     RUN_TEST(test_l3_payout_above_255_units_is_chunked);
     RUN_TEST(test_l3_payout_not_a_multiple_of_scaling_pays_the_floor);
     RUN_TEST(test_l3_chunked_payout_stops_at_a_short_chunk);
+    RUN_TEST(test_l3_payout_timeout_restarts_for_every_chunk);
     RUN_TEST(test_enabled_never_exceeds_denominations);
     RUN_TEST(test_request_payout_refused_while_running_or_offline);
     RUN_TEST(test_miss_threshold_goes_offline_then_recovers);

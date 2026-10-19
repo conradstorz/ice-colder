@@ -1162,6 +1162,141 @@ static void test_self_test_reports_driver_event_drops(void) {
     TEST_ASSERT_NOT_NULL(strstr(a.result_json, "\"name\":\"event_queue\",\"pass\":true,\"detail\":\"0 dropped\""));
 }
 
+static int count_vends(const Rig& r, uint8_t sub) {
+    int c = 0;
+    for (int i = 0; i < r.rdr.n_vends; ++i) c += r.rdr.vends[i].sub == sub;
+    return c;
+}
+
+// A refused or repeated vend_request must never erase the id of the vend the reader holds.
+static void test_same_id_vend_request_retry_keeps_the_in_flight_vend(void) {
+    Rig r;
+    r.bring_up();
+    r.set_policy();
+    char session[65];
+    snprintf(session, sizeof(session), "%s", r.tap_session());
+    r.rdr.approve(25);
+    r.rdr.silent = true;
+    Ack a = r.vend(25, session, "vend-0000040");
+    TEST_ASSERT_EQUAL(AckStatus::Ok, a.status);
+    TEST_ASSERT_EQUAL(Phase::Accepted, a.phase);
+    a = r.vend(25, session, "vend-0000040");  // the edge's retry; the first is still queued
+    TEST_ASSERT_EQUAL(AckStatus::Ok, a.status);
+    TEST_ASSERT_EQUAL(Phase::Accepted, a.phase);
+    TEST_ASSERT_EQUAL_STRING("in_progress", a.detail);
+    r.rdr.silent = false;
+    r.clock.advance_ms(1500);
+    r.steps(20);
+    TEST_ASSERT_EQUAL_INT(1, count_vends(r, 0x00));  // exactly one VEND REQUEST on the wire
+    const PaymentEvent* ap = need(r.sink.first(EventKind::VendApproved));
+    TEST_ASSERT_EQUAL_STRING("vend-0000040", ap->request_id);
+    a = r.vend_result(session, "vend-0000040", true);
+    TEST_ASSERT_EQUAL(AckStatus::Ok, a.status);
+    r.steps(10);
+    TEST_ASSERT_EQUAL(SessionEndReason::Complete, need(r.sink.last(EventKind::SessionEnded))->end_reason);
+}
+
+static void test_different_id_vend_request_while_one_is_in_flight_is_busy(void) {
+    Rig r;
+    r.bring_up();
+    r.set_policy();
+    char session[65];
+    snprintf(session, sizeof(session), "%s", r.tap_session());
+    r.rdr.approve(25);
+    Ack a = r.vend(25, session, "vend-0000041");
+    TEST_ASSERT_EQUAL(Phase::Accepted, a.phase);
+    a = r.vend(25, session, "vend-0000042");
+    TEST_ASSERT_EQUAL(AckStatus::Rejected, a.status);
+    TEST_ASSERT_EQUAL_STRING("busy", a.detail);
+    r.steps(3);
+    TEST_ASSERT_EQUAL_STRING("vend-0000041", need(r.sink.first(EventKind::VendApproved))->request_id);
+    a = r.vend_result(session, "vend-0000041", true);
+    TEST_ASSERT_EQUAL(AckStatus::Ok, a.status);
+    r.steps(10);
+    TEST_ASSERT_EQUAL(SessionEndReason::Complete, need(r.sink.last(EventKind::SessionEnded))->end_reason);
+}
+
+static void test_refused_price_scale_request_keeps_the_in_flight_id(void) {
+    Rig r;
+    r.bring_up();
+    r.set_policy();
+    char session[65];
+    snprintf(session, sizeof(session), "%s", r.tap_session());
+    r.rdr.approve(25);
+    r.vend(25, session, "vend-0000043");
+    const Ack bad = r.vend(33, session, "vend-0000044");  // not a multiple of the scale
+    TEST_ASSERT_EQUAL(AckStatus::Rejected, bad.status);
+    r.steps(3);
+    const Ack a = r.vend_result(session, "vend-0000043", true);
+    TEST_ASSERT_EQUAL(AckStatus::Ok, a.status);
+}
+
+static void test_reader_nak_of_vend_success_is_a_failed_ack_and_the_chain_continues(void) {
+    Rig r;
+    r.bring_up();
+    r.set_policy();
+    char session[65];
+    snprintf(session, sizeof(session), "%s", r.tap_session());
+    r.rdr.approve(25);
+    r.vend(25, session, "vend-0000045");
+    r.steps(3);
+    r.rdr.fail_next_action = true;  // the reader NAKs VEND SUCCESS
+    const Ack a = r.vend_result(session, "vend-0000045", true);
+    TEST_ASSERT_EQUAL(AckStatus::Failed, a.status);
+    TEST_ASSERT_EQUAL_STRING("nak", a.detail);
+    r.steps(10);
+    TEST_ASSERT_TRUE(r.reader_saw(0x04));  // SESSION COMPLETE still went out
+}
+
+static void test_return_escrow_with_a_silent_validator_is_queued(void) {
+    Rig r;
+    r.bring_up();
+    r.set_policy();
+    r.bill.insert(1);
+    r.steps(1);
+    r.bill.silent = true;
+    const Ack a = r.simple(CmdKind::ReturnEscrow, "return_escrow");
+    TEST_ASSERT_EQUAL(AckStatus::Ok, a.status);
+    TEST_ASSERT_EQUAL_STRING("queued", a.detail);
+}
+
+static void test_payout_b_while_a_result_is_held_is_busy_and_a_retry_still_accepted(void) {
+    Rig r;
+    r.bring_up();
+    r.set_policy();
+    r.acc.coin(100);
+    r.sink.capacity = r.sink.n;  // A's PayoutResult will be held back
+    TEST_ASSERT_EQUAL(Phase::Accepted, r.payout(15, "pay-00000050").phase);
+    r.steps(8);
+    TEST_ASSERT_EQUAL_INT(0, r.sink.count(EventKind::PayoutResult));
+    const Ack b = r.payout(10, "pay-00000051");
+    TEST_ASSERT_EQUAL(AckStatus::Rejected, b.status);
+    TEST_ASSERT_EQUAL_STRING("busy", b.detail);
+    const Ack again = r.payout(15, "pay-00000050");
+    TEST_ASSERT_EQUAL(AckStatus::Ok, again.status);
+    TEST_ASSERT_EQUAL(Phase::Accepted, again.phase);
+    TEST_ASSERT_EQUAL_INT(1, r.coin.n_payouts);
+    r.sink.capacity = 256;
+    r.steps(3);
+    TEST_ASSERT_EQUAL_INT(1, r.sink.count(EventKind::PayoutResult));
+    TEST_ASSERT_EQUAL_STRING("pay-00000050", need(r.sink.first(EventKind::PayoutResult))->request_id);
+    TEST_ASSERT_EQUAL_UINT32(85, r.acc.escrow_cents());
+}
+
+static void test_self_test_event_queue_fails_after_a_driver_dropped_events(void) {
+    Rig r;
+    r.bring_up();
+    r.set_policy();
+    char session[65];
+    snprintf(session, sizeof(session), "%s", r.tap_session());
+    r.sink.capacity = r.sink.n;  // a refusing sink: each price_scale denial stays queued in the reader driver
+    for (int i = 0; i < 20; ++i) r.vend(33, session, "vend-0000046");
+    Ack a;
+    r.m.self_test(a);
+    TEST_ASSERT_NOT_NULL(strstr(a.result_json, "\"name\":\"event_queue\",\"pass\":false"));
+    TEST_ASSERT_NULL(strstr(a.result_json, "\"detail\":\"0 dropped\""));
+}
+
 static void test_self_test_shape(void) {
     Rig r;
     r.bring_up();
@@ -1254,6 +1389,13 @@ int main(int, char**) {
     RUN_TEST(test_enabled_is_within_the_denominations_the_devices_reported);
     RUN_TEST(test_vend_result_end_session_return_escrow_ack_after_the_bus);
     RUN_TEST(test_self_test_reports_driver_event_drops);
+    RUN_TEST(test_same_id_vend_request_retry_keeps_the_in_flight_vend);
+    RUN_TEST(test_different_id_vend_request_while_one_is_in_flight_is_busy);
+    RUN_TEST(test_refused_price_scale_request_keeps_the_in_flight_id);
+    RUN_TEST(test_reader_nak_of_vend_success_is_a_failed_ack_and_the_chain_continues);
+    RUN_TEST(test_return_escrow_with_a_silent_validator_is_queued);
+    RUN_TEST(test_payout_b_while_a_result_is_held_is_busy_and_a_retry_still_accepted);
+    RUN_TEST(test_self_test_event_queue_fails_after_a_driver_dropped_events);
     RUN_TEST(test_self_test_shape);
     return UNITY_END();
 }

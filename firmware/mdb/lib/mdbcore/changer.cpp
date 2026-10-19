@@ -481,6 +481,7 @@ void Changer::do_payout() {
                 if (paid >= payout_.chunk_cents && payout_.sent_cents < payout_.target) {
                     payout_.step = PayStep::L3Send;  // chunk fully paid, the next one follows
                     payout_.progress_cents = 0;
+                    payout_.start_ms = clock_.now_ms();  // the timeout is per chunk
                     return;
                 }
                 const bool floored = payout_.done_cents == payout_.target && payout_.target < payout_.requested;

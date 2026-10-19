@@ -15,6 +15,7 @@ struct FakeReader : FakePeripheral {
     uint8_t max_response_s = 5;
     bool offer_always_idle = false;  // level 3 only, and only when the VMC announced level 3
     bool silent = false;             // answer nothing at all
+    bool fail_next_action = false;   // NAK the next VEND or READER command (then clears itself)
 
     // Live state.
     bool reader_enabled = false;
@@ -146,6 +147,10 @@ struct FakeReader : FakePeripheral {
                 return ack();
             case 3:  // VEND
                 if (n < 1) return nak();
+                if (fail_next_action) {
+                    fail_next_action = false;
+                    return nak();
+                }
                 if (n_vends < 16) {
                     Vend& v = vends[n_vends++];
                     v.sub = d[0];
@@ -181,6 +186,10 @@ struct FakeReader : FakePeripheral {
                 }
             case 4:  // READER
                 if (n < 1) return nak();
+                if (fail_next_action) {
+                    fail_next_action = false;
+                    return nak();
+                }
                 if (n_reader_cmds < 16) reader_cmds[n_reader_cmds++] = d[0];
                 if (d[0] == 0x00) reader_enabled = false;
                 if (d[0] == 0x01) reader_enabled = true;
