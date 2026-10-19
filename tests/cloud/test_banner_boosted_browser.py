@@ -15,7 +15,7 @@ import uvicorn
 from ice_cloud.app import create_app
 from tests.cloud.conftest import make_settings
 from tests.browser_harness import BROWSER_OPT_IN, free_port, run_node_check
-from tests.cloud.reports import NOW, make_report
+from tests.cloud.reports import FP, NOW, make_report
 
 pytestmark = BROWSER_OPT_IN
 
@@ -23,7 +23,7 @@ pytestmark = BROWSER_OPT_IN
 @pytest.fixture
 def cloud_server(tmp_path):
     app = create_app(make_settings(tmp_path / "cloud"), now=lambda: NOW)
-    app.state.store.save(make_report())
+    app.state.store.save(FP, make_report())
     port = free_port()
     server = uvicorn.Server(
         uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
