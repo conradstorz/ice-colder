@@ -34,6 +34,7 @@ from ice_edge.app.startup_config import (
     warn_if_setup_mode,
 )
 from ice_edge.uplink.client import HttpUplink
+from ice_edge.uplink.identity import MachineIdentity
 from ice_edge.uplink.loop import run_uplink
 from ice_edge.web.context import holder_display_name
 from ice_edge.web.server import app
@@ -180,7 +181,7 @@ async def main():
     if live_config.cloud.enabled:
         # Off by default. Uploads run in this supervised task with a 5 s
         # timeout and never block a sale.
-        uplink = HttpUplink(live_config.cloud.url, live_config.machine_id)
+        uplink = HttpUplink(live_config.cloud.url, MachineIdentity.load_or_create())
         background.append(
             supervise(
                 "uplink",
