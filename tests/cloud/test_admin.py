@@ -10,10 +10,42 @@ def _admin(cloud):
     return login(cloud, "admin@example.com")
 
 
-def test_non_admin_404(cloud):
-    login(cloud, "user@example.com")
-    assert cloud.get("/admin").status_code == 404
-    assert cloud.post("/admin/accounts/x/suspend", headers=HX).status_code == 404
+def test_non_admin_404(cloud_app, signer):
+    repo = cloud_app.state.repo
+    with TestClient(cloud_app, follow_redirects=False) as owner_c:
+        with TestClient(cloud_app, follow_redirects=False) as victim_c:
+            owner = login(owner_c, "user@example.com")
+            victim = login(victim_c, "victim@example.com")
+            fp = register(owner_c, signer)
+            repo.claim_machine(fp, owner.id, cloud_app.state.now())
+            base = f"/admin/machines/{short(signer)}/unbind"
+            assert owner_c.get("/admin").status_code == 404
+            r = owner_c.post(f"/admin/accounts/{victim.id}/suspend", headers=HX)
+            assert r.status_code == 404
+            assert repo.account(victim.id).suspended_at is None
+            r = owner_c.post(f"/admin/accounts/{victim.id}/unsuspend", headers=HX)
+            assert r.status_code == 404
+            assert owner_c.post(base, headers=HX).status_code == 404
+            assert owner_c.get(f"{base}/confirm", headers=HX).status_code == 404
+            assert repo.machine(fp).owner_id == owner.id
+            assert repo.account(victim.id).suspended_at is None
+
+
+def test_unclaimed_machine_has_no_unbind_button(cloud, signer):
+    register(cloud, signer, "m-free")
+    _admin(cloud)
+    r = cloud.get("/admin")
+    assert "m-free" in r.text and "unclaimed" in r.text
+    assert "/unbind" not in r.text
+
+
+def test_unbind_already_unbound_is_harmless(cloud, signer):
+    repo = cloud.app.state.repo
+    fp = register(cloud, signer)
+    _admin(cloud)
+    r = cloud.post(f"/admin/machines/{short(signer)}/unbind", headers=HX)
+    assert r.status_code == 200
+    assert repo.machine(fp).owner_id is None
 
 
 def test_admin_sees_unclaimed_and_claimed(cloud, signer):
@@ -75,12 +107,13 @@ def test_suspend_signs_account_out_and_unsuspend_restores(cloud_app, signer):
 
 
 def test_admin_cannot_assign_owner(cloud, signer):
-    register(cloud, signer)
+    fp = register(cloud, signer)
     _admin(cloud)
-    for method in (cloud.post, cloud.put):
-        r = method(f"/admin/machines/{short(signer)}/owner", headers=HX)
-        assert r.status_code in (404, 405)
-    assert r.status_code == 404 or r.status_code == 405
+    url = f"/admin/machines/{short(signer)}/owner"
+    # POST reaches the portal catch-all (404); PUT has no handler anywhere (405).
+    assert cloud.post(url, headers=HX).status_code == 404
+    assert cloud.put(url, headers=HX).status_code == 405
+    assert cloud.app.state.repo.machine(fp).owner_id is None
 
 
 def test_admin_cannot_suspend_self(cloud):
