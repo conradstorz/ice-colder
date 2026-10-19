@@ -39,7 +39,9 @@ Compile-time defaults (`-DBOARD_DEFAULT_WIFI_SSID=...` and the rest) are listed 
 
 The USB serial console (115200 baud, prompt `vend> `; the MDB board uses `mdb> ` and NVS namespace `mdb`) persists settings to NVS: `set <key> <value>`,
 `show` (secrets masked), `erase`, `reboot`. Keys: `wifi_ssid`, `wifi_pass`, `mqtt_host`, `mqtt_port`,
-`mqtt_user`, `mqtt_pass`, `machine_id`, `use_eth`, `polarity`. A change applies after `reboot`.
+`mqtt_user`, `mqtt_pass`, `machine_id`, and on the vending board only `use_eth` and `polarity` (the MDB
+board has neither). Values containing spaces or quotes are quoted: `set wifi_ssid "my net"`. A change
+applies after `reboot`. On the MDB board the console is the DevKitC's native USB port (USB Serial/JTAG).
 
 ## Conformance suite
 

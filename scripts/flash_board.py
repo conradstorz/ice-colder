@@ -182,6 +182,32 @@ def load_provisioning(path: Path) -> dict[str, str]:
     return out
 
 
+def quote_console_arg(value: str) -> str:
+    """Quote ``value`` for the board's ``esp_console_split_argv``: double quotes around it, with
+    backslash and double quote escaped by a backslash (so spaces and empty values survive)."""
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def set_reply_ok(reply: str) -> bool:
+    """A ``set`` reply that confirms the value was stored (``saved; reboot to apply``)."""
+    return "saved" in reply and "rejected" not in reply and "usage" not in reply
+
+
+def show_reply_ok(reply: str) -> bool:
+    """A ``show`` reply that really is the settings listing, not just a bare prompt."""
+    return "machine_id" in reply
+
+
+def no_board_exit(opts: Options) -> int:
+    """Exit code when no board is attached: a plain flash has nothing to do (0), but a request to
+    verify or provision a board that is not there did not succeed (1)."""
+    return (
+        EXIT_UNVERIFIED
+        if opts.verify_only or opts.provision is not None
+        else EXIT_VERIFIED
+    )
+
+
 def mask_secret(key: str, value: str) -> str:
     return "***" if key in SECRET_KEYS else value
 
@@ -364,10 +390,14 @@ def verify(port: str, target: Target, timeout_s: float = 15.0) -> bool:
                 file=sys.stderr,
             )
             return False
+        ser.reset_input_buffer()  # boot chatter must not pass for the answer
         ser.write(b"\r\nshow\r\n")
         shown = _read_until(ser, target.prompt, 5.0)
-        if target.prompt not in shown:
-            print(f"console on {port} did not answer `show`", file=sys.stderr)
+        if target.prompt not in shown or not show_reply_ok(shown):
+            print(
+                f"console on {port} did not answer `show` with its settings",
+                file=sys.stderr,
+            )
             return False
     print(f"verified {target.name} {got} on {port}")
     return True
@@ -382,10 +412,14 @@ def provision(port: str, target: Target, values: dict[str, str]) -> bool:
         _read_until(ser, target.prompt, 3.0)
         for key, value in values.items():
             print(f"set {key} {mask_secret(key, value)}")
-            ser.write(f"set {key} {value}\r\n".encode())
+            ser.reset_input_buffer()
+            ser.write(f"set {key} {quote_console_arg(value)}\r\n".encode())
             reply = _read_until(ser, target.prompt, 5.0)
             if target.prompt not in reply:
                 print(f"no prompt after setting {key}", file=sys.stderr)
+                return False
+            if not set_reply_ok(reply):
+                print(f"the board did not accept {key}", file=sys.stderr)
                 return False
         print("reboot")
         ser.write(b"reboot\r\n")
@@ -463,7 +497,7 @@ def main(argv: list[str] | None = None) -> int:
         elif step == "detect":
             port, rc = _select_port(opts)
             if port is None:
-                return rc
+                return no_board_exit(opts) if rc == EXIT_VERIFIED else rc
         elif step == "upload":
             assert port is not None
             upload_ok, port = upload_with_retry(target, port)

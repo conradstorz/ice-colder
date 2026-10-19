@@ -1283,18 +1283,22 @@ static void test_payout_b_while_a_result_is_held_is_busy_and_a_retry_still_accep
     TEST_ASSERT_EQUAL_UINT32(85, r.acc.escrow_cents());
 }
 
-static void test_self_test_event_queue_fails_after_a_driver_dropped_events(void) {
+static void test_payout_and_vend_are_rejected_until_a_policy_was_acked(void) {
     Rig r;
     r.bring_up();
-    r.set_policy();
-    char session[65];
-    snprintf(session, sizeof(session), "%s", r.tap_session());
-    r.sink.capacity = r.sink.n;  // a refusing sink: each price_scale denial stays queued in the reader driver
-    for (int i = 0; i < 20; ++i) r.vend(33, session, "vend-0000046");
-    Ack a;
-    r.m.self_test(a);
-    TEST_ASSERT_NOT_NULL(strstr(a.result_json, "\"name\":\"event_queue\",\"pass\":false"));
-    TEST_ASSERT_NULL(strstr(a.result_json, "\"detail\":\"0 dropped\""));
+    r.steps(4);
+    Ack p = r.payout(15, "pay-0000001");
+    TEST_ASSERT_EQUAL(AckStatus::Rejected, p.status);
+    TEST_ASSERT_EQUAL_STRING("no_policy", p.detail);
+    r.rdr.tap(200);
+    r.steps(2);
+    Ack v = r.vend(25, nullptr, "vend-0000099");
+    TEST_ASSERT_EQUAL(AckStatus::Rejected, v.status);
+    TEST_ASSERT_EQUAL_STRING("no_policy", v.detail);
+    TEST_ASSERT_EQUAL(AckStatus::Ok, r.set_policy().status);
+    p = r.payout(15, "pay-0000001");
+    TEST_ASSERT_EQUAL(AckStatus::Ok, p.status);
+    TEST_ASSERT_EQUAL(Phase::Accepted, p.phase);
 }
 
 static void test_self_test_shape(void) {
@@ -1472,7 +1476,7 @@ int main(int, char**) {
     RUN_TEST(test_reader_nak_of_vend_success_is_a_failed_ack_and_the_chain_continues);
     RUN_TEST(test_return_escrow_with_a_silent_validator_is_queued);
     RUN_TEST(test_payout_b_while_a_result_is_held_is_busy_and_a_retry_still_accepted);
-    RUN_TEST(test_self_test_event_queue_fails_after_a_driver_dropped_events);
+    RUN_TEST(test_payout_and_vend_are_rejected_until_a_policy_was_acked);
     RUN_TEST(test_self_test_shape);
     return UNITY_END();
 }

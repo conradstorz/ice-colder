@@ -1,4 +1,5 @@
 #include "changer.h"
+#include "text.h"
 
 #include <string.h>
 
@@ -18,14 +19,6 @@ void copy_str(char* dst, size_t cap, const char* src) {
     dst[i] = '\0';
 }
 
-// Copies a space/NUL padded fixed-width field, trimming the padding.
-void copy_field(char* dst, size_t cap, const uint8_t* src, size_t n) {
-    size_t len = n < cap - 1 ? n : cap - 1;
-    while (len > 0 && (src[len - 1] == ' ' || src[len - 1] == 0)) --len;
-    memcpy(dst, src, len);
-    dst[len] = '\0';
-}
-
 int status_rank(Status s) {
     return s == Status::Offline ? 4 : s == Status::Jammed ? 3 : s == Status::Error ? 2 : 1;
 }
@@ -34,6 +27,7 @@ int status_rank(Status s) {
 
 Changer::Changer(Link& link, Clock& clock, EventSink& sink) : link_(link), clock_(clock), sink_(sink) {
     state_.present = false;
+    state_.was_present = false;
     state_.status = Status::Offline;
 }
 
@@ -223,6 +217,7 @@ void Changer::do_setup() {
     refilter();  // a policy received before SETUP now has denominations to be checked against
     state_.level = static_cast<int8_t>(level >= 3 ? 3 : level);
     state_.present = true;
+    state_.was_present = true;
     alt_payout_ = false;
     rebuild_tubes();
     phase_ = level >= 3 ? Phase::Identify : Phase::TubeStatus;
@@ -302,6 +297,8 @@ void Changer::do_coin_type() {
 }
 
 void Changer::do_poll() {
+    poll_clean_ = false;
+    poll_busy_ = false;
     Response r = link_.transact(kAddr, kCmdPoll, nullptr, 0);
     if (r.kind == Reply::Timeout || r.kind == Reply::Corrupt) {
         note_miss();
@@ -309,6 +306,7 @@ void Changer::do_poll() {
     }
     offline_reported_ = false;
     if (r.kind == Reply::Nak) return;
+    poll_clean_ = true;
     const bool swallow = swallow_reset_;
     swallow_reset_ = false;
     if (r.kind == Reply::Ack) {
@@ -344,6 +342,9 @@ void Changer::do_poll() {
                     lever_ = true;
                     continue;
                 case 0x02:
+                    poll_busy_ = true;
+                    s = Status::Busy;
+                    break;
                 case 0x0A:
                     s = Status::Busy;
                     break;
@@ -513,11 +514,20 @@ void Changer::do_payout() {
                 payout_.acked = true;
                 payout_.working[t] = static_cast<uint16_t>(payout_.working[t] - n);
                 payout_.remaining -= n * type_cents(t);
+                payout_.start_ms = clock_.now_ms();  // the timeout is per chunk
             } else {
-                payout_.step = PayStep::L2Refresh;
+                payout_.l2_finish = true;
             }
+            // The changer keeps the coins moving after it ACKed: wait until it stops reporting
+            // payout busy before the next DISPENSE or the TUBE STATUS that measures what was paid.
+            payout_.step = PayStep::L2Wait;
             return;
         }
+        case PayStep::L2Wait:
+            do_poll();
+            if (!payout_.active || !poll_clean_ || poll_busy_) return;  // interrupted, retry, or still busy
+            payout_.step = payout_.l2_finish ? PayStep::L2Refresh : PayStep::L2Dispense;
+            return;
         case PayStep::L2Refresh:
             return do_tube_status();
     }

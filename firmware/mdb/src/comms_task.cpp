@@ -38,6 +38,8 @@ constexpr uint32_t kRetryLogMs = 10000;
 constexpr uint32_t kInflightMaxAgeS = 120;
 constexpr uint32_t kReplayRequestMinS = 5;
 constexpr int kHaCount = 6;
+constexpr int kAckSlots = 4;
+constexpr int kRxDepth = 8;
 
 struct RxItem {
     char topic[96];
@@ -45,8 +47,19 @@ struct RxItem {
     uint16_t len;
 };
 
+// payment/event/ack is cumulative per boot_id, so a burst (an old-boot backlog being re-acked during
+// a replay) collapses to one pending value per boot: the MQTT callback keeps the maximum seq per
+// boot_id here, and the comms loop drains it into ack_in_q. An ack storm therefore can neither
+// overflow rx_q (acks never enter it) nor wedge the command path behind them.
+struct AckSlot {
+    bool used;
+    char boot_id[33];
+    uint32_t seq;
+};
+
 struct Comms {
     Queues q;
+    AckSlot acks[kAckSlots] = {};
     QueueHandle_t rx_q;
     Settings settings;
     AckCache cache;
@@ -79,6 +92,7 @@ struct Comms {
     char t_cmd[96], t_ack[96], t_evt_ack[96];
 };
 Comms g;
+portMUX_TYPE g_ack_mux = portMUX_INITIALIZER_UNLOCKED;
 
 uint32_t uptime_s() { return static_cast<uint32_t>(esp_timer_get_time() / 1000000); }
 
@@ -152,7 +166,55 @@ void flush_ring() {
     }
 }
 
+// Keeps the highest seq per boot_id. A fifth boot evicts the slot holding the lowest seq (the least
+// information: acks are cumulative, and the edge re-acks on the next replay). Short critical section.
+void coalesce_ack(const char* boot_id, uint32_t seq) {
+    portENTER_CRITICAL(&g_ack_mux);
+    int hit = -1, free_slot = -1, lowest = 0;
+    for (int i = 0; i < kAckSlots; ++i) {
+        if (!g.acks[i].used) {
+            if (free_slot < 0) free_slot = i;
+            continue;
+        }
+        if (strcmp(g.acks[i].boot_id, boot_id) == 0) hit = i;
+        if (g.acks[i].seq < g.acks[lowest].seq || !g.acks[lowest].used) lowest = i;
+    }
+    if (hit >= 0) {
+        if (seq > g.acks[hit].seq) g.acks[hit].seq = seq;
+    } else {
+        const int slot = free_slot >= 0 ? free_slot : lowest;
+        g.acks[slot].used = true;
+        memcpy(g.acks[slot].boot_id, boot_id, strlen(boot_id) + 1);
+        g.acks[slot].seq = seq;
+    }
+    portEXIT_CRITICAL(&g_ack_mux);
+}
+
+// Comms loop: moves the coalesced acks to the ledger. One that the ledger queue refuses goes back
+// into the table (merged with anything newer) and is retried on the next pass.
+void drain_acks() {
+    for (int i = 0; i < kAckSlots; ++i) {
+        EventAckItem item;
+        bool have = false;
+        portENTER_CRITICAL(&g_ack_mux);
+        if (g.acks[i].used) {
+            memcpy(item.boot_id, g.acks[i].boot_id, sizeof(item.boot_id));
+            item.seq = g.acks[i].seq;
+            g.acks[i].used = false;
+            have = true;
+        }
+        portEXIT_CRITICAL(&g_ack_mux);
+        if (have && xQueueSend(g.q.ack_in_q, &item, 0) != pdTRUE) coalesce_ack(item.boot_id, item.seq);
+    }
+}
+
 void on_message(const char* topic, size_t tl, const char* data, size_t dl) {  // MQTT client task
+    if (tl == strlen(g.t_evt_ack) && memcmp(topic, g.t_evt_ack, tl) == 0) {
+        char boot_id[33];
+        uint32_t seq;
+        if (decode_event_ack(data, dl, boot_id, seq)) coalesce_ack(boot_id, seq);
+        return;  // malformed acks are ignored: the edge re-acks on the next replay
+    }
     static RxItem item;
     if (tl >= sizeof(item.topic) || dl >= sizeof(item.data)) {
         g.rx_dropped.fetch_add(1);
@@ -259,15 +321,6 @@ void handle_command(const RxItem& rx) {
         g.ha_zero_logged = -1;
         publish_heartbeat();
     }
-}
-
-void handle_event_ack(const RxItem& rx) {
-    static EventAckItem ack;
-    if (!decode_event_ack(rx.data, rx.len, ack.boot_id, ack.seq)) {
-        ESP_LOGW(TAG, "malformed payment/event/ack ignored");
-        return;
-    }
-    if (xQueueSend(g.q.ack_in_q, &ack, 0) != pdTRUE) ESP_LOGW(TAG, "event ack queue full; ack %u lost, the edge re-acks on replay", static_cast<unsigned>(ack.seq));
 }
 
 // One Home Assistant discovery entity. Returns bytes written to payload, 0 on overflow.
@@ -437,8 +490,8 @@ void comms_main(void*) {
         }
         while (xQueueReceive(g.rx_q, &rx, 0) == pdTRUE) {
             if (strcmp(rx.topic, g.t_cmd) == 0) handle_command(rx);
-            else if (strcmp(rx.topic, g.t_evt_ack) == 0) handle_event_ack(rx);
         }
+        drain_acks();
         if (mqtt_take_connected_edge()) {
             on_connect();
             last_hb = uptime_s();
@@ -479,7 +532,7 @@ void comms_main(void*) {
 
 void start_comms(const Queues& q, const BoardIdentity& id, const Settings& settings) {
     g.q = q;
-    g.rx_q = xQueueCreate(3, sizeof(RxItem));
+    g.rx_q = xQueueCreate(kRxDepth, sizeof(RxItem));
     g.settings = settings;
     WireCtx ctx;
     ctx.machine_id = g.settings.machine_id;

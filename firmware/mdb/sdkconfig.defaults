@@ -1,4 +1,8 @@
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+# The console is the S3 DevKitC's native USB port (USB Serial/JTAG, VID 303A), where the flash tool
+# looks for the board; UART0 stays free of the console.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+# CONFIG_ESP_CONSOLE_UART_DEFAULT is not set
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_ESP_TASK_WDT_EN=y

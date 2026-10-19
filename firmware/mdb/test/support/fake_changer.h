@@ -19,6 +19,8 @@ struct FakeChanger : FakePeripheral {
     bool alt_payout = true;  // advertised in IDENTIFICATION
     int busy_polls = 0;      // PAYOUT STATUS ACKs (still busy) before the 16-byte reply
     bool fail_payout = false;
+    bool high_bit_model = false;  // IDENTIFICATION model starts with two bytes >= 0x80
+    int dispense_busy_polls = 0;  // level 2: POLLs reporting 0x02 (payout busy) before a DISPENSE settles in the tubes
     bool fail_coin_type = false;  // NAK every COIN TYPE
     uint8_t value_poll_cap_units = 255;  // PAYOUT VALUE POLL reports at most this many units
     bool silent = false;     // answer nothing at all
@@ -42,6 +44,8 @@ struct FakeChanger : FakePeripheral {
     int calls[8] = {};
 
     bool payout_pending = false;
+    int busy_left = 0;
+    uint8_t settling[16] = {};  // coins a DISPENSE took that are not yet reflected in `tubes`
     uint8_t paid_types[16] = {};
     int status_polls = 0;
 
@@ -133,6 +137,15 @@ struct FakeChanger : FakePeripheral {
                 return data(out, 18);
             }
             case 3: {
+                if (busy_left > 0) {
+                    if (--busy_left == 0)
+                        for (int t = 0; t < 16; ++t) {
+                            tubes[t] = static_cast<uint8_t>(tubes[t] - settling[t]);
+                            settling[t] = 0;
+                        }
+                    const uint8_t busy = 0x02;
+                    return data(&busy, 1);
+                }
                 if (head < n_blk) {
                     const int i = head++;
                     return data(blk[i], blk_len[i]);
@@ -152,8 +165,13 @@ struct FakeChanger : FakePeripheral {
                 uint8_t cnt = d[0] >> 4;
                 while (cnt > 0 && tubes[t] > 0) {
                     --tubes[t];
+                    if (dispense_busy_polls > 0) {
+                        ++tubes[t];  // keep showing the old count until the busy window ends
+                        ++settling[t];
+                    }
                     --cnt;
                 }
+                if (dispense_busy_polls > 0) busy_left = dispense_busy_polls;
                 return ack();
             }
             case 7:
@@ -168,6 +186,10 @@ struct FakeChanger : FakePeripheral {
                 memcpy(out, "KLR", 3);
                 memcpy(out + 3, "SER000000042", 12);
                 memcpy(out + 15, "FAKECHG-3   ", 12);
+                if (high_bit_model) {
+                    out[15] = 0xC3;
+                    out[16] = 0xA9;
+                }
                 out[27] = 1;
                 out[28] = 0;
                 out[29] = out[30] = out[31] = 0;

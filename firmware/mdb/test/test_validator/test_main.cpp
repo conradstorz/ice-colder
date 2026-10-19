@@ -298,6 +298,7 @@ static void test_miss_threshold_goes_offline_then_recovers(void) {
     TEST_ASSERT_EQUAL_INT(1, r.sink.count(EventKind::DeviceStatus));
     TEST_ASSERT_EQUAL(Status::Offline, r.sink.ev[0].status);
     TEST_ASSERT_FALSE(r.v.state().present);
+    TEST_ASSERT_TRUE(r.v.state().was_present);
     TEST_ASSERT_EQUAL(Validator::Phase::Reset, r.v.phase());
 
     const int before = r.bus.tx_len;

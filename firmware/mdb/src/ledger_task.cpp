@@ -1,3 +1,12 @@
+// Ledger task: owns the replay log (spec section 6). Appends bus events to flash, hands them to
+// comms in order, erases them when the edge acks them, and publishes payment/state.
+//
+// Stalled-log replay: acks normally arrive on their own, but one lost for good (the edge never saw
+// the event, or its ack never reached us) would leave entries pending forever, and the log pressure
+// that follows would keep cash acceptance inhibited. So while connected, if events are pending and
+// nothing has been erased for kStallReplayMs, the ledger asks for a full replay (the same request a
+// reconnect makes), at most once per kStallReplayMs. A replay can duplicate events the edge already
+// has; the edge dedupes on (boot_id, seq), and its re-ack is what finally clears the log.
 #include "ledger_task.h"
 
 #include <stdio.h>
@@ -6,6 +15,7 @@
 
 #include <atomic>
 
+#include "boardidf/mqtt_publisher.h"
 #include "boardidf/net.h"
 #include "esp_ids.h"
 #include "esp_log.h"
@@ -25,6 +35,7 @@ constexpr uint32_t kStatsLogMs = 60000;
 constexpr uint32_t kPayoutsRetryMs = 500;
 constexpr int kAppendsPerPass = 8;
 constexpr int kSweepKeysPerStep = 2;
+constexpr uint32_t kStallReplayMs = 30000;
 
 Queues g_q;
 NvsLogStore g_store;
@@ -69,6 +80,7 @@ bool g_state_dirty = false;
 uint32_t g_last_err_log_ms = 0;
 bool g_err_logged = false;
 uint32_t g_last_stats_ms = 0;
+uint32_t g_stall_since_ms = 0;  // last erase, last stall replay, or the last time there was nothing to wait for
 
 uint32_t now_ms() { return static_cast<uint32_t>(xTaskGetTickCount() * portTICK_PERIOD_MS); }
 
@@ -123,6 +135,7 @@ void handle_acks() {
         const int before = g_log.pending();
         g_log.acked(a.boot_id, a.seq);
         const int erased = before - g_log.pending();
+        if (erased > 0) g_stall_since_ms = now_ms();
         if (g_replay_next >= 0) g_replay_next = g_replay_next > erased ? g_replay_next - erased : 0;
     }
 }
@@ -133,6 +146,20 @@ void sweep_blobs() {
     FlashWindow w;
     if (!w.open()) return;
     while (w.budget() && g_store.sweep_pending() > 0) g_store.sweep_step(kSweepKeysPerStep);
+}
+
+// See the file header: a log that stops draining while connected is replayed, once per window.
+void check_stalled_log() {
+    const uint32_t now = now_ms();
+    if (!mqtt_connected() || g_log.pending() == 0 || g_replay_next >= 0 || g_connect_edge.load()) {
+        g_stall_since_ms = now;  // nothing to wait on, or a replay is already under way
+        return;
+    }
+    if (now - g_stall_since_ms < kStallReplayMs) return;
+    g_stall_since_ms = now;
+    ESP_LOGW(TAG, "%d events pending with no ack for %u s; requesting a replay", g_log.pending(),
+             static_cast<unsigned>(kStallReplayMs / 1000));
+    ledger_connected();
 }
 
 void run_replay() {
@@ -239,7 +266,7 @@ void handle_state() {
         g_have_state = true;
         g_state_dirty = true;
         bool offline = false;
-        for (const DeviceState& d : g_last.state.devices) offline = offline || (d.present && d.status == Status::Offline);
+        for (const DeviceState& d : g_last.state.devices) offline = offline || (d.was_present && d.status == Status::Offline);
         status_led_set_state(g_last.state.inhibited == Inhibit::None, offline);
         if (g_last.payouts_len > 0 &&
             (g_last.payouts_len != g_payouts_saved_len || memcmp(g_last.payouts, g_payouts_saved, g_last.payouts_len) != 0))
@@ -274,6 +301,7 @@ void ledger_main(void*) {
             g_state_dirty = true;
         }
         handle_acks();
+        check_stalled_log();
         sweep_blobs();
         update_pressure();
         run_replay();

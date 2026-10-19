@@ -140,6 +140,22 @@ static void test_set_policy_bounds(void) {
 #undef POL
 }
 
+static void test_sale_and_session_ids_are_capped_at_64(void) {
+    char id64[65], id65[66], j[320];
+    memset(id64, 'a', 64);
+    id64[64] = '\0';
+    memset(id65, 'a', 65);
+    id65[65] = '\0';
+    snprintf(j, sizeof(j), "{\"command\":\"payout\"," RID ",\"params\":{\"cents\":5,\"reason\":\"change\",\"sale_id\":\"%s\"}}", id64);
+    TEST_ASSERT_EQUAL(static_cast<int>(Decode::Ok), static_cast<int>(dec(j).result));
+    snprintf(j, sizeof(j), "{\"command\":\"payout\"," RID ",\"params\":{\"cents\":5,\"reason\":\"change\",\"sale_id\":\"%s\"}}", id65);
+    expect_rejected(j, "sale_id");
+    snprintf(j, sizeof(j), "{\"command\":\"vend_request\"," RID ",\"params\":{\"cents\":5,\"item\":\"A1\",\"session_id\":\"%s\"}}", id64);
+    TEST_ASSERT_EQUAL(static_cast<int>(Decode::Ok), static_cast<int>(dec(j).result));
+    snprintf(j, sizeof(j), "{\"command\":\"vend_request\"," RID ",\"params\":{\"cents\":5,\"item\":\"A1\",\"session_id\":\"%s\"}}", id65);
+    expect_rejected(j, "session_id");
+}
+
 static void test_payout(void) {
     const Decoded d = dec("{\"command\":\"payout\"," RID
                           ",\"params\":{\"cents\":75,\"reason\":\"vend_failed\",\"sale_id\":\"s-9\"}}");
@@ -311,12 +327,34 @@ static void test_decode_event_ack(void) {
     }
 }
 
+static void test_decode_event_ack_hand_parser(void) {
+    char b[40];
+    uint32_t seq = 0;
+    const char* ok =
+        " { \"seq\" : 4294967295 , \"extra\":null,\"flag\":true,\"timestamp\":\"x\\\"y\", \"boot_id\" : \"0123456789abcdef\" } ";
+    TEST_ASSERT_TRUE(decode_event_ack(ok, strlen(ok), b, seq));
+    TEST_ASSERT_EQUAL_STRING("0123456789abcdef", b);
+    TEST_ASSERT_EQUAL_UINT32(4294967295u, seq);
+    for (const char* bad : {"{\"boot_id\":\"0123456789abcdef\",\"seq\":4294967296}",
+                            "{\"boot_id\":\"0123456789abcdef\",\"seq\":-3}",
+                            "{\"boot_id\":\"0123456789abcdef\",\"seq\":99999999999999999999}",
+                            "{\"boot_id\":\"0123456789\\u0061bcdef\",\"seq\":1}",
+                            "{\"boot_id\":\"0123456789abcdef\",\"seq\":1,\"n\":{\"a\":1}}",
+                            "{\"boot_id\":\"0123456789abcdef\",\"seq\":1",
+                            "{\"boot_id\":\"0123456789abcdef\",\"seq\":}",
+                            "{\"boot_id\":12345678,\"seq\":1}", ""}) {
+        TEST_ASSERT_FALSE_MESSAGE(decode_event_ack(bad, strlen(bad), b, seq), bad);
+    }
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
+    RUN_TEST(test_decode_event_ack_hand_parser);
     RUN_TEST(test_standard_commands);
     RUN_TEST(test_set_policy);
     RUN_TEST(test_set_policy_max_arrays_fit_the_arena);
     RUN_TEST(test_set_policy_bounds);
+    RUN_TEST(test_sale_and_session_ids_are_capped_at_64);
     RUN_TEST(test_payout);
     RUN_TEST(test_cents_is_integer_only);
     RUN_TEST(test_cash_sale);

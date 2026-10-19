@@ -19,6 +19,7 @@ from scripts.flash_board import (
     SerialPort,
     build_parser,
     candidate_boards,
+    no_board_exit,
     exit_code,
     expected_version,
     find_port_by_serial,
@@ -27,6 +28,10 @@ from scripts.flash_board import (
     parse_banner,
     parse_device_list,
     plan_steps,
+    provision,
+    quote_console_arg,
+    set_reply_ok,
+    show_reply_ok,
 )
 
 REPO = Path(__file__).resolve().parents[2]
@@ -263,3 +268,90 @@ def test_port_busy_detection() -> None:
 
     assert is_port_busy("could not open port COM5: PermissionError(13)")
     assert not is_port_busy("A fatal error occurred: Failed to connect")
+
+
+@pytest.mark.parametrize(
+    ("value", "quoted"),
+    [
+        ("net", '"net"'),
+        ("my wifi", '"my wifi"'),
+        ("", '""'),
+        ('say "hi"', '"say \\"hi\\""'),
+        ("back\\slash", '"back\\\\slash"'),
+        ('\\"', '"\\\\\\""'),
+    ],
+)
+def test_quote_console_arg(value: str, quoted: str) -> None:
+    assert quote_console_arg(value) == quoted
+
+
+def test_set_reply_ok() -> None:
+    assert set_reply_ok("set x\r\nsaved; reboot to apply\r\nmdb> ")
+    assert not set_reply_ok("rejected: unknown key or bad value\r\nmdb> ")
+    assert not set_reply_ok("usage: set <key> <value>\r\nmdb> ")
+    assert not set_reply_ok("mdb> ")
+
+
+def test_show_reply_needs_the_settings_listing() -> None:
+    assert show_reply_ok("machine_id = vm-1\r\nmqtt_port = 1883\r\nmdb> ")
+    assert not show_reply_ok("\r\nmdb> ")
+
+
+def test_no_board_exit_is_unverified_when_asked_to_verify_or_provision() -> None:
+    assert no_board_exit(_opts()) == EXIT_VERIFIED
+    assert no_board_exit(_opts(verify_only=True)) == EXIT_UNVERIFIED
+    assert no_board_exit(_opts(provision=Path("p.toml"))) == EXIT_UNVERIFIED
+
+
+class _FakeSerial:
+    """Answers each console line with a canned reply, ending in the prompt."""
+
+    def __init__(self, replies: dict[str, str], prompt: str = "mdb> ") -> None:
+        self.replies, self.prompt = replies, prompt
+        self.written: list[str] = []
+        self._out = b""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a) -> None:
+        return None
+
+    def reset_input_buffer(self) -> None:
+        self._out = b""
+
+    def write(self, data: bytes) -> None:
+        line = data.decode().strip()
+        self.written.append(line)
+        key = line.split(" ")[1] if line.startswith("set ") else line
+        self._out += self.replies.get(key, self.prompt).encode()
+
+    def read(self, n: int) -> bytes:
+        chunk, self._out = self._out[:n], self._out[n:]
+        return chunk if chunk else b" "
+
+
+def _provision(monkeypatch, fake: _FakeSerial, values: dict[str, str]) -> bool:
+    import scripts.flash_board as fb
+
+    monkeypatch.setattr(fb, "_open_serial", lambda port, timeout: fake)
+    monkeypatch.setattr(fb.time, "sleep", lambda s: None)
+    return provision("COM1", TARGETS["mdb"], values)
+
+
+def test_provision_quotes_values_and_accepts_saved(monkeypatch) -> None:
+    fake = _FakeSerial({"wifi_ssid": "saved; reboot to apply\r\nmdb> "})
+    assert _provision(monkeypatch, fake, {"wifi_ssid": 'my "net"'})
+    assert 'set wifi_ssid "my \\"net\\""' in fake.written
+    assert fake.written[-1] == "reboot"
+
+
+def test_provision_fails_on_rejected_reply_and_never_prints_the_value(
+    monkeypatch, capsys
+) -> None:
+    fake = _FakeSerial({"wifi_pass": "rejected: unknown key or bad value\r\nmdb> "})
+    assert not _provision(monkeypatch, fake, {"wifi_pass": "hunter2hunter2"})
+    out = capsys.readouterr()
+    assert "wifi_pass" in out.err
+    assert "hunter2" not in out.out + out.err
+    assert "reboot" not in fake.written

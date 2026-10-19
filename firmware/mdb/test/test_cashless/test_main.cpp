@@ -352,17 +352,32 @@ static void test_cash_sale(void) {
     TEST_ASSERT_EQUAL_INT(1, r.dev.n_vends);
 }
 
-static void test_price_scale_denied_locally(void) {
+static void test_price_scale_refused_without_event(void) {
     Rig r;
     r.bring_up();
     r.dev.tap(200);
     r.steps(1);
-    TEST_ASSERT_TRUE(r.c.vend_request(152, 3, "bad-1"));
-    TEST_ASSERT_EQUAL(EventKind::VendDenied, r.sink.ev[1].kind);
-    TEST_ASSERT_EQUAL_STRING("price_scale", r.sink.ev[1].detail);
-    TEST_ASSERT_EQUAL_STRING("bad-1", r.sink.ev[1].request_id);
+    const int before = r.sink.n;
+    TEST_ASSERT_FALSE(r.c.price_fits(152));
+    TEST_ASSERT_FALSE(r.c.vend_request(152, 3, "bad-1"));  // the Master acks `rejected price_scale`
     r.steps(2);
+    TEST_ASSERT_EQUAL_INT(before, r.sink.n);  // no VendDenied: it could carry a stale session id
     TEST_ASSERT_EQUAL_INT(0, r.dev.n_vends);  // never reached the bus
+}
+
+static void test_reader_reset_clears_always_idle(void) {
+    Rig r;
+    r.dev.level = 3;
+    r.dev.offer_always_idle = true;
+    r.c.set_always_idle_wanted(true);
+    r.bring_up();
+    TEST_ASSERT_TRUE(r.c.always_idle());
+    r.dev.offer_always_idle = false;  // after its own reset the reader no longer offers the feature
+    r.dev.just_reset();
+    r.steps(30);
+    TEST_ASSERT_EQUAL(Cashless::Phase::Polling, r.c.phase());
+    TEST_ASSERT_FALSE(r.c.always_idle());
+    TEST_ASSERT_FALSE(r.c.vend_request(150, 3, "idle-2"));  // no session, no always-idle: refused
 }
 
 static void test_disable_and_enable(void) {
@@ -431,6 +446,7 @@ static void test_miss_threshold_goes_offline_then_recovers(void) {
     r.steps(12);
     TEST_ASSERT_EQUAL(Status::Offline, r.c.state().status);
     TEST_ASSERT_FALSE(r.c.state().present);
+    TEST_ASSERT_TRUE(r.c.state().was_present);
     TEST_ASSERT_EQUAL_INT(1, r.sink.count(EventKind::DeviceStatus));
     r.dev.silent = false;
     r.clock.advance_ms(1100);
@@ -485,7 +501,8 @@ int main(int, char**) {
     RUN_TEST(test_always_idle_not_wanted);
     RUN_TEST(test_always_idle_not_offered);
     RUN_TEST(test_cash_sale);
-    RUN_TEST(test_price_scale_denied_locally);
+    RUN_TEST(test_price_scale_refused_without_event);
+    RUN_TEST(test_reader_reset_clears_always_idle);
     RUN_TEST(test_disable_and_enable);
     RUN_TEST(test_out_of_sequence_re_resets);
     RUN_TEST(test_malfunction_reports_code);

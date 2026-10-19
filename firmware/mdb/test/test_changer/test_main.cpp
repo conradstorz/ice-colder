@@ -296,7 +296,7 @@ static void test_l2_dispense_greedy_choice(void) {
     r.dev.level = 2;
     r.bring_up();
     TEST_ASSERT_TRUE(r.ch.request_payout(65, "req-00000006"));
-    r.steps(10);
+    r.steps(20);
     TEST_ASSERT_EQUAL_INT(3, r.dev.n_disp);
     TEST_ASSERT_EQUAL_HEX8(0x22, r.dev.dispenses[0]);  // 2 quarters
     TEST_ASSERT_EQUAL_HEX8(0x11, r.dev.dispenses[1]);  // 1 dime
@@ -307,13 +307,35 @@ static void test_l2_dispense_greedy_choice(void) {
     TEST_ASSERT_EQUAL_UINT32(65, e->paid_cents);
 }
 
+static void test_identification_text_is_ascii_only(void) {
+    Rig r;
+    r.dev.high_bit_model = true;
+    r.bring_up();
+    TEST_ASSERT_EQUAL_STRING("??KECHG-3", r.ch.state().model);  // bytes >= 0x80 never reach the JSON
+    TEST_ASSERT_EQUAL_STRING("SER000000042", r.ch.state().serial);
+}
+
+static void test_l2_payout_waits_out_changer_busy(void) {
+    Rig r;
+    r.dev.level = 2;
+    r.dev.dispense_busy_polls = 3;  // tube counts only settle after 3 POLLs reporting 0x02
+    r.bring_up();
+    TEST_ASSERT_TRUE(r.ch.request_payout(65, "req-00000020"));
+    r.steps(40);
+    TEST_ASSERT_EQUAL_INT(3, r.dev.n_disp);
+    const PaymentEvent* e = r.sink.first(EventKind::PayoutResult);
+    TEST_ASSERT_NOT_NULL(e);
+    TEST_ASSERT_EQUAL(PayoutStatus::Ok, e->payout_status);
+    TEST_ASSERT_EQUAL_UINT32(65, e->paid_cents);  // exact even though the fake is slow
+}
+
 static void test_l2_dispense_caps_at_15_per_command(void) {
     Rig r;
     r.dev.level = 2;
     r.dev.tubes[2] = 20;
     r.bring_up();
     TEST_ASSERT_TRUE(r.ch.request_payout(400, "req-00000007"));  // 16 quarters
-    r.steps(10);
+    r.steps(20);
     TEST_ASSERT_EQUAL_INT(2, r.dev.n_disp);
     TEST_ASSERT_EQUAL_HEX8(0xF2, r.dev.dispenses[0]);
     TEST_ASSERT_EQUAL_HEX8(0x12, r.dev.dispenses[1]);
@@ -442,6 +464,15 @@ static void test_request_payout_refused_while_running_or_offline(void) {
     TEST_ASSERT_FALSE(o.ch.request_payout(10, "req-0000000d"));
 }
 
+static void test_never_present_device_is_not_was_present(void) {
+    Rig r;
+    r.dev.silent = true;
+    r.ch.reset();
+    r.steps(kMissThreshold + 3);
+    TEST_ASSERT_FALSE(r.ch.state().present);
+    TEST_ASSERT_FALSE(r.ch.state().was_present);  // no changer fitted: the LED never lights red
+}
+
 static void test_miss_threshold_goes_offline_then_recovers(void) {
     Rig r;
     r.bring_up();
@@ -452,6 +483,7 @@ static void test_miss_threshold_goes_offline_then_recovers(void) {
     TEST_ASSERT_EQUAL_INT(1, r.sink.count(EventKind::DeviceStatus));
     TEST_ASSERT_EQUAL(Status::Offline, r.sink.ev[0].status);
     TEST_ASSERT_FALSE(r.ch.state().present);
+    TEST_ASSERT_TRUE(r.ch.state().was_present);  // it had answered: the LED goes red
     TEST_ASSERT_EQUAL(Changer::Phase::Reset, r.ch.phase());
 
     const int before = r.bus.tx_len;
@@ -653,6 +685,8 @@ int main(int, char**) {
     RUN_TEST(test_l3_payout_nak_is_failed);
     RUN_TEST(test_l3_without_alt_payout_uses_dispense);
     RUN_TEST(test_l2_dispense_greedy_choice);
+    RUN_TEST(test_identification_text_is_ascii_only);
+    RUN_TEST(test_l2_payout_waits_out_changer_busy);
     RUN_TEST(test_l2_dispense_caps_at_15_per_command);
     RUN_TEST(test_l2_partial_when_short);
     RUN_TEST(test_l2_failed_when_no_coin_fits);
@@ -662,6 +696,7 @@ int main(int, char**) {
     RUN_TEST(test_l3_payout_timeout_restarts_for_every_chunk);
     RUN_TEST(test_enabled_never_exceeds_denominations);
     RUN_TEST(test_request_payout_refused_while_running_or_offline);
+    RUN_TEST(test_never_present_device_is_not_was_present);
     RUN_TEST(test_miss_threshold_goes_offline_then_recovers);
     RUN_TEST(test_set_enabled_sends_mask);
     RUN_TEST(test_money_event_survives_full_sink);

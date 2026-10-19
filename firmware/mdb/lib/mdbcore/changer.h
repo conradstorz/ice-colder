@@ -46,12 +46,13 @@ private:
     static constexpr uint32_t kPayoutTimeoutMs = 30000;
     static constexpr uint8_t kPending = 16;
 
-    enum class PayStep : uint8_t { L3Send, L3Value, L3Status, L2Dispense, L2Refresh };
+    enum class PayStep : uint8_t { L3Send, L3Value, L3Status, L2Dispense, L2Wait, L2Refresh };
 
     struct Payout {
         bool active;
         bool acked;
         bool level3;
+        bool l2_finish;  // level 2: a DISPENSE was refused, so after the busy wait only the TUBE STATUS remains
         PayStep step;
         uint32_t requested;
         uint32_t target;       // cents the changer can express (requested floored to the scaling)
@@ -74,6 +75,10 @@ private:
     void do_tube_status();
     void do_coin_type();
     void do_poll();
+    // Set by the last do_poll(): the reply was a real answer (not a miss/NAK), and it carried 0x02
+    // (changer payout busy). Level 2 payouts wait on these before trusting the tube counts.
+    bool poll_clean_ = false;
+    bool poll_busy_ = false;
     void do_payout();
     void note_miss();
     bool parse_tube_response(const Response& r);

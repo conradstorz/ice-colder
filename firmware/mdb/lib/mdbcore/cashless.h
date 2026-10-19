@@ -26,8 +26,9 @@ public:
     // True with the open session's id (16 hex + NUL, so out needs 17 bytes). funds_cents is 0 when unknown.
     bool session_open(char* session_id_out, bool& funds_known, uint32_t& funds_cents) const;
     // False unless a session is open (or always-idle is active) and no other vend step is outstanding.
-    // A price that is not a multiple of the reader's scale factor is answered locally with a
-    // VendDenied{"price_scale"} event (returns true; nothing is sent on the bus).
+    // A price that is not a multiple of the reader's scale factor returns false WITHOUT emitting
+    // any event (see price_fits); the Master acks `rejected price_scale`.
+    bool price_fits(uint32_t cents) const;  // multiple of the scale factor and within 16 bits
     bool vend_request(uint32_t cents, uint16_t item, const char* request_id);
     bool vend_result(bool success, uint16_t item);  // false unless a vend is approved and open
     bool end_session();                             // false when no session is open or a vend step is outstanding

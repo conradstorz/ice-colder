@@ -1,4 +1,5 @@
 #include "validator.h"
+#include "text.h"
 
 #include <string.h>
 
@@ -17,13 +18,6 @@ void copy_str(char* dst, size_t cap, const char* src) {
     dst[i] = '\0';
 }
 
-void copy_field(char* dst, size_t cap, const uint8_t* src, size_t n) {
-    size_t len = n < cap - 1 ? n : cap - 1;
-    while (len > 0 && (src[len - 1] == ' ' || src[len - 1] == 0)) --len;
-    memcpy(dst, src, len);
-    dst[len] = '\0';
-}
-
 int status_rank(Status s) {
     return s == Status::Offline ? 4 : s == Status::Jammed ? 3 : s == Status::Error ? 2 : 1;
 }
@@ -33,6 +27,7 @@ int status_rank(Status s) {
 Validator::Validator(Link& link, Clock& clock, EventSink& sink, EscrowJudge& judge)
     : link_(link), clock_(clock), sink_(sink), judge_(judge) {
     state_.present = false;
+    state_.was_present = false;
     state_.status = Status::Offline;
 }
 
@@ -224,6 +219,7 @@ void Validator::do_setup() {
     refilter();  // a policy received before SETUP now has denominations to be checked against
     state_.level = static_cast<int8_t>(level >= 2 ? 2 : level);
     state_.present = true;
+    state_.was_present = true;
     no_escrow_reported_ = false;
     phase_ = level >= 2 ? Phase::Identify : Phase::Stacker;
 }

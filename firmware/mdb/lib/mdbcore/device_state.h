@@ -15,6 +15,7 @@ struct TubeLevel {
 
 struct DeviceState {
     bool present;
+    bool was_present;  // answered at least once since boot: Offline now means it went away (LED red)
     Status status;
     int8_t level;  // 0 = null
     char model[13];

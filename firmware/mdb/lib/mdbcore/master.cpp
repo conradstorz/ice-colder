@@ -416,10 +416,13 @@ Ack Master::do_set_policy(const Command& c) {
     return make_ack(c, AckStatus::Failed, failed);
 }
 
-// Payout is neither gated on the policy nor on an inhibit: coins already taken are owed, and
-// after edge silence the edge pays them out before it re-sends set_policy.
+// Payout is not gated on an inhibit or on edge silence: coins already taken are owed, and after
+// edge silence the edge pays them out before it re-sends set_policy. It IS refused until a
+// set_policy has been acked in this boot: a rebooted board has no escrow, and paying an old
+// request before the edge re-establishes policy could repay a payout (spec 4 as built).
 Ack Master::do_payout(const Command& c) {
     if (expired(c)) return make_ack(c, AckStatus::Rejected, "expired");
+    if (!has_policy_) return make_ack(c, AckStatus::Rejected, "no_policy");
     if (c.cents == 0) return make_ack(c, AckStatus::Rejected, "cents");
 
     PaymentEvent stored;
@@ -463,6 +466,7 @@ Ack Master::do_payout(const Command& c) {
 
 Ack Master::do_vend_request(const Command& c) {
     if (expired(c)) return make_ack(c, AckStatus::Rejected, "expired");
+    if (!has_policy_) return make_ack(c, AckStatus::Rejected, "no_policy");
     if (c.cents == 0) return make_ack(c, AckStatus::Rejected, "cents");
     // A vend the reader still holds (pending or approved) owns vend_req_id_. The edge's retry of it is
     // accepted; any other request is busy; neither may touch the in-flight id.
@@ -481,10 +485,10 @@ Ack Master::do_vend_request(const Command& c) {
         return make_ack(c, AckStatus::Rejected, "no_session");  // price-first: the edge waits for a tap
     }
 
+    if (!cashless_.price_fits(c.cents)) return make_ack(c, AckStatus::Rejected, "price_scale");
     denied_seen_ = false;
     denied_detail_[0] = '\0';
-    // The id must be set before the call (a price_scale denial is emitted synchronously), and any
-    // refusal puts the previous one back.
+    // Any refusal puts the previous id back.
     char prev_id[sizeof(vend_req_id_)];
     memcpy(prev_id, vend_req_id_, sizeof(prev_id));
     const uint16_t prev_item = request_item_;

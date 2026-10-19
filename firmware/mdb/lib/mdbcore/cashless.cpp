@@ -1,4 +1,5 @@
 #include "cashless.h"
+#include "text.h"
 
 #include <string.h>
 
@@ -22,18 +23,12 @@ void copy_str(char* dst, size_t cap, const char* src) {
     dst[i] = '\0';
 }
 
-void copy_field(char* dst, size_t cap, const uint8_t* src, size_t n) {
-    size_t len = n < cap - 1 ? n : cap - 1;
-    while (len > 0 && (src[len - 1] == ' ' || src[len - 1] == 0)) --len;
-    memcpy(dst, src, len);
-    dst[len] = '\0';
-}
-
 }  // namespace
 
 Cashless::Cashless(Link& link, Clock& clock, EventSink& sink, IdSource& ids)
     : link_(link), clock_(clock), sink_(sink), ids_(ids) {
     state_.present = false;
+    state_.was_present = false;
     state_.status = Status::Offline;
 }
 
@@ -153,16 +148,16 @@ bool Cashless::session_open(char* session_id_out, bool& funds_known, uint32_t& f
     return true;
 }
 
+bool Cashless::price_fits(uint32_t cents) const {
+    return scale_ != 0 && cents % scale_ == 0 && cents / scale_ <= 0xFFFF;
+}
+
 bool Cashless::vend_request(uint32_t cents, uint16_t item, const char* request_id) {
     if (phase_ != Phase::Polling || !enabled_ || closing_ || action_ != Action::None || vend_ != Vend::None)
         return false;
     if (!session_open_ && !always_idle_active_) return false;
+    if (!price_fits(cents)) return false;  // no event: the Master acks `rejected price_scale`
     copy_str(request_id_, sizeof(request_id_), request_id);
-    if (cents % scale_ != 0 || cents / scale_ > 0xFFFF) {
-        emit_denied("price_scale");
-        flush();
-        return true;
-    }
     if (!session_open_) {
         ids_.fill_hex(session_id_, 16);
         session_id_[16] = '\0';
@@ -309,6 +304,7 @@ void Cashless::do_setup_config() {
     max_response_ms_ = static_cast<uint32_t>(r.data[6]) * 1000;
     state_.level = static_cast<int8_t>(level > 3 ? 3 : level);
     state_.present = true;
+    state_.was_present = true;
     phase_ = Phase::SetupPrices;
 }
 
@@ -536,6 +532,11 @@ void Cashless::do_poll() {
     if (was_reset) {
         update_status(Status::Busy, 0x00, "reader was reset");
         lose_session(SessionEndReason::Reader);
+        // A reset reader forgets the negotiated features: the next SETUP starts again at level 1,
+        // exactly like reset(), so a stale always-idle cannot allow a session-less vend_request.
+        vmc_level_ = 1;
+        always_idle_offered_ = false;
+        always_idle_active_ = false;
         cash_pending_ = false;
         enable_dirty_ = true;
         phase_ = Phase::SetupConfig;

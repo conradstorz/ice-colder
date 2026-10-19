@@ -350,19 +350,110 @@ Decoded decode_command(const char* json, size_t len) {
     return d;
 }
 
+// payment/event/ack is decoded by a small hand parser, not ArduinoJson: it runs in the MQTT client
+// task (no arena shared with decode_command, no blocking, no heap). It accepts one flat object whose
+// values are strings, integers, true/false/null; only boot_id (string, 8-32 chars, no escapes) and
+// seq (integer 1..2^32-1) are used, every other member is skipped. Anything nested is refused.
+namespace {
+
+struct Scan {
+    const char* p;
+    const char* end;
+    void ws() {
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) ++p;
+    }
+    bool eat(char c) {
+        ws();
+        if (p < end && *p == c) {
+            ++p;
+            return true;
+        }
+        return false;
+    }
+    // Reads a string; `out` receives up to cap-1 chars when non-null. `n` is the full length seen,
+    // and `escaped` tells the caller a backslash was present (the fields we use never contain one).
+    bool str(char* out, size_t cap, size_t& n, bool& escaped) {
+        n = 0;
+        escaped = false;
+        if (!eat('"')) return false;
+        while (p < end) {
+            const char c = *p++;
+            if (c == '"') {
+                if (out != nullptr && cap > 0) out[n < cap ? n : cap - 1] = '\0';
+                return true;
+            }
+            if (c == '\\') {
+                escaped = true;
+                if (p >= end) return false;
+                ++p;
+                ++n;
+                continue;
+            }
+            if (out != nullptr && n + 1 < cap) out[n] = c;
+            ++n;
+        }
+        return false;
+    }
+};
+
+}  // namespace
+
 bool decode_event_ack(const char* json, size_t len, char* boot_id, uint32_t& seq) {
-    g_arena.reset();
-    JsonDocument doc(&g_arena);
-    if (deserializeJson(doc, json, len) != DeserializationError::Ok) return false;
-    JsonVariantConst b = doc["boot_id"];
-    JsonVariantConst s = doc["seq"];
-    if (!b.is<const char*>() || !s.is<int64_t>()) return false;
-    const char* bs = b.as<const char*>();
-    const size_t n = strlen(bs);
-    const int64_t sv = s.as<int64_t>();
-    if (n < 8 || n > 32 || sv < 1 || sv > 0xFFFFFFFFll) return false;
-    memcpy(boot_id, bs, n + 1);
-    seq = static_cast<uint32_t>(sv);
+    Scan s{json, json + len};
+    if (!s.eat('{')) return false;
+    char bid[34] = {};
+    size_t bid_n = 0;
+    bool have_bid = false, have_seq = false;
+    int64_t seq_v = 0;
+    for (bool first = true;; first = false) {
+        if (s.eat('}')) break;
+        if (!first && !s.eat(',')) return false;
+        char key[12];
+        size_t kn;
+        bool kesc;
+        if (!s.str(key, sizeof(key), kn, kesc) || kesc || !s.eat(':')) return false;
+        const bool is_bid = kn == 7 && memcmp(key, "boot_id", 7) == 0;
+        const bool is_seq = kn == 3 && memcmp(key, "seq", 3) == 0;
+        s.ws();
+        if (s.p >= s.end) return false;
+        if (*s.p == '"') {
+            size_t n;
+            bool esc;
+            if (!s.str(is_bid ? bid : nullptr, sizeof(bid), n, esc)) return false;
+            if (is_seq) return false;  // a string where an integer is required
+            if (is_bid) {
+                if (esc || n > 32) return false;
+                bid_n = n;
+                have_bid = true;
+            }
+        } else if ((*s.p >= '0' && *s.p <= '9') || *s.p == '-') {
+            const bool neg = *s.p == '-';
+            if (neg) ++s.p;
+            if (s.p >= s.end || *s.p < '0' || *s.p > '9') return false;
+            int64_t v = 0;
+            while (s.p < s.end && *s.p >= '0' && *s.p <= '9') {
+                if (v < (int64_t{1} << 40)) v = v * 10 + (*s.p - '0');
+                ++s.p;
+            }
+            if (s.p < s.end && (*s.p == '.' || *s.p == 'e' || *s.p == 'E')) return false;  // not an integer
+            if (is_bid) return false;
+            if (is_seq) {
+                seq_v = neg ? -v : v;
+                have_seq = true;
+            }
+        } else if (*s.p == 't' || *s.p == 'f' || *s.p == 'n') {
+            const char* lit = *s.p == 't' ? "true" : *s.p == 'f' ? "false" : "null";
+            const size_t ln = strlen(lit);
+            if (static_cast<size_t>(s.end - s.p) < ln || memcmp(s.p, lit, ln) != 0) return false;
+            s.p += ln;
+            if (is_bid || is_seq) return false;
+        } else {
+            return false;  // nested object/array or garbage
+        }
+    }
+    if (!have_bid || !have_seq || bid_n < 8 || seq_v < 1 || seq_v > 0xFFFFFFFFll) return false;
+    memcpy(boot_id, bid, bid_n + 1);
+    seq = static_cast<uint32_t>(seq_v);
     return true;
 }
 

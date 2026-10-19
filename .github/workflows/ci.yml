@@ -117,7 +117,8 @@ jobs:
       - run: pio test -e native
         working-directory: firmware/mdb
       - name: Golden wire files are up to date
-        run: git diff --exit-code -- firmware/vending/test/golden firmware/mdb/test/golden
+        # porcelain, not diff: a newly generated (untracked) golden file must fail the build too
+        run: test -z "$(git status --porcelain -- firmware/vending/test/golden firmware/mdb/test/golden)"
 
   compose-config:
     runs-on: ubuntu-latest
