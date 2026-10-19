@@ -8,7 +8,7 @@ import pytest
 
 from ice_ui.bundle import INSTALLED_ROOT, build_bundle
 from tests.cloud.conftest import push, select
-from tests.cloud.reports import make_report
+from tests.cloud.reports import FP, make_report
 
 PAGES = ["/", "/status", "/pill", "/kpi", "/health", "/health/faults"]
 
@@ -31,12 +31,12 @@ def test_fleet_lists_machines_and_select_sets_a_non_credential_cookie(cloud):
     assert page.status_code == 200
     assert "m-0042" in page.text and "Online" in page.text
     assert "1 active fault" in page.text
-    assert "/fleet/select/m-0042" in page.text
+    assert f"/fleet/select/{FP}" in page.text
 
-    r = cloud.post("/fleet/select/m-0042")
+    r = cloud.post(f"/fleet/select/{FP}")
     assert r.status_code == 303 and r.headers["location"] == "/"
     cookie = r.headers["set-cookie"].lower()
-    assert "ice_cloud_machine=m-0042" in cookie
+    assert f"ice_cloud_machine={FP}" in cookie
     assert "httponly" in cookie and "samesite=lax" in cookie
 
 
@@ -47,7 +47,7 @@ def test_select_unknown_or_malformed_machine_is_404(cloud):
 
 def test_selected_machine_pages_render_from_report(cloud):
     push(cloud, make_report())
-    select(cloud, "m-0042")
+    select(cloud)
     faults = cloud.get("/health/faults")
     assert faults.status_code == 200
     assert "ICE-301" in faults.text
@@ -63,7 +63,7 @@ def test_selected_machine_pages_render_from_report(cloud):
 
 def test_stale_machine_still_renders_under_offline_banner(cloud, clock):
     push(cloud, make_report(interval=60))
-    select(cloud, "m-0042")
+    select(cloud)
     clock.advance(180)  # exactly 3 x interval: not yet stale
     assert "Offline" not in cloud.get("/health/faults").text
     clock.advance(181)
@@ -77,7 +77,7 @@ def test_stale_machine_still_renders_under_offline_banner(cloud, clock):
 
 def test_unknown_ui_digest_shows_mismatch_banner_and_installed_ui(cloud):
     push(cloud, make_report(digest="c" * 64))
-    select(cloud, "m-0042")
+    select(cloud)
     r = cloud.get("/health/faults")
     assert r.status_code == 200
     assert "UI version mismatch: machine cccccccc" in r.text
@@ -95,7 +95,7 @@ def test_static_serves_installed_ui_and_refuses_escapes(cloud):
 
 def test_unserved_pages_are_not_available_remotely(cloud):
     push(cloud, make_report())
-    select(cloud, "m-0042")
+    select(cloud)
     for path in ("/controls", "/health/subsystems", "/logout", "/nowhere/at/all"):
         r = cloud.get(path)
         assert r.status_code == 404, path
@@ -130,7 +130,7 @@ def test_full_page_renders_from_cached_bundle_in_sandbox(cloud, tmp_path):
     digest, data = _marked_bundle(tmp_path, "SANDBOXED-MACHINE-UI")
     assert cloud.put(f"/api/v1/ui-bundles/{digest}", content=data).status_code == 201
     push(cloud, make_report(digest=digest))
-    select(cloud, "m-0042")
+    select(cloud)
 
     r = cloud.get("/health/faults")
     assert r.status_code == 200
@@ -162,7 +162,7 @@ def test_sandbox_blocks_unsafe_template_in_uploaded_bundle(cloud, tmp_path):
         digest = json.loads(tf.extractfile("manifest.json").read())["digest"]
     cloud.put(f"/api/v1/ui-bundles/{digest}", content=data)
     push(cloud, make_report(digest=digest))
-    select(cloud, "m-0042")
+    select(cloud)
     with pytest.raises(Exception, match="unsafe"):
         cloud.get("/health/faults")
 
@@ -177,7 +177,7 @@ def test_banner_renders_inside_the_oob_swapped_bar(cloud):
     from tests.dom_utils import find_by_id, parse_elements
 
     push(cloud, make_report())
-    select(cloud, "m-0042")
+    select(cloud)
     for path in ("/", "/health", "/health/faults"):
         html = cloud.get(path).text
         els = parse_elements(html)

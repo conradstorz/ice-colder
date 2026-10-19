@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 
 from ice_cloud.app import create_app
 from ice_cloud.settings import CloudSettings
-from tests.cloud.reports import NOW, later
+from tests.cloud.reports import FP, NOW, later
 
 
 class Clock:
@@ -52,15 +52,15 @@ def cloud(cloud_app):
         yield c
 
 
-def push(cloud: TestClient, report) -> None:
+def push(cloud: TestClient, report, fingerprint: str = FP) -> None:
     r = cloud.post(
-        f"/api/v1/machines/{report.machine_id}/report",
+        f"/api/v1/machines/{fingerprint}/report",
         content=report.model_dump_json(),
         headers={"content-type": "application/json"},
     )
     assert r.status_code == 204
 
 
-def select(cloud: TestClient, machine_id: str) -> None:
-    r = cloud.post(f"/fleet/select/{machine_id}")
+def select(cloud: TestClient, fingerprint: str = FP) -> None:
+    r = cloud.post(f"/fleet/select/{fingerprint}")
     assert r.status_code == 303 and r.headers["location"] == "/"

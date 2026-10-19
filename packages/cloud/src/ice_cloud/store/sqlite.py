@@ -1,0 +1,489 @@
+"""SQLite implementation of :class:`Repository`: the only module with SQL.
+
+One connection per call, WAL, ``synchronous=NORMAL``, foreign keys on (the
+edge's ``EventRecorder`` pattern). Schema changes are an ordered list of
+scripts in ``MIGRATIONS`` applied on construction under ``schema_version``.
+"""
+
+from __future__ import annotations
+
+import json
+import secrets
+import sqlite3
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Literal
+
+from ice_cloud.store.repository import (
+    Account,
+    EmailConflict,
+    Invitation,
+    Machine,
+    MachineAccess,
+    Membership,
+)
+
+MIGRATIONS: list[str] = [
+    """
+    CREATE TABLE accounts (
+        id TEXT PRIMARY KEY,
+        google_sub TEXT NOT NULL UNIQUE,
+        email TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        suspended_at TEXT
+    );
+    CREATE TABLE machines (
+        fingerprint TEXT PRIMARY KEY,
+        public_key TEXT NOT NULL,
+        label TEXT NOT NULL,
+        owner_id TEXT REFERENCES accounts(id),
+        registered_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        claim_code_hash TEXT,
+        claim_code_expires_at TEXT,
+        claimed_at TEXT
+    );
+    CREATE TABLE memberships (
+        account_id TEXT NOT NULL REFERENCES accounts(id),
+        fingerprint TEXT NOT NULL REFERENCES machines(fingerprint),
+        role TEXT NOT NULL,
+        granted_by TEXT NOT NULL REFERENCES accounts(id),
+        granted_at TEXT NOT NULL,
+        PRIMARY KEY (account_id, fingerprint)
+    );
+    CREATE TABLE invitations (
+        token TEXT PRIMARY KEY,
+        inviter_id TEXT NOT NULL REFERENCES accounts(id),
+        email TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        accepted_by TEXT REFERENCES accounts(id),
+        accepted_at TEXT
+    );
+    """
+]
+
+# Public so a test can substitute a failing statement and prove a claim is atomic.
+DELETE_MEMBERSHIPS_SQL = "DELETE FROM memberships WHERE fingerprint = ?"
+
+_FLEET = "fleet"
+
+
+def _iso(value: datetime | None) -> str | None:
+    return None if value is None else value.astimezone(UTC).isoformat()
+
+
+def _dt(value: str | None) -> datetime | None:
+    return None if value is None else datetime.fromisoformat(value)
+
+
+def _account(row: sqlite3.Row) -> Account:
+    return Account(
+        id=row["id"],
+        google_sub=row["google_sub"],
+        email=row["email"],
+        name=row["name"],
+        created_at=_dt(row["created_at"]),
+        suspended_at=_dt(row["suspended_at"]),
+    )
+
+
+def _machine(row: sqlite3.Row) -> Machine:
+    return Machine(
+        fingerprint=row["fingerprint"],
+        public_key_b64=row["public_key"],
+        label=row["label"],
+        owner_id=row["owner_id"],
+        registered_at=_dt(row["registered_at"]),
+        last_seen_at=_dt(row["last_seen_at"]),
+        claim_code_hash=row["claim_code_hash"],
+        claim_code_expires_at=_dt(row["claim_code_expires_at"]),
+        claimed_at=_dt(row["claimed_at"]),
+    )
+
+
+def _invitation(row: sqlite3.Row) -> Invitation:
+    raw = row["scope"]
+    scope: str | tuple[str, ...] = raw if raw == _FLEET else tuple(json.loads(raw))
+    return Invitation(
+        token=row["token"],
+        inviter_id=row["inviter_id"],
+        email=row["email"],
+        scope=scope,
+        created_at=_dt(row["created_at"]),
+        expires_at=_dt(row["expires_at"]),
+        accepted_by=row["accepted_by"],
+        accepted_at=_dt(row["accepted_at"]),
+    )
+
+
+class SqliteRepository:
+    def __init__(self, path: Path) -> None:
+        self._path = Path(path)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._migrate()
+
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(self._path, timeout=30, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            yield conn
+        finally:
+            conn.close()
+
+    @contextmanager
+    def _tx(self) -> Iterator[sqlite3.Connection]:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield conn
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            conn.execute("COMMIT")
+
+    def _migrate(self) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
+            )
+            row = conn.execute("SELECT version FROM schema_version").fetchone()
+            if row is None:
+                conn.execute("INSERT INTO schema_version (version) VALUES (0)")
+                current = 0
+            else:
+                current = row["version"]
+            for index in range(current, len(MIGRATIONS)):
+                for statement in MIGRATIONS[index].split(";"):
+                    if statement.strip():
+                        conn.execute(statement)
+                conn.execute("UPDATE schema_version SET version = ?", (index + 1,))
+
+    # accounts
+
+    def upsert_account_from_login(
+        self, google_sub: str, email: str, name: str, now: datetime
+    ) -> Account:
+        email = email.lower()
+        with self._tx() as conn:
+            row = conn.execute(
+                "SELECT * FROM accounts WHERE google_sub = ?", (google_sub,)
+            ).fetchone()
+            clash = conn.execute(
+                "SELECT 1 FROM accounts WHERE email = ? AND google_sub != ?",
+                (email, google_sub),
+            ).fetchone()
+            if clash is not None:
+                raise EmailConflict(email)
+            if row is None:
+                account_id = str(uuid.uuid4())
+                conn.execute(
+                    "INSERT INTO accounts (id, google_sub, email, name, created_at)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (account_id, google_sub, email, name, _iso(now)),
+                )
+            else:
+                account_id = row["id"]
+                conn.execute(
+                    "UPDATE accounts SET email = ?, name = ? WHERE id = ?",
+                    (email, name, account_id),
+                )
+            return _account(
+                conn.execute(
+                    "SELECT * FROM accounts WHERE id = ?", (account_id,)
+                ).fetchone()
+            )
+
+    def account(self, id: str) -> Account | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM accounts WHERE id = ?", (id,)).fetchone()
+        return None if row is None else _account(row)
+
+    def account_by_email(self, email: str) -> Account | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM accounts WHERE email = ?", (email.lower(),)
+            ).fetchone()
+        return None if row is None else _account(row)
+
+    def set_suspended(self, id: str, suspended_at: datetime | None) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                "UPDATE accounts SET suspended_at = ? WHERE id = ?",
+                (_iso(suspended_at), id),
+            )
+
+    def all_accounts(self) -> list[Account]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM accounts ORDER BY email").fetchall()
+        return [_account(r) for r in rows]
+
+    # machines
+
+    def register_machine(
+        self, fingerprint: str, public_key_b64: str, label: str, now: datetime
+    ) -> Machine:
+        with self._tx() as conn:
+            conn.execute(
+                "INSERT INTO machines (fingerprint, public_key, label, registered_at,"
+                " last_seen_at) VALUES (?, ?, ?, ?, ?)"
+                " ON CONFLICT(fingerprint) DO UPDATE SET"
+                " label = excluded.label, last_seen_at = excluded.last_seen_at",
+                (fingerprint, public_key_b64, label, _iso(now), _iso(now)),
+            )
+            return _machine(
+                conn.execute(
+                    "SELECT * FROM machines WHERE fingerprint = ?", (fingerprint,)
+                ).fetchone()
+            )
+
+    def machine(self, fingerprint: str) -> Machine | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM machines WHERE fingerprint = ?", (fingerprint,)
+            ).fetchone()
+        return None if row is None else _machine(row)
+
+    def resolve_short(self, short16: str) -> Machine | None:
+        if not short16 or any(c in short16 for c in "%_\\"):
+            return None
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM machines WHERE fingerprint LIKE ? LIMIT 2",
+                (short16.lower() + "%",),
+            ).fetchall()
+        return _machine(rows[0]) if len(rows) == 1 else None
+
+    def touch_seen(self, fingerprint: str, now: datetime) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                "UPDATE machines SET last_seen_at = ? WHERE fingerprint = ?",
+                (_iso(now), fingerprint),
+            )
+
+    def set_claim_code(
+        self, fingerprint: str, hash: str | None, expires_at: datetime | None
+    ) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                "UPDATE machines SET claim_code_hash = ?, claim_code_expires_at = ?"
+                " WHERE fingerprint = ?",
+                (hash, _iso(expires_at), fingerprint),
+            )
+
+    def claim_machine(self, fingerprint: str, account_id: str, now: datetime) -> bool:
+        with self._tx() as conn:
+            if not conn.execute(
+                "SELECT 1 FROM accounts WHERE id = ?", (account_id,)
+            ).fetchone():
+                return False
+            cur = conn.execute(
+                "UPDATE machines SET owner_id = ?, claimed_at = ?,"
+                " claim_code_hash = NULL, claim_code_expires_at = NULL"
+                " WHERE fingerprint = ?",
+                (account_id, _iso(now), fingerprint),
+            )
+            if cur.rowcount == 0:
+                return False
+            conn.execute(DELETE_MEMBERSHIPS_SQL, (fingerprint,))
+            return True
+
+    def unbind_machine(self, fingerprint: str) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                "UPDATE machines SET owner_id = NULL, claimed_at = NULL,"
+                " claim_code_hash = NULL, claim_code_expires_at = NULL"
+                " WHERE fingerprint = ?",
+                (fingerprint,),
+            )
+            conn.execute(DELETE_MEMBERSHIPS_SQL, (fingerprint,))
+
+    def all_machines(self) -> list[Machine]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM machines ORDER BY label, fingerprint"
+            ).fetchall()
+        return [_machine(r) for r in rows]
+
+    # access
+
+    def machines_for_account(self, account_id: str) -> list[MachineAccess]:
+        with self._connect() as conn:
+            owned = conn.execute(
+                "SELECT * FROM machines WHERE owner_id = ?", (account_id,)
+            ).fetchall()
+            tech = conn.execute(
+                "SELECT m.* FROM machines m JOIN memberships s"
+                " ON s.fingerprint = m.fingerprint"
+                " WHERE s.account_id = ? AND m.owner_id IS NOT ?",
+                (account_id, account_id),
+            ).fetchall()
+        found = [MachineAccess(_machine(r), "owner") for r in owned]
+        found += [MachineAccess(_machine(r), "tech") for r in tech]
+        return sorted(found, key=lambda a: (a.machine.label, a.machine.fingerprint))
+
+    def access_for(
+        self, account_id: str, fingerprint: str
+    ) -> Literal["owner", "tech"] | None:
+        with self._connect() as conn:
+            owner = conn.execute(
+                "SELECT 1 FROM machines WHERE fingerprint = ? AND owner_id = ?",
+                (fingerprint, account_id),
+            ).fetchone()
+            if owner is not None:
+                return "owner"
+            member = conn.execute(
+                "SELECT 1 FROM memberships WHERE account_id = ? AND fingerprint = ?",
+                (account_id, fingerprint),
+            ).fetchone()
+        return "tech" if member is not None else None
+
+    def memberships(self, fingerprint: str) -> list[tuple[Membership, Account]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT a.*, s.role, s.granted_by, s.granted_at"
+                " FROM memberships s JOIN accounts a ON a.id = s.account_id"
+                " WHERE s.fingerprint = ? ORDER BY a.email",
+                (fingerprint,),
+            ).fetchall()
+        return [
+            (
+                Membership(
+                    account_id=r["id"],
+                    fingerprint=fingerprint,
+                    role=r["role"],
+                    granted_by=r["granted_by"],
+                    granted_at=_dt(r["granted_at"]),
+                ),
+                _account(r),
+            )
+            for r in rows
+        ]
+
+    def grant_tech(
+        self, account_id: str, fingerprint: str, granted_by: str, now: datetime
+    ) -> None:
+        with self._tx() as conn:
+            if not conn.execute(
+                "SELECT 1 FROM accounts WHERE id = ?", (account_id,)
+            ).fetchone():
+                raise LookupError(f"unknown account {account_id}")
+            if not conn.execute(
+                "SELECT 1 FROM machines WHERE fingerprint = ?", (fingerprint,)
+            ).fetchone():
+                raise LookupError(f"unknown machine {fingerprint}")
+            conn.execute(
+                "INSERT OR IGNORE INTO memberships"
+                " (account_id, fingerprint, role, granted_by, granted_at)"
+                " VALUES (?, ?, 'tech', ?, ?)",
+                (account_id, fingerprint, granted_by, _iso(now)),
+            )
+
+    def revoke(self, account_id: str, fingerprint: str) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                "DELETE FROM memberships WHERE account_id = ? AND fingerprint = ?",
+                (account_id, fingerprint),
+            )
+
+    # invitations
+
+    def create_invitation(
+        self,
+        inviter_id: str,
+        email: str,
+        scope: str | tuple[str, ...],
+        now: datetime,
+        ttl: timedelta = timedelta(days=7),
+    ) -> Invitation:
+        token = secrets.token_urlsafe(32)
+        stored = scope if isinstance(scope, str) else json.dumps(list(scope))
+        with self._tx() as conn:
+            conn.execute(
+                "INSERT INTO invitations (token, inviter_id, email, scope,"
+                " created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (token, inviter_id, email.lower(), stored, _iso(now), _iso(now + ttl)),
+            )
+            return _invitation(
+                conn.execute(
+                    "SELECT * FROM invitations WHERE token = ?", (token,)
+                ).fetchone()
+            )
+
+    def invitation(self, token: str) -> Invitation | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM invitations WHERE token = ?", (token,)
+            ).fetchone()
+        return None if row is None else _invitation(row)
+
+    def invitations_by(
+        self, inviter_id: str, fingerprint: str | None, now: datetime
+    ) -> list[Invitation]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM invitations WHERE inviter_id = ? AND accepted_by IS NULL"
+                " ORDER BY created_at",
+                (inviter_id,),
+            ).fetchall()
+        found = [i for i in map(_invitation, rows) if i.expires_at > now]
+        if fingerprint is None:
+            return found
+        return [i for i in found if i.scope == _FLEET or fingerprint in i.scope]
+
+    def accept_invitation(
+        self, token: str, account_id: str, now: datetime
+    ) -> list[str]:
+        with self._tx() as conn:
+            row = conn.execute(
+                "SELECT * FROM invitations WHERE token = ?", (token,)
+            ).fetchone()
+            if row is None:
+                return []
+            invite = _invitation(row)
+            if invite.accepted_by is not None or invite.expires_at <= now:
+                return []
+            owned = [
+                r["fingerprint"]
+                for r in conn.execute(
+                    "SELECT fingerprint FROM machines WHERE owner_id = ?"
+                    " ORDER BY fingerprint",
+                    (invite.inviter_id,),
+                )
+            ]
+            if invite.scope == _FLEET:
+                targets = owned
+            else:
+                targets = [fp for fp in owned if fp in invite.scope]
+            granted = []
+            for fp in targets:
+                if conn.execute(
+                    "SELECT 1 FROM machines WHERE fingerprint = ? AND owner_id = ?",
+                    (fp, account_id),
+                ).fetchone():
+                    continue  # the new member already owns it
+                conn.execute(
+                    "INSERT OR IGNORE INTO memberships"
+                    " (account_id, fingerprint, role, granted_by, granted_at)"
+                    " VALUES (?, ?, 'tech', ?, ?)",
+                    (account_id, fp, invite.inviter_id, _iso(now)),
+                )
+                granted.append(fp)
+            conn.execute(
+                "UPDATE invitations SET accepted_by = ?, accepted_at = ? WHERE token = ?",
+                (account_id, _iso(now), token),
+            )
+            return granted
+
+    def cancel_invitation(self, token: str) -> None:
+        with self._tx() as conn:
+            conn.execute("DELETE FROM invitations WHERE token = ?", (token,))

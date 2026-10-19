@@ -9,6 +9,8 @@ from ice_contracts.cloud.report import MachineReport
 from ice_ui.bundle import ui_digest
 
 NOW = datetime(2026, 10, 13, 14, 5, tzinfo=UTC)
+FP = "ab" * 32
+FP_2 = "cd" * 32
 BOOT_A = "6f1c2a7e-3d4b-4e0a-9b51-2c8f0d7a1e93"
 BOOT_B = "0b6e3f64-5a1c-4d27-8c3e-9a7d1f2b4c58"
 

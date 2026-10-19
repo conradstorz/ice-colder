@@ -8,7 +8,7 @@
     <span class="text-xs px-1.5 py-0.5 rounded {% if m.stale %}bg-red-50 text-red-600{% else %}bg-gray-100 text-gray-600{% endif %}">{{ "Offline" if m.stale else "Online" }}</span>
     <span class="text-xs text-gray-400">reported {{ m.age_text }} ago</span>
     <span class="text-xs text-gray-400">{{ m.fault_line }}</span>
-    <form method="post" action="/fleet/select/{{ m.machine_id }}" class="ml-auto">
+    <form method="post" action="/fleet/select/{{ m.fingerprint }}" class="ml-auto">
       <button type="submit"
               class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Select</button>
     </form>

@@ -10,7 +10,7 @@ from fastapi import FastAPI
 
 from ice_cloud import ingest, portal
 from ice_cloud.settings import CloudSettings
-from ice_cloud.store import SnapshotStore
+from ice_cloud.store import SnapshotStore, SqliteRepository
 from ice_cloud.ui_registry import UiRegistry
 
 CLOUD_TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -29,7 +29,9 @@ def create_app(
     app = FastAPI(title="ice-cloud")
     app.state.settings = settings
     app.state.provider = provider
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
     app.state.store = SnapshotStore(settings.data_dir)
+    app.state.repo = SqliteRepository(settings.data_dir / "cloud.db")
     app.state.registry = UiRegistry(
         settings.data_dir, cloud_templates=CLOUD_TEMPLATES_DIR
     )
