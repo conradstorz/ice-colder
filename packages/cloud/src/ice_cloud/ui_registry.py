@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi.templating import Jinja2Templates
+from jinja2 import Template
 
 from ice_contracts.cloud.ui import DIGEST_PATTERN
 from ice_ui.bundle import BundleError, extract_bundle, ui_digest
@@ -21,12 +22,33 @@ from ice_ui.templating import STATIC_DIR, TEMPLATES_DIR, make_templates
 _DIGEST_RE = re.compile(DIGEST_PATTERN)
 
 
+class _NoRequestTemplate(Template):
+    """A template whose context never carries ``request``.
+
+    Starlette's ``TemplateResponse`` always injects ``request``; an uploaded
+    (untrusted) bundle must not reach ``request.app.state``. Dropping it at
+    ``new_context`` covers the page itself and every include/extends/import.
+    """
+
+    def new_context(self, vars=None, shared=False, locals=None):
+        if vars and "request" in vars:
+            vars = {k: v for k, v in vars.items() if k != "request"}
+        return super().new_context(vars, shared, locals)
+
+
+def _sandboxed_templates(directory: Path, extra_dirs: list[Path]) -> Jinja2Templates:
+    result = make_templates(directory, sandboxed=True, extra_dirs=extra_dirs)
+    result.env.template_class = _NoRequestTemplate
+    return result
+
+
 @dataclass(frozen=True)
 class ResolvedUi:
     templates: Jinja2Templates
     static_dir: Path
     mismatch: bool
     digest: str
+    sandboxed: bool = False
 
 
 class UiRegistry:
@@ -66,13 +88,11 @@ class UiRegistry:
         if cached is not None and (cached / "templates").is_dir():
             templates = self._templates_for(
                 digest,
-                lambda: make_templates(
-                    cached / "templates",
-                    sandboxed=True,
-                    extra_dirs=[self._cloud_templates],
+                lambda: _sandboxed_templates(
+                    cached / "templates", [self._cloud_templates]
                 ),
             )
-            return ResolvedUi(templates, cached / "static", False, digest)
+            return ResolvedUi(templates, cached / "static", False, digest, True)
         return self._installed(mismatch=True)
 
     def _installed(self, *, mismatch: bool) -> ResolvedUi:
