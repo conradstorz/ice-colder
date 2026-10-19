@@ -25,6 +25,7 @@ GLOBALS: tuple[str, ...] = (
     "inventory_manager",
     "access_store",
     "display_controller",
+    "machine_identity",
     "_last_logged_setup_code",
     "_pending_codes",
 )

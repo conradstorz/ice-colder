@@ -29,6 +29,7 @@ from ice_edge.web.context import (
     set_event_recorder,
     set_health_monitor,
     set_inventory_manager,
+    set_machine_identity,
     set_machine_instance,
 )
 from ice_edge.web.routes import auth as auth_routes
@@ -48,6 +49,7 @@ __all__ = [
     "set_event_recorder",
     "set_health_monitor",
     "set_inventory_manager",
+    "set_machine_identity",
     "set_machine_instance",
 ]
 

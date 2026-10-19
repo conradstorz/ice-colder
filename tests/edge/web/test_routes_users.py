@@ -514,3 +514,92 @@ class TestProfileEdit:
         assert store.owner() is not None
         assert store.owner().id == owner_user.id
         assert store.get_user(owner_user.id).role == Role.owner
+
+
+class TestLinkToCloud:
+    """POST /users/ownership/link mints a cloud claim code (owner PIN-gated)."""
+
+    @pytest.fixture
+    def cloud_on(self, wired, tmp_path):
+        from ice_edge.uplink.identity import MachineIdentity
+        from ice_edge.web import context
+
+        cfg, _vmc, _inv, _store = wired
+        cfg.cloud.enabled = True
+        identity = MachineIdentity.load_or_create(tmp_path / "identity.json")
+        context.set_machine_identity(identity)
+        return identity
+
+    def test_link_requires_manage_ownership(self, login_as, wired, cloud_on):
+        _cfg, _vmc, _inv, store = wired
+        tech = login_as(Role.tech)
+        resp = tech.post("/users/ownership/link", data={"pin": "1379"})
+        assert resp.status_code == 403
+        assert store.pending_link is None
+
+    def test_link_wrong_pin_no_code(self, client, wired, cloud_on):
+        _cfg, _vmc, _inv, store = wired
+        resp = client.post("/users/ownership/link", data={"pin": "0000"})
+        assert resp.status_code == 200
+        assert "Wrong PIN" in resp.text
+        assert _codes_in(resp.text) == []
+        assert store.pending_link is None
+
+    def test_link_shows_code_once_with_no_store(self, client, wired, cloud_on):
+        _cfg, _vmc, _inv, store = wired
+        resp = client.post("/users/ownership/link", data={"pin": "1379"})
+        assert resp.status_code == 200
+        assert resp.headers["cache-control"] == "no-store"
+        assert len(_codes_in(resp.text)) == 1
+        assert cloud_on.short_fingerprint in resp.text
+        assert store.pending_link is not None
+        reload_resp = client.get("/users/ownership")
+        assert _codes_in(reload_resp.text) == []
+        assert "Cancel link" in reload_resp.text
+        assert cloud_on.short_fingerprint in reload_resp.text
+
+    def test_link_refused_while_transfer_pending(self, client, wired, cloud_on):
+        _cfg, _vmc, _inv, store = wired
+        codes = store.generate_emergency_codes()
+        client.post("/users/transfer", data={"pin": "1379", "emergency_code": codes[0]})
+        assert store.pending_transfer is not None
+        resp = client.post("/users/ownership/link", data={"pin": "1379"})
+        assert "transfer is pending" in resp.text.lower()
+        assert _codes_in(resp.text) == []
+        assert store.pending_link is None
+
+    def test_link_cancel(self, client, wired, cloud_on):
+        _cfg, _vmc, _inv, store = wired
+        client.post("/users/ownership/link", data={"pin": "1379"})
+        assert store.pending_link is not None
+        resp = client.post("/users/ownership/link/cancel", data={"pin": "1379"})
+        assert resp.status_code == 200
+        assert store.pending_link is None
+
+    def test_link_cancel_wrong_pin_keeps_link(self, client, wired, cloud_on):
+        _cfg, _vmc, _inv, store = wired
+        client.post("/users/ownership/link", data={"pin": "1379"})
+        bad = client.post("/users/ownership/link/cancel", data={"pin": "0000"})
+        assert "Wrong PIN" in bad.text
+        assert store.pending_link is not None
+
+    def test_link_card_hidden_when_cloud_disabled(self, client, wired):
+        cfg, _vmc, _inv, _store = wired
+        assert cfg.cloud.enabled is False
+        resp = client.get("/users/ownership")
+        assert "Link to cloud" not in resp.text
+
+    def test_link_card_shown_when_cloud_enabled(self, client, wired, cloud_on):
+        resp = client.get("/users/ownership")
+        assert "Link to cloud" in resp.text
+        assert cloud_on.short_fingerprint in resp.text
+
+    def test_health_shows_short_fingerprint_when_identity_set(
+        self, client, wired, cloud_on
+    ):
+        from ice_edge.monitoring.health_monitor import HealthMonitor
+        from ice_edge.web import context
+
+        context.set_health_monitor(HealthMonitor())
+        resp = client.get("/health")
+        assert cloud_on.short_fingerprint in resp.text
