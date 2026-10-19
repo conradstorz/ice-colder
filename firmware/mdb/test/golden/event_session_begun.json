@@ -1,0 +1,1 @@
+{"event_id":"0123456789abcdef-7","boot_id":"0123456789abcdef","seq":7,"ts":"2026-10-18T12:34:56Z","event":{"kind":"session_begun","session_id":"sess-0001","funds_cents":1000}}
