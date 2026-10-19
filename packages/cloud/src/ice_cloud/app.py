@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from ice_cloud import ingest, portal
+from ice_cloud.settings import CloudSettings
 from ice_cloud.store import SnapshotStore
 from ice_cloud.ui_registry import UiRegistry
 
@@ -19,10 +20,19 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def create_app(*, data_dir: Path, now: Callable[[], datetime] = utc_now) -> FastAPI:
-    app = FastAPI(title="ice-cloud (dev only, no auth)")
-    app.state.store = SnapshotStore(data_dir)
-    app.state.registry = UiRegistry(data_dir, cloud_templates=CLOUD_TEMPLATES_DIR)
+def create_app(
+    settings: CloudSettings,
+    *,
+    now: Callable[[], datetime] = utc_now,
+    provider: object | None = None,  # Task 11 types this as ice_cloud.auth.OidcProvider
+) -> FastAPI:
+    app = FastAPI(title="ice-cloud")
+    app.state.settings = settings
+    app.state.provider = provider
+    app.state.store = SnapshotStore(settings.data_dir)
+    app.state.registry = UiRegistry(
+        settings.data_dir, cloud_templates=CLOUD_TEMPLATES_DIR
+    )
     app.state.now = now
     app.include_router(ingest.router)
     app.include_router(portal.router)
