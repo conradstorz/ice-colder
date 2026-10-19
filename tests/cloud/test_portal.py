@@ -174,7 +174,7 @@ def test_sandbox_blocks_unsafe_template_in_uploaded_bundle(cloud, tmp_path, sign
 
 
 def test_post_to_unserved_path_is_the_same_404_page(cloud):
-    r = cloud.post("/logout")
+    r = cloud.post("/settings/machine")
     assert r.status_code == 404
     assert "Not available remotely yet" in r.text
 

@@ -413,6 +413,7 @@ name = "ice-cloud"
 version = "0.1.0"
 source = { editable = "packages/cloud" }
 dependencies = [
+    { name = "cryptography" },
     { name = "fastapi", extra = ["standard"] },
     { name = "ice-common" },
     { name = "ice-contracts" },
@@ -421,6 +422,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=43" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.115.11" },
     { name = "ice-common", editable = "packages/common" },
     { name = "ice-contracts", editable = "packages/contracts" },
