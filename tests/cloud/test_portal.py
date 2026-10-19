@@ -216,15 +216,15 @@ def _home_bundle(tmp_path, body):
     return digest, data
 
 
-def test_sandboxed_bundle_cannot_see_request_or_app_state(cloud, tmp_path):
+def test_sandboxed_bundle_cannot_see_request_or_app_state(cloud, tmp_path, signer):
     digest, data = _home_bundle(
         tmp_path,
         "[[{{ request }}|{{ request is defined }}|"
         "{{ request.app.state if request is defined else 'gone' }}]]",
     )
-    assert cloud.put(f"/api/v1/ui-bundles/{digest}", content=data).status_code == 201
-    push(cloud, make_report(digest=digest))
-    select(cloud)
+    assert put_bundle(cloud, signer, digest, data).status_code == 201
+    push(cloud, signer, make_report(digest=digest))
+    select(cloud, signer)
 
     r = cloud.get("/")
     assert r.status_code == 200
