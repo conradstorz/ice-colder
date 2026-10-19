@@ -1,4 +1,4 @@
-"""Edge-cloud contract: MachineReport and the UI bundle manifest (v0.1.0)."""
+"""Edge-cloud contract: MachineReport and the UI bundle manifest (v0.2.0)."""
 
 import json
 
@@ -18,7 +18,7 @@ CRLF, LF = bytes([13, 10]), bytes([10])
 # Literal copy of cloud spec section 6.6.
 SPEC_EXAMPLE = """
 {
-  "contract": "0.1.0", "machine_id": "m-0042", "sent_at": "2026-10-13T14:05:00Z",
+  "contract": "0.2.0", "machine_id": "m-0042", "sent_at": "2026-10-13T14:05:00Z",
   "boot_id": "6f1c2a7e-3d4b-4e0a-9b51-2c8f0d7a1e93", "seq": 118,
   "report_interval_seconds": 60, "edge_build": "6fa3512",
   "ui": {"digest": "3b9f0c2d8e41a7b65f90d3c1e28a4b7f6d05c9e1a3b2f48d7e6c5a0b9d1f2e3a", "ice_ui_version": "0.1.0"},
@@ -66,8 +66,8 @@ def _full() -> MachineReport:
     return MachineReport.model_validate(data)
 
 
-def test_version():
-    assert CLOUD_CONTRACT_VERSION == "0.1.0"
+def test_contract_version_is_0_2_0():
+    assert CLOUD_CONTRACT_VERSION == "0.2.0"
 
 
 def test_spec_example_validates():
@@ -132,7 +132,7 @@ def test_digest_pattern_rejects(digest):
         ("machine_id", "bad id"),
         ("machine_id", ""),
         ("machine_id", "x" * 65),
-        ("contract", "0.2.0"),
+        ("contract", "0.1.0"),
         ("seq", -1),
         ("report_interval_seconds", 9),
         ("report_interval_seconds", 3601),

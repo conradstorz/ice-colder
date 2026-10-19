@@ -1,0 +1,22 @@
+{
+  "additionalProperties": false,
+  "description": "Body of POST /api/v1/machines/register.",
+  "properties": {
+    "public_key_b64": {
+      "title": "Public Key B64",
+      "type": "string"
+    },
+    "label": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Label",
+      "type": "string"
+    }
+  },
+  "required": [
+    "public_key_b64",
+    "label"
+  ],
+  "title": "RegisterMachine",
+  "type": "object"
+}

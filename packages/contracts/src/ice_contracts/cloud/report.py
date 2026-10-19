@@ -1,4 +1,4 @@
-"""MachineReport v0.1.0: the snapshot a machine uploads to the cloud (cloud spec section 6)."""
+"""MachineReport v0.2.0: the snapshot a machine uploads to the cloud (cloud spec section 6)."""
 
 from typing import Literal
 
@@ -6,7 +6,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from ice_contracts.cloud.ui import DIGEST_PATTERN
 
-CLOUD_CONTRACT_VERSION = "0.1.0"
+CLOUD_CONTRACT_VERSION = "0.2.0"
 
 _UUID4_PATTERN = (
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -108,7 +108,7 @@ class HealthPageSummary(_Model):
 
 
 class MachineReport(_Model):
-    contract: Literal["0.1.0"]
+    contract: Literal["0.2.0"]
     machine_id: str = Field(pattern=r"^[A-Za-z0-9_.-]{1,64}$")
     sent_at: AwareDatetime
     boot_id: str = Field(pattern=_UUID4_PATTERN)

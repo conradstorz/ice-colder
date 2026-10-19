@@ -570,7 +570,7 @@
   "additionalProperties": false,
   "properties": {
     "contract": {
-      "const": "0.1.0",
+      "const": "0.2.0",
       "title": "Contract",
       "type": "string"
     },
