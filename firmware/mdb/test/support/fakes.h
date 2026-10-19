@@ -74,6 +74,8 @@ public:
     bool corrupt_next = false;         // flip a bit in the next reply block's checksum
     bool corrupt_retransmit = false;   // also corrupt the block resent after a RET
     int silent_next = 0;               // reply blocks to swallow
+    bool silent_retransmit = false;    // swallow the block that would answer a RET
+    uint32_t first_byte_delay_us = 0;  // 0 = use gap_us for the first byte too
 
     uint8_t tx_bytes[kTranscript];
     bool tx_modes[kTranscript];
@@ -97,7 +99,7 @@ public:
             }
         }
         if (n == 1 && !modes[0]) {  // master ACK / RET / NAK
-            if (bytes[0] == kRet && last_valid_) queue_block(last_reply_, true);
+            if (bytes[0] == kRet && last_valid_ && !silent_retransmit) queue_block(last_reply_, true);
             if (last_peer_) last_peer_->on_master_byte(bytes[0]);
             return;
         }
@@ -159,7 +161,7 @@ private:
                 if (is_retransmit || !corrupt_retransmit) corrupt_next = false;
             }
         }
-        uint64_t t = clock_.now_us() + gap_us;
+        uint64_t t = clock_.now_us() + (first_byte_delay_us ? first_byte_delay_us : gap_us);
         for (int i = 0; i < n && tail_ < kRx; ++i, t += gap_us) {
             rx_[tail_].data = bytes[i];
             rx_[tail_].mode = modes[i];

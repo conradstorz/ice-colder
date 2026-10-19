@@ -149,7 +149,7 @@ static void test_second_corrupt_is_nak(void) {
     TEST_ASSERT_EQUAL_HEX8(kRet, r.dev.master_bytes[0]);
     TEST_ASSERT_EQUAL_HEX8(kNak, r.dev.master_bytes[1]);
     TEST_ASSERT_EQUAL_UINT32(2, r.link.corrupt_blocks());
-    TEST_ASSERT_EQUAL_INT(0, r.link.misses(0x08));
+    TEST_ASSERT_EQUAL_INT(1, r.link.misses(0x08));
 }
 
 static void test_one_silent_reply_retries(void) {
@@ -195,6 +195,81 @@ static void test_overlong_block_is_corrupt(void) {
     TEST_ASSERT_EQUAL(Reply::Corrupt, resp.kind);
 }
 
+static void test_silence_after_ret_does_not_resend(void) {
+    Rig r;
+    r.bus.corrupt_next = true;
+    r.bus.silent_retransmit = true;
+    const uint8_t d[2] = {0x10, 0x20};
+    r.dev.reply_data(d, 2);
+    Response resp = r.link.transact(0x08, 0x0B, nullptr, 0);
+    TEST_ASSERT_EQUAL(Reply::Corrupt, resp.kind);
+    TEST_ASSERT_EQUAL_INT(1, r.dev.calls);  // the command was never repeated
+    TEST_ASSERT_EQUAL_INT(4, r.bus.tx_len);  // command (2 bytes) + RET + NAK
+    TEST_ASSERT_EQUAL_INT(2, r.dev.n_master);
+    TEST_ASSERT_EQUAL_HEX8(kRet, r.dev.master_bytes[0]);
+    TEST_ASSERT_EQUAL_HEX8(kNak, r.dev.master_bytes[1]);
+    TEST_ASSERT_EQUAL_INT(1, r.link.misses(0x08));
+}
+
+static void test_first_byte_after_5ms_is_timeout(void) {
+    Rig r;
+    r.dev.reply_ack();
+    r.bus.first_byte_delay_us = kResponseTimeoutUs + 1000;
+    TEST_ASSERT_EQUAL(Reply::Timeout, r.link.transact(0x08, 0x0B, nullptr, 0).kind);
+    TEST_ASSERT_EQUAL_INT(2, r.dev.calls);
+    TEST_ASSERT_EQUAL_INT(1, r.link.misses(0x08));
+}
+
+static void test_first_byte_at_5ms_is_accepted(void) {
+    Rig r;
+    r.dev.reply_ack();
+    r.bus.first_byte_delay_us = kResponseTimeoutUs;
+    TEST_ASSERT_EQUAL(Reply::Ack, r.link.transact(0x08, 0x0B, nullptr, 0).kind);
+    TEST_ASSERT_EQUAL_INT(1, r.dev.calls);
+}
+
+static void test_inter_byte_gap_over_1ms_ends_block_and_triggers_ret(void) {
+    Rig r;
+    r.bus.gap_us = 1200;
+    const uint8_t d[3] = {0x01, 0x02, 0x03};
+    r.dev.reply_data(d, 3);
+    Response resp = r.link.transact(0x08, 0x0B, nullptr, 0);
+    TEST_ASSERT_EQUAL(Reply::Corrupt, resp.kind);
+    TEST_ASSERT_EQUAL_INT(4, r.bus.tx_len);
+    TEST_ASSERT_EQUAL_HEX8(kRet, r.bus.tx_bytes[2]);
+    TEST_ASSERT_EQUAL_HEX8(kNak, r.bus.tx_bytes[3]);
+    TEST_ASSERT_EQUAL_UINT32(2, r.link.mode_disagreements());
+}
+
+static void test_max_length_reply_accepted(void) {
+    Rig r;
+    uint8_t d[35];
+    for (uint8_t i = 0; i < 35; ++i) d[i] = i;
+    r.dev.reply_data(d, 35);  // 35 data + checksum = 36 bytes
+    Response resp = r.link.transact(0x08, 0x0B, nullptr, 0);
+    TEST_ASSERT_EQUAL(Reply::Data, resp.kind);
+    TEST_ASSERT_EQUAL_UINT8(35, resp.len);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(d, resp.data, 35);
+}
+
+static void test_command_data_over_34_is_refused(void) {
+    Rig r;
+    r.dev.reply_ack();
+    uint8_t d[35] = {};
+    Response resp = r.link.transact(0x08, 0x0B, d, 35);
+    TEST_ASSERT_EQUAL(Reply::Corrupt, resp.kind);
+    TEST_ASSERT_EQUAL_INT(0, r.bus.tx_len);
+    TEST_ASSERT_EQUAL_INT(0, r.dev.calls);
+    TEST_ASSERT_EQUAL(Reply::Ack, r.link.transact(0x08, 0x0B, d, 34).kind);  // 34 is the limit
+    TEST_ASSERT_EQUAL_UINT8(34, r.dev.last_n);
+}
+
+static void test_command_is_masked_to_three_bits(void) {
+    Rig r;
+    r.link.transact(0x10, 0x0F, nullptr, 0);  // no peer at 0x10; only the transcript matters
+    TEST_ASSERT_EQUAL_HEX8(0x17, r.bus.tx_bytes[0]);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_reset_framing);
@@ -209,5 +284,12 @@ int main(int, char**) {
     RUN_TEST(test_two_silent_replies_timeout);
     RUN_TEST(test_ten_timeouts_reach_threshold_and_valid_reply_clears);
     RUN_TEST(test_overlong_block_is_corrupt);
+    RUN_TEST(test_silence_after_ret_does_not_resend);
+    RUN_TEST(test_first_byte_after_5ms_is_timeout);
+    RUN_TEST(test_first_byte_at_5ms_is_accepted);
+    RUN_TEST(test_inter_byte_gap_over_1ms_ends_block_and_triggers_ret);
+    RUN_TEST(test_max_length_reply_accepted);
+    RUN_TEST(test_command_data_over_34_is_refused);
+    RUN_TEST(test_command_is_masked_to_three_bits);
     return UNITY_END();
 }

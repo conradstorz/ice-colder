@@ -64,6 +64,8 @@ Response Link::read_response() {
     return r;
 }
 
+// Timeout here means the peripheral sent no byte at all, so the command was not executed.
+// Once any reply block arrived the command ran: never report Timeout after that.
 Response Link::send_once(const uint8_t* bytes, const bool* modes, uint8_t n) {
     bus_.flush_rx();
     bus_.write(bytes, modes, n);
@@ -73,7 +75,9 @@ Response Link::send_once(const uint8_t* bytes, const bool* modes, uint8_t n) {
         ++corrupt_blocks_;
         send_master_byte(kRet);
         r = read_response();
-        if (r.kind == Reply::Corrupt) {
+        if (r.kind == Reply::Timeout || r.kind == Reply::Corrupt) {
+            // Silent or bad retransmit: the command already executed, so no resend.
+            r.kind = Reply::Corrupt;
             ++corrupt_blocks_;
             send_master_byte(kNak);
         }
@@ -89,7 +93,7 @@ Response Link::transact(uint8_t address, uint8_t cmd, const uint8_t* data, uint8
     uint8_t bytes[kMaxBlock];
     bool modes[kMaxBlock];
     uint8_t len = 0;
-    bytes[len] = static_cast<uint8_t>(address | cmd);
+    bytes[len] = static_cast<uint8_t>(address | (cmd & 0x07));  // cmd is 3 bits; never let it spill into the address
     modes[len++] = true;
     for (uint8_t i = 0; i < n; ++i) {
         bytes[len] = data[i];
@@ -104,7 +108,9 @@ Response Link::transact(uint8_t address, uint8_t cmd, const uint8_t* data, uint8
     int& miss = misses_[(address >> 3) & 31];
     if (r.kind == Reply::Timeout) {
         ++miss;
-    } else if (r.kind != Reply::Corrupt) {
+    } else if (r.kind == Reply::Corrupt) {
+        ++miss;
+    } else {
         miss = 0;
     }
     return r;
