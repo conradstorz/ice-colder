@@ -166,7 +166,28 @@ def push(cloud: TestClient, signer: Signer, report) -> None:
     assert r.status_code == 204
 
 
+def short(signer: Signer) -> str:
+    return signing.short_fingerprint(signer.fingerprint)
+
+
+def claim(cloud: TestClient, signer: Signer, account: Account) -> None:
+    """Bind the signer's (registered) machine to ``account`` through the repo."""
+    assert cloud.app.state.repo.claim_machine(
+        signer.fingerprint, account.id, cloud.app.state.now()
+    )
+
+
 def select(cloud: TestClient, signer: Signer) -> None:
-    fingerprint = signer.fingerprint
-    r = cloud.post(f"/fleet/select/{fingerprint}")
+    r = cloud.post(f"/fleet/select/{short(signer)}")
     assert r.status_code == 303 and r.headers["location"] == "/"
+
+
+def own_and_select(
+    cloud: TestClient, signer: Signer, report, email: str = "owner@example.com"
+) -> Account:
+    """Sign in as ``email``, push ``report``, claim the machine, select it."""
+    account = login(cloud, email)
+    push(cloud, signer, report)
+    claim(cloud, signer, account)
+    select(cloud, signer)
+    return account
