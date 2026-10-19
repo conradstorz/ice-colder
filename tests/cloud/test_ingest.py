@@ -2,13 +2,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ice_cloud.app import create_app
+from tests.cloud.conftest import make_settings
 from ice_ui.bundle import build_bundle, ui_digest
 from tests.cloud.reports import make_report
 
 
 @pytest.fixture
 def client(tmp_path):
-    app = create_app(data_dir=tmp_path)
+    app = create_app(make_settings(tmp_path))
     with TestClient(app) as c:
         yield c
 

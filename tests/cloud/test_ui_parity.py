@@ -18,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ice_cloud.app import create_app
+from tests.cloud.conftest import make_settings
 from ice_contracts.access import REMOTE_VIEWER_PERMISSIONS
 from ice_contracts.board.vending_machine import FaultCode
 from ice_edge.access.access import Role
@@ -106,7 +107,7 @@ async def edge_and_report(wired, login_as, frozen, narrowed_owner, tmp_path):
 
 def _cloud_client(tmp_path, report, now):
     clock = {"now": now}
-    app = create_app(data_dir=tmp_path / "cloud", now=lambda: clock["now"])
+    app = create_app(make_settings(tmp_path / "cloud"), now=lambda: clock["now"])
     client = TestClient(app, follow_redirects=False)
     r = client.post(
         f"/api/v1/machines/{report.machine_id}/report",

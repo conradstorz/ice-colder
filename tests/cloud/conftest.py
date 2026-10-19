@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ice_cloud.app import create_app
+from ice_cloud.settings import CloudSettings
 from tests.cloud.reports import NOW, later
 
 
@@ -23,9 +24,26 @@ def clock():
     return Clock()
 
 
+def make_settings(data_dir) -> CloudSettings:
+    return CloudSettings(
+        data_dir=data_dir,
+        public_url=None,
+        google_client_id=None,
+        google_client_secret=None,
+        admins=frozenset({"admin@example.com"}),
+        session_key=b"k" * 32,
+        insecure_cookies=True,
+    )
+
+
 @pytest.fixture
-def cloud_app(tmp_path, clock):
-    return create_app(data_dir=tmp_path / "cloud_data", now=clock)
+def settings(tmp_path):
+    return make_settings(tmp_path / "cloud_data")
+
+
+@pytest.fixture
+def cloud_app(settings, clock):
+    return create_app(settings, now=clock)
 
 
 @pytest.fixture
