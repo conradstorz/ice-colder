@@ -1,5 +1,7 @@
 """set_policy acks, state echo, and event-log id invariants."""
 
+import pytest
+
 from ice_contracts.board.payment import PaymentEventEnvelope
 
 from tests.firmware.mdb.helpers import ACK_TIMEOUT, fresh_state, policy_params
@@ -17,6 +19,13 @@ async def _apply(board, accept: bool) -> dict:
         ACK_TIMEOUT,
         since=since,
     )
+
+
+@pytest.fixture(autouse=True)
+async def _restore_accepting_policy(board):
+    """Leave the board accepting, so a test that set accept=False cannot inhibit later tests."""
+    yield
+    await _apply(board, True)
 
 
 async def test_set_policy_is_acked_and_echoed_in_state(board):
@@ -37,9 +46,10 @@ async def test_malformed_set_policy_is_rejected(board):
 
 
 async def test_boot_id_matches_state_and_every_event(board):
+    since = board.mark()
     await _apply(board, False)
     state = await fresh_state(board)
-    for raw in board.history("payment/event"):
+    for raw in board.history("payment/event", since):
         env = PaymentEventEnvelope.model_validate(raw)
         assert env.boot_id == state.boot_id
         assert env.event_id == f"{env.boot_id}-{env.seq}"

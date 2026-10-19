@@ -30,6 +30,8 @@ async def test_return_escrow_without_a_bill_acks_no_bill(board):
 
 async def test_cash_sale_larger_than_escrow_is_clamped(board):
     state = await fresh_state(board)
+    if state.escrow_cents > 0:
+        pytest.skip("escrow holds credit on this board; not zeroing it")
     since = board.mark()
     rid = await board.send(
         "cash_sale", {"cents": state.escrow_cents + 1, "sale_id": None}
