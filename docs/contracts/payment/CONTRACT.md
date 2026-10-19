@@ -145,6 +145,10 @@ but is never spendable, so a bill the policy then returns needs no refund.
 `paid_cents == requested_cents`; `partial` requires
 `0 <= paid_cents < requested_cents`; `failed` requires `paid_cents == 0`.
 
+A `payout_result` also lowers `state.escrow_cents` by `paid_cents` (the board
+debits the coins it just paid out; clarified in firmware spec 4, no version
+bump).
+
 `revalue_result` is deliberately absent from 1.0 (see Out of scope).
 
 ## State (`payment/state`, retained)

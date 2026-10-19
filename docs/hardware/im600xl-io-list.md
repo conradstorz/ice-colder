@@ -165,4 +165,4 @@ This document changes nothing else. These were the places the repo disagreed wit
 - [ ] Anything else the PLC switches or reads that is not listed here (none known).
 - [ ] Each input's broken-wire state (what an open circuit reads as).
 - [ ] Scotsman serial line: physical layer and protocol, if the optional tap is pursued.
-- [ ] The MDB interface the PLC uses today (make/model), to confirm a clean swap to our bus master.
+- [ ] The MDB interface the PLC uses today (make/model), to confirm a clean swap to our bus master (tracked in `firmware/docs/mdb-board-interface.md`, sections 2 and 10).

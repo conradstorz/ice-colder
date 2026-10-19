@@ -365,6 +365,9 @@ generated schemas.
 - Keyed service mode input: customer sales inhibited, bounded local tests
   allowed.
 - Persist calibration and fault lockouts across reboot.
+- The MDB payment board is the second field device: `docs/superpowers/specs/2026-10-18-mdb-board-firmware-design.md`
+  (interface doc `firmware/docs/mdb-board-interface.md`). It owns the MDB bus and speaks
+  `ice_contracts.board.payment`.
 
 ### Phase E — Bench prototype
 
@@ -416,7 +419,8 @@ Answers change the design; collect them during Phase A.
 
 - Payment equipment make, model and protocol. MDB is assumed; if it is a
   proprietary pulse/dry-contact interface the payment layer in Phase D changes
-  shape.
+  shape. The open items for the MDB board (existing interface make, bus power,
+  peripheral models) are tracked in `firmware/docs/mdb-board-interface.md`.
 - Does the ice maker expose enable, bin-full and fault contacts, or is the
   monitor project the only view into it?
 - Is there a bag-inflation confirmation sensor, or only bag-present and

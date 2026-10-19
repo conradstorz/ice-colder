@@ -106,14 +106,18 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.platformio
-          key: pio-${{ hashFiles('firmware/vending/platformio.ini') }}
+          key: pio-${{ hashFiles('firmware/vending/platformio.ini', 'firmware/mdb/platformio.ini') }}
           restore-keys: pio-
       - run: pio run -e kc868-a8
         working-directory: firmware/vending
       - run: pio test -e native
         working-directory: firmware/vending
+      - run: pio run -e esp32-s3-devkitc-1
+        working-directory: firmware/mdb
+      - run: pio test -e native
+        working-directory: firmware/mdb
       - name: Golden wire files are up to date
-        run: git diff --exit-code -- firmware/vending/test/golden
+        run: git diff --exit-code -- firmware/vending/test/golden firmware/mdb/test/golden
 
   compose-config:
     runs-on: ubuntu-latest

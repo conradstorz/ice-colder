@@ -344,3 +344,36 @@ confirmed at the machine; whether the Nayax reader offers always-idle.
   character time and margin (`rx_deadline_us`). TX leaves the shared parity setting at EVEN.
 - **Replay ordering.** Epoch-stamped Outcome envelopes and a "replay owed" latch in comms (see section 6).
 - **Bus task does not log.** It counts (`BusStats`, carried in the state mailbox); the ledger logs them.
+- **RX mode bit.** Decoded from the UART driver's per-byte parity-error events (`mode = popcount&1 XOR
+  parity_error`); EVEN parity is restored after every TX; an ambiguous multi-byte batch containing an
+  error falls back to `mode=false`, is counted, and the count shows in `self_test` as the mode-bit
+  disagreement counter. Event ordering is read from the IDF source, unverified on silicon.
+- **Flash windows, extended.** The bus parks between transactions for at most 400 ms (one overrun per
+  window); the ledger does all NVS work including blob reads inside `acked` and replay reads; console
+  writes go through the same window (`settings_set_flash_guard`, proceeding after about 1 s if none is
+  granted); Wi-Fi storage is RAM (`esp_wifi_set_storage` before init); comms starts before the bus.
+- **Ack model.** `Master::submit` drives the bus synchronously (at most 8 settle rounds) and returns the
+  real first ack: `payout`/`vend_request` `accepted` after the bus ACK, `set_policy` `ok` after the
+  enables apply, a command still queued is never `failed` (`accepted`, or `ok` with `detail "queued"`).
+  `poll_completion()` is a reserved seam that always returns false.
+- **Payouts.** `payout_result.paid_cents` lowers `escrow_cents` (clarified in CONTRACT.md); level 3
+  payouts are chunked at 255 units; an amount not a multiple of the scaling factor pays the floor and
+  reports `partial` with `detail "scaling"`; `enabled` is always filtered to the peripheral's reported
+  denominations; a repeated `payout` while another result is held is `busy`.
+- **Devices and sessions.** Always-idle is wanted from boot; a lever press always emits
+  `escrow_return_pressed` and returns the bill only with `return_bill_on_lever`; a held bill becomes
+  `bill_returned{timeout}` on a validator reset or offline; `Inhibit::DeviceFault` is produced only by
+  log pressure, never by a faulty device; a same-id `vend_request` retry keeps the in-flight vend.
+- **Log store.** NVS partition `evlog`, namespace `log`, blob keys `e<8 hex>`; `head` advances before
+  blobs are erased (a power cut leaves orphans, swept incrementally in windows), a corrupt partition is
+  erased and re-initialised loudly.
+- **Buffers.** `PubItem.payload` 1664 B (not 512), `StateMsg` carries a deep copy of the state plus a
+  5120 B `payouts_json`; `CmdItem` gained a `WallTime` kind.
+- **Tooling and tests.** `scripts/flash_board.py` exit codes 0/1/2/3 as designed; the MDB conformance
+  suite adds the skip category `mdb_board_needs_hardware` and its hardware tests have never run against
+  a board.
+- **Recorded, not fixed.** `set_policy` settling briefly enables devices before a rollback; a changer
+  payout timeout is only checked while a payout is active; Wi-Fi init PHY calibration writes happen
+  before the bus starts; `CONFIG_SPI_FLASH_AUTO_SUSPEND` depends on the fitted flash chip; decimals byte
+  ignored (USD only); changer masks assumed big-endian bit *i* = coin type *i* and always-idle at SETUP
+  byte 33 mask 0x02, both for the bench (interface doc section 9).
