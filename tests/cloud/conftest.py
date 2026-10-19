@@ -4,6 +4,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ice_cloud.app import create_app
+from ice_cloud.auth import IdentityClaims, SignInError
+from ice_cloud.store.repository import Account
 from ice_cloud.settings import CloudSettings
 from ice_contracts.cloud import signing
 from ice_contracts.cloud.identity import RegisterMachine
@@ -45,9 +47,55 @@ def settings(tmp_path):
     return make_settings(tmp_path / "cloud_data")
 
 
+class FakeProvider:
+    """An OIDC provider with fixed, mutable claims; no network, no Google."""
+
+    def __init__(self, claims: IdentityClaims) -> None:
+        self.claims = claims
+        self.exchanges: list[dict[str, str]] = []
+
+    def authorize_url(self, *, state: str, nonce: str, code_challenge: str) -> str:
+        return f"/auth/google/callback?code=fake&state={state}"
+
+    async def exchange(
+        self, *, code: str, code_verifier: str, nonce: str
+    ) -> IdentityClaims:
+        self.exchanges.append(
+            {"code": code, "code_verifier": code_verifier, "nonce": nonce}
+        )
+        if not self.claims.email_verified:
+            raise SignInError("Your Google email address is not verified")
+        return self.claims
+
+
 @pytest.fixture
-def cloud_app(settings, clock):
-    return create_app(settings, now=clock)
+def provider():
+    return FakeProvider(
+        IdentityClaims(
+            sub="sub-default", email="user@example.com", email_verified=True, name="U"
+        )
+    )
+
+
+@pytest.fixture
+def cloud_app(settings, clock, provider):
+    return create_app(settings, now=clock, provider=provider)
+
+
+def login(
+    cloud: TestClient, email: str, sub: str | None = None, name: str = "Test User"
+) -> Account:
+    """Sign the client in as ``email`` by driving start then callback."""
+    cloud.app.state.provider.claims = IdentityClaims(
+        sub=sub or f"sub-{email}", email=email, email_verified=True, name=name
+    )
+    start = cloud.get("/auth/google/start")
+    assert start.status_code == 303
+    callback = cloud.get(start.headers["location"])
+    assert callback.status_code == 303, callback.text
+    account = cloud.app.state.repo.account_by_email(email)
+    assert account is not None
+    return account
 
 
 @pytest.fixture
