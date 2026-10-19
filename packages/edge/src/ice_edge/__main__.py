@@ -181,12 +181,31 @@ async def main():
     if live_config.cloud.enabled:
         # Off by default. Uploads run in this supervised task with a 5 s
         # timeout and never block a sale.
-        uplink = HttpUplink(live_config.cloud.url, MachineIdentity.load_or_create())
+        identity = MachineIdentity.load_or_create()
+        uplink = HttpUplink(live_config.cloud.url, identity)
+
+        def _sync_claim_notice() -> None:
+            identity.set_notice(*(access_store.cloud_claim_code() or (None, None)))
+
+        access_store.subscribe_claim_code_change(_sync_claim_notice)
+        # A code minted while the cloud was disabled must still be sent, but a
+        # restart must not re-send an already-acked unchanged notice.
+        live_code = access_store.cloud_claim_code()
+        held = identity.notice
+        if held is None:
+            if live_code is not None:
+                _sync_claim_notice()
+        elif held.claim_code_hash != (live_code[0] if live_code else None):
+            _sync_claim_notice()
         background.append(
             supervise(
                 "uplink",
                 lambda: run_uplink(
-                    machine, live_config, uplink, holder_name=holder_display_name
+                    machine,
+                    live_config,
+                    uplink,
+                    identity=identity,
+                    holder_name=holder_display_name,
                 ),
             )
         )

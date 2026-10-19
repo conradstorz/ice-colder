@@ -118,12 +118,18 @@ class MachineIdentity:
         self._write(notice)
         self._notice = notice
 
-    def mark_notice_acked(self) -> None:
-        if self._notice is None:
-            return
-        notice = replace(self._notice, acked=True)
-        self._write(notice)
-        self._notice = notice
+    def mark_notice_acked(self, notice: ClaimNotice) -> bool:
+        """Ack ``notice`` only if it is still the current one.
+
+        A notice replaced while its request was in flight stays unacked so the
+        newer one is sent. Returns True when the ack was recorded.
+        """
+        if self._notice != notice:
+            return False
+        acked = replace(notice, acked=True)
+        self._write(acked)
+        self._notice = acked
+        return True
 
     def _write(self, notice: ClaimNotice | None) -> None:
         doc = {

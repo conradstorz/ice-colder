@@ -4,14 +4,40 @@ from datetime import UTC, datetime
 import pytest
 
 from ice_common.config_model import ConfigModel
+from ice_edge.uplink.identity import MachineIdentity
 from ice_edge.uplink.loop import run_uplink
 from ice_ui.bundle import ui_digest
 
 
 class FakeUplink:
-    def __init__(self, bundle_results=(True,)):
+    def __init__(
+        self,
+        bundle_results=(True,),
+        register_results=(True,),
+        claim_results=(True,),
+        delete_results=(True,),
+        on_claim=None,
+    ):
+        self.on_claim = on_claim
         self.bundle_results = list(bundle_results)
+        self.register_results = list(register_results)
+        self.claim_results = list(claim_results)
+        self.delete_results = list(delete_results)
         self.events: list[tuple] = []
+
+    async def register(self, label):
+        self.events.append(("register", label))
+        return self.register_results.pop(0) if self.register_results else True
+
+    async def post_claim_code(self, notice):
+        self.events.append(("claim", notice.claim_code_hash))
+        if self.on_claim is not None:
+            self.on_claim()
+        return self.claim_results.pop(0) if self.claim_results else True
+
+    async def delete_claim_code(self):
+        self.events.append(("delete",))
+        return self.delete_results.pop(0) if self.delete_results else True
 
     async def put_ui_bundle(self, digest, data):
         self.events.append(("put", digest))
@@ -35,20 +61,25 @@ def _sleeper(config, *, stop_after, set_interval_at=None):
     return sleep, calls
 
 
+@pytest.fixture
+def identity(tmp_path):
+    return MachineIdentity.load_or_create(tmp_path / "identity.json")
+
+
 def _now():
     return datetime(2026, 10, 13, tzinfo=UTC)
 
 
-async def test_one_bundle_put_then_reports_with_rising_seq(machine_fake_time):
+async def test_one_bundle_put_then_reports_with_rising_seq(machine_fake_time, identity):
     machine, _ = machine_fake_time
     cfg = ConfigModel()
     uplink = FakeUplink()
     sleep, calls = _sleeper(cfg, stop_after=3)
 
     with pytest.raises(asyncio.CancelledError):
-        await run_uplink(machine, cfg, uplink, sleep=sleep, now=_now)
+        await run_uplink(machine, cfg, uplink, sleep=sleep, now=_now, identity=identity)
 
-    assert uplink.events[0] == ("put", ui_digest())
+    assert uplink.events[1] == ("put", ui_digest())
     posts = [e for e in uplink.events if e[0] == "post"]
     assert [p[1] for p in posts] == [0, 1, 2]
     assert len({p[2] for p in posts}) == 1
@@ -56,25 +87,129 @@ async def test_one_bundle_put_then_reports_with_rising_seq(machine_fake_time):
     assert calls == [60, 60, 60]
 
 
-async def test_interval_change_is_honoured_next_pass(machine_fake_time):
+async def test_interval_change_is_honoured_next_pass(machine_fake_time, identity):
     machine, _ = machine_fake_time
     cfg = ConfigModel()
     sleep, calls = _sleeper(cfg, stop_after=3, set_interval_at=(1, 10))
 
     with pytest.raises(asyncio.CancelledError):
-        await run_uplink(machine, cfg, FakeUplink(), sleep=sleep, now=_now)
+        await run_uplink(
+            machine, cfg, FakeUplink(), sleep=sleep, now=_now, identity=identity
+        )
 
     assert calls == [60, 10, 10]
 
 
-async def test_bundle_put_retried_each_interval_until_accepted(machine_fake_time):
+async def test_bundle_put_retried_each_interval_until_accepted(
+    machine_fake_time, identity
+):
     machine, _ = machine_fake_time
     cfg = ConfigModel()
     uplink = FakeUplink(bundle_results=[False, False, True])
     sleep, calls = _sleeper(cfg, stop_after=3)
 
     with pytest.raises(asyncio.CancelledError):
-        await run_uplink(machine, cfg, uplink, sleep=sleep, now=_now)
+        await run_uplink(machine, cfg, uplink, sleep=sleep, now=_now, identity=identity)
 
-    assert [e[0] for e in uplink.events] == ["put", "put", "put", "post"]
+    assert [e[0] for e in uplink.events] == [
+        "register",
+        "put",
+        "put",
+        "put",
+        "post",
+    ]
     assert calls == [60, 60, 60]
+
+
+async def test_register_precedes_everything_and_blocks_reports(
+    machine_fake_time, identity
+):
+    machine, _ = machine_fake_time
+    cfg = ConfigModel()
+    identity.set_notice("h1", None)
+    uplink = FakeUplink(register_results=[False, False, True])
+    sleep, _calls = _sleeper(cfg, stop_after=3)
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_uplink(machine, cfg, uplink, sleep=sleep, now=_now, identity=identity)
+
+    kinds = [e[0] for e in uplink.events]
+    assert kinds == ["register", "register", "register", "claim", "put", "post"]
+    assert uplink.events[0] == ("register", cfg.machine_id)
+
+
+async def test_unacked_notice_sent_each_pass_until_2xx_then_acked(
+    machine_fake_time, identity
+):
+    machine, _ = machine_fake_time
+    cfg = ConfigModel()
+    identity.set_notice("h1", "2026-10-20T00:00:00+00:00")
+    uplink = FakeUplink(claim_results=[False, True])
+    sleep, _calls = _sleeper(cfg, stop_after=4)
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_uplink(machine, cfg, uplink, sleep=sleep, now=_now, identity=identity)
+
+    assert [e for e in uplink.events if e[0] == "claim"] == [
+        ("claim", "h1"),
+        ("claim", "h1"),
+    ]
+    assert identity.notice is not None
+    assert identity.notice.acked is True
+
+
+async def test_delete_notice_when_hash_none(machine_fake_time, identity):
+    machine, _ = machine_fake_time
+    cfg = ConfigModel()
+    identity.set_notice(None, None)
+    uplink = FakeUplink(delete_results=[False, True])
+    sleep, _calls = _sleeper(cfg, stop_after=3)
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_uplink(machine, cfg, uplink, sleep=sleep, now=_now, identity=identity)
+
+    assert [e[0] for e in uplink.events].count("delete") == 2
+    assert not [e for e in uplink.events if e[0] == "claim"]
+    assert identity.notice is not None
+    assert identity.notice.acked is True
+
+
+async def test_bundle_still_once(machine_fake_time, identity):
+    machine, _ = machine_fake_time
+    cfg = ConfigModel()
+    uplink = FakeUplink()
+    sleep, _calls = _sleeper(cfg, stop_after=4)
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_uplink(machine, cfg, uplink, sleep=sleep, now=_now, identity=identity)
+
+    assert [e[0] for e in uplink.events].count("put") == 1
+    assert [e[0] for e in uplink.events].count("post") == 4
+
+
+async def test_notice_replaced_mid_flight_is_not_acked(machine_fake_time, identity):
+    machine, _ = machine_fake_time
+    cfg = ConfigModel()
+    identity.set_notice("h1", None)
+    uplink = FakeUplink(on_claim=lambda: identity.set_notice("h2", None))
+    sleep, _calls = _sleeper(cfg, stop_after=1)
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_uplink(machine, cfg, uplink, sleep=sleep, now=_now, identity=identity)
+
+    assert identity.notice is not None
+    assert identity.notice.claim_code_hash == "h2"
+    assert identity.notice.acked is False
+
+    uplink.on_claim = None
+    sleep2, _ = _sleeper(cfg, stop_after=1)
+    with pytest.raises(asyncio.CancelledError):
+        await run_uplink(
+            machine, cfg, uplink, sleep=sleep2, now=_now, identity=identity
+        )
+
+    assert [e for e in uplink.events if e[0] == "claim"] == [
+        ("claim", "h1"),
+        ("claim", "h2"),
+    ]
+    assert identity.notice.acked is True
