@@ -22,6 +22,10 @@ public:
     void reset();
     bool request_payout(uint32_t cents, const char* request_id);  // false if busy or offline
     bool payout_in_progress() const { return payout_.active; }
+    // True once the changer has ACKed the first PAYOUT (level 3) or DISPENSE (level 2) command.
+    bool payout_acked() const { return payout_.active && payout_.acked; }
+    // A coin-type (enable) update has not been ACKed on the bus yet.
+    bool enable_pending() const { return mask_dirty_; }
     const DeviceState& state() const { return state_; }
     const TubeLevel* tubes(uint8_t& n) const { n = n_tubes_; return tubes_; }
     uint32_t payable_total_cents() const;
@@ -41,6 +45,7 @@ private:
 
     struct Payout {
         bool active;
+        bool acked;
         bool level3;
         PayStep step;
         uint32_t requested;

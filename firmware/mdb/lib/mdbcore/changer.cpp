@@ -432,10 +432,12 @@ void Changer::do_payout() {
             const uint8_t d[2] = {kSubPayout, static_cast<uint8_t>(payout_.requested / scaling_)};
             r = link_.transact(kAddr, kCmdExpansion, d, 2);
             if (r.kind == Reply::Timeout || r.kind == Reply::Corrupt) return note_miss();
-            if (r.kind == Reply::Ack)
+            if (r.kind == Reply::Ack) {
+                payout_.acked = true;
                 payout_.step = PayStep::L3Value;
-            else
+            } else {
                 finish_payout(0);
+            }
             return;
         }
         case PayStep::L3Value: {
@@ -482,6 +484,7 @@ void Changer::do_payout() {
             r = link_.transact(kAddr, kCmdDispense, &d, 1);
             if (r.kind == Reply::Timeout || r.kind == Reply::Corrupt) return note_miss();
             if (r.kind == Reply::Ack) {
+                payout_.acked = true;
                 payout_.working[t] = static_cast<uint16_t>(payout_.working[t] - n);
                 payout_.remaining -= n * type_cents(t);
             } else {

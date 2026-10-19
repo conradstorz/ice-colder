@@ -33,6 +33,9 @@ public:
     bool end_session();                             // false when no session is open or a vend step is outstanding
     bool cash_sale(uint32_t cents, uint16_t item);  // false unless polling, idle and the price fits the scale
     void set_edge_timeout_ms(uint32_t ms) { edge_timeout_ms_ = ms; }
+    bool enable_pending() const { return enable_dirty_; }  // a READER enable/disable is not ACKed yet
+    // True once the reader ACKed the VEND REQUEST of the current request (false again after a denial).
+    bool vend_command_sent() const { return vend_sent_; }
     bool always_idle() const { return always_idle_active_; }
     const DeviceState& state() const { return state_; }
     Phase phase() const { return phase_; }

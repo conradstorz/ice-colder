@@ -30,6 +30,7 @@ public:
     // accept=false disables every bill (zero masks). cents lists the denominations to accept.
     void set_enabled(const uint32_t* cents, uint8_t n, bool accept);
     void reset();
+    bool enable_pending() const { return mask_dirty_; }  // a bill-type update is not ACKed yet
     bool return_escrow(BillReturnReason reason);  // false when no bill is held
     bool bill_in_escrow(uint32_t& cents) const {
         cents = held_cents_;
