@@ -13,6 +13,15 @@ constexpr uint8_t kMaxBlock = 36;
 constexpr uint8_t kAck = 0x00, kRet = 0xAA, kNak = 0xFF;
 constexpr int kMissThreshold = 10;
 
+// A byte reaches the port driver at the END of its stop bit: 11 bits at 9600 baud, 1.146 ms after
+// its start bit. BusPort::read timeouts are line-idle times measured from that far end of the
+// previous byte, so a port must add one character time plus margin before comparing against its
+// own clock (a port that does not cuts multi-byte replies off and reports a legal late reply as a
+// Timeout, which makes the Link resend the command).
+constexpr uint32_t kCharTimeUs = 1150;
+constexpr uint32_t kRxMarginUs = 250;
+constexpr uint32_t rx_deadline_us(uint32_t timeout_us) { return timeout_us + kCharTimeUs + kRxMarginUs; }
+
 // Which UART parity setting (true = even) makes the transmitted parity bit equal `mode`.
 // Even parity makes the total number of ones (data + parity bit) even, so the bit equals popcount & 1.
 bool parity_even_for(uint8_t data, bool mode);

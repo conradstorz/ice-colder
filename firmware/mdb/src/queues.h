@@ -30,6 +30,7 @@ constexpr size_t kPubPayloadMax = 1664;
 struct PubItem {
     char topic[96];
     char payload[kPubPayloadMax];
+    uint32_t replay_epoch;  // Outcome items: ledger's replay epoch when queued; comms drops stale ones
     uint16_t len;
     bool retain;
     boardcore::Prio prio;
@@ -40,6 +41,19 @@ struct EventAckItem {
     uint32_t seq;
 };
 
+// Counters kept by the bus task instead of log lines (it must not log): the ledger reports them.
+struct BusStats {
+    uint32_t ack_dropped;           // ack lost to a full ack_q after one was already held
+    uint32_t ack_held;              // ack held for retry because ack_q was full
+    uint32_t payouts_unserialized;  // payout store did not fit its buffer
+    uint32_t rx_mode_disagreements;
+    uint32_t rx_ambiguous;
+    uint32_t rx_orphans;
+    uint32_t rx_lost;
+    uint32_t corrupt_blocks;
+    uint32_t flash_window_timeouts;  // ledger overran the flash quiet window
+};
+
 // A deep copy of the Master's PaymentState (whose pointers refer into the Master) plus the
 // payout idempotency store, so the ledger task never touches the bus task's objects.
 constexpr size_t kPayoutsMax = 5120;
@@ -47,6 +61,7 @@ struct StateMsg {
     mdbcore::PaymentState state;
     char policy_id[65];
     char session_ts[25];
+    BusStats stats;
     size_t payouts_len;
     char payouts[kPayoutsMax];
 };

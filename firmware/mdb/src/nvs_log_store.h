@@ -9,7 +9,13 @@
 // gone, which would wedge EventLog::acked at the front forever. The idempotency store for payouts
 // lives in the same namespace under "payouts".
 //
-// Only the ledger task calls append/get/erase_first/save_payouts; count() is safe from any task.
+// erase_first(n) is cheap: it only advances `head` (one flash write). The blobs below head are
+// erased later, a few at a time, by sweep_step(), so one ack can never turn into a long run of
+// flash writes inside a quiet window (see flash_window.h). begin() sweeps every stale blob left by
+// a cut, by walking the whole namespace, not just a window below head.
+//
+// Only the ledger task calls append/get/erase_first/sweep_step/save_payouts; count() is safe from
+// any task. Every call that writes flash must run inside a flash quiet window.
 #pragma once
 
 #include <stddef.h>
@@ -27,9 +33,19 @@ public:
     bool begin();
 
     bool append(const char* json, size_t len) override;
-    int count() const override { return static_cast<int>(tail_.load() - head_.load()); }
+    // head is read before tail: both only grow and head <= tail always, so this order can never
+    // observe head > tail (a torn read the other way round could go negative).
+    int count() const override {
+        const uint32_t h = head_.load();
+        const uint32_t t = tail_.load();
+        return t >= h ? static_cast<int>(t - h) : 0;
+    }
     bool get(int index, char* out, size_t cap) const override;
     void erase_first(int n) override;
+
+    // Erases up to max_keys stale blobs below head (see above). Returns how many it erased.
+    int sweep_step(int max_keys);
+    int sweep_pending() const { return static_cast<int>(head_.load() - swept_); }
 
     // Payout idempotency store (Accounts::payouts_json). load: false when none stored.
     bool load_payouts(char* out, size_t cap, size_t& len) const;
@@ -42,4 +58,5 @@ private:
     bool ok_ = false;
     std::atomic<uint32_t> head_{0};
     std::atomic<uint32_t> tail_{0};
+    uint32_t swept_ = 0;  // blobs below this index are already erased; ledger task only
 };

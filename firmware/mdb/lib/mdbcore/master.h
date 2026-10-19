@@ -106,6 +106,12 @@ public:
     // EscrowJudge (from the tap).
     EscrowVerdict judge(uint32_t bill_cents) override;
 
+    // Replay-log pressure from the ledger (EventLog::next_pressure). While set, and no higher inhibit
+    // applies, acceptance is off with Inhibit::DeviceFault: the three devices are disabled on the bus
+    // like the silence sequence, but no bill is returned and no session ended. Releasing it never
+    // lifts NoPolicy, EdgeSilent or PolicyOff.
+    void set_log_pressure(bool on);
+
     Inhibit inhibit() const { return inhibit_; }
 
 private:
@@ -118,7 +124,7 @@ private:
         uint16_t item;
     };
 
-    bool accepting() const { return has_policy_ && policy_.accept && !silent_; }
+    bool accepting() const { return has_policy_ && policy_.accept && !silent_ && !log_pressure_; }
     void recompute_inhibit();
     void apply_enables();
     void after_changer_step();
@@ -155,6 +161,7 @@ private:
     Policy policy_{};
     bool has_policy_ = false;
     bool silent_ = false;
+    bool log_pressure_ = false;
     bool silent_end_pending_ = false;
     bool idle_wanted_ = true;
     bool lever_event_pending_ = false;

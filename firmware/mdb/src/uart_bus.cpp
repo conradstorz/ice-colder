@@ -54,6 +54,9 @@ void UartBus::write(const uint8_t* bytes, const bool* modes, uint8_t n) {
         uart_write_bytes(port_, &bytes[i], 1);
     }
     uart_wait_tx_done(port_, pdMS_TO_TICKS(20));
+    // The parity setting is shared by TX and RX. Leave it EVEN so the receiver always decodes the
+    // ninth bit relative to EVEN (mode = popcount & 1 ^ parity_error), whatever the last TX byte used.
+    uart_set_parity(port_, UART_PARITY_EVEN);
 }
 
 void UartBus::push(uint8_t data, bool mode) {
@@ -84,8 +87,10 @@ void UartBus::on_data(uint32_t size) {
             stash_ = e;
             have_stash_ = true;
             break;
-        } else if (e.type == UART_FIFO_OVF || e.type == UART_BUFFER_FULL || e.type == UART_FRAME_ERR ||
-                   e.type == UART_BREAK) {
+        } else if (e.type == UART_FIFO_OVF || e.type == UART_BUFFER_FULL) {
+            ++rx_lost_;
+            uart_flush_input(port_);  // same recovery as pump(): the byte stream is no longer trustworthy
+        } else if (e.type == UART_FRAME_ERR || e.type == UART_BREAK) {
             ++rx_lost_;
         }
     }
@@ -140,7 +145,9 @@ void UartBus::pump(uint32_t wait_ticks) {
 }
 
 bool UartBus::read(mdbcore::RxByte& out, uint32_t timeout_us) {
-    const int64_t deadline = esp_timer_get_time() + static_cast<int64_t>(timeout_us);
+    // timeout_us is line-idle time from the far end of the previous byte; a byte is delivered one
+    // character time after it started, so add that (and a margin) to the arrival-time deadline.
+    const int64_t deadline = esp_timer_get_time() + static_cast<int64_t>(mdbcore::rx_deadline_us(timeout_us));
     for (;;) {
         pump(0);
         if (count_ > 0) {

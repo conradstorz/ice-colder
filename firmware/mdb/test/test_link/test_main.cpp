@@ -270,8 +270,15 @@ static void test_command_is_masked_to_three_bits(void) {
     TEST_ASSERT_EQUAL_HEX8(0x17, r.bus.tx_bytes[0]);
 }
 
+static void test_rx_deadline_adds_one_character_time_and_margin(void) {
+    TEST_ASSERT_EQUAL_UINT32(1150 + 250, rx_deadline_us(0));
+    TEST_ASSERT_EQUAL_UINT32(kInterByteGapUs + kCharTimeUs + kRxMarginUs, rx_deadline_us(kInterByteGapUs));
+    TEST_ASSERT_TRUE(rx_deadline_us(kInterByteGapUs) > 2000);  // the 9600 baud stop bit ends 1.146 ms after the start
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
+    RUN_TEST(test_rx_deadline_adds_one_character_time_and_margin);
     RUN_TEST(test_reset_framing);
     RUN_TEST(test_data_command_framing);
     RUN_TEST(test_parity_truth_table);

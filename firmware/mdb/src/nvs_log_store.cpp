@@ -10,7 +10,17 @@ namespace {
 const char* TAG = "nvs_log";
 constexpr const char* kPartition = "evlog";
 constexpr const char* kNamespace = "log";
-constexpr uint32_t kOrphanSweep = 256;  // matches EventLog::kCapacity: the most one erase_first can strand
+constexpr int kBootSweepGuard = 4096;  // upper bound on stale blobs erased at boot
+
+// Index of an "e<8 hex>" key, or false for any other key.
+bool parse_key(const char* key, uint32_t& index) {
+    if (key[0] != 'e' || strlen(key) != 9) return false;
+    char* end = nullptr;
+    const unsigned long v = strtoul(key + 1, &end, 16);
+    if (end != key + 9) return false;
+    index = static_cast<uint32_t>(v);
+    return true;
+}
 }  // namespace
 
 void NvsLogStore::key_for(uint32_t index, char* out) { snprintf(out, 16, "e%08x", static_cast<unsigned>(index)); }
@@ -40,10 +50,25 @@ bool NvsLogStore::begin() {
     }
     head_.store(head);
     tail_.store(tail);
-    char key[16];
-    for (uint32_t i = 1; i <= kOrphanSweep && i <= head; ++i) {  // blobs stranded by a cut erase
-        key_for(head - i, key);
-        nvs_erase_key(h_, key);
+    swept_ = head;
+    // Boot-time sweep (the bus task is not running yet): erase every entry blob below head, whatever
+    // cut stranded it. Collect-one-then-erase, because erasing while iterating invalidates the iterator.
+    for (int guard = 0; guard < kBootSweepGuard; ++guard) {
+        char stale[16] = {};
+        nvs_iterator_t it = nullptr;
+        esp_err_t e = nvs_entry_find_in_handle(h_, NVS_TYPE_BLOB, &it);
+        while (e == ESP_OK && it != nullptr) {
+            nvs_entry_info_t info;
+            uint32_t idx = 0;
+            if (nvs_entry_info(it, &info) == ESP_OK && parse_key(info.key, idx) && idx < head) {
+                snprintf(stale, sizeof(stale), "%s", info.key);
+                break;
+            }
+            e = nvs_entry_next(&it);
+        }
+        nvs_release_iterator(it);
+        if (stale[0] == '\0') break;
+        nvs_erase_key(h_, stale);
     }
     nvs_commit(h_);
     ok_ = true;
@@ -86,19 +111,26 @@ bool NvsLogStore::get(int index, char* out, size_t cap) const {
 void NvsLogStore::erase_first(int n) {
     if (!ok_ || n <= 0) return;
     if (n > count()) n = count();
-    const uint32_t head = head_.load();
-    const uint32_t new_head = head + static_cast<uint32_t>(n);
+    const uint32_t new_head = head_.load() + static_cast<uint32_t>(n);
     if (nvs_set_u32(h_, "head", new_head) != ESP_OK || nvs_commit(h_) != ESP_OK) {
         ESP_LOGE(TAG, "erase: head update failed; entries stay");
         return;
     }
-    head_.store(new_head);
+    head_.store(new_head);  // the blobs below it are erased by sweep_step()
+}
+
+int NvsLogStore::sweep_step(int max_keys) {
+    if (!ok_) return 0;
+    int done = 0;
     char key[16];
-    for (uint32_t i = head; i < new_head; ++i) {
-        key_for(i, key);
+    const uint32_t head = head_.load();
+    while (swept_ < head && done < max_keys) {
+        key_for(swept_, key);
         nvs_erase_key(h_, key);
+        ++swept_;
+        ++done;
     }
-    nvs_commit(h_);
+    return done;
 }
 
 bool NvsLogStore::load_payouts(char* out, size_t cap, size_t& len) const {

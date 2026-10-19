@@ -8,6 +8,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "flash_window.h"
 #include "ledger_task.h"
 #include "nvs_flash.h"
 #include "queues.h"
@@ -43,6 +44,7 @@ extern "C" void app_main(void) {
         for (;;) vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
+    flash_window_init();
     status_led_start(mdbboard::kStatusLedGpio);
     if (!ledger_init(q, settings.machine_id)) ESP_LOGE(TAG, "replay log unavailable; money events will be held, not lost");
     start_bus(q);

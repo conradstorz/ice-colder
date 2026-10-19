@@ -118,6 +118,13 @@ Master::Master(Link& link, Clock& clock, IdSource& /*ids*/, EventSink& sink, Cha
     cashless_.reset();
 }
 
+void Master::set_log_pressure(bool on) {
+    if (on == log_pressure_) return;
+    log_pressure_ = on;
+    recompute_inhibit();
+    apply_enables();
+}
+
 void Master::set_wall_time(int64_t unix_now) {
     wall_known_ = true;
     wall_unix_ = unix_now;
@@ -143,6 +150,8 @@ void Master::recompute_inhibit() {
         inhibit_ = Inhibit::EdgeSilent;
     else if (!policy_.accept)
         inhibit_ = Inhibit::PolicyOff;
+    else if (log_pressure_)
+        inhibit_ = Inhibit::DeviceFault;
     else
         inhibit_ = Inhibit::None;
     dirty_ = true;
@@ -631,13 +640,17 @@ void Master::self_test(Ack& out) const {
     device(false, "validator", validator_.state());
     device(false, "reader", cashless_.state());
     check(false, "clock_synced", wall_known_, wall_known_ ? "synced" : "not synced");
-    char buf[32];
+    char buf[40];
     if (log_ != nullptr) {
-        snprintf(buf, sizeof(buf), "depth %d", log_->pending());
-        check(false, "event_log", log_->pending() < EventLog::kCapacity * 3 / 4, buf);
+        if (log_->corrupt_entries() != 0)
+            snprintf(buf, sizeof(buf), "depth %d, corrupt %u", log_->pending(),
+                     static_cast<unsigned>(log_->corrupt_entries()));
+        else
+            snprintf(buf, sizeof(buf), "depth %d", log_->pending());
     } else {
-        check(false, "event_log", true, "not attached");
+        snprintf(buf, sizeof(buf), "not attached");
     }
+    check(false, "event_log_full", !log_pressure_, buf);
     snprintf(buf, sizeof(buf), "%u disagreements", static_cast<unsigned>(link_.mode_disagreements()));
     check(false, "rx_mode_bit", link_.mode_disagreements() == 0, buf);
     if (has_policy_)

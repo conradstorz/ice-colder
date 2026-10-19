@@ -197,8 +197,16 @@ Subscriptions: `cmd/mdb`, `payment/event/ack`.
 **Replay.** On connect the ledger task walks the log oldest boot first and hands every unacked
 envelope to comms in order before any new event. An ack `{boot_id, seq}` erases entries of that
 `boot_id` with `seq <=` the acked value and nothing else. Capacity is 256 envelopes in a 128 KB NVS
-partition; at capacity the board keeps accepting (money already in the machine must be recorded),
-`self_test` fails with `event_log_full`, and the LED pattern changes.
+partition. The board does not run the log to capacity: at 192 pending (3/4) it sets log pressure and
+inhibits acceptance with `inhibited_reason: device_fault` (all three devices disabled on the bus like
+the silence sequence; no bill is returned, no session ended; payouts, cash sales and `set_policy`
+still work). Pressure clears at 128 pending (hysteresis), or never when the store is unusable at
+boot. `self_test` fails `event_log_full` exactly while pressure is set, and the LED pattern changes.
+Pressure never lifts `no_policy`, `edge_silent` or `policy_off`, which outrank it. "The whole unacked
+log in order before anything new" is enforced with a replay epoch: the ledger stamps each outgoing
+envelope, every connect edge and every replay request bumps the epoch, and comms drops envelopes
+carrying a stale one; an envelope comms cannot publish or hold latches "replay owed" and every later
+one is dropped until the replay is requested.
 
 **Boot.** New random `boot_id`; `seq` starts at 1; `inhibited_reason: no_policy`; the three
 peripherals go through RESET and setup; the state doc is published as soon as the devices have
@@ -232,7 +240,7 @@ whether the clock is synced.
 | Broker lost | The bus keeps running on the policy; events accumulate in flash; everything replays on reconnect; the edge-silence timer still fires because `cmd/mdb` stops arriving |
 | Power loss or watchdog reset | New `boot_id`; unacked log entries replay first; `no_policy` until `set_policy`; peripherals are reset, so a bill mid-escrow is returned by the validator itself |
 | `evt_q` or `pub_q` full | Money events are never dropped: the bus task defers the next POLL to that device until the queue drains (peripherals tolerate hundreds of milliseconds between polls); only state republishes are coalesced |
-| Replay log full | Keep accepting; `self_test` fails `event_log_full`; LED pattern changes |
+| Replay log pressure (192 of 256 pending; clears at 128) | Acceptance inhibited with `device_fault` before the log can fill, so money already taken is always recordable; `self_test` fails `event_log_full`; LED pattern changes. Unusable store at boot: permanent |
 | Malformed command, unknown command, expired `payout`/`vend_request` | `rejected` naming the field, `unsupported`, `rejected` with `detail: "expired"`, per contract |
 | `cash_sale` larger than `escrow_cents` | Clamp to zero, ack `ok` with `detail: "clamped"`, so a mixed cash-plus-virtual sale never fails |
 
@@ -323,3 +331,16 @@ doc.
 From §4.4, each affects only a default or the interface doc, never the architecture: the existing MDB
 interface make and bus power source; the peripheral models and negotiated levels; the connector pinout
 confirmed at the machine; whether the Nayax reader offers always-idle.
+
+## 11. As built
+
+- **Log pressure (task 12 fixes).** Replaces "keep accepting at capacity": `Master::set_log_pressure`
+  inhibits with `device_fault` at 192 pending and releases at 128 (`EventLog::next_pressure`); the
+  ledger computes it and the bus task applies it every round. `g_store_ok == false` is permanent pressure.
+- **Flash quiet window.** All NVS writes and the blob reads inside `acked` run in a window the bus
+  task grants between transactions (`src/flash_window.h`), so flash cache stalls on core 0 can never
+  freeze an MDB transaction on core 1. `CONFIG_SPI_FLASH_AUTO_SUSPEND` is enabled as a second layer.
+- **Line-idle read deadlines.** `BusPort::read` timeouts are line-idle times; the UART port adds one
+  character time and margin (`rx_deadline_us`). TX leaves the shared parity setting at EVEN.
+- **Replay ordering.** Epoch-stamped Outcome envelopes and a "replay owed" latch in comms (see section 6).
+- **Bus task does not log.** It counts (`BusStats`, carried in the state mailbox); the ledger logs them.

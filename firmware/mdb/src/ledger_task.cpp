@@ -9,6 +9,7 @@
 #include "boardidf/net.h"
 #include "esp_ids.h"
 #include "esp_log.h"
+#include "flash_window.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_log_store.h"
@@ -20,13 +21,17 @@ using namespace mdbcore;
 namespace {
 const char* TAG = "ledger";
 constexpr uint32_t kErrLogMs = 10000;
+constexpr uint32_t kStatsLogMs = 60000;
+constexpr uint32_t kPayoutsRetryMs = 500;
 constexpr int kAppendsPerPass = 8;
+constexpr int kSweepKeysPerStep = 2;
 
 Queues g_q;
 NvsLogStore g_store;
 EspIds g_ids;
 EventLog g_log(g_store, g_ids);
 bool g_store_ok = false;
+std::atomic<bool> g_pressure{false};
 
 char g_topic_event[96];
 char g_topic_state[96];
@@ -35,13 +40,21 @@ char g_payouts_boot[kPayoutsMax];
 size_t g_payouts_boot_len = 0;
 char g_payouts_saved[kPayoutsMax];
 size_t g_payouts_saved_len = 0;
+bool g_payouts_dirty = false;
+uint32_t g_payouts_retry_ms = 0;
 
 std::atomic<bool> g_connect_edge{false};
+// Bumped (by comms) before the connect flag is set. g_pub_epoch is the epoch this task has
+// processed: Outcome items are stamped with it, so anything queued before the ledger saw the latest
+// request carries an older stamp and comms discards it.
+std::atomic<uint32_t> g_replay_epoch{0};
+uint32_t g_pub_epoch = 0;
 
 // Replay cursor: index of the next log entry to hand to comms, or -1 when not replaying.
 int g_replay_next = -1;
 
-// An event whose append the store refused (log full or flash error): held, retried, never dropped.
+// An event whose append the store refused (log full, flash error, or no quiet window): held,
+// retried, never dropped.
 PaymentEvent g_held_evt;
 bool g_have_evt = false;
 // An envelope already in the log but not yet accepted by pub_q.
@@ -55,6 +68,7 @@ bool g_state_dirty = false;
 
 uint32_t g_last_err_log_ms = 0;
 bool g_err_logged = false;
+uint32_t g_last_stats_ms = 0;
 
 uint32_t now_ms() { return static_cast<uint32_t>(xTaskGetTickCount() * portTICK_PERIOD_MS); }
 
@@ -85,17 +99,40 @@ bool push_pub(const char* topic, const char* payload, size_t len, bool retain, b
     item.len = static_cast<uint16_t>(len);
     item.retain = retain;
     item.prio = prio;
+    item.replay_epoch = g_pub_epoch;
     return xQueueSend(g_q.pub_q, &item, 0) == pdTRUE;
 }
 
+// Replay-log pressure: hysteresis on the pending count; an unusable store is permanent pressure.
+void update_pressure() {
+    const bool next = !g_store_ok || EventLog::next_pressure(g_pressure.load(), g_log.pending());
+    if (next != g_pressure.load()) {
+        ESP_LOGW(TAG, "replay log pressure %s (%d pending)", next ? "ON, acceptance inhibited" : "off", g_log.pending());
+        g_pressure.store(next);
+    }
+    status_led_set_log_full(next);
+}
+
+// Acks erase the prefix. Reads and the head update touch flash, so they run in a quiet window.
 void handle_acks() {
     static EventAckItem a;
-    while (xQueueReceive(g_q.ack_in_q, &a, 0) == pdTRUE) {
+    if (uxQueueMessagesWaiting(g_q.ack_in_q) == 0) return;
+    FlashWindow w;
+    if (!w.open()) return;  // the acks stay queued; the next pass tries again
+    while (w.budget() && xQueueReceive(g_q.ack_in_q, &a, 0) == pdTRUE) {
         const int before = g_log.pending();
         g_log.acked(a.boot_id, a.seq);
         const int erased = before - g_log.pending();
         if (g_replay_next >= 0) g_replay_next = g_replay_next > erased ? g_replay_next - erased : 0;
     }
+}
+
+// Erased entries' blobs go a couple of keys at a time, so one ack never becomes a long flash run.
+void sweep_blobs() {
+    if (g_store.sweep_pending() <= 0) return;
+    FlashWindow w;
+    if (!w.open()) return;
+    while (w.budget() && g_store.sweep_pending() > 0) g_store.sweep_step(kSweepKeysPerStep);
 }
 
 void run_replay() {
@@ -119,14 +156,21 @@ void run_replay() {
 void drain_events() {
     static PaymentEvent evt;
     char iso[24];
+    FlashWindow w;  // opened on the first event that needs an append
     for (int n = 0; n < kAppendsPerPass; ++n) {
         if (g_have_env) {  // the previous envelope must reach pub_q first, so order is the log's order
             if (!push_pub(g_topic_event, g_env, g_env_len, false, boardcore::Prio::Outcome)) return;
             g_have_env = false;
         }
+        if (w.is_open() && !w.budget()) return;  // batch spent: the rest waits for the next pass
         if (g_have_evt) {
             evt = g_held_evt;
         } else if (xQueueReceive(g_q.evt_q, &evt, 0) != pdTRUE) {
+            return;
+        }
+        if (!w.open()) {  // bus never reached a checkpoint in time: hold the event, ask again later
+            g_held_evt = evt;
+            g_have_evt = true;
             return;
         }
         iso_now(iso, sizeof(iso));
@@ -144,6 +188,39 @@ void drain_events() {
     }
 }
 
+void persist_payouts() {
+    if (!g_payouts_dirty) return;
+    if (now_ms() < g_payouts_retry_ms) return;
+    FlashWindow w;
+    if (w.open() && g_store.save_payouts(g_last.payouts, g_last.payouts_len)) {
+        memcpy(g_payouts_saved, g_last.payouts, g_last.payouts_len);
+        g_payouts_saved_len = g_last.payouts_len;
+        g_payouts_dirty = false;
+        return;
+    }
+    g_payouts_retry_ms = now_ms() + kPayoutsRetryMs;
+}
+
+void log_bus_stats() {
+    const uint32_t now = now_ms();
+    if (now - g_last_stats_ms < kStatsLogMs) return;
+    g_last_stats_ms = now;
+    const BusStats& s = g_last.stats;
+    if (!g_have_state) return;
+    if (s.ack_dropped | s.ack_held | s.payouts_unserialized | s.rx_mode_disagreements | s.rx_ambiguous | s.rx_orphans |
+        s.rx_lost | s.corrupt_blocks | s.flash_window_timeouts) {
+        ESP_LOGI(TAG,
+                 "bus stats: acks held %u dropped %u, payouts unserialized %u, rx mode disagreements %u ambiguous %u "
+                 "orphan parity %u lost %u, corrupt blocks %u, flash window overruns %u, max window %u us, corrupt log entries %u",
+                 static_cast<unsigned>(s.ack_held), static_cast<unsigned>(s.ack_dropped),
+                 static_cast<unsigned>(s.payouts_unserialized), static_cast<unsigned>(s.rx_mode_disagreements),
+                 static_cast<unsigned>(s.rx_ambiguous), static_cast<unsigned>(s.rx_orphans),
+                 static_cast<unsigned>(s.rx_lost), static_cast<unsigned>(s.corrupt_blocks),
+                 static_cast<unsigned>(s.flash_window_timeouts), static_cast<unsigned>(FlashWindow::max_hold_us()),
+                 static_cast<unsigned>(g_log.corrupt_entries()));
+    }
+}
+
 void handle_state() {
     static StateMsg msg;
     if (xQueueReceive(g_q.state_q, &msg, 0) == pdTRUE) {
@@ -156,13 +233,12 @@ void handle_state() {
         for (const DeviceState& d : g_last.state.devices) offline = offline || (d.present && d.status == Status::Offline);
         status_led_set_state(g_last.state.inhibited == Inhibit::None, offline);
         if (g_last.payouts_len > 0 &&
-            (g_last.payouts_len != g_payouts_saved_len || memcmp(g_last.payouts, g_payouts_saved, g_last.payouts_len) != 0)) {
-            if (g_store.save_payouts(g_last.payouts, g_last.payouts_len)) {
-                memcpy(g_payouts_saved, g_last.payouts, g_last.payouts_len);
-                g_payouts_saved_len = g_last.payouts_len;
-            }
-        }
+            (g_last.payouts_len != g_payouts_saved_len || memcmp(g_last.payouts, g_payouts_saved, g_last.payouts_len) != 0))
+            g_payouts_dirty = true;
+        else
+            g_payouts_dirty = false;  // the newest state matches what is on flash again
     }
+    persist_payouts();
     if (g_state_dirty && g_have_state && uxQueueSpacesAvailable(g_q.pub_q) > 0) {
         static char json[kPubPayloadMax];
         char iso[24];
@@ -183,15 +259,19 @@ void handle_state() {
 void ledger_main(void*) {
     for (;;) {
         if (g_connect_edge.exchange(false)) {
+            g_pub_epoch = g_replay_epoch.load();  // items queued from here on are current
             g_replay_next = 0;
             g_have_env = false;  // already in the log, so the replay carries it
             g_state_dirty = true;
         }
         handle_acks();
+        sweep_blobs();
+        update_pressure();
         run_replay();
         if (g_replay_next < 0) drain_events();
+        update_pressure();
         handle_state();
-        status_led_set_log_full(g_log.full());
+        log_bus_stats();
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
@@ -203,8 +283,9 @@ bool ledger_init(const Queues& q, const char* machine_id) {
     ctx.machine_id = machine_id;
     topic_event(ctx, g_topic_event, sizeof(g_topic_event));
     topic_state(ctx, g_topic_state, sizeof(g_topic_state));
-    g_store_ok = g_store.begin();
+    g_store_ok = g_store.begin();  // boot: the bus task is not running, so no quiet window is needed
     g_log.begin_boot();
+    g_pressure.store(!g_store_ok || EventLog::next_pressure(false, g_log.pending()));
     if (g_store_ok) {
         size_t len = 0;
         if (g_store.load_payouts(g_payouts_boot, sizeof(g_payouts_boot), len)) {
@@ -213,7 +294,8 @@ bool ledger_init(const Queues& q, const char* machine_id) {
             g_payouts_saved_len = len;
         }
     }
-    ESP_LOGI(TAG, "boot_id %s, %d unacked events in the log", g_log.boot_id(), g_log.pending());
+    ESP_LOGI(TAG, "boot_id %s, %d unacked events in the log%s", g_log.boot_id(), g_log.pending(),
+             g_pressure.load() ? " (log pressure: acceptance inhibited)" : "");
     return g_store_ok;
 }
 
@@ -226,4 +308,11 @@ const char* ledger_payouts_blob(size_t& len) {
     return g_payouts_boot_len > 0 ? g_payouts_boot : nullptr;
 }
 
-void ledger_connected() { g_connect_edge.store(true); }
+void ledger_connected() {
+    g_replay_epoch.fetch_add(1);  // before the flag: the ledger loads the epoch after taking the flag
+    g_connect_edge.store(true);
+}
+
+uint32_t ledger_replay_epoch() { return g_replay_epoch.load(); }
+
+bool ledger_log_pressure() { return g_pressure.load(); }

@@ -19,6 +19,10 @@ struct RxByte {
 
 struct BusPort {
     virtual void write(const uint8_t* bytes, const bool* modes, uint8_t n) = 0;
+    // timeout_us is LINE-IDLE time, measured from the far end of the previous byte (or of the last
+    // transmitted byte): it is not an arrival-time budget. A byte is delivered at the end of its stop
+    // bit, one character time (about 1.15 ms at 9600 baud) after it started, so a real port must add
+    // its own character time and margin (see rx_deadline_us in link.h) to timeout_us.
     virtual bool read(RxByte& out, uint32_t timeout_us) = 0;
     virtual void flush_rx() = 0;
 };

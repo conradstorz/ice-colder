@@ -14,6 +14,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_task_wdt.h"
+#include "flash_window.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "ledger_task.h"
@@ -31,7 +32,6 @@ namespace {
 const char* TAG = "bus";
 constexpr TickType_t kLoopDelay = 2;           // ticks (ms) between bus rounds; lets IDLE1 run
 constexpr uint32_t kStatePushMs = 30000;
-constexpr uint32_t kStatsLogMs = 60000;
 
 // emit() refusing makes the device driver hold the money event and offer it again next step.
 struct QueueSink : EventSink {
@@ -44,6 +44,8 @@ struct QueueSink : EventSink {
 Ack g_held;
 bool g_have_held = false;
 
+BusStats* g_stats = nullptr;
+
 void flush_held(QueueHandle_t q) {
     if (g_have_held && xQueueSend(q, &g_held, 0) == pdTRUE) g_have_held = false;
 }
@@ -51,13 +53,13 @@ void flush_held(QueueHandle_t q) {
 void send_ack(QueueHandle_t q, const Ack& a) {
     flush_held(q);
     if (g_have_held) {
-        ESP_LOGE(TAG, "ack queue full, dropped %s", a.request_id);
+        ++g_stats->ack_dropped;
         return;
     }
     if (xQueueSend(q, &a, 0) != pdTRUE) {
         g_held = a;
         g_have_held = true;
-        ESP_LOGW(TAG, "ack queue full, holding %s for retry", a.request_id);
+        ++g_stats->ack_held;
     }
 }
 
@@ -89,6 +91,7 @@ struct Bus {
     Accounts accounts;
     EdgeWatch edge{clock};
     Master master{link, clock, ids, sink, changer, validator, cashless, accounts, edge};
+    BusStats stats{};  // the bus task never logs: it counts, and the ledger reports
 };
 void push_state(Bus& b) {
     static StateMsg msg;
@@ -104,7 +107,13 @@ void push_state(Bus& b) {
         msg.state.session_started_ts = msg.session_ts;
     }
     msg.payouts_len = b.accounts.payouts_json(msg.payouts, sizeof(msg.payouts));
-    if (msg.payouts_len == 0) ESP_LOGE(TAG, "payouts store did not serialize (%u B buffer)", static_cast<unsigned>(sizeof(msg.payouts)));
+    if (msg.payouts_len == 0) ++b.stats.payouts_unserialized;
+    b.stats.rx_mode_disagreements = b.link.mode_disagreements();
+    b.stats.rx_ambiguous = b.uart.ambiguous();
+    b.stats.rx_orphans = b.uart.orphans();
+    b.stats.rx_lost = b.uart.rx_lost();
+    b.stats.corrupt_blocks = b.link.corrupt_blocks();
+    msg.stats = b.stats;
     xQueueOverwrite(b.q.state_q, &msg);
 }
 
@@ -128,6 +137,7 @@ void bus_main(void* arg) {
     Bus& b = bus;
     b.q = *static_cast<Queues*>(arg);
     b.sink.q = b.q.evt_q;
+    g_stats = &b.stats;
     if (!b.uart.begin(mdbboard::kMdbUart, mdbboard::kMdbTxGpio, mdbboard::kMdbRxGpio)) {
         // Fail-safe: never kick the watchdog on a dead bus; reboot and retry.
         ESP_LOGE(TAG, "MDB UART init failed; rebooting in 5 s");
@@ -142,10 +152,10 @@ void bus_main(void* arg) {
 
     esp_task_wdt_add(nullptr);
     uint32_t last_push = b.clock.now_ms();
-    uint32_t last_stats = last_push;
     push_state(b);  // retained "no_policy" view until the edge's first set_policy
     for (;;) {
         flush_held(b.q.ack_q);
+        b.master.set_log_pressure(ledger_log_pressure());  // replay log 3/4 full: stop taking money
         drain_commands(b);
         b.master.step();
         Ack done;
@@ -155,17 +165,9 @@ void bus_main(void* arg) {
             last_push = now;
             push_state(b);
         }
-        if (now - last_stats >= kStatsLogMs) {
-            last_stats = now;
-            if (b.link.mode_disagreements() != 0 || b.uart.ambiguous() != 0 || b.uart.orphans() != 0 || b.uart.rx_lost() != 0 ||
-                b.link.corrupt_blocks() != 0) {
-                ESP_LOGI(TAG, "rx stats: mode disagreements %u, ambiguous %u, orphan parity %u, lost %u, corrupt blocks %u",
-                         static_cast<unsigned>(b.link.mode_disagreements()), static_cast<unsigned>(b.uart.ambiguous()),
-                         static_cast<unsigned>(b.uart.orphans()), static_cast<unsigned>(b.uart.rx_lost()),
-                         static_cast<unsigned>(b.link.corrupt_blocks()));
-            }
-        }
         esp_task_wdt_reset();
+        // Between transactions: the one place the ledger may take the bus for flash work.
+        if (!flash_window_checkpoint()) ++b.stats.flash_window_timeouts;
         vTaskDelay(kLoopDelay);
     }
 }

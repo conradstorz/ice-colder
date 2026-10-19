@@ -9,3 +9,6 @@ CONFIG_FREERTOS_HZ=1000
 CONFIG_MQTT_USE_CUSTOM_CONFIG=y
 CONFIG_MQTT_OUTBOX_EXPIRED_TIMEOUT_MS=600000
 CONFIG_MQTT_REPORT_DELETED_MESSAGES=y
+# Second layer only: lets a long flash erase be suspended for the other core. The quiet window
+# (src/flash_window.h) is the actual fix for NVS work freezing the bus task.
+CONFIG_SPI_FLASH_AUTO_SUSPEND=y

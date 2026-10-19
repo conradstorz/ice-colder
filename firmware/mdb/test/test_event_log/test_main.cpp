@@ -224,8 +224,36 @@ static void test_peek_rejects_garbage(void) {
     TEST_ASSERT_FALSE(peek_boot_seq("{\"boot_id\":\"abc\"}", b, s));
 }
 
+static void test_acked_erases_an_unparseable_front_entry_and_continues(void) {
+    reset();
+    EventLog log(store, ids);
+    log.begin_boot();
+    TEST_ASSERT_TRUE(store.append("garbage", 7));
+    for (int i = 0; i < 3; ++i) TEST_ASSERT_TRUE(log.append(coin(10), "t", out, sizeof(out)));
+    TEST_ASSERT_EQUAL_UINT32(0, log.corrupt_entries());
+    log.acked(log.boot_id(), 2);
+    TEST_ASSERT_EQUAL_UINT32(1, log.corrupt_entries());
+    TEST_ASSERT_EQUAL_INT(1, log.pending());  // garbage gone, seq 1 and 2 acked, seq 3 stays
+    TEST_ASSERT_TRUE(entry_is(0, log.boot_id(), 3));
+    // An unparseable entry behind an acked prefix is also dropped once the prefix is gone.
+    TEST_ASSERT_TRUE(store.append("garbage", 7));
+    log.acked(log.boot_id(), 3);
+    TEST_ASSERT_EQUAL_INT(0, log.pending());
+    TEST_ASSERT_EQUAL_UINT32(2, log.corrupt_entries());
+}
+
+static void test_pressure_hysteresis(void) {
+    TEST_ASSERT_FALSE(EventLog::next_pressure(false, 191));
+    TEST_ASSERT_TRUE(EventLog::next_pressure(false, 192));
+    TEST_ASSERT_TRUE(EventLog::next_pressure(true, 129));
+    TEST_ASSERT_FALSE(EventLog::next_pressure(true, 128));
+    TEST_ASSERT_FALSE(EventLog::next_pressure(false, 150));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
+    RUN_TEST(test_acked_erases_an_unparseable_front_entry_and_continues);
+    RUN_TEST(test_pressure_hysteresis);
     RUN_TEST(test_ids_and_envelope);
     RUN_TEST(test_acked_same_boot);
     RUN_TEST(test_two_boots);

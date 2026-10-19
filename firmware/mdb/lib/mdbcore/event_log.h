@@ -35,11 +35,24 @@ public:
 
     bool full() const { return store_.count() >= kCapacity; }
 
+    // Log pressure, with hysteresis: set at 3/4 full, cleared at 1/2. While set the Master inhibits
+    // acceptance (Inhibit::DeviceFault) so the log never has to refuse money already taken.
+    static constexpr int kPressureSet = 192;
+    static constexpr int kPressureClear = 128;
+    static bool next_pressure(bool current, int pending) {
+        if (current) return pending > kPressureClear;
+        return pending >= kPressureSet;
+    }
+
+    // Entries erased by acked() because they could not be parsed (a corrupt front entry).
+    uint32_t corrupt_entries() const { return corrupt_; }
+
 private:
     LogStore& store_;
     IdSource& ids_;
     char boot_id_[17] = {};
     uint32_t seq_ = 0;
+    uint32_t corrupt_ = 0;
 };
 
 }  // namespace mdbcore

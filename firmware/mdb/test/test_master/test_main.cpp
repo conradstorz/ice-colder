@@ -1307,7 +1307,7 @@ static void test_self_test_shape(void) {
     TEST_ASSERT_EQUAL(AckStatus::Ok, a.status);
     const char* j = a.result_json;
     TEST_ASSERT_EQUAL_INT(0, strncmp(j, "{\"checks\":[{\"name\":\"changer\",\"pass\":true,\"detail\":\"level 3, ready\"}", 67));
-    const char* names[7] = {"changer", "validator", "reader", "clock_synced", "event_log", "rx_mode_bit", "policy"};
+    const char* names[7] = {"changer", "validator", "reader", "clock_synced", "event_log_full", "rx_mode_bit", "policy"};
     const char* at = j;
     for (int i = 0; i < 7; ++i) {
         char key[48];
@@ -1327,7 +1327,7 @@ static void test_self_test_shape(void) {
     r.m.set_event_log(&log);
     r.m.set_wall_time(1700000000);
     r.m.self_test(a);
-    TEST_ASSERT_NOT_NULL(strstr(a.result_json, "\"name\":\"event_log\",\"pass\":true,\"detail\":\"depth 0\""));
+    TEST_ASSERT_NOT_NULL(strstr(a.result_json, "\"name\":\"event_log_full\",\"pass\":true,\"detail\":\"depth 0\""));
     TEST_ASSERT_NOT_NULL(strstr(a.result_json, "\"name\":\"clock_synced\",\"pass\":true"));
     // Via submit, the result rides in the ack.
     const Ack viacmd = r.simple(CmdKind::SelfTest, "self_test");
@@ -1335,8 +1335,85 @@ static void test_self_test_shape(void) {
     TEST_ASSERT_EQUAL_STRING(a.result_json, viacmd.result_json);
 }
 
+static void test_log_pressure_inhibits_with_device_fault_and_zeroes_the_bus(void) {
+    Rig r;
+    r.bring_up();
+    TEST_ASSERT_EQUAL(AckStatus::Ok, r.set_policy().status);
+    r.steps(4);
+    TEST_ASSERT_EQUAL_UINT16(0x000F, r.bill.bill_mask);
+    TEST_ASSERT_TRUE(r.rdr.reader_enabled);
+    r.m.set_log_pressure(true);
+    r.steps(6);
+    TEST_ASSERT_EQUAL(Inhibit::DeviceFault, r.m.inhibit());
+    PaymentState s;
+    r.m.snapshot(s);
+    TEST_ASSERT_FALSE(s.accepting);
+    TEST_ASSERT_EQUAL(Inhibit::DeviceFault, s.inhibited);
+    TEST_ASSERT_EQUAL_UINT16(0, r.coin.coin_masks[r.coin.n_masks - 1]);
+    TEST_ASSERT_EQUAL_UINT16(0, r.bill.bill_mask);
+    TEST_ASSERT_FALSE(r.rdr.reader_enabled);
+    Ack a;
+    r.m.self_test(a);
+    TEST_ASSERT_NOT_NULL(strstr(a.result_json, "\"name\":\"event_log_full\",\"pass\":false"));
+    // Releasing the pressure with a valid policy resumes acceptance.
+    r.m.set_log_pressure(false);
+    r.steps(6);
+    TEST_ASSERT_EQUAL(Inhibit::None, r.m.inhibit());
+    TEST_ASSERT_EQUAL_UINT16(0x000F, r.bill.bill_mask);
+    TEST_ASSERT_TRUE(r.rdr.reader_enabled);
+    r.m.self_test(a);
+    TEST_ASSERT_NOT_NULL(strstr(a.result_json, "\"name\":\"event_log_full\",\"pass\":true"));
+}
+
+static void test_log_pressure_never_lifts_a_higher_inhibit(void) {
+    Rig r;
+    r.bring_up();
+    r.m.set_log_pressure(true);  // no policy yet: no_policy outranks it
+    TEST_ASSERT_EQUAL(Inhibit::NoPolicy, r.m.inhibit());
+    r.m.set_log_pressure(false);
+    TEST_ASSERT_EQUAL(Inhibit::NoPolicy, r.m.inhibit());
+
+    Command pc = r.policy();
+    pc.policy.edge_timeout_s = 5;
+    TEST_ASSERT_EQUAL(AckStatus::Ok, r.m.submit(pc).status);
+    r.m.set_log_pressure(true);
+    TEST_ASSERT_EQUAL(Inhibit::DeviceFault, r.m.inhibit());
+    r.clock.advance_ms(6000);
+    r.steps(8);
+    TEST_ASSERT_EQUAL(Inhibit::EdgeSilent, r.m.inhibit());  // silence outranks it
+    r.m.set_log_pressure(false);
+    r.steps(4);
+    TEST_ASSERT_EQUAL(Inhibit::EdgeSilent, r.m.inhibit());
+    TEST_ASSERT_EQUAL_UINT16(0, r.bill.bill_mask);
+    TEST_ASSERT_FALSE(r.rdr.reader_enabled);
+
+    // policy off outranks it too
+    TEST_ASSERT_EQUAL(AckStatus::Ok, r.set_policy(false).status);
+    r.m.set_log_pressure(true);
+    TEST_ASSERT_EQUAL(Inhibit::PolicyOff, r.m.inhibit());
+    r.m.set_log_pressure(false);
+    TEST_ASSERT_EQUAL(Inhibit::PolicyOff, r.m.inhibit());
+}
+
+static void test_log_pressure_does_not_return_a_held_bill_or_end_a_session(void) {
+    Rig r;
+    r.bring_up();
+    TEST_ASSERT_EQUAL(AckStatus::Ok, r.set_policy().status);
+    r.steps(4);
+    const char* sid = r.tap_session();
+    TEST_ASSERT_NOT_NULL(sid);
+    r.sink.n = 0;
+    r.m.set_log_pressure(true);
+    r.steps(6);
+    TEST_ASSERT_EQUAL_INT(0, r.sink.count(EventKind::BillReturned));
+    TEST_ASSERT_EQUAL_INT(0, r.sink.count(EventKind::SessionEnded));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
+    RUN_TEST(test_log_pressure_inhibits_with_device_fault_and_zeroes_the_bus);
+    RUN_TEST(test_log_pressure_never_lifts_a_higher_inhibit);
+    RUN_TEST(test_log_pressure_does_not_return_a_held_bill_or_end_a_session);
     RUN_TEST(test_boot_without_policy_disables_everything);
     RUN_TEST(test_set_policy_acks_ok_after_enables_on_the_bus);
     RUN_TEST(test_set_policy_accept_false_is_policy_off);

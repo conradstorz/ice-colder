@@ -66,6 +66,15 @@ struct Comms {
     int ha_next = 0;
     uint32_t last_replay_request_s = 0;
     bool replay_requested = false;
+    // Replay ordering (CONTRACT.md Delivery: the whole unacked log, in order, before anything new).
+    //  synced:      the connect edge has been processed (queue drained, replay requested). Until then,
+    //               and while disconnected, Outcome items are dropped: the flash log carries them.
+    //  replay_owed: an Outcome was lost while connected (ring full), so a gap exists. Every later
+    //               Outcome is dropped, whatever its epoch, until a replay is requested; the replay
+    //               resends the whole log in order.
+    bool synced = false;
+    bool replay_owed = false;
+    uint32_t stale_dropped = 0;
     uint32_t pub_dropped = 0;
     char t_cmd[96], t_ack[96], t_evt_ack[96];
 };
@@ -97,7 +106,9 @@ void clear_ring() {
 }
 
 // An event the ring could not hold is still safe in the flash log; have the ledger replay it.
-// Rate limited; clears the ring first so the replay stays oldest first.
+// Rate limited (the latch g.replay_owed keeps asking from the main loop); clears the ring first so
+// the replay stays oldest first. ledger_connected() bumps the replay epoch, which makes every
+// Outcome already queued behind us stale.
 void request_replay() {
     const uint32_t now = uptime_s();
     if (g.replay_requested && now - g.last_replay_request_s < kReplayRequestMinS) return;
@@ -105,16 +116,23 @@ void request_replay() {
     g.last_replay_request_s = now;
     clear_ring();
     ledger_connected();
+    g.replay_owed = false;
 }
 
 // Publishes now when connected and nothing is queued ahead; otherwise holds it in the ring.
 // Money events (Outcome) that cannot be published or held fall back to the flash log's replay.
 void send(const char* topic, const char* payload, size_t len, bool retain, Prio prio) {
+    // The log replays an Outcome dropped here: before the connect edge was processed, while
+    // disconnected, or after an earlier Outcome was lost (a later one must not overtake the gap).
+    if (prio == Prio::Outcome && (!g.synced || g.replay_owed)) return;
     if (g.ring.size() == 0 && mqtt_publish(topic, payload, len, retain)) return;
-    if (prio == Prio::Outcome && !mqtt_connected()) return;  // the log replays it on the connect edge
+    if (prio == Prio::Outcome && !mqtt_connected()) return;
     if (!g.ring.push(topic, payload, len, retain, prio)) {
         ++g.pub_dropped;
-        if (prio == Prio::Outcome) request_replay();
+        if (prio == Prio::Outcome) {
+            g.replay_owed = true;
+            request_replay();
+        }
     }
 }
 
@@ -349,9 +367,18 @@ void on_connect() {
     static char topic[160];
     char iso[24];
     const WireCtx ctx = make_ctx(iso, sizeof(iso));
-    clear_ring();  // anything held across the gap is stale; events come back from the log, in order
+    // Anything held across the gap is stale; events come back from the log, in order. Drain pub_q and
+    // the ring BEFORE requesting the replay: what the ledger queues after that carries the new epoch.
+    // Items it queued before it saw the request carry the old epoch and are dropped by the main loop.
+    static PubItem stale;
+    while (xQueueReceive(g.q.pub_q, &stale, 0) == pdTRUE) {
+    }
+    clear_ring();
     inflight_clear();
+    g.replay_owed = false;
+    g.replay_requested = false;
     ledger_connected();
+    g.synced = true;
     g.caps_pending = true;
     g.ha_next = 0;
     g.ha_zero_logged = -1;
@@ -407,6 +434,8 @@ void comms_main(void*) {
             on_connect();
             last_hb = uptime_s();
         }
+        if (!mqtt_connected()) g.synced = false;
+        if (g.replay_owed) request_replay();
         inflight_expire();
         send_wall_time(wall_sent, last_wall_s);
         const uint32_t dropped = g.rx_dropped.load();
@@ -420,7 +449,13 @@ void comms_main(void*) {
             if (g.subs_pending) subscribe_all();
         }
         static PubItem pub;
-        while (xQueueReceive(g.q.pub_q, &pub, 0) == pdTRUE) send(pub.topic, pub.payload, pub.len, pub.retain, pub.prio);
+        while (xQueueReceive(g.q.pub_q, &pub, 0) == pdTRUE) {
+            if (pub.prio == Prio::Outcome && pub.replay_epoch != ledger_replay_epoch()) {
+                ++g.stale_dropped;  // queued before the latest replay request: the replay resends it in order
+                continue;
+            }
+            send(pub.topic, pub.payload, pub.len, pub.retain, pub.prio);
+        }
         if (mqtt_connected()) {
             flush_ring();
             if (uptime_s() - last_hb >= kHeartbeatMs / 1000) {

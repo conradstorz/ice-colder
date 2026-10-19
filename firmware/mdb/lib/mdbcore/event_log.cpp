@@ -28,16 +28,27 @@ bool EventLog::append(const PaymentEvent& e, const char* iso_ts, char* json_out,
 void EventLog::acked(const char* boot_id, uint32_t seq) {
     char entry[LogStore::kMaxJson];
     char bid[33];
-    int n = 0;
-    const int total = store_.count();
-    while (n < total) {
-        if (!store_.get(n, entry, sizeof(entry))) break;
-        uint32_t s = 0;
-        if (!peek_boot_seq(entry, bid, s)) break;
-        if (strcmp(bid, boot_id) != 0 || s > seq) break;
-        ++n;
+    for (;;) {
+        int n = 0;
+        bool bad = false;
+        const int total = store_.count();
+        while (n < total) {
+            uint32_t s = 0;
+            if (!store_.get(n, entry, sizeof(entry)) || !peek_boot_seq(entry, bid, s)) {
+                bad = true;  // would wedge the front of the log for good
+                break;
+            }
+            if (strcmp(bid, boot_id) != 0 || s > seq) break;
+            ++n;
+        }
+        // The store erases from the front only: take the acked prefix, then the bad entry behind it.
+        if (bad) {
+            ++n;
+            ++corrupt_;
+        }
+        if (n > 0) store_.erase_first(n);
+        if (!bad || store_.count() >= total) return;  // a store that cannot erase must not spin us
     }
-    if (n > 0) store_.erase_first(n);
 }
 
 }  // namespace mdbcore
