@@ -1,10 +1,11 @@
-# dev only — no auth (cloud spec §8)
 name: ice_cloud
 
-# Cloud portal stub. From the repository root:
+# Cloud fleet portal (identity and tenancy spec 2026-10-19, section 8).
+# From the repository root, with ICE_CLOUD_* set in .env (see .env.example):
 #   docker compose -f docker/docker-compose.cloud.yml up --build
 # The container binds 0.0.0.0 so the port mapping can reach it; the host side
-# of the mapping stays on loopback, so the portal is never exposed to the LAN.
+# of the mapping stays on loopback. Put an HTTPS reverse proxy in front of
+# 127.0.0.1:26124 for anything beyond local development (packages/cloud/README.md).
 
 services:
   cloud:
@@ -15,6 +16,12 @@ services:
     environment:
       - ICE_CLOUD_HOST=0.0.0.0
       - ICE_CLOUD_DATA=/app/cloud_data
+      - ICE_CLOUD_PUBLIC_URL=${ICE_CLOUD_PUBLIC_URL:-}
+      - ICE_CLOUD_GOOGLE_CLIENT_ID=${ICE_CLOUD_GOOGLE_CLIENT_ID:-}
+      - ICE_CLOUD_GOOGLE_CLIENT_SECRET=${ICE_CLOUD_GOOGLE_CLIENT_SECRET:-}
+      - ICE_CLOUD_ADMINS=${ICE_CLOUD_ADMINS:-}
+      - ICE_CLOUD_SESSION_KEY=${ICE_CLOUD_SESSION_KEY:?set ICE_CLOUD_SESSION_KEY in .env (at least 32 bytes)}
+      - ICE_CLOUD_INSECURE_COOKIES=${ICE_CLOUD_INSECURE_COOKIES:-}
     ports:
       - "127.0.0.1:26124:26124"
     volumes:
