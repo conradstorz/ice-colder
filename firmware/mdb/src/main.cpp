@@ -1,11 +1,17 @@
+#include "../boards/mdb-s3.h"
 #include "boardidf/board_identity.h"
 #include "boardidf/console.h"
 #include "boardidf/settings.h"
+#include "bus_task.h"
 #include "comms_task.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
+#include "ledger_task.h"
 #include "nvs_flash.h"
+#include "queues.h"
+#include "status_led.h"
 #include "version.h"
 
 static const char* TAG = "mdb";
@@ -23,7 +29,25 @@ extern "C" void app_main(void) {
     static Settings settings;
     settings_load(settings);
     console_start(kIdentity, settings);
-    start_comms(kIdentity, settings);
+
+    // All queues are allocated here, once; nothing allocates after boot.
+    static Queues q;
+    q.cmd_q = xQueueCreate(8, sizeof(CmdItem));
+    q.evt_q = xQueueCreate(64, sizeof(mdbcore::PaymentEvent));
+    q.pub_q = xQueueCreate(32, sizeof(PubItem));
+    q.ack_q = xQueueCreate(16, sizeof(boardcore::Ack));
+    q.ack_in_q = xQueueCreate(8, sizeof(EventAckItem));
+    q.state_q = xQueueCreate(1, sizeof(StateMsg));
+    if (!q.cmd_q || !q.evt_q || !q.pub_q || !q.ack_q || !q.ack_in_q || !q.state_q) {
+        ESP_LOGE(TAG, "queue allocation failed; halting");
+        for (;;) vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+
+    status_led_start(mdbboard::kStatusLedGpio);
+    if (!ledger_init(q, settings.machine_id)) ESP_LOGE(TAG, "replay log unavailable; money events will be held, not lost");
+    start_bus(q);
+    start_ledger();
+    start_comms(q, kIdentity, settings);
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(1000));
     }

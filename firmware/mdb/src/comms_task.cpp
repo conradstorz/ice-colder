@@ -1,29 +1,86 @@
 #include "comms_task.h"
 
 #include <stdio.h>
+#include <string.h>
+#include <time.h>
 
+#include <atomic>
+
+#include "boardcore/ack_cache.h"
+#include "boardcore/json_writer.h"
+#include "boardcore/outbound_ring.h"
 #include "boardidf/mqtt_publisher.h"
 #include "boardidf/net.h"
+#include "command.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "ledger_task.h"
 #include "version.h"
 #include "wire.h"
 
 using namespace mdbcore;
+using boardcore::Ack;
+using boardcore::AckCache;
+using boardcore::JsonWriter;
+using boardcore::OutboundRing;
+using boardcore::Prio;
+using boardcore::RingEntry;
 
 namespace {
 const char* TAG = "comms";
 constexpr uint32_t kHeartbeatMs = 10000;
+constexpr uint32_t kWallRefreshS = 60;
+constexpr int kInflightMax = 8;
+constexpr uint32_t kRxDropLogMs = 10000;
+constexpr uint32_t kRetryLogMs = 10000;
+constexpr uint32_t kInflightMaxAgeS = 120;
+constexpr uint32_t kReplayRequestMinS = 5;
+constexpr int kHaCount = 6;
+
+struct RxItem {
+    char topic[96];
+    char data[2048];
+    uint16_t len;
+};
 
 struct Comms {
+    Queues q;
+    QueueHandle_t rx_q;
     Settings settings;
+    AckCache cache;
+    OutboundRing ring;
+    uint32_t dropped_no_request_id = 0;
+    std::atomic<uint32_t> rx_dropped{0};  // written by the MQTT task, logged by the comms task
+    uint32_t rx_dropped_logged = 0;
+    // Request ids pushed to cmd_q whose first ack has not yet been drained from ack_q.
+    char inflight[kInflightMax][65] = {};
+    bool inflight_used[kInflightMax] = {};
+    uint32_t inflight_since_s[kInflightMax] = {};
+    uint32_t last_retry_log_s = 0;
+    bool retry_logged = false;
+    int ha_zero_logged = -1;
     bool caps_pending = false;  // retained capabilities publish not yet accepted
+    bool subs_pending = false;
+    int ha_next = 0;
+    uint32_t last_replay_request_s = 0;
+    bool replay_requested = false;
+    uint32_t pub_dropped = 0;
+    char t_cmd[96], t_ack[96], t_evt_ack[96];
 };
 Comms g;
 
 uint32_t uptime_s() { return static_cast<uint32_t>(esp_timer_get_time() / 1000000); }
+
+// Connect-time retry warnings repeat every 20 ms loop pass; allow one per kRetryLogMs.
+bool retry_log_due() {
+    const uint32_t now = uptime_s();
+    if (g.retry_logged && now - g.last_retry_log_s < kRetryLogMs / 1000) return false;
+    g.retry_logged = true;
+    g.last_retry_log_s = now;
+    return true;
+}
 
 WireCtx make_ctx(char* iso, size_t iso_cap) {
     WireCtx c;
@@ -35,6 +92,103 @@ WireCtx make_ctx(char* iso, size_t iso_cap) {
     return c;
 }
 
+void clear_ring() {
+    while (g.ring.front() != nullptr) g.ring.pop();
+}
+
+// An event the ring could not hold is still safe in the flash log; have the ledger replay it.
+// Rate limited; clears the ring first so the replay stays oldest first.
+void request_replay() {
+    const uint32_t now = uptime_s();
+    if (g.replay_requested && now - g.last_replay_request_s < kReplayRequestMinS) return;
+    g.replay_requested = true;
+    g.last_replay_request_s = now;
+    clear_ring();
+    ledger_connected();
+}
+
+// Publishes now when connected and nothing is queued ahead; otherwise holds it in the ring.
+// Money events (Outcome) that cannot be published or held fall back to the flash log's replay.
+void send(const char* topic, const char* payload, size_t len, bool retain, Prio prio) {
+    if (g.ring.size() == 0 && mqtt_publish(topic, payload, len, retain)) return;
+    if (prio == Prio::Outcome && !mqtt_connected()) return;  // the log replays it on the connect edge
+    if (!g.ring.push(topic, payload, len, retain, prio)) {
+        ++g.pub_dropped;
+        if (prio == Prio::Outcome) request_replay();
+    }
+}
+
+void flush_ring() {
+    while (const RingEntry* e = g.ring.front()) {
+        if (!mqtt_publish(e->topic, e->payload, e->len, e->retain)) return;
+        g.ring.pop();
+    }
+}
+
+void on_message(const char* topic, size_t tl, const char* data, size_t dl) {  // MQTT client task
+    static RxItem item;
+    if (tl >= sizeof(item.topic) || dl >= sizeof(item.data)) {
+        g.rx_dropped.fetch_add(1);
+        return;
+    }
+    memcpy(item.topic, topic, tl);
+    item.topic[tl] = '\0';
+    memcpy(item.data, data, dl);
+    item.data[dl] = '\0';
+    item.len = static_cast<uint16_t>(dl);
+    if (xQueueSend(g.rx_q, &item, 0) != pdTRUE) g.rx_dropped.fetch_add(1);
+}
+
+void publish_ack(const Ack& a) {
+    static char buf[1024];
+    const size_t n = boardcore::ack_json(a, buf, sizeof(buf));
+    if (n == 0) {
+        ESP_LOGW(TAG, "ack for %s did not serialize", a.request_id);
+        return;
+    }
+    send(g.t_ack, buf, n, false, Prio::Normal);
+}
+
+bool push_cmd(const CmdItem& item) {
+    if (xQueueSend(g.q.cmd_q, &item, 0) == pdTRUE) return true;
+    ESP_LOGW(TAG, "cmd queue full, dropped item kind %d", static_cast<int>(item.kind));
+    return false;
+}
+
+int inflight_find(const char* id) {
+    for (int i = 0; i < kInflightMax; ++i)
+        if (g.inflight_used[i] && strcmp(g.inflight[i], id) == 0) return i;
+    return -1;
+}
+
+bool inflight_add(const char* id) {
+    for (int i = 0; i < kInflightMax; ++i) {
+        if (g.inflight_used[i]) continue;
+        snprintf(g.inflight[i], sizeof(g.inflight[i]), "%s", id);
+        g.inflight_used[i] = true;
+        g.inflight_since_s[i] = uptime_s();
+        return true;
+    }
+    return false;
+}
+
+// An ack lost to a full ack_q would otherwise pin its slot forever, so the set is cleared on every
+// (re)connect and any entry older than kInflightMaxAgeS is dropped.
+void inflight_clear() {
+    for (int i = 0; i < kInflightMax; ++i) g.inflight_used[i] = false;
+}
+
+void inflight_expire() {
+    const uint32_t now = uptime_s();
+    for (int i = 0; i < kInflightMax; ++i)
+        if (g.inflight_used[i] && now - g.inflight_since_s[i] >= kInflightMaxAgeS) g.inflight_used[i] = false;
+}
+
+void inflight_remove(const char* id) {
+    const int i = inflight_find(id);
+    if (i >= 0) g.inflight_used[i] = false;
+}
+
 void publish_heartbeat() {
     static char buf[96];
     static char topic[160];
@@ -43,35 +197,232 @@ void publish_heartbeat() {
     char tail[48];
     snprintf(tail, sizeof(tail), "heartbeat/%s", kSubsystem);
     const size_t n = heartbeat_json(uptime_s(), buf, sizeof(buf));
-    if (n > 0 && topic_join(ctx, tail, topic, sizeof(topic)) > 0) mqtt_publish(topic, buf, n, false);
+    if (n > 0 && topic_join(ctx, tail, topic, sizeof(topic)) > 0) send(topic, buf, n, false, Prio::Normal);
 }
 
-void publish_capabilities() {
+void handle_command(const RxItem& rx) {
+    static CmdItem item;  // Decoded is large; keep it off the stack
+    item = CmdItem{};
+    // Any cmd/mdb message proves the edge is alive, whatever it asks. EdgeSeen goes first: the bus
+    // task drains cmd_q FIFO. payment/event/ack never reaches here, so it never counts (spec 3.2).
+    item.kind = CmdItem::EdgeSeen;
+    push_cmd(item);
+    item.decoded = decode_command(rx.data, rx.len);  // only caller: not reentrant
+    if (item.decoded.result == Decode::NoRequestId) {
+        ++g.dropped_no_request_id;
+        ESP_LOGW(TAG, "command without a usable request_id dropped (%u so far)", static_cast<unsigned>(g.dropped_no_request_id));
+        return;
+    }
+    if (const Ack* hit = g.cache.find(item.decoded.cmd.request_id)) {
+        publish_ack(*hit);  // retry of an acked command: replay, never re-run
+        return;
+    }
+    if (inflight_find(item.decoded.cmd.request_id) >= 0) {
+        ESP_LOGD(TAG, "duplicate of in-flight command %s ignored", item.decoded.cmd.request_id);
+        return;
+    }
+    item.kind = CmdItem::Decoded;
+    if (!push_cmd(item)) return;
+    if (!inflight_add(item.decoded.cmd.request_id))
+        ESP_LOGW(TAG, "in-flight set full; duplicate suppression off for %s", item.decoded.cmd.request_id);
+    if (item.decoded.result == Decode::Ok && item.decoded.cmd.kind == CmdKind::ForceReport) {
+        // force_report also refreshes the retained documents and the heartbeat, not just the state.
+        g.caps_pending = true;
+        g.ha_next = 0;
+        g.ha_zero_logged = -1;
+        publish_heartbeat();
+    }
+}
+
+void handle_event_ack(const RxItem& rx) {
+    static EventAckItem ack;
+    if (!decode_event_ack(rx.data, rx.len, ack.boot_id, ack.seq)) {
+        ESP_LOGW(TAG, "malformed payment/event/ack ignored");
+        return;
+    }
+    if (xQueueSend(g.q.ack_in_q, &ack, 0) != pdTRUE) ESP_LOGW(TAG, "event ack queue full; ack %u lost, the edge re-acks on replay", static_cast<unsigned>(ack.seq));
+}
+
+// One Home Assistant discovery entity. Returns bytes written to payload, 0 on overflow.
+size_t ha_discovery(int i, const WireCtx& ctx, char* topic, size_t tcap, char* payload, size_t pcap) {
+    struct Entity {
+        const char* id;
+        const char* name;
+        const char* component;
+        const char* tmpl;
+        const char* unit;
+    };
+    static const Entity kEntities[kHaCount] = {
+        {"escrow_cents", "Cash Escrow", "sensor", "{{ value_json.escrow_cents }}", "cents"},
+        {"accepting", "Accepting Cash", "binary_sensor", "{{ 'ON' if value_json.accepting else 'OFF' }}", nullptr},
+        {"exact_change", "Exact Change Only", "binary_sensor", "{{ 'ON' if value_json.exact_change else 'OFF' }}", nullptr},
+        {"coin_status", "Coin Changer", "sensor", "{{ value_json.devices.coin.status }}", nullptr},
+        {"bill_status", "Bill Validator", "sensor", "{{ value_json.devices.bill.status }}", nullptr},
+        {"cashless_status", "Cashless Reader", "sensor", "{{ value_json.devices.cashless.status }}", nullptr},
+    };
+    if (i < 0 || i >= kHaCount) return 0;
+    const Entity& e = kEntities[i];
+    char node[80];
+    snprintf(node, sizeof(node), "%s_%s", ctx.machine_id, kSubsystem);
+    const int tn = snprintf(topic, tcap, "homeassistant/%s/%s/%s/config", e.component, node, e.id);
+    if (tn <= 0 || static_cast<size_t>(tn) >= tcap) return 0;
+    char uid[112];
+    snprintf(uid, sizeof(uid), "%s_%s", node, e.id);
+    char state_topic[128];
+    topic_state(ctx, state_topic, sizeof(state_topic));
+    char dev_name[80];
+    snprintf(dev_name, sizeof(dev_name), "%s Payments", ctx.machine_id);
+    JsonWriter w(payload, pcap);
+    w.ch('{');
+    w.field("name", e.name);
+    w.ch(',');
+    w.field("unique_id", uid);
+    w.ch(',');
+    w.field("state_topic", state_topic);
+    w.ch(',');
+    w.field("value_template", e.tmpl);
+    if (e.unit != nullptr) {
+        w.ch(',');
+        w.field("unit_of_measurement", e.unit);
+    }
+    w.ch(',');
+    w.key("device");
+    w.ch('{');
+    w.key("identifiers");
+    w.ch('[');
+    w.str(node);
+    w.ch(']');
+    w.ch(',');
+    w.field("name", dev_name);
+    w.ch(',');
+    w.field("manufacturer", "ice-colder");
+    w.ch(',');
+    w.field("model", "ESP32-S3 MDB");
+    w.ch('}');
+    w.ch('}');
+    return w.done();
+}
+
+// Retained capabilities and the HA discovery set; retried from the loop until all of it is accepted.
+void publish_retained() {
     static char payload[1024];
     static char topic[160];
     char iso[24];
     const WireCtx ctx = make_ctx(iso, sizeof(iso));
-    char tail[48];
-    snprintf(tail, sizeof(tail), "capabilities/%s", kSubsystem);
-    const size_t n = capabilities_json(ctx, payload, sizeof(payload));
-    if (n == 0 || topic_join(ctx, tail, topic, sizeof(topic)) == 0 || !mqtt_publish(topic, payload, n, true)) {
-        ESP_LOGW(TAG, "capabilities publish failed; will retry");
-        return;
+    if (g.caps_pending) {
+        const size_t n = capabilities_json(ctx, payload, sizeof(payload));
+        char cap_tail[48];
+        snprintf(cap_tail, sizeof(cap_tail), "capabilities/%s", kSubsystem);
+        if (n == 0) {
+            if (retry_log_due()) ESP_LOGW(TAG, "capabilities_json produced nothing; will retry");
+            return;
+        }
+        if (topic_join(ctx, cap_tail, topic, sizeof(topic)) == 0 || !mqtt_publish(topic, payload, n, true)) {
+            if (retry_log_due()) ESP_LOGW(TAG, "capabilities publish failed; will retry");
+            return;
+        }
+        g.caps_pending = false;
     }
-    g.caps_pending = false;
+    while (g.ha_next < kHaCount) {
+        const size_t pn = ha_discovery(g.ha_next, ctx, topic, sizeof(topic), payload, sizeof(payload));
+        if (pn == 0 && g.ha_zero_logged != g.ha_next) {
+            g.ha_zero_logged = g.ha_next;
+            ESP_LOGW(TAG, "HA discovery %d produced nothing; skipped", g.ha_next);
+        }
+        if (pn > 0 && !mqtt_publish(topic, payload, pn, true)) {
+            if (retry_log_due()) ESP_LOGW(TAG, "HA discovery %d publish failed; will retry", g.ha_next);
+            return;
+        }
+        ++g.ha_next;
+    }
+}
+
+void subscribe_all() {
+    bool ok = mqtt_subscribe(g.t_cmd);
+    if (!mqtt_subscribe(g.t_evt_ack)) ok = false;
+    if (!ok && retry_log_due()) ESP_LOGW(TAG, "subscribe failed; will retry");
+    g.subs_pending = !ok;
+}
+
+void on_connect() {
+    static char payload[96];
+    static char topic[160];
+    char iso[24];
+    const WireCtx ctx = make_ctx(iso, sizeof(iso));
+    clear_ring();  // anything held across the gap is stale; events come back from the log, in order
+    inflight_clear();
+    ledger_connected();
+    g.caps_pending = true;
+    g.ha_next = 0;
+    g.ha_zero_logged = -1;
+    publish_retained();
+    char hb_tail[48];
+    snprintf(hb_tail, sizeof(hb_tail), "heartbeat/%s", kSubsystem);
+    const size_t n = heartbeat_json(uptime_s(), payload, sizeof(payload));
+    if (n == 0 || topic_join(ctx, hb_tail, topic, sizeof(topic)) == 0) {
+        ESP_LOGW(TAG, "connect heartbeat did not serialize");
+    } else if (!mqtt_publish(topic, payload, n, false)) {
+        ESP_LOGW(TAG, "connect heartbeat publish failed");
+    }
+    subscribe_all();
+    static CmdItem fr;
+    fr = CmdItem{};
+    fr.kind = CmdItem::ForceReport;
+    push_cmd(fr);
+}
+
+void send_wall_time(bool& sent, uint32_t& last_s) {
+    char iso[24];
+    if (!net_iso_time(iso, sizeof(iso))) return;
+    if (sent && uptime_s() - last_s < kWallRefreshS) return;
+    static CmdItem item;
+    item = CmdItem{};
+    item.kind = CmdItem::WallTime;
+    item.wall_unix = static_cast<int64_t>(time(nullptr));
+    if (push_cmd(item)) {
+        sent = true;
+        last_s = uptime_s();
+    }
 }
 
 void comms_main(void*) {
     uint32_t last_hb = 0;
+    uint32_t last_drop_log = 0;
+    uint32_t last_wall_s = 0;
+    bool wall_sent = false;
     for (;;) {
+        static RxItem rx;
+        // ack_q first: a retry arriving now must find the first ack already cached.
+        static Ack ack;
+        while (xQueueReceive(g.q.ack_q, &ack, 0) == pdTRUE) {
+            g.cache.put(ack);
+            inflight_remove(ack.request_id);
+            publish_ack(ack);
+        }
+        while (xQueueReceive(g.rx_q, &rx, 0) == pdTRUE) {
+            if (strcmp(rx.topic, g.t_cmd) == 0) handle_command(rx);
+            else if (strcmp(rx.topic, g.t_evt_ack) == 0) handle_event_ack(rx);
+        }
         if (mqtt_take_connected_edge()) {
-            g.caps_pending = true;
-            publish_capabilities();
-            publish_heartbeat();
+            on_connect();
             last_hb = uptime_s();
         }
+        inflight_expire();
+        send_wall_time(wall_sent, last_wall_s);
+        const uint32_t dropped = g.rx_dropped.load();
+        if (dropped != g.rx_dropped_logged && uptime_s() - last_drop_log >= kRxDropLogMs / 1000) {
+            ESP_LOGW(TAG, "inbound messages dropped: %u total", static_cast<unsigned>(dropped));
+            g.rx_dropped_logged = dropped;
+            last_drop_log = uptime_s();
+        }
         if (mqtt_connected()) {
-            if (g.caps_pending) publish_capabilities();
+            if (g.caps_pending || g.ha_next < kHaCount) publish_retained();
+            if (g.subs_pending) subscribe_all();
+        }
+        static PubItem pub;
+        while (xQueueReceive(g.q.pub_q, &pub, 0) == pdTRUE) send(pub.topic, pub.payload, pub.len, pub.retain, pub.prio);
+        if (mqtt_connected()) {
+            flush_ring();
             if (uptime_s() - last_hb >= kHeartbeatMs / 1000) {
                 last_hb = uptime_s();
                 publish_heartbeat();
@@ -82,9 +433,16 @@ void comms_main(void*) {
 }
 }  // namespace
 
-void start_comms(const BoardIdentity& id, const Settings& settings) {
+void start_comms(const Queues& q, const BoardIdentity& id, const Settings& settings) {
+    g.q = q;
+    g.rx_q = xQueueCreate(3, sizeof(RxItem));
     g.settings = settings;
+    WireCtx ctx;
+    ctx.machine_id = g.settings.machine_id;
+    topic_cmd(ctx, g.t_cmd, sizeof(g.t_cmd));
+    topic_ack(ctx, g.t_ack, sizeof(g.t_ack));
+    topic_event_ack(ctx, g.t_evt_ack, sizeof(g.t_evt_ack));
     net_start(id, settings);
-    mqtt_start(id, settings, [](const char*, size_t, const char*, size_t) {});
-    xTaskCreatePinnedToCore(comms_main, "comms", 6144, nullptr, 5, nullptr, 0);
+    mqtt_start(id, settings, on_message);
+    xTaskCreatePinnedToCore(comms_main, "comms", 8192, nullptr, 5, nullptr, 0);
 }
