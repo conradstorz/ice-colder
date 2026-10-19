@@ -1,0 +1,30 @@
+{
+  "additionalProperties": false,
+  "description": "Body of POST /api/v1/machines/{fingerprint}/claim-code.\n\nexpires_at None means a setup code, which never expires.",
+  "properties": {
+    "claim_code_hash": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Claim Code Hash",
+      "type": "string"
+    },
+    "expires_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Expires At"
+    }
+  },
+  "required": [
+    "claim_code_hash",
+    "expires_at"
+  ],
+  "title": "ClaimCodeNotice",
+  "type": "object"
+}

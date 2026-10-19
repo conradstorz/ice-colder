@@ -1,0 +1,19 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "fingerprint": {
+      "title": "Fingerprint",
+      "type": "string"
+    },
+    "claimed": {
+      "title": "Claimed",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "fingerprint",
+    "claimed"
+  ],
+  "title": "RegisterResponse",
+  "type": "object"
+}

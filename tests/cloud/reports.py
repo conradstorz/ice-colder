@@ -37,7 +37,7 @@ def make_report(
 ) -> MachineReport:
     active = [_FAULT] if faults else []
     data: dict[str, Any] = {
-        "contract": "0.1.0",
+        "contract": "0.2.0",
         "machine_id": machine_id,
         "sent_at": sent_at.isoformat(),
         "boot_id": boot_id,
