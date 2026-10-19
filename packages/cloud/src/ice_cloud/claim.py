@@ -8,6 +8,7 @@ form cannot be used to discover machines.
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -16,13 +17,15 @@ from ice_cloud.auth import require_htmx, require_signed_in
 from ice_cloud.portal import COOKIE, LEVEL_FLEET
 from ice_cloud.store.repository import Account
 from ice_cloud.viewer import RemoteViewer
-from ice_common.secrets import verify_secret
+from ice_common.secrets import hash_secret, verify_secret
 from ice_contracts.access import REMOTE_VIEWER_PERMISSIONS
 from ice_contracts.cloud.signing import parse_short_fingerprint
 from ice_ui.levels import Level
 
 LEVEL_CLAIM = Level(title="Claim a machine", url="/claim", parent=LEVEL_FLEET)
 NO_CLAIM = "No claim is open for this machine, or the code is wrong."
+
+DUMMY_HASH = hash_secret("00000000")
 
 router = APIRouter()
 
@@ -84,7 +87,9 @@ async def claim_submit(
             headers={"Retry-After": str(wait)},
         )
 
-    def fail() -> Response:
+    async def fail(*, burn: bool = False) -> Response:
+        if burn:
+            await asyncio.to_thread(verify_secret, code.strip(), DUMMY_HASH)
         backoff.record_failure("claim", subject, client, trusted=False)
         return _page(
             request,
@@ -106,15 +111,21 @@ async def claim_submit(
             and machine.claim_code_expires_at <= now
         )
     ):
-        return fail()
+        return await fail(burn=True)
     if not await asyncio.to_thread(
         verify_secret, code.strip(), machine.claim_code_hash
     ):
-        return fail()
+        return await fail()
     if not await asyncio.to_thread(
-        state.repo.claim_machine, machine.fingerprint, account.id, now
+        partial(
+            state.repo.claim_machine,
+            machine.fingerprint,
+            account.id,
+            now,
+            expected_hash=machine.claim_code_hash,
+        )
     ):
-        return fail()
+        return await fail()
 
     backoff.record_success("claim", subject, client)
     response = RedirectResponse("/", status_code=303)

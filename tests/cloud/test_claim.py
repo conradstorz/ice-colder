@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+from ice_cloud import claim as claim_module
 from ice_common.secrets import hash_secret
 from ice_contracts.cloud.identity import ClaimCodeNotice
 from tests.cloud.conftest import login, register, short, signed
@@ -60,18 +61,51 @@ def test_wrong_code_403_and_then_backoff_429_with_retry_after(cloud, signer, clo
     assert post_claim(cloud, signer, CODE).status_code == 303
 
 
-def test_no_open_claim_same_403_message(cloud, signer):
-    fp = register(cloud, signer)
-    assert fp
+def test_no_open_claim_same_403_message(cloud, signer, clock):
+    other = type(signer)()
+    register(cloud, signer)
+    open_claim(cloud, other, expires_in=60)
     login(cloud, "a@example.com")
-    wrong_machine = post_claim(cloud, signer, CODE)
-    unknown = post_claim(cloud, signer, CODE, fingerprint="0000-0000-0000-0000")
-    garbage = post_claim(cloud, signer, CODE, fingerprint="not a fingerprint")
-    assert wrong_machine.status_code == 403
-    assert unknown.status_code == 403 or unknown.status_code == 429
-    assert garbage.status_code == 403
-    for r in (wrong_machine, garbage):
-        assert "No claim is open for this machine, or the code is wrong." in r.text
+    clock.advance(120)
+    cases = {
+        "no open claim": post_claim(cloud, signer, CODE),
+        "unknown machine": post_claim(
+            cloud, signer, CODE, fingerprint="0000-0000-0000-0000"
+        ),
+        "expired": post_claim(cloud, other, CODE),
+        "garbage": post_claim(cloud, signer, CODE, fingerprint="not a fingerprint"),
+    }
+    for name, r in cases.items():
+        assert r.status_code == 403, name
+        assert "No claim is open for this machine, or the code is wrong." in r.text, (
+            name
+        )
+
+
+def test_backoff_applies_before_lookup_for_unknown_machine(cloud, signer):
+    login(cloud, "a@example.com")
+    ghost = "0000-0000-0000-0000"
+    assert post_claim(cloud, signer, CODE, fingerprint=ghost).status_code == 403
+    assert post_claim(cloud, signer, CODE, fingerprint=ghost).status_code == 429
+
+
+def test_claim_fails_if_code_rotated_between_verify_and_claim(
+    cloud, signer, monkeypatch
+):
+    fp = open_claim(cloud, signer)
+    login(cloud, "a@example.com")
+    repo = cloud.app.state.repo
+    real = claim_module.verify_secret
+
+    def rotating(value, stored):
+        ok = real(value, stored)
+        if stored != claim_module.DUMMY_HASH:
+            repo.set_claim_code(fp, hash_secret("87654321"), None)
+        return ok
+
+    monkeypatch.setattr(claim_module, "verify_secret", rotating)
+    assert post_claim(cloud, signer).status_code == 403
+    assert repo.machine(fp).owner_id is None
 
 
 def test_expired_code_403(cloud, signer, clock):

@@ -101,8 +101,19 @@ class Repository(Protocol):
         self, fingerprint: str, hash: str | None, expires_at: datetime | None
     ) -> None: ...
 
-    def claim_machine(self, fingerprint: str, account_id: str, now: datetime) -> bool:
-        """Bind the machine to the account; False (no change) if either is unknown."""
+    def claim_machine(
+        self,
+        fingerprint: str,
+        account_id: str,
+        now: datetime,
+        *,
+        expected_hash: str | None = None,
+    ) -> bool:
+        """Bind the machine to the account; False (no change) if either is unknown.
+
+        With ``expected_hash`` the bind is a compare-and-swap: it applies only while
+        the machine still holds that claim-code hash and it has not expired.
+        """
         ...
 
     def unbind_machine(self, fingerprint: str) -> None: ...

@@ -280,7 +280,22 @@ class SqliteRepository:
                 (hash, _iso(expires_at), fingerprint),
             )
 
-    def claim_machine(self, fingerprint: str, account_id: str, now: datetime) -> bool:
+    def claim_machine(
+        self,
+        fingerprint: str,
+        account_id: str,
+        now: datetime,
+        *,
+        expected_hash: str | None = None,
+    ) -> bool:
+        where = "fingerprint = ?"
+        params: list[str] = [account_id, _iso(now), fingerprint]
+        if expected_hash is not None:
+            where += (
+                " AND claim_code_hash = ?"
+                " AND (claim_code_expires_at IS NULL OR claim_code_expires_at > ?)"
+            )
+            params += [expected_hash, _iso(now)]
         with self._tx() as conn:
             if not conn.execute(
                 "SELECT 1 FROM accounts WHERE id = ?", (account_id,)
@@ -289,8 +304,8 @@ class SqliteRepository:
             cur = conn.execute(
                 "UPDATE machines SET owner_id = ?, claimed_at = ?,"
                 " claim_code_hash = NULL, claim_code_expires_at = NULL"
-                " WHERE fingerprint = ?",
-                (account_id, _iso(now), fingerprint),
+                f" WHERE {where}",
+                params,
             )
             if cur.rowcount == 0:
                 return False
