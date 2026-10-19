@@ -31,6 +31,8 @@
 
 namespace {
 const char* g_ns = "board";
+void (*g_guard_begin)() = nullptr;
+void (*g_guard_end)() = nullptr;
 const ExtraSetting* g_extra = nullptr;
 int g_extra_n = 0;
 
@@ -49,6 +51,15 @@ const StrKey kStrKeys[] = {
     {"machine_id", offsetof(Settings, machine_id), sizeof(Settings::machine_id), false},
 };
 
+struct Guard {
+    Guard() {
+        if (g_guard_begin != nullptr) g_guard_begin();
+    }
+    ~Guard() {
+        if (g_guard_end != nullptr) g_guard_end();
+    }
+};
+
 void copy(char* dst, size_t n, const char* src) {
     strncpy(dst, src, n - 1);
     dst[n - 1] = '\0';
@@ -56,6 +67,11 @@ void copy(char* dst, size_t n, const char* src) {
 
 char* field(Settings& s, const StrKey& k) { return reinterpret_cast<char*>(&s) + k.offset; }
 }  // namespace
+
+void settings_set_flash_guard(void (*begin)(), void (*end)()) {
+    g_guard_begin = begin;
+    g_guard_end = end;
+}
 
 void settings_register_extra(const ExtraSetting* table, int n) {
     g_extra = table;
@@ -98,6 +114,7 @@ esp_err_t settings_load(Settings& s) {
 }
 
 bool settings_set(const char* key, const char* value) {
+    Guard guard;  // every NVS write below (and an extra setter's) happens inside the board's flash guard
     for (int i = 0; i < g_extra_n; ++i) {
         if (strcmp(key, g_extra[i].key) == 0) return g_extra[i].set(value);
     }
@@ -122,6 +139,7 @@ bool settings_set(const char* key, const char* value) {
 }
 
 void settings_erase() {
+    Guard guard;
     nvs_handle_t h;
     if (nvs_open(g_ns, NVS_READWRITE, &h) != ESP_OK) return;
     nvs_erase_all(h);

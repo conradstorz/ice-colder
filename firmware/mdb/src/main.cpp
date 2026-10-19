@@ -29,6 +29,8 @@ extern "C" void app_main(void) {
     settings_init(kIdentity);
     static Settings settings;
     settings_load(settings);
+    flash_window_init();  // before the console: its settings writes go through the window
+    settings_set_flash_guard(flash_window_open_blocking, flash_window_close_blocking);
     console_start(kIdentity, settings);
 
     // All queues are allocated here, once; nothing allocates after boot.
@@ -44,12 +46,13 @@ extern "C" void app_main(void) {
         for (;;) vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
-    flash_window_init();
     status_led_start(mdbboard::kStatusLedGpio);
-    if (!ledger_init(q, settings.machine_id)) ESP_LOGE(TAG, "replay log unavailable; money events will be held, not lost");
-    start_bus(q);
-    start_ledger();
+    if (!ledger_init(q, settings.machine_id)) ESP_LOGE(TAG, "replay log unavailable; money acceptance stops (log pressure) until it is repaired");
+    // Comms first: network init and PHY calibration touch flash, and must finish before the bus
+    // task starts polling. The bus task is created only after start_comms has returned.
     start_comms(q, kIdentity, settings);
+    start_ledger();
+    start_bus(q);
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(1000));
     }

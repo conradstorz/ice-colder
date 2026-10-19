@@ -10,7 +10,6 @@ namespace {
 const char* TAG = "nvs_log";
 constexpr const char* kPartition = "evlog";
 constexpr const char* kNamespace = "log";
-constexpr int kBootSweepGuard = 4096;  // upper bound on stale blobs erased at boot
 
 // Index of an "e<8 hex>" key, or false for any other key.
 bool parse_key(const char* key, uint32_t& index) {
@@ -50,27 +49,20 @@ bool NvsLogStore::begin() {
     }
     head_.store(head);
     tail_.store(tail);
-    swept_ = head;
-    // Boot-time sweep (the bus task is not running yet): erase every entry blob below head, whatever
-    // cut stranded it. Collect-one-then-erase, because erasing while iterating invalidates the iterator.
-    for (int guard = 0; guard < kBootSweepGuard; ++guard) {
-        char stale[16] = {};
-        nvs_iterator_t it = nullptr;
-        esp_err_t e = nvs_entry_find_in_handle(h_, NVS_TYPE_BLOB, &it);
-        while (e == ESP_OK && it != nullptr) {
-            nvs_entry_info_t info;
-            uint32_t idx = 0;
-            if (nvs_entry_info(it, &info) == ESP_OK && parse_key(info.key, idx) && idx < head) {
-                snprintf(stale, sizeof(stale), "%s", info.key);
-                break;
-            }
-            e = nvs_entry_next(&it);
-        }
-        nvs_release_iterator(it);
-        if (stale[0] == '\0') break;
-        nvs_erase_key(h_, stale);
+    // One read-only walk of the namespace (no erases, so nothing here can run long): find the lowest
+    // entry blob below head, whatever cut stranded it. sweep_step() then erases swept_..head-1
+    // incrementally inside quiet windows once the bus is running.
+    uint32_t lowest = head;
+    nvs_iterator_t it = nullptr;
+    esp_err_t e = nvs_entry_find_in_handle(h_, NVS_TYPE_BLOB, &it);
+    while (e == ESP_OK && it != nullptr) {
+        nvs_entry_info_t info;
+        uint32_t idx = 0;
+        if (nvs_entry_info(it, &info) == ESP_OK && parse_key(info.key, idx) && idx < lowest) lowest = idx;
+        e = nvs_entry_next(&it);
     }
-    nvs_commit(h_);
+    nvs_release_iterator(it);
+    swept_ = lowest;
     ok_ = true;
     ESP_LOGI(TAG, "replay log: %d entries pending", count());
     return true;
@@ -130,6 +122,7 @@ int NvsLogStore::sweep_step(int max_keys) {
         ++swept_;
         ++done;
     }
+    if (done > 0) nvs_commit(h_);
     return done;
 }
 

@@ -11,8 +11,9 @@
 //
 // erase_first(n) is cheap: it only advances `head` (one flash write). The blobs below head are
 // erased later, a few at a time, by sweep_step(), so one ack can never turn into a long run of
-// flash writes inside a quiet window (see flash_window.h). begin() sweeps every stale blob left by
-// a cut, by walking the whole namespace, not just a window below head.
+// flash writes inside a quiet window (see flash_window.h). begin() walks the namespace once (read
+// only) to find the lowest stale blob left by a cut and points the sweep at it; sweep_step() then
+// erases incrementally inside quiet windows, so boot never does a long erase run.
 //
 // Only the ledger task calls append/get/erase_first/sweep_step/save_payouts; count() is safe from
 // any task. Every call that writes flash must run inside a flash quiet window.

@@ -79,6 +79,7 @@ void UartBus::on_data(uint32_t size) {
     // The PARITY_ERR for a byte is queued right after that byte's DATA event, and both are
     // normally posted before this task runs, so look ahead without blocking.
     int perr = 0;
+    bool flushed = false;
     uart_event_t e;
     while (xQueueReceive(events_, &e, 0) == pdTRUE) {
         if (e.type == UART_PARITY_ERR) {
@@ -90,10 +91,12 @@ void UartBus::on_data(uint32_t size) {
         } else if (e.type == UART_FIFO_OVF || e.type == UART_BUFFER_FULL) {
             ++rx_lost_;
             uart_flush_input(port_);  // same recovery as pump(): the byte stream is no longer trustworthy
+            flushed = true;           // the bytes already read are from before the overflow: do not push them
         } else if (e.type == UART_FRAME_ERR || e.type == UART_BREAK) {
             ++rx_lost_;
         }
     }
+    if (flushed) return;
     if (got == 1) {
         push(buf[0], popcount_odd(buf[0]) != (perr > 0));
     } else if (perr == 0) {

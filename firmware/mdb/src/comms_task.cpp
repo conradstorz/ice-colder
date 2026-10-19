@@ -127,6 +127,15 @@ void send(const char* topic, const char* payload, size_t len, bool retain, Prio 
     if (prio == Prio::Outcome && (!g.synced || g.replay_owed)) return;
     if (g.ring.size() == 0 && mqtt_publish(topic, payload, len, retain)) return;
     if (prio == Prio::Outcome && !mqtt_connected()) return;
+    // Ring rule: OutboundRing::push evicts the oldest Outcome when the ring is all Outcomes and
+    // reports success, which would silently lose a money event while later ones overtake it (the
+    // edge acks cumulatively). So a money event never pushes into a full ring: that is a drop.
+    if (prio == Prio::Outcome && g.ring.full()) {
+        ++g.pub_dropped;
+        g.replay_owed = true;
+        request_replay();
+        return;
+    }
     if (!g.ring.push(topic, payload, len, retain, prio)) {
         ++g.pub_dropped;
         if (prio == Prio::Outcome) {

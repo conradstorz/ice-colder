@@ -27,6 +27,9 @@ public:
     const RingEntry* front() const { return count_ > 0 ? &e_[head_] : nullptr; }
     void pop();
     int size() const { return count_; }
+    // True when every slot is taken; the next push then evicts or drops. A caller that cannot
+    // tolerate an eviction (the mdb comms task, for money events) checks this before pushing.
+    bool full() const { return count_ == kCapacity; }
     uint32_t dropped() const { return dropped_; }
 
 private:

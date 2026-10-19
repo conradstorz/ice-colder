@@ -67,6 +67,17 @@ static void test_outcome_evicts_normal_before_outcome(void) {
     TEST_ASSERT_EQUAL_INT(64, outcomes);
 }
 
+static void test_full_reports_capacity(void) {
+    OutboundRing r;
+    TEST_ASSERT_FALSE(r.full());
+    fill(r, Prio::Outcome, OutboundRing::kCapacity - 1, "o");
+    TEST_ASSERT_FALSE(r.full());
+    fill(r, Prio::Outcome, 1, "last");
+    TEST_ASSERT_TRUE(r.full());
+    r.pop();
+    TEST_ASSERT_FALSE(r.full());
+}
+
 static void test_oversize_rejected(void) {
     OutboundRing r;
     char big[300];
@@ -81,6 +92,7 @@ int main(int, char**) {
     RUN_TEST(test_full_drops_telemetry_first);
     RUN_TEST(test_outcome_never_dropped_for_lower_prio);
     RUN_TEST(test_outcome_evicts_normal_before_outcome);
+    RUN_TEST(test_full_reports_capacity);
     RUN_TEST(test_oversize_rejected);
     return UNITY_END();
 }

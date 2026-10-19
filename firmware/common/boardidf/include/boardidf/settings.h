@@ -31,6 +31,11 @@ void settings_register_extra(const ExtraSetting* table, int n);
 int settings_extra_count();
 const ExtraSetting* settings_extra(int index);
 
+// Optional flash guard. A board whose other tasks must not be stalled by NVS writes (the mdb board's
+// MDB bus) installs begin/end; settings_set / settings_erase and extra-setting setters then run
+// inside begin()..end(). begin() may block. Default: none installed (the vending board).
+void settings_set_flash_guard(void (*begin)(), void (*end)());
+
 // Binds the NVS namespace; call once before any other settings function.
 void settings_init(const BoardIdentity& id);
 void settings_defaults(Settings& s);

@@ -116,7 +116,7 @@ void update_pressure() {
 // Acks erase the prefix. Reads and the head update touch flash, so they run in a quiet window.
 void handle_acks() {
     static EventAckItem a;
-    if (uxQueueMessagesWaiting(g_q.ack_in_q) == 0) return;
+    if (!g_store_ok || uxQueueMessagesWaiting(g_q.ack_in_q) == 0) return;
     FlashWindow w;
     if (!w.open()) return;  // the acks stay queued; the next pass tries again
     while (w.budget() && xQueueReceive(g_q.ack_in_q, &a, 0) == pdTRUE) {
@@ -129,7 +129,7 @@ void handle_acks() {
 
 // Erased entries' blobs go a couple of keys at a time, so one ack never becomes a long flash run.
 void sweep_blobs() {
-    if (g_store.sweep_pending() <= 0) return;
+    if (!g_store_ok || g_store.sweep_pending() <= 0) return;
     FlashWindow w;
     if (!w.open()) return;
     while (w.budget() && g_store.sweep_pending() > 0) g_store.sweep_step(kSweepKeysPerStep);
@@ -137,6 +137,7 @@ void sweep_blobs() {
 
 void run_replay() {
     static char entry[LogStore::kMaxJson];
+    FlashWindow w;  // reads are flash calls too: opened on the first entry, closed when the batch is spent
     while (g_replay_next >= 0) {
         if (g_replay_next >= g_log.pending()) {
             g_replay_next = -1;
@@ -144,6 +145,8 @@ void run_replay() {
             return;
         }
         if (uxQueueSpacesAvailable(g_q.pub_q) == 0) return;
+        if (w.is_open() && !w.budget()) return;  // batch spent: the rest waits for the next pass
+        if (!w.open()) return;
         if (g_log.pending_at(g_replay_next, entry, sizeof(entry))) {
             push_pub(g_topic_event, entry, strlen(entry), false, boardcore::Prio::Outcome);
         } else {
@@ -168,6 +171,12 @@ void drain_events() {
         } else if (xQueueReceive(g_q.evt_q, &evt, 0) != pdTRUE) {
             return;
         }
+        if (!g_store_ok) {  // no usable store: hold the event without opening a window every pass
+            g_held_evt = evt;
+            g_have_evt = true;
+            if (err_log_due()) ESP_LOGE(TAG, "event %s not logged (store unusable); holding it", event_kind_str(evt.kind));
+            return;
+        }
         if (!w.open()) {  // bus never reached a checkpoint in time: hold the event, ask again later
             g_held_evt = evt;
             g_have_evt = true;
@@ -189,7 +198,7 @@ void drain_events() {
 }
 
 void persist_payouts() {
-    if (!g_payouts_dirty) return;
+    if (!g_payouts_dirty || !g_store_ok) return;
     if (now_ms() < g_payouts_retry_ms) return;
     FlashWindow w;
     if (w.open() && g_store.save_payouts(g_last.payouts, g_last.payouts_len)) {
