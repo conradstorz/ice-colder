@@ -29,6 +29,15 @@ from ice_common.backoff import (  # noqa: F401  (re-exported for existing import
     Backoff,
 )
 from ice_common.observers import Subscribers
+from ice_common.secrets import (  # noqa: F401  (re-exported for existing importers)
+    SCRYPT_DKLEN,
+    SCRYPT_N,
+    SCRYPT_P,
+    SCRYPT_R,
+    _scrypt,
+    hash_secret,
+    verify_secret,
+)
 from ice_common.paths import DATA_DIR
 from ice_contracts.access import (  # noqa: F401  (re-exported for existing importers)
     ROLE_PERMISSIONS,
@@ -36,26 +45,10 @@ from ice_contracts.access import (  # noqa: F401  (re-exported for existing impo
     Role,
 )
 
-SCRYPT_N = 2**14
-SCRYPT_R = 8
-SCRYPT_P = 1
-SCRYPT_DKLEN = 32
-
 EMERGENCY_CODE_COUNT = 20
 CODE_DIGITS = 8
 TRANSFER_TTL_DAYS = 7
 LINK_TTL_DAYS = 7
-
-
-def _scrypt(value: str, salt: bytes) -> bytes:
-    return hashlib.scrypt(
-        value.encode("utf-8"),
-        salt=salt,
-        n=SCRYPT_N,
-        r=SCRYPT_R,
-        p=SCRYPT_P,
-        dklen=SCRYPT_DKLEN,
-    )
 
 
 def hash_pin(pin: str, salt: str | None = None) -> tuple[str, str]:
@@ -77,24 +70,6 @@ def verify_pin(pin: str, pin_hash: str, pin_salt: str) -> bool:
 # real wrong-PIN check would, instead of returning early and leaking which
 # case it was through response timing.
 _DUMMY_PIN_HASH, _DUMMY_PIN_SALT = hash_pin(secrets.token_hex(16))
-
-
-def hash_secret(value: str) -> str:
-    """Salted scrypt for codes stored without a separate salt column."""
-    salt = secrets.token_bytes(16)
-    return f"scrypt${salt.hex()}${_scrypt(value, salt).hex()}"
-
-
-def verify_secret(value: str, stored: str) -> bool:
-    """Constant-time check against hash_secret output. Garbage returns False."""
-    try:
-        scheme, salt_hex, digest_hex = stored.split("$")
-        if scheme != "scrypt":
-            return False
-        salt = bytes.fromhex(salt_hex)
-    except (ValueError, AttributeError):
-        return False
-    return secrets.compare_digest(_scrypt(value, salt).hex(), digest_hex)
 
 
 def generate_code(digits: int) -> str:

@@ -107,6 +107,36 @@ def test_claim_sets_owner_clears_code_and_drops_memberships(repo):
     assert repo.access_for(tech.id, FP) is None
 
 
+def test_claim_with_stale_expected_hash_is_false_and_unchanged(repo):
+    owner, _ = _accounts(repo)
+    repo.register_machine(FP, KEY, "a", T0)
+    repo.set_claim_code(FP, "rotated", T0 + timedelta(days=1))
+    assert repo.claim_machine(FP, owner.id, T0, expected_hash="old") is False
+    m = repo.machine(FP)
+    assert m.owner_id is None and m.claim_code_hash == "rotated"
+    repo.set_claim_code(FP, None, None)
+    assert repo.claim_machine(FP, owner.id, T0, expected_hash="old") is False
+    assert repo.machine(FP).owner_id is None
+
+
+def test_claim_with_expected_hash_matching_succeeds(repo):
+    owner, _ = _accounts(repo)
+    repo.register_machine(FP, KEY, "a", T0)
+    repo.set_claim_code(FP, "h", T0 + timedelta(days=1))
+    assert repo.claim_machine(FP, owner.id, T0, expected_hash="h") is True
+    m = repo.machine(FP)
+    assert m.owner_id == owner.id and m.claim_code_hash is None
+
+
+def test_claim_with_expected_hash_refuses_expired_code(repo):
+    owner, _ = _accounts(repo)
+    repo.register_machine(FP, KEY, "a", T0)
+    repo.set_claim_code(FP, "h", T0 + timedelta(minutes=1))
+    later = T0 + timedelta(minutes=5)
+    assert repo.claim_machine(FP, owner.id, later, expected_hash="h") is False
+    assert repo.machine(FP).owner_id is None
+
+
 def test_claim_unknown_machine_is_false(repo):
     owner, _ = _accounts(repo)
     assert repo.claim_machine(FP, owner.id, T0) is False
