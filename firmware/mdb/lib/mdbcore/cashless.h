@@ -36,6 +36,10 @@ public:
     bool enable_pending() const { return enable_dirty_; }  // a READER enable/disable is not ACKed yet
     // True once the reader ACKed the VEND REQUEST of the current request (false again after a denial).
     bool vend_command_sent() const { return vend_sent_; }
+    // A vend_result / end_session action chain is still queued (not every command ACKed yet).
+    bool action_pending() const { return action_ != Action::None; }
+    // The reader NAKed a command of the chain started by the last vend_result / end_session.
+    bool action_nak() const { return action_nak_; }
     bool always_idle() const { return always_idle_active_; }
     const DeviceState& state() const { return state_; }
     Phase phase() const { return phase_; }
@@ -109,6 +113,7 @@ private:
     uint32_t approved_ms_ = 0;
     Action action_ = Action::None;
     Action follow_ = Action::None;
+    bool action_nak_ = false;
     bool cash_pending_ = false;
     uint32_t cash_cents_ = 0;
     uint16_t cash_item_ = 0;

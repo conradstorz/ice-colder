@@ -185,6 +185,7 @@ bool Cashless::vend_result(bool success, uint16_t item) {
     vend_ = Vend::None;
     closing_ = true;
     end_reason_ = SessionEndReason::Complete;
+    action_nak_ = false;
     queue(success ? Action::VendSuccess : Action::VendFailure, Action::SessionComplete);
     return true;
 }
@@ -195,6 +196,7 @@ bool Cashless::end_session() {
         return false;
     closing_ = true;
     end_reason_ = SessionEndReason::Edge;
+    action_nak_ = false;
     queue(Action::SessionComplete, Action::None);
     return true;
 }
@@ -415,6 +417,7 @@ void Cashless::do_action() {
     const Action done = action_;
     action_ = follow_;
     follow_ = Action::None;
+    if (r.kind == Reply::Nak && done != Action::VendRequest) action_nak_ = true;
     if (done == Action::VendRequest) {
         if (r.kind == Reply::Nak)
             deny_vend("nak");

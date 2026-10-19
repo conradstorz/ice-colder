@@ -330,6 +330,19 @@ static void test_bill_type_mask_and_escrow_bits(void) {
     TEST_ASSERT_EQUAL_HEX16(0x0002, r.dev.bill_masks[r.dev.n_masks - 1]);
 }
 
+static void test_enabled_never_exceeds_denominations(void) {
+    Rig r;
+    static const uint32_t some[3] = {500, 7, 2000};
+    r.v.set_enabled(some, 3, true);
+    TEST_ASSERT_EQUAL_UINT8(0, r.v.state().n_enabled);  // nothing known before SETUP
+    r.v.reset();
+    r.steps(12);
+    TEST_ASSERT_EQUAL_UINT8(2, r.v.state().n_enabled);
+    TEST_ASSERT_EQUAL_UINT32(500, r.v.state().enabled[0]);
+    TEST_ASSERT_EQUAL_UINT32(2000, r.v.state().enabled[1]);
+    TEST_ASSERT_EQUAL_HEX16(0x000A, r.dev.bill_masks[r.dev.n_masks - 1]);
+}
+
 static void test_accept_false_disables_all(void) {
     Rig r;
     r.bring_up();
@@ -428,6 +441,7 @@ int main(int, char**) {
     RUN_TEST(test_validator_reset_during_escrow_returns_timeout);
     RUN_TEST(test_miss_threshold_goes_offline_then_recovers);
     RUN_TEST(test_bill_type_mask_and_escrow_bits);
+    RUN_TEST(test_enabled_never_exceeds_denominations);
     RUN_TEST(test_accept_false_disables_all);
     RUN_TEST(test_no_escrow_stacks_straight_away);
     RUN_TEST(test_money_event_survives_full_sink);

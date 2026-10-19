@@ -19,6 +19,7 @@ struct FakeChanger : FakePeripheral {
     bool alt_payout = true;  // advertised in IDENTIFICATION
     int busy_polls = 0;      // PAYOUT STATUS ACKs (still busy) before the 16-byte reply
     bool fail_payout = false;
+    bool fail_coin_type = false;  // NAK every COIN TYPE
     uint8_t value_poll_cap_units = 255;  // PAYOUT VALUE POLL reports at most this many units
     bool silent = false;     // answer nothing at all
 
@@ -139,7 +140,7 @@ struct FakeChanger : FakePeripheral {
                 return ack();
             }
             case 4: {
-                if (n < 4) return nak();
+                if (n < 4 || fail_coin_type) return nak();
                 if (n_masks < 16) coin_masks[n_masks++] = static_cast<uint16_t>((d[0] << 8) | d[1]);
                 manual_mask_bytes = static_cast<uint8_t>(d[2] + d[3]);
                 return ack();

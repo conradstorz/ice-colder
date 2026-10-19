@@ -8,11 +8,17 @@
 // Until bound the tap refuses every event (the drivers hold them) and returns every bill.
 //
 // Acks. submit() always returns the real first ack, as vendcore::Core::submit does: the
-// commands that need the bus (set_policy, payout, vend_request) drive the affected device for a
-// bounded number of transactions inside submit() and answer from what the peripheral did:
-//   * payout / vend_request answer `accepted` only after the peripheral ACKed the MDB command
-//     (Changer::payout_acked / Cashless::vend_command_sent), else rejected/failed;
-//   * set_policy answers `ok` only after every present, polling device ACKed its enable update.
+// commands that need the bus drive the affected device for a bounded number of transactions
+// inside submit() and answer from what the peripheral did:
+//   * payout / vend_request answer `accepted` while the driver holds the command (queued, in
+//     flight, or ended with its result held back by a full sink). `failed` is final (rule 5), so it
+//     is never answered for a command the driver still holds; a terminal failure arrives as the
+//     payout_result / vend_denied event. A refusal is `rejected` (`busy` only when a payout is
+//     running, `unpayable` when the changer cannot express the amount at all);
+//   * set_policy answers `ok` only after every present, polling device ACKed its enable update,
+//     else `failed`, and a failed set_policy changes nothing (no commit, no lifted silence);
+//   * vend_result / end_session / return_escrow answer `ok` once the bus confirmed, `failed` on a
+//     NAK, and `ok` with detail "queued" if the action is still queued after the settle rounds.
 // So there is no late ack and poll_completion() is a reserved, always-empty seam (the dispatcher
 // treats a phase=accepted ack without a registered completion timeout as an error, which
 // set_policy must never produce). Long-running outcomes arrive as payout_result / vend_* events.
@@ -126,6 +132,7 @@ private:
     uint32_t timeout_s() const { return has_policy_ ? policy_.edge_timeout_s : 30; }
     uint32_t state_signature() const;
 
+    boardcore::Ack settle_cashless_action(const Command& c);
     boardcore::Ack do_set_policy(const Command& c);
     boardcore::Ack do_payout(const Command& c);
     boardcore::Ack do_vend_request(const Command& c);

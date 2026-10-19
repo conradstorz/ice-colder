@@ -344,6 +344,66 @@ static void test_l2_failed_when_no_coin_fits(void) {
     TEST_ASSERT_EQUAL(PayoutStatus::Failed, r.sink.first(EventKind::PayoutResult)->payout_status);
 }
 
+static void test_l3_payout_above_255_units_is_chunked(void) {
+    Rig r;
+    r.dev.tubes[2] = 100;  // enough quarters
+    r.bring_up();
+    TEST_ASSERT_TRUE(r.ch.request_payout(1500, "req-00000020"));  // 300 units of 5c
+    r.steps(40);
+    TEST_ASSERT_FALSE(r.ch.payout_in_progress());
+    TEST_ASSERT_EQUAL_INT(2, r.dev.n_payouts);
+    TEST_ASSERT_EQUAL_UINT8(255, r.dev.payouts[0]);
+    TEST_ASSERT_EQUAL_UINT8(45, r.dev.payouts[1]);
+    TEST_ASSERT_EQUAL_INT(1, r.sink.count(EventKind::PayoutResult));
+    const PaymentEvent* e = r.sink.first(EventKind::PayoutResult);
+    TEST_ASSERT_EQUAL(PayoutStatus::Ok, e->payout_status);
+    TEST_ASSERT_EQUAL_UINT32(1500, e->requested_cents);
+    TEST_ASSERT_EQUAL_UINT32(1500, e->paid_cents);
+}
+
+static void test_l3_payout_not_a_multiple_of_scaling_pays_the_floor(void) {
+    Rig r;
+    r.dev.tubes[2] = 100;
+    r.bring_up();
+    TEST_ASSERT_TRUE(r.ch.request_payout(1502, "req-00000021"));
+    r.steps(40);
+    const PaymentEvent* e = r.sink.first(EventKind::PayoutResult);
+    TEST_ASSERT_NOT_NULL(e);
+    TEST_ASSERT_EQUAL(PayoutStatus::Partial, e->payout_status);
+    TEST_ASSERT_EQUAL_UINT32(1502, e->requested_cents);
+    TEST_ASSERT_EQUAL_UINT32(1500, e->paid_cents);
+    TEST_ASSERT_EQUAL_STRING("scaling", e->detail);
+    TEST_ASSERT_FALSE(r.ch.request_payout(3, "req-00000022"));  // floors to zero units: impossible
+}
+
+static void test_l3_chunked_payout_stops_at_a_short_chunk(void) {
+    Rig r;
+    r.dev.tubes[2] = 30;  // 750c of quarters, nothing else
+    r.dev.tubes[0] = 0;
+    r.dev.tubes[1] = 0;
+    r.bring_up();
+    TEST_ASSERT_TRUE(r.ch.request_payout(1500, "req-00000023"));
+    r.steps(40);
+    const PaymentEvent* e = r.sink.first(EventKind::PayoutResult);
+    TEST_ASSERT_NOT_NULL(e);
+    TEST_ASSERT_EQUAL(PayoutStatus::Partial, e->payout_status);
+    TEST_ASSERT_EQUAL_UINT32(750, e->paid_cents);
+    TEST_ASSERT_EQUAL_INT(1, r.dev.n_payouts);
+}
+
+static void test_enabled_never_exceeds_denominations(void) {
+    Rig r;
+    static const uint32_t some[3] = {5, 200, 100};
+    r.ch.set_enabled(some, 3, true);
+    TEST_ASSERT_EQUAL_UINT8(0, r.ch.state().n_enabled);  // nothing known before SETUP
+    r.ch.reset();
+    r.steps(12);
+    TEST_ASSERT_EQUAL_UINT8(2, r.ch.state().n_enabled);
+    TEST_ASSERT_EQUAL_UINT32(5, r.ch.state().enabled[0]);
+    TEST_ASSERT_EQUAL_UINT32(100, r.ch.state().enabled[1]);
+    TEST_ASSERT_EQUAL_HEX16(0x0009, r.dev.coin_masks[r.dev.n_masks - 1]);  // types 0 and 3 only
+}
+
 static void test_request_payout_refused_while_running_or_offline(void) {
     Rig r;
     r.bring_up();
@@ -575,6 +635,10 @@ int main(int, char**) {
     RUN_TEST(test_l2_dispense_caps_at_15_per_command);
     RUN_TEST(test_l2_partial_when_short);
     RUN_TEST(test_l2_failed_when_no_coin_fits);
+    RUN_TEST(test_l3_payout_above_255_units_is_chunked);
+    RUN_TEST(test_l3_payout_not_a_multiple_of_scaling_pays_the_floor);
+    RUN_TEST(test_l3_chunked_payout_stops_at_a_short_chunk);
+    RUN_TEST(test_enabled_never_exceeds_denominations);
     RUN_TEST(test_request_payout_refused_while_running_or_offline);
     RUN_TEST(test_miss_threshold_goes_offline_then_recovers);
     RUN_TEST(test_set_enabled_sends_mask);

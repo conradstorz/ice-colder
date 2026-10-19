@@ -622,15 +622,89 @@ static void test_payout_changer_refusal_is_a_failed_ack(void) {
     TEST_ASSERT_EQUAL_UINT8(PayoutStatus::Failed, need(r.sink.first(EventKind::PayoutResult))->payout_status);
 }
 
-static void test_payout_never_accepted_when_changer_is_silent(void) {
+// A command the driver still holds is never answered `failed` (rule 5: failed is final).
+static void test_payout_still_queued_when_changer_is_silent_is_accepted(void) {
     Rig r;
     r.bring_up();
     r.set_policy();
     r.coin.silent = true;
-    const Ack a = r.payout(15);
-    TEST_ASSERT_EQUAL(AckStatus::Failed, a.status);
-    TEST_ASSERT_EQUAL_STRING("no_bus_ack", a.detail);
+    const Ack a = r.payout(15, "pay-00000030");
+    TEST_ASSERT_EQUAL(AckStatus::Ok, a.status);
+    TEST_ASSERT_EQUAL(Phase::Accepted, a.phase);
     TEST_ASSERT_EQUAL_INT(0, r.coin.n_payouts);
+    // The same-id retry while the first is still queued: accepted, not failed, not busy.
+    const Ack again = r.payout(15, "pay-00000030");
+    TEST_ASSERT_EQUAL(AckStatus::Ok, again.status);
+    TEST_ASSERT_EQUAL(Phase::Accepted, again.phase);
+    // The changer comes back: the one queued payout runs exactly once.
+    r.coin.silent = false;
+    r.clock.advance_ms(1500);
+    r.steps(20);
+    TEST_ASSERT_EQUAL_INT(1, r.coin.n_payouts);
+    TEST_ASSERT_EQUAL_INT(1, r.sink.count(EventKind::PayoutResult));
+}
+
+static void test_payout_retry_while_in_flight_is_accepted_not_busy(void) {
+    Rig r;
+    r.bring_up();
+    r.set_policy();
+    r.coin.busy_polls = 50;
+    TEST_ASSERT_EQUAL(Phase::Accepted, r.payout(15, "pay-00000031").phase);
+    const Ack again = r.payout(15, "pay-00000031");
+    TEST_ASSERT_EQUAL(AckStatus::Ok, again.status);
+    TEST_ASSERT_EQUAL(Phase::Accepted, again.phase);
+    TEST_ASSERT_EQUAL_INT(1, r.coin.n_payouts);
+}
+
+static void test_payout_result_held_by_full_sink_retry_is_accepted_then_replays(void) {
+    Rig r;
+    r.bring_up();
+    r.set_policy();
+    r.acc.coin(100);
+    r.sink.capacity = r.sink.n;  // nothing more gets out
+    TEST_ASSERT_EQUAL(Phase::Accepted, r.payout(15, "pay-00000032").phase);
+    r.steps(8);  // the payout ends; its PayoutResult is held inside the changer
+    TEST_ASSERT_EQUAL_INT(0, r.sink.count(EventKind::PayoutResult));
+    Ack again = r.payout(15, "pay-00000032");
+    TEST_ASSERT_EQUAL(AckStatus::Ok, again.status);
+    TEST_ASSERT_EQUAL(Phase::Accepted, again.phase);
+    TEST_ASSERT_EQUAL_INT(1, r.coin.n_payouts);
+    r.sink.capacity = 256;
+    r.steps(3);
+    TEST_ASSERT_EQUAL_INT(1, r.sink.count(EventKind::PayoutResult));
+    TEST_ASSERT_EQUAL_UINT32(85, r.acc.escrow_cents());
+    again = r.payout(15, "pay-00000032");  // now the stored result is replayed
+    TEST_ASSERT_EQUAL(AckStatus::Ok, again.status);
+    TEST_ASSERT_EQUAL_STRING("replay", again.detail);
+    TEST_ASSERT_EQUAL_INT(2, r.sink.count(EventKind::PayoutResult));
+    TEST_ASSERT_EQUAL_INT(1, r.coin.n_payouts);
+    TEST_ASSERT_EQUAL_UINT32(85, r.acc.escrow_cents());
+}
+
+static void test_payout_the_changer_cannot_express_is_chunked_or_unpayable(void) {
+    Rig r;
+    r.coin.tubes[2] = 200;
+    r.bring_up();
+    r.set_policy();
+    // Above 255 scaled units: accepted, paid in two chunks.
+    Ack a = r.payout(1500, "pay-00000033");
+    TEST_ASSERT_EQUAL(AckStatus::Ok, a.status);
+    TEST_ASSERT_EQUAL(Phase::Accepted, a.phase);
+    r.steps(40);
+    TEST_ASSERT_EQUAL_INT(2, r.coin.n_payouts);
+    TEST_ASSERT_EQUAL_UINT32(1500, need(r.sink.last(EventKind::PayoutResult))->paid_cents);
+    // Not a multiple of the scaling: floor paid, partial, never refused.
+    a = r.payout(1502, "pay-00000034");
+    TEST_ASSERT_EQUAL(AckStatus::Ok, a.status);
+    r.steps(40);
+    const PaymentEvent* e = need(r.sink.last(EventKind::PayoutResult));
+    TEST_ASSERT_EQUAL(PayoutStatus::Partial, e->payout_status);
+    TEST_ASSERT_EQUAL_UINT32(1500, e->paid_cents);
+    TEST_ASSERT_EQUAL_STRING("scaling", e->detail);
+    // Less than one unit: genuinely impossible, and not reported as busy.
+    a = r.payout(3, "pay-00000035");
+    TEST_ASSERT_EQUAL(AckStatus::Rejected, a.status);
+    TEST_ASSERT_EQUAL_STRING("unpayable", a.detail);
 }
 
 static void test_payout_rejections(void) {
@@ -771,7 +845,7 @@ static void test_vend_denied_by_reader_arrives_as_event_after_accepted_ack(void)
     TEST_ASSERT_TRUE(s.session_open);
 }
 
-static void test_vend_request_never_accepted_when_reader_does_not_ack(void) {
+static void test_vend_request_still_queued_when_reader_does_not_ack_is_accepted(void) {
     Rig r;
     r.bring_up();
     r.set_policy();
@@ -779,8 +853,8 @@ static void test_vend_request_never_accepted_when_reader_does_not_ack(void) {
     snprintf(session, sizeof(session), "%s", r.tap_session());
     r.rdr.silent = true;
     const Ack a = r.vend(25, session, "vend-0000007");
-    TEST_ASSERT_EQUAL(AckStatus::Failed, a.status);
-    TEST_ASSERT_EQUAL_STRING("no_bus_ack", a.detail);
+    TEST_ASSERT_EQUAL(AckStatus::Ok, a.status);
+    TEST_ASSERT_EQUAL(Phase::Accepted, a.phase);
     TEST_ASSERT_EQUAL_INT(0, r.rdr.n_vends);
 }
 
@@ -976,6 +1050,118 @@ static void test_snapshot_contents(void) {
     TEST_ASSERT_EQUAL_INT(20, static_cast<int>(strlen(s.session_started_ts)));
 }
 
+// ---------------------------------------------------------------- ack model, policy commit, enables
+
+static void test_failed_set_policy_rolls_back_and_never_resumes_acceptance(void) {
+    Rig r;
+    r.bring_up();
+    Command pc = r.policy();
+    pc.policy.edge_timeout_s = 5;
+    TEST_ASSERT_EQUAL(AckStatus::Ok, r.m.submit(pc).status);
+    r.clock.advance_ms(6000);
+    r.steps(8);
+    TEST_ASSERT_EQUAL(Inhibit::EdgeSilent, r.m.inhibit());
+    const int masks = r.coin.n_masks;
+    r.coin.fail_coin_type = true;  // the changer NAKs the enable update
+    const Ack a = r.set_policy();
+    TEST_ASSERT_EQUAL(AckStatus::Failed, a.status);
+    TEST_ASSERT_EQUAL_STRING("enable_pending:coin", a.detail);
+    TEST_ASSERT_EQUAL(Inhibit::EdgeSilent, r.m.inhibit());
+    PaymentState s;
+    r.m.snapshot(s);
+    TEST_ASSERT_FALSE(s.accepting);
+    TEST_ASSERT_EQUAL_STRING("p-00000001", s.policy_id);
+    r.steps(5);
+    TEST_ASSERT_EQUAL_INT(masks, r.coin.n_masks);
+    TEST_ASSERT_EQUAL_UINT16(0, r.bill.bill_mask);  // still disabled on the bus
+    TEST_ASSERT_FALSE(r.rdr.reader_enabled);
+    // A later set_policy that the bus accepts does resume acceptance.
+    r.coin.fail_coin_type = false;
+    TEST_ASSERT_EQUAL(AckStatus::Ok, r.set_policy().status);
+    TEST_ASSERT_EQUAL(Inhibit::None, r.m.inhibit());
+}
+
+static void test_failed_first_set_policy_stays_without_a_policy(void) {
+    Rig r;
+    r.bring_up();
+    r.coin.fail_coin_type = true;
+    TEST_ASSERT_EQUAL(AckStatus::Failed, r.set_policy().status);
+    TEST_ASSERT_EQUAL(Inhibit::NoPolicy, r.m.inhibit());
+    PaymentState s;
+    r.m.snapshot(s);
+    TEST_ASSERT_NULL(s.policy_id);
+    TEST_ASSERT_FALSE(s.accepting);
+}
+
+static void test_enabled_is_within_the_denominations_the_devices_reported(void) {
+    Rig r;
+    Command c = r.policy();
+    const uint32_t coins[2] = {5, 200};  // the fake changer has no 200 cent coin
+    memcpy(c.policy.coin_enabled, coins, sizeof(coins));
+    c.policy.n_coin = 2;
+    r.m.submit(c);  // before SETUP: nothing is known yet
+    PaymentState s;
+    r.m.snapshot(s);
+    TEST_ASSERT_EQUAL_UINT8(0, s.devices[0].n_enabled);
+    TEST_ASSERT_EQUAL_UINT8(0, s.devices[1].n_enabled);
+    r.steps(40);
+    r.m.snapshot(s);
+    TEST_ASSERT_EQUAL_UINT8(1, s.devices[0].n_enabled);
+    TEST_ASSERT_EQUAL_UINT32(5, s.devices[0].enabled[0]);
+    TEST_ASSERT_EQUAL_UINT8(4, s.devices[1].n_enabled);
+    TEST_ASSERT_EQUAL_UINT16(0x0001, r.coin.coin_masks[r.coin.n_masks - 1]);  // no bit for the unknown type
+    TEST_ASSERT_EQUAL_UINT16(0x000F, r.bill.bill_mask);
+}
+
+static void test_vend_result_end_session_return_escrow_ack_after_the_bus(void) {
+    Rig r;
+    r.bring_up();
+    r.set_policy();
+    char session[65];
+    snprintf(session, sizeof(session), "%s", r.tap_session());
+    r.rdr.approve(25);
+    r.vend(25, session, "vend-0000020");
+    r.steps(3);
+    // The result reaches the reader before the ack exists.
+    const int before = r.rdr.n_vends;
+    Ack a = r.vend_result(session, "vend-0000020", true);
+    TEST_ASSERT_EQUAL(AckStatus::Ok, a.status);
+    TEST_ASSERT_EQUAL_STRING("", a.detail);
+    TEST_ASSERT_TRUE(r.rdr.n_vends >= before + 2);  // VEND SUCCESS and SESSION COMPLETE
+
+    // A silent reader: the action is still queued, so the ack says so (the events are authoritative).
+    char s2[65];
+    snprintf(s2, sizeof(s2), "%s", r.tap_session());
+    TEST_ASSERT_TRUE(s2[0] != '\0');
+    r.rdr.silent = true;
+    Command c = r.cmd(CmdKind::EndSession, "end_session");
+    snprintf(c.session_id, sizeof(c.session_id), "%s", s2);
+    a = r.m.submit(c);
+    TEST_ASSERT_EQUAL(AckStatus::Ok, a.status);
+    TEST_ASSERT_EQUAL_STRING("queued", a.detail);
+    TEST_ASSERT_EQUAL(Phase::Completed, a.phase);
+    r.rdr.silent = false;
+    r.clock.advance_ms(1500);
+    r.steps(10);
+    TEST_ASSERT_EQUAL(SessionEndReason::Edge, need(r.sink.last(EventKind::SessionEnded))->end_reason);
+
+    // return_escrow: a NAK from the validator is a failed ack.
+    r.bill.insert(1);
+    r.steps(1);
+    r.bill.fail_escrow = true;
+    a = r.simple(CmdKind::ReturnEscrow, "return_escrow");
+    TEST_ASSERT_EQUAL(AckStatus::Failed, a.status);
+    TEST_ASSERT_EQUAL_STRING("nak", a.detail);
+}
+
+static void test_self_test_reports_driver_event_drops(void) {
+    Rig r;
+    r.bring_up();
+    Ack a;
+    r.m.self_test(a);
+    TEST_ASSERT_NOT_NULL(strstr(a.result_json, "\"name\":\"event_queue\",\"pass\":true,\"detail\":\"0 dropped\""));
+}
+
 static void test_self_test_shape(void) {
     Rig r;
     r.bring_up();
@@ -1041,7 +1227,10 @@ int main(int, char**) {
     RUN_TEST(test_lever_without_flag_only_reports);
     RUN_TEST(test_payout_acked_accepted_only_after_changer_acked_the_bus_command);
     RUN_TEST(test_payout_changer_refusal_is_a_failed_ack);
-    RUN_TEST(test_payout_never_accepted_when_changer_is_silent);
+    RUN_TEST(test_payout_still_queued_when_changer_is_silent_is_accepted);
+    RUN_TEST(test_payout_retry_while_in_flight_is_accepted_not_busy);
+    RUN_TEST(test_payout_result_held_by_full_sink_retry_is_accepted_then_replays);
+    RUN_TEST(test_payout_the_changer_cannot_express_is_chunked_or_unpayable);
     RUN_TEST(test_payout_rejections);
     RUN_TEST(test_payout_retry_of_running_payout_does_not_pay_twice);
     RUN_TEST(test_payout_idempotent_replay_after_completion);
@@ -1049,7 +1238,7 @@ int main(int, char**) {
     RUN_TEST(test_payout_expiry_uses_wall_time);
     RUN_TEST(test_vend_request_rejections);
     RUN_TEST(test_vend_denied_by_reader_arrives_as_event_after_accepted_ack);
-    RUN_TEST(test_vend_request_never_accepted_when_reader_does_not_ack);
+    RUN_TEST(test_vend_request_still_queued_when_reader_does_not_ack_is_accepted);
     RUN_TEST(test_vend_result_rejections);
     RUN_TEST(test_end_session);
     RUN_TEST(test_return_escrow);
@@ -1060,6 +1249,11 @@ int main(int, char**) {
     RUN_TEST(test_all_three_devices_share_one_clean_bus);
     RUN_TEST(test_state_dirty_flag);
     RUN_TEST(test_snapshot_contents);
+    RUN_TEST(test_failed_set_policy_rolls_back_and_never_resumes_acceptance);
+    RUN_TEST(test_failed_first_set_policy_stays_without_a_policy);
+    RUN_TEST(test_enabled_is_within_the_denominations_the_devices_reported);
+    RUN_TEST(test_vend_result_end_session_return_escrow_ack_after_the_bus);
+    RUN_TEST(test_self_test_reports_driver_event_drops);
     RUN_TEST(test_self_test_shape);
     return UNITY_END();
 }

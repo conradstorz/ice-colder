@@ -17,10 +17,15 @@ public:
     Changer(Link& link, Clock& clock, EventSink& sink);
 
     void step();
-    // accept=false disables every coin (zero mask). cents lists the denominations to accept.
+    // accept=false disables every coin (zero mask). cents lists the denominations the policy wants;
+    // state().enabled is that list intersected with the denominations the changer reported in SETUP
+    // (empty until then), and only those can ever reach the COIN TYPE mask.
     void set_enabled(const uint32_t* cents, uint8_t n, bool accept);
     void reset();
-    bool request_payout(uint32_t cents, const char* request_id);  // false if busy or offline
+    // False when the payout is impossible: offline, one already running, or fewer cents than one
+    // scaled unit. A level 3 request above 255 units is sent in chunks; an amount that is not a
+    // multiple of the scaling pays the floor multiple and ends partial with detail "scaling".
+    bool request_payout(uint32_t cents, const char* request_id);
     bool payout_in_progress() const { return payout_.active; }
     // True once the changer has ACKed the first PAYOUT (level 3) or DISPENSE (level 2) command.
     bool payout_acked() const { return payout_.active && payout_.acked; }
@@ -49,6 +54,10 @@ private:
         bool level3;
         PayStep step;
         uint32_t requested;
+        uint32_t target;       // cents the changer can express (requested floored to the scaling)
+        uint32_t sent_cents;   // level 3: value of the chunks sent so far, the current one included
+        uint32_t chunk_cents;  // level 3: value of the current chunk
+        uint32_t done_cents;   // level 3: paid by the finished chunks
         uint32_t remaining;  // level 2 only
         uint32_t start_ms;
         uint32_t progress_cents;  // level 3 value-poll progress
@@ -76,6 +85,7 @@ private:
     void finish_payout(uint32_t paid, const char* detail = "");
     void interrupt_payout(const char* cause);
     uint16_t enable_mask() const;
+    void refilter();
     uint32_t type_cents(uint8_t type) const { return static_cast<uint32_t>(credit_[type]) * scaling_; }
     bool type_valid(uint8_t type) const { return credit_[type] != 0 && credit_[type] != 0xFF; }
     bool type_tubed(uint8_t type) const { return type_valid(type) && ((routing_ >> type) & 1); }
@@ -96,6 +106,8 @@ private:
     uint8_t n_tubes_ = 0;
     bool alt_payout_ = false;
     bool accept_ = false;
+    uint32_t want_[16] = {};  // the policy's list as received, before the denominations filter
+    uint8_t n_want_ = 0;
     bool mask_dirty_ = true;
     bool lever_ = false;
     bool tubes_due_ = false;

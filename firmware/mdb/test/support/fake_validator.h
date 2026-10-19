@@ -16,6 +16,7 @@ struct FakeValidator : FakePeripheral {
     uint8_t credit[16] = {1, 5, 10, 20};  // $1 $5 $10 $20 (units of `scaling`)
     bool escrow_capable = true;
     bool silent = false;  // answer nothing at all
+    bool fail_escrow = false;  // NAK every ESCROW command
 
     // Live state.
     uint16_t stacker_count = 0;
@@ -137,7 +138,7 @@ struct FakeValidator : FakePeripheral {
                 return ack();
             }
             case 5: {
-                if (n < 1) return nak();
+                if (n < 1 || fail_escrow) return nak();
                 if (n_escrow_cmds < 16) escrow_cmds[n_escrow_cmds++] = d[0];
                 if (!in_escrow) {
                     status(0x0A);  // invalid escrow request

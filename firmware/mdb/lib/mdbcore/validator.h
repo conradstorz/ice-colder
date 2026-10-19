@@ -27,11 +27,17 @@ public:
     Validator(Link& link, Clock& clock, EventSink& sink, EscrowJudge& judge);
 
     void step();
-    // accept=false disables every bill (zero masks). cents lists the denominations to accept.
+    // accept=false disables every bill (zero masks). cents lists the denominations the policy wants;
+    // state().enabled is that list intersected with the denominations the validator reported in
+    // SETUP (empty until then), and only those can ever reach the BILL TYPE mask.
     void set_enabled(const uint32_t* cents, uint8_t n, bool accept);
     void reset();
     bool enable_pending() const { return mask_dirty_; }  // a bill-type update is not ACKed yet
     bool return_escrow(BillReturnReason reason);  // false when no bill is held
+    // An ESCROW command (stack or return) is decided but not ACKed yet.
+    bool escrow_command_pending() const { return escrow_cmd_ != EscrowCmd::None; }
+    // The last ESCROW command was NAKed (cleared when return_escrow queues a new one).
+    bool escrow_nak() const { return escrow_nak_; }
     bool bill_in_escrow(uint32_t& cents) const {
         cents = held_cents_;
         return held_;
@@ -66,6 +72,7 @@ private:
     void update_status(Status s, int16_t mdb, const char* detail, bool force = false);
     Status base_status() const;
     uint16_t enable_mask() const;
+    void refilter();
     uint32_t type_cents(uint8_t type) const { return static_cast<uint32_t>(credit_[type]) * scaling_; }
     bool type_valid(uint8_t type) const { return credit_[type] != 0; }
     void enter_polling();
@@ -83,6 +90,8 @@ private:
     uint8_t credit_[16] = {};
     bool escrow_capable_ = false;
     bool accept_ = false;
+    uint32_t want_[16] = {};  // the policy's list as received, before the denominations filter
+    uint8_t n_want_ = 0;
     bool mask_dirty_ = true;
     bool swallow_reset_ = false;
     bool offline_reported_ = false;
@@ -98,6 +107,7 @@ private:
     uint32_t held_cents_ = 0;
     EscrowCmd escrow_cmd_ = EscrowCmd::None;
     bool escrow_sent_ = false;
+    bool escrow_nak_ = false;
     bool return_requested_ = false;
     BillReturnReason return_reason_ = BillReturnReason::Policy;
     PaymentEvent pending_[kPending];

@@ -107,12 +107,22 @@ uint32_t Changer::payable_total_cents() const {
     return total;
 }
 
+void Changer::refilter() {
+    state_.n_enabled = 0;
+    if (!accept_) return;
+    for (uint8_t i = 0; i < n_want_; ++i) {
+        bool known = false, dup = false;
+        for (uint8_t d = 0; d < state_.n_denominations; ++d) known = known || state_.denominations[d] == want_[i];
+        for (uint8_t e = 0; e < state_.n_enabled; ++e) dup = dup || state_.enabled[e] == want_[i];
+        if (known && !dup) state_.enabled[state_.n_enabled++] = want_[i];
+    }
+}
+
 void Changer::set_enabled(const uint32_t* cents, uint8_t n, bool accept) {
     accept_ = accept;
-    state_.n_enabled = 0;
-    if (accept) {
-        for (uint8_t i = 0; i < n && i < 16; ++i) state_.enabled[state_.n_enabled++] = cents[i];
-    }
+    n_want_ = 0;
+    for (uint8_t i = 0; i < n && i < 16; ++i) want_[n_want_++] = cents[i];
+    refilter();
     mask_dirty_ = true;
 }
 
@@ -210,6 +220,7 @@ void Changer::do_setup() {
         credit_[t] = r.data[7 + t];
         if (type_valid(t)) state_.denominations[state_.n_denominations++] = type_cents(t);
     }
+    refilter();  // a policy received before SETUP now has denominations to be checked against
     state_.level = static_cast<int8_t>(level >= 3 ? 3 : level);
     state_.present = true;
     alt_payout_ = false;
@@ -376,12 +387,13 @@ bool Changer::request_payout(uint32_t cents, const char* request_id) {
     if (!state_.present || offline_reported_ || phase_ != Phase::Polling || payout_.active || cents == 0)
         return false;
     const bool l3 = state_.level >= 3 && alt_payout_;
-    if (l3 && (scaling_ == 0 || cents % scaling_ != 0 || cents / scaling_ > 255)) return false;
+    if (l3 && (scaling_ == 0 || cents / scaling_ == 0)) return false;
     memset(&payout_, 0, sizeof(payout_));
     payout_.active = true;
     payout_.level3 = l3;
     payout_.step = l3 ? PayStep::L3Send : PayStep::L2Dispense;
     payout_.requested = cents;
+    payout_.target = l3 ? cents / scaling_ * scaling_ : cents;
     payout_.remaining = cents;
     payout_.start_ms = clock_.now_ms();
     copy_str(payout_.request_id, sizeof(payout_.request_id), request_id);
@@ -413,7 +425,7 @@ void Changer::finish_payout(uint32_t paid, const char* detail) {
 // POLL figure, level 2 the value of every DISPENSE the changer ACKed. Coins may already be in the
 // customer's hand, so reporting 0 here would invite a double payment.
 void Changer::interrupt_payout(const char* cause) {
-    const uint32_t vouched = payout_.level3 ? payout_.progress_cents : payout_.requested - payout_.remaining;
+    const uint32_t vouched = payout_.level3 ? payout_.done_cents + payout_.progress_cents : payout_.requested - payout_.remaining;
     char detail[sizeof(PaymentEvent::detail)];
     copy_str(detail, sizeof(detail), "interrupted: ");
     size_t n = strlen(detail);
@@ -429,14 +441,20 @@ void Changer::do_payout() {
     Response r{};
     switch (payout_.step) {
         case PayStep::L3Send: {
-            const uint8_t d[2] = {kSubPayout, static_cast<uint8_t>(payout_.requested / scaling_)};
+            // At most 255 scaled units per PAYOUT command: longer requests go out in chunks.
+            uint32_t units = (payout_.target - payout_.sent_cents) / scaling_;
+            if (units > 255) units = 255;
+            const uint8_t d[2] = {kSubPayout, static_cast<uint8_t>(units)};
             r = link_.transact(kAddr, kCmdExpansion, d, 2);
             if (r.kind == Reply::Timeout || r.kind == Reply::Corrupt) return note_miss();
             if (r.kind == Reply::Ack) {
                 payout_.acked = true;
+                payout_.chunk_cents = units * scaling_;
+                payout_.sent_cents += payout_.chunk_cents;
+                payout_.progress_cents = 0;
                 payout_.step = PayStep::L3Value;
             } else {
-                finish_payout(0);
+                finish_payout(payout_.done_cents);  // chunks already paid stay paid
             }
             return;
         }
@@ -459,7 +477,14 @@ void Changer::do_payout() {
                 link_.acknowledge();
                 uint32_t paid = 0;
                 for (uint8_t t = 0; t < 16; ++t) paid += static_cast<uint32_t>(r.data[t]) * type_cents(t);
-                finish_payout(paid);
+                payout_.done_cents += paid;
+                if (paid >= payout_.chunk_cents && payout_.sent_cents < payout_.target) {
+                    payout_.step = PayStep::L3Send;  // chunk fully paid, the next one follows
+                    payout_.progress_cents = 0;
+                    return;
+                }
+                const bool floored = payout_.done_cents == payout_.target && payout_.target < payout_.requested;
+                finish_payout(payout_.done_cents, floored ? "scaling" : "");
                 return;
             }
             if (r.kind == Reply::Data) link_.acknowledge();

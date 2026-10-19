@@ -97,6 +97,7 @@ EscrowVerdict MasterTap::judge(uint32_t bill_cents) {
     return master_->judge(bill_cents);
 }
 
+// `ids` is part of the brief's signature but unused: the Cashless driver owns the session-id source.
 Master::Master(Link& link, Clock& clock, IdSource& /*ids*/, EventSink& sink, Changer& changer,
                Validator& validator, Cashless& cashless, Accounts& accounts, EdgeWatch& edge)
     : link_(link),
@@ -336,6 +337,10 @@ Ack Master::do_set_policy(const Command& c) {
     if (p.max_escrow_cents == 0) return make_ack(c, AckStatus::Rejected, "max_escrow_cents");
     if (p.n_coin > 16 || p.n_bill > 16) return make_ack(c, AckStatus::Rejected, "enabled list too long");
 
+    // Nothing below is final until the ack is known: a failed set_policy puts all of it back, so it
+    // never lifts edge silence or resumes acceptance (rule 1, and the fail-safe section).
+    const Policy prev_policy = policy_;
+    const bool prev_has = has_policy_, prev_silent = silent_, prev_silent_end = silent_end_pending_;
     policy_ = p;
     has_policy_ = true;
     silent_ = false;  // only an acked set_policy lifts edge silence
@@ -383,10 +388,23 @@ Ack Master::do_set_policy(const Command& c) {
         if (!any) break;
     }
     dirty_ = true;
-    if (changer_p()) return make_ack(c, AckStatus::Failed, "enable_pending:coin");
-    if (validator_p()) return make_ack(c, AckStatus::Failed, "enable_pending:bill");
-    if (cashless_p()) return make_ack(c, AckStatus::Failed, "enable_pending:cashless");
-    return make_ack(c, AckStatus::Ok, "");
+    const char* failed = changer_p() ? "enable_pending:coin"
+                         : validator_p() ? "enable_pending:bill"
+                         : cashless_p() ? "enable_pending:cashless"
+                                        : nullptr;
+    if (failed == nullptr) return make_ack(c, AckStatus::Ok, "");
+    policy_ = prev_policy;
+    has_policy_ = prev_has;
+    silent_ = prev_silent;
+    silent_end_pending_ = prev_silent_end;
+    const uint32_t ms = prev_has ? static_cast<uint32_t>(prev_policy.edge_timeout_s) * 1000 : 30000;
+    edge_.set_timeout_ms(ms);
+    cashless_.set_edge_timeout_ms(ms);
+    idle_wanted_ = prev_has ? prev_policy.cashless_enabled : true;
+    cashless_.set_always_idle_wanted(idle_wanted_);
+    recompute_inhibit();
+    apply_enables();
+    return make_ack(c, AckStatus::Failed, failed);
 }
 
 // Payout is neither gated on the policy nor on an inhibit: coins already taken are owed, and
@@ -403,17 +421,17 @@ Ack Master::do_payout(const Command& c) {
         if (sink_.emit(replay_)) replay_pending_ = false;
         return make_ack(c, AckStatus::Ok, "replay", Phase::Accepted);
     }
-    if (strcmp(active_payout_, c.request_id) == 0) {  // retry of a payout still running
-        if (changer_.payout_acked()) return make_ack(c, AckStatus::Ok, "in_progress", Phase::Accepted);
-        return make_ack(c, AckStatus::Failed, "no_bus_ack");
-    }
+    // Retry of a payout the driver still holds: queued, running, or ended with its PayoutResult
+    // held back by a full sink. Never `failed` (rule 5: failed is final); the result event decides.
+    if (strcmp(active_payout_, c.request_id) == 0) return make_ack(c, AckStatus::Ok, "in_progress", Phase::Accepted);
     if (changer_.payout_in_progress()) return make_ack(c, AckStatus::Rejected, "busy");
 
     result_seen_ = false;
     copy_str(active_payout_, sizeof(active_payout_), c.request_id);
     if (!changer_.request_payout(c.cents, c.request_id)) {
+        // Nothing is in progress (checked above), so this one cannot be expressed or the changer is away.
         active_payout_[0] = '\0';
-        return make_ack(c, AckStatus::Rejected, changer_.state().present ? "busy" : "changer_offline");
+        return make_ack(c, AckStatus::Rejected, changer_.state().present ? "unpayable" : "changer_offline");
     }
     // request_payout() only queues the payout. Run the changer until it ACKed the PAYOUT /
     // DISPENSE command (or ended the payout itself), and answer from that.
@@ -426,9 +444,10 @@ Ack Master::do_payout(const Command& c) {
             return make_ack(c, AckStatus::Failed, last_result_.detail);
         return make_ack(c, AckStatus::Ok, "", Phase::Accepted);
     }
-    if (changer_.payout_acked()) return make_ack(c, AckStatus::Ok, "", Phase::Accepted);
-    if (!changer_.payout_in_progress()) return make_ack(c, AckStatus::Failed, "payout_failed");
-    return make_ack(c, AckStatus::Failed, "no_bus_ack");
+    // Acked on the bus, or still queued behind a slow changer, or ended with the result held back by
+    // a full sink: in every case the driver holds the command and active_payout_ still names it, so
+    // the answer is `accepted`; a terminal failure only ever arrives as the payout_result event.
+    return make_ack(c, AckStatus::Ok, "", Phase::Accepted);
 }
 
 Ack Master::do_vend_request(const Command& c) {
@@ -459,8 +478,21 @@ Ack Master::do_vend_request(const Command& c) {
         step_cashless();
     }
     if (denied_seen_) return make_ack(c, AckStatus::Rejected, denied_detail_);
-    if (cashless_.vend_command_sent()) return make_ack(c, AckStatus::Ok, "", Phase::Accepted);
-    return make_ack(c, AckStatus::Failed, "no_bus_ack");
+    // Acked, or still queued behind a slow reader: the driver holds the request either way, so it is
+    // accepted. A later denial arrives as the vend_denied event, never as a failed ack.
+    return make_ack(c, AckStatus::Ok, "", Phase::Accepted);
+}
+
+// An immediate command is acknowledged `ok` once the bus confirmed it. A NAK is a failed ack; if the
+// settle rounds run out with the action still queued it will still run, so the ack says "queued".
+Ack Master::settle_cashless_action(const Command& c) {
+    for (int r = 0; r < kSettleRounds; ++r) {
+        if (!cashless_.action_pending() || cashless_.action_nak()) break;
+        step_cashless();
+    }
+    dirty_ = true;
+    if (cashless_.action_nak()) return make_ack(c, AckStatus::Failed, "nak");
+    return make_ack(c, AckStatus::Ok, cashless_.action_pending() ? "queued" : "");
 }
 
 Ack Master::do_vend_result(const Command& c) {
@@ -471,7 +503,7 @@ Ack Master::do_vend_result(const Command& c) {
     if (!cashless_.vend_result(c.success, approved_.item)) return make_ack(c, AckStatus::Rejected, "no_vend");
     approved_.active = false;
     dirty_ = true;
-    return make_ack(c, AckStatus::Ok, "");
+    return settle_cashless_action(c);
 }
 
 Ack Master::do_end_session(const Command& c) {
@@ -481,14 +513,20 @@ Ack Master::do_end_session(const Command& c) {
     if (!cashless_.session_open(sid, fk, fc)) return make_ack(c, AckStatus::Rejected, "no_session");
     if (strcmp(sid, c.session_id) != 0) return make_ack(c, AckStatus::Rejected, "session_mismatch");
     if (!cashless_.end_session()) return make_ack(c, AckStatus::Rejected, "busy");
-    return make_ack(c, AckStatus::Ok, "");
+    return settle_cashless_action(c);
 }
 
 Ack Master::do_return_escrow(const Command& c) {
     uint32_t cents = 0;
     if (!validator_.bill_in_escrow(cents)) return make_ack(c, AckStatus::Ok, "no_bill");
     if (!validator_.return_escrow(BillReturnReason::Edge)) return make_ack(c, AckStatus::Rejected, "busy");
-    return make_ack(c, AckStatus::Ok, "");
+    for (int r = 0; r < kSettleRounds; ++r) {
+        if (!validator_.escrow_command_pending() || validator_.escrow_nak()) break;
+        step_validator();
+    }
+    dirty_ = true;
+    if (validator_.escrow_nak()) return make_ack(c, AckStatus::Failed, "nak");
+    return make_ack(c, AckStatus::Ok, validator_.escrow_command_pending() ? "queued" : "");
 }
 
 Ack Master::do_device_reset(const Command& c) {
@@ -593,6 +631,9 @@ void Master::self_test(Ack& out) const {
     else
         snprintf(buf, sizeof(buf), "none");
     check(false, "policy", has_policy_, buf);
+    const uint32_t dropped = changer_.dropped_events() + validator_.dropped_events() + cashless_.dropped_events();
+    snprintf(buf, sizeof(buf), "%u dropped", static_cast<unsigned>(dropped));
+    check(false, "event_queue", dropped == 0, buf);
     w.raw("]}");
     if (w.done() == 0) out.result_json[0] = '\0';
 }

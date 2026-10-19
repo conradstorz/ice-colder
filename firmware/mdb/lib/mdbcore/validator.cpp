@@ -88,12 +88,22 @@ uint16_t Validator::enable_mask() const {
     return m;
 }
 
+void Validator::refilter() {
+    state_.n_enabled = 0;
+    if (!accept_) return;
+    for (uint8_t i = 0; i < n_want_; ++i) {
+        bool known = false, dup = false;
+        for (uint8_t d = 0; d < state_.n_denominations; ++d) known = known || state_.denominations[d] == want_[i];
+        for (uint8_t e = 0; e < state_.n_enabled; ++e) dup = dup || state_.enabled[e] == want_[i];
+        if (known && !dup) state_.enabled[state_.n_enabled++] = want_[i];
+    }
+}
+
 void Validator::set_enabled(const uint32_t* cents, uint8_t n, bool accept) {
     accept_ = accept;
-    state_.n_enabled = 0;
-    if (accept) {
-        for (uint8_t i = 0; i < n && i < 16; ++i) state_.enabled[state_.n_enabled++] = cents[i];
-    }
+    n_want_ = 0;
+    for (uint8_t i = 0; i < n && i < 16; ++i) want_[n_want_++] = cents[i];
+    refilter();
     mask_dirty_ = true;
 }
 
@@ -121,6 +131,7 @@ void Validator::reset() {
 bool Validator::return_escrow(BillReturnReason reason) {
     if (!held_ || escrow_sent_) return false;
     escrow_cmd_ = EscrowCmd::Return;
+    escrow_nak_ = false;
     return_reason_ = reason;
     return true;
 }
@@ -210,6 +221,7 @@ void Validator::do_setup() {
         credit_[t] = r.data[11 + t];
         if (type_valid(t)) state_.denominations[state_.n_denominations++] = type_cents(t);
     }
+    refilter();  // a policy received before SETUP now has denominations to be checked against
     state_.level = static_cast<int8_t>(level >= 2 ? 2 : level);
     state_.present = true;
     no_escrow_reported_ = false;
@@ -281,6 +293,7 @@ void Validator::do_escrow() {
         return;
     }
     if (r.kind == Reply::Data) link_.acknowledge();
+    escrow_nak_ = r.kind == Reply::Nak;
     if (r.kind == Reply::Ack) {
         escrow_sent_ = true;
         return_requested_ = !stack;
