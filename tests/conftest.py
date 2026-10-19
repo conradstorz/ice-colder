@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from loguru import logger as _loguru
 
-import ice_edge.access.access as access
+import ice_common.secrets as secrets_module
 import ice_edge.config.config_store as config_store
 from ice_common.config_model import ConfigModel, PhysicalDetails
 from ice_edge.app.machine import Machine
@@ -101,7 +101,7 @@ def _isolated_route_context():
 def _fast_scrypt():
     """Lower the PIN/secret hashing cost for the whole test session.
 
-    ice_edge.access.access._scrypt reads SCRYPT_N from the module at call time, so
+    ice_common.secrets._scrypt reads SCRYPT_N from the module at call time, so
     patching the module attribute here is enough to speed up hash_pin,
     verify_pin, hash_secret and verify_secret everywhere — no AccessStore
     constructor plumbing needed. Session-scoped so the (measured) 213.8 ms
@@ -114,10 +114,10 @@ def _fast_scrypt():
     test_access.py), since this fixture patches the value for the whole
     session before any such test can run.
     """
-    original = access.SCRYPT_N
-    access.SCRYPT_N = 2**4
+    original = secrets_module.SCRYPT_N
+    secrets_module.SCRYPT_N = 2**4
     yield
-    access.SCRYPT_N = original
+    secrets_module.SCRYPT_N = original
 
 
 @pytest.fixture

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-import ice_edge.access.access as access
+import ice_common.secrets as secrets_module
 from ice_edge.access.access import (
     BACKOFF_CAP_SECONDS,
     ROLE_PERMISSIONS,
@@ -240,7 +240,7 @@ class TestHashing:
         disk, which the fixture never touches, so it genuinely reflects
         what ships.
         """
-        source = ast.parse(Path(access.__file__).read_text(encoding="utf-8"))
+        source = ast.parse(Path(secrets_module.__file__).read_text(encoding="utf-8"))
         assignments = [
             node
             for node in ast.walk(source)
