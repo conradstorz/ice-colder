@@ -1,6 +1,6 @@
 """Latest-report-per-machine store (cloud spec section 4).
 
-One JSON file per machine under ``<root>/machines/``. A report with the same
+Keyed by machine fingerprint (64 lower-case hex). One JSON file per machine under ``<root>/machines/``. A report with the same
 ``boot_id`` and a ``seq`` no greater than the stored one is ignored; a new
 ``boot_id`` always replaces.
 """
@@ -17,13 +17,13 @@ from pydantic import ValidationError
 
 from ice_contracts.cloud.report import MachineReport
 
-MACHINE_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
-def check_machine_id(machine_id: str) -> str:
-    if not MACHINE_ID_RE.fullmatch(machine_id):
-        raise ValueError(f"invalid machine_id: {machine_id!r}")
-    return machine_id
+def check_fingerprint(fingerprint: str) -> str:
+    if not FINGERPRINT_RE.fullmatch(fingerprint):
+        raise ValueError(f"invalid fingerprint: {fingerprint!r}")
+    return fingerprint
 
 
 class SnapshotStore:
@@ -31,34 +31,35 @@ class SnapshotStore:
         self._dir = Path(root) / "machines"
         self._lock = threading.Lock()
 
-    def _path(self, machine_id: str) -> Path:
-        return self._dir / f"{check_machine_id(machine_id)}.json"
+    def _path(self, fingerprint: str) -> Path:
+        return self._dir / f"{check_fingerprint(fingerprint)}.json"
 
-    def latest(self, machine_id: str) -> MachineReport | None:
-        path = self._path(machine_id)
+    def latest(self, fingerprint: str) -> MachineReport | None:
+        path = self._path(fingerprint)
         try:
             return MachineReport.model_validate_json(path.read_bytes())
         except (OSError, ValidationError):
             return None
 
-    def machines(self) -> list[MachineReport]:
+    def machines(self) -> list[tuple[str, MachineReport]]:
+        """``(fingerprint, report)`` pairs, sorted by the report's label."""
         if not self._dir.is_dir():
             return []
         found = []
         for path in self._dir.glob("*.json"):
-            if not MACHINE_ID_RE.fullmatch(path.stem):
+            if not FINGERPRINT_RE.fullmatch(path.stem):
                 continue
             report = self.latest(path.stem)
             if report is not None:
-                found.append(report)
-        return sorted(found, key=lambda r: r.machine_id)
+                found.append((path.stem, report))
+        return sorted(found, key=lambda pair: (pair[1].machine_id, pair[0]))
 
-    def save(self, report: MachineReport) -> bool:
+    def save(self, fingerprint: str, report: MachineReport) -> bool:
         """Store *report*; ``False`` (stored report untouched) when it is not
         newer than the stored one of the same boot."""
-        path = self._path(report.machine_id)
+        path = self._path(fingerprint)
         with self._lock:
-            stored = self.latest(report.machine_id)
+            stored = self.latest(fingerprint)
             if (
                 stored is not None
                 and stored.boot_id == report.boot_id

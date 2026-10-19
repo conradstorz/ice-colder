@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 from ice_cloud.app import create_app
 from tests.cloud.conftest import make_settings
 from ice_ui.bundle import build_bundle, ui_digest
-from tests.cloud.reports import make_report
+from tests.cloud.reports import FP, make_report
 
 
 @pytest.fixture
@@ -14,9 +14,9 @@ def client(tmp_path):
         yield c
 
 
-def _post(client, report, machine_id=None):
+def _post(client, report, fingerprint=FP):
     return client.post(
-        f"/api/v1/machines/{machine_id or report.machine_id}/report",
+        f"/api/v1/machines/{fingerprint}/report",
         content=report.model_dump_json(),
         headers={"content-type": "application/json"},
     )
@@ -24,16 +24,16 @@ def _post(client, report, machine_id=None):
 
 def test_report_is_accepted_and_stored(client, tmp_path):
     assert _post(client, make_report()).status_code == 204
-    assert (tmp_path / "machines" / "m-0042.json").is_file()
+    assert (tmp_path / "machines" / f"{FP}.json").is_file()
 
 
-def test_machine_id_mismatch_is_422(client, tmp_path):
-    assert _post(client, make_report(machine_id="m-0042"), "m-0099").status_code == 422
+def test_malformed_fingerprint_is_422(client, tmp_path):
+    assert _post(client, make_report(), "m-0042").status_code == 422
     assert not (tmp_path / "machines").exists()
 
 
 def test_invalid_body_is_422(client):
-    r = client.post("/api/v1/machines/m-1/report", json={"machine_id": "m-1"})
+    r = client.post(f"/api/v1/machines/{FP}/report", json={"machine_id": "m-1"})
     assert r.status_code == 422
 
 

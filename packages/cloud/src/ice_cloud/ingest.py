@@ -7,21 +7,20 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
-from ice_cloud.store import MACHINE_ID_RE
+from ice_cloud.store import FINGERPRINT_RE
 from ice_contracts.cloud.report import MachineReport
 from ice_ui.bundle import MAX_UNCOMPRESSED_BYTES, BundleError
 
 router = APIRouter(prefix="/api/v1")
 
 
-@router.post("/machines/{machine_id}/report", status_code=204)
-async def post_report(machine_id: str, report: MachineReport, request: Request):
-    if not MACHINE_ID_RE.fullmatch(machine_id) or report.machine_id != machine_id:
-        raise HTTPException(
-            status_code=422,
-            detail="machine_id in the body does not match the URL",
-        )
-    await asyncio.to_thread(request.app.state.store.save, report)
+@router.post("/machines/{fingerprint}/report", status_code=204)
+async def post_report(fingerprint: str, report: MachineReport, request: Request):
+    # Task 10 replaces this with the signed-request check; until then the URL
+    # segment is the key.
+    if not FINGERPRINT_RE.fullmatch(fingerprint):
+        raise HTTPException(status_code=422, detail="invalid machine fingerprint")
+    await asyncio.to_thread(request.app.state.store.save, fingerprint, report)
     return Response(status_code=204)
 
 

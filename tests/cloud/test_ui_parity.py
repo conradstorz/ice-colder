@@ -28,7 +28,7 @@ from ice_edge.monitoring.health_monitor import HealthMonitor
 from ice_edge.uplink.report import build_machine_report
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
-from tests.cloud.reports import BOOT_A, NOW
+from tests.cloud.reports import BOOT_A, FP, NOW
 from tests.dom_utils import main_html
 
 FULL_PAGES = ["/", "/health", "/health/faults"]
@@ -110,12 +110,12 @@ def _cloud_client(tmp_path, report, now):
     app = create_app(make_settings(tmp_path / "cloud"), now=lambda: clock["now"])
     client = TestClient(app, follow_redirects=False)
     r = client.post(
-        f"/api/v1/machines/{report.machine_id}/report",
+        f"/api/v1/machines/{FP}/report",
         content=report.model_dump_json(),
         headers={"content-type": "application/json"},
     )
     assert r.status_code == 204
-    assert client.post(f"/fleet/select/{report.machine_id}").status_code == 303
+    assert client.post(f"/fleet/select/{FP}").status_code == 303
     return client
 
 

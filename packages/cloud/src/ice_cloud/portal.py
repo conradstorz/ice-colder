@@ -119,9 +119,10 @@ def _fault_count(report: MachineReport) -> str:
 @router.get("/fleet", response_class=HTMLResponse)
 async def fleet(request: Request):
     rows = []
-    for report in request.app.state.store.machines():
+    for fingerprint, report in request.app.state.store.machines():
         rows.append(
             {
+                "fingerprint": fingerprint,
                 "machine_id": report.machine_id,
                 "stale": _is_stale(request, report),
                 "age_text": humanize_seconds(max(_age_seconds(request, report), 0.0)),
@@ -134,16 +135,16 @@ async def fleet(request: Request):
     )
 
 
-@router.post("/fleet/select/{machine_id}")
-async def select_machine(request: Request, machine_id: str):
+@router.post("/fleet/select/{fingerprint}")
+async def select_machine(request: Request, fingerprint: str):
     try:
-        known = request.app.state.store.latest(machine_id)
+        known = request.app.state.store.latest(fingerprint)
     except ValueError:
         known = None
     if known is None:
         return Response(status_code=404)
     response = RedirectResponse("/", status_code=303)
-    response.set_cookie(COOKIE, machine_id, httponly=True, samesite="lax")
+    response.set_cookie(COOKIE, fingerprint, httponly=True, samesite="lax")
     return response
 
 
