@@ -19,6 +19,7 @@ from typing import Literal
 
 from ice_cloud.store.repository import (
     Account,
+    EmailConflict,
     Invitation,
     Machine,
     MachineAccess,
@@ -177,6 +178,12 @@ class SqliteRepository:
             row = conn.execute(
                 "SELECT * FROM accounts WHERE google_sub = ?", (google_sub,)
             ).fetchone()
+            clash = conn.execute(
+                "SELECT 1 FROM accounts WHERE email = ? AND google_sub != ?",
+                (email, google_sub),
+            ).fetchone()
+            if clash is not None:
+                raise EmailConflict(email)
             if row is None:
                 account_id = str(uuid.uuid4())
                 conn.execute(
@@ -275,6 +282,10 @@ class SqliteRepository:
 
     def claim_machine(self, fingerprint: str, account_id: str, now: datetime) -> bool:
         with self._tx() as conn:
+            if not conn.execute(
+                "SELECT 1 FROM accounts WHERE id = ?", (account_id,)
+            ).fetchone():
+                return False
             cur = conn.execute(
                 "UPDATE machines SET owner_id = ?, claimed_at = ?,"
                 " claim_code_hash = NULL, claim_code_expires_at = NULL"
@@ -362,6 +373,14 @@ class SqliteRepository:
         self, account_id: str, fingerprint: str, granted_by: str, now: datetime
     ) -> None:
         with self._tx() as conn:
+            if not conn.execute(
+                "SELECT 1 FROM accounts WHERE id = ?", (account_id,)
+            ).fetchone():
+                raise LookupError(f"unknown account {account_id}")
+            if not conn.execute(
+                "SELECT 1 FROM machines WHERE fingerprint = ?", (fingerprint,)
+            ).fetchone():
+                raise LookupError(f"unknown machine {fingerprint}")
             conn.execute(
                 "INSERT OR IGNORE INTO memberships"
                 " (account_id, fingerprint, role, granted_by, granted_at)"
@@ -408,7 +427,7 @@ class SqliteRepository:
         return None if row is None else _invitation(row)
 
     def invitations_by(
-        self, inviter_id: str, fingerprint: str | None
+        self, inviter_id: str, fingerprint: str | None, now: datetime
     ) -> list[Invitation]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -416,7 +435,7 @@ class SqliteRepository:
                 " ORDER BY created_at",
                 (inviter_id,),
             ).fetchall()
-        found = [_invitation(r) for r in rows]
+        found = [i for i in map(_invitation, rows) if i.expires_at > now]
         if fingerprint is None:
             return found
         return [i for i in found if i.scope == _FLEET or fingerprint in i.scope]

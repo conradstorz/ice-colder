@@ -1,8 +1,10 @@
 from datetime import UTC, datetime, timedelta
 
+import sqlite3
+
 import pytest
 
-from ice_cloud.store import SqliteRepository, sqlite
+from ice_cloud.store import EmailConflict, SqliteRepository, sqlite
 from tests.cloud.reports import FP, FP_2
 
 T0 = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
@@ -118,7 +120,7 @@ def test_claim_is_atomic_when_membership_delete_fails(repo, monkeypatch):
     repo.grant_tech(tech.id, FP, owner.id, T0)
     repo.set_claim_code(FP, "hash", T0 + timedelta(days=1))
     monkeypatch.setattr(sqlite, "DELETE_MEMBERSHIPS_SQL", "DELETE FROM no_such_table")
-    with pytest.raises(Exception):
+    with pytest.raises(sqlite3.OperationalError):
         repo.claim_machine(FP, other.id, T0 + timedelta(hours=1))
     m = repo.machine(FP)
     assert m.owner_id == owner.id and m.claimed_at == T0
@@ -190,18 +192,18 @@ def test_invitations_by_lists_pending_and_filters_by_machine(repo):
     fleet = repo.create_invitation(owner.id, "a@example.com", "fleet", T0)
     one = repo.create_invitation(owner.id, "b@example.com", (FP,), T0)
     two = repo.create_invitation(owner.id, "c@example.com", (FP_2,), T0)
-    assert {i.token for i in repo.invitations_by(owner.id, None)} == {
+    assert {i.token for i in repo.invitations_by(owner.id, None, T0)} == {
         fleet.token,
         one.token,
         two.token,
     }
-    assert {i.token for i in repo.invitations_by(owner.id, FP)} == {
+    assert {i.token for i in repo.invitations_by(owner.id, FP, T0)} == {
         fleet.token,
         one.token,
     }
     repo.accept_invitation(one.token, tech.id, T0)
-    assert one.token not in {i.token for i in repo.invitations_by(owner.id, None)}
-    assert repo.invitations_by(tech.id, None) == []
+    assert one.token not in {i.token for i in repo.invitations_by(owner.id, None, T0)}
+    assert repo.invitations_by(tech.id, None, T0) == []
 
 
 def test_accept_invitation_grants_listed_machines_once(repo):
@@ -272,6 +274,55 @@ def test_migrations_idempotent_on_reopen(tmp_path):
 
 
 def test_foreign_keys_are_enforced(repo):
+    with pytest.raises(sqlite3.IntegrityError):
+        repo.create_invitation("no-such-account", "t@example.com", "fleet", T0)
+
+
+def test_login_with_email_owned_by_another_sub_raises_email_conflict(repo):
+    first = repo.upsert_account_from_login("sub-1", "a@example.com", "Ann", T0)
+    other = repo.upsert_account_from_login("sub-2", "b@example.com", "Bob", T0)
+    with pytest.raises(EmailConflict):
+        repo.upsert_account_from_login("sub-3", "A@example.com", "Cy", T0)
+    with pytest.raises(EmailConflict):
+        repo.upsert_account_from_login("sub-2", "a@example.com", "Bob", T0)
+    assert repo.account(first.id) == first
+    assert repo.account(other.id) == other
+    assert len(repo.all_accounts()) == 2
+
+
+def test_claim_unknown_account_is_false_and_unchanged(repo):
     owner, _ = _accounts(repo)
-    with pytest.raises(Exception):
-        repo.grant_tech(owner.id, FP, owner.id, T0)  # machine does not exist
+    repo.register_machine(FP, KEY, "a", T0)
+    repo.set_claim_code(FP, "hash", T0 + timedelta(days=1))
+    before = repo.machine(FP)
+    assert repo.claim_machine(FP, "no-such-account", T0) is False
+    assert repo.machine(FP) == before
+    assert repo.claim_machine(FP_2, owner.id, T0) is False
+
+
+def test_grant_tech_unknown_account_or_machine_raises_lookup_error(repo):
+    owner, _ = _accounts(repo)
+    repo.register_machine(FP, KEY, "a", T0)
+    with pytest.raises(LookupError, match="account"):
+        repo.grant_tech("no-such-account", FP, owner.id, T0)
+    with pytest.raises(LookupError, match="machine"):
+        repo.grant_tech(owner.id, FP_2, owner.id, T0)
+    assert repo.memberships(FP) == []
+
+
+def test_invitations_by_excludes_expired_and_accepted(repo):
+    owner, tech = _accounts(repo)
+    live = repo.create_invitation(owner.id, "a@example.com", "fleet", T0)
+    old = repo.create_invitation(
+        owner.id, "b@example.com", "fleet", T0, ttl=timedelta(hours=1)
+    )
+    done = repo.create_invitation(owner.id, "c@example.com", "fleet", T0)
+    repo.accept_invitation(done.token, tech.id, T0)
+    later = T0 + timedelta(hours=2)
+    assert {i.token for i in repo.invitations_by(owner.id, None, later)} == {live.token}
+    assert {i.token for i in repo.invitations_by(owner.id, None, T0)} == {
+        live.token,
+        old.token,
+    }
+    assert old.expires_at == T0 + timedelta(hours=1)
+    assert repo.invitations_by(owner.id, None, old.expires_at) == [live]

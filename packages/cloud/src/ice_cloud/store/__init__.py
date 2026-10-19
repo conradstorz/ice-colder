@@ -2,6 +2,7 @@
 
 from ice_cloud.store.repository import (
     Account,
+    EmailConflict,
     Invitation,
     Machine,
     MachineAccess,
@@ -14,6 +15,7 @@ from ice_cloud.store.sqlite import SqliteRepository
 __all__ = [
     "FINGERPRINT_RE",
     "Account",
+    "EmailConflict",
     "Invitation",
     "Machine",
     "MachineAccess",

@@ -1,8 +1,8 @@
 """Latest-report-per-machine store (cloud spec section 4).
 
-Keyed by machine fingerprint (64 lower-case hex). One JSON file per machine under ``<root>/machines/``. A report with the same
-``boot_id`` and a ``seq`` no greater than the stored one is ignored; a new
-``boot_id`` always replaces.
+Keyed by machine fingerprint (64 lower-case hex). One JSON file per machine
+under ``<root>/machines/``. A report with the same ``boot_id`` and a ``seq`` no
+greater than the stored one is ignored; a new ``boot_id`` always replaces.
 """
 
 from __future__ import annotations

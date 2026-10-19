@@ -11,6 +11,10 @@ from datetime import datetime, timedelta
 from typing import Literal, Protocol
 
 
+class EmailConflict(ValueError):
+    """A login's email already belongs to a different Google account."""
+
+
 @dataclass(frozen=True)
 class Account:
     id: str
@@ -65,7 +69,14 @@ class Repository(Protocol):
     # accounts
     def upsert_account_from_login(
         self, google_sub: str, email: str, name: str, now: datetime
-    ) -> Account: ...
+    ) -> Account:
+        """Create or refresh the account for ``google_sub``.
+
+        Raises :class:`EmailConflict` (nothing written) when ``email`` already
+        belongs to an account with a different ``google_sub``, whether this
+        login is new or an existing account is changing its email.
+        """
+        ...
 
     def account(self, id: str) -> Account | None: ...
 
@@ -90,9 +101,9 @@ class Repository(Protocol):
         self, fingerprint: str, hash: str | None, expires_at: datetime | None
     ) -> None: ...
 
-    def claim_machine(
-        self, fingerprint: str, account_id: str, now: datetime
-    ) -> bool: ...
+    def claim_machine(self, fingerprint: str, account_id: str, now: datetime) -> bool:
+        """Bind the machine to the account; False (no change) if either is unknown."""
+        ...
 
     def unbind_machine(self, fingerprint: str) -> None: ...
 
@@ -109,7 +120,9 @@ class Repository(Protocol):
 
     def grant_tech(
         self, account_id: str, fingerprint: str, granted_by: str, now: datetime
-    ) -> None: ...
+    ) -> None:
+        """Grant tech access; raises ``LookupError`` if the account or machine is unknown."""
+        ...
 
     def revoke(self, account_id: str, fingerprint: str) -> None: ...
 
@@ -126,8 +139,10 @@ class Repository(Protocol):
     def invitation(self, token: str) -> Invitation | None: ...
 
     def invitations_by(
-        self, inviter_id: str, fingerprint: str | None
-    ) -> list[Invitation]: ...
+        self, inviter_id: str, fingerprint: str | None, now: datetime
+    ) -> list[Invitation]:
+        """Pending invitations: unaccepted and with ``expires_at > now``."""
+        ...
 
     def accept_invitation(
         self, token: str, account_id: str, now: datetime
