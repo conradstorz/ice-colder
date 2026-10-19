@@ -63,7 +63,7 @@ def test_set_notice_persists_unacked_and_ack_flips(tmp_path):
     expected = ClaimNotice("hash1", "2026-10-20T00:00:00Z", False)
     assert ident.notice == expected
     assert MachineIdentity.load_or_create(path).notice == expected
-    ident.mark_notice_acked()
+    assert ident.mark_notice_acked(expected) is True
     acked = ClaimNotice("hash1", "2026-10-20T00:00:00Z", True)
     assert ident.notice == acked
     assert MachineIdentity.load_or_create(path).notice == acked
@@ -71,7 +71,7 @@ def test_set_notice_persists_unacked_and_ack_flips(tmp_path):
 
 def test_mark_notice_acked_without_notice_is_noop(tmp_path):
     ident = MachineIdentity.load_or_create(tmp_path / "id.json")
-    ident.mark_notice_acked()
+    assert ident.mark_notice_acked(ClaimNotice("h", None, False)) is False
     assert ident.notice is None
 
 
@@ -79,7 +79,8 @@ def test_newer_notice_replaces_older(tmp_path):
     path = tmp_path / "id.json"
     ident = MachineIdentity.load_or_create(path)
     ident.set_notice("old", "2026-10-20T00:00:00Z")
-    ident.mark_notice_acked()
+    assert ident.notice is not None
+    ident.mark_notice_acked(ident.notice)
     ident.set_notice("new", "2026-10-21T00:00:00Z")
     assert ident.notice == ClaimNotice("new", "2026-10-21T00:00:00Z", False)
     assert MachineIdentity.load_or_create(path).notice == ident.notice
@@ -89,7 +90,20 @@ def test_set_notice_none_hash_means_delete_pending(tmp_path):
     path = tmp_path / "id.json"
     ident = MachineIdentity.load_or_create(path)
     ident.set_notice("h", "2026-10-20T00:00:00Z")
-    ident.mark_notice_acked()
+    assert ident.notice is not None
+    ident.mark_notice_acked(ident.notice)
     ident.set_notice(None, None)
     assert ident.notice == ClaimNotice(None, None, False)
     assert MachineIdentity.load_or_create(path).notice == ClaimNotice(None, None, False)
+
+
+def test_mark_acked_ignores_stale_notice(tmp_path):
+    path = tmp_path / "id.json"
+    ident = MachineIdentity.load_or_create(path)
+    ident.set_notice("h1", None)
+    stale = ident.notice
+    assert stale is not None
+    ident.set_notice("h2", None)
+    assert ident.mark_notice_acked(stale) is False
+    assert ident.notice == ClaimNotice("h2", None, False)
+    assert MachineIdentity.load_or_create(path).notice == ClaimNotice("h2", None, False)

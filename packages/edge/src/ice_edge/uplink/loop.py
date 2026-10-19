@@ -41,7 +41,7 @@ async def _send_notice(uplink: HttpUplink, identity: MachineIdentity) -> None:
             ClaimCodeNotice(claim_code_hash=notice.claim_code_hash, expires_at=expires)
         )
     if ok:
-        identity.mark_notice_acked()
+        identity.mark_notice_acked(notice)
 
 
 async def run_uplink(

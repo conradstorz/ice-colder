@@ -16,7 +16,9 @@ class FakeUplink:
         register_results=(True,),
         claim_results=(True,),
         delete_results=(True,),
+        on_claim=None,
     ):
+        self.on_claim = on_claim
         self.bundle_results = list(bundle_results)
         self.register_results = list(register_results)
         self.claim_results = list(claim_results)
@@ -29,6 +31,8 @@ class FakeUplink:
 
     async def post_claim_code(self, notice):
         self.events.append(("claim", notice.claim_code_hash))
+        if self.on_claim is not None:
+            self.on_claim()
         return self.claim_results.pop(0) if self.claim_results else True
 
     async def delete_claim_code(self):
@@ -181,3 +185,31 @@ async def test_bundle_still_once(machine_fake_time, identity):
 
     assert [e[0] for e in uplink.events].count("put") == 1
     assert [e[0] for e in uplink.events].count("post") == 4
+
+
+async def test_notice_replaced_mid_flight_is_not_acked(machine_fake_time, identity):
+    machine, _ = machine_fake_time
+    cfg = ConfigModel()
+    identity.set_notice("h1", None)
+    uplink = FakeUplink(on_claim=lambda: identity.set_notice("h2", None))
+    sleep, _calls = _sleeper(cfg, stop_after=1)
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_uplink(machine, cfg, uplink, sleep=sleep, now=_now, identity=identity)
+
+    assert identity.notice is not None
+    assert identity.notice.claim_code_hash == "h2"
+    assert identity.notice.acked is False
+
+    uplink.on_claim = None
+    sleep2, _ = _sleeper(cfg, stop_after=1)
+    with pytest.raises(asyncio.CancelledError):
+        await run_uplink(
+            machine, cfg, uplink, sleep=sleep2, now=_now, identity=identity
+        )
+
+    assert [e for e in uplink.events if e[0] == "claim"] == [
+        ("claim", "h1"),
+        ("claim", "h2"),
+    ]
+    assert identity.notice.acked is True
