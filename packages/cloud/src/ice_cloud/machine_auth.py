@@ -8,19 +8,26 @@ path, so a deployment behind a path prefix must strip that prefix at the proxy.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, Request, Response
 from loguru import logger
 from pydantic import ValidationError
 
 from ice_cloud.store.repository import Machine
 from ice_contracts.cloud import signing
 from ice_contracts.cloud.identity import RegisterMachine
-from ice_ui.bundle import MAX_UNCOMPRESSED_BYTES
 
 REGISTER_PATH = "/api/v1/machines/register"
+
+
+def _printable(fp: str | None) -> str:
+    """Header-supplied text is attacker-controlled: cap it and drop control chars."""
+    if not fp:
+        return "-"
+    return "".join(c for c in fp[:64] if c.isprintable()) or "-"
 
 
 class MachineAuthError(Exception):
@@ -39,7 +46,7 @@ def install(app: FastAPI) -> None:
         assert isinstance(exc, MachineAuthError)
         logger.warning(
             "machine auth failed: fingerprint={} reason={}",
-            exc.fingerprint or "-",
+            _printable(exc.fingerprint),
             exc.reason,
         )
         return Response(status_code=401)
@@ -67,10 +74,6 @@ async def require_machine(request: Request) -> Machine | None:
     app = request.app
     if not signing.is_timestamp_fresh(timestamp, app.state.now()):
         raise MachineAuthError("stale or malformed timestamp", fp)
-    declared = headers.get("content-length")
-    if declared is not None and declared.isdigit():
-        if int(declared) > MAX_UNCOMPRESSED_BYTES:
-            raise HTTPException(status_code=400, detail="bundle too large")
     body = await request.body()
 
     machine: Machine | None = None
@@ -83,7 +86,7 @@ async def require_machine(request: Request) -> Machine | None:
         if key is None or signing.fingerprint(key) != fp:
             raise MachineAuthError("header fingerprint does not match key", fp)
     else:
-        machine = app.state.repo.machine(fp)
+        machine = await asyncio.to_thread(app.state.repo.machine, fp)
         if machine is None:
             raise MachineAuthError("unknown machine", fp)
         key = _decode_key(machine.public_key_b64)
@@ -99,5 +102,5 @@ async def require_machine(request: Request) -> Machine | None:
     if not signing.verify(key, message, signature):
         raise MachineAuthError("bad signature", fp)
     if machine is not None:
-        app.state.repo.touch_seen(fp, app.state.now())
+        await asyncio.to_thread(app.state.repo.touch_seen, fp, app.state.now())
     return machine

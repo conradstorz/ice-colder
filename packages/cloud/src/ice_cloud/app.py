@@ -8,6 +8,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from ice_cloud.body_limit import BodyLimitMiddleware
 from ice_cloud import ingest, machine_auth, portal
 from ice_cloud.settings import CloudSettings
 from ice_cloud.store import SnapshotStore, SqliteRepository
@@ -36,6 +37,7 @@ def create_app(
         settings.data_dir, cloud_templates=CLOUD_TEMPLATES_DIR
     )
     app.state.now = now
+    app.add_middleware(BodyLimitMiddleware)
     machine_auth.install(app)
     app.include_router(ingest.router)
     app.include_router(portal.router)

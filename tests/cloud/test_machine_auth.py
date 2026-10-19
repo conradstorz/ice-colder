@@ -120,3 +120,36 @@ def test_claim_code_notice_set_then_cleared(cloud, known):
 def test_claim_code_unsigned_is_401(cloud, known):
     path = f"/api/v1/machines/{known.fingerprint}/claim-code"
     assert cloud.delete(path).status_code == 401
+
+
+def test_chunked_body_over_limit_is_413_before_auth(cloud, cloud_app, signer):
+    path = "/api/v1/machines/register"
+    big = b"x" * (256 * 1024 + 1)
+    headers = signer.headers("POST", path, big, now=NOW)
+
+    def body():
+        for i in range(0, len(big), 64 * 1024):
+            yield big[i : i + 64 * 1024]
+
+    r = cloud.post(
+        path, content=body(), headers={**headers, "content-type": "application/json"}
+    )
+    assert r.status_code == 413 and r.content == b""
+    assert cloud_app.state.repo.machine(signer.fingerprint) is None
+
+
+def test_unsigned_register_creates_no_row(cloud, cloud_app, signer):
+    body = f'{{"public_key_b64": "{signer.public_key_b64}", "label": "x"}}'.encode()
+    r = cloud.post(
+        "/api/v1/machines/register",
+        content=body,
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 401
+    assert cloud_app.state.repo.machine(signer.fingerprint) is None
+
+
+def test_malformed_timestamp_is_401(cloud, known):
+    headers = known.headers("POST", _path(known), _body(), now=NOW)
+    headers[signing.HEADER_TIMESTAMP] = "not-a-time"
+    assert _send(cloud, headers, _path(known)).status_code == 401

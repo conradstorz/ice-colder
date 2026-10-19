@@ -73,8 +73,7 @@ def test_bundle_with_wrong_digest_in_url_is_400(client, machine):
 def test_oversize_bundle_is_rejected_before_extraction(client, machine, tmp_path):
     big = b"\0" * (20 * 1024 * 1024 + 1)
     r = _put(client, machine, "d" * 64, big)
-    assert r.status_code == 400
-    assert "too large" in r.json()["detail"]
+    assert r.status_code == 413 and r.content == b""
     assert not (tmp_path / "ui").exists()
 
 
@@ -88,8 +87,29 @@ def test_oversize_bundle_without_content_length_is_cut_off(client, machine):
             yield big[i * 1024 * 1024 : (i + 1) * 1024 * 1024]
 
     r = client.put(path, content=body(), headers=headers)
-    assert r.status_code == 400
-    assert "too large" in r.json()["detail"]
+    assert r.status_code == 413 and r.content == b""
+
+
+def _streamed_put(client, signer, size):
+    data = b"\0" * size
+    path = f"/api/v1/ui-bundles/{'d' * 64}"
+    headers = signer.headers("PUT", path, data, now=client.app.state.now())
+
+    def body():
+        step = 1024 * 1024
+        for i in range(0, size, step):
+            yield data[i : i + step]
+
+    return client.put(path, content=body(), headers=headers)
+
+
+def test_bundle_route_allows_up_to_bundle_limit_but_not_over(client, machine):
+    limit = 20 * 1024 * 1024
+    at = _streamed_put(client, machine, limit)
+    assert at.status_code == 400  # past the size cap; rejected as a corrupt bundle
+    assert "too large" not in at.json()["detail"]
+    over = _streamed_put(client, machine, limit + 1)
+    assert over.status_code == 413
 
 
 def test_unsigned_bundle_put_is_401(client):
