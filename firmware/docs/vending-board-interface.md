@@ -159,10 +159,10 @@ switched by a board relay directly.
 
 ## 7. Provisioning
 
-Flashing: from the repository root, `uv run python scripts/flash_vending.py` builds the `kc868-a8`
+Flashing: from the repository root, `uv run python scripts/flash_board.py vending` builds the `kc868-a8`
 environment, finds the one attached USB-serial bridge (CH340/CH9102, CP210x, FTDI or Espressif), and
 uploads to it; it exits 0 with a message when no board is attached, asks for `--port` when several are,
-and takes `--no-build` and `--monitor`.
+and takes `--no-build`, `--monitor`, `--verify-only` and `--provision FILE.toml`. It retries a failed upload once, then verifies the boot banner version and `show` over the console (exit 0 verified, 1 unverified, 2 build/upload failed, 3 usage); secrets in the provisioning file are never printed.
 
 Compile-time defaults come from the `BOARD_DEFAULT_*` flags documented in
 `firmware/vending/platformio.ini`; the USB serial console (115200 baud, prompt `vend> `) overrides

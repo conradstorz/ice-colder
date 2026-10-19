@@ -20,7 +20,7 @@ need a host `g++` on PATH (on Windows, WinLibs: `winget install BrechtSanders.Wi
 | Task | Command |
 |---|---|
 | Build the firmware | `pio run -e kc868-a8` |
-| Build and flash whatever board is plugged in (from the repo root) | `uv run python scripts/flash_vending.py` (`--port COMx`, `--no-build`, `--monitor`) |
+| Build and flash whatever board is plugged in (from the repo root) | `uv run python scripts/flash_board.py vending` or `mdb` (`--port COMx`, `--no-build`, `--monitor`, `--verify-only`, `--provision FILE.toml`) |
 | Host unit tests | `pio test -e native` |
 | Refresh the golden wire JSON | `pio test -e native -f test_wire` |
 | Flash over USB | `pio run -e kc868-a8 -t upload` |
