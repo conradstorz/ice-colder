@@ -7,8 +7,14 @@ import tarfile
 import pytest
 
 from ice_ui.bundle import INSTALLED_ROOT, build_bundle
-from tests.cloud.conftest import push, select
-from tests.cloud.reports import FP, make_report
+from tests.cloud.conftest import push, register, select, signed
+from tests.cloud.reports import make_report
+
+
+def put_bundle(cloud, signer, digest, data):
+    register(cloud, signer)
+    return signed(cloud, signer, "PUT", f"/api/v1/ui-bundles/{digest}", data)
+
 
 PAGES = ["/", "/status", "/pill", "/kpi", "/health", "/health/faults"]
 
@@ -25,18 +31,18 @@ def test_cookie_naming_unreported_machine_redirects_to_fleet(cloud):
     assert cloud.get("/").status_code == 303
 
 
-def test_fleet_lists_machines_and_select_sets_a_non_credential_cookie(cloud):
-    push(cloud, make_report())
+def test_fleet_lists_machines_and_select_sets_a_non_credential_cookie(cloud, signer):
+    push(cloud, signer, make_report())
     page = cloud.get("/fleet")
     assert page.status_code == 200
     assert "m-0042" in page.text and "Online" in page.text
     assert "1 active fault" in page.text
-    assert f"/fleet/select/{FP}" in page.text
+    assert f"/fleet/select/{signer.fingerprint}" in page.text
 
-    r = cloud.post(f"/fleet/select/{FP}")
+    r = cloud.post(f"/fleet/select/{signer.fingerprint}")
     assert r.status_code == 303 and r.headers["location"] == "/"
     cookie = r.headers["set-cookie"].lower()
-    assert f"ice_cloud_machine={FP}" in cookie
+    assert f"ice_cloud_machine={signer.fingerprint}" in cookie
     assert "httponly" in cookie and "samesite=lax" in cookie
 
 
@@ -45,9 +51,9 @@ def test_select_unknown_or_malformed_machine_is_404(cloud):
     assert cloud.post("/fleet/select/bad%20id").status_code == 404
 
 
-def test_selected_machine_pages_render_from_report(cloud):
-    push(cloud, make_report())
-    select(cloud)
+def test_selected_machine_pages_render_from_report(cloud, signer):
+    push(cloud, signer, make_report())
+    select(cloud, signer)
     faults = cloud.get("/health/faults")
     assert faults.status_code == 200
     assert "ICE-301" in faults.text
@@ -61,9 +67,9 @@ def test_selected_machine_pages_render_from_report(cloud):
     assert "3/3 OK" in cloud.get("/health").text
 
 
-def test_stale_machine_still_renders_under_offline_banner(cloud, clock):
-    push(cloud, make_report(interval=60))
-    select(cloud)
+def test_stale_machine_still_renders_under_offline_banner(cloud, clock, signer):
+    push(cloud, signer, make_report(interval=60))
+    select(cloud, signer)
     clock.advance(180)  # exactly 3 x interval: not yet stale
     assert "Offline" not in cloud.get("/health/faults").text
     clock.advance(181)
@@ -75,9 +81,9 @@ def test_stale_machine_still_renders_under_offline_banner(cloud, clock):
     assert "Offline" in cloud.get("/fleet").text
 
 
-def test_unknown_ui_digest_shows_mismatch_banner_and_installed_ui(cloud):
-    push(cloud, make_report(digest="c" * 64))
-    select(cloud)
+def test_unknown_ui_digest_shows_mismatch_banner_and_installed_ui(cloud, signer):
+    push(cloud, signer, make_report(digest="c" * 64))
+    select(cloud, signer)
     r = cloud.get("/health/faults")
     assert r.status_code == 200
     assert "UI version mismatch: machine cccccccc" in r.text
@@ -93,9 +99,9 @@ def test_static_serves_installed_ui_and_refuses_escapes(cloud):
     assert cloud.get("/static/%00").status_code == 404
 
 
-def test_unserved_pages_are_not_available_remotely(cloud):
-    push(cloud, make_report())
-    select(cloud)
+def test_unserved_pages_are_not_available_remotely(cloud, signer):
+    push(cloud, signer, make_report())
+    select(cloud, signer)
     for path in ("/controls", "/health/subsystems", "/logout", "/nowhere/at/all"):
         r = cloud.get(path)
         assert r.status_code == 404, path
@@ -126,11 +132,11 @@ def _marked_bundle(tmp_path, marker):
     return digest, data
 
 
-def test_full_page_renders_from_cached_bundle_in_sandbox(cloud, tmp_path):
+def test_full_page_renders_from_cached_bundle_in_sandbox(cloud, tmp_path, signer):
     digest, data = _marked_bundle(tmp_path, "SANDBOXED-MACHINE-UI")
-    assert cloud.put(f"/api/v1/ui-bundles/{digest}", content=data).status_code == 201
-    push(cloud, make_report(digest=digest))
-    select(cloud)
+    assert put_bundle(cloud, signer, digest, data).status_code == 201
+    push(cloud, signer, make_report(digest=digest))
+    select(cloud, signer)
 
     r = cloud.get("/health/faults")
     assert r.status_code == 200
@@ -144,7 +150,7 @@ def test_full_page_renders_from_cached_bundle_in_sandbox(cloud, tmp_path):
     assert cloud.get("/static/machine-only.txt").text == "from the machine UI"
 
 
-def test_sandbox_blocks_unsafe_template_in_uploaded_bundle(cloud, tmp_path):
+def test_sandbox_blocks_unsafe_template_in_uploaded_bundle(cloud, tmp_path, signer):
     root = tmp_path / "evil"
     shutil.copytree(INSTALLED_ROOT / "templates", root / "templates")
     shutil.copytree(INSTALLED_ROOT / "static", root / "static")
@@ -160,9 +166,9 @@ def test_sandbox_blocks_unsafe_template_in_uploaded_bundle(cloud, tmp_path):
     data = build_bundle(root)
     with tarfile.open(fileobj=io.BytesIO(gzip.decompress(data))) as tf:
         digest = json.loads(tf.extractfile("manifest.json").read())["digest"]
-    cloud.put(f"/api/v1/ui-bundles/{digest}", content=data)
-    push(cloud, make_report(digest=digest))
-    select(cloud)
+    put_bundle(cloud, signer, digest, data)
+    push(cloud, signer, make_report(digest=digest))
+    select(cloud, signer)
     with pytest.raises(Exception, match="unsafe"):
         cloud.get("/health/faults")
 
@@ -173,11 +179,11 @@ def test_post_to_unserved_path_is_the_same_404_page(cloud):
     assert "Not available remotely yet" in r.text
 
 
-def test_banner_renders_inside_the_oob_swapped_bar(cloud):
+def test_banner_renders_inside_the_oob_swapped_bar(cloud, signer):
     from tests.dom_utils import find_by_id, parse_elements
 
-    push(cloud, make_report())
-    select(cloud)
+    push(cloud, signer, make_report())
+    select(cloud, signer)
     for path in ("/", "/health", "/health/faults"):
         html = cloud.get(path).text
         els = parse_elements(html)

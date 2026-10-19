@@ -2,9 +2,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ice_cloud.app import create_app
-from tests.cloud.conftest import make_settings
 from ice_ui.bundle import build_bundle, ui_digest
-from tests.cloud.reports import FP, make_report
+from tests.cloud.conftest import make_settings, register, signed
+from tests.cloud.reports import make_report
 
 
 @pytest.fixture
@@ -14,58 +14,84 @@ def client(tmp_path):
         yield c
 
 
-def _post(client, report, fingerprint=FP):
-    return client.post(
-        f"/api/v1/machines/{fingerprint}/report",
-        content=report.model_dump_json(),
-        headers={"content-type": "application/json"},
+@pytest.fixture
+def machine(client, signer):
+    register(client, signer)
+    return signer
+
+
+def _post(client, signer, report):
+    return signed(
+        client,
+        signer,
+        "POST",
+        f"/api/v1/machines/{signer.fingerprint}/report",
+        report.model_dump_json().encode(),
     )
 
 
-def test_report_is_accepted_and_stored(client, tmp_path):
-    assert _post(client, make_report()).status_code == 204
-    assert (tmp_path / "machines" / f"{FP}.json").is_file()
+def _put(client, signer, digest, data):
+    return signed(client, signer, "PUT", f"/api/v1/ui-bundles/{digest}", data)
 
 
-def test_malformed_fingerprint_is_422(client, tmp_path):
-    assert _post(client, make_report(), "m-0042").status_code == 422
-    assert not (tmp_path / "machines").exists()
+def test_report_is_accepted_and_stored(client, machine, tmp_path):
+    assert _post(client, machine, make_report()).status_code == 204
+    assert (tmp_path / "machines" / f"{machine.fingerprint}.json").is_file()
 
 
-def test_invalid_body_is_422(client):
-    r = client.post(f"/api/v1/machines/{FP}/report", json={"machine_id": "m-1"})
+def test_body_machine_id_is_a_label_not_checked_against_the_path(client, machine):
+    assert _post(client, machine, make_report(machine_id="anything")).status_code == 204
+
+
+def test_invalid_body_is_422(client, machine):
+    r = signed(
+        client,
+        machine,
+        "POST",
+        f"/api/v1/machines/{machine.fingerprint}/report",
+        b'{"machine_id": "m-1"}',
+    )
     assert r.status_code == 422
 
 
-def test_bundle_put_201_then_200_then_400_for_corrupt_bytes(client):
+def test_bundle_put_201_then_200_then_400_for_corrupt_bytes(client, machine):
     data = build_bundle()
-    url = f"/api/v1/ui-bundles/{ui_digest()}"
-    assert client.put(url, content=data).status_code == 201
-    assert client.put(url, content=data).status_code == 200
-    bad = client.put(f"/api/v1/ui-bundles/{'a' * 64}", content=b"corrupt")
+    digest = ui_digest()
+    assert _put(client, machine, digest, data).status_code == 201
+    assert _put(client, machine, digest, data).status_code == 200
+    bad = _put(client, machine, "a" * 64, b"corrupt")
     assert bad.status_code == 400
     assert "detail" in bad.json()
 
 
-def test_bundle_with_wrong_digest_in_url_is_400(client):
-    r = client.put(f"/api/v1/ui-bundles/{'b' * 64}", content=build_bundle())
+def test_bundle_with_wrong_digest_in_url_is_400(client, machine):
+    r = _put(client, machine, "b" * 64, build_bundle())
     assert r.status_code == 400
     assert "digest" in r.json()["detail"]
 
 
-def test_oversize_bundle_is_rejected_before_extraction(client, tmp_path):
+def test_oversize_bundle_is_rejected_before_extraction(client, machine, tmp_path):
     big = b"\0" * (20 * 1024 * 1024 + 1)
-    r = client.put(f"/api/v1/ui-bundles/{'d' * 64}", content=big)
+    r = _put(client, machine, "d" * 64, big)
     assert r.status_code == 400
     assert "too large" in r.json()["detail"]
     assert not (tmp_path / "ui").exists()
 
 
-def test_oversize_bundle_without_content_length_is_cut_off(client):
-    def body():
-        for _ in range(21):
-            yield b"\0" * (1024 * 1024)
+def test_oversize_bundle_without_content_length_is_cut_off(client, machine):
+    big = b"\0" * (21 * 1024 * 1024)
+    path = f"/api/v1/ui-bundles/{'d' * 64}"
+    headers = machine.headers("PUT", path, big, now=client.app.state.now())
 
-    r = client.put(f"/api/v1/ui-bundles/{'d' * 64}", content=body())
+    def body():
+        for i in range(21):
+            yield big[i * 1024 * 1024 : (i + 1) * 1024 * 1024]
+
+    r = client.put(path, content=body(), headers=headers)
     assert r.status_code == 400
     assert "too large" in r.json()["detail"]
+
+
+def test_unsigned_bundle_put_is_401(client):
+    r = client.put(f"/api/v1/ui-bundles/{ui_digest()}", content=build_bundle())
+    assert r.status_code == 401 and r.content == b""
