@@ -33,9 +33,10 @@ struct FakeIds : IdSource {
 struct FakeLogStore : LogStore {
     static constexpr int kSlots = 300;
     char items[kSlots][kMaxJson];
+    bool refuse = false;  // make append() fail, as a flash write error would
     int n = 0;
     bool append(const char* json, size_t len) override {
-        if (n >= kSlots || len >= kMaxJson) return false;
+        if (refuse || n >= kSlots || len >= kMaxJson) return false;
         memcpy(items[n], json, len);
         items[n][len] = '\0';
         ++n;
