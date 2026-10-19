@@ -63,9 +63,4 @@
     <p class="text-sm text-gray-500">Ownership is transferred at the machine, not here. On the machine's Users screen, start a transfer to mint a code, then the new owner enters it on their Claim page.</p>
   </div>
 </div>
-<script>
-document.body.addEventListener("htmx:beforeSwap", function (e) {
-  if (e.detail.xhr.status === 400) { e.detail.shouldSwap = true; e.detail.isError = false; }
-});
-</script>
 {% endblock %}

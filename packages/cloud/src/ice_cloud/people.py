@@ -7,10 +7,10 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, Response
 
 from ice_cloud.auth import require_htmx, require_machine_access, require_signed_in
-from ice_cloud.portal import LEVEL_FLEET, _context, _resolve
+from ice_cloud.portal import LEVEL_FLEET, page_context, resolve_ui
 from ice_cloud.store.repository import Account, Invitation, Machine
 from ice_contracts.cloud.signing import short_fingerprint
 from ice_ui.levels import Level
@@ -52,7 +52,6 @@ async def _page(
     *,
     error: str | None = None,
     new_link: str | None = None,
-    status_code: int = 200,
 ) -> Response:
     state = request.app.state
     short = short_fingerprint(machine.fingerprint)
@@ -75,12 +74,12 @@ async def _page(
         }
         for i in pending
     ]
-    ui = _resolve(request, None)
+    ui = resolve_ui(request, None)
     level = Level.child(LEVEL_FLEET, "People", f"/machines/{short}/people")
     return ui.templates.TemplateResponse(
         request,
         "people.html",
-        _context(
+        page_context(
             request,
             account,
             ui,
@@ -92,7 +91,6 @@ async def _page(
             error=error,
             new_link=new_link,
         ),
-        status_code=status_code,
     )
 
 
@@ -121,7 +119,7 @@ async def revoke_confirm(
 ):
     _account, machine, _role = access
     await _tech_member(request, machine, account_id)
-    ui = _resolve(request, None)
+    ui = resolve_ui(request, None)
     short = short_fingerprint(machine.fingerprint)
     return ui.templates.TemplateResponse(
         request,
@@ -165,7 +163,6 @@ async def invite(
             account,
             machine,
             error="Enter a valid email address (for example name@example.com).",
-            status_code=400,
         )
     state = request.app.state
     stored = "fleet" if scope == "fleet" else (machine.fingerprint,)
@@ -203,17 +200,13 @@ async def _open_invitation(request: Request, token: str) -> Invitation:
     return found
 
 
-@router.get("/invite/{token}", response_class=HTMLResponse)
-async def invite_page(
-    request: Request, token: str, account: Account = Depends(require_signed_in)
-):
-    found = await _open_invitation(request, token)
-    inviter = await asyncio.to_thread(request.app.state.repo.account, found.inviter_id)
-    ui = _resolve(request, None)
+def _invite_response(request, account, token, found, *, lapsed=False):
+    ui = resolve_ui(request, None)
+    inviter = request.app.state.repo.account(found.inviter_id)
     return ui.templates.TemplateResponse(
         request,
         "invite.html",
-        _context(
+        page_context(
             request,
             account,
             ui,
@@ -224,8 +217,17 @@ async def invite_page(
             machine_count=0 if found.scope == "fleet" else len(found.scope),
             matches=account.email.lower() == found.email.lower(),
             invited_email=found.email,
+            lapsed=lapsed,
         ),
     )
+
+
+@router.get("/invite/{token}", response_class=HTMLResponse)
+async def invite_page(
+    request: Request, token: str, account: Account = Depends(require_signed_in)
+):
+    found = await _open_invitation(request, token)
+    return await asyncio.to_thread(_invite_response, request, account, token, found)
 
 
 @router.post("/invite/{token}", dependencies=[Depends(require_htmx)])
@@ -242,5 +244,7 @@ async def accept(
         state.repo.accept_invitation, token, account.id, state.now()
     )
     if not granted:
-        raise HTTPException(status_code=404)
-    return RedirectResponse("/fleet", status_code=303)
+        return await asyncio.to_thread(
+            _invite_response, request, account, token, found, lapsed=True
+        )
+    return Response(status_code=200, headers={"HX-Redirect": "/fleet"})

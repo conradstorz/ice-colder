@@ -69,7 +69,7 @@ def test_accept_matching_email_grants_machine_scope(cloud, signer):
     page = cloud.get(f"/invite/{token}")
     assert page.status_code == 200 and "Accept invitation" in page.text
     r = cloud.post(f"/invite/{token}", headers=HX)
-    assert r.status_code == 303 and r.headers["location"] == "/fleet"
+    assert r.status_code == 200 and r.headers["HX-Redirect"] == "/fleet"
     repo = cloud.app.state.repo
     assert repo.access_for(tech.id, signer.fingerprint) == "tech"
     assert cloud.get(f"/invite/{token}").status_code == 404
@@ -83,7 +83,7 @@ def test_accept_fleet_scope_grants_current_machines_only(cloud, signer):
     push(cloud, second, make_report(machine_id="m-0043"))
     claim(cloud, second, owner)
     tech = login(cloud, "tech@example.com")
-    assert cloud.post(f"/invite/{token}", headers=HX).status_code == 303
+    assert cloud.post(f"/invite/{token}", headers=HX).headers["HX-Redirect"] == "/fleet"
     third = Signer()
     login(cloud, "owner@example.com")
     push(cloud, third, make_report(machine_id="m-0044"))
@@ -152,7 +152,7 @@ def test_invite_bad_email_error_message(cloud, signer):
     owner, sh = _owner_setup(cloud, signer)
     for bad in ("nobody", "a@@b.com", "a b@c.com", "@x.com", "x@"):
         r = _invite(cloud, sh, bad)
-        assert r.status_code == 400, bad
+        assert r.status_code == 200, bad
         assert "valid email" in r.text
     assert (
         cloud.app.state.repo.invitations_by(
@@ -161,3 +161,51 @@ def test_invite_bad_email_error_message(cloud, signer):
         == []
     )
     assert signing.short_fingerprint(signer.fingerprint) == sh
+
+
+def test_owner_cannot_cancel_another_owners_invitation(cloud, signer):
+    owner, sh = _owner_setup(cloud, signer)
+    _invite(cloud, sh)
+    token = _token(cloud, owner, signer.fingerprint)
+    other = Signer()
+    push(cloud, other, make_report(machine_id="m-0043"))
+    owner_y = login(cloud, "owner-y@example.com")
+    claim(cloud, other, owner_y)
+    r = cloud.post(
+        f"/machines/{short(other)}/people/invitations/{token}/cancel", headers=HX
+    )
+    assert r.status_code == 404
+    assert cloud.app.state.repo.invitation(token) is not None
+
+
+def test_accept_after_inviter_sold_machine_grants_nothing(cloud, signer):
+    owner, sh = _owner_setup(cloud, signer)
+    _invite(cloud, sh)
+    token = _token(cloud, owner, signer.fingerprint)
+    buyer = login(cloud, "buyer@example.com")
+    claim(cloud, signer, buyer)
+    tech = login(cloud, "tech@example.com")
+    r = cloud.post(f"/invite/{token}", headers=HX)
+    assert r.status_code == 200 and "HX-Redirect" not in r.headers
+    assert "no longer applies" in r.text and "Accept invitation" not in r.text
+    assert cloud.app.state.repo.access_for(tech.id, signer.fingerprint) is None
+
+
+def test_tech_cannot_invite_revoke_or_cancel(cloud, signer):
+    owner, sh = _owner_setup(cloud, signer)
+    _invite(cloud, sh)
+    token = _token(cloud, owner, signer.fingerprint)
+    tech = login(cloud, "tech@example.com")
+    repo = cloud.app.state.repo
+    repo.grant_tech(tech.id, signer.fingerprint, owner.id, cloud.app.state.now())
+    assert _invite(cloud, sh, "x@example.com").status_code == 404
+    r = cloud.post(f"/machines/{sh}/people/{tech.id}/revoke", headers=HX)
+    assert r.status_code == 404
+    r = cloud.post(f"/machines/{sh}/people/invitations/{token}/cancel", headers=HX)
+    assert r.status_code == 404
+    assert repo.access_for(tech.id, signer.fingerprint) == "tech"
+    assert repo.invitation(token) is not None
+    assert (
+        len(repo.invitations_by(owner.id, signer.fingerprint, cloud.app.state.now()))
+        == 1
+    )
