@@ -63,8 +63,9 @@ void start_wifi(const Settings& s) {
     }
     esp_netif_create_default_wifi_sta();
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
-    // Keep Wi-Fi credentials/calibration out of NVS: our settings live in our own namespace, and a
-    // flash write from the driver would land outside the mdb board's flash quiet window.
+    // Keep Wi-Fi credentials out of NVS: our settings live in our own namespace, and a flash write
+    // from the driver would land outside the mdb board's flash quiet window. The call has to come
+    // after esp_wifi_init. It does not stop the PHY calibration data written during init itself.
     ESP_ERROR_CHECK(esp_wifi_init(&init));
     esp_err_t st = esp_wifi_set_storage(WIFI_STORAGE_RAM);
     if (st != ESP_OK) ESP_LOGW(TAG, "esp_wifi_set_storage failed: %s", esp_err_to_name(st));

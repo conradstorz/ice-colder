@@ -175,9 +175,9 @@ Ports: `BusPort` (write a block of 9-bit bytes; receive bytes with their mode bi
 `payout` and `vend_request` are acked `accepted` only after the peripheral has ACKed the MDB command;
 `set_policy` is acked `ok` after the COIN TYPE, BILL TYPE and READER enables have been applied on the
 bus; everything else acks from the bus task's confirmation, never from receipt. `ping`, `self_test`
-and `force_report` ack `completed` from the comms task directly. `self_test` reports: each device's
+and `force_report` ack from the bus task through `Master::submit` (section 11). `self_test` reports: each device's
 status and level, clock synced, event log depth and `event_log_full`, RX mode-bit disagreement
-counter, link RSSI, dropped-message counters.
+counter, dropped-message counters (no link RSSI: section 11).
 
 ## 6. Wire behaviour
 
@@ -351,7 +351,8 @@ confirmed at the machine; whether the Nayax reader offers always-idle.
 - **Flash windows, extended.** The bus parks between transactions for at most 400 ms (one overrun per
   window); the ledger does all NVS work including blob reads inside `acked` and replay reads; console
   writes go through the same window (`settings_set_flash_guard`, proceeding after about 1 s if none is
-  granted); Wi-Fi storage is RAM (`esp_wifi_set_storage` before init); comms starts before the bus.
+  granted); Wi-Fi storage is RAM (`esp_wifi_set_storage`, called after `esp_wifi_init`; the PHY calibration
+  writes during init still happen); comms starts before the bus.
 - **Ack model.** `Master::submit` drives the bus synchronously (at most 8 settle rounds) and returns the
   real first ack: `payout`/`vend_request` `accepted` after the bus ACK, `set_policy` `ok` after the
   enables apply, a command still queued is never `failed` (`accepted`, or `ok` with `detail "queued"`).
@@ -377,3 +378,36 @@ confirmed at the machine; whether the Nayax reader offers always-idle.
   before the bus starts; `CONFIG_SPI_FLASH_AUTO_SUSPEND` depends on the fitted flash chip; decimals byte
   ignored (USD only); changer masks assumed big-endian bit *i* = coin type *i* and always-idle at SETUP
   byte 33 mask 0x02, both for the bench (interface doc section 9).
+
+### 11.1 Final whole-branch review
+
+- **No money before a policy this boot.** `payout` and `vend_request` are acked `rejected` with `detail
+  "no_policy"` until a `set_policy` has been acked `ok` since boot (`has_policy_`). Edge silence does
+  not clear it, so contract flow 7 (payout after silence) still works; flow 8 already has the edge send
+  `set_policy` first. A `coin_enabled` or `bill_enabled` of 17 entries is rejected (the decoder caps at
+  16) and leaves the board at `no_policy`.
+- **Escrow restarts at 0 on every boot.** It is RAM only. Spec 3 must reconcile against the replayed
+  events of the previous `boot_id` and raise PAY-104 only on a real disagreement.
+- **`cash_collected{coin}` is not implemented.** Only the validator emits `cash_collected`; the
+  changer-tube heuristic was dropped as unreliable.
+- **Standard commands.** `ping`, `self_test` and `force_report` are acked by the bus task through
+  `Master::submit`, not by the comms task. `self_test` reports no link RSSI (512 B result budget).
+- **Event acks.** `payment/event/ack` is decoded in the MQTT callback by a hand parser and coalesced into
+  a 4-slot table of `(boot_id, max seq)`; the comms loop drains it into `ack_in_q`. Acks never enter
+  `rx_q` (now 8 deep, commands only), so an ack storm cannot wedge the command path. While connected, if
+  events are pending and nothing has been erased for 30 s, the ledger requests a replay (at most once
+  per 30 s), so a lost ack cannot hold the log in pressure forever.
+- **Wi-Fi storage.** `esp_wifi_set_storage(WIFI_STORAGE_RAM)` is called after `esp_wifi_init`, not
+  before; it does not cover the PHY calibration writes of init.
+- **Orphan blobs.** The sweep of blobs left by a power cut is incremental, in flash windows during
+  normal running, not a pass at boot.
+- **Console.** The MDB board's console is the DevKitC native USB port (USB Serial/JTAG), chosen at
+  compile time from the sdkconfig; the vending board keeps UART0.
+- **Other review fixes.** Level 2 payouts wait out the changer's 0x02 payout-busy before the next
+  DISPENSE and the final TUBE STATUS; the offline LED needs a device that had answered once
+  (`DeviceState.was_present`), so a machine with no reader never lights red; a `price_scale` mismatch
+  is a Master `rejected` ack with no event; a reader-initiated JUST RESET clears always-idle state;
+  MDB model and serial text is ASCII only (other bytes become `?`); `sale_id` and `session_id` are
+  capped at 64 characters.
+- **New bench items.** L2 payout-busy timing on a real changer; a replay ack storm with an old-boot
+  backlog (interface doc section 9).

@@ -26,7 +26,7 @@ the edge with at-least-once delivery. It implements `ice_contracts.board.payment
   acked `set_policy`.
 - Ack phases: `payout` and `vend_request` ack `accepted` only after the peripheral ACKed the MDB
   command; `set_policy` acks `ok` after the enables are applied on the bus; `ping`, `self_test` and
-  `force_report` ack `completed` from the comms task. A command is never acked `failed` while it is
+  `force_report` are acked by the bus task through `Master::submit`, not by the comms task. A command is never acked `failed` while it is
   still queued on the bus: it is acked `accepted`, or `ok` with `detail: "queued"` for immediate
   commands.
 
@@ -81,8 +81,9 @@ check. The firmware pin map is `firmware/mdb/boards/mdb-s3.h`.
 | Status LED | 48 | the DevKitC's WS2812 |
 | Console and flash | native USB (GPIO 19/20) | not available for other use |
 
-There are no digital inputs: `cash_collected` is derived from the peripherals themselves (validator
-cash box out of position and back; changer tube counts dropping while acceptance is disabled).
+There are no digital inputs. `cash_collected` comes from the bill validator only (cash box out of
+position and back); `cash_collected{coin}` is not implemented, because the changer-tube-count heuristic
+was dropped as unreliable.
 
 ## 5. The 9-bit path as shipped
 
@@ -177,7 +178,12 @@ before it is published, receives its per-boot `seq`, and is erased only when the
 (`payment/event/ack` with `{boot_id, seq}` erases entries of that `boot_id` with `seq <=` acked). On
 every broker connect the log replays oldest boot first, ahead of anything new. A stale-epoch rule drops
 envelopes queued before a reconnect so the order holds. The payout idempotency store (last 32 payout
-`request_id`s with results) is persisted in the same namespace so a reboot cannot repay a payout.
+`request_id`s with results) is persisted in the same namespace and replays the stored result for a
+repeated id. Escrow itself is RAM only and restarts at 0 on every boot, so the edge reconciles against
+the replayed events of the previous `boot_id`. The guard against a payout after a reboot is that
+`payout` and `vend_request` are rejected `no_policy` until a `set_policy` has been acked in the current
+boot; edge silence does not clear that, so a payout after silence still works. A `coin_enabled` or
+`bill_enabled` with 17 entries is rejected (the decoder caps at 16) and leaves the board at `no_policy`.
 
 **All flash work happens in a quiet window.** The ledger task requests a window; the bus task parks
 between transactions (holding for at most 400 ms), the ledger does every NVS operation, then releases
@@ -251,10 +257,16 @@ acks come back on `cmd/mdb/ack`.
   validator returns the bill, the next boot has a new `boot_id`, unacked events replay first, and the
   board stays at `no_policy` until `set_policy`. Cut power during an NVS write and confirm the log
   recovers.
-- [ ] **Boot sweep time.** Time the orphan-blob sweep at boot with a full log; confirm it does not
-  delay the first `set_policy` ack.
+- [ ] **Orphan sweep.** Fill the log, cut power mid-erase, and confirm the incremental sweep (in flash
+  windows during normal running, not at boot) clears the orphans without a missed MDB poll or a late
+  `set_policy` ack.
 - [ ] **Wi-Fi PHY calibration.** Wi-Fi init writes PHY calibration data before the bus task starts;
   confirm no MDB transaction is missed around Wi-Fi bring-up.
+- [ ] **L2 payout-busy timing.** On a real level 2 changer, run multi-coin payouts and confirm the
+  0x02 payout-busy wait: `paid_cents` exact for every denomination mix, no payout timeout.
+- [ ] **Replay ack storm.** With an old-boot backlog in the log, have the edge ack the whole backlog
+  at once while commands keep arriving; confirm acks coalesce, commands are never dropped, and the log
+  drains.
 - [ ] **LED.** Confirm each pattern in section 8 on the real DevKitC (some clones differ in LED order).
 - [ ] **Flash tool on hardware.** Run `scripts/flash_board.py mdb --provision` against a real board,
   including the RTS reset used to catch the boot banner, and `--verify-only`.
@@ -296,7 +308,8 @@ Collected from the task reports; the full list is spec section 11.
   chunked at 255 units.
 - **Replay ordering** by epoch-stamped envelopes and a "replay owed" latch in comms.
 - **Erase order.** The log store advances `head` first and erases blobs afterwards, so a power cut
-  leaves harmless orphan blobs (swept at boot) rather than a counted entry with no blob.
+  leaves harmless orphan blobs (swept incrementally in flash windows, not at boot) rather than a
+  counted entry with no blob.
 - **Larger buffers** than planned: `pub_q` items are 1664 bytes (the state document is about 0.8 KB,
   1.6 KB with 16 tubes); the payouts blob buffer is 5120 bytes.
 - **`Inhibit::DeviceFault` is produced only by log pressure.** A jammed, errored or offline device
@@ -304,3 +317,7 @@ Collected from the task reports; the full list is spec section 11.
 - Recorded, not fixed: while a failing `set_policy` settles, devices are briefly enabled before the
   rollback; a changer payout timeout is only checked while a payout is active; a very busy bus can
   defer NVS work (events wait in `evt_q`, and log pressure keeps the log bounded).
+- **Final review additions** (spec section 11.1): payout and vend are rejected `no_policy` until the
+  first acked `set_policy`; escrow restarts at 0 per boot; event acks are coalesced in the MQTT
+  callback and a stalled log requests a replay after 30 s; the console is the native USB port; no link
+  RSSI in `self_test`; `esp_wifi_set_storage` is called after `esp_wifi_init`.

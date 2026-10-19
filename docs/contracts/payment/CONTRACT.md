@@ -245,7 +245,9 @@ today but the old contract never listed.
 **Board-side rules fixed by the contract:**
 
 1. **No policy, no money.** Until a `set_policy` is acked `ok`,
-   `inhibited_reason` is `no_policy` and nothing is accepted. The edge sends
+   `inhibited_reason` is `no_policy` and nothing is accepted, and `payout` and
+   `vend_request` are acked `rejected` with `detail: "no_policy"` (clarified in
+   firmware spec 4). The edge sends
    `set_policy` on its own boot, whenever `state.boot_id` changes or
    `state.policy_id` is null, and whenever its `payment_enabled` verdict
    flips. `accept: false` is the acked replacement for the old
