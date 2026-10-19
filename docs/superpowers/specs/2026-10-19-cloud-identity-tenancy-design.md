@@ -82,7 +82,7 @@ Both edge and cloud need the models and the signing helpers; `ice_contracts` is 
 
 Headers (constants in `signing.py`): `X-Ice-Machine` (full fingerprint), `X-Ice-Timestamp` (ISO-8601 UTC, seconds), `X-Ice-Signature` (base64).
 
-`identity.py` (Pydantic, `extra="forbid"`): `RegisterMachine{public_key_b64, label}`, `ClaimCodeNotice{claim_code_hash, expires_at}`, `RegisterResponse{fingerprint, claimed: bool}`. `CLOUD_CONTRACT_VERSION` bumps **0.1.0 → 0.2.0** (additive: new endpoints and headers; the report body is unchanged).
+`identity.py` (Pydantic, `extra="forbid"`): `RegisterMachine{public_key_b64, label}`, `ClaimCodeNotice{claim_code_hash, expires_at | null}` (null = a setup code, which never expires), `RegisterResponse{fingerprint, claimed: bool}`. `CLOUD_CONTRACT_VERSION` bumps **0.1.0 → 0.2.0** (additive: new endpoints and headers; the report body is unchanged).
 
 ### 4.3 Cloud: verifying
 
@@ -124,7 +124,7 @@ The edge learns about code changes through a `subscribe_claim_code_change(cb)` o
 
 `GET/POST /claim` (signed-in account): form fields `fingerprint` (short form) and `code`. Server order:
 
-1. Back-off check keyed `("claim", short_fingerprint, client_ip)` using a port of the edge's `Backoff` class into `ice_cloud.backoff` (same exponential rules, no hard cap). On back-off: 429.
+1. Back-off check keyed `("claim", short_fingerprint, client_ip)` using the edge's `Backoff` class, which moves verbatim to `ice_common.backoff` (the edge keeps importing it from `ice_edge.access.access`, a re-export). Same exponential rules, no hard cap. On back-off: 429.
 2. Resolve the machine; no machine, no live hash, or expired → 403 "no claim is open for this machine" (same message for all three; the back-off counter increments).
 3. `verify_secret(code, claim_code_hash)` false → 403, counter increments.
 4. Success, **one transaction**: `owner_id = account.id`, `claimed_at = now`, delete every `memberships` row for the machine, clear `claim_code_hash`/`claim_code_expires_at`. Redirect to `/m/{short}/`.
@@ -157,17 +157,22 @@ A signed cookie `ice_cloud_session` = `base64(json{account_id, issued_at, last_a
 
 ### 6.3 Portal routes
 
+The `ice_ui` templates carry root-absolute URLs (`hx-get="/status"`, `href="/health/faults"`) inside `<main>`, and the parity rule compares `<main>` byte for byte, so machine pages cannot move under a path prefix. They stay at the machine's own paths and the **selected-machine cookie stays**, but it is no longer trusted on its own: every machine page resolves the cookie's fingerprint and then checks that the signed-in account may see that machine. The cookie says *which*; the session says *whether*.
+
 | Route | Who | Behaviour |
 |---|---|---|
-| `GET /` | signed-in | **My machines**: owned and tech-granted machines, each with label, short fingerprint, online/offline (existing 3× interval rule), fault count, your role. Empty state links to `/claim`. |
-| `GET/POST /claim` | signed-in | §5.4 |
-| `GET /m/{short}/`, `/status`, `/pill`, `/kpi`, `/health`, `/health/faults`, `/static/…` | owner, tech, admin | The existing machine pages, byte-for-byte what they render today, mounted under the prefix. Links and `hx-get` URLs inside the templates are prefixed through the existing `remote` context (`ice_ui` already renders from a base path for the cloud). Any other sub-path: the existing 404 "Not available remotely yet". |
-| `GET /m/{short}/people` | owner | Memberships list with Revoke (two-tap), Invite form (email + scope: this machine / all my machines), pending invitations with Cancel, and a "Transfer ownership" panel that explains the code is minted at the machine (no action here). |
-| `POST /m/{short}/people/invite`, `/people/{account_id}/revoke`, `/people/invitations/{token}/cancel` | owner | As named. Invite emails are **out of scope** for this spec (no mailer on the cloud yet); the owner is shown the invitation link to pass on. |
-| `GET/POST /invite/{token}` | signed-in | Accept: the account's email must equal the invitation's email (lower-cased), token unexpired and unaccepted. Fleet scope expands to one membership per machine the inviter **currently** owns. Then redirect to `/`. |
-| `GET /admin`, `POST /admin/machines/{short}/unbind`, `POST /admin/accounts/{id}/suspend` | platform admin | §5.5 |
+| `GET /fleet` | signed-in | **My machines**: owned and tech-granted machines (every machine for an admin), each with label, short fingerprint, online/offline (existing 3× interval rule), fault count, your role, a Select button. Empty state links to `/claim`. |
+| `POST /fleet/select/{short}` | owner, tech, admin of that machine | Access check, set `ice_cloud_machine` to the full fingerprint, 303 to `/`. Non-member: 404. |
+| `GET /m/{short}` | same | Deep link (for admin and invitation pages): same as select, as a GET. |
+| `GET /`, `/status`, `/pill`, `/kpi`, `/health`, `/health/faults`, `/static/…` | the selected machine's owner, tech, admin | The existing machine pages, byte-for-byte what they render today. No cookie, unknown machine, or no access → 303 `/fleet` (fragments: 204 for an htmx request, as today). |
+| `GET/POST /claim` | signed-in | §5.4; success selects the machine and redirects to `/`. |
+| `GET /machines/{short}/people` | owner | Memberships list with Revoke (two-tap), Invite form (email + scope: this machine / all my machines), pending invitations with Cancel, and a "Transfer ownership" panel that explains the code is minted at the machine (no action here). |
+| `POST /machines/{short}/people/invite`, `/machines/{short}/people/{account_id}/revoke`, `/machines/{short}/people/invitations/{token}/cancel` | owner | As named. Invite emails are **out of scope** for this spec (no mailer on the cloud yet); the owner is shown the invitation link to pass on. |
+| `GET/POST /invite/{token}` | signed-in | Accept: the account's email must equal the invitation's email (lower-cased), token unexpired and unaccepted. Fleet scope expands to one membership per machine the inviter **currently** owns. Then redirect to `/fleet`. |
+| `GET /admin`, `POST /admin/machines/{short}/unbind`, `POST /admin/accounts/{id}/suspend`, `POST /admin/accounts/{id}/unsuspend` | platform admin | §5.5 |
+| `GET /login`, `GET /auth/google/start`, `GET /auth/google/callback`, `POST /logout` | anyone | §6.1 |
 
-The current `/fleet`, `/fleet/select/{machine_id}` and the selection cookie are removed; the fingerprint in the URL is the selection. `/` was the selected machine's home; it is now My machines, and the machine home moves to `/m/{short}/`.
+Signed-out requests to any route but the machine API and the sign-in routes redirect to `/login?next=`. The remote banner shows the short fingerprint beside the label.
 
 Both owners and techs get `REMOTE_VIEWER_PERMISSIONS` on machine pages for now; the role is recorded so alert routing and remote commands can widen it later.
 
@@ -215,7 +220,7 @@ Edge side: nothing new in `config.json`. `cloud.enabled` and `cloud.url` are eno
 - `tests/cloud/test_claim.py`: wrong code 403 and back-off 429, expired code, success swaps owner and drops techs, old owner then gets 404, local-order independence (claim before or after the `DELETE` notice).
 - `tests/cloud/test_people.py`: invite, accept with matching/mismatching email, fleet scope expands only to machines owned at acceptance, revoke, cancel, non-owner 404.
 - `tests/cloud/test_admin.py`: allowlist, unbind, suspend; non-admin 404.
-- `tests/cloud/test_ui_parity.py`: unchanged assertions, now against `/m/{short}/…` with a claimed machine fixture.
+- `tests/cloud/test_ui_parity.py`: unchanged assertions, with a signed-in owner and a claimed machine fixture selecting through `/fleet/select/{short}`.
 - `tests/cloud/test_ui_registry.py`: bundle context has no `request`.
 - `tests/edge/uplink/test_identity.py`: file created once (mode 0600 on POSIX), never regenerated, fingerprint stable across loads; claim-code notice persisted and `acked` flips only on 2xx; superseded notice replaces, never queues.
 - `tests/edge/uplink/test_loop.py`: register precedes bundle and report; no report until registered; notice retried each interval.
