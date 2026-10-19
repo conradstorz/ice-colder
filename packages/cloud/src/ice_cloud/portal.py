@@ -76,6 +76,9 @@ def _resolve(request: Request, report: MachineReport | None) -> ResolvedUi:
     return registry.resolve(report.ui.digest if report else registry.installed_digest)
 
 
+resolve_ui = _resolve
+
+
 def _remote(
     request: Request, report: MachineReport, ui: ResolvedUi, fingerprint: str
 ) -> dict:
@@ -113,6 +116,9 @@ def _context(
         ctx["remote"] = _remote(request, report, ui, machine.fingerprint)
     ctx.update(extra)
     return ctx
+
+
+page_context = _context
 
 
 def _to_fleet() -> RedirectResponse:
