@@ -7,13 +7,13 @@ same ``ice_ui`` templates, tile builders and pill logic the edge routes use
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 
 from ice_cloud.ui_registry import ResolvedUi
+from ice_cloud.viewer import VIEWER, RemoteViewer
 from ice_contracts.access import REMOTE_VIEWER_PERMISSIONS
 from ice_contracts.cloud.report import MachineReport
 from ice_ui.filters import humanize_seconds
@@ -25,18 +25,9 @@ COOKIE = "ice_cloud_machine"
 STALE_FACTOR = 3
 LEVEL_FLEET = Level(title="Fleet", url="/fleet")
 
+__all__ = ["VIEWER", "RemoteViewer", "router"]
+
 router = APIRouter()
-
-
-@dataclass(frozen=True)
-class RemoteViewer:
-    """``current_user`` for the remote viewer; ``base.html`` reads no
-    attribute of it today (spec section 5)."""
-
-    display_name: str = "Fleet viewer"
-
-
-VIEWER = RemoteViewer()
 
 
 def _age_seconds(request: Request, report: MachineReport) -> float:

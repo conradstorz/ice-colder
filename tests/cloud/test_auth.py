@@ -20,12 +20,14 @@ from ice_cloud.auth import (
     GoogleProvider,
     IdentityClaims,
     SignInError,
+    decode_flow,
     decode_session,
     encode_session,
     require_admin,
     require_htmx,
     require_machine_access,
     require_signed_in,
+    safe_next,
 )
 from tests.cloud.conftest import login
 from tests.cloud.reports import FP, FP_2, NOW
@@ -113,6 +115,83 @@ def test_sign_in_lands_on_fleet_or_safe_next(cloud):
     start = cloud.get("/auth/google/start?next=//evil.example.com")
     r = cloud.get(start.headers["location"])
     assert r.headers["location"] == "/fleet"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "//evil.example.com",
+        "/\\evil.example.com",
+        "javascript:alert(1)",
+        "https://evil.example.com",
+        "/fleet\nSet-Cookie: x=1",
+        "/fleet\x00",
+        "",
+        None,
+    ],
+)
+def test_safe_next_refuses_unsafe_values(value):
+    assert safe_next(value) is None
+
+
+@pytest.mark.parametrize("value", ["/fleet", "/m/abcd-abcd-abcd-abcd"])
+def test_safe_next_accepts_local_paths(value):
+    assert safe_next(value) == value
+
+
+def test_login_page_renders_only_safe_next(settings, clock, provider):
+    from dataclasses import replace
+
+    from fastapi.testclient import TestClient
+
+    from ice_cloud.app import create_app
+
+    configured = replace(
+        settings,
+        google_client_id="id",
+        google_client_secret="s",
+        public_url="https://c.example.com",
+    )
+    app = create_app(configured, now=clock, provider=provider)
+    with TestClient(app, follow_redirects=False) as c:
+        good = c.get("/login?next=/m/abcd-abcd-abcd-abcd").text
+        assert "next=/m/abcd-abcd-abcd-abcd" in good
+        bad = c.get("/login?next=//evil.example.com").text
+        assert "evil.example.com" not in bad
+        assert "/auth/google/start" in bad
+        assert "next=" not in bad
+
+
+def test_callback_passes_cookie_nonce_and_verifier_to_provider(cloud, provider):
+    start = cloud.get("/auth/google/start")
+    flow = decode_flow(
+        cloud.app.state.settings.session_key, cloud.cookies["ice_cloud_oidc"]
+    )
+    assert cloud.get(start.headers["location"]).status_code == 303
+    assert provider.exchanges == [
+        {"code": "fake", "code_verifier": flow["v"], "nonce": flow["n"]}
+    ]
+
+
+def test_callback_clears_oidc_cookie_and_replay_fails(cloud, provider):
+    start = cloud.get("/auth/google/start")
+    first = cloud.get(start.headers["location"])
+    assert first.status_code == 303
+    assert "ice_cloud_oidc" not in cloud.cookies
+    replay = cloud.get(start.headers["location"])
+    assert replay.status_code == 400
+    assert len(provider.exchanges) == 1
+
+
+def test_logout_response_carries_no_refreshed_session_cookie(cloud, clock, probes):
+    login(cloud, "r@example.com")
+    clock.advance(2 * 3600)  # past REFRESH_EVERY, so the session is due a refresh
+    r = cloud.post("/logout", headers=HTMX)
+    assert r.status_code == 303
+    cookies = r.headers.get_list("set-cookie")
+    session = [c for c in cookies if c.startswith(SESSION_COOKIE + "=")]
+    assert len(session) == 1
+    assert "Max-Age=0" in session[0] or '=""' in session[0] or "1970" in session[0]
 
 
 def test_unverified_email_refused(cloud, probes):
@@ -325,6 +404,7 @@ class FakeGoogle:
         self.requests: list[str] = []
         self.token_forms: list[dict] = []
         self.id_token = ""
+        self.keys_override: list | None = None
 
     def jwk(self, kid: str | None = None) -> dict:
         numbers = self.private.public_key().public_numbers()
@@ -368,7 +448,9 @@ class FakeGoogle:
                 },
             )
         if request.url.path == "/oauth2/v3/certs":
-            return httpx.Response(200, json={"keys": [self.jwk()]})
+            return httpx.Response(
+                200, json={"keys": self.keys_override or [self.jwk()]}
+            )
         if request.url.path == "/token":
             self.token_forms.append(dict(httpx.QueryParams(request.content.decode())))
             return httpx.Response(200, json={"id_token": self.id_token})
@@ -456,6 +538,31 @@ def test_google_provider_refreshes_jwks_once_on_unknown_kid():
     assert google.requests.count("/oauth2/v3/certs") == 2
 
 
+def test_unknown_kid_refreshes_jwks_once_without_rediscovery():
+    google = FakeGoogle()
+    provider = make_provider(google)
+    google.id_token = google.mint()
+    google.kid = "kid-never-published"
+    google.keys_override = [dict(google.jwk("kid-other"))]
+    google.id_token = google.mint()
+    with pytest.raises(SignInError):
+        exchange(provider)
+    assert google.requests.count("/oauth2/v3/certs") == 1
+    assert google.requests.count("/.well-known/openid-configuration") == 1
+
+
+@pytest.mark.parametrize(
+    "bad", [{"e": 5, "n": 5}, {"e": None, "n": "AQAB"}, {"e": "!!", "n": "x"}]
+)
+def test_malformed_jwk_is_a_sign_in_error(bad):
+    google = FakeGoogle()
+    provider = make_provider(google)
+    google.keys_override = [{"kid": google.kid, **bad}]
+    google.id_token = google.mint()
+    with pytest.raises(SignInError):
+        exchange(provider)
+
+
 def test_authorize_url_carries_pkce_state_and_nonce():
     provider = make_provider(FakeGoogle())
     url = provider.authorize_url(state="st", nonce="no", code_challenge="ch")
@@ -490,3 +597,29 @@ def test_create_app_builds_google_provider_when_configured(settings, clock):
 
 def test_session_timedelta_constants():
     assert IDLE_LIMIT == timedelta(days=30) and ABSOLUTE_LIMIT == timedelta(days=90)
+
+
+def test_create_app_closes_its_http_client_on_shutdown(settings, clock, monkeypatch):
+    from dataclasses import replace
+
+    from fastapi.testclient import TestClient
+
+    from ice_cloud.app import create_app
+
+    closed: list[bool] = []
+    real = httpx.AsyncClient.aclose
+
+    async def spy(self):
+        closed.append(True)
+        await real(self)
+
+    monkeypatch.setattr(httpx.AsyncClient, "aclose", spy)
+    configured = replace(
+        settings,
+        google_client_id="id",
+        google_client_secret="secret",
+        public_url="https://cloud.example.com",
+    )
+    with TestClient(create_app(configured, now=clock)):
+        assert closed == []
+    assert closed == [True]

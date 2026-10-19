@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI
 
 from ice_cloud.body_limit import BodyLimitMiddleware
@@ -27,13 +29,25 @@ def create_app(
     now: Callable[[], datetime] = utc_now,
     provider: auth.OidcProvider | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="ice-cloud")
+    http: httpx.AsyncClient | None = None
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            if http is not None:
+                await http.aclose()
+
+    app = FastAPI(title="ice-cloud", lifespan=lifespan)
     app.state.settings = settings
     if provider is None and settings.google_configured:
+        http = httpx.AsyncClient(timeout=10.0)
         provider = auth.GoogleProvider(
             settings.google_client_id,
             settings.google_client_secret,
             (settings.public_url or "").rstrip("/") + "/auth/google/callback",
+            http=http,
         )
     app.state.provider = provider
     settings.data_dir.mkdir(parents=True, exist_ok=True)

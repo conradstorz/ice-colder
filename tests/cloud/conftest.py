@@ -52,6 +52,7 @@ class FakeProvider:
 
     def __init__(self, claims: IdentityClaims) -> None:
         self.claims = claims
+        self.exchanges: list[dict[str, str]] = []
 
     def authorize_url(self, *, state: str, nonce: str, code_challenge: str) -> str:
         return f"/auth/google/callback?code=fake&state={state}"
@@ -59,6 +60,9 @@ class FakeProvider:
     async def exchange(
         self, *, code: str, code_verifier: str, nonce: str
     ) -> IdentityClaims:
+        self.exchanges.append(
+            {"code": code, "code_verifier": code_verifier, "nonce": nonce}
+        )
         if not self.claims.email_verified:
             raise SignInError("Your Google email address is not verified")
         return self.claims
