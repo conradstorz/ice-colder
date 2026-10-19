@@ -99,3 +99,16 @@ def test_register_rejects_corrupt_bytes_and_wrong_digest(registry, marked_bundle
     with pytest.raises(BundleError):
         registry.register("../escape", data)
     assert registry.resolve(digest).mismatch is True
+
+
+def test_installed_ui_keeps_request(registry, marked_bundle):
+    digest, data = marked_bundle
+    registry.register(digest, data)
+    installed = registry.resolve(ui_digest())
+    assert installed.sandboxed is False
+    assert (
+        installed.templates.env.from_string("{{ request }}").render(request="R") == "R"
+    )
+    bundle = registry.resolve(digest)
+    assert bundle.sandboxed is True
+    assert bundle.templates.env.from_string("{{ request }}").render(request="R") == ""

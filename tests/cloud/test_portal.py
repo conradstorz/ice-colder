@@ -191,3 +191,37 @@ def test_fragments_without_selection_do_not_redirect_htmx_polls(cloud):
     for path in ("/status", "/pill", "/kpi"):
         assert cloud.get(path, headers={"HX-Request": "true"}).status_code == 204
         assert cloud.get(path).status_code == 303
+
+
+def _home_bundle(tmp_path, body):
+    root = tmp_path / "home_probe"
+    shutil.copytree(INSTALLED_ROOT / "templates", root / "templates")
+    shutil.copytree(INSTALLED_ROOT / "static", root / "static")
+    home = root / "templates" / "home.html"
+    home.write_text(
+        home.read_text(encoding="utf-8").replace(
+            "{% block body %}", "{% block body %}" + body, 1
+        ),
+        encoding="utf-8",
+    )
+    data = build_bundle(root)
+    with tarfile.open(fileobj=io.BytesIO(gzip.decompress(data))) as tf:
+        digest = json.loads(tf.extractfile("manifest.json").read())["digest"]
+    return digest, data
+
+
+def test_sandboxed_bundle_cannot_see_request_or_app_state(cloud, tmp_path):
+    digest, data = _home_bundle(
+        tmp_path,
+        "[[{{ request }}|{{ request is defined }}|"
+        "{{ request.app.state if request is defined else 'gone' }}]]",
+    )
+    assert cloud.put(f"/api/v1/ui-bundles/{digest}", content=data).status_code == 201
+    push(cloud, make_report(digest=digest))
+    select(cloud)
+
+    r = cloud.get("/")
+    assert r.status_code == 200
+    assert "[[|False|gone]]" in r.text
+    assert "SnapshotStore" not in r.text
+    assert "settings" not in r.text
