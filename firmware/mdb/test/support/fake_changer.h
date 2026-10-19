@@ -19,6 +19,7 @@ struct FakeChanger : FakePeripheral {
     bool alt_payout = true;  // advertised in IDENTIFICATION
     int busy_polls = 0;      // PAYOUT STATUS ACKs (still busy) before the 16-byte reply
     bool fail_payout = false;
+    uint8_t value_poll_cap_units = 255;  // PAYOUT VALUE POLL reports at most this many units
     bool silent = false;     // answer nothing at all
 
     // Scripted POLL blocks.
@@ -193,7 +194,7 @@ struct FakeChanger : FakePeripheral {
                 if (!payout_pending) return ack();
                 uint8_t units = 0;
                 for (int t = 0; t < 16; ++t) units = static_cast<uint8_t>(units + paid_types[t] * credit[t]);
-                out[0] = units;
+                out[0] = units < value_poll_cap_units ? units : value_poll_cap_units;
                 return data(out, 1);
             }
             default:

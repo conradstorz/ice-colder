@@ -28,6 +28,7 @@ public:
     bool exact_change(uint32_t threshold_cents) const { return payable_total_cents() < threshold_cents; }
     bool escrow_lever_pending() { bool v = lever_; lever_ = false; return v; }
     Phase phase() const { return phase_; }
+    uint32_t dropped_events() const { return dropped_events_; }
 
 private:
     static constexpr uint8_t kAddr = 0x08;
@@ -67,7 +68,8 @@ private:
     bool flush();
     void update_status(Status s, int16_t mdb, const char* detail);
     Status base_status() const;
-    void finish_payout(uint32_t paid);
+    void finish_payout(uint32_t paid, const char* detail = "");
+    void interrupt_payout(const char* cause);
     uint16_t enable_mask() const;
     uint32_t type_cents(uint8_t type) const { return static_cast<uint32_t>(credit_[type]) * scaling_; }
     bool type_valid(uint8_t type) const { return credit_[type] != 0 && credit_[type] != 0xFF; }
@@ -99,6 +101,7 @@ private:
     Payout payout_{};
     PaymentEvent pending_[kPending];
     uint8_t n_pending_ = 0;
+    uint32_t dropped_events_ = 0;
 };
 
 }  // namespace mdbcore

@@ -38,7 +38,13 @@ Changer::Changer(Link& link, Clock& clock, EventSink& sink) : link_(link), clock
 }
 
 void Changer::push(const PaymentEvent& e) {
-    if (n_pending_ < kPending) pending_[n_pending_++] = e;
+    // 16 is enough: a POLL block is at most 16 bytes, so it yields at most 16 events, and step()
+    // never parses a new block while pending_ is non-empty. Other pushes (status, payout result)
+    // are single events made between flushes. Overflow is counted, never silent.
+    if (n_pending_ < kPending)
+        pending_[n_pending_++] = e;
+    else
+        ++dropped_events_;
 }
 
 bool Changer::flush() {
@@ -111,7 +117,7 @@ void Changer::set_enabled(const uint32_t* cents, uint8_t n, bool accept) {
 }
 
 void Changer::reset() {
-    if (payout_.active) finish_payout(0);
+    if (payout_.active) interrupt_payout("reset");
     phase_ = Phase::Reset;
     mask_dirty_ = true;
     swallow_reset_ = false;
@@ -121,7 +127,7 @@ void Changer::note_miss() {
     if (offline_reported_ || link_.misses(kAddr) < kMissThreshold) return;
     offline_reported_ = true;
     state_.present = false;
-    if (payout_.active) finish_payout(0);
+    if (payout_.active) interrupt_payout("offline");
     update_status(Status::Offline, -1, "no response");
     phase_ = Phase::Reset;
     mask_dirty_ = true;
@@ -360,7 +366,7 @@ void Changer::do_poll() {
         update_status(base_status(), -1, "");
     }
     if (was_reset) {
-        if (payout_.active) finish_payout(0);
+        if (payout_.active) interrupt_payout("changer_reset");
         mask_dirty_ = true;
         phase_ = Phase::Setup;
     }
@@ -383,9 +389,10 @@ bool Changer::request_payout(uint32_t cents, const char* request_id) {
     return true;
 }
 
-void Changer::finish_payout(uint32_t paid) {
+void Changer::finish_payout(uint32_t paid, const char* detail) {
     PaymentEvent e = make_event(EventKind::PayoutResult, Device::Coin);
     e.requested_cents = payout_.requested;
+    copy_str(e.detail, sizeof(e.detail), detail);
     if (paid > payout_.requested) {
         paid = payout_.requested;
         copy_str(e.detail, sizeof(e.detail), "changer reported more than requested");
@@ -402,10 +409,21 @@ void Changer::finish_payout(uint32_t paid) {
     tubes_due_ = true;
 }
 
+// Ends an unfinished payout with the amount the driver can vouch for: level 3 the last PAYOUT VALUE
+// POLL figure, level 2 the value of every DISPENSE the changer ACKed. Coins may already be in the
+// customer's hand, so reporting 0 here would invite a double payment.
+void Changer::interrupt_payout(const char* cause) {
+    const uint32_t vouched = payout_.level3 ? payout_.progress_cents : payout_.requested - payout_.remaining;
+    char detail[sizeof(PaymentEvent::detail)];
+    copy_str(detail, sizeof(detail), "interrupted: ");
+    size_t n = strlen(detail);
+    copy_str(detail + n, sizeof(detail) - n, cause);
+    finish_payout(vouched, detail);
+}
+
 void Changer::do_payout() {
     if (clock_.now_ms() - payout_.start_ms >= kPayoutTimeoutMs) {
-        // Give up: report only what we can vouch for.
-        finish_payout(payout_.level3 ? payout_.progress_cents : payout_.requested - payout_.remaining);
+        interrupt_payout("timeout");
         return;
     }
     Response r{};

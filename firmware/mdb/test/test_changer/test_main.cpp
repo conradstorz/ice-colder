@@ -433,6 +433,125 @@ static void test_tubes_reread_every_10s(void) {
     TEST_ASSERT_EQUAL_INT(tube_calls + 1, r.dev.calls[2]);
 }
 
+static const PaymentEvent* only_result(Rig& r) {
+    TEST_ASSERT_EQUAL_INT(1, r.sink.count(EventKind::PayoutResult));
+    return r.sink.first(EventKind::PayoutResult);
+}
+
+static void test_l3_interrupted_offline_reports_progress(void) {
+    Rig r;
+    r.dev.busy_polls = 1000;  // never finishes on its own
+    r.bring_up();
+    TEST_ASSERT_TRUE(r.ch.request_payout(35, "req-00000010"));
+    r.steps(3);  // PAYOUT, VALUE POLL (35c so far), STATUS (busy)
+    r.dev.silent = true;
+    r.steps(kMissThreshold + 1);
+    const PaymentEvent* e = only_result(r);
+    TEST_ASSERT_EQUAL(PayoutStatus::Ok, e->payout_status);  // vouched == requested
+    TEST_ASSERT_EQUAL_UINT32(35, e->paid_cents);
+    TEST_ASSERT_EQUAL_STRING("interrupted: offline", e->detail);
+    TEST_ASSERT_FALSE(r.ch.payout_in_progress());
+}
+
+static void test_l3_interrupted_offline_partial(void) {
+    Rig r;
+    r.dev.busy_polls = 1000;
+    r.dev.value_poll_cap_units = 5;  // changer reports 25c of the 35c
+    r.bring_up();
+    TEST_ASSERT_TRUE(r.ch.request_payout(35, "req-00000011"));
+    r.steps(3);
+    r.dev.silent = true;
+    r.steps(kMissThreshold + 1);
+    const PaymentEvent* e = only_result(r);
+    TEST_ASSERT_EQUAL(PayoutStatus::Partial, e->payout_status);
+    TEST_ASSERT_EQUAL_UINT32(25, e->paid_cents);
+    TEST_ASSERT_EQUAL_UINT32(35, e->requested_cents);
+    TEST_ASSERT_EQUAL_STRING("interrupted: offline", e->detail);
+}
+
+static void test_l3_interrupted_before_progress_is_failed(void) {
+    Rig r;
+    r.dev.busy_polls = 1000;
+    r.bring_up();
+    TEST_ASSERT_TRUE(r.ch.request_payout(35, "req-00000012"));
+    r.steps(1);  // PAYOUT sent, no VALUE POLL yet
+    r.dev.silent = true;
+    r.steps(kMissThreshold + 1);
+    const PaymentEvent* e = only_result(r);
+    TEST_ASSERT_EQUAL(PayoutStatus::Failed, e->payout_status);
+    TEST_ASSERT_EQUAL_UINT32(0, e->paid_cents);
+    TEST_ASSERT_EQUAL_STRING("interrupted: offline", e->detail);
+}
+
+static void test_l3_interrupted_by_reset_reports_progress(void) {
+    Rig r;
+    r.dev.busy_polls = 1000;
+    r.dev.value_poll_cap_units = 5;
+    r.bring_up();
+    TEST_ASSERT_TRUE(r.ch.request_payout(35, "req-00000013"));
+    r.steps(3);
+    r.ch.reset();
+    r.steps(1);
+    const PaymentEvent* e = only_result(r);
+    TEST_ASSERT_EQUAL(PayoutStatus::Partial, e->payout_status);
+    TEST_ASSERT_EQUAL_UINT32(25, e->paid_cents);
+    TEST_ASSERT_EQUAL_STRING("interrupted: reset", e->detail);
+}
+
+static void test_l3_timeout_reports_progress(void) {
+    Rig r;
+    r.dev.busy_polls = 1000;
+    r.dev.value_poll_cap_units = 5;
+    r.bring_up();
+    TEST_ASSERT_TRUE(r.ch.request_payout(35, "req-00000014"));
+    r.steps(3);
+    r.clock.advance_ms(31000);
+    r.steps(1);
+    const PaymentEvent* e = only_result(r);
+    TEST_ASSERT_EQUAL(PayoutStatus::Partial, e->payout_status);
+    TEST_ASSERT_EQUAL_UINT32(25, e->paid_cents);
+    TEST_ASSERT_EQUAL_STRING("interrupted: timeout", e->detail);
+}
+
+static void test_l2_interrupted_offline_reports_acked_dispense(void) {
+    Rig r;
+    r.dev.level = 2;
+    r.bring_up();
+    TEST_ASSERT_TRUE(r.ch.request_payout(65, "req-00000015"));
+    r.steps(1);  // DISPENSE 2 quarters ACKed
+    TEST_ASSERT_EQUAL_INT(1, r.dev.n_disp);
+    r.dev.silent = true;  // the next DISPENSE (dime) times out, so is not vouched for
+    r.steps(kMissThreshold + 1);
+    const PaymentEvent* e = only_result(r);
+    TEST_ASSERT_EQUAL(PayoutStatus::Partial, e->payout_status);
+    TEST_ASSERT_EQUAL_UINT32(50, e->paid_cents);
+    TEST_ASSERT_EQUAL_STRING("interrupted: offline", e->detail);
+}
+
+static void test_l2_interrupted_before_any_dispense_is_failed(void) {
+    Rig r;
+    r.dev.level = 2;
+    r.bring_up();
+    TEST_ASSERT_TRUE(r.ch.request_payout(65, "req-00000016"));
+    r.dev.silent = true;
+    r.steps(kMissThreshold + 1);
+    const PaymentEvent* e = only_result(r);
+    TEST_ASSERT_EQUAL(PayoutStatus::Failed, e->payout_status);
+    TEST_ASSERT_EQUAL_UINT32(0, e->paid_cents);
+    TEST_ASSERT_EQUAL_STRING("interrupted: offline", e->detail);
+}
+
+static void test_event_queue_drops_are_counted(void) {
+    Rig r;
+    r.bring_up();
+    TEST_ASSERT_EQUAL_UINT32(0, r.ch.dropped_events());
+    r.sink.capacity = 0;  // nothing can be delivered, so pending_ fills
+    for (int i = 0; i < 3; ++i) r.dev.deposit(2, 0, i > 0);
+    r.dev.deposit(1, 0, true);
+    r.steps(1);
+    TEST_ASSERT_EQUAL_UINT32(0, r.ch.dropped_events());  // a POLL block never exceeds the queue
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_setup_parse_usd_scale5);
@@ -461,5 +580,13 @@ int main(int, char**) {
     RUN_TEST(test_set_enabled_sends_mask);
     RUN_TEST(test_money_event_survives_full_sink);
     RUN_TEST(test_tubes_reread_every_10s);
+    RUN_TEST(test_l3_interrupted_offline_reports_progress);
+    RUN_TEST(test_l3_interrupted_offline_partial);
+    RUN_TEST(test_l3_interrupted_before_progress_is_failed);
+    RUN_TEST(test_l3_interrupted_by_reset_reports_progress);
+    RUN_TEST(test_l3_timeout_reports_progress);
+    RUN_TEST(test_l2_interrupted_offline_reports_acked_dispense);
+    RUN_TEST(test_l2_interrupted_before_any_dispense_is_failed);
+    RUN_TEST(test_event_queue_drops_are_counted);
     return UNITY_END();
 }
