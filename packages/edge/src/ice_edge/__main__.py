@@ -182,6 +182,7 @@ async def main():
         # Off by default. Uploads run in this supervised task with a 5 s
         # timeout and never block a sale.
         identity = MachineIdentity.load_or_create()
+        routes.set_machine_identity(identity)
         uplink = HttpUplink(live_config.cloud.url, identity)
 
         def _sync_claim_notice() -> None:
