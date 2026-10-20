@@ -121,9 +121,9 @@ class AlertDispatcher:
                 self._repo.mark_delivery, delivery.id, status="muted", now=now
             )
             return
-        wanted = set(delivery.event_ids)
-        stored = await asyncio.to_thread(self._repo.alert_events, fp, limit=1000)
-        mine = sorted((e for e in stored if e.id in wanted), key=lambda e: e.id)
+        mine = await asyncio.to_thread(
+            self._repo.alert_events_by_ids, delivery.event_ids
+        )
         await self._attempt(delivery, person, machine, mine)
 
     async def _cooled_down(

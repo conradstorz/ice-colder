@@ -172,3 +172,15 @@ async def test_tech_not_emailed_for_alert_gate(env):
     stored = await env.dispatch(_row(gate="alert"))
     assert [m["To"] for m in env.mailer.sent] == ["owner@example.com"]
     assert [d.account_id for d in env.deliveries(stored)] == [env.owner.id]
+
+
+async def test_flush_resolves_events_by_id_not_recency(env):
+    await env.dispatch(_row(key="a"))
+    env.clock.advance(60)
+    stored = await env.dispatch(_row(key="held"))
+    env.events(*[_row(key=f"newer{i}", gate="alert") for i in range(5)])
+    env.clock.advance(COOLDOWN_SECONDS)
+    await env.disp.flush(env.clock())
+    assert {d.status for d in env.deliveries(stored)} == {"sent"}
+    body = env.mailer.sent[-1].get_content()
+    assert "newer" not in body and "Raised" in body

@@ -11,7 +11,7 @@ import json
 import secrets
 import sqlite3
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -792,6 +792,17 @@ class SqliteRepository:
                 "SELECT * FROM alert_events WHERE fingerprint = ?"
                 " ORDER BY at DESC, id DESC LIMIT ?",
                 (fingerprint, limit),
+            ).fetchall()
+        return [_event(r) for r in rows]
+
+    def alert_events_by_ids(self, ids: Sequence[int]) -> list[StoredEvent]:
+        if not ids:
+            return []
+        marks = ",".join("?" * len(ids))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM alert_events WHERE id IN ({marks}) ORDER BY id",  # noqa: S608
+                tuple(ids),
             ).fetchall()
         return [_event(r) for r in rows]
 
