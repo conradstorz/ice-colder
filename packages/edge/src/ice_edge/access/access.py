@@ -1,7 +1,7 @@
 """Named users, roles, PIN login, device trust and back-off for the dashboard.
 
-Everything access-related lives here: the ``Backoff`` rate limiter, PIN and
-code hashing, the permission table, and the ``AccessStore`` persisted to
+Everything access-related lives here: PIN and code hashing
+(the ``Backoff`` rate limiter is ``ice_common.backoff``, imported here), the permission table, and the ``AccessStore`` persisted to
 ``data/access.json``. That file holds secrets and PII and is never merged
 into config.json.
 """

@@ -1,4 +1,4 @@
-"""Application factory for the cloud portal stub (dev only, no auth: spec 8)."""
+"""Application factory for the cloud portal (identity and tenancy spec)."""
 
 from __future__ import annotations
 

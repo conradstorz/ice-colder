@@ -47,8 +47,10 @@ packages/
       config/          config persistence: config_store
       supervisor/      supervisor (§2.10): task_runner
       cctv/            CCTV (§4) — docstring-only stub
-  cloud/       Dockerfile  src/ice_cloud/  app, ingest, portal, store, ui_registry, shadow, commands,
-                                           auth, templates/                           [PR 5]
+  cloud/       Dockerfile  src/ice_cloud/  admin, app, auth, body_limit, claim, commands, ingest,
+                                           machine_auth, oidc, oidc_google, people, portal, settings,
+                                           shadow, ui_registry, viewer, store/{snapshots,repository,sqlite},
+                                           templates/
   sims/        src/ice_sims/    simulated board layer: base, ice_maker, mdb_gateway, vending_machine (thin entry),
                                 vending/ (board, channels, dispense, customer, faults, ha, ro_tank, climate, simulator)
 firmware/      README.md, docs/{vending,mdb}-board-interface.md — field-device/board layer
@@ -160,7 +162,7 @@ logs a clear error and exits with code 1 rather than papering over it.
 
 ### Cloud uplink (`ice_edge/uplink/`)
 
-Off unless `config.cloud.enabled`. `ice_edge/__main__.py` then adds a supervised `uplink` task running `run_uplink`: it `PUT`s the `ice_ui` bundle once (retried each interval until accepted), then forever `POST`s a `MachineReport` (built by `build_machine_report` from the `ice_edge.views.health` builders; a pure read) to `{url}/api/v1/machines/{machine_id}/report`, re-reading `report_interval_seconds` each pass. `HttpUplink` has a 5 s timeout and never raises (failure logs a warning and returns `False`); there is no outbox, each report supersedes the last, and a sale is never blocked. `ice_edge.uplink` sits above `views` and below `app`/`web`, so it imports `Machine` only under `TYPE_CHECKING`.
+Off unless `config.cloud.enabled`. `ice_edge/__main__.py` then calls `init_cloud_identity` (`ice_edge.uplink.identity`; a corrupt identity file or unwritable `data/` logs an error and leaves the uplink off, boot continues) and adds a supervised `uplink` task running `run_uplink`. Each pass: **register** the machine's Ed25519 key (`POST /api/v1/machines/register`, until accepted; nothing is sent before it), deliver any unacknowledged claim-code **notice** (or its `DELETE`), `PUT` the `ice_ui` **bundle** once (retried each interval until accepted; the cloud accepts bundles only from claimed machines), then `POST` a `MachineReport` (built by `build_machine_report` from the `ice_edge.views.health` builders; a pure read) to `{url}/api/v1/machines/{fingerprint}/report`, keyed by the key fingerprint, not `machine_id`; re-reading `report_interval_seconds` each pass. A 401 on any call (`HttpUplink.last_status`) sends the loop back to register. `HttpUplink` has a 5 s timeout and never raises (failure logs a warning and returns `False`); there is no outbox, each report supersedes the last, and a sale is never blocked. `ice_edge.uplink` sits above `views` and below `app`/`web`, so it imports `Machine` only under `TYPE_CHECKING`.
 
 ### Dispenser profiles (`dispensers.toml`)
 
