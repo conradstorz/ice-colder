@@ -9,19 +9,22 @@ import asyncio
 import smtplib
 from email.message import EmailMessage
 
+from ice_common.mailer import smtp_send as _smtp_send
 from loguru import logger
-
-SMTP_TIMEOUT_SECONDS = 15.0
 
 
 def smtp_send(email_config, msg: EmailMessage) -> None:
     """Blocking SMTP send. Call through send_email, or from an executor."""
-    with smtplib.SMTP(
-        email_config.smtp_server, email_config.smtp_port, timeout=SMTP_TIMEOUT_SECONDS
-    ) as server:
-        server.starttls()
-        server.login(email_config.username, email_config.password.get_secret_value())
-        server.send_message(msg)
+    _smtp_send(
+        host=email_config.smtp_server,
+        port=email_config.smtp_port,
+        username=email_config.username,
+        password=email_config.password.get_secret_value(),
+        use_starttls=True,
+        msg=msg,
+        # Looked up at call time so tests can patch smtplib.SMTP here.
+        smtp_factory=smtplib.SMTP,
+    )
 
 
 async def send_email(

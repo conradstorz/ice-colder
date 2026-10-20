@@ -1,0 +1,15 @@
+{
+  "additionalProperties": false,
+  "description": "Body of the 200 answer to POST /api/v1/machines/{fingerprint}/report.\n\n``alerts_handled`` is recomputed by the cloud on every report: true while it\nis currently able to email this machine's alerts (see the contract notes).",
+  "properties": {
+    "alerts_handled": {
+      "title": "Alerts Handled",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "alerts_handled"
+  ],
+  "title": "ReportResponse",
+  "type": "object"
+}

@@ -8,6 +8,11 @@
     "claimed": {
       "title": "Claimed",
       "type": "boolean"
+    },
+    "alerts_handled": {
+      "default": false,
+      "title": "Alerts Handled",
+      "type": "boolean"
     }
   },
   "required": [

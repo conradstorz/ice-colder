@@ -45,6 +45,34 @@ def _revoke_ctx(short: str, account_id: str, confirming: bool) -> dict:
     }
 
 
+async def recipients_context(
+    request: Request, machine: Machine, account: Account, role: str
+) -> dict:
+    """Context for the alert-recipients fragment, as seen by ``account``.
+
+    The owner (and an admin) sees every recipient; a technician sees only their
+    own row, so other people's email addresses are never disclosed to them.
+    """
+    rows = await asyncio.to_thread(
+        request.app.state.repo.people_for_alerts, machine.fingerprint
+    )
+    if role == "tech":
+        rows = [(r, muted) for r, muted in rows if r.account_id == account.id]
+    return {
+        "short": short_fingerprint(machine.fingerprint),
+        "recipients": [
+            {
+                "account_id": r.account_id,
+                "email": r.email,
+                "role": r.role,
+                "muted": muted,
+                "can_toggle": role == "owner" or r.account_id == account.id,
+            }
+            for r, muted in rows
+        ],
+    }
+
+
 async def _page(
     request: Request,
     account: Account,
@@ -74,6 +102,7 @@ async def _page(
         }
         for i in pending
     ]
+    recipients = await recipients_context(request, machine, account, "owner")
     ui = resolve_ui(request, None)
     level = Level.child(LEVEL_FLEET, "People", f"/machines/{short}/people")
     return ui.templates.TemplateResponse(
@@ -87,6 +116,7 @@ async def _page(
             short=short,
             machine_label=machine.label,
             people=people,
+            recipients=recipients,
             invites=invites,
             error=error,
             new_link=new_link,
@@ -106,6 +136,35 @@ async def _tech_member(request: Request, machine: Machine, account_id: str) -> N
 async def people_page(request: Request, access=Depends(_OWNER)):
     account, machine, _role = access
     return await _page(request, account, machine)
+
+
+@router.post(
+    "/machines/{short}/people/{account_id}/mute",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_htmx)],
+)
+async def mute(
+    request: Request,
+    account_id: str,
+    muted: str = Form("0"),
+    access=Depends(require_machine_access()),
+):
+    """Owner may toggle anyone with access; a tech only themself."""
+    account, machine, role = access
+    if role != "owner" and account_id != account.id:
+        raise HTTPException(status_code=403)
+    repo = request.app.state.repo
+    rows = await asyncio.to_thread(repo.people_for_alerts, machine.fingerprint)
+    if not any(r.account_id == account_id for r, _ in rows):
+        raise HTTPException(status_code=404)
+    await asyncio.to_thread(
+        repo.set_muted, account_id, machine.fingerprint, muted == "1"
+    )
+    ui = resolve_ui(request, None)
+    ctx = await recipients_context(request, machine, account, role)
+    return ui.templates.TemplateResponse(
+        request, "partials/alert_recipients.html", {"request": request, **ctx}
+    )
 
 
 @router.get(

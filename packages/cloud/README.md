@@ -73,11 +73,37 @@ Ownership is proven by a code minted **at the machine**; the cloud only ever sto
 
 **Resale.** The seller starts a transfer at the machine (existing flow, `/users/ownership`), which mints a transfer code. The buyer signs in to the cloud, claims with that code and fingerprint, then completes `/setup` at the machine with the same code. **Claim on the cloud before pressing Done at the machine.** Done finalizes the local setup and sends the cloud a `DELETE` that closes the claim, so after Done the transfer code no longer works in the cloud; if the buyer pressed Done first, they mint a Link-to-cloud code and claim with that. A code the cloud has already consumed is never reopened by the machine re-announcing it. Claiming drops the previous owner's access immediately and deletes the technician memberships when the owner changes (re-claiming your own machine keeps your techs); the new owner re-invites whom they trust. A local transfer the cloud never heard about needs no special handling: the new owner mints a Link-to-cloud code and claims.
 
-**Technicians.** The owner opens `/machines/{short}/people`, invites by email (this machine or all machines owned at acceptance time), and passes on the invitation link (valid 7 days). There is no cloud mailer yet, so the link is shown, not emailed. The invitee signs in with a Google account whose email matches, and opens the link.
+**Technicians.** The owner opens `/machines/{short}/people`, invites by email (this machine or all machines owned at acceptance time), and passes on the invitation link (valid 7 days). Invitation links are shown, not emailed (the alert mailer does not send invitations). The invitee signs in with a Google account whose email matches, and opens the link.
 
 ## Platform admin
 
 Add Google emails to `ICE_CLOUD_ADMINS` and restart; that is the whole procedure. Admins see `/admin`: every machine with owner or "unclaimed", last seen, claim open or not, plus **Unbind** (owner removed, memberships deleted, two-tap) and **Suspend/Unsuspend** for accounts. Admins can view every machine's pages but can never set an owner: ownership always passes through a code minted at the machine. Non-admins get 404 on `/admin`.
+
+## Alerts
+
+The cloud emails a claimed machine's owner and technicians when a fault is raised, when the machine stops reporting, and when it reports again. Nothing extra crosses the wire: each accepted report is compared with the previous report's fault list kept in `machine_alert_state`. A fault newly present is `raised`, one that vanished is `cleared`. A machine silent for more than 3 x its `report_interval_seconds` is flagged `offline` by a sweep that runs every 60 s, and its next report produces `online`. A fault that raises and clears between two reports is never seen. Unclaimed machines produce no events. Claiming a machine for a different owner, or unbinding it, deletes its alert state, preferences, events and delivery history, so a new owner never sees the previous owner's history.
+
+**Who gets what.** Owners and technicians receive `raised` faults of gate `safety` or `fulfillment`, plus `offline` and `online`. Only the owner receives `raised` faults of gate `alert` (for example `DATA-101`). `cleared` events never trigger an email alone; they ride along in the next email to that person. Each person can be muted per machine: the owner on `/machines/{short}/people` (anyone), a technician on `/machines/{short}/alerts` (only themselves); the footer link in every email points to the alerts page. A mute is removed when the person loses access. Suspended accounts get nothing.
+
+**Cooldown and bundling.** At most one email per person per machine every 10 minutes, counted from the last successful send. Events inside the window are held as `pending` and go out together, with any `cleared` events since the person's last email, once the window closes (the sweep flushes, so within about a minute of it). A failed send is retried with exponential backoff (2, 4, 8, 16 minutes), up to 5 attempts, then stays `failed`.
+
+**SMTP.** Set in the cloud's environment (see `.env.example`):
+
+| Variable | Meaning |
+|---|---|
+| `ICE_CLOUD_SMTP_HOST` | Unset = log-only: alerts are recorded and logged, nothing is sent. |
+| `ICE_CLOUD_SMTP_PORT` | Default 587. |
+| `ICE_CLOUD_SMTP_USER`, `ICE_CLOUD_SMTP_PASSWORD` | Optional pair. A user without a password is a startup error. |
+| `ICE_CLOUD_SMTP_FROM` | Required when the host is set. |
+| `ICE_CLOUD_SMTP_STARTTLS` | On unless `0`. |
+
+Until `ICE_CLOUD_SMTP_HOST` is set the cloud logs one warning at boot and tells every machine `alerts_handled: false`, so the edge keeps emailing locally exactly as before. The flag is recomputed for every register and every report (the report answer is `200 {"alerts_handled": bool}`) and is true only while the machine is claimed, SMTP is configured, at least one recipient is unmuted and not suspended, and the latest delivery attempt did not fail. So an unbind, a cloud restart without SMTP, an all-muted machine or a wrong SMTP password hands alerting back to the edge within one report interval (dispatch runs after the response, so a failure shows on the following report). Otherwise a claimed machine defers its own alert email to the cloud; if the cloud stops accepting reports for 3 x the report interval (3 minutes at the default), the edge resumes local email until reports are accepted again. The machine's `/health` page shows "Alerts: cloud" or "Alerts: local". A fault raised during such a gap is emailed by the cloud when the first report gets through; one that raised and cleared inside the gap is emailed by nobody.
+
+**Where to look.** `/machines/{short}/alerts` lists the last 200 events with one line per recipient (`sent`, `pending`, `failed: <error>`, `muted`) and is open to anyone who can open the machine. Times are UTC. Owners and admins see every recipient and SMTP error text; a technician sees their own lines in full and the others only as "owner" or "technician" with a status. `/fleet` shows alerts in the last 24 hours per machine. Admins see the SMTP status on `/admin` and can send a test email to their own address.
+
+**Startup grace.** After a cloud restart the sweep flags nobody offline until 3 x that machine's interval has passed since the cloud started, so downtime does not email the fleet "offline" then "online".
+
+**Open items.** Deferral is one-shot: the first fault raised after SMTP breaks is deferred by the edge while the flag is still true, and if the cloud's five attempts (about 30 minutes) all fail, that fault is emailed by nobody; the flag going false protects only later faults. Follow-up idea: when the edge sees the flag go true to false, re-deliver the deferred alerts that are still active. No SMTP rate limiting beyond the cooldown. The sweep is one in-process task, so run one cloud instance. A failed send is retried with exponential backoff (2, 4, 8, 16 minutes after attempts 1 to 4), then left `failed` after 5 attempts. Mail is sent from a background task so a slow SMTP server never delays a report. **Upgrade order:** upgrade the cloud before the edges; a 0.2.0 cloud rejects a 0.3.0 report with 422 and the portal goes stale. `FORWARDED_ALLOW_IPS` is unrelated to alerts.
 
 ## Key rotation
 

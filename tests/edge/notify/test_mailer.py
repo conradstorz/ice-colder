@@ -5,9 +5,11 @@ from email.message import EmailMessage
 from unittest.mock import patch
 
 import pytest
+from pydantic import SecretStr
 
 from ice_common.config_model import EmailGatewayConfig
-from ice_edge.notify.mailer import SMTP_TIMEOUT_SECONDS, send_email, smtp_send
+from ice_common.mailer import SMTP_TIMEOUT_SECONDS
+from ice_edge.notify.mailer import send_email, smtp_send
 
 
 @pytest.fixture
@@ -29,6 +31,41 @@ def test_smtp_send_uses_starttls_login_and_the_timeout(gateway):
     server.starttls.assert_called_once()
     server.login.assert_called_once()
     server.send_message.assert_called_once_with(msg)
+
+
+def test_edge_smtp_send_passes_config_through(gateway):
+    """The edge wrapper hands host, port, credentials and STARTTLS to the shared send."""
+    calls = []
+
+    class RecordingSMTP:
+        def __init__(self, host, port, timeout=None):
+            calls.append(("connect", host, port, timeout))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def starttls(self):
+            calls.append(("starttls",))
+
+        def login(self, user, password):
+            calls.append(("login", user, password))
+
+        def send_message(self, msg):
+            calls.append(("send_message", msg))
+
+    gateway.password = SecretStr("pw-from-config")
+    msg = EmailMessage()
+    with patch("ice_common.mailer.smtplib.SMTP", RecordingSMTP):
+        smtp_send(gateway, msg)
+    assert calls == [
+        ("connect", "smtp.test.local", 587, SMTP_TIMEOUT_SECONDS),
+        ("starttls",),
+        ("login", "vmc@test.local", "pw-from-config"),
+        ("send_message", msg),
+    ]
 
 
 async def test_send_email_builds_the_message_and_reports_success(gateway):
