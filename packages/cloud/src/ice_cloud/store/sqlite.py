@@ -17,13 +17,20 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
+from ice_contracts.cloud.report import FaultView
+
 from ice_cloud.store.repository import (
     Account,
+    AlertEventRow,
+    AlertState,
+    Delivery,
     EmailConflict,
     Invitation,
     Machine,
     MachineAccess,
     Membership,
+    Recipient,
+    StoredEvent,
 )
 
 MIGRATIONS: list[str] = [
@@ -86,7 +93,53 @@ MIGRATIONS: list[str] = [
         SELECT fingerprint, consumed_claim_hash, COALESCE(claimed_at, registered_at)
         FROM machines WHERE consumed_claim_hash IS NOT NULL
     """,
+    """
+    CREATE TABLE machine_alert_state (
+        fingerprint TEXT PRIMARY KEY REFERENCES machines(fingerprint),
+        faults_json TEXT NOT NULL,
+        last_report_at TEXT NOT NULL,
+        report_interval_seconds INTEGER NOT NULL,
+        offline_since TEXT
+    )
+    """,
+    """
+    CREATE TABLE alert_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fingerprint TEXT NOT NULL REFERENCES machines(fingerprint),
+        kind TEXT NOT NULL,
+        at TEXT NOT NULL,
+        "key" TEXT,
+        code TEXT,
+        severity TEXT,
+        gate TEXT,
+        description TEXT,
+        sku TEXT,
+        product TEXT
+    );
+    CREATE INDEX alert_events_by_machine ON alert_events (fingerprint, at);
+    CREATE TABLE alert_deliveries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fingerprint TEXT NOT NULL REFERENCES machines(fingerprint),
+        account_id TEXT NOT NULL REFERENCES accounts(id),
+        event_ids_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        attempted_at TEXT,
+        sent_at TEXT,
+        error TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0
+    )
+    """,
+    """
+    CREATE TABLE alert_prefs (
+        account_id TEXT NOT NULL REFERENCES accounts(id),
+        fingerprint TEXT NOT NULL REFERENCES machines(fingerprint),
+        muted INTEGER NOT NULL,
+        PRIMARY KEY (account_id, fingerprint)
+    )
+    """,
 ]
+
+MAX_DELIVERY_ATTEMPTS = 5
 
 # Public so a test can substitute a failing statement and prove a claim is atomic.
 DELETE_MEMBERSHIPS_SQL = "DELETE FROM memberships WHERE fingerprint = ?"
@@ -140,6 +193,54 @@ def _invitation(row: sqlite3.Row) -> Invitation:
         accepted_by=row["accepted_by"],
         accepted_at=_dt(row["accepted_at"]),
     )
+
+
+def _event(row: sqlite3.Row) -> StoredEvent:
+    return StoredEvent(
+        fingerprint=row["fingerprint"],
+        kind=row["kind"],
+        at=_dt(row["at"]),
+        key=row["key"],
+        code=row["code"],
+        severity=row["severity"],
+        gate=row["gate"],
+        description=row["description"],
+        sku=row["sku"],
+        product=row["product"],
+        id=row["id"],
+    )
+
+
+def _delivery(row: sqlite3.Row) -> Delivery:
+    return Delivery(
+        id=row["id"],
+        fingerprint=row["fingerprint"],
+        account_id=row["account_id"],
+        event_ids=tuple(json.loads(row["event_ids_json"])),
+        status=row["status"],
+        attempted_at=_dt(row["attempted_at"]),
+        sent_at=_dt(row["sent_at"]),
+        error=row["error"],
+        attempts=row["attempts"],
+    )
+
+
+def _alert_state(row: sqlite3.Row) -> AlertState:
+    return AlertState(
+        fingerprint=row["fingerprint"],
+        faults=tuple(
+            FaultView.model_validate(f) for f in json.loads(row["faults_json"])
+        ),
+        last_report_at=_dt(row["last_report_at"]),
+        report_interval_seconds=row["report_interval_seconds"],
+        offline_since=_dt(row["offline_since"]),
+    )
+
+
+_ALERT_DELETES = (
+    "DELETE FROM machine_alert_state WHERE fingerprint = ?",
+    "DELETE FROM alert_prefs WHERE fingerprint = ?",
+)
 
 
 class SqliteRepository:
@@ -356,6 +457,8 @@ class SqliteRepository:
                 )
             if before["owner_id"] != account_id:
                 conn.execute(DELETE_MEMBERSHIPS_SQL, (fingerprint,))
+                for statement in _ALERT_DELETES:
+                    conn.execute(statement, (fingerprint,))
             return True
 
     def can_upload_bundle(
@@ -406,6 +509,14 @@ class SqliteRepository:
                 (fingerprint,),
             )
             conn.execute(DELETE_MEMBERSHIPS_SQL, (fingerprint,))
+            for statement in _ALERT_DELETES:
+                conn.execute(statement, (fingerprint,))
+            conn.execute(
+                "DELETE FROM alert_deliveries WHERE fingerprint = ?", (fingerprint,)
+            )
+            conn.execute(
+                "DELETE FROM alert_events WHERE fingerprint = ?", (fingerprint,)
+            )
 
     def all_machines(self) -> list[Machine]:
         with self._connect() as conn:
@@ -492,6 +603,10 @@ class SqliteRepository:
         with self._tx() as conn:
             conn.execute(
                 "DELETE FROM memberships WHERE account_id = ? AND fingerprint = ?",
+                (account_id, fingerprint),
+            )
+            conn.execute(
+                "DELETE FROM alert_prefs WHERE account_id = ? AND fingerprint = ?",
                 (account_id, fingerprint),
             )
 
@@ -587,3 +702,231 @@ class SqliteRepository:
     def cancel_invitation(self, token: str) -> None:
         with self._tx() as conn:
             conn.execute("DELETE FROM invitations WHERE token = ?", (token,))
+
+    # alerts
+
+    def alert_state(self, fingerprint: str) -> AlertState | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM machine_alert_state WHERE fingerprint = ?",
+                (fingerprint,),
+            ).fetchone()
+        return None if row is None else _alert_state(row)
+
+    def put_alert_state(self, state: AlertState) -> None:
+        faults = json.dumps([f.model_dump(mode="json") for f in state.faults])
+        with self._tx() as conn:
+            conn.execute(
+                "INSERT INTO machine_alert_state (fingerprint, faults_json,"
+                " last_report_at, report_interval_seconds, offline_since)"
+                " VALUES (?, ?, ?, ?, ?) ON CONFLICT(fingerprint) DO UPDATE SET"
+                " faults_json = excluded.faults_json,"
+                " last_report_at = excluded.last_report_at,"
+                " report_interval_seconds = excluded.report_interval_seconds,"
+                " offline_since = excluded.offline_since",
+                (
+                    state.fingerprint,
+                    faults,
+                    _iso(state.last_report_at),
+                    state.report_interval_seconds,
+                    _iso(state.offline_since),
+                ),
+            )
+
+    def delete_alert_state(self, fingerprint: str) -> None:
+        with self._tx() as conn:
+            conn.execute(_ALERT_DELETES[0], (fingerprint,))
+
+    def claimed_machines_with_state(self) -> list[tuple[Machine, AlertState]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT m.*, s.faults_json, s.last_report_at,"
+                " s.report_interval_seconds, s.offline_since"
+                " FROM machines m JOIN machine_alert_state s"
+                " ON s.fingerprint = m.fingerprint"
+                " WHERE m.owner_id IS NOT NULL ORDER BY m.label, m.fingerprint"
+            ).fetchall()
+        return [(_machine(r), _alert_state(r)) for r in rows]
+
+    def record_alert_events(self, events: list[AlertEventRow]) -> list[StoredEvent]:
+        stored: list[StoredEvent] = []
+        with self._tx() as conn:
+            for e in events:
+                cur = conn.execute(
+                    'INSERT INTO alert_events (fingerprint, kind, at, "key", code,'
+                    " severity, gate, description, sku, product)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        e.fingerprint,
+                        e.kind,
+                        _iso(e.at),
+                        e.key,
+                        e.code,
+                        e.severity,
+                        e.gate,
+                        e.description,
+                        e.sku,
+                        e.product,
+                    ),
+                )
+                stored.append(
+                    StoredEvent(
+                        fingerprint=e.fingerprint,
+                        kind=e.kind,
+                        at=e.at,
+                        key=e.key,
+                        code=e.code,
+                        severity=e.severity,
+                        gate=e.gate,
+                        description=e.description,
+                        sku=e.sku,
+                        product=e.product,
+                        id=cur.lastrowid,
+                    )
+                )
+        return stored
+
+    def alert_events(self, fingerprint: str, *, limit: int) -> list[StoredEvent]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM alert_events WHERE fingerprint = ?"
+                " ORDER BY at DESC, id DESC LIMIT ?",
+                (fingerprint, limit),
+            ).fetchall()
+        return [_event(r) for r in rows]
+
+    def alert_count_since(self, fingerprint: str, since: datetime) -> int:
+        with self._connect() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) AS n FROM alert_events WHERE fingerprint = ?"
+                " AND at >= ? AND kind != 'cleared'",
+                (fingerprint, _iso(since)),
+            ).fetchone()["n"]
+
+    def cleared_since_last_sent(
+        self, fingerprint: str, account_id: str
+    ) -> list[StoredEvent]:
+        last = self.last_sent_at(fingerprint, account_id)
+        sql = "SELECT * FROM alert_events WHERE fingerprint = ? AND kind = 'cleared'"
+        params: list[str | None] = [fingerprint]
+        if last is not None:
+            sql += " AND at > ?"
+            params.append(_iso(last))
+        with self._connect() as conn:
+            rows = conn.execute(sql + " ORDER BY at, id", params).fetchall()
+        return [_event(r) for r in rows]
+
+    def people_for_alerts(self, fingerprint: str) -> list[tuple[Recipient, bool]]:
+        with self._connect() as conn:
+            owner = conn.execute(
+                "SELECT a.id, a.email, COALESCE(p.muted, 0) AS muted"
+                " FROM machines m JOIN accounts a ON a.id = m.owner_id"
+                " LEFT JOIN alert_prefs p ON p.account_id = a.id"
+                " AND p.fingerprint = m.fingerprint"
+                " WHERE m.fingerprint = ? AND a.suspended_at IS NULL",
+                (fingerprint,),
+            ).fetchall()
+            techs = conn.execute(
+                "SELECT a.id, a.email, COALESCE(p.muted, 0) AS muted"
+                " FROM memberships s JOIN accounts a ON a.id = s.account_id"
+                " JOIN machines m ON m.fingerprint = s.fingerprint"
+                " LEFT JOIN alert_prefs p ON p.account_id = a.id"
+                " AND p.fingerprint = s.fingerprint"
+                " WHERE s.fingerprint = ? AND a.suspended_at IS NULL"
+                " AND m.owner_id IS NOT a.id ORDER BY s.granted_at, a.email",
+                (fingerprint,),
+            ).fetchall()
+        people = [(r, "owner") for r in owner] + [(r, "tech") for r in techs]
+        return [
+            (Recipient(r["id"], r["email"], role), bool(r["muted"]))
+            for r, role in people
+        ]
+
+    def set_muted(self, account_id: str, fingerprint: str, muted: bool) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                "INSERT INTO alert_prefs (account_id, fingerprint, muted)"
+                " VALUES (?, ?, ?) ON CONFLICT(account_id, fingerprint)"
+                " DO UPDATE SET muted = excluded.muted",
+                (account_id, fingerprint, int(muted)),
+            )
+
+    def is_muted(self, account_id: str, fingerprint: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT muted FROM alert_prefs WHERE account_id = ? AND fingerprint = ?",
+                (account_id, fingerprint),
+            ).fetchone()
+        return row is not None and bool(row["muted"])
+
+    def create_delivery(
+        self,
+        fingerprint: str,
+        account_id: str,
+        event_ids: list[int] | tuple[int, ...],
+        status: str,
+        now: datetime,
+    ) -> Delivery:
+        with self._tx() as conn:
+            cur = conn.execute(
+                "INSERT INTO alert_deliveries (fingerprint, account_id,"
+                " event_ids_json, status, attempted_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    fingerprint,
+                    account_id,
+                    json.dumps(list(event_ids)),
+                    status,
+                    _iso(now),
+                ),
+            )
+            return _delivery(
+                conn.execute(
+                    "SELECT * FROM alert_deliveries WHERE id = ?", (cur.lastrowid,)
+                ).fetchone()
+            )
+
+    def pending_deliveries(self, *, before: datetime) -> list[Delivery]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM alert_deliveries WHERE"
+                " (status = 'pending' AND attempted_at <= ?)"
+                " OR (status = 'failed' AND attempts < ?) ORDER BY id",
+                (_iso(before), MAX_DELIVERY_ATTEMPTS),
+            ).fetchall()
+        return [_delivery(r) for r in rows]
+
+    def mark_delivery(
+        self, id: int, *, status: str, now: datetime, error: str | None = None
+    ) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                "UPDATE alert_deliveries SET status = ?, attempted_at = ?, error = ?,"
+                " attempts = attempts + 1,"
+                " sent_at = CASE WHEN ? = 'sent' THEN ? ELSE sent_at END"
+                " WHERE id = ?",
+                (status, _iso(now), error, status, _iso(now), id),
+            )
+
+    def last_sent_at(self, fingerprint: str, account_id: str) -> datetime | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT MAX(sent_at) AS at FROM alert_deliveries"
+                " WHERE fingerprint = ? AND account_id = ? AND status = 'sent'",
+                (fingerprint, account_id),
+            ).fetchone()
+        return _dt(row["at"])
+
+    def deliveries_for_events(
+        self, event_ids: list[int] | tuple[int, ...]
+    ) -> dict[int, list[Delivery]]:
+        wanted = set(event_ids)
+        found: dict[int, list[Delivery]] = {i: [] for i in wanted}
+        if not wanted:
+            return found
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM alert_deliveries ORDER BY id").fetchall()
+        for delivery in map(_delivery, rows):
+            for event_id in delivery.event_ids:
+                if event_id in wanted:
+                    found[event_id].append(delivery)
+        return found

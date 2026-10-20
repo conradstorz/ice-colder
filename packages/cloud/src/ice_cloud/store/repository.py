@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal, Protocol
 
+from ice_contracts.cloud.report import FaultView
+
 
 class EmailConflict(ValueError):
     """A login's email already belongs to a different Google account."""
@@ -63,6 +65,58 @@ class Invitation:
 class MachineAccess:
     machine: Machine
     role: Literal["owner", "tech", "admin"]
+
+
+@dataclass(frozen=True)
+class AlertState:
+    fingerprint: str
+    faults: tuple[FaultView, ...]
+    last_report_at: datetime
+    report_interval_seconds: int
+    offline_since: datetime | None
+
+    @property
+    def keys(self) -> frozenset[str]:
+        return frozenset(f.key for f in self.faults)
+
+
+@dataclass(frozen=True)
+class AlertEventRow:
+    fingerprint: str
+    kind: str
+    at: datetime
+    key: str | None
+    code: str | None
+    severity: str | None
+    gate: str | None
+    description: str | None
+    sku: str | None
+    product: str | None
+
+
+@dataclass(frozen=True)
+class StoredEvent(AlertEventRow):
+    id: int
+
+
+@dataclass(frozen=True)
+class Recipient:
+    account_id: str
+    email: str
+    role: Literal["owner", "tech"]
+
+
+@dataclass(frozen=True)
+class Delivery:
+    id: int
+    fingerprint: str
+    account_id: str
+    event_ids: tuple[int, ...]
+    status: str
+    attempted_at: datetime | None
+    sent_at: datetime | None
+    error: str | None
+    attempts: int
 
 
 class Repository(Protocol):
@@ -177,3 +231,68 @@ class Repository(Protocol):
     ) -> list[str]: ...
 
     def cancel_invitation(self, token: str) -> None: ...
+
+    # alerts
+    def alert_state(self, fingerprint: str) -> AlertState | None: ...
+
+    def put_alert_state(self, state: AlertState) -> None: ...
+
+    def delete_alert_state(self, fingerprint: str) -> None: ...
+
+    def claimed_machines_with_state(self) -> list[tuple[Machine, AlertState]]:
+        """Claimed machines (owner set) that have an alert state row."""
+        ...
+
+    def record_alert_events(self, events: list[AlertEventRow]) -> list[StoredEvent]:
+        """Insert events (any object with the row's fields) in order; return them with ids."""
+        ...
+
+    def alert_events(self, fingerprint: str, *, limit: int) -> list[StoredEvent]:
+        """Newest first."""
+        ...
+
+    def alert_count_since(self, fingerprint: str, since: datetime) -> int:
+        """Events at or after ``since``, not counting ``cleared`` ones."""
+        ...
+
+    def cleared_since_last_sent(
+        self, fingerprint: str, account_id: str
+    ) -> list[StoredEvent]:
+        """``cleared`` events after the account's last ``sent`` delivery (all if none)."""
+        ...
+
+    def people_for_alerts(self, fingerprint: str) -> list[tuple[Recipient, bool]]:
+        """Owner first, then techs by ``granted_at``, each with its muted flag;
+        suspended accounts are excluded."""
+        ...
+
+    def set_muted(self, account_id: str, fingerprint: str, muted: bool) -> None: ...
+
+    def is_muted(self, account_id: str, fingerprint: str) -> bool: ...
+
+    def create_delivery(
+        self,
+        fingerprint: str,
+        account_id: str,
+        event_ids: list[int] | tuple[int, ...],
+        status: str,
+        now: datetime,
+    ) -> Delivery: ...
+
+    def pending_deliveries(self, *, before: datetime) -> list[Delivery]:
+        """``pending`` rows with ``attempted_at <= before`` and ``failed`` rows
+        with fewer than 5 attempts."""
+        ...
+
+    def mark_delivery(
+        self, id: int, *, status: str, now: datetime, error: str | None = None
+    ) -> None:
+        """Set status, ``attempted_at`` and ``error``; ``attempts`` += 1;
+        ``sent_at`` is set only for ``sent``."""
+        ...
+
+    def last_sent_at(self, fingerprint: str, account_id: str) -> datetime | None: ...
+
+    def deliveries_for_events(
+        self, event_ids: list[int] | tuple[int, ...]
+    ) -> dict[int, list[Delivery]]: ...
