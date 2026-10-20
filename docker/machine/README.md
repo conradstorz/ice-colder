@@ -1,6 +1,6 @@
 # Simulated machine
 
-One Docker image that imitates a complete, deployed vending machine: the VMC (`ice_edge`), the three simulated boards (`ice_sims`) and a private MQTT broker, all in one container, reporting to the cloud fleet portal (`ice_cloud`) over its signed uplink. `--scale machine=N` stands up N independent machines, each with its own identity, so the cloud server can be tested against a fleet without hardware. Spec: `docs/superpowers/specs/2026-10-19-simulated-machine-container-design.md`.
+One Docker image that imitates a complete, deployed vending machine: the VMC (`ice_edge`), the three simulated boards (`ice_sims`) and a private MQTT broker, all in one container, reporting to the cloud fleet portal (`ice_cloud`) over its signed uplink. `--scale machine=N` stands up N independent machines, each with its own identity, so the cloud server can be tested against a fleet without hardware. Spec: `docs/superpowers/specs/2026-10-19-simulated-machine-container-design.md`. Step-by-step walkthrough (build, launch, claim, experiments, cleanup): `docs/running-a-virtual-fleet.md`.
 
 ## Run
 
