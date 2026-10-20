@@ -1,0 +1,31 @@
+# Simulated machine fleet: each replica is a complete imitation machine (VMC, the
+# three board simulators and a private broker) reporting to a remote cloud server
+# (design 2026-10-19-simulated-machine-container-design.md, section 5).
+# From the repository root, with ICE_CLOUD_URL set to the cloud server's base URL:
+#   docker compose -f docker/docker-compose.fleet.yml up -d --build --scale machine=5
+#   docker compose -f docker/docker-compose.fleet.yml logs | grep -i "setup code"
+#   docker compose -f docker/docker-compose.fleet.yml stop machine-3   # offline test
+# ICE_FLEET_BASE_IMAGE overrides the image the machines are layered on (default:
+# the published ghcr.io/conradstorz/ice-colder:latest); build one locally first with
+# `docker build -t ice-colder:dev .` and set ICE_FLEET_BASE_IMAGE=ice-colder:dev.
+# There is no container_name (it would break --scale) and no ICE_COLDER_MACHINE_ID:
+# the hostname default is what makes scaling zero-config. To name a machine, set
+# ICE_COLDER_MACHINE_ID in an override file (-f docker/docker-compose.fleet.yml -f my.yml).
+
+name: ice_fleet
+services:
+  machine:
+    build:
+      context: machine
+      args:
+        BASE_IMAGE: ${ICE_FLEET_BASE_IMAGE:-ghcr.io/conradstorz/ice-colder:latest}
+    image: ice-colder-machine:local
+    environment:
+      - ICE_CLOUD_URL=${ICE_CLOUD_URL:?set ICE_CLOUD_URL to the cloud server's base URL}
+      - ICE_COLDER_REPORT_INTERVAL=${ICE_COLDER_REPORT_INTERVAL:-60}
+    ports:
+      - "26123"          # ephemeral host port per replica; `docker compose port machine 26123`
+    volumes:
+      - /app/data         # anonymous: one identity per container, kept across restarts
+    stop_grace_period: 15s
+    restart: unless-stopped
