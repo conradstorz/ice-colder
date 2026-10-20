@@ -714,24 +714,28 @@ class SqliteRepository:
         return None if row is None else _alert_state(row)
 
     def put_alert_state(self, state: AlertState) -> None:
-        faults = json.dumps([f.model_dump(mode="json") for f in state.faults])
         with self._tx() as conn:
-            conn.execute(
-                "INSERT INTO machine_alert_state (fingerprint, faults_json,"
-                " last_report_at, report_interval_seconds, offline_since)"
-                " VALUES (?, ?, ?, ?, ?) ON CONFLICT(fingerprint) DO UPDATE SET"
-                " faults_json = excluded.faults_json,"
-                " last_report_at = excluded.last_report_at,"
-                " report_interval_seconds = excluded.report_interval_seconds,"
-                " offline_since = excluded.offline_since",
-                (
-                    state.fingerprint,
-                    faults,
-                    _iso(state.last_report_at),
-                    state.report_interval_seconds,
-                    _iso(state.offline_since),
-                ),
-            )
+            self._upsert_alert_state(conn, state)
+
+    @staticmethod
+    def _upsert_alert_state(conn: sqlite3.Connection, state: AlertState) -> None:
+        faults = json.dumps([f.model_dump(mode="json") for f in state.faults])
+        conn.execute(
+            "INSERT INTO machine_alert_state (fingerprint, faults_json,"
+            " last_report_at, report_interval_seconds, offline_since)"
+            " VALUES (?, ?, ?, ?, ?) ON CONFLICT(fingerprint) DO UPDATE SET"
+            " faults_json = excluded.faults_json,"
+            " last_report_at = excluded.last_report_at,"
+            " report_interval_seconds = excluded.report_interval_seconds,"
+            " offline_since = excluded.offline_since",
+            (
+                state.fingerprint,
+                faults,
+                _iso(state.last_report_at),
+                state.report_interval_seconds,
+                _iso(state.offline_since),
+            ),
+        )
 
     def delete_alert_state(self, fingerprint: str) -> None:
         with self._tx() as conn:
@@ -749,41 +753,55 @@ class SqliteRepository:
         return [(_machine(r), _alert_state(r)) for r in rows]
 
     def record_alert_events(self, events: list[AlertEventRow]) -> list[StoredEvent]:
-        stored: list[StoredEvent] = []
         with self._tx() as conn:
-            for e in events:
-                cur = conn.execute(
-                    'INSERT INTO alert_events (fingerprint, kind, at, "key", code,'
-                    " severity, gate, description, sku, product)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        e.fingerprint,
-                        e.kind,
-                        _iso(e.at),
-                        e.key,
-                        e.code,
-                        e.severity,
-                        e.gate,
-                        e.description,
-                        e.sku,
-                        e.product,
-                    ),
+            return self._insert_alert_events(conn, events)
+
+    def record_alert_pass(
+        self, events: Sequence[AlertEventRow], state: AlertState
+    ) -> list[StoredEvent]:
+        with self._tx() as conn:
+            stored = self._insert_alert_events(conn, events)
+            self._upsert_alert_state(conn, state)
+        return stored
+
+    @staticmethod
+    def _insert_alert_events(
+        conn: sqlite3.Connection, events: Sequence[AlertEventRow]
+    ) -> list[StoredEvent]:
+        stored: list[StoredEvent] = []
+        for e in events:
+            cur = conn.execute(
+                'INSERT INTO alert_events (fingerprint, kind, at, "key", code,'
+                " severity, gate, description, sku, product)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    e.fingerprint,
+                    e.kind,
+                    _iso(e.at),
+                    e.key,
+                    e.code,
+                    e.severity,
+                    e.gate,
+                    e.description,
+                    e.sku,
+                    e.product,
+                ),
+            )
+            stored.append(
+                StoredEvent(
+                    fingerprint=e.fingerprint,
+                    kind=e.kind,
+                    at=e.at,
+                    key=e.key,
+                    code=e.code,
+                    severity=e.severity,
+                    gate=e.gate,
+                    description=e.description,
+                    sku=e.sku,
+                    product=e.product,
+                    id=cur.lastrowid,
                 )
-                stored.append(
-                    StoredEvent(
-                        fingerprint=e.fingerprint,
-                        kind=e.kind,
-                        at=e.at,
-                        key=e.key,
-                        code=e.code,
-                        severity=e.severity,
-                        gate=e.gate,
-                        description=e.description,
-                        sku=e.sku,
-                        product=e.product,
-                        id=cur.lastrowid,
-                    )
-                )
+            )
         return stored
 
     def alert_events(self, fingerprint: str, *, limit: int) -> list[StoredEvent]:

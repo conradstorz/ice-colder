@@ -7,9 +7,11 @@ from datetime import timedelta
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
+from loguru import logger
 
+from ice_cloud.alerts.engine import AlertEvent, diff_reports
 from ice_cloud.machine_auth import require_machine
-from ice_cloud.store.repository import Machine
+from ice_cloud.store.repository import AlertState, Machine
 from ice_contracts.cloud.identity import (
     ClaimCodeNotice,
     RegisterMachine,
@@ -39,7 +41,12 @@ async def register(
         body.label,
         request.app.state.now(),
     )
-    return RegisterResponse(fingerprint=fp, claimed=row.owner_id is not None)
+    return RegisterResponse(
+        fingerprint=fp,
+        claimed=row.owner_id is not None,
+        alerts_handled=row.owner_id is not None
+        and request.app.state.settings.smtp_configured,
+    )
 
 
 @router.post("/machines/{fingerprint}/report", status_code=204)
@@ -48,8 +55,57 @@ async def post_report(
     request: Request,
     machine: Machine = Depends(require_machine),
 ):
-    await asyncio.to_thread(request.app.state.store.save, machine.fingerprint, report)
+    state = request.app.state
+    await asyncio.to_thread(state.store.save, machine.fingerprint, report)
+    try:
+        await _handle_alerts(request, machine, report)
+    except Exception:
+        logger.exception("Alert handling failed for {}", machine.fingerprint[:8])
     return Response(status_code=204)
+
+
+def _record_alerts(repo, fingerprint: str, report: MachineReport, now):
+    previous = repo.alert_state(fingerprint)
+    events = diff_reports(
+        previous.faults if previous else (), report, now=now, fingerprint=fingerprint
+    )
+    if previous is not None and previous.offline_since is not None:
+        events.append(
+            AlertEvent(
+                fingerprint=fingerprint,
+                kind="online",
+                at=now,
+                key=None,
+                code=None,
+                severity=None,
+                gate=None,
+                description=None,
+                sku=None,
+                product=None,
+            )
+        )
+    return repo.record_alert_pass(
+        events,
+        AlertState(
+            fingerprint=fingerprint,
+            faults=tuple(report.faults),
+            last_report_at=now,
+            report_interval_seconds=report.report_interval_seconds,
+            offline_since=None,
+        ),
+    )
+
+
+async def _handle_alerts(request: Request, machine: Machine, report: MachineReport):
+    if machine.owner_id is None:
+        return  # unclaimed machines never produce events
+    state = request.app.state
+    now = state.now()
+    stored = await asyncio.to_thread(
+        _record_alerts, state.repo, machine.fingerprint, report, now
+    )
+    await state.alerts.dispatch(machine.fingerprint, machine, stored)
+    await state.alerts.flush(state.now())
 
 
 @router.post("/machines/{fingerprint}/claim-code", status_code=204)

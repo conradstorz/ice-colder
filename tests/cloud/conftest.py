@@ -31,7 +31,7 @@ def clock():
     return Clock()
 
 
-def make_settings(data_dir) -> CloudSettings:
+def make_settings(data_dir, **smtp) -> CloudSettings:
     return CloudSettings(
         data_dir=data_dir,
         public_url=None,
@@ -40,6 +40,7 @@ def make_settings(data_dir) -> CloudSettings:
         admins=frozenset({"admin@example.com"}),
         session_key=b"k" * 32,
         insecure_cookies=True,
+        **smtp,
     )
 
 
@@ -85,7 +86,9 @@ def mailer():
 
 @pytest.fixture
 def cloud_app(settings, clock, provider, mailer):
-    return create_app(settings, now=clock, provider=provider, mailer=mailer)
+    return create_app(
+        settings, now=clock, provider=provider, mailer=mailer, start_sweep=False
+    )
 
 
 def login(
