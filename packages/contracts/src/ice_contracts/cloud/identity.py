@@ -35,6 +35,7 @@ class RegisterMachine(_Model):
 class RegisterResponse(_Model):
     fingerprint: str
     claimed: bool
+    alerts_handled: bool = False
 
 
 class ClaimCodeNotice(_Model):

@@ -64,3 +64,14 @@ def test_claim_code_notice_none_expiry_and_hash_bounds():
     for bad in ("", "x" * 257):
         with pytest.raises(ValidationError):
             ClaimCodeNotice(claim_code_hash=bad, expires_at=None)
+
+
+def test_register_response_defaults_alerts_handled_false():
+    r = RegisterResponse.model_validate({"fingerprint": "ab", "claimed": True})
+    assert r.alerts_handled is False
+
+
+def test_register_response_round_trips_alerts_handled():
+    r = RegisterResponse(fingerprint="ab", claimed=True, alerts_handled=True)
+    assert RegisterResponse.model_validate_json(r.model_dump_json()) == r
+    assert r.alerts_handled is True
