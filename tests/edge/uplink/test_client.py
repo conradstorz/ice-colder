@@ -192,3 +192,30 @@ async def test_last_status_tracks_the_latest_response(identity):
     assert await uplink.delete_claim_code() is True
     assert uplink.last_status == 204
     await uplink.aclose()
+
+
+async def test_register_stores_alerts_handled(identity):
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "fingerprint": identity.fingerprint,
+                "claimed": True,
+                "alerts_handled": True,
+            },
+        )
+
+    uplink = _uplink(handler, identity)
+    assert uplink.last_register is None
+    assert await uplink.register("Lobby") is True
+    assert uplink.last_register is not None
+    assert uplink.last_register.alerts_handled is True
+
+
+async def test_register_failure_or_bad_body_leaves_last_register_none(identity):
+    uplink = _uplink(lambda request: httpx.Response(200, content=b"nope"), identity)
+    assert await uplink.register("Lobby") is True
+    assert uplink.last_register is None
+    failing = _uplink(lambda request: httpx.Response(500), identity)
+    assert await failing.register("Lobby") is False
+    assert failing.last_register is None

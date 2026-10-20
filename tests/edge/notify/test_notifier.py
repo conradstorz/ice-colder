@@ -84,3 +84,36 @@ async def test_cooldown_expires_and_resends(monkeypatch):
     clock[0] = 1000.0 + 301  # Past cooldown
     await n.send(first_alert)
     assert deliver_mock.await_count == 2  # Resent after cooldown expires
+
+
+async def test_deferred_to_cloud_logs_and_skips_delivery():
+    from loguru import logger
+
+    n, deliver_mock = _notifier_with_mock()
+    n.set_cloud_handles_alerts(lambda: True)
+    lines: list[str] = []
+    sink = logger.add(lambda m: lines.append(str(m)), level="INFO")
+    try:
+        await n.send(Alert(level="error", source="vmc", message="a", code="ICE-301"))
+    finally:
+        logger.remove(sink)
+    assert deliver_mock.await_count == 0
+    assert any("Notifier: deferred to cloud: vmc|ICE-301|" in m for m in lines)
+
+
+async def test_deferred_still_records_cooldown():
+    n, deliver_mock = _notifier_with_mock()
+    flag = {"cloud": True}
+    n.set_cloud_handles_alerts(lambda: flag["cloud"])
+    alert = Alert(level="error", source="vmc", message="a", code="ICE-301")
+    await n.send(alert)
+    flag["cloud"] = False
+    await n.send(alert)
+    assert deliver_mock.await_count == 0
+
+
+async def test_falls_back_when_predicate_false():
+    n, deliver_mock = _notifier_with_mock()
+    n.set_cloud_handles_alerts(lambda: False)
+    await n.send(Alert(level="error", source="vmc", message="a", code="ICE-301"))
+    assert deliver_mock.await_count == 1

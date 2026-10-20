@@ -107,3 +107,49 @@ def test_mark_acked_ignores_stale_notice(tmp_path):
     assert ident.mark_notice_acked(stale) is False
     assert ident.notice == ClaimNotice("h2", None, False)
     assert MachineIdentity.load_or_create(path).notice == ClaimNotice("h2", None, False)
+
+
+def test_identity_file_unchanged_by_flags(tmp_path):
+    path = tmp_path / "cloud_identity.json"
+    identity = MachineIdentity.load_or_create(path)
+    before = path.read_text(encoding="utf-8")
+    assert identity.alerts_handled is False
+    assert identity.last_report_ok_at is None
+    from datetime import UTC, datetime
+
+    identity.alerts_handled = True
+    identity.last_report_ok_at = datetime(2026, 10, 19, tzinfo=UTC)
+    identity.set_notice(None, None)
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert set(doc) == set(json.loads(before))
+    assert MachineIdentity.load_or_create(path).alerts_handled is False
+
+
+@pytest.mark.parametrize(
+    "handled, age_seconds, expected",
+    [
+        (False, 0, False),
+        (True, None, False),
+        (True, 180, True),
+        (True, 181, False),
+    ],
+)
+def test_cloud_handles_alerts_truth_table(tmp_path, handled, age_seconds, expected):
+    from datetime import UTC, datetime, timedelta
+
+    from ice_edge.uplink.identity import cloud_handles_alerts
+
+    now = datetime(2026, 10, 19, tzinfo=UTC)
+    identity = MachineIdentity.load_or_create(tmp_path / "id.json")
+    identity.alerts_handled = handled
+    if age_seconds is not None:
+        identity.last_report_ok_at = now - timedelta(seconds=age_seconds)
+    assert cloud_handles_alerts(identity, 60, now) is expected
+
+
+def test_cloud_handles_alerts_without_identity():
+    from datetime import UTC, datetime
+
+    from ice_edge.uplink.identity import cloud_handles_alerts
+
+    assert cloud_handles_alerts(None, 60, datetime.now(UTC)) is False

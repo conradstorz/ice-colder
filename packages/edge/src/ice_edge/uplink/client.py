@@ -12,7 +12,11 @@ from datetime import UTC, datetime
 import httpx
 from loguru import logger
 
-from ice_contracts.cloud.identity import ClaimCodeNotice, RegisterMachine
+from ice_contracts.cloud.identity import (
+    ClaimCodeNotice,
+    RegisterMachine,
+    RegisterResponse,
+)
 from ice_contracts.cloud.report import MachineReport
 from ice_contracts.cloud.signing import (
     HEADER_MACHINE,
@@ -41,6 +45,8 @@ class HttpUplink:
         self._now = now
         self.last_status: int | None = None
         """HTTP status of the most recent request; None when it never got a response."""
+        self.last_register: RegisterResponse | None = None
+        """Parsed body of the latest accepted register; None when it failed or was unparseable."""
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"), timeout=timeout, transport=transport
         )
@@ -68,12 +74,20 @@ class HttpUplink:
         body = RegisterMachine(
             public_key_b64=self._identity.public_key_b64, label=label
         )
-        return await self._send(
+        self.last_register = None
+        response = await self._request(
             "POST",
             "/api/v1/machines/register",
             content=body.model_dump_json().encode("utf-8"),
             content_type="application/json",
         )
+        if response is None:
+            return False
+        try:
+            self.last_register = RegisterResponse.model_validate_json(response.content)
+        except ValueError:
+            logger.warning("Cloud uplink register response was not understood")
+        return True
 
     async def post_claim_code(self, notice: ClaimCodeNotice) -> bool:
         return await self._send(
@@ -97,6 +111,14 @@ class HttpUplink:
     async def _send(
         self, method: str, path: str, *, content: bytes, content_type: str
     ) -> bool:
+        response = await self._request(
+            method, path, content=content, content_type=content_type
+        )
+        return response is not None
+
+    async def _request(
+        self, method: str, path: str, *, content: bytes, content_type: str
+    ) -> httpx.Response | None:
         try:
             timestamp = format_timestamp(self._now())
             headers = {
@@ -111,11 +133,11 @@ class HttpUplink:
         except Exception as exc:  # never raise out of the uplink
             self.last_status = None
             logger.warning(f"Cloud uplink {method} {path} failed: {exc!r}")
-            return False
+            return None
         self.last_status = response.status_code
         if not response.is_success:
             logger.warning(
                 f"Cloud uplink {method} {path} returned HTTP {response.status_code}"
             )
-            return False
-        return True
+            return None
+        return response

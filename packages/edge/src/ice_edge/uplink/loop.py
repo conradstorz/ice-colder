@@ -78,6 +78,8 @@ async def run_uplink(
             if not registered:
                 registered = await uplink.register(config.machine_id)
                 if registered:
+                    last = uplink.last_register
+                    identity.alerts_handled = bool(last and last.alerts_handled)
                     next_bundle_attempt = None
                     if ever_registered:
                         # Registering again means the cloud forgot us (401): it
@@ -113,8 +115,12 @@ async def run_uplink(
                     holder_name=holder_name,
                 )
                 seq += 1
-                if not await uplink.post_report(report):
+                if await uplink.post_report(report):
+                    identity.last_report_ok_at = now()
+                else:
                     registered = registered and uplink.last_status != 401
         except Exception:
             logger.exception("Cloud uplink attempt failed")
+        if not registered:
+            identity.alerts_handled = False  # the cloud no longer vouches for us
         await sleep(config.cloud.report_interval_seconds)
