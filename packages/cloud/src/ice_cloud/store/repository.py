@@ -6,6 +6,7 @@ is named for a use case. Times are timezone-aware UTC ``datetime`` values.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal, Protocol
@@ -249,6 +250,10 @@ class Repository(Protocol):
 
     def alert_events(self, fingerprint: str, *, limit: int) -> list[StoredEvent]:
         """Newest first."""
+        ...
+
+    def alert_events_by_ids(self, ids: Sequence[int]) -> list[StoredEvent]:
+        """The events with these ids, ordered by id; unknown ids are skipped."""
         ...
 
     def alert_count_since(self, fingerprint: str, since: datetime) -> int:

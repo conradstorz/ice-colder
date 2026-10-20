@@ -669,3 +669,10 @@ def test_migrations_apply_on_existing_db(tmp_path):
     repo.put_alert_state(_state())
     assert repo.alert_state(FP) == _state()
     assert repo.record_alert_events([_event()])[0].id == 1
+
+
+def test_alert_events_by_ids_ordered_and_skips_unknown(repo):
+    _claimed(repo)
+    a, b, c = repo.record_alert_events([_event(key=k) for k in "abc"])
+    assert repo.alert_events_by_ids([c.id, a.id, 9999]) == [a, c]
+    assert repo.alert_events_by_ids([]) == []
