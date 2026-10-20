@@ -4,12 +4,27 @@ from datetime import timedelta
 
 from ice_cloud.alerts.dispatcher import COOLDOWN_SECONDS
 from ice_cloud.alerts.sweep import SWEEP_SECONDS, OfflineSweep
-from ice_cloud.store import AlertState
-from tests.cloud.alerts.test_dispatcher import FP, T0, Env, _row
+from ice_cloud.store import AlertEventRow, AlertState
+from tests.cloud.alerts.test_dispatcher import FP, T0, Env
 
 import pytest
 
 INTERVAL = 60
+
+
+def event_row(key="WTR-104:machine"):
+    return AlertEventRow(
+        fingerprint=FP,
+        kind="raised",
+        at=T0,
+        key=key,
+        code="WTR-104",
+        severity="critical",
+        gate="safety",
+        description="Sump high",
+        sku=None,
+        product=None,
+    )
 
 
 @pytest.fixture
@@ -80,9 +95,9 @@ async def test_no_state_row_never(env):
 
 
 async def test_tick_flushes_pending(env):
-    await env.dispatch(_row(key="a"))
+    await env.dispatch(event_row(key="a"))
     env.clock.advance(60)
-    stored = await env.dispatch(_row(key="b"))
+    stored = await env.dispatch(event_row(key="b"))
     assert {d.status for d in env.deliveries(stored)} == {"pending"}
     env.clock.advance(COOLDOWN_SECONDS)
     _state(env, last_report_at=env.clock())
@@ -92,9 +107,9 @@ async def test_tick_flushes_pending(env):
 
 
 async def test_tick_flushes_before_dispatch(env):
-    await env.dispatch(_row(key="a"))
+    await env.dispatch(event_row(key="a"))
     env.clock.advance(60)
-    stored = await env.dispatch(_row(key="b"))
+    stored = await env.dispatch(event_row(key="b"))
     env.clock.advance(COOLDOWN_SECONDS)
     _state(env, last_report_at=env.clock() - timedelta(seconds=3 * INTERVAL + 1))
     before = len(env.mailer.sent)
