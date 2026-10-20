@@ -14,6 +14,17 @@ from ice_edge.config.config_store import add_product
 from ice_edge.vend.dispensers import validate_document
 
 LAUNCHER = Path(__file__).resolve().parents[2] / "docker" / "machine" / "launcher.py"
+
+
+@pytest.fixture(scope="module")
+def event_loop_policy():
+    # tests/firmware/conftest.py installs the selector policy for the whole
+    # session on Windows, and that loop cannot spawn subprocesses.
+    if sys.platform == "win32":
+        return asyncio.WindowsProactorEventLoopPolicy()
+    return asyncio.DefaultEventLoopPolicy()
+
+
 spec = importlib.util.spec_from_file_location("machine_launcher", LAUNCHER)
 launcher = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(launcher)
