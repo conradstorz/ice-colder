@@ -1,6 +1,7 @@
 """Edge-cloud contract: MachineReport and the UI bundle manifest (v0.2.0)."""
 
 import json
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -66,8 +67,8 @@ def _full() -> MachineReport:
     return MachineReport.model_validate(data)
 
 
-def test_contract_version_is_0_2_0():
-    assert CLOUD_CONTRACT_VERSION == "0.2.0"
+def test_contract_version_is_0_3_0():
+    assert CLOUD_CONTRACT_VERSION == "0.3.0"
 
 
 def test_spec_example_validates():
@@ -202,3 +203,20 @@ def test_edge_cloud_registered_and_bytes_match(tmp_path):
 
     assert norm(schema_dir) == norm(out)
     assert set(norm(out)) == {f"{n}.schema.json" for n in models}
+
+
+def test_report_accepts_0_2_0_and_0_3_0():
+    data = _example()
+    for version in ("0.2.0", "0.3.0"):
+        data["contract"] = version
+        assert MachineReport.model_validate(data).contract == version
+    data["contract"] = "0.4.0"
+    with pytest.raises(ValidationError):
+        MachineReport.model_validate(data)
+
+
+def test_contract_doc_has_0_3_0_section():
+    doc = (
+        Path(__file__).resolve().parents[2] / "docs/contracts/edge-cloud/CONTRACT.md"
+    ).read_text(encoding="utf-8")
+    assert "## 0.3.0" in doc

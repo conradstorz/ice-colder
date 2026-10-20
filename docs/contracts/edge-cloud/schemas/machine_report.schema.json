@@ -570,7 +570,10 @@
   "additionalProperties": false,
   "properties": {
     "contract": {
-      "const": "0.2.0",
+      "enum": [
+        "0.2.0",
+        "0.3.0"
+      ],
       "title": "Contract",
       "type": "string"
     },
