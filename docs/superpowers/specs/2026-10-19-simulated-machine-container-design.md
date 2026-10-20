@@ -71,7 +71,7 @@ and the setup code in one stream.
 | `ICE_CLOUD_URL` | yes | Base URL of the cloud server. Missing or empty: exit 1 with a one-line message. Never a silent machine with `cloud.enabled=false`. |
 | `ICE_COLDER_MACHINE_ID` | no | `config.machine_id`. Default: the container hostname (`socket.gethostname()`). |
 | `ICE_COLDER_REPORT_INTERVAL` | no | `config.cloud.report_interval_seconds`, 10–3600. Default 60. Out of range: exit 1. |
-| `ICE_COLDER_DATA` | no | Data directory. Default `/app/data`. Exists so the unit tests and a local dry run can point at a temp dir. |
+| `ICE_COLDER_DATA` | no | Data directory. Default `/app/data`. Exists so the unit tests and a local dry run can point at a temp dir. It relocates only `config.json` and `dispensers.toml`; `ice_common.paths.DATA_DIR` is fixed, so `cloud_identity.json`, `access.json`, `session.json`, the sales journal and `events.db` stay there regardless. |
 
 The launcher sets, for its children, `ICE_COLDER_CONFIG=<data>/config.json` and
 `ICE_COLDER_DISPENSERS=<data>/dispensers.toml`. It sets no `MQTT_*` variables: the
@@ -126,8 +126,9 @@ so it is unit-testable without Docker.
    file sets it to 15 s to leave room.
 
 The launcher logs its own lines with a `[launcher]` prefix via `print(..., flush=True)`;
-it does not import loguru, so a broken edge install cannot take the supervisor down with
-it.
+its supervision loop has no loguru dependency of its own and logs with print. The seeding
+step imports `ice_edge` (which pulls in loguru transitively), so a broken edge install fails
+at seed time with a visible traceback before anything is started.
 
 ## 5. Compose (`docker/docker-compose.fleet.yml`)
 

@@ -12,7 +12,7 @@ docker compose -f docker/docker-compose.fleet.yml logs | grep -i "setup code"
 docker stop ice_fleet-machine-3
 ```
 
-Optional environment: `ICE_COLDER_MACHINE_ID` (default: the container hostname), `ICE_COLDER_REPORT_INTERVAL` (seconds, 10-3600, default 60), `ICE_COLDER_DATA` (default `/app/data`). Each replica's dashboard is on an ephemeral host port: `docker compose -f docker/docker-compose.fleet.yml port machine 26123`.
+Optional environment: `ICE_COLDER_MACHINE_ID` (default: the container hostname), `ICE_COLDER_REPORT_INTERVAL` (seconds, 10-3600, default 60). Each replica's dashboard is on an ephemeral host port: `docker compose -f docker/docker-compose.fleet.yml port machine 26123`.
 
 ## Claiming
 
@@ -20,7 +20,13 @@ Nothing claims a machine for you. Each machine logs its setup code, which is als
 
 ## What a restart keeps and what it overwrites
 
-Data lives in an anonymous volume at `/app/data`, so identity lasts as long as that volume. On every start the launcher re-applies these fields to `config.json` and overwrites any edit to them: `machine_id`, `cloud.enabled`, `cloud.url`, `cloud.report_interval_seconds`, `mqtt.broker_host` (plus `mqtt.username` and `mqtt.password`, cleared). That is the price of env-driven config. Everything else in `config.json` is untouched, so a catalog edit made in the dashboard survives a restart. `dispensers.toml` is written only when absent. `cloud_identity.json` and `access.json` are never touched: a restart keeps the same fingerprint and the same owner. `docker compose down -v` discards the volume, and the machine becomes a new, unclaimed one.
+Data lives in an anonymous volume at `/app/data`, so identity lasts as long as that volume. On every start the launcher re-applies these fields to `config.json` and overwrites any edit to them: `machine_id`, `cloud.enabled`, `cloud.url`, `cloud.report_interval_seconds`, `mqtt.broker_host` (plus `mqtt.username` and `mqtt.password`, cleared). That is the price of env-driven config. Everything else in `config.json` is untouched, so a catalog edit made in the dashboard survives a restart. `dispensers.toml` is written only when absent. `cloud_identity.json` and `access.json` are never touched: a restart keeps the same fingerprint and the same owner.
+
+Identity survives `docker stop`/`start`/`restart` and in-place recreates (compose reuses an anonymous volume only when it recreates an existing container in place, e.g. `up` after a config or image change, or `up --build`). It does not survive `docker compose down`: the next `up` gives every replica a fresh volume, so a new fingerprint and a new unclaimed machine, and the old volumes are orphaned. Scaling down and then up does the same to the removed replicas. `docker volume prune` removes the orphans.
+
+`machine_id` (the label the cloud shows) defaults to the container hostname, so an in-place recreate keeps the fingerprint but changes the label; set `ICE_COLDER_MACHINE_ID` in an override file for a stable label.
+
+`ICE_COLDER_DATA` exists only as a test and dry-run hook and is not a full relocation: it moves just `config.json` and `dispensers.toml`, while `cloud_identity.json`, `access.json`, `session.json`, the sales journal and `events.db` stay under the fixed `data/` directory of the app.
 
 ## Offline test
 

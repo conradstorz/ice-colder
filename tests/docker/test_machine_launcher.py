@@ -12,6 +12,7 @@ import pytest
 from ice_common.config_model import ConfigModel
 from ice_edge.config.config_store import add_product
 from ice_edge.vend.dispensers import validate_document
+from ice_edge.vend.dispensers_doc import render_example
 
 LAUNCHER = Path(__file__).resolve().parents[2] / "docker" / "machine" / "launcher.py"
 
@@ -250,3 +251,17 @@ async def test_amain_missing_url_returns_1(tmp_path, capsys):
     assert await launcher.amain({"ICE_COLDER_DATA": str(tmp_path)}) == 1
     assert "ICE_CLOUD_URL" in capsys.readouterr().out
     assert not (tmp_path / "config.json").exists()
+
+
+def test_seed_writes_dispensers_atomically(tmp_path):
+    launcher.seed(_settings(tmp_path))
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert (tmp_path / "dispensers.toml").read_text(
+        encoding="utf-8"
+    ) == render_example()
+
+
+async def test_amain_missing_mosquitto_returns_1(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(launcher, "MOSQUITTO", ("ice-no-such-broker-binary",))
+    assert await launcher.amain(_env(tmp_path)) == 1
+    assert "[launcher] error: cannot start mosquitto:" in capsys.readouterr().out

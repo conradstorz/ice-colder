@@ -104,7 +104,9 @@ def seed(settings: Settings) -> ConfigModel:
 
     dispensers = data_dir / "dispensers.toml"
     if not dispensers.exists():
-        dispensers.write_text(render_example(), encoding="utf-8")
+        tmp = dispensers.with_name("dispensers.toml.tmp")
+        tmp.write_text(render_example(), encoding="utf-8")
+        os.replace(tmp, dispensers)
 
     config.machine_id = settings.machine_id
     config.cloud.enabled = True
@@ -129,6 +131,7 @@ def child_env(settings: Settings, base: Mapping[str, str]) -> dict[str, str]:
 
 
 MOSQUITTO_CONF = "/app/machine/mosquitto.conf"
+MOSQUITTO: tuple[str, ...] = ("mosquitto", "-c", MOSQUITTO_CONF)
 BROKER = ("127.0.0.1", 1883)
 RESTART_DELAY = 5.0
 STOP_TIMEOUT = 10.0
@@ -329,9 +332,7 @@ async def amain(env: Mapping[str, str]) -> int:
     try:
         settings = Settings.from_env(env, hostname=socket.gethostname())
         seed(settings)
-        mosquitto = ChildSpec(
-            "mosquitto", ("mosquitto", "-c", MOSQUITTO_CONF), fatal=True
-        )
+        mosquitto = ChildSpec("mosquitto", MOSQUITTO, fatal=True)
         supervisor = Supervisor(
             (mosquitto, *app_children(settings)), env=child_env(settings, env)
         )
@@ -339,7 +340,11 @@ async def amain(env: Mapping[str, str]) -> int:
             loop = asyncio.get_running_loop()
             for sig in (signal.SIGTERM, signal.SIGINT):
                 loop.add_signal_handler(sig, supervisor.request_stop)
-        await supervisor.start(mosquitto)
+        try:
+            await supervisor.start(mosquitto)
+        except OSError as exc:
+            log(f"error: cannot start mosquitto: {exc}")
+            return 1
         try:
             await wait_for_port(*BROKER, timeout=10, stop=supervisor.stopping)
         except LauncherError:
