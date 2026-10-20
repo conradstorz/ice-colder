@@ -3,6 +3,9 @@
 {% block body %}
 <div id="alerts" class="space-y-4">
   <h1 class="text-hero font-semibold text-gray-900">Alerts <span class="font-mono text-sm text-gray-400">{{ machine_label }} {{ short }}</span></h1>
+  {% if recipients %}
+  {% with short=recipients.short, recipients=recipients.recipients %}{% include "partials/alert_recipients.html" %}{% endwith %}
+  {% endif %}
   <div class="space-y-2">
     {% for e in events %}
     <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-4 space-y-1">

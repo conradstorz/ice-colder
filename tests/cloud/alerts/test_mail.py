@@ -92,7 +92,7 @@ def test_golden_raised_and_cleared():
         "\n"
         "Open the machine: https://cloud.example/m/abcd-efgh-ijkl-mnop\n"
         "You receive this as owner of this machine. "
-        "Mute: https://cloud.example/machines/abcd-efgh-ijkl-mnop/people\n"
+        "Mute: https://cloud.example/machines/abcd-efgh-ijkl-mnop/alerts\n"
     )
 
 
@@ -105,7 +105,7 @@ def test_golden_offline():
         "\n"
         "Open the machine: https://cloud.example/m/abcd-efgh-ijkl-mnop\n"
         "You receive this as technician of this machine. "
-        "Mute: https://cloud.example/machines/abcd-efgh-ijkl-mnop/people\n"
+        "Mute: https://cloud.example/machines/abcd-efgh-ijkl-mnop/alerts\n"
     )
 
 
