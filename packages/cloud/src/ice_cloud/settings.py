@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+
+from ice_contracts.cloud.ui import DIGEST_PATTERN
 
 MIN_SESSION_KEY_BYTES = 32
 
@@ -22,6 +25,7 @@ class CloudSettings:
     admins: frozenset[str]
     session_key: bytes
     insecure_cookies: bool = False
+    trusted_ui_digests: frozenset[str] = frozenset()
 
     @property
     def google_configured(self) -> bool:
@@ -58,6 +62,16 @@ class CloudSettings:
         entries = (
             p.strip().lower() for p in env.get("ICE_CLOUD_ADMINS", "").split(",")
         )
+        digests = [
+            p.strip().lower()
+            for p in env.get("ICE_CLOUD_TRUSTED_UI_DIGESTS", "").split(",")
+        ]
+        for digest in digests:
+            if digest and not re.fullmatch(DIGEST_PATTERN, digest):
+                raise SettingsError(
+                    f"ICE_CLOUD_TRUSTED_UI_DIGESTS entry {digest!r} is not a"
+                    " sha256 hex digest"
+                )
         return cls(
             data_dir=Path(env.get("ICE_CLOUD_DATA") or "cloud_data"),
             public_url=public_url,
@@ -66,4 +80,5 @@ class CloudSettings:
             admins=frozenset(e for e in entries if e),
             session_key=key,
             insecure_cookies=env.get("ICE_CLOUD_INSECURE_COOKIES", "").strip() == "1",
+            trusted_ui_digests=frozenset(d for d in digests if d),
         )

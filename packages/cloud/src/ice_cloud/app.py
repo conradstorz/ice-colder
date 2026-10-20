@@ -55,7 +55,9 @@ def create_app(
     app.state.store = SnapshotStore(settings.data_dir)
     app.state.repo = SqliteRepository(settings.data_dir / "cloud.db")
     app.state.registry = UiRegistry(
-        settings.data_dir, cloud_templates=CLOUD_TEMPLATES_DIR
+        settings.data_dir,
+        cloud_templates=CLOUD_TEMPLATES_DIR,
+        trusted_digests=settings.trusted_ui_digests,
     )
     app.state.now = now
     app.state.backoff = Backoff(clock=lambda: app.state.now().timestamp())

@@ -62,3 +62,15 @@ def test_admins_normalised():
     assert s.admins == frozenset({"a@example.com", "b@example.com"})
     assert s.insecure_cookies is True
     assert s.data_dir == Path("somewhere")
+
+
+def test_trusted_ui_digests_parsed_and_validated():
+    from ice_cloud.settings import CloudSettings, SettingsError
+
+    base = {"ICE_CLOUD_SESSION_KEY": "k" * 32}
+    assert CloudSettings.from_env(base).trusted_ui_digests == frozenset()
+    good = {**base, "ICE_CLOUD_TRUSTED_UI_DIGESTS": f"{'a' * 64}, {'B' * 64} ,"}
+    assert CloudSettings.from_env(good).trusted_ui_digests == {"a" * 64, "b" * 64}
+    bad = {**base, "ICE_CLOUD_TRUSTED_UI_DIGESTS": "nope"}
+    with pytest.raises(SettingsError):
+        CloudSettings.from_env(bad)

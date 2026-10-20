@@ -21,6 +21,7 @@ from ice_cloud.auth import (
     Role,
     current_account,
     is_admin,
+    require_htmx,
     require_machine_access,
     require_signed_in,
 )
@@ -194,7 +195,7 @@ def _select_response(request: Request, machine: Machine) -> RedirectResponse:
     return response
 
 
-@router.post("/fleet/select/{short}")
+@router.post("/fleet/select/{short}", dependencies=[Depends(require_htmx)])
 async def select_machine(request: Request, access=Depends(require_machine_access())):
     _account, machine, _role = access
     return _select_response(request, machine)
@@ -202,8 +203,12 @@ async def select_machine(request: Request, access=Depends(require_machine_access
 
 @router.get("/m/{short}")
 async def deep_link(request: Request, access=Depends(require_machine_access())):
+    """Pre-select the machine but land on the fleet list, never on a machine
+    page, so a cross-site click cannot render machine content directly."""
     _account, machine, _role = access
-    return _select_response(request, machine)
+    response = _select_response(request, machine)
+    response.headers["location"] = "/fleet"
+    return response
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -398,6 +403,14 @@ async def static_file(
         return Response(status_code=404)
     if not target.is_relative_to(base) or not target.is_file():
         return Response(status_code=404)
+    if ui.sandboxed:
+        return FileResponse(
+            target,
+            headers={
+                "Content-Security-Policy": "sandbox; default-src 'none'",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
     return FileResponse(target)
 
 

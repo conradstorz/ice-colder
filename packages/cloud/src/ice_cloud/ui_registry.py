@@ -1,8 +1,10 @@
 """Resolve which UI renders a machine's pages (cloud spec section 3).
 
 The installed ``ice_ui`` when the reported digest matches; else a cached,
-uploaded bundle for that digest (rendered in a sandbox); else the installed
-``ice_ui`` flagged as a mismatch.
+uploaded bundle for that digest, only if the operator listed the digest as
+trusted (rendered in a sandbox); else the installed ``ice_ui`` flagged as a
+mismatch. An untrusted upload is stored but never rendered or served: its
+static files would be same-origin HTML on the cloud's origin.
 """
 
 from __future__ import annotations
@@ -52,7 +54,14 @@ class ResolvedUi:
 
 
 class UiRegistry:
-    def __init__(self, root: Path, *, cloud_templates: Path) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        cloud_templates: Path,
+        trusted_digests: frozenset[str] = frozenset(),
+    ) -> None:
+        self._trusted = frozenset(trusted_digests)
         self._ui_dir = Path(root) / "ui"
         self._cloud_templates = cloud_templates
         self._lock = threading.Lock()
@@ -85,7 +94,11 @@ class UiRegistry:
         if digest == self.installed_digest:
             return self._installed(mismatch=False)
         cached = self._ui_dir / digest if _DIGEST_RE.fullmatch(digest) else None
-        if cached is not None and (cached / "templates").is_dir():
+        if (
+            cached is not None
+            and digest in self._trusted
+            and (cached / "templates").is_dir()
+        ):
             templates = self._templates_for(
                 digest,
                 lambda: _sandboxed_templates(

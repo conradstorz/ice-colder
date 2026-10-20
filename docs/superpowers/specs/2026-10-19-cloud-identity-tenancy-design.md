@@ -131,7 +131,7 @@ The edge learns about code changes through a `subscribe_claim_code_change(cb)` o
 
 The old owner loses access the moment the new owner claims, matching the local swap in `AccessStore.complete_transfer`; techs are dropped because the new owner has not vouched for them.
 
-The claim **does not** consume the code at the machine: the incoming owner still completes `/setup` locally with it. The two completions are independent in time and either order works. The cloud learns about the local transfer only through claim-code notices: `complete_transfer` moves the hash into the unfinalised `setup` record, so the live code is unchanged and the observer re-sends the same hash (idempotent); `finalize_setup` clears it and the observer sends the `DELETE`. Both transitions fire the observer.
+The claim **does not** consume the code at the machine: the incoming owner still completes `/setup` locally with it. The two completions are independent in time and either order works. *(As built: claim on the cloud before pressing Done locally, because Done sends the `DELETE`; the cloud also remembers the consumed hash and ignores the machine re-announcing it, so a resale `/setup` cannot reopen a spent claim.)* The cloud learns about the local transfer only through claim-code notices: `complete_transfer` moves the hash into the unfinalised `setup` record, so the live code is unchanged and the observer re-sends the same hash (idempotent); `finalize_setup` clears it and the observer sends the `DELETE`. Both transitions fire the observer.
 
 A completed local transfer the cloud never heard about is not a special case: the new owner mints a Link-to-cloud code and claims.
 

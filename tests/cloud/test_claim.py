@@ -149,13 +149,23 @@ def test_old_owner_then_gets_404_on_select(cloud, signer):
     old = login(cloud, "old@example.com")
     repo.claim_machine(fp, old.id, cloud.app.state.now())
     repo.set_claim_code(fp, hash_secret(CODE), None)
-    assert cloud.post(f"/fleet/select/{short(signer)}").status_code == 303
+    assert (
+        cloud.post(
+            f"/fleet/select/{short(signer)}", headers={"HX-Request": "true"}
+        ).status_code
+        == 303
+    )
     cloud.cookies.clear()
     login(cloud, "new@example.com")
     assert post_claim(cloud, signer).status_code == 303
     cloud.cookies.clear()
     login(cloud, "old@example.com")
-    assert cloud.post(f"/fleet/select/{short(signer)}").status_code == 404
+    assert (
+        cloud.post(
+            f"/fleet/select/{short(signer)}", headers={"HX-Request": "true"}
+        ).status_code
+        == 404
+    )
 
 
 def test_claim_before_delete_notice_and_after(cloud, signer):
