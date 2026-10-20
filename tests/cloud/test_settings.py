@@ -131,3 +131,32 @@ def test_smtp_starttls_zero_disables():
         CloudSettings.from_env({**base, "ICE_CLOUD_SMTP_STARTTLS": "1"}).smtp_starttls
         is True
     )
+
+
+def test_smtp_user_without_password_is_error():
+    base = {
+        "ICE_CLOUD_SESSION_KEY": KEY,
+        "ICE_CLOUD_SMTP_HOST": "smtp.example",
+        "ICE_CLOUD_SMTP_FROM": "alerts@example.com",
+        "ICE_CLOUD_SMTP_USER": "alerts",
+    }
+    with pytest.raises(SettingsError, match="ICE_CLOUD_SMTP_PASSWORD is required"):
+        CloudSettings.from_env(base)
+    s = CloudSettings.from_env({**base, "ICE_CLOUD_SMTP_PASSWORD": "secret"})
+    assert s.smtp_user == "alerts"
+    assert s.smtp_password == "secret"
+
+
+def test_smtp_user_and_password_are_read_and_stripped():
+    s = CloudSettings.from_env(
+        {
+            "ICE_CLOUD_SESSION_KEY": KEY,
+            "ICE_CLOUD_SMTP_HOST": " smtp.example ",
+            "ICE_CLOUD_SMTP_FROM": "alerts@example.com",
+            "ICE_CLOUD_SMTP_USER": "  alerts  ",
+            "ICE_CLOUD_SMTP_PASSWORD": "  secret\n",
+        }
+    )
+    assert s.smtp_host == "smtp.example"
+    assert s.smtp_user == "alerts"
+    assert s.smtp_password == "secret"

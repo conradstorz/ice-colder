@@ -89,6 +89,12 @@ class CloudSettings:
             raise SettingsError(
                 "ICE_CLOUD_SMTP_FROM is required when ICE_CLOUD_SMTP_HOST is set"
             )
+        smtp_user = get("ICE_CLOUD_SMTP_USER")
+        smtp_password = get("ICE_CLOUD_SMTP_PASSWORD")
+        if smtp_user and not smtp_password:
+            raise SettingsError(
+                "ICE_CLOUD_SMTP_PASSWORD is required when ICE_CLOUD_SMTP_USER is set"
+            )
         raw_port = get("ICE_CLOUD_SMTP_PORT")
         smtp_port = 587
         if raw_port is not None:
