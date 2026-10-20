@@ -1,0 +1,124 @@
+"""Tests for docker/machine/launcher.py (settings parsing and config seeding)."""
+
+import importlib.util
+import json
+from pathlib import Path
+
+import pytest
+
+from ice_common.config_model import ConfigModel
+from ice_edge.config.config_store import add_product
+from ice_edge.vend.dispensers import validate_document
+
+LAUNCHER = Path(__file__).resolve().parents[2] / "docker" / "machine" / "launcher.py"
+spec = importlib.util.spec_from_file_location("machine_launcher", LAUNCHER)
+launcher = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(launcher)
+
+
+def _env(tmp_path, **extra):
+    env = {"ICE_CLOUD_URL": "http://cloud.test:26124", "ICE_COLDER_DATA": str(tmp_path)}
+    env.update(extra)
+    return env
+
+
+def _settings(tmp_path, **extra):
+    return launcher.Settings.from_env(_env(tmp_path, **extra), hostname="unit-host")
+
+
+def test_from_env_requires_cloud_url():
+    for env in ({}, {"ICE_CLOUD_URL": ""}):
+        with pytest.raises(launcher.LauncherError) as exc:
+            launcher.Settings.from_env(env, hostname="unit-host")
+        assert "ICE_CLOUD_URL" in str(exc.value)
+
+
+def test_from_env_defaults():
+    s = launcher.Settings.from_env({"ICE_CLOUD_URL": "http://c"}, hostname="unit-host")
+    assert s.machine_id == "unit-host"
+    assert s.report_interval == 60
+    assert s.data_dir == Path("/app/data")
+
+
+def test_from_env_interval_bounds(tmp_path):
+    for bad in ("9", "3601", "abc"):
+        with pytest.raises(launcher.LauncherError):
+            _settings(tmp_path, ICE_COLDER_REPORT_INTERVAL=bad)
+    assert _settings(tmp_path, ICE_COLDER_REPORT_INTERVAL="10").report_interval == 10
+    assert (
+        _settings(tmp_path, ICE_COLDER_REPORT_INTERVAL="3600").report_interval == 3600
+    )
+
+
+def test_seed_fresh_dir_sells(tmp_path):
+    s = _settings(tmp_path, ICE_COLDER_MACHINE_ID="m-1")
+    config = launcher.seed(s)
+    loaded = ConfigModel.model_validate_json((tmp_path / "config.json").read_text())
+    rows = [(p.sku, p.slot, p.kind, p.button) for p in loaded.products]
+    assert rows == [
+        ("SAMPLE-ICE", 0, "ice", "button_ice"),
+        ("SAMPLE-WATER-SM", 1, "water", "button_water_1gal"),
+        ("SAMPLE-WATER-LG", 2, "water", "button_water_5gal"),
+    ]
+    report = validate_document(
+        (tmp_path / "dispensers.toml").read_text(), config.products
+    )
+    assert report.errors == []
+    assert loaded.cloud.enabled is True
+    assert loaded.cloud.url == "http://cloud.test:26124"
+    assert loaded.machine_id == "m-1"
+    assert loaded.mqtt.broker_host == "127.0.0.1"
+
+
+def test_seed_preserves_identity_and_catalog(tmp_path, monkeypatch):
+    s = _settings(tmp_path, ICE_COLDER_MACHINE_ID="m-1")
+    ident = tmp_path / "cloud_identity.json"
+    access = tmp_path / "access.json"
+    ident.write_bytes(b"\x00identity\xff")
+    access.write_bytes(b"{arbitrary")
+    config = launcher.seed(s)
+    monkeypatch.setenv("ICE_COLDER_CONFIG", str(tmp_path / "config.json"))
+    assert add_product(config, "EXTRA", "Extra", 5.0, slot=3)
+    path = tmp_path / "config.json"
+    data = json.loads(path.read_text())
+    data["machine_id"] = "edited"
+    path.write_text(json.dumps(data))
+    again = launcher.seed(s)
+    assert ident.read_bytes() == b"\x00identity\xff"
+    assert access.read_bytes() == b"{arbitrary"
+    assert len(again.products) == 4
+    assert again.machine_id == "m-1"
+    assert ConfigModel.model_validate_json(path.read_text()).machine_id == "m-1"
+
+
+def test_seed_leaves_existing_dispensers_alone(tmp_path):
+    (tmp_path / "dispensers.toml").write_text("# custom\n")
+    launcher.seed(_settings(tmp_path))
+    assert (tmp_path / "dispensers.toml").read_text() == "# custom\n"
+
+
+def test_seed_rejects_directory_config(tmp_path):
+    (tmp_path / "config.json").mkdir()
+    with pytest.raises(launcher.LauncherError):
+        launcher.seed(_settings(tmp_path))
+
+
+def test_seed_rejects_unparsable_config(tmp_path):
+    (tmp_path / "config.json").write_text("{not json")
+    with pytest.raises(launcher.LauncherError):
+        launcher.seed(_settings(tmp_path))
+
+
+def test_child_env(tmp_path):
+    s = _settings(tmp_path)
+    base = {
+        "PATH": "x",
+        "MQTT_BROKER_HOST": "h",
+        "MQTT_USERNAME": "u",
+        "MQTT_PASSWORD": "p",
+    }
+    env = launcher.child_env(s, base)
+    assert env["ICE_COLDER_CONFIG"] == str(tmp_path / "config.json")
+    assert env["ICE_COLDER_DISPENSERS"] == str(tmp_path / "dispensers.toml")
+    assert env["PATH"] == "x"
+    assert not [k for k in env if k.startswith("MQTT_")]
