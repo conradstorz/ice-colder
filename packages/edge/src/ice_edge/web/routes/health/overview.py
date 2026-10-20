@@ -4,6 +4,8 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 
 from ice_edge.access.access import Permission
+from ice_edge.uplink.identity import cloud_handles_alerts
+from ice_edge.uplink.loop import utc_now
 from ice_edge.views.health import build_health_page_summary
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
@@ -15,6 +17,15 @@ from ice_edge.web.routes.health.faults import _faults_with_age
 from ice_edge.web.routes.health.subsystems import _subsystem_summary
 
 router = APIRouter()
+
+
+def _alerts_mode() -> str | None:
+    """ "cloud" or "local" when the uplink identity exists, else None."""
+    identity = context.machine_identity
+    if identity is None:
+        return None
+    interval = context.config.cloud.report_interval_seconds
+    return "cloud" if cloud_handles_alerts(identity, interval, utc_now()) else "local"
 
 
 @router.get(
@@ -52,6 +63,7 @@ async def health_home(request: Request):
             mqtt_connected=page.mqtt_connected,
             vmc_state=page.vmc_state,
             vmc_build=page.vmc_build,
+            alerts_mode=_alerts_mode(),
             cloud_fingerprint=(
                 context.machine_identity.short_fingerprint
                 if context.machine_identity

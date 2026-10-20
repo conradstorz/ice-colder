@@ -27,9 +27,17 @@ class FakeUplink:
         self.last_status: int | None = 200
         self.bundle_status = None
         self.report_results: list[bool] = []
+        self.alerts_handled = False
+        self.last_register = None
 
     async def register(self, label):
         self.events.append(("register", label))
+        if self.alerts_handled:
+            from ice_contracts.cloud.identity import RegisterResponse
+
+            self.last_register = RegisterResponse(
+                fingerprint="f", claimed=True, alerts_handled=True
+            )
         return self.register_results.pop(0) if self.register_results else True
 
     async def post_claim_code(self, notice):
@@ -313,3 +321,53 @@ async def test_reregistration_resends_bundle_and_live_notice(
         "register", "claim", "put", "post",
         "post",
     ]  # fmt: skip
+
+
+async def test_register_stores_alerts_handled(machine_fake_time, identity):
+    machine, _ = machine_fake_time
+    cfg = ConfigModel()
+    uplink = FakeUplink()
+    uplink.alerts_handled = True
+    sleep, _calls = _sleeper(cfg, stop_after=1)
+    with pytest.raises(asyncio.CancelledError):
+        await run_uplink(machine, cfg, uplink, sleep=sleep, now=_now, identity=identity)
+    assert identity.alerts_handled is True
+
+
+async def test_report_ok_stamps_time(machine_fake_time, identity):
+    machine, _ = machine_fake_time
+    cfg = ConfigModel()
+    sleep, _calls = _sleeper(cfg, stop_after=1)
+    with pytest.raises(asyncio.CancelledError):
+        await run_uplink(
+            machine, cfg, FakeUplink(), sleep=sleep, now=_now, identity=identity
+        )
+    assert identity.last_report_ok_at == _now()
+
+
+async def test_failed_report_does_not_stamp_time(machine_fake_time, identity):
+    machine, _ = machine_fake_time
+    cfg = ConfigModel()
+    uplink = FakeUplink()
+    uplink.report_results = [False]
+    sleep, _calls = _sleeper(cfg, stop_after=1)
+    with pytest.raises(asyncio.CancelledError):
+        await run_uplink(machine, cfg, uplink, sleep=sleep, now=_now, identity=identity)
+    assert identity.last_report_ok_at is None
+
+
+async def test_401_clears_alerts_handled(machine_fake_time, identity):
+    machine, _ = machine_fake_time
+    cfg = ConfigModel()
+    uplink = FakeUplink()
+    uplink.alerts_handled = True
+    uplink.report_results = [False]  # FakeUplink reports 401 on this failure
+    seen: list[bool] = []
+
+    async def sleep(seconds):
+        seen.append(identity.alerts_handled)
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_uplink(machine, cfg, uplink, sleep=sleep, now=_now, identity=identity)
+    assert seen == [False]

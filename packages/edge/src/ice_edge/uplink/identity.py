@@ -11,7 +11,7 @@ import json
 import os
 from dataclasses import dataclass, replace
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
@@ -55,6 +55,9 @@ class MachineIdentity:
         self._created_at = created_at
         self._notice = notice
         self._fingerprint = signing.fingerprint(self._public_key)
+        # In-memory only (never written to the file); set by the uplink loop.
+        self.alerts_handled: bool = False
+        self.last_report_ok_at: datetime | None = None
 
     @classmethod
     def load_or_create(cls, path: Path = IDENTITY_FILE) -> "MachineIdentity":
@@ -171,6 +174,22 @@ class MachineIdentity:
         if os.name == "posix":
             os.chmod(self._path, 0o600)
             fsync_dir(self._path.parent)
+
+
+def cloud_handles_alerts(
+    identity: MachineIdentity | None, interval_seconds: int, now: datetime
+) -> bool:
+    """True while the cloud has taken over alert email and is demonstrably reachable.
+
+    The cloud must have said so at registration and the last accepted report
+    must be no older than three report intervals.
+    """
+    return (
+        identity is not None
+        and identity.alerts_handled
+        and identity.last_report_ok_at is not None
+        and now - identity.last_report_ok_at <= timedelta(seconds=3 * interval_seconds)
+    )
 
 
 def sync_notice_from(

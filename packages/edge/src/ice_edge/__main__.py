@@ -33,8 +33,8 @@ from ice_edge.app.startup_config import (
     warn_if_no_buttons,
     warn_if_setup_mode,
 )
-from ice_edge.uplink.client import HttpUplink
-from ice_edge.uplink.identity import init_cloud_identity
+from ice_edge.uplink.client import HttpUplink, utc_now
+from ice_edge.uplink.identity import cloud_handles_alerts, init_cloud_identity
 from ice_edge.uplink.loop import run_uplink
 from ice_edge.web.context import holder_display_name
 from ice_edge.web.server import app
@@ -185,6 +185,11 @@ async def main():
         identity = init_cloud_identity(access_store)
     if identity is not None:
         routes.set_machine_identity(identity)
+        notifier.set_cloud_handles_alerts(
+            lambda: cloud_handles_alerts(
+                identity, live_config.cloud.report_interval_seconds, utc_now()
+            )
+        )
         uplink = HttpUplink(live_config.cloud.url, identity)
         background.append(
             supervise(
