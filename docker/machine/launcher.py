@@ -158,11 +158,19 @@ def app_children(settings: Settings) -> tuple[ChildSpec, ...]:
 
 
 async def wait_for_port(
-    host: str, port: int, *, timeout: float, interval: float = 0.25
+    host: str,
+    port: int,
+    *,
+    timeout: float,
+    interval: float = 0.25,
+    stop: asyncio.Event | None = None,
 ) -> None:
+    """Wait until host:port accepts a connection; return early if `stop` is set."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while True:
+        if stop is not None and stop.is_set():
+            return
         try:
             _, writer = await asyncio.open_connection(host, port)
         except OSError:
@@ -170,9 +178,19 @@ async def wait_for_port(
                 raise LauncherError(
                     f"{host}:{port} did not accept connections within {timeout}s"
                 ) from None
-            await asyncio.sleep(interval)
+            if stop is None:
+                await asyncio.sleep(interval)
+            else:
+                try:
+                    await asyncio.wait_for(stop.wait(), interval)
+                except asyncio.TimeoutError:
+                    pass
         else:
             writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
             return
 
 
@@ -183,7 +201,9 @@ class Supervisor:
     idempotent per name, so a caller can start a gate-keeping child (mosquitto)
     alone, wait for it, then call `run()`, which first starts every spec not yet
     started and then supervises them all. Public state: `restarts` (restart count
-    per name) and `processes` (the current process per name).
+    per name; it counts respawn attempts, failed ones included), `processes` (the
+    current process per name), `stopping` (set once a stop is requested) and
+    `all_started` (set by `run()` once every spec has been started).
     """
 
     def __init__(
@@ -203,40 +223,60 @@ class Supervisor:
         self._watchers: dict[str, asyncio.Task] = {}
         self._stopping = asyncio.Event()
         self._fatal = asyncio.Event()
+        self.all_started = asyncio.Event()
 
-    async def _spawn(self, spec: ChildSpec) -> None:
-        self.processes[spec.name] = await asyncio.create_subprocess_exec(
-            *spec.argv, env=self.env
-        )
-        log(f"started {spec.name} (pid {self.processes[spec.name].pid})")
+    @property
+    def stopping(self) -> asyncio.Event:
+        return self._stopping
+
+    async def _spawn(self, spec: ChildSpec) -> asyncio.subprocess.Process:
+        proc = await asyncio.create_subprocess_exec(*spec.argv, env=self.env)
+        self.processes[spec.name] = proc
+        log(f"started {spec.name} (pid {proc.pid})")
+        return proc
 
     async def start(self, spec: ChildSpec) -> None:
         if spec.name in self._watchers:
             return
         self.restarts.setdefault(spec.name, 0)
-        await self._spawn(spec)
-        self._watchers[spec.name] = asyncio.create_task(self._watch(spec))
-
-    async def _watch(self, spec: ChildSpec) -> None:
-        while not self._stopping.is_set():
-            code = await self.processes[spec.name].wait()
-            if self._stopping.is_set():
-                return
-            log(f"{spec.name} exited with code {code}")
+        proc: asyncio.subprocess.Process | None = None
+        try:
+            proc = await self._spawn(spec)
+        except OSError as exc:
             if spec.fatal:
-                self._fatal.set()
-                return
+                raise
+            # Treated like an exit: the watcher retries after the restart delay.
+            log(f"start of {spec.name} failed: {exc}")
+        self._watchers[spec.name] = asyncio.create_task(self._watch(spec, proc))
+
+    async def _watch(
+        self, spec: ChildSpec, proc: asyncio.subprocess.Process | None
+    ) -> None:
+        while not self._stopping.is_set():
+            if proc is not None:
+                code = await proc.wait()
+                if self._stopping.is_set():
+                    return
+                log(f"{spec.name} exited with code {code}")
+                if spec.fatal:
+                    self._fatal.set()
+                    return
             try:
                 await asyncio.wait_for(self._stopping.wait(), self.restart_delay)
                 return
             except asyncio.TimeoutError:
                 pass
-            await self._spawn(spec)
             self.restarts[spec.name] += 1
+            try:
+                proc = await self._spawn(spec)
+            except OSError as exc:
+                log(f"restart of {spec.name} failed: {exc}")
+                proc = None
 
     async def run(self) -> int:
         for spec in self.specs:
             await self.start(spec)
+        self.all_started.set()
         stop_wait = asyncio.create_task(self._stopping.wait())
         fatal_wait = asyncio.create_task(self._fatal.wait())
         try:
@@ -257,8 +297,10 @@ class Supervisor:
 
     async def stop(self) -> None:
         self._stopping.set()
-        for watcher in self._watchers.values():
+        watchers = list(self._watchers.values())
+        for watcher in watchers:
             watcher.cancel()
+        await asyncio.gather(*watchers, return_exceptions=True)
         live = [p for p in self.processes.values() if p.returncode is None]
         for proc in live:
             try:
@@ -293,19 +335,22 @@ async def amain(env: Mapping[str, str]) -> int:
         supervisor = Supervisor(
             (mosquitto, *app_children(settings)), env=child_env(settings, env)
         )
+        if sys.platform != "win32":
+            loop = asyncio.get_running_loop()
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                loop.add_signal_handler(sig, supervisor.request_stop)
         await supervisor.start(mosquitto)
         try:
-            await wait_for_port(*BROKER, timeout=10)
+            await wait_for_port(*BROKER, timeout=10, stop=supervisor.stopping)
         except LauncherError:
             await supervisor.stop()
             raise
+        if supervisor.stopping.is_set():
+            await supervisor.stop()
+            return 0
     except LauncherError as exc:
         log(f"error: {exc}")
         return 1
-    if sys.platform != "win32":
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(sig, supervisor.request_stop)
     return await supervisor.run()
 
 

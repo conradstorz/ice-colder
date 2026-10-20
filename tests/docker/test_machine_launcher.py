@@ -193,11 +193,29 @@ async def test_supervisor_start_is_idempotent():
     await sup.start(child)
     first = sup.processes["sleeper"]
     task = asyncio.create_task(sup.run())
-    assert await _poll(lambda: sup.processes["sleeper"] is first)
-    await asyncio.sleep(0.1)
+    await asyncio.wait_for(sup.all_started.wait(), 5)
     assert sup.processes["sleeper"] is first
     sup.request_stop()
     assert await asyncio.wait_for(task, 10) == 0
+
+
+async def test_supervisor_keeps_retrying_failed_spawn(tmp_path):
+    ghost = launcher.ChildSpec("ghost", (str(tmp_path / "no-such-binary"),))
+    sup = launcher.Supervisor([ghost], env={}, restart_delay=0.05, stop_timeout=5.0)
+    task = asyncio.create_task(sup.run())
+    # restarts counts spawn attempts, failed ones included
+    assert await _poll(lambda: sup.restarts.get("ghost", 0) >= 2)
+    assert not task.done()
+    sup.request_stop()
+    assert await asyncio.wait_for(task, 10) == 0
+
+
+async def test_wait_for_port_gives_up_when_stopped():
+    stop = asyncio.Event()
+    stop.set()
+    await asyncio.wait_for(
+        launcher.wait_for_port("127.0.0.1", _free_port(), timeout=30, stop=stop), 5
+    )
 
 
 def test_app_children_argv(tmp_path):
