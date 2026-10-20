@@ -203,6 +203,8 @@ Settings (`CloudSettings`): `ICE_CLOUD_SMTP_HOST`, `ICE_CLOUD_SMTP_PORT` (defaul
 `Literal["0.2.0", "0.3.0"]` on the cloud (ingest keeps accepting 0.2.0 reports from un-upgraded edges)
 and the edge sends `"0.3.0"`. `docs/contracts/edge-cloud/CONTRACT.md` gains a 0.3.0 section.
 
+*(As built, after the final review: the flag is not register-only. `POST .../report` now answers `200 {"alerts_handled": bool}` (`ReportResponse`) instead of 204, and the edge refreshes `identity.alerts_handled` on every successful report, so an unbind, a cloud restart without SMTP, or failing mail hands alerting back to the edge within one interval. The cloud computes it in `ice_cloud.alerts.handled.alerts_handled_for`: claimed AND SMTP AND at least one unmuted, unsuspended recipient AND `Repository.delivery_health` (the most recently attempted non-`muted` delivery is not `failed`). Because dispatch now runs after the response, a failure is visible from the next report. Failed deliveries retry with exponential backoff (`min(2**attempts, 64)` minutes, at most 5 attempts) instead of on every flush. An owner change deletes events and deliveries as well as state and prefs, and the cleared ride-along is bounded by the recipient's access start (`claimed_at` / `granted_at`). Ingest calls `AlertDispatcher.schedule`, a tracked background task drained at shutdown. Technicians see only their own delivery lines on `/machines/{short}/alerts` and mute themselves there; the email footer links to that page. Deploy order: cloud before edges, since a 0.2.0 cloud answers a 0.3.0 report with 422.)*
+
 ### 4.2 Edge
 
 `MachineIdentity` gains in-memory (never persisted) fields set by the uplink loop:
