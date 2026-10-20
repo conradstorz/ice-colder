@@ -9,7 +9,7 @@
 
 ## 0.3.0: cloud alert handling (additive)
 
-`RegisterResponse` gains one field, `alerts_handled: bool = false`. It is `true` when the machine is claimed **and** the cloud has SMTP configured, meaning the cloud emails this machine's alerts. The edge then defers its own local alert emails (the cooldown bookkeeping still runs) only while it is fresh: the last successful report is within 3 x `report_interval_seconds`, so an unreachable cloud is covered by local email again within about three minutes. Semantics: `docs/superpowers/specs/2026-10-19-cloud-alert-forwarding-design.md` section 4.
+`RegisterResponse` gains one field, `alerts_handled: bool = false`. It is `true` when the machine is claimed **and** the cloud has SMTP configured, meaning the cloud emails this machine's alerts. The edge then defers its own local alert emails (the cooldown bookkeeping still runs) only while it is fresh: the last successful report is within 3 x `report_interval_seconds`, so an unreachable cloud is covered by local email again within about three minutes. The edge keeps the flag in memory only: it is cleared on a 401 or a failed register and set afresh by each successful register response. Semantics: `docs/superpowers/specs/2026-10-19-cloud-alert-forwarding-design.md` section 4.
 
 `CLOUD_CONTRACT_VERSION` is `"0.3.0"`; the edge sends it in `MachineReport.contract`. `MachineReport.contract` accepts `"0.2.0"` and `"0.3.0"`, so the cloud keeps ingesting reports from edges that have not been upgraded. No other wire change.
 
