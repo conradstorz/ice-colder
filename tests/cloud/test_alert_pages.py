@@ -27,7 +27,7 @@ def _row(fp, at, n=0, kind="raised"):
 
 
 def _setup(cloud, signer):
-    owner = own_and_select(cloud, signer, make_report(faults=False))
+    owner = own_and_select(cloud, signer, make_report())
     return owner, short(signer)
 
 
