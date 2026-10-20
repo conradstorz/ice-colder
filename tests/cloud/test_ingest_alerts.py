@@ -7,6 +7,8 @@ from ice_cloud.app import create_app
 from tests.cloud.conftest import (
     claim,
     login,
+    select,
+    short,
     make_settings,
     push,
     register,
@@ -129,3 +131,28 @@ def test_0_2_0_report_still_processed(cloud, signer, mailer):
     _claimed(cloud, signer)
     push(cloud, signer, report)
     assert len(mailer.sent) == 1
+
+
+def test_resale_hides_previous_owner_history(cloud, signer, mailer, clock):
+    repo = cloud.app.state.repo
+    first = _claimed(cloud, signer, "first@example.com")
+    push(cloud, signer, make_report())
+    clock.advance(1)
+    push(cloud, signer, make_report(seq=2, faults=False))  # a clear for the old owner
+    assert repo.alert_events(signer.fingerprint, limit=10)
+    clock.advance(1000)
+    second = login(cloud, "second@example.com")
+    assert second.id != first.id
+    claim(cloud, signer, second)
+    assert repo.alert_events(signer.fingerprint, limit=10) == []
+    clock.advance(1000)
+    sent_before = len(mailer.sent)
+    push(cloud, signer, _other_fault(make_report(seq=3)))
+    new = mailer.sent[sent_before:]
+    assert [str(m["To"]) for m in new] == ["second@example.com"]
+    assert "Cleared since your last email" not in new[0].get_body().get_content()
+    select(cloud, signer)
+    page = cloud.get(f"/machines/{short(signer)}/alerts")
+    assert page.status_code == 200
+    assert "WTR-104" in page.text and "ICE-301" not in page.text
+    assert "first@example.com" not in page.text

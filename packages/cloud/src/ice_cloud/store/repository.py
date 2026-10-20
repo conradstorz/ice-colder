@@ -269,7 +269,9 @@ class Repository(Protocol):
     def cleared_since_last_sent(
         self, fingerprint: str, account_id: str
     ) -> list[StoredEvent]:
-        """``cleared`` events after the account's last ``sent`` delivery (all if none)."""
+        """``cleared`` events after the later of the account's last ``sent`` delivery
+        and its access start (``claimed_at`` for the owner, ``granted_at`` for a
+        tech); empty when the account has no access to the machine."""
         ...
 
     def people_for_alerts(self, fingerprint: str) -> list[tuple[Recipient, bool]]:

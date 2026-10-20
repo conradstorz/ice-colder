@@ -605,6 +605,22 @@ def test_last_sent_at_and_cleared_since_last_sent(repo):
     assert repo.last_sent_at(FP, tech.id) is None
 
 
+def test_cleared_since_last_sent_bounded_by_access_start(repo):
+    owner, tech = _claimed(repo)  # both gain access at T0
+    early = repo.record_alert_events(
+        [_event(kind="cleared", at=T0 + timedelta(minutes=1))]
+    )[0]
+    late_tech = repo.upsert_account_from_login("sub-l", "late@example.com", "L", T0)
+    repo.grant_tech(late_tech.id, FP, owner.id, T0 + timedelta(minutes=5))
+    stranger = repo.upsert_account_from_login("sub-s", "s@example.com", "S", T0)
+    after = repo.record_alert_events(
+        [_event(kind="cleared", at=T0 + timedelta(minutes=10))]
+    )[0]
+    assert repo.cleared_since_last_sent(FP, owner.id) == [early, after]
+    assert repo.cleared_since_last_sent(FP, late_tech.id) == [after]
+    assert repo.cleared_since_last_sent(FP, stranger.id) == []
+
+
 def test_deliveries_for_events_groups_by_event(repo):
     owner, tech = _claimed(repo)
     a, b, c = repo.record_alert_events([_event(key=k) for k in "abc"])
@@ -623,14 +639,16 @@ def _seed_alerts(repo, owner, tech):
     return e
 
 
-def test_claim_change_resets_alert_state_and_prefs(repo):
+def test_claim_change_resets_alert_state_prefs_and_history(repo):
     owner, tech = _claimed(repo)
     e = _seed_alerts(repo, owner, tech)
     newer = repo.upsert_account_from_login("sub-n", "new@example.com", "Nia", T0)
     assert repo.claim_machine(FP, newer.id, T0 + timedelta(hours=1)) is True
     assert repo.alert_state(FP) is None
     assert repo.is_muted(tech.id, FP) is False
-    assert [x.id for x in repo.alert_events(FP, limit=5)] == [e.id]
+    assert repo.alert_events(FP, limit=5) == []
+    assert repo.deliveries_for_events([e.id]) == {e.id: []}
+    assert repo.last_sent_at(FP, owner.id) is None
 
 
 def test_reclaim_same_owner_keeps_state(repo):

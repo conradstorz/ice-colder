@@ -240,6 +240,8 @@ def _alert_state(row: sqlite3.Row) -> AlertState:
 _ALERT_DELETES = (
     "DELETE FROM machine_alert_state WHERE fingerprint = ?",
     "DELETE FROM alert_prefs WHERE fingerprint = ?",
+    "DELETE FROM alert_deliveries WHERE fingerprint = ?",
+    "DELETE FROM alert_events WHERE fingerprint = ?",
 )
 
 
@@ -511,12 +513,6 @@ class SqliteRepository:
             conn.execute(DELETE_MEMBERSHIPS_SQL, (fingerprint,))
             for statement in _ALERT_DELETES:
                 conn.execute(statement, (fingerprint,))
-            conn.execute(
-                "DELETE FROM alert_deliveries WHERE fingerprint = ?", (fingerprint,)
-            )
-            conn.execute(
-                "DELETE FROM alert_events WHERE fingerprint = ?", (fingerprint,)
-            )
 
     def all_machines(self) -> list[Machine]:
         with self._connect() as conn:
@@ -835,14 +831,30 @@ class SqliteRepository:
     def cleared_since_last_sent(
         self, fingerprint: str, account_id: str
     ) -> list[StoredEvent]:
-        last = self.last_sent_at(fingerprint, account_id)
-        sql = "SELECT * FROM alert_events WHERE fingerprint = ? AND kind = 'cleared'"
-        params: list[str | None] = [fingerprint]
-        if last is not None:
-            sql += " AND at > ?"
-            params.append(_iso(last))
         with self._connect() as conn:
-            rows = conn.execute(sql + " ORDER BY at, id", params).fetchall()
+            owner = conn.execute(
+                "SELECT claimed_at FROM machines"
+                " WHERE fingerprint = ? AND owner_id = ?",
+                (fingerprint, account_id),
+            ).fetchone()
+            if owner is not None:
+                access_start = _dt(owner["claimed_at"])
+            else:
+                member = conn.execute(
+                    "SELECT granted_at FROM memberships"
+                    " WHERE fingerprint = ? AND account_id = ?",
+                    (fingerprint, account_id),
+                ).fetchone()
+                access_start = None if member is None else _dt(member["granted_at"])
+            if access_start is None:
+                return []
+            last = self.last_sent_at(fingerprint, account_id)
+            bound = access_start if last is None else max(last, access_start)
+            rows = conn.execute(
+                "SELECT * FROM alert_events WHERE fingerprint = ?"
+                " AND kind = 'cleared' AND at > ? ORDER BY at, id",
+                (fingerprint, _iso(bound)),
+            ).fetchall()
         return [_event(r) for r in rows]
 
     def people_for_alerts(self, fingerprint: str) -> list[tuple[Recipient, bool]]:
