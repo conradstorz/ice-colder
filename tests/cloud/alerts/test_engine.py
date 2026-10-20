@@ -32,7 +32,7 @@ def _report(*faults: dict, sent_at: datetime = NOW):
 
 def test_first_report_raises_every_fault():
     report = make_report()
-    events = diff_reports(frozenset(), report, now=LATER, fingerprint=FP)
+    events = diff_reports([], report, now=LATER, fingerprint=FP)
     assert [e.kind for e in events] == ["raised"]
     assert events[0].key == "ICE-10LB"
     assert events[0].fingerprint == FP
@@ -41,34 +41,26 @@ def test_first_report_raises_every_fault():
 
 def test_unchanged_emits_nothing():
     report = make_report()
-    assert (
-        diff_reports(frozenset({"ICE-10LB"}), report, now=LATER, fingerprint=FP) == []
-    )
+    assert diff_reports(list(report.faults), report, now=LATER, fingerprint=FP) == []
 
 
-def test_removed_key_is_cleared_with_code_from_key():
+def test_removed_key_is_cleared_with_fields_from_previous():
+    previous = _report(_machine_fault("WTR-104", gate="safety")).faults
     report = make_report(faults=False)
-    events = diff_reports(frozenset({"WTR-104"}), report, now=LATER, fingerprint=FP)
-    assert len(events) == 1
-    ev = events[0]
+    (ev,) = diff_reports(previous, report, now=LATER, fingerprint=FP)
     assert ev.kind == "cleared"
     assert ev.key == "WTR-104"
     assert ev.code == "WTR-104"
-    assert ev.sku is None
-    assert ev.severity is None and ev.gate is None
-    assert ev.description is None and ev.product is None
-    colon = diff_reports(
-        frozenset({"CFG-101:ICE-10LB"}), report, now=LATER, fingerprint=FP
-    )
-    assert colon[0].code == "CFG-101"
-    assert colon[0].sku == "ICE-10LB"
+    assert ev.severity == "critical"
+    assert ev.gate == "safety"
+    assert ev.description == "WTR-104 description"
+    assert ev.sku is None and ev.product is None
 
 
 def test_mixed_orders_cleared_then_raised_by_key():
     report = _report(_machine_fault("WTR-106"), _machine_fault("ENV-102"))
-    events = diff_reports(
-        frozenset({"WTR-104", "PWR-102"}), report, now=LATER, fingerprint=FP
-    )
+    previous = _report(_machine_fault("WTR-104"), _machine_fault("PWR-102")).faults
+    events = diff_reports(previous, report, now=LATER, fingerprint=FP)
     assert [(e.kind, e.key) for e in events] == [
         ("cleared", "PWR-102"),
         ("cleared", "WTR-104"),
@@ -80,12 +72,13 @@ def test_mixed_orders_cleared_then_raised_by_key():
 
 def test_at_is_now_not_sent_at():
     report = make_report(sent_at=NOW)
-    events = diff_reports(frozenset({"WTR-104"}), report, now=LATER, fingerprint=FP)
+    previous = _report(_machine_fault("WTR-104")).faults
+    events = diff_reports(previous, report, now=LATER, fingerprint=FP)
     assert {e.at for e in events} == {LATER}
 
 
 def test_product_fault_carries_sku_and_product():
-    (ev,) = diff_reports(frozenset(), make_report(), now=LATER, fingerprint=FP)
+    (ev,) = diff_reports([], make_report(), now=LATER, fingerprint=FP)
     assert ev.sku == "ICE-10LB"
     assert ev.product == "Bag of Ice"
     assert ev.severity == "lockout"
