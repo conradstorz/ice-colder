@@ -96,16 +96,16 @@ def test_register_twice_updates_label_and_stays_unclaimed(cloud, signer):
 def test_report_after_register_moves_last_seen(cloud, known, clock):
     before = cloud.app.state.repo.machine(known.fingerprint).last_seen_at
     clock.advance(30)
-    assert signed(cloud, known, "POST", _path(known), _body()).status_code == 204
+    assert signed(cloud, known, "POST", _path(known), _body()).status_code == 200
     after = cloud.app.state.repo.machine(known.fingerprint).last_seen_at
     assert after == before + timedelta(seconds=30)
 
 
-def test_replayed_report_is_204_and_store_unchanged(cloud, known):
+def test_replayed_report_is_200_and_store_unchanged(cloud, known):
     body = make_report(seq=3).model_dump_json().encode()
-    assert signed(cloud, known, "POST", _path(known), body).status_code == 204
+    assert signed(cloud, known, "POST", _path(known), body).status_code == 200
     stored = cloud.app.state.store.latest(known.fingerprint)
-    assert signed(cloud, known, "POST", _path(known), body).status_code == 204
+    assert signed(cloud, known, "POST", _path(known), body).status_code == 200
     assert cloud.app.state.store.latest(known.fingerprint) == stored
 
 

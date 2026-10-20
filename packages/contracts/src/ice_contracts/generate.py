@@ -22,6 +22,7 @@ from ice_contracts.cloud.identity import (
     ClaimCodeNotice,
     RegisterMachine,
     RegisterResponse,
+    ReportResponse,
 )
 from ice_contracts.cloud.report import MachineReport
 from ice_contracts.cloud.ui import BundleManifest
@@ -106,6 +107,7 @@ EDGE_CLOUD_MODELS = {
     "bundle_manifest": BundleManifest,
     "register_machine": RegisterMachine,
     "register_response": RegisterResponse,
+    "report_response": ReportResponse,
     "claim_code_notice": ClaimCodeNotice,
 }
 

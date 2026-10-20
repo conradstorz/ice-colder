@@ -16,6 +16,7 @@ from ice_contracts.cloud.identity import (
     ClaimCodeNotice,
     RegisterMachine,
     RegisterResponse,
+    ReportResponse,
 )
 from ice_contracts.cloud.report import MachineReport
 from ice_contracts.cloud.signing import (
@@ -47,6 +48,9 @@ class HttpUplink:
         """HTTP status of the most recent request; None when it never got a response."""
         self.last_register: RegisterResponse | None = None
         """Parsed body of the latest accepted register; None when it failed or was unparseable."""
+        self.last_report: ReportResponse | None = None
+        """Parsed body of the latest accepted report; None when it failed, was a
+        204 (an older cloud) or was unparseable."""
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"), timeout=timeout, transport=transport
         )
@@ -55,12 +59,21 @@ class HttpUplink:
         return f"/api/v1/machines/{self._identity.fingerprint}/{suffix}"
 
     async def post_report(self, report: MachineReport) -> bool:
-        return await self._send(
+        self.last_report = None
+        response = await self._request(
             "POST",
             self._machine_path("report"),
             content=report.model_dump_json().encode("utf-8"),
             content_type="application/json",
         )
+        if response is None:
+            return False
+        if response.content:
+            try:
+                self.last_report = ReportResponse.model_validate_json(response.content)
+            except ValueError:
+                logger.warning("Cloud uplink report response was not understood")
+        return True
 
     async def put_ui_bundle(self, digest: str, data: bytes) -> bool:
         return await self._send(

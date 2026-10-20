@@ -78,7 +78,7 @@ def test_online_after_sweep_offline(cloud, signer, mailer, clock):
     assert state.offline_since is None
 
 
-def test_alert_failure_still_204(cloud, signer, mailer, monkeypatch):
+def test_alert_failure_still_200(cloud, signer, mailer, monkeypatch):
     _claimed(cloud, signer)
 
     async def boom(*a, **k):
@@ -156,3 +156,71 @@ def test_resale_hides_previous_owner_history(cloud, signer, mailer, clock):
     assert page.status_code == 200
     assert "WTR-104" in page.text and "ICE-301" not in page.text
     assert "first@example.com" not in page.text
+
+
+@pytest.fixture
+def smtp_cloud(tmp_path, clock, provider, mailer):
+    app = create_app(
+        make_settings(
+            tmp_path / "d", smtp_host="smtp.example.com", smtp_from="a@example.com"
+        ),
+        now=clock,
+        provider=provider,
+        mailer=mailer,
+        start_sweep=False,
+    )
+    with TestClient(app, follow_redirects=False) as c:
+        yield c
+
+
+def _flag(cloud, signer, report) -> bool:
+    register(cloud, signer, report.machine_id)
+    r = signed(
+        cloud,
+        signer,
+        "POST",
+        f"/api/v1/machines/{signer.fingerprint}/report",
+        report.model_dump_json().encode(),
+    )
+    assert r.status_code == 200
+    return r.json()["alerts_handled"]
+
+
+def test_report_flag_false_without_smtp(cloud, signer):
+    _claimed(cloud, signer)
+    assert _flag(cloud, signer, make_report()) is False
+
+
+def test_report_flag_false_while_unclaimed_then_true_once_claimed(smtp_cloud, signer):
+    assert _flag(smtp_cloud, signer, make_report()) is False
+    account = login(smtp_cloud, "owner@example.com")
+    claim(smtp_cloud, signer, account)
+    assert _flag(smtp_cloud, signer, make_report(seq=2)) is True
+
+
+def test_report_flag_false_after_unbind(smtp_cloud, signer):
+    _claimed(smtp_cloud, signer)
+    assert _flag(smtp_cloud, signer, make_report()) is True
+    smtp_cloud.app.state.repo.unbind_machine(signer.fingerprint)
+    assert _flag(smtp_cloud, signer, make_report(seq=2)) is False
+
+
+def test_report_flag_false_with_no_unmuted_recipient(smtp_cloud, signer):
+    owner = _claimed(smtp_cloud, signer)
+    repo = smtp_cloud.app.state.repo
+    repo.set_muted(owner.id, signer.fingerprint, True)
+    assert _flag(smtp_cloud, signer, make_report()) is False
+    repo.set_muted(owner.id, signer.fingerprint, False)
+    assert _flag(smtp_cloud, signer, make_report(seq=2)) is True
+    repo.set_suspended(owner.id, smtp_cloud.app.state.now())
+    assert _flag(smtp_cloud, signer, make_report(seq=3)) is False
+
+
+def test_report_flag_tracks_delivery_health(smtp_cloud, signer, mailer, clock):
+    _claimed(smtp_cloud, signer)
+    assert _flag(smtp_cloud, signer, make_report()) is True
+    mailer.fail_next = RuntimeError("smtp down")
+    clock.advance(700)
+    assert _flag(smtp_cloud, signer, _other_fault(make_report(seq=2))) is False
+    clock.advance(1000)  # past the retry backoff: the next pass delivers it
+    assert _flag(smtp_cloud, signer, _other_fault(make_report(seq=3))) is True

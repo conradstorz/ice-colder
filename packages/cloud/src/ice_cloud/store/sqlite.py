@@ -974,6 +974,16 @@ class SqliteRepository:
                 (status, _iso(now), error, status, _iso(now), id),
             )
 
+    def delivery_health(self, fingerprint: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM alert_deliveries WHERE fingerprint = ?"
+                " AND status != 'muted' AND attempted_at IS NOT NULL"
+                " ORDER BY attempted_at DESC, id DESC LIMIT 1",
+                (fingerprint,),
+            ).fetchone()
+        return row is None or row["status"] != "failed"
+
     def last_sent_at(self, fingerprint: str, account_id: str) -> datetime | None:
         with self._connect() as conn:
             row = conn.execute(

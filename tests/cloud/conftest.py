@@ -172,7 +172,7 @@ def push(cloud: TestClient, signer: Signer, report) -> None:
         f"/api/v1/machines/{signer.fingerprint}/report",
         report.model_dump_json().encode(),
     )
-    assert r.status_code == 204
+    assert r.status_code == 200
 
 
 def short(signer: Signer) -> str:

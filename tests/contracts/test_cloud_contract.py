@@ -1,4 +1,4 @@
-"""Edge-cloud contract: MachineReport and the UI bundle manifest (v0.2.0)."""
+"""Edge-cloud contract: MachineReport and the UI bundle manifest (v0.3.0)."""
 
 import json
 from pathlib import Path

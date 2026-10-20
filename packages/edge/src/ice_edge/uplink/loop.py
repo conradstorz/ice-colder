@@ -117,6 +117,10 @@ async def run_uplink(
                 seq += 1
                 if await uplink.post_report(report):
                     identity.last_report_ok_at = now()
+                    # The cloud recomputes this on every report; an old cloud
+                    # (204) or an unreadable body counts as "not handled".
+                    last = uplink.last_report
+                    identity.alerts_handled = bool(last and last.alerts_handled)
                 else:
                     registered = registered and uplink.last_status != 401
         except Exception:

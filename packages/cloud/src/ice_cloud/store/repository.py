@@ -318,6 +318,12 @@ class Repository(Protocol):
         ``sent_at`` is set only for ``sent``."""
         ...
 
+    def delivery_health(self, fingerprint: str) -> bool:
+        """False when the machine's most recently attempted delivery (ignoring
+        ``muted`` rows, which are never attempts) is ``failed``; true otherwise,
+        including when there is no delivery at all."""
+        ...
+
     def last_sent_at(self, fingerprint: str, account_id: str) -> datetime | None: ...
 
     def deliveries_for_events(

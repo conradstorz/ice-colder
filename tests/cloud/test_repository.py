@@ -750,3 +750,19 @@ def test_mark_offline_if_unchanged_skips_when_report_arrived(repo):
     assert repo.mark_offline_if_unchanged(FP, _state().last_report_at, offline) is None
     assert repo.alert_state(FP) == newer
     assert repo.alert_events(FP, limit=5) == []
+
+
+def test_delivery_health_follows_most_recent_attempt(repo):
+    owner, tech = _claimed(repo)
+    e = repo.record_alert_events([_event()])[0]
+    assert repo.delivery_health(FP) is True
+    first = repo.create_delivery(FP, owner.id, [e.id], "pending", T0)
+    repo.mark_delivery(first.id, status="failed", now=T0 + timedelta(minutes=1))
+    assert repo.delivery_health(FP) is False
+    repo.create_delivery(FP, tech.id, [e.id], "muted", T0 + timedelta(minutes=2))
+    assert repo.delivery_health(FP) is False  # a muted row is not an attempt
+    second = repo.create_delivery(FP, owner.id, [e.id], "pending", T0)
+    repo.mark_delivery(second.id, status="sent", now=T0 + timedelta(minutes=3))
+    assert repo.delivery_health(FP) is True
+    repo.mark_delivery(first.id, status="failed", now=T0 + timedelta(minutes=4))
+    assert repo.delivery_health(FP) is False

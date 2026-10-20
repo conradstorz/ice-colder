@@ -29,6 +29,8 @@ class FakeUplink:
         self.report_results: list[bool] = []
         self.alerts_handled = False
         self.last_register = None
+        self.last_report = None
+        self.report_flags: list[bool | None] = []
 
     async def register(self, label):
         self.events.append(("register", label))
@@ -58,6 +60,10 @@ class FakeUplink:
 
     async def post_report(self, report):
         self.events.append(("post", report.seq, report.boot_id))
+        from ice_contracts.cloud.identity import ReportResponse
+
+        flag = self.report_flags.pop(0) if self.report_flags else self.alerts_handled
+        self.last_report = None if flag is None else ReportResponse(alerts_handled=flag)
         if self.report_results:
             ok = self.report_results.pop(0)
             self.last_status = 200 if ok else 401
@@ -371,3 +377,20 @@ async def test_401_clears_alerts_handled(machine_fake_time, identity):
     with pytest.raises(asyncio.CancelledError):
         await run_uplink(machine, cfg, uplink, sleep=sleep, now=_now, identity=identity)
     assert seen == [False]
+
+
+async def test_alerts_handled_follows_every_report(machine_fake_time, identity):
+    machine, _ = machine_fake_time
+    cfg = ConfigModel()
+    uplink = FakeUplink()
+    uplink.report_flags = [True, False, True, None]
+    seen: list[bool] = []
+
+    async def sleep(seconds):
+        seen.append(identity.alerts_handled)
+        if len(seen) >= 4:
+            raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_uplink(machine, cfg, uplink, sleep=sleep, now=_now, identity=identity)
+    assert seen == [True, False, True, False]  # a missing body means not handled
