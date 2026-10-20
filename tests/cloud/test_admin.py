@@ -128,3 +128,51 @@ def test_setup_code_without_expiry_shows_claim_open(cloud, signer):
     cloud.app.state.repo.set_claim_code(fp, "h", None)
     _admin(cloud)
     assert "claim open: yes" in cloud.get("/admin").text
+
+
+def _smtp_app(settings, clock, provider, mailer):
+    from dataclasses import replace
+
+    from ice_cloud.app import create_app
+
+    configured = replace(settings, smtp_host="smtp.example.com", smtp_from="a@x.org")
+    return create_app(configured, now=clock, provider=provider, mailer=mailer)
+
+
+def test_admin_shows_smtp_status_both_states(cloud, settings, clock, provider, mailer):
+    _admin(cloud)
+    assert "Email: log-only" in cloud.get("/admin").text
+    app = _smtp_app(settings, clock, provider, mailer)
+    with TestClient(app, follow_redirects=False) as c:
+        login(c, "admin@example.com")
+        assert "Email: configured (smtp.example.com)" in c.get("/admin").text
+
+
+def test_test_email_sends_to_admin_address(cloud, mailer):
+    _admin(cloud)
+    r = cloud.post("/admin/test-email", headers=HX)
+    assert r.status_code == 200
+    assert "Sent to admin@example.com" in r.text
+    (msg,) = mailer.sent
+    assert msg["To"] == "admin@example.com"
+    assert msg["Subject"] == "[ice-colder] test email"
+    assert msg["From"] == "ice-colder@localhost"
+
+
+def test_test_email_reports_failure(cloud, mailer):
+    _admin(cloud)
+    mailer.fail_next = RuntimeError("smtp down")
+    r = cloud.post("/admin/test-email", headers=HX)
+    assert r.status_code == 200
+    assert "Failed: smtp down" in r.text
+    assert mailer.sent == []
+
+
+def test_test_email_requires_admin_and_htmx(cloud, mailer):
+    login(cloud, "user@example.com")
+    assert cloud.post("/admin/test-email", headers=HX).status_code == 404
+    other = TestClient(cloud.app, follow_redirects=False)
+    with other:
+        _admin(other)
+        assert other.post("/admin/test-email").status_code == 403
+    assert mailer.sent == []

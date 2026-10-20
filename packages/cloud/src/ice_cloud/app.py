@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI
 
+from ice_cloud.alerts.mail import Mailer, make_mailer
 from ice_cloud.body_limit import BodyLimitMiddleware
 from ice_cloud import admin, auth, claim, ingest, machine_auth, people, portal
 from ice_common.backoff import Backoff
@@ -29,6 +30,7 @@ def create_app(
     *,
     now: Callable[[], datetime] = utc_now,
     provider: auth.OidcProvider | None = None,
+    mailer: Mailer | None = None,
 ) -> FastAPI:
     http: httpx.AsyncClient | None = None
 
@@ -51,6 +53,7 @@ def create_app(
             http=http,
         )
     app.state.provider = provider
+    app.state.mailer = mailer if mailer is not None else make_mailer(settings)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     app.state.store = SnapshotStore(settings.data_dir)
     app.state.repo = SqliteRepository(settings.data_dir / "cloud.db")
