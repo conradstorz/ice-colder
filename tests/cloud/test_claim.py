@@ -185,12 +185,10 @@ def test_claim_before_delete_notice_and_after(cloud, signer):
 
 def test_consumed_code_cannot_reopen_the_claim_via_signed_notice(cloud, signer):
     fp = open_claim(cloud, signer)
+    consumed = cloud.app.state.repo.machine(fp).claim_code_hash
     login(cloud, "a@example.com")
     assert post_claim(cloud, signer).status_code == 303
-    notice = ClaimCodeNotice(
-        claim_code_hash=cloud.app.state.repo.machine(fp).consumed_claim_hash,
-        expires_at=None,
-    )
+    notice = ClaimCodeNotice(claim_code_hash=consumed, expires_at=None)
     r = signed(
         cloud,
         signer,
@@ -221,3 +219,32 @@ def test_a_fresh_hash_after_a_claim_opens_a_new_claim(cloud, signer):
     b = login(cloud, "b@example.com")
     assert post_claim(cloud, signer, code="87654321").status_code == 303
     assert cloud.app.state.repo.machine(fp).owner_id == b.id
+
+
+def test_consumed_code_stays_dead_after_an_intervening_link_code(cloud, signer):
+    """claim h -> notice g -> notice h again (setup fallback) -> reclaim is 403."""
+
+    def notice(code_hash):
+        body = ClaimCodeNotice(claim_code_hash=code_hash, expires_at=None)
+        r = signed(
+            cloud,
+            signer,
+            "POST",
+            f"/api/v1/machines/{fp}/claim-code",
+            body.model_dump_json().encode(),
+        )
+        assert r.status_code == 204
+
+    fp = open_claim(cloud, signer)
+    h = cloud.app.state.repo.machine(fp).claim_code_hash
+    buyer = login(cloud, "buyer@example.com")
+    assert post_claim(cloud, signer).status_code == 303
+    g = hash_secret("87654321")
+    notice(g)  # buyer mints a link code
+    signed(cloud, signer, "DELETE", f"/api/v1/machines/{fp}/claim-code")  # cancelled
+    notice(h)  # the edge falls back to the unfinalised setup hash
+    assert cloud.app.state.repo.machine(fp).claim_code_hash is None
+    cloud.cookies.clear()
+    login(cloud, "seller@example.com")
+    assert post_claim(cloud, signer).status_code == 403
+    assert cloud.app.state.repo.machine(fp).owner_id == buyer.id

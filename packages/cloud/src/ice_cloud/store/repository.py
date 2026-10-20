@@ -36,7 +36,6 @@ class Machine:
     claim_code_hash: str | None
     claim_code_expires_at: datetime | None
     claimed_at: datetime | None
-    consumed_claim_hash: str | None = None
 
 
 @dataclass(frozen=True)
@@ -125,7 +124,13 @@ class Repository(Protocol):
         self, fingerprint: str, digest: str, now: datetime
     ) -> None: ...
 
-    def unbind_machine(self, fingerprint: str) -> None: ...
+    def consumed_claim_hashes(self, fingerprint: str) -> set[str]:
+        """Claim-code hashes a claim has spent; ``set_claim_code`` ignores them."""
+        ...
+
+    def unbind_machine(self, fingerprint: str) -> None:
+        """Admin reset: drops the owner, memberships and consumed hashes."""
+        ...
 
     def all_machines(self) -> list[Machine]: ...
 

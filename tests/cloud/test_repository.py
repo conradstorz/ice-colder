@@ -365,10 +365,27 @@ def test_set_claim_code_ignores_the_hash_a_claim_consumed(repo):
     assert repo.claim_machine(FP, owner.id, T0, expected_hash="h") is True
     repo.set_claim_code(FP, "h", None)  # the edge re-sending the consumed code
     assert repo.machine(FP).claim_code_hash is None
-    assert repo.machine(FP).consumed_claim_hash == "h"
+    assert repo.consumed_claim_hashes(FP) == {"h"}
     repo.set_claim_code(FP, "fresh", None)
-    m = repo.machine(FP)
-    assert m.claim_code_hash == "fresh" and m.consumed_claim_hash is None
+    assert repo.machine(FP).claim_code_hash == "fresh"
+    # A fresh hash does not make a consumed one usable again.
+    assert repo.consumed_claim_hashes(FP) == {"h"}
+    repo.set_claim_code(FP, "h", None)
+    assert repo.machine(FP).claim_code_hash == "fresh"
+    repo.set_claim_code(FP, None, None)
+    repo.set_claim_code(FP, "h", None)
+    assert repo.machine(FP).claim_code_hash is None
+
+
+def test_unbind_is_the_only_thing_that_forgets_consumed_hashes(repo):
+    owner, _ = _accounts(repo)
+    repo.register_machine(FP, KEY, "a", T0)
+    repo.set_claim_code(FP, "h", None)
+    repo.claim_machine(FP, owner.id, T0, expected_hash="h")
+    repo.unbind_machine(FP)
+    assert repo.consumed_claim_hashes(FP) == set()
+    repo.set_claim_code(FP, "h", None)
+    assert repo.machine(FP).claim_code_hash == "h"
 
 
 def test_reclaim_by_the_same_owner_keeps_techs(repo):
