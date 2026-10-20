@@ -321,7 +321,7 @@ class Repository(Protocol):
 
     def delivery_health(self, fingerprint: str) -> bool:
         """False when the machine's most recently attempted delivery (ignoring
-        ``muted`` rows, which are never attempts) is ``failed``; true otherwise,
+        ``muted`` rows and rows never attempted) is ``failed``; true otherwise,
         including when there is no delivery at all."""
         ...
 

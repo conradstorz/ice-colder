@@ -978,7 +978,7 @@ class SqliteRepository:
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT status FROM alert_deliveries WHERE fingerprint = ?"
-                " AND status != 'muted' AND attempted_at IS NOT NULL"
+                " AND status != 'muted' AND attempts > 0 AND attempted_at IS NOT NULL"
                 " ORDER BY attempted_at DESC, id DESC LIMIT 1",
                 (fingerprint,),
             ).fetchone()

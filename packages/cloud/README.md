@@ -85,7 +85,7 @@ The cloud emails a claimed machine's owner and technicians when a fault is raise
 
 **Who gets what.** Owners and technicians receive `raised` faults of gate `safety` or `fulfillment`, plus `offline` and `online`. Only the owner receives `raised` faults of gate `alert` (for example `DATA-101`). `cleared` events never trigger an email alone; they ride along in the next email to that person. Each person can be muted per machine: the owner on `/machines/{short}/people` (anyone), a technician on `/machines/{short}/alerts` (only themselves); the footer link in every email points to the alerts page. A mute is removed when the person loses access. Suspended accounts get nothing.
 
-**Cooldown and bundling.** At most one email per person per machine every 10 minutes, counted from the last successful send. Events inside the window are held as `pending` and go out together, with any `cleared` events since the person's last email, once the window closes (the sweep flushes, so within about a minute of it). A failed send is retried on later passes under the same cooldown gate, up to 5 attempts, then stays `failed`.
+**Cooldown and bundling.** At most one email per person per machine every 10 minutes, counted from the last successful send. Events inside the window are held as `pending` and go out together, with any `cleared` events since the person's last email, once the window closes (the sweep flushes, so within about a minute of it). A failed send is retried with exponential backoff (2, 4, 8, 16 minutes), up to 5 attempts, then stays `failed`.
 
 **SMTP.** Set in the cloud's environment (see `.env.example`):
 
@@ -103,7 +103,7 @@ Until `ICE_CLOUD_SMTP_HOST` is set the cloud logs one warning at boot and tells 
 
 **Startup grace.** After a cloud restart the sweep flags nobody offline until 3 x that machine's interval has passed since the cloud started, so downtime does not email the fleet "offline" then "online".
 
-**Open items.** No SMTP rate limiting beyond the cooldown. The sweep is one in-process task, so run one cloud instance. A failed send is retried with exponential backoff (2, 4, 8, 16 minutes after attempts 1 to 4), then left `failed` after 5 attempts. Mail is sent from a background task so a slow SMTP server never delays a report. **Upgrade order:** upgrade the cloud before the edges; a 0.2.0 cloud rejects a 0.3.0 report with 422 and the portal goes stale. `FORWARDED_ALLOW_IPS` is unrelated to alerts.
+**Open items.** Deferral is one-shot: the first fault raised after SMTP breaks is deferred by the edge while the flag is still true, and if the cloud's five attempts (about 30 minutes) all fail, that fault is emailed by nobody; the flag going false protects only later faults. Follow-up idea: when the edge sees the flag go true to false, re-deliver the deferred alerts that are still active. No SMTP rate limiting beyond the cooldown. The sweep is one in-process task, so run one cloud instance. A failed send is retried with exponential backoff (2, 4, 8, 16 minutes after attempts 1 to 4), then left `failed` after 5 attempts. Mail is sent from a background task so a slow SMTP server never delays a report. **Upgrade order:** upgrade the cloud before the edges; a 0.2.0 cloud rejects a 0.3.0 report with 422 and the portal goes stale. `FORWARDED_ALLOW_IPS` is unrelated to alerts.
 
 ## Key rotation
 

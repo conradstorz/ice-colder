@@ -762,6 +762,11 @@ def test_delivery_health_follows_most_recent_attempt(repo):
     assert repo.delivery_health(FP) is False
     repo.create_delivery(FP, tech.id, [e.id], "muted", T0 + timedelta(minutes=2))
     assert repo.delivery_health(FP) is False  # a muted row is not an attempt
+    fresh = repo.create_delivery(
+        FP, owner.id, [e.id], "pending", T0 + timedelta(minutes=2, seconds=30)
+    )
+    assert fresh.attempts == 0
+    assert repo.delivery_health(FP) is False  # a never-attempted row is not a success
     second = repo.create_delivery(FP, owner.id, [e.id], "pending", T0)
     repo.mark_delivery(second.id, status="sent", now=T0 + timedelta(minutes=3))
     assert repo.delivery_health(FP) is True
