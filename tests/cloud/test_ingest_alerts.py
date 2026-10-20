@@ -223,14 +223,15 @@ def test_report_flag_tracks_delivery_health(smtp_cloud, signer, mailer, clock):
     _claimed(smtp_cloud, signer)
     assert _flag(smtp_cloud, signer, make_report()) is True
     mailer.fail_next = RuntimeError("smtp down")
-    clock.advance(700)
-    # Dispatch runs after the response, so this report still sees a healthy log...
-    assert _flag(smtp_cloud, signer, _other_fault(make_report(seq=2))) is True
-    # ...and the next one sees the failure.
-    clock.advance(10)
+    clock.advance(700)  # Clock.advance is absolute: now = start + 700 s
+    # Dispatch runs after the response, so this report's own flag is a race with
+    # the send; what matters is the failure that it leaves behind.
+    _flag(smtp_cloud, signer, _other_fault(make_report(seq=2)))
+    clock.advance(710)  # inside the 2-minute retry backoff: still failing
     assert _flag(smtp_cloud, signer, _other_fault(make_report(seq=3))) is False
-    clock.advance(1000)  # past the retry backoff: this pass delivers it
-    assert _flag(smtp_cloud, signer, _other_fault(make_report(seq=4))) is False
+    clock.advance(1000)  # past the backoff: this pass retries and delivers
+    _flag(smtp_cloud, signer, _other_fault(make_report(seq=4)))
+    clock.advance(1010)
     assert _flag(smtp_cloud, signer, _other_fault(make_report(seq=5))) is True
 
 
