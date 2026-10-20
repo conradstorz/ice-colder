@@ -914,7 +914,9 @@ class SqliteRepository:
                 ).fetchone()
             )
 
-    def pending_deliveries(self, *, before: datetime) -> list[Delivery]:
+    def pending_deliveries(
+        self, *, before: datetime, ignore_backoff: bool = False
+    ) -> list[Delivery]:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM alert_deliveries WHERE"
@@ -922,7 +924,17 @@ class SqliteRepository:
                 " OR (status = 'failed' AND attempts < ?) ORDER BY id",
                 (_iso(before), MAX_DELIVERY_ATTEMPTS),
             ).fetchall()
-        return [_delivery(r) for r in rows]
+        out = []
+        for delivery in map(_delivery, rows):
+            if delivery.status == "failed" and not ignore_backoff:
+                wait = timedelta(minutes=min(2**delivery.attempts, 64))
+                if (
+                    delivery.attempted_at is None
+                    or delivery.attempted_at + wait > before
+                ):
+                    continue
+            out.append(delivery)
+        return out
 
     def mark_delivery(
         self, id: int, *, status: str, now: datetime, error: str | None = None

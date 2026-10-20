@@ -90,7 +90,9 @@ class AlertDispatcher:
                 now,
             )
             if await self._cooled_down(fingerprint, account_id, now):
-                due = await asyncio.to_thread(self._repo.pending_deliveries, before=now)
+                due = await asyncio.to_thread(
+                    self._repo.pending_deliveries, before=now, ignore_backoff=True
+                )
                 rows = [
                     d
                     for d in due

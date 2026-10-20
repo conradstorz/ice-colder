@@ -544,7 +544,7 @@ def test_create_delivery_and_mark_increments_attempts(repo):
     repo.mark_delivery(
         d.id, status="failed", now=T0 + timedelta(minutes=1), error="boom"
     )
-    (failed,) = repo.pending_deliveries(before=T0)
+    (failed,) = repo.pending_deliveries(before=T0 + timedelta(days=1))
     assert failed.status == "failed" and failed.error == "boom"
     assert failed.attempts == 1 and failed.sent_at is None
     repo.mark_delivery(d.id, status="sent", now=T0 + timedelta(minutes=2))
@@ -569,9 +569,22 @@ def test_pending_deliveries_excludes_exhausted_failed(repo):
     d = repo.create_delivery(FP, owner.id, [e.id], "pending", T0)
     for n in range(4):
         repo.mark_delivery(d.id, status="failed", now=T0, error="x")
-        assert [x.attempts for x in repo.pending_deliveries(before=T0)] == [n + 1]
+        later = T0 + timedelta(days=1)
+        assert [x.attempts for x in repo.pending_deliveries(before=later)] == [n + 1]
     repo.mark_delivery(d.id, status="failed", now=T0, error="x")
-    assert repo.pending_deliveries(before=T0) == []
+    assert repo.pending_deliveries(before=T0 + timedelta(days=1)) == []
+
+
+def test_failed_delivery_backs_off_exponentially(repo):
+    owner, _ = _claimed(repo)
+    e = repo.record_alert_events([_event()])[0]
+    d = repo.create_delivery(FP, owner.id, [e.id], "pending", T0)
+    for attempts, minutes in [(1, 2), (2, 4), (3, 8), (4, 16)]:
+        repo.mark_delivery(d.id, status="failed", now=T0, error="x")
+        just_before = T0 + timedelta(minutes=minutes) - timedelta(seconds=1)
+        assert repo.pending_deliveries(before=just_before) == []
+        due = repo.pending_deliveries(before=T0 + timedelta(minutes=minutes))
+        assert [x.attempts for x in due] == [attempts]
 
 
 def test_last_sent_at_and_cleared_since_last_sent(repo):

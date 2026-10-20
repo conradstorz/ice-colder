@@ -290,9 +290,14 @@ class Repository(Protocol):
         now: datetime,
     ) -> Delivery: ...
 
-    def pending_deliveries(self, *, before: datetime) -> list[Delivery]:
-        """``pending`` rows with ``attempted_at <= before`` and ``failed`` rows
-        with fewer than 5 attempts."""
+    def pending_deliveries(
+        self, *, before: datetime, ignore_backoff: bool = False
+    ) -> list[Delivery]:
+        """``pending`` rows with ``attempted_at <= before`` and ``failed`` rows with
+        fewer than 5 attempts whose backoff has elapsed: ``attempted_at`` plus
+        ``min(2**attempts, 64)`` minutes is at or before ``before``. With
+        ``ignore_backoff`` every failed row under the attempt cap is returned
+        (used to fold them into an email that is going out anyway)."""
         ...
 
     def mark_delivery(

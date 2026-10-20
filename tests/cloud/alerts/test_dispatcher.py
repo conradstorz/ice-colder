@@ -69,13 +69,16 @@ async def test_failed_send_marks_failed_and_retries_on_flush(env):
     assert statuses == ["failed", "sent"]
     failed = next(d for d in env.deliveries(stored) if d.status == "failed")
     assert failed.attempts == 1 and "smtp down" in failed.error
-    env.clock.advance(1)
+    env.clock.advance(60)
+    await env.disp.flush(env.clock())
+    assert {d.status for d in env.deliveries(stored)} == {"failed", "sent"}
+    env.clock.advance(120)
     await env.disp.flush(env.clock())
     assert {d.status for d in env.deliveries(stored)} == {"sent"}
     assert len(env.mailer.sent) == 2
 
 
-async def test_sixth_attempt_not_retried(env):
+async def test_failed_retries_back_off_then_stop(env):
     class Down:
         async def send(self, msg):
             raise RuntimeError("x" * 900)
@@ -90,9 +93,18 @@ async def test_sixth_attempt_not_retried(env):
     stored = await env.dispatch(event_row(key="k", gate="alert"))
     (d,) = env.deliveries(stored)
     assert d.status == "failed" and d.attempts == 1 and len(d.error) <= 500
-    for _ in range(10):
+    for _ in range(5):
         env.clock.advance(1)
         await env.disp.flush(env.clock())
+    (d,) = env.deliveries(stored)
+    assert d.attempts == 1  # five quick flushes do not exhaust the row
+    for minutes in (2, 4, 8, 16):
+        env.clock.advance(minutes * 60)
+        await env.disp.flush(env.clock())
+    (d,) = env.deliveries(stored)
+    assert d.attempts == 5
+    env.clock.advance(3600)
+    await env.disp.flush(env.clock())
     (d,) = env.deliveries(stored)
     assert d.attempts == 5
 
