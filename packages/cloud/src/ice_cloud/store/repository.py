@@ -36,6 +36,7 @@ class Machine:
     claim_code_hash: str | None
     claim_code_expires_at: datetime | None
     claimed_at: datetime | None
+    consumed_claim_hash: str | None = None
 
 
 @dataclass(frozen=True)

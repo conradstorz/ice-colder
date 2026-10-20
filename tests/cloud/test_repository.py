@@ -356,3 +356,25 @@ def test_invitations_by_excludes_expired_and_accepted(repo):
     }
     assert old.expires_at == T0 + timedelta(hours=1)
     assert repo.invitations_by(owner.id, None, old.expires_at) == [live]
+
+
+def test_set_claim_code_ignores_the_hash_a_claim_consumed(repo):
+    owner, _ = _accounts(repo)
+    repo.register_machine(FP, KEY, "a", T0)
+    repo.set_claim_code(FP, "h", None)
+    assert repo.claim_machine(FP, owner.id, T0, expected_hash="h") is True
+    repo.set_claim_code(FP, "h", None)  # the edge re-sending the consumed code
+    assert repo.machine(FP).claim_code_hash is None
+    assert repo.machine(FP).consumed_claim_hash == "h"
+    repo.set_claim_code(FP, "fresh", None)
+    m = repo.machine(FP)
+    assert m.claim_code_hash == "fresh" and m.consumed_claim_hash is None
+
+
+def test_reclaim_by_the_same_owner_keeps_techs(repo):
+    owner, tech = _accounts(repo)
+    repo.register_machine(FP, KEY, "a", T0)
+    repo.claim_machine(FP, owner.id, T0)
+    repo.grant_tech(tech.id, FP, owner.id, T0)
+    assert repo.claim_machine(FP, owner.id, T0 + timedelta(hours=1)) is True
+    assert repo.access_for(tech.id, FP) == "tech"

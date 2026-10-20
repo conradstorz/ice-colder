@@ -171,3 +171,43 @@ def test_claim_before_delete_notice_and_after(cloud, signer):
     r = signed(cloud, other, "DELETE", f"/api/v1/machines/{fp2}/claim-code")
     assert r.status_code == 204
     assert post_claim(cloud, other).status_code == 403
+
+
+def test_consumed_code_cannot_reopen_the_claim_via_signed_notice(cloud, signer):
+    fp = open_claim(cloud, signer)
+    login(cloud, "a@example.com")
+    assert post_claim(cloud, signer).status_code == 303
+    notice = ClaimCodeNotice(
+        claim_code_hash=cloud.app.state.repo.machine(fp).consumed_claim_hash,
+        expires_at=None,
+    )
+    r = signed(
+        cloud,
+        signer,
+        "POST",
+        f"/api/v1/machines/{fp}/claim-code",
+        notice.model_dump_json().encode(),
+    )
+    assert r.status_code == 204
+    cloud.cookies.clear()
+    login(cloud, "b@example.com")
+    assert post_claim(cloud, signer).status_code == 403
+    assert cloud.app.state.repo.machine(fp).claim_code_hash is None
+
+
+def test_a_fresh_hash_after_a_claim_opens_a_new_claim(cloud, signer):
+    fp = open_claim(cloud, signer)
+    login(cloud, "a@example.com")
+    assert post_claim(cloud, signer).status_code == 303
+    notice = ClaimCodeNotice(claim_code_hash=hash_secret("87654321"), expires_at=None)
+    signed(
+        cloud,
+        signer,
+        "POST",
+        f"/api/v1/machines/{fp}/claim-code",
+        notice.model_dump_json().encode(),
+    )
+    cloud.cookies.clear()
+    b = login(cloud, "b@example.com")
+    assert post_claim(cloud, signer, code="87654321").status_code == 303
+    assert cloud.app.state.repo.machine(fp).owner_id == b.id

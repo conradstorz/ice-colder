@@ -65,7 +65,8 @@ MIGRATIONS: list[str] = [
         accepted_by TEXT REFERENCES accounts(id),
         accepted_at TEXT
     );
-    """
+    """,
+    "ALTER TABLE machines ADD COLUMN consumed_claim_hash TEXT",
 ]
 
 # Public so a test can substitute a failing statement and prove a claim is atomic.
@@ -104,6 +105,7 @@ def _machine(row: sqlite3.Row) -> Machine:
         claim_code_hash=row["claim_code_hash"],
         claim_code_expires_at=_dt(row["claim_code_expires_at"]),
         claimed_at=_dt(row["claimed_at"]),
+        consumed_claim_hash=row["consumed_claim_hash"],
     )
 
 
@@ -274,10 +276,19 @@ class SqliteRepository:
         self, fingerprint: str, hash: str | None, expires_at: datetime | None
     ) -> None:
         with self._tx() as conn:
+            if hash is None:
+                conn.execute(
+                    "UPDATE machines SET claim_code_hash = NULL,"
+                    " claim_code_expires_at = NULL WHERE fingerprint = ?",
+                    (fingerprint,),
+                )
+                return
+            # A hash a claim already consumed must not reopen the claim (resale).
             conn.execute(
-                "UPDATE machines SET claim_code_hash = ?, claim_code_expires_at = ?"
-                " WHERE fingerprint = ?",
-                (hash, _iso(expires_at), fingerprint),
+                "UPDATE machines SET claim_code_hash = ?, claim_code_expires_at = ?,"
+                " consumed_claim_hash = NULL WHERE fingerprint = ?"
+                " AND consumed_claim_hash IS NOT ?",
+                (hash, _iso(expires_at), fingerprint, hash),
             )
 
     def claim_machine(
@@ -301,15 +312,20 @@ class SqliteRepository:
                 "SELECT 1 FROM accounts WHERE id = ?", (account_id,)
             ).fetchone():
                 return False
+            before = conn.execute(
+                "SELECT owner_id FROM machines WHERE fingerprint = ?", (fingerprint,)
+            ).fetchone()
             cur = conn.execute(
                 "UPDATE machines SET owner_id = ?, claimed_at = ?,"
+                " consumed_claim_hash = COALESCE(claim_code_hash, consumed_claim_hash),"
                 " claim_code_hash = NULL, claim_code_expires_at = NULL"
                 f" WHERE {where}",
                 params,
             )
             if cur.rowcount == 0:
                 return False
-            conn.execute(DELETE_MEMBERSHIPS_SQL, (fingerprint,))
+            if before["owner_id"] != account_id:
+                conn.execute(DELETE_MEMBERSHIPS_SQL, (fingerprint,))
             return True
 
     def unbind_machine(self, fingerprint: str) -> None:

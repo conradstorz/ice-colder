@@ -10,8 +10,12 @@ import binascii
 import json
 import os
 from dataclasses import dataclass, replace
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol
+
+from loguru import logger
 
 from ice_common.paths import DATA_DIR, fsync_dir
 from ice_contracts.cloud import signing
@@ -160,3 +164,49 @@ class MachineIdentity:
         if os.name == "posix":
             os.chmod(self._path, 0o600)
             fsync_dir(self._path.parent)
+
+
+def sync_notice_from(
+    identity: MachineIdentity,
+    cloud_claim_code: Callable[[], tuple[str, str | None] | None],
+) -> None:
+    """Make the pending notice reflect the live claim code.
+
+    A live code whose hash is already the held notice's hash (only its expiry
+    changed, as when a resale setup republishes the code the cloud consumed)
+    is not re-sent: re-sending would reopen a claim the cloud closed.
+    """
+    new_hash, expires_at = cloud_claim_code() or (None, None)
+    held = identity.notice
+    if held is not None and held.claim_code_hash == new_hash:
+        return
+    identity.set_notice(new_hash, expires_at)
+
+
+class ClaimCodeSource(Protocol):
+    def cloud_claim_code(self) -> tuple[str, str | None] | None: ...
+
+    def subscribe_claim_code_change(self, callback: Callable[[], None]) -> object: ...
+
+
+def init_cloud_identity(
+    store: ClaimCodeSource, path: Path = IDENTITY_FILE
+) -> MachineIdentity | None:
+    """Load the identity, reconcile the notice and follow code changes.
+
+    Returns None (uplink disabled, boot continues) when the identity file is
+    corrupt or the data directory is unwritable.
+    """
+    try:
+        identity = MachineIdentity.load_or_create(path)
+        # A code minted while the cloud was disabled must still be sent, but a
+        # restart must not re-send an already-acked unchanged notice.
+        if identity.notice is not None or store.cloud_claim_code() is not None:
+            sync_notice_from(identity, store.cloud_claim_code)
+    except (IdentityError, OSError) as exc:
+        logger.error(f"cloud uplink disabled: {exc}")
+        return None
+    store.subscribe_claim_code_change(
+        lambda: sync_notice_from(identity, store.cloud_claim_code)
+    )
+    return identity

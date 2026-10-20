@@ -34,7 +34,7 @@ from ice_edge.app.startup_config import (
     warn_if_setup_mode,
 )
 from ice_edge.uplink.client import HttpUplink
-from ice_edge.uplink.identity import MachineIdentity
+from ice_edge.uplink.identity import init_cloud_identity
 from ice_edge.uplink.loop import run_uplink
 from ice_edge.web.context import holder_display_name
 from ice_edge.web.server import app
@@ -178,26 +178,14 @@ async def main():
         ),
     ]
     uplink = None
+    identity = None
     if live_config.cloud.enabled:
         # Off by default. Uploads run in this supervised task with a 5 s
         # timeout and never block a sale.
-        identity = MachineIdentity.load_or_create()
+        identity = init_cloud_identity(access_store)
+    if identity is not None:
         routes.set_machine_identity(identity)
         uplink = HttpUplink(live_config.cloud.url, identity)
-
-        def _sync_claim_notice() -> None:
-            identity.set_notice(*(access_store.cloud_claim_code() or (None, None)))
-
-        access_store.subscribe_claim_code_change(_sync_claim_notice)
-        # A code minted while the cloud was disabled must still be sent, but a
-        # restart must not re-send an already-acked unchanged notice.
-        live_code = access_store.cloud_claim_code()
-        held = identity.notice
-        if held is None:
-            if live_code is not None:
-                _sync_claim_notice()
-        elif held.claim_code_hash != (live_code[0] if live_code else None):
-            _sync_claim_notice()
         background.append(
             supervise(
                 "uplink",
@@ -210,7 +198,10 @@ async def main():
                 ),
             )
         )
-        logger.info(f"Cloud uplink enabled, reporting to {live_config.cloud.url}")
+        logger.info(
+            f"Cloud uplink enabled, reporting to {live_config.cloud.url};"
+            f" machine fingerprint {identity.short_fingerprint}"
+        )
     try:
         await run_until_primary_exits(server.serve(), *background)
     finally:
