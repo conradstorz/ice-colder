@@ -158,8 +158,10 @@ machine). Run from the repository root:
 ```
 docker compose -f docker/docker-compose.fleet.yml up -d --build --scale machine=5
 docker compose -f docker/docker-compose.fleet.yml logs | grep -i "setup code"
-docker compose -f docker/docker-compose.fleet.yml stop machine-3   # offline test
+docker stop ice_fleet-machine-3   # offline test
 ```
+
+Replica container names come from `docker ps`: compose v2 names them `ice_fleet-machine-<n>`, after the compose project name `ice_fleet`.
 
 `ICE_FLEET_BASE_IMAGE` lets a developer build the base image locally first
 (`docker build -t ice-colder:dev .`) and point the fleet at it instead of pulling

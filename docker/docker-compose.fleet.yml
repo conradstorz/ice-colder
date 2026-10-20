@@ -4,7 +4,7 @@
 # From the repository root, with ICE_CLOUD_URL set to the cloud server's base URL:
 #   docker compose -f docker/docker-compose.fleet.yml up -d --build --scale machine=5
 #   docker compose -f docker/docker-compose.fleet.yml logs | grep -i "setup code"
-#   docker compose -f docker/docker-compose.fleet.yml stop machine-3   # offline test
+#   docker stop ice_fleet-machine-3   # offline test (replica names: docker ps)
 # ICE_FLEET_BASE_IMAGE overrides the image the machines are layered on (default:
 # the published ghcr.io/conradstorz/ice-colder:latest); build one locally first with
 # `docker build -t ice-colder:dev .` and set ICE_FLEET_BASE_IMAGE=ice-colder:dev.
