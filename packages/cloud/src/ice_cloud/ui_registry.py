@@ -73,6 +73,13 @@ class UiRegistry:
             raise BundleError(f"not a sha256 hex digest: {digest!r}")
         return self._ui_dir / digest
 
+    def has(self, digest: str) -> bool:
+        """Whether this bundle is already stored."""
+        return (
+            _DIGEST_RE.fullmatch(digest) is not None
+            and (self._ui_dir / digest).is_dir()
+        )
+
     def register(self, digest: str, data: bytes) -> bool:
         """Validate and store an uploaded bundle; ``True`` if newly stored,
         ``False`` if that digest is already present. ``BundleError`` on any

@@ -122,6 +122,13 @@ class MachineIdentity:
         self._write(notice)
         self._notice = notice
 
+    def reset_ack(self) -> None:
+        """Mark the current notice unsent, so the uplink delivers it again."""
+        if self._notice is not None and self._notice.acked:
+            fresh = replace(self._notice, acked=False)
+            self._write(fresh)
+            self._notice = fresh
+
     def mark_notice_acked(self, notice: ClaimNotice) -> bool:
         """Ack ``notice`` only if it is still the current one.
 

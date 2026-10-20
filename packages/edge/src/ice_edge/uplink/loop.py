@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -60,7 +60,8 @@ async def run_uplink(
 ) -> None:
     """Each pass: register (until accepted; nothing else is sent before), retry
     an unacknowledged claim-code notice, try the UI bundle upload (retried each pass
-    until accepted; an unclaimed machine is refused, and the cloud shows the
+    until accepted; a 401 or 409 refusal is retried only after
+    report_interval_seconds * 60 or a new registration; the cloud shows the
     installed UI with a mismatch banner meanwhile), then always post a report. The interval is re-read every pass. ``seq`` increments
     per report attempt; ``boot_id`` is fixed per call. Failures are logged and
     dropped; only cancellation ends the loop."""
@@ -68,21 +69,39 @@ async def run_uplink(
     digest, bundle = ui_digest(), build_bundle()
     registered = False  # reset on a 401: the cloud no longer knows this machine
     bundle_sent = False
+    ever_registered = False
+    next_bundle_attempt: datetime | None = None
     seq = 0
 
     while True:
         try:
             if not registered:
                 registered = await uplink.register(config.machine_id)
+                if registered:
+                    next_bundle_attempt = None
+                    if ever_registered:
+                        # Registering again means the cloud forgot us (401): it
+                        # needs the bundle and the live claim notice once more.
+                        bundle_sent = False
+                        identity.reset_ack()
+                    ever_registered = True
             if registered:
                 try:
                     if not await _send_notice(uplink, identity):
                         registered = registered and uplink.last_status != 401
                 except Exception:
                     logger.exception("Claim-code notice attempt failed")
-                if not bundle_sent:
+                if not bundle_sent and (
+                    next_bundle_attempt is None or now() >= next_bundle_attempt
+                ):
                     try:
                         bundle_sent = await uplink.put_ui_bundle(digest, bundle)
+                        if not bundle_sent and uplink.last_status in (401, 409):
+                            # Refused outright (unclaimed, or at the cap): retry
+                            # roughly hourly, not every pass.
+                            next_bundle_attempt = now() + timedelta(
+                                seconds=config.cloud.report_interval_seconds * 60
+                            )
                     except Exception:
                         logger.exception("UI bundle upload attempt failed")
                 report = await build_machine_report(

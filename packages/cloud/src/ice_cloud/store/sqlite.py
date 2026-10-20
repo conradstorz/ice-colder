@@ -358,7 +358,9 @@ class SqliteRepository:
                 conn.execute(DELETE_MEMBERSHIPS_SQL, (fingerprint,))
             return True
 
-    def can_upload_bundle(self, fingerprint: str, digest: str, limit: int) -> bool:
+    def can_upload_bundle(
+        self, fingerprint: str, digest: str, limit: int, since: datetime
+    ) -> bool:
         with self._connect() as conn:
             if conn.execute(
                 "SELECT 1 FROM bundle_uploads WHERE fingerprint = ? AND digest = ?",
@@ -366,8 +368,9 @@ class SqliteRepository:
             ).fetchone():
                 return True
             count = conn.execute(
-                "SELECT COUNT(*) AS n FROM bundle_uploads WHERE fingerprint = ?",
-                (fingerprint,),
+                "SELECT COUNT(*) AS n FROM bundle_uploads"
+                " WHERE fingerprint = ? AND uploaded_at > ?",
+                (fingerprint, _iso(since)),
             ).fetchone()["n"]
         return count < limit
 
@@ -376,8 +379,9 @@ class SqliteRepository:
     ) -> None:
         with self._tx() as conn:
             conn.execute(
-                "INSERT OR IGNORE INTO bundle_uploads (fingerprint, digest,"
-                " uploaded_at) VALUES (?, ?, ?)",
+                "INSERT INTO bundle_uploads (fingerprint, digest, uploaded_at)"
+                " VALUES (?, ?, ?) ON CONFLICT(fingerprint, digest)"
+                " DO UPDATE SET uploaded_at = excluded.uploaded_at",
                 (fingerprint, digest, _iso(now)),
             )
 

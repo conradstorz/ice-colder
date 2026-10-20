@@ -169,3 +169,65 @@ def test_fifth_distinct_bundle_digest_is_409_but_repeats_are_fine(
     assert not (tmp_path / "ui" / digest).exists()
     first_digest, first_data = bundles[0]
     assert _put(client, owned, first_digest, first_data).status_code == 200
+
+
+def _variants(tmp_path, count):
+    import gzip
+    import io
+    import json
+    import shutil
+    import tarfile
+
+    from ice_ui.bundle import INSTALLED_ROOT
+
+    out = []
+    for n in range(count):
+        root = tmp_path / f"copy{n}"
+        shutil.copytree(INSTALLED_ROOT / "templates", root / "templates")
+        shutil.copytree(INSTALLED_ROOT / "static", root / "static")
+        (root / "static" / "v.txt").write_text(str(n))
+        data = build_bundle(root)
+        with tarfile.open(fileobj=io.BytesIO(gzip.decompress(data))) as tf:
+            out.append(
+                (json.loads(tf.extractfile("manifest.json").read())["digest"], data)
+            )
+    return out
+
+
+def test_bundle_cap_counts_only_the_last_30_days(tmp_path, signer, clock):
+    app = create_app(make_settings(tmp_path / "cloud"), now=clock)
+    with TestClient(app) as c:
+        register(c, signer)
+        owner = app.state.repo.upsert_account_from_login(
+            "sub-o", "o@example.com", "O", clock()
+        )
+        app.state.repo.claim_machine(signer.fingerprint, owner.id, clock())
+        bundles = _variants(tmp_path, 6)
+        for digest, data in bundles[:4]:
+            assert _put(c, signer, digest, data).status_code == 201
+        assert _put(c, signer, *bundles[4]).status_code == 409
+        clock.advance(31 * 86400)
+        assert _put(c, signer, *bundles[4]).status_code == 201
+
+
+def test_digest_the_cloud_already_holds_skips_the_cap(tmp_path, signer, clock):
+    from tests.cloud.conftest import Signer
+
+    app = create_app(make_settings(tmp_path / "cloud"), now=clock)
+    with TestClient(app) as c:
+        other = Signer()
+        bundles = _variants(tmp_path, 5)
+        for s in (signer, other):
+            register(c, s)
+            owner = app.state.repo.upsert_account_from_login(
+                f"sub-{s.fingerprint[:6]}",
+                f"{s.fingerprint[:6]}@example.com",
+                "O",
+                clock(),
+            )
+            app.state.repo.claim_machine(s.fingerprint, owner.id, clock())
+        assert _put(c, signer, *bundles[4]).status_code == 201
+        for digest, data in bundles[:4]:
+            assert _put(c, other, digest, data).status_code == 201
+        # `other` is at its cap, but a digest the cloud already holds is no new storage.
+        assert _put(c, other, *bundles[4]).status_code == 200

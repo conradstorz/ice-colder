@@ -68,3 +68,15 @@ def test_unwritable_data_dir_disables_uplink(tmp_path):
     blocker = tmp_path / "file"
     blocker.write_text("x", encoding="utf-8")
     assert init_cloud_identity(FakeStore(None), blocker / "id.json") is None
+
+
+def test_reset_ack_makes_an_acked_notice_deliverable_again(tmp_path):
+    path = tmp_path / "id.json"
+    identity = MachineIdentity.load_or_create(path)
+    identity.reset_ack()  # no notice: nothing happens
+    assert identity.notice is None
+    identity.set_notice("h", None)
+    identity.mark_notice_acked(identity.notice)
+    identity.reset_ack()
+    assert identity.notice == ClaimNotice("h", None, False)
+    assert MachineIdentity.load_or_create(path).notice.acked is False

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
@@ -18,7 +19,8 @@ from ice_contracts.cloud.report import MachineReport
 from ice_contracts.cloud.signing import HEADER_MACHINE
 from ice_ui.bundle import BundleError
 
-MAX_BUNDLES_PER_MACHINE = 4
+MAX_BUNDLES_PER_MACHINE = 4  # distinct digests per machine within BUNDLE_WINDOW
+BUNDLE_WINDOW = timedelta(days=30)
 
 router = APIRouter(prefix="/api/v1")
 
@@ -86,8 +88,15 @@ async def put_bundle(
     if machine is None or machine.owner_id is None:
         return Response(status_code=401)
     repo = request.app.state.repo
+    if request.app.state.registry.has(digest):
+        return JSONResponse({"digest": digest}, status_code=200)  # nothing new to store
+    now = request.app.state.now()
     if not await asyncio.to_thread(
-        repo.can_upload_bundle, machine.fingerprint, digest, MAX_BUNDLES_PER_MACHINE
+        repo.can_upload_bundle,
+        machine.fingerprint,
+        digest,
+        MAX_BUNDLES_PER_MACHINE,
+        now - BUNDLE_WINDOW,
     ):
         return Response(status_code=409)
     # Size is capped by BodyLimitMiddleware as bytes arrive.
@@ -98,7 +107,5 @@ async def put_bundle(
         )
     except BundleError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=400)
-    await asyncio.to_thread(
-        repo.record_bundle_upload, machine.fingerprint, digest, request.app.state.now()
-    )
+    await asyncio.to_thread(repo.record_bundle_upload, machine.fingerprint, digest, now)
     return JSONResponse({"digest": digest}, status_code=201 if created else 200)

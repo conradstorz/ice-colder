@@ -116,8 +116,11 @@ class Repository(Protocol):
         """
         ...
 
-    def can_upload_bundle(self, fingerprint: str, digest: str, limit: int) -> bool:
-        """True if ``digest`` is already this machine's or it has fewer than ``limit``."""
+    def can_upload_bundle(
+        self, fingerprint: str, digest: str, limit: int, since: datetime
+    ) -> bool:
+        """True if ``digest`` is already this machine's or fewer than ``limit``
+        distinct digests were uploaded since ``since``."""
         ...
 
     def record_bundle_upload(
