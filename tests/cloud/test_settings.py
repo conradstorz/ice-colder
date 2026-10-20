@@ -74,3 +74,60 @@ def test_trusted_ui_digests_parsed_and_validated():
     bad = {**base, "ICE_CLOUD_TRUSTED_UI_DIGESTS": "nope"}
     with pytest.raises(SettingsError):
         CloudSettings.from_env(bad)
+
+
+def test_smtp_unset_is_not_configured():
+    s = CloudSettings.from_env({"ICE_CLOUD_SESSION_KEY": KEY})
+    assert s.smtp_host is None
+    assert s.smtp_configured is False
+
+
+def test_smtp_host_without_from_is_error():
+    with pytest.raises(SettingsError, match="ICE_CLOUD_SMTP_FROM"):
+        CloudSettings.from_env(
+            {"ICE_CLOUD_SESSION_KEY": KEY, "ICE_CLOUD_SMTP_HOST": "smtp.example"}
+        )
+
+
+def test_smtp_defaults_port_and_starttls():
+    s = CloudSettings.from_env(
+        {
+            "ICE_CLOUD_SESSION_KEY": KEY,
+            "ICE_CLOUD_SMTP_HOST": "smtp.example",
+            "ICE_CLOUD_SMTP_FROM": "alerts@example.com",
+        }
+    )
+    assert s.smtp_configured is True
+    assert s.smtp_port == 587
+    assert s.smtp_starttls is True
+    assert s.smtp_user is None and s.smtp_password is None
+    assert s.smtp_from == "alerts@example.com"
+
+
+def test_smtp_bad_port_is_error():
+    base = {
+        "ICE_CLOUD_SESSION_KEY": KEY,
+        "ICE_CLOUD_SMTP_HOST": "smtp.example",
+        "ICE_CLOUD_SMTP_FROM": "alerts@example.com",
+    }
+    for bad in ("nope", "0", "65536"):
+        with pytest.raises(SettingsError, match="ICE_CLOUD_SMTP_PORT"):
+            CloudSettings.from_env({**base, "ICE_CLOUD_SMTP_PORT": bad})
+    s = CloudSettings.from_env({**base, "ICE_CLOUD_SMTP_PORT": "2525"})
+    assert s.smtp_port == 2525
+
+
+def test_smtp_starttls_zero_disables():
+    base = {
+        "ICE_CLOUD_SESSION_KEY": KEY,
+        "ICE_CLOUD_SMTP_HOST": "smtp.example",
+        "ICE_CLOUD_SMTP_FROM": "alerts@example.com",
+    }
+    assert (
+        CloudSettings.from_env({**base, "ICE_CLOUD_SMTP_STARTTLS": "0"}).smtp_starttls
+        is False
+    )
+    assert (
+        CloudSettings.from_env({**base, "ICE_CLOUD_SMTP_STARTTLS": "1"}).smtp_starttls
+        is True
+    )

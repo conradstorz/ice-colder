@@ -26,10 +26,20 @@ class CloudSettings:
     session_key: bytes
     insecure_cookies: bool = False
     trusted_ui_digests: frozenset[str] = frozenset()
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str | None = None
+    smtp_starttls: bool = True
 
     @property
     def google_configured(self) -> bool:
         return bool(self.google_client_id and self.google_client_secret)
+
+    @property
+    def smtp_configured(self) -> bool:
+        return self.smtp_host is not None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> CloudSettings:
@@ -72,6 +82,21 @@ class CloudSettings:
                     f"ICE_CLOUD_TRUSTED_UI_DIGESTS entry {digest!r} is not a"
                     " sha256 hex digest"
                 )
+
+        smtp_host = get("ICE_CLOUD_SMTP_HOST")
+        smtp_from = get("ICE_CLOUD_SMTP_FROM")
+        if smtp_host and not smtp_from:
+            raise SettingsError(
+                "ICE_CLOUD_SMTP_FROM is required when ICE_CLOUD_SMTP_HOST is set"
+            )
+        raw_port = get("ICE_CLOUD_SMTP_PORT")
+        smtp_port = 587
+        if raw_port is not None:
+            if not (re.fullmatch(r"[0-9]+", raw_port) and 1 <= int(raw_port) <= 65535):
+                raise SettingsError(
+                    f"ICE_CLOUD_SMTP_PORT {raw_port!r} is not a port number (1-65535)"
+                )
+            smtp_port = int(raw_port)
         return cls(
             data_dir=Path(env.get("ICE_CLOUD_DATA") or "cloud_data"),
             public_url=public_url,
@@ -81,4 +106,10 @@ class CloudSettings:
             session_key=key,
             insecure_cookies=env.get("ICE_CLOUD_INSECURE_COOKIES", "").strip() == "1",
             trusted_ui_digests=frozenset(d for d in digests if d),
+            smtp_host=smtp_host,
+            smtp_port=smtp_port,
+            smtp_user=get("ICE_CLOUD_SMTP_USER"),
+            smtp_password=get("ICE_CLOUD_SMTP_PASSWORD"),
+            smtp_from=smtp_from,
+            smtp_starttls=env.get("ICE_CLOUD_SMTP_STARTTLS", "").strip() != "0",
         )
