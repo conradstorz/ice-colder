@@ -49,8 +49,15 @@ class AlertDispatcher:
         self._now = now
         self._public_url = public_url
         self._from_addr = from_addr
+        self._lock = asyncio.Lock()
 
     async def dispatch(
+        self, fingerprint: str, machine: Machine, events: Sequence[StoredEvent]
+    ) -> None:
+        async with self._lock:
+            await self._dispatch(fingerprint, machine, events)
+
+    async def _dispatch(
         self, fingerprint: str, machine: Machine, events: Sequence[StoredEvent]
     ) -> None:
         if not events:
@@ -83,48 +90,54 @@ class AlertDispatcher:
                 now,
             )
             if await self._cooled_down(fingerprint, account_id, now):
-                await self._attempt(delivery, person, machine, mine)
+                await self._attempt([delivery], person, machine, mine)
             else:
                 logger.info(
                     "Alert for {} held by cooldown ({} event(s))", account_id, len(mine)
                 )
 
     async def flush(self, now: datetime) -> None:
-        due = await asyncio.to_thread(self._repo.pending_deliveries, before=now)
-        for delivery in due:
-            try:
-                await self._flush_one(delivery, now)
-            except Exception:
-                logger.exception("Alert flush failed for delivery {}", delivery.id)
+        async with self._lock:
+            due = await asyncio.to_thread(self._repo.pending_deliveries, before=now)
+            groups: dict[tuple[str, str], list[Delivery]] = {}
+            for delivery in due:
+                key = (delivery.fingerprint, delivery.account_id)
+                groups.setdefault(key, []).append(delivery)
+            for rows in groups.values():
+                try:
+                    await self._flush_group(rows, now)
+                except Exception:
+                    logger.exception(
+                        "Alert flush failed for deliveries {}", [d.id for d in rows]
+                    )
 
-    async def _flush_one(self, delivery: Delivery, now: datetime) -> None:
-        fp = delivery.fingerprint
-        if not await self._cooled_down(fp, delivery.account_id, now):
+    async def _flush_group(self, rows: list[Delivery], now: datetime) -> None:
+        fp, account_id = rows[0].fingerprint, rows[0].account_id
+        if not await self._cooled_down(fp, account_id, now):
             return
         machine = await asyncio.to_thread(self._repo.machine, fp)
         people = await asyncio.to_thread(self._repo.people_for_alerts, fp)
-        entry = next(
-            (x for x in people if x[0].account_id == delivery.account_id), None
-        )
+        entry = next((x for x in people if x[0].account_id == account_id), None)
         if machine is None or entry is None:
-            await asyncio.to_thread(
-                self._repo.mark_delivery,
-                delivery.id,
-                status="failed",
-                now=now,
-                error="machine or recipient no longer available",
-            )
+            for row in rows:
+                await asyncio.to_thread(
+                    self._repo.mark_delivery,
+                    row.id,
+                    status="failed",
+                    now=now,
+                    error="machine or recipient no longer available",
+                )
             return
         person, is_muted = entry
         if is_muted:
-            await asyncio.to_thread(
-                self._repo.mark_delivery, delivery.id, status="muted", now=now
-            )
+            for row in rows:
+                await asyncio.to_thread(
+                    self._repo.mark_delivery, row.id, status="muted", now=now
+                )
             return
-        mine = await asyncio.to_thread(
-            self._repo.alert_events_by_ids, delivery.event_ids
-        )
-        await self._attempt(delivery, person, machine, mine)
+        ids = sorted({i for row in rows for i in row.event_ids})
+        mine = await asyncio.to_thread(self._repo.alert_events_by_ids, ids)
+        await self._attempt(rows, person, machine, mine)
 
     async def _cooled_down(
         self, fingerprint: str, account_id: str, now: datetime
@@ -134,12 +147,15 @@ class AlertDispatcher:
 
     async def _attempt(
         self,
-        delivery: Delivery,
+        rows: Sequence[Delivery],
         person: Recipient,
         machine: Machine,
         triggering: Sequence[StoredEvent],
     ) -> None:
-        fp = delivery.fingerprint
+        fp = rows[0].fingerprint
+        # One stamp, taken before the cleared read, so a cleared event recorded
+        # while the send is in flight is newer than sent_at and rides the next email.
+        stamp = self._now()
         try:
             cleared = await asyncio.to_thread(
                 self._repo.cleared_since_last_sent, fp, person.account_id
@@ -160,15 +176,17 @@ class AlertDispatcher:
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"[:_ERROR_LIMIT]
             logger.warning("Alert email to {} failed: {}", person.account_id, error)
-            await asyncio.to_thread(
-                self._repo.mark_delivery,
-                delivery.id,
-                status="failed",
-                now=self._now(),
-                error=error,
-            )
+            for row in rows:
+                await asyncio.to_thread(
+                    self._repo.mark_delivery,
+                    row.id,
+                    status="failed",
+                    now=stamp,
+                    error=error,
+                )
             return
-        await asyncio.to_thread(
-            self._repo.mark_delivery, delivery.id, status="sent", now=self._now()
-        )
+        for row in rows:
+            await asyncio.to_thread(
+                self._repo.mark_delivery, row.id, status="sent", now=stamp
+            )
         logger.info("Alert email sent to {} for {}", person.account_id, fp[:8])

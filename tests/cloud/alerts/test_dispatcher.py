@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
+import asyncio
+
 import pytest
 
 from ice_cloud.alerts.dispatcher import COOLDOWN_SECONDS, AlertDispatcher
@@ -21,13 +23,13 @@ class Clock:
         self.t += timedelta(seconds=seconds)
 
 
-def _row(kind="raised", key="WTR-104:machine", gate="safety", at=T0):
+def _row(kind="raised", key="WTR-104:machine", gate="safety", at=T0, code="WTR-104"):
     return AlertEventRow(
         fingerprint=FP,
         kind=kind,
         at=at,
         key=key,
-        code="WTR-104",
+        code=code,
         severity="critical",
         gate=gate,
         description="Sump high",
@@ -90,12 +92,16 @@ async def test_one_email_per_recipient_per_pass(env):
 
 
 async def test_cleared_rides_along_since_last_sent(env):
-    env.events(_row("cleared", key="old"))
+    env.events(_row("cleared", key="old", code="ICE-999", at=T0 + timedelta(seconds=1)))
     env.clock.advance(5)
     await env.dispatch(_row(key="new"))
     owner_msg = next(m for m in env.mailer.sent if m["To"] == "owner@example.com")
     body = owner_msg.get_content()
-    assert "Cleared since your last email" in body
+    assert "Cleared since your last email" in body and "ICE-999" in body
+    env.clock.advance(COOLDOWN_SECONDS + 1)
+    await env.dispatch(_row(key="newer"))
+    later = [m for m in env.mailer.sent if m["To"] == "owner@example.com"][-1]
+    assert "ICE-999" not in later.get_content()
 
 
 async def test_cleared_alone_sends_nothing(env):
@@ -165,7 +171,8 @@ async def test_muted_recipient_row_status_muted(env):
 async def test_mailer_exception_does_not_propagate(env):
     env.mailer.fail_next = ValueError("boom")
     stored = await env.dispatch(_row())
-    assert "failed" in {d.status for d in env.deliveries(stored)}
+    assert sorted(d.status for d in env.deliveries(stored)) == ["failed", "sent"]
+    assert len(env.mailer.sent) == 1
 
 
 async def test_tech_not_emailed_for_alert_gate(env):
@@ -184,3 +191,91 @@ async def test_flush_resolves_events_by_id_not_recency(env):
     assert {d.status for d in env.deliveries(stored)} == {"sent"}
     body = env.mailer.sent[-1].get_content()
     assert "newer" not in body and "Raised" in body
+
+
+async def test_multiple_pending_rows_bundle_into_one_email(env):
+    await env.dispatch(_row(key="first", code="AAA-1"))
+    assert len(env.mailer.sent) == 2
+    env.clock.advance(60)
+    one = await env.dispatch(_row(key="k1", code="BBB-1"))
+    env.clock.advance(60)
+    two = await env.dispatch(_row(key="k2", code="CCC-1"))
+    env.clock.advance(60)
+    three = await env.dispatch(_row(key="k3", code="DDD-1"))
+    env.clock.advance(600)
+    await env.disp.flush(env.clock())
+    assert len(env.mailer.sent) == 4
+    body = next(
+        m for m in env.mailer.sent[2:] if m["To"] == "owner@example.com"
+    ).get_content()
+    assert all(c in body for c in ("BBB-1", "CCC-1", "DDD-1"))
+    assert {d.status for d in env.deliveries(one + two + three)} == {"sent"}
+
+
+async def test_failed_and_pending_rows_go_out_together(env):
+    env.mailer.fail_next = RuntimeError("smtp down")
+    first = await env.dispatch(_row(key="a", code="AAA-1", gate="alert"))
+    assert [d.status for d in env.deliveries(first)] == ["failed"]
+    env.clock.advance(1)
+    second = await env.dispatch(_row(key="b", code="BBB-1", gate="alert"))
+    assert [d.status for d in env.deliveries(second)] == ["sent"]
+    env.clock.advance(1)
+    third = await env.dispatch(_row(key="c", code="CCC-1", gate="alert"))
+    assert [d.status for d in env.deliveries(third)] == ["pending"]
+    env.clock.advance(COOLDOWN_SECONDS)
+    before = len(env.mailer.sent)
+    await env.disp.flush(env.clock())
+    assert len(env.mailer.sent) == before + 1
+    body = env.mailer.sent[-1].get_content()
+    assert "CCC-1" in body and "AAA-1" in body
+    assert {d.status for d in env.deliveries(first + third)} == {"sent"}
+
+
+async def test_dispatch_and_flush_do_not_double_send(env):
+    gate = asyncio.Event()
+    entered = asyncio.Event()
+    inner = env.mailer
+
+    class Slow:
+        async def send(self, msg):
+            entered.set()
+            await gate.wait()
+            await inner.send(msg)
+
+    env.disp = AlertDispatcher(
+        env.repo, Slow(), now=env.clock, public_url=None, from_addr="a@example.com"
+    )
+    env.repo.set_muted(env.tech.id, FP, True)
+    stored = env.events(_row(gate="alert"))
+    task = asyncio.create_task(env.disp.dispatch(FP, env.repo.machine(FP), stored))
+    await entered.wait()
+    flusher = asyncio.create_task(env.disp.flush(env.clock()))
+    await asyncio.sleep(0.05)
+    gate.set()
+    await asyncio.gather(task, flusher)
+    assert len(env.mailer.sent) == 1
+    sent = [d for d in env.deliveries(stored) if d.status == "sent"]
+    assert [d.attempts for d in sent] == [1]
+
+
+async def test_cleared_recorded_during_send_rides_next_email(env):
+    inner = env.mailer
+    env.repo.set_muted(env.tech.id, FP, True)
+
+    class Racing:
+        async def send(self, msg):
+            env.clock.advance(5)
+            env.events(_row("cleared", key="race", code="RACE-1", at=env.clock()))
+            env.clock.advance(5)
+            await inner.send(msg)
+
+    env.disp = AlertDispatcher(
+        env.repo, Racing(), now=env.clock, public_url=None, from_addr="a@example.com"
+    )
+    await env.dispatch(_row(key="a"))
+    env.disp = AlertDispatcher(
+        env.repo, inner, now=env.clock, public_url=None, from_addr="a@example.com"
+    )
+    env.clock.advance(COOLDOWN_SECONDS)
+    await env.dispatch(_row(key="b"))
+    assert "RACE-1" in env.mailer.sent[-1].get_content()
