@@ -12,7 +12,7 @@ every request.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
@@ -173,6 +173,11 @@ async def fleet(request: Request, account: Account = Depends(require_signed_in))
                     else ""
                 ),
                 "fault_line": _fault_count(report) if report is not None else "",
+                "alerts_24h": await asyncio.to_thread(
+                    state.repo.alert_count_since,
+                    machine.fingerprint,
+                    state.now() - timedelta(hours=24),
+                ),
             }
         )
     ui = _resolve(request, None)

@@ -13,6 +13,7 @@
     {% else %}
     <span class="text-xs text-gray-400">never reported</span>
     {% endif %}
+    <a href="/machines/{{ m.short }}/alerts" class="text-xs text-gray-600">{{ m.alerts_24h }} alerts / 24 h</a>
     <span class="text-xs text-gray-600">{{ m.role }}</span>
     {% if m.role == "owner" %}
     <a href="/machines/{{ m.short }}/people" class="text-xs text-gray-600">People</a>
