@@ -4,7 +4,15 @@ import sqlite3
 
 import pytest
 
-from ice_cloud.store import EmailConflict, SqliteRepository, sqlite
+from ice_contracts.cloud.report import FaultView
+
+from ice_cloud.store import (
+    AlertEventRow,
+    AlertState,
+    EmailConflict,
+    SqliteRepository,
+    sqlite,
+)
 from tests.cloud.reports import FP, FP_2
 
 T0 = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
@@ -395,3 +403,269 @@ def test_reclaim_by_the_same_owner_keeps_techs(repo):
     repo.grant_tech(tech.id, FP, owner.id, T0)
     assert repo.claim_machine(FP, owner.id, T0 + timedelta(hours=1)) is True
     assert repo.access_for(tech.id, FP) == "tech"
+
+
+# alerts
+
+
+def _event(kind="raised", at=T0, key="WTR-104:machine", gate="safety", fp=FP):
+    return AlertEventRow(
+        fingerprint=fp,
+        kind=kind,
+        at=at,
+        key=key,
+        code="WTR-104",
+        severity="critical",
+        gate=gate,
+        description="Sump high",
+        sku=None,
+        product=None,
+    )
+
+
+def _fault(key="ICE-10LB"):
+    return FaultView(
+        key=key,
+        sku="ICE-10LB",
+        product="Bag of Ice",
+        code="ICE-301",
+        severity="lockout",
+        scope="product",
+        description="Ice bin low",
+        since_seconds=412.3,
+        gate="fulfillment",
+        pending_sale=None,
+    )
+
+
+def _state(fp=FP, keys=("A",), offline_since=None):
+    return AlertState(fp, tuple(_fault(k) for k in keys), T0, 60, offline_since)
+
+
+def _claimed(repo):
+    owner, tech = _accounts(repo)
+    repo.register_machine(FP, KEY, "a", T0)
+    repo.claim_machine(FP, owner.id, T0)
+    repo.grant_tech(tech.id, FP, owner.id, T0)
+    return owner, tech
+
+
+def test_alert_state_put_get_replace_delete(repo):
+    repo.register_machine(FP, KEY, "a", T0)
+    assert repo.alert_state(FP) is None
+    repo.put_alert_state(_state(keys=("B", "A")))
+    got = repo.alert_state(FP)
+    assert got == _state(keys=("B", "A"))
+    assert got.faults[0].product == "Bag of Ice" and got.keys == {"A", "B"}
+    later = AlertState(FP, (), T0 + timedelta(minutes=1), 120, T0)
+    repo.put_alert_state(later)
+    assert repo.alert_state(FP) == later
+    repo.delete_alert_state(FP)
+    assert repo.alert_state(FP) is None
+
+
+def test_claimed_machines_with_state_only_claimed(repo):
+    owner, _ = _accounts(repo)
+    repo.register_machine(FP, KEY, "a", T0)
+    repo.register_machine(FP_2, KEY, "b", T0)
+    repo.claim_machine(FP, owner.id, T0)
+    repo.put_alert_state(_state(FP))
+    repo.put_alert_state(_state(FP_2))
+    found = repo.claimed_machines_with_state()
+    assert [(m.fingerprint, s.fingerprint) for m, s in found] == [(FP, FP)]
+
+
+def test_record_and_list_alert_events_newest_first(repo):
+    repo.register_machine(FP, KEY, "a", T0)
+    stored = repo.record_alert_events(
+        [_event(at=T0), _event(kind="cleared", at=T0 + timedelta(minutes=1))]
+    )
+    assert [e.id for e in stored] == sorted(e.id for e in stored)
+    assert stored[0].kind == "raised" and stored[0].at == T0
+    listed = repo.alert_events(FP, limit=10)
+    assert listed == list(reversed(stored))
+    assert repo.alert_events(FP, limit=1) == [stored[1]]
+    assert repo.alert_events(FP_2, limit=10) == []
+
+
+def test_alert_count_since_ignores_cleared_and_old(repo):
+    repo.register_machine(FP, KEY, "a", T0)
+    repo.record_alert_events(
+        [
+            _event(at=T0 - timedelta(hours=30)),
+            _event(at=T0 - timedelta(hours=1)),
+            _event(kind="offline", at=T0),
+            _event(kind="cleared", at=T0),
+        ]
+    )
+    assert repo.alert_count_since(FP, T0 - timedelta(hours=24)) == 2
+
+
+def test_people_for_alerts_owner_first_then_techs_with_muted(repo):
+    owner, tech = _claimed(repo)
+    other = repo.upsert_account_from_login("sub-x", "x@example.com", "Xi", T0)
+    repo.grant_tech(other.id, FP, owner.id, T0 - timedelta(days=1))
+    repo.set_muted(tech.id, FP, True)
+    people = repo.people_for_alerts(FP)
+    assert [(r.account_id, r.role, m) for r, m in people] == [
+        (owner.id, "owner", False),
+        (other.id, "tech", False),
+        (tech.id, "tech", True),
+    ]
+    assert people[0][0].email == "owner@example.com"
+    assert repo.people_for_alerts(FP_2) == []
+
+
+def test_people_for_alerts_excludes_suspended(repo):
+    owner, tech = _claimed(repo)
+    repo.set_suspended(tech.id, T0)
+    assert [r.account_id for r, _ in repo.people_for_alerts(FP)] == [owner.id]
+    repo.set_suspended(owner.id, T0)
+    assert repo.people_for_alerts(FP) == []
+
+
+def test_set_muted_and_is_muted(repo):
+    owner, tech = _claimed(repo)
+    assert repo.is_muted(tech.id, FP) is False
+    repo.set_muted(tech.id, FP, True)
+    assert repo.is_muted(tech.id, FP) is True
+    assert repo.is_muted(owner.id, FP) is False
+    repo.set_muted(tech.id, FP, False)
+    assert repo.is_muted(tech.id, FP) is False
+
+
+def test_create_delivery_and_mark_increments_attempts(repo):
+    owner, _ = _claimed(repo)
+    events = repo.record_alert_events([_event(), _event(key="k2")])
+    ids = [e.id for e in events]
+    d = repo.create_delivery(FP, owner.id, ids, "pending", T0)
+    assert d.event_ids == tuple(ids) and d.status == "pending"
+    assert d.attempted_at == T0 and d.sent_at is None and d.attempts == 0
+    repo.mark_delivery(
+        d.id, status="failed", now=T0 + timedelta(minutes=1), error="boom"
+    )
+    (failed,) = repo.pending_deliveries(before=T0)
+    assert failed.status == "failed" and failed.error == "boom"
+    assert failed.attempts == 1 and failed.sent_at is None
+    repo.mark_delivery(d.id, status="sent", now=T0 + timedelta(minutes=2))
+    assert repo.pending_deliveries(before=T0 + timedelta(days=1)) == []
+    assert repo.last_sent_at(FP, owner.id) == T0 + timedelta(minutes=2)
+
+
+def test_pending_deliveries_before_cutoff(repo):
+    owner, _ = _claimed(repo)
+    e = repo.record_alert_events([_event()])[0]
+    due = repo.create_delivery(FP, owner.id, [e.id], "pending", T0)
+    repo.create_delivery(FP, owner.id, [e.id], "pending", T0 + timedelta(minutes=5))
+    repo.create_delivery(FP, owner.id, [e.id], "muted", T0)
+    repo.create_delivery(FP, owner.id, [e.id], "sent", T0)
+    assert [d.id for d in repo.pending_deliveries(before=T0)] == [due.id]
+    assert len(repo.pending_deliveries(before=T0 + timedelta(minutes=5))) == 2
+
+
+def test_pending_deliveries_excludes_exhausted_failed(repo):
+    owner, _ = _claimed(repo)
+    e = repo.record_alert_events([_event()])[0]
+    d = repo.create_delivery(FP, owner.id, [e.id], "pending", T0)
+    for n in range(4):
+        repo.mark_delivery(d.id, status="failed", now=T0, error="x")
+        assert [x.attempts for x in repo.pending_deliveries(before=T0)] == [n + 1]
+    repo.mark_delivery(d.id, status="failed", now=T0, error="x")
+    assert repo.pending_deliveries(before=T0) == []
+
+
+def test_last_sent_at_and_cleared_since_last_sent(repo):
+    owner, tech = _claimed(repo)
+    first, cleared_old, cleared_new = repo.record_alert_events(
+        [
+            _event(at=T0),
+            _event(kind="cleared", at=T0 + timedelta(minutes=1)),
+            _event(kind="cleared", at=T0 + timedelta(minutes=30)),
+        ]
+    )
+    assert repo.last_sent_at(FP, owner.id) is None
+    assert repo.cleared_since_last_sent(FP, owner.id) == [cleared_old, cleared_new]
+    d = repo.create_delivery(FP, owner.id, [first.id], "pending", T0)
+    repo.mark_delivery(d.id, status="sent", now=T0 + timedelta(minutes=10))
+    assert repo.last_sent_at(FP, owner.id) == T0 + timedelta(minutes=10)
+    assert repo.cleared_since_last_sent(FP, owner.id) == [cleared_new]
+    assert repo.last_sent_at(FP, tech.id) is None
+
+
+def test_deliveries_for_events_groups_by_event(repo):
+    owner, tech = _claimed(repo)
+    a, b, c = repo.record_alert_events([_event(key=k) for k in "abc"])
+    d1 = repo.create_delivery(FP, owner.id, [a.id, b.id], "sent", T0)
+    d2 = repo.create_delivery(FP, tech.id, [b.id], "muted", T0)
+    got = repo.deliveries_for_events([a.id, b.id, c.id])
+    assert got == {a.id: [d1], b.id: [d1, d2], c.id: []}
+    assert repo.deliveries_for_events([]) == {}
+
+
+def _seed_alerts(repo, owner, tech):
+    repo.put_alert_state(_state())
+    repo.set_muted(tech.id, FP, True)
+    e = repo.record_alert_events([_event()])[0]
+    repo.create_delivery(FP, owner.id, [e.id], "sent", T0)
+    return e
+
+
+def test_claim_change_resets_alert_state_and_prefs(repo):
+    owner, tech = _claimed(repo)
+    e = _seed_alerts(repo, owner, tech)
+    newer = repo.upsert_account_from_login("sub-n", "new@example.com", "Nia", T0)
+    assert repo.claim_machine(FP, newer.id, T0 + timedelta(hours=1)) is True
+    assert repo.alert_state(FP) is None
+    assert repo.is_muted(tech.id, FP) is False
+    assert [x.id for x in repo.alert_events(FP, limit=5)] == [e.id]
+
+
+def test_reclaim_same_owner_keeps_state(repo):
+    owner, tech = _claimed(repo)
+    _seed_alerts(repo, owner, tech)
+    assert repo.claim_machine(FP, owner.id, T0 + timedelta(hours=1)) is True
+    assert repo.alert_state(FP) == _state()
+    assert repo.is_muted(tech.id, FP) is True
+
+
+def test_revoke_deletes_pref(repo):
+    owner, tech = _claimed(repo)
+    repo.set_muted(tech.id, FP, True)
+    repo.set_muted(owner.id, FP, True)
+    repo.revoke(tech.id, FP)
+    assert repo.is_muted(tech.id, FP) is False
+    assert repo.is_muted(owner.id, FP) is True
+
+
+def test_unbind_deletes_everything_alert(repo):
+    owner, tech = _claimed(repo)
+    e = _seed_alerts(repo, owner, tech)
+    repo.unbind_machine(FP)
+    assert repo.alert_state(FP) is None
+    assert repo.alert_events(FP, limit=5) == []
+    assert repo.deliveries_for_events([e.id]) == {e.id: []}
+    assert repo.pending_deliveries(before=T0 + timedelta(days=1)) == []
+    assert repo.last_sent_at(FP, owner.id) is None
+    assert repo.is_muted(tech.id, FP) is False
+
+
+def test_migrations_apply_on_existing_db(tmp_path):
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    n_old = len(sqlite.MIGRATIONS) - 3
+    for script in sqlite.MIGRATIONS[:n_old]:
+        old.executescript(script)
+    old.execute("INSERT INTO schema_version (version) VALUES (?)", (n_old,))
+    old.execute(
+        "INSERT INTO machines (fingerprint, public_key, label, registered_at,"
+        " last_seen_at) VALUES (?, ?, 'a', ?, ?)",
+        (FP, KEY, T0.isoformat(), T0.isoformat()),
+    )
+    old.commit()
+    old.close()
+    repo = SqliteRepository(path)
+    assert repo.machine(FP).label == "a"
+    repo.put_alert_state(_state())
+    assert repo.alert_state(FP) == _state()
+    assert repo.record_alert_events([_event()])[0].id == 1
