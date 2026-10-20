@@ -59,8 +59,9 @@ async def run_uplink(
     holder_name: Callable[[MaintenanceHold], str | None] | None = None,
 ) -> None:
     """Each pass: register (until accepted; nothing else is sent before), retry
-    an unacknowledged claim-code notice, upload the UI bundle (until accepted),
-    then post a report. The interval is re-read every pass. ``seq`` increments
+    an unacknowledged claim-code notice, try the UI bundle upload (retried each pass
+    until accepted; an unclaimed machine is refused, and the cloud shows the
+    installed UI with a mismatch banner meanwhile), then always post a report. The interval is re-read every pass. ``seq`` increments
     per report attempt; ``boot_id`` is fixed per call. Failures are logged and
     dropped; only cancellation ends the loop."""
     boot_id = str(uuid.uuid4())
@@ -82,22 +83,19 @@ async def run_uplink(
                 if not bundle_sent:
                     try:
                         bundle_sent = await uplink.put_ui_bundle(digest, bundle)
-                        if not bundle_sent:
-                            registered = registered and uplink.last_status != 401
                     except Exception:
                         logger.exception("UI bundle upload attempt failed")
-                if bundle_sent:
-                    report = await build_machine_report(
-                        machine,
-                        config=config,
-                        seq=seq,
-                        boot_id=boot_id,
-                        now=now(),
-                        holder_name=holder_name,
-                    )
-                    seq += 1
-                    if not await uplink.post_report(report):
-                        registered = registered and uplink.last_status != 401
+                report = await build_machine_report(
+                    machine,
+                    config=config,
+                    seq=seq,
+                    boot_id=boot_id,
+                    now=now(),
+                    holder_name=holder_name,
+                )
+                seq += 1
+                if not await uplink.post_report(report):
+                    registered = registered and uplink.last_status != 401
         except Exception:
             logger.exception("Cloud uplink attempt failed")
         await sleep(config.cloud.report_interval_seconds)

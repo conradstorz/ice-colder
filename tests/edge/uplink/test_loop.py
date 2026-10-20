@@ -120,7 +120,9 @@ async def test_bundle_put_retried_each_interval_until_accepted(
     assert [e[0] for e in uplink.events] == [
         "register",
         "put",
+        "post",
         "put",
+        "post",
         "put",
         "post",
     ]
@@ -233,3 +235,16 @@ async def test_401_on_report_triggers_a_fresh_registration(machine_fake_time, id
 
     kinds = [e[0] for e in uplink.events]
     assert kinds == ["register", "put", "post", "register", "post", "post"]
+
+
+async def test_reports_continue_while_bundle_refused(machine_fake_time, identity):
+    machine, _ = machine_fake_time
+    cfg = ConfigModel()
+    uplink = FakeUplink(bundle_results=[False] * 10)
+    sleep, _calls = _sleeper(cfg, stop_after=3)
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_uplink(machine, cfg, uplink, sleep=sleep, now=_now, identity=identity)
+
+    kinds = [e[0] for e in uplink.events]
+    assert kinds == ["register", "put", "post", "put", "post", "put", "post"]
