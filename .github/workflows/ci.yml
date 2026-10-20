@@ -176,6 +176,23 @@ jobs:
           fi
           cat cloud.err
           grep -q "ModuleNotFoundError: No module named 'ice_cloud'" cloud.err
+      # The simulated machine container (docker/machine) on top of the smoke image:
+      # mosquitto, the three sims and the edge must all come up inside one container.
+      - name: Smoke-test the simulated machine image
+        run: |
+          docker build --build-arg BASE_IMAGE=ice-colder:smoke -t ice-colder-machine:smoke docker/machine
+          docker run -d --name machine-smoke -e ICE_CLOUD_URL=http://127.0.0.1:9 ice-colder-machine:smoke
+          for i in $(seq 1 60); do
+            docker logs machine-smoke > machine.log 2>&1 || true
+            if grep -qF "Opening ipv4 listen socket on port 1883" machine.log               && grep -qF "[vending] Connected to 127.0.0.1:1883" machine.log               && grep -qF "[ice_maker] Connected to 127.0.0.1:1883" machine.log               && grep -qF "[mdb] Connected to 127.0.0.1:1883" machine.log               && grep -qF "Entering main event loop with web server, MQTT client, and health monitor" machine.log               && grep -qF "Dashboard is in setup mode" machine.log; then
+              docker rm -f machine-smoke
+              exit 0
+            fi
+            sleep 1
+          done
+          cat machine.log
+          docker rm -f machine-smoke
+          exit 1
       # The cloud portal stub image (dev only, no auth). Built on every PR and
       # never published. Its own Dockerfile.dockerignore (next to the Dockerfile)
       # replaces the root .dockerignore, which excludes packages/cloud.
