@@ -181,3 +181,26 @@ async def test_recording_mailer_fail_next():
 
 async def test_log_only_mailer_does_not_raise():
     await LogOnlyMailer().send(build(RAISED, []))
+
+
+def test_golden_online_with_raised():
+    msg = build([Ev("online"), RAISED[0]], [])
+    assert msg["Subject"] == "[ice-colder] Lobby (abcd-efgh-ijkl-mnop): back online"
+    assert msg.get_content().splitlines()[:6] == [
+        "Machine Lobby (abcd-efgh-ijkl-mnop)",
+        "Reporting again at 2026-10-19 14:02 UTC",
+        "",
+        "Raised",
+        "  WTR-104  critical  machine  Sump high-level float tripped",
+        "",
+    ]
+
+
+def test_times_converted_to_utc():
+    from datetime import timedelta, timezone
+
+    est = timezone(timedelta(hours=-5))
+    body = build(
+        [Ev("offline", at=AT.astimezone(est))], [], last_report_at=LAST.astimezone(est)
+    ).get_content()
+    assert "Stopped reporting at 2026-10-19 14:02 UTC (last report 14:00)" in body

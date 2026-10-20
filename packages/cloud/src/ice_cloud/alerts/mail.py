@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from email.message import EmailMessage
 from typing import Any, Protocol
 
@@ -107,8 +107,14 @@ def make_mailer(settings: Any) -> Mailer:
     return SmtpMailer(config)
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def _utc(value: datetime) -> str:
-    return value.strftime("%Y-%m-%d %H:%M UTC")
+    return _as_utc(value).strftime("%Y-%m-%d %H:%M UTC")
 
 
 def _scope_text(event: MailEvent) -> str:
@@ -139,7 +145,7 @@ def render_email(
         event = next(e for e in triggering if e.kind == "offline")
         line = f"Stopped reporting at {_utc(event.at)}"
         if last_report_at is not None:
-            line += f" (last report {last_report_at:%H:%M})"
+            line += f" (last report {_as_utc(last_report_at):%H:%M})"
         lines.append(line)
     elif "online" in kinds:
         subject = head + "back online"
@@ -150,7 +156,7 @@ def render_email(
         at = (raised or list(cleared) or list(triggering))[0].at
         lines.append(f"Fault changes at {_utc(at)}")
 
-    if raised and not kinds & {"offline", "online"}:
+    if raised:
         lines += ["", "Raised"]
         for e in raised:
             lines.append(f"  {e.code}  {e.severity}  {_scope_text(e)}  {e.description}")
