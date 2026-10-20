@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
+from dataclasses import replace
 import sqlite3
 
 import pytest
@@ -488,7 +489,7 @@ def test_record_and_list_alert_events_newest_first(repo):
     assert repo.alert_events(FP_2, limit=10) == []
 
 
-def test_alert_count_since_ignores_cleared_and_old(repo):
+def test_alert_count_since_counts_raised_and_offline_only(repo):
     repo.register_machine(FP, KEY, "a", T0)
     repo.record_alert_events(
         [
@@ -496,6 +497,7 @@ def test_alert_count_since_ignores_cleared_and_old(repo):
             _event(at=T0 - timedelta(hours=1)),
             _event(kind="offline", at=T0),
             _event(kind="cleared", at=T0),
+            _event(kind="online", at=T0),
         ]
     )
     assert repo.alert_count_since(FP, T0 - timedelta(hours=24)) == 2
@@ -544,7 +546,7 @@ def test_create_delivery_and_mark_increments_attempts(repo):
     repo.mark_delivery(
         d.id, status="failed", now=T0 + timedelta(minutes=1), error="boom"
     )
-    (failed,) = repo.pending_deliveries(before=T0)
+    (failed,) = repo.pending_deliveries(before=T0 + timedelta(days=1))
     assert failed.status == "failed" and failed.error == "boom"
     assert failed.attempts == 1 and failed.sent_at is None
     repo.mark_delivery(d.id, status="sent", now=T0 + timedelta(minutes=2))
@@ -569,9 +571,22 @@ def test_pending_deliveries_excludes_exhausted_failed(repo):
     d = repo.create_delivery(FP, owner.id, [e.id], "pending", T0)
     for n in range(4):
         repo.mark_delivery(d.id, status="failed", now=T0, error="x")
-        assert [x.attempts for x in repo.pending_deliveries(before=T0)] == [n + 1]
+        later = T0 + timedelta(days=1)
+        assert [x.attempts for x in repo.pending_deliveries(before=later)] == [n + 1]
     repo.mark_delivery(d.id, status="failed", now=T0, error="x")
-    assert repo.pending_deliveries(before=T0) == []
+    assert repo.pending_deliveries(before=T0 + timedelta(days=1)) == []
+
+
+def test_failed_delivery_backs_off_exponentially(repo):
+    owner, _ = _claimed(repo)
+    e = repo.record_alert_events([_event()])[0]
+    d = repo.create_delivery(FP, owner.id, [e.id], "pending", T0)
+    for attempts, minutes in [(1, 2), (2, 4), (3, 8), (4, 16)]:
+        repo.mark_delivery(d.id, status="failed", now=T0, error="x")
+        just_before = T0 + timedelta(minutes=minutes) - timedelta(seconds=1)
+        assert repo.pending_deliveries(before=just_before) == []
+        due = repo.pending_deliveries(before=T0 + timedelta(minutes=minutes))
+        assert [x.attempts for x in due] == [attempts]
 
 
 def test_last_sent_at_and_cleared_since_last_sent(repo):
@@ -592,6 +607,22 @@ def test_last_sent_at_and_cleared_since_last_sent(repo):
     assert repo.last_sent_at(FP, tech.id) is None
 
 
+def test_cleared_since_last_sent_bounded_by_access_start(repo):
+    owner, tech = _claimed(repo)  # both gain access at T0
+    early = repo.record_alert_events(
+        [_event(kind="cleared", at=T0 + timedelta(minutes=1))]
+    )[0]
+    late_tech = repo.upsert_account_from_login("sub-l", "late@example.com", "L", T0)
+    repo.grant_tech(late_tech.id, FP, owner.id, T0 + timedelta(minutes=5))
+    stranger = repo.upsert_account_from_login("sub-s", "s@example.com", "S", T0)
+    after = repo.record_alert_events(
+        [_event(kind="cleared", at=T0 + timedelta(minutes=10))]
+    )[0]
+    assert repo.cleared_since_last_sent(FP, owner.id) == [early, after]
+    assert repo.cleared_since_last_sent(FP, late_tech.id) == [after]
+    assert repo.cleared_since_last_sent(FP, stranger.id) == []
+
+
 def test_deliveries_for_events_groups_by_event(repo):
     owner, tech = _claimed(repo)
     a, b, c = repo.record_alert_events([_event(key=k) for k in "abc"])
@@ -610,14 +641,16 @@ def _seed_alerts(repo, owner, tech):
     return e
 
 
-def test_claim_change_resets_alert_state_and_prefs(repo):
+def test_claim_change_resets_alert_state_prefs_and_history(repo):
     owner, tech = _claimed(repo)
     e = _seed_alerts(repo, owner, tech)
     newer = repo.upsert_account_from_login("sub-n", "new@example.com", "Nia", T0)
     assert repo.claim_machine(FP, newer.id, T0 + timedelta(hours=1)) is True
     assert repo.alert_state(FP) is None
     assert repo.is_muted(tech.id, FP) is False
-    assert [x.id for x in repo.alert_events(FP, limit=5)] == [e.id]
+    assert repo.alert_events(FP, limit=5) == []
+    assert repo.deliveries_for_events([e.id]) == {e.id: []}
+    assert repo.last_sent_at(FP, owner.id) is None
 
 
 def test_reclaim_same_owner_keeps_state(repo):
@@ -694,3 +727,48 @@ def test_record_alert_pass_rolls_back_events_when_state_write_fails(repo):
         repo.record_alert_pass([_event()], bad)
     assert repo.alert_events(FP, limit=10) == []
     assert repo.alert_state(FP) is None
+
+
+def test_mark_offline_if_unchanged(repo):
+    _claimed(repo)
+    repo.put_alert_state(_state())
+    offline = _event(kind="offline", at=T0 + timedelta(hours=1))
+    stored = repo.mark_offline_if_unchanged(FP, _state().last_report_at, offline)
+    assert stored is not None and stored.kind == "offline"
+    assert repo.alert_state(FP).offline_since == offline.at
+    assert [e.id for e in repo.alert_events(FP, limit=5)] == [stored.id]
+    # already offline: nothing more
+    assert repo.mark_offline_if_unchanged(FP, _state().last_report_at, offline) is None
+    assert len(repo.alert_events(FP, limit=5)) == 1
+
+
+def test_mark_offline_if_unchanged_skips_when_report_arrived(repo):
+    _claimed(repo)
+    repo.put_alert_state(_state())
+    newer = replace(_state(), last_report_at=T0 + timedelta(minutes=30))
+    repo.put_alert_state(newer)
+    offline = _event(kind="offline", at=T0 + timedelta(hours=1))
+    assert repo.mark_offline_if_unchanged(FP, _state().last_report_at, offline) is None
+    assert repo.alert_state(FP) == newer
+    assert repo.alert_events(FP, limit=5) == []
+
+
+def test_delivery_health_follows_most_recent_attempt(repo):
+    owner, tech = _claimed(repo)
+    e = repo.record_alert_events([_event()])[0]
+    assert repo.delivery_health(FP) is True
+    first = repo.create_delivery(FP, owner.id, [e.id], "pending", T0)
+    repo.mark_delivery(first.id, status="failed", now=T0 + timedelta(minutes=1))
+    assert repo.delivery_health(FP) is False
+    repo.create_delivery(FP, tech.id, [e.id], "muted", T0 + timedelta(minutes=2))
+    assert repo.delivery_health(FP) is False  # a muted row is not an attempt
+    fresh = repo.create_delivery(
+        FP, owner.id, [e.id], "pending", T0 + timedelta(minutes=2, seconds=30)
+    )
+    assert fresh.attempts == 0
+    assert repo.delivery_health(FP) is False  # a never-attempted row is not a success
+    second = repo.create_delivery(FP, owner.id, [e.id], "pending", T0)
+    repo.mark_delivery(second.id, status="sent", now=T0 + timedelta(minutes=3))
+    assert repo.delivery_health(FP) is True
+    repo.mark_delivery(first.id, status="failed", now=T0 + timedelta(minutes=4))
+    assert repo.delivery_health(FP) is False

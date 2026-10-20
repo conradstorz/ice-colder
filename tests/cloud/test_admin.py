@@ -160,12 +160,20 @@ def test_test_email_sends_to_admin_address(cloud, mailer):
 
 
 def test_test_email_reports_failure(cloud, mailer):
+    from loguru import logger
+
     _admin(cloud)
     mailer.fail_next = RuntimeError("smtp down")
-    r = cloud.post("/admin/test-email", headers=HX)
+    lines: list[str] = []
+    sink = logger.add(lambda m: lines.append(str(m)), level="WARNING")
+    try:
+        r = cloud.post("/admin/test-email", headers=HX)
+    finally:
+        logger.remove(sink)
     assert r.status_code == 200
     assert "Failed: smtp down" in r.text
     assert mailer.sent == []
+    assert any("Admin test email" in m and "smtp down" in m for m in lines)
 
 
 def test_test_email_requires_admin_and_htmx(cloud, mailer):

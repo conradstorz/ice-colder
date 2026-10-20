@@ -173,7 +173,7 @@ def render_email(
         lines.append(f"Open the machine: {base}/m/{short}")
     footer = f"You receive this as {_ROLE_WORDS.get(role, role)} of this machine."
     if base:
-        footer += f" Mute: {base}/machines/{short}/people"
+        footer += f" Mute: {base}/machines/{short}/alerts"
     lines.append(footer)
 
     msg = EmailMessage()

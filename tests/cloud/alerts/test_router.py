@@ -55,3 +55,9 @@ def test_tech_skips_alert_gate_owner_gets_it():
 
 def test_muted_ids():
     assert muted_ids([(OWNER, True), (TECH, False)]) == {"o1"}
+
+
+def test_everyone_muted_routes_nothing():
+    got = recipients_for([Ev("raised", "safety")], [(OWNER, True), (TECH, True)])
+    assert got == {}
+    assert muted_ids([(OWNER, True), (TECH, True)]) == {"o1", "t1"}

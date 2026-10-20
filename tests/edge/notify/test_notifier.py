@@ -117,3 +117,10 @@ async def test_falls_back_when_predicate_false():
     n.set_cloud_handles_alerts(lambda: False)
     await n.send(Alert(level="error", source="vmc", message="a", code="ICE-301"))
     assert deliver_mock.await_count == 1
+
+
+async def test_predicate_exception_delivers_locally():
+    n, deliver_mock = _notifier_with_mock()
+    n.set_cloud_handles_alerts(lambda: 1 / 0)
+    await n.send(Alert(level="error", source="vmc", message="a", code="ICE-301"))
+    assert deliver_mock.await_count == 1

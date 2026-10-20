@@ -10,7 +10,7 @@ from ice_contracts.cloud.signing import short_fingerprint
 from loguru import logger
 
 from ice_cloud.alerts.mail import Mailer, render_email
-from ice_cloud.alerts.router import muted_ids, recipients_for
+from ice_cloud.alerts.router import TECH_GATES, muted_ids, recipients_for
 from ice_cloud.store import Delivery, Machine, Repository, StoredEvent
 from ice_cloud.store.repository import Recipient
 
@@ -50,6 +50,33 @@ class AlertDispatcher:
         self._public_url = public_url
         self._from_addr = from_addr
         self._lock = asyncio.Lock()
+        self._tasks: set[asyncio.Task[None]] = set()
+
+    def schedule(
+        self, fingerprint: str, machine: Machine, events: Sequence[StoredEvent]
+    ) -> None:
+        """Dispatch and flush in a tracked background task; never blocks the caller.
+
+        Must be called from the running event loop. SMTP can take seconds, and the
+        edge's report request must not wait for it.
+        """
+        task = asyncio.create_task(self._run(fingerprint, machine, list(events)))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _run(
+        self, fingerprint: str, machine: Machine, events: list[StoredEvent]
+    ) -> None:
+        try:
+            await self.dispatch(fingerprint, machine, events)
+            await self.flush(self._now())
+        except Exception:
+            logger.exception("Alert dispatch failed for {}", fingerprint[:8])
+
+    async def drain(self) -> None:
+        """Wait for every scheduled dispatch (shutdown, and tests)."""
+        while self._tasks:
+            await asyncio.gather(*list(self._tasks), return_exceptions=True)
 
     async def dispatch(
         self, fingerprint: str, machine: Machine, events: Sequence[StoredEvent]
@@ -90,7 +117,9 @@ class AlertDispatcher:
                 now,
             )
             if await self._cooled_down(fingerprint, account_id, now):
-                due = await asyncio.to_thread(self._repo.pending_deliveries, before=now)
+                due = await asyncio.to_thread(
+                    self._repo.pending_deliveries, before=now, ignore_backoff=True
+                )
                 rows = [
                     d
                     for d in due
@@ -174,6 +203,8 @@ class AlertDispatcher:
             cleared = await asyncio.to_thread(
                 self._repo.cleared_since_last_sent, fp, person.account_id
             )
+            if person.role == "tech":  # same gate rule as for raised events
+                cleared = [e for e in cleared if e.gate in TECH_GATES]
             state = await asyncio.to_thread(self._repo.alert_state, fp)
             msg = render_email(
                 label=machine.label,

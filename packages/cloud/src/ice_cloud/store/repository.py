@@ -254,6 +254,15 @@ class Repository(Protocol):
         """Insert events and upsert the alert state in one transaction."""
         ...
 
+    def mark_offline_if_unchanged(
+        self, fingerprint: str, last_report_at: datetime, event: AlertEventRow
+    ) -> StoredEvent | None:
+        """Set ``offline_since`` to ``event.at`` and insert ``event``, in one
+        transaction, only while the state still has ``offline_since`` unset and
+        ``last_report_at`` unchanged (no report arrived since the caller read it).
+        Returns the stored event, or None when nothing changed."""
+        ...
+
     def alert_events(self, fingerprint: str, *, limit: int) -> list[StoredEvent]:
         """Newest first."""
         ...
@@ -263,13 +272,16 @@ class Repository(Protocol):
         ...
 
     def alert_count_since(self, fingerprint: str, since: datetime) -> int:
-        """Events at or after ``since``, not counting ``cleared`` ones."""
+        """Events at or after ``since``, counting ``raised`` and ``offline`` only
+        (neither ``cleared`` nor ``online`` is an alert)."""
         ...
 
     def cleared_since_last_sent(
         self, fingerprint: str, account_id: str
     ) -> list[StoredEvent]:
-        """``cleared`` events after the account's last ``sent`` delivery (all if none)."""
+        """``cleared`` events after the later of the account's last ``sent`` delivery
+        and its access start (``claimed_at`` for the owner, ``granted_at`` for a
+        tech); empty when the account has no access to the machine."""
         ...
 
     def people_for_alerts(self, fingerprint: str) -> list[tuple[Recipient, bool]]:
@@ -290,9 +302,14 @@ class Repository(Protocol):
         now: datetime,
     ) -> Delivery: ...
 
-    def pending_deliveries(self, *, before: datetime) -> list[Delivery]:
-        """``pending`` rows with ``attempted_at <= before`` and ``failed`` rows
-        with fewer than 5 attempts."""
+    def pending_deliveries(
+        self, *, before: datetime, ignore_backoff: bool = False
+    ) -> list[Delivery]:
+        """``pending`` rows with ``attempted_at <= before`` and ``failed`` rows with
+        fewer than 5 attempts whose backoff has elapsed: ``attempted_at`` plus
+        ``min(2**attempts, 64)`` minutes is at or before ``before``. With
+        ``ignore_backoff`` every failed row under the attempt cap is returned
+        (used to fold them into an email that is going out anyway)."""
         ...
 
     def mark_delivery(
@@ -300,6 +317,12 @@ class Repository(Protocol):
     ) -> None:
         """Set status, ``attempted_at`` and ``error``; ``attempts`` += 1;
         ``sent_at`` is set only for ``sent``."""
+        ...
+
+    def delivery_health(self, fingerprint: str) -> bool:
+        """False when the machine's most recently attempted delivery (ignoring
+        ``muted`` rows and rows never attempted) is ``failed``; true otherwise,
+        including when there is no delivery at all."""
         ...
 
     def last_sent_at(self, fingerprint: str, account_id: str) -> datetime | None: ...

@@ -45,13 +45,19 @@ def _revoke_ctx(short: str, account_id: str, confirming: bool) -> dict:
     }
 
 
-async def _recipients(
+async def recipients_context(
     request: Request, machine: Machine, account: Account, role: str
 ) -> dict:
-    """Context for the alert-recipients fragment, as seen by ``account``."""
+    """Context for the alert-recipients fragment, as seen by ``account``.
+
+    The owner (and an admin) sees every recipient; a technician sees only their
+    own row, so other people's email addresses are never disclosed to them.
+    """
     rows = await asyncio.to_thread(
         request.app.state.repo.people_for_alerts, machine.fingerprint
     )
+    if role == "tech":
+        rows = [(r, muted) for r, muted in rows if r.account_id == account.id]
     return {
         "short": short_fingerprint(machine.fingerprint),
         "recipients": [
@@ -96,7 +102,7 @@ async def _page(
         }
         for i in pending
     ]
-    recipients = await _recipients(request, machine, account, "owner")
+    recipients = await recipients_context(request, machine, account, "owner")
     ui = resolve_ui(request, None)
     level = Level.child(LEVEL_FLEET, "People", f"/machines/{short}/people")
     return ui.templates.TemplateResponse(
@@ -155,7 +161,7 @@ async def mute(
         repo.set_muted, account_id, machine.fingerprint, muted == "1"
     )
     ui = resolve_ui(request, None)
-    ctx = await _recipients(request, machine, account, role)
+    ctx = await recipients_context(request, machine, account, role)
     return ui.templates.TemplateResponse(
         request, "partials/alert_recipients.html", {"request": request, **ctx}
     )

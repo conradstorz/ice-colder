@@ -128,13 +128,13 @@ def test_tech_cannot_mute_other_403(cloud, signer):
     tech = _tech(cloud, signer, owner)
     assert _mute(cloud, sh, owner).status_code == 403
     assert not _muted(cloud, owner, signer)
-    assert tech
+    assert not _muted(cloud, tech, signer)
 
 
 def test_mute_requires_htmx(cloud, signer):
     owner, sh = _setup(cloud, signer)
     r = _mute(cloud, sh, owner, headers={})
-    assert r.status_code == 403 or r.status_code == 400
+    assert r.status_code == 403
     assert not _muted(cloud, owner, signer)
 
 
@@ -159,3 +159,84 @@ def test_people_page_shows_owner_row_with_mute(cloud, signer):
     assert "owner@example.com" in text
     assert f"/machines/{sh}/people/{owner.id}/mute" in text
     assert f"/machines/{sh}/alerts" in text
+
+
+def test_owner_mutes_self(cloud, signer):
+    owner, sh = _setup(cloud, signer)
+    assert _mute(cloud, sh, owner).status_code == 200
+    assert _muted(cloud, owner, signer)
+    assert _mute(cloud, sh, owner, "0").status_code == 200
+    assert not _muted(cloud, owner, signer)
+
+
+def test_admin_mute_is_404(cloud, signer):
+    owner, sh = _setup(cloud, signer)
+    admin = login(cloud, "admin@example.com")
+    assert _mute(cloud, sh, admin).status_code == 404  # admins are not recipients
+    assert _mute(cloud, sh, owner).status_code == 403  # nor may they mute others
+    assert not _muted(cloud, owner, signer)
+
+
+def _seed_delivery_history(cloud, signer, owner, tech):
+    repo = cloud.app.state.repo
+    now = cloud.app.state.now()
+    (event,) = repo.record_alert_events([_row(signer.fingerprint, now, 7)])
+    mine = repo.create_delivery(signer.fingerprint, tech.id, [event.id], "pending", now)
+    repo.mark_delivery(mine.id, status="failed", now=now, error="tech-side boom")
+    theirs = repo.create_delivery(
+        signer.fingerprint, owner.id, [event.id], "pending", now
+    )
+    repo.mark_delivery(theirs.id, status="failed", now=now, error="owner-side boom")
+
+
+def test_tech_alerts_page_hides_other_recipients(cloud, signer):
+    owner, sh = _setup(cloud, signer)
+    tech = _tech(cloud, signer, owner)
+    _seed_delivery_history(cloud, signer, owner, tech)
+    text = cloud.get(f"/machines/{sh}/alerts").text
+    assert "tech@example.com: failed: tech-side boom" in text
+    assert "owner@example.com" not in text
+    assert "owner-side boom" not in text
+    assert "owner: failed" in text
+    assert f"/machines/{sh}/people/{tech.id}/mute" in text
+    assert f"/machines/{sh}/people/{owner.id}/mute" not in text
+
+
+def test_owner_alerts_page_shows_everything(cloud, signer):
+    owner, sh = _setup(cloud, signer)
+    tech = _tech(cloud, signer, owner)
+    _seed_delivery_history(cloud, signer, owner, tech)
+    login(cloud, "owner@example.com")
+    text = cloud.get(f"/machines/{sh}/alerts").text
+    assert "tech-side boom" in text and "owner-side boom" in text
+    assert "tech@example.com" in text and "owner@example.com" in text
+
+
+def test_admin_alerts_page_shows_errors_without_a_mute_control(cloud, signer):
+    owner, sh = _setup(cloud, signer)
+    tech = _tech(cloud, signer, owner)
+    _seed_delivery_history(cloud, signer, owner, tech)
+    login(cloud, "admin@example.com")
+    text = cloud.get(f"/machines/{sh}/alerts").text
+    assert "owner-side boom" in text
+    assert "/mute" not in text
+
+
+def test_tech_self_mute_from_the_alerts_page(cloud, signer):
+    owner, sh = _setup(cloud, signer)
+    tech = _tech(cloud, signer, owner)
+    r = _mute(cloud, sh, tech)
+    assert r.status_code == 200
+    assert "tech@example.com" in r.text and "owner@example.com" not in r.text
+    assert "Unmute" in r.text
+    page = cloud.get(f"/machines/{sh}/alerts").text
+    assert "Muted" in page and "Unmute" in page
+    assert _mute(cloud, sh, tech, "0").status_code == 200
+    assert not _muted(cloud, tech, signer)
+
+
+def test_alert_times_are_labelled_utc(cloud, signer):
+    owner, sh = _setup(cloud, signer)
+    now = cloud.app.state.now()
+    cloud.app.state.repo.record_alert_events([_row(signer.fingerprint, now, 9)])
+    assert f"{now:%Y-%m-%d %H:%M} UTC" in cloud.get(f"/machines/{sh}/alerts").text

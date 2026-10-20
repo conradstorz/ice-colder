@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
 from datetime import datetime, timedelta
 
 from loguru import logger
@@ -73,12 +72,18 @@ class OfflineSweep:
             sku=None,
             product=None,
         )
-        # Event and mark commit together, before dispatching, so a crash cannot emit twice.
+        # Event and mark commit together, and only if no report landed since the
+        # state was read (a fresh report must not be overwritten by this pass).
         stored = await asyncio.to_thread(
-            self._repo.record_alert_pass, [row], replace(state, offline_since=now)
+            self._repo.mark_offline_if_unchanged,
+            machine.fingerprint,
+            state.last_report_at,
+            row,
         )
-        await self._dispatcher.dispatch(machine.fingerprint, machine, stored)
-        return stored
+        if stored is None:
+            return []
+        await self._dispatcher.dispatch(machine.fingerprint, machine, [stored])
+        return [stored]
 
     async def run(
         self, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep

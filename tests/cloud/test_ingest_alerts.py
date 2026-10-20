@@ -1,4 +1,5 @@
 import asyncio
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
@@ -6,7 +7,10 @@ from fastapi.testclient import TestClient
 from ice_cloud.app import create_app
 from tests.cloud.conftest import (
     claim,
+    drain_alerts,
     login,
+    select,
+    short,
     make_settings,
     push,
     register,
@@ -76,7 +80,7 @@ def test_online_after_sweep_offline(cloud, signer, mailer, clock):
     assert state.offline_since is None
 
 
-def test_alert_failure_still_204(cloud, signer, mailer, monkeypatch):
+def test_alert_failure_still_200(cloud, signer, mailer, monkeypatch):
     _claimed(cloud, signer)
 
     async def boom(*a, **k):
@@ -129,3 +133,137 @@ def test_0_2_0_report_still_processed(cloud, signer, mailer):
     _claimed(cloud, signer)
     push(cloud, signer, report)
     assert len(mailer.sent) == 1
+
+
+def test_resale_hides_previous_owner_history(cloud, signer, mailer, clock):
+    repo = cloud.app.state.repo
+    first = _claimed(cloud, signer, "first@example.com")
+    push(cloud, signer, make_report())
+    clock.advance(1)
+    push(cloud, signer, make_report(seq=2, faults=False))  # a clear for the old owner
+    assert repo.alert_events(signer.fingerprint, limit=10)
+    clock.advance(1000)
+    second = login(cloud, "second@example.com")
+    assert second.id != first.id
+    claim(cloud, signer, second)
+    assert repo.alert_events(signer.fingerprint, limit=10) == []
+    clock.advance(1000)
+    sent_before = len(mailer.sent)
+    push(cloud, signer, _other_fault(make_report(seq=3)))
+    new = mailer.sent[sent_before:]
+    assert [str(m["To"]) for m in new] == ["second@example.com"]
+    assert "Cleared since your last email" not in new[0].get_body().get_content()
+    select(cloud, signer)
+    page = cloud.get(f"/machines/{short(signer)}/alerts")
+    assert page.status_code == 200
+    assert "WTR-104" in page.text and "ICE-301" not in page.text
+    assert "first@example.com" not in page.text
+
+
+@pytest.fixture
+def smtp_cloud(tmp_path, clock, provider, mailer):
+    app = create_app(
+        make_settings(
+            tmp_path / "d", smtp_host="smtp.example.com", smtp_from="a@example.com"
+        ),
+        now=clock,
+        provider=provider,
+        mailer=mailer,
+        start_sweep=False,
+    )
+    with TestClient(app, follow_redirects=False) as c:
+        yield c
+
+
+def _flag(cloud, signer, report) -> bool:
+    register(cloud, signer, report.machine_id)
+    r = signed(
+        cloud,
+        signer,
+        "POST",
+        f"/api/v1/machines/{signer.fingerprint}/report",
+        report.model_dump_json().encode(),
+    )
+    assert r.status_code == 200
+    drain_alerts(cloud)
+    return r.json()["alerts_handled"]
+
+
+def test_report_flag_false_without_smtp(cloud, signer):
+    _claimed(cloud, signer)
+    assert _flag(cloud, signer, make_report()) is False
+
+
+def test_report_flag_false_while_unclaimed_then_true_once_claimed(smtp_cloud, signer):
+    assert _flag(smtp_cloud, signer, make_report()) is False
+    account = login(smtp_cloud, "owner@example.com")
+    claim(smtp_cloud, signer, account)
+    assert _flag(smtp_cloud, signer, make_report(seq=2)) is True
+
+
+def test_report_flag_false_after_unbind(smtp_cloud, signer):
+    _claimed(smtp_cloud, signer)
+    assert _flag(smtp_cloud, signer, make_report()) is True
+    smtp_cloud.app.state.repo.unbind_machine(signer.fingerprint)
+    assert _flag(smtp_cloud, signer, make_report(seq=2)) is False
+
+
+def test_report_flag_false_with_no_unmuted_recipient(smtp_cloud, signer):
+    owner = _claimed(smtp_cloud, signer)
+    repo = smtp_cloud.app.state.repo
+    repo.set_muted(owner.id, signer.fingerprint, True)
+    assert _flag(smtp_cloud, signer, make_report()) is False
+    repo.set_muted(owner.id, signer.fingerprint, False)
+    assert _flag(smtp_cloud, signer, make_report(seq=2)) is True
+    repo.set_suspended(owner.id, smtp_cloud.app.state.now())
+    assert _flag(smtp_cloud, signer, make_report(seq=3)) is False
+
+
+def test_report_flag_tracks_delivery_health(smtp_cloud, signer, mailer, clock):
+    _claimed(smtp_cloud, signer)
+    assert _flag(smtp_cloud, signer, make_report()) is True
+    mailer.fail_next = RuntimeError("smtp down")
+    clock.advance(700)  # Clock.advance is absolute: now = start + 700 s
+    # Dispatch runs after the response, so this report's own flag is a race with
+    # the send; what matters is the failure that it leaves behind.
+    _flag(smtp_cloud, signer, _other_fault(make_report(seq=2)))
+    clock.advance(710)  # inside the 2-minute retry backoff: still failing
+    assert _flag(smtp_cloud, signer, _other_fault(make_report(seq=3))) is False
+    clock.advance(1000)  # past the backoff: this pass retries and delivers
+    _flag(smtp_cloud, signer, _other_fault(make_report(seq=4)))
+    clock.advance(1010)
+    assert _flag(smtp_cloud, signer, _other_fault(make_report(seq=5))) is True
+
+
+def test_report_does_not_wait_for_slow_mail(tmp_path, clock, provider, signer):
+    release = threading.Event()
+
+    class Slow:
+        async def send(self, msg):
+            while not release.is_set():
+                await asyncio.sleep(0.01)
+
+    app = create_app(
+        make_settings(
+            tmp_path / "d", smtp_host="smtp.example.com", smtp_from="a@example.com"
+        ),
+        now=clock,
+        provider=provider,
+        mailer=Slow(),
+        start_sweep=False,
+    )
+    with TestClient(app, follow_redirects=False) as c:
+        _claimed(c, signer)
+        r = signed(
+            c,
+            signer,
+            "POST",
+            f"/api/v1/machines/{signer.fingerprint}/report",
+            make_report().model_dump_json().encode(),
+        )
+        assert r.status_code == 200  # returned although the send is still blocked
+        release.set()
+        drain_alerts(c)
+    assert c.app.state.repo.last_sent_at(
+        signer.fingerprint, c.app.state.repo.machine(signer.fingerprint).owner_id
+    )

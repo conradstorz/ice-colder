@@ -77,7 +77,14 @@ class Notifier:
             return
         self._last_sent[key] = now
 
-        if self._cloud_handles_alerts():
+        try:
+            deferred = self._cloud_handles_alerts()
+        except Exception:
+            logger.exception(
+                "Notifier: cloud hand-off check failed; delivering locally"
+            )
+            deferred = False
+        if deferred:
             logger.info(f"Notifier: deferred to cloud: {key}")
             return
 

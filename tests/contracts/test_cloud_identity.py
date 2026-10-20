@@ -1,4 +1,4 @@
-"""Edge-cloud identity models (contract 0.2.0)."""
+"""Edge-cloud identity models (contract 0.3.0)."""
 
 import base64
 
@@ -9,6 +9,7 @@ from ice_contracts.cloud.identity import (
     ClaimCodeNotice,
     RegisterMachine,
     RegisterResponse,
+    ReportResponse,
 )
 
 KEY = base64.b64encode(bytes(32)).decode()
@@ -75,3 +76,22 @@ def test_register_response_round_trips_alerts_handled():
     r = RegisterResponse(fingerprint="ab", claimed=True, alerts_handled=True)
     assert RegisterResponse.model_validate_json(r.model_dump_json()) == r
     assert r.alerts_handled is True
+
+
+@pytest.mark.parametrize("label", ["a\nb", "a\rb", "tab\there", "\x00", "", "x" * 65])
+def test_register_machine_rejects_control_characters_and_bad_length(label):
+    with pytest.raises(ValidationError):
+        RegisterMachine(public_key_b64=KEY, label=label)
+
+
+def test_register_machine_accepts_unicode_and_spaces_label():
+    assert RegisterMachine(public_key_b64=KEY, label="Café 2nd floor").label
+
+
+def test_report_response_requires_flag_and_forbids_extra():
+    assert ReportResponse(alerts_handled=True).alerts_handled is True
+    assert ReportResponse.model_validate_json('{"alerts_handled": false}')
+    with pytest.raises(ValidationError):
+        ReportResponse.model_validate({})
+    with pytest.raises(ValidationError):
+        ReportResponse(alerts_handled=True, extra=1)

@@ -1,4 +1,4 @@
-"""Alert engine: diff a machine report's faults against the previous key set (pure)."""
+"""Alert engine: diff a machine report's faults against the previous faults (pure)."""
 
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -6,8 +6,6 @@ from datetime import datetime
 from typing import Literal
 
 from ice_contracts.cloud.report import FaultView, MachineReport
-
-KIND_ORDER = ("cleared", "raised")
 
 
 @dataclass(frozen=True)

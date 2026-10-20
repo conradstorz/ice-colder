@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Protocol
+
+from ice_cloud.store.repository import Recipient
 
 
 class _Event(Protocol):
@@ -15,21 +16,14 @@ class _Event(Protocol):
     def gate(self) -> str | None: ...
 
 
-@dataclass(frozen=True)
-class Recipient:
-    account_id: str
-    email: str
-    role: Literal["owner", "tech"]
-
-
-_TECH_GATES = frozenset({"safety", "fulfillment"})
+TECH_GATES = frozenset({"safety", "fulfillment"})
 
 
 def _triggers(event: _Event, role: str) -> bool:
     if event.kind in ("offline", "online"):
         return True
     if event.kind == "raised":
-        return role == "owner" or event.gate in _TECH_GATES
+        return role == "owner" or event.gate in TECH_GATES
     return False
 
 

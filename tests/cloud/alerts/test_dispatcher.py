@@ -69,13 +69,16 @@ async def test_failed_send_marks_failed_and_retries_on_flush(env):
     assert statuses == ["failed", "sent"]
     failed = next(d for d in env.deliveries(stored) if d.status == "failed")
     assert failed.attempts == 1 and "smtp down" in failed.error
-    env.clock.advance(1)
+    env.clock.advance(60)
+    await env.disp.flush(env.clock())
+    assert {d.status for d in env.deliveries(stored)} == {"failed", "sent"}
+    env.clock.advance(120)
     await env.disp.flush(env.clock())
     assert {d.status for d in env.deliveries(stored)} == {"sent"}
     assert len(env.mailer.sent) == 2
 
 
-async def test_sixth_attempt_not_retried(env):
+async def test_failed_retries_back_off_then_stop(env):
     class Down:
         async def send(self, msg):
             raise RuntimeError("x" * 900)
@@ -90,9 +93,18 @@ async def test_sixth_attempt_not_retried(env):
     stored = await env.dispatch(event_row(key="k", gate="alert"))
     (d,) = env.deliveries(stored)
     assert d.status == "failed" and d.attempts == 1 and len(d.error) <= 500
-    for _ in range(10):
+    for _ in range(5):
         env.clock.advance(1)
         await env.disp.flush(env.clock())
+    (d,) = env.deliveries(stored)
+    assert d.attempts == 1  # five quick flushes do not exhaust the row
+    for minutes in (2, 4, 8, 16):
+        env.clock.advance(minutes * 60)
+        await env.disp.flush(env.clock())
+    (d,) = env.deliveries(stored)
+    assert d.attempts == 5
+    env.clock.advance(3600)
+    await env.disp.flush(env.clock())
     (d,) = env.deliveries(stored)
     assert d.attempts == 5
 
@@ -266,3 +278,46 @@ async def test_online_held_then_offline_sends_offline(env):
     assert msg["Subject"].endswith(": offline")
     body = msg.get_content()
     assert body.index("Reporting again") < body.index("Stopped reporting")
+
+
+async def test_schedule_returns_immediately_and_drain_waits(env):
+    stored = env.events(event_row())
+    env.disp.schedule(FP, env.repo.machine(FP), stored)
+    assert env.mailer.sent == []  # nothing ran yet: the caller was not blocked
+    await env.disp.drain()
+    assert len(env.mailer.sent) == 2
+
+
+async def test_schedule_logs_failure_instead_of_raising(env, monkeypatch):
+    async def boom(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(env.disp, "dispatch", boom)
+    env.disp.schedule(FP, env.repo.machine(FP), env.events(event_row()))
+    await env.disp.drain()  # does not raise
+    assert env.mailer.sent == []
+
+
+async def test_tech_cleared_ride_along_respects_gate_rule(env):
+    env.events(
+        event_row(
+            "cleared",
+            key="a",
+            code="SAF-1",
+            gate="safety",
+            at=T0 + timedelta(seconds=1),
+        ),
+        event_row(
+            "cleared",
+            key="b",
+            code="DATA-101",
+            gate="alert",
+            at=T0 + timedelta(seconds=1),
+        ),
+    )
+    env.clock.advance(5)
+    await env.dispatch(event_row(key="new", code="WTR-104", gate="safety"))
+    owner = next(m for m in env.mailer.sent if m["To"] == "owner@example.com")
+    tech = next(m for m in env.mailer.sent if m["To"] == "tech@example.com")
+    assert "SAF-1" in owner.get_content() and "DATA-101" in owner.get_content()
+    assert "SAF-1" in tech.get_content() and "DATA-101" not in tech.get_content()

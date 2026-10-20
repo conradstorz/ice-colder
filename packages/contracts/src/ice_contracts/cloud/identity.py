@@ -1,4 +1,4 @@
-"""Machine identity wire models (edge-cloud contract 0.2.0): registration and claim codes."""
+"""Machine identity wire models (edge-cloud contract 0.3.0): registration, claim codes and report acks."""
 
 import base64
 import binascii
@@ -16,7 +16,7 @@ class RegisterMachine(_Model):
     """Body of POST /api/v1/machines/register."""
 
     public_key_b64: str
-    label: str = Field(min_length=1, max_length=64)
+    label: str = Field(pattern=r"^[^\r\n\x00-\x1f]{1,64}$")
 
     @field_validator("public_key_b64")
     @classmethod
@@ -36,6 +36,16 @@ class RegisterResponse(_Model):
     fingerprint: str
     claimed: bool
     alerts_handled: bool = False
+
+
+class ReportResponse(_Model):
+    """Body of the 200 answer to POST /api/v1/machines/{fingerprint}/report.
+
+    ``alerts_handled`` is recomputed by the cloud on every report: true while it
+    is currently able to email this machine's alerts (see the contract notes).
+    """
+
+    alerts_handled: bool
 
 
 class ClaimCodeNotice(_Model):

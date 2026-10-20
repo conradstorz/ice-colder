@@ -240,6 +240,8 @@ def _alert_state(row: sqlite3.Row) -> AlertState:
 _ALERT_DELETES = (
     "DELETE FROM machine_alert_state WHERE fingerprint = ?",
     "DELETE FROM alert_prefs WHERE fingerprint = ?",
+    "DELETE FROM alert_deliveries WHERE fingerprint = ?",
+    "DELETE FROM alert_events WHERE fingerprint = ?",
 )
 
 
@@ -511,12 +513,6 @@ class SqliteRepository:
             conn.execute(DELETE_MEMBERSHIPS_SQL, (fingerprint,))
             for statement in _ALERT_DELETES:
                 conn.execute(statement, (fingerprint,))
-            conn.execute(
-                "DELETE FROM alert_deliveries WHERE fingerprint = ?", (fingerprint,)
-            )
-            conn.execute(
-                "DELETE FROM alert_events WHERE fingerprint = ?", (fingerprint,)
-            )
 
     def all_machines(self) -> list[Machine]:
         with self._connect() as conn:
@@ -804,6 +800,20 @@ class SqliteRepository:
             )
         return stored
 
+    def mark_offline_if_unchanged(
+        self, fingerprint: str, last_report_at: datetime, event: AlertEventRow
+    ) -> StoredEvent | None:
+        with self._tx() as conn:
+            cur = conn.execute(
+                "UPDATE machine_alert_state SET offline_since = ?"
+                " WHERE fingerprint = ? AND offline_since IS NULL"
+                " AND last_report_at = ?",
+                (_iso(event.at), fingerprint, _iso(last_report_at)),
+            )
+            if cur.rowcount != 1:
+                return None
+            return self._insert_alert_events(conn, [event])[0]
+
     def alert_events(self, fingerprint: str, *, limit: int) -> list[StoredEvent]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -828,21 +838,37 @@ class SqliteRepository:
         with self._connect() as conn:
             return conn.execute(
                 "SELECT COUNT(*) AS n FROM alert_events WHERE fingerprint = ?"
-                " AND at >= ? AND kind != 'cleared'",
+                " AND at >= ? AND kind NOT IN ('cleared', 'online')",
                 (fingerprint, _iso(since)),
             ).fetchone()["n"]
 
     def cleared_since_last_sent(
         self, fingerprint: str, account_id: str
     ) -> list[StoredEvent]:
-        last = self.last_sent_at(fingerprint, account_id)
-        sql = "SELECT * FROM alert_events WHERE fingerprint = ? AND kind = 'cleared'"
-        params: list[str | None] = [fingerprint]
-        if last is not None:
-            sql += " AND at > ?"
-            params.append(_iso(last))
         with self._connect() as conn:
-            rows = conn.execute(sql + " ORDER BY at, id", params).fetchall()
+            owner = conn.execute(
+                "SELECT claimed_at FROM machines"
+                " WHERE fingerprint = ? AND owner_id = ?",
+                (fingerprint, account_id),
+            ).fetchone()
+            if owner is not None:
+                access_start = _dt(owner["claimed_at"])
+            else:
+                member = conn.execute(
+                    "SELECT granted_at FROM memberships"
+                    " WHERE fingerprint = ? AND account_id = ?",
+                    (fingerprint, account_id),
+                ).fetchone()
+                access_start = None if member is None else _dt(member["granted_at"])
+            if access_start is None:
+                return []
+            last = self.last_sent_at(fingerprint, account_id)
+            bound = access_start if last is None else max(last, access_start)
+            rows = conn.execute(
+                "SELECT * FROM alert_events WHERE fingerprint = ?"
+                " AND kind = 'cleared' AND at > ? ORDER BY at, id",
+                (fingerprint, _iso(bound)),
+            ).fetchall()
         return [_event(r) for r in rows]
 
     def people_for_alerts(self, fingerprint: str) -> list[tuple[Recipient, bool]]:
@@ -914,7 +940,9 @@ class SqliteRepository:
                 ).fetchone()
             )
 
-    def pending_deliveries(self, *, before: datetime) -> list[Delivery]:
+    def pending_deliveries(
+        self, *, before: datetime, ignore_backoff: bool = False
+    ) -> list[Delivery]:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM alert_deliveries WHERE"
@@ -922,7 +950,17 @@ class SqliteRepository:
                 " OR (status = 'failed' AND attempts < ?) ORDER BY id",
                 (_iso(before), MAX_DELIVERY_ATTEMPTS),
             ).fetchall()
-        return [_delivery(r) for r in rows]
+        out = []
+        for delivery in map(_delivery, rows):
+            if delivery.status == "failed" and not ignore_backoff:
+                wait = timedelta(minutes=min(2**delivery.attempts, 64))
+                if (
+                    delivery.attempted_at is None
+                    or delivery.attempted_at + wait > before
+                ):
+                    continue
+            out.append(delivery)
+        return out
 
     def mark_delivery(
         self, id: int, *, status: str, now: datetime, error: str | None = None
@@ -935,6 +973,16 @@ class SqliteRepository:
                 " WHERE id = ?",
                 (status, _iso(now), error, status, _iso(now), id),
             )
+
+    def delivery_health(self, fingerprint: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM alert_deliveries WHERE fingerprint = ?"
+                " AND status != 'muted' AND attempts > 0 AND attempted_at IS NOT NULL"
+                " ORDER BY attempted_at DESC, id DESC LIMIT 1",
+                (fingerprint,),
+            ).fetchone()
+        return row is None or row["status"] != "failed"
 
     def last_sent_at(self, fingerprint: str, account_id: str) -> datetime | None:
         with self._connect() as conn:

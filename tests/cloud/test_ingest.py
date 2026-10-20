@@ -47,12 +47,12 @@ def _put(client, signer, digest, data):
 
 
 def test_report_is_accepted_and_stored(client, machine, tmp_path):
-    assert _post(client, machine, make_report()).status_code == 204
+    assert _post(client, machine, make_report()).status_code == 200
     assert (tmp_path / "machines" / f"{machine.fingerprint}.json").is_file()
 
 
 def test_body_machine_id_is_a_label_not_checked_against_the_path(client, machine):
-    assert _post(client, machine, make_report(machine_id="anything")).status_code == 204
+    assert _post(client, machine, make_report(machine_id="anything")).status_code == 200
 
 
 def test_invalid_body_is_422(client, machine):

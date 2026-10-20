@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from ice_cloud.alerts.engine import KIND_ORDER, diff_reports
+from ice_cloud.alerts.engine import diff_reports
 from ice_contracts.cloud.report import MachineReport
 
 from tests.cloud.reports import FP, NOW, make_report
@@ -67,7 +67,6 @@ def test_mixed_orders_cleared_then_raised_by_key():
         ("raised", "ENV-102"),
         ("raised", "WTR-106"),
     ]
-    assert KIND_ORDER == ("cleared", "raised")
 
 
 def test_at_is_now_not_sent_at():
