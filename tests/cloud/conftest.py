@@ -3,6 +3,7 @@ import base64
 import pytest
 from fastapi.testclient import TestClient
 
+from ice_cloud.alerts.mail import RecordingMailer
 from ice_cloud.app import create_app
 from ice_cloud.auth import IdentityClaims, SignInError
 from ice_cloud.store.repository import Account
@@ -78,8 +79,13 @@ def provider():
 
 
 @pytest.fixture
-def cloud_app(settings, clock, provider):
-    return create_app(settings, now=clock, provider=provider)
+def mailer():
+    return RecordingMailer()
+
+
+@pytest.fixture
+def cloud_app(settings, clock, provider, mailer):
+    return create_app(settings, now=clock, provider=provider, mailer=mailer)
 
 
 def login(
