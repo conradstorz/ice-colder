@@ -254,6 +254,15 @@ class Repository(Protocol):
         """Insert events and upsert the alert state in one transaction."""
         ...
 
+    def mark_offline_if_unchanged(
+        self, fingerprint: str, last_report_at: datetime, event: AlertEventRow
+    ) -> StoredEvent | None:
+        """Set ``offline_since`` to ``event.at`` and insert ``event``, in one
+        transaction, only while the state still has ``offline_since`` unset and
+        ``last_report_at`` unchanged (no report arrived since the caller read it).
+        Returns the stored event, or None when nothing changed."""
+        ...
+
     def alert_events(self, fingerprint: str, *, limit: int) -> list[StoredEvent]:
         """Newest first."""
         ...

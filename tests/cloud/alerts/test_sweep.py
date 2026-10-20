@@ -155,16 +155,16 @@ async def test_startup_grace_then_flag(env, sweep):
 
 
 class FailingPutRepo:
-    """Delegates to a real repo; record_alert_pass raises for one fingerprint."""
+    """Delegates to a real repo; the offline write raises for one fingerprint."""
 
     def __init__(self, repo, bad):
         self.repo = repo
         self.bad = bad
 
-    def record_alert_pass(self, events, state):
-        if state.fingerprint == self.bad:
+    def mark_offline_if_unchanged(self, fingerprint, last_report_at, event):
+        if fingerprint == self.bad:
             raise RuntimeError("disk full")
-        return self.repo.record_alert_pass(events, state)
+        return self.repo.mark_offline_if_unchanged(fingerprint, last_report_at, event)
 
     def __getattr__(self, name):
         return getattr(self.repo, name)
@@ -189,3 +189,28 @@ async def test_one_machine_failing_does_not_block_another(env):
     events = await sweep.tick()
     assert [e.fingerprint for e in events] == [other]
     assert [m["To"] for m in env.mailer.sent] == ["owner@example.com"]
+
+
+async def test_report_between_read_and_write_is_not_overwritten(env, sweep):
+    _state(env)
+    env.clock.advance(3 * INTERVAL + 1)
+    real = env.repo.claimed_machines_with_state
+
+    def read_then_report():
+        pairs = real()  # the sweep's snapshot, taken before the report lands
+        fresh = AlertState(
+            fingerprint=FP,
+            faults=(),
+            last_report_at=env.clock(),
+            report_interval_seconds=INTERVAL,
+            offline_since=None,
+        )
+        env.repo.record_alert_pass([], fresh)
+        return pairs
+
+    env.repo.claimed_machines_with_state = read_then_report
+    assert await sweep.tick() == []
+    assert env.mailer.sent == []
+    assert env.repo.alert_events(FP, limit=5) == []
+    state = env.repo.alert_state(FP)
+    assert state.offline_since is None and state.last_report_at == env.clock()

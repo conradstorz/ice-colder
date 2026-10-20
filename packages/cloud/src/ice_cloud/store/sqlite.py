@@ -800,6 +800,20 @@ class SqliteRepository:
             )
         return stored
 
+    def mark_offline_if_unchanged(
+        self, fingerprint: str, last_report_at: datetime, event: AlertEventRow
+    ) -> StoredEvent | None:
+        with self._tx() as conn:
+            cur = conn.execute(
+                "UPDATE machine_alert_state SET offline_since = ?"
+                " WHERE fingerprint = ? AND offline_since IS NULL"
+                " AND last_report_at = ?",
+                (_iso(event.at), fingerprint, _iso(last_report_at)),
+            )
+            if cur.rowcount != 1:
+                return None
+            return self._insert_alert_events(conn, [event])[0]
+
     def alert_events(self, fingerprint: str, *, limit: int) -> list[StoredEvent]:
         with self._connect() as conn:
             rows = conn.execute(

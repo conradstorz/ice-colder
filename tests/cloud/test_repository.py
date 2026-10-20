@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
+from dataclasses import replace
 import sqlite3
 
 import pytest
@@ -725,3 +726,27 @@ def test_record_alert_pass_rolls_back_events_when_state_write_fails(repo):
         repo.record_alert_pass([_event()], bad)
     assert repo.alert_events(FP, limit=10) == []
     assert repo.alert_state(FP) is None
+
+
+def test_mark_offline_if_unchanged(repo):
+    _claimed(repo)
+    repo.put_alert_state(_state())
+    offline = _event(kind="offline", at=T0 + timedelta(hours=1))
+    stored = repo.mark_offline_if_unchanged(FP, _state().last_report_at, offline)
+    assert stored is not None and stored.kind == "offline"
+    assert repo.alert_state(FP).offline_since == offline.at
+    assert [e.id for e in repo.alert_events(FP, limit=5)] == [stored.id]
+    # already offline: nothing more
+    assert repo.mark_offline_if_unchanged(FP, _state().last_report_at, offline) is None
+    assert len(repo.alert_events(FP, limit=5)) == 1
+
+
+def test_mark_offline_if_unchanged_skips_when_report_arrived(repo):
+    _claimed(repo)
+    repo.put_alert_state(_state())
+    newer = replace(_state(), last_report_at=T0 + timedelta(minutes=30))
+    repo.put_alert_state(newer)
+    offline = _event(kind="offline", at=T0 + timedelta(hours=1))
+    assert repo.mark_offline_if_unchanged(FP, _state().last_report_at, offline) is None
+    assert repo.alert_state(FP) == newer
+    assert repo.alert_events(FP, limit=5) == []
