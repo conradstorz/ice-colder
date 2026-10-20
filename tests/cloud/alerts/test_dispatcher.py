@@ -250,3 +250,19 @@ async def test_offline_held_then_online_sends_back_online(env):
     body = msg.get_content()
     assert "Stopped reporting at" in body and "Reporting again at" in body
     assert body.index("Stopped reporting") < body.index("Reporting again")
+
+
+async def test_online_held_then_offline_sends_offline(env):
+    await env.dispatch(event_row(key="a"))
+    env.clock.advance(60)
+    await env.dispatch(event_row("online", key=None, code=None, gate=None))
+    env.clock.advance(60)
+    await env.dispatch(event_row("offline", key=None, code=None, gate=None))
+    env.clock.advance(COOLDOWN_SECONDS)
+    before = len(env.mailer.sent)
+    await env.disp.flush(env.clock())
+    assert len(env.mailer.sent) == before + 2
+    msg = env.mailer.sent[-1]
+    assert msg["Subject"].endswith(": offline")
+    body = msg.get_content()
+    assert body.index("Reporting again") < body.index("Stopped reporting")
