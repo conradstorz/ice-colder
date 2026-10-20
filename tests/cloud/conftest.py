@@ -162,8 +162,22 @@ def register(cloud: TestClient, signer: Signer, label: str = "m-0042") -> str:
     return r.json()["fingerprint"]
 
 
+def drain_alerts(cloud: TestClient) -> None:
+    """Wait for the background alert dispatches a request scheduled.
+
+    The TestClient runs the app on its own event loop in a portal thread, so the
+    dispatcher's tasks live there; ``portal.call`` awaits ``drain`` on that loop.
+    A client used without ``with`` has no portal (each request gets its own loop),
+    so there is nothing to wait for.
+    """
+    if cloud.portal is None:
+        return
+    cloud.portal.call(cloud.app.state.alerts.drain)
+
+
 def push(cloud: TestClient, signer: Signer, report) -> None:
-    """Register (idempotent) and push one report as the signer's machine."""
+    """Register (idempotent) and push one report as the signer's machine,
+    then wait for its alert dispatch to finish."""
     register(cloud, signer, report.machine_id)
     r = signed(
         cloud,
@@ -173,6 +187,7 @@ def push(cloud: TestClient, signer: Signer, report) -> None:
         report.model_dump_json().encode(),
     )
     assert r.status_code == 200
+    drain_alerts(cloud)
 
 
 def short(signer: Signer) -> str:

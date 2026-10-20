@@ -48,6 +48,7 @@ def create_app(
         try:
             yield
         finally:
+            await app.state.alerts.drain()
             if sweep_task is not None:
                 sweep_task.cancel()
                 await asyncio.gather(sweep_task, return_exceptions=True)

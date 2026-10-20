@@ -1,4 +1,5 @@
 import asyncio
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
@@ -6,6 +7,7 @@ from fastapi.testclient import TestClient
 from ice_cloud.app import create_app
 from tests.cloud.conftest import (
     claim,
+    drain_alerts,
     login,
     select,
     short,
@@ -183,6 +185,7 @@ def _flag(cloud, signer, report) -> bool:
         report.model_dump_json().encode(),
     )
     assert r.status_code == 200
+    drain_alerts(cloud)
     return r.json()["alerts_handled"]
 
 
@@ -221,6 +224,45 @@ def test_report_flag_tracks_delivery_health(smtp_cloud, signer, mailer, clock):
     assert _flag(smtp_cloud, signer, make_report()) is True
     mailer.fail_next = RuntimeError("smtp down")
     clock.advance(700)
-    assert _flag(smtp_cloud, signer, _other_fault(make_report(seq=2))) is False
-    clock.advance(1000)  # past the retry backoff: the next pass delivers it
-    assert _flag(smtp_cloud, signer, _other_fault(make_report(seq=3))) is True
+    # Dispatch runs after the response, so this report still sees a healthy log...
+    assert _flag(smtp_cloud, signer, _other_fault(make_report(seq=2))) is True
+    # ...and the next one sees the failure.
+    clock.advance(10)
+    assert _flag(smtp_cloud, signer, _other_fault(make_report(seq=3))) is False
+    clock.advance(1000)  # past the retry backoff: this pass delivers it
+    assert _flag(smtp_cloud, signer, _other_fault(make_report(seq=4))) is False
+    assert _flag(smtp_cloud, signer, _other_fault(make_report(seq=5))) is True
+
+
+def test_report_does_not_wait_for_slow_mail(tmp_path, clock, provider, signer):
+    release = threading.Event()
+
+    class Slow:
+        async def send(self, msg):
+            while not release.is_set():
+                await asyncio.sleep(0.01)
+
+    app = create_app(
+        make_settings(
+            tmp_path / "d", smtp_host="smtp.example.com", smtp_from="a@example.com"
+        ),
+        now=clock,
+        provider=provider,
+        mailer=Slow(),
+        start_sweep=False,
+    )
+    with TestClient(app, follow_redirects=False) as c:
+        _claimed(c, signer)
+        r = signed(
+            c,
+            signer,
+            "POST",
+            f"/api/v1/machines/{signer.fingerprint}/report",
+            make_report().model_dump_json().encode(),
+        )
+        assert r.status_code == 200  # returned although the send is still blocked
+        release.set()
+        drain_alerts(c)
+    assert c.app.state.repo.last_sent_at(
+        signer.fingerprint, c.app.state.repo.machine(signer.fingerprint).owner_id
+    )

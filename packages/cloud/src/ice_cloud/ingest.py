@@ -117,8 +117,7 @@ async def _handle_alerts(request: Request, machine: Machine, report: MachineRepo
     stored = await asyncio.to_thread(
         _record_alerts, state.repo, machine.fingerprint, report, now
     )
-    await state.alerts.dispatch(machine.fingerprint, machine, stored)
-    await state.alerts.flush(state.now())
+    state.alerts.schedule(machine.fingerprint, machine, stored)
 
 
 @router.post("/machines/{fingerprint}/claim-code", status_code=204)

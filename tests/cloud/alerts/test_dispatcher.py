@@ -278,3 +278,21 @@ async def test_online_held_then_offline_sends_offline(env):
     assert msg["Subject"].endswith(": offline")
     body = msg.get_content()
     assert body.index("Reporting again") < body.index("Stopped reporting")
+
+
+async def test_schedule_returns_immediately_and_drain_waits(env):
+    stored = env.events(event_row())
+    env.disp.schedule(FP, env.repo.machine(FP), stored)
+    assert env.mailer.sent == []  # nothing ran yet: the caller was not blocked
+    await env.disp.drain()
+    assert len(env.mailer.sent) == 2
+
+
+async def test_schedule_logs_failure_instead_of_raising(env, monkeypatch):
+    async def boom(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(env.disp, "dispatch", boom)
+    env.disp.schedule(FP, env.repo.machine(FP), env.events(event_row()))
+    await env.disp.drain()  # does not raise
+    assert env.mailer.sent == []
