@@ -90,7 +90,15 @@ class AlertDispatcher:
                 now,
             )
             if await self._cooled_down(fingerprint, account_id, now):
-                await self._attempt([delivery], person, machine, mine)
+                due = await asyncio.to_thread(self._repo.pending_deliveries, before=now)
+                rows = [
+                    d
+                    for d in due
+                    if d.fingerprint == fingerprint and d.account_id == account_id
+                ]
+                if all(d.id != delivery.id for d in rows):
+                    rows.append(delivery)
+                await self._send_group(rows, person, machine)
             else:
                 logger.info(
                     "Alert for {} held by cooldown ({} event(s))", account_id, len(mine)
@@ -135,6 +143,12 @@ class AlertDispatcher:
                     self._repo.mark_delivery, row.id, status="muted", now=now
                 )
             return
+        await self._send_group(rows, person, machine)
+
+    async def _send_group(
+        self, rows: list[Delivery], person: Recipient, machine: Machine
+    ) -> None:
+        """One email for the union of the rows' events; every row gets the outcome."""
         ids = sorted({i for row in rows for i in row.event_ids})
         mine = await asyncio.to_thread(self._repo.alert_events_by_ids, ids)
         await self._attempt(rows, person, machine, mine)
