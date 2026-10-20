@@ -3,6 +3,7 @@ import base64
 import pytest
 from fastapi.testclient import TestClient
 
+from ice_cloud.alerts.mail import RecordingMailer
 from ice_cloud.app import create_app
 from ice_cloud.auth import IdentityClaims, SignInError
 from ice_cloud.store.repository import Account
@@ -30,7 +31,7 @@ def clock():
     return Clock()
 
 
-def make_settings(data_dir) -> CloudSettings:
+def make_settings(data_dir, **smtp) -> CloudSettings:
     return CloudSettings(
         data_dir=data_dir,
         public_url=None,
@@ -39,6 +40,7 @@ def make_settings(data_dir) -> CloudSettings:
         admins=frozenset({"admin@example.com"}),
         session_key=b"k" * 32,
         insecure_cookies=True,
+        **smtp,
     )
 
 
@@ -78,8 +80,15 @@ def provider():
 
 
 @pytest.fixture
-def cloud_app(settings, clock, provider):
-    return create_app(settings, now=clock, provider=provider)
+def mailer():
+    return RecordingMailer()
+
+
+@pytest.fixture
+def cloud_app(settings, clock, provider, mailer):
+    return create_app(
+        settings, now=clock, provider=provider, mailer=mailer, start_sweep=False
+    )
 
 
 def login(
@@ -153,8 +162,22 @@ def register(cloud: TestClient, signer: Signer, label: str = "m-0042") -> str:
     return r.json()["fingerprint"]
 
 
+def drain_alerts(cloud: TestClient) -> None:
+    """Wait for the background alert dispatches a request scheduled.
+
+    The TestClient runs the app on its own event loop in a portal thread, so the
+    dispatcher's tasks live there; ``portal.call`` awaits ``drain`` on that loop.
+    A client used without ``with`` has no portal (each request gets its own loop),
+    so there is nothing to wait for.
+    """
+    if cloud.portal is None:
+        return
+    cloud.portal.call(cloud.app.state.alerts.drain)
+
+
 def push(cloud: TestClient, signer: Signer, report) -> None:
-    """Register (idempotent) and push one report as the signer's machine."""
+    """Register (idempotent) and push one report as the signer's machine,
+    then wait for its alert dispatch to finish."""
     register(cloud, signer, report.machine_id)
     r = signed(
         cloud,
@@ -163,7 +186,8 @@ def push(cloud: TestClient, signer: Signer, report) -> None:
         f"/api/v1/machines/{signer.fingerprint}/report",
         report.model_dump_json().encode(),
     )
-    assert r.status_code == 204
+    assert r.status_code == 200
+    drain_alerts(cloud)
 
 
 def short(signer: Signer) -> str:

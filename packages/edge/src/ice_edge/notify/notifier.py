@@ -10,6 +10,7 @@ Deduplicates alerts to avoid flooding the owner.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from email.message import EmailMessage
 from typing import TYPE_CHECKING
 
@@ -31,7 +32,13 @@ class Notifier:
         await notifier.send(alert)
     """
 
-    def __init__(self, config: ConfigModel):
+    def __init__(
+        self,
+        config: ConfigModel,
+        *,
+        cloud_handles_alerts: Callable[[], bool] = lambda: False,
+    ):
+        self._cloud_handles_alerts = cloud_handles_alerts
         self._config = config
         self._owner = config.machine_owner
         # Rate limiting: last send time per (source, code|message, sku)
@@ -40,6 +47,10 @@ class Notifier:
             300.0  # 5 min between repeat alerts per (source, code|message, sku)
         )
         self._warned_unconfigured = False
+
+    def set_cloud_handles_alerts(self, predicate: Callable[[], bool]) -> None:
+        """Attach the cloud hand-off predicate once the uplink identity exists."""
+        self._cloud_handles_alerts = predicate
 
     @staticmethod
     def _cooldown_key(alert: Alert) -> str:
@@ -65,6 +76,17 @@ class Notifier:
             logger.debug(f"Notifier: Suppressing alert {key} (cooldown)")
             return
         self._last_sent[key] = now
+
+        try:
+            deferred = self._cloud_handles_alerts()
+        except Exception:
+            logger.exception(
+                "Notifier: cloud hand-off check failed; delivering locally"
+            )
+            deferred = False
+        if deferred:
+            logger.info(f"Notifier: deferred to cloud: {key}")
+            return
 
         logger.info(
             f"Notifier: [{alert.level}] {alert.source} -> {self._owner.name}: "

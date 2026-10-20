@@ -1,0 +1,16 @@
+<div id="alert-recipients" class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-3">
+  <h2 class="text-base font-semibold text-gray-900">Alert emails</h2>
+  <ul class="space-y-2">
+    {% for r in recipients %}
+    <li class="flex flex-wrap items-center gap-3">
+      <span class="text-sm text-gray-700">{{ r.email }}</span>
+      <span class="text-xs text-gray-400">{{ r.role }}</span>
+      <span class="text-xs text-gray-600">{{ "Muted" if r.muted else "Receiving" }}</span>
+      {% if r.can_toggle %}
+      <button hx-post="/machines/{{ short }}/people/{{ r.account_id }}/mute" hx-vals='{"muted": "{{ 0 if r.muted else 1 }}"}' hx-target="#alert-recipients" hx-swap="outerHTML"
+              class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50 ml-auto">{{ "Unmute" if r.muted else "Mute" }}</button>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</div>

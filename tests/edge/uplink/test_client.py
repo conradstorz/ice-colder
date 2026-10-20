@@ -192,3 +192,66 @@ async def test_last_status_tracks_the_latest_response(identity):
     assert await uplink.delete_claim_code() is True
     assert uplink.last_status == 204
     await uplink.aclose()
+
+
+async def test_register_stores_alerts_handled(identity):
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "fingerprint": identity.fingerprint,
+                "claimed": True,
+                "alerts_handled": True,
+            },
+        )
+
+    uplink = _uplink(handler, identity)
+    assert uplink.last_register is None
+    assert await uplink.register("Lobby") is True
+    assert uplink.last_register is not None
+    assert uplink.last_register.alerts_handled is True
+
+
+async def test_register_failure_or_bad_body_leaves_last_register_none(identity):
+    uplink = _uplink(lambda request: httpx.Response(200, content=b"nope"), identity)
+    assert await uplink.register("Lobby") is True
+    assert uplink.last_register is None
+    failing = _uplink(lambda request: httpx.Response(500), identity)
+    assert await failing.register("Lobby") is False
+    assert failing.last_register is None
+
+
+async def test_post_report_parses_alerts_handled(report, identity):
+    uplink = _uplink(
+        lambda r: httpx.Response(200, json={"alerts_handled": True}), identity
+    )
+    assert uplink.last_report is None
+    assert await uplink.post_report(report) is True
+    assert uplink.last_report is not None and uplink.last_report.alerts_handled is True
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(204),
+        httpx.Response(200, content=b"nope"),
+        httpx.Response(200, json={"other": 1}),
+    ],
+)
+async def test_post_report_without_a_usable_body_leaves_last_report_none(
+    report, identity, response
+):
+    uplink = _uplink(lambda r: response, identity)
+    uplink.last_report = object()  # a stale value must be cleared
+    assert await uplink.post_report(report) is True
+    assert uplink.last_report is None
+
+
+async def test_post_report_failure_clears_last_report(report, identity):
+    calls = iter(
+        [httpx.Response(200, json={"alerts_handled": True}), httpx.Response(500)]
+    )
+    uplink = _uplink(lambda r: next(calls), identity)
+    assert await uplink.post_report(report) is True
+    assert await uplink.post_report(report) is False
+    assert uplink.last_report is None

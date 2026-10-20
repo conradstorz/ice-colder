@@ -74,6 +74,21 @@ class TestLevelPermissionGates:
 
 
 class TestHealthLanding:
+    def test_health_shows_alerts_mode(self, client_as_tech, tmp_path):
+        from datetime import UTC, datetime
+
+        from ice_edge.monitoring.health_monitor import HealthMonitor
+        from ice_edge.uplink.identity import MachineIdentity
+
+        routes.set_health_monitor(HealthMonitor())
+        assert "Alerts:" not in client_as_tech.get("/health").text
+        identity = MachineIdentity.load_or_create(tmp_path / "identity.json")
+        routes.set_machine_identity(identity)
+        assert "Alerts: local" in client_as_tech.get("/health").text
+        identity.alerts_handled = True
+        identity.last_report_ok_at = datetime.now(UTC)
+        assert "Alerts: cloud" in client_as_tech.get("/health").text
+
     def test_renders_logs_subtile_for_a_tech(self, client_as_tech):
         resp = client_as_tech.get("/health")
         assert resp.status_code == 200

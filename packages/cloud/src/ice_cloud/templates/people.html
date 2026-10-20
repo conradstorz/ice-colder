@@ -3,6 +3,7 @@
 {% block body %}
 <div id="people" class="space-y-4">
   <h1 class="text-hero font-semibold text-gray-900">People <span class="font-mono text-sm text-gray-400">{{ machine_label }} {{ short }}</span></h1>
+  <p class="text-sm"><a href="/machines/{{ short }}/alerts" class="text-gray-600">Alert history</a></p>
 
   {% if error %}<p class="text-red-600 text-sm" role="alert">{{ error }}</p>{% endif %}
   {% if new_link %}
@@ -11,6 +12,8 @@
     <p class="mt-1 font-mono text-amber-700 text-sm">{{ new_link }}</p>
   </div>
   {% endif %}
+
+  {% with short=recipients.short, recipients=recipients.recipients %}{% include "partials/alert_recipients.html" %}{% endwith %}
 
   <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-3">
     <h2 class="text-base font-semibold text-gray-900">Techs with access</h2>

@@ -6,9 +6,12 @@ is named for a use case. Times are timezone-aware UTC ``datetime`` values.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal, Protocol
+
+from ice_contracts.cloud.report import FaultView
 
 
 class EmailConflict(ValueError):
@@ -63,6 +66,58 @@ class Invitation:
 class MachineAccess:
     machine: Machine
     role: Literal["owner", "tech", "admin"]
+
+
+@dataclass(frozen=True)
+class AlertState:
+    fingerprint: str
+    faults: tuple[FaultView, ...]
+    last_report_at: datetime
+    report_interval_seconds: int
+    offline_since: datetime | None
+
+    @property
+    def keys(self) -> frozenset[str]:
+        return frozenset(f.key for f in self.faults)
+
+
+@dataclass(frozen=True)
+class AlertEventRow:
+    fingerprint: str
+    kind: str
+    at: datetime
+    key: str | None
+    code: str | None
+    severity: str | None
+    gate: str | None
+    description: str | None
+    sku: str | None
+    product: str | None
+
+
+@dataclass(frozen=True)
+class StoredEvent(AlertEventRow):
+    id: int
+
+
+@dataclass(frozen=True)
+class Recipient:
+    account_id: str
+    email: str
+    role: Literal["owner", "tech"]
+
+
+@dataclass(frozen=True)
+class Delivery:
+    id: int
+    fingerprint: str
+    account_id: str
+    event_ids: tuple[int, ...]
+    status: str
+    attempted_at: datetime | None
+    sent_at: datetime | None
+    error: str | None
+    attempts: int
 
 
 class Repository(Protocol):
@@ -177,3 +232,101 @@ class Repository(Protocol):
     ) -> list[str]: ...
 
     def cancel_invitation(self, token: str) -> None: ...
+
+    # alerts
+    def alert_state(self, fingerprint: str) -> AlertState | None: ...
+
+    def put_alert_state(self, state: AlertState) -> None: ...
+
+    def delete_alert_state(self, fingerprint: str) -> None: ...
+
+    def claimed_machines_with_state(self) -> list[tuple[Machine, AlertState]]:
+        """Claimed machines (owner set) that have an alert state row."""
+        ...
+
+    def record_alert_events(self, events: list[AlertEventRow]) -> list[StoredEvent]:
+        """Insert events (any object with the row's fields) in order; return them with ids."""
+        ...
+
+    def record_alert_pass(
+        self, events: Sequence[AlertEventRow], state: AlertState
+    ) -> list[StoredEvent]:
+        """Insert events and upsert the alert state in one transaction."""
+        ...
+
+    def mark_offline_if_unchanged(
+        self, fingerprint: str, last_report_at: datetime, event: AlertEventRow
+    ) -> StoredEvent | None:
+        """Set ``offline_since`` to ``event.at`` and insert ``event``, in one
+        transaction, only while the state still has ``offline_since`` unset and
+        ``last_report_at`` unchanged (no report arrived since the caller read it).
+        Returns the stored event, or None when nothing changed."""
+        ...
+
+    def alert_events(self, fingerprint: str, *, limit: int) -> list[StoredEvent]:
+        """Newest first."""
+        ...
+
+    def alert_events_by_ids(self, ids: Sequence[int]) -> list[StoredEvent]:
+        """The events with these ids, ordered by id; unknown ids are skipped."""
+        ...
+
+    def alert_count_since(self, fingerprint: str, since: datetime) -> int:
+        """Events at or after ``since``, counting ``raised`` and ``offline`` only
+        (neither ``cleared`` nor ``online`` is an alert)."""
+        ...
+
+    def cleared_since_last_sent(
+        self, fingerprint: str, account_id: str
+    ) -> list[StoredEvent]:
+        """``cleared`` events after the later of the account's last ``sent`` delivery
+        and its access start (``claimed_at`` for the owner, ``granted_at`` for a
+        tech); empty when the account has no access to the machine."""
+        ...
+
+    def people_for_alerts(self, fingerprint: str) -> list[tuple[Recipient, bool]]:
+        """Owner first, then techs by ``granted_at``, each with its muted flag;
+        suspended accounts are excluded."""
+        ...
+
+    def set_muted(self, account_id: str, fingerprint: str, muted: bool) -> None: ...
+
+    def is_muted(self, account_id: str, fingerprint: str) -> bool: ...
+
+    def create_delivery(
+        self,
+        fingerprint: str,
+        account_id: str,
+        event_ids: list[int] | tuple[int, ...],
+        status: str,
+        now: datetime,
+    ) -> Delivery: ...
+
+    def pending_deliveries(
+        self, *, before: datetime, ignore_backoff: bool = False
+    ) -> list[Delivery]:
+        """``pending`` rows with ``attempted_at <= before`` and ``failed`` rows with
+        fewer than 5 attempts whose backoff has elapsed: ``attempted_at`` plus
+        ``min(2**attempts, 64)`` minutes is at or before ``before``. With
+        ``ignore_backoff`` every failed row under the attempt cap is returned
+        (used to fold them into an email that is going out anyway)."""
+        ...
+
+    def mark_delivery(
+        self, id: int, *, status: str, now: datetime, error: str | None = None
+    ) -> None:
+        """Set status, ``attempted_at`` and ``error``; ``attempts`` += 1;
+        ``sent_at`` is set only for ``sent``."""
+        ...
+
+    def delivery_health(self, fingerprint: str) -> bool:
+        """False when the machine's most recently attempted delivery (ignoring
+        ``muted`` rows and rows never attempted) is ``failed``; true otherwise,
+        including when there is no delivery at all."""
+        ...
+
+    def last_sent_at(self, fingerprint: str, account_id: str) -> datetime | None: ...
+
+    def deliveries_for_events(
+        self, event_ids: list[int] | tuple[int, ...]
+    ) -> dict[int, list[Delivery]]: ...

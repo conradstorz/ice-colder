@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -9,9 +10,14 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI
+from loguru import logger
 
+from ice_cloud.alerts.dispatcher import AlertDispatcher
+from ice_cloud.alerts.mail import Mailer, make_mailer
 from ice_cloud.body_limit import BodyLimitMiddleware
 from ice_cloud import admin, auth, claim, ingest, machine_auth, people, portal
+from ice_cloud.alerts import pages
+from ice_cloud.alerts.sweep import OfflineSweep
 from ice_common.backoff import Backoff
 from ice_cloud.settings import CloudSettings
 from ice_cloud.store import SnapshotStore, SqliteRepository
@@ -29,14 +35,23 @@ def create_app(
     *,
     now: Callable[[], datetime] = utc_now,
     provider: auth.OidcProvider | None = None,
+    mailer: Mailer | None = None,
+    start_sweep: bool = True,
 ) -> FastAPI:
     http: httpx.AsyncClient | None = None
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        sweep_task = None
+        if start_sweep:
+            sweep_task = asyncio.create_task(app.state.sweep.run())
         try:
             yield
         finally:
+            await app.state.alerts.drain()
+            if sweep_task is not None:
+                sweep_task.cancel()
+                await asyncio.gather(sweep_task, return_exceptions=True)
             if http is not None:
                 await http.aclose()
 
@@ -51,6 +66,7 @@ def create_app(
             http=http,
         )
     app.state.provider = provider
+    app.state.mailer = mailer if mailer is not None else make_mailer(settings)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     app.state.store = SnapshotStore(settings.data_dir)
     app.state.repo = SqliteRepository(settings.data_dir / "cloud.db")
@@ -60,6 +76,16 @@ def create_app(
         trusted_digests=settings.trusted_ui_digests,
     )
     app.state.now = now
+    if not settings.smtp_configured:
+        logger.warning("SMTP is not configured; alerts are log-only")
+    app.state.alerts = AlertDispatcher(
+        app.state.repo,
+        app.state.mailer,
+        now=now,
+        public_url=settings.public_url,
+        from_addr=settings.smtp_from or "ice-colder@localhost",
+    )
+    app.state.sweep = OfflineSweep(app.state.repo, app.state.alerts, now=now)
     app.state.backoff = Backoff(clock=lambda: app.state.now().timestamp())
     app.add_middleware(BodyLimitMiddleware)
     machine_auth.install(app)
@@ -69,5 +95,6 @@ def create_app(
     app.include_router(admin.router)
     app.include_router(people.router)
     app.include_router(claim.router)
+    app.include_router(pages.router)
     app.include_router(portal.router)
     return app

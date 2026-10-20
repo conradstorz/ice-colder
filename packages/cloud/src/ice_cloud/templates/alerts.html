@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Alerts · Vending Machine{% endblock %}
+{% block body %}
+<div id="alerts" class="space-y-4">
+  <h1 class="text-hero font-semibold text-gray-900">Alerts <span class="font-mono text-sm text-gray-400">{{ machine_label }} {{ short }}</span></h1>
+  {% if recipients %}
+  {% with short=recipients.short, recipients=recipients.recipients %}{% include "partials/alert_recipients.html" %}{% endwith %}
+  {% endif %}
+  <div class="space-y-2">
+    {% for e in events %}
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-4 space-y-1">
+      <div class="flex flex-wrap items-center gap-3">
+        <span class="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">{{ e.kind }}</span>
+        <span class="font-mono text-sm text-gray-700">{{ e.code }}</span>
+        <span class="text-sm text-gray-700">{{ e.description }}</span>
+        {% if e.product %}<span class="text-xs text-gray-400">{{ e.product }}</span>{% endif %}
+        <span class="text-xs text-gray-400 ml-auto">{{ e.at }}</span>
+      </div>
+      <ul class="space-y-1">
+        {% for d in e.deliveries %}
+        <li class="text-xs text-gray-500">{{ d.who }}: {{ d.text }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% else %}
+    <p class="text-sm text-gray-400">No alerts yet.</p>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}
