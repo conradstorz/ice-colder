@@ -329,8 +329,8 @@ def test_full_page_renders_from_cached_bundle_in_sandbox(
 ):
     digest, data = _marked_bundle(tmp_path, "SANDBOXED-MACHINE-UI")
     cloud = trusting_cloud(digest)
-    assert put_bundle(cloud, signer, digest, data).status_code == 201
     own_and_select(cloud, signer, make_report(digest=digest))
+    assert put_bundle(cloud, signer, digest, data).status_code == 201
 
     r = cloud.get("/health/faults")
     assert r.status_code == 200
@@ -364,8 +364,8 @@ def test_sandbox_blocks_unsafe_template_in_uploaded_bundle(
     data = build_bundle(root)
     digest = _digest_of(data)
     cloud = trusting_cloud(digest)
-    put_bundle(cloud, signer, digest, data)
     own_and_select(cloud, signer, make_report(digest=digest))
+    put_bundle(cloud, signer, digest, data)
     with pytest.raises(Exception, match="unsafe"):
         cloud.get("/health/faults")
 
@@ -423,8 +423,8 @@ def test_sandboxed_bundle_cannot_see_request_or_app_state(
         "{{ request.app.state if request is defined else 'gone' }}]]",
     )
     cloud = trusting_cloud(digest)
-    assert put_bundle(cloud, signer, digest, data).status_code == 201
     own_and_select(cloud, signer, make_report(digest=digest))
+    assert put_bundle(cloud, signer, digest, data).status_code == 201
 
     r = cloud.get("/")
     assert r.status_code == 200

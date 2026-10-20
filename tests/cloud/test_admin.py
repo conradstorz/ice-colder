@@ -121,3 +121,10 @@ def test_admin_cannot_suspend_self(cloud):
     r = cloud.post(f"/admin/accounts/{admin.id}/suspend", headers=HX)
     assert r.status_code == 400
     assert cloud.app.state.repo.account(admin.id).suspended_at is None
+
+
+def test_setup_code_without_expiry_shows_claim_open(cloud, signer):
+    fp = register(cloud, signer, "m-setup")
+    cloud.app.state.repo.set_claim_code(fp, "h", None)
+    _admin(cloud)
+    assert "claim open: yes" in cloud.get("/admin").text

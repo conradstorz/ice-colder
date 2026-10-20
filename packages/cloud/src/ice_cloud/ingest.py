@@ -18,6 +18,8 @@ from ice_contracts.cloud.report import MachineReport
 from ice_contracts.cloud.signing import HEADER_MACHINE
 from ice_ui.bundle import BundleError
 
+MAX_BUNDLES_PER_MACHINE = 4
+
 router = APIRouter(prefix="/api/v1")
 
 
@@ -77,8 +79,17 @@ async def delete_claim_code(
 async def put_bundle(
     digest: str,
     request: Request,
-    _machine: Machine | None = Depends(require_machine),
+    machine: Machine | None = Depends(require_machine),
 ):
+    # Only claimed machines may store bundles, a few distinct digests each:
+    # registration is open, so this bounds disk use per owned machine.
+    if machine is None or machine.owner_id is None:
+        return Response(status_code=401)
+    repo = request.app.state.repo
+    if not await asyncio.to_thread(
+        repo.can_upload_bundle, machine.fingerprint, digest, MAX_BUNDLES_PER_MACHINE
+    ):
+        return Response(status_code=409)
     # Size is capped by BodyLimitMiddleware as bytes arrive.
     data = await request.body()
     try:
@@ -87,4 +98,7 @@ async def put_bundle(
         )
     except BundleError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=400)
+    await asyncio.to_thread(
+        repo.record_bundle_upload, machine.fingerprint, digest, request.app.state.now()
+    )
     return JSONResponse({"digest": digest}, status_code=201 if created else 200)

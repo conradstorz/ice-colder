@@ -26,11 +26,14 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-async def _send_notice(uplink: HttpUplink, identity: MachineIdentity) -> None:
-    """Deliver the pending claim-code notice (or its DELETE) once; ack on 2xx."""
+async def _send_notice(uplink: HttpUplink, identity: MachineIdentity) -> bool:
+    """Deliver the pending claim-code notice (or its DELETE) once; ack on 2xx.
+
+    Returns False only when a delivery was attempted and failed.
+    """
     notice = identity.notice
     if notice is None or notice.acked:
-        return
+        return True
     if notice.claim_code_hash is None:
         ok = await uplink.delete_claim_code()
     else:
@@ -42,6 +45,7 @@ async def _send_notice(uplink: HttpUplink, identity: MachineIdentity) -> None:
         )
     if ok:
         identity.mark_notice_acked(notice)
+    return ok
 
 
 async def run_uplink(
@@ -61,7 +65,7 @@ async def run_uplink(
     dropped; only cancellation ends the loop."""
     boot_id = str(uuid.uuid4())
     digest, bundle = ui_digest(), build_bundle()
-    registered = False
+    registered = False  # reset on a 401: the cloud no longer knows this machine
     bundle_sent = False
     seq = 0
 
@@ -71,12 +75,15 @@ async def run_uplink(
                 registered = await uplink.register(config.machine_id)
             if registered:
                 try:
-                    await _send_notice(uplink, identity)
+                    if not await _send_notice(uplink, identity):
+                        registered = registered and uplink.last_status != 401
                 except Exception:
                     logger.exception("Claim-code notice attempt failed")
                 if not bundle_sent:
                     try:
                         bundle_sent = await uplink.put_ui_bundle(digest, bundle)
+                        if not bundle_sent:
+                            registered = registered and uplink.last_status != 401
                     except Exception:
                         logger.exception("UI bundle upload attempt failed")
                 if bundle_sent:
@@ -89,7 +96,8 @@ async def run_uplink(
                         holder_name=holder_name,
                     )
                     seq += 1
-                    await uplink.post_report(report)
+                    if not await uplink.post_report(report):
+                        registered = registered and uplink.last_status != 401
         except Exception:
             logger.exception("Cloud uplink attempt failed")
         await sleep(config.cloud.report_interval_seconds)

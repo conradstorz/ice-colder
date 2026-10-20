@@ -67,6 +67,14 @@ MIGRATIONS: list[str] = [
     );
     """,
     "ALTER TABLE machines ADD COLUMN consumed_claim_hash TEXT",
+    """
+    CREATE TABLE bundle_uploads (
+        fingerprint TEXT NOT NULL REFERENCES machines(fingerprint),
+        digest TEXT NOT NULL,
+        uploaded_at TEXT NOT NULL,
+        PRIMARY KEY (fingerprint, digest)
+    )
+    """,
 ]
 
 # Public so a test can substitute a failing statement and prove a claim is atomic.
@@ -327,6 +335,29 @@ class SqliteRepository:
             if before["owner_id"] != account_id:
                 conn.execute(DELETE_MEMBERSHIPS_SQL, (fingerprint,))
             return True
+
+    def can_upload_bundle(self, fingerprint: str, digest: str, limit: int) -> bool:
+        with self._connect() as conn:
+            if conn.execute(
+                "SELECT 1 FROM bundle_uploads WHERE fingerprint = ? AND digest = ?",
+                (fingerprint, digest),
+            ).fetchone():
+                return True
+            count = conn.execute(
+                "SELECT COUNT(*) AS n FROM bundle_uploads WHERE fingerprint = ?",
+                (fingerprint,),
+            ).fetchone()["n"]
+        return count < limit
+
+    def record_bundle_upload(
+        self, fingerprint: str, digest: str, now: datetime
+    ) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO bundle_uploads (fingerprint, digest,"
+                " uploaded_at) VALUES (?, ?, ?)",
+                (fingerprint, digest, _iso(now)),
+            )
 
     def unbind_machine(self, fingerprint: str) -> None:
         with self._tx() as conn:

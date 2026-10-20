@@ -20,6 +20,18 @@ def machine(client, signer):
     return signer
 
 
+@pytest.fixture
+def owned(client, machine):
+    """A registered machine that has been claimed (bundles are accepted)."""
+    owner = client.app.state.repo.upsert_account_from_login(
+        "sub-o", "o@example.com", "O", client.app.state.now()
+    )
+    assert client.app.state.repo.claim_machine(
+        machine.fingerprint, owner.id, client.app.state.now()
+    )
+    return machine
+
+
 def _post(client, signer, report):
     return signed(
         client,
@@ -54,7 +66,8 @@ def test_invalid_body_is_422(client, machine):
     assert r.status_code == 422
 
 
-def test_bundle_put_201_then_200_then_400_for_corrupt_bytes(client, machine):
+def test_bundle_put_201_then_200_then_400_for_corrupt_bytes(client, owned):
+    machine = owned
     data = build_bundle()
     digest = ui_digest()
     assert _put(client, machine, digest, data).status_code == 201
@@ -64,7 +77,8 @@ def test_bundle_put_201_then_200_then_400_for_corrupt_bytes(client, machine):
     assert "detail" in bad.json()
 
 
-def test_bundle_with_wrong_digest_in_url_is_400(client, machine):
+def test_bundle_with_wrong_digest_in_url_is_400(client, owned):
+    machine = owned
     r = _put(client, machine, "b" * 64, build_bundle())
     assert r.status_code == 400
     assert "digest" in r.json()["detail"]
@@ -103,7 +117,8 @@ def _streamed_put(client, signer, size):
     return client.put(path, content=body(), headers=headers)
 
 
-def test_bundle_route_allows_up_to_bundle_limit_but_not_over(client, machine):
+def test_bundle_route_allows_up_to_bundle_limit_but_not_over(client, owned):
+    machine = owned
     limit = 20 * 1024 * 1024
     at = _streamed_put(client, machine, limit)
     assert at.status_code == 400  # past the size cap; rejected as a corrupt bundle
@@ -115,3 +130,42 @@ def test_bundle_route_allows_up_to_bundle_limit_but_not_over(client, machine):
 def test_unsigned_bundle_put_is_401(client):
     r = client.put(f"/api/v1/ui-bundles/{ui_digest()}", content=build_bundle())
     assert r.status_code == 401 and r.content == b""
+
+
+def test_bundle_put_from_unclaimed_machine_is_401_and_stores_nothing(
+    client, machine, tmp_path
+):
+    r = _put(client, machine, ui_digest(), build_bundle())
+    assert r.status_code == 401 and r.content == b""
+    assert not (tmp_path / "ui").exists()
+
+
+def test_fifth_distinct_bundle_digest_is_409_but_repeats_are_fine(
+    client, owned, tmp_path
+):
+    import gzip
+    import io
+    import json
+    import tarfile
+    import shutil
+
+    from ice_ui.bundle import INSTALLED_ROOT
+
+    def variant(n):
+        root = tmp_path / f"copy{n}"
+        shutil.copytree(INSTALLED_ROOT / "templates", root / "templates")
+        shutil.copytree(INSTALLED_ROOT / "static", root / "static")
+        (root / "static" / "v.txt").write_text(str(n))
+        data = build_bundle(root)
+        with tarfile.open(fileobj=io.BytesIO(gzip.decompress(data))) as tf:
+            return json.loads(tf.extractfile("manifest.json").read())["digest"], data
+
+    bundles = [variant(n) for n in range(5)]
+    for digest, data in bundles[:4]:
+        assert _put(client, owned, digest, data).status_code == 201
+    digest, data = bundles[4]
+    r = _put(client, owned, digest, data)
+    assert r.status_code == 409 and r.content == b""
+    assert not (tmp_path / "ui" / digest).exists()
+    first_digest, first_data = bundles[0]
+    assert _put(client, owned, first_digest, first_data).status_code == 200

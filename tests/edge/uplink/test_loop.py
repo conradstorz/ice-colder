@@ -24,6 +24,8 @@ class FakeUplink:
         self.claim_results = list(claim_results)
         self.delete_results = list(delete_results)
         self.events: list[tuple] = []
+        self.last_status: int | None = 200
+        self.report_results: list[bool] = []
 
     async def register(self, label):
         self.events.append(("register", label))
@@ -45,6 +47,10 @@ class FakeUplink:
 
     async def post_report(self, report):
         self.events.append(("post", report.seq, report.boot_id))
+        if self.report_results:
+            ok = self.report_results.pop(0)
+            self.last_status = 200 if ok else 401
+            return ok
         return True
 
 
@@ -213,3 +219,17 @@ async def test_notice_replaced_mid_flight_is_not_acked(machine_fake_time, identi
         ("claim", "h2"),
     ]
     assert identity.notice.acked is True
+
+
+async def test_401_on_report_triggers_a_fresh_registration(machine_fake_time, identity):
+    machine, _ = machine_fake_time
+    cfg = ConfigModel()
+    uplink = FakeUplink()
+    uplink.report_results = [False]
+    sleep, _calls = _sleeper(cfg, stop_after=3)
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_uplink(machine, cfg, uplink, sleep=sleep, now=_now, identity=identity)
+
+    kinds = [e[0] for e in uplink.events]
+    assert kinds == ["register", "put", "post", "register", "post", "post"]

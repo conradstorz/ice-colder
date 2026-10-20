@@ -39,6 +39,8 @@ class HttpUplink:
     ) -> None:
         self._identity = identity
         self._now = now
+        self.last_status: int | None = None
+        """HTTP status of the most recent request; None when it never got a response."""
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"), timeout=timeout, transport=transport
         )
@@ -107,8 +109,10 @@ class HttpUplink:
                 method, path, content=content, headers=headers
             )
         except Exception as exc:  # never raise out of the uplink
+            self.last_status = None
             logger.warning(f"Cloud uplink {method} {path} failed: {exc!r}")
             return False
+        self.last_status = response.status_code
         if not response.is_success:
             logger.warning(
                 f"Cloud uplink {method} {path} returned HTTP {response.status_code}"
