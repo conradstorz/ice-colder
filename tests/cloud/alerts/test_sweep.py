@@ -115,12 +115,11 @@ async def test_tick_flushes_before_dispatch(env):
     before = len(env.mailer.sent)
     events = await _sweep(env).tick()
     assert [e.kind for e in events] == ["offline"]
-    # The older due row went out in this tick's flush (one email per recipient);
-    # the new offline event, now inside cooldown, waits as pending.
     assert len(env.mailer.sent) == before + 2
+    body = env.mailer.sent[-1].get_content()
+    assert "WTR-104" in body and "stopped reporting" in body.lower()
     assert {d.status for d in env.deliveries(stored)} == {"sent"}
-    offline = env.deliveries(events)
-    assert {d.status for d in offline} == {"pending"}
+    assert {d.status for d in env.deliveries(events)} == {"sent"}
 
 
 class FlakyRepo:

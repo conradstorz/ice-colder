@@ -219,6 +219,8 @@ async def test_failed_and_pending_rows_go_out_together(env):
     env.clock.advance(1)
     second = await env.dispatch(_row(key="b", code="BBB-1", gate="alert"))
     assert [d.status for d in env.deliveries(second)] == ["sent"]
+    assert [d.status for d in env.deliveries(first)] == ["sent"]
+    assert "AAA-1" in env.mailer.sent[-1].get_content()
     env.clock.advance(1)
     third = await env.dispatch(_row(key="c", code="CCC-1", gate="alert"))
     assert [d.status for d in env.deliveries(third)] == ["pending"]
@@ -227,7 +229,7 @@ async def test_failed_and_pending_rows_go_out_together(env):
     await env.disp.flush(env.clock())
     assert len(env.mailer.sent) == before + 1
     body = env.mailer.sent[-1].get_content()
-    assert "CCC-1" in body and "AAA-1" in body
+    assert "CCC-1" in body
     assert {d.status for d in env.deliveries(first + third)} == {"sent"}
 
 
@@ -279,3 +281,17 @@ async def test_cleared_recorded_during_send_rides_next_email(env):
     env.clock.advance(COOLDOWN_SECONDS)
     await env.dispatch(_row(key="b"))
     assert "RACE-1" in env.mailer.sent[-1].get_content()
+
+
+async def test_dispatch_folds_in_due_rows(env):
+    await env.dispatch(_row(key="a"))
+    env.clock.advance(60)
+    held = await env.dispatch(_row(key="b"))
+    env.clock.advance(COOLDOWN_SECONDS)
+    sent_before = len(env.mailer.sent)
+    fresh = await env.dispatch(_row(key="c"))
+    assert len(env.mailer.sent) == sent_before + 2
+    owner_msg = [m for m in env.mailer.sent if m["To"] == "owner@example.com"][-1]
+    assert owner_msg.get_content().count("WTR-104") >= 1
+    assert {d.status for d in env.deliveries(held)} == {"sent"}
+    assert {d.status for d in env.deliveries(fresh)} == {"sent"}

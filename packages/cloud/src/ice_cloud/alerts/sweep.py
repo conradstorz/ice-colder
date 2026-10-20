@@ -30,8 +30,12 @@ class OfflineSweep:
         self._now = now
 
     async def tick(self) -> list[StoredEvent]:
-        """One pass: flush due rows first, then emit `offline` once per silent machine."""
-        await self._dispatcher.flush(self._now())
+        """One pass: emit `offline` once per silent machine, then flush leftovers.
+
+        Dispatch folds a recipient's due rows into the new email, so the older
+        rows and the offline event leave together; flushing first would send the
+        older rows alone and leave the offline event held by the cooldown.
+        """
         pairs = await asyncio.to_thread(self._repo.claimed_machines_with_state)
         emitted: list[StoredEvent] = []
         for machine, state in pairs:
@@ -39,6 +43,7 @@ class OfflineSweep:
                 emitted.extend(await self._check(machine, state))
             except Exception:
                 logger.exception("Offline sweep failed for {}", machine.fingerprint[:8])
+        await self._dispatcher.flush(self._now())
         return emitted
 
     async def _check(self, machine: Machine, state: AlertState) -> list[StoredEvent]:
