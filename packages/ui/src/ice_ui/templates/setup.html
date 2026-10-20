@@ -40,6 +40,10 @@
     </p>
   {% endif %}
 
+  {% if short_fingerprint %}
+  <p class="text-sm text-gray-500">Machine fingerprint (enter it in the cloud portal to claim): <span class="font-mono text-gray-700">{{ short_fingerprint }}</span></p>
+  {% endif %}
+
   <form hx-post="/setup" hx-target="main" hx-select="main" hx-swap="outerHTML" class="space-y-3">
     <div>
       <label for="setup_code" class="block text-sm font-medium text-gray-700">

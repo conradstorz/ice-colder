@@ -36,6 +36,10 @@
     {% endfor %}
   </ul>
 
+  {% if short_fingerprint %}
+  <p class="text-sm text-gray-500">Machine fingerprint (enter it in the cloud portal to claim): <span class="font-mono text-gray-700">{{ short_fingerprint }}</span></p>
+  {% endif %}
+
   {% if can_email %}
     <button hx-post="/setup/codes/email" hx-target="main" hx-select="main" hx-swap="outerHTML"
             class="w-full py-3 border border-gray-300 rounded-xl text-sm">
