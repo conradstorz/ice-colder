@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from ice_cloud.alerts.mail import Mailer, make_mailer
 from ice_cloud.body_limit import BodyLimitMiddleware
 from ice_cloud import admin, auth, claim, ingest, machine_auth, people, portal
+from ice_cloud.alerts import pages
 from ice_common.backoff import Backoff
 from ice_cloud.settings import CloudSettings
 from ice_cloud.store import SnapshotStore, SqliteRepository
@@ -72,5 +73,6 @@ def create_app(
     app.include_router(admin.router)
     app.include_router(people.router)
     app.include_router(claim.router)
+    app.include_router(pages.router)
     app.include_router(portal.router)
     return app
