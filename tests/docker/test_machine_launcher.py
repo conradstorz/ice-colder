@@ -1,7 +1,10 @@
 """Tests for docker/machine/launcher.py (settings parsing and config seeding)."""
 
+import asyncio
 import importlib.util
 import json
+import socket
+import sys
 from pathlib import Path
 
 import pytest
@@ -122,3 +125,99 @@ def test_child_env(tmp_path):
     assert env["ICE_COLDER_DISPENSERS"] == str(tmp_path / "dispensers.toml")
     assert env["PATH"] == "x"
     assert not [k for k in env if k.startswith("MQTT_")]
+
+
+def _free_port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+async def _poll(predicate, timeout=5.0):
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(0.05)
+    return predicate()
+
+
+async def test_wait_for_port_times_out():
+    with pytest.raises(launcher.LauncherError):
+        await launcher.wait_for_port(
+            "127.0.0.1", _free_port(), timeout=0.3, interval=0.05
+        )
+
+
+async def test_wait_for_port_succeeds():
+    server = await asyncio.start_server(lambda r, w: w.close(), "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        await launcher.wait_for_port("127.0.0.1", port, timeout=2.0, interval=0.05)
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def test_supervisor_restarts_exiting_child():
+    child = launcher.ChildSpec(
+        "flaky", (sys.executable, "-c", "import sys; sys.exit(3)")
+    )
+    sup = launcher.Supervisor([child], env={}, restart_delay=0.05, stop_timeout=5.0)
+    task = asyncio.create_task(sup.run())
+    assert await _poll(lambda: sup.restarts.get("flaky", 0) >= 2)
+    sup.request_stop()
+    assert await asyncio.wait_for(task, 10) == 0
+
+
+async def test_supervisor_fatal_child_returns_1():
+    fatal = launcher.ChildSpec(
+        "broker", (sys.executable, "-c", "import sys; sys.exit(0)"), fatal=True
+    )
+    sleeper = launcher.ChildSpec(
+        "sleeper", (sys.executable, "-c", "import time; time.sleep(100)")
+    )
+    sup = launcher.Supervisor(
+        [fatal, sleeper], env={}, restart_delay=0.05, stop_timeout=5.0
+    )
+    assert await asyncio.wait_for(sup.run(), 10) == 1
+    assert sup.processes["sleeper"].returncode is not None
+
+
+async def test_supervisor_start_is_idempotent():
+    child = launcher.ChildSpec(
+        "sleeper", (sys.executable, "-c", "import time; time.sleep(100)")
+    )
+    sup = launcher.Supervisor([child], env={}, stop_timeout=5.0)
+    await sup.start(child)
+    first = sup.processes["sleeper"]
+    task = asyncio.create_task(sup.run())
+    assert await _poll(lambda: sup.processes["sleeper"] is first)
+    await asyncio.sleep(0.1)
+    assert sup.processes["sleeper"] is first
+    sup.request_stop()
+    assert await asyncio.wait_for(task, 10) == 0
+
+
+def test_app_children_argv(tmp_path):
+    children = launcher.app_children(_settings(tmp_path))
+    assert [c.name for c in children] == ["vending", "ice_maker", "mdb", "edge"]
+    assert not any(c.fatal for c in children)
+    modules = {c.name: c.argv[2] for c in children}
+    assert modules == {
+        "vending": "ice_sims.vending_machine",
+        "ice_maker": "ice_sims.ice_maker",
+        "mdb": "ice_sims.mdb_gateway",
+        "edge": "ice_edge",
+    }
+    for c in children:
+        assert c.argv[:2] == (sys.executable, "-m")
+        if c.name != "edge":
+            assert c.argv[3:] == ("--broker", "127.0.0.1")
+
+
+async def test_amain_missing_url_returns_1(tmp_path, capsys):
+    assert await launcher.amain({"ICE_COLDER_DATA": str(tmp_path)}) == 1
+    assert "ICE_CLOUD_URL" in capsys.readouterr().out
+    assert not (tmp_path / "config.json").exists()
