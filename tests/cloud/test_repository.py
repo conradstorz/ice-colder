@@ -489,7 +489,7 @@ def test_record_and_list_alert_events_newest_first(repo):
     assert repo.alert_events(FP_2, limit=10) == []
 
 
-def test_alert_count_since_ignores_cleared_and_old(repo):
+def test_alert_count_since_counts_raised_and_offline_only(repo):
     repo.register_machine(FP, KEY, "a", T0)
     repo.record_alert_events(
         [
@@ -497,6 +497,7 @@ def test_alert_count_since_ignores_cleared_and_old(repo):
             _event(at=T0 - timedelta(hours=1)),
             _event(kind="offline", at=T0),
             _event(kind="cleared", at=T0),
+            _event(kind="online", at=T0),
         ]
     )
     assert repo.alert_count_since(FP, T0 - timedelta(hours=24)) == 2

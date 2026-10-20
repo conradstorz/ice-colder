@@ -296,3 +296,28 @@ async def test_schedule_logs_failure_instead_of_raising(env, monkeypatch):
     env.disp.schedule(FP, env.repo.machine(FP), env.events(event_row()))
     await env.disp.drain()  # does not raise
     assert env.mailer.sent == []
+
+
+async def test_tech_cleared_ride_along_respects_gate_rule(env):
+    env.events(
+        event_row(
+            "cleared",
+            key="a",
+            code="SAF-1",
+            gate="safety",
+            at=T0 + timedelta(seconds=1),
+        ),
+        event_row(
+            "cleared",
+            key="b",
+            code="DATA-101",
+            gate="alert",
+            at=T0 + timedelta(seconds=1),
+        ),
+    )
+    env.clock.advance(5)
+    await env.dispatch(event_row(key="new", code="WTR-104", gate="safety"))
+    owner = next(m for m in env.mailer.sent if m["To"] == "owner@example.com")
+    tech = next(m for m in env.mailer.sent if m["To"] == "tech@example.com")
+    assert "SAF-1" in owner.get_content() and "DATA-101" in owner.get_content()
+    assert "SAF-1" in tech.get_content() and "DATA-101" not in tech.get_content()

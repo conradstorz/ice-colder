@@ -10,7 +10,7 @@ from ice_contracts.cloud.signing import short_fingerprint
 from loguru import logger
 
 from ice_cloud.alerts.mail import Mailer, render_email
-from ice_cloud.alerts.router import muted_ids, recipients_for
+from ice_cloud.alerts.router import TECH_GATES, muted_ids, recipients_for
 from ice_cloud.store import Delivery, Machine, Repository, StoredEvent
 from ice_cloud.store.repository import Recipient
 
@@ -203,6 +203,8 @@ class AlertDispatcher:
             cleared = await asyncio.to_thread(
                 self._repo.cleared_since_last_sent, fp, person.account_id
             )
+            if person.role == "tech":  # same gate rule as for raised events
+                cleared = [e for e in cleared if e.gate in TECH_GATES]
             state = await asyncio.to_thread(self._repo.alert_state, fp)
             msg = render_email(
                 label=machine.label,

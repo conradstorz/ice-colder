@@ -272,7 +272,8 @@ class Repository(Protocol):
         ...
 
     def alert_count_since(self, fingerprint: str, since: datetime) -> int:
-        """Events at or after ``since``, not counting ``cleared`` ones."""
+        """Events at or after ``since``, counting ``raised`` and ``offline`` only
+        (neither ``cleared`` nor ``online`` is an alert)."""
         ...
 
     def cleared_since_last_sent(

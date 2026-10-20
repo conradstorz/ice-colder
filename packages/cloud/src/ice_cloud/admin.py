@@ -12,6 +12,7 @@ from html import escape
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
+from loguru import logger
 
 from ice_cloud.auth import require_admin, require_htmx
 from ice_cloud.store.repository import Account, Machine
@@ -182,5 +183,6 @@ async def test_email(request: Request, admin: Account = Depends(require_admin)):
     try:
         await state.mailer.send(msg)
     except Exception as exc:
+        logger.warning("Admin test email to {} failed: {}", admin.email, exc)
         return _test_email_fragment(f"Failed: {exc}", False)
     return _test_email_fragment(f"Sent to {admin.email}", True)

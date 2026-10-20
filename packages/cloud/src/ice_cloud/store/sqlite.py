@@ -838,7 +838,7 @@ class SqliteRepository:
         with self._connect() as conn:
             return conn.execute(
                 "SELECT COUNT(*) AS n FROM alert_events WHERE fingerprint = ?"
-                " AND at >= ? AND kind != 'cleared'",
+                " AND at >= ? AND kind NOT IN ('cleared', 'online')",
                 (fingerprint, _iso(since)),
             ).fetchone()["n"]
 

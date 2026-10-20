@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse
 
 from ice_edge.access.access import Permission
 from ice_edge.uplink.identity import cloud_handles_alerts
-from ice_edge.uplink.loop import utc_now
+from ice_edge.uplink.client import utc_now
 from ice_edge.views.health import build_health_page_summary
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
