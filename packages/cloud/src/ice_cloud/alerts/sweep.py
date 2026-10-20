@@ -18,6 +18,13 @@ OFFLINE_INTERVALS = 3
 
 
 class OfflineSweep:
+    """Flags machines silent for more than 3 report intervals, once each.
+
+    Startup grace: the sweep records when it was built and never flags a machine
+    while `now - started_at <= 3 * that machine's interval`, so a cloud restart
+    after downtime does not email the whole fleet "offline" and then "online".
+    """
+
     def __init__(
         self,
         repo: Repository,
@@ -28,6 +35,7 @@ class OfflineSweep:
         self._repo = repo
         self._dispatcher = dispatcher
         self._now = now
+        self._started_at = now()
 
     async def tick(self) -> list[StoredEvent]:
         """One pass: emit `offline` once per silent machine, then flush leftovers.
@@ -50,6 +58,8 @@ class OfflineSweep:
         now = self._now()
         limit = timedelta(seconds=OFFLINE_INTERVALS * state.report_interval_seconds)
         if state.offline_since is not None or now - state.last_report_at <= limit:
+            return []
+        if now - self._started_at <= limit:
             return []
         # Persist the mark before dispatching so a crash cannot emit twice.
         await asyncio.to_thread(

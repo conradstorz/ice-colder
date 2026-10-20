@@ -140,17 +140,18 @@ def render_email(
     head = f"[ice-colder] {label} ({short}): "
     lines = [f"Machine {label} ({short})"]
     raised = [e for e in triggering if e.kind == "raised"]
-    if "offline" in kinds:
-        subject = head + "offline"
-        event = next(e for e in triggering if e.kind == "offline")
-        line = f"Stopped reporting at {_utc(event.at)}"
-        if last_report_at is not None:
-            line += f" (last report {_as_utc(last_report_at):%H:%M})"
-        lines.append(line)
-    elif "online" in kinds:
-        subject = head + "back online"
-        event = next(e for e in triggering if e.kind == "online")
-        lines.append(f"Reporting again at {_utc(event.at)}")
+    if "offline" in kinds or "online" in kinds:
+        back = "online" in kinds
+        subject = head + ("back online" if back else "offline")
+        for event in (e for e in triggering if e.kind == "offline"):
+            line = f"Stopped reporting at {_utc(event.at)}"
+            if last_report_at is not None:
+                line += f" (last report {_as_utc(last_report_at):%H:%M})"
+            lines.append(line)
+            break
+        for event in (e for e in triggering if e.kind == "online"):
+            lines.append(f"Reporting again at {_utc(event.at)}")
+            break
     else:
         subject = head + f"{len(raised)} raised, {len(cleared)} cleared"
         at = (raised or list(cleared) or list(triggering))[0].at
