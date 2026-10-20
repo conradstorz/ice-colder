@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Invitation · Vending Machine{% endblock %}
+{% block body %}
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-3">
+  <h1 class="text-hero font-semibold text-gray-900">Invitation</h1>
+  <p class="text-sm text-gray-700">{{ inviter_name }} invited you as a tech for
+    {% if fleet %}all the machines they own today{% elif machine_count == 1 %}one machine{% else %}{{ machine_count }} machines{% endif %}.</p>
+  {% if lapsed %}
+  <p class="text-sm text-red-600" role="alert">This invitation no longer applies: the inviter no longer owns those machines.</p>
+  {% elif matches %}
+  <button hx-post="/invite/{{ token }}"
+          class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">Accept invitation</button>
+  {% else %}
+  <p class="text-sm text-red-600" role="alert">This invitation is for a different address ({{ invited_email }}). Sign in with that Google account to accept it.</p>
+  {% endif %}
+</div>
+{% endblock %}

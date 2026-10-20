@@ -44,6 +44,15 @@ def marked_bundle(tmp_path):
     return digest, data
 
 
+@pytest.fixture
+def trusted_registry(tmp_path, cloud_templates, marked_bundle):
+    return UiRegistry(
+        tmp_path / "data",
+        cloud_templates=cloud_templates,
+        trusted_digests={marked_bundle[0]},
+    )
+
+
 def _render_fragment(resolved) -> str:
     return resolved.templates.get_template("partials/status_fragment.html").render(
         request=None,
@@ -75,7 +84,10 @@ def test_garbage_digest_is_a_mismatch_not_an_error(registry):
     assert registry.resolve("../../etc").mismatch is True
 
 
-def test_registered_bundle_renders_its_own_template_sandboxed(registry, marked_bundle):
+def test_registered_bundle_renders_its_own_template_sandboxed(
+    trusted_registry, marked_bundle
+):
+    registry = trusted_registry
     digest, data = marked_bundle
     assert registry.register(digest, data) is True
     assert registry.register(digest, data) is False
@@ -99,3 +111,41 @@ def test_register_rejects_corrupt_bytes_and_wrong_digest(registry, marked_bundle
     with pytest.raises(BundleError):
         registry.register("../escape", data)
     assert registry.resolve(digest).mismatch is True
+
+
+def test_installed_ui_keeps_request(trusted_registry, marked_bundle):
+    registry = trusted_registry
+    digest, data = marked_bundle
+    registry.register(digest, data)
+    installed = registry.resolve(ui_digest())
+    assert installed.sandboxed is False
+    assert (
+        installed.templates.env.from_string("{{ request }}").render(request="R") == "R"
+    )
+    bundle = registry.resolve(digest)
+    assert bundle.sandboxed is True
+    assert bundle.templates.env.from_string("{{ request }}").render(request="R") == ""
+
+
+def test_untrusted_uploaded_bundle_resolves_to_installed_with_mismatch(
+    registry, marked_bundle
+):
+    digest, data = marked_bundle
+    assert registry.register(digest, data) is True
+    resolved = registry.resolve(digest)
+    assert resolved.mismatch is True and resolved.sandboxed is False
+    assert resolved.digest == ui_digest()
+    assert MARKER not in _render_fragment(resolved)
+
+
+def test_trusted_uploaded_bundle_renders_sandboxed(
+    tmp_path, cloud_templates, marked_bundle
+):
+    digest, data = marked_bundle
+    trusted = UiRegistry(
+        tmp_path / "data", cloud_templates=cloud_templates, trusted_digests={digest}
+    )
+    trusted.register(digest, data)
+    resolved = trusted.resolve(digest)
+    assert resolved.sandboxed is True and resolved.mismatch is False
+    assert MARKER in _render_fragment(resolved)

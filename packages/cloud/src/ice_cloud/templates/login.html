@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Sign in · Vending Machine{% endblock %}
+{% block body %}
+<div class="space-y-3">
+  {% if error %}
+  <p class="text-sm text-red-600">{{ error }}</p>
+  {% endif %}
+  {% if configured %}
+  <a href="/auth/google/start{% if next %}?next={{ next | urlencode }}{% endif %}"
+     class="touch-target inline-flex items-center px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Sign in with Google</a>
+  {% else %}
+  <p class="text-sm text-gray-400">Google sign-in is not configured on this server.</p>
+  {% endif %}
+</div>
+{% endblock %}

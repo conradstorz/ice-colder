@@ -4,17 +4,27 @@
 <div id="fleet-list" class="space-y-2">
   {% for m in machines %}
   <div class="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-gray-200 shadow-sm p-4">
-    <span class="font-mono text-sm text-gray-700">{{ m.machine_id }}</span>
+    <span class="font-mono text-sm text-gray-700">{{ m.label }}</span>
+    <span class="font-mono text-xs text-gray-400">{{ m.short }}</span>
+    {% if m.reported %}
     <span class="text-xs px-1.5 py-0.5 rounded {% if m.stale %}bg-red-50 text-red-600{% else %}bg-gray-100 text-gray-600{% endif %}">{{ "Offline" if m.stale else "Online" }}</span>
     <span class="text-xs text-gray-400">reported {{ m.age_text }} ago</span>
     <span class="text-xs text-gray-400">{{ m.fault_line }}</span>
-    <form method="post" action="/fleet/select/{{ m.machine_id }}" class="ml-auto">
+    {% else %}
+    <span class="text-xs text-gray-400">never reported</span>
+    {% endif %}
+    <span class="text-xs text-gray-600">{{ m.role }}</span>
+    {% if m.role == "owner" %}
+    <a href="/machines/{{ m.short }}/people" class="text-xs text-gray-600">People</a>
+    {% endif %}
+    <form method="post" action="/fleet/select/{{ m.short }}" class="ml-auto">
       <button type="submit"
               class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Select</button>
     </form>
   </div>
   {% else %}
-  <p class="text-sm text-gray-400">No machines have reported yet</p>
+  <p class="text-sm text-gray-400">You have no machines yet.</p>
   {% endfor %}
 </div>
+<p class="mt-3 text-sm"><a href="/claim" class="text-gray-600">Claim a machine</a></p>
 {% endblock %}

@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}People · Vending Machine{% endblock %}
+{% block body %}
+<div id="people" class="space-y-4">
+  <h1 class="text-hero font-semibold text-gray-900">People <span class="font-mono text-sm text-gray-400">{{ machine_label }} {{ short }}</span></h1>
+
+  {% if error %}<p class="text-red-600 text-sm" role="alert">{{ error }}</p>{% endif %}
+  {% if new_link %}
+  <div class="p-3 border border-amber-200 bg-amber-50 rounded-lg">
+    <p class="font-medium text-amber-800 text-sm">Invitation created. Send this link to the invitee:</p>
+    <p class="mt-1 font-mono text-amber-700 text-sm">{{ new_link }}</p>
+  </div>
+  {% endif %}
+
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-3">
+    <h2 class="text-base font-semibold text-gray-900">Techs with access</h2>
+    <ul class="space-y-2">
+      {% for p in people %}
+      <li class="flex flex-wrap items-center gap-3">
+        <span class="text-sm text-gray-700">{{ p.name }}</span>
+        <span class="text-xs text-gray-400">{{ p.email }}</span>
+        <span class="ml-auto">{% with label=p.label, confirm_label=p.confirm_label, post_url=p.post_url, confirm_url=p.confirm_url, target=p.target, confirming=p.confirming %}{% include "partials/people_revoke.html" %}{% endwith %}</span>
+      </li>
+      {% else %}
+      <li class="text-sm text-gray-400">No techs have access yet.</li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-3">
+    <h2 class="text-base font-semibold text-gray-900">Invite a tech</h2>
+    <form hx-post="/machines/{{ short }}/people/invite" hx-target="#people" hx-select="#people" hx-swap="outerHTML" class="space-y-3">
+      <input type="email" name="email" required autocomplete="off" placeholder="Email address"
+             class="touch-target px-3 rounded-md border border-gray-300 text-sm w-full max-w-sm">
+      <div class="space-y-1 text-sm text-gray-700">
+        <label class="flex items-center gap-2"><input type="radio" name="scope" value="machine" checked> This machine</label>
+        <label class="flex items-center gap-2"><input type="radio" name="scope" value="fleet"> All my machines</label>
+      </div>
+      <button type="submit"
+              class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">Create invitation</button>
+    </form>
+  </div>
+
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-3">
+    <h2 class="text-base font-semibold text-gray-900">Pending invitations</h2>
+    <ul class="space-y-2">
+      {% for i in invites %}
+      <li class="flex flex-wrap items-center gap-3">
+        <span class="text-sm text-gray-700">{{ i.email }}</span>
+        <span class="text-xs text-gray-400">{{ "all my machines" if i.fleet else "this machine" }}</span>
+        <span class="font-mono text-xs text-gray-500">{{ i.link }}</span>
+        <button hx-post="/machines/{{ short }}/people/invitations/{{ i.token }}/cancel" hx-target="closest li" hx-swap="outerHTML"
+                class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50 ml-auto">Cancel</button>
+      </li>
+      {% else %}
+      <li class="text-sm text-gray-400">No pending invitations.</li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-2">
+    <h2 class="text-base font-semibold text-gray-900">Transfer ownership</h2>
+    <p class="text-sm text-gray-500">Ownership is transferred at the machine, not here. On the machine's Users screen, start a transfer to mint a code, then the new owner enters it on their Claim page.</p>
+  </div>
+</div>
+{% endblock %}

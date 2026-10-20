@@ -34,6 +34,7 @@ from ice_edge.app.startup_config import (
     warn_if_setup_mode,
 )
 from ice_edge.uplink.client import HttpUplink
+from ice_edge.uplink.identity import init_cloud_identity
 from ice_edge.uplink.loop import run_uplink
 from ice_edge.web.context import holder_display_name
 from ice_edge.web.server import app
@@ -177,19 +178,30 @@ async def main():
         ),
     ]
     uplink = None
+    identity = None
     if live_config.cloud.enabled:
         # Off by default. Uploads run in this supervised task with a 5 s
         # timeout and never block a sale.
-        uplink = HttpUplink(live_config.cloud.url, live_config.machine_id)
+        identity = init_cloud_identity(access_store)
+    if identity is not None:
+        routes.set_machine_identity(identity)
+        uplink = HttpUplink(live_config.cloud.url, identity)
         background.append(
             supervise(
                 "uplink",
                 lambda: run_uplink(
-                    machine, live_config, uplink, holder_name=holder_display_name
+                    machine,
+                    live_config,
+                    uplink,
+                    identity=identity,
+                    holder_name=holder_display_name,
                 ),
             )
         )
-        logger.info(f"Cloud uplink enabled, reporting to {live_config.cloud.url}")
+        logger.info(
+            f"Cloud uplink enabled, reporting to {live_config.cloud.url};"
+            f" machine fingerprint {identity.short_fingerprint}"
+        )
     try:
         await run_until_primary_exits(server.serve(), *background)
     finally:

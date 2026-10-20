@@ -1,5 +1,7 @@
-# Cloud portal stub (dev only, no auth: cloud spec section 8). Build from the
-# repository root:  docker build -f packages/cloud/Dockerfile .
+# Cloud fleet portal (identity and tenancy: Google sign-in, signed machine API,
+# SQLite). Needs ICE_CLOUD_SESSION_KEY at runtime; see packages/cloud/README.md
+# and docker/docker-compose.cloud.yml. Build from the repository root:
+#   docker build -f packages/cloud/Dockerfile .
 # BuildKit reads packages/cloud/Dockerfile.dockerignore (next to this file) in
 # preference to the root .dockerignore, which excludes packages/cloud for the
 # edge image.

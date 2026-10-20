@@ -1915,6 +1915,29 @@ class TestSetupWizard:
         assert "text/html" in resp.headers["content-type"]
         assert "set up" in resp.text.lower()
 
+    def test_setup_pages_show_the_cloud_fingerprint_when_identity_set(
+        self, anon, fresh_store, tmp_path
+    ):
+        from ice_edge.uplink.identity import MachineIdentity
+
+        _cfg, store, _display = fresh_store
+        assert "Machine fingerprint" not in anon.get("/setup").text
+        identity = MachineIdentity.load_or_create(tmp_path / "identity.json")
+        routes.set_machine_identity(identity)
+        assert identity.short_fingerprint in anon.get("/setup").text
+        anon.post(
+            "/setup",
+            data={
+                "setup_code": store.pending_setup_code,
+                "name": "Ada",
+                "email": "",
+                "pin": "2468",
+                "pin_confirm": "2468",
+            },
+        )
+        codes = anon.get("/setup/codes")
+        assert identity.short_fingerprint in codes.text
+
     def test_setup_code_is_on_the_display_and_matches_the_store(
         self, anon, fresh_store
     ):

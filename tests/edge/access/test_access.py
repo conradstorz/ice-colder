@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-import ice_edge.access.access as access
+import ice_common.secrets as secrets_module
 from ice_edge.access.access import (
     BACKOFF_CAP_SECONDS,
     ROLE_PERMISSIONS,
@@ -240,7 +240,7 @@ class TestHashing:
         disk, which the fixture never touches, so it genuinely reflects
         what ships.
         """
-        source = ast.parse(Path(access.__file__).read_text(encoding="utf-8"))
+        source = ast.parse(Path(secrets_module.__file__).read_text(encoding="utf-8"))
         assignments = [
             node
             for node in ast.walk(source)
@@ -1076,3 +1076,96 @@ class TestMachineReport:
         report = store.machine_report(ConfigModel())
         assert "scrypt" not in report
         assert "pin_hash" not in report
+
+
+class TestCloudClaimCode:
+    def _store(self, tmp_path):
+        wall = FakeWallClock()
+        s = AccessStore(
+            path=tmp_path / "access.json", clock=FakeClock(), wall_clock=wall
+        )
+        owner = s.create_user("Ada", "ada@example.com", Role.owner, "1379")
+        return s, wall, owner
+
+    def test_start_link_returns_code_and_hash_verifies(self, tmp_path):
+        s, _, owner = self._store(tmp_path)
+        code = s.start_link(owner.id)
+        assert len(code) == 8 and code.isdigit()
+        claim = s.cloud_claim_code()
+        assert claim is not None
+        assert verify_secret(code, claim[0])
+        assert claim[1] == s.pending_link["expires_at"]
+
+    def test_link_expires_after_ttl(self, tmp_path):
+        s, wall, owner = self._store(tmp_path)
+        s.start_link(owner.id)
+        wall.advance(days=6)
+        assert s.pending_link is not None
+        wall.advance(days=2)
+        assert s.pending_link is None
+        assert s.cloud_claim_code() is None
+
+    def test_start_link_refused_while_transfer_pending(self, tmp_path):
+        s, _, owner = self._store(tmp_path)
+        s.start_transfer(owner.id)
+        with pytest.raises(AccessError):
+            s.start_link(owner.id)
+
+    def test_start_transfer_clears_pending_link(self, tmp_path):
+        s, _, owner = self._store(tmp_path)
+        s.start_link(owner.id)
+        s.start_transfer(owner.id)
+        assert s.pending_link is None
+
+    def test_priority_transfer_then_link_then_setup(self, tmp_path):
+        s, _, owner = self._store(tmp_path)
+        setup = s.begin_setup()
+        assert verify_secret(setup, s.cloud_claim_code()[0])
+        link = s.start_link(owner.id)
+        assert verify_secret(link, s.cloud_claim_code()[0])
+        s.cancel_link()
+        transfer = s.start_transfer(owner.id)
+        assert verify_secret(transfer, s.cloud_claim_code()[0])
+        s.cancel_transfer()
+        assert verify_secret(setup, s.cloud_claim_code()[0])
+
+    def test_setup_code_has_no_expiry(self, tmp_path):
+        s, _, _ = self._store(tmp_path)
+        s.begin_setup()
+        claim = s.cloud_claim_code()
+        assert claim is not None and claim[1] is None
+
+    def test_observer_fires_on_each_transition(self, tmp_path):
+        s, _, owner = self._store(tmp_path)
+        seen = []
+        unsubscribe = s.subscribe_claim_code_change(
+            lambda: seen.append(s.cloud_claim_code())
+        )
+        s.begin_setup()
+        assert len(seen) == 1 and seen[-1][1] is None
+        s.start_link(owner.id)
+        assert len(seen) == 2 and seen[-1][1] is not None
+        s.cancel_link()
+        assert len(seen) == 3 and seen[-1] == seen[0]
+        s.start_transfer(owner.id)
+        assert len(seen) == 4
+        s.cancel_transfer()
+        assert len(seen) == 5
+        s.start_transfer(owner.id)
+        before = s.cloud_claim_code()
+        s.complete_transfer("Bob", None, "2468")
+        assert len(seen) == 7
+        assert seen[-1][0] == before[0] and seen[-1][1] is None
+        s.finalize_setup()
+        assert len(seen) == 8 and seen[-1] is None
+        unsubscribe()
+        assert len(seen) == 8
+
+    def test_pending_link_survives_reload(self, tmp_path):
+        s, wall, owner = self._store(tmp_path)
+        code = s.start_link(owner.id)
+        s2 = AccessStore(
+            path=tmp_path / "access.json", clock=FakeClock(), wall_clock=wall
+        )
+        claim = s2.cloud_claim_code()
+        assert claim is not None and verify_secret(code, claim[0])

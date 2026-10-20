@@ -18,6 +18,11 @@ from ice_contracts.board.mqtt_messages import (
     SubsystemHeartbeat,
 )
 
+from ice_contracts.cloud.identity import (
+    ClaimCodeNotice,
+    RegisterMachine,
+    RegisterResponse,
+)
 from ice_contracts.cloud.report import MachineReport
 from ice_contracts.cloud.ui import BundleManifest
 from ice_contracts.board.common import CommandAck, SubsystemCommand
@@ -99,6 +104,9 @@ EDGE_CLOUD_SCHEMA_DIR = _REPO_ROOT / "docs/contracts/edge-cloud/schemas"
 EDGE_CLOUD_MODELS = {
     "machine_report": MachineReport,
     "bundle_manifest": BundleManifest,
+    "register_machine": RegisterMachine,
+    "register_response": RegisterResponse,
+    "claim_code_notice": ClaimCodeNotice,
 }
 
 PAYMENT_SCHEMA_DIR = _REPO_ROOT / "docs/contracts/payment/schemas"

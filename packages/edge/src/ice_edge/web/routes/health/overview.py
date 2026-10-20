@@ -52,5 +52,10 @@ async def health_home(request: Request):
             mqtt_connected=page.mqtt_connected,
             vmc_state=page.vmc_state,
             vmc_build=page.vmc_build,
+            cloud_fingerprint=(
+                context.machine_identity.short_fingerprint
+                if context.machine_identity
+                else None
+            ),
         ),
     )

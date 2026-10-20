@@ -129,9 +129,11 @@ The edge learns about code changes through a `subscribe_claim_code_change(cb)` o
 3. `verify_secret(code, claim_code_hash)` false → 403, counter increments.
 4. Success, **one transaction**: `owner_id = account.id`, `claimed_at = now`, delete every `memberships` row for the machine, clear `claim_code_hash`/`claim_code_expires_at`. Redirect to `/m/{short}/`.
 
+*(As built: the membership delete happens only when the owner actually changes, so re-claiming your own machine keeps your techs; the consumed hash is added to a permanent per-machine `consumed_claim_hashes` set that `set_claim_code` consults, cleared only by an admin unbind.)*
+
 The old owner loses access the moment the new owner claims, matching the local swap in `AccessStore.complete_transfer`; techs are dropped because the new owner has not vouched for them.
 
-The claim **does not** consume the code at the machine: the incoming owner still completes `/setup` locally with it. The two completions are independent in time and either order works. The cloud learns about the local transfer only through claim-code notices: `complete_transfer` moves the hash into the unfinalised `setup` record, so the live code is unchanged and the observer re-sends the same hash (idempotent); `finalize_setup` clears it and the observer sends the `DELETE`. Both transitions fire the observer.
+The claim **does not** consume the code at the machine: the incoming owner still completes `/setup` locally with it. The two completions are independent in time and either order works. *(As built: claim on the cloud before pressing Done locally, because Done sends the `DELETE`; the cloud also remembers the consumed hash and ignores the machine re-announcing it, so a resale `/setup` cannot reopen a spent claim.)* The cloud learns about the local transfer only through claim-code notices: `complete_transfer` moves the hash into the unfinalised `setup` record, so the live code is unchanged and the observer re-sends the same hash (idempotent); `finalize_setup` clears it and the observer sends the `DELETE`. Both transitions fire the observer.
 
 A completed local transfer the cloud never heard about is not a special case: the new owner mints a Link-to-cloud code and claims.
 
@@ -163,7 +165,7 @@ The `ice_ui` templates carry root-absolute URLs (`hx-get="/status"`, `href="/hea
 |---|---|---|
 | `GET /fleet` | signed-in | **My machines**: owned and tech-granted machines (every machine for an admin), each with label, short fingerprint, online/offline (existing 3× interval rule), fault count, your role, a Select button. Empty state links to `/claim`. |
 | `POST /fleet/select/{short}` | owner, tech, admin of that machine | Access check, set `ice_cloud_machine` to the full fingerprint, 303 to `/`. Non-member: 404. |
-| `GET /m/{short}` | same | Deep link (for admin and invitation pages): same as select, as a GET. |
+| `GET /m/{short}` | same | Deep link (for admin and invitation pages): same as select, as a GET. *(As built: sets the cookie but redirects to `/fleet`, so a cross-site click never lands on a machine page.)* |
 | `GET /`, `/status`, `/pill`, `/kpi`, `/health`, `/health/faults`, `/static/…` | the selected machine's owner, tech, admin | The existing machine pages, byte-for-byte what they render today. No cookie, unknown machine, or no access → 303 `/fleet` (fragments: 204 for an htmx request, as today). |
 | `GET/POST /claim` | signed-in | §5.4; success selects the machine and redirects to `/`. |
 | `GET /machines/{short}/people` | owner | Memberships list with Revoke (two-tap), Invite form (email + scope: this machine / all my machines), pending invitations with Cancel, and a "Transfer ownership" panel that explains the code is minted at the machine (no action here). |
@@ -177,6 +179,8 @@ Signed-out requests to any route but the machine API and the sign-in routes redi
 Both owners and techs get `REMOTE_VIEWER_PERMISSIONS` on machine pages for now; the role is recorded so alert routing and remote commands can widen it later.
 
 ### 6.4 Bundle sandbox hardening
+
+*(As built: an uploaded bundle is rendered only if its digest is the installed one or in `ICE_CLOUD_TRUSTED_UI_DIGESTS`; otherwise installed UI plus the mismatch banner. Bundle `PUT` needs a claimed machine, 4 distinct new digests per 30 days.)*
 
 Uploaded UI bundles render in the existing `SandboxedEnvironment`, but the context passed to a bundle template loses `request` (and so `request.app.state`); the installed UI keeps the full context. A bundle from one owner's machine must not be able to reach the store or the registry. `tests/cloud/test_ui_registry.py` gains the test.
 

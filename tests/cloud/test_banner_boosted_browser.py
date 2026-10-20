@@ -13,16 +13,26 @@ import pytest
 import uvicorn
 
 from ice_cloud.app import create_app
+from ice_cloud.auth import SESSION_COOKIE, encode_session
+from tests.cloud.conftest import make_settings
 from tests.browser_harness import BROWSER_OPT_IN, free_port, run_node_check
-from tests.cloud.reports import NOW, make_report
+from tests.cloud.reports import FP, NOW, make_report
 
 pytestmark = BROWSER_OPT_IN
 
 
 @pytest.fixture
 def cloud_server(tmp_path):
-    app = create_app(data_dir=tmp_path / "cloud", now=lambda: NOW)
-    app.state.store.save(make_report())
+    app = create_app(make_settings(tmp_path / "cloud"), now=lambda: NOW)
+    settings = app.state.settings
+    owner = app.state.repo.upsert_account_from_login(
+        "sub-owner", "owner@example.com", "Owner", NOW
+    )
+    repo = app.state.repo
+    repo.register_machine(FP, "key", "m-0042", NOW)
+    repo.claim_machine(FP, owner.id, NOW)
+    app.state.store.save(FP, make_report())
+    session = encode_session(settings.session_key, owner.id, NOW, NOW)
     port = free_port()
     server = uvicorn.Server(
         uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
@@ -38,7 +48,7 @@ def cloud_server(tmp_path):
             raise RuntimeError("uvicorn server never reported started")
         yield {
             "base_url": f"http://127.0.0.1:{port}",
-            "session_cookie": "-",
+            "session_cookie": f"{SESSION_COOKIE}={session}",
             "device_cookie": "-",
         }
     finally:

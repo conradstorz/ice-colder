@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.10.6",
     "pydantic-extra-types>=2.10.4",
+    "cryptography>=43",
 ]
 
 [build-system]

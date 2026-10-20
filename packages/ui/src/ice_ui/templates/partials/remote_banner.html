@@ -6,6 +6,7 @@
      class="px-4 py-2 text-sm border-b border-amber-200 bg-amber-50 text-amber-900">
   <span class="font-semibold">Remote view</span>
   <span class="font-mono text-xs">{{ remote.machine_id }}</span>
+  {% if remote.short_fingerprint %}<span class="font-mono text-xs">{{ remote.short_fingerprint }}</span>{% endif %}
   {% if remote.stale %}
   <div class="font-medium">Offline — showing last report from {{ remote.last_report_local }} ({{ remote.age_text }} ago)</div>
   {% endif %}

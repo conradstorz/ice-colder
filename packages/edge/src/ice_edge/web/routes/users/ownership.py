@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse
 
-from ice_edge.access.access import Permission
+from ice_edge.access.access import AccessError, Permission
 from ice_edge.notify.mailer import send_email
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
@@ -143,6 +143,7 @@ def _render_ownership(
     error: str | None = None,
     notice: str | None = None,
     transfer_code: str | None = None,
+    link_code: str | None = None,
     status_code: int = 200,
     headers: dict[str, str] | None = None,
 ):
@@ -166,6 +167,15 @@ def _render_ownership(
             # Shown exactly once, in the response that created it —
             # never persisted, never re-rendered on a later request.
             transfer_code=transfer_code,
+            cloud_enabled=context.config.cloud.enabled,
+            pending_link=context.access_store.pending_link,
+            short_fingerprint=(
+                context.machine_identity.short_fingerprint
+                if context.machine_identity
+                else None
+            ),
+            # Shown exactly once, like transfer_code.
+            link_code=link_code,
         ),
         status_code=status_code,
         headers=resp_headers,
@@ -292,3 +302,50 @@ async def cancel_ownership_transfer(request: Request, pin: str = Form(...)):
         return _owner_pin_problem_ownership_response(request, problem)
     context.access_store.cancel_transfer()
     return _render_ownership(request, notice="Ownership transfer cancelled.")
+
+
+@router.post(
+    "/users/ownership/link",
+    response_class=HTMLResponse,
+    dependencies=[
+        Depends(web_auth.require(Permission.manage_ownership)),
+        Depends(context.require_htmx),
+    ],
+)
+async def start_cloud_link(request: Request, pin: str = Form(...)):
+    principal = web_auth.current_principal(request)
+    problem = _check_owner_pin(request, principal, pin)
+    if problem:
+        return _owner_pin_problem_ownership_response(request, problem)
+    try:
+        link_code = context.access_store.start_link(principal.user.id)
+    except AccessError:
+        return _render_ownership(
+            request,
+            error=(
+                "An ownership transfer is pending. "
+                "Cancel it before linking to the cloud."
+            ),
+        )
+    return _render_ownership(
+        request,
+        notice="Link code created. Enter it in the cloud portal.",
+        link_code=link_code,
+    )
+
+
+@router.post(
+    "/users/ownership/link/cancel",
+    response_class=HTMLResponse,
+    dependencies=[
+        Depends(web_auth.require(Permission.manage_ownership)),
+        Depends(context.require_htmx),
+    ],
+)
+async def cancel_cloud_link(request: Request, pin: str = Form(...)):
+    principal = web_auth.current_principal(request)
+    problem = _check_owner_pin(request, principal, pin)
+    if problem:
+        return _owner_pin_problem_ownership_response(request, problem)
+    context.access_store.cancel_link()
+    return _render_ownership(request, notice="Cloud link cancelled.")

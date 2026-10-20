@@ -3,51 +3,109 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
 
-from ice_cloud.store import MACHINE_ID_RE
+from ice_cloud.machine_auth import require_machine
+from ice_cloud.store.repository import Machine
+from ice_contracts.cloud.identity import (
+    ClaimCodeNotice,
+    RegisterMachine,
+    RegisterResponse,
+)
 from ice_contracts.cloud.report import MachineReport
-from ice_ui.bundle import MAX_UNCOMPRESSED_BYTES, BundleError
+from ice_contracts.cloud.signing import HEADER_MACHINE
+from ice_ui.bundle import BundleError
+
+MAX_BUNDLES_PER_MACHINE = 4  # distinct digests per machine within BUNDLE_WINDOW
+BUNDLE_WINDOW = timedelta(days=30)
 
 router = APIRouter(prefix="/api/v1")
 
 
-@router.post("/machines/{machine_id}/report", status_code=204)
-async def post_report(machine_id: str, report: MachineReport, request: Request):
-    if not MACHINE_ID_RE.fullmatch(machine_id) or report.machine_id != machine_id:
-        raise HTTPException(
-            status_code=422,
-            detail="machine_id in the body does not match the URL",
-        )
-    await asyncio.to_thread(request.app.state.store.save, report)
+@router.post("/machines/register")
+async def register(
+    body: RegisterMachine,
+    request: Request,
+    _machine: Machine | None = Depends(require_machine),
+) -> RegisterResponse:
+    fp = request.headers[HEADER_MACHINE]
+    row = await asyncio.to_thread(
+        request.app.state.repo.register_machine,
+        fp,
+        body.public_key_b64,
+        body.label,
+        request.app.state.now(),
+    )
+    return RegisterResponse(fingerprint=fp, claimed=row.owner_id is not None)
+
+
+@router.post("/machines/{fingerprint}/report", status_code=204)
+async def post_report(
+    report: MachineReport,
+    request: Request,
+    machine: Machine = Depends(require_machine),
+):
+    await asyncio.to_thread(request.app.state.store.save, machine.fingerprint, report)
     return Response(status_code=204)
 
 
-def _too_large() -> JSONResponse:
-    return JSONResponse({"detail": "bundle too large"}, status_code=400)
+@router.post("/machines/{fingerprint}/claim-code", status_code=204)
+async def post_claim_code(
+    notice: ClaimCodeNotice,
+    request: Request,
+    machine: Machine = Depends(require_machine),
+):
+    await asyncio.to_thread(
+        request.app.state.repo.set_claim_code,
+        machine.fingerprint,
+        notice.claim_code_hash,
+        notice.expires_at,
+    )
+    return Response(status_code=204)
+
+
+@router.delete("/machines/{fingerprint}/claim-code", status_code=204)
+async def delete_claim_code(
+    request: Request, machine: Machine = Depends(require_machine)
+):
+    await asyncio.to_thread(
+        request.app.state.repo.set_claim_code, machine.fingerprint, None, None
+    )
+    return Response(status_code=204)
 
 
 @router.put("/ui-bundles/{digest}")
-async def put_bundle(digest: str, request: Request):
-    declared = request.headers.get("content-length")
-    if declared is not None and declared.isdigit():
-        if int(declared) > MAX_UNCOMPRESSED_BYTES:
-            return _too_large()
-    # Read in chunks so a body without (or lying about) Content-Length is
-    # still cut off at the limit instead of being buffered whole.
-    chunks: list[bytes] = []
-    size = 0
-    async for chunk in request.stream():
-        size += len(chunk)
-        if size > MAX_UNCOMPRESSED_BYTES:
-            return _too_large()
-        chunks.append(chunk)
+async def put_bundle(
+    digest: str,
+    request: Request,
+    machine: Machine | None = Depends(require_machine),
+):
+    # Only claimed machines may store bundles, a few distinct digests each:
+    # registration is open, so this bounds disk use per owned machine.
+    if machine is None or machine.owner_id is None:
+        return Response(status_code=401)
+    repo = request.app.state.repo
+    if request.app.state.registry.has(digest):
+        return JSONResponse({"digest": digest}, status_code=200)  # nothing new to store
+    now = request.app.state.now()
+    if not await asyncio.to_thread(
+        repo.can_upload_bundle,
+        machine.fingerprint,
+        digest,
+        MAX_BUNDLES_PER_MACHINE,
+        now - BUNDLE_WINDOW,
+    ):
+        return Response(status_code=409)
+    # Size is capped by BodyLimitMiddleware as bytes arrive.
+    data = await request.body()
     try:
         created = await asyncio.to_thread(
-            request.app.state.registry.register, digest, b"".join(chunks)
+            request.app.state.registry.register, digest, data
         )
     except BundleError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=400)
+    await asyncio.to_thread(repo.record_bundle_upload, machine.fingerprint, digest, now)
     return JSONResponse({"digest": digest}, status_code=201 if created else 200)

@@ -1,1 +1,1 @@
-"""ice_cloud: the cloud/fleet portal stub (dev only, no auth). See docs/superpowers/specs/2026-10-13-cloud-monitoring-server-design.md."""
+"""ice_cloud: the multi-owner fleet portal. See docs/superpowers/specs/2026-10-19-cloud-identity-tenancy-design.md."""

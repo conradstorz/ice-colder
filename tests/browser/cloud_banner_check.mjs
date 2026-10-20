@@ -1,7 +1,7 @@
 // Real-headless-Chrome check that the cloud portal's remote banner never
 // stacks on boosted navigation: it lives inside the out-of-band #bar, so each
 // swap replaces it. Steps: /fleet -> select -> / -> /health -> /health/faults -> /.
-// Invocation: node cloud_banner_check.mjs <baseUrl> [ignored] [ignored]
+// Invocation: node cloud_banner_check.mjs <baseUrl> <session cookie name=value> [ignored]
 // Prints one JSON line {ok, steps, error?}.
 import { spawn } from "node:child_process";
 import { mkdtempSync, existsSync } from "node:fs";
@@ -135,6 +135,15 @@ async function main() {
       out.steps.push(s);
       return s;
     };
+
+    // The portal needs a signed-in account: the harness passes the signed
+    // session cookie as "name=value" (a lone "-" means none).
+    if (sessionCookie && sessionCookie !== "-") {
+      const eq = sessionCookie.indexOf("=");
+      await cmd("Network.setCookie", {
+        name: sessionCookie.slice(0, eq), value: sessionCookie.slice(eq + 1), url: baseUrl,
+      });
+    }
 
     // /fleet has no selected machine, hence no banner at all.
     await cmd("Page.navigate", { url: `${baseUrl}/fleet` });
