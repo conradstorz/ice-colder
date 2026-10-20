@@ -61,10 +61,6 @@ class OfflineSweep:
             return []
         if now - self._started_at <= limit:
             return []
-        # Persist the mark before dispatching so a crash cannot emit twice.
-        await asyncio.to_thread(
-            self._repo.put_alert_state, replace(state, offline_since=now)
-        )
         row = AlertEventRow(
             fingerprint=machine.fingerprint,
             kind="offline",
@@ -77,7 +73,10 @@ class OfflineSweep:
             sku=None,
             product=None,
         )
-        stored = await asyncio.to_thread(self._repo.record_alert_events, [row])
+        # Event and mark commit together, before dispatching, so a crash cannot emit twice.
+        stored = await asyncio.to_thread(
+            self._repo.record_alert_pass, [row], replace(state, offline_since=now)
+        )
         await self._dispatcher.dispatch(machine.fingerprint, machine, stored)
         return stored
 

@@ -155,16 +155,16 @@ async def test_startup_grace_then_flag(env, sweep):
 
 
 class FailingPutRepo:
-    """Delegates to a real repo; put_alert_state raises for one fingerprint."""
+    """Delegates to a real repo; record_alert_pass raises for one fingerprint."""
 
     def __init__(self, repo, bad):
         self.repo = repo
         self.bad = bad
 
-    def put_alert_state(self, state):
+    def record_alert_pass(self, events, state):
         if state.fingerprint == self.bad:
             raise RuntimeError("disk full")
-        self.repo.put_alert_state(state)
+        return self.repo.record_alert_pass(events, state)
 
     def __getattr__(self, name):
         return getattr(self.repo, name)

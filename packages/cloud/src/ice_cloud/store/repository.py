@@ -248,6 +248,12 @@ class Repository(Protocol):
         """Insert events (any object with the row's fields) in order; return them with ids."""
         ...
 
+    def record_alert_pass(
+        self, events: Sequence[AlertEventRow], state: AlertState
+    ) -> list[StoredEvent]:
+        """Insert events and upsert the alert state in one transaction."""
+        ...
+
     def alert_events(self, fingerprint: str, *, limit: int) -> list[StoredEvent]:
         """Newest first."""
         ...

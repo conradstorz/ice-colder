@@ -84,20 +84,21 @@ def _record_alerts(repo, fingerprint: str, report: MachineReport, now):
                 product=None,
             )
         )
-    stored = repo.record_alert_events(events)
-    repo.put_alert_state(
+    return repo.record_alert_pass(
+        events,
         AlertState(
             fingerprint=fingerprint,
             faults=tuple(report.faults),
             last_report_at=now,
             report_interval_seconds=report.report_interval_seconds,
             offline_since=None,
-        )
+        ),
     )
-    return stored
 
 
 async def _handle_alerts(request: Request, machine: Machine, report: MachineReport):
+    if machine.owner_id is None:
+        return  # unclaimed machines never produce events
     state = request.app.state
     now = state.now()
     stored = await asyncio.to_thread(

@@ -56,7 +56,10 @@ def test_cleared_bundled_into_next_raise(cloud, signer, mailer, clock):
 
 def test_unclaimed_machine_no_events(cloud, signer, mailer):
     push(cloud, signer, make_report())
+    repo = cloud.app.state.repo
     assert mailer.sent == []
+    assert repo.alert_events(signer.fingerprint, limit=10) == []
+    assert repo.alert_state(signer.fingerprint) is None
 
 
 def test_online_after_sweep_offline(cloud, signer, mailer, clock):
@@ -81,7 +84,11 @@ def test_alert_failure_still_204(cloud, signer, mailer, monkeypatch):
 
     monkeypatch.setattr(cloud.app.state.alerts, "dispatch", boom)
     push(cloud, signer, make_report())
-    assert cloud.app.state.store.latest(signer.fingerprint) is not None
+    repo = cloud.app.state.repo
+    assert repo.alert_state(signer.fingerprint) is not None
+    push(cloud, signer, make_report(seq=2))
+    events = repo.alert_events(signer.fingerprint, limit=10)
+    assert [e.kind for e in events] == ["raised"]
 
 
 @pytest.mark.parametrize("claimed", [False, True])

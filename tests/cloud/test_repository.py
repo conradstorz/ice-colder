@@ -676,3 +676,21 @@ def test_alert_events_by_ids_ordered_and_skips_unknown(repo):
     a, b, c = repo.record_alert_events([_event(key=k) for k in "abc"])
     assert repo.alert_events_by_ids([c.id, a.id, 9999]) == [a, c]
     assert repo.alert_events_by_ids([]) == []
+
+
+def test_record_alert_pass_commits_events_and_state_together(repo):
+    _claimed(repo)
+    stored = repo.record_alert_pass([_event()], _state())
+    assert len(stored) == 1 and stored[0].id
+    assert repo.alert_state(FP) == _state()
+    assert repo.alert_events(FP, limit=10) == stored
+
+
+def test_record_alert_pass_rolls_back_events_when_state_write_fails(repo):
+    _claimed(repo)
+    bad = _state()
+    object.__setattr__(bad, "report_interval_seconds", object())
+    with pytest.raises(Exception):
+        repo.record_alert_pass([_event()], bad)
+    assert repo.alert_events(FP, limit=10) == []
+    assert repo.alert_state(FP) is None
