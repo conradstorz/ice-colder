@@ -128,6 +128,7 @@ jobs:
       - run: docker compose --env-file .env.example -f docker-compose.yml config -q
       - run: docker compose --env-file .env.example -f docker/docker-compose.prod.yml config -q
       - run: docker compose --env-file .env.example -f docker/docker-compose.cloud.yml config -q
+      - run: ICE_CLOUD_URL=http://example.invalid docker compose --env-file .env.example -f docker/docker-compose.fleet.yml config -q
 
   image:
     # PRs: prove the image builds. main: publish it for Watchtower on the sim host.
@@ -180,11 +181,25 @@ jobs:
       # mosquitto, the three sims and the edge must all come up inside one container.
       - name: Smoke-test the simulated machine image
         run: |
-          docker build --build-arg BASE_IMAGE=ice-colder:smoke -t ice-colder-machine:smoke docker/machine
+          # The setup-buildx builder is a docker-container builder and cannot see the
+          # daemon-local ice-colder:smoke; --builder default --load builds in the daemon.
+          docker buildx build --builder default --load --build-arg BASE_IMAGE=ice-colder:smoke -t ice-colder-machine:smoke docker/machine
           docker run -d --name machine-smoke -e ICE_CLOUD_URL=http://127.0.0.1:9 ice-colder-machine:smoke
+          need=(
+            "Opening ipv4 listen socket on port 1883"
+            "[vending] Connected to 127.0.0.1:1883"
+            "[ice_maker] Connected to 127.0.0.1:1883"
+            "[mdb] Connected to 127.0.0.1:1883"
+            "Entering main event loop with web server, MQTT client, and health monitor"
+            "Dashboard is in setup mode"
+          )
           for i in $(seq 1 60); do
             docker logs machine-smoke > machine.log 2>&1 || true
-            if grep -qF "Opening ipv4 listen socket on port 1883" machine.log               && grep -qF "[vending] Connected to 127.0.0.1:1883" machine.log               && grep -qF "[ice_maker] Connected to 127.0.0.1:1883" machine.log               && grep -qF "[mdb] Connected to 127.0.0.1:1883" machine.log               && grep -qF "Entering main event loop with web server, MQTT client, and health monitor" machine.log               && grep -qF "Dashboard is in setup mode" machine.log; then
+            missing=0
+            for s in "${need[@]}"; do
+              grep -qF "$s" machine.log || missing=1
+            done
+            if [ "$missing" = 0 ]; then
               docker rm -f machine-smoke
               exit 0
             fi
