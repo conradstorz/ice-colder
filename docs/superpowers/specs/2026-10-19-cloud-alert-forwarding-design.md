@@ -49,6 +49,8 @@ def diff_reports(previous_keys: frozenset[str], report: MachineReport, *, now: d
   the owner accepted that in exchange for no new edge contract.
 - Events within one call are ordered `cleared` first, then `raised`, each by key.
 
+*(As built: `diff_reports(previous: Sequence[FaultView], report, *, now, fingerprint)` takes the previous report's full `FaultView` list, not bare keys, because a product fault's wire `key` is the bare sku, so a `CODE[:sku]` key cannot be parsed back into a code. A `cleared` event copies `code`, `severity`, `gate`, `description`, `sku` and `product` from the previous `FaultView`; no key parsing exists anywhere.)*
+
 ### 2.2 Per-machine alert state
 
 A new table `machine_alert_state (fingerprint PK, fault_keys_json, last_report_at, report_interval_seconds, offline_since)`
@@ -62,6 +64,8 @@ snapshot file under `machines/` is never re-read for this purpose.
   last faults are never re-sent to them.
 - `unbind_machine` deletes the row and the machine's `alert_events`, `alert_deliveries` and `alert_prefs`.
 
+*(As built: the state row's column is `faults_json`, the previous report's full `FaultView` list, and `AlertState.faults` is a tuple of `FaultView`; `AlertState.keys` remains as a derived property. The repository also exposes `delete_alert_state`.)*
+
 ### 2.3 Offline and online
 
 `OfflineSweep` (`ice_cloud/alerts/sweep.py`) is an asyncio task started in the app lifespan and run every
@@ -73,6 +77,8 @@ banner uses, so the page and the email agree.
 
 Unclaimed machines never produce events of any kind. A machine with no state row (registered, never
 reported) is not "offline"; nothing has promised reports yet.
+
+*(As built: startup grace. `OfflineSweep` records `started_at` at construction and never flags a machine offline while `now - started_at <= 3 * report_interval_seconds` for that machine, so a cloud restart after downtime does not email the fleet "offline" and then "online" as reports resume. The offline event and the `offline_since` mark are committed together by `record_alert_pass` before dispatch, so a crash cannot emit twice. Each tick calls `dispatch` for new offline events, then `flush` for leftovers.)*
 
 ### 2.4 Ingest hook
 
@@ -86,6 +92,8 @@ reported) is not "offline"; nothing has promised reports yet.
    never fail the report (the machine still gets its 204).
 
 All repository calls go through `asyncio.to_thread`, as the existing handlers do.
+
+*(As built: steps 3 and 4 differ. Events and state are written by one repository call, `record_alert_pass(events, state)`, in a single transaction, used by both ingest and the sweep, so a crash between the two writes cannot leave events without state or the reverse. An unclaimed machine (`owner_id is None`) is skipped before any repository call. Ingest then calls `alerts.dispatch(fingerprint, machine, stored_events)` followed by `alerts.flush(now)`.)*
 
 ## 3. Routing and delivery
 
@@ -136,6 +144,8 @@ change) delete the affected rows, so a mute never outlives access.
   on the next pass and the cooldown is not consumed by a failure; after **5** failures it stays `failed`
   and the next event starts a fresh row.
 
+*(As built: `dispatch(fingerprint, machine, events)` folds the recipient's other due rows (`pending`, or `failed` with `attempts < 5`) into the same email, and every folded row receives the outcome. Both ingest and the sweep therefore call `dispatch` first and `flush` after; flushing first would send the older rows alone and hold the new event behind the cooldown. A `failed` row is retried under the same per-recipient cooldown gate as a `pending` one (the gate reads the last `sent` delivery, so a failure never consumes the cooldown). One `asyncio.Lock` serialises `dispatch` and `flush`. The dispatcher truncates error text to 500 characters. A muted recipient gets a `muted` delivery row at dispatch time, and `flush` marks a due row `muted` if the person was muted after it was queued. A due row whose machine or recipient has vanished is marked `failed` with "machine or recipient no longer available" and burns an attempt on each later flush.)*
+
 ### 3.4 Email
 
 Plain text, one per bundle:
@@ -159,6 +169,8 @@ You receive this as <owner|technician> of this machine. Mute: <public_url>/machi
 
 The link uses `settings.public_url`; with no public URL the link lines are omitted.
 
+*(As built: a bundle holding both `offline` and `online` events takes its subject from the newest of them ("offline" or "back online") and prints both kind lines in time order. The kind lines are "Stopped reporting at <ts> UTC (last report HH:MM)", "Reporting again at <ts> UTC" and, for fault bundles, "Fault changes at <ts> UTC". A fault bundle's subject counts the raised events and the cleared events riding along.)*
+
 ### 3.5 Mailer
 
 `ice_common/mailer.py` receives the edge's `smtp_send(email_config, msg)` body, generalised to
@@ -179,6 +191,8 @@ Settings (`CloudSettings`): `ICE_CLOUD_SMTP_HOST`, `ICE_CLOUD_SMTP_PORT` (defaul
 (`1` default). Host unset ⇒ `smtp_configured == False`, `LogOnlyMailer`, one warning at boot, and
 `alerts_handled` is false for every machine (section 4). Host set without `FROM` is a `SettingsError`.
 `.env.example` and `docker/docker-compose.cloud.yml` carry the block.
+
+*(As built: `ICE_CLOUD_SMTP_USER` without `ICE_CLOUD_SMTP_PASSWORD` is also a `SettingsError`, as is a non-numeric or out-of-range `ICE_CLOUD_SMTP_PORT`. `SmtpMailer` takes an `SmtpConfig` (host, port, username, password, `use_starttls`, from); `make_mailer(settings)` is the entry point and returns `LogOnlyMailer` when the host is unset.)*
 
 ## 4. Edge hand-off (owner decision B) and fallback
 
@@ -258,6 +272,8 @@ def mark_delivery(self, id, *, status, now, error=None) -> None
 def last_sent_at(self, fingerprint, account_id) -> datetime | None
 def deliveries_for_events(self, event_ids) -> dict[int, list[Delivery]]
 ```
+
+*(As built: the repository also has `alert_events_by_ids(ids)`, `record_alert_pass(events, state)` (events and state in one transaction), `is_muted(account_id, fingerprint)` and `delete_alert_state(fingerprint)`. `record_alert_events` takes `AlertEventRow` objects, `AlertState` holds `faults` rather than `keys`, and `alert_count_since` does not count `cleared` events.)*
 
 Three migrations appended to `MIGRATIONS`: `machine_alert_state`, `alert_events` + `alert_deliveries`
 (with `attempts INTEGER NOT NULL DEFAULT 0`), `alert_prefs`. Existing `claim_machine`, `revoke`,
