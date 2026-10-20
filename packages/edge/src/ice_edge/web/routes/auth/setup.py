@@ -17,6 +17,12 @@ from ice_ui.templating import templates
 router = APIRouter()
 
 
+def _short_fingerprint() -> str | None:
+    """The cloud fingerprint to read out when claiming this machine, if any."""
+    identity = context.machine_identity
+    return identity.short_fingerprint if identity is not None else None
+
+
 def _setup_page(
     request: Request,
     *,
@@ -33,6 +39,7 @@ def _setup_page(
             error=error,
             form=form or {"name": "", "email": ""},
             transfer=context.access_store.pending_transfer is not None,
+            short_fingerprint=_short_fingerprint(),
         ),
         status_code=status_code,
         headers=headers or {},
@@ -179,6 +186,7 @@ def _setup_codes_page(
             notice=notice,
             error=error,
             can_email=context._can_email_owner(owner),
+            short_fingerprint=_short_fingerprint(),
         ),
         status_code=status_code,
         headers=resp_headers,

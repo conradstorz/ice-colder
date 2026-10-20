@@ -303,7 +303,7 @@ v0.1.0's `seq` is only a supersede marker; it is not a watermark and nothing is 
 - The edge's `cloud.enabled` defaults to **false**. `CloudConfig` also carries
   `url` (default `http://127.0.0.1:26124`) and `report_interval_seconds` (default 60, 10–3600), re-read
   each pass so an edit takes effect on the next report.
-- Order: the bundle `PUT` first (retried once per interval until accepted), then reports forever.
+- Order: the bundle `PUT` first (retried once per interval until accepted), then reports forever. *(As built: reports are posted every pass and no longer wait for bundle acceptance; a refused bundle is retried about hourly.)*
 - Uploads never block a sale: they run in a supervised background task with a 5 s timeout, and failures
   are logged and dropped. There is no outbox yet; each report supersedes the previous one.
 - Building a report is a pure read of machine state: it changes nothing, raises no fault, and writes no

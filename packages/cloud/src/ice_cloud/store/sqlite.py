@@ -65,7 +65,27 @@ MIGRATIONS: list[str] = [
         accepted_by TEXT REFERENCES accounts(id),
         accepted_at TEXT
     );
+    """,
+    "ALTER TABLE machines ADD COLUMN consumed_claim_hash TEXT",
     """
+    CREATE TABLE bundle_uploads (
+        fingerprint TEXT NOT NULL REFERENCES machines(fingerprint),
+        digest TEXT NOT NULL,
+        uploaded_at TEXT NOT NULL,
+        PRIMARY KEY (fingerprint, digest)
+    )
+    """,
+    """
+    CREATE TABLE consumed_claim_hashes (
+        fingerprint TEXT NOT NULL REFERENCES machines(fingerprint),
+        hash TEXT NOT NULL,
+        consumed_at TEXT NOT NULL,
+        PRIMARY KEY (fingerprint, hash)
+    );
+    INSERT INTO consumed_claim_hashes (fingerprint, hash, consumed_at)
+        SELECT fingerprint, consumed_claim_hash, COALESCE(claimed_at, registered_at)
+        FROM machines WHERE consumed_claim_hash IS NOT NULL
+    """,
 ]
 
 # Public so a test can substitute a failing statement and prove a claim is atomic.
@@ -274,6 +294,21 @@ class SqliteRepository:
         self, fingerprint: str, hash: str | None, expires_at: datetime | None
     ) -> None:
         with self._tx() as conn:
+            if (
+                hash is not None
+                and conn.execute(
+                    "SELECT 1 FROM consumed_claim_hashes WHERE fingerprint = ? AND hash = ?",
+                    (fingerprint, hash),
+                ).fetchone()
+            ):
+                return  # a spent code never reopens a claim (resale)
+            if hash is None:
+                conn.execute(
+                    "UPDATE machines SET claim_code_hash = NULL,"
+                    " claim_code_expires_at = NULL WHERE fingerprint = ?",
+                    (fingerprint,),
+                )
+                return
             conn.execute(
                 "UPDATE machines SET claim_code_hash = ?, claim_code_expires_at = ?"
                 " WHERE fingerprint = ?",
@@ -301,6 +336,10 @@ class SqliteRepository:
                 "SELECT 1 FROM accounts WHERE id = ?", (account_id,)
             ).fetchone():
                 return False
+            before = conn.execute(
+                "SELECT owner_id, claim_code_hash FROM machines WHERE fingerprint = ?",
+                (fingerprint,),
+            ).fetchone()
             cur = conn.execute(
                 "UPDATE machines SET owner_id = ?, claimed_at = ?,"
                 " claim_code_hash = NULL, claim_code_expires_at = NULL"
@@ -309,11 +348,57 @@ class SqliteRepository:
             )
             if cur.rowcount == 0:
                 return False
-            conn.execute(DELETE_MEMBERSHIPS_SQL, (fingerprint,))
+            if before["claim_code_hash"] is not None:
+                conn.execute(
+                    "INSERT OR IGNORE INTO consumed_claim_hashes"
+                    " (fingerprint, hash, consumed_at) VALUES (?, ?, ?)",
+                    (fingerprint, before["claim_code_hash"], _iso(now)),
+                )
+            if before["owner_id"] != account_id:
+                conn.execute(DELETE_MEMBERSHIPS_SQL, (fingerprint,))
             return True
+
+    def can_upload_bundle(
+        self, fingerprint: str, digest: str, limit: int, since: datetime
+    ) -> bool:
+        with self._connect() as conn:
+            if conn.execute(
+                "SELECT 1 FROM bundle_uploads WHERE fingerprint = ? AND digest = ?",
+                (fingerprint, digest),
+            ).fetchone():
+                return True
+            count = conn.execute(
+                "SELECT COUNT(*) AS n FROM bundle_uploads"
+                " WHERE fingerprint = ? AND uploaded_at > ?",
+                (fingerprint, _iso(since)),
+            ).fetchone()["n"]
+        return count < limit
+
+    def record_bundle_upload(
+        self, fingerprint: str, digest: str, now: datetime
+    ) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                "INSERT INTO bundle_uploads (fingerprint, digest, uploaded_at)"
+                " VALUES (?, ?, ?) ON CONFLICT(fingerprint, digest)"
+                " DO UPDATE SET uploaded_at = excluded.uploaded_at",
+                (fingerprint, digest, _iso(now)),
+            )
+
+    def consumed_claim_hashes(self, fingerprint: str) -> set[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT hash FROM consumed_claim_hashes WHERE fingerprint = ?",
+                (fingerprint,),
+            ).fetchall()
+        return {r["hash"] for r in rows}
 
     def unbind_machine(self, fingerprint: str) -> None:
         with self._tx() as conn:
+            conn.execute(
+                "DELETE FROM consumed_claim_hashes WHERE fingerprint = ?",
+                (fingerprint,),
+            )
             conn.execute(
                 "UPDATE machines SET owner_id = NULL, claimed_at = NULL,"
                 " claim_code_hash = NULL, claim_code_expires_at = NULL"

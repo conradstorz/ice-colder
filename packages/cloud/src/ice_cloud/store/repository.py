@@ -116,7 +116,24 @@ class Repository(Protocol):
         """
         ...
 
-    def unbind_machine(self, fingerprint: str) -> None: ...
+    def can_upload_bundle(
+        self, fingerprint: str, digest: str, limit: int, since: datetime
+    ) -> bool:
+        """True if ``digest`` is already this machine's or fewer than ``limit``
+        distinct digests were uploaded since ``since``."""
+        ...
+
+    def record_bundle_upload(
+        self, fingerprint: str, digest: str, now: datetime
+    ) -> None: ...
+
+    def consumed_claim_hashes(self, fingerprint: str) -> set[str]:
+        """Claim-code hashes a claim has spent; ``set_claim_code`` ignores them."""
+        ...
+
+    def unbind_machine(self, fingerprint: str) -> None:
+        """Admin reset: drops the owner, memberships and consumed hashes."""
+        ...
 
     def all_machines(self) -> list[Machine]: ...
 

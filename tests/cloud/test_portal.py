@@ -91,7 +91,12 @@ def test_admin_sees_every_machine(cloud):
     login(cloud, "admin@example.com")
     page = cloud.get("/fleet")
     assert "m-A" in page.text and "m-B" in page.text and ">admin<" in page.text
-    assert cloud.post(f"/fleet/select/{short(b)}").status_code == 303
+    assert (
+        cloud.post(
+            f"/fleet/select/{short(b)}", headers={"HX-Request": "true"}
+        ).status_code
+        == 303
+    )
     assert cloud.get("/health/faults").status_code == 200
 
 
@@ -99,7 +104,7 @@ def test_select_sets_a_non_credential_cookie(cloud, signer):
     owner = login(cloud, "owner@example.com")
     push(cloud, signer, make_report())
     claim(cloud, signer, owner)
-    r = cloud.post(f"/fleet/select/{short(signer)}")
+    r = cloud.post(f"/fleet/select/{short(signer)}", headers={"HX-Request": "true"})
     assert r.status_code == 303 and r.headers["location"] == "/"
     cookie = r.headers["set-cookie"].lower()
     assert f"ice_cloud_machine={signer.fingerprint}" in cookie
@@ -111,10 +116,21 @@ def test_select_non_member_404(cloud, signer):
     push(cloud, signer, make_report())
     claim(cloud, signer, owner)
     login(cloud, "stranger@example.com")
-    assert cloud.post(f"/fleet/select/{short(signer)}").status_code == 404
+    assert (
+        cloud.post(
+            f"/fleet/select/{short(signer)}", headers={"HX-Request": "true"}
+        ).status_code
+        == 404
+    )
     assert cloud.get(f"/m/{short(signer)}").status_code == 404
-    assert cloud.post("/fleet/select/m-ghost").status_code == 404
-    assert cloud.post("/fleet/select/bad%20id").status_code == 404
+    assert (
+        cloud.post("/fleet/select/m-ghost", headers={"HX-Request": "true"}).status_code
+        == 404
+    )
+    assert (
+        cloud.post("/fleet/select/bad%20id", headers={"HX-Request": "true"}).status_code
+        == 404
+    )
 
 
 def test_machine_pages_require_access_and_redirect_to_fleet(cloud, signer):
@@ -160,9 +176,17 @@ def test_deep_link_selects(cloud, signer):
     push(cloud, signer, make_report())
     claim(cloud, signer, owner)
     r = cloud.get(f"/m/{short(signer)}")
-    assert r.status_code == 303 and r.headers["location"] == "/"
+    # Never lands on a machine page after a cross-site click: fleet list only.
+    assert r.status_code == 303 and r.headers["location"] == "/fleet"
     assert f"ice_cloud_machine={signer.fingerprint}" in r.headers["set-cookie"]
     assert cloud.get("/health/faults").status_code == 200
+
+
+def test_select_requires_htmx_header(cloud, signer):
+    owner = login(cloud, "owner@example.com")
+    push(cloud, signer, make_report())
+    claim(cloud, signer, owner)
+    assert cloud.post(f"/fleet/select/{short(signer)}").status_code == 403
 
 
 def test_machine_without_report_renders_no_report_page(cloud, signer):
@@ -258,10 +282,55 @@ def _marked_bundle(tmp_path, marker):
     return digest, data
 
 
-def test_full_page_renders_from_cached_bundle_in_sandbox(cloud, tmp_path, signer):
-    digest, data = _marked_bundle(tmp_path, "SANDBOXED-MACHINE-UI")
-    assert put_bundle(cloud, signer, digest, data).status_code == 201
+@pytest.fixture
+def trusting_cloud(settings, clock, provider):
+    """Build a cloud client whose settings trust the given bundle digests."""
+    from dataclasses import replace
+
+    from fastapi.testclient import TestClient
+
+    from ice_cloud.app import create_app
+
+    stack = []
+
+    def make(*digests):
+        app = create_app(
+            replace(settings, trusted_ui_digests=frozenset(digests)),
+            now=clock,
+            provider=provider,
+        )
+        client = TestClient(app, follow_redirects=False)
+        stack.append(client)
+        client.__enter__()
+        return client
+
+    yield make
+    for client in stack:
+        client.__exit__(None, None, None)
+
+
+def _digest_of(data):
+    with tarfile.open(fileobj=io.BytesIO(gzip.decompress(data))) as tf:
+        return json.loads(tf.extractfile("manifest.json").read())["digest"]
+
+
+def test_untrusted_bundle_is_never_rendered_or_served(cloud, tmp_path, signer):
+    digest, data = _marked_bundle(tmp_path, "UNTRUSTED-UI")
     own_and_select(cloud, signer, make_report(digest=digest))
+    assert put_bundle(cloud, signer, digest, data).status_code == 201
+    r = cloud.get("/health/faults")
+    assert "UNTRUSTED-UI" not in r.text
+    assert "UI version mismatch" in r.text
+    assert cloud.get("/static/machine-only.txt").status_code == 404
+
+
+def test_full_page_renders_from_cached_bundle_in_sandbox(
+    trusting_cloud, tmp_path, signer
+):
+    digest, data = _marked_bundle(tmp_path, "SANDBOXED-MACHINE-UI")
+    cloud = trusting_cloud(digest)
+    own_and_select(cloud, signer, make_report(digest=digest))
+    assert put_bundle(cloud, signer, digest, data).status_code == 201
 
     r = cloud.get("/health/faults")
     assert r.status_code == 200
@@ -272,10 +341,14 @@ def test_full_page_renders_from_cached_bundle_in_sandbox(cloud, tmp_path, signer
     # Home and health also render through the sandbox, and static follows the bundle.
     assert cloud.get("/health").status_code == 200
     assert cloud.get("/").status_code == 200
-    assert cloud.get("/static/machine-only.txt").text == "from the machine UI"
+    static = cloud.get("/static/machine-only.txt")
+    assert static.text == "from the machine UI"
+    assert "sandbox" in static.headers["content-security-policy"]
 
 
-def test_sandbox_blocks_unsafe_template_in_uploaded_bundle(cloud, tmp_path, signer):
+def test_sandbox_blocks_unsafe_template_in_uploaded_bundle(
+    trusting_cloud, tmp_path, signer
+):
     root = tmp_path / "evil"
     shutil.copytree(INSTALLED_ROOT / "templates", root / "templates")
     shutil.copytree(INSTALLED_ROOT / "static", root / "static")
@@ -289,10 +362,10 @@ def test_sandbox_blocks_unsafe_template_in_uploaded_bundle(cloud, tmp_path, sign
         encoding="utf-8",
     )
     data = build_bundle(root)
-    with tarfile.open(fileobj=io.BytesIO(gzip.decompress(data))) as tf:
-        digest = json.loads(tf.extractfile("manifest.json").read())["digest"]
-    put_bundle(cloud, signer, digest, data)
+    digest = _digest_of(data)
+    cloud = trusting_cloud(digest)
     own_and_select(cloud, signer, make_report(digest=digest))
+    put_bundle(cloud, signer, digest, data)
     with pytest.raises(Exception, match="unsafe"):
         cloud.get("/health/faults")
 
@@ -341,14 +414,17 @@ def _home_bundle(tmp_path, body):
     return digest, data
 
 
-def test_sandboxed_bundle_cannot_see_request_or_app_state(cloud, tmp_path, signer):
+def test_sandboxed_bundle_cannot_see_request_or_app_state(
+    trusting_cloud, tmp_path, signer
+):
     digest, data = _home_bundle(
         tmp_path,
         "[[{{ request }}|{{ request is defined }}|"
         "{{ request.app.state if request is defined else 'gone' }}]]",
     )
-    assert put_bundle(cloud, signer, digest, data).status_code == 201
+    cloud = trusting_cloud(digest)
     own_and_select(cloud, signer, make_report(digest=digest))
+    assert put_bundle(cloud, signer, digest, data).status_code == 201
 
     r = cloud.get("/")
     assert r.status_code == 200

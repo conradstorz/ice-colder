@@ -15,6 +15,7 @@ All configuration is environment variables, read once at start (`ice_cloud.setti
 | `ICE_CLOUD_GOOGLE_CLIENT_ID`, `ICE_CLOUD_GOOGLE_CLIENT_SECRET` | Google OAuth client. Set both or neither; with neither, `/login` says sign-in is not configured and the machine API still works. | none |
 | `ICE_CLOUD_ADMINS` | Comma-separated admin emails (case-insensitive). | empty |
 | `ICE_CLOUD_INSECURE_COOKIES` | `1` drops the `Secure` cookie flag, for local http only. | unset |
+| `ICE_CLOUD_TRUSTED_UI_DIGESTS` | Comma-separated sha256 digests of machine UI bundles the portal may render. Empty: only the cloud's own installed `ice_ui` renders; a machine reporting any other digest is shown with the installed UI and a mismatch banner. See "Uploaded UI bundles". | empty |
 | `ICE_CLOUD_DATA` | Data directory: `cloud.db` (SQLite), `machines/` (report snapshots), `ui/` (uploaded bundles). | `./cloud_data` |
 | `ICE_CLOUD_HOST` | Bind host. Port is fixed at 26124. | `127.0.0.1` |
 
@@ -40,13 +41,26 @@ With Docker: copy `.env.example` to `.env`, fill the `ICE_CLOUD_*` block, then `
 
 The flow is authorization code with PKCE; the ID token is verified (signature, issuer, audience, expiry, nonce) and the email must be verified. The first sign-in creates the account; anyone with a Google account can sign up, and then claim a machine or accept an invitation. Sessions last 30 days idle, 90 days absolute. Provider code is in `ice_cloud.oidc_google`, the protocol in `ice_cloud.oidc`, sessions and dependencies in `ice_cloud.auth`.
 
+## Uploaded UI bundles
+
+Any registered machine can upload a UI bundle, and a bundle holds HTML and static files that would be served from the cloud's own origin. So the portal **never renders or serves an uploaded bundle unless its digest is listed** in `ICE_CLOUD_TRUSTED_UI_DIGESTS`. Unlisted digests are stored but ignored: the machine's pages render with the installed UI and the mismatch banner. Even trusted bundles render in a Jinja sandbox without `request`, and their static files are sent with `Content-Security-Policy: sandbox`.
+
+To trust a release, get its digest from the release you built or deployed and add it to the variable, then restart:
+
+```
+uv run python -c "from ice_ui.bundle import ui_digest; print(ui_digest())"
+```
+
+The deep link `/m/{short}` selects the machine and then redirects to `/fleet`; it never renders a machine page directly, so a cross-site click cannot land on one.
+
 ## Reverse proxy
 
 The server speaks plain HTTP. Terminate HTTPS in a reverse proxy (Traefik, Caddy, nginx) in front of `127.0.0.1:26124`; session cookies are `Secure`, so sign-in does not work over http except with `ICE_CLOUD_INSECURE_COOKIES=1`.
 
 - **No path prefix.** Machines sign the request path as the cloud sees it (`request.url.path`), and the portal templates use root-absolute URLs. Serve the cloud at the root of its host, or strip any prefix at the proxy before forwarding. A prefix left in place makes every machine signature fail (401).
-- **Pass the real client address.** The claim back-off is keyed on the client IP. Behind a proxy that address must reach the app as the connection peer. The cloud does not yet read `X-Forwarded-For`, so today every claimant behind the proxy shares one back-off bucket (one attacker can lock out legitimate claims, never bypass the check). Open item.
+- **Pass the real client address.** The claim back-off is keyed on the client IP. Behind a proxy that address must reach the app as the connection peer. uvicorn honours `X-Forwarded-For` from loopback peers by default, so a proxy on the same host works as is. When the proxy is not on loopback (for example a Docker bridge address), uvicorn ignores the header and every claimant shares one back-off bucket (one attacker can lock out legitimate claims, never bypass the check): set `FORWARDED_ALLOW_IPS` (uvicorn `--forwarded-allow-ips`) to the proxy's address.
 - **Rate limiting** on `/login` and the machine API is a proxy concern for now.
+- **Open registration (open item).** `POST /api/v1/machines/register` accepts any new keypair, so anyone can create unclaimed machine rows. Bundle uploads are limited to claimed machines (401 otherwise) and to 4 distinct new digests per machine in any 30 days (409 for a fifth; re-sending a digest the cloud already holds is a 200 and never counts), and the edge retries a refused bundle only about hourly, which bounds disk use, but registration itself and `/login` still need rate limiting at the proxy. An unclaimed machine still reports (its reports are stored and its last-seen time updates); only its bundle upload is refused, retried each pass, and the portal shows the installed UI with a mismatch banner until a claimed machine's bundle is accepted and trusted.
 - **Body limits.** The app itself caps request bodies (`BodyLimitMiddleware`): 20 MiB for the UI-bundle `PUT`, 256 KiB for everything else, answered 413 with an empty body. A proxy limit at least that large is fine.
 
 ## Claiming a machine, and transfer
@@ -57,7 +71,7 @@ Ownership is proven by a code minted **at the machine**; the cloud only ever sto
 
 **First claim (cloud side).** Sign in, open `/claim`, enter the short fingerprint and the code. On success you are the owner, the machine appears in `/fleet`, and the claim code is spent in the cloud. Wrong codes, unknown machines and expired codes all give the same 403 and each failure costs the same scrypt time; repeated failures back off exponentially (429).
 
-**Resale.** The seller starts a transfer at the machine (existing flow, `/users/ownership`), which mints a transfer code. The buyer signs in to the cloud, claims with that code and fingerprint, then completes `/setup` at the machine with the same code. The two steps are independent and either order works. Claiming drops the previous owner's access immediately and deletes every technician membership; the new owner re-invites whom they trust. A local transfer the cloud never heard about needs no special handling: the new owner mints a Link-to-cloud code and claims.
+**Resale.** The seller starts a transfer at the machine (existing flow, `/users/ownership`), which mints a transfer code. The buyer signs in to the cloud, claims with that code and fingerprint, then completes `/setup` at the machine with the same code. **Claim on the cloud before pressing Done at the machine.** Done finalizes the local setup and sends the cloud a `DELETE` that closes the claim, so after Done the transfer code no longer works in the cloud; if the buyer pressed Done first, they mint a Link-to-cloud code and claim with that. A code the cloud has already consumed is never reopened by the machine re-announcing it. Claiming drops the previous owner's access immediately and deletes the technician memberships when the owner changes (re-claiming your own machine keeps your techs); the new owner re-invites whom they trust. A local transfer the cloud never heard about needs no special handling: the new owner mints a Link-to-cloud code and claims.
 
 **Technicians.** The owner opens `/machines/{short}/people`, invites by email (this machine or all machines owned at acceptance time), and passes on the invitation link (valid 7 days). There is no cloud mailer yet, so the link is shown, not emailed. The invitee signs in with a Google account whose email matches, and opens the link.
 

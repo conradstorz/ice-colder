@@ -181,3 +181,14 @@ async def test_put_ui_bundle_400_and_error_are_false(identity):
         raise httpx.ReadTimeout("slow", request=request)
 
     assert await _uplink(boom, identity).put_ui_bundle("a", b"x") is False
+
+
+async def test_last_status_tracks_the_latest_response(identity):
+    statuses = iter([401, 204])
+    uplink = _uplink(lambda request: httpx.Response(next(statuses)), identity)
+    assert uplink.last_status is None
+    assert await uplink.delete_claim_code() is False
+    assert uplink.last_status == 401
+    assert await uplink.delete_claim_code() is True
+    assert uplink.last_status == 204
+    await uplink.aclose()

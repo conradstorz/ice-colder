@@ -178,7 +178,7 @@ def claim(cloud: TestClient, signer: Signer, account: Account) -> None:
 
 
 def select(cloud: TestClient, signer: Signer) -> None:
-    r = cloud.post(f"/fleet/select/{short(signer)}")
+    r = cloud.post(f"/fleet/select/{short(signer)}", headers={"HX-Request": "true"})
     assert r.status_code == 303 and r.headers["location"] == "/"
 
 

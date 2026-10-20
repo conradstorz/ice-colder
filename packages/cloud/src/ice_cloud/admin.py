@@ -84,8 +84,9 @@ async def admin_page(request: Request, account: Account = Depends(require_admin)
                 "last_seen": m.last_seen_at.astimezone().strftime("%Y-%m-%d %H:%M:%S"),
                 "claim_open": bool(
                     m.claim_code_hash
-                    and m.claim_code_expires_at
-                    and m.claim_code_expires_at > now
+                    and (
+                        m.claim_code_expires_at is None or m.claim_code_expires_at > now
+                    )
                 ),
                 "claimed": m.owner_id is not None,
             }
