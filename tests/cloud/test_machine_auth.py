@@ -86,7 +86,11 @@ def test_register_twice_updates_label_and_stays_unclaimed(cloud, signer):
     assert row.label == "second" and row.owner_id is None
     body = f'{{"public_key_b64": "{signer.public_key_b64}", "label": "third"}}'
     r = signed(cloud, signer, "POST", "/api/v1/machines/register", body.encode())
-    assert r.status_code == 200 and r.json() == {"fingerprint": fp, "claimed": False}
+    assert r.status_code == 200 and r.json() == {
+        "fingerprint": fp,
+        "claimed": False,
+        "alerts_handled": False,
+    }
 
 
 def test_report_after_register_moves_last_seen(cloud, known, clock):
