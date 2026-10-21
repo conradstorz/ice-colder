@@ -129,6 +129,11 @@ class DispenseCycle:
         self._request_id: str | None = None
         self._mechanism: str | None = None
         self._timeout_task = None
+        self._settled = False
+
+    @property
+    def settled(self) -> bool:
+        return self._settled
 
     @property
     def request_id(self) -> str | None:
@@ -305,6 +310,12 @@ class DispenseCycle:
         """
         state = data.get("state", "")
         slot = data.get("slot", "?")
+        if self._settled:
+            logger.warning(
+                f"Ignoring dispenser report '{state}' for slot {slot}: "
+                "this dispense cycle is already settled"
+            )
+            return None
         try:
             outcome = DispenserOutcome(state)
         except ValueError:
@@ -471,3 +482,11 @@ class DispenseCycle:
         if self._timeout_task is not None and not self._timeout_task.done():
             self._timeout_task.cancel()
         self._timeout_task = None
+
+    def settle(self) -> None:
+        """Mark the cycle terminal and cancel the timeout. Called
+        synchronously on the first accepted terminal report, before any
+        await, so a duplicate or late report arriving while the sale
+        write is suspended is ignored by `classify`."""
+        self._settled = True
+        self.cancel()

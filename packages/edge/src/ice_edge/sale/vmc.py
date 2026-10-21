@@ -346,9 +346,9 @@ class VMC:
         product_name = (
             self.selected_product.name if self.selected_product else "Unknown"
         )
-        # Cancel the timeout before the await in record(): the customer already has
+        # Settle (cancels the timeout) before the await in record(): the customer already has
         # the product, so a timeout firing during that suspension must not fail it.
-        self._cycle.cancel()
+        self._cycle.settle()
         self._journal.dispense_success(slot, product_name)
         if self._sale is not None and self._sale.is_test:
             # is_test lives on the sale, not the lease, so a lease release cannot flip it
@@ -372,7 +372,7 @@ class VMC:
         product_name = (
             self.selected_product.name if self.selected_product else "Unknown"
         )
-        self._cycle.cancel()
+        self._cycle.settle()
         code = report.fault
         sku = self.selected_product.sku if self.selected_product else None
         self._journal.dispense_failed(slot, product_name, report.outcome.value, code)

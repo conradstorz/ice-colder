@@ -571,3 +571,18 @@ async def test_record_raises_pay104_and_sets_transaction_uncertain():
     assert faults.raised == [
         (FaultCode.PAY_104, None, "sku=ICE-1 price=$2.00 unrecorded")
     ]
+
+
+def test_settled_cycle_classifies_every_report_as_none(tmp_path, caplog):
+    profile = _profile_for(tmp_path, ICE)
+    cycle = _started_cycle(tmp_path, ICE, profile)
+    report = {"state": "complete", "slot": ICE.slot, "request_id": cycle.request_id}
+    assert cycle.settled is False
+    assert cycle.classify(report) is not None
+
+    cycle.settle()
+
+    assert cycle.settled is True
+    assert cycle.classify(report) is None
+    assert cycle.classify({**report, "state": "jam"}) is None
+    assert any("settled" in r.message for r in caplog.records)

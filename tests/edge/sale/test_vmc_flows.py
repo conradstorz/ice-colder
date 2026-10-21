@@ -8,6 +8,7 @@ import asyncio
 import json
 import sqlite3
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -4018,3 +4019,73 @@ async def test_exact_change_vend_arms_no_session_timer():
 
     assert vmc.state == "idle"
     assert "session_timeout" not in {c.label for c in runner.scheduled}
+
+
+class _GatedRecorder:
+    """Recorder whose `record_sale` blocks (in the worker thread) until
+    released, so the `await record()` suspension in the success path is
+    observable from the test."""
+
+    def __init__(self):
+        self.events: list[tuple] = []
+        self.sales: list[tuple] = []
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def record(self, event_type, value=1.0, metadata=None):
+        self.events.append((event_type, value, metadata))
+
+    def record_sale(self, sku, name, slot, price, methods, ts=None):
+        self.entered.set()
+        assert self.release.wait(5), "test never released the sale write"
+        self.sales.append((sku, name, slot, price, methods))
+
+
+async def _second_report_during_sale_write(second_state: str):
+    """Start a vend, deliver `complete`, and while its sale write is
+    suspended deliver a second report with `second_state` (same slot and
+    request_id). Returns (vmc, recorder) after the write is released."""
+    machine = make_machine(price=2.50)
+    vmc = machine.vmc
+    machine.attach_to_loop(asyncio.get_running_loop())
+    recorder = _GatedRecorder()
+    machine.set_event_recorder(recorder)
+    vmc.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    vmc.credit_escrow = 2.50
+    vmc.process_payment()
+    assert vmc.state == "dispensing"
+
+    slot = vmc.products[0].slot
+    first = asyncio.create_task(
+        vmc.on_dispenser_event(
+            "hardware/dispenser", {"slot": slot, "state": "complete"}
+        )
+    )
+    assert await asyncio.to_thread(recorder.entered.wait, 5)
+    # The first report is now suspended inside the sale write.
+    await vmc.on_dispenser_event(
+        "hardware/dispenser", {"slot": slot, "state": second_state}
+    )
+    recorder.release.set()
+    await first
+    await settle()
+    return vmc, recorder
+
+
+async def test_duplicate_complete_during_sale_write_records_one_sale():
+    vmc, recorder = await _second_report_during_sale_write("complete")
+
+    assert len(recorder.sales) == 1
+    assert vmc.state == "idle"
+    assert vmc.credit_escrow == 0.0
+
+
+async def test_late_jam_during_sale_write_does_not_restore_credit():
+    vmc, recorder = await _second_report_during_sale_write("jam")
+
+    assert len(recorder.sales) == 1
+    assert vmc.state == "idle"
+    assert vmc.credit_escrow == 0.0
+    assert not vmc.faults.lockouts
+    assert not [e for e in recorder.events if e[0] == "vend_failed"]
