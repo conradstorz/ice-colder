@@ -86,6 +86,9 @@ Cloud C1, C2 → the rest.
   settle a new sale on the same slot; `classify` reads `sale.product.slot` from the live
   catalog object, so editing a slot mid-dispense turns the terminal report into a slot
   mismatch and a timeout.
+  If the dispense timeout wins first, a genuine `complete` arriving afterwards is
+  ignored (credit restored though product may be out) -- pre-existing, documented, not
+  changed here.
 
 ## R. Edge runtime resilience
 

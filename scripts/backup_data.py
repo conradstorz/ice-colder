@@ -18,6 +18,7 @@ import argparse
 import hashlib
 import io
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -79,7 +80,7 @@ def build_archive(
 ) -> Path:
     """Create ``dest/<label>-<UTC stamp>.tar.gz`` atomically and return its path."""
     now = now or datetime.now(UTC)
-    dest.mkdir(parents=True, exist_ok=True)
+    dest.mkdir(parents=True, exist_ok=True, mode=0o700)
     final = dest / f"{label}-{now.strftime(STAMP_FORMAT)}.tar.gz"
     with tempfile.TemporaryDirectory(dir=dest, prefix=".backup-") as work_name:
         work = Path(work_name)
@@ -95,7 +96,13 @@ def build_archive(
             if not path.exists():
                 log(f"skip {path}: does not exist")
                 continue
-            members.append(path)
+            # Copy first, then hash and archive the copy, so the manifest and
+            # the archived bytes cannot disagree if the source is rewritten.
+            copy = work / path.name
+            if copy.exists():
+                raise ValueError(f"duplicate member names: {path.name}")
+            shutil.copyfile(path, copy)
+            members.append(copy)
             log(f"include {path}")
         manifest = {
             "created": now.strftime(STAMP_FORMAT),
@@ -117,6 +124,7 @@ def build_archive(
             tar.addfile(info, io.BytesIO(data))
             for member in members:
                 tar.add(member, arcname=member.name)
+        os.chmod(tmp_archive, 0o600)
         tmp_archive.replace(final)
     log(f"wrote {final}")
     return final
@@ -160,7 +168,7 @@ def prune(dest: Path, label: str, keep: int) -> list[Path]:
     archives = sorted(p for p in dest.iterdir() if pattern.match(p.name))
     removed = archives[: max(len(archives) - keep, 0)]
     for old in removed:
-        old.unlink()
+        old.unlink(missing_ok=True)
         log(f"pruned {old}")
     return removed
 
@@ -181,6 +189,16 @@ def verify(archive: Path) -> bool:
             manifest = json.load(tar.extractfile(MANIFEST))
             for entry in manifest["members"]:
                 name = entry["name"]
+                if (
+                    not isinstance(name, str)
+                    or not name
+                    or Path(name).name != name
+                    or name in (".", "..")
+                    or "/" in name
+                    or "\\" in name
+                ):
+                    log(f"FAIL unsafe member name {name!r}")
+                    return False
                 if name not in names:
                     log(f"FAIL {name}: missing from archive")
                     ok = False
@@ -222,6 +240,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    os.umask(0o077)
     args = parse_args(argv)
     try:
         if args.verify is not None:
@@ -229,7 +248,7 @@ def main(argv: list[str] | None = None) -> int:
         remove_stale_workdirs(args.dest)
         if args.min_age_hours > 0:
             age = newest_age_hours(args.dest, args.label)
-            if age is not None and age < args.min_age_hours:
+            if age is not None and 0 <= age < args.min_age_hours:
                 log(
                     f"skip: newest {args.label} archive is {age:.1f} h old (< {args.min_age_hours} h)"
                 )

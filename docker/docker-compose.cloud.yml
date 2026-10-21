@@ -41,7 +41,7 @@ services:
     restart: unless-stopped
 
   backup:
-    # Daily verified archive of cloud.db into cloud_data/backups (docs/backups.md).
+    # Verified archive (polled every 6 h, written at most once per 20 h) of cloud.db into cloud_data/backups (docs/backups.md).
     # Off-host copies are the operator's job.
     image: ghcr.io/conradstorz/ice-colder-cloud:latest
     build:
@@ -62,7 +62,7 @@ services:
         while true; do
         python scripts/backup_data.py --label cloud --dest /app/cloud_data/backups --keep 30 --min-age-hours 20
         --sqlite /app/cloud_data/cloud.db;
-        sleep 86400;
+        sleep 21600;
         done
     volumes:
       - ../cloud_data:/app/cloud_data

@@ -5,6 +5,7 @@ import importlib.util
 import io
 import os
 import json
+import pytest
 import sqlite3
 import tarfile
 from datetime import UTC, datetime, timedelta
@@ -226,3 +227,60 @@ def test_verify_catches_corrupt_db_with_matching_manifest(tmp_path):
             info.size = len(data)
             dst.addfile(info, io.BytesIO(data))
     assert backup.main(["--verify", str(bad)]) == 1
+
+
+@pytest.fixture(autouse=True)
+def _restore_umask():
+    previous = os.umask(0o022)
+    os.umask(previous)
+    yield
+    os.umask(previous)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes only")
+def test_archive_and_dest_are_private(tmp_path):
+    source = tmp_path / "access.json"
+    source.write_text("{}")
+    dest = tmp_path / "out"
+    assert backup.main(["--dest", str(dest), "--file", str(source)]) == 0
+    (archive,) = dest.glob("backup-*.tar.gz")
+    assert archive.stat().st_mode & 0o777 == 0o600
+    assert dest.stat().st_mode & 0o777 == 0o700
+
+
+def test_verify_rejects_path_traversal_member_names(tmp_path):
+    payload = b"x"
+    for name in ("../evil.txt", "sub/evil.txt", "..\evil.txt", ".."):
+        manifest = {
+            "members": [
+                {
+                    "name": name,
+                    "size": len(payload),
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                }
+            ]
+        }
+        bad = tmp_path / "bad.tar.gz"
+        with tarfile.open(bad, "w:gz") as dst:
+            for member_name, data in (
+                ("MANIFEST.json", json.dumps(manifest).encode()),
+                (name, payload),
+            ):
+                info = tarfile.TarInfo(member_name)
+                info.size = len(data)
+                dst.addfile(info, io.BytesIO(data))
+        assert backup.main(["--verify", str(bad)]) == 1
+        assert not (tmp_path / "evil.txt").exists()
+
+
+def test_future_dated_archive_does_not_suppress_backup(tmp_path):
+    source = tmp_path / "f.json"
+    source.write_text("{}")
+    dest = tmp_path / "out"
+    base = datetime(2026, 10, 1, tzinfo=UTC)
+    first = backup.build_archive(dest, "edge", [], [source], now=base)
+    _age(first, -48)
+    args = ["--dest", str(dest), "--label", "edge", "--file", str(source)]
+    args += ["--min-age-hours", "20"]
+    assert backup.main(args) == 0
+    assert len(list(dest.glob("edge-*.tar.gz"))) == 2

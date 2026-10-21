@@ -41,7 +41,7 @@ services:
     restart: unless-stopped
 
   backup:
-    # Daily verified archive of the irreplaceable files in ./data into ./backups
+    # Verified archive (polled every 6 h, written at most once per 20 h) of the irreplaceable files in ./data into ./backups
     # (see docs/backups.md). session.json is deliberately not named: restoring
     # crash evidence would resurrect a stale PAY-104. Off-host copies are the
     # operator's job. The script only ever reads the source (databases are
@@ -70,7 +70,7 @@ services:
         --file /app/data/cloud_identity.json
         --file /app/data/config.json
         --file /app/data/dispensers.toml;
-        sleep 86400;
+        sleep 21600;
         done
     volumes:
       - ./data:/app/data
