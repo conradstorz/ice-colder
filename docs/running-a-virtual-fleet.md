@@ -58,7 +58,7 @@ export ICE_FLEET_BASE_IMAGE=ice-colder:dev        # omit to use the published la
 docker compose -f docker/docker-compose.fleet.yml up -d --build --scale machine=5
 ```
 
-Compose refuses to start without `ICE_CLOUD_URL`. Five containers come up, named
+Compose refuses to start without `ICE_CLOUD_URL`. Note that `docker compose -f docker/<file>.yml` takes `docker/` as its project directory and does **not** read the repository root `.env`, so a value there is ignored unless you also pass `--env-file .env`; exporting the variable, as above, always works. Five containers come up, named
 `ice_fleet-machine-1` to `ice_fleet-machine-5`, each with its own anonymous data volume and
 therefore its own identity. Every machine's `machine_id` (the label the cloud shows next to
 the fingerprint) defaults to its container hostname, a 12-character id, so scaling needs no

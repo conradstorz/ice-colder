@@ -39,7 +39,7 @@ With Docker: copy `.env.example` to `.env`, fill the `ICE_CLOUD_*` block, then `
 2. Add the authorized redirect URI `{ICE_CLOUD_PUBLIC_URL}/auth/google/callback`, exactly (scheme, host, port, no trailing slash), for example `https://fleet.example.com/auth/google/callback`.
 3. Put the client id and secret in `ICE_CLOUD_GOOGLE_CLIENT_ID` / `ICE_CLOUD_GOOGLE_CLIENT_SECRET` and restart.
 
-The flow is authorization code with PKCE; the ID token is verified (signature, issuer, audience, expiry, nonce) and the email must be verified. The first sign-in creates the account; anyone with a Google account can sign up, and then claim a machine or accept an invitation. Sessions last 30 days idle, 90 days absolute. Provider code is in `ice_cloud.oidc_google`, the protocol in `ice_cloud.oidc`, sessions and dependencies in `ice_cloud.auth`.
+The sign-in link carries `hx-boost="false"`: it leaves the site, and inside the shell's boosted body htmx would otherwise fetch it by XHR, follow the redirect to Google, fail CORS and silently stay on `/login` (`tests/cloud/test_auth.py` pins this). Any other link to an external origin needs the same opt-out. The flow is authorization code with PKCE; the ID token is verified (signature, issuer, audience, expiry, nonce) and the email must be verified. The first sign-in creates the account; anyone with a Google account can sign up, and then claim a machine or accept an invitation. Sessions last 30 days idle, 90 days absolute. Provider code is in `ice_cloud.oidc_google`, the protocol in `ice_cloud.oidc`, sessions and dependencies in `ice_cloud.auth`.
 
 ## Uploaded UI bundles
 
@@ -56,6 +56,8 @@ The deep link `/m/{short}` selects the machine and then redirects to `/fleet`; i
 ## Reverse proxy
 
 The server speaks plain HTTP. Terminate HTTPS in a reverse proxy (Traefik, Caddy, nginx) in front of `127.0.0.1:26124`; session cookies are `Secure`, so sign-in does not work over http except with `ICE_CLOUD_INSECURE_COOKIES=1`.
+
+The reference deployment (Caddy on a DigitalOcean droplet, `docker/docker-compose.cloud.proxy.yml` and `docker/Caddyfile`, host hardening, update and rebuild procedures) is written up in `docs/deploying-the-cloud-server.md`.
 
 - **No path prefix.** Machines sign the request path as the cloud sees it (`request.url.path`), and the portal templates use root-absolute URLs. Serve the cloud at the root of its host, or strip any prefix at the proxy before forwarding. A prefix left in place makes every machine signature fail (401).
 - **Pass the real client address.** The claim back-off is keyed on the client IP. Behind a proxy that address must reach the app as the connection peer. uvicorn honours `X-Forwarded-For` from loopback peers by default, so a proxy on the same host works as is. When the proxy is not on loopback (for example a Docker bridge address), uvicorn ignores the header and every claimant shares one back-off bucket (one attacker can lock out legitimate claims, never bypass the check): set `FORWARDED_ALLOW_IPS` (uvicorn `--forwarded-allow-ips`) to the proxy's address.
@@ -112,5 +114,7 @@ A machine's identity is its key. To rotate it, delete `data/cloud_identity.json`
 ## Troubleshooting
 
 - Server exits at start: read stderr; it names the missing or short `ICE_CLOUD_SESSION_KEY` or an unpaired Google id/secret.
+- Clicking Sign in with Google stays on `/login` with no error, and the log shows `GET /auth/google/start` but never `/auth/google/callback`: the link is being hx-boosted (see Google sign-in). A `redirect_uri_mismatch` page from Google instead means the client has no authorized redirect URI, or not exactly `{ICE_CLOUD_PUBLIC_URL}/auth/google/callback`.
+- `PermissionError` on `cloud.db` at start under `docker-compose.cloud.proxy.yml`: the container runs as uid 1000, so `chown -R 1000:1000` the host `cloud_data` directory.
 - Machine gets 401 on every request: clock skew over 300 s, a path prefix in front of the app, or a regenerated identity file.
 - Uploaded UI bundles render without `request` in their template context, by design.

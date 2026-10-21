@@ -55,7 +55,7 @@ Four tiers, each of which keeps working when the tier above it fails:
 | Field devices | Motors, valves, sensors, MDB payment devices | — (physical) |
 | Subsystem boards | ESP32s that own real-time I/O and local interlocks | `firmware/` (future), simulated by `ice_sims` |
 | Edge controller | Raspberry Pi: sale logic, ledger, faults, dashboard | `ice_edge` |
-| Cloud | Fleet monitoring portal | `ice_cloud` (dev-only stub) |
+| Cloud | Fleet monitoring portal | `ice_cloud` |
 
 Boards and the edge talk over **MQTT**; every command carries a `request_id` and is idempotent, so a retry
 never vends twice. Home Assistant may observe the bus but never controls the machine.
@@ -76,7 +76,7 @@ A `uv` workspace of layered packages; a package may only import packages below i
 | `packages/common` → `ice_common` | Config model, logging, MQTT client, task supervisor/lifecycle |
 | `packages/ui` → `ice_ui` | Jinja templates, static assets and view helpers shared by edge and cloud |
 | `packages/edge` → `ice_edge` | The vending machine controller itself (`uv run python -m ice_edge`) |
-| `packages/cloud` → `ice_cloud` | Fleet portal stub |
+| `packages/cloud` → `ice_cloud` | Fleet portal: machine identity, claims, Google sign-in, alerts |
 | `packages/sims` → `ice_sims` | Simulated ESP32 boards |
 
 → [CLAUDE.md — Layout](../CLAUDE.md#layout) (full target tree and mapping to the architecture) ·
@@ -206,11 +206,13 @@ edge ↔ screen contract is designed and planned.
 
 When `cloud.enabled` is set, the edge pushes a periodic `MachineReport` and its UI bundle to `ice_cloud`,
 which renders the machine's **own** dashboard templates read-only, with an Offline banner when reports stop.
-It is a dev-only, no-auth stub bound to localhost until auth and mTLS exist.
+Machines authenticate with an Ed25519 key per request, people with Google sign-in, and ownership is claimed with a code minted at the machine. The reference deployment runs at `https://vmc.ohr3023.org` behind Caddy.
 
 → [Cloud monitoring server](superpowers/specs/2026-10-13-cloud-monitoring-server-design.md) ·
 [Edge-cloud contract](contracts/edge-cloud/CONTRACT.md) ·
-[CLAUDE.md — Cloud](../CLAUDE.md#cloud-ice_cloud)
+[CLAUDE.md — Cloud](../CLAUDE.md#cloud-ice_cloud) ·
+[Deploying the cloud server](deploying-the-cloud-server.md) ·
+[Running a virtual fleet](running-a-virtual-fleet.md)
 
 ## Contracts between layers
 
