@@ -94,6 +94,12 @@ def test_login_page_offers_button_when_configured(settings, clock, provider, tmp
         r = c.get("/login?next=/fleet")
     assert "Sign in with Google" in r.text
     assert "/auth/google/start?next=/fleet" in r.text
+    # The link leaves the site for accounts.google.com. Inside the shell's
+    # hx-boost scope htmx would fetch it by XHR, follow the 303 to Google, fail
+    # CORS and silently stay on /login, so the anchor must opt out of boosting.
+    anchor = re.search(r'<a\s[^>]*href="/auth/google/start[^"]*"[^>]*>', r.text)
+    assert anchor is not None
+    assert 'hx-boost="false"' in anchor.group(0)
 
 
 def test_sign_in_creates_account_then_updates_name_on_return(cloud, probes):
