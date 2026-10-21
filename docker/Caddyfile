@@ -1,0 +1,3 @@
+{$ICE_CLOUD_DOMAIN} {
+	reverse_proxy cloud:26124
+}

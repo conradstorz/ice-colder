@@ -128,6 +128,7 @@ jobs:
       - run: docker compose --env-file .env.example -f docker-compose.yml config -q
       - run: docker compose --env-file .env.example -f docker/docker-compose.prod.yml config -q
       - run: docker compose --env-file .env.example -f docker/docker-compose.cloud.yml config -q
+      - run: ICE_CLOUD_DOMAIN=example.invalid docker compose --env-file .env.example -f docker/docker-compose.cloud.yml -f docker/docker-compose.cloud.proxy.yml config -q
       - run: ICE_CLOUD_URL=http://example.invalid docker compose --env-file .env.example -f docker/docker-compose.fleet.yml config -q
 
   image:

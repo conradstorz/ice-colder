@@ -1,0 +1,29 @@
+# HTTPS front for the cloud portal: Caddy terminates TLS (Let's Encrypt via
+# ICE_CLOUD_DOMAIN) and proxies to the cloud service on the compose network.
+# From the repository root, with ICE_CLOUD_DOMAIN set in .env:
+#   docker compose -f docker/docker-compose.cloud.yml -f docker/docker-compose.cloud.proxy.yml up -d
+services:
+  cloud:
+    environment:
+      # Caddy reaches the app from a bridge address, not loopback, so uvicorn
+      # must be told to trust its X-Forwarded-For (claim back-off keys on it).
+      - FORWARDED_ALLOW_IPS=*
+  caddy:
+    image: caddy:2-alpine
+    container_name: ice-cloud-caddy
+    environment:
+      - ICE_CLOUD_DOMAIN=${ICE_CLOUD_DOMAIN:?set ICE_CLOUD_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - cloud
+    restart: unless-stopped
+volumes:
+  caddy_data:
+  caddy_config:
