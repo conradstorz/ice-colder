@@ -250,7 +250,7 @@ def test_archive_and_dest_are_private(tmp_path):
 
 def test_verify_rejects_path_traversal_member_names(tmp_path):
     payload = b"x"
-    for name in ("../evil.txt", "sub/evil.txt", "..\evil.txt", ".."):
+    for name in ("../evil.txt", "sub/evil.txt", r"..\evil.txt", ".."):
         manifest = {
             "members": [
                 {

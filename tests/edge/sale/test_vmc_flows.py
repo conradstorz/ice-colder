@@ -4093,7 +4093,7 @@ async def test_late_jam_during_sale_write_does_not_restore_credit():
 
 async def _vend_held_in_sale_write(runner):
     """Start a vend on a fake-time machine, deliver `complete`, and return once
-    its sale write is suspended. Returns (machine, recorder, first, outcomes)."""
+    its sale write is suspended. Returns (machine, recorder, outcomes)."""
     machine = make_machine(price=2.50, tasks=runner)
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())

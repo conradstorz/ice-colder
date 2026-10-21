@@ -55,8 +55,8 @@ services:
       - harbor.kind=internal
     container_name: ice-colder-backup
     healthcheck:
-      # Unhealthy when the newest archive is older than 26 hours.
-      test: ["CMD-SHELL", "find /app/backups -name 'edge-*.tar.gz' -mmin -1560 | grep -q ."]
+      # Unhealthy when the newest archive is older than 30 hours.
+      test: ["CMD-SHELL", "find /app/backups -name 'edge-*.tar.gz' -mmin -1800 | grep -q ."]
       interval: 1h
       start_period: 10m
     command:

@@ -7,6 +7,7 @@ every 6 h and writes at most once per 20 h, so a container restart does not add 
 archive, a failed run is retried within 6 h, and with the compose defaults N archives
 means about N days. Archives are mode 0600 (they hold secrets such as the machine's
 private key); keep copies private.
+Archives written before the 0600 change are 0644, and Docker creates `backups/` (and `cloud_data/backups/`) with default permissions. After upgrading, run `chmod 700 backups` and `chmod 600 backups/*.tar.gz` by hand (cloud: `chmod 700 cloud_data/backups` and `chmod 600 cloud_data/backups/*.tar.gz`).
 
 | Where | Archives | Contents | Retention |
 |---|---|---|---|
@@ -22,7 +23,7 @@ WAL-mode database copied byte-for-byte can be inconsistent), and each snapshot m
 ## Telling that a backup failed
 
 Each `backup` service has a healthcheck that fails when the newest archive is older than
-26 hours. `docker ps` shows the service `unhealthy`; read `docker logs ice-colder-backup`
+30 hours. `docker ps` shows the service `unhealthy`; read `docker logs ice-colder-backup`
 (edge) or `docker logs ice-cloud-backup` (cloud) for the `FAILED:` line.
 
 ## Deliberately not backed up

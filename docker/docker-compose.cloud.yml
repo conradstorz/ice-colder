@@ -51,8 +51,8 @@ services:
       - com.centurylinklabs.watchtower.enable=true
     container_name: ice-cloud-backup
     healthcheck:
-      # Unhealthy when the newest archive is older than 26 hours.
-      test: ["CMD-SHELL", "find /app/cloud_data/backups -name 'cloud-*.tar.gz' -mmin -1560 | grep -q ."]
+      # Unhealthy when the newest archive is older than 30 hours.
+      test: ["CMD-SHELL", "find /app/cloud_data/backups -name 'cloud-*.tar.gz' -mmin -1800 | grep -q ."]
       interval: 1h
       start_period: 10m
     command:
