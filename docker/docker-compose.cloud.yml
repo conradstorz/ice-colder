@@ -3,15 +3,20 @@ name: ice_cloud
 # Cloud fleet portal (identity and tenancy spec 2026-10-19, section 8).
 # From the repository root, with ICE_CLOUD_* set in .env (see .env.example):
 #   docker compose -f docker/docker-compose.cloud.yml up --build
+# On a server, pull the image CI publishes on main instead of building:
+#   docker compose -f docker/docker-compose.cloud.yml pull && ... up -d
 # The container binds 0.0.0.0 so the port mapping can reach it; the host side
 # of the mapping stays on loopback. Put an HTTPS reverse proxy in front of
 # 127.0.0.1:26124 for anything beyond local development (packages/cloud/README.md).
 
 services:
   cloud:
+    image: ghcr.io/conradstorz/ice-colder-cloud:latest
     build:
       context: ..
       dockerfile: packages/cloud/Dockerfile
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
     container_name: ice-cloud
     environment:
       - ICE_CLOUD_HOST=0.0.0.0

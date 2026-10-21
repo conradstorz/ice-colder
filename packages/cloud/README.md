@@ -31,7 +31,7 @@ uv run python -m ice_cloud
 
 Without Google credentials nobody can sign in (the portal pages need a session), but machines can register and report. To sign in locally, set up the Google client below with `ICE_CLOUD_PUBLIC_URL=http://127.0.0.1:26124`.
 
-With Docker: copy `.env.example` to `.env`, fill the `ICE_CLOUD_*` block, then `docker compose -f docker/docker-compose.cloud.yml up --build`. The host port is bound to `127.0.0.1:26124`; the container binds `0.0.0.0` inside.
+With Docker: copy `.env.example` to `.env`, fill the `ICE_CLOUD_*` block, then `docker compose -f docker/docker-compose.cloud.yml up --build` (or `pull` then `up -d` to run the `ghcr.io/conradstorz/ice-colder-cloud:latest` image CI publishes on `main`). The host port is bound to `127.0.0.1:26124`; the container binds `0.0.0.0` inside.
 
 ## Google sign-in
 

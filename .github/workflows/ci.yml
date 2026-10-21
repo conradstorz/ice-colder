@@ -131,7 +131,8 @@ jobs:
       - run: ICE_CLOUD_URL=http://example.invalid docker compose --env-file .env.example -f docker/docker-compose.fleet.yml config -q
 
   image:
-    # PRs: prove the image builds. main: publish it for Watchtower on the sim host.
+    # PRs: prove both images build. main: publish them for Watchtower (edge on the
+    # sim host, cloud on the fleet server).
     needs: [lint, test, compose-config]
     runs-on: ubuntu-latest
     permissions:
@@ -151,6 +152,13 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+      - id: meta-cloud
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}-cloud
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=sha-
@@ -208,15 +216,21 @@ jobs:
           cat machine.log
           docker rm -f machine-smoke
           exit 1
-      # The cloud portal stub image (dev only, no auth). Built on every PR and
-      # never published. Its own Dockerfile.dockerignore (next to the Dockerfile)
-      # replaces the root .dockerignore, which excludes packages/cloud.
+      # The cloud portal image. PRs: prove it builds. main: publish it as
+      # ghcr.io/<repo>-cloud for the fleet server (amd64 only; it runs on a
+      # DigitalOcean droplet, never on the Pi). Its own Dockerfile.dockerignore
+      # (next to the Dockerfile) replaces the root .dockerignore, which excludes
+      # packages/cloud.
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: packages/cloud/Dockerfile
           platforms: linux/amd64
-          push: false
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: ${{ steps.meta-cloud.outputs.tags }}
+          labels: ${{ steps.meta-cloud.outputs.labels }}
+          cache-from: type=gha,scope=cloud
+          cache-to: type=gha,mode=max,scope=cloud
       - uses: docker/build-push-action@v6
         with:
           context: .
