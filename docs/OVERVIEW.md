@@ -235,12 +235,17 @@ drift-tested in CI.
 No physical boards exist yet. `ice_sims` simulates the vending, MDB and ice-maker boards on the real MQTT
 topics and contracts — including autonomous behaviour and injectable faults — so the whole stack runs
 without hardware. The ice-maker simulator announces itself to Home Assistant via MQTT discovery.
+`docker/machine/` packs the edge, the three simulators and a private broker into one container, so
+`docker compose -f docker/docker-compose.fleet.yml up --scale machine=N` stands up N virtual machines,
+each with its own cloud identity, to exercise the fleet portal.
 
 → [ESP32 simulators](superpowers/specs/2026-04-12-esp32-simulators-design.md) ·
 [Simulator fault injection](superpowers/specs/2026-04-19-simulator-fault-injection-design.md) ·
 [Dual hot-gas valves](superpowers/specs/2026-09-13-dual-hot-gas-valves-design.md) ·
 [Home Assistant MQTT discovery](superpowers/specs/2026-04-14-ha-mqtt-discovery-ice-maker-design.md) ·
-[IM600XL vending simulator](superpowers/specs/2026-10-17-im600xl-simulator-design.md)
+[IM600XL vending simulator](superpowers/specs/2026-10-17-im600xl-simulator-design.md) ·
+[Simulated machine container](superpowers/specs/2026-10-19-simulated-machine-container-design.md) ·
+[Running a virtual fleet](running-a-virtual-fleet.md)
 
 ## Running and deploying
 
@@ -248,6 +253,8 @@ without hardware. The ice-maker simulator announces itself to Home Assistant via
 uv sync
 uv run python -m ice_edge          # dashboard on http://localhost:26123
 docker compose up --build          # VMC + simulators + mosquitto
+ICE_CLOUD_URL=https://fleet.example.com docker compose -f docker/docker-compose.fleet.yml up -d --scale machine=5
+                                   # N virtual machines reporting to the cloud portal
 ```
 
 CI (ruff, pytest, headless-Chrome browser tests) runs on every push; `main` publishes
@@ -328,3 +335,6 @@ Not yet built: real firmware and hardware, real payment gateways, CCTV, and a pr
 | 2026-10-13 | [Layer contracts](superpowers/specs/2026-10-13-layer-contracts-design.md) |
 | 2026-10-14 | [Customer screen contract](superpowers/specs/2026-10-14-customer-screen-contract-design.md) |
 | 2026-10-17 | [IM600XL simulator](superpowers/specs/2026-10-17-im600xl-simulator-design.md) |
+| 2026-10-19 | [Cloud identity and tenancy](superpowers/specs/2026-10-19-cloud-identity-tenancy-design.md) |
+| 2026-10-19 | [Cloud alert forwarding](superpowers/specs/2026-10-19-cloud-alert-forwarding-design.md) |
+| 2026-10-19 | [Simulated machine container](superpowers/specs/2026-10-19-simulated-machine-container-design.md) |

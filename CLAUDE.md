@@ -390,9 +390,50 @@ on `main`, publishes the image to `ghcr.io/conradstorz/ice-colder` (`latest`
 and `sha-<commit>`). Compose services reference that image (with `build: .`
 kept for local `--build`) and carry the Watchtower enable label, so the
 simulation host updates itself; `docker compose pull` then `up -d` forces it.
-A `compose-config` CI job runs `docker compose config` against both compose
-files with `.env.example` to catch YAML/interpolation errors before `image`
-builds.
+A `compose-config` CI job runs `docker compose config` against every compose
+file (root, `docker/docker-compose.prod.yml`, the two cloud files, and the
+fleet file with a dummy `ICE_CLOUD_URL`) with `.env.example` to catch
+YAML/interpolation errors before `image` builds.
+
+**Simulated machine image (`docker/machine/`, spec
+`docs/superpowers/specs/2026-10-19-simulated-machine-container-design.md`,
+walkthrough `docs/running-a-virtual-fleet.md`, reference `docker/machine/README.md`).**
+One container that imitates a whole deployed machine, for testing the cloud
+portal against a fleet without hardware. `docker/machine/Dockerfile` layers
+mosquitto and a stdlib Python launcher (`docker/machine/launcher.py`) on the
+edge image (`ARG BASE_IMAGE`, default `ghcr.io/conradstorz/ice-colder:latest`,
+set from `ICE_FLEET_BASE_IMAGE` by compose; build context is `docker/machine`,
+so the root `.dockerignore` does not apply). The launcher supervises mosquitto
+(anonymous, bound to the container's loopback only, `docker/machine/mosquitto.conf`),
+the three `ice_sims` boards and `ice_edge`: a dead sim or edge is respawned after
+5 s (a failed respawn is logged and retried), a mosquitto exit is fatal and stops
+everything with exit 1, and SIGTERM/SIGINT stop every child within
+`stop_grace_period`.
+`docker/docker-compose.fleet.yml` (project `ice_fleet`, one service `machine`,
+`--scale machine=N`) requires `ICE_CLOUD_URL` and accepts `ICE_COLDER_MACHINE_ID`
+(default: the container hostname) and `ICE_COLDER_REPORT_INTERVAL` (10-3600,
+default 60). On first start the launcher seeds `config.json` (defaults plus
+three sample products wired to the vending board's buttons) and
+`dispensers.toml` (from `ice_edge.vend.dispensers_doc.render_example()`) into an
+anonymous `/app/data` volume; on every start it re-applies `machine_id`,
+`cloud.enabled`/`url`/`report_interval_seconds` and `mqtt.broker_host=127.0.0.1`
+(clearing `mqtt.username`/`password`) and never touches `cloud_identity.json`
+or `access.json`, so a machine's fingerprint and owner survive
+`docker stop`/`start` and in-place recreates but not `compose down` or a
+scale-down (fresh anonymous volumes, orphans left for `docker volume prune`).
+Non-goals by design: no scenario knobs or files (the sims' random behaviour is
+the scenario), no auto-claim (claim at the cloud's `/claim` with the setup code
+and fingerprint the container logs), ephemeral dashboard ports only, no
+Watchtower label, no published fleet image, amd64 only. Tests:
+`tests/docker/test_machine_launcher.py` loads the launcher by file path and
+overrides `event_loop_policy` with the proactor policy on Windows, because
+`tests/firmware/conftest.py` installs the selector policy session-wide and that
+loop cannot spawn subprocesses. CI: the `image` job's "Smoke-test the simulated
+machine image" step builds `docker/machine` on the just-built smoke image with
+`docker buildx build --builder default --load` (the setup-buildx container
+builder cannot see daemon-local images) and polls the container log for up to
+60 s for the six boot lines (mosquitto listening, the three sims connected, the
+edge's main loop, setup mode); `compose-config` parses the fleet file.
 
 Both the root `docker-compose.yml` and `docker/docker-compose.prod.yml`
 require a `.env` file (`cp .env.example .env`) and run a one-shot

@@ -169,5 +169,6 @@ All Python work goes through `uv`. Firmware work goes through PlatformIO from th
 | Firmware host tests | `pio test -e native` in either firmware folder |
 | Flash and provision a board | `uv run python scripts/flash_board.py vending` or `mdb` |
 | Run the cloud portal | `uv run python -m ice_cloud` |
+| Run N virtual machines against a cloud portal | `ICE_CLOUD_URL=… docker compose -f docker/docker-compose.fleet.yml up -d --build --scale machine=N` ([Running a virtual fleet](running-a-virtual-fleet.md)) |
 
 The dashboard is at `http://localhost:26123` and the cloud portal at `http://127.0.0.1:26124`. Copy `.env.example` to `.env` and set a broker password before starting Docker.

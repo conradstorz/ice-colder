@@ -4,11 +4,11 @@ One Docker image that imitates a complete, deployed vending machine: the VMC (`i
 
 ## Run
 
-From the repository root, with `ICE_CLOUD_URL` set to the cloud server's base URL (required: compose refuses to start without it, and a bare `docker run` exits 1):
+From the repository root, with `ICE_CLOUD_URL` exported (or passed with `--env-file .env`; the `-f docker/...` form does not read the root `.env` by itself) and set to the cloud server's base URL (required: compose refuses to start without it, and a bare `docker run` exits 1):
 
 ```
 docker compose -f docker/docker-compose.fleet.yml up -d --build --scale machine=5
-docker compose -f docker/docker-compose.fleet.yml logs | grep -i "setup code"
+docker compose -f docker/docker-compose.fleet.yml logs | grep -iE "setup code|fingerprint"
 docker stop ice_fleet-machine-3
 ```
 
@@ -16,7 +16,7 @@ Optional environment: `ICE_COLDER_MACHINE_ID` (default: the container hostname),
 
 ## Claiming
 
-Nothing claims a machine for you. Each machine logs its setup code, which is also its cloud claim code. Find the codes with the `grep` above, then enter one at the cloud server's `/claim` page. Unclaimed machines are themselves a useful test of the cloud's unclaimed views.
+Nothing claims a machine for you. Each machine logs its short fingerprint once at uplink start and its setup code, which is also its cloud claim code, when the dashboard enters setup mode. Find both with the `grep` above, then enter them at the cloud server's `/claim` page. Unclaimed machines are themselves a useful test of the cloud's unclaimed views.
 
 ## What a restart keeps and what it overwrites
 

@@ -40,6 +40,17 @@ docker compose up -d
 ```
 The real machine should pin a `sha-<commit>` tag instead of `latest`.
 
+**Virtual fleet (testing the cloud portal):** `docker/docker-compose.fleet.yml`
+runs N self-contained simulated machines (VMC, three simulated boards and a
+private broker in one container each), every one with its own identity,
+reporting to the cloud at `ICE_CLOUD_URL`:
+```
+export ICE_CLOUD_URL=https://fleet.example.com
+docker compose -f docker/docker-compose.fleet.yml up -d --build --scale machine=5
+```
+Walkthrough (build, claim, offline tests, cleanup):
+[docs/running-a-virtual-fleet.md](docs/running-a-virtual-fleet.md).
+
 ### Reusable async helpers
 
 The startup lifecycle helpers can be imported without loading the VMC,

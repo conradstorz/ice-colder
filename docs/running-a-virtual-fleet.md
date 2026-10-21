@@ -97,14 +97,16 @@ A machine appears in the cloud as soon as it registers, but it belongs to nobody
 claimed with the code minted at the machine. For a fresh machine that code is the setup code,
 the same one that unlocks the dashboard's setup wizard.
 
-The code is in the log:
+Both are in the log. The edge logs the fingerprint once at uplink start (`Cloud uplink
+enabled, reporting to ...; machine fingerprint xxxx-xxxx-xxxx-xxxx`) and the setup code when
+the dashboard enters setup mode, so one grep collects both for every replica:
 
 ```
-docker compose -f docker/docker-compose.fleet.yml logs | grep -i "setup code"
+docker compose -f docker/docker-compose.fleet.yml logs | grep -iE "setup code|fingerprint"
 ```
 
-The fingerprint is on the machine's own `/setup` page. Each replica's dashboard is published
-on an ephemeral host port; find it with the replica's index:
+The fingerprint is also on the machine's own `/setup` page. Each replica's dashboard is
+published on an ephemeral host port; find it with the replica's index:
 
 ```
 docker compose -f docker/docker-compose.fleet.yml port --index 3 machine 26123
@@ -212,7 +214,7 @@ docker compose -f docker/docker-compose.fleet.yml start
 
 | Symptom | Cause and fix |
 |---|---|
-| compose exits immediately: `set ICE_CLOUD_URL to the cloud server's base URL` | export `ICE_CLOUD_URL` before `up` |
+| compose exits immediately: `set ICE_CLOUD_URL to the cloud server's base URL` | export `ICE_CLOUD_URL` before `up`, or pass `--env-file .env`; the `-f docker/...` form does not read the root `.env` by itself |
 | a container exits with `[launcher] error: ICE_COLDER_REPORT_INTERVAL ...` | the value must be an integer from 10 to 3600 |
 | `pull access denied for ice-colder` during build | `ICE_FLEET_BASE_IMAGE` names an image that does not exist on the Docker host; build it first (step 1) |
 | machines boot but never appear in the cloud | the uplink warnings in the log say why: wrong URL, TLS, a path prefix at the proxy (signatures then fail with 401), or the base image predates the registration flow |
