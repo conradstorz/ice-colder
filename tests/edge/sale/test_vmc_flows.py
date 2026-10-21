@@ -4089,3 +4089,83 @@ async def test_late_jam_during_sale_write_does_not_restore_credit():
     assert vmc.credit_escrow == 0.0
     assert not vmc.faults.lockouts
     assert not [e for e in recorder.events if e[0] == "vend_failed"]
+
+
+async def _vend_held_in_sale_write(runner):
+    """Start a vend on a fake-time machine, deliver `complete`, and return once
+    its sale write is suspended. Returns (machine, recorder, first, outcomes)."""
+    machine = make_machine(price=2.50, tasks=runner)
+    vmc = machine.vmc
+    machine.attach_to_loop(asyncio.get_running_loop())
+    recorder = _GatedRecorder()
+    machine.set_event_recorder(recorder)
+    outcomes: list[str] = []
+    vmc.subscribe_sale_settled(lambda sale, outcome, code: outcomes.append(outcome))
+    vmc.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    vmc.credit_escrow = 2.50
+    return machine, recorder, outcomes
+
+
+async def test_dispense_timeout_during_sale_write_is_ignored():
+    runner = FakeTaskRunner()
+    machine, recorder, outcomes = await _vend_held_in_sale_write(runner)
+    vmc = machine.vmc
+    vmc.process_payment()
+    await settle()
+    assert vmc.state == "dispensing"
+
+    slot = vmc.products[0].slot
+    first = asyncio.create_task(
+        vmc.on_dispenser_event(
+            "hardware/dispenser", {"slot": slot, "state": "complete"}
+        )
+    )
+    # The timer fires before the report task first runs (so it is still live);
+    # its queued failure task then resolves while the report holds the write.
+    runner.fire("dispense_timeout")
+    assert await asyncio.to_thread(recorder.entered.wait, 5)
+    await settle()
+    recorder.release.set()
+    await first
+    await settle()
+
+    assert len(recorder.sales) == 1
+    assert vmc.credit_escrow == 0.0
+    assert vmc.state == "idle"
+    assert not vmc.faults.lockouts
+    assert not vmc.faults.has("PAY-102")
+    assert outcomes == ["dispensed"]
+
+
+async def test_dispatch_failure_during_sale_write_is_ignored():
+    runner = FakeTaskRunner()
+    machine, recorder, outcomes = await _vend_held_in_sale_write(runner)
+    vmc = machine.vmc
+    dispatcher = machine.command_dispatcher
+    dispatcher.fail_with = CommandTimeout("vending", "dispense")
+    dispatcher.gate = asyncio.Event()
+    gate = dispatcher.gate
+    vmc.process_payment()
+    await settle()
+    assert vmc.state == "dispensing"
+
+    slot = vmc.products[0].slot
+    first = asyncio.create_task(
+        vmc.on_dispenser_event(
+            "hardware/dispenser", {"slot": slot, "state": "complete"}
+        )
+    )
+    assert await asyncio.to_thread(recorder.entered.wait, 5)
+    gate.set()  # the held dispatch now fails with no_ack mid-write
+    await settle()
+    recorder.release.set()
+    await first
+    await settle()
+
+    assert len(recorder.sales) == 1
+    assert vmc.credit_escrow == 0.0
+    assert vmc.state == "idle"
+    assert not vmc.faults.lockouts
+    assert not vmc.faults.has("PAY-102")
+    assert outcomes == ["dispensed"]

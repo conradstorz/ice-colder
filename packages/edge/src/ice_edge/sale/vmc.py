@@ -293,11 +293,12 @@ class VMC:
         """
         # Identity guard: a late failure from an earlier sale's dispatch must not
         # cancel, fault or refund the sale now dispensing. The state check covers a
-        # sale that already settled through the hardware report.
+        # sale that already settled through the hardware report (`cycle.settled`
+        # covers the window while its sale write is still awaited).
         if cycle is not self._cycle:
             self._journal.late_failure_ignored(code, outcome)
             return
-        if self.state != "dispensing":
+        if self.state != "dispensing" or cycle.settled:
             self._journal.failure_after_settled()
             return
         cycle.cancel()
