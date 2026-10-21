@@ -3,7 +3,7 @@
 Standard library only: it runs inside the slim edge and cloud images and must
 not import any ``ice_*`` package.
 
-    backup_data.py --dest DIR [--keep N] [--sqlite FILE ...] [--file PATH ...] [--label NAME]
+    backup_data.py --dest DIR [--keep N] [--min-age-hours H] [--sqlite FILE ...] [--file PATH ...] [--label NAME]
     backup_data.py --verify ARCHIVE
 
 A database is copied with the sqlite3 online backup API (a plain file copy of
@@ -19,10 +19,12 @@ import hashlib
 import io
 import json
 import re
+import shutil
 import sqlite3
 import sys
 import tarfile
 import tempfile
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -120,9 +122,41 @@ def build_archive(
     return final
 
 
+def _archive_pattern(label: str) -> re.Pattern[str]:
+    return re.compile(rf"^{re.escape(label)}-\d{{8}}T\d{{6}}Z\.tar\.gz$")
+
+
+def newest_age_hours(dest: Path, label: str, now: float | None = None) -> float | None:
+    """Age in hours of the newest archive of ``label`` in ``dest`` (by mtime), or None."""
+    if not dest.is_dir():
+        return None
+    pattern = _archive_pattern(label)
+    mtimes = [p.stat().st_mtime for p in dest.iterdir() if pattern.match(p.name)]
+    if not mtimes:
+        return None
+    return ((now if now is not None else time.time()) - max(mtimes)) / 3600
+
+
+def remove_stale_workdirs(
+    dest: Path, max_age_seconds: float = 3600, now: float | None = None
+) -> None:
+    """Delete ``.backup-*`` work dirs older than an hour (left by a kill mid-run)."""
+    if not dest.is_dir():
+        return
+    cutoff = (now if now is not None else time.time()) - max_age_seconds
+    for path in dest.iterdir():
+        if (
+            path.is_dir()
+            and path.name.startswith(".backup-")
+            and path.stat().st_mtime < cutoff
+        ):
+            shutil.rmtree(path, ignore_errors=True)
+            log(f"removed stale work dir {path}")
+
+
 def prune(dest: Path, label: str, keep: int) -> list[Path]:
     """Delete all but the newest ``keep`` archives of ``label``; return those removed."""
-    pattern = re.compile(rf"^{re.escape(label)}-\d{{8}}T\d{{6}}Z\.tar\.gz$")
+    pattern = _archive_pattern(label)
     archives = sorted(p for p in dest.iterdir() if pattern.match(p.name))
     removed = archives[: max(len(archives) - keep, 0)]
     for old in removed:
@@ -134,7 +168,9 @@ def prune(dest: Path, label: str, keep: int) -> list[Path]:
 def verify(archive: Path) -> bool:
     """Check every member against the manifest and integrity_check any .db member."""
     ok = True
-    with tempfile.TemporaryDirectory(prefix="backup-verify-") as work_name:
+    with tempfile.TemporaryDirectory(
+        dir=archive.parent, prefix=".backup-verify-"
+    ) as work_name:
         work = Path(work_name)
         with tarfile.open(archive, "r:gz") as tar:
             names = tar.getnames()
@@ -169,6 +205,12 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--keep", type=int, default=DEFAULT_KEEP)
     parser.add_argument("--sqlite", type=Path, action="append", default=[])
     parser.add_argument("--file", type=Path, action="append", default=[], dest="files")
+    parser.add_argument(
+        "--min-age-hours",
+        type=float,
+        default=0,
+        help="skip the run when the newest archive is younger than this (0 = always run)",
+    )
     parser.add_argument("--label", default="backup")
     parser.add_argument("--verify", type=Path, metavar="ARCHIVE")
     args = parser.parse_args(argv)
@@ -184,6 +226,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.verify is not None:
             return 0 if verify(args.verify) else 1
+        remove_stale_workdirs(args.dest)
+        if args.min_age_hours > 0:
+            age = newest_age_hours(args.dest, args.label)
+            if age is not None and age < args.min_age_hours:
+                log(
+                    f"skip: newest {args.label} archive is {age:.1f} h old (< {args.min_age_hours} h)"
+                )
+                return 0
         build_archive(args.dest, args.label, args.sqlite, args.files)
         prune(args.dest, args.label, args.keep)
     except Exception as exc:

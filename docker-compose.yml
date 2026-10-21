@@ -44,19 +44,27 @@ services:
     # Daily verified archive of the irreplaceable files in ./data into ./backups
     # (see docs/backups.md). session.json is deliberately not named: restoring
     # crash evidence would resurrect a stale PAY-104. Off-host copies are the
-    # operator's job.
+    # operator's job. The script only ever reads the source (databases are
+    # snapshotted with the online backup API), but ./data is mounted read-write
+    # because a WAL-mode SQLite reader needs a writable -shm file; on a
+    # read-only mount the open fails whenever the VMC is stopped.
     image: ghcr.io/conradstorz/ice-colder:latest
     build: .
     labels:
       - com.centurylinklabs.watchtower.enable=true
       - harbor.kind=internal
     container_name: ice-colder-backup
+    healthcheck:
+      # Unhealthy when the newest archive is older than 26 hours.
+      test: ["CMD-SHELL", "find /app/backups -name 'edge-*.tar.gz' -mmin -1560 | grep -q ."]
+      interval: 1h
+      start_period: 10m
     command:
       - sh
       - -c
       - >-
         while true; do
-        python scripts/backup_data.py --label edge --dest /app/backups --keep 14
+        python scripts/backup_data.py --label edge --dest /app/backups --keep 14 --min-age-hours 20
         --sqlite /app/data/events.db
         --file /app/data/access.json
         --file /app/data/cloud_identity.json
@@ -65,7 +73,7 @@ services:
         sleep 86400;
         done
     volumes:
-      - ./data:/app/data:ro
+      - ./data:/app/data
       - ./backups:/app/backups
     restart: unless-stopped
 

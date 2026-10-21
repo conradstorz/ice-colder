@@ -1,7 +1,9 @@
 # Backups
 
 Two compose `backup` services run `scripts/backup_data.py` once a day (and once at
-start). Each run writes one verified `.tar.gz` and prunes old ones.
+start). Each run writes one verified `.tar.gz` and prunes old ones. Retention is N archives
+taken at most once per `--min-age-hours` (20 in the compose files), so a container
+restart does not add an archive and with the compose defaults N archives means N days.
 
 | Where | Archives | Contents | Retention |
 |---|---|---|---|
@@ -13,6 +15,12 @@ WAL-mode database copied byte-for-byte can be inconsistent), and each snapshot m
 `PRAGMA integrity_check` or no archive is written and the run exits non-zero.
 `MANIFEST.json` records every member's size and sha256. A missing `--file` (for example
 `cloud_identity.json` on a machine that never enabled the uplink) is logged and skipped.
+
+## Telling that a backup failed
+
+Each `backup` service has a healthcheck that fails when the newest archive is older than
+26 hours. `docker ps` shows the service `unhealthy`; read `docker logs ice-colder-backup`
+(edge) or `docker logs ice-cloud-backup` (cloud) for the `FAILED:` line.
 
 ## Deliberately not backed up
 
@@ -31,7 +39,10 @@ not do it. For the cloud, also enable DigitalOcean droplet backups.
 
 ```
 docker compose exec backup python scripts/backup_data.py --verify /app/backups/edge-20261021T040000Z.tar.gz
+docker compose -f docker/docker-compose.cloud.yml exec backup python scripts/backup_data.py --verify /app/cloud_data/backups/cloud-20261021T040000Z.tar.gz
 ```
+
+(first line edge, second cloud)
 
 or on any host with Python 3.12 (the script is standard library only):
 

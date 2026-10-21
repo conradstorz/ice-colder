@@ -50,12 +50,17 @@ services:
     labels:
       - com.centurylinklabs.watchtower.enable=true
     container_name: ice-cloud-backup
+    healthcheck:
+      # Unhealthy when the newest archive is older than 26 hours.
+      test: ["CMD-SHELL", "find /app/cloud_data/backups -name 'cloud-*.tar.gz' -mmin -1560 | grep -q ."]
+      interval: 1h
+      start_period: 10m
     command:
       - sh
       - -c
       - >-
         while true; do
-        python scripts/backup_data.py --label cloud --dest /app/cloud_data/backups --keep 30
+        python scripts/backup_data.py --label cloud --dest /app/cloud_data/backups --keep 30 --min-age-hours 20
         --sqlite /app/cloud_data/cloud.db;
         sleep 86400;
         done

@@ -52,7 +52,7 @@ docker compose -f docker-compose.cloud.yml -f docker-compose.cloud.proxy.yml <co
 The proxy override also hardens the cloud container: it runs as uid 1000 with a read-only
 root filesystem, every capability dropped and `no-new-privileges`, and calls the venv's
 `python -m ice_cloud` directly so `uv` needs no cache or home directory. Because of the uid,
-**`/opt/ice-cloud/cloud_data` must be owned by `1000:1000`**; a permission error at start
+**`/opt/ice-cloud/cloud_data` must be owned by `1000:1000`, recursively (`chown -R`, including `cloud_data/backups`, so a root-created `backups/` does not block the overlay)**; a permission error at start
 means that `chown` was missed. It also sets `FORWARDED_ALLOW_IPS=*` so uvicorn trusts
 Caddy's `X-Forwarded-For` from the bridge network (the claim back-off is keyed on the real
 client address; only Caddy can reach the port).

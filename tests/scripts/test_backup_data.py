@@ -3,6 +3,7 @@
 import hashlib
 import importlib.util
 import io
+import os
 import json
 import sqlite3
 import tarfile
@@ -164,3 +165,64 @@ def test_corrupt_source_db_fails_and_writes_no_archive(tmp_path):
     dest = tmp_path / "out"
     assert backup.main(["--dest", str(dest), "--sqlite", str(db)]) == 1
     assert not list(dest.glob("*.tar.gz"))
+
+
+def _age(path: Path, hours: float) -> None:
+    stamp = path.stat().st_mtime - hours * 3600
+    os.utime(path, (stamp, stamp))
+
+
+def test_min_age_hours_skips_fresh_and_writes_when_old(tmp_path, capsys):
+    source = tmp_path / "f.json"
+    source.write_text("{}")
+    dest = tmp_path / "out"
+    base = datetime(2026, 10, 1, tzinfo=UTC)
+    first = backup.build_archive(dest, "edge", [], [source], now=base)
+    args = ["--dest", str(dest), "--label", "edge", "--file", str(source)]
+    args += ["--min-age-hours", "20"]
+    assert backup.main(args) == 0
+    assert list(dest.glob("edge-*.tar.gz")) == [first]
+    assert "skip" in capsys.readouterr().out
+    _age(first, 21)
+    assert backup.main(args) == 0
+    assert len(list(dest.glob("edge-*.tar.gz"))) == 2
+
+
+def test_stale_work_dirs_removed_fresh_ones_kept(tmp_path):
+    dest = tmp_path / "out"
+    stale = dest / ".backup-old"
+    fresh = dest / ".backup-new"
+    stale.mkdir(parents=True)
+    fresh.mkdir()
+    (stale / "x").write_text("x")
+    _age(stale, 2)
+    source = tmp_path / "f.json"
+    source.write_text("{}")
+    assert backup.main(["--dest", str(dest), "--file", str(source)]) == 0
+    assert not stale.exists()
+    assert fresh.exists()
+
+
+def test_verify_catches_corrupt_db_with_matching_manifest(tmp_path):
+    db = tmp_path / "cloud.db"
+    conn = _wal_db(db, rows=2000)
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.close()
+    archive = backup.build_archive(tmp_path / "out", "cloud", [db], [])
+    payload = bytearray(_read(archive, "cloud.db"))
+    for offset in range(4096, len(payload), 512):
+        payload[offset : offset + 64] = b"\xff" * 64
+    payload = bytes(payload)
+    manifest = json.loads(_read(archive, "MANIFEST.json"))
+    manifest["members"][0]["size"] = len(payload)
+    manifest["members"][0]["sha256"] = hashlib.sha256(payload).hexdigest()
+    bad = tmp_path / "bad.tar.gz"
+    with tarfile.open(bad, "w:gz") as dst:
+        for name, data in (
+            ("MANIFEST.json", json.dumps(manifest).encode()),
+            ("cloud.db", payload),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            dst.addfile(info, io.BytesIO(data))
+    assert backup.main(["--verify", str(bad)]) == 1
