@@ -8,9 +8,19 @@ services:
       # Caddy reaches the app from a bridge address, not loopback, so uvicorn
       # must be told to trust its X-Forwarded-For (claim back-off keys on it).
       - FORWARDED_ALLOW_IPS=*
+    # Least privilege on a public host: unprivileged uid, no capabilities, a
+    # read-only root filesystem (cloud_data is the only writable path), and the
+    # venv's python directly so uv never needs a cache or home directory.
+    # The host's cloud_data directory must be owned by uid 1000.
+    user: "1000:1000"
+    command: ["python", "-m", "ice_cloud"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
   caddy:
     image: caddy:2-alpine
     container_name: ice-cloud-caddy
+    security_opt: ["no-new-privileges:true"]
     environment:
       - ICE_CLOUD_DOMAIN=${ICE_CLOUD_DOMAIN:?set ICE_CLOUD_DOMAIN}
     ports:
