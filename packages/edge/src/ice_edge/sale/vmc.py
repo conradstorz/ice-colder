@@ -572,6 +572,7 @@ class VMC:
         self._outputs.display(dest)
         self._outputs.refresh()
         if self.credit_escrow > 0:
+            self._session_timer.arm()  # leftover credit must expire into a refund
             self.send_customer_message(
                 "Transaction complete. You have remaining credit. Please select another product if desired."
             )

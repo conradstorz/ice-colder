@@ -3976,3 +3976,45 @@ async def test_locked_out_product_button_is_refused():
     await vmc.on_button_press("hardware/buttons", {"button": "button_ice"})
     assert vmc.state == "idle"
     assert vmc.selected_product is None
+
+
+async def _vend_with_credit(runner, credit: float, price: float = 2.50):
+    machine = make_machine(price=price, tasks=runner)
+    vmc = machine.vmc
+    machine.attach_to_loop(asyncio.get_running_loop())
+    vmc.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    vmc.credit_escrow = credit
+    vmc.process_payment()
+    assert vmc.state == "dispensing"
+    await vmc.on_dispenser_event(
+        "hardware/dispenser",
+        {"slot": vmc.products[0].slot, "state": "complete"},
+    )
+    return vmc
+
+
+async def test_leftover_credit_after_vend_is_refunded_on_session_timeout():
+    runner = FakeTaskRunner()
+    vmc = await _vend_with_credit(runner, credit=5.00, price=2.50)
+
+    assert vmc.state == "interacting_with_user"
+    assert vmc.credit_escrow == pytest.approx(2.50)
+    assert "session_timeout" in {c.label for c in runner.scheduled}
+
+    runner.fire("session_timeout")
+    await settle()
+
+    assert vmc.state == "idle"
+    assert vmc.credit_escrow == 0.0
+    (refund,) = vmc.refunds.pending.values()
+    assert refund.amount == pytest.approx(2.50)
+    assert refund.reason == "session_timeout"
+
+
+async def test_exact_change_vend_arms_no_session_timer():
+    runner = FakeTaskRunner()
+    vmc = await _vend_with_credit(runner, credit=2.50, price=2.50)
+
+    assert vmc.state == "idle"
+    assert "session_timeout" not in {c.label for c in runner.scheduled}
