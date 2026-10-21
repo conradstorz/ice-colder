@@ -30,6 +30,8 @@ COPY packages/contracts packages/contracts
 COPY packages/common packages/common
 COPY packages/ui packages/ui
 COPY packages/cloud packages/cloud
+# Backup tool run by the compose `backup` service (docs/backups.md).
+COPY scripts/backup_data.py scripts/backup_data.py
 
 RUN uv sync --package ice-cloud
 ENV UV_NO_SYNC=1 \

@@ -34,6 +34,8 @@ ENV ICE_COLDER_COMMIT=$VCS_REF \
 
 # Copy application code
 COPY packages/ packages/
+# Backup tool run by the compose `backup` service (docs/backups.md).
+COPY scripts/backup_data.py scripts/backup_data.py
 
 # Install the workspace members themselves, then make the project venv the
 # default interpreter: bare `python` must be /app/.venv's, not the slim

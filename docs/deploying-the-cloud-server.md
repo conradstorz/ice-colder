@@ -183,8 +183,9 @@ operator who already holds the codes; it does not bypass the hash check.
 
 Both need the DigitalOcean control panel:
 
-- **Backups.** `cloud.db` is the only record of owners, techs and claims. Turn on droplet
-  backups (about $0.80/month) or copy `/opt/ice-cloud/cloud_data` off the host on a schedule.
+- **Droplet backups.** The compose `backup` service writes daily `cloud.db` archives to
+  `cloud_data/backups` (see `docs/backups.md`, including restore). Also enable DigitalOcean
+  droplet backups (about $0.80/month) so the archives themselves live off the host.
 - **Cloud firewall.** A provider firewall allowing 22/80/443 in front of ufw, with 22
   limited to known source addresses, is a second layer that survives a host misconfiguration.
 

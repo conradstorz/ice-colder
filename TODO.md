@@ -253,7 +253,7 @@ Cloud C1, C2 → the rest.
 
 ## D. Deployment, data and secrets
 
-- [ ] **D1 — HIGH: nothing is backed up.**
+- [x] **D1 — HIGH: nothing is backed up.**
   Edge: `./data:/app/data` (`docker-compose.yml:26-27`) holds `events.db` (sales and
   `cash_collections` are never pruned — the financial record), `access.json` (users,
   PINs), `cloud_identity.json` (losing it = a new unclaimed machine), `config.json`,

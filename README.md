@@ -40,6 +40,8 @@ docker compose up -d
 ```
 The real machine should pin a `sha-<commit>` tag instead of `latest`.
 
+**Backups:** the compose `backup` service archives `data/` daily into `backups/`; see `docs/backups.md` for contents, verification and restore.
+
 **Virtual fleet (testing the cloud portal):** `docker/docker-compose.fleet.yml`
 runs N self-contained simulated machines (VMC, three simulated boards and a
 private broker in one container each), every one with its own identity,

@@ -39,3 +39,26 @@ services:
     volumes:
       - ../cloud_data:/app/cloud_data
     restart: unless-stopped
+
+  backup:
+    # Daily verified archive of cloud.db into cloud_data/backups (docs/backups.md).
+    # Off-host copies are the operator's job.
+    image: ghcr.io/conradstorz/ice-colder-cloud:latest
+    build:
+      context: ..
+      dockerfile: packages/cloud/Dockerfile
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+    container_name: ice-cloud-backup
+    command:
+      - sh
+      - -c
+      - >-
+        while true; do
+        python scripts/backup_data.py --label cloud --dest /app/cloud_data/backups --keep 30
+        --sqlite /app/cloud_data/cloud.db;
+        sleep 86400;
+        done
+    volumes:
+      - ../cloud_data:/app/cloud_data
+    restart: unless-stopped

@@ -40,6 +40,35 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  backup:
+    # Daily verified archive of the irreplaceable files in ./data into ./backups
+    # (see docs/backups.md). session.json is deliberately not named: restoring
+    # crash evidence would resurrect a stale PAY-104. Off-host copies are the
+    # operator's job.
+    image: ghcr.io/conradstorz/ice-colder:latest
+    build: .
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+      - harbor.kind=internal
+    container_name: ice-colder-backup
+    command:
+      - sh
+      - -c
+      - >-
+        while true; do
+        python scripts/backup_data.py --label edge --dest /app/backups --keep 14
+        --sqlite /app/data/events.db
+        --file /app/data/access.json
+        --file /app/data/cloud_identity.json
+        --file /app/data/config.json
+        --file /app/data/dispensers.toml;
+        sleep 86400;
+        done
+    volumes:
+      - ./data:/app/data:ro
+      - ./backups:/app/backups
+    restart: unless-stopped
+
   sim-ice-maker:
     image: ghcr.io/conradstorz/ice-colder:latest
     build: .

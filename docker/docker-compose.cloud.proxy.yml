@@ -17,6 +17,12 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+  backup:
+    # Same hardening as the cloud service; it only writes under cloud_data.
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
   caddy:
     image: caddy:2-alpine
     container_name: ice-cloud-caddy

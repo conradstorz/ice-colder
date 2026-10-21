@@ -221,3 +221,6 @@ sdkconfig.*
 !sdkconfig.defaults
 firmware/vending/managed_components/
 firmware/mdb/managed_components/
+
+# Local backup archives (scripts/backup_data.py, docs/backups.md)
+backups/

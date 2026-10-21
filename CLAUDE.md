@@ -454,6 +454,8 @@ applied to the dashboard's login back-off via
 `routes.backoff.set_trusted_proxies(...)`, called after
 `routes.set_config_object(...)` so the env value wins.
 
+**Backups.** `scripts/backup_data.py` (stdlib only, no `ice_*` imports; copied into both images) writes `<label>-<UTC stamp>.tar.gz` holding sqlite3 online-backup snapshots (integrity-checked) of each `--sqlite` file, the `--file` paths it is given, and a sha256 `MANIFEST.json`; `--verify ARCHIVE` re-checks one, and `--keep N` prunes per label. A `backup` compose service runs it daily: `docker-compose.yml` archives `events.db`, `access.json`, `cloud_identity.json`, `config.json` and `dispensers.toml` into `./backups` (never `session.json`, which would resurrect a stale PAY-104), and `docker/docker-compose.cloud.yml` archives `cloud.db` into `cloud_data/backups`. Shipping archives off-host is the operator's job; see `docs/backups.md`.
+
 ## Cloud (`ice_cloud`)
 
 A multi-owner fleet portal: `packages/cloud` (README there), specs `docs/superpowers/specs/2026-10-13-cloud-monitoring-server-design.md` (portal, reports, bundles) and `2026-10-19-cloud-identity-tenancy-design.md` (identity; supersedes the first spec's §8 stub). It binds `127.0.0.1` by default (compose maps `127.0.0.1:26124`); HTTPS is a reverse proxy's job and the app must be served at a path root (the signature covers `request.url.path`, so a prefix must be stripped at the proxy).
