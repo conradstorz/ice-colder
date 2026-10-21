@@ -14,7 +14,7 @@ Cloud C1, C2 → the rest.
 
 ## M. Money and sale correctness (`packages/edge/src/ice_edge/sale/`, `vend/`)
 
-- [ ] **M1 — HIGH: leftover credit after a vend is never refunded.**
+- [x] **M1 — HIGH: leftover credit after a vend is never refunded.**
   `sale/vmc.py:566` `on_complete_transaction` routes to `interacting_with_user` when
   `credit_escrow > 0` but nothing re-arms the session timer; the only arm sites are
   `on_start_interaction` (:537), `deposit_funds` (:722) and `_fail_vend` (:661).
@@ -23,7 +23,7 @@ Cloud C1, C2 → the rest.
   (`tests/edge/sale/`) that fires `session_timeout` after a vend with change and asserts
   a refund.
 
-- [ ] **M2 — HIGH: a duplicate terminal dispenser report during the awaited sale write
+- [x] **M2 — HIGH: a duplicate terminal dispenser report during the awaited sale write
   re-enters the success path.**
   `sale/vmc.py:345` `_dispense_succeeded` cancels only the timeout before
   `await self._cycle.record()`; state is still `dispensing`, `_cycle` is still set, and
