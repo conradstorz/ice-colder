@@ -94,7 +94,6 @@ class Notifier:
         if deferred:
             logger.info(f"Notifier: deferred to cloud: {key}")
             self._last_sent[key] = now
-            self._last_failed.pop(key, None)
             return True
 
         failed = self._last_failed.get(key)

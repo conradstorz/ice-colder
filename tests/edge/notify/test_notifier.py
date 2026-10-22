@@ -179,7 +179,7 @@ async def test_deferred_to_cloud_is_handled():
     assert await n.send(alert) is True
 
 
-async def test_failed_flag_cleared_when_later_deferred_to_cloud(monkeypatch):
+async def test_failed_then_deferred_to_cloud_is_handled(monkeypatch):
     clock = [0.0]
     deferred = [False]
     calls = []
