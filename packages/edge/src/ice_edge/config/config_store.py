@@ -69,6 +69,9 @@ def save_config(config: ConfigModel, path: Path | None = None):
         path = _config_path()
     tmp = path.with_name(path.name + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    if os.name == "posix":
+        # Tighten a stale .tmp before any secret is written into it.
+        os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(_config_json(config))
         f.flush()
