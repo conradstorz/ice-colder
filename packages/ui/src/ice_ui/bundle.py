@@ -17,6 +17,7 @@ import os
 import shutil
 import tarfile
 import tempfile
+import zlib
 from functools import cache
 from importlib.metadata import version
 from pathlib import Path, PurePosixPath
@@ -209,7 +210,7 @@ def _decompress_bounded(data: bytes) -> bytes:
                         f"bundle decompresses to more than {MAX_DECOMPRESSED_BYTES} bytes"
                     )
                 out.write(chunk)
-    except (gzip.BadGzipFile, OSError, EOFError) as exc:
+    except (gzip.BadGzipFile, OSError, EOFError, zlib.error) as exc:
         raise BundleError(f"not a gzip tar archive: {exc}") from exc
     return out.getvalue()
 

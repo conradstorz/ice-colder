@@ -187,12 +187,20 @@ def test_concurrent_registers_store_once(
 
 
 def test_init_sweeps_stale_temp_dirs(tmp_path, cloud_templates):
+    import os
+    import time
+
+    import ice_cloud.ui_registry as ui_registry
+
     ui = tmp_path / "data" / "ui"
     (ui / ".abc.tmp").mkdir(parents=True)
     (ui / ".abc.tmp" / "f").write_text("x")
+    old = time.time() - 2 * ui_registry.STALE_TEMP_SECONDS
+    os.utime(ui / ".abc.tmp", (old, old))
+    (ui / ".fresh.tmp").mkdir()
     (ui / ("a" * 64)).mkdir()
     UiRegistry(tmp_path / "data", cloud_templates=cloud_templates)
-    assert [p.name for p in ui.iterdir()] == ["a" * 64]
+    assert sorted(p.name for p in ui.iterdir()) == [".fresh.tmp", "a" * 64]
 
 
 def test_register_extracts_outside_the_resolve_lock(

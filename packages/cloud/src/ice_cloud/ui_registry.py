@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 import shutil
 import threading
 from dataclasses import dataclass
@@ -23,6 +24,9 @@ from jinja2 import Template
 from ice_contracts.cloud.ui import DIGEST_PATTERN
 from ice_ui.bundle import BundleError, prepare_bundle, ui_digest
 from ice_ui.templating import STATIC_DIR, TEMPLATES_DIR, make_templates
+
+# Temp dirs younger than this may belong to an in-flight extraction.
+STALE_TEMP_SECONDS = 600
 
 _DIGEST_RE = re.compile(DIGEST_PATTERN)
 
@@ -73,10 +77,19 @@ class UiRegistry:
         self._sweep_stale_temp_dirs()
 
     def _sweep_stale_temp_dirs(self) -> None:
-        """Remove ``.``-prefixed extraction leftovers from a crashed upload."""
+        """Remove ``.``-prefixed extraction leftovers from a crashed upload.
+
+        Assumes one owning process per data dir; dirs touched within
+        ``STALE_TEMP_SECONDS`` are skipped so an overlapping process's
+        in-flight extraction survives."""
         if not self._ui_dir.is_dir():
             return
-        stale = [p for p in self._ui_dir.glob(".*") if p.is_dir()]
+        cutoff = time.time() - STALE_TEMP_SECONDS
+        stale = [
+            p
+            for p in self._ui_dir.glob(".*")
+            if p.is_dir() and p.stat().st_mtime < cutoff
+        ]
         for p in stale:
             shutil.rmtree(p, ignore_errors=True)
         if stale:
