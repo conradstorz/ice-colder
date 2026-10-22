@@ -1,8 +1,16 @@
+import asyncio
+
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from ice_cloud.app import create_app
-from ice_cloud.ingest import MAX_UNCLAIMED_REPORT_BYTES, UNCLAIMED_MACHINE_TTL_DAYS
+from ice_cloud.ingest import (
+    MAX_NEW_REGISTRATIONS_PER_HOUR,
+    MAX_UNCLAIMED_REPORT_BYTES,
+    UNCLAIMED_MACHINE_TTL_DAYS,
+    SlidingWindow,
+)
 from ice_contracts.cloud.identity import RegisterMachine
 from ice_ui.bundle import build_bundle, ui_digest
 from tests.cloud.conftest import Signer, make_settings, register, signed
@@ -254,17 +262,54 @@ def timed(tmp_path, clock):
         yield c
 
 
-def test_second_new_machine_from_one_address_is_throttled(timed, clock):
-    first, second = Signer(), Signer()
-    assert _register_request(timed, first).status_code == 200
-    r = _register_request(timed, second)
+def test_eleventh_new_machine_in_an_hour_from_one_address_is_throttled(timed, clock):
+    signers = [Signer() for _ in range(MAX_NEW_REGISTRATIONS_PER_HOUR + 1)]
+    for s in signers[:-1]:
+        assert _register_request(timed, s).status_code == 200
+    r = _register_request(timed, signers[-1])
     assert r.status_code == 429 and r.content == b""
-    assert float(r.headers["retry-after"]) >= 1
-    # A known fingerprint re-registers freely and does not touch the meter.
-    assert _register_request(timed, first).status_code == 200
-    clock.advance(2)
-    assert _register_request(timed, second).status_code == 200
-    assert timed.app.state.repo.machine(second.fingerprint) is not None
+    assert 0 < float(r.headers["retry-after"]) <= 3600
+    # A known fingerprint re-registers freely and does not count.
+    assert _register_request(timed, signers[0]).status_code == 200
+    clock.advance(3601)
+    assert _register_request(timed, signers[-1]).status_code == 200
+    assert timed.app.state.repo.machine(signers[-1].fingerprint) is not None
+
+
+def test_sliding_window_prunes_and_drops_empty_keys():
+    w = SlidingWindow(2, 10)
+    w.record("a", 0)
+    w.record("a", 1)
+    assert w.allow("a", 5) == 5
+    assert w.allow("a", 10) is None
+    assert w.allow("a", 12) is None
+    w.record("b", 0)
+    w.reset("b")
+    assert w.allow("b", 0) is None
+
+
+async def test_concurrent_new_registrations_respect_the_cap(tmp_path, clock):
+    settings = make_settings(tmp_path / "cloud", max_unclaimed_machines=2)
+    app = create_app(settings, now=clock, start_sweep=False)
+    transport = httpx.ASGITransport(app=app)
+    signers = [Signer() for _ in range(8)]
+
+    async def one(signer):
+        body = (
+            RegisterMachine(public_key_b64=signer.public_key_b64, label="m")
+            .model_dump_json()
+            .encode()
+        )
+        headers = signer.headers("POST", "/api/v1/machines/register", body, now=clock())
+        headers["content-type"] = "application/json"
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            return (
+                await c.post("/api/v1/machines/register", content=body, headers=headers)
+            ).status_code
+
+    codes = await asyncio.gather(*(one(s) for s in signers))
+    assert sorted(codes) == [200, 200] + [429] * 6
+    assert app.state.repo.count_unclaimed_machines() == 2
 
 
 def test_unclaimed_machine_cap_blocks_new_but_not_known(tmp_path, clock):
@@ -324,3 +369,22 @@ async def test_sweep_purges_stale_unclaimed_machines_and_snapshots(tmp_path, clo
     assert app.state.store.latest(claimed.fingerprint) is not None
     assert repo.machine(fresh.fingerprint) is not None
     assert app.state.store.latest(fresh.fingerprint) is not None
+
+
+async def test_failing_purge_does_not_stop_the_sweep(tmp_path, clock):
+    app = create_app(make_settings(tmp_path / "cloud"), now=clock, start_sweep=False)
+    repo = app.state.repo
+
+    def boom(_cutoff):
+        raise RuntimeError("db down")
+
+    repo.purge_unclaimed_machines = boom
+    checked = []
+
+    def claimed_machines_with_state():
+        checked.append(True)
+        return []
+
+    repo.claimed_machines_with_state = claimed_machines_with_state
+    assert await app.state.sweep.tick() == []
+    assert checked == [True]

@@ -164,9 +164,7 @@ def register(cloud: TestClient, signer: Signer, label: str = "m-0042") -> str:
     # Tests register many machines from the one test-client address; the
     # per-address new-machine meter is exercised through `signed` directly in
     # test_ingest.py, so reset it here.
-    cloud.app.state.backoff.record_success(
-        "register", "new", "testclient", trusted=True
-    )
+    cloud.app.state.new_registrations.reset("testclient")
     body = RegisterMachine(public_key_b64=signer.public_key_b64, label=label)
     r = signed(
         cloud,

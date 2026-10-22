@@ -94,7 +94,10 @@ def create_app(
             app.state.repo.purge_unclaimed_machines, cutoff
         )
         for fp in purged:
-            await asyncio.to_thread(app.state.store.delete, fp)
+            try:
+                await asyncio.to_thread(app.state.store.delete, fp)
+            except Exception:
+                logger.warning("Could not delete snapshot of purged {}", fp[:8])
         if purged:
             logger.info("Purged {} never-claimed machines", len(purged))
 
@@ -103,6 +106,10 @@ def create_app(
     )
     # A signature stays acceptable for +/- the skew, so remember it for twice that.
     app.state.seen_signatures = SeenSignatures(2 * signing.MAX_CLOCK_SKEW_SECONDS)
+    app.state.register_lock = asyncio.Lock()
+    app.state.new_registrations = ingest.SlidingWindow(
+        ingest.MAX_NEW_REGISTRATIONS_PER_HOUR, ingest.REGISTRATION_WINDOW_SECONDS
+    )
     app.state.backoff = Backoff(clock=lambda: app.state.now().timestamp())
     app.add_middleware(BodyLimitMiddleware)
     machine_auth.install(app)

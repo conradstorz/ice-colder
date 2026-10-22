@@ -87,9 +87,9 @@ ICE_CLOUD_UNCLAIMED_TTL_DAYS=7              # unseen this long and never claimed
 ICE_CLOUD_MAX_UNCLAIMED_REPORT_BYTES=16384  # larger reports from unclaimed machines: 413
 ```
 
-Independently, each client address may register one new machine for free and then waits
-1 s, 2 s, 4 s ... (capped at 1 h, forgotten after 24 h) for each further one; machines
-that are already registered are never throttled.
+Independently, each client address may register at most 10 new machines per rolling hour
+(further ones answer 429 with `Retry-After`); machines that are already registered are
+never throttled.
 
 SMTP is not configured, so the cloud answers every report with `alerts_handled: false` and
 each edge keeps emailing its own alerts (`packages/cloud/README.md`, Alerts).
