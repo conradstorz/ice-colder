@@ -267,3 +267,40 @@ def test_report_does_not_wait_for_slow_mail(tmp_path, clock, provider, signer):
     assert c.app.state.repo.last_sent_at(
         signer.fingerprint, c.app.state.repo.machine(signer.fingerprint).owner_id
     )
+
+
+def _post_report(cloud, signer, report):
+    r = signed(
+        cloud,
+        signer,
+        "POST",
+        f"/api/v1/machines/{signer.fingerprint}/report",
+        report.model_dump_json().encode(),
+    )
+    drain_alerts(cloud)
+    return r
+
+
+def test_same_seq_report_does_not_touch_alert_state(cloud, signer, clock):
+    _claimed(cloud, signer)
+    push(cloud, signer, make_report(seq=5))
+    repo = cloud.app.state.repo
+    first = repo.alert_state(signer.fingerprint).last_report_at
+    events = len(repo.alert_events(signer.fingerprint, limit=50))
+    clock.advance(30)
+    r = _post_report(cloud, signer, make_report(seq=5))
+    assert r.status_code == 200 and "alerts_handled" in r.json()
+    assert repo.alert_state(signer.fingerprint).last_report_at == first
+    assert len(repo.alert_events(signer.fingerprint, limit=50)) == events
+
+
+def test_lower_seq_report_is_ignored_for_alerts(cloud, signer, clock):
+    _claimed(cloud, signer)
+    push(cloud, signer, make_report(seq=5, faults=False))
+    repo = cloud.app.state.repo
+    first = repo.alert_state(signer.fingerprint).last_report_at
+    clock.advance(30)
+    r = _post_report(cloud, signer, make_report(seq=4))  # old report, has a fault
+    assert r.status_code == 200
+    state = repo.alert_state(signer.fingerprint)
+    assert state.last_report_at == first and state.faults == ()

@@ -2,6 +2,7 @@ from datetime import timedelta
 
 import pytest
 
+from ice_cloud.machine_auth import SeenSignatures
 from ice_contracts.cloud import signing
 from tests.cloud.conftest import Signer, register, signed
 from tests.cloud.reports import NOW, make_report
@@ -101,10 +102,11 @@ def test_report_after_register_moves_last_seen(cloud, known, clock):
     assert after == before + timedelta(seconds=30)
 
 
-def test_replayed_report_is_200_and_store_unchanged(cloud, known):
+def test_replayed_report_is_200_and_store_unchanged(cloud, known, clock):
     body = make_report(seq=3).model_dump_json().encode()
     assert signed(cloud, known, "POST", _path(known), body).status_code == 200
     stored = cloud.app.state.store.latest(known.fingerprint)
+    clock.advance(1)  # a fresh signature, not a byte-identical replay
     assert signed(cloud, known, "POST", _path(known), body).status_code == 200
     assert cloud.app.state.store.latest(known.fingerprint) == stored
 
@@ -157,3 +159,46 @@ def test_malformed_timestamp_is_401(cloud, known):
     headers = known.headers("POST", _path(known), _body(), now=NOW)
     headers[signing.HEADER_TIMESTAMP] = "not-a-time"
     assert _send(cloud, headers, _path(known)).status_code == 401
+
+
+def test_byte_identical_signed_request_is_rejected_on_replay(cloud, known):
+    headers = known.headers("POST", _path(known), _body(), now=NOW)
+    assert _send(cloud, headers, _path(known)).status_code == 200
+    r = _send(cloud, headers, _path(known))
+    assert r.status_code == 401 and r.content == b""
+
+
+def test_replay_does_not_refresh_last_seen(cloud, known, clock):
+    headers = known.headers("POST", _path(known), _body(), now=NOW)
+    assert _send(cloud, headers, _path(known)).status_code == 200
+    seen = cloud.app.state.repo.machine(known.fingerprint).last_seen_at
+    clock.advance(30)
+    assert _send(cloud, headers, _path(known)).status_code == 401
+    assert cloud.app.state.repo.machine(known.fingerprint).last_seen_at == seen
+
+
+def test_seen_signatures_expire_after_the_window():
+    seen = SeenSignatures(window_seconds=10)
+    assert seen.check_and_add("a", 0.0) is True
+    assert seen.check_and_add("a", 9.0) is False
+    assert seen.check_and_add("a", 11.0) is True  # expired, accepted again
+
+
+def test_seen_signatures_evict_the_oldest_over_capacity():
+    seen = SeenSignatures(window_seconds=1000, max_entries=2)
+    assert seen.check_and_add("a", 0.0)
+    assert seen.check_and_add("b", 1.0)
+    assert seen.check_and_add("c", 2.0)  # evicts "a"
+    assert seen.check_and_add("a", 3.0) is True
+    assert seen.check_and_add("c", 4.0) is False
+
+
+def test_replayed_claim_code_delete_does_not_wipe_a_newer_code(cloud, known):
+    path = f"/api/v1/machines/{known.fingerprint}/claim-code"
+    delete = known.headers("DELETE", path, b"", now=NOW)
+    assert cloud.delete(path, headers=delete).status_code == 204
+    body = b'{"claim_code_hash": "scrypt$new", "expires_at": "2026-10-20T14:05:00Z"}'
+    assert signed(cloud, known, "POST", path, body).status_code == 204
+    assert cloud.delete(path, headers=delete).status_code == 401
+    row = cloud.app.state.repo.machine(known.fingerprint)
+    assert row.claim_code_hash == "scrypt$new"

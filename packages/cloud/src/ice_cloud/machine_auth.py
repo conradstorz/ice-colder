@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import threading
+from collections import OrderedDict
 
 from fastapi import FastAPI, Request, Response
 from loguru import logger
@@ -37,6 +39,36 @@ class MachineAuthError(Exception):
         super().__init__(reason)
         self.reason = reason
         self.fingerprint = fingerprint
+
+
+class SeenSignatures:
+    """Recently accepted ``(fingerprint, signature)`` keys, to refuse replays.
+
+    Per-process and lost on restart; the timestamp freshness window bounds the
+    exposure. Entries expire after ``window_seconds`` and the oldest is evicted
+    beyond ``max_entries``.
+    """
+
+    def __init__(self, window_seconds: float, max_entries: int = 10_000) -> None:
+        self._window = window_seconds
+        self._max = max_entries
+        self._seen: OrderedDict[str, float] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def check_and_add(self, key: str, now: float) -> bool:
+        """Record *key*; ``False`` when it was already seen and not expired."""
+        with self._lock:
+            while self._seen:
+                oldest = next(iter(self._seen))
+                if now - self._seen[oldest] <= self._window:
+                    break
+                del self._seen[oldest]
+            if key in self._seen:
+                return False
+            self._seen[key] = now
+            while len(self._seen) > self._max:
+                self._seen.popitem(last=False)
+            return True
 
 
 def install(app: FastAPI) -> None:
@@ -101,6 +133,11 @@ async def require_machine(request: Request) -> Machine | None:
     )
     if not signing.verify(key, message, signature):
         raise MachineAuthError("bad signature", fp)
+    now = app.state.now()
+    if not app.state.seen_signatures.check_and_add(
+        f"{fp}:{signature}", now.timestamp()
+    ):
+        raise MachineAuthError("replayed signature", fp)
     if machine is not None:
         await asyncio.to_thread(app.state.repo.touch_seen, fp, app.state.now())
     return machine

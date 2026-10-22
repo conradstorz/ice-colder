@@ -62,11 +62,18 @@ async def post_report(
     machine: Machine = Depends(require_machine),
 ) -> ReportResponse:
     state = request.app.state
-    await asyncio.to_thread(state.store.save, machine.fingerprint, report)
-    try:
-        await _handle_alerts(request, machine, report)
-    except Exception:
-        logger.exception("Alert handling failed for {}", machine.fingerprint[:8])
+    saved = await asyncio.to_thread(state.store.save, machine.fingerprint, report)
+    if saved:
+        try:
+            await _handle_alerts(request, machine, report)
+        except Exception:
+            logger.exception("Alert handling failed for {}", machine.fingerprint[:8])
+    else:
+        logger.debug(
+            "Stale report ignored for alerts: {} seq={}",
+            machine.fingerprint[:8],
+            report.seq,
+        )
     try:
         handled = await asyncio.to_thread(
             alerts_handled_for, state.repo, state.settings, machine

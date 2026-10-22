@@ -19,6 +19,8 @@ from ice_cloud import admin, auth, claim, ingest, machine_auth, people, portal
 from ice_cloud.alerts import pages
 from ice_cloud.alerts.sweep import OfflineSweep
 from ice_common.backoff import Backoff
+from ice_contracts.cloud import signing
+from ice_cloud.machine_auth import SeenSignatures
 from ice_cloud.settings import CloudSettings
 from ice_cloud.store import SnapshotStore, SqliteRepository
 from ice_cloud.ui_registry import UiRegistry
@@ -86,6 +88,8 @@ def create_app(
         from_addr=settings.smtp_from or "ice-colder@localhost",
     )
     app.state.sweep = OfflineSweep(app.state.repo, app.state.alerts, now=now)
+    # A signature stays acceptable for +/- the skew, so remember it for twice that.
+    app.state.seen_signatures = SeenSignatures(2 * signing.MAX_CLOCK_SKEW_SECONDS)
     app.state.backoff = Backoff(clock=lambda: app.state.now().timestamp())
     app.add_middleware(BodyLimitMiddleware)
     machine_auth.install(app)
