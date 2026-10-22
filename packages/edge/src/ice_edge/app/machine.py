@@ -115,6 +115,8 @@ class Machine:
             selected_product=lambda: self.vmc.selected_product,
             pay104_active=lambda: self._faults.has(FaultCode.PAY_104),
             tasks=self._tasks,
+            on_persist_failed=self._raise_session_unsaved,
+            on_persist_ok=self._clear_session_unsaved,
         )
         self._journal = SaleJournal(
             recorder=lambda: self._event_recorder,
@@ -377,6 +379,18 @@ class Machine:
     async def drain_persistence(self, timeout: float = 3.0) -> None:
         """Await in-flight session/inventory writes so shutdown never cancels them."""
         await self._tasks.drain_persistence(timeout=timeout)
+
+    def _raise_session_unsaved(self) -> None:
+        """``StatusOutputs`` could not write the session snapshot: raise
+        DATA-104 (machine-scope, never payment-blocking) once."""
+        if not self._faults.has(FaultCode.DATA_104):
+            self._faults.raise_fault(FaultCode.DATA_104)
+
+    def _clear_session_unsaved(self) -> None:
+        """A later write succeeded. Nothing else raises DATA-104, so a
+        plain clear-if-active is correct."""
+        if self._faults.has(FaultCode.DATA_104):
+            self._faults.clear_fault(FaultCode.DATA_104.value, by="auto")
 
     def set_mqtt_client(self, client) -> None:
         """Attach an MQTTClient instance for publishing status and receiving events."""

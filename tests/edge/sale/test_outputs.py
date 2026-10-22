@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from ice_common.config_model import Product
 from ice_contracts.board.vending_machine import PaymentRefundCommand
 from ice_edge.sale.outputs import StatusOutputs
@@ -31,6 +33,7 @@ from tests.fakes import (
     FakeMqtt,
     FakeStore,
     FakeTaskRunner,
+    settle,
 )
 
 
@@ -58,6 +61,8 @@ def make_outputs(
     selected_product=lambda: None,
     fsm_state=lambda: "idle",
     pay104_active=lambda: False,
+    on_persist_failed=None,
+    on_persist_ok=None,
 ) -> tuple[StatusOutputs, FakeTaskRunner]:
     runner = tasks if tasks is not None else FakeTaskRunner()
     outputs = StatusOutputs(
@@ -67,6 +72,8 @@ def make_outputs(
         fsm_state=fsm_state,
         pay104_active=pay104_active,
         tasks=runner,
+        on_persist_failed=on_persist_failed,
+        on_persist_ok=on_persist_ok,
     )
     return outputs, runner
 
@@ -212,6 +219,85 @@ async def test_persist_clears_a_snapshot_that_is_not_open():
 
     assert store.saved == []
     assert store.cleared_async_calls == 1
+
+
+class FailingStore(FakeStore):
+    """A store whose save/clear raise while `broken` is set."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.broken = True
+
+    async def save_async(self, snap) -> None:
+        if self.broken:
+            raise OSError("disk full")
+        await super().save_async(snap)
+
+    async def clear_async(self) -> bool:
+        if self.broken:
+            raise OSError("disk full")
+        return await super().clear_async()
+
+
+async def test_persist_save_failure_calls_on_persist_failed_once_then_ok_on_recovery():
+    events: list[str] = []
+    store = FailingStore()
+    outputs, runner = make_outputs(
+        snapshot=open_snapshot,
+        on_persist_failed=lambda: events.append("failed"),
+        on_persist_ok=lambda: events.append("ok"),
+    )
+    runner.attach(asyncio.get_running_loop())
+    outputs.attach_session_store(store)
+
+    outputs.persist("interacting_with_user")
+    await settle()
+    assert events == ["failed"]
+
+    store.broken = False
+    outputs.persist("interacting_with_user")
+    await settle()
+    assert events == ["failed", "ok"]
+    assert len(store.saved) == 1
+
+
+async def test_persist_clear_failure_calls_on_persist_failed():
+    events: list[str] = []
+    store = FailingStore()
+    outputs, runner = make_outputs(
+        snapshot=not_open_snapshot,
+        on_persist_failed=lambda: events.append("failed"),
+        on_persist_ok=lambda: events.append("ok"),
+    )
+    runner.attach(asyncio.get_running_loop())
+    outputs.attach_session_store(store)
+
+    outputs.persist("idle")
+    await settle()
+    assert events == ["failed"]
+
+    store.broken = False
+    outputs.persist("idle")
+    await settle()
+    assert events == ["failed", "ok"]
+
+
+async def test_save_snapshot_async_failure_still_propagates_and_reports():
+    events: list[str] = []
+    store = FailingStore()
+    outputs, _ = make_outputs(
+        on_persist_failed=lambda: events.append("failed"),
+        on_persist_ok=lambda: events.append("ok"),
+    )
+    outputs.attach_session_store(store)
+
+    with pytest.raises(OSError):
+        await outputs.save_snapshot_async(open_snapshot("dispensing"))
+    assert events == ["failed"]
+
+    store.broken = False
+    await outputs.save_snapshot_async(open_snapshot("dispensing"))
+    assert events == ["failed", "ok"]
 
 
 # --- save_snapshot_async ---

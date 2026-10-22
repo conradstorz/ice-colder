@@ -68,6 +68,9 @@ from ice_contracts.board.common import ChannelDescriptor, _utc_now
 # 2.1.0 -> 2.2.0 (2026-10-22): minor bump, additive. DATA-103 (event
 # database unavailable; sales journalled to the fallback file). Alert-class
 # and not payment-blocking.
+# Also in 2.2.0: DATA-104 (session snapshot could not be saved; a crash
+# now would lose the live sale's evidence). Alert-class, not
+# payment-blocking.
 CONTRACT_VERSION = "2.2.0"
 
 
@@ -138,6 +141,7 @@ class FaultCode(str, Enum):
     DATA_101 = "DATA-101"
     DATA_102 = "DATA-102"
     DATA_103 = "DATA-103"
+    DATA_104 = "DATA-104"
     CFG_101 = "CFG-101"
     CFG_102 = "CFG-102"
 
@@ -345,6 +349,14 @@ FAULT_TABLE: dict[FaultCode, FaultSpec] = {
         description=(
             "Event database unavailable; sales are being journalled to the "
             "fallback file"
+        ),
+    ),
+    FaultCode.DATA_104: FaultSpec(
+        severity=Severity.warning,
+        scope=Scope.machine,
+        description=(
+            "Session snapshot could not be saved; a crash now would lose the "
+            "live sale's evidence"
         ),
     ),
     FaultCode.CFG_101: FaultSpec(

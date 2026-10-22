@@ -387,3 +387,15 @@ def test_input_faults_are_machine_scope_with_unique_channels():
         (VendingChannel.water_pressure_ok, False, FaultCode.WTR_105),
         (VendingChannel.ro_tank_empty, True, FaultCode.WTR_106),
     }
+
+
+def test_data_104_is_an_alert_class_machine_warning_for_an_unsaved_session():
+    spec = FAULT_TABLE[FaultCode.DATA_104]
+    assert FaultCode.DATA_104.value == "DATA-104"
+    assert spec.severity is Severity.warning
+    assert spec.scope is Scope.machine
+    assert FaultCode.DATA_104 not in PAYMENT_BLOCKING_FAULTS
+    assert (
+        spec.description
+        == "Session snapshot could not be saved; a crash now would lose the live sale's evidence"
+    )

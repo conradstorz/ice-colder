@@ -19,7 +19,8 @@ from ice_edge.hal.mqtt_inbound import SUBSCRIPTIONS
 from ice_edge.sale.vmc import VMC
 from ice_edge.ledger.session_store import SessionSnapshot
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
-from tests.fakes import FakeAvailability, FakeTaskRunner
+from ice_edge.faults.availability import Availability
+from tests.fakes import FakeAvailability, FakeTaskRunner, settle
 
 
 class RecordingMqtt:
@@ -211,6 +212,55 @@ class TestSetSessionStore:
 
         assert not machine.faults.has(FaultCode.PAY_104)
         assert store.clear_calls == 1
+
+
+class FailingSaveStore:
+    """A session store whose writes raise while `broken` is set."""
+
+    def __init__(self) -> None:
+        self.broken = True
+        self.saved: list[SessionSnapshot] = []
+
+    def load(self):
+        return None
+
+    def clear(self) -> bool:
+        return True
+
+    async def save_async(self, snap: SessionSnapshot) -> None:
+        if self.broken:
+            raise OSError("disk full")
+        self.saved.append(snap)
+
+    async def clear_async(self) -> bool:
+        if self.broken:
+            raise OSError("disk full")
+        return True
+
+
+class TestSessionSnapshotFault:
+    async def test_failed_deposit_save_raises_data_104_without_blocking_payment(self):
+        runner = FakeTaskRunner()
+        machine = Machine(ConfigModel(), tasks=runner)
+        machine.attach_to_loop(asyncio.get_running_loop())
+        availability = Availability()
+        machine.set_availability(availability)
+        store = FailingSaveStore()
+        machine.set_session_store(store)
+
+        machine.vmc.deposit_funds(1.0, payment_method="cash")
+        await settle()
+
+        assert machine.faults.has(FaultCode.DATA_104)
+        assert availability.payment_enabled
+
+        store.broken = False
+        machine.vmc.deposit_funds(1.0, payment_method="cash")
+        await settle()
+
+        assert not machine.faults.has(FaultCode.DATA_104)
+        assert store.saved
+        machine.cancel_pending_tasks()
 
 
 class TestCancelPendingTasks:

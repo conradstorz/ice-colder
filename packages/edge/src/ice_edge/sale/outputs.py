@@ -65,6 +65,8 @@ class StatusOutputs:
         fsm_state: Callable[[], str],
         pay104_active: Callable[[], bool],
         tasks: TaskRunner,
+        on_persist_failed: Callable[[], None] | None = None,
+        on_persist_ok: Callable[[], None] | None = None,
     ) -> None:
         self._snapshot = snapshot
         self._credit_escrow = credit_escrow
@@ -72,6 +74,8 @@ class StatusOutputs:
         self._fsm_state = fsm_state
         self._pay104_active = pay104_active
         self._tasks = tasks
+        self._on_persist_failed = on_persist_failed
+        self._on_persist_ok = on_persist_ok
         self._start_time = time.monotonic()
 
         self._mqtt = None
@@ -173,14 +177,30 @@ class StatusOutputs:
         if self._pay104_active():
             return
         snap = self._snapshot(state)
-        if snap.is_open():
-            self._tasks.fire_and_forget(
-                self._session_store.save_async(snap), persistent=True
-            )
-        else:
-            self._tasks.fire_and_forget(
-                self._session_store.clear_async(), persistent=True
-            )
+        store = self._session_store
+        write = store.save_async(snap) if snap.is_open() else store.clear_async()
+        self._tasks.fire_and_forget(self._reporting(write), persistent=True)
+
+    async def _reporting(self, write) -> None:
+        """Await one store write; on failure log it and tell the owner via
+        ``on_persist_failed`` (the failure must not stay a log line only),
+        on success via ``on_persist_ok``."""
+        try:
+            await write
+        except Exception as exc:
+            logger.error(f"Session snapshot write failed: {exc!r}")
+            self._notify(self._on_persist_failed)
+            return
+        self._notify(self._on_persist_ok)
+
+    @staticmethod
+    def _notify(callback: Callable[[], None] | None) -> None:
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:
+            logger.exception("Session persistence callback failed")
 
     async def save_snapshot_async(self, snap: SessionSnapshot | None) -> None:
         """Await a snapshot save directly, for a caller that is already
@@ -197,7 +217,12 @@ class StatusOutputs:
             return
         if self._pay104_active():
             return
-        await self._session_store.save_async(snap)
+        try:
+            await self._session_store.save_async(snap)
+        except Exception:
+            self._notify(self._on_persist_failed)
+            raise
+        self._notify(self._on_persist_ok)
 
     def clear_session_evidence(self) -> bool:
         """Remove the session evidence file. Returns ``True`` without a
