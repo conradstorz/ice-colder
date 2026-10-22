@@ -149,3 +149,69 @@ def test_overview_nav_links_every_admin_level(cloud, clock):
         assert f'href="{url}"' in page
     frag = cloud.get("/admin/overview", headers={"HX-Request": "true"})
     assert 'aria-label="Admin levels"' not in frag.text
+
+
+def _owner_fleet(cloud, clock):
+    silent, online, solo, tech = Signer(), Signer(), Signer(), None
+    push(cloud, silent, make_report(machine_id="m-a-silent", interval=10))
+    clock.advance(31)
+    push(cloud, online, make_report(machine_id="m-a-online", interval=60))
+    push(cloud, solo, make_report(machine_id="m-b-solo", interval=60))
+    owner_a = login(cloud, "owner-a@example.com")
+    owner_b = login(cloud, "owner-b@example.com")
+    claim(cloud, silent, owner_a)
+    claim(cloud, online, owner_a)
+    claim(cloud, solo, owner_b)
+    tech = login(cloud, "tech@example.com")
+    cloud.app.state.repo.grant_tech(
+        tech.id, online.fingerprint, owner_a.id, cloud.app.state.now()
+    )
+    return owner_a, owner_b, tech
+
+
+def _owner_row(text, email):
+    start = text.index(email)
+    end = text.find("</tr>", start)
+    return text[start:end]
+
+
+def test_owners_page_counts(cloud, clock):
+    _owner_fleet(cloud, clock)
+    _admin(cloud)
+    r = cloud.get("/admin/owners")
+    assert r.status_code == 200
+    assert r.text.index("owner-a@example.com") < r.text.index("owner-b@example.com")
+    row = _owner_row(r.text, "owner-a@example.com")
+    cells = [c.split("<")[0].strip() for c in row.split(">") if c.strip()]
+    assert "2" in cells and "1" in cells
+    assert 'href="/admin/machines?owner=' in row
+
+
+def test_owners_footer_counts_idle_accounts(cloud, clock):
+    _owner_fleet(cloud, clock)
+    _admin(cloud)
+    text = cloud.get("/admin/owners").text
+    assert "own nothing" in text
+    start = text.index("own nothing")
+    assert "2" in text[start - 40 : start]
+
+
+def test_owners_non_admin_404(cloud):
+    login(cloud, "someone@example.com")
+    assert cloud.get("/admin/owners").status_code == 404
+
+
+def test_machines_table_marks_top_fault_code(cloud, clock):
+    push(cloud, Signer(), make_report(machine_id="m-fault", faults=True))
+    _admin(cloud)
+    text = cloud.get("/admin/machines").text
+    assert "ICE-301" in text
+    assert "text-amber-600" in text[text.index("ICE-301") - 200 : text.index("ICE-301")]
+
+
+def test_machines_table_payment_off(cloud, clock):
+    health = make_report(faults=False).model_dump(mode="json")["health"]
+    health["payment_enabled"] = False
+    push(cloud, Signer(), make_report(machine_id="m-off", faults=False, health=health))
+    _admin(cloud)
+    assert ">Off<" in cloud.get("/admin/machines").text

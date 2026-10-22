@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Owners · Admin · Vending Machine{% endblock %}
+{% block body %}
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
+  <table class="w-full text-sm text-left">
+    <thead>
+      <tr class="text-xs text-gray-400 uppercase tracking-wide">
+        <th class="p-3">Owner</th><th class="p-3">Machines</th><th class="p-3">Online</th>
+        <th class="p-3">Silent</th><th class="p-3">Never</th><th class="p-3">Faulted</th>
+        <th class="p-3">Techs</th><th class="p-3">Alerts 24 h</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for o in owners %}
+      <tr class="border-t border-gray-100">
+        <td class="p-3">
+          <span class="text-gray-900">{{ o.email }}</span>
+          {% if o.suspended %}<span class="text-xs px-1.5 py-0.5 rounded bg-red-50 text-red-600">Suspended</span>{% endif %}
+          <div class="text-xs text-gray-400">{{ o.name }}</div>
+        </td>
+        <td class="p-3"><a href="{{ o.url }}" class="text-gray-900">{{ o.machines }}</a></td>
+        <td class="p-3 {% if o.online %}text-green-700{% else %}text-gray-400{% endif %}">{{ o.online }}</td>
+        <td class="p-3 {% if o.silent %}text-red-600{% else %}text-gray-400{% endif %}">{{ o.silent }}</td>
+        <td class="p-3 text-gray-600">{{ o.never_reported }}</td>
+        <td class="p-3 {% if o.faulted %}text-amber-600{% else %}text-gray-400{% endif %}">{{ o.faulted }}</td>
+        <td class="p-3 text-gray-600">{{ o.techs }}</td>
+        <td class="p-3 text-gray-600">{{ o.alerts_24h }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" class="p-4 text-sm text-gray-400">No owners yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<div class="text-xs text-gray-400 uppercase tracking-wide mt-2">{{ owners|length }} owner{{ "" if owners|length == 1 else "s" }} · {{ idle_accounts }} account{{ "" if idle_accounts == 1 else "s" }} own nothing</div>
+{% endblock %}

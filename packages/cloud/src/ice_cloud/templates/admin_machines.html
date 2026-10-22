@@ -26,16 +26,16 @@
         </td>
         <td class="p-3">
           <a href="/m/{{ m.short }}" class="font-mono text-gray-900">{{ m.label }}</a>
-          <div class="font-mono text-xs text-gray-400">{{ m.short }}{% if m.vmc_missing %} · VMC missing{% endif %}</div>
+          <div class="font-mono text-xs text-gray-400">{{ m.short }}{% if m.vmc_missing %} · no VMC{% endif %}</div>
         </td>
         <td class="p-3">
           {% if m.owner_email %}<a href="/admin/machines?owner={{ m.owner_id }}" class="text-gray-700">{{ m.owner_email }}</a>{% else %}<span class="text-gray-600">unclaimed</span>{% endif %}
-          {% if m.claim_open %}<div class="text-xs text-gray-400">claim open</div>{% endif %}
+          {% if m.claim_open %}<div class="text-xs text-amber-600">claim open</div>{% endif %}
         </td>
         <td class="p-3 text-gray-600">{{ m.age_text }}</td>
         <td class="p-3">
           {% if m.fault_count %}
-          <span class="{% if m.has_safety_fault %}text-red-600{% else %}text-amber-600{% endif %}">{{ m.fault_count }}{% if m.top_fault %} · {{ m.top_fault.code }}{% endif %}</span>
+          <span class="{% if m.top_fault and m.top_fault.gate == 'safety' %}text-red-600{% elif m.top_fault and m.top_fault.gate == 'fulfillment' %}text-amber-600{% else %}text-gray-600{% endif %}">{{ m.fault_count }}{% if m.top_fault %} · {{ m.top_fault.code }}{% endif %}</span>
           {% else %}<span class="text-gray-400">0</span>{% endif %}
         </td>
         <td class="p-3">
