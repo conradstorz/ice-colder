@@ -86,6 +86,8 @@ def meter_key(client_ip: str) -> str:
         addr = ipaddress.ip_address(client_ip)
     except ValueError:
         return client_ip
+    if addr.version == 6 and addr.ipv4_mapped is not None:
+        return str(addr.ipv4_mapped)
     if addr.version == 6:
         return str(ipaddress.ip_network(f"{client_ip}/64", strict=False))
     return client_ip

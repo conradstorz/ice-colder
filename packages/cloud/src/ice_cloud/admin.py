@@ -74,7 +74,7 @@ def _purge_fragment(request: Request, confirming: bool, **extra) -> Response:
     base = "/admin/purge-unclaimed"
     return _templates(request).TemplateResponse(
         request,
-        "partials/admin_unclaimed_purge.html",
+        "partials/admin_unbind.html",
         {
             "label": "Purge all unclaimed",
             "confirm_label": "Confirm purge",
@@ -178,13 +178,7 @@ async def purge_unclaimed(request: Request):
     purged = await asyncio.to_thread(state.repo.purge_all_unclaimed_machines)
     await delete_snapshots(state.store, purged)
     logger.warning("Admin purged {} unclaimed machines", len(purged))
-    return _purge_fragment(
-        request,
-        False,
-        oob=True,
-        unclaimed=await asyncio.to_thread(state.repo.count_unclaimed_machines),
-        purged=len(purged),
-    )
+    return Response(status_code=200, headers={"HX-Refresh": "true"})
 
 
 async def _set_suspended(request: Request, account_id: str, suspend: bool) -> Response:

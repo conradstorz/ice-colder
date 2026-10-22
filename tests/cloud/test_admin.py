@@ -211,7 +211,7 @@ def test_purge_unclaimed_deletes_only_unclaimed_and_their_snapshots(cloud, signe
     r = cloud.post("/admin/purge-unclaimed", headers=HX)
 
     assert r.status_code == 200
-    assert "Unclaimed machines: 0" in r.text and "purged 2" in r.text
+    assert r.headers["hx-refresh"] == "true"
     assert repo.machine(signer.fingerprint) is not None
     assert all(repo.machine(s.fingerprint) is None for s in squatters)
     assert not _snapshot_path(cloud, squatters[0]).exists()

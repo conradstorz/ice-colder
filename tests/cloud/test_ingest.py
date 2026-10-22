@@ -295,6 +295,8 @@ def test_meter_key_collapses_ipv6_to_its_64():
     a = meter_key("2001:db8:1:2::1")
     assert a == meter_key("2001:db8:1:2:ffff:ffff:ffff:ffff") == "2001:db8:1:2::/64"
     assert a != meter_key("2001:db8:1:3::1")
+    assert meter_key("::ffff:203.0.113.9") == "203.0.113.9"
+    assert meter_key("::ffff:203.0.113.9") != meter_key("::ffff:203.0.113.10")
     assert meter_key("unknown") == "unknown"
     assert meter_key("not an ip") == "not an ip"
 

@@ -124,8 +124,27 @@ SQL
 
 The `SELECT` prints the deleted fingerprints; remove each stored report with
 `rm /opt/ice-cloud/cloud_data/machines/<fingerprint>.json` (the files are owned by uid 1000,
-so use `sudo`). If the host has no `sqlite3`, run the same statements through
-`docker exec -i ice-cloud python -c` with the `sqlite3` module. Take a backup first
+so use `sudo`). If the host has no `sqlite3`, run the same statements inside the container
+with Python (`ice-cloud` is the container name used throughout this document):
+
+```
+docker exec -i ice-cloud python - <<'PY'
+import sqlite3
+conn = sqlite3.connect("/app/cloud_data/cloud.db", isolation_level=None)
+conn.execute("PRAGMA foreign_keys=ON")
+conn.execute("BEGIN")
+fps = [r[0] for r in conn.execute("SELECT fingerprint FROM machines WHERE owner_id IS NULL")]
+for fp in fps:
+    for t in ("consumed_claim_hashes", "bundle_uploads", "memberships", "machine_alert_state",
+              "alert_prefs", "alert_deliveries", "alert_events", "machines"):
+        conn.execute(f"DELETE FROM {t} WHERE fingerprint = ?", (fp,))
+conn.execute("COMMIT")
+print("
+".join(fps))
+PY
+```
+
+Take a backup first
 (`docs/backups.md`); a machine whose owner was mid-claim is lost the same way as by the button.
 
 SMTP is not configured, so the cloud answers every report with `alerts_handled: false` and
