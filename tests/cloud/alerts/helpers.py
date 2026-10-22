@@ -67,5 +67,5 @@ class Env:
         return stored
 
     def deliveries(self, stored):
-        out = self.repo.deliveries_for_events([e.id for e in stored])
+        out = self.repo.deliveries_for_events(FP, [e.id for e in stored])
         return {d.id: d for ds in out.values() for d in ds}.values()

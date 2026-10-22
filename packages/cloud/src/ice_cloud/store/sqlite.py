@@ -137,6 +137,7 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (account_id, fingerprint)
     )
     """,
+    "CREATE INDEX alert_deliveries_by_machine ON alert_deliveries (fingerprint, id)",
 ]
 
 MAX_DELIVERY_ATTEMPTS = 5
@@ -1020,14 +1021,17 @@ class SqliteRepository:
         return _dt(row["at"])
 
     def deliveries_for_events(
-        self, event_ids: list[int] | tuple[int, ...]
+        self, fingerprint: str, event_ids: list[int] | tuple[int, ...]
     ) -> dict[int, list[Delivery]]:
         wanted = set(event_ids)
         found: dict[int, list[Delivery]] = {i: [] for i in wanted}
         if not wanted:
             return found
         with self._connect() as conn:
-            rows = conn.execute("SELECT * FROM alert_deliveries ORDER BY id").fetchall()
+            rows = conn.execute(
+                "SELECT * FROM alert_deliveries WHERE fingerprint = ? ORDER BY id",
+                (fingerprint,),
+            ).fetchall()
         for delivery in map(_delivery, rows):
             for event_id in delivery.event_ids:
                 if event_id in wanted:

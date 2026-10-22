@@ -338,5 +338,7 @@ class Repository(Protocol):
     def last_sent_at(self, fingerprint: str, account_id: str) -> datetime | None: ...
 
     def deliveries_for_events(
-        self, event_ids: list[int] | tuple[int, ...]
-    ) -> dict[int, list[Delivery]]: ...
+        self, fingerprint: str, event_ids: list[int] | tuple[int, ...]
+    ) -> dict[int, list[Delivery]]:
+        """This machine's deliveries grouped by the given event ids."""
+        ...

@@ -628,9 +628,23 @@ def test_deliveries_for_events_groups_by_event(repo):
     a, b, c = repo.record_alert_events([_event(key=k) for k in "abc"])
     d1 = repo.create_delivery(FP, owner.id, [a.id, b.id], "sent", T0)
     d2 = repo.create_delivery(FP, tech.id, [b.id], "muted", T0)
-    got = repo.deliveries_for_events([a.id, b.id, c.id])
+    got = repo.deliveries_for_events(FP, [a.id, b.id, c.id])
     assert got == {a.id: [d1], b.id: [d1, d2], c.id: []}
-    assert repo.deliveries_for_events([]) == {}
+    assert repo.deliveries_for_events(FP, []) == {}
+
+
+def test_deliveries_for_events_ignores_other_machines(repo):
+    owner, _tech = _claimed(repo)
+    other = "other-fp"
+    repo.register_machine(other, KEY, "b", T0)
+    repo.claim_machine(other, owner.id, T0)
+    (a,) = repo.record_alert_events([_event()])
+    (b,) = repo.record_alert_events([_event(fp=other)])
+    mine = repo.create_delivery(FP, owner.id, [a.id], "sent", T0)
+    theirs = repo.create_delivery(other, owner.id, [a.id, b.id], "sent", T0)
+    got = repo.deliveries_for_events(FP, [a.id, b.id])
+    assert got == {a.id: [mine], b.id: []}
+    assert theirs not in got[a.id]
 
 
 def _seed_alerts(repo, owner, tech):
@@ -649,7 +663,7 @@ def test_claim_change_resets_alert_state_prefs_and_history(repo):
     assert repo.alert_state(FP) is None
     assert repo.is_muted(tech.id, FP) is False
     assert repo.alert_events(FP, limit=5) == []
-    assert repo.deliveries_for_events([e.id]) == {e.id: []}
+    assert repo.deliveries_for_events(FP, [e.id]) == {e.id: []}
     assert repo.last_sent_at(FP, owner.id) is None
 
 
@@ -676,7 +690,7 @@ def test_unbind_deletes_everything_alert(repo):
     repo.unbind_machine(FP)
     assert repo.alert_state(FP) is None
     assert repo.alert_events(FP, limit=5) == []
-    assert repo.deliveries_for_events([e.id]) == {e.id: []}
+    assert repo.deliveries_for_events(FP, [e.id]) == {e.id: []}
     assert repo.pending_deliveries(before=T0 + timedelta(days=1)) == []
     assert repo.last_sent_at(FP, owner.id) is None
     assert repo.is_muted(tech.id, FP) is False

@@ -43,7 +43,7 @@ async def alerts_page(request: Request, access=Depends(require_machine_access())
         repo.alert_events, machine.fingerprint, limit=HISTORY_LIMIT
     )
     by_event = await asyncio.to_thread(
-        repo.deliveries_for_events, [e.id for e in events]
+        repo.deliveries_for_events, machine.fingerprint, [e.id for e in events]
     )
     privileged = role in ("owner", "admin")
     names: dict[str, str] = {}
