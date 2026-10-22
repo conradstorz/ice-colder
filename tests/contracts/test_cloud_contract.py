@@ -220,3 +220,43 @@ def test_contract_doc_has_0_3_0_section():
         Path(__file__).resolve().parents[2] / "docs/contracts/edge-cloud/CONTRACT.md"
     ).read_text(encoding="utf-8")
     assert "## 0.3.0" in doc
+
+
+def test_fault_lists_are_capped_at_200():
+    data = _example()
+    active = data["health"]["active_faults"][0]
+    fault = data["faults"][0]
+    data["health"]["active_faults"] = [active] * 200
+    data["faults"] = [fault] * 200
+    MachineReport.model_validate(data)
+    for path in (("health", "active_faults"), ("faults",)):
+        over = _example()
+        over["health"]["active_faults"] = [active] * 200
+        over["faults"] = [fault] * 200
+        target = over
+        for part in path[:-1]:
+            target = target[part]
+        target[path[-1]] = target[path[-1]] + [target[path[-1]][0]]
+        with pytest.raises(ValidationError):
+            MachineReport.model_validate(over)
+
+
+@pytest.mark.parametrize("field", ["key", "sku", "product", "code", "description"])
+@pytest.mark.parametrize("where", ["health", "faults"])
+def test_fault_strings_are_capped_at_200(where, field):
+    data = _example()
+    entry = (
+        data["health"]["active_faults"][0] if where == "health" else data["faults"][0]
+    )
+    entry[field] = "x" * 200
+    MachineReport.model_validate(data)
+    entry[field] = "x" * 201
+    with pytest.raises(ValidationError):
+        MachineReport.model_validate(data)
+
+
+def test_selected_product_is_capped_at_200():
+    data = _example()
+    data["health"]["status"]["selected_product"] = "x" * 201
+    with pytest.raises(ValidationError):
+        MachineReport.model_validate(data)

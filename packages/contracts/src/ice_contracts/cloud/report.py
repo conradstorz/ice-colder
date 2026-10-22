@@ -8,6 +8,12 @@ from ice_contracts.cloud.ui import DIGEST_PATTERN
 
 CLOUD_CONTRACT_VERSION = "0.3.0"
 
+# Caps added without a version bump (real edges build these from a fixed fault
+# table, far below them): a claimed fake machine must not be able to flap a huge
+# faults list and mint thousands of alert rows per report.
+MAX_FAULTS = 200
+MAX_TEXT = 200
+
 _UUID4_PATTERN = (
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 )
@@ -24,7 +30,9 @@ class UiIdentity(_Model):
 
 class StatusView(_Model):
     state: str
-    selected_product: str | None  # the product's name, not its sku
+    selected_product: str | None = Field(
+        max_length=MAX_TEXT
+    )  # the product's name, not its sku
     credit_escrow: float
     last_payment_method: str | None
 
@@ -32,13 +40,13 @@ class StatusView(_Model):
 class FaultBase(_Model):
     """The seven keys FaultService.active_faults() emits."""
 
-    key: str
-    sku: str | None
-    product: str | None
-    code: str
+    key: str = Field(max_length=MAX_TEXT)
+    sku: str | None = Field(max_length=MAX_TEXT)
+    product: str | None = Field(max_length=MAX_TEXT)
+    code: str = Field(max_length=MAX_TEXT)
     severity: str
     scope: str  # "product" | "machine"
-    description: str
+    description: str = Field(max_length=MAX_TEXT)
 
 
 class ActiveFaultView(FaultBase):
@@ -64,7 +72,7 @@ class HealthSummary(_Model):
     status: StatusView | None
     is_healthy: bool | None
     issues: list[str]
-    active_faults: list[ActiveFaultView]
+    active_faults: list[ActiveFaultView] = Field(max_length=MAX_FAULTS)
     payment_enabled: bool | None
     payment_reasons: list[str]
     machine_stopped: bool | None
@@ -118,5 +126,5 @@ class MachineReport(_Model):
     ui: UiIdentity
     health: HealthSummary
     kpi: KpiSummary
-    faults: list[FaultView]
+    faults: list[FaultView] = Field(max_length=MAX_FAULTS)
     health_page: HealthPageSummary

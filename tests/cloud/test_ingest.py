@@ -76,6 +76,19 @@ def test_invalid_body_is_422(client, machine):
     assert r.status_code == 422
 
 
+def _with_faults(count: int):
+    base = make_report()
+    fault = base.faults[0].model_dump(mode="json")
+    return base.model_copy(
+        update={"faults": [base.faults[0].model_copy(update=fault)] * count}
+    )
+
+
+def test_report_with_200_faults_is_accepted_and_201_is_422(client, owned):
+    assert _post(client, owned, _with_faults(200)).status_code == 200
+    assert _post(client, owned, _with_faults(201)).status_code == 422
+
+
 def test_bundle_put_201_then_200_then_400_for_corrupt_bytes(client, owned):
     machine = owned
     data = build_bundle()

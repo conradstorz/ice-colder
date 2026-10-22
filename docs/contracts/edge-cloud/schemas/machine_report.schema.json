@@ -4,12 +4,14 @@
       "additionalProperties": false,
       "properties": {
         "key": {
+          "maxLength": 200,
           "title": "Key",
           "type": "string"
         },
         "sku": {
           "anyOf": [
             {
+              "maxLength": 200,
               "type": "string"
             },
             {
@@ -21,6 +23,7 @@
         "product": {
           "anyOf": [
             {
+              "maxLength": 200,
               "type": "string"
             },
             {
@@ -30,6 +33,7 @@
           "title": "Product"
         },
         "code": {
+          "maxLength": 200,
           "title": "Code",
           "type": "string"
         },
@@ -42,6 +46,7 @@
           "type": "string"
         },
         "description": {
+          "maxLength": 200,
           "title": "Description",
           "type": "string"
         },
@@ -115,12 +120,14 @@
       "additionalProperties": false,
       "properties": {
         "key": {
+          "maxLength": 200,
           "title": "Key",
           "type": "string"
         },
         "sku": {
           "anyOf": [
             {
+              "maxLength": 200,
               "type": "string"
             },
             {
@@ -132,6 +139,7 @@
         "product": {
           "anyOf": [
             {
+              "maxLength": 200,
               "type": "string"
             },
             {
@@ -141,6 +149,7 @@
           "title": "Product"
         },
         "code": {
+          "maxLength": 200,
           "title": "Code",
           "type": "string"
         },
@@ -153,6 +162,7 @@
           "type": "string"
         },
         "description": {
+          "maxLength": 200,
           "title": "Description",
           "type": "string"
         },
@@ -296,6 +306,7 @@
           "items": {
             "$ref": "#/$defs/ActiveFaultView"
           },
+          "maxItems": 200,
           "title": "Active Faults",
           "type": "array"
         },
@@ -513,6 +524,7 @@
         "selected_product": {
           "anyOf": [
             {
+              "maxLength": 200,
               "type": "string"
             },
             {
@@ -620,6 +632,7 @@
       "items": {
         "$ref": "#/$defs/FaultView"
       },
+      "maxItems": 200,
       "title": "Faults",
       "type": "array"
     },
