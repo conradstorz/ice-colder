@@ -129,11 +129,11 @@ async def test_predicate_exception_delivers_locally():
 # ── delivery failure is retried, not lost ────────────────────
 
 
-def _email_notifier(monkeypatch, smtp):
+def _email_notifier(monkeypatch, smtp, clock=None):
     """A Notifier whose email gateway is 'configured' and whose SMTP call is `smtp`."""
     from ice_edge.notify import notifier as notifier_mod
 
-    n = Notifier(ConfigModel())
+    n = Notifier(ConfigModel(), clock=clock)
     gw = SimpleNamespace(is_configured=True, default_from="vmc@example.com")
     monkeypatch.setattr(
         ConfigModel,
@@ -145,25 +145,8 @@ def _email_notifier(monkeypatch, smtp):
     return n
 
 
-def _fake_clock(monkeypatch):
-    clock = [1000.0]
-    fake_loop = SimpleNamespace(
-        time=lambda: clock[0],
-        run_in_executor=lambda _ex, fn, *a: _run_sync(fn, *a),
-    )
-    monkeypatch.setattr(
-        "ice_edge.notify.notifier.asyncio",
-        SimpleNamespace(get_running_loop=lambda: fake_loop),
-    )
-    return clock
-
-
-async def _run_sync(fn, *args):
-    return fn(*args)
-
-
 async def test_failed_email_is_retried_after_retry_window(monkeypatch):
-    clock = _fake_clock(monkeypatch)
+    clock = [1000.0]
     calls = []
     outcomes = [RuntimeError("smtp down"), None]
 
@@ -173,7 +156,7 @@ async def test_failed_email_is_retried_after_retry_window(monkeypatch):
         if outcome:
             raise outcome
 
-    n = _email_notifier(monkeypatch, smtp)
+    n = _email_notifier(monkeypatch, smtp, clock=lambda: clock[0])
     alert = Alert(level="error", source="vmc", message="leak", code="WTR-104")
 
     assert await n.send(alert) is False
@@ -200,3 +183,22 @@ async def test_deferred_to_cloud_is_handled():
     n = Notifier(ConfigModel(), cloud_handles_alerts=lambda: True)
     alert = Alert(level="error", source="vmc", message="x", code="ICE-301")
     assert await n.send(alert) is True
+
+
+async def test_failed_flag_cleared_when_later_deferred_to_cloud(monkeypatch):
+    clock = [1000.0]
+    deferred = [False]
+
+    def smtp(_cfg, _msg):
+        raise RuntimeError("down")
+
+    n = _email_notifier(monkeypatch, smtp, clock=lambda: clock[0])
+    n.set_cloud_handles_alerts(lambda: deferred[0])
+    alert = Alert(level="error", source="vmc", message="leak", code="WTR-104")
+    assert await n.send(alert) is False
+    clock[0] += Notifier.RETRY_SECONDS + 1
+    deferred[0] = True
+    assert await n.send(alert) is True
+    deferred[0] = False
+    clock[0] += 1000  # past the success cooldown
+    assert await n.send(alert) is False  # fresh failure, not a stale retry window

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from loguru import logger
 
+from tests.fakes import settle
 from ice_common.config_model import ConfigModel
 from ice_edge.monitoring.health_monitor import HealthMonitor, SubsystemStatus, Alert
 from ice_edge.notify.notifier import Notifier
@@ -846,3 +847,25 @@ class TestPendingAlertRetry:
         monitor.set_alert_callback(cb)
         await _round(monitor)
         assert monitor.pending_alert_keys == frozenset()
+
+    @pytest.mark.asyncio
+    async def test_clear_during_inflight_failed_send_does_not_resurrect(self):
+        monitor = HealthMonitor()
+        monitor.update_mqtt_status(True)
+        gate = asyncio.Event()
+        calls = []
+
+        async def cb(_alert):
+            calls.append(1)
+            await gate.wait()
+            return False
+
+        monitor.set_alert_callback(cb)
+        task = asyncio.create_task(monitor.raise_alert("k1", "error", "vmc", "m"))
+        await settle()
+        monitor.clear_alert("k1")
+        gate.set()
+        await task
+        assert monitor.pending_alert_keys == frozenset()
+        await _round(monitor)
+        assert len(calls) == 1

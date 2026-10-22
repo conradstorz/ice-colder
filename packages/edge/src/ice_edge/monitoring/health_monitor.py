@@ -543,11 +543,14 @@ class HealthMonitor:
             handled = False
         if handled:
             self._pending_alerts.pop(key, None)
-        else:
+        elif key in self._fired_alerts:
+            # Only while the fault is still raised: it may have cleared mid-send.
             self._pending_alerts[key] = alert
 
     async def _retry_pending(self) -> None:
         for key, alert in list(self._pending_alerts.items()):
+            if key not in self._pending_alerts:
+                continue
             await self._deliver(key, alert)
 
     async def _fire_alert(

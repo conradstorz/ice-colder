@@ -39,7 +39,9 @@ class Notifier:
         config: ConfigModel,
         *,
         cloud_handles_alerts: Callable[[], bool] = lambda: False,
+        clock: Callable[[], float] | None = None,
     ):
+        self._clock = clock
         self._cloud_handles_alerts = cloud_handles_alerts
         self._config = config
         self._owner = config.machine_owner
@@ -73,7 +75,7 @@ class Notifier:
         the cloud, or suppressed by the success cooldown); False when a
         configured email send failed or a retry is still pending.
         """
-        now = asyncio.get_running_loop().time()
+        now = self._clock() if self._clock else asyncio.get_running_loop().time()
         key = self._cooldown_key(alert)
         last = self._last_sent.get(key)
         # `last is None` must mean "never sent": loop.time() is monotonic and can
@@ -97,6 +99,7 @@ class Notifier:
         if deferred:
             logger.info(f"Notifier: deferred to cloud: {key}")
             self._last_sent[key] = now
+            self._last_failed.pop(key, None)
             return True
 
         logger.info(
