@@ -179,6 +179,8 @@ def test_percentages_largest_remainder():
     p = percentages([1, 1, 1])
     assert sum(p) == 100
     assert sorted(p) == [33, 33, 34]
+    p = percentages([2, 1, 0, 0])
+    assert p == [67, 33, 0, 0]
     assert percentages([0, 0]) == [0, 0]
 
 
@@ -218,6 +220,59 @@ def test_attention_order_and_uniqueness():
     assert [a.tone for a in att] == ["bad", "bad", "warn", "warn"]
 
 
+def test_attention_silent_longest_first():
+    ms = [
+        _machine("a1" * 32, "short"),
+        _machine("b1" * 32, "long"),
+        _machine("c1" * 32, "mid"),
+    ]
+    reports = {
+        "a1" * 32: _report(age=500, faults=False),
+        "b1" * 32: _report(age=9000, faults=False),
+        "c1" * 32: _report(age=2000, faults=False),
+    }
+    att = _view(ms, reports).attention
+    assert [a.row.label for a in att] == ["long", "mid", "short"]
+
+
+def test_top_fault_prefers_safety_gate_over_earlier_code():
+    base = _report()
+    early = FaultView.model_validate(
+        {**_FAULT, "gate": "fulfillment", "pending_sale": None, "code": "AAA-100"}
+    )
+    safety = FaultView.model_validate(
+        {**_FAULT, "gate": "safety", "pending_sale": None, "code": "WTR-103"}
+    )
+    report = base.model_copy(update={"faults": [early, safety]})
+    m = _machine("a1" * 32, "a")
+    row = _view([m], {m.fingerprint: report}).rows[0]
+    assert row.top_fault.code == "WTR-103"
+    assert row.has_safety_fault is True
+
+
+def test_report_without_kpi_summary_contributes_nothing():
+    base = _report(faults=False)
+    report = base.model_copy(
+        update={"kpi": base.kpi.model_copy(update={"summary": None})}
+    )
+    m = _machine("a1" * 32, "a")
+    sec = {h.label: h for h in _view([m], {m.fingerprint: report}).secondary}
+    assert sec["Revenue (24 h)"].value == "$0.00"
+    assert sec["Revenue (24 h)"].sub == "0 products out · 0 vends failed"
+    assert sec["Uptime (24 h)"].value == "—"
+
+
+def test_owner_without_account_falls_back_to_owner_id():
+    m = _machine("a1" * 32, "a", owner_id="ghost")
+    v = _view([m], {m.fingerprint: _report(faults=False)})
+    assert v.rows[0].owner_email == "ghost"
+    assert v.headlines[1].value == 1
+    (owner,) = v.owners
+    assert (owner.account_id, owner.email, owner.name) == ("ghost", "ghost", "")
+    assert owner.suspended is False
+    assert owner.machines == 1
+
+
 def test_attention_capped_at_12():
     ms = [_machine(f"{i:02x}" * 32, f"m{i:02d}") for i in range(20)]
     reports = {m.fingerprint: _report(faults=False) for m in ms}
@@ -243,7 +298,7 @@ def test_owner_rows_count_distinct_techs():
         "z@x.io",
         2,
         1,
-        0 + 1,
+        1,
     )
     assert (first.faulted, first.techs, first.alerts_24h) == (1, 2, 3)
     assert first.url == "/admin/machines?owner=o1"
@@ -269,6 +324,22 @@ def test_filter_rows_each_filter_and_conjunction():
     assert labels(payment="blocked") == []
     assert labels(claimed=True, status=MachineStatus.online) == ["claimed-faulted"]
     assert labels(owner="o1", faulted=True) == []
+
+
+def _blocked_health(report):
+    return report.health.model_copy(update={"payment_enabled": False})
+
+
+def test_faulted_and_payment_filters_match_online_only():
+    ms = [_machine("a1" * 32, "stale"), _machine("b1" * 32, "live")]
+    stale = _report(age=1000)
+    stale = stale.model_copy(update={"health": _blocked_health(stale)})
+    live = _report(faults=False)
+    live = live.model_copy(update={"health": _blocked_health(live)})
+    rows = _view(ms, {"a1" * 32: stale, "b1" * 32: live}).rows
+    assert stale.faults
+    assert [r.label for r in filter_rows(rows, faulted=True)] == []
+    assert [r.label for r in filter_rows(rows, payment="blocked")] == ["live"]
 
 
 def test_rows_sorted_silent_first():

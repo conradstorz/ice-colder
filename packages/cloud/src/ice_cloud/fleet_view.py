@@ -174,14 +174,14 @@ def _row(
         status=classify(report, now),
         age_seconds=age,
         age_text=humanize_seconds(age) if age is not None else "never",
-        interval_seconds=report.report_interval_seconds if report else None,
+        interval_seconds=report.report_interval_seconds if report is not None else None,
         fault_count=len(report.faults) if report is not None else 0,
         top_fault=_top_fault(report) if report is not None else None,
         has_safety_fault=report is not None
         and any(f.gate == "safety" for f in report.faults),
-        payment_enabled=report.health.payment_enabled if report else None,
+        payment_enabled=report.health.payment_enabled if report is not None else None,
         payment_reason=reasons[0] if reasons else None,
-        edge_build=report.edge_build if report else None,
+        edge_build=report.edge_build if report is not None else None,
         ui_mismatch=report is not None and report.ui.digest != installed_digest,
         alerts_24h=alerts_24h,
         claim_open=machine.claim_code_hash is not None
@@ -256,8 +256,6 @@ def _owner_rows(
     owners: list[OwnerRow] = []
     for oid in {r.owner_id for r in rows if r.owner_id is not None}:
         acct = by_account.get(oid)
-        if acct is None:
-            continue
         mine = [r for r in rows if r.owner_id == oid]
         techs: set[str] = set()
         for r in mine:
@@ -266,9 +264,9 @@ def _owner_rows(
         owners.append(
             OwnerRow(
                 account_id=oid,
-                email=acct.email,
-                name=acct.name,
-                suspended=acct.suspended_at is not None,
+                email=acct.email if acct is not None else oid,
+                name=acct.name if acct is not None else "",
+                suspended=acct is not None and acct.suspended_at is not None,
                 machines=len(mine),
                 online=len(online),
                 silent=sum(1 for r in mine if r.status is MachineStatus.silent),
@@ -302,7 +300,7 @@ def build_fleet_view(
             reports.get(m.fingerprint),
             owner_email=by_account[m.owner_id].email
             if m.owner_id in by_account
-            else None,
+            else m.owner_id,
             alerts_24h=alert_counts.get(m.fingerprint, 0),
             installed_digest=installed_digest,
             now=now,
@@ -445,15 +443,25 @@ def filter_rows(
     payment: Literal["blocked"] | None = None,
     owner: str | None = None,
 ) -> list[MachineRow]:
+    """Filter rows; all given filters must match.
+
+    `faulted` and `payment="blocked"` match online machines only: a silent
+    machine's last report is stale, so its faults and payment state are not
+    current (this keeps the list consistent with the headline cards).
+    """
     out: list[MachineRow] = []
     for r in rows:
         if status is not None and r.status is not status:
             continue
         if claimed is not None and (r.owner_id is not None) != claimed:
             continue
-        if faulted is not None and (r.fault_count > 0) != faulted:
-            continue
-        if payment == "blocked" and r.payment_enabled is not False:
+        if faulted is not None:
+            is_faulted = r.status is MachineStatus.online and r.fault_count > 0
+            if is_faulted != faulted:
+                continue
+        if payment == "blocked" and not (
+            r.status is MachineStatus.online and r.payment_enabled is False
+        ):
             continue
         if owner is not None and r.owner_id != owner:
             continue
