@@ -84,14 +84,15 @@ def test_bundle_with_wrong_digest_in_url_is_400(client, owned):
     assert "digest" in r.json()["detail"]
 
 
-def test_oversize_bundle_is_rejected_before_extraction(client, machine, tmp_path):
+def test_oversize_bundle_is_rejected_before_extraction(client, owned, tmp_path):
     big = b"\0" * (20 * 1024 * 1024 + 1)
-    r = _put(client, machine, "d" * 64, big)
+    r = _put(client, owned, "d" * 64, big)
     assert r.status_code == 413 and r.content == b""
     assert not (tmp_path / "ui").exists()
 
 
-def test_oversize_bundle_without_content_length_is_cut_off(client, machine):
+def test_oversize_bundle_without_content_length_is_cut_off(client, owned):
+    machine = owned
     big = b"\0" * (21 * 1024 * 1024)
     path = f"/api/v1/ui-bundles/{'d' * 64}"
     headers = machine.headers("PUT", path, big, now=client.app.state.now())

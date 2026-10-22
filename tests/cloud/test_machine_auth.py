@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 import pytest
+from fastapi.testclient import TestClient
 
 from ice_cloud.machine_auth import SeenSignatures
 from ice_contracts.cloud import signing
@@ -202,3 +203,117 @@ def test_replayed_claim_code_delete_does_not_wipe_a_newer_code(cloud, known):
     assert cloud.delete(path, headers=delete).status_code == 401
     row = cloud.app.state.repo.machine(known.fingerprint)
     assert row.claim_code_hash == "scrypt$new"
+
+
+BUNDLE = "/api/v1/ui-bundles/" + "d" * 64
+
+
+class BodyReads:
+    """Counts ``http.request`` messages the app pulls from ``receive``."""
+
+    def __init__(self, app) -> None:
+        self.count = 0
+        outer = self
+
+        class Counter:
+            def __init__(self, inner) -> None:
+                self.inner = inner
+
+            async def __call__(self, scope, receive, send):
+                async def counting():
+                    message = await receive()
+                    if message["type"] == "http.request":
+                        outer.count += 1
+                    return message
+
+                await self.inner(scope, counting, send)
+
+        app.add_middleware(Counter)
+
+
+@pytest.fixture
+def watched(cloud_app):
+    reads = BodyReads(cloud_app)
+    with TestClient(cloud_app, follow_redirects=False) as client:
+        yield client, reads
+
+
+def _own(client, signer):
+    register(client, signer)
+    owner = client.app.state.repo.upsert_account_from_login(
+        "sub-o", "o@example.com", "O", client.app.state.now()
+    )
+    assert client.app.state.repo.claim_machine(
+        signer.fingerprint, owner.id, client.app.state.now()
+    )
+
+
+def _bundle_put(client, headers, body=b"x" * 1024):
+    return client.put(BUNDLE, content=body, headers=headers)
+
+
+def test_unknown_fingerprint_bundle_put_does_not_read_the_body(watched):
+    client, reads = watched
+    stranger = Signer()
+    body = b"x" * (1024 * 1024)
+    headers = stranger.headers("PUT", BUNDLE, body, now=client.app.state.now())
+    r = _bundle_put(client, headers, body)
+    assert r.status_code == 401 and r.content == b""
+    assert reads.count == 0
+
+
+def test_unclaimed_machine_bundle_put_does_not_read_the_body(watched):
+    client, reads = watched
+    s = Signer()
+    register(client, s)
+    reads.count = 0
+    body = b"x" * (1024 * 1024)
+    headers = s.headers("PUT", BUNDLE, body, now=client.app.state.now())
+    r = _bundle_put(client, headers, body)
+    assert r.status_code == 401 and r.content == b""
+    assert reads.count == 0
+
+
+def _bad_headers(client, s, body=b"x" * 1024):
+    return s.headers("PUT", BUNDLE, b"other", now=client.app.state.now())
+
+
+def test_bad_signature_backs_off_without_reading_the_body(watched, clock):
+    client, reads = watched
+    s = Signer()
+    _own(client, s)
+    reads.count = 0
+    assert _bundle_put(client, _bad_headers(client, s)).status_code == 401
+    assert reads.count > 0  # it has to be read to be verified
+    reads.count = 0
+    r = _bundle_put(client, _bad_headers(client, s))
+    assert r.status_code == 401 and r.content == b""
+    assert reads.count == 0
+    clock.advance(2)
+    reads.count = 0
+    assert _bundle_put(client, _bad_headers(client, s)).status_code == 401
+    assert reads.count > 0  # evaluated again after the delay
+
+
+def test_good_signature_resets_back_off(watched, clock):
+    client, reads = watched
+    s = Signer()
+    _own(client, s)
+    assert _bundle_put(client, _bad_headers(client, s)).status_code == 401
+    clock.advance(2)
+    assert signed(client, s, "PUT", BUNDLE, b"junk").status_code == 400
+    reads.count = 0
+    assert _bundle_put(client, _bad_headers(client, s)).status_code == 401
+    assert reads.count > 0  # a fresh first failure, not refused
+
+
+def test_stale_and_unknown_attempts_do_not_count_toward_back_off(cloud, known, clock):
+    path = _path(known)
+    stale = known.headers("POST", path, _body(), now=NOW)
+    clock.advance(signing.MAX_CLOCK_SKEW_SECONDS + 1)
+    assert _send(cloud, stale, path).status_code == 401
+    assert _send(cloud, stale, path).status_code == 401
+    stranger = Signer()
+    unk = stranger.headers("POST", _path(stranger), _body(), now=cloud.app.state.now())
+    assert _send(cloud, unk, _path(stranger)).status_code == 401
+    assert signed(cloud, known, "POST", path, _body()).status_code == 200

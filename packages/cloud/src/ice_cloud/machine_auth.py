@@ -18,6 +18,7 @@ from fastapi import FastAPI, Request, Response
 from loguru import logger
 from pydantic import ValidationError
 
+from ice_cloud.body_limit import BUNDLE_PREFIX
 from ice_cloud.store.repository import Machine
 from ice_contracts.cloud import signing
 from ice_contracts.cloud.identity import RegisterMachine
@@ -96,6 +97,13 @@ def _decode_key(value: str) -> bytes | None:
 async def require_machine(request: Request) -> Machine | None:
     """Verify the signature headers; return the machine, or None for a first
     registration (unknown fingerprint allowed on the register path only).
+
+    Order matters: nothing larger than the JSON cap is read before the caller
+    is a known, claimed machine inside its back-off allowance. Header, timestamp,
+    machine lookup, stored key, path fingerprint, claimed-for-bundles and the
+    per-(fingerprint, client) back-off all run before ``request.body()``. Only a
+    bad signature counts toward back-off (not an unknown machine, a stale
+    timestamp or a refusal), so a drifting clock cannot lock a machine out.
     """
     headers = request.headers
     fp = headers.get(signing.HEADER_MACHINE)
@@ -106,18 +114,11 @@ async def require_machine(request: Request) -> Machine | None:
     app = request.app
     if not signing.is_timestamp_fresh(timestamp, app.state.now()):
         raise MachineAuthError("stale or malformed timestamp", fp)
-    body = await request.body()
 
     machine: Machine | None = None
-    if request.url.path == REGISTER_PATH:
-        try:
-            reg = RegisterMachine.model_validate_json(body)
-        except ValidationError:
-            raise MachineAuthError("invalid register body", fp) from None
-        key = _decode_key(reg.public_key_b64)
-        if key is None or signing.fingerprint(key) != fp:
-            raise MachineAuthError("header fingerprint does not match key", fp)
-    else:
+    key: bytes | None = None
+    is_register = request.url.path == REGISTER_PATH
+    if not is_register:
         machine = await asyncio.to_thread(app.state.repo.machine, fp)
         if machine is None:
             raise MachineAuthError("unknown machine", fp)
@@ -127,12 +128,32 @@ async def require_machine(request: Request) -> Machine | None:
         path_fp = request.path_params.get("fingerprint")
         if path_fp is not None and path_fp != fp:
             raise MachineAuthError("path fingerprint mismatch", fp)
+        if request.url.path.startswith(BUNDLE_PREFIX) and machine.owner_id is None:
+            raise MachineAuthError("bundle from unclaimed machine", fp)
+
+    backoff = app.state.backoff
+    client_ip = backoff.client_ip(request)
+    if backoff.check("machine", fp, client_ip, trusted=True) is not None:
+        raise MachineAuthError("backing off", fp)
+
+    body = await request.body()
+    if is_register:
+        try:
+            reg = RegisterMachine.model_validate_json(body)
+        except ValidationError:
+            raise MachineAuthError("invalid register body", fp) from None
+        key = _decode_key(reg.public_key_b64)
+        if key is None or signing.fingerprint(key) != fp:
+            raise MachineAuthError("header fingerprint does not match key", fp)
+    assert key is not None
 
     message = signing.canonical_message(
         request.method, request.url.path, timestamp, body
     )
     if not signing.verify(key, message, signature):
+        backoff.record_failure("machine", fp, client_ip, trusted=True)
         raise MachineAuthError("bad signature", fp)
+    backoff.record_success("machine", fp, client_ip, trusted=True)
     now = app.state.now()
     if not app.state.seen_signatures.check_and_add(
         f"{fp}:{signature}", now.timestamp()
