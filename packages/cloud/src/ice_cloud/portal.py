@@ -25,6 +25,8 @@ from ice_cloud.auth import (
     require_machine_access,
     require_signed_in,
 )
+from ice_cloud import fleet_view
+from ice_cloud.fleet_view import STALE_FACTOR
 from ice_cloud.store.repository import Account, Machine
 from ice_cloud.ui_registry import ResolvedUi
 from ice_cloud.viewer import VIEWER, RemoteViewer
@@ -37,10 +39,9 @@ from ice_ui.tiles import availability_line, build_tiles, fault_count_line, healt
 from ice_ui.views.health import VMC_MISSING_HTML, pill_state
 
 COOKIE = "ice_cloud_machine"
-STALE_FACTOR = 3
 LEVEL_FLEET = Level(title="Fleet", url="/fleet")
 
-__all__ = ["VIEWER", "RemoteViewer", "router"]
+__all__ = ["STALE_FACTOR", "VIEWER", "RemoteViewer", "router"]
 
 router = APIRouter()
 
@@ -51,7 +52,7 @@ def _age_seconds(request: Request, report: MachineReport) -> float:
 
 
 def _is_stale(request: Request, report: MachineReport) -> bool:
-    return _age_seconds(request, report) > STALE_FACTOR * report.report_interval_seconds
+    return fleet_view.is_stale(report, request.app.state.now())
 
 
 async def _selected(
