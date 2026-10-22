@@ -339,3 +339,34 @@ def test_bad_registers_for_unknown_fingerprints_record_nothing(cloud, known):
     bad = known.headers("POST", path, b"other", now=cloud.app.state.now())
     assert _send(cloud, bad, path, body).status_code == 401
     assert backoff.check("machine", known.fingerprint, ip, trusted=True) is not None
+
+
+def _noncanonical_variant(signature: str) -> str:
+    """Another header string that base64-decodes to the same signature bytes."""
+    import base64
+
+    assert signature.endswith("==")
+    raw = base64.b64decode(signature, validate=True)
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    for char in alphabet:
+        variant = signature[:-3] + char + "=="
+        if variant != signature and base64.b64decode(variant) == raw:
+            return variant
+    raise AssertionError("no alternate encoding found")
+
+
+def test_reencoded_signature_cannot_replay_a_claim_code_delete(cloud, known):
+    path = f"/api/v1/machines/{known.fingerprint}/claim-code"
+    delete = known.headers("DELETE", path, b"", now=NOW)
+    assert cloud.delete(path, headers=delete).status_code == 204
+    body = b'{"claim_code_hash": "scrypt$new", "expires_at": "2026-10-20T14:05:00Z"}'
+    assert signed(cloud, known, "POST", path, body).status_code == 204
+    variant = {
+        **delete,
+        signing.HEADER_SIGNATURE: _noncanonical_variant(
+            delete[signing.HEADER_SIGNATURE]
+        ),
+    }
+    assert cloud.delete(path, headers=variant).status_code == 401
+    row = cloud.app.state.repo.machine(known.fingerprint)
+    assert row.claim_code_hash == "scrypt$new"

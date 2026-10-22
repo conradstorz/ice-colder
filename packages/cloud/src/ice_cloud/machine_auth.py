@@ -159,11 +159,17 @@ async def require_machine(request: Request) -> Machine | None:
         if known:
             backoff.record_failure("machine", fp, client_ip, trusted=True)
         raise MachineAuthError("bad signature", fp)
+    # Base64 ignores the unused trailing bits, so several header strings decode
+    # to one signature. Reject the non-canonical ones and key the replay cache
+    # on the decoded bytes so a re-encoding cannot slip past it.
+    raw_signature = base64.b64decode(signature, validate=True)
+    if base64.b64encode(raw_signature).decode("ascii") != signature:
+        raise MachineAuthError("non-canonical signature encoding", fp)
     if known:
         backoff.record_success("machine", fp, client_ip, trusted=True)
     now = app.state.now()
     if not app.state.seen_signatures.check_and_add(
-        f"{fp}:{signature}", now.timestamp()
+        f"{fp}:{raw_signature.hex()}", now.timestamp()
     ):
         raise MachineAuthError("replayed signature", fp)
     if machine is not None:
