@@ -1,4 +1,4 @@
-# Vending Machine Contract — v2.1.0
+# Vending Machine Contract — v2.2.0
 
 This document and the JSON Schema files in `schemas/` define the interface
 between the ice-colder VMC and the vending ESP32 firmware plus the MDB
@@ -110,6 +110,12 @@ A command whose parameters fail the contract's bounds (e.g., `water_valve` with 
 ### Capabilities advertisement
 
 `SubsystemCapabilities.commands` lists **every** command the firmware supports, including the three standard commands (`ping`, `self_test`, `force_report`), the actuator commands (`dispense`, `water_valve`, `bill_acceptor_test`, `coin_return_test`, `card_reader_test`), and any control commands (`set_interval` for the ice maker). The VMC maintains a server-side allowlist, `TESTABLE_COMMANDS` in `packages/contracts/src/ice_contracts/board/common.py`, containing exactly the standard commands and the test-mode actuator commands; this allowlist is separate from what firmware advertises. A test button in the dashboard appears only for a command that is both allowlisted and advertised by the subsystem, ensuring firmware that ignores the command channel remains unaffected and a crafted request cannot invoke a control command through the test UI.
+
+## 2.2.0 (2026-10-22, additive)
+
+- `FaultCode` gains `DATA-103` (event database unavailable; sales are being
+  journalled to the fallback file). Machine-scope `warning`.
+- It is not in `PAYMENT_BLOCKING_FAULTS`, which stays at seven codes.
 
 ## 2.1.0 (2026-10-18, additive)
 

@@ -268,14 +268,17 @@ class EventRecorder:
             # healthy database aside would permanently lose its history for
             # no reason. Nor may it stop the machine at boot: log it, flag
             # db_unavailable (main.py raises DATA-103) and let construction
-            # finish; every downstream user already tolerates an unwritable
-            # database (see the contract described below).
+            # finish. record_sale journals every sale on its own connection;
+            # the writer thread either swallows per-item insert failures or,
+            # when its own connect fails (e.g. an unopenable parent), exits
+            # and leaves record() rows queued unwritten while flush() returns
+            # at once -- event history is lost, no sale is.
             if isinstance(exc, OSError) or not _is_corruption_error(exc):
                 logger.exception(
-                    f"EventRecorder: could not open the event database at "
-                    f"{self._db_path} (not corruption: read-only, locked or "
-                    "unopenable); the database is unavailable for this "
-                    "process. record_sale will journal every sale."
+                    f"EventRecorder: the event database at {self._db_path} "
+                    "could not be initialized (not corruption: read-only, "
+                    "locked or unopenable); the database is unavailable for "
+                    "this process. record_sale will journal every sale."
                 )
                 self.db_unavailable = True
                 self._start_writer()

@@ -269,7 +269,6 @@ def test_reconcile_raises_data_103_only_when_db_unavailable(
 
     class StubRecorder:
         db_was_corrupt = False
-        db_unavailable = False
         corrupt_backup_path = None
         db_unavailable = unavailable
 
