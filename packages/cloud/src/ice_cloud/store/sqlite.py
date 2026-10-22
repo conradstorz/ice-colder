@@ -522,6 +522,27 @@ class SqliteRepository:
             ).fetchone()
         return int(row["n"])
 
+    def prune_alert_history(self, before: datetime) -> int:
+        cutoff = _iso(before)
+        with self._tx() as conn:
+            events = conn.execute(
+                "DELETE FROM alert_events WHERE at < ?", (cutoff,)
+            ).rowcount
+            deliveries = conn.execute(
+                "DELETE FROM alert_deliveries WHERE attempted_at < ?"
+                " AND (status IN ('sent', 'muted')"
+                " OR (status = 'failed' AND attempts >= ?))",
+                (cutoff, MAX_DELIVERY_ATTEMPTS),
+            ).rowcount
+            conn.execute("DELETE FROM bundle_uploads WHERE uploaded_at < ?", (cutoff,))
+            conn.execute(
+                "DELETE FROM invitations WHERE"
+                " (accepted_by IS NOT NULL AND accepted_at < ?)"
+                " OR (accepted_by IS NULL AND expires_at < ?)",
+                (cutoff, cutoff),
+            )
+        return events + deliveries
+
     def purge_unclaimed_machines(self, not_seen_since: datetime) -> list[str]:
         with self._tx() as conn:
             rows = conn.execute(

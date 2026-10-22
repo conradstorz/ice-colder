@@ -816,3 +816,56 @@ def test_purge_unclaimed_deletes_only_stale_unclaimed_and_cascades(repo):
     assert repo.alert_state(FP) is None
     assert repo.count_unclaimed_machines() == 1
     assert repo.purge_unclaimed_machines(cutoff) == []
+
+
+def test_prune_alert_history_removes_old_settled_rows_and_keeps_the_rest(repo):
+    owner, tech = _claimed(repo)
+    cutoff = T0 + timedelta(days=90)
+    old, new = T0 + timedelta(days=1), cutoff + timedelta(days=1)
+    e_old, e_new = repo.record_alert_events(
+        [_event(at=old, key="a"), _event(at=new, key="b")]
+    )
+    sent = repo.create_delivery(FP, owner.id, [e_old.id], "sent", old)
+    repo.mark_delivery(sent.id, status="sent", now=old)
+    muted = repo.create_delivery(FP, tech.id, [e_old.id], "muted", old)
+    exhausted = repo.create_delivery(FP, owner.id, [e_old.id], "pending", old)
+    for _ in range(5):
+        repo.mark_delivery(exhausted.id, status="failed", now=old, error="x")
+    retrying = repo.create_delivery(FP, owner.id, [e_old.id], "pending", old)
+    for _ in range(4):
+        repo.mark_delivery(retrying.id, status="failed", now=old, error="x")
+    pending = repo.create_delivery(FP, owner.id, [e_old.id], "pending", old)
+    recent = repo.create_delivery(FP, owner.id, [e_new.id], "sent", new)
+    repo.mark_delivery(recent.id, status="sent", now=new)
+
+    removed = repo.prune_alert_history(cutoff)
+
+    assert [e.id for e in repo.alert_events(FP, limit=10)] == [e_new.id]
+    kept = repo.deliveries_for_events(FP, [e_old.id, e_new.id])
+    ids = {d.id for ds in kept.values() for d in ds}
+    assert ids == {retrying.id, pending.id, recent.id}
+    assert {sent.id, muted.id, exhausted.id}.isdisjoint(ids)
+    assert removed == 1 + 3  # one event, three deliveries
+
+
+def test_prune_alert_history_drops_old_bundle_uploads_and_invitations(repo):
+    owner, _tech = _claimed(repo)
+    cutoff = T0 + timedelta(days=90)
+    old, new = T0 + timedelta(days=1), cutoff + timedelta(days=1)
+    repo.record_bundle_upload(FP, "old", old)
+    repo.record_bundle_upload(FP, "new", new)
+    stale_accepted = repo.create_invitation(owner.id, "a@example.com", "fleet", old)
+    repo.accept_invitation(stale_accepted.token, owner.id, old)
+    expired = repo.create_invitation(owner.id, "b@example.com", "fleet", old)
+    live = repo.create_invitation(owner.id, "c@example.com", "fleet", new)
+    fresh_accepted = repo.create_invitation(owner.id, "d@example.com", "fleet", new)
+    repo.accept_invitation(fresh_accepted.token, owner.id, new)
+
+    repo.prune_alert_history(cutoff)
+
+    assert repo.can_upload_bundle(FP, "old", 0, cutoff) is False
+    assert repo.can_upload_bundle(FP, "new", 0, cutoff) is True
+    assert repo.invitation(stale_accepted.token) is None
+    assert repo.invitation(expired.token) is None
+    assert repo.invitation(live.token) is not None
+    assert repo.invitation(fresh_accepted.token) is not None

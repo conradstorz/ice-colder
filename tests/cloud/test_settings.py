@@ -167,14 +167,17 @@ def test_unclaimed_limits_default_and_parse():
     assert s.max_unclaimed_machines == 200
     assert s.unclaimed_ttl_days == 60
     assert s.max_unclaimed_report_bytes == 16 * 1024
+    assert s.alert_retention_days == 90
     s = CloudSettings.from_env(
         {
             "ICE_CLOUD_SESSION_KEY": KEY,
             "ICE_CLOUD_MAX_UNCLAIMED_MACHINES": "5",
             "ICE_CLOUD_UNCLAIMED_TTL_DAYS": "2",
             "ICE_CLOUD_MAX_UNCLAIMED_REPORT_BYTES": "4096",
+            "ICE_CLOUD_ALERT_RETENTION_DAYS": "30",
         }
     )
+    assert s.alert_retention_days == 30
     assert (s.max_unclaimed_machines, s.unclaimed_ttl_days) == (5, 2)
     assert s.max_unclaimed_report_bytes == 4096
 
@@ -185,6 +188,7 @@ def test_unclaimed_limits_default_and_parse():
         "ICE_CLOUD_MAX_UNCLAIMED_MACHINES",
         "ICE_CLOUD_UNCLAIMED_TTL_DAYS",
         "ICE_CLOUD_MAX_UNCLAIMED_REPORT_BYTES",
+        "ICE_CLOUD_ALERT_RETENTION_DAYS",
     ],
 )
 @pytest.mark.parametrize("value", ["many", "0", "-3", "1.5"])

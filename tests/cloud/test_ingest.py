@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ice_cloud.app import create_app
+from ice_cloud.store import AlertEventRow
 from ice_cloud.ingest import (
     MAX_NEW_REGISTRATIONS_PER_HOUR,
     MAX_UNCLAIMED_REPORT_BYTES,
@@ -388,3 +389,34 @@ async def test_failing_purge_does_not_stop_the_sweep(tmp_path, clock):
     repo.claimed_machines_with_state = claimed_machines_with_state
     assert await app.state.sweep.tick() == []
     assert checked == [True]
+
+
+async def test_sweep_prunes_old_alert_history(tmp_path, clock):
+    settings = make_settings(tmp_path / "cloud")
+    app = create_app(settings, now=clock, start_sweep=False)
+    repo = app.state.repo
+    s = Signer()
+    t0 = clock()
+    repo.register_machine(s.fingerprint, s.public_key_b64, "m", t0)
+    owner = repo.upsert_account_from_login("sub-o", "o@example.com", "O", t0)
+    assert repo.claim_machine(s.fingerprint, owner.id, t0)
+    repo.record_alert_events(
+        [
+            AlertEventRow(
+                fingerprint=s.fingerprint,
+                kind="raised",
+                at=t0,
+                key="k",
+                code="WTR-104",
+                severity="critical",
+                gate="safety",
+                description="d",
+                sku=None,
+                product=None,
+            )
+        ]
+    )
+    assert len(repo.alert_events(s.fingerprint, limit=10)) == 1
+    clock.advance(settings.alert_retention_days * 86400 + 60)
+    await app.state.sweep.tick()
+    assert repo.alert_events(s.fingerprint, limit=10) == []

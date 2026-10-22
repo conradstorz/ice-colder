@@ -196,6 +196,15 @@ class Repository(Protocol):
         """Machines with no owner (never claimed, or unbound)."""
         ...
 
+    def prune_alert_history(self, before: datetime) -> int:
+        """Retention: delete ``alert_events`` older than ``before``; deliveries that
+        are ``sent``/``muted`` or ``failed`` with 5+ attempts and last attempted
+        before it (``pending`` and still-retrying rows are kept); ``bundle_uploads``
+        older than it; accepted invitations created before it and unaccepted ones
+        expired before it. Returns the number of alert rows (events plus
+        deliveries) removed."""
+        ...
+
     def purge_unclaimed_machines(self, not_seen_since: datetime) -> list[str]:
         """Delete never-claimed machines last seen before *not_seen_since*, with
         their bundle uploads, memberships, consumed hashes and alert rows, in one

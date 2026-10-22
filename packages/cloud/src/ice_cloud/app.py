@@ -101,8 +101,19 @@ def create_app(
         if purged:
             logger.info("Purged {} never-claimed machines", len(purged))
 
+    async def housekeeping() -> None:
+        """The sweep's one maintenance hook: unclaimed purge, then retention."""
+        try:
+            await purge_unclaimed()
+        except Exception:
+            logger.exception("Unclaimed machine purge failed")
+        cutoff = now() - timedelta(days=settings.alert_retention_days)
+        removed = await asyncio.to_thread(app.state.repo.prune_alert_history, cutoff)
+        if removed:
+            logger.info("Pruned {} aged alert rows", removed)
+
     app.state.sweep = OfflineSweep(
-        app.state.repo, app.state.alerts, now=now, purge=purge_unclaimed
+        app.state.repo, app.state.alerts, now=now, purge=housekeeping
     )
     # A signature stays acceptable for +/- the skew, so remember it for twice that.
     app.state.seen_signatures = SeenSignatures(2 * signing.MAX_CLOCK_SKEW_SECONDS)
