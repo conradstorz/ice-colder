@@ -309,14 +309,19 @@ def test_add_product_unrecognized_kind_falls_back_to_other(tmp_path, monkeypatch
 @pytest.mark.skipif(os.name != "posix", reason="POSIX file modes only")
 def test_save_config_files_are_private_under_permissive_umask(tmp_path):
     target = tmp_path / "config.json"
+    bak = tmp_path / "config.json.bak"
+    tmp = tmp_path / "config.json.tmp"
+    for p in (target, bak, tmp):
+        p.write_text("{}", encoding="utf-8")
+        os.chmod(p, 0o644)
     previous = os.umask(0o022)
     try:
-        save_config(_config_with_secret(), target)
         save_config(_config_with_secret(), target)
     finally:
         os.umask(previous)
     assert target.stat().st_mode & 0o777 == 0o600
-    assert (tmp_path / "config.json.bak").stat().st_mode & 0o777 == 0o600
+    assert bak.stat().st_mode & 0o777 == 0o600
+    assert not tmp.exists()
 
 
 def test_save_config_overwrites_stale_tmp_file(tmp_path):
