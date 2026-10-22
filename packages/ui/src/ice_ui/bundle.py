@@ -30,6 +30,10 @@ INSTALLED_ROOT: Path = Path(__file__).parent
 MANIFEST_NAME = "manifest.json"
 BUNDLE_ROOTS = ("templates", "static")
 MAX_UNCOMPRESSED_BYTES = 20 * 1024 * 1024
+# Header-only bombs: zero-byte members add no bytes, so cap their count too.
+MAX_MEMBERS = 2000
+# Longest accepted member name, in characters.
+MAX_MEMBER_NAME_CHARS = 255
 
 
 class BundleError(ValueError):
@@ -118,6 +122,8 @@ def build_bundle(root: Path | None = None) -> bytes:
 
 
 def _check_member_name(name: str) -> None:
+    if len(name) > MAX_MEMBER_NAME_CHARS:
+        raise BundleError(f"member name too long ({len(name)} chars)")
     if not name or "\\" in name or "\0" in name:
         raise BundleError(f"unsafe member name: {name!r}")
     path = PurePosixPath(name)
@@ -141,7 +147,10 @@ def extract_bundle(
     Every spec section 3 rejection raises ``BundleError`` with a reason:
     absolute paths, ``..`` components, symlinks or hardlinks, non-regular
     members, members outside ``manifest.json``/``templates/``/``static/``,
-    total uncompressed size over 20 MB, and a digest recomputed from the
+    total uncompressed size over 20 MB, more than ``MAX_MEMBERS`` members,
+    a member name over ``MAX_MEMBER_NAME_CHARS`` characters (both checked
+    before any member is read, so a header-only bomb stops early; the
+    compressed input is already bounded by the caller's body limit), and a digest recomputed from the
     extracted files plus the manifest's ``levels`` that differs from the
     manifest's own ``digest`` (and from *expected_digest*, the URL's digest,
     when given). Extraction goes to a temporary sibling directory that is
@@ -149,9 +158,8 @@ def extract_bundle(
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
         raise BundleError(f"destination already exists: {dest}")
-    tmp = Path(tempfile.mkdtemp(prefix=f".{dest.name}.", dir=dest.parent))
+    tmp, manifest = prepare_bundle(data, dest.parent, expected_digest, prefix=dest.name)
     try:
-        manifest = _extract_into(data, tmp, expected_digest)
         os.replace(tmp, dest)
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -159,11 +167,34 @@ def extract_bundle(
     return manifest
 
 
+def prepare_bundle(
+    data: bytes,
+    parent: Path,
+    expected_digest: str | None = None,
+    *,
+    prefix: str | None = None,
+) -> tuple[Path, BundleManifest]:
+    """Validate and extract a bundle into a fresh temporary directory under
+    *parent*, returning ``(directory, manifest)``. The caller owns the
+    directory (typically renaming it into place); on any exception it has
+    already been removed. Same rejections as :func:`extract_bundle`."""
+    parent.mkdir(parents=True, exist_ok=True)
+    name = prefix if prefix is not None else (expected_digest or "bundle")
+    tmp = Path(tempfile.mkdtemp(prefix=f".{name}.", dir=parent))
+    try:
+        manifest = _extract_into(data, tmp, expected_digest)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    return tmp, manifest
+
+
 def _extract_into(
     data: bytes, tmp: Path, expected_digest: str | None
 ) -> BundleManifest:
     seen: set[str] = set()
     total = 0
+    count = 0
     manifest_bytes: bytes | None = None
     try:
         tf = tarfile.open(fileobj=io.BytesIO(data), mode="r:gz")
@@ -172,6 +203,9 @@ def _extract_into(
     with tf:
         try:
             for member in tf:
+                count += 1
+                if count > MAX_MEMBERS:
+                    raise BundleError(f"bundle has more than {MAX_MEMBERS} members")
                 if member.issym() or member.islnk():
                     raise BundleError(f"link member in bundle: {member.name!r}")
                 if not member.isreg():

@@ -9,7 +9,9 @@ static files would be same-origin HTML on the cloud's origin.
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +20,7 @@ from fastapi.templating import Jinja2Templates
 from jinja2 import Template
 
 from ice_contracts.cloud.ui import DIGEST_PATTERN
-from ice_ui.bundle import BundleError, extract_bundle, ui_digest
+from ice_ui.bundle import BundleError, prepare_bundle, ui_digest
 from ice_ui.templating import STATIC_DIR, TEMPLATES_DIR, make_templates
 
 _DIGEST_RE = re.compile(DIGEST_PATTERN)
@@ -85,11 +87,21 @@ class UiRegistry:
         ``False`` if that digest is already present. ``BundleError`` on any
         rejection."""
         dest = self._bundle_dir(digest)
-        with self._lock:
-            if dest.is_dir():
-                return False
-            extract_bundle(data, dest, expected_digest=digest)
-            return True
+        if dest.is_dir():
+            return False
+        # Extraction is slow and untrusted: do it outside the lock that every
+        # page render takes, and hold the lock only for the rename.
+        tmp, _manifest = prepare_bundle(data, self._ui_dir, expected_digest=digest)
+        try:
+            with self._lock:
+                if dest.is_dir():
+                    shutil.rmtree(tmp, ignore_errors=True)
+                    return False
+                os.replace(tmp, dest)
+                return True
+        except BaseException:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
 
     def _templates_for(self, digest: str, factory) -> Jinja2Templates:
         with self._lock:

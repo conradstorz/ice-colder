@@ -149,3 +149,59 @@ def test_trusted_uploaded_bundle_renders_sandboxed(
     resolved = trusted.resolve(digest)
     assert resolved.sandboxed is True and resolved.mismatch is False
     assert MARKER in _render_fragment(resolved)
+
+
+def test_concurrent_registers_store_once(registry, marked_bundle, tmp_path):
+    import threading
+
+    digest, data = marked_bundle
+    barrier = threading.Barrier(2)
+    results: list[bool] = []
+
+    def worker():
+        barrier.wait(timeout=10)
+        results.append(registry.register(digest, data))
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert sorted(results) == [False, True]
+    assert registry.has(digest)
+    assert [p.name for p in (tmp_path / "data" / "ui").iterdir()] == [digest]
+
+
+def test_register_extracts_outside_the_resolve_lock(
+    registry, marked_bundle, monkeypatch
+):
+    import threading
+
+    import ice_cloud.ui_registry as ui_registry
+
+    digest, data = marked_bundle
+    entered = threading.Event()
+    release = threading.Event()
+    real = ui_registry.prepare_bundle
+
+    def slow(*args, **kwargs):
+        entered.set()
+        assert release.wait(timeout=30)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ui_registry, "prepare_bundle", slow)
+    uploader = threading.Thread(target=registry.register, args=(digest, data))
+    uploader.start()
+    assert entered.wait(timeout=10)
+
+    resolved: list[object] = []
+    reader = threading.Thread(
+        target=lambda: resolved.append(registry.resolve(registry.installed_digest))
+    )
+    reader.start()
+    reader.join(timeout=10)
+    finished = not reader.is_alive()
+    release.set()
+    uploader.join(timeout=30)
+    assert finished, "resolve blocked while a bundle was being extracted"
+    assert resolved

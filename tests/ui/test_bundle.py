@@ -260,3 +260,36 @@ def test_rejects_existing_destination(tmp_path):
     dest.mkdir()
     with pytest.raises(BundleError, match="already exists"):
         extract_bundle(build_bundle(), dest)
+
+
+# --- member-count caps and prepare_bundle ----------------------------------
+
+
+def test_rejects_more_than_max_members(tmp_path):
+    members = [_file(f"static/f{i}", b"") for i in range(bundle.MAX_MEMBERS + 1)]
+    _assert_rejected(tmp_path, _tar_gz(members), "members")
+
+
+def test_rejects_overlong_member_name(tmp_path):
+    name = "static/" + "a" * (bundle.MAX_MEMBER_NAME_CHARS + 1 - len("static/"))
+    assert len(name) == bundle.MAX_MEMBER_NAME_CHARS + 1
+    data = _tar_gz([_file(name, b"x")])
+    _assert_rejected(tmp_path, data, "too long")
+
+
+def test_prepare_bundle_returns_a_renameable_directory(tmp_path):
+    data = build_bundle()
+    parent = tmp_path / "ui"
+    tmp, manifest = bundle.prepare_bundle(data, parent, expected_digest=ui_digest())
+    assert manifest.digest == ui_digest()
+    assert (tmp / "templates").is_dir()
+    assert tmp.parent == parent
+    tmp.rename(parent / "final")
+    assert (parent / "final" / "static").is_dir()
+
+
+def test_failing_prepare_bundle_leaves_no_temp_directory(tmp_path):
+    parent = tmp_path / "ui"
+    with pytest.raises(BundleError):
+        bundle.prepare_bundle(b"garbage", parent, expected_digest=None)
+    assert list(parent.iterdir()) == []
