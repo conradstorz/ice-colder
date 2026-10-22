@@ -68,12 +68,19 @@ def save_config(config: ConfigModel, path: Path | None = None):
     if path is None:
         path = _config_path()
     tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(_config_json(config))
         f.flush()
         os.fsync(f.fileno())
+    if os.name == "posix":
+        # O_CREAT does not re-mode a .tmp left behind by a crash.
+        os.chmod(tmp, 0o600)
     if path.exists():
-        shutil.copy2(path, path.with_name(path.name + ".bak"))
+        bak = path.with_name(path.name + ".bak")
+        shutil.copy2(path, bak)
+        if os.name == "posix":
+            os.chmod(bak, 0o600)
     os.replace(tmp, path)
     fsync_dir(path.parent)
 
