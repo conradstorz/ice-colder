@@ -2,7 +2,7 @@ import re
 
 import pytest
 
-from tests.cloud.conftest import Signer, claim, login, push, register
+from tests.cloud.conftest import Signer, claim, login, push, register, short
 from tests.cloud.reports import make_report
 
 
@@ -239,3 +239,48 @@ def test_machines_table_payment_off(cloud, clock):
     push(cloud, Signer(), make_report(machine_id="m-off", faults=False, health=health))
     _admin(cloud)
     assert ">Off<" in cloud.get("/admin/machines").text
+
+
+def _alert_rows(text):
+    return re.findall(
+        r'<a href="(/machines/[^"]+/alerts)"[^>]*>\s*([^<]+?)\s*</a>', text
+    )
+
+
+def test_fleet_alerts_newest_first_with_machine_link(cloud, clock):
+    a, b = Signer(), Signer()
+    owner = login(cloud, "alerts-owner@example.com")
+    register(cloud, a, "m-alert-a")
+    register(cloud, b, "m-alert-b")
+    claim(cloud, a, owner)
+    claim(cloud, b, owner)
+    push(cloud, a, make_report(machine_id="m-alert-a", faults=True, seq=1))
+    clock.advance(60)
+    push(cloud, a, make_report(machine_id="m-alert-a", faults=False, seq=2))
+    clock.advance(60)
+    push(cloud, b, make_report(machine_id="m-alert-b", faults=True, seq=1))
+    _admin(cloud)
+    r = cloud.get("/admin/alerts")
+    assert r.status_code == 200
+    links = _alert_rows(r.text)
+    assert links[0] == (f"/machines/{short(b)}/alerts", "m-alert-b")
+    assert (f"/machines/{short(a)}/alerts", "m-alert-a") in links
+    assert "raised" in r.text and "cleared" in r.text
+    assert " UTC" in r.text
+
+
+def test_fleet_alerts_empty(cloud):
+    _admin(cloud)
+    assert "No alerts yet." in cloud.get("/admin/alerts").text
+
+
+def test_fleet_alerts_non_admin_404(cloud):
+    login(cloud, "someone@example.com")
+    assert cloud.get("/admin/alerts").status_code == 404
+
+
+def test_fleet_page_links_dashboard_for_admin_only(cloud):
+    login(cloud, "plain-owner@example.com")
+    assert 'href="/admin"' not in cloud.get("/fleet").text
+    _admin(cloud)
+    assert 'href="/admin"' in cloud.get("/fleet").text

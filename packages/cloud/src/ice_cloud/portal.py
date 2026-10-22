@@ -185,7 +185,14 @@ async def fleet(request: Request, account: Account = Depends(require_signed_in))
     return ui.templates.TemplateResponse(
         request,
         "fleet.html",
-        _context(request, account, ui, LEVEL_FLEET, machines=rows),
+        _context(
+            request,
+            account,
+            ui,
+            LEVEL_FLEET,
+            machines=rows,
+            is_admin=is_admin(state.settings, account),
+        ),
     )
 
 

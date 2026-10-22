@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from ice_cloud.admin import accounts, machines, overview, owners
+from ice_cloud.admin import accounts, alerts, machines, overview, owners
 from ice_cloud.admin.common import (
     LEVEL_ADMIN,
     LEVEL_ADMIN_ACCOUNTS,
@@ -23,6 +23,7 @@ router.include_router(overview.router)
 router.include_router(machines.router)
 router.include_router(owners.router)
 router.include_router(accounts.router)
+router.include_router(alerts.router)
 
 __all__ = [
     "LEVEL_ADMIN",
