@@ -50,13 +50,14 @@ Cloud C1, C2 → the rest.
   payment-event consumer that acks by `(boot_id, seq)`, dedups on `event_id`, raises
   `PAY-105` on a gap. Until it lands, dedup legacy credits on a message id.
 
-- [ ] **M4 — MEDIUM: availability is checked only at selection, not at payment.**
+- [x] **M4 — MEDIUM: availability is checked only at selection, not at payment.**
   `_refusal` runs in `select_product` (`sale/vmc.py:856`); `process_payment` (:903-928)
   checks only credit amount and catalog membership.
   Scenario: customer selects ice, then `WTR-104`/`ENV-102` or an `ICE-101` lockout
   arrives while waiting for money; the next deposit still dispenses.
   Fix: re-run `_refusal`/`sale_available` in `process_payment` before `consume_fifo`;
   on refusal keep waiting or refund.
+  Landed: `process_payment` re-runs the refusal and stock checks before `consume_fifo`; a refused test sale settles `vend_failed` with its credit taken, never refunded.
 
 - [ ] **M5 — MEDIUM-LOW: PAY-104 "Record as sale" can duplicate an already-recorded sale.**
   The live `record_sale` uses a fresh `time.time()` and is not idempotent; the recovery
@@ -74,11 +75,12 @@ Cloud C1, C2 → the rest.
   `error_occurred` has no production caller today.
   Fix: delete the trigger, or make it restore shares / record the sale.
 
-- [ ] **M7 — LOW: stale `process_payment` retry chains.**
+- [x] **M7 — LOW: stale `process_payment` retry chains.**
   Each button press schedules its own 1 s then 5 s chain (`sale/vmc.py:896`, :941). A
   stale chain firing with `selected_product is None` after a vend that left credit calls
   `cancel_sale`, refunding with a misleading "no longer available" message.
   Fix: one tracked handle, cancelled before scheduling a new one.
+  Landed: one tracked `PaymentRetryTimer`, cancelled on every exit from `interacting_with_user`.
 
 - [ ] **M8 — LOW (accepted trade-offs, document them):** a dispense timeout with no
   report restores credit though product may have come out (PAY-102 raised, later report
@@ -105,15 +107,16 @@ Cloud C1, C2 → the rest.
   alerts it deferred to the cloud, so one deferred just before the cloud stops vouching
   is never sent locally.
 
-- [ ] **R2 — HIGH: a bad `data/` volume stops the whole machine at boot, with exit 0.**
+- [x] **R2 — HIGH: a bad `data/` volume stops the whole machine at boot, with exit 0.**
   `ledger/event_recorder.py:268` re-raises any non-corruption `OperationalError`
   (read-only, locked, cannot open); `__main__.py:131` constructs it unguarded;
   `@logger.catch()` on `main` (`__main__.py:45`) logs it and returns, so the exit code
   is 0 and the restart loop looks like clean exits.
   Fix: catch init failure, set `db_unavailable`, raise a fault (as the corrupt-DB path
   does); `@logger.catch(onerror=lambda _: sys.exit(1))`.
+  Landed: a non-corruption open failure sets `db_unavailable` and raises `DATA-103` (contract 2.2.0); `main` exits 1 on an unhandled startup error.
 
-- [ ] **R3 — MEDIUM-HIGH: a failed session-snapshot save on deposit is only logged.**
+- [x] **R3 — MEDIUM-HIGH: a failed session-snapshot save on deposit is only logged.**
   `sale/outputs.py:167-186` saves via `fire_and_forget(persistent=True)`;
   `supervisor/task_runner.py:119-125` only logs a failure. The dispense path is correct
   (`PAY-102 snapshot_failed`); the deposit and refund-pending paths are not.
@@ -121,6 +124,7 @@ Cloud C1, C2 → the rest.
   gone silently.
   Fix: raise a machine-scope fault (e.g. `DATA-103`) on save failure, clear on next
   success.
+  Landed: `DATA-104` raised on a failed snapshot save, cleared on the next success (contract 2.2.0).
 
 - [ ] **R4 — MEDIUM: no persistent MQTT session; a broker drop mid-vend can pay out twice.**
   `ice_common/mqtt_client.py:190-199` sets no persistent session, so messages published
@@ -206,7 +210,7 @@ Cloud C1, C2 → the rest.
   Fix: check headers, timestamp, known+claimed machine before reading the body; keep an
   unauthenticated cap at 256 KiB.
 
-- [ ] **C4 — MEDIUM: unbounded alert tables and a full-table scan per page.**
+- [x] **C4 — MEDIUM: unbounded alert tables and a full-table scan per page.**
   `store/sqlite.py:1004` `deliveries_for_events` does `SELECT * FROM alert_deliveries`
   with no WHERE on every `/machines/{short}/alerts` view and JSON-parses every row.
   Nothing prunes `alert_events`, `alert_deliveries` (incl. failed rows with attempts ≥ 5),
@@ -215,6 +219,7 @@ Cloud C1, C2 → the rest.
   creates thousands of event rows per report.
   Fix: filter by fingerprint/event ids; retention job (90 days); cap `faults` length and
   string lengths in `ice_contracts.cloud.report`.
+  Landed: deliveries filtered by machine with an index; `ICE_CLOUD_ALERT_RETENTION_DAYS` (90) prune in the sweep; `faults` capped at 200 entries and 200-char strings.
 
 - [x] **C5 — MEDIUM: a replayed or stale report still triggers alert processing.**
   `ingest.py:67` ignores `store.save()` returning `False` for a stale `seq` and always
@@ -257,7 +262,7 @@ Cloud C1, C2 → the rest.
 - [ ] **C11 — LOW: `resolve_short` uses a 64-bit prefix** (`store/sqlite.py:379-387`);
   ambiguous prefixes return `None`. ~2^64 work to exploit; note only.
 
-- [ ] **C12 — MEDIUM: the unclaimed-machine purge can strand a setup code.**
+- [x] **C12 — MEDIUM: the unclaimed-machine purge can strand a setup code.**
   `purge_unclaimed_machines` deletes a never-claimed machine after `UNCLAIMED_TTL_DAYS`
   (7), but the edge persists the claim-code notice as acked (`uplink/identity.py:135-145`),
   the setup code never expires (`access.py:902-904`), and `init_cloud_identity` does not
@@ -271,8 +276,9 @@ Cloud C1, C2 → the rest.
   `claimed` is false (safe: consumed hashes are ignored); and/or raise the default TTL to
   60-90 days (the cap, not the TTL, is the real bound). Must land before the first real
   install.
+  Landed: the edge re-sends its claim-code notice whenever a register answers `claimed=false`; default TTL 60 days.
 
-- [ ] **C13 — MEDIUM: squatters can fill the unclaimed cap and nothing clears them.**
+- [x] **C13 — MEDIUM: squatters can fill the unclaimed cap and nothing clears them.**
   The registration meter keys on the full client address (`ingest.py:94-95`), so an IPv6
   attacker rotating addresses inside one /64 gets a fresh allowance each time, and a
   squatter survives the purge with one signed request per 7 days (`touch_seen`).
@@ -280,8 +286,9 @@ Cloud C1, C2 → the rest.
   `/admin` cannot list or delete unclaimed machines.
   Fix: key IPv6 on its /64; add an admin "purge unclaimed" action; document the SQL
   recovery in `docs/deploying-the-cloud-server.md`.
+  Landed: meter keyed on the IPv6 /64 (IPv4-mapped addresses treated as IPv4); `/admin` "Purge all unclaimed" action; SQL fallback documented.
 
-- [ ] **C14 — MEDIUM: no global limit on in-flight bundle bodies.**
+- [x] **C14 — MEDIUM: no global limit on in-flight bundle bodies.**
   `Backoff.check` runs before the body read but failures are recorded after it, so N
   concurrent bad-signature PUTs for a known claimed fingerprint all pass the check and each
   buffers up to 20 MiB; a claimed machine with valid signatures is never backed off at all.
@@ -289,6 +296,7 @@ Cloud C1, C2 → the rest.
   Scenario: a few concurrent 20 MiB PUTs exhaust the 512 MB droplet.
   Fix: a process-wide non-blocking semaphore on in-flight bundle bodies, answering 503/429
   before `request.body()` (in `require_machine` or `BodyLimitMiddleware`).
+  Landed: at most 2 bundle bodies in flight process-wide; a third answers 503 with `Retry-After: 30` before the body is read.
 
 ## D. Deployment, data and secrets
 
@@ -304,12 +312,13 @@ Cloud C1, C2 → the rest.
   `session.json`) shipped off-host; the same for `cloud.db`; a written restore section;
   consider enabling DO droplet backups.
 
-- [ ] **D2 — HIGH: `events.db` has no migration path.**
+- [x] **D2 — HIGH: `events.db` has no migration path.**
   Tables are `CREATE TABLE IF NOT EXISTS` only (`event_recorder.py:421-455`), no
   `user_version`; the next added column cannot reach a deployed database and the first
   insert after a pulled image would fail. `cloud.db` already has the pattern
   (`schema_version` + transactional `MIGRATIONS`, `store/sqlite.py:277-292`).
   Fix: copy the cloud's migration pattern into `EventRecorder`.
+  Landed: `MIGRATIONS` list applied under `PRAGMA user_version`, each in its own transaction; a newer or failed schema sets `db_unavailable`.
 
 - [ ] **D3 — HIGH: `:latest` auto-pull with no healthcheck, no rollback, no idle window.**
   `vmc` and sims pull `ghcr.io/conradstorz/ice-colder:latest` with the Watchtower label
