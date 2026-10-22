@@ -131,9 +131,14 @@ async def require_machine(request: Request) -> Machine | None:
         if request.url.path.startswith(BUNDLE_PREFIX) and machine.owner_id is None:
             raise MachineAuthError("bundle from unclaimed machine", fp)
 
+    # Back-off state exists only for fingerprints already in the database, so
+    # a flood of registers with fresh keypairs cannot grow the registry.
+    known = machine is not None or (
+        is_register and await asyncio.to_thread(app.state.repo.machine, fp) is not None
+    )
     backoff = app.state.backoff
     client_ip = backoff.client_ip(request)
-    if backoff.check("machine", fp, client_ip, trusted=True) is not None:
+    if known and backoff.check("machine", fp, client_ip, trusted=True) is not None:
         raise MachineAuthError("backing off", fp)
 
     body = await request.body()
@@ -151,9 +156,11 @@ async def require_machine(request: Request) -> Machine | None:
         request.method, request.url.path, timestamp, body
     )
     if not signing.verify(key, message, signature):
-        backoff.record_failure("machine", fp, client_ip, trusted=True)
+        if known:
+            backoff.record_failure("machine", fp, client_ip, trusted=True)
         raise MachineAuthError("bad signature", fp)
-    backoff.record_success("machine", fp, client_ip, trusted=True)
+    if known:
+        backoff.record_success("machine", fp, client_ip, trusted=True)
     now = app.state.now()
     if not app.state.seen_signatures.check_and_add(
         f"{fp}:{signature}", now.timestamp()

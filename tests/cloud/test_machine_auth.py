@@ -313,7 +313,29 @@ def test_stale_and_unknown_attempts_do_not_count_toward_back_off(cloud, known, c
     clock.advance(signing.MAX_CLOCK_SKEW_SECONDS + 1)
     assert _send(cloud, stale, path).status_code == 401
     assert _send(cloud, stale, path).status_code == 401
+    assert signed(cloud, known, "POST", path, _body()).status_code == 200
     stranger = Signer()
     unk = stranger.headers("POST", _path(stranger), _body(), now=cloud.app.state.now())
     assert _send(cloud, unk, _path(stranger)).status_code == 401
-    assert signed(cloud, known, "POST", path, _body()).status_code == 200
+    assert _send(cloud, unk, _path(stranger)).status_code == 401
+    backoff = cloud.app.state.backoff
+    ip = "testclient"
+    assert backoff.check("machine", stranger.fingerprint, ip, trusted=True) is None
+
+
+def test_bad_registers_for_unknown_fingerprints_record_nothing(cloud, known):
+    path = "/api/v1/machines/register"
+    backoff = cloud.app.state.backoff
+    ip = "testclient"
+    strangers = [Signer() for _ in range(50)]
+    for s in strangers:
+        body = f'{{"public_key_b64": "{s.public_key_b64}", "label": "x"}}'.encode()
+        headers = s.headers("POST", path, b"other", now=cloud.app.state.now())
+        assert _send(cloud, headers, path, body).status_code == 401
+    for s in strangers:
+        assert backoff.check("machine", s.fingerprint, ip, trusted=True) is None
+    # a known machine's bad register-path signature still records one failure
+    body = f'{{"public_key_b64": "{known.public_key_b64}", "label": "x"}}'.encode()
+    bad = known.headers("POST", path, b"other", now=cloud.app.state.now())
+    assert _send(cloud, bad, path, body).status_code == 401
+    assert backoff.check("machine", known.fingerprint, ip, trusted=True) is not None
