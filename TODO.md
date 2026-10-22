@@ -101,6 +101,9 @@ Cloud C1, C2 → the rest.
   re-raises.
   Fix: `send` returns success; on failure `clear_alert(key)` or retry with backoff; set
   the cooldown only on success.
+  Still open: the "cloud defers, then stops vouching" case; the edge does not re-deliver
+  alerts it deferred to the cloud, so one deferred just before the cloud stops vouching
+  is never sent locally.
 
 - [ ] **R2 — HIGH: a bad `data/` volume stops the whole machine at boot, with exit 0.**
   `ledger/event_recorder.py:268` re-raises any non-corruption `OperationalError`
@@ -253,6 +256,39 @@ Cloud C1, C2 → the rest.
 
 - [ ] **C11 — LOW: `resolve_short` uses a 64-bit prefix** (`store/sqlite.py:379-387`);
   ambiguous prefixes return `None`. ~2^64 work to exploit; note only.
+
+- [ ] **C12 — MEDIUM: the unclaimed-machine purge can strand a setup code.**
+  `purge_unclaimed_machines` deletes a never-claimed machine after `UNCLAIMED_TTL_DAYS`
+  (7), but the edge persists the claim-code notice as acked (`uplink/identity.py:135-145`),
+  the setup code never expires (`access.py:902-904`), and `init_cloud_identity` does not
+  re-send an acked, unchanged notice (`identity.py:205-209`); `run_uplink` resets the ack
+  only on a re-register within one process (`loop.py:84-88`).
+  Scenario: a machine is set up on the bench, shipped, and stays powered off over 7 days;
+  it is purged, re-registers as new, and the owner's setup code gets the generic 403 at
+  `/claim`. Recovery is "Link to cloud" at the machine, which breaks the documented
+  "claim on the cloud before pressing Done" flow with no visible error.
+  Fix: edge calls `reset_ack()` after the first successful register of each process while
+  `claimed` is false (safe: consumed hashes are ignored); and/or raise the default TTL to
+  60-90 days (the cap, not the TTL, is the real bound). Must land before the first real
+  install.
+
+- [ ] **C13 — MEDIUM: squatters can fill the unclaimed cap and nothing clears them.**
+  The registration meter keys on the full client address (`ingest.py:94-95`), so an IPv6
+  attacker rotating addresses inside one /64 gets a fresh allowance each time, and a
+  squatter survives the purge with one signed request per 7 days (`touch_seen`).
+  Scenario: 200 squatters, then every genuine new registration gets 429 indefinitely;
+  `/admin` cannot list or delete unclaimed machines.
+  Fix: key IPv6 on its /64; add an admin "purge unclaimed" action; document the SQL
+  recovery in `docs/deploying-the-cloud-server.md`.
+
+- [ ] **C14 — MEDIUM: no global limit on in-flight bundle bodies.**
+  `Backoff.check` runs before the body read but failures are recorded after it, so N
+  concurrent bad-signature PUTs for a known claimed fingerprint all pass the check and each
+  buffers up to 20 MiB; a claimed machine with valid signatures is never backed off at all.
+  The extraction semaphore bounds extraction, not the body read.
+  Scenario: a few concurrent 20 MiB PUTs exhaust the 512 MB droplet.
+  Fix: a process-wide non-blocking semaphore on in-flight bundle bodies, answering 503/429
+  before `request.body()` (in `require_machine` or `BodyLimitMiddleware`).
 
 ## D. Deployment, data and secrets
 
