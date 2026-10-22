@@ -84,7 +84,7 @@ def _seed_fleet(cloud, clock):
 
 
 def _headline(text, label, value):
-    start = text.index(label)
+    start = text.index(label, text.find('id="fleet-overview"'))
     return f">{value}<" in text[start : start + 400]
 
 
@@ -139,3 +139,13 @@ def test_overview_software_panel_counts_builds(cloud):
     r = cloud.get("/admin")
     start = r.text.index("aaa")
     assert ">2<" in r.text[start : start + 300]
+
+
+def test_overview_nav_links_every_admin_level(cloud, clock):
+    _seed_fleet(cloud, clock)
+    _admin(cloud)
+    page = cloud.get("/admin").text
+    for url in ("/admin/machines", "/admin/owners", "/admin/accounts", "/admin/alerts"):
+        assert f'href="{url}"' in page
+    frag = cloud.get("/admin/overview", headers={"HX-Request": "true"})
+    assert 'aria-label="Admin levels"' not in frag.text

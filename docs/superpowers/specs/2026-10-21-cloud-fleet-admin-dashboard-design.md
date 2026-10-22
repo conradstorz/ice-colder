@@ -156,6 +156,7 @@ same reason it is on the edge's panels: `<body>` carries `hx-target="main"`.
 
 Inside the partial, top to bottom:
 
+0. **Level nav** — a row of four pill links (Machines, Owners, Accounts, Alerts) above the polled frame, so every admin level is one tap away; it is outside the frame and never re-rendered by the poll. (as built: added after review found /admin/accounts had no entry point)
 1. **Headline strip** — four stat cards (`partials/admin_stat.html`: label, big value, sub-line,
    whole card is a link; tone sets the value colour: `good` green-700, `warn` amber-600, `bad`
    red-600, `neutral` gray-900). Grid `grid-cols-2 lg:grid-cols-4`.
