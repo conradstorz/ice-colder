@@ -1,4 +1,5 @@
 import base64
+from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -121,6 +122,7 @@ class Signer:
         self.public_key = signing.public_key_from_private(self._private)
         self.public_key_b64 = base64.b64encode(self.public_key).decode("ascii")
         self.fingerprint = signing.fingerprint(self.public_key)
+        self.sent: set = set()
 
     def headers(
         self, method: str, path: str, body: bytes = b"", *, now=NOW
@@ -143,13 +145,26 @@ def signed(
     cloud: TestClient, signer: Signer, method: str, path: str, body: bytes = b""
 ):
     """Send one correctly signed request, stamped with the cloud's own clock."""
-    headers = signer.headers(method, path, body, now=cloud.app.state.now())
+    now = cloud.app.state.now()
+    # A byte-identical request is a replay and answers 401, so a test that
+    # resends the same thing at the same clock gets a later timestamp (a fresh
+    # signature, well inside the skew window).
+    key = (method, path, body, signing.format_timestamp(now))
+    while key in signer.sent:
+        now += timedelta(seconds=1)
+        key = (method, path, body, signing.format_timestamp(now))
+    signer.sent.add(key)
+    headers = signer.headers(method, path, body, now=now)
     if body:
         headers["content-type"] = "application/json"
     return cloud.request(method, path, content=body, headers=headers)
 
 
 def register(cloud: TestClient, signer: Signer, label: str = "m-0042") -> str:
+    # Tests register many machines from the one test-client address; the
+    # per-address new-machine meter is exercised through `signed` directly in
+    # test_ingest.py, so reset it here.
+    cloud.app.state.new_registrations.reset("testclient")
     body = RegisterMachine(public_key_b64=signer.public_key_b64, label=label)
     r = signed(
         cloud,
@@ -178,7 +193,8 @@ def drain_alerts(cloud: TestClient) -> None:
 def push(cloud: TestClient, signer: Signer, report) -> None:
     """Register (idempotent) and push one report as the signer's machine,
     then wait for its alert dispatch to finish."""
-    register(cloud, signer, report.machine_id)
+    if cloud.app.state.repo.machine(signer.fingerprint) is None:
+        register(cloud, signer, report.machine_id)  # re-signing would be a replay
     r = signed(
         cloud,
         signer,

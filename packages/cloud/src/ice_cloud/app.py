@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -19,6 +19,8 @@ from ice_cloud import admin, auth, claim, ingest, machine_auth, people, portal
 from ice_cloud.alerts import pages
 from ice_cloud.alerts.sweep import OfflineSweep
 from ice_common.backoff import Backoff
+from ice_contracts.cloud import signing
+from ice_cloud.machine_auth import SeenSignatures
 from ice_cloud.settings import CloudSettings
 from ice_cloud.store import SnapshotStore, SqliteRepository
 from ice_cloud.ui_registry import UiRegistry
@@ -85,7 +87,29 @@ def create_app(
         public_url=settings.public_url,
         from_addr=settings.smtp_from or "ice-colder@localhost",
     )
-    app.state.sweep = OfflineSweep(app.state.repo, app.state.alerts, now=now)
+
+    async def purge_unclaimed() -> None:
+        cutoff = now() - timedelta(days=settings.unclaimed_ttl_days)
+        purged = await asyncio.to_thread(
+            app.state.repo.purge_unclaimed_machines, cutoff
+        )
+        for fp in purged:
+            try:
+                await asyncio.to_thread(app.state.store.delete, fp)
+            except Exception:
+                logger.warning("Could not delete snapshot of purged {}", fp[:8])
+        if purged:
+            logger.info("Purged {} never-claimed machines", len(purged))
+
+    app.state.sweep = OfflineSweep(
+        app.state.repo, app.state.alerts, now=now, purge=purge_unclaimed
+    )
+    # A signature stays acceptable for +/- the skew, so remember it for twice that.
+    app.state.seen_signatures = SeenSignatures(2 * signing.MAX_CLOCK_SKEW_SECONDS)
+    app.state.register_lock = asyncio.Lock()
+    app.state.new_registrations = ingest.SlidingWindow(
+        ingest.MAX_NEW_REGISTRATIONS_PER_HOUR, ingest.REGISTRATION_WINDOW_SECONDS
+    )
     app.state.backoff = Backoff(clock=lambda: app.state.now().timestamp())
     app.add_middleware(BodyLimitMiddleware)
     machine_auth.install(app)

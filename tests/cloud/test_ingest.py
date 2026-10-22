@@ -1,9 +1,19 @@
+import asyncio
+
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from ice_cloud.app import create_app
+from ice_cloud.ingest import (
+    MAX_NEW_REGISTRATIONS_PER_HOUR,
+    MAX_UNCLAIMED_REPORT_BYTES,
+    UNCLAIMED_MACHINE_TTL_DAYS,
+    SlidingWindow,
+)
+from ice_contracts.cloud.identity import RegisterMachine
 from ice_ui.bundle import build_bundle, ui_digest
-from tests.cloud.conftest import make_settings, register, signed
+from tests.cloud.conftest import Signer, make_settings, register, signed
 from tests.cloud.reports import make_report
 
 
@@ -84,14 +94,15 @@ def test_bundle_with_wrong_digest_in_url_is_400(client, owned):
     assert "digest" in r.json()["detail"]
 
 
-def test_oversize_bundle_is_rejected_before_extraction(client, machine, tmp_path):
+def test_oversize_bundle_is_rejected_before_extraction(client, owned, tmp_path):
     big = b"\0" * (20 * 1024 * 1024 + 1)
-    r = _put(client, machine, "d" * 64, big)
+    r = _put(client, owned, "d" * 64, big)
     assert r.status_code == 413 and r.content == b""
     assert not (tmp_path / "ui").exists()
 
 
-def test_oversize_bundle_without_content_length_is_cut_off(client, machine):
+def test_oversize_bundle_without_content_length_is_cut_off(client, owned):
+    machine = owned
     big = b"\0" * (21 * 1024 * 1024)
     path = f"/api/v1/ui-bundles/{'d' * 64}"
     headers = machine.headers("PUT", path, big, now=client.app.state.now())
@@ -231,3 +242,149 @@ def test_digest_the_cloud_already_holds_skips_the_cap(tmp_path, signer, clock):
             assert _put(c, other, digest, data).status_code == 201
         # `other` is at its cap, but a digest the cloud already holds is no new storage.
         assert _put(c, other, *bundles[4]).status_code == 200
+
+
+def _register_request(client, signer, label="m-new"):
+    body = RegisterMachine(public_key_b64=signer.public_key_b64, label=label)
+    return signed(
+        client,
+        signer,
+        "POST",
+        "/api/v1/machines/register",
+        body.model_dump_json().encode(),
+    )
+
+
+@pytest.fixture
+def timed(tmp_path, clock):
+    app = create_app(make_settings(tmp_path / "cloud"), now=clock)
+    with TestClient(app) as c:
+        yield c
+
+
+def test_eleventh_new_machine_in_an_hour_from_one_address_is_throttled(timed, clock):
+    signers = [Signer() for _ in range(MAX_NEW_REGISTRATIONS_PER_HOUR + 1)]
+    for s in signers[:-1]:
+        assert _register_request(timed, s).status_code == 200
+    r = _register_request(timed, signers[-1])
+    assert r.status_code == 429 and r.content == b""
+    assert 0 < float(r.headers["retry-after"]) <= 3600
+    # A known fingerprint re-registers freely and does not count.
+    assert _register_request(timed, signers[0]).status_code == 200
+    clock.advance(3601)
+    assert _register_request(timed, signers[-1]).status_code == 200
+    assert timed.app.state.repo.machine(signers[-1].fingerprint) is not None
+
+
+def test_sliding_window_prunes_and_drops_empty_keys():
+    w = SlidingWindow(2, 10)
+    w.record("a", 0)
+    w.record("a", 1)
+    assert w.allow("a", 5) == 5
+    assert w.allow("a", 10) is None
+    assert w.allow("a", 12) is None
+    w.record("b", 0)
+    w.reset("b")
+    assert w.allow("b", 0) is None
+
+
+async def test_concurrent_new_registrations_respect_the_cap(tmp_path, clock):
+    settings = make_settings(tmp_path / "cloud", max_unclaimed_machines=2)
+    app = create_app(settings, now=clock, start_sweep=False)
+    transport = httpx.ASGITransport(app=app)
+    signers = [Signer() for _ in range(8)]
+
+    async def one(signer):
+        body = (
+            RegisterMachine(public_key_b64=signer.public_key_b64, label="m")
+            .model_dump_json()
+            .encode()
+        )
+        headers = signer.headers("POST", "/api/v1/machines/register", body, now=clock())
+        headers["content-type"] = "application/json"
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            return (
+                await c.post("/api/v1/machines/register", content=body, headers=headers)
+            ).status_code
+
+    codes = await asyncio.gather(*(one(s) for s in signers))
+    assert sorted(codes) == [200, 200] + [429] * 6
+    assert app.state.repo.count_unclaimed_machines() == 2
+
+
+def test_unclaimed_machine_cap_blocks_new_but_not_known(tmp_path, clock):
+    settings = make_settings(tmp_path / "cloud", max_unclaimed_machines=1)
+    app = create_app(settings, now=clock)
+    with TestClient(app) as c:
+        first, second = Signer(), Signer()
+        assert _register_request(c, first).status_code == 200
+        clock.advance(5)
+        r = _register_request(c, second)
+        assert r.status_code == 429 and r.headers["retry-after"] == "3600"
+        assert _register_request(c, first).status_code == 200
+        repo = app.state.repo
+        owner = repo.upsert_account_from_login("sub-o", "o@example.com", "O", clock())
+        assert repo.claim_machine(first.fingerprint, owner.id, clock())
+        assert _register_request(c, second).status_code == 200
+
+
+def _padded(report):
+    return report.model_copy(
+        update={
+            "health": report.health.model_copy(update={"issues": ["x" * 100] * 300})
+        }
+    )
+
+
+def test_unclaimed_report_over_the_cap_is_413_and_not_stored(client, machine, tmp_path):
+    padded = _padded(make_report())
+    assert len(padded.model_dump_json().encode()) > MAX_UNCLAIMED_REPORT_BYTES
+    r = _post(client, machine, padded)
+    assert r.status_code == 413 and r.content == b""
+    assert not (tmp_path / "machines" / f"{machine.fingerprint}.json").exists()
+
+
+def test_claimed_machine_may_send_the_same_large_report(client, owned):
+    assert _post(client, owned, _padded(make_report())).status_code == 200
+
+
+async def test_sweep_purges_stale_unclaimed_machines_and_snapshots(tmp_path, clock):
+    app = create_app(make_settings(tmp_path / "cloud"), now=clock, start_sweep=False)
+    repo = app.state.repo
+    old, claimed, fresh = Signer(), Signer(), Signer()
+    t0 = clock()
+    for s in (old, claimed):
+        repo.register_machine(s.fingerprint, s.public_key_b64, "m", t0)
+    owner = repo.upsert_account_from_login("sub-o", "o@example.com", "O", t0)
+    assert repo.claim_machine(claimed.fingerprint, owner.id, t0)
+    for s in (old, claimed):
+        app.state.store.save(s.fingerprint, make_report())
+    clock.advance(UNCLAIMED_MACHINE_TTL_DAYS * 86400 + 60)
+    repo.register_machine(fresh.fingerprint, fresh.public_key_b64, "m", clock())
+    app.state.store.save(fresh.fingerprint, make_report())
+    await app.state.sweep.tick()
+    assert repo.machine(old.fingerprint) is None
+    assert app.state.store.latest(old.fingerprint) is None
+    assert repo.machine(claimed.fingerprint) is not None
+    assert app.state.store.latest(claimed.fingerprint) is not None
+    assert repo.machine(fresh.fingerprint) is not None
+    assert app.state.store.latest(fresh.fingerprint) is not None
+
+
+async def test_failing_purge_does_not_stop_the_sweep(tmp_path, clock):
+    app = create_app(make_settings(tmp_path / "cloud"), now=clock, start_sweep=False)
+    repo = app.state.repo
+
+    def boom(_cutoff):
+        raise RuntimeError("db down")
+
+    repo.purge_unclaimed_machines = boom
+    checked = []
+
+    def claimed_machines_with_state():
+        checked.append(True)
+        return []
+
+    repo.claimed_machines_with_state = claimed_machines_with_state
+    assert await app.state.sweep.tick() == []
+    assert checked == [True]

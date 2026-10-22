@@ -9,17 +9,28 @@ static files would be same-origin HTML on the cloud's origin.
 
 from __future__ import annotations
 
+import os
 import re
+import time
+import shutil
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from loguru import logger
 from fastapi.templating import Jinja2Templates
 from jinja2 import Template
 
 from ice_contracts.cloud.ui import DIGEST_PATTERN
-from ice_ui.bundle import BundleError, extract_bundle, ui_digest
+from ice_ui.bundle import BundleError, prepare_bundle, ui_digest
 from ice_ui.templating import STATIC_DIR, TEMPLATES_DIR, make_templates
+
+# Temp dirs younger than this may belong to an in-flight extraction.
+STALE_TEMP_SECONDS = 600
+
+# Each extraction can hold ~64 MiB; on a 512 MB host more than a couple at once
+# risks the OOM killer. Renders take ``_lock`` and are never held up by this.
+MAX_CONCURRENT_EXTRACTIONS = 2
 
 _DIGEST_RE = re.compile(DIGEST_PATTERN)
 
@@ -65,8 +76,29 @@ class UiRegistry:
         self._ui_dir = Path(root) / "ui"
         self._cloud_templates = cloud_templates
         self._lock = threading.Lock()
+        self._extractions = threading.BoundedSemaphore(MAX_CONCURRENT_EXTRACTIONS)
         self._cache: dict[str, Jinja2Templates] = {}
         self.installed_digest: str = ui_digest()
+        self._sweep_stale_temp_dirs()
+
+    def _sweep_stale_temp_dirs(self) -> None:
+        """Remove ``.``-prefixed extraction leftovers from a crashed upload.
+
+        Assumes one owning process per data dir; dirs touched within
+        ``STALE_TEMP_SECONDS`` are skipped so an overlapping process's
+        in-flight extraction survives."""
+        if not self._ui_dir.is_dir():
+            return
+        cutoff = time.time() - STALE_TEMP_SECONDS
+        stale = [
+            p
+            for p in self._ui_dir.glob(".*")
+            if p.is_dir() and p.stat().st_mtime < cutoff
+        ]
+        for p in stale:
+            shutil.rmtree(p, ignore_errors=True)
+        if stale:
+            logger.warning("removed {} stale bundle temp dir(s)", len(stale))
 
     def _bundle_dir(self, digest: str) -> Path:
         if not _DIGEST_RE.fullmatch(digest):
@@ -85,11 +117,22 @@ class UiRegistry:
         ``False`` if that digest is already present. ``BundleError`` on any
         rejection."""
         dest = self._bundle_dir(digest)
-        with self._lock:
-            if dest.is_dir():
-                return False
-            extract_bundle(data, dest, expected_digest=digest)
-            return True
+        if dest.is_dir():
+            return False
+        # Extraction is slow and untrusted: do it outside the lock that every
+        # page render takes, and hold the lock only for the rename.
+        with self._extractions:
+            tmp, _manifest = prepare_bundle(data, self._ui_dir, expected_digest=digest)
+        try:
+            with self._lock:
+                if dest.is_dir():
+                    shutil.rmtree(tmp, ignore_errors=True)
+                    return False
+                os.replace(tmp, dest)
+                return True
+        except BaseException:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
 
     def _templates_for(self, digest: str, factory) -> Jinja2Templates:
         with self._lock:

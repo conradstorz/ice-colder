@@ -149,3 +149,132 @@ def test_trusted_uploaded_bundle_renders_sandboxed(
     resolved = trusted.resolve(digest)
     assert resolved.sandboxed is True and resolved.mismatch is False
     assert MARKER in _render_fragment(resolved)
+
+
+def test_concurrent_registers_store_once(
+    registry, marked_bundle, tmp_path, monkeypatch
+):
+    import threading
+
+    import ice_cloud.ui_registry as ui_registry
+
+    digest, data = marked_bundle
+    start = threading.Barrier(2)
+    extracted = threading.Barrier(2)
+    real = ui_registry.prepare_bundle
+
+    def wrapped(*args, **kwargs):
+        result = real(*args, **kwargs)
+        extracted.wait(timeout=10)  # both finish extraction before either locks
+        return result
+
+    monkeypatch.setattr(ui_registry, "prepare_bundle", wrapped)
+    results: list[bool] = []
+
+    def worker():
+        start.wait(timeout=10)
+        results.append(registry.register(digest, data))
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert not any(t.is_alive() for t in threads)
+    assert sorted(results) == [False, True]
+    assert registry.has(digest)
+    assert [p.name for p in (tmp_path / "data" / "ui").iterdir()] == [digest]
+
+
+def test_init_sweeps_stale_temp_dirs(tmp_path, cloud_templates):
+    import os
+    import time
+
+    import ice_cloud.ui_registry as ui_registry
+
+    ui = tmp_path / "data" / "ui"
+    (ui / ".abc.tmp").mkdir(parents=True)
+    (ui / ".abc.tmp" / "f").write_text("x")
+    old = time.time() - 2 * ui_registry.STALE_TEMP_SECONDS
+    os.utime(ui / ".abc.tmp", (old, old))
+    (ui / ".fresh.tmp").mkdir()
+    (ui / ("a" * 64)).mkdir()
+    UiRegistry(tmp_path / "data", cloud_templates=cloud_templates)
+    assert sorted(p.name for p in ui.iterdir()) == [".fresh.tmp", "a" * 64]
+
+
+def test_register_extracts_outside_the_resolve_lock(
+    registry, marked_bundle, monkeypatch
+):
+    import threading
+
+    import ice_cloud.ui_registry as ui_registry
+
+    digest, data = marked_bundle
+    entered = threading.Event()
+    release = threading.Event()
+    real = ui_registry.prepare_bundle
+
+    def slow(*args, **kwargs):
+        entered.set()
+        assert release.wait(timeout=30)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ui_registry, "prepare_bundle", slow)
+    uploader = threading.Thread(target=registry.register, args=(digest, data))
+    uploader.start()
+    assert entered.wait(timeout=10)
+
+    resolved: list[object] = []
+    reader = threading.Thread(
+        target=lambda: resolved.append(registry.resolve(registry.installed_digest))
+    )
+    reader.start()
+    reader.join(timeout=10)
+    finished = not reader.is_alive()
+    release.set()
+    uploader.join(timeout=30)
+    assert finished, "resolve blocked while a bundle was being extracted"
+    assert resolved
+
+
+def test_extractions_are_bounded_by_a_semaphore(tmp_path, cloud_templates, monkeypatch):
+    import threading
+
+    import ice_cloud.ui_registry as ui_registry
+
+    monkeypatch.setattr(ui_registry, "MAX_CONCURRENT_EXTRACTIONS", 1)
+    reg = UiRegistry(tmp_path / "data", cloud_templates=cloud_templates)
+    entered: list[str] = []
+    first_in = threading.Event()
+    release_first = threading.Event()
+    second_in = threading.Event()
+
+    def blocking_prepare(data, ui_dir, expected_digest):
+        entered.append(expected_digest)
+        if len(entered) == 1:
+            first_in.set()
+            assert release_first.wait(10)
+        else:
+            second_in.set()
+        raise BundleError("rejected")
+
+    monkeypatch.setattr(ui_registry, "prepare_bundle", blocking_prepare)
+
+    def run(digest):
+        try:
+            reg.register(digest, b"x")
+        except BundleError:
+            pass
+
+    t1 = threading.Thread(target=run, args=("a" * 64,))
+    t2 = threading.Thread(target=run, args=("b" * 64,))
+    t1.start()
+    assert first_in.wait(10)
+    t2.start()
+    assert not second_in.wait(0.3)  # blocked behind the first extraction
+    assert entered == ["a" * 64]
+    release_first.set()
+    t1.join(10)
+    t2.join(10)
+    assert second_in.is_set()

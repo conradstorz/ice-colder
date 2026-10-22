@@ -78,6 +78,19 @@ Web application, with the single authorized redirect URI
 download does not include the redirect URI, so a client created from the console must have
 it added by hand or sign-in fails with `redirect_uri_mismatch`.
 
+Registration is open, so three optional variables bound what an unclaimed machine can
+cost (defaults shown; each is a positive integer, anything else stops the cloud at start):
+
+```
+ICE_CLOUD_MAX_UNCLAIMED_MACHINES=200        # new registrations beyond this answer 429
+ICE_CLOUD_UNCLAIMED_TTL_DAYS=7              # unseen this long and never claimed: purged
+ICE_CLOUD_MAX_UNCLAIMED_REPORT_BYTES=16384  # larger reports from unclaimed machines: 413
+```
+
+Independently, each client address may register at most 10 new machines per rolling hour
+(further ones answer 429 with `Retry-After`); machines that are already registered are
+never throttled.
+
 SMTP is not configured, so the cloud answers every report with `alerts_handled: false` and
 each edge keeps emailing its own alerts (`packages/cloud/README.md`, Alerts).
 

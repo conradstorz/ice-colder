@@ -92,7 +92,7 @@ Cloud C1, C2 → the rest.
 
 ## R. Edge runtime resilience
 
-- [ ] **R1 — HIGH: one failed email loses the alert permanently.**
+- [x] **R1 — HIGH: one failed email loses the alert permanently.**
   `monitoring/health_monitor.py:530` adds the dedup key to `_fired_alerts` before calling
   the callback; `notify/notifier.py:68` sets the cooldown before delivery; :146 logs and
   swallows the SMTP failure; `_deliver` also returns silently when the gateway is
@@ -101,6 +101,9 @@ Cloud C1, C2 → the rest.
   re-raises.
   Fix: `send` returns success; on failure `clear_alert(key)` or retry with backoff; set
   the cooldown only on success.
+  Still open: the "cloud defers, then stops vouching" case; the edge does not re-deliver
+  alerts it deferred to the cloud, so one deferred just before the cloud stops vouching
+  is never sent locally.
 
 - [ ] **R2 — HIGH: a bad `data/` volume stops the whole machine at boot, with exit 0.**
   `ledger/event_recorder.py:268` re-raises any non-corruption `OperationalError`
@@ -176,7 +179,7 @@ Cloud C1, C2 → the rest.
 
 ## C. Cloud portal (`packages/cloud/`) — public internet, 1 vCPU / 512 MB
 
-- [ ] **C1 — HIGH: unauthenticated registration has no rate limit or machine cap.**
+- [x] **C1 — HIGH: unauthenticated registration has no rate limit or machine cap.**
   `ingest.py:33` `register` accepts any Ed25519 key; `require_machine`
   (`machine_auth.py:180-187`) only checks fingerprint matches key; `post_report` then
   accepts up to 256 KiB per report from any registered machine, claimed or not, written
@@ -186,7 +189,7 @@ Cloud C1, C2 → the rest.
   Fix: IP rate limit on register (Caddy or in-app `Backoff`), global machine cap, TTL
   purge of never-claimed machines, smaller body cap for unclaimed reports.
 
-- [ ] **C2 — HIGH: bundle tar caps bytes but not member count.**
+- [x] **C2 — HIGH: bundle tar caps bytes but not member count.**
   `packages/ui/src/ice_ui/bundle.py:183` sums `member.size` against 20 MiB; zero-byte
   members add nothing, so a ~20 MB gzip can expand to tens of millions of 512-byte
   headers, each added to `seen` (RAM) and written as an inode. `UiRegistry.register`
@@ -196,7 +199,7 @@ Cloud C1, C2 → the rest.
   Fix: cap member count (~2000) and cumulative header/name bytes; extract outside the
   shared lock.
 
-- [ ] **C3 — MEDIUM: unsigned 20 MiB PUTs are buffered before the signature is checked.**
+- [x] **C3 — MEDIUM: unsigned 20 MiB PUTs are buffered before the signature is checked.**
   `body_limit.py:224-227` grants 20 MiB to any `PUT /api/v1/ui-bundles/*`;
   `require_machine` calls `await request.body()` (`machine_auth.py:177`) before verifying.
   A few concurrent unsigned PUTs exhaust the droplet.
@@ -213,7 +216,7 @@ Cloud C1, C2 → the rest.
   Fix: filter by fingerprint/event ids; retention job (90 days); cap `faults` length and
   string lengths in `ice_contracts.cloud.report`.
 
-- [ ] **C5 — MEDIUM: a replayed or stale report still triggers alert processing.**
+- [x] **C5 — MEDIUM: a replayed or stale report still triggers alert processing.**
   `ingest.py:67` ignores `store.save()` returning `False` for a stale `seq` and always
   calls `_handle_alerts`; it also refreshes `last_report_at`, delaying the offline alert.
   No nonce cache; `canonical_message` (`ice_contracts/cloud/signing.py:68`) covers
@@ -254,6 +257,39 @@ Cloud C1, C2 → the rest.
 - [ ] **C11 — LOW: `resolve_short` uses a 64-bit prefix** (`store/sqlite.py:379-387`);
   ambiguous prefixes return `None`. ~2^64 work to exploit; note only.
 
+- [ ] **C12 — MEDIUM: the unclaimed-machine purge can strand a setup code.**
+  `purge_unclaimed_machines` deletes a never-claimed machine after `UNCLAIMED_TTL_DAYS`
+  (7), but the edge persists the claim-code notice as acked (`uplink/identity.py:135-145`),
+  the setup code never expires (`access.py:902-904`), and `init_cloud_identity` does not
+  re-send an acked, unchanged notice (`identity.py:205-209`); `run_uplink` resets the ack
+  only on a re-register within one process (`loop.py:84-88`).
+  Scenario: a machine is set up on the bench, shipped, and stays powered off over 7 days;
+  it is purged, re-registers as new, and the owner's setup code gets the generic 403 at
+  `/claim`. Recovery is "Link to cloud" at the machine, which breaks the documented
+  "claim on the cloud before pressing Done" flow with no visible error.
+  Fix: edge calls `reset_ack()` after the first successful register of each process while
+  `claimed` is false (safe: consumed hashes are ignored); and/or raise the default TTL to
+  60-90 days (the cap, not the TTL, is the real bound). Must land before the first real
+  install.
+
+- [ ] **C13 — MEDIUM: squatters can fill the unclaimed cap and nothing clears them.**
+  The registration meter keys on the full client address (`ingest.py:94-95`), so an IPv6
+  attacker rotating addresses inside one /64 gets a fresh allowance each time, and a
+  squatter survives the purge with one signed request per 7 days (`touch_seen`).
+  Scenario: 200 squatters, then every genuine new registration gets 429 indefinitely;
+  `/admin` cannot list or delete unclaimed machines.
+  Fix: key IPv6 on its /64; add an admin "purge unclaimed" action; document the SQL
+  recovery in `docs/deploying-the-cloud-server.md`.
+
+- [ ] **C14 — MEDIUM: no global limit on in-flight bundle bodies.**
+  `Backoff.check` runs before the body read but failures are recorded after it, so N
+  concurrent bad-signature PUTs for a known claimed fingerprint all pass the check and each
+  buffers up to 20 MiB; a claimed machine with valid signatures is never backed off at all.
+  The extraction semaphore bounds extraction, not the body read.
+  Scenario: a few concurrent 20 MiB PUTs exhaust the 512 MB droplet.
+  Fix: a process-wide non-blocking semaphore on in-flight bundle bodies, answering 503/429
+  before `request.body()` (in `require_machine` or `BodyLimitMiddleware`).
+
 ## D. Deployment, data and secrets
 
 - [x] **D1 — HIGH: nothing is backed up.**
@@ -285,7 +321,7 @@ Cloud C1, C2 → the rest.
   Watchtower for the sim host only, or monitor-only mode plus an idle-window update
   script; document rollback.
 
-- [ ] **D4 — MEDIUM: `config.json` and `.bak` are written with umask permissions.**
+- [x] **D4 — MEDIUM: `config.json` and `.bak` are written with umask permissions.**
   `config/config_store.py:70-77` uses plain `open(tmp, "w")` and `shutil.copy2`; both
   carry real Stripe/PayPal/SMTP/MQTT secrets (`_config_json`, :51). On the host (root,
   umask 022) they are 0644, readable by any local user or any container bind-mounting

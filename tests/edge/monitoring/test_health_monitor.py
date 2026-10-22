@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from loguru import logger
 
+from tests.fakes import settle
 from ice_common.config_model import ConfigModel
 from ice_edge.monitoring.health_monitor import HealthMonitor, SubsystemStatus, Alert
 from ice_edge.notify.notifier import Notifier
@@ -783,3 +784,106 @@ class TestSignals:
 
     def test_empty_subsystem_row_has_empty_channels(self):
         assert HealthMonitor.empty_subsystem_row()["channels"] == []
+
+
+# ── failed delivery stays pending and is retried ─────────────
+
+
+async def _round(monitor):
+    # private: the periodic round has no public trigger; the loop task sleeps.
+    await monitor._check()
+
+
+class TestPendingAlertRetry:
+    @pytest.mark.asyncio
+    async def test_false_return_is_retried_until_true(self):
+        monitor = HealthMonitor()
+        callback = AsyncMock(side_effect=[False, False, True])
+        monitor.set_alert_callback(callback)
+
+        await _round(monitor)
+        assert monitor.pending_alert_keys == frozenset({"mqtt_disconnect"})
+        await _round(monitor)
+        assert callback.await_count == 2
+        assert monitor.pending_alert_keys == frozenset({"mqtt_disconnect"})
+        await _round(monitor)
+        assert callback.await_count == 3
+        assert monitor.pending_alert_keys == frozenset()
+        await _round(monitor)
+        assert callback.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_retries_run_after_liveness_detection(self):
+        monitor = HealthMonitor()
+        seen: list[str] = []
+
+        async def callback(alert):
+            seen.append(alert.message)
+            return False  # delivery keeps failing (SMTP blackholed)
+
+        monitor.set_alert_callback(callback)
+        await _round(monitor)  # fires mqtt_disconnect, which stays pending
+        monitor.mark_offline("ice_maker")
+        seen.clear()
+
+        await _round(monitor)
+        assert "ice_maker" in seen[0]  # the new stale alert is detected first
+        assert "MQTT" in seen[-1]  # the pending retry comes last
+
+    @pytest.mark.asyncio
+    async def test_raising_callback_stays_pending(self):
+        monitor = HealthMonitor()
+        callback = AsyncMock(side_effect=[RuntimeError("boom"), True])
+        monitor.set_alert_callback(callback)
+
+        await _round(monitor)
+        assert monitor.pending_alert_keys == frozenset({"mqtt_disconnect"})
+        await _round(monitor)
+        assert monitor.pending_alert_keys == frozenset()
+
+    @pytest.mark.asyncio
+    async def test_clear_alert_drops_pending(self):
+        monitor = HealthMonitor()
+        monitor.update_mqtt_status(True)
+        callback = AsyncMock(return_value=False)
+        monitor.set_alert_callback(callback)
+        await monitor.raise_alert("k1", "error", "vmc", "m")
+        assert monitor.pending_alert_keys == frozenset({"k1"})
+
+        monitor.clear_alert("k1")
+        assert monitor.pending_alert_keys == frozenset()
+        await _round(monitor)
+        callback.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_none_return_is_handled(self):
+        monitor = HealthMonitor()
+
+        async def cb(_alert):
+            return None
+
+        monitor.set_alert_callback(cb)
+        await _round(monitor)
+        assert monitor.pending_alert_keys == frozenset()
+
+    @pytest.mark.asyncio
+    async def test_clear_during_inflight_failed_send_does_not_resurrect(self):
+        monitor = HealthMonitor()
+        monitor.update_mqtt_status(True)
+        gate = asyncio.Event()
+        calls = []
+
+        async def cb(_alert):
+            calls.append(1)
+            await gate.wait()
+            return False
+
+        monitor.set_alert_callback(cb)
+        task = asyncio.create_task(monitor.raise_alert("k1", "error", "vmc", "m"))
+        await settle()
+        monitor.clear_alert("k1")
+        gate.set()
+        await task
+        assert monitor.pending_alert_keys == frozenset()
+        await _round(monitor)
+        assert len(calls) == 1

@@ -1,7 +1,9 @@
 """Tests for ice_edge/config/config_store.py — secret-preserving, atomic saves."""
 
 import json
+import os
 
+import pytest
 from pydantic import SecretStr
 
 from ice_common.config_model import ConfigModel
@@ -302,3 +304,32 @@ def test_add_product_unrecognized_kind_falls_back_to_other(tmp_path, monkeypatch
     assert add_product(cfg, "NEW-1", "New Thing", 3.25, kind="soda") is True
     new = next(p for p in cfg.products if p.sku == "NEW-1")
     assert new.kind == "other"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes only")
+def test_save_config_files_are_private_under_permissive_umask(tmp_path):
+    target = tmp_path / "config.json"
+    bak = tmp_path / "config.json.bak"
+    tmp = tmp_path / "config.json.tmp"
+    for p in (target, bak, tmp):
+        p.write_text("{}", encoding="utf-8")
+        os.chmod(p, 0o644)
+    previous = os.umask(0o022)
+    try:
+        save_config(_config_with_secret(), target)
+    finally:
+        os.umask(previous)
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert bak.stat().st_mode & 0o777 == 0o600
+    assert not tmp.exists()
+
+
+def test_save_config_overwrites_stale_tmp_file(tmp_path):
+    target = tmp_path / "config.json"
+    (tmp_path / "config.json.tmp").write_text("x" * 100000, encoding="utf-8")
+    save_config(_config_with_secret(), target)
+    reloaded = ConfigModel.model_validate(
+        json.loads(target.read_text(encoding="utf-8"))
+    )
+    assert reloaded.payment.stripe.api_key.get_secret_value() == "sk_live_REALKEY123"
+    assert not (tmp_path / "config.json.tmp").exists()

@@ -10,9 +10,9 @@ from ice_edge.monitoring.health_monitor import Alert
 from ice_edge.notify.notifier import Notifier
 
 
-def _notifier_with_mock():
+def _notifier_with_mock(clock=None):
     """Stub delivery to track send attempts; these tests cover cooldown/dedup only."""
-    n = Notifier(ConfigModel())
+    n = Notifier(ConfigModel(), clock=clock)
     deliver_mock = AsyncMock()
     n._deliver = deliver_mock
     return n, deliver_mock
@@ -65,13 +65,7 @@ async def test_no_code_falls_back_to_message():
 async def test_cooldown_expires_and_resends(monkeypatch):
     """Send an alert, suppress the next (within cooldown), resend after cooldown expires."""
     clock = [1000.0]
-    fake_loop = SimpleNamespace(time=lambda: clock[0])
-    monkeypatch.setattr(
-        "ice_edge.notify.notifier.asyncio",
-        SimpleNamespace(get_running_loop=lambda: fake_loop),
-    )
-
-    n, deliver_mock = _notifier_with_mock()
+    n, deliver_mock = _notifier_with_mock(clock=lambda: clock[0])
     first_alert = Alert(level="error", source="vmc", message="a", code="ICE-301")
 
     await n.send(first_alert)
@@ -124,3 +118,134 @@ async def test_predicate_exception_delivers_locally():
     n.set_cloud_handles_alerts(lambda: 1 / 0)
     await n.send(Alert(level="error", source="vmc", message="a", code="ICE-301"))
     assert deliver_mock.await_count == 1
+
+
+# ── delivery failure is retried, not lost ────────────────────
+
+
+def _email_notifier(monkeypatch, smtp, clock=None):
+    """A Notifier whose email gateway is 'configured' and whose SMTP call is `smtp`."""
+    from ice_edge.notify import notifier as notifier_mod
+
+    n = Notifier(ConfigModel(), clock=clock)
+    gw = SimpleNamespace(is_configured=True, default_from="vmc@example.com")
+    monkeypatch.setattr(
+        ConfigModel,
+        "get_preferred_gateway_for",
+        lambda self, owner: (notifier_mod.Channel.email, gw),
+    )
+    monkeypatch.setattr(notifier_mod, "_is_placeholder_host", lambda _addr: False)
+    monkeypatch.setattr(notifier_mod, "smtp_send", smtp)
+    return n
+
+
+async def test_failed_email_is_retried_after_retry_window(monkeypatch):
+    clock = [1000.0]
+    calls = []
+    outcomes = [RuntimeError("smtp down"), None]
+
+    def smtp(_cfg, _msg):
+        calls.append(1)
+        outcome = outcomes[len(calls) - 1]
+        if outcome:
+            raise outcome
+
+    n = _email_notifier(monkeypatch, smtp, clock=lambda: clock[0])
+    alert = Alert(level="error", source="vmc", message="leak", code="WTR-104")
+
+    assert await n.send(alert) is False
+    assert len(calls) == 1
+    assert await n.send(alert) is False  # inside the retry window: no new attempt
+    assert len(calls) == 1
+
+    clock[0] += Notifier.RETRY_SECONDS + 1
+    assert await n.send(alert) is True
+    assert len(calls) == 2
+
+    clock[0] += 10  # inside the success cooldown
+    assert await n.send(alert) is True
+    assert len(calls) == 2
+
+
+async def test_consecutive_failures_back_off_exponentially(monkeypatch):
+    clock = [1000.0]
+    calls = []
+
+    def smtp(_cfg, _msg):
+        calls.append(clock[0])
+        raise RuntimeError("smtp down")
+
+    n = _email_notifier(monkeypatch, smtp, clock=lambda: clock[0])
+    alert = Alert(level="error", source="vmc", message="leak", code="WTR-104")
+
+    for gap in (60, 120, 240):
+        assert await n.send(alert) is False
+        clock[0] += gap - 1
+        assert await n.send(alert) is False  # still inside the window
+        clock[0] += 1
+    assert len(calls) == 3
+    assert [b - a for a, b in zip(calls, calls[1:])] == [60, 120]
+
+
+async def test_retry_window_is_capped_and_resets_on_success(monkeypatch):
+    clock = [0.0]
+    fail = [True]
+    attempts = []
+
+    def smtp(_cfg, _msg):
+        attempts.append(clock[0])
+        if fail[0]:
+            raise RuntimeError("smtp down")
+
+    n = _email_notifier(monkeypatch, smtp, clock=lambda: clock[0])
+    alert = Alert(level="error", source="vmc", message="leak", code="WTR-104")
+    for _ in range(12):
+        await n.send(alert)
+        clock[0] += Notifier.RETRY_CAP_SECONDS
+    assert await n.send(alert) is False
+    clock[0] += Notifier.RETRY_CAP_SECONDS  # the cap is always enough to retry
+    fail[0] = False
+    assert await n.send(alert) is True
+    fail[0] = True
+    clock[0] += 10_000  # past the success cooldown
+    assert await n.send(alert) is False
+    assert await n.send(alert) is False
+    before = len(attempts)
+    clock[0] += Notifier.RETRY_SECONDS  # back to the base window after a success
+    assert await n.send(alert) is False
+    assert len(attempts) == before + 1
+
+
+async def test_log_only_outcome_is_handled():
+    n = Notifier(ConfigModel())
+    alert = Alert(level="error", source="vmc", message="x", code="ICE-301")
+    assert await n.send(alert) is True
+
+
+async def test_deferred_to_cloud_is_handled():
+    n = Notifier(ConfigModel(), cloud_handles_alerts=lambda: True)
+    alert = Alert(level="error", source="vmc", message="x", code="ICE-301")
+    assert await n.send(alert) is True
+
+
+async def test_failed_then_deferred_to_cloud_is_handled(monkeypatch):
+    clock = [0.0]
+    deferred = [False]
+    calls = []
+
+    def smtp(_cfg, _msg):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("down")
+
+    n = _email_notifier(monkeypatch, smtp, clock=lambda: clock[0])
+    n.set_cloud_handles_alerts(lambda: deferred[0])
+    alert = Alert(level="error", source="vmc", message="leak", code="WTR-104")
+    assert await n.send(alert) is False
+    clock[0] = 1.0
+    deferred[0] = True
+    assert await n.send(alert) is True
+    clock[0] = 2.0  # still inside the retry window
+    deferred[0] = False
+    assert await n.send(alert) is True  # handled, not reported as pending
+    assert len(calls) == 1  # the deferral counted as handled: no further SMTP
