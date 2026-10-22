@@ -32,7 +32,8 @@ class Notifier:
         await notifier.send(alert)
     """
 
-    RETRY_SECONDS: float = 60.0  # min gap between attempts after a failed send
+    RETRY_SECONDS: float = 60.0  # base gap between attempts after a failed send
+    RETRY_CAP_SECONDS: float = 3600.0  # the gap doubles per failure up to this
 
     def __init__(
         self,
@@ -51,6 +52,7 @@ class Notifier:
             300.0  # 5 min between repeat alerts per (source, code|message, sku)
         )
         self._last_failed: dict[str, float] = {}
+        self._failures: dict[str, int] = {}
         self._warned_unconfigured = False
 
     def set_cloud_handles_alerts(self, predicate: Callable[[], bool]) -> None:
@@ -97,7 +99,7 @@ class Notifier:
             return True
 
         failed = self._last_failed.get(key)
-        if failed is not None and now - failed < self.RETRY_SECONDS:
+        if failed is not None and now - failed < self._retry_window(key):
             logger.debug(f"Notifier: Waiting to retry alert {key}")
             return False
 
@@ -108,9 +110,16 @@ class Notifier:
         if await self._deliver(alert):
             self._last_sent[key] = now
             self._last_failed.pop(key, None)
+            self._failures.pop(key, None)
             return True
         self._last_failed[key] = now
+        self._failures[key] = self._failures.get(key, 0) + 1
         return False
+
+    def _retry_window(self, key: str) -> float:
+        """Gap before the next attempt: base, doubling per consecutive failure."""
+        failures = max(self._failures.get(key, 1), 1)
+        return min(self.RETRY_SECONDS * 2 ** (failures - 1), self.RETRY_CAP_SECONDS)
 
     async def _deliver(self, alert: Alert) -> bool:
         """Pick the owner's channel and send. Split out so tests can stub delivery."""

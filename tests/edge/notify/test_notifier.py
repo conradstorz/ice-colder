@@ -167,6 +167,55 @@ async def test_failed_email_is_retried_after_retry_window(monkeypatch):
     assert len(calls) == 2
 
 
+async def test_consecutive_failures_back_off_exponentially(monkeypatch):
+    clock = [1000.0]
+    calls = []
+
+    def smtp(_cfg, _msg):
+        calls.append(clock[0])
+        raise RuntimeError("smtp down")
+
+    n = _email_notifier(monkeypatch, smtp, clock=lambda: clock[0])
+    alert = Alert(level="error", source="vmc", message="leak", code="WTR-104")
+
+    for gap in (60, 120, 240):
+        assert await n.send(alert) is False
+        clock[0] += gap - 1
+        assert await n.send(alert) is False  # still inside the window
+        clock[0] += 1
+    assert len(calls) == 3
+    assert [b - a for a, b in zip(calls, calls[1:])] == [60, 120]
+
+
+async def test_retry_window_is_capped_and_resets_on_success(monkeypatch):
+    clock = [0.0]
+    fail = [True]
+    attempts = []
+
+    def smtp(_cfg, _msg):
+        attempts.append(clock[0])
+        if fail[0]:
+            raise RuntimeError("smtp down")
+
+    n = _email_notifier(monkeypatch, smtp, clock=lambda: clock[0])
+    alert = Alert(level="error", source="vmc", message="leak", code="WTR-104")
+    for _ in range(12):
+        await n.send(alert)
+        clock[0] += Notifier.RETRY_CAP_SECONDS
+    assert await n.send(alert) is False
+    clock[0] += Notifier.RETRY_CAP_SECONDS  # the cap is always enough to retry
+    fail[0] = False
+    assert await n.send(alert) is True
+    fail[0] = True
+    clock[0] += 10_000  # past the success cooldown
+    assert await n.send(alert) is False
+    assert await n.send(alert) is False
+    before = len(attempts)
+    clock[0] += Notifier.RETRY_SECONDS  # back to the base window after a success
+    assert await n.send(alert) is False
+    assert len(attempts) == before + 1
+
+
 async def test_log_only_outcome_is_handled():
     n = Notifier(ConfigModel())
     alert = Alert(level="error", source="vmc", message="x", code="ICE-301")

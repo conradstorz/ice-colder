@@ -813,6 +813,24 @@ class TestPendingAlertRetry:
         assert callback.await_count == 3
 
     @pytest.mark.asyncio
+    async def test_retries_run_after_liveness_detection(self):
+        monitor = HealthMonitor()
+        seen: list[str] = []
+
+        async def callback(alert):
+            seen.append(alert.message)
+            return False  # delivery keeps failing (SMTP blackholed)
+
+        monitor.set_alert_callback(callback)
+        await _round(monitor)  # fires mqtt_disconnect, which stays pending
+        monitor.mark_offline("ice_maker")
+        seen.clear()
+
+        await _round(monitor)
+        assert "ice_maker" in seen[0]  # the new stale alert is detected first
+        assert "MQTT" in seen[-1]  # the pending retry comes last
+
+    @pytest.mark.asyncio
     async def test_raising_callback_stays_pending(self):
         monitor = HealthMonitor()
         callback = AsyncMock(side_effect=[RuntimeError("boom"), True])

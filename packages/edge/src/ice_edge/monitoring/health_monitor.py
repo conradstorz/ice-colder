@@ -497,8 +497,9 @@ class HealthMonitor:
 
     async def _check(self):
         """Run one round of health checks."""
-        await self._retry_pending()
-
+        # Alerts already pending when the round starts; ones that fail for the
+        # first time during it were just attempted and wait for the next round.
+        carried = frozenset(self._pending_alerts)
         # Check MQTT connection
         if not self._mqtt_connected:
             await self._fire_alert(
@@ -532,6 +533,10 @@ class HealthMonitor:
                     f"(range: {self._temp_min} to {self._temp_max})",
                 )
 
+        # Last: a blackholed SMTP server can cost seconds per pending alert, and
+        # must not delay the liveness detection above.
+        await self._retry_pending(carried)
+
     async def _deliver(self, key: str, alert: Alert) -> None:
         """Hand `alert` to the callback; keep it pending unless it reports handled."""
         if not self._alert_callback:
@@ -547,9 +552,9 @@ class HealthMonitor:
             # Only while the fault is still raised: it may have cleared mid-send.
             self._pending_alerts[key] = alert
 
-    async def _retry_pending(self) -> None:
+    async def _retry_pending(self, only: frozenset[str]) -> None:
         for key, alert in list(self._pending_alerts.items()):
-            if key not in self._pending_alerts:
+            if key not in only or key not in self._pending_alerts:
                 continue
             await self._deliver(key, alert)
 
