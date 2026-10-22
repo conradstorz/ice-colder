@@ -306,7 +306,8 @@ class EventRecorder:
             # healthy database aside would permanently lose its history for
             # no reason. Nor may it stop the machine at boot: log it, flag
             # db_unavailable (main.py raises DATA-103) and let construction
-            # finish. record_sale journals every sale on its own connection;
+            # finish. record_sale still attempts its own connection and journals a
+            # failed write;
             # the writer thread either swallows per-item insert failures or,
             # when its own connect fails (e.g. an unopenable parent), exits
             # and leaves record() rows queued unwritten while flush() returns
@@ -316,7 +317,8 @@ class EventRecorder:
                     f"EventRecorder: the event database at {self._db_path} "
                     "could not be initialized (not corruption: read-only, "
                     "locked or unopenable); the database is unavailable for "
-                    "this process. record_sale will journal every sale."
+                    "this process. Writes are still attempted; a failed sale write is "
+                    "journalled (DATA-101 path)."
                 )
                 self.db_unavailable = True
                 self._start_writer()
@@ -355,10 +357,9 @@ class EventRecorder:
                     f"EventRecorder: could not initialize a fresh database "
                     f"at {self._db_path} after quarantining the corrupt "
                     "one; the database is unavailable for this process. "
-                    "record_sale will journal every sale it is asked to "
-                    "record (and re-raise, so the caller can alert "
-                    "DATA-101); DATA-102 stays set from the quarantine "
-                    "above."
+                    "writes are still attempted and a failed sale write is "
+                    "journalled (DATA-101 path); DATA-102 stays set from the "
+                    "quarantine above."
                 )
                 self.db_unavailable = True
         self._start_writer()
@@ -467,8 +468,9 @@ class EventRecorder:
             logger.error(
                 f"EventRecorder: {self._db_path} is at schema version "
                 f"{current} but this build only knows {len(MIGRATIONS)}; "
-                "refusing to touch it (downgrade?). The database is "
-                "unavailable for this process."
+                "the schema is left unmigrated (downgrade?). Writes are still "
+                "attempted and a failed sale write is journalled (DATA-101 "
+                "path)."
             )
             self.db_unavailable = True
             return

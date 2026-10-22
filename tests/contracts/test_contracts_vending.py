@@ -326,7 +326,7 @@ def test_data_103_is_an_alert_class_machine_warning_for_an_unavailable_event_db(
     assert FaultCode.DATA_103 not in PAYMENT_BLOCKING_FAULTS
     assert (
         spec.description
-        == "Event database unavailable; sales are being journalled to the fallback file"
+        == "Event database could not be initialised; writes are still attempted and a failed sale write is journalled to the fallback file"
     )
 
 

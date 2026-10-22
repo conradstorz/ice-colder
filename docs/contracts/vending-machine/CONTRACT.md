@@ -113,8 +113,8 @@ A command whose parameters fail the contract's bounds (e.g., `water_valve` with 
 
 ## 2.2.0 (2026-10-22, additive)
 
-- `FaultCode` gains `DATA-103` (event database unavailable; sales are being
-  journalled to the fallback file). Machine-scope `warning`.
+- `FaultCode` gains `DATA-103` (event database could not be initialised; writes
+  are still attempted and a failed sale write is journalled to the fallback file). Machine-scope `warning`.
 - `FaultCode` also gains `DATA-104` (session snapshot could not be saved; a
   crash now would lose the live sale's evidence). Machine-scope `warning`.
 - Neither is in `PAYMENT_BLOCKING_FAULTS`, which stays at seven codes.
