@@ -24,7 +24,8 @@ from ice_edge.sale.buttons import product_for_button
 from ice_edge.sale.outputs import StatusOutputs
 from ice_edge.payment.refund_protocol import PendingRefund, RefundProtocol
 from ice_edge.sale.sale_context import SaleContext
-from ice_edge.sale.session_timer import SessionTimer
+from ice_edge.sale.refusal import refusal
+from ice_edge.sale.session_timer import PaymentRetryTimer, SessionTimer
 from ice_edge.supervisor.task_runner import TaskRunner
 from ice_edge.vend.dispenser_gate import DispenserProfileGate
 from ice_edge.sale.sale_journal import STATE_CHANGE_PREFIX, SaleJournal  # noqa: F401  (tests import STATE_CHANGE_PREFIX from here)
@@ -98,13 +99,14 @@ class VMC:
         self._session_timer = SessionTimer(
             tasks, lambda: self.session_timeout_seconds, self._expire_session
         )
+        self._payment_retry = PaymentRetryTimer(tasks, self.process_payment)
         self._inventory: Callable[[], InventoryManager | None] = inventory
         self._availability: Callable[[], Availability | None] = availability
         self._outputs = outputs
         self._in_maintenance: Callable[[], bool] = in_maintenance
         # True for exactly one run_test_sale call (double-submit guard).
         self._test_sale_in_progress: bool = False
-        self._state_change_observers: list[Callable[[str], None]] = []
+        self._state_change_observers = [self._payment_retry.on_state]
         self._sale_settled_observers: list[
             Callable[[SaleContext, str, str | None], None]
         ] = []
@@ -131,6 +133,7 @@ class VMC:
         if self._cycle is not None:
             self._cycle.cancel()
         self._session_timer.cancel()
+        self._payment_retry.cancel()
 
     @property
     def outputs(self) -> StatusOutputs:
@@ -855,24 +858,16 @@ class VMC:
             f"Virtual Payment Option ({current_gateway}): Scan the QR code above."
         )
 
-    def _refusal(self, candidate: Product) -> bool:
-        """Journal and message the refusal if `candidate` is locked out or unavailable; True when refused."""
-        locked_code = self._faults.lockouts.get(candidate.sku)
-        if locked_code is not None:
-            self._journal.locked_out(candidate, locked_code)
-            return True
-        availability = self._availability()
-        if availability:
-            # A test sale (sale.is_test, never the lease) is exempt from its
-            # own SVC-102 only; a customer press mid-lease is still refused.
-            if self._sale is not None and self._sale.is_test:
-                sellable, failing = availability.test_sale_sellable(candidate)
-            else:
-                sellable, failing = availability.product_sellable(candidate)
-            if not sellable:
-                self._journal.unavailable(candidate, failing[0])
-                return True
-        return False
+    def _refusal(self, candidate: Product, *, stock: bool = False) -> bool:
+        return refusal(
+            candidate,
+            faults=self._faults,
+            availability=self._availability(),
+            inventory=self._inventory(),
+            journal=self._journal,
+            is_test=self._sale is not None and self._sale.is_test,
+            check_stock=stock,
+        )
 
     @logger.catch()
     def select_product(self, product: Product) -> None:
@@ -895,10 +890,10 @@ class VMC:
 
         if self.state == "idle":
             self.start_interaction()
-            self._schedule(1.0, self.process_payment, label="process_payment")
+            self._payment_retry.arm()
         elif self.state == "interacting_with_user":
             self.initiate_virtual_payment(self.selected_product.price)
-            self._schedule(1.0, self.process_payment, label="process_payment")
+            self._payment_retry.arm()
         self._outputs.refresh()
 
     @logger.catch()
@@ -913,6 +908,12 @@ class VMC:
         if self.selected_product is None or self.selected_product not in self.products:
             self._journal.catalog_lost_selection()
             self.cancel_sale()
+            return
+
+        # Availability or stock can change while the customer is still paying.
+        if self._refusal(self.selected_product, stock=True):
+            self.selected_product = None
+            self._outputs.refresh()
             return
 
         price = self.selected_product.price if self.selected_product else 0
@@ -940,7 +941,7 @@ class VMC:
                     self.credit_escrow, price, self.selected_product, required, message
                 )
                 self.last_insufficient_message = message
-            self._schedule(5.0, self.process_payment, label="process_payment")
+            self._payment_retry.arm(5.0)
 
     @logger.catch()
     def _expire_session(self):

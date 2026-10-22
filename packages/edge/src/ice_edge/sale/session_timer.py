@@ -24,10 +24,12 @@ class SessionTimer:
         self._on_expire = on_expire
         self._task: asyncio.Task | None = None
 
-    def arm(self) -> None:
+    def arm(self, delay: float | None = None) -> None:
         self.cancel()
         self._task = self._tasks.schedule(
-            self._seconds(), self._on_expire, label=self.LABEL
+            self._seconds() if delay is None else delay,
+            self._on_expire,
+            label=self.LABEL,
         )
 
     def cancel(self) -> None:
@@ -38,3 +40,18 @@ class SessionTimer:
     @property
     def armed(self) -> bool:
         return self._task is not None and not self._task.done()
+
+
+class PaymentRetryTimer(SessionTimer):
+    """The single pending `process_payment` re-check: arming replaces any
+    earlier one, so a stale chain can never fire after the sale moved on."""
+
+    LABEL = "process_payment"
+
+    def __init__(self, tasks: TaskRunner, on_fire: Callable[[], None]) -> None:
+        super().__init__(tasks, lambda: 1.0, on_fire)
+
+    def on_state(self, state: str) -> None:
+        """State-change observer: the re-check only lives while interacting."""
+        if state != "interacting_with_user":
+            self.cancel()

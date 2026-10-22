@@ -471,7 +471,6 @@ async def test_record_sale_totally_lost_preserves_pay104_recovery_not_data_101(
     vmc = machine.vmc
     machine.attach_to_loop(asyncio.get_running_loop())
     machine.set_session_store(SessionStore(store_path))
-    machine.set_availability(Availability())
 
     class TotallyFailingRecorder:
         def __init__(self):
@@ -492,6 +491,9 @@ async def test_record_sale_totally_lost_preserves_pay104_recovery_not_data_101(
 
     vmc.process_payment()
     assert vmc.state == "dispensing"
+    machine.set_availability(
+        Availability()
+    )  # after payment: a bare one is not sellable
     await machine.drain_persistence()  # the 'dispensing' snapshot is now on disk
 
     await vmc.on_dispenser_event(

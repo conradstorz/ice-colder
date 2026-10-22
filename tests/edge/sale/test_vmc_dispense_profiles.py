@@ -597,9 +597,10 @@ async def test_door_open_completes_sale_and_raises_ice402(tmp_path):
     rec = FakeEventRecorder()
     machine.set_event_recorder(rec)
     avail = Availability()
-    machine.set_availability(avail)
     product = vmc.products[0]
     _start_sale(vmc, product)
+    # Attached after payment: a bare Availability is (correctly) not sellable.
+    machine.set_availability(avail)
     await asyncio.sleep(0)
 
     await vmc.on_dispenser_event(
@@ -624,10 +625,10 @@ async def test_door_open_on_water_fill_fails_vend_with_error_mapping(tmp_path):
     rec = FakeEventRecorder()
     machine.set_event_recorder(rec)
     avail = Availability()
-    machine.set_availability(avail)
     product = vmc.products[1]  # W-1, water_fill
     price = product.price
     _start_sale(vmc, product)
+    machine.set_availability(avail)  # after payment: a bare one is not sellable
     await asyncio.sleep(0)
 
     await vmc.on_dispenser_event(
