@@ -92,7 +92,7 @@ Cloud C1, C2 → the rest.
 
 ## R. Edge runtime resilience
 
-- [ ] **R1 — HIGH: one failed email loses the alert permanently.**
+- [x] **R1 — HIGH: one failed email loses the alert permanently.**
   `monitoring/health_monitor.py:530` adds the dedup key to `_fired_alerts` before calling
   the callback; `notify/notifier.py:68` sets the cooldown before delivery; :146 logs and
   swallows the SMTP failure; `_deliver` also returns silently when the gateway is
@@ -176,7 +176,7 @@ Cloud C1, C2 → the rest.
 
 ## C. Cloud portal (`packages/cloud/`) — public internet, 1 vCPU / 512 MB
 
-- [ ] **C1 — HIGH: unauthenticated registration has no rate limit or machine cap.**
+- [x] **C1 — HIGH: unauthenticated registration has no rate limit or machine cap.**
   `ingest.py:33` `register` accepts any Ed25519 key; `require_machine`
   (`machine_auth.py:180-187`) only checks fingerprint matches key; `post_report` then
   accepts up to 256 KiB per report from any registered machine, claimed or not, written
@@ -186,7 +186,7 @@ Cloud C1, C2 → the rest.
   Fix: IP rate limit on register (Caddy or in-app `Backoff`), global machine cap, TTL
   purge of never-claimed machines, smaller body cap for unclaimed reports.
 
-- [ ] **C2 — HIGH: bundle tar caps bytes but not member count.**
+- [x] **C2 — HIGH: bundle tar caps bytes but not member count.**
   `packages/ui/src/ice_ui/bundle.py:183` sums `member.size` against 20 MiB; zero-byte
   members add nothing, so a ~20 MB gzip can expand to tens of millions of 512-byte
   headers, each added to `seen` (RAM) and written as an inode. `UiRegistry.register`
@@ -196,7 +196,7 @@ Cloud C1, C2 → the rest.
   Fix: cap member count (~2000) and cumulative header/name bytes; extract outside the
   shared lock.
 
-- [ ] **C3 — MEDIUM: unsigned 20 MiB PUTs are buffered before the signature is checked.**
+- [x] **C3 — MEDIUM: unsigned 20 MiB PUTs are buffered before the signature is checked.**
   `body_limit.py:224-227` grants 20 MiB to any `PUT /api/v1/ui-bundles/*`;
   `require_machine` calls `await request.body()` (`machine_auth.py:177`) before verifying.
   A few concurrent unsigned PUTs exhaust the droplet.
@@ -213,7 +213,7 @@ Cloud C1, C2 → the rest.
   Fix: filter by fingerprint/event ids; retention job (90 days); cap `faults` length and
   string lengths in `ice_contracts.cloud.report`.
 
-- [ ] **C5 — MEDIUM: a replayed or stale report still triggers alert processing.**
+- [x] **C5 — MEDIUM: a replayed or stale report still triggers alert processing.**
   `ingest.py:67` ignores `store.save()` returning `False` for a stale `seq` and always
   calls `_handle_alerts`; it also refreshes `last_report_at`, delaying the offline alert.
   No nonce cache; `canonical_message` (`ice_contracts/cloud/signing.py:68`) covers
@@ -285,7 +285,7 @@ Cloud C1, C2 → the rest.
   Watchtower for the sim host only, or monitor-only mode plus an idle-window update
   script; document rollback.
 
-- [ ] **D4 — MEDIUM: `config.json` and `.bak` are written with umask permissions.**
+- [x] **D4 — MEDIUM: `config.json` and `.bak` are written with umask permissions.**
   `config/config_store.py:70-77` uses plain `open(tmp, "w")` and `shutil.copy2`; both
   carry real Stripe/PayPal/SMTP/MQTT secrets (`_config_json`, :51). On the host (root,
   umask 022) they are 0644, readable by any local user or any container bind-mounting
