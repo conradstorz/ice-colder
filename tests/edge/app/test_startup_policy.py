@@ -259,6 +259,32 @@ def test_reconcile_corrupt_db_raises_data_102_and_vmc_stays_usable(
     assert "DATA-102" not in {f["code"] for f in vmc.active_faults()}
 
 
+@pytest.mark.parametrize("unavailable", [True, False])
+def test_reconcile_raises_data_103_only_when_db_unavailable(
+    tmp_path, monkeypatch, unavailable
+):
+    monkeypatch.setattr(
+        event_recorder_module, "JOURNAL_PATH", tmp_path / "sales-journal.jsonl"
+    )
+
+    class StubRecorder:
+        db_was_corrupt = False
+        db_unavailable = False
+        corrupt_backup_path = None
+        db_unavailable = unavailable
+
+        def replay_sales_journal(self):
+            return 0
+
+    machine = Machine(config=ConfigModel())
+
+    reconcile_sales_journal_faults(machine, StubRecorder())
+
+    assert machine.faults.has(FaultCode.DATA_103.value) is unavailable
+    assert not machine.faults.has(FaultCode.DATA_102.value)
+    assert machine.vmc.state == "idle"
+
+
 @pytest.mark.parametrize(
     ("journal_text", "data_101_active"),
     [
@@ -282,6 +308,7 @@ def test_reconcile_never_raises_on_recorder_failure(
 
     class ExplodingRecorder:
         db_was_corrupt = False
+        db_unavailable = False
 
         def replay_sales_journal(self):
             raise RuntimeError("disk exploded")
@@ -331,6 +358,7 @@ def test_reconcile_raises_data_101_when_replay_commits_but_journal_rewrite_fails
         needing to fake os.replace internals."""
 
         db_was_corrupt = False
+        db_unavailable = False
 
         def replay_sales_journal(self):
             real_recorder.record_sale(

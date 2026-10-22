@@ -19,6 +19,9 @@ def reconcile_sales_journal_faults(machine: Machine, recorder: EventRecorder) ->
     - ``DATA-102`` is raised once whenever the recorder reports it quarantined
       a corrupt database on this boot (``recorder.db_was_corrupt``, set by
       ``EventRecorder.__init__``, never by this function).
+    - ``DATA-103`` is raised whenever ``recorder.db_unavailable`` is set (the
+      database could not be opened for a non-corruption reason); it is never
+      auto-cleared in this process.
     - ``DATA-101`` is reconciled from the *journal's own state after replay*,
       never from ``replay_sales_journal()``'s return value: that integer is
       only the count of rows this call actually inserted, and it is ``0``
@@ -44,6 +47,18 @@ def reconcile_sales_journal_faults(machine: Machine, recorder: EventRecorder) ->
             )
             machine.faults.raise_fault(FaultCode.DATA_102, outcome=detail)
             logger.error(f"Event database was reset after corruption: {detail}")
+
+        if recorder.db_unavailable:
+            # Never auto-cleared: the database is opened once at boot, so
+            # only an operator clear or the next restart ends this fault.
+            machine.faults.raise_fault(
+                FaultCode.DATA_103,
+                outcome="event database could not be opened at startup",
+            )
+            logger.error(
+                "Event database unavailable; sales are being journalled to "
+                "the fallback file"
+            )
 
         try:
             inserted = recorder.replay_sales_journal()

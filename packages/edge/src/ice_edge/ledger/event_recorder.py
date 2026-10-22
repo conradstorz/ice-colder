@@ -255,18 +255,31 @@ class EventRecorder:
         try:
             self._init_db()
             self.prune()
-        except sqlite3.DatabaseError as exc:
+        except (sqlite3.DatabaseError, OSError) as exc:
+            # (OSError: the data directory itself cannot be created, e.g. a
+            # file in its place or a read-only volume.)
             # Either _init_db (schema creation reads the file header) or
             # prune (a DELETE) can be the first statement to actually touch
             # a corrupt file and raise -- handle both here. But only genuine
             # corruption is handled this way: a locked database or a
             # transient I/O/permission error (both raise OperationalError,
-            # a DatabaseError subclass) must propagate unchanged rather than
-            # be treated as corruption -- see _is_corruption_error. Renaming
-            # a merely-locked, perfectly healthy database aside would
-            # permanently lose its history for no reason.
-            if not _is_corruption_error(exc):
-                raise
+            # a DatabaseError subclass) must not be treated as corruption --
+            # see _is_corruption_error. Renaming a merely-locked, perfectly
+            # healthy database aside would permanently lose its history for
+            # no reason. Nor may it stop the machine at boot: log it, flag
+            # db_unavailable (main.py raises DATA-103) and let construction
+            # finish; every downstream user already tolerates an unwritable
+            # database (see the contract described below).
+            if isinstance(exc, OSError) or not _is_corruption_error(exc):
+                logger.exception(
+                    f"EventRecorder: could not open the event database at "
+                    f"{self._db_path} (not corruption: read-only, locked or "
+                    "unopenable); the database is unavailable for this "
+                    "process. record_sale will journal every sale."
+                )
+                self.db_unavailable = True
+                self._start_writer()
+                return
             self._quarantine_corrupt_db()
             # This retry must not be allowed to raise out of the
             # constructor: _quarantine_corrupt_db only clears the way for a
@@ -307,6 +320,9 @@ class EventRecorder:
                     "above."
                 )
                 self.db_unavailable = True
+        self._start_writer()
+
+    def _start_writer(self) -> None:
         # All inserts go through one daemon thread with one connection so MQTT
         # handlers never block the event loop on SD-card writes.
         self._queue: queue.Queue = queue.Queue()

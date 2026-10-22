@@ -1257,8 +1257,9 @@ class TestCorruptDetectionNarrowedToGenuineCorruption:
         fake_connect = self._make_failing_connect(db_path, message, real_connect)
         monkeypatch.setattr(sqlite3, "connect", fake_connect)
 
-        with pytest.raises(sqlite3.OperationalError):
-            EventRecorder(db_path=str(db_path))
+        rec = EventRecorder(db_path=str(db_path))  # must not raise (R2)
+        assert rec.db_unavailable is True
+        assert rec.db_was_corrupt is False
 
         # Proves the branch was truly entered as "not corruption": no
         # quarantine sibling was created and the original file is untouched,
@@ -2124,3 +2125,36 @@ class TestTestRunRetentionScope:
             sales_count = conn.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
         assert test_run_count == 0
         assert sales_count == 1
+
+
+class TestOpenFailureIsNotCorruption:
+    """R2: a database that cannot be opened for a reason other than
+    corruption (read-only volume, locked, parent is not a directory) must not
+    stop the machine at boot and must never be renamed aside."""
+
+    def test_unopenable_path_does_not_raise_and_flags_unavailable(
+        self, tmp_path, journal_path
+    ):
+        blocker = tmp_path / "data"
+        blocker.write_text("a file where the data directory should be")
+        db_path = blocker / "events.db"  # parent is a file: cannot open
+
+        rec = EventRecorder(db_path=str(db_path))  # must not raise
+
+        assert rec.db_unavailable is True
+        assert rec.db_was_corrupt is False
+        assert rec.corrupt_backup_path is None
+        assert not list(tmp_path.glob("**/*.corrupt-*"))
+        assert blocker.read_text() == "a file where the data directory should be"
+
+        rec.record("payment", value=1.0)
+        rec.flush(timeout=5.0)
+        with pytest.raises(sqlite3.OperationalError):
+            rec.record_sale("SKU1", "Cola", 1, 1.50, {"cash": 1.50}, ts=12345.0)
+        lines = journal_path.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1
+        assert json.loads(lines[0])["sku"] == "SKU1"
+
+    def test_healthy_database_is_not_flagged_unavailable(self, tmp_path):
+        rec = EventRecorder(db_path=str(tmp_path / "events.db"))
+        assert rec.db_unavailable is False

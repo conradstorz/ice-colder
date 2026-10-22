@@ -42,7 +42,7 @@ from ice_edge.web import routes
 from ice_edge.web import auth as web_auth
 
 
-@logger.catch()
+@logger.catch(onerror=lambda _: sys.exit(1))
 async def main():
     setup_logging()
     logger.info("Starting Vending Machine Controller")
