@@ -1,14 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Admin · Vending Machine{% endblock %}
+{% block title %}Fleet · Admin · Vending Machine{% endblock %}
 {% block body %}
-<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-  <a href="/admin/machines" class="block bg-white rounded-xl border border-gray-200 shadow-sm p-5 touch-target">
-    <div class="text-xs text-gray-400 uppercase tracking-wide">Fleet</div>
-    <div class="text-lg font-semibold text-gray-900">Machines</div>
-  </a>
-  <a href="/admin/accounts" class="block bg-white rounded-xl border border-gray-200 shadow-sm p-5 touch-target">
-    <div class="text-xs text-gray-400 uppercase tracking-wide">People</div>
-    <div class="text-lg font-semibold text-gray-900">Accounts</div>
-  </a>
-</div>
+{% include "partials/admin_overview_frame.html" %}
 {% endblock %}

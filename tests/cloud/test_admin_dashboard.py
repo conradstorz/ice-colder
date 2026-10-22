@@ -1,4 +1,4 @@
-from tests.cloud.conftest import Signer, claim, login, push
+from tests.cloud.conftest import Signer, claim, login, push, register
 from tests.cloud.reports import make_report
 
 
@@ -67,3 +67,75 @@ def test_machines_breadcrumb_for_filter(cloud, clock):
     _admin(cloud)
     r = cloud.get("/admin/machines?status=silent")
     assert 'aria-current="page">Silent<' in r.text
+
+
+def _seed_fleet(cloud, clock):
+    silent = Signer()
+    push(cloud, silent, make_report(machine_id="m-silent", interval=10))
+    clock.advance(31)
+    one, two, loose, never = Signer(), Signer(), Signer(), Signer()
+    push(cloud, one, make_report(machine_id="m-one", interval=60))
+    push(cloud, two, make_report(machine_id="m-two", interval=60))
+    push(cloud, loose, make_report(machine_id="m-loose", interval=60))
+    register(cloud, never, "m-never")
+    claim(cloud, silent, login(cloud, "owner1@example.com"))
+    claim(cloud, one, login(cloud, "owner1@example.com"))
+    claim(cloud, two, login(cloud, "owner2@example.com"))
+
+
+def _headline(text, label, value):
+    start = text.index(label)
+    return f">{value}<" in text[start : start + 400]
+
+
+def test_overview_shows_four_headlines(cloud, clock):
+    _seed_fleet(cloud, clock)
+    _admin(cloud)
+    r = cloud.get("/admin")
+    assert r.status_code == 200
+    assert _headline(r.text, "Machines", 5)
+    assert _headline(r.text, "Owners", 2)
+    assert _headline(r.text, "Unclaimed calling in", 1)
+    assert _headline(r.text, "Silent", 1)
+
+
+def test_overview_attention_lists_silent_before_unclaimed(cloud, clock):
+    _seed_fleet(cloud, clock)
+    _admin(cloud)
+    r = cloud.get("/admin")
+    assert r.text.index("m-silent") < r.text.index("m-loose")
+
+
+def test_overview_fragment_is_bare_div(cloud, clock):
+    _seed_fleet(cloud, clock)
+    _admin(cloud)
+    r = cloud.get("/admin/overview", headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert r.text.lstrip().startswith('<div id="fleet-overview"')
+    assert 'hx-target="this"' in r.text
+    assert "<html" not in r.text
+    assert _headline(r.text, "Machines", 5)
+    assert _headline(r.text, "Silent", 1)
+
+
+def test_overview_non_admin_404(cloud):
+    login(cloud, "someone@example.com")
+    assert cloud.get("/admin").status_code == 404
+    assert cloud.get("/admin/overview").status_code == 404
+
+
+def test_overview_empty_fleet(cloud):
+    _admin(cloud)
+    r = cloud.get("/admin")
+    assert r.status_code == 200
+    assert "Nothing needs attention." in r.text
+    assert _headline(r.text, "Machines", 0)
+
+
+def test_overview_software_panel_counts_builds(cloud):
+    for name, build in (("m-a", "aaa"), ("m-b", "aaa"), ("m-c", "bbb")):
+        push(cloud, Signer(), make_report(machine_id=name, edge_build=build))
+    _admin(cloud)
+    r = cloud.get("/admin")
+    start = r.text.index("aaa")
+    assert ">2<" in r.text[start : start + 300]
