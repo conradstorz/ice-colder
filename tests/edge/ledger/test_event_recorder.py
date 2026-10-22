@@ -2158,3 +2158,115 @@ class TestOpenFailureIsNotCorruption:
     def test_healthy_database_is_not_flagged_unavailable(self, tmp_path):
         rec = EventRecorder(db_path=str(tmp_path / "events.db"))
         assert rec.db_unavailable is False
+
+
+def _user_version(db: str) -> int:
+    conn = sqlite3.connect(db)
+    try:
+        return conn.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def _tables(db: str) -> set[str]:
+    conn = sqlite3.connect(db)
+    try:
+        return {
+            r[0]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    finally:
+        conn.close()
+
+
+def _columns(db: str, table: str) -> set[str]:
+    conn = sqlite3.connect(db)
+    try:
+        return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    finally:
+        conn.close()
+
+
+class TestMigrations:
+    def test_fresh_file_reaches_latest_version(self, tmp_path):
+        db = str(tmp_path / "events.db")
+        rec = EventRecorder(db_path=db)
+        assert _user_version(db) == len(event_recorder_module.MIGRATIONS)
+        assert {"events", "sales", "cash_collections"} <= _tables(db)
+        assert rec.db_unavailable is False
+
+    def test_legacy_unversioned_file_is_adopted_with_data_intact(self, tmp_path):
+        db = str(tmp_path / "events.db")
+        legacy = sqlite3.connect(db)
+        legacy.executescript(event_recorder_module.MIGRATIONS[0])
+        legacy.execute(
+            "INSERT INTO sales (ts, sku, name, slot, price, methods) "
+            "VALUES (1.0, 'ICE', 'Ice', 1, 3.5, '{}')"
+        )
+        legacy.commit()
+        legacy.close()
+        assert _user_version(db) == 0
+
+        rec = EventRecorder(db_path=db)
+
+        assert rec.db_unavailable is False
+        assert _user_version(db) == 1
+        conn = sqlite3.connect(db)
+        rows = conn.execute("SELECT sku, price FROM sales").fetchall()
+        conn.close()
+        assert rows == [("ICE", 3.5)]
+
+    def test_second_construction_applies_nothing(self, tmp_path):
+        db = str(tmp_path / "events.db")
+        EventRecorder(db_path=db)
+        before = _user_version(db)
+        rec = EventRecorder(db_path=db)
+        assert _user_version(db) == before
+        assert rec.db_unavailable is False
+
+    def test_future_migration_is_applied(self, tmp_path, monkeypatch):
+        db = str(tmp_path / "events.db")
+        EventRecorder(db_path=db)
+        monkeypatch.setattr(
+            event_recorder_module,
+            "MIGRATIONS",
+            [
+                *event_recorder_module.MIGRATIONS,
+                "ALTER TABLE sales ADD COLUMN note TEXT",
+            ],
+        )
+        rec = EventRecorder(db_path=db)
+        assert rec.db_unavailable is False
+        assert "note" in _columns(db, "sales")
+        assert _user_version(db) == 2
+
+    def test_database_newer_than_code_is_unavailable_and_untouched(self, tmp_path):
+        db = str(tmp_path / "events.db")
+        EventRecorder(db_path=db)
+        conn = sqlite3.connect(db)
+        conn.execute("PRAGMA user_version = 99")
+        conn.close()
+
+        rec = EventRecorder(db_path=db)
+
+        assert rec.db_unavailable is True
+        assert _user_version(db) == 99
+        assert {"events", "sales", "cash_collections"} <= _tables(db)
+
+    def test_failing_migration_rolls_back_and_flags_unavailable(
+        self, tmp_path, monkeypatch
+    ):
+        db = str(tmp_path / "events.db")
+        EventRecorder(db_path=db)
+        monkeypatch.setattr(
+            event_recorder_module,
+            "MIGRATIONS",
+            [
+                *event_recorder_module.MIGRATIONS,
+                "ALTER TABLE sales ADD COLUMN half_done TEXT; NOT VALID SQL",
+            ],
+        )
+        rec = EventRecorder(db_path=db)
+        assert rec.db_unavailable is True
+        assert _user_version(db) == 1
+        assert "half_done" not in _columns(db, "sales")

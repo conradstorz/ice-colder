@@ -37,6 +37,43 @@ from ice_contracts.board.mqtt_messages import (
 )
 from ice_common.paths import DATA_DIR
 
+# Schema history. Append only -- never edit an entry once shipped. The applied
+# count lives in ``PRAGMA user_version`` (idiomatic SQLite, no extra table;
+# the cloud's cloud.db uses a schema_version table instead). Migration 1 is
+# the original ``CREATE ... IF NOT EXISTS`` schema, so it is a no-op on a
+# database deployed before versioning existed.
+MIGRATIONS: list[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS events (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_type TEXT NOT NULL,
+        timestamp  REAL NOT NULL,
+        value      REAL,
+        metadata   TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_type_ts ON events (event_type, timestamp);
+    CREATE TABLE IF NOT EXISTS sales (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts         REAL NOT NULL,
+        sku        TEXT NOT NULL,
+        name       TEXT NOT NULL,
+        slot       INTEGER,
+        price      REAL NOT NULL,
+        methods    TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sales_ts ON sales (ts);
+    CREATE INDEX IF NOT EXISTS idx_sales_sku_ts ON sales (sku, ts);
+    CREATE TABLE IF NOT EXISTS cash_collections (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts            REAL NOT NULL,
+        user_id       TEXT NOT NULL,
+        user_name     TEXT NOT NULL,
+        expected_cash REAL NOT NULL
+    )
+    """,
+]
+
+
 # Must match packages/sims/src/ice_sims/base.py HEARTBEAT_INTERVAL
 _HEARTBEAT_INTERVAL = 10.0
 
@@ -254,7 +291,8 @@ class EventRecorder:
         self.db_unavailable: bool = False
         try:
             self._init_db()
-            self.prune()
+            if not self.db_unavailable:
+                self.prune()
         except (sqlite3.DatabaseError, OSError) as exc:
             # (OSError: the data directory itself cannot be created, e.g. a
             # file in its place or a read-only volume.)
@@ -416,6 +454,43 @@ class EventRecorder:
             f"be created at {fallback_path} and used for this process"
         )
 
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        """Bring the schema up to ``len(MIGRATIONS)`` via ``PRAGMA user_version``.
+
+        Each pending migration runs in its own transaction together with its
+        version bump, so it is applied whole or not at all. A database newer
+        than this code, or a migration that fails, flags ``db_unavailable``
+        (record_sale keeps journaling sales) instead of raising.
+        """
+        current = conn.execute("PRAGMA user_version").fetchone()[0]
+        if current > len(MIGRATIONS):
+            logger.error(
+                f"EventRecorder: {self._db_path} is at schema version "
+                f"{current} but this build only knows {len(MIGRATIONS)}; "
+                "refusing to touch it (downgrade?). The database is "
+                "unavailable for this process."
+            )
+            self.db_unavailable = True
+            return
+        for index in range(current, len(MIGRATIONS)):
+            try:
+                conn.execute("BEGIN")
+                for statement in MIGRATIONS[index].split(";"):
+                    if statement.strip():
+                        conn.execute(statement)
+                conn.execute(f"PRAGMA user_version = {index + 1}")
+                conn.execute("COMMIT")
+            except sqlite3.Error:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                logger.exception(
+                    f"EventRecorder: migration {index + 1} of "
+                    f"{self._db_path} failed and was rolled back; the "
+                    "database is unavailable for this process."
+                )
+                self.db_unavailable = True
+                return
+
     def _init_db(self):
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         # Explicit close (not `with sqlite3.connect(...) as conn:`, which
@@ -436,43 +511,7 @@ class EventRecorder:
                     "the first-sale 'database is locked' race may recur",
                     mode[0] if mode else None,
                 )
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS events (
-                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                    event_type TEXT NOT NULL,
-                    timestamp  REAL NOT NULL,
-                    value      REAL,
-                    metadata   TEXT
-                )
-            """)
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_type_ts ON events (event_type, timestamp)"
-            )
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS sales (
-                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ts         REAL NOT NULL,
-                    sku        TEXT NOT NULL,
-                    name       TEXT NOT NULL,
-                    slot       INTEGER,
-                    price      REAL NOT NULL,
-                    methods    TEXT NOT NULL
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_ts ON sales (ts)")
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_sales_sku_ts ON sales (sku, ts)"
-            )
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS cash_collections (
-                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ts            REAL NOT NULL,
-                    user_id       TEXT NOT NULL,
-                    user_name     TEXT NOT NULL,
-                    expected_cash REAL NOT NULL
-                )
-            """)
-            conn.commit()
+            self._migrate(conn)
         finally:
             conn.close()
 
