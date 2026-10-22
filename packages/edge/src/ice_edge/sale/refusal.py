@@ -19,9 +19,10 @@ def refusal(
     journal: "SaleJournal",
     is_test: bool,
     check_stock: bool = False,
-) -> bool:
+) -> str | None:
     """Journal and message the refusal if `candidate` is locked out,
-    unavailable or (with `check_stock`) sold out; True when refused.
+    unavailable or (with `check_stock`) sold out; returns why (a fault code,
+    failing row or "sold_out"), or None when sellable.
 
     A test sale (`is_test`, never the lease) is exempt from its own SVC-102
     only; a customer press mid-lease is still refused.
@@ -29,7 +30,7 @@ def refusal(
     locked_code = faults.lockouts.get(candidate.sku)
     if locked_code is not None:
         journal.locked_out(candidate, locked_code)
-        return True
+        return locked_code.value
     if availability:
         check = (
             availability.test_sale_sellable
@@ -39,8 +40,8 @@ def refusal(
         sellable, failing = check(candidate)
         if not sellable:
             journal.unavailable(candidate, failing[0])
-            return True
+            return failing[0]
     if check_stock and inventory and not inventory.is_available(candidate.sku):
         journal.sold_out(candidate)
-        return True
-    return False
+        return "sold_out"
+    return None

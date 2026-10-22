@@ -393,6 +393,7 @@ class VMC:
             self._cycle.cancel()
         self._cycle = None
         self.selected_product = None
+        self._payment_retry.cancel()
         self.last_insufficient_message = ""
 
     def _settle(
@@ -858,7 +859,7 @@ class VMC:
             f"Virtual Payment Option ({current_gateway}): Scan the QR code above."
         )
 
-    def _refusal(self, candidate: Product, *, stock: bool = False) -> bool:
+    def _refusal(self, candidate: Product, *, stock: bool = False) -> str | None:
         return refusal(
             candidate,
             faults=self._faults,
@@ -877,16 +878,11 @@ class VMC:
             return
 
         candidate = product
-        if self._refusal(candidate):
+        if self._refusal(candidate, stock=True):
             return
 
         self.selected_product = candidate
         self._journal.product_selected(self.selected_product)
-
-        inventory = self._inventory()
-        if inventory and not inventory.is_available(self.selected_product.sku):
-            self._journal.sold_out(self.selected_product)
-            return
 
         if self.state == "idle":
             self.start_interaction()
@@ -911,9 +907,13 @@ class VMC:
             return
 
         # Availability or stock can change while the customer is still paying.
-        if self._refusal(self.selected_product, stock=True):
-            self.selected_product = None
-            self._outputs.refresh()
+        if code := self._refusal(self.selected_product, stock=True):
+            if self._sale.is_test:  # settle it, or the runner awaits forever
+                self._escrow.take_all()  # test money is never refunded
+                self._settle("vend_failed", code, self.cancel_sale)
+            else:
+                self.selected_product = None
+                self._outputs.refresh()
             return
 
         price = self.selected_product.price if self.selected_product else 0

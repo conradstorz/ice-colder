@@ -100,3 +100,36 @@ async def test_no_payment_timer_pending_after_vend_leaves_change(tmp_path):
     assert vmc.state == "interacting_with_user"
     assert vmc.selected_product is None
     assert _labels(runner, "process_payment") == 0
+
+
+async def test_test_sale_refused_at_payment_settles_and_releases_lease(tmp_path):
+    # private: shared Machine+dispatcher+mqtt harness, same as test_test_sale_runner
+    from tests.edge.sale.test_vmc_observers import _vmc_with_profiles
+
+    machine, vmc, _dispatcher, client, _runner = _vmc_with_profiles(tmp_path)
+    product = vmc.products[0]
+    granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
+    assert granted is True
+    task = asyncio.get_running_loop().create_task(
+        machine.test_sales.run_test_sale(product.sku)
+    )
+    await asyncio.sleep(0)
+    assert vmc.state == "interacting_with_user"
+
+    vmc.raise_fault(FaultCode.ICE_101, sku=product.sku)
+    vmc.process_payment()
+    result = await asyncio.wait_for(task, timeout=5)
+
+    assert result.outcome == "vend_failed"
+    assert result.fault_code == FaultCode.ICE_101.value
+    assert not any(t == "cmd/payment/refund" for t, *_ in client.published)
+    assert machine.lease.hold.runs_in_flight == 0
+    assert vmc.credit_escrow == 0
+    assert vmc.test_sale_in_progress is False
+    machine.cancel_pending_tasks()
+
+
+async def test_session_expiry_cancels_payment_timer(tmp_path):
+    machine, runner, _ = _selected(tmp_path)
+    runner.fire("session_timeout")
+    assert _labels(runner, "process_payment") == 0
