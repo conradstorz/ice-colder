@@ -86,6 +86,12 @@ async def run_uplink(
                         # needs the bundle and the live claim notice once more.
                         bundle_sent = False
                         identity.reset_ack()
+                    elif last is not None and not last.claimed:
+                        # First register of this process, and the cloud has no
+                        # owner for us: it may have purged us while we were off,
+                        # taking the notice we persisted as acked. Re-send it
+                        # (idempotent: the cloud ignores consumed hashes).
+                        identity.reset_ack()
                     ever_registered = True
             if registered:
                 try:

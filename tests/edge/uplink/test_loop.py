@@ -17,8 +17,10 @@ class FakeUplink:
         claim_results=(True,),
         delete_results=(True,),
         on_claim=None,
+        claimed=None,
     ):
         self.on_claim = on_claim
+        self.claimed = claimed
         self.bundle_results = list(bundle_results)
         self.register_results = list(register_results)
         self.claim_results = list(claim_results)
@@ -34,11 +36,13 @@ class FakeUplink:
 
     async def register(self, label):
         self.events.append(("register", label))
-        if self.alerts_handled:
+        if self.alerts_handled or self.claimed is not None:
             from ice_contracts.cloud.identity import RegisterResponse
 
             self.last_register = RegisterResponse(
-                fingerprint="f", claimed=True, alerts_handled=True
+                fingerprint="f",
+                claimed=True if self.claimed is None else self.claimed,
+                alerts_handled=self.alerts_handled,
             )
         return self.register_results.pop(0) if self.register_results else True
 
@@ -327,6 +331,33 @@ async def test_reregistration_resends_bundle_and_live_notice(
         "register", "claim", "put", "post",
         "post",
     ]  # fmt: skip
+
+
+async def _first_register_notice_events(machine, identity, *, claimed):
+    cfg = ConfigModel()
+    identity.set_notice("h1", None)
+    identity.mark_notice_acked(identity.notice)
+    uplink = FakeUplink(claimed=claimed)
+    sleep, _calls = _sleeper(cfg, stop_after=1)
+    with pytest.raises(asyncio.CancelledError):
+        await run_uplink(machine, cfg, uplink, sleep=sleep, now=_now, identity=identity)
+    return [e[0] for e in uplink.events]
+
+
+async def test_first_register_resends_acked_notice_when_unclaimed(
+    machine_fake_time, identity
+):
+    machine, _ = machine_fake_time
+    kinds = await _first_register_notice_events(machine, identity, claimed=False)
+    assert kinds == ["register", "claim", "put", "post"]
+
+
+async def test_first_register_keeps_acked_notice_when_claimed(
+    machine_fake_time, identity
+):
+    machine, _ = machine_fake_time
+    kinds = await _first_register_notice_events(machine, identity, claimed=True)
+    assert kinds == ["register", "put", "post"]
 
 
 async def test_register_stores_alerts_handled(machine_fake_time, identity):
