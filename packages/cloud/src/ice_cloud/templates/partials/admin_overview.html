@@ -11,7 +11,7 @@
     {% if view.mix.never_reported_pct %}<div class="h-3 bg-gray-400" style="width: {{ view.mix.never_reported_pct }}%"></div>{% endif %}
   </div>
   <div class="flex flex-wrap gap-x-4 gap-y-1 mt-3 text-sm text-gray-600">
-    <a href="/admin/machines?status=online" class="touch-target inline-flex items-center gap-1"><span class="inline-block w-2 h-2 rounded-full bg-green-500"></span>{{ view.mix.online_ok }} online</a>
+    <a href="/admin/machines?status=online" class="touch-target inline-flex items-center gap-1"><span class="inline-block w-2 h-2 rounded-full bg-green-500"></span>{{ view.mix.online_ok }} online, no faults</a>
     <a href="/admin/machines?faulted=yes" class="touch-target inline-flex items-center gap-1"><span class="inline-block w-2 h-2 rounded-full bg-amber-500"></span>{{ view.mix.online_faulted }} faulted</a>
     <a href="/admin/machines?status=silent" class="touch-target inline-flex items-center gap-1"><span class="inline-block w-2 h-2 rounded-full bg-red-500"></span>{{ view.mix.silent }} silent</a>
     <a href="/admin/machines?status=never_reported" class="touch-target inline-flex items-center gap-1"><span class="inline-block w-2 h-2 rounded-full bg-gray-400"></span>{{ view.mix.never_reported }} never reported</a>
@@ -78,7 +78,7 @@
     {% else %}
     <div class="text-sm text-gray-400">No builds reported yet.</div>
     {% endfor %}
-    <div class="text-xs text-gray-400 mt-2">{{ view.rows | selectattr("ui_mismatch") | list | length }} with a different UI</div>
+    <div class="text-xs text-gray-400 mt-2">{{ view.ui_mismatch_count }} with a different UI</div>
   </div>
 </div>
 

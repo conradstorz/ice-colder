@@ -134,6 +134,7 @@ class FleetView:
     owners: tuple[OwnerRow, ...]
     rows: tuple[MachineRow, ...]
     account_count: int
+    ui_mismatch_count: int
 
 
 def percentages(counts: Sequence[int]) -> list[int]:
@@ -163,7 +164,9 @@ def _row(
     installed_digest: str,
     now: datetime,
 ) -> MachineRow:
-    age = (now - report.sent_at).total_seconds() if report is not None else None
+    age = (
+        max((now - report.sent_at).total_seconds(), 0.0) if report is not None else None
+    )
     reasons = report.health.payment_reasons if report is not None else []
     expires = machine.claim_code_expires_at
     return MachineRow(
@@ -364,6 +367,7 @@ def build_fleet_view(
         if r.edge_build is not None:
             builds_by.setdefault(r.edge_build, []).append(r)
 
+    ui_mismatch_count = sum(1 for r in rows if r.ui_mismatch)
     secondary = (
         Headline(
             "Faulted",
@@ -404,7 +408,7 @@ def build_fleet_view(
         Headline(
             "Software",
             len(builds_by),
-            f"{sum(1 for r in rows if r.ui_mismatch)} with a different UI",
+            f"{ui_mismatch_count} with a different UI",
             "/admin/machines",
             "neutral",
         ),
@@ -433,6 +437,7 @@ def build_fleet_view(
         owners=_owner_rows(rows, by_account, memberships),
         rows=tuple(rows),
         account_count=len(accounts),
+        ui_mismatch_count=ui_mismatch_count,
     )
 
 

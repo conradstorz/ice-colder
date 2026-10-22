@@ -34,6 +34,22 @@ _PILLS: tuple[tuple[str, dict[str, str]], ...] = (
 )
 
 
+def _title(query: dict[str, str], owner_email: str | None) -> str:
+    """Active filters in pill order, joined; the owner's email leads."""
+    parts: list[str] = []
+    if "owner" in query:
+        parts.append(owner_email or query["owner"])
+    if "claimed" in query:
+        parts.append("Claimed" if query["claimed"] == "yes" else "Unclaimed")
+    if "status" in query:
+        parts.append(query["status"].replace("_", " ").capitalize())
+    if "faulted" in query:
+        parts.append("Faulted")
+    if "payment" in query:
+        parts.append("Payment blocked")
+    return " · ".join(parts)
+
+
 def _url(query: dict[str, str]) -> str:
     base = LEVEL_ADMIN_MACHINES.url
     return f"{base}?{urlencode(query)}" if query else base
@@ -103,13 +119,9 @@ async def machines_page(
     level = LEVEL_ADMIN_MACHINES
     heading = "Machines"
     if query:
-        active = next((f["label"] for f in filters if f["active"]), None)
-        if list(query) == ["owner"]:
-            title = owner_email
-        else:
-            title = active or "Filtered"
+        title = _title(query, owner_email)
         level = Level.child(LEVEL_ADMIN_MACHINES, title, _url(query))
-        heading = f"Machines — {owner_email}" if owner_email else f"Machines — {title}"
+        heading = f"Machines — {title}"
     return templates(request).TemplateResponse(
         request,
         "admin_machines.html",

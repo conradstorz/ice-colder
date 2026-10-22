@@ -376,3 +376,16 @@ def test_portal_is_stale_uses_fleet_view():
     assert portal.STALE_FACTOR is fleet_view.STALE_FACTOR
     assert fleet_view.is_stale(_report(age=181), NOW) is True
     assert fleet_view.is_stale(_report(age=180), NOW) is False
+
+
+def test_future_report_clamps_age_to_zero():
+    m = _machine("c1" * 32, "c")
+    row = _view([m], {"c1" * 32: _report(age=-30)}).rows[0]
+    assert row.status is MachineStatus.online
+    assert (row.age_seconds, row.age_text) == (0.0, "0s")
+
+
+def test_ui_mismatch_count_on_view():
+    m = _machine("a1" * 32, "a")
+    v = _view([m], {"a1" * 32: _report(digest="0" * 64)})
+    assert v.ui_mismatch_count == 1

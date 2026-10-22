@@ -53,6 +53,12 @@ def test_machines_filter_unknown_value_ignored(cloud, clock):
     assert bogus.status_code == 200
     for label in ("m-quiet", "m-busy"):
         assert label in plain.text and label in bogus.text
+    assert bogus.text.count('<tr class="border-t') == plain.text.count(
+        '<tr class="border-t'
+    )
+    active = 'bg-slate-800 text-white border-slate-800">'
+    assert bogus.text.count(active) == 1
+    assert f"{active}All<" in bogus.text
 
 
 def test_machines_filter_owner_names_owner(cloud, clock):
@@ -284,3 +290,21 @@ def test_fleet_page_links_dashboard_for_admin_only(cloud):
     assert 'href="/admin"' not in cloud.get("/fleet").text
     _admin(cloud)
     assert 'href="/admin"' in cloud.get("/fleet").text
+
+
+def test_machines_combined_filter_title(cloud, clock):
+    _two_machines(cloud, clock)
+    _admin(cloud)
+    r = cloud.get("/admin/machines?claimed=no&status=online")
+    assert "Machines — Unclaimed · Online" in r.text
+    assert 'aria-current="page">Unclaimed · Online<' in r.text
+
+
+def test_machines_owner_plus_filter_title(cloud, clock):
+    quiet, busy = _two_machines(cloud, clock)
+    owner = login(cloud, "a@x.com")
+    claim(cloud, busy, owner)
+    _admin(cloud)
+    r = cloud.get(f"/admin/machines?owner={owner.id}&status=silent")
+    assert "a@x.com · Silent" in r.text
+    assert 'aria-current="page">a@x.com · Silent<' in r.text
