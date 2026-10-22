@@ -34,6 +34,8 @@ MAX_UNCOMPRESSED_BYTES = 20 * 1024 * 1024
 MAX_MEMBERS = 2000
 # Longest accepted member name, in characters.
 MAX_MEMBER_NAME_CHARS = 255
+# Hard cap on the decompressed stream: file bytes plus tar header overhead.
+MAX_DECOMPRESSED_BYTES = MAX_UNCOMPRESSED_BYTES + MAX_MEMBERS * 1024
 
 
 class BundleError(ValueError):
@@ -189,6 +191,29 @@ def prepare_bundle(
     return tmp, manifest
 
 
+def _decompress_bounded(data: bytes) -> bytes:
+    """gunzip *data*, refusing to produce more than ``MAX_DECOMPRESSED_BYTES``
+    (tarfile buffers longname/PAX header bodies whole, so the tar layer cannot
+    be trusted to bound memory itself)."""
+    out = io.BytesIO()
+    total = 0
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(data)) as gz:
+            while True:
+                chunk = gz.read(min(65536, MAX_DECOMPRESSED_BYTES + 1 - total))
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_DECOMPRESSED_BYTES:
+                    raise BundleError(
+                        f"bundle decompresses to more than {MAX_DECOMPRESSED_BYTES} bytes"
+                    )
+                out.write(chunk)
+    except (gzip.BadGzipFile, OSError, EOFError) as exc:
+        raise BundleError(f"not a gzip tar archive: {exc}") from exc
+    return out.getvalue()
+
+
 def _extract_into(
     data: bytes, tmp: Path, expected_digest: str | None
 ) -> BundleManifest:
@@ -196,8 +221,9 @@ def _extract_into(
     total = 0
     count = 0
     manifest_bytes: bytes | None = None
+    raw = _decompress_bounded(data)
     try:
-        tf = tarfile.open(fileobj=io.BytesIO(data), mode="r:gz")
+        tf = tarfile.open(fileobj=io.BytesIO(raw), mode="r:")
     except (tarfile.TarError, OSError, EOFError) as exc:
         raise BundleError(f"not a gzip tar archive: {exc}") from exc
     with tf:

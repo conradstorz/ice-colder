@@ -16,6 +16,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from loguru import logger
 from fastapi.templating import Jinja2Templates
 from jinja2 import Template
 
@@ -69,6 +70,17 @@ class UiRegistry:
         self._lock = threading.Lock()
         self._cache: dict[str, Jinja2Templates] = {}
         self.installed_digest: str = ui_digest()
+        self._sweep_stale_temp_dirs()
+
+    def _sweep_stale_temp_dirs(self) -> None:
+        """Remove ``.``-prefixed extraction leftovers from a crashed upload."""
+        if not self._ui_dir.is_dir():
+            return
+        stale = [p for p in self._ui_dir.glob(".*") if p.is_dir()]
+        for p in stale:
+            shutil.rmtree(p, ignore_errors=True)
+        if stale:
+            logger.warning("removed {} stale bundle temp dir(s)", len(stale))
 
     def _bundle_dir(self, digest: str) -> Path:
         if not _DIGEST_RE.fullmatch(digest):

@@ -293,3 +293,17 @@ def test_failing_prepare_bundle_leaves_no_temp_directory(tmp_path):
     with pytest.raises(BundleError):
         bundle.prepare_bundle(b"garbage", parent, expected_digest=None)
     assert list(parent.iterdir()) == []
+
+
+def test_rejects_decompression_bomb_via_longname(tmp_path):
+    info = tarfile.TarInfo("static/" + "a" * (bundle.MAX_DECOMPRESSED_BYTES + 1))
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w", format=tarfile.GNU_FORMAT) as tf:
+        tf.addfile(info)
+    data = gzip.compress(raw.getvalue(), mtime=0)
+    _assert_rejected(tmp_path, data, "decompresses")
+
+
+def test_normal_bundle_still_extracts_after_bounded_decompress(tmp_path):
+    manifest = extract_bundle(build_bundle(), tmp_path / "ui" / "ok")
+    assert manifest.digest == ui_digest()

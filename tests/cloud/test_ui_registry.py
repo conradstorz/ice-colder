@@ -151,15 +151,28 @@ def test_trusted_uploaded_bundle_renders_sandboxed(
     assert MARKER in _render_fragment(resolved)
 
 
-def test_concurrent_registers_store_once(registry, marked_bundle, tmp_path):
+def test_concurrent_registers_store_once(
+    registry, marked_bundle, tmp_path, monkeypatch
+):
     import threading
 
+    import ice_cloud.ui_registry as ui_registry
+
     digest, data = marked_bundle
-    barrier = threading.Barrier(2)
+    start = threading.Barrier(2)
+    extracted = threading.Barrier(2)
+    real = ui_registry.prepare_bundle
+
+    def wrapped(*args, **kwargs):
+        result = real(*args, **kwargs)
+        extracted.wait(timeout=10)  # both finish extraction before either locks
+        return result
+
+    monkeypatch.setattr(ui_registry, "prepare_bundle", wrapped)
     results: list[bool] = []
 
     def worker():
-        barrier.wait(timeout=10)
+        start.wait(timeout=10)
         results.append(registry.register(digest, data))
 
     threads = [threading.Thread(target=worker) for _ in range(2)]
@@ -167,9 +180,19 @@ def test_concurrent_registers_store_once(registry, marked_bundle, tmp_path):
         t.start()
     for t in threads:
         t.join(timeout=30)
+    assert not any(t.is_alive() for t in threads)
     assert sorted(results) == [False, True]
     assert registry.has(digest)
     assert [p.name for p in (tmp_path / "data" / "ui").iterdir()] == [digest]
+
+
+def test_init_sweeps_stale_temp_dirs(tmp_path, cloud_templates):
+    ui = tmp_path / "data" / "ui"
+    (ui / ".abc.tmp").mkdir(parents=True)
+    (ui / ".abc.tmp" / "f").write_text("x")
+    (ui / ("a" * 64)).mkdir()
+    UiRegistry(tmp_path / "data", cloud_templates=cloud_templates)
+    assert [p.name for p in ui.iterdir()] == ["a" * 64]
 
 
 def test_register_extracts_outside_the_resolve_lock(
