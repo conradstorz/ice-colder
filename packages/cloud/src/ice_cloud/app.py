@@ -121,6 +121,9 @@ def create_app(
     app.state.new_registrations = ingest.SlidingWindow(
         ingest.MAX_NEW_REGISTRATIONS_PER_HOUR, ingest.REGISTRATION_WINDOW_SECONDS
     )
+    app.state.bundle_bodies = machine_auth.InflightSlots(
+        machine_auth.MAX_INFLIGHT_BUNDLE_BODIES
+    )
     app.state.backoff = Backoff(clock=lambda: app.state.now().timestamp())
     app.add_middleware(BodyLimitMiddleware)
     machine_auth.install(app)

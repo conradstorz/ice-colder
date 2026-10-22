@@ -12,6 +12,7 @@ import asyncio
 import base64
 import binascii
 import threading
+from collections.abc import AsyncIterator
 from collections import OrderedDict
 
 from fastapi import FastAPI, Request, Response
@@ -24,6 +25,30 @@ from ice_contracts.cloud import signing
 from ice_contracts.cloud.identity import RegisterMachine
 
 REGISTER_PATH = "/api/v1/machines/register"
+# 2 x the 20 MiB bundle cap on a 512 MB host; a third concurrent PUT answers 503.
+MAX_INFLIGHT_BUNDLE_BODIES = 2
+BUNDLE_RETRY_AFTER_SECONDS = 30
+
+
+class InflightSlots:
+    """A non-blocking counter: ``try_acquire`` never waits."""
+
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._used = 0
+
+    def try_acquire(self) -> bool:
+        if self._used >= self._limit:
+            return False
+        self._used += 1
+        return True
+
+    def release(self) -> None:
+        self._used = max(0, self._used - 1)
+
+
+class BundleBusy(Exception):
+    """Too many bundle bodies are being buffered; rendered as 503."""
 
 
 def _printable(fp: str | None) -> str:
@@ -86,6 +111,15 @@ def install(app: FastAPI) -> None:
 
     app.add_exception_handler(MachineAuthError, handler)
 
+    async def busy(_request: Request, _exc: Exception) -> Response:
+        logger.warning("bundle upload refused: too many bodies in flight")
+        return Response(
+            status_code=503,
+            headers={"Retry-After": str(BUNDLE_RETRY_AFTER_SECONDS)},
+        )
+
+    app.add_exception_handler(BundleBusy, busy)
+
 
 def _decode_key(value: str) -> bytes | None:
     try:
@@ -94,12 +128,29 @@ def _decode_key(value: str) -> bytes | None:
         return None
 
 
-async def require_machine(request: Request) -> Machine | None:
+async def require_machine(request: Request) -> AsyncIterator[Machine | None]:
+    """Authenticate the request (see :func:`_verify`) and hold the bundle-body
+    slot, if one was taken, until the request is over.
+
+    A generator dependency so the slot is released on every exit: a failure in
+    ``_verify`` itself after acquisition, a handler exception, or success.
+    """
+    try:
+        yield await _verify(request)
+    finally:
+        if getattr(request.state, "bundle_slot", False):
+            request.state.bundle_slot = False
+            request.app.state.bundle_bodies.release()
+
+
+async def _verify(request: Request) -> Machine | None:
     """Verify the signature headers; return the machine, or None for a first
     registration (unknown fingerprint allowed on the register path only).
 
     Order matters: nothing larger than the JSON cap is read before the caller
-    is a known, claimed machine inside its back-off allowance. Header, timestamp,
+    is a known, claimed machine inside its back-off allowance, and a bundle PUT
+    additionally holds one of ``MAX_INFLIGHT_BUNDLE_BODIES`` process-wide slots
+    (else 503 before the read). Header, timestamp,
     machine lookup, stored key, path fingerprint, claimed-for-bundles and the
     per-(fingerprint, client) back-off all run before ``request.body()``. Only a
     bad signature counts toward back-off (not an unknown machine, a stale
@@ -141,6 +192,10 @@ async def require_machine(request: Request) -> Machine | None:
     if known and backoff.check("machine", fp, client_ip, trusted=True) is not None:
         raise MachineAuthError("backing off", fp)
 
+    if request.url.path.startswith(BUNDLE_PREFIX):
+        if not app.state.bundle_bodies.try_acquire():
+            raise BundleBusy
+        request.state.bundle_slot = True
     body = await request.body()
     if is_register:
         try:

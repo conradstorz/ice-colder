@@ -1,9 +1,11 @@
+import asyncio
 from datetime import timedelta
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from ice_cloud.machine_auth import SeenSignatures
+from ice_cloud.machine_auth import InflightSlots, SeenSignatures
 from ice_contracts.cloud import signing
 from tests.cloud.conftest import Signer, register, signed
 from tests.cloud.reports import NOW, make_report
@@ -370,3 +372,112 @@ def test_reencoded_signature_cannot_replay_a_claim_code_delete(cloud, known):
     assert cloud.delete(path, headers=variant).status_code == 401
     row = cloud.app.state.repo.machine(known.fingerprint)
     assert row.claim_code_hash == "scrypt$new"
+
+
+# --- C14: process-wide limit on in-flight bundle bodies -----------------------
+
+
+async def _gated_body(body: bytes, started: asyncio.Event, release: asyncio.Event):
+    started.set()
+    await asyncio.wait_for(release.wait(), timeout=5)
+    yield body
+
+
+async def _unreadable_body():
+    raise AssertionError("the refused request's body must not be read")
+    yield b""  # pragma: no cover
+
+
+def _async_client(app):
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    )
+
+
+async def test_bundle_bodies_beyond_the_limit_get_503_before_the_body_is_read(
+    cloud_app,
+):
+    cloud_app.state.bundle_bodies = InflightSlots(1)
+    s = Signer()
+    with TestClient(cloud_app) as sync:
+        _own(sync, s)
+    now = cloud_app.state.now()
+    started, release = asyncio.Event(), asyncio.Event()
+    async with _async_client(cloud_app) as client:
+        first = asyncio.create_task(
+            client.put(
+                BUNDLE,
+                content=_gated_body(b"junk-1", started, release),
+                headers=s.headers("PUT", BUNDLE, b"junk-1", now=now),
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=5)
+        second = await client.put(
+            BUNDLE,
+            content=_unreadable_body(),
+            headers=s.headers("PUT", BUNDLE, b"junk-2", now=now),
+        )
+        assert second.status_code == 503
+        assert second.headers["retry-after"] == "30"
+        assert second.content == b""
+        release.set()
+        assert (await first).status_code == 400  # valid signature, not a bundle
+        third = await client.put(
+            BUNDLE,
+            content=b"junk-3",
+            headers=s.headers("PUT", BUNDLE, b"junk-3", now=now),
+        )
+        assert third.status_code == 400
+
+
+async def test_a_bundle_put_failing_after_acquisition_frees_its_slot(cloud_app, clock):
+    cloud_app.state.bundle_bodies = InflightSlots(1)
+    s = Signer()
+    with TestClient(cloud_app) as sync:
+        _own(sync, s)
+    async with _async_client(cloud_app) as client:
+        bad = await client.put(
+            BUNDLE,
+            content=b"junk",
+            headers=s.headers("PUT", BUNDLE, b"other", now=cloud_app.state.now()),
+        )
+        assert bad.status_code == 401
+        clock.advance(2)  # past the back-off the bad signature recorded
+        good = await client.put(
+            BUNDLE,
+            content=b"junk",
+            headers=s.headers("PUT", BUNDLE, b"junk", now=cloud_app.state.now()),
+        )
+        assert good.status_code == 400
+
+
+async def test_the_slot_is_freed_when_the_handler_raises(cloud_app, monkeypatch):
+    cloud_app.state.bundle_bodies = InflightSlots(1)
+    s = Signer()
+    with TestClient(cloud_app) as sync:
+        _own(sync, s)
+
+    def boom(digest, data):
+        raise RuntimeError("extraction exploded")
+
+    monkeypatch.setattr(cloud_app.state.registry, "register", boom)
+    now = cloud_app.state.now()
+    async with _async_client(cloud_app) as client:
+        with pytest.raises(RuntimeError):
+            await client.put(
+                BUNDLE,
+                content=b"junk-1",
+                headers=s.headers("PUT", BUNDLE, b"junk-1", now=now),
+            )
+        with pytest.raises(RuntimeError):  # reaches the handler again: not 503
+            await client.put(
+                BUNDLE,
+                content=b"junk-2",
+                headers=s.headers("PUT", BUNDLE, b"junk-2", now=now),
+            )
+
+
+def test_json_routes_are_not_counted_against_the_bundle_slots(cloud, known):
+    cloud.app.state.bundle_bodies = InflightSlots(0)
+    r = signed(cloud, known, "POST", _path(known), _body())
+    assert r.status_code == 200
