@@ -7,12 +7,14 @@ greater than the stored one is ignored; a new ``boot_id`` always replaces.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import tempfile
 import threading
 from pathlib import Path
 
+from loguru import logger
 from pydantic import ValidationError
 
 from ice_contracts.cloud.report import MachineReport
@@ -83,3 +85,12 @@ class SnapshotStore:
                 Path(tmp).unlink(missing_ok=True)
                 raise
             return True
+
+
+async def delete_snapshots(store: SnapshotStore, fingerprints: list[str]) -> None:
+    """Remove each purged machine's stored report; one failure never stops the rest."""
+    for fp in fingerprints:
+        try:
+            await asyncio.to_thread(store.delete, fp)
+        except Exception:
+            logger.warning("Could not delete snapshot of purged {}", fp[:8])

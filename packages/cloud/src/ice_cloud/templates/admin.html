@@ -7,6 +7,14 @@
           class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Send test email</button>
   <span id="test-email-result"></span>
 </div>
+<div class="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-gray-200 shadow-sm p-4 mb-2">
+  {% include "partials/admin_unclaimed_count.html" %}
+  <span class="ml-auto">
+    {% with label="Purge all unclaimed", confirm_label="Confirm purge", post_url="/admin/purge-unclaimed", confirm_url="/admin/purge-unclaimed/confirm", target="#unclaimed-purge", confirming=false %}
+    {% include "partials/admin_unbind.html" %}
+    {% endwith %}
+  </span>
+</div>
 <h2 class="text-sm font-semibold text-gray-700 mb-2">Machines</h2>
 <div id="admin-machines" class="space-y-2">
   {% for m in machines %}

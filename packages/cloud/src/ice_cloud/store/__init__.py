@@ -14,7 +14,12 @@ from ice_cloud.store.repository import (
     Repository,
     StoredEvent,
 )
-from ice_cloud.store.snapshots import FINGERPRINT_RE, SnapshotStore, check_fingerprint
+from ice_cloud.store.snapshots import (
+    FINGERPRINT_RE,
+    SnapshotStore,
+    check_fingerprint,
+    delete_snapshots,
+)
 from ice_cloud.store.sqlite import SqliteRepository
 
 __all__ = [
@@ -31,6 +36,7 @@ __all__ = [
     "Recipient",
     "Repository",
     "SnapshotStore",
+    "delete_snapshots",
     "SqliteRepository",
     "StoredEvent",
     "check_fingerprint",

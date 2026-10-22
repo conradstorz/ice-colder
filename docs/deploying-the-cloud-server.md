@@ -90,7 +90,43 @@ ICE_CLOUD_MAX_UNCLAIMED_REPORT_BYTES=16384  # larger reports from unclaimed mach
 
 Independently, each client address may register at most 10 new machines per rolling hour
 (further ones answer 429 with `Retry-After`); machines that are already registered are
-never throttled.
+never throttled. An IPv6 client is metered on its /64, so rotating addresses inside one
+network does not earn a new allowance.
+
+### Clearing squatters
+
+If unclaimed machines fill `ICE_CLOUD_MAX_UNCLAIMED_MACHINES`, every genuine new registration
+answers 429. First choice: sign in as an admin, open `/admin`, and use **Purge all unclaimed**
+(two taps). It deletes every machine with no owner, whatever its age, with its stored report;
+an edge that was merely waiting to be claimed re-registers on its next pass.
+
+If `/admin` is unreachable, do the same by hand. Foreign keys are enforced, so the dependent
+rows go first (this is exactly the order the app uses). Run it against the live database from
+the host, with the cloud still up (SQLite serialises the writes):
+
+```
+sqlite3 /opt/ice-cloud/cloud_data/cloud.db <<'SQL'
+PRAGMA foreign_keys=ON;
+BEGIN;
+CREATE TEMP TABLE doomed AS SELECT fingerprint FROM machines WHERE owner_id IS NULL;
+DELETE FROM consumed_claim_hashes WHERE fingerprint IN (SELECT fingerprint FROM doomed);
+DELETE FROM bundle_uploads        WHERE fingerprint IN (SELECT fingerprint FROM doomed);
+DELETE FROM memberships           WHERE fingerprint IN (SELECT fingerprint FROM doomed);
+DELETE FROM machine_alert_state   WHERE fingerprint IN (SELECT fingerprint FROM doomed);
+DELETE FROM alert_prefs           WHERE fingerprint IN (SELECT fingerprint FROM doomed);
+DELETE FROM alert_deliveries      WHERE fingerprint IN (SELECT fingerprint FROM doomed);
+DELETE FROM alert_events          WHERE fingerprint IN (SELECT fingerprint FROM doomed);
+DELETE FROM machines              WHERE fingerprint IN (SELECT fingerprint FROM doomed);
+SELECT fingerprint FROM doomed;
+COMMIT;
+SQL
+```
+
+The `SELECT` prints the deleted fingerprints; remove each stored report with
+`rm /opt/ice-cloud/cloud_data/machines/<fingerprint>.json` (the files are owned by uid 1000,
+so use `sudo`). If the host has no `sqlite3`, run the same statements through
+`docker exec -i ice-cloud python -c` with the `sqlite3` module. Take a backup first
+(`docs/backups.md`); a machine whose owner was mid-claim is lost the same way as by the button.
 
 SMTP is not configured, so the cloud answers every report with `alerts_handled: false` and
 each edge keeps emailing its own alerts (`packages/cloud/README.md`, Alerts).

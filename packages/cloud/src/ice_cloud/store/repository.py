@@ -211,6 +211,12 @@ class Repository(Protocol):
         transaction; return the deleted fingerprints."""
         ...
 
+    def purge_all_unclaimed_machines(self) -> list[str]:
+        """Admin: delete every machine with no owner (whatever its age or history)
+        with the same dependent rows as ``purge_unclaimed_machines``; return the
+        deleted fingerprints."""
+        ...
+
     # access
     def machines_for_account(self, account_id: str) -> list[MachineAccess]: ...
 

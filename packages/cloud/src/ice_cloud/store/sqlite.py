@@ -543,6 +543,18 @@ class SqliteRepository:
             )
         return events + deliveries
 
+    @staticmethod
+    def _delete_machines(conn, fingerprints: list[str]) -> None:
+        for fp in fingerprints:
+            conn.execute(
+                "DELETE FROM consumed_claim_hashes WHERE fingerprint = ?", (fp,)
+            )
+            conn.execute("DELETE FROM bundle_uploads WHERE fingerprint = ?", (fp,))
+            conn.execute(DELETE_MEMBERSHIPS_SQL, (fp,))
+            for statement in _ALERT_DELETES:
+                conn.execute(statement, (fp,))
+            conn.execute("DELETE FROM machines WHERE fingerprint = ?", (fp,))
+
     def purge_unclaimed_machines(self, not_seen_since: datetime) -> list[str]:
         with self._tx() as conn:
             rows = conn.execute(
@@ -551,15 +563,16 @@ class SqliteRepository:
                 (_iso(not_seen_since),),
             ).fetchall()
             purged = [r["fingerprint"] for r in rows]
-            for fp in purged:
-                conn.execute(
-                    "DELETE FROM consumed_claim_hashes WHERE fingerprint = ?", (fp,)
-                )
-                conn.execute("DELETE FROM bundle_uploads WHERE fingerprint = ?", (fp,))
-                conn.execute(DELETE_MEMBERSHIPS_SQL, (fp,))
-                for statement in _ALERT_DELETES:
-                    conn.execute(statement, (fp,))
-                conn.execute("DELETE FROM machines WHERE fingerprint = ?", (fp,))
+            self._delete_machines(conn, purged)
+        return purged
+
+    def purge_all_unclaimed_machines(self) -> list[str]:
+        with self._tx() as conn:
+            rows = conn.execute(
+                "SELECT fingerprint FROM machines WHERE owner_id IS NULL"
+            ).fetchall()
+            purged = [r["fingerprint"] for r in rows]
+            self._delete_machines(conn, purged)
         return purged
 
     def all_machines(self) -> list[Machine]:

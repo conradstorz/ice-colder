@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse, Response
 from loguru import logger
 
 from ice_cloud.auth import require_admin, require_htmx
+from ice_cloud.store import delete_snapshots
 from ice_cloud.store.repository import Account, Machine
 from ice_cloud.viewer import RemoteViewer
 from ice_contracts.access import REMOTE_VIEWER_PERMISSIONS
@@ -69,6 +70,23 @@ def _unbind_fragment(request: Request, short: str, confirming: bool) -> Response
     )
 
 
+def _purge_fragment(request: Request, confirming: bool, **extra) -> Response:
+    base = "/admin/purge-unclaimed"
+    return _templates(request).TemplateResponse(
+        request,
+        "partials/admin_unclaimed_purge.html",
+        {
+            "label": "Purge all unclaimed",
+            "confirm_label": "Confirm purge",
+            "post_url": base,
+            "confirm_url": f"{base}/confirm",
+            "target": "#unclaimed-purge",
+            "confirming": confirming,
+            **extra,
+        },
+    )
+
+
 @router.get("", response_class=HTMLResponse)
 async def admin_page(request: Request, account: Account = Depends(require_admin)):
     state = request.app.state
@@ -112,6 +130,7 @@ async def admin_page(request: Request, account: Account = Depends(require_admin)
             account,
             LEVEL_ADMIN,
             machines=rows,
+            unclaimed=await asyncio.to_thread(state.repo.count_unclaimed_machines),
             accounts=people,
             smtp_host=state.settings.smtp_host
             if state.settings.smtp_configured
@@ -138,6 +157,34 @@ async def unbind(request: Request, short: str):
     machine = await _machine_or_404(request, short)
     await asyncio.to_thread(request.app.state.repo.unbind_machine, machine.fingerprint)
     return Response(status_code=200, headers={"HX-Refresh": "true"})
+
+
+@router.get(
+    "/purge-unclaimed/confirm",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_admin), Depends(require_htmx)],
+)
+async def purge_unclaimed_confirm(request: Request, confirming: str | None = None):
+    return _purge_fragment(request, confirming != "false")
+
+
+@router.post(
+    "/purge-unclaimed",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_admin), Depends(require_htmx)],
+)
+async def purge_unclaimed(request: Request):
+    state = request.app.state
+    purged = await asyncio.to_thread(state.repo.purge_all_unclaimed_machines)
+    await delete_snapshots(state.store, purged)
+    logger.warning("Admin purged {} unclaimed machines", len(purged))
+    return _purge_fragment(
+        request,
+        False,
+        oob=True,
+        unclaimed=await asyncio.to_thread(state.repo.count_unclaimed_machines),
+        purged=len(purged),
+    )
 
 
 async def _set_suspended(request: Request, account_id: str, suspend: bool) -> Response:

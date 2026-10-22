@@ -818,6 +818,20 @@ def test_purge_unclaimed_deletes_only_stale_unclaimed_and_cascades(repo):
     assert repo.purge_unclaimed_machines(cutoff) == []
 
 
+def test_purge_all_unclaimed_ignores_age_and_keeps_owned(repo):
+    owner, _ = _accounts(repo)
+    fresh = "ef" * 32
+    for fp in (FP, FP_2, fresh):
+        repo.register_machine(fp, KEY, "m", T0)
+    assert repo.claim_machine(fresh, owner.id, T0)
+    repo.record_bundle_upload(FP, "d" * 64, T0)
+    assert sorted(repo.purge_all_unclaimed_machines()) == sorted([FP, FP_2])
+    assert repo.machine(FP) is None and repo.machine(FP_2) is None
+    assert repo.machine(fresh) is not None
+    assert repo.count_unclaimed_machines() == 0
+    assert repo.purge_all_unclaimed_machines() == []
+
+
 def test_prune_alert_history_removes_old_settled_rows_and_keeps_the_rest(repo):
     owner, tech = _claimed(repo)
     cutoff = T0 + timedelta(days=90)

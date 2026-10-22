@@ -184,3 +184,55 @@ def test_test_email_requires_admin_and_htmx(cloud, mailer):
         _admin(other)
         assert other.post("/admin/test-email").status_code == 403
     assert mailer.sent == []
+
+
+def _snapshot_path(cloud, signer):
+    return cloud.app.state.settings.data_dir / "machines" / f"{signer.fingerprint}.json"
+
+
+def test_purge_unclaimed_deletes_only_unclaimed_and_their_snapshots(cloud, signer):
+    from tests.cloud.conftest import Signer, push
+    from tests.cloud.reports import make_report
+
+    repo = cloud.app.state.repo
+    owner = login(cloud, "owner@example.com")
+    register(cloud, signer, "m-claimed")
+    repo.claim_machine(signer.fingerprint, owner.id, cloud.app.state.now())
+    squatters = [Signer(), Signer()]
+    for s in squatters:
+        register(cloud, s, "squat")
+    push(cloud, squatters[0], make_report())
+    assert _snapshot_path(cloud, squatters[0]).exists()
+    _admin(cloud)
+    page = cloud.get("/admin")
+    assert "Unclaimed machines: 2" in page.text
+    assert "/admin/purge-unclaimed/confirm" in page.text
+
+    r = cloud.post("/admin/purge-unclaimed", headers=HX)
+
+    assert r.status_code == 200
+    assert "Unclaimed machines: 0" in r.text and "purged 2" in r.text
+    assert repo.machine(signer.fingerprint) is not None
+    assert all(repo.machine(s.fingerprint) is None for s in squatters)
+    assert not _snapshot_path(cloud, squatters[0]).exists()
+    assert cloud.get("/admin").text.count("Unclaimed machines: 0") == 1
+
+
+def test_purge_unclaimed_confirm_fragment_toggles(cloud):
+    _admin(cloud)
+    first = cloud.get("/admin/purge-unclaimed/confirm", headers=HX)
+    assert "Confirm purge" in first.text
+    back = cloud.get("/admin/purge-unclaimed/confirm?confirming=false", headers=HX)
+    assert "Confirm purge" not in back.text and "Purge all unclaimed" in back.text
+
+
+def test_purge_unclaimed_refused_for_non_admin_and_non_htmx(cloud, signer):
+    repo = cloud.app.state.repo
+    register(cloud, signer, "squat")
+    login(cloud, "user@example.com")
+    assert cloud.post("/admin/purge-unclaimed", headers=HX).status_code == 404
+    assert cloud.get("/admin/purge-unclaimed/confirm", headers=HX).status_code == 404
+    assert repo.machine(signer.fingerprint) is not None
+    _admin(cloud)
+    assert cloud.post("/admin/purge-unclaimed").status_code >= 400
+    assert repo.machine(signer.fingerprint) is not None

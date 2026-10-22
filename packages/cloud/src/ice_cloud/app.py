@@ -22,7 +22,7 @@ from ice_common.backoff import Backoff
 from ice_contracts.cloud import signing
 from ice_cloud.machine_auth import SeenSignatures
 from ice_cloud.settings import CloudSettings
-from ice_cloud.store import SnapshotStore, SqliteRepository
+from ice_cloud.store import SnapshotStore, SqliteRepository, delete_snapshots
 from ice_cloud.ui_registry import UiRegistry
 
 CLOUD_TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -93,11 +93,7 @@ def create_app(
         purged = await asyncio.to_thread(
             app.state.repo.purge_unclaimed_machines, cutoff
         )
-        for fp in purged:
-            try:
-                await asyncio.to_thread(app.state.store.delete, fp)
-            except Exception:
-                logger.warning("Could not delete snapshot of purged {}", fp[:8])
+        await delete_snapshots(app.state.store, purged)
         if purged:
             logger.info("Purged {} never-claimed machines", len(purged))
 
