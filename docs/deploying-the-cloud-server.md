@@ -83,7 +83,7 @@ cost (defaults shown; each is a positive integer, anything else stops the cloud 
 
 ```
 ICE_CLOUD_MAX_UNCLAIMED_MACHINES=200        # new registrations beyond this answer 429
-ICE_CLOUD_UNCLAIMED_TTL_DAYS=7              # unseen this long and never claimed: purged
+ICE_CLOUD_UNCLAIMED_TTL_DAYS=60             # unseen this long and never claimed: purged
 ICE_CLOUD_MAX_UNCLAIMED_REPORT_BYTES=16384  # larger reports from unclaimed machines: 413
 ```
 

@@ -8,7 +8,6 @@ from ice_cloud.app import create_app
 from ice_cloud.ingest import (
     MAX_NEW_REGISTRATIONS_PER_HOUR,
     MAX_UNCLAIMED_REPORT_BYTES,
-    UNCLAIMED_MACHINE_TTL_DAYS,
     SlidingWindow,
 )
 from ice_contracts.cloud.identity import RegisterMachine
@@ -349,7 +348,8 @@ def test_claimed_machine_may_send_the_same_large_report(client, owned):
 
 
 async def test_sweep_purges_stale_unclaimed_machines_and_snapshots(tmp_path, clock):
-    app = create_app(make_settings(tmp_path / "cloud"), now=clock, start_sweep=False)
+    settings = make_settings(tmp_path / "cloud")
+    app = create_app(settings, now=clock, start_sweep=False)
     repo = app.state.repo
     old, claimed, fresh = Signer(), Signer(), Signer()
     t0 = clock()
@@ -359,7 +359,7 @@ async def test_sweep_purges_stale_unclaimed_machines_and_snapshots(tmp_path, clo
     assert repo.claim_machine(claimed.fingerprint, owner.id, t0)
     for s in (old, claimed):
         app.state.store.save(s.fingerprint, make_report())
-    clock.advance(UNCLAIMED_MACHINE_TTL_DAYS * 86400 + 60)
+    clock.advance(settings.unclaimed_ttl_days * 86400 + 60)
     repo.register_machine(fresh.fingerprint, fresh.public_key_b64, "m", clock())
     app.state.store.save(fresh.fingerprint, make_report())
     await app.state.sweep.tick()

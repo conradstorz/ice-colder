@@ -33,7 +33,7 @@ class CloudSettings:
     smtp_from: str | None = None
     smtp_starttls: bool = True
     max_unclaimed_machines: int = 200
-    unclaimed_ttl_days: int = 7
+    unclaimed_ttl_days: int = 60
     max_unclaimed_report_bytes: int = 16 * 1024
 
     @property
@@ -131,7 +131,7 @@ class CloudSettings:
             smtp_from=smtp_from,
             smtp_starttls=env.get("ICE_CLOUD_SMTP_STARTTLS", "").strip() != "0",
             max_unclaimed_machines=positive("ICE_CLOUD_MAX_UNCLAIMED_MACHINES", 200),
-            unclaimed_ttl_days=positive("ICE_CLOUD_UNCLAIMED_TTL_DAYS", 7),
+            unclaimed_ttl_days=positive("ICE_CLOUD_UNCLAIMED_TTL_DAYS", 60),
             max_unclaimed_report_bytes=positive(
                 "ICE_CLOUD_MAX_UNCLAIMED_REPORT_BYTES", 16 * 1024
             ),

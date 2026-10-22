@@ -29,7 +29,6 @@ MAX_BUNDLES_PER_MACHINE = 4  # distinct digests per machine within BUNDLE_WINDOW
 BUNDLE_WINDOW = timedelta(days=30)
 # Defaults; the deployed values come from CloudSettings (env-overridable).
 MAX_UNCLAIMED_MACHINES = 200
-UNCLAIMED_MACHINE_TTL_DAYS = 7
 MAX_UNCLAIMED_REPORT_BYTES = 16 * 1024
 CAP_RETRY_AFTER_SECONDS = 3600
 CAP_LOG_INTERVAL = timedelta(seconds=60)

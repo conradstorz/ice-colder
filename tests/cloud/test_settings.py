@@ -165,7 +165,7 @@ def test_smtp_user_and_password_are_read_and_stripped():
 def test_unclaimed_limits_default_and_parse():
     s = CloudSettings.from_env({"ICE_CLOUD_SESSION_KEY": KEY})
     assert s.max_unclaimed_machines == 200
-    assert s.unclaimed_ttl_days == 7
+    assert s.unclaimed_ttl_days == 60
     assert s.max_unclaimed_report_bytes == 16 * 1024
     s = CloudSettings.from_env(
         {
