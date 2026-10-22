@@ -211,6 +211,11 @@ class Repository(Protocol):
 
     def memberships(self, fingerprint: str) -> list[tuple[Membership, Account]]: ...
 
+    def all_memberships(self) -> list[Membership]:
+        """Every membership row across the fleet, ordered by fingerprint, then
+        grant time."""
+        ...
+
     def grant_tech(
         self, account_id: str, fingerprint: str, granted_by: str, now: datetime
     ) -> None:
@@ -284,6 +289,16 @@ class Repository(Protocol):
     def alert_count_since(self, fingerprint: str, since: datetime) -> int:
         """Events at or after ``since``, counting ``raised`` and ``offline`` only
         (neither ``cleared`` nor ``online`` is an alert)."""
+        ...
+
+    def alert_counts_since(self, since: datetime) -> dict[str, int]:
+        """``{fingerprint: count}`` of ``raised`` and ``offline`` events at or
+        after ``since``; machines with none are absent."""
+        ...
+
+    def recent_alert_events(self, *, limit: int) -> list[tuple[StoredEvent, Machine]]:
+        """The newest ``limit`` events across all machines, newest first, each
+        with its machine."""
         ...
 
     def cleared_since_last_sent(

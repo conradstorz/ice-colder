@@ -1,0 +1,5 @@
+<a href="{{ stat.url }}" class="block bg-white rounded-xl border border-gray-200 shadow-sm p-5 hover:bg-slate-50">
+  <div class="text-xs text-gray-400 uppercase tracking-wide">{{ stat.label }}</div>
+  <div class="text-3xl font-bold mt-1 {% if stat.tone == 'good' %}text-green-700{% elif stat.tone == 'warn' %}text-amber-600{% elif stat.tone == 'bad' %}text-red-600{% else %}text-gray-900{% endif %}">{{ stat.value }}</div>
+  <div class="text-xs text-gray-400 mt-1">{{ stat.sub }}</div>
+</a>

@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Alerts · Admin · Vending Machine{% endblock %}
+{% block body %}
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
+  <table class="w-full text-sm text-left">
+    <thead>
+      <tr class="text-xs text-gray-400 uppercase tracking-wide">
+        <th class="p-3">When</th><th class="p-3">Machine</th><th class="p-3">Event</th>
+        <th class="p-3">Code</th><th class="p-3">Detail</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in events %}
+      <tr class="border-t border-gray-100">
+        <td class="p-3 text-gray-600">{{ e.at }}</td>
+        <td class="p-3">
+          <a href="{{ e.alerts_url }}" class="text-gray-900">{{ e.label }}</a>
+          <span class="font-mono text-xs text-gray-400">{{ e.short }}</span>
+        </td>
+        <td class="p-3">
+          <span class="text-xs px-1.5 py-0.5 rounded {% if e.kind == 'raised' %}bg-red-50 text-red-600{% elif e.kind == 'cleared' %}bg-green-50 text-green-700{% elif e.kind == 'offline' %}bg-amber-50 text-amber-700{% else %}bg-gray-100 text-gray-600{% endif %}">{{ e.kind }}</span>
+        </td>
+        <td class="p-3 font-mono text-gray-600">{{ e.code }}</td>
+        <td class="p-3 text-gray-600">{{ e.description }}{% if e.product %} <span class="text-xs text-gray-400">({{ e.product }})</span>{% endif %}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="p-4 text-sm text-gray-400">No alerts yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<div class="text-xs text-gray-400 mt-2">Newest 100 events across the fleet</div>
+{% endblock %}

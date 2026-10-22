@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Machines · Admin · Vending Machine{% endblock %}
+{% block body %}
+<div class="flex flex-wrap gap-2 mb-3">
+  {% for f in filters %}
+  <a href="{{ f.url }}" class="touch-target inline-flex items-center px-3 rounded-full text-sm border {% if f.active %}bg-slate-800 text-white border-slate-800{% else %}bg-white text-gray-700 border-gray-300{% endif %}">{{ f.label }}</a>
+  {% endfor %}
+</div>
+<div class="text-xs text-gray-400 uppercase tracking-wide mb-2">{{ heading }} · {{ count }}</div>
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
+  <table class="w-full text-sm text-left">
+    <thead>
+      <tr class="text-xs text-gray-400 uppercase tracking-wide">
+        <th class="p-3">Status</th><th class="p-3">Machine</th><th class="p-3">Owner</th>
+        <th class="p-3">Last report</th><th class="p-3">Faults</th><th class="p-3">Payment</th>
+        <th class="p-3">Build</th><th class="p-3">Alerts 24 h</th><th class="p-3">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for m in rows %}
+      <tr class="border-t border-gray-100">
+        <td class="p-3">
+          {% include "partials/admin_status_badge.html" %}
+        </td>
+        <td class="p-3">
+          <a href="/m/{{ m.short }}" class="font-mono text-gray-900">{{ m.label }}</a>
+          <div class="font-mono text-xs text-gray-400">{{ m.short }}{% if m.vmc_missing %} · no VMC{% endif %}</div>
+        </td>
+        <td class="p-3">
+          {% if m.owner_email %}<a href="/admin/machines?owner={{ m.owner_id }}" class="text-gray-700">{{ m.owner_email }}</a>{% else %}<span class="text-gray-600">unclaimed</span>{% endif %}
+          {% if m.claim_open %}<div class="text-xs text-amber-600">claim open</div>{% endif %}
+        </td>
+        <td class="p-3 text-gray-600">{{ m.age_text }}</td>
+        <td class="p-3">
+          {% if m.fault_count %}
+          <span class="{% if m.top_fault and m.top_fault.gate == 'safety' %}text-red-600{% elif m.top_fault and m.top_fault.gate == 'fulfillment' %}text-amber-600{% else %}text-gray-600{% endif %}">{{ m.fault_count }}{% if m.top_fault %} · {{ m.top_fault.code }}{% endif %}</span>
+          {% else %}<span class="text-gray-400">0</span>{% endif %}
+        </td>
+        <td class="p-3">
+          {% if m.payment_enabled is none %}<span class="text-gray-400">—</span>
+          {% elif m.payment_enabled %}<span class="text-green-700">On</span>
+          {% else %}<span class="text-red-600" title="{{ m.payment_reason or '' }}">Off</span>{% endif %}
+        </td>
+        <td class="p-3 text-gray-600">{{ m.edge_build or "—" }}{% if m.ui_mismatch %}<div class="text-xs text-amber-600">UI differs</div>{% endif %}</td>
+        <td class="p-3"><a href="/machines/{{ m.short }}/alerts" class="text-gray-700">{{ m.alerts_24h }}</a></td>
+        <td class="p-3">
+          {% if m.owner_id %}
+          {% with label="Unbind", confirm_label="Confirm unbind", post_url="/admin/machines/" ~ m.short ~ "/unbind", confirm_url="/admin/machines/" ~ m.short ~ "/unbind/confirm", target="#unbind-" ~ m.short, confirming=false %}
+          {% include "partials/admin_unbind.html" %}
+          {% endwith %}
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9" class="p-4 text-sm text-gray-400">No machines match.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

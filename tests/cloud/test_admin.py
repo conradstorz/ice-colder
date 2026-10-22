@@ -20,6 +20,8 @@ def test_non_admin_404(cloud_app, signer):
             repo.claim_machine(fp, owner.id, cloud_app.state.now())
             base = f"/admin/machines/{short(signer)}/unbind"
             assert owner_c.get("/admin").status_code == 404
+            assert owner_c.get("/admin/machines").status_code == 404
+            assert owner_c.get("/admin/accounts").status_code == 404
             r = owner_c.post(f"/admin/accounts/{victim.id}/suspend", headers=HX)
             assert r.status_code == 404
             assert repo.account(victim.id).suspended_at is None
@@ -34,7 +36,7 @@ def test_non_admin_404(cloud_app, signer):
 def test_unclaimed_machine_has_no_unbind_button(cloud, signer):
     register(cloud, signer, "m-free")
     _admin(cloud)
-    r = cloud.get("/admin")
+    r = cloud.get("/admin/machines")
     assert "m-free" in r.text and "unclaimed" in r.text
     assert "/unbind" not in r.text
 
@@ -59,7 +61,7 @@ def test_admin_sees_unclaimed_and_claimed(cloud, signer):
     other = Signer()
     register(cloud, other, "m-free")
     _admin(cloud)
-    r = cloud.get("/admin")
+    r = cloud.get("/admin/machines")
     assert r.status_code == 200
     assert "m-claimed" in r.text and "owner@example.com" in r.text
     assert "m-free" in r.text and "unclaimed" in r.text
@@ -127,7 +129,7 @@ def test_setup_code_without_expiry_shows_claim_open(cloud, signer):
     fp = register(cloud, signer, "m-setup")
     cloud.app.state.repo.set_claim_code(fp, "h", None)
     _admin(cloud)
-    assert "claim open: yes" in cloud.get("/admin").text
+    assert "claim open" in cloud.get("/admin/machines").text
 
 
 def _smtp_app(settings, clock, provider, mailer):
@@ -141,11 +143,11 @@ def _smtp_app(settings, clock, provider, mailer):
 
 def test_admin_shows_smtp_status_both_states(cloud, settings, clock, provider, mailer):
     _admin(cloud)
-    assert "Email: log-only" in cloud.get("/admin").text
+    assert "Email: log-only" in cloud.get("/admin/accounts").text
     app = _smtp_app(settings, clock, provider, mailer)
     with TestClient(app, follow_redirects=False) as c:
         login(c, "admin@example.com")
-        assert "Email: configured (smtp.example.com)" in c.get("/admin").text
+        assert "Email: configured (smtp.example.com)" in c.get("/admin/accounts").text
 
 
 def test_test_email_sends_to_admin_address(cloud, mailer):
