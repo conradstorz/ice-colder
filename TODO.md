@@ -92,6 +92,15 @@ Cloud C1, C2 → the rest.
   ignored (credit restored though product may be out) -- pre-existing, documented, not
   changed here.
 
+- [ ] **M9 — LOW: `Product.sku`/`name` have no length limit.**
+  `ice_common/config_model.py` accepts any length; the catalog form had no `maxlength`.
+  Scenario: a 250-character product name broke every `MachineReport` (cloud caps strings at
+  200) until the product was renamed.
+  Stopgap landed: the edge clips report strings at 200 (`ice_edge.views.health.clip`) and the
+  catalog form inputs carry `maxlength="200"`.
+  Fix: limit `sku`/`name` in `ConfigModel` and the form, with a migration path for existing
+  `config.json` files (truncate or flag on load rather than refuse to start).
+
 ## R. Edge runtime resilience
 
 - [x] **R1 — HIGH: one failed email loses the alert permanently.**
@@ -298,6 +307,14 @@ Cloud C1, C2 → the rest.
   before `request.body()` (in `require_machine` or `BodyLimitMiddleware`).
   Landed: at most 2 bundle bodies in flight process-wide; a third answers 503 with `Retry-After: 30` before the body is read.
 
+- [ ] **C15 — MEDIUM: slow bundle PUTs can pin both in-flight slots indefinitely.**
+  The C14 slot is taken before the body is read and the signature is checked after it. Caddy
+  streams request bodies and uvicorn has no body-read timeout.
+  Scenario: two PUTs with a garbage signature and a trickled body hold both slots, so every
+  real bundle PUT answers 503 until the connections drop.
+  Fix: an `asyncio.timeout` deadline around `request.body()` for bundle PUTs (release the
+  slot and answer 408 on expiry).
+
 ## D. Deployment, data and secrets
 
 - [x] **D1 — HIGH: nothing is backed up.**
@@ -380,6 +397,12 @@ Cloud C1, C2 → the rest.
   roots); `PLAN.md:82,96,136` cite `main.py`; `docker-compose.override.yml` comment cites
   `services/auth_policy.py`. Traefik (edge) vs Caddy (cloud) is intentional but
   `README.md:101-107` vs the deploy doc could say so in one place.
+
+- [ ] **D13 — LOW: an older build meeting a newer-schema `events.db`.**
+  `EventRecorder` flags `db_unavailable` (DATA-103) when `PRAGMA user_version` exceeds the
+  migrations it knows, but writes are still attempted against a schema it cannot vouch for.
+  Decide this before migration 2 is written (a downgrade after an upgrade is the trigger).
+  Recommended: treat such a database as read-only and journal sales directly.
 
 ## T. Tests
 

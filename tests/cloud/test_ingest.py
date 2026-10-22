@@ -467,3 +467,39 @@ async def test_sweep_prunes_old_alert_history(tmp_path, clock):
     clock.advance(settings.alert_retention_days * 86400 + 60)
     await app.state.sweep.tick()
     assert repo.alert_events(s.fingerprint, limit=10) == []
+
+
+async def test_sweep_prunes_alert_history_at_most_once_an_hour(tmp_path, clock):
+    settings = make_settings(tmp_path / "cloud")
+    app = create_app(settings, now=clock, start_sweep=False)
+    repo = app.state.repo
+    s = Signer()
+    t0 = clock()
+    repo.register_machine(s.fingerprint, s.public_key_b64, "m", t0)
+    owner = repo.upsert_account_from_login("sub-o", "o@example.com", "O", t0)
+    assert repo.claim_machine(s.fingerprint, owner.id, t0)
+
+    def raised(key: str) -> AlertEventRow:
+        return AlertEventRow(
+            fingerprint=s.fingerprint,
+            kind="raised",
+            at=t0,
+            key=key,
+            code="WTR-104",
+            severity="critical",
+            gate="safety",
+            description="d",
+            sku=None,
+            product=None,
+        )
+
+    retention = settings.alert_retention_days * 86400
+    clock.advance(retention + 60)
+    await app.state.sweep.tick()  # first pass prunes (nothing to remove yet)
+    repo.record_alert_events([raised("k")])
+    clock.advance(retention + 120)  # Clock.advance is absolute
+    await app.state.sweep.tick()  # within the hour: no prune
+    assert len(repo.alert_events(s.fingerprint, limit=10)) == 1
+    clock.advance(retention + 60 + 3600)
+    await app.state.sweep.tick()
+    assert repo.alert_events(s.fingerprint, limit=10) == []

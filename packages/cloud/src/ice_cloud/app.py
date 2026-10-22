@@ -26,6 +26,7 @@ from ice_cloud.store import SnapshotStore, SqliteRepository, delete_snapshots
 from ice_cloud.ui_registry import UiRegistry
 
 CLOUD_TEMPLATES_DIR = Path(__file__).parent / "templates"
+PRUNE_INTERVAL = timedelta(hours=1)
 
 
 def utc_now() -> datetime:
@@ -97,16 +98,30 @@ def create_app(
         if purged:
             logger.info("Purged {} never-claimed machines", len(purged))
 
-    async def housekeeping() -> None:
-        """The sweep's one maintenance hook: unclaimed purge, then retention."""
-        try:
-            await purge_unclaimed()
-        except Exception:
-            logger.exception("Unclaimed machine purge failed")
+    last_prune_at: datetime | None = None
+
+    async def prune_history() -> None:
         cutoff = now() - timedelta(days=settings.alert_retention_days)
         removed = await asyncio.to_thread(app.state.repo.prune_alert_history, cutoff)
         if removed:
             logger.info("Pruned {} aged alert rows", removed)
+
+    async def housekeeping() -> None:
+        """The sweep's maintenance hook: unclaimed purge every tick, then the
+        retention prune at most once an hour."""
+        nonlocal last_prune_at
+        try:
+            await purge_unclaimed()
+        except Exception:
+            logger.exception("Unclaimed machine purge failed")
+        current = now()
+        if last_prune_at is not None and current - last_prune_at < PRUNE_INTERVAL:
+            return
+        last_prune_at = current
+        try:
+            await prune_history()
+        except Exception:
+            logger.exception("Alert history prune failed")
 
     app.state.sweep = OfflineSweep(
         app.state.repo, app.state.alerts, now=now, purge=housekeeping

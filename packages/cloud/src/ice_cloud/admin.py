@@ -70,7 +70,7 @@ def _unbind_fragment(request: Request, short: str, confirming: bool) -> Response
     )
 
 
-def _purge_fragment(request: Request, confirming: bool, **extra) -> Response:
+def _purge_fragment(request: Request, confirming: bool) -> Response:
     base = "/admin/purge-unclaimed"
     return _templates(request).TemplateResponse(
         request,
@@ -82,7 +82,6 @@ def _purge_fragment(request: Request, confirming: bool, **extra) -> Response:
             "confirm_url": f"{base}/confirm",
             "target": "#unclaimed-purge",
             "confirming": confirming,
-            **extra,
         },
     )
 
