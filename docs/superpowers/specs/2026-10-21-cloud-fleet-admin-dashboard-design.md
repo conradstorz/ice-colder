@@ -144,6 +144,10 @@ Helpers exported for routes and tests: `classify(report, now) -> MachineStatus`,
 claimed=None, faulted=None, payment=None, owner=None) -> list[MachineRow]`, and `humanize_seconds`
 is reused from `ice_ui.filters`.
 
+*(As built: the faulted and payment-blocked filters match `online` machines only, as in §2.3; when an owner account cannot be found, `owner_email` falls back to the owner id rather than `None`, so the machine still reads as claimed.)*
+
+*(As built: `FleetView` also carries `account_count`, the total number of accounts, used for the Owners card sub-line and the owners footer.)*
+
 ## 5. Rendering
 
 ### 5.1 Overview (`admin.html` + `partials/admin_overview.html`)
