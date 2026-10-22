@@ -772,3 +772,63 @@ def test_delivery_health_follows_most_recent_attempt(repo):
     assert repo.delivery_health(FP) is True
     repo.mark_delivery(first.id, status="failed", now=T0 + timedelta(minutes=4))
     assert repo.delivery_health(FP) is False
+
+
+# fleet queries
+
+
+def test_all_memberships_lists_every_grant(repo):
+    owner, tech = _accounts(repo)
+    other = repo.upsert_account_from_login("sub-x", "x@example.com", "Xan", T0)
+    repo.register_machine(FP, KEY, "a", T0)
+    repo.register_machine(FP_2, KEY, "b", T0)
+    repo.grant_tech(tech.id, FP_2, owner.id, T0)
+    repo.grant_tech(other.id, FP, owner.id, T0 + timedelta(hours=1))
+    repo.grant_tech(tech.id, FP, owner.id, T0)
+    got = repo.all_memberships()
+    first, second = sorted([FP, FP_2])
+    expected = {FP: [tech.id, other.id], FP_2: [tech.id]}
+    assert [(m.fingerprint, m.account_id) for m in got] == [
+        (fp, acct) for fp in (first, second) for acct in expected[fp]
+    ]
+    assert all(m.role == "tech" and m.granted_by == owner.id for m in got)
+    assert [m.granted_at for m in got if m.fingerprint == FP] == [
+        T0,
+        T0 + timedelta(hours=1),
+    ]
+
+
+def test_alert_counts_since_groups_by_machine(repo):
+    repo.register_machine(FP, KEY, "a", T0)
+    repo.register_machine(FP_2, KEY, "b", T0)
+    repo.record_alert_events(
+        [
+            _event(at=T0 - timedelta(hours=30)),
+            _event(at=T0 - timedelta(hours=2)),
+            _event(at=T0 - timedelta(hours=1)),
+            _event(kind="cleared", at=T0),
+            _event(kind="offline", at=T0),
+            _event(kind="online", at=T0, fp=FP_2),
+        ]
+    )
+    assert repo.alert_counts_since(T0 - timedelta(hours=24)) == {FP: 3}
+
+
+def test_recent_alert_events_newest_first_with_machine(repo):
+    repo.register_machine(FP, KEY, "alpha", T0)
+    repo.register_machine(FP_2, KEY, "beta", T0)
+    repo.record_alert_events(
+        [
+            _event(at=T0, fp=FP),
+            _event(at=T0 + timedelta(minutes=2), fp=FP_2),
+            _event(kind="cleared", at=T0 + timedelta(minutes=1), fp=FP),
+        ]
+    )
+    got = repo.recent_alert_events(limit=10)
+    assert [(e.fingerprint, e.kind, m.label) for e, m in got] == [
+        (FP_2, "raised", "beta"),
+        (FP, "cleared", "alpha"),
+        (FP, "raised", "alpha"),
+    ]
+    assert all(e.fingerprint == m.fingerprint and e.id for e, m in got)
+    assert len(repo.recent_alert_events(limit=2)) == 2
