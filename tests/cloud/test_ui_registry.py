@@ -236,3 +236,45 @@ def test_register_extracts_outside_the_resolve_lock(
     uploader.join(timeout=30)
     assert finished, "resolve blocked while a bundle was being extracted"
     assert resolved
+
+
+def test_extractions_are_bounded_by_a_semaphore(tmp_path, cloud_templates, monkeypatch):
+    import threading
+
+    import ice_cloud.ui_registry as ui_registry
+
+    monkeypatch.setattr(ui_registry, "MAX_CONCURRENT_EXTRACTIONS", 1)
+    reg = UiRegistry(tmp_path / "data", cloud_templates=cloud_templates)
+    entered: list[str] = []
+    first_in = threading.Event()
+    release_first = threading.Event()
+    second_in = threading.Event()
+
+    def blocking_prepare(data, ui_dir, expected_digest):
+        entered.append(expected_digest)
+        if len(entered) == 1:
+            first_in.set()
+            assert release_first.wait(10)
+        else:
+            second_in.set()
+        raise BundleError("rejected")
+
+    monkeypatch.setattr(ui_registry, "prepare_bundle", blocking_prepare)
+
+    def run(digest):
+        try:
+            reg.register(digest, b"x")
+        except BundleError:
+            pass
+
+    t1 = threading.Thread(target=run, args=("a" * 64,))
+    t2 = threading.Thread(target=run, args=("b" * 64,))
+    t1.start()
+    assert first_in.wait(10)
+    t2.start()
+    assert not second_in.wait(0.3)  # blocked behind the first extraction
+    assert entered == ["a" * 64]
+    release_first.set()
+    t1.join(10)
+    t2.join(10)
+    assert second_in.is_set()

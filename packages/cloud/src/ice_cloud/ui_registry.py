@@ -28,6 +28,10 @@ from ice_ui.templating import STATIC_DIR, TEMPLATES_DIR, make_templates
 # Temp dirs younger than this may belong to an in-flight extraction.
 STALE_TEMP_SECONDS = 600
 
+# Each extraction can hold ~64 MiB; on a 512 MB host more than a couple at once
+# risks the OOM killer. Renders take ``_lock`` and are never held up by this.
+MAX_CONCURRENT_EXTRACTIONS = 2
+
 _DIGEST_RE = re.compile(DIGEST_PATTERN)
 
 
@@ -72,6 +76,7 @@ class UiRegistry:
         self._ui_dir = Path(root) / "ui"
         self._cloud_templates = cloud_templates
         self._lock = threading.Lock()
+        self._extractions = threading.BoundedSemaphore(MAX_CONCURRENT_EXTRACTIONS)
         self._cache: dict[str, Jinja2Templates] = {}
         self.installed_digest: str = ui_digest()
         self._sweep_stale_temp_dirs()
@@ -116,7 +121,8 @@ class UiRegistry:
             return False
         # Extraction is slow and untrusted: do it outside the lock that every
         # page render takes, and hold the lock only for the rename.
-        tmp, _manifest = prepare_bundle(data, self._ui_dir, expected_digest=digest)
+        with self._extractions:
+            tmp, _manifest = prepare_bundle(data, self._ui_dir, expected_digest=digest)
         try:
             with self._lock:
                 if dest.is_dir():
