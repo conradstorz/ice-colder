@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 
@@ -22,7 +20,6 @@ router = APIRouter(prefix="/admin")
 @router.get("/owners", response_class=HTMLResponse)
 async def owners_page(request: Request, account: Account = Depends(require_admin)):
     view = await load_fleet_view(request)
-    accounts = await asyncio.to_thread(request.app.state.repo.all_accounts)
     return templates(request).TemplateResponse(
         request,
         "admin_owners.html",
@@ -31,6 +28,6 @@ async def owners_page(request: Request, account: Account = Depends(require_admin
             account,
             LEVEL_ADMIN_OWNERS,
             owners=view.owners,
-            idle_accounts=len(accounts) - len(view.owners),
+            idle_accounts=view.account_count - len(view.owners),
         ),
     )

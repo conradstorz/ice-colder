@@ -20,9 +20,7 @@
       {% for m in rows %}
       <tr class="border-t border-gray-100">
         <td class="p-3">
-          {% if m.status.value == "online" %}<span class="text-xs px-1.5 py-0.5 rounded bg-green-50 text-green-700">Online</span>
-          {% elif m.status.value == "silent" %}<span class="text-xs px-1.5 py-0.5 rounded bg-red-50 text-red-600">Silent</span>
-          {% else %}<span class="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">Never reported</span>{% endif %}
+          {% include "partials/admin_status_badge.html" %}
         </td>
         <td class="p-3">
           <a href="/m/{{ m.short }}" class="font-mono text-gray-900">{{ m.label }}</a>

@@ -1,3 +1,7 @@
+import re
+
+import pytest
+
 from tests.cloud.conftest import Signer, claim, login, push, register
 from tests.cloud.reports import make_report
 
@@ -169,10 +173,16 @@ def _owner_fleet(cloud, clock):
     return owner_a, owner_b, tech
 
 
-def _owner_row(text, email):
-    start = text.index(email)
-    end = text.find("</tr>", start)
-    return text[start:end]
+def _owner_rows(text):
+    """Each owners-table body row as its list of <td> texts (tags stripped)."""
+    rows = []
+    for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", text, re.S):
+        cells = re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S)
+        if cells:
+            rows.append(
+                [re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", c)).strip() for c in cells]
+            )
+    return rows
 
 
 def test_owners_page_counts(cloud, clock):
@@ -180,20 +190,25 @@ def test_owners_page_counts(cloud, clock):
     _admin(cloud)
     r = cloud.get("/admin/owners")
     assert r.status_code == 200
-    assert r.text.index("owner-a@example.com") < r.text.index("owner-b@example.com")
-    row = _owner_row(r.text, "owner-a@example.com")
-    cells = [c.split("<")[0].strip() for c in row.split(">") if c.strip()]
-    assert "2" in cells and "1" in cells
-    assert 'href="/admin/machines?owner=' in row
+    rows = _owner_rows(r.text)
+    assert len(rows) == 2
+    a, b = rows
+    assert a[0].startswith("owner-a@example.com")
+    assert b[0].startswith("owner-b@example.com")
+    # Machines, Online, Silent, Never, Faulted, Techs
+    assert a[1:7] == ["2", "1", "1", "0", "1", "1"]
+    assert b[1:7] == ["1", "1", "0", "0", "1", "0"]
+    assert 'href="/admin/machines?owner=' in r.text
 
 
 def test_owners_footer_counts_idle_accounts(cloud, clock):
     _owner_fleet(cloud, clock)
     _admin(cloud)
+    accounts = cloud.app.state.repo.all_accounts()
+    idle = len(accounts) - 2
+    assert idle == 2  # the admin login and the tech own nothing
     text = cloud.get("/admin/owners").text
-    assert "own nothing" in text
-    start = text.index("own nothing")
-    assert "2" in text[start - 40 : start]
+    assert f"2 owners · {idle} accounts own nothing" in text
 
 
 def test_owners_non_admin_404(cloud):
@@ -201,12 +216,21 @@ def test_owners_non_admin_404(cloud):
     assert cloud.get("/admin/owners").status_code == 404
 
 
-def test_machines_table_marks_top_fault_code(cloud, clock):
-    push(cloud, Signer(), make_report(machine_id="m-fault", faults=True))
+def _fault_report(machine_id, gate, code):
+    base = make_report(machine_id=machine_id)
+    fault = base.faults[0].model_copy(update={"gate": gate, "code": code})
+    return base.model_copy(update={"faults": [fault]})
+
+
+@pytest.mark.parametrize(
+    ("gate", "tone"),
+    [("fulfillment", "amber-600"), ("safety", "red-600"), ("alert", "gray-600")],
+)
+def test_machines_table_marks_top_fault_code(cloud, clock, gate, tone):
+    push(cloud, Signer(), _fault_report("m-fault", gate, "ICE-301"))
     _admin(cloud)
     text = cloud.get("/admin/machines").text
-    assert "ICE-301" in text
-    assert "text-amber-600" in text[text.index("ICE-301") - 200 : text.index("ICE-301")]
+    assert re.search(rf'<span class="[^"]*text-{tone}[^"]*">\s*1 · ICE-301', text)
 
 
 def test_machines_table_payment_off(cloud, clock):

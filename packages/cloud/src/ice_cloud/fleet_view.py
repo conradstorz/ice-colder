@@ -133,6 +133,7 @@ class FleetView:
     builds: tuple[BuildRow, ...]
     owners: tuple[OwnerRow, ...]
     rows: tuple[MachineRow, ...]
+    account_count: int
 
 
 def percentages(counts: Sequence[int]) -> list[int]:
@@ -431,6 +432,7 @@ def build_fleet_view(
         builds=builds,
         owners=_owner_rows(rows, by_account, memberships),
         rows=tuple(rows),
+        account_count=len(accounts),
     )
 
 
