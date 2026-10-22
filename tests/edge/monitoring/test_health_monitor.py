@@ -783,3 +783,66 @@ class TestSignals:
 
     def test_empty_subsystem_row_has_empty_channels(self):
         assert HealthMonitor.empty_subsystem_row()["channels"] == []
+
+
+# ── failed delivery stays pending and is retried ─────────────
+
+
+async def _round(monitor):
+    # private: the periodic round has no public trigger; the loop task sleeps.
+    await monitor._check()
+
+
+class TestPendingAlertRetry:
+    @pytest.mark.asyncio
+    async def test_false_return_is_retried_until_true(self):
+        monitor = HealthMonitor()
+        callback = AsyncMock(side_effect=[False, False, True])
+        monitor.set_alert_callback(callback)
+
+        await _round(monitor)
+        assert monitor.pending_alert_keys == frozenset({"mqtt_disconnect"})
+        await _round(monitor)
+        assert callback.await_count == 2
+        assert monitor.pending_alert_keys == frozenset({"mqtt_disconnect"})
+        await _round(monitor)
+        assert callback.await_count == 3
+        assert monitor.pending_alert_keys == frozenset()
+        await _round(monitor)
+        assert callback.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_raising_callback_stays_pending(self):
+        monitor = HealthMonitor()
+        callback = AsyncMock(side_effect=[RuntimeError("boom"), True])
+        monitor.set_alert_callback(callback)
+
+        await _round(monitor)
+        assert monitor.pending_alert_keys == frozenset({"mqtt_disconnect"})
+        await _round(monitor)
+        assert monitor.pending_alert_keys == frozenset()
+
+    @pytest.mark.asyncio
+    async def test_clear_alert_drops_pending(self):
+        monitor = HealthMonitor()
+        monitor.update_mqtt_status(True)
+        callback = AsyncMock(return_value=False)
+        monitor.set_alert_callback(callback)
+        await monitor.raise_alert("k1", "error", "vmc", "m")
+        assert monitor.pending_alert_keys == frozenset({"k1"})
+
+        monitor.clear_alert("k1")
+        assert monitor.pending_alert_keys == frozenset()
+        await _round(monitor)
+        callback.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_none_return_is_handled(self):
+        monitor = HealthMonitor()
+
+        async def cb(_alert):
+            return None
+
+        monitor.set_alert_callback(cb)
+        await _round(monitor)
+        assert monitor.pending_alert_keys == frozenset()

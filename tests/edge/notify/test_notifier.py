@@ -124,3 +124,79 @@ async def test_predicate_exception_delivers_locally():
     n.set_cloud_handles_alerts(lambda: 1 / 0)
     await n.send(Alert(level="error", source="vmc", message="a", code="ICE-301"))
     assert deliver_mock.await_count == 1
+
+
+# ── delivery failure is retried, not lost ────────────────────
+
+
+def _email_notifier(monkeypatch, smtp):
+    """A Notifier whose email gateway is 'configured' and whose SMTP call is `smtp`."""
+    from ice_edge.notify import notifier as notifier_mod
+
+    n = Notifier(ConfigModel())
+    gw = SimpleNamespace(is_configured=True, default_from="vmc@example.com")
+    monkeypatch.setattr(
+        ConfigModel,
+        "get_preferred_gateway_for",
+        lambda self, owner: (notifier_mod.Channel.email, gw),
+    )
+    monkeypatch.setattr(notifier_mod, "_is_placeholder_host", lambda _addr: False)
+    monkeypatch.setattr(notifier_mod, "smtp_send", smtp)
+    return n
+
+
+def _fake_clock(monkeypatch):
+    clock = [1000.0]
+    fake_loop = SimpleNamespace(
+        time=lambda: clock[0],
+        run_in_executor=lambda _ex, fn, *a: _run_sync(fn, *a),
+    )
+    monkeypatch.setattr(
+        "ice_edge.notify.notifier.asyncio",
+        SimpleNamespace(get_running_loop=lambda: fake_loop),
+    )
+    return clock
+
+
+async def _run_sync(fn, *args):
+    return fn(*args)
+
+
+async def test_failed_email_is_retried_after_retry_window(monkeypatch):
+    clock = _fake_clock(monkeypatch)
+    calls = []
+    outcomes = [RuntimeError("smtp down"), None]
+
+    def smtp(_cfg, _msg):
+        calls.append(1)
+        outcome = outcomes[len(calls) - 1]
+        if outcome:
+            raise outcome
+
+    n = _email_notifier(monkeypatch, smtp)
+    alert = Alert(level="error", source="vmc", message="leak", code="WTR-104")
+
+    assert await n.send(alert) is False
+    assert len(calls) == 1
+    assert await n.send(alert) is False  # inside the retry window: no new attempt
+    assert len(calls) == 1
+
+    clock[0] += Notifier.RETRY_SECONDS + 1
+    assert await n.send(alert) is True
+    assert len(calls) == 2
+
+    clock[0] += 10  # inside the success cooldown
+    assert await n.send(alert) is True
+    assert len(calls) == 2
+
+
+async def test_log_only_outcome_is_handled():
+    n = Notifier(ConfigModel())
+    alert = Alert(level="error", source="vmc", message="x", code="ICE-301")
+    assert await n.send(alert) is True
+
+
+async def test_deferred_to_cloud_is_handled():
+    n = Notifier(ConfigModel(), cloud_handles_alerts=lambda: True)
+    alert = Alert(level="error", source="vmc", message="x", code="ICE-301")
+    assert await n.send(alert) is True

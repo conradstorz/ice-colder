@@ -32,6 +32,8 @@ class Notifier:
         await notifier.send(alert)
     """
 
+    RETRY_SECONDS: float = 60.0  # min gap between attempts after a failed send
+
     def __init__(
         self,
         config: ConfigModel,
@@ -46,6 +48,7 @@ class Notifier:
         self._cooldown_seconds: float = (
             300.0  # 5 min between repeat alerts per (source, code|message, sku)
         )
+        self._last_failed: dict[str, float] = {}
         self._warned_unconfigured = False
 
     def set_cloud_handles_alerts(self, predicate: Callable[[], bool]) -> None:
@@ -61,10 +64,14 @@ class Notifier:
         """
         return f"{alert.source}|{alert.code or alert.message}|{alert.product_sku or ''}"
 
-    async def send(self, alert: Alert):
+    async def send(self, alert: Alert) -> bool:
         """
         Route an alert to the owner via their preferred channel.
         Runs blocking I/O (SMTP) in a thread executor to stay async.
+
+        Returns True when the alert is handled (delivered, log-only, deferred to
+        the cloud, or suppressed by the success cooldown); False when a
+        configured email send failed or a retry is still pending.
         """
         now = asyncio.get_running_loop().time()
         key = self._cooldown_key(alert)
@@ -74,8 +81,11 @@ class Notifier:
         # suppress the first alert from every key for a whole cooldown.
         if last is not None and now - last < self._cooldown_seconds:
             logger.debug(f"Notifier: Suppressing alert {key} (cooldown)")
-            return
-        self._last_sent[key] = now
+            return True
+        failed = self._last_failed.get(key)
+        if failed is not None and now - failed < self.RETRY_SECONDS:
+            logger.debug(f"Notifier: Waiting to retry alert {key}")
+            return False
 
         try:
             deferred = self._cloud_handles_alerts()
@@ -86,20 +96,26 @@ class Notifier:
             deferred = False
         if deferred:
             logger.info(f"Notifier: deferred to cloud: {key}")
-            return
+            self._last_sent[key] = now
+            return True
 
         logger.info(
             f"Notifier: [{alert.level}] {alert.source} -> {self._owner.name}: "
             f"{alert.message}"
         )
-        await self._deliver(alert)
+        if await self._deliver(alert):
+            self._last_sent[key] = now
+            self._last_failed.pop(key, None)
+            return True
+        self._last_failed[key] = now
+        return False
 
-    async def _deliver(self, alert: Alert) -> None:
+    async def _deliver(self, alert: Alert) -> bool:
         """Pick the owner's channel and send. Split out so tests can stub delivery."""
         gateway_info = self._config.get_preferred_gateway_for(self._owner)
         if gateway_info is None:
             logger.warning("Notifier: No configured gateway for owner")
-            return
+            return True
 
         channel, gateway_config = gateway_info
 
@@ -113,15 +129,16 @@ class Notifier:
                         "smtp server or owner address); alerts are logged only"
                     )
                     self._warned_unconfigured = True
-                return
-            await self._send_email(alert, gateway_config)
+                return True
+            return await self._send_email(alert, gateway_config)
         elif channel == Channel.sms:
             logger.info(f"Notifier: SMS alert would be sent to {self._owner.phone}")
             # SMS integration is a future task
         else:
             logger.info(f"Notifier: Channel {channel} not yet implemented")
+        return True
 
-    async def _send_email(self, alert: Alert, email_config):
+    async def _send_email(self, alert: Alert, email_config) -> bool:
         """Send an alert email. Runs SMTP in executor to avoid blocking."""
         subject = f"[VMC {alert.level.upper()}] {alert.source}: {alert.message[:60]}"
         body = (
@@ -142,5 +159,7 @@ class Notifier:
         try:
             await loop.run_in_executor(None, smtp_send, email_config, msg)
             logger.info(f"Notifier: Email sent to {self._owner.email}")
+            return True
         except Exception as e:
             logger.error(f"Notifier: Email send failed: {e}")
+            return False

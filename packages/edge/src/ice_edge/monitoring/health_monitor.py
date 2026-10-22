@@ -82,7 +82,7 @@ class Alert:
 
 
 # Type for the callback that delivers alerts (e.g., to notifier service)
-AlertCallback = Callable[[Alert], Awaitable[None]]
+AlertCallback = Callable[[Alert], Awaitable[bool | None]]
 
 # Type for the callback that reports subsystem liveness transitions
 LivenessCallback = Callable[[str, bool], None]
@@ -126,6 +126,9 @@ class HealthMonitor:
         self._liveness_callback: Optional[LivenessCallback] = None
         # Track which alerts have already fired to avoid spamming
         self._fired_alerts: set[str] = set()
+        # Raised alerts whose delivery failed (callback returned False or raised);
+        # re-sent at the start of every check round until handled or forgotten.
+        self._pending_alerts: dict[str, Alert] = {}
         # Active faults pushed by the VMC: key -> fault dict (+ "since" monotonic)
         self._active_faults: dict[str, dict] = {}
 
@@ -135,6 +138,16 @@ class HealthMonitor:
         (subsystem-windows design §4.6) -- the same bounds `record_temperature`
         already alerts against."""
         return (self._temp_min, self._temp_max)
+
+    @property
+    def pending_alert_keys(self) -> frozenset[str]:
+        """Keys of raised alerts whose delivery has not yet succeeded."""
+        return frozenset(self._pending_alerts)
+
+    def _forget(self, key: str) -> None:
+        """Re-arm `key`: forget both the dedup mark and any pending retry."""
+        self._fired_alerts.discard(key)
+        self._pending_alerts.pop(key, None)
 
     def set_alert_callback(self, callback: AlertCallback):
         """Register a coroutine to be called when an alert fires."""
@@ -167,7 +180,7 @@ class HealthMonitor:
         self._subsystems[subsystem].last_payload = payload or {}
         self._subsystems[subsystem].offline = False
         # Clear stale alert for this subsystem
-        self._fired_alerts.discard(f"subsystem_stale:{subsystem}")
+        self._forget(f"subsystem_stale:{subsystem}")
         self._notify_liveness(self._subsystems[subsystem], True)
 
     def record_capabilities(self, subsystem: str, caps: dict):
@@ -208,7 +221,7 @@ class HealthMonitor:
         )
         # Clear out-of-range alert if back in range
         if self._temp_min <= value <= self._temp_max:
-            self._fired_alerts.discard(f"temp_range:{location}")
+            self._forget(f"temp_range:{location}")
         subsystem = self.declaring_subsystem(location, kind="temperature")
         if subsystem is not None:
             self.record_signal(subsystem, location, value)
@@ -322,23 +335,23 @@ class HealthMonitor:
 
     def clear_alert(self, key: str):
         """Forget a dedup key so the next raise_alert with it fires again."""
-        self._fired_alerts.discard(key)
+        self._forget(key)
 
     def update_mqtt_status(self, connected: bool):
         """Update MQTT connection status."""
         was_connected = self._mqtt_connected
         self._mqtt_connected = connected
         if was_connected and not connected:
-            self._fired_alerts.discard("mqtt_disconnect")
+            self._forget("mqtt_disconnect")
         elif not was_connected and connected:
-            self._fired_alerts.discard("mqtt_disconnect")
+            self._forget("mqtt_disconnect")
 
     def update_vmc_state(self, state: str):
         """Update the current FSM state for monitoring."""
         prev = self._vmc_state
         self._vmc_state = state
         if prev == "error" and state != "error":
-            self._fired_alerts.discard("vmc_error")
+            self._forget("vmc_error")
 
     @staticmethod
     def _channel_rows(channels) -> list[dict]:
@@ -484,6 +497,8 @@ class HealthMonitor:
 
     async def _check(self):
         """Run one round of health checks."""
+        await self._retry_pending()
+
         # Check MQTT connection
         if not self._mqtt_connected:
             await self._fire_alert(
@@ -517,6 +532,24 @@ class HealthMonitor:
                     f"(range: {self._temp_min} to {self._temp_max})",
                 )
 
+    async def _deliver(self, key: str, alert: Alert) -> None:
+        """Hand `alert` to the callback; keep it pending unless it reports handled."""
+        if not self._alert_callback:
+            return
+        try:
+            handled = await self._alert_callback(alert) is not False
+        except Exception as e:
+            logger.error(f"Health: Alert callback failed: {e}")
+            handled = False
+        if handled:
+            self._pending_alerts.pop(key, None)
+        else:
+            self._pending_alerts[key] = alert
+
+    async def _retry_pending(self) -> None:
+        for key, alert in list(self._pending_alerts.items()):
+            await self._deliver(key, alert)
+
     async def _fire_alert(
         self,
         key: str,
@@ -540,8 +573,4 @@ class HealthMonitor:
         )
         logger.warning(f"Health alert [{level}] {source}: {message}")
 
-        if self._alert_callback:
-            try:
-                await self._alert_callback(alert)
-            except Exception as e:
-                logger.error(f"Health: Alert callback failed: {e}")
+        await self._deliver(key, alert)
