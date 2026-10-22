@@ -1,45 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Admin · Vending Machine{% endblock %}
 {% block body %}
-<div class="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-gray-200 shadow-sm p-4 mb-2">
-  <span class="text-sm text-gray-700">{% if smtp_host %}Email: configured ({{ smtp_host }}){% else %}Email: log-only{% endif %}</span>
-  <button hx-post="/admin/test-email" hx-target="#test-email-result"
-          class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Send test email</button>
-  <span id="test-email-result"></span>
-</div>
-<h2 class="text-sm font-semibold text-gray-700 mb-2">Machines</h2>
-<div id="admin-machines" class="space-y-2">
-  {% for m in machines %}
-  <div class="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-gray-200 shadow-sm p-4">
-    <span class="font-mono text-sm text-gray-700">{{ m.label }}</span>
-    <a href="/m/{{ m.short }}" class="font-mono text-xs text-gray-400">{{ m.short }}</a>
-    <span class="text-xs text-gray-600">{{ m.owner if m.owner else "unclaimed" }}</span>
-    <span class="text-xs text-gray-400">last seen {{ m.last_seen }}</span>
-    <span class="text-xs text-gray-400">claim open: {{ "yes" if m.claim_open else "no" }}</span>
-    {% if m.claimed %}
-    <span class="ml-auto">
-      {% with label="Unbind", confirm_label="Confirm unbind", post_url="/admin/machines/" ~ m.short ~ "/unbind", confirm_url="/admin/machines/" ~ m.short ~ "/unbind/confirm", target="#unbind-" ~ m.short, confirming=false %}
-      {% include "partials/admin_unbind.html" %}
-      {% endwith %}
-    </span>
-    {% endif %}
-  </div>
-  {% else %}
-  <p class="text-sm text-gray-400">No machines registered.</p>
-  {% endfor %}
-</div>
-<h2 class="text-sm font-semibold text-gray-700 mt-6 mb-2">Accounts</h2>
-<div id="admin-accounts" class="space-y-2">
-  {% for a in accounts %}
-  <div class="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-gray-200 shadow-sm p-4">
-    <span class="text-sm text-gray-700">{{ a.email }}</span>
-    <span class="text-xs text-gray-400">{{ a.name }}</span>
-    {% if a.suspended %}<span class="text-xs px-1.5 py-0.5 rounded bg-red-50 text-red-600">Suspended</span>{% endif %}
-    {% if not a.is_self %}
-    <button hx-post="/admin/accounts/{{ a.id }}/{{ 'unsuspend' if a.suspended else 'suspend' }}"
-            class="ml-auto touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">{{ "Unsuspend" if a.suspended else "Suspend" }}</button>
-    {% endif %}
-  </div>
-  {% endfor %}
+<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+  <a href="/admin/machines" class="block bg-white rounded-xl border border-gray-200 shadow-sm p-5 touch-target">
+    <div class="text-xs text-gray-400 uppercase tracking-wide">Fleet</div>
+    <div class="text-lg font-semibold text-gray-900">Machines</div>
+  </a>
+  <a href="/admin/accounts" class="block bg-white rounded-xl border border-gray-200 shadow-sm p-5 touch-target">
+    <div class="text-xs text-gray-400 uppercase tracking-wide">People</div>
+    <div class="text-lg font-semibold text-gray-900">Accounts</div>
+  </a>
 </div>
 {% endblock %}
