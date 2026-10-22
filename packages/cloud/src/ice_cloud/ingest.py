@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import math
 from collections import deque
 from datetime import timedelta
@@ -74,6 +75,22 @@ class SlidingWindow:
         self._stamps.pop(key, None)
 
 
+def meter_key(client_ip: str) -> str:
+    """The registration-meter key: an IPv4 address itself, an IPv6 address's /64.
+
+    One IPv6 subscriber typically owns a whole /64, so keying on the full address
+    would hand an attacker a fresh allowance per address. Anything unparseable
+    (``unknown``, a garbled forwarded hop) is returned unchanged.
+    """
+    try:
+        addr = ipaddress.ip_address(client_ip)
+    except ValueError:
+        return client_ip
+    if addr.version == 6:
+        return str(ipaddress.ip_network(f"{client_ip}/64", strict=False))
+    return client_ip
+
+
 router = APIRouter(prefix="/api/v1")
 
 
@@ -91,7 +108,7 @@ async def _admit_new(request: Request, fp: str) -> Response | None:
     """429 when this address or the fleet may not add another machine."""
     state = request.app.state
     wait = state.new_registrations.allow(
-        state.backoff.client_ip(request), state.now().timestamp()
+        meter_key(state.backoff.client_ip(request)), state.now().timestamp()
     )
     if wait is not None:
         return Response(status_code=429, headers={"Retry-After": str(math.ceil(wait))})
@@ -133,7 +150,7 @@ async def register(
                 return refusal
             row = await _register(request, fp, body)
             state.new_registrations.record(
-                state.backoff.client_ip(request), state.now().timestamp()
+                meter_key(state.backoff.client_ip(request)), state.now().timestamp()
             )
     return RegisterResponse(
         fingerprint=fp,

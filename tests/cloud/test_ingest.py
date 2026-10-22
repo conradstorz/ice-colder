@@ -10,6 +10,7 @@ from ice_cloud.ingest import (
     MAX_NEW_REGISTRATIONS_PER_HOUR,
     MAX_UNCLAIMED_REPORT_BYTES,
     SlidingWindow,
+    meter_key,
 )
 from ice_contracts.cloud.identity import RegisterMachine
 from ice_ui.bundle import build_bundle, ui_digest
@@ -287,6 +288,37 @@ def test_eleventh_new_machine_in_an_hour_from_one_address_is_throttled(timed, cl
     clock.advance(3601)
     assert _register_request(timed, signers[-1]).status_code == 200
     assert timed.app.state.repo.machine(signers[-1].fingerprint) is not None
+
+
+def test_meter_key_collapses_ipv6_to_its_64():
+    assert meter_key("203.0.113.9") == "203.0.113.9"
+    a = meter_key("2001:db8:1:2::1")
+    assert a == meter_key("2001:db8:1:2:ffff:ffff:ffff:ffff") == "2001:db8:1:2::/64"
+    assert a != meter_key("2001:db8:1:3::1")
+    assert meter_key("unknown") == "unknown"
+    assert meter_key("not an ip") == "not an ip"
+
+
+def test_rotating_addresses_inside_one_ipv6_64_share_an_allowance(tmp_path, clock):
+    app = create_app(make_settings(tmp_path / "cloud"), now=clock)
+    app.state.backoff.set_trusted_proxies(["10.0.0.1/32"])
+    with TestClient(app, client=("10.0.0.1", 5000)) as c:
+
+        def register_from(address):
+            signer = Signer()
+            body = RegisterMachine(public_key_b64=signer.public_key_b64, label="m")
+            body = body.model_dump_json().encode()
+            headers = signer.headers(
+                "POST", "/api/v1/machines/register", body, now=clock()
+            )
+            headers["content-type"] = "application/json"
+            headers["x-forwarded-for"] = address
+            return c.post("/api/v1/machines/register", content=body, headers=headers)
+
+        for n in range(MAX_NEW_REGISTRATIONS_PER_HOUR):
+            assert register_from(f"2001:db8:1:2::{n + 1:x}").status_code == 200
+        assert register_from("2001:db8:1:2:dead:beef::1").status_code == 429
+        assert register_from("2001:db8:1:3::1").status_code == 200
 
 
 def test_sliding_window_prunes_and_drops_empty_keys():
