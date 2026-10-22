@@ -1,7 +1,10 @@
+import asyncio
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from ice_common.config_model import ConfigModel
+from ice_common.config_model import ConfigModel, PhysicalDetails, Product
+from ice_edge.app.machine import Machine
+from tests.fakes import FakeTaskRunner
 from ice_contracts.board.vending_machine import FaultCode
 from ice_contracts.cloud.report import MachineReport
 from ice_edge.faults.availability import Availability
@@ -51,3 +54,28 @@ async def test_building_a_report_changes_no_machine_state(machine_fake_time):
     )
     assert machine.vmc.active_faults() == before
     assert machine.vmc.state == "idle"
+
+
+async def test_overlong_product_name_is_clipped_not_fatal():
+    cfg = ConfigModel(
+        physical=PhysicalDetails(
+            products=[Product(sku="S" * 250, name="N" * 250, price=1.0, slot=1)]
+        )
+    )
+    machine = Machine(config=cfg, tasks=FakeTaskRunner())
+    machine.attach_to_loop(asyncio.get_running_loop())
+    machine.set_health_monitor(HealthMonitor())
+    machine.set_availability(Availability())
+    product = machine.vmc.products[0]
+    machine.vmc.raise_fault(FaultCode.ICE_301, sku=product.sku)
+    machine.vmc.start_interaction()
+    machine.vmc.selected_product = product
+
+    report = await build_machine_report(
+        machine, config=cfg, seq=1, boot_id=str(uuid4()), now=NOW
+    )
+
+    assert report.health.status.selected_product == "N" * 200
+    assert any(f.product == "N" * 200 for f in report.faults)
+    assert all(f.sku == "S" * 200 for f in report.faults if f.sku)
+    MachineReport.model_validate(report.model_dump(mode="json"))

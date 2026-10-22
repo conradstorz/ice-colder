@@ -28,6 +28,7 @@ from ice_contracts.cloud.report import (
     KpiAverage,
     KpiSummary,
     KpiWindow,
+    MAX_TEXT,
     PendingSaleView,
 )
 from ice_edge.monitoring.health_monitor import HealthMonitor
@@ -40,6 +41,25 @@ if TYPE_CHECKING:
 # active_faults() reports fault codes as strings (FaultCode.value); compare
 # against the contract's enum set once, here, rather than in fault_gate.
 _PAYMENT_BLOCKING_CODES = {code.value for code in PAYMENT_BLOCKING_FAULTS}
+
+
+def clip(text: str | None, limit: int = MAX_TEXT) -> str | None:
+    """Truncate operator-entered text to the cloud contract's string cap.
+
+    Product skus/names have no length limit in the config, but the report
+    contract caps them; an over-long one must not make every report fail.
+    """
+    return text if text is None or len(text) <= limit else text[:limit]
+
+
+def _clip_fault(f: dict) -> dict:
+    return {
+        **f,
+        "key": clip(f["key"]),
+        "sku": clip(f.get("sku")),
+        "product": clip(f.get("product")),
+        "description": clip(f["description"]),
+    }
 
 
 def fault_gate(fault: dict) -> str:
@@ -211,10 +231,13 @@ async def build_health_summary(
 
     return HealthSummary(
         vmc_missing=False,
-        status=status,
+        status={
+            **status,
+            "selected_product": clip(status.get("selected_product")),
+        },
         is_healthy=is_healthy,
         issues=issues,
-        active_faults=active_faults,
+        active_faults=[_clip_fault(f) for f in active_faults],
         payment_enabled=payment_enabled,
         payment_reasons=payment_reasons,
         machine_stopped=(None if payment_enabled is None else not payment_enabled),
@@ -233,13 +256,13 @@ def build_fault_views(active_faults: list[dict]) -> list[FaultView]:
         pending = f.get("pending_sale")
         views.append(
             FaultView(
-                key=f["key"],
-                sku=f["sku"],
-                product=f["product"],
+                key=clip(f["key"]),
+                sku=clip(f["sku"]),
+                product=clip(f["product"]),
                 code=f["code"],
                 severity=f["severity"],
                 scope=f["scope"],
-                description=f["description"],
+                description=clip(f["description"]),
                 since_seconds=f.get("since_seconds"),
                 gate=f["gate"] if "gate" in f else fault_gate(f),
                 pending_sale=(

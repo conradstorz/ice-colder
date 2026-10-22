@@ -8,9 +8,10 @@ from ice_contracts.cloud.ui import DIGEST_PATTERN
 
 CLOUD_CONTRACT_VERSION = "0.3.0"
 
-# Caps added without a version bump (real edges build these from a fixed fault
-# table, far below them): a claimed fake machine must not be able to flap a huge
-# faults list and mint thousands of alert rows per report.
+# Caps added without a version bump: a claimed fake machine must not be able to
+# flap a huge faults list and mint thousands of alert rows per report. Text
+# fields can carry operator-entered product names/skus, so the edge clips them
+# to MAX_TEXT when it builds a report (ice_edge.views.health.clip).
 MAX_FAULTS = 200
 MAX_TEXT = 200
 

@@ -139,8 +139,7 @@ for fp in fps:
               "alert_prefs", "alert_deliveries", "alert_events", "machines"):
         conn.execute(f"DELETE FROM {t} WHERE fingerprint = ?", (fp,))
 conn.execute("COMMIT")
-print("
-".join(fps))
+print("\n".join(fps))
 PY
 ```
 
