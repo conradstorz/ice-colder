@@ -84,11 +84,6 @@ class Notifier:
         if last is not None and now - last < self._cooldown_seconds:
             logger.debug(f"Notifier: Suppressing alert {key} (cooldown)")
             return True
-        failed = self._last_failed.get(key)
-        if failed is not None and now - failed < self.RETRY_SECONDS:
-            logger.debug(f"Notifier: Waiting to retry alert {key}")
-            return False
-
         try:
             deferred = self._cloud_handles_alerts()
         except Exception:
@@ -101,6 +96,11 @@ class Notifier:
             self._last_sent[key] = now
             self._last_failed.pop(key, None)
             return True
+
+        failed = self._last_failed.get(key)
+        if failed is not None and now - failed < self.RETRY_SECONDS:
+            logger.debug(f"Notifier: Waiting to retry alert {key}")
+            return False
 
         logger.info(
             f"Notifier: [{alert.level}] {alert.source} -> {self._owner.name}: "

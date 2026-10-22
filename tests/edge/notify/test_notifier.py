@@ -10,9 +10,9 @@ from ice_edge.monitoring.health_monitor import Alert
 from ice_edge.notify.notifier import Notifier
 
 
-def _notifier_with_mock():
+def _notifier_with_mock(clock=None):
     """Stub delivery to track send attempts; these tests cover cooldown/dedup only."""
-    n = Notifier(ConfigModel())
+    n = Notifier(ConfigModel(), clock=clock)
     deliver_mock = AsyncMock()
     n._deliver = deliver_mock
     return n, deliver_mock
@@ -65,13 +65,7 @@ async def test_no_code_falls_back_to_message():
 async def test_cooldown_expires_and_resends(monkeypatch):
     """Send an alert, suppress the next (within cooldown), resend after cooldown expires."""
     clock = [1000.0]
-    fake_loop = SimpleNamespace(time=lambda: clock[0])
-    monkeypatch.setattr(
-        "ice_edge.notify.notifier.asyncio",
-        SimpleNamespace(get_running_loop=lambda: fake_loop),
-    )
-
-    n, deliver_mock = _notifier_with_mock()
+    n, deliver_mock = _notifier_with_mock(clock=lambda: clock[0])
     first_alert = Alert(level="error", source="vmc", message="a", code="ICE-301")
 
     await n.send(first_alert)
@@ -186,19 +180,23 @@ async def test_deferred_to_cloud_is_handled():
 
 
 async def test_failed_flag_cleared_when_later_deferred_to_cloud(monkeypatch):
-    clock = [1000.0]
+    clock = [0.0]
     deferred = [False]
+    calls = []
 
     def smtp(_cfg, _msg):
-        raise RuntimeError("down")
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("down")
 
     n = _email_notifier(monkeypatch, smtp, clock=lambda: clock[0])
     n.set_cloud_handles_alerts(lambda: deferred[0])
     alert = Alert(level="error", source="vmc", message="leak", code="WTR-104")
     assert await n.send(alert) is False
-    clock[0] += Notifier.RETRY_SECONDS + 1
+    clock[0] = 1.0
     deferred[0] = True
     assert await n.send(alert) is True
+    clock[0] = 2.0  # still inside the retry window
     deferred[0] = False
-    clock[0] += 1000  # past the success cooldown
-    assert await n.send(alert) is False  # fresh failure, not a stale retry window
+    assert await n.send(alert) is True  # handled, not reported as pending
+    assert len(calls) == 1  # the deferral counted as handled: no further SMTP
