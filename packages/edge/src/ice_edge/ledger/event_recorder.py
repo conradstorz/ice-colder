@@ -475,14 +475,19 @@ class EventRecorder:
         for index in range(current, len(MIGRATIONS)):
             try:
                 conn.execute("BEGIN")
+                # Naive split: no statement may contain a literal semicolon
+                # (use one migration entry per statement if one must).
                 for statement in MIGRATIONS[index].split(";"):
                     if statement.strip():
                         conn.execute(statement)
                 conn.execute(f"PRAGMA user_version = {index + 1}")
                 conn.execute("COMMIT")
-            except sqlite3.Error:
+            except sqlite3.Error as exc:
                 if conn.in_transaction:
                     conn.execute("ROLLBACK")
+                if _is_corruption_error(exc):
+                    # Damaged schema/pages: let the constructor quarantine it.
+                    raise
                 logger.exception(
                     f"EventRecorder: migration {index + 1} of "
                     f"{self._db_path} failed and was rolled back; the "

@@ -2270,3 +2270,40 @@ class TestMigrations:
         assert rec.db_unavailable is True
         assert _user_version(db) == 1
         assert "half_done" not in _columns(db, "sales")
+
+
+def test_corruption_raised_during_migration_is_quarantined(tmp_path, monkeypatch):
+    """A header-valid file whose schema is damaged can first fail inside a
+    migration statement; that must reach quarantine, not db_unavailable."""
+    db = tmp_path / "events.db"
+    legacy = sqlite3.connect(str(db))
+    legacy.executescript(event_recorder_module.MIGRATIONS[0])
+    legacy.close()
+    real_connect = sqlite3.connect
+    state = {"armed": True}
+
+    class Proxy:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, sql, *args):
+            if state["armed"] and "CREATE TABLE IF NOT EXISTS events" in sql:
+                state["armed"] = False
+                raise sqlite3.DatabaseError("database disk image is malformed")
+            return self._conn.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    monkeypatch.setattr(
+        event_recorder_module.sqlite3,
+        "connect",
+        lambda *a, **k: Proxy(real_connect(*a, **k)),
+    )
+
+    rec = EventRecorder(db_path=str(db))
+
+    assert rec.db_was_corrupt is True
+    assert rec.db_unavailable is False
+    assert Path(rec.corrupt_backup_path).exists()
+    assert _user_version(str(db)) == 1
