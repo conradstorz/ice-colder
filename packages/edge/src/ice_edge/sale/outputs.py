@@ -178,15 +178,24 @@ class StatusOutputs:
             return
         snap = self._snapshot(state)
         store = self._session_store
-        write = store.save_async(snap) if snap.is_open() else store.clear_async()
-        self._tasks.fire_and_forget(self._reporting(write), persistent=True)
+        if snap.is_open():
+            self._tasks.fire_and_forget(
+                self._reporting(lambda: store.save_async(snap)), persistent=True
+            )
+        else:
+            self._tasks.fire_and_forget(
+                self._reporting(store.clear_async), persistent=True
+            )
 
-    async def _reporting(self, write) -> None:
+    async def _reporting(self, make_write) -> None:
         """Await one store write; on failure log it and tell the owner via
         ``on_persist_failed`` (the failure must not stay a log line only),
         on success via ``on_persist_ok``."""
         try:
-            await write
+            # The store coroutine is created here, only when the wrapper
+            # actually runs, so a runner that drops the wrapper (no loop)
+            # never leaves an un-awaited coroutine behind.
+            await make_write()
         except Exception as exc:
             logger.error(f"Session snapshot write failed: {exc!r}")
             self._notify(self._on_persist_failed)
