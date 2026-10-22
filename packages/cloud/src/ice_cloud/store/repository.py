@@ -192,6 +192,16 @@ class Repository(Protocol):
 
     def all_machines(self) -> list[Machine]: ...
 
+    def count_unclaimed_machines(self) -> int:
+        """Machines with no owner (never claimed, or unbound)."""
+        ...
+
+    def purge_unclaimed_machines(self, not_seen_since: datetime) -> list[str]:
+        """Delete never-claimed machines last seen before *not_seen_since*, with
+        their bundle uploads, memberships, consumed hashes and alert rows, in one
+        transaction; return the deleted fingerprints."""
+        ...
+
     # access
     def machines_for_account(self, account_id: str) -> list[MachineAccess]: ...
 

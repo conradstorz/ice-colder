@@ -30,7 +30,9 @@ class OfflineSweep:
         dispatcher: AlertDispatcher,
         *,
         now: Callable[[], datetime],
+        purge: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
+        self._purge = purge
         self._repo = repo
         self._dispatcher = dispatcher
         self._now = now
@@ -43,6 +45,11 @@ class OfflineSweep:
         rows and the offline event leave together; flushing first would send the
         older rows alone and leave the offline event held by the cooldown.
         """
+        if self._purge is not None:
+            try:
+                await self._purge()
+            except Exception:
+                logger.exception("Unclaimed machine purge failed")
         pairs = await asyncio.to_thread(self._repo.claimed_machines_with_state)
         emitted: list[StoredEvent] = []
         for machine, state in pairs:

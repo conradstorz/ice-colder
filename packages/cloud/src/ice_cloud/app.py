@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -87,7 +87,20 @@ def create_app(
         public_url=settings.public_url,
         from_addr=settings.smtp_from or "ice-colder@localhost",
     )
-    app.state.sweep = OfflineSweep(app.state.repo, app.state.alerts, now=now)
+
+    async def purge_unclaimed() -> None:
+        cutoff = now() - timedelta(days=settings.unclaimed_ttl_days)
+        purged = await asyncio.to_thread(
+            app.state.repo.purge_unclaimed_machines, cutoff
+        )
+        for fp in purged:
+            await asyncio.to_thread(app.state.store.delete, fp)
+        if purged:
+            logger.info("Purged {} never-claimed machines", len(purged))
+
+    app.state.sweep = OfflineSweep(
+        app.state.repo, app.state.alerts, now=now, purge=purge_unclaimed
+    )
     # A signature stays acceptable for +/- the skew, so remember it for twice that.
     app.state.seen_signatures = SeenSignatures(2 * signing.MAX_CLOCK_SKEW_SECONDS)
     app.state.backoff = Backoff(clock=lambda: app.state.now().timestamp())

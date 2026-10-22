@@ -514,6 +514,32 @@ class SqliteRepository:
             for statement in _ALERT_DELETES:
                 conn.execute(statement, (fingerprint,))
 
+    def count_unclaimed_machines(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM machines WHERE owner_id IS NULL"
+            ).fetchone()
+        return int(row["n"])
+
+    def purge_unclaimed_machines(self, not_seen_since: datetime) -> list[str]:
+        with self._tx() as conn:
+            rows = conn.execute(
+                "SELECT fingerprint FROM machines WHERE owner_id IS NULL"
+                " AND claimed_at IS NULL AND last_seen_at < ?",
+                (_iso(not_seen_since),),
+            ).fetchall()
+            purged = [r["fingerprint"] for r in rows]
+            for fp in purged:
+                conn.execute(
+                    "DELETE FROM consumed_claim_hashes WHERE fingerprint = ?", (fp,)
+                )
+                conn.execute("DELETE FROM bundle_uploads WHERE fingerprint = ?", (fp,))
+                conn.execute(DELETE_MEMBERSHIPS_SQL, (fp,))
+                for statement in _ALERT_DELETES:
+                    conn.execute(statement, (fp,))
+                conn.execute("DELETE FROM machines WHERE fingerprint = ?", (fp,))
+        return purged
+
     def all_machines(self) -> list[Machine]:
         with self._connect() as conn:
             rows = conn.execute(

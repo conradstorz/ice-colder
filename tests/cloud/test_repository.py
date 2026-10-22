@@ -772,3 +772,33 @@ def test_delivery_health_follows_most_recent_attempt(repo):
     assert repo.delivery_health(FP) is True
     repo.mark_delivery(first.id, status="failed", now=T0 + timedelta(minutes=4))
     assert repo.delivery_health(FP) is False
+
+
+def test_purge_unclaimed_deletes_only_stale_unclaimed_and_cascades(repo):
+    owner, _ = _accounts(repo)
+    old_t = T0 - timedelta(days=10)
+    cutoff = T0 - timedelta(days=7)
+    fresh = "ef" * 32
+    claimed = "12" * 32
+    for fp in (FP, FP_2, fresh, claimed):
+        repo.register_machine(fp, KEY, "m", old_t)
+    repo.touch_seen(fresh, T0)
+    assert repo.claim_machine(claimed, owner.id, old_t)
+    repo.record_bundle_upload(FP, "d" * 64, old_t)
+    repo.put_alert_state(
+        AlertState(
+            fingerprint=FP,
+            faults=(),
+            last_report_at=old_t,
+            report_interval_seconds=60,
+            offline_since=None,
+        )
+    )
+    assert repo.count_unclaimed_machines() == 3
+    purged = repo.purge_unclaimed_machines(cutoff)
+    assert sorted(purged) == sorted([FP, FP_2])
+    assert repo.machine(FP) is None and repo.machine(FP_2) is None
+    assert repo.machine(fresh) is not None and repo.machine(claimed) is not None
+    assert repo.alert_state(FP) is None
+    assert repo.count_unclaimed_machines() == 1
+    assert repo.purge_unclaimed_machines(cutoff) == []

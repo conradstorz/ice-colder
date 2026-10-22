@@ -160,3 +160,34 @@ def test_smtp_user_and_password_are_read_and_stripped():
     assert s.smtp_host == "smtp.example"
     assert s.smtp_user == "alerts"
     assert s.smtp_password == "secret"
+
+
+def test_unclaimed_limits_default_and_parse():
+    s = CloudSettings.from_env({"ICE_CLOUD_SESSION_KEY": KEY})
+    assert s.max_unclaimed_machines == 200
+    assert s.unclaimed_ttl_days == 7
+    assert s.max_unclaimed_report_bytes == 16 * 1024
+    s = CloudSettings.from_env(
+        {
+            "ICE_CLOUD_SESSION_KEY": KEY,
+            "ICE_CLOUD_MAX_UNCLAIMED_MACHINES": "5",
+            "ICE_CLOUD_UNCLAIMED_TTL_DAYS": "2",
+            "ICE_CLOUD_MAX_UNCLAIMED_REPORT_BYTES": "4096",
+        }
+    )
+    assert (s.max_unclaimed_machines, s.unclaimed_ttl_days) == (5, 2)
+    assert s.max_unclaimed_report_bytes == 4096
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "ICE_CLOUD_MAX_UNCLAIMED_MACHINES",
+        "ICE_CLOUD_UNCLAIMED_TTL_DAYS",
+        "ICE_CLOUD_MAX_UNCLAIMED_REPORT_BYTES",
+    ],
+)
+@pytest.mark.parametrize("value", ["many", "0", "-3", "1.5"])
+def test_unclaimed_limits_reject_non_positive_integers(name, value):
+    with pytest.raises(SettingsError, match=name):
+        CloudSettings.from_env({"ICE_CLOUD_SESSION_KEY": KEY, name: value})

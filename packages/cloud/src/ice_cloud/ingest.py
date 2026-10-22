@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -25,17 +26,51 @@ from ice_ui.bundle import BundleError
 
 MAX_BUNDLES_PER_MACHINE = 4  # distinct digests per machine within BUNDLE_WINDOW
 BUNDLE_WINDOW = timedelta(days=30)
+# Defaults; the deployed values come from CloudSettings (env-overridable).
+MAX_UNCLAIMED_MACHINES = 200
+UNCLAIMED_MACHINE_TTL_DAYS = 7
+MAX_UNCLAIMED_REPORT_BYTES = 16 * 1024
+CAP_RETRY_AFTER_SECONDS = 3600
+CAP_LOG_INTERVAL = timedelta(seconds=60)
 
 router = APIRouter(prefix="/api/v1")
 
 
-@router.post("/machines/register")
+def _log_cap_reached(state, unclaimed: int) -> None:
+    now = state.now()
+    last = getattr(state, "cap_logged_at", None)
+    if last is None or now - last >= CAP_LOG_INTERVAL:
+        state.cap_logged_at = now
+        logger.warning(
+            "Unclaimed machine cap reached ({}); refusing new registrations", unclaimed
+        )
+
+
+@router.post("/machines/register", response_model=RegisterResponse)
 async def register(
     body: RegisterMachine,
     request: Request,
     _machine: Machine | None = Depends(require_machine),
-) -> RegisterResponse:
+) -> RegisterResponse | Response:
     fp = request.headers[HEADER_MACHINE]
+    state = request.app.state
+    is_new = await asyncio.to_thread(state.repo.machine, fp) is None
+    client_ip = state.backoff.client_ip(request)
+    if is_new:
+        # The back-off counter doubles as a cost-per-new-machine meter for this
+        # address: the first registration is free, each later one waits longer.
+        wait = state.backoff.check("register", "new", client_ip, trusted=True)
+        if wait is not None:
+            return Response(
+                status_code=429, headers={"Retry-After": str(math.ceil(wait))}
+            )
+        unclaimed = await asyncio.to_thread(state.repo.count_unclaimed_machines)
+        if unclaimed >= state.settings.max_unclaimed_machines:
+            _log_cap_reached(state, unclaimed)
+            return Response(
+                status_code=429,
+                headers={"Retry-After": str(CAP_RETRY_AFTER_SECONDS)},
+            )
     row = await asyncio.to_thread(
         request.app.state.repo.register_machine,
         fp,
@@ -43,6 +78,8 @@ async def register(
         body.label,
         request.app.state.now(),
     )
+    if is_new:
+        state.backoff.record_failure("register", "new", client_ip, trusted=True)
     return RegisterResponse(
         fingerprint=fp,
         claimed=row.owner_id is not None,
@@ -55,13 +92,18 @@ async def register(
     )
 
 
-@router.post("/machines/{fingerprint}/report")
+@router.post("/machines/{fingerprint}/report", response_model=ReportResponse)
 async def post_report(
     report: MachineReport,
     request: Request,
     machine: Machine = Depends(require_machine),
-) -> ReportResponse:
+) -> ReportResponse | Response:
     state = request.app.state
+    if (
+        machine.owner_id is None
+        and len(await request.body()) > state.settings.max_unclaimed_report_bytes
+    ):
+        return Response(status_code=413)
     saved = await asyncio.to_thread(state.store.save, machine.fingerprint, report)
     if saved:
         try:

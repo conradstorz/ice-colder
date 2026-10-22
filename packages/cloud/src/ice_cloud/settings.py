@@ -32,6 +32,9 @@ class CloudSettings:
     smtp_password: str | None = None
     smtp_from: str | None = None
     smtp_starttls: bool = True
+    max_unclaimed_machines: int = 200
+    unclaimed_ttl_days: int = 7
+    max_unclaimed_report_bytes: int = 16 * 1024
 
     @property
     def google_configured(self) -> bool:
@@ -103,6 +106,15 @@ class CloudSettings:
                     f"ICE_CLOUD_SMTP_PORT {raw_port!r} is not a port number (1-65535)"
                 )
             smtp_port = int(raw_port)
+
+        def positive(name: str, default: int) -> int:
+            raw = get(name)
+            if raw is None:
+                return default
+            if not (re.fullmatch(r"[0-9]+", raw) and int(raw) >= 1):
+                raise SettingsError(f"{name} {raw!r} is not a positive integer")
+            return int(raw)
+
         return cls(
             data_dir=Path(env.get("ICE_CLOUD_DATA") or "cloud_data"),
             public_url=public_url,
@@ -118,4 +130,9 @@ class CloudSettings:
             smtp_password=get("ICE_CLOUD_SMTP_PASSWORD"),
             smtp_from=smtp_from,
             smtp_starttls=env.get("ICE_CLOUD_SMTP_STARTTLS", "").strip() != "0",
+            max_unclaimed_machines=positive("ICE_CLOUD_MAX_UNCLAIMED_MACHINES", 200),
+            unclaimed_ttl_days=positive("ICE_CLOUD_UNCLAIMED_TTL_DAYS", 7),
+            max_unclaimed_report_bytes=positive(
+                "ICE_CLOUD_MAX_UNCLAIMED_REPORT_BYTES", 16 * 1024
+            ),
         )

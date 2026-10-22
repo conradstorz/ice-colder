@@ -54,6 +54,11 @@ class SnapshotStore:
                 found.append((path.stem, report))
         return sorted(found, key=lambda pair: (pair[1].machine_id, pair[0]))
 
+    def delete(self, fingerprint: str) -> None:
+        """Remove the machine's stored report; a missing one is fine."""
+        with self._lock:
+            self._path(fingerprint).unlink(missing_ok=True)
+
     def save(self, fingerprint: str, report: MachineReport) -> bool:
         """Store *report*; ``False`` (stored report untouched) when it is not
         newer than the stored one of the same boot."""
