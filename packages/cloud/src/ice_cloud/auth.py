@@ -215,6 +215,17 @@ async def require_admin(
     return account
 
 
+def machine_role(
+    settings: CloudSettings, repo, account: Account, fingerprint: str
+) -> Role | None:
+    """The account's role on a machine: its membership, else ``admin`` for a
+    platform admin, else ``None``."""
+    role: Role | None = repo.access_for(account.id, fingerprint)
+    if role is None and is_admin(settings, account):
+        return "admin"
+    return role
+
+
 def require_machine_access(*, owner_only: bool = False):
     """Build a dependency yielding ``(account, machine, role)`` for ``{short}``.
 
@@ -236,15 +247,18 @@ def require_machine_access(*, owner_only: bool = False):
         )
         if machine is None:
             raise HTTPException(status_code=404)
-        role: Role | None = await asyncio.to_thread(
-            repo.access_for, account.id, machine.fingerprint
-        )
-        if (
-            role is None
-            and not owner_only
-            and is_admin(request.app.state.settings, account)
-        ):
-            role = "admin"
+        if owner_only:
+            role: Role | None = await asyncio.to_thread(
+                repo.access_for, account.id, machine.fingerprint
+            )
+        else:
+            role = await asyncio.to_thread(
+                machine_role,
+                request.app.state.settings,
+                repo,
+                account,
+                machine.fingerprint,
+            )
         if role is None or (owner_only and role != "owner"):
             raise HTTPException(status_code=404)
         return account, machine, role

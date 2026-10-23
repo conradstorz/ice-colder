@@ -7,10 +7,16 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class RemoteViewer:
-    """``current_user`` for the remote viewer; ``base.html`` reads no
-    attribute of it today (spec section 5)."""
+    """``current_user`` for the remote viewer; ``base.html`` reads ``name`` and
+    ``role_label``, ``me.html`` also ``email``."""
 
     display_name: str = "Fleet viewer"
+    email: str | None = None
+    role_label: str | None = None
+
+    @property
+    def name(self) -> str:
+        return self.display_name
 
 
 VIEWER = RemoteViewer()
