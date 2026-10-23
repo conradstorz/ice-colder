@@ -681,18 +681,18 @@ class VMC:
             self._journal.error_restored(self._escrow.restore_shares(shares))
         if self._sale is not None:
             self._sale = self._sale.with_(mechanism=None, request_id=None, shares=None)
-        had_credit = self.credit_escrow > 0
-        if had_credit:
+        if self._sale is not None and self._sale.is_test:  # never refund test money
+            self._journal.test_credit_cleared_on_error(self._escrow.take_all())
+        if had_credit := self.credit_escrow > 0:
             self.request_refund(reason="error")
         self._outputs.display("error")
         self._outputs.refresh()
-        if had_credit:
-            self.send_customer_message(
-                "An error has occurred. A refund of your credit has been requested. "
-                "Please contact support if it does not arrive."
-            )
-        else:
-            self.send_customer_message("An error has occurred. Please contact support.")
+        self.send_customer_message(
+            "An error has occurred. A refund of your credit has been requested. "
+            "Please contact support if it does not arrive."
+            if had_credit
+            else "An error has occurred. Please contact support."
+        )
 
     # --- Business Logic Methods ---
     def _refund_maintenance_deposit(self, amount, payment_method) -> None:

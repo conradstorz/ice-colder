@@ -4201,3 +4201,65 @@ async def test_dispatch_failure_during_sale_write_is_ignored():
     assert not vmc.faults.lockouts
     assert not vmc.faults.has("PAY-102")
     assert outcomes == ["dispensed"]
+
+
+class TestOnErrorTestMoney:
+    """on_error must never publish a real refund for a test sale's synthetic credit."""
+
+    async def test_error_mid_test_dispense_clears_credit_without_refund(self):
+        machine, vmc, rec, client = _test_run_vmc()
+        granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
+        assert granted is True
+        assert vmc.begin_test_sale(vmc.find_product("ICE-1")) is True
+        vmc.process_payment()
+        assert vmc.state == "dispensing"
+        assert vmc.sale is not None and vmc.sale.is_test
+
+        vmc.error_occurred()
+        await asyncio.sleep(0)
+
+        assert vmc.state == "error"
+        assert vmc.credit_escrow == 0.0
+        assert vmc.escrow_credits == []
+        assert client.refund_commands() == []
+        assert vmc.refunds.pending is None or not vmc.refunds.pending
+        assert rec.sales == []
+        vmc.end_test_sale()
+
+    async def test_error_after_vend_failure_does_not_restore_twice(self):
+        machine = make_machine(products=two_products())
+        vmc = machine.vmc
+        machine.attach_to_loop(asyncio.get_running_loop())
+        client = RecordingClient()
+        machine.set_mqtt_client(client)
+        vmc.set_state("interacting_with_user")
+        vmc.selected_product = vmc.products[0]
+        vmc.deposit_funds(2.50, payment_method="card")
+        vmc.process_payment()
+        assert vmc.state == "dispensing"
+        await vmc.on_dispenser_event(
+            "hardware/dispenser", {"slot": 0, "state": "error"}
+        )
+        assert vmc.credit_escrow == 2.50
+
+        vmc.error_occurred()
+        await asyncio.sleep(0)
+
+        cmds = client.refund_commands()
+        assert len(cmds) == 1 and cmds[0].amount == 2.5
+
+    async def test_error_from_idle_without_sale_is_quiet(self):
+        machine = make_machine()
+        vmc = machine.vmc
+        machine.attach_to_loop(asyncio.get_running_loop())
+        client = RecordingClient()
+        machine.set_mqtt_client(client)
+        lines: list[str] = []
+        sink = logger.add(lambda m: lines.append(str(m)), level="DEBUG")
+        try:
+            vmc.error_occurred()
+            await asyncio.sleep(0)
+        finally:
+            logger.remove(sink)
+        assert not any("returned to escrow" in m or "test credit" in m for m in lines)
+        assert client.refund_commands() == []

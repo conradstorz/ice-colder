@@ -247,6 +247,9 @@ class SaleJournal:
         )
         self._txn.warning(f"ERROR: ${total:.2f} returned to escrow for refund")
 
+    def test_credit_cleared_on_error(self, amount: float) -> None:
+        logger.debug(f"test credit cleared on error, never refunded (${amount:.2f})")
+
     # -- refunds -----------------------------------------------------------
 
     def refund_requested(self, amount: float, method, reason, request_id: str) -> None:
