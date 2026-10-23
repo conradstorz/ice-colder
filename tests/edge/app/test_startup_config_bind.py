@@ -1,5 +1,4 @@
 import socket
-import sys
 
 import pytest
 
@@ -29,9 +28,6 @@ def test_check_web_bind_exits_1_when_port_held(caplog):
     assert "127.0.0.1" in text and str(port) in text and "errno" in text
 
 
-@pytest.mark.skipif(
-    sys.platform != "win32", reason="SO_REUSEADDR sharing is Windows-specific"
-)
 def test_check_web_bind_exits_1_when_port_held_with_reuseaddr():
     with socket.socket() as holder:
         holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
