@@ -59,10 +59,18 @@ class SessionRecovery:
         store: Callable[[], SessionStore | None],
         product_name: Callable[[str | None], str | None],
         pay104_active: Callable[[], bool],
+        sale_recorded: Callable[[str, float, dict[str, float]], bool] = (
+            lambda sku, since_ts, methods: False
+        ),
     ) -> None:
         self._store = store
         self._product_name = product_name
         self._pay104_active = pay104_active
+        # (sku, since_ts, methods) -> True when the live path already
+        # committed this snapshot's sale (crash between the insert and the
+        # idle snapshot clear). Default: never.
+        self._sale_recorded = sale_recorded
+        self._logged_already_recorded = False
         # In-memory record-once guard for PAY-104 recovery (Task 14 review
         # finding 3): keys of pending sales this process has already
         # committed via record_sale, checked (and populated) only when the
@@ -97,9 +105,30 @@ class SessionRecovery:
             store.clear()
             return BootDecision(kind="discard_test", snapshot=snap)
         if snap.is_open():
+            if self._already_recorded(snap):
+                logger.info(
+                    "sale already recorded; snapshot discarded at boot "
+                    f"(sku={snap.selected_sku!r})"
+                )
+                store.clear()
+                return BootDecision(kind="closed", snapshot=snap)
             return BootDecision(kind="uncertain", snapshot=snap)
         store.clear()
         return BootDecision(kind="closed", snapshot=snap)
+
+    def _already_recorded(self, snap: SessionSnapshot) -> bool:
+        """True when the snapshot's pending sale already has a `sales` row."""
+        if snap.selected_sku is None or not snap.pending_sale_shares:
+            return False
+        try:
+            return bool(
+                self._sale_recorded(
+                    snap.selected_sku, snap.saved_at, dict(snap.pending_sale_shares)
+                )
+            )
+        except Exception:
+            logger.exception("PAY-104: already-recorded check failed; assuming not")
+            return False
 
     def pending_sale_for_recovery(self) -> dict | None:
         """Read-only: the pending sale recorded in the session snapshot, if
@@ -147,6 +176,16 @@ class SessionRecovery:
             return None
         sku = snap.selected_sku
         if sku is None:
+            return None
+        if self._already_recorded(snap):
+            # Defence in depth: the sale is already in `sales`, so offering
+            # "Record as sale" would duplicate it.
+            if not self._logged_already_recorded:
+                self._logged_already_recorded = True
+                logger.info(
+                    "PAY-104: pending sale already recorded; not offering "
+                    f"recovery (sku={sku!r})"
+                )
             return None
         return {
             "sku": sku,

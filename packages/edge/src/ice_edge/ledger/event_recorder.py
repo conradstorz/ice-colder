@@ -736,6 +736,48 @@ class EventRecorder:
             if conn is not None:
                 conn.close()
 
+    def sale_recorded_since(
+        self, sku: str, since_ts: float, methods: dict[str, float]
+    ) -> bool:
+        """True when a ``sales`` row for ``sku`` exists at or after
+        ``since_ts`` (minus one second of clock tolerance) whose method
+        shares equal ``methods`` (compared as dicts rounded to cents).
+
+        PAY-104 recovery uses it to spot a sale the live path committed
+        just before a crash that left the dispensing snapshot behind.
+        Synchronous, on its own connection (like ``record_sale``); returns
+        ``False`` when the database is unavailable or cannot be read.
+        """
+        if self.db_unavailable:
+            return False
+
+        def cents(d: dict) -> dict[str, float]:
+            return {str(k): round(float(v), 2) for k, v in d.items()}
+
+        wanted = cents(methods)
+        conn = None
+        try:
+            conn = sqlite3.connect(self._db_path, timeout=5.0)
+            rows = conn.execute(
+                "SELECT methods FROM sales WHERE sku = ? AND ts >= ?",
+                (sku, since_ts - 1.0),
+            ).fetchall()
+        except Exception:
+            logger.exception(
+                f"EventRecorder: sale_recorded_since failed for sku={sku!r}"
+            )
+            return False
+        finally:
+            if conn is not None:
+                conn.close()
+        for (methods_json,) in rows:
+            try:
+                if cents(json.loads(methods_json)) == wanted:
+                    return True
+            except (ValueError, TypeError):
+                continue
+        return False
+
     def replay_sales_journal(self) -> int:
         """Insert any journalled sales; return the count actually inserted.
 

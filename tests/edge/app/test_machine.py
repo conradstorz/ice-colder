@@ -11,13 +11,17 @@ fakes don't offer.
 from __future__ import annotations
 
 import asyncio
+import time
+
+from loguru import logger
 
 from ice_common.config_model import ConfigModel, PhysicalDetails, Product
 from ice_contracts.board.vending_machine import FaultCode
 from ice_edge.app.machine import Machine
 from ice_edge.hal.mqtt_inbound import SUBSCRIPTIONS
 from ice_edge.sale.vmc import VMC
-from ice_edge.ledger.session_store import SessionSnapshot
+from ice_edge.ledger.event_recorder import EventRecorder
+from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
 from ice_edge.faults.availability import Availability
 from tests.fakes import FakeAvailability, FakeTaskRunner, settle
@@ -212,6 +216,59 @@ class TestSetSessionStore:
 
         assert not machine.faults.has(FaultCode.PAY_104)
         assert store.clear_calls == 1
+
+
+class TestBootAlreadyRecordedSale:
+    def _snapshot(self, saved_at):
+        return SessionSnapshot(
+            state="dispensing",
+            credit_escrow=0.0,
+            selected_sku="ICE-1",
+            pending_sale_shares={"cash": 2.50},
+            saved_at=saved_at,
+        )
+
+    def test_recorded_sale_discards_snapshot_without_pay104(self, tmp_path):
+        recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
+        store = SessionStore(tmp_path / "session.json")
+        saved_at = time.time()
+        store.save(self._snapshot(saved_at))
+        recorder.record_sale(
+            "ICE-1", "Ice", 1, 2.50, {"cash": 2.50}, ts=saved_at + 0.05
+        )
+        machine = Machine(ConfigModel())
+        machine.set_event_recorder(recorder)
+
+        machine.set_session_store(store)
+
+        assert not machine.faults.has(FaultCode.PAY_104)
+        assert not (tmp_path / "session.json").exists()
+
+    def test_no_sale_row_raises_pay104_as_before(self, tmp_path):
+        recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
+        store = SessionStore(tmp_path / "session.json")
+        store.save(self._snapshot(time.time()))
+        machine = Machine(ConfigModel())
+        machine.set_event_recorder(recorder)
+
+        machine.set_session_store(store)
+
+        assert machine.faults.has(FaultCode.PAY_104)
+        assert (tmp_path / "session.json").exists()
+
+    def test_no_recorder_warns_and_still_flags_uncertain(self, tmp_path):
+        store = SessionStore(tmp_path / "session.json")
+        store.save(self._snapshot(time.time()))
+        machine = Machine(ConfigModel())
+        messages = []
+        sink = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+        try:
+            machine.set_session_store(store)
+        finally:
+            logger.remove(sink)
+
+        assert machine.faults.has(FaultCode.PAY_104)
+        assert any("no event recorder" in m for m in messages)
 
 
 class FailingSaveStore:

@@ -2307,3 +2307,41 @@ def test_corruption_raised_during_migration_is_quarantined(tmp_path, monkeypatch
     assert rec.db_unavailable is False
     assert Path(rec.corrupt_backup_path).exists()
     assert _user_version(str(db)) == 1
+
+
+class TestSaleRecordedSince:
+    def test_true_for_matching_row_after_since(self, recorder):
+        now = time.time()
+        recorder.record_sale("ICE-1", "Ice", 1, 2.5, {"cash": 2.5}, ts=now)
+        assert recorder.sale_recorded_since("ICE-1", now - 0.2, {"cash": 2.5})
+
+    def test_tolerates_one_second_of_clock_skew(self, recorder):
+        now = time.time()
+        recorder.record_sale("ICE-1", "Ice", 1, 2.5, {"cash": 2.5}, ts=now - 0.9)
+        assert recorder.sale_recorded_since("ICE-1", now, {"cash": 2.5})
+
+    def test_false_for_older_row(self, recorder):
+        now = time.time()
+        recorder.record_sale("ICE-1", "Ice", 1, 2.5, {"cash": 2.5}, ts=now - 60)
+        assert not recorder.sale_recorded_since("ICE-1", now, {"cash": 2.5})
+
+    def test_false_for_different_sku(self, recorder):
+        now = time.time()
+        recorder.record_sale("ICE-2", "Ice", 1, 2.5, {"cash": 2.5}, ts=now)
+        assert not recorder.sale_recorded_since("ICE-1", now - 0.2, {"cash": 2.5})
+
+    def test_false_for_different_methods(self, recorder):
+        now = time.time()
+        recorder.record_sale("ICE-1", "Ice", 1, 2.5, {"cash": 2.5}, ts=now)
+        assert not recorder.sale_recorded_since("ICE-1", now - 0.2, {"card": 2.5})
+
+    def test_methods_compared_rounded_to_cents(self, recorder):
+        now = time.time()
+        recorder.record_sale("ICE-1", "Ice", 1, 2.5, {"cash": 2.5}, ts=now)
+        assert recorder.sale_recorded_since("ICE-1", now - 0.2, {"cash": 2.5000001})
+
+    def test_false_when_db_unavailable(self, recorder):
+        now = time.time()
+        recorder.record_sale("ICE-1", "Ice", 1, 2.5, {"cash": 2.5}, ts=now)
+        recorder.db_unavailable = True
+        assert not recorder.sale_recorded_since("ICE-1", now - 0.2, {"cash": 2.5})

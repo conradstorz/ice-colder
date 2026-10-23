@@ -9,7 +9,9 @@ from ice_edge.ledger.session_recovery import BootDecision, SessionRecovery
 from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
 
 
-def make_recovery(store: SessionStore | None, *, pay104_active: bool = False):
+def make_recovery(
+    store: SessionStore | None, *, pay104_active: bool = False, sale_recorded=None
+):
     names: dict[str, str] = {"ICE-1": "Ice Bag"}
 
     def product_name(sku):
@@ -21,6 +23,7 @@ def make_recovery(store: SessionStore | None, *, pay104_active: bool = False):
         store=lambda: store,
         product_name=product_name,
         pay104_active=lambda: pay104_active,
+        **({} if sale_recorded is None else {"sale_recorded": sale_recorded}),
     )
 
 
@@ -236,3 +239,71 @@ def test_mark_pending_sale_recorded_false_with_no_store():
     recovery = make_recovery(None, pay104_active=True)
 
     assert recovery.mark_pending_sale_recorded() is False
+
+
+# --- already-recorded sale (M5) ---
+
+
+def _open_snapshot(**kw):
+    return SessionSnapshot(
+        state="dispensing",
+        credit_escrow=0.0,
+        selected_sku="ICE-1",
+        pending_sale_shares={"cash": 2.50},
+        **kw,
+    )
+
+
+def test_uncertain_snapshot_whose_sale_is_recorded_is_closed(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    snap = _open_snapshot()
+    store.save(snap)
+    calls = []
+
+    def recorded(sku, since_ts, methods):
+        calls.append((sku, since_ts, methods))
+        return True
+
+    decision = make_recovery(store, sale_recorded=recorded).evaluate_at_boot()
+
+    assert decision.kind == "closed"
+    assert store.load() is None
+    assert calls == [("ICE-1", snap.saved_at, {"cash": 2.50})]
+
+
+def test_uncertain_snapshot_not_recorded_stays_uncertain(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    store.save(_open_snapshot())
+
+    decision = make_recovery(store, sale_recorded=lambda *a: False).evaluate_at_boot()
+
+    assert decision.kind == "uncertain"
+    assert store.load() is not None
+
+
+def test_test_snapshot_never_consults_sale_recorded(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    store.save(_open_snapshot(is_test=True))
+
+    def boom(*a):
+        raise AssertionError("must not be consulted")
+
+    decision = make_recovery(store, sale_recorded=boom).evaluate_at_boot()
+
+    assert decision.kind == "discard_test"
+
+
+def test_pending_sale_for_recovery_none_when_row_exists(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    store.save(_open_snapshot())
+    recovery = make_recovery(store, pay104_active=True, sale_recorded=lambda *a: True)
+
+    assert recovery.pending_sale_for_recovery() is None
+
+
+def test_pending_sale_for_recovery_returned_when_row_absent(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    store.save(_open_snapshot())
+    recovery = make_recovery(store, pay104_active=True, sale_recorded=lambda *a: False)
+
+    assert recovery.pending_sale_for_recovery()["sku"] == "ICE-1"

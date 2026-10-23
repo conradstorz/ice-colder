@@ -170,6 +170,7 @@ class Machine:
             store=lambda: self._outputs.session_store,
             product_name=self._product_name,
             pay104_active=lambda: self._faults.has(FaultCode.PAY_104),
+            sale_recorded=self._sale_recorded,
         )
         # The router is a pure fan-out; every consumer is subscribed here.
         self._telemetry = mqtt_inbound.TelemetryRouter()
@@ -448,6 +449,12 @@ class Machine:
         Call after attach_to_loop, set_health_monitor and set_availability so
         the PAY-104 alert and the availability gate both land.
         """
+        if self._event_recorder is None:
+            logger.warning(
+                "Machine.set_session_store: no event recorder attached yet; "
+                "the boot-time already-recorded sale check is skipped "
+                "(attach the recorder first)."
+            )
         self._outputs.attach_session_store(store)
         decision = self._recovery.evaluate_at_boot()
         if decision.kind == "discard_test":
@@ -481,6 +488,12 @@ class Machine:
         """Connection-state callback from MQTTClient (chained after the
         health monitor) -- delegates to `self._faults.on_mqtt_connection`."""
         self._faults.on_mqtt_connection(connected)
+
+    def _sale_recorded(self, sku: str, since_ts: float, methods: dict) -> bool:
+        recorder = self._event_recorder
+        if recorder is None:
+            return False
+        return recorder.sale_recorded_since(sku, since_ts, methods)
 
     def _flag_uncertain_session(self, snap: SessionSnapshot) -> None:
         """Side effects of an 'uncertain' boot decision other than
