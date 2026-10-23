@@ -37,6 +37,23 @@ async def test_report_validates_and_carries_fault_and_digest(machine_fake_time):
     assert report.health_page.subsystems_total > 0
 
 
+async def test_report_carries_common_name_clipped_to_200(machine_fake_time):
+    machine, _ = machine_fake_time
+    cfg = ConfigModel()
+    cfg.physical.common_name = "Lobby Ice"
+    report = await build_machine_report(
+        machine, config=cfg, seq=0, boot_id=str(uuid4()), now=NOW
+    )
+    assert report.common_name == "Lobby Ice"
+
+    cfg.physical.common_name = "n" * 300
+    report = await build_machine_report(
+        machine, config=cfg, seq=1, boot_id=str(uuid4()), now=NOW
+    )
+    assert report.common_name == "n" * 200
+    MachineReport.model_validate(report.model_dump(mode="json"))
+
+
 async def test_report_without_monitor_or_recorder_still_builds(machine_fake_time):
     machine, _ = machine_fake_time
     report = await build_machine_report(

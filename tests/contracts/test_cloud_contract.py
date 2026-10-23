@@ -1,4 +1,4 @@
-"""Edge-cloud contract: MachineReport and the UI bundle manifest (v0.3.0)."""
+"""Edge-cloud contract: MachineReport and the UI bundle manifest (v0.4.0)."""
 
 import json
 from pathlib import Path
@@ -67,8 +67,8 @@ def _full() -> MachineReport:
     return MachineReport.model_validate(data)
 
 
-def test_contract_version_is_0_3_0():
-    assert CLOUD_CONTRACT_VERSION == "0.3.0"
+def test_contract_version_is_0_4_0():
+    assert CLOUD_CONTRACT_VERSION == "0.4.0"
 
 
 def test_spec_example_validates():
@@ -205,20 +205,31 @@ def test_edge_cloud_registered_and_bytes_match(tmp_path):
     assert set(norm(out)) == {f"{n}.schema.json" for n in models}
 
 
-def test_report_accepts_0_2_0_and_0_3_0():
+def test_report_accepts_0_2_0_through_0_4_0():
     data = _example()
-    for version in ("0.2.0", "0.3.0"):
+    for version in ("0.2.0", "0.3.0", "0.4.0"):
         data["contract"] = version
         assert MachineReport.model_validate(data).contract == version
-    data["contract"] = "0.4.0"
+    data["contract"] = "0.5.0"
     with pytest.raises(ValidationError):
         MachineReport.model_validate(data)
 
 
-def test_contract_doc_has_0_3_0_section():
+def test_report_common_name_is_optional_and_capped():
+    data = _example()
+    assert MachineReport.model_validate(data).common_name is None
+    data["common_name"] = "x" * 200
+    assert len(MachineReport.model_validate(data).common_name) == 200
+    data["common_name"] = "x" * 201
+    with pytest.raises(ValidationError):
+        MachineReport.model_validate(data)
+
+
+def test_contract_doc_has_0_4_0_section():
     doc = (
         Path(__file__).resolve().parents[2] / "docs/contracts/edge-cloud/CONTRACT.md"
     ).read_text(encoding="utf-8")
+    assert "## 0.4.0" in doc
     assert "## 0.3.0" in doc
 
 

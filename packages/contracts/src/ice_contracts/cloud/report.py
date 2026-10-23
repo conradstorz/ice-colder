@@ -1,4 +1,4 @@
-"""MachineReport v0.3.0: the snapshot a machine uploads to the cloud (cloud spec section 6)."""
+"""MachineReport v0.4.0: the snapshot a machine uploads to the cloud (cloud spec section 6)."""
 
 from typing import Literal
 
@@ -6,7 +6,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from ice_contracts.cloud.ui import DIGEST_PATTERN
 
-CLOUD_CONTRACT_VERSION = "0.3.0"
+CLOUD_CONTRACT_VERSION = "0.4.0"
 
 # Caps added without a version bump: a claimed fake machine must not be able to
 # flap a huge faults list and mint thousands of alert rows per report. Text
@@ -117,8 +117,9 @@ class HealthPageSummary(_Model):
 
 
 class MachineReport(_Model):
-    contract: Literal["0.2.0", "0.3.0"]
+    contract: Literal["0.2.0", "0.3.0", "0.4.0"]
     machine_id: str = Field(pattern=r"^[A-Za-z0-9_.-]{1,64}$")
+    common_name: str | None = Field(default=None, max_length=MAX_TEXT)
     sent_at: AwareDatetime
     boot_id: str = Field(pattern=_UUID4_PATTERN)
     seq: int = Field(ge=0)
