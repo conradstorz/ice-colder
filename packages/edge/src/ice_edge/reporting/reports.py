@@ -34,7 +34,7 @@ import time
 from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Optional
 
-from ice_edge.ledger.event_recorder import _HEARTBEAT_INTERVAL, is_cash
+from ice_edge.ledger.event_recorder import HEARTBEAT_BUCKET_SECONDS, is_cash
 
 __all__ = [
     "is_cash",
@@ -371,11 +371,11 @@ def by_period(
                 covered_buckets = conn.execute(
                     "SELECT COUNT(DISTINCT CAST(timestamp / ? AS INTEGER)) FROM events "
                     "WHERE event_type='heartbeat' AND timestamp>=? AND timestamp<?",
-                    (_HEARTBEAT_INTERVAL, q_start, q_end),
+                    (HEARTBEAT_BUCKET_SECONDS, q_start, q_end),
                 ).fetchone()[0]
                 span = q_end - q_start
                 uptime_pct = (
-                    min(100.0, covered_buckets * _HEARTBEAT_INTERVAL / span * 100)
+                    min(100.0, covered_buckets * HEARTBEAT_BUCKET_SECONDS / span * 100)
                     if span > 0
                     else 0.0
                 )

@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from ice_edge.ledger import event_recorder as event_recorder_module
-from ice_edge.ledger.event_recorder import EventRecorder, is_cash
+from ice_edge.ledger.event_recorder import (
+    HEARTBEAT_BUCKET_SECONDS,
+    EventRecorder,
+    is_cash,
+)
 
 
 @pytest.fixture
@@ -142,24 +146,33 @@ class TestUptimeComputation:
         conn.commit()
         conn.close()
 
+    # A multiple of every plausible bucket size, so windows align to buckets.
+    START = 1_000_020.0 * 60
+
     def test_full_coverage_by_one_subsystem_reads_100_pct(self, recorder):
-        start = 1_000_000.0
-        end = start + 100.0  # 10 buckets of 10s
-        self._insert_heartbeats(recorder.db_path, [start + i * 10 for i in range(10)])
+        start = self.START
+        end = start + 10 * HEARTBEAT_BUCKET_SECONDS
+        self._insert_heartbeats(
+            recorder.db_path,
+            [start + i * HEARTBEAT_BUCKET_SECONDS for i in range(10)],
+        )
         assert recorder._compute_window(start, end)["uptime_pct"] == pytest.approx(
             100.0
         )
 
     def test_half_covered_window_reads_about_50_pct(self, recorder):
-        start = 1_000_000.0
-        end = start + 100.0
-        self._insert_heartbeats(recorder.db_path, [start + i * 10 for i in range(5)])
+        start = self.START
+        end = start + 10 * HEARTBEAT_BUCKET_SECONDS
+        self._insert_heartbeats(
+            recorder.db_path,
+            [start + i * HEARTBEAT_BUCKET_SECONDS for i in range(5)],
+        )
         assert recorder._compute_window(start, end)["uptime_pct"] == pytest.approx(50.0)
 
     def test_multiple_subsystems_in_same_bucket_count_once(self, recorder):
-        start = 1_000_000.0
-        end = start + 100.0
-        # Three subsystems all beat within the same 10s bucket.
+        start = self.START
+        end = start + 10 * HEARTBEAT_BUCKET_SECONDS
+        # Three subsystems all beat within the same bucket.
         self._insert_heartbeats(recorder.db_path, [start + 1, start + 2, start + 3])
         # 1 of 10 buckets covered, not 3 rows worth.
         assert recorder._compute_window(start, end)["uptime_pct"] == pytest.approx(10.0)
@@ -167,23 +180,111 @@ class TestUptimeComputation:
     def test_metric_reads_100_pct_even_if_one_subsystem_silently_offline(
         self, recorder
     ):
-        """Two subsystems beat every 10s for the whole window; a third never
+        """Two subsystems beat every bucket for the whole window; a third never
         beats at all. uptime_pct measures 'at least one subsystem alive' per
         bucket, not per-subsystem health, so this honestly reads 100% — it no
         longer inflates past 100% (the bug), but per-subsystem outages are a
         separate metric this one doesn't claim to cover."""
-        start = 1_000_000.0
-        end = start + 100.0
+        start = self.START
+        end = start + 10 * HEARTBEAT_BUCKET_SECONDS
         timestamps = []
         for i in range(10):
-            timestamps.append(start + i * 10)  # subsystem A
-            timestamps.append(start + i * 10 + 0.5)  # subsystem B
+            timestamps.append(start + i * HEARTBEAT_BUCKET_SECONDS)  # subsystem A
+            timestamps.append(start + i * HEARTBEAT_BUCKET_SECONDS + 0.5)  # subsystem B
         self._insert_heartbeats(recorder.db_path, timestamps)
         # Still reads 100% for "at least one subsystem alive" per bucket —
         # this documents the metric's honest ceiling, not per-subsystem health.
         assert recorder._compute_window(start, end)["uptime_pct"] == pytest.approx(
             100.0
         )
+
+
+def _heartbeat_handler(recorder):
+    from unittest.mock import MagicMock
+
+    client = MagicMock()
+    recorder.register_handlers(client)
+    return {c.args[0]: c.args[1] for c in client.register.call_args_list}["heartbeat/+"]
+
+
+class _FakeTime:
+    """The `time` module with a settable `time()`, swapped into the recorder."""
+
+    def __init__(self, now):
+        self.now = now
+
+    def time(self):
+        return self.now
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
+class TestHeartbeatCoalescing:
+    """One `heartbeat` row per bucket however many subsystems beat in it."""
+
+    START = 1_000_020.0 * 60
+
+    @staticmethod
+    def _payload(subsystem, uptime=300):
+        return {
+            "subsystem": subsystem,
+            "uptime_seconds": uptime,
+            "timestamp": "2026-01-01T00:00:00+00:00",
+        }
+
+    @pytest.fixture
+    def clock(self, monkeypatch):
+        fake = _FakeTime(self.START + 1)
+        monkeypatch.setattr(event_recorder_module, "time", fake)
+        return fake
+
+    @staticmethod
+    def _rows(recorder, etype):
+        recorder.flush()
+        with sqlite3.connect(recorder.db_path) as conn:
+            return conn.execute(
+                "SELECT timestamp FROM events WHERE event_type=?", (etype,)
+            ).fetchall()
+
+    @pytest.mark.asyncio
+    async def test_three_subsystems_in_one_bucket_write_one_row(self, recorder, clock):
+        handler = _heartbeat_handler(recorder)
+        for name in ("vending", "ice_maker", "mdb"):
+            await handler(f"heartbeat/{name}", self._payload(name))
+            clock.now += 1
+        assert len(self._rows(recorder, "heartbeat")) == 1
+
+    @pytest.mark.asyncio
+    async def test_two_buckets_apart_write_two_rows(self, recorder, clock):
+        handler = _heartbeat_handler(recorder)
+        await handler("heartbeat/vending", self._payload("vending"))
+        clock.now += HEARTBEAT_BUCKET_SECONDS
+        await handler("heartbeat/vending", self._payload("vending"))
+        assert len(self._rows(recorder, "heartbeat")) == 2
+
+    @pytest.mark.asyncio
+    async def test_covered_window_reads_100_pct(self, recorder, clock):
+        handler = _heartbeat_handler(recorder)
+        for _ in range(5):
+            await handler("heartbeat/vending", self._payload("vending"))
+            await handler("heartbeat/mdb", self._payload("mdb"))
+            clock.now += HEARTBEAT_BUCKET_SECONDS
+        # get_summary's window is the trailing hour ending at the fake "now":
+        # five covered one-minute buckets read 5 / 60 of it.
+        assert recorder.get_summary(1)["uptime_pct"] == pytest.approx(
+            5 * HEARTBEAT_BUCKET_SECONDS / 3600 * 100, rel=0.01
+        )
+
+    @pytest.mark.asyncio
+    async def test_offline_will_still_records_in_a_covered_bucket(
+        self, recorder, clock
+    ):
+        handler = _heartbeat_handler(recorder)
+        await handler("heartbeat/vending", self._payload("vending"))
+        await handler("heartbeat/vending", self._payload("vending", uptime=-1))
+        assert len(self._rows(recorder, "heartbeat")) == 1
+        assert len(self._rows(recorder, "subsystem_offline")) == 1
 
 
 class TestRegisterHandlers:

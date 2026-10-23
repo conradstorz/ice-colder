@@ -74,8 +74,10 @@ MIGRATIONS: list[str] = [
 ]
 
 
-# Must match packages/sims/src/ice_sims/base.py HEARTBEAT_INTERVAL
-_HEARTBEAT_INTERVAL = 10.0
+# Liveness resolution: at most one `heartbeat` row is written per bucket (any
+# subsystem), and the uptime queries count distinct buckets. Independent of the
+# boards' own beat period (packages/sims/src/ice_sims/base.py HEARTBEAT_INTERVAL).
+HEARTBEAT_BUCKET_SECONDS = 60.0
 
 # get_historical_average only covers prior *complete* periods, so its result
 # changes slowly; cache it briefly to spare the DB from up to 30 SELECTs per
@@ -305,6 +307,8 @@ class EventRecorder:
         # here: sales are journalled, event rows are discarded.
         self.db_newer_than_code: bool = False
         self._discarded_events = 0
+        # Last heartbeat bucket that got a row (in memory; reset on restart).
+        self._last_heartbeat_bucket: Optional[int] = None
         try:
             self._init_db()
             if not self.db_unavailable:
@@ -1224,8 +1228,8 @@ class EventRecorder:
     def _compute_window(self, start_ts: float, end_ts: float) -> dict:
         """Compute aggregates for events in [start_ts, end_ts).
 
-        uptime_pct measures the fraction of _HEARTBEAT_INTERVAL-sized time
-        buckets in the window that have at least one heartbeat from ANY
+        uptime_pct measures the fraction of HEARTBEAT_BUCKET_SECONDS-sized
+        time buckets in the window that have at least one heartbeat from ANY
         subsystem — i.e. "was something alive during this interval", not raw
         heartbeat row count. Counting rows overcounts when multiple
         subsystems beat concurrently (three simulators beating every 10s
@@ -1233,6 +1237,11 @@ class EventRecorder:
         any *particular* subsystem was up. Counting distinct covered buckets
         is the most this metric can honestly claim; per-subsystem health is a
         separate concern (see health_monitor / subsystem_offline events).
+
+        Resolution is one bucket (60 s): `_on_heartbeat` writes a single row per
+        bucket, so an outage shorter than a bucket that sits inside a covered
+        bucket is not visible here. Older 10 s-era rows stay compatible, since
+        distinct-bucket counting works at any row density.
         """
         self.flush()
         with sqlite3.connect(self._db_path) as conn:
@@ -1252,12 +1261,12 @@ class EventRecorder:
             covered_buckets = conn.execute(
                 "SELECT COUNT(DISTINCT CAST(timestamp / ? AS INTEGER)) FROM events "
                 "WHERE event_type='heartbeat' AND timestamp>=? AND timestamp<?",
-                (_HEARTBEAT_INTERVAL, start_ts, end_ts),
+                (HEARTBEAT_BUCKET_SECONDS, start_ts, end_ts),
             ).fetchone()[0]
             period_secs = end_ts - start_ts
             uptime_pct = min(
                 100.0,
-                covered_buckets * _HEARTBEAT_INTERVAL / period_secs * 100,
+                covered_buckets * HEARTBEAT_BUCKET_SECONDS / period_secs * 100,
             )
             return {
                 "money_in": round(total("payment"), 2),
@@ -1337,6 +1346,10 @@ class EventRecorder:
             # make an outage count as uptime in _compute_window.
             self.record("subsystem_offline", metadata={"subsystem": hb.subsystem})
             return
+        bucket = int(time.time() // HEARTBEAT_BUCKET_SECONDS)
+        if bucket == self._last_heartbeat_bucket:
+            return  # this bucket is already covered; one row per bucket is enough
+        self._last_heartbeat_bucket = bucket
         self.record("heartbeat", value=float(hb.uptime_seconds))
 
     def get_historical_average(self, period_hours: int) -> dict:
