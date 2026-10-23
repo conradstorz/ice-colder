@@ -104,5 +104,6 @@ dev = [
     "import-linter>=2.6,<2.7",
     "libcst>=1.8,<1.9",
     "pytest-asyncio>=1.3.0",
+    "pyyaml>=6",
     "ruff>=0.11.2",
 ]

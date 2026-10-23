@@ -59,7 +59,7 @@ Cloud C1, C2 → the rest.
   on refusal keep waiting or refund.
   Landed: `process_payment` re-runs the refusal and stock checks before `consume_fifo`; a refused test sale settles `vend_failed` with its credit taken, never refunded.
 
-- [ ] **M5 — MEDIUM-LOW: PAY-104 "Record as sale" can duplicate an already-recorded sale.**
+- [x] **M5 — MEDIUM-LOW: PAY-104 "Record as sale" can duplicate an already-recorded sale.**
   The live `record_sale` uses a fresh `time.time()` and is not idempotent; the recovery
   route (`web/routes/health/recovery.py:196`) uses `ts=saved_at, idempotent=True`. The
   keys can never match.
@@ -68,12 +68,14 @@ Cloud C1, C2 → the rest.
   Fix: write the live sale with the dispensing snapshot's `saved_at` as `ts` and
   `idempotent=True`, or have recovery check for a row with the same sku at/after
   `saved_at`.
+  Landed: at boot a snapshot whose sale row already exists (same sku and shares, ts within saved_at..+600 s) is closed without PAY-104 when no credit, refund or error is left over; otherwise PAY-104 is raised but "Record as sale" is not offered.
 
-- [ ] **M6 — LOW: the `error` state would lose a sale if anything entered it.**
+- [x] **M6 — LOW: the `error` state would lose a sale if anything entered it.**
   `on_error` (`sale/vmc.py:667`) keeps the sale with shares already deducted and cancels
   the cycle without restoring credit or recording; `on_reset` then `_drop_sale`s.
   `error_occurred` has no production caller today.
   Fix: delete the trigger, or make it restore shares / record the sale.
+  Landed: on_error restores consumed shares before refunding; a test sale's synthetic credit is cleared, never refunded.
 
 - [x] **M7 — LOW: stale `process_payment` retry chains.**
   Each button press schedules its own 1 s then 5 s chain (`sale/vmc.py:896`, :941). A
@@ -100,6 +102,10 @@ Cloud C1, C2 → the rest.
   catalog form inputs carry `maxlength="200"`.
   Fix: limit `sku`/`name` in `ConfigModel` and the form, with a migration path for existing
   `config.json` files (truncate or flag on load rather than refuse to start).
+
+- [ ] **M10 — LOW: a test sale that enters the `error` state never settles its runner.**
+  `on_error` (`sale/vmc.py`) never calls `_settle`, and it cancels the dispense cycle, so `TestSaleRunner.run_test_sale` awaiting the settlement future hangs: the maintenance lease stays held with `runs_in_flight > 0` and `_test_sale_in_progress` stays set. `error_occurred` has no production caller today.
+  Fix: settle the test sale from `on_error` (outcome `vend_failed`, no fault code) or give the runner a bounded wait that releases the lease.
 
 ## R. Edge runtime resilience
 
@@ -145,21 +151,24 @@ Cloud C1, C2 → the rest.
   reconcile from retained dispenser state after reconnect; make `publish` report the
   drop.
 
-- [ ] **R5 — MEDIUM-LOW: uvicorn bind failure skips cleanup.**
+- [x] **R5 — MEDIUM-LOW: uvicorn bind failure skips cleanup.**
   uvicorn `sys.exit(1)`s inside a task, bypassing `main`'s `finally`
   (`__main__.py:212-220`); the recorder is not flushed. MQTT, recorder, health and uplink
   are all wired before the bind attempt.
   Fix: bind-check early, or move cleanup into an outer try/finally.
+  Landed: check_web_bind probes the web port before any service is built and exits 1; run_until_primary_exits cleans up on SystemExit.
 
-- [ ] **R6 — MEDIUM-LOW: event-row and inventory write failures are invisible.**
+- [x] **R6 — MEDIUM-LOW: event-row and inventory write failures are invisible.**
   `_writer_loop` logs a failed insert (`event_recorder.py:876-886`);
   `InventoryManager._save` logs an error (`monitoring/inventory_manager.py:73-74`).
   Neither raises a fault; KPIs go silently wrong or counts revert after restart.
   Fix: alert-class faults.
+  Landed: DATA-105 (event row write failed) and DATA-106 (inventory save failed), contract 2.3.0, raised from the write observers and cleared on the next success.
 
-- [ ] **R7 — LOW: future `saved_at` treated as corrupt.** `ledger/session_store.py:129-130`.
+- [x] **R7 — LOW: future `saved_at` treated as corrupt.** `ledger/session_store.py:129-130`.
   A Pi with no RTC booting with a clock behind the last save loses the recovery details
   and gets a generic PAY-104. Fix: relax the check or store a boot id alongside wall time.
+  Landed: a future saved_at loads with a warning instead of being treated as corrupt.
 
 - [ ] **R8 — LOW: unbounded in-memory keys and queues.** `_temperatures`, `_channels`,
   `_signals`, `_subsystems`, `capabilities` keyed by payload strings
@@ -174,11 +183,12 @@ Cloud C1, C2 → the rest.
   writes synchronously by default; `build_bundle()`/`ui_digest()` run synchronously at
   uplink start and on every supervisor restart (`uplink/loop.py:69`).
 
-- [ ] **R10 — LOW: logging.** File sink has no level (`ice_common/logging_setup.py:15-22`),
+- [x] **R10 — LOW: logging.** File sink has no level (`ice_common/logging_setup.py:15-22`),
   so it records DEBUG including every sensor/heartbeat payload and the config model dump
   (`__main__.py:57`); no size cap on the 300-day retention; `mqtt_client.py:264` logs
   handler errors without traceback. Fix: file sink at INFO, `logger.exception` for
   handler errors.
+  Landed: vmc.log sink at INFO (ICE_COLDER_LOG_LEVEL overrides), rotates at midnight or 50 MB; MQTT handler errors log the traceback.
 
 - [ ] **R11 — LOW: heartbeats are stored as event rows.** On the sim host 797k of 863k
   rows in `events.db` (56 MB after 4 weeks) are `heartbeat`. The 90-day prune bounds it
@@ -239,7 +249,7 @@ Cloud C1, C2 → the rest.
   Fix: skip alert processing when `save` returns `False`; small cache of seen signatures
   within the skew window.
 
-- [ ] **C6 — MEDIUM: any signed-in account can lock a machine out of being claimed.**
+- [x] **C6 — MEDIUM: any signed-in account can lock a machine out of being claimed.**
   `claim.py:357` `backoff.check("claim", subject, client, trusted=False)`; the
   per-subject budget (`ice_common/backoff.py:126-130`) throttles all clients after 20
   failures/hour, cap 3600 s; unparseable fingerprints share subject `"unknown"`.
@@ -247,12 +257,14 @@ Cloud C1, C2 → the rest.
   sink.
   Fix: apply the per-subject budget only to attempts that failed the code check on a
   resolved machine; bound the dictionary.
+  Landed: only a wrong code against a resolved live machine feeds the per-subject budget; unresolved attempts back off the client alone (per short and under a fixed "any" subject); back-off tables capped at 10 000 keys.
 
-- [ ] **C7 — MEDIUM-LOW: scrypt shares the default thread pool with SQLite.**
+- [x] **C7 — MEDIUM-LOW: scrypt shares the default thread pool with SQLite.**
   Each failed claim `to_thread(verify_secret)` (`claim.py:371`, :395), N=2^14 r=8
   (~16 MB, tens of ms). On 1 vCPU the default executor (~5 threads) is shared with every
   DB call and report ingest.
   Fix: dedicated 1–2 thread executor or a semaphore for scrypt.
+  Landed: all claim-path scrypt runs on a one-worker executor on app.state.
 
 - [ ] **C8 — LOW-MEDIUM: no revocation for sessions or machine keys.**
   Sessions are stateless HMAC cookies (`auth.py:107-130`); logout only deletes the
@@ -307,13 +319,14 @@ Cloud C1, C2 → the rest.
   before `request.body()` (in `require_machine` or `BodyLimitMiddleware`).
   Landed: at most 2 bundle bodies in flight process-wide; a third answers 503 with `Retry-After: 30` before the body is read.
 
-- [ ] **C15 — MEDIUM: slow bundle PUTs can pin both in-flight slots indefinitely.**
+- [x] **C15 — MEDIUM: slow bundle PUTs can pin both in-flight slots indefinitely.**
   The C14 slot is taken before the body is read and the signature is checked after it. Caddy
   streams request bodies and uvicorn has no body-read timeout.
   Scenario: two PUTs with a garbage signature and a trickled body hold both slots, so every
   real bundle PUT answers 503 until the connections drop.
   Fix: an `asyncio.timeout` deadline around `request.body()` for bundle PUTs (release the
   slot and answer 408 on expiry).
+  Landed: bundle PUT bodies are read under a 30 s deadline; expiry answers 408 and releases the slot.
 
 ## D. Deployment, data and secrets
 
@@ -355,17 +368,19 @@ Cloud C1, C2 → the rest.
   rotation. Contrast `access/access.py:321` (`os.open(..., 0o600)`).
   Fix: `os.open(..., 0o600)` for the tmp file, chmod the `.bak`.
 
-- [ ] **D5 — MEDIUM: edge compose hygiene.**
+- [x] **D5 — MEDIUM: edge compose hygiene.**
   No `logging: max-size`/`max-file` (container logs unbounded); no `stop_grace_period`
   (10 s default vs uvicorn drain + up to 3 s persistence drain + up to 5 s recorder
   flush); no `mem_limit`/`deploy.resources` on any app service. `uv run` is the CMD
   (`Dockerfile:51`); `uv run` execs on Unix so SIGTERM reaches Python, but exec'ing
   python directly removes the doubt.
   Fix: `stop_grace_period: 30s`, log caps, exec python directly.
+  Landed: json-file log caps on every root/prod compose service, stop_grace_period 30s on vmc and cloud, python exec'd directly; no mem_limit by design.
 
-- [ ] **D6 — MEDIUM: Dockerfiles use unpinned `uv:latest`** (`Dockerfile:6`,
+- [x] **D6 — MEDIUM: Dockerfiles use unpinned `uv:latest`** (`Dockerfile:6`,
   `packages/cloud/Dockerfile:12`); `python:3.12-slim`, `eclipse-mosquitto:2`,
   `caddy:2-alpine` float. `uv.lock` pins Python deps. Fix: pin uv to a version.
+  Landed: uv pinned to 0.7.13 in both Dockerfiles; base images stay on major tags by choice.
 
 - [ ] **D7 — MEDIUM: session/device cookies are `Secure` only when the request is HTTPS.**
   `web/auth.py:94` via `backoff.is_https` (`ice_common/backoff.py:88-95`) honours
@@ -385,9 +400,10 @@ Cloud C1, C2 → the rest.
   major versions, not SHAs; the MDB hardware conformance skip is a standing gap until an
   MDB simulator exists.
 
-- [ ] **D10 — LOW: `/health/logs` tail reads byte-by-byte with a seek per byte**
+- [x] **D10 — LOW: `/health/logs` tail reads byte-by-byte with a seek per byte**
   (`web/context.py:209-228`); a log with long lines makes it do millions of seeks
   (authenticated CPU DoS only). Fix: read fixed-size blocks backwards.
+  Landed: tail reads 8 KiB blocks backwards.
 
 - [ ] **D11 — LOW: `/static` is mounted without auth** (`web/server.py:10-13`); serves
   only app assets today. Note so a future file placed there is not accidentally public.

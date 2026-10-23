@@ -444,6 +444,7 @@ dev = [
     { name = "import-linter" },
     { name = "libcst" },
     { name = "pytest-asyncio" },
+    { name = "pyyaml" },
     { name = "ruff" },
 ]
 
@@ -459,6 +460,7 @@ dev = [
     { name = "import-linter", specifier = ">=2.6,<2.7" },
     { name = "libcst", specifier = ">=1.8,<1.9" },
     { name = "pytest-asyncio", specifier = ">=1.3.0" },
+    { name = "pyyaml", specifier = ">=6" },
     { name = "ruff", specifier = ">=0.11.2" },
 ]
 
