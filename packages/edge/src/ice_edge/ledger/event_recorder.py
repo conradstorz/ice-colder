@@ -24,7 +24,7 @@ import time
 from collections import namedtuple
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from loguru import logger
 
@@ -284,6 +284,11 @@ class EventRecorder:
         self._temp_max = temp_max
         self._retention_days = retention_days
         self._last_prune = 0.0
+        # Write-health observers (see set_write_observers); touched only from
+        # the writer thread once it is running.
+        self._on_write_failed: Optional[Callable[[], None]] = None
+        self._on_write_ok: Optional[Callable[[], None]] = None
+        self._last_write_failed = False
         self._historical_avg_cache: dict[int, tuple[float, dict]] = {}
         # Corrupt-database recovery (§5): not a raise -- a flag + the backup
         # path a later task (main.py) inspects to raise the alert-class
@@ -928,6 +933,38 @@ class EventRecorder:
             _atomic_write_text(JOURNAL_PATH, "")
         return count
 
+    def set_write_observers(
+        self,
+        on_failed: Optional[Callable[[], None]],
+        on_ok: Optional[Callable[[], None]],
+    ) -> None:
+        """Observe the writer thread's insert health.
+
+        `on_failed` runs after every failed row write; `on_ok` runs after a
+        successful write only when the previous one failed (a recovery edge,
+        not every row). Both run on the writer thread, not the event loop --
+        the wiring must hop threads -- and a raising observer is logged,
+        never propagated into the writer loop.
+        """
+        self._on_write_failed = on_failed
+        self._on_write_ok = on_ok
+
+    def _notify_write(self, ok: bool) -> None:
+        if ok:
+            if not self._last_write_failed:
+                return
+            self._last_write_failed = False
+            cb = self._on_write_ok
+        else:
+            self._last_write_failed = True
+            cb = self._on_write_failed
+        if cb is None:
+            return
+        try:
+            cb()
+        except Exception:
+            logger.exception("EventRecorder: write observer raised")
+
     def flush(self, timeout: float = 5.0) -> None:
         """Block until every queued row is written (tests, shutdown, reads).
 
@@ -986,6 +1023,7 @@ class EventRecorder:
                     conn.commit()
                     if time.time() - self._last_prune > 86400:
                         self._prune_with(conn)
+                self._notify_write(True)
             except Exception:
                 if isinstance(row, _CashCollectionJob):
                     logger.exception(
@@ -997,6 +1035,7 @@ class EventRecorder:
                     )
                 else:
                     logger.exception(f"EventRecorder: failed to write {row[0]}")
+                self._notify_write(False)
             finally:
                 self._queue.task_done()
 

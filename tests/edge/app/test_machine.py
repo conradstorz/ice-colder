@@ -525,3 +525,81 @@ class TestInputFaultsWiring:
 
         assert machine.faults.has(FaultCode.WTR_104)
         assert len([1 for t, _, _ in mqtt.published if t == "alerts"]) == 1
+
+
+class TestDataWriteFaults:
+    async def test_failed_event_write_raises_data_105_without_blocking_payment(
+        self, tmp_path
+    ):
+        import sqlite3
+
+        machine = Machine(ConfigModel(), tasks=FakeTaskRunner())
+        machine.attach_to_loop(asyncio.get_running_loop())
+        availability = Availability()
+        machine.set_availability(availability)
+        db = str(tmp_path / "events.db")
+        recorder = EventRecorder(db_path=db)
+        machine.set_event_recorder(recorder)
+
+        conn = sqlite3.connect(db)
+        ddl = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='events'"
+        ).fetchone()[0]
+        conn.execute("DROP TABLE events")
+        conn.commit()
+        conn.close()
+
+        recorder.record("lost")
+        await asyncio.to_thread(recorder.flush)
+        await settle()
+
+        assert machine.faults.has(FaultCode.DATA_105)
+        assert availability.payment_enabled
+
+        conn = sqlite3.connect(db)
+        conn.execute(ddl)
+        conn.commit()
+        conn.close()
+        recorder.record("back")
+        await asyncio.to_thread(recorder.flush)
+        await settle()
+
+        assert not machine.faults.has(FaultCode.DATA_105)
+        machine.cancel_pending_tasks()
+
+    async def test_failed_inventory_save_raises_data_106_without_blocking_payment(
+        self, tmp_path
+    ):
+        from ice_edge.monitoring.inventory_manager import InventoryManager
+
+        machine = Machine(ConfigModel(), tasks=FakeTaskRunner())
+        machine.attach_to_loop(asyncio.get_running_loop())
+        availability = Availability()
+        machine.set_availability(availability)
+        inv = InventoryManager(
+            [
+                Product(
+                    sku="X",
+                    name="X",
+                    price=1.0,
+                    track_inventory=True,
+                    inventory_count=3,
+                )
+            ],
+            path=tmp_path / "inventory.json",
+        )
+        machine.set_inventory_manager(inv)
+
+        (tmp_path / "inventory.json.tmp").mkdir()
+        inv.set_count("X", 2)
+        await settle()
+
+        assert machine.faults.has(FaultCode.DATA_106)
+        assert availability.payment_enabled
+
+        (tmp_path / "inventory.json.tmp").rmdir()
+        inv.set_count("X", 1)
+        await settle()
+
+        assert not machine.faults.has(FaultCode.DATA_106)
+        machine.cancel_pending_tasks()

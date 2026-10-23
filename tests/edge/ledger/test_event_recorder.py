@@ -2355,3 +2355,87 @@ class TestSaleRecordedSince:
         recorder.record_sale("ICE-1", "Ice", 1, 2.5, {"cash": 2.5}, ts=now)
         recorder.db_unavailable = True
         assert not recorder.sale_recorded_since("ICE-1", now - 0.2, {"cash": 2.5})
+
+
+class TestWriteObservers:
+    def _break_events_table(self, db_path: str) -> str:
+        conn = sqlite3.connect(db_path)
+        ddl = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='events'"
+        ).fetchone()[0]
+        conn.execute("DROP TABLE events")
+        conn.commit()
+        conn.close()
+        return ddl
+
+    def test_failed_insert_calls_on_failed_once_and_flush_returns(self, tmp_path):
+        db = str(tmp_path / "events.db")
+        rec = EventRecorder(db_path=db)
+        failed: list[int] = []
+        ok: list[int] = []
+        rec.set_write_observers(lambda: failed.append(1), lambda: ok.append(1))
+        self._break_events_table(db)
+
+        rec.record("a")
+        rec.flush()
+
+        assert failed == [1]
+        assert ok == []
+
+    def test_on_failed_fires_per_failed_row(self, tmp_path):
+        db = str(tmp_path / "events.db")
+        rec = EventRecorder(db_path=db)
+        failed: list[int] = []
+        rec.set_write_observers(lambda: failed.append(1), lambda: None)
+        self._break_events_table(db)
+
+        rec.record("a")
+        rec.record("b")
+        rec.flush()
+
+        assert failed == [1, 1]
+
+    def test_on_ok_fires_once_on_recovery_not_on_every_row(self, tmp_path):
+        db = str(tmp_path / "events.db")
+        rec = EventRecorder(db_path=db)
+        failed: list[int] = []
+        ok: list[int] = []
+        rec.set_write_observers(lambda: failed.append(1), lambda: ok.append(1))
+
+        ddl = self._break_events_table(db)
+        rec.record("lost")
+        rec.flush()
+        conn = sqlite3.connect(db)
+        conn.execute(ddl)
+        conn.commit()
+        conn.close()
+
+        rec.record("back-1")
+        rec.record("back-2")
+        rec.flush()
+
+        assert failed == [1]
+        assert ok == [1]
+
+    def test_raising_observers_never_kill_the_writer(self, tmp_path):
+        db = str(tmp_path / "events.db")
+        rec = EventRecorder(db_path=db)
+
+        def boom():
+            raise RuntimeError("observer bug")
+
+        rec.set_write_observers(boom, boom)
+        ddl = self._break_events_table(db)
+        rec.record("lost")
+        rec.flush()
+        conn = sqlite3.connect(db)
+        conn.execute(ddl)
+        conn.commit()
+        conn.close()
+        rec.record("after")
+        rec.flush()
+
+        conn = sqlite3.connect(db)
+        types = [r[0] for r in conn.execute("SELECT event_type FROM events")]
+        conn.close()
+        assert types == ["after"]

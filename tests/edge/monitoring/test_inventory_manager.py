@@ -183,3 +183,35 @@ async def test_decrement_without_persist_then_save_async(tmp_path):
     assert json.loads(path.read_text())["A"] == 3  # not yet written
     await inv.save_async()
     assert json.loads(path.read_text())["A"] == 2
+
+
+class TestSaveObservers:
+    def test_failed_save_calls_on_failed_then_good_save_calls_on_ok(self, tmp_path):
+        good = tmp_path / "inventory.json"
+        inv = InventoryManager(_products(), path=good)
+        failed: list[int] = []
+        ok: list[int] = []
+        inv.set_save_observers(lambda: failed.append(1), lambda: ok.append(1))
+
+        # A directory occupying the temp-file path makes open(tmp, "w") fail
+        # on every platform.
+        (tmp_path / "inventory.json.tmp").mkdir()
+        inv.set_count("ICE-SM", 4)
+        assert failed == [1]
+        assert ok == []
+
+        (tmp_path / "inventory.json.tmp").rmdir()
+        inv.set_count("ICE-SM", 5)
+        inv.set_count("ICE-SM", 6)
+        assert failed == [1]
+        assert ok == [1]  # only the first success after a failure
+
+    def test_raising_observers_do_not_propagate(self, tmp_path):
+        inv = InventoryManager(_products(), path=tmp_path / "inventory.json")
+
+        def boom():
+            raise RuntimeError("bug")
+
+        inv.set_save_observers(boom, boom)
+        (tmp_path / "inventory.json.tmp").mkdir()
+        inv.set_count("ICE-SM", 4)

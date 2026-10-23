@@ -393,6 +393,37 @@ class Machine:
         if self._faults.has(FaultCode.DATA_104):
             self._faults.clear_fault(FaultCode.DATA_104.value, by="auto")
 
+    def _on_loop(self, fn) -> None:
+        """Run `fn` on the attached event loop from any thread; directly when
+        no loop is attached (or it is closed)."""
+        loop = self._tasks.loop
+        if loop is None or loop.is_closed():
+            fn()
+            return
+        try:
+            loop.call_soon_threadsafe(fn)
+        except RuntimeError:
+            logger.debug("Machine: loop closed before a write-health update ran.")
+
+    def _raise_event_unwritten(self) -> None:
+        """An event row could not be written: DATA-105 (machine-scope, never
+        payment-blocking) once."""
+        if not self._faults.has(FaultCode.DATA_105):
+            self._faults.raise_fault(FaultCode.DATA_105)
+
+    def _clear_event_unwritten(self) -> None:
+        if self._faults.has(FaultCode.DATA_105):
+            self._faults.clear_fault(FaultCode.DATA_105.value, by="auto")
+
+    def _raise_inventory_unsaved(self) -> None:
+        """Inventory counts could not be saved: DATA-106 once."""
+        if not self._faults.has(FaultCode.DATA_106):
+            self._faults.raise_fault(FaultCode.DATA_106)
+
+    def _clear_inventory_unsaved(self) -> None:
+        if self._faults.has(FaultCode.DATA_106):
+            self._faults.clear_fault(FaultCode.DATA_106.value, by="auto")
+
     def set_mqtt_client(self, client) -> None:
         """Attach an MQTTClient instance for publishing status and receiving events."""
         self._outputs.attach_mqtt(client)
@@ -436,11 +467,26 @@ class Machine:
     def set_inventory_manager(self, inventory: InventoryManager) -> None:
         """Attach an InventoryManager for persistent stock tracking."""
         self._inventory = inventory
+        # save_async runs _save on a worker thread, so hop to the loop.
+        # Duck-typed: a stand-in without the observer hook is simply unobserved.
+        observe = getattr(inventory, "set_save_observers", None)
+        if observe is not None:
+            observe(
+                lambda: self._on_loop(self._raise_inventory_unsaved),
+                lambda: self._on_loop(self._clear_inventory_unsaved),
+            )
         logger.debug("Machine attached inventory manager.")
 
     def set_event_recorder(self, recorder) -> None:
         """Attach an EventRecorder so FSM error events are persisted."""
         self._event_recorder = recorder
+        # The recorder's observers run on its writer thread: hop to the loop.
+        observe = getattr(recorder, "set_write_observers", None)
+        if observe is not None:
+            observe(
+                lambda: self._on_loop(self._raise_event_unwritten),
+                lambda: self._on_loop(self._clear_event_unwritten),
+            )
         logger.debug("Machine attached event recorder.")
 
     def set_session_store(self, store: SessionStore) -> None:

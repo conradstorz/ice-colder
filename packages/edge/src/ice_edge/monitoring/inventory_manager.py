@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 from loguru import logger
@@ -37,6 +38,9 @@ class InventoryManager:
         # event loop, which also calls _save() synchronously — guard the
         # tmp-write-then-replace sequence against concurrent writers.
         self._save_lock = threading.Lock()
+        self._on_save_failed: Callable[[], None] | None = None
+        self._on_save_ok: Callable[[], None] | None = None
+        self._last_save_failed = False
         self._load(products)
 
     def _load(self, products: list):
@@ -63,6 +67,19 @@ class InventoryManager:
 
         self._save()
 
+    def set_save_observers(
+        self,
+        on_failed: Callable[[], None] | None,
+        on_ok: Callable[[], None] | None,
+    ) -> None:
+        """Observe save health. `on_failed` runs after each failed save;
+        `on_ok` after a successful save only when the previous one failed.
+        Both run on the thread that called `_save` (the event loop, or the
+        `save_async` worker thread); a raising observer is logged, never
+        propagated."""
+        self._on_save_failed = on_failed
+        self._on_save_ok = on_ok
+
     def _save(self):
         """Persist current counts to disk atomically."""
         with self._save_lock:
@@ -73,6 +90,18 @@ class InventoryManager:
                 os.replace(tmp, self._path)
             except Exception as e:
                 logger.error(f"Failed to save inventory: {e}")
+                self._last_save_failed = True
+                cb = self._on_save_failed
+            else:
+                if not self._last_save_failed:
+                    return
+                self._last_save_failed = False
+                cb = self._on_save_ok
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                logger.exception("InventoryManager: save observer raised")
 
     def get_count(self, sku: str) -> int:
         """Return current inventory count for a SKU."""
