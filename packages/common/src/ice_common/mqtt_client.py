@@ -261,7 +261,7 @@ class MQTTClient:
                 try:
                     await handler(suffix, payload)
                 except Exception as e:
-                    logger.error(f"MQTT: Handler error for {topic_str}: {e}")
+                    logger.exception(f"MQTT: Handler error for {topic_str}: {e}")
 
     @staticmethod
     def topic_matches(pattern: str, topic: str) -> bool:

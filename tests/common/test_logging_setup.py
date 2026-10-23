@@ -76,7 +76,7 @@ logger.remove()
 
     log_dir = tmp_path / "LOGS"
     general = (log_dir / "vmc.log").read_text()
-    assert "debug-marker;DEBUG " in general
+    assert "debug-marker" not in general
     for marker in (
         "general-marker",
         "transaction-marker",
@@ -95,3 +95,60 @@ logger.remove()
         lines = (log_dir / filename).read_text().splitlines()
         assert len(lines) == 1
         assert lines[0].endswith(f" | {marker}")
+
+
+def _file_sink_script(env_level):
+    return f"""
+import os, sys
+sys.path.insert(0, sys.argv[1])
+{"os.environ['ICE_COLDER_LOG_LEVEL'] = " + repr(env_level) if env_level else ""}
+from loguru import logger
+from ice_common.logging_setup import setup_logging
+
+setup_logging()
+logger.debug("debug-marker")
+logger.info("info-marker")
+logger.remove()
+"""
+
+
+def test_file_sink_defaults_to_info(tmp_path):
+    run_logging_script(tmp_path, _file_sink_script(None))
+    general = (tmp_path / "LOGS" / "vmc.log").read_text()
+    assert "info-marker;INFO " in general
+    assert "debug-marker" not in general
+
+
+def test_log_level_env_enables_debug(tmp_path):
+    run_logging_script(tmp_path, _file_sink_script("debug"))
+    general = (tmp_path / "LOGS" / "vmc.log").read_text()
+    assert "debug-marker;DEBUG " in general
+
+
+def test_invalid_log_level_env_warns_and_uses_info(tmp_path):
+    result = run_logging_script(tmp_path, _file_sink_script("LOUD"))
+    general = (tmp_path / "LOGS" / "vmc.log").read_text()
+    assert "debug-marker" not in general
+    assert "info-marker;INFO " in general
+    assert "ICE_COLDER_LOG_LEVEL" in general
+    assert "ICE_COLDER_LOG_LEVEL" in result.stdout
+
+
+def test_file_sink_rotates_at_size_limit(tmp_path):
+    run_logging_script(
+        tmp_path,
+        """
+import sys
+sys.path.insert(0, sys.argv[1])
+from loguru import logger
+from ice_common import logging_setup
+
+logging_setup.MAX_LOG_BYTES = 2000
+logging_setup.setup_logging()
+for i in range(10):
+    logger.info("x" * 500)
+logger.remove()
+""",
+    )
+    rotated = [p for p in (tmp_path / "LOGS").iterdir() if p.name.startswith("vmc.")]
+    assert len(rotated) > 1
