@@ -218,6 +218,10 @@ async def _verify(request: Request) -> Machine | None:
             async with asyncio.timeout(BUNDLE_BODY_READ_SECONDS):
                 body = await request.body()
         except TimeoutError:
+            # A trickled body is hostile or broken: count it so repeats from
+            # this client are refused before a slot is taken.
+            if known:
+                backoff.record_failure("machine", fp, client_ip, trusted=True)
             raise BundleBodyTimeout from None
     else:
         body = await request.body()

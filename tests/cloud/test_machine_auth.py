@@ -494,7 +494,7 @@ async def _stalled_body():
 
 
 async def test_a_stalled_bundle_body_times_out_with_408_and_frees_its_slot(
-    cloud_app, monkeypatch
+    cloud_app, clock, monkeypatch
 ):
     # Deadline 0: expires at the first real suspension, i.e. the stalled read.
     monkeypatch.setattr(machine_auth, "BUNDLE_BODY_READ_SECONDS", 0)
@@ -513,9 +513,47 @@ async def test_a_stalled_bundle_body_times_out_with_408_and_frees_its_slot(
         assert stalled.content == b""
         assert cloud_app.state.bundle_bodies.in_use == 0
         monkeypatch.undo()
+        clock.advance(2)  # past the back-off the timeout recorded
         real = await client.put(
             BUNDLE,
             content=b"junk-2",
             headers=s.headers("PUT", BUNDLE, b"junk-2", now=now),
         )
         assert real.status_code == 400  # valid signature, not a bundle: past the slot
+
+
+async def test_repeated_body_timeouts_back_the_client_off_before_a_slot_is_taken(
+    cloud_app, clock, monkeypatch
+):
+    monkeypatch.setattr(machine_auth, "BUNDLE_BODY_READ_SECONDS", 0)
+    cloud_app.state.bundle_bodies = InflightSlots(2)
+    s = Signer()
+    with TestClient(cloud_app) as sync:
+        _own(sync, s)
+
+    def stalled(client):
+        return client.put(
+            BUNDLE,
+            content=_stalled_body(),
+            headers=s.headers("PUT", BUNDLE, b"junk-never", now=cloud_app.state.now()),
+        )
+
+    async with _async_client(cloud_app) as client:
+        assert (await stalled(client)).status_code == 408
+        clock.advance(2)  # past the first back-off step
+        assert (await stalled(client)).status_code == 408
+        third = await stalled(client)  # refused before a slot is taken
+        assert third.status_code == 401
+        assert cloud_app.state.bundle_bodies.in_use == 0
+        monkeypatch.undo()
+        other = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=cloud_app, client=("10.9.9.9", 1)),
+            base_url="http://testserver",
+        )
+        async with other:
+            ok = await other.put(
+                BUNDLE,
+                content=b"junk-2",
+                headers=s.headers("PUT", BUNDLE, b"junk-2", now=cloud_app.state.now()),
+            )
+        assert ok.status_code == 400  # a different client still gets a slot
