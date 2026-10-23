@@ -24,14 +24,13 @@ from ice_common.paths import DATA_DIR
 
 SESSION_PATH = DATA_DIR / "session.json"
 
-# How far ahead of the wall clock a loaded saved_at may sit before it is
-# treated as corrupt rather than as ordinary clock jitter. A snapshot is
-# written and read back on the same machine within the same call, so any
-# genuine skew is sub-second; this is deliberately generous (two orders of
-# magnitude above that) to absorb coarse or slightly-adjusted system clocks
-# without ever accepting a value that is meaningfully "in the future" --
-# e.g. a hand-edited or tampered file, or a snapshot from a machine whose
-# clock is wrong by minutes or more.
+# How far ahead of the wall clock a loaded saved_at may sit before a warning
+# is logged. A future value is accepted, never rejected: a Pi with no RTC can
+# boot with its clock behind the last save, and rejecting it would discard the
+# PAY-104 recovery details. saved_at is kept as-is (it is the recovery key and
+# the idempotent-insert ts; a future value is harmless for both). Genuine
+# same-clock jitter is sub-second, so this threshold only separates "ordinary"
+# from "worth a log line".
 SAVED_AT_FUTURE_SKEW_SECONDS = 5.0
 
 
@@ -129,7 +128,7 @@ class SessionStore:
             # exact instant a pending sale's escrow shares were written) so
             # it must never be allowed to silently re-default to "now" via
             # SessionSnapshot's field(default_factory=time.time) -- an
-            # absent, non-numeric, non-finite, non-positive, or future value
+            # absent, non-numeric, non-finite, or non-positive value
             # on disk is rejected here and folds into the same
             # unreadable-snapshot "error" channel used below for a JSON
             # parse failure, rather than inventing a second signalling
@@ -146,8 +145,12 @@ class SessionStore:
                 or saved_at <= 0
             ):
                 raise ValueError(f"saved_at is not a valid timestamp: {saved_at!r}")
-            if saved_at > time.time() + SAVED_AT_FUTURE_SKEW_SECONDS:
-                raise ValueError(f"saved_at is in the future: {saved_at!r}")
+            skew = saved_at - time.time()
+            if skew > SAVED_AT_FUTURE_SKEW_SECONDS:
+                logger.warning(
+                    f"SessionStore: saved_at in {self._path} is {skew:.0f}s ahead of "
+                    "the clock (clock behind the last save?); keeping it as-is"
+                )
             return SessionSnapshot(**raw)
         except Exception as e:
             logger.error(f"SessionStore: unreadable {self._path}: {e}")

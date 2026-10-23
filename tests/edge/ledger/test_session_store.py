@@ -2,6 +2,8 @@ import json
 import time
 from pathlib import Path
 
+from loguru import logger
+
 from ice_edge.ledger.session_store import (
     SAVED_AT_FUTURE_SKEW_SECONDS,
     Credit,
@@ -311,25 +313,29 @@ def test_is_open_unchanged_for_open_and_cleared_snapshot_after_guard(tmp_path):
     assert store.load().is_open() is False
 
 
-def test_future_saved_at_beyond_skew_is_reported_as_unreadable(tmp_path):
-    """A saved_at meaningfully ahead of the wall clock (clock skew, or a
-    tampered/hand-edited file) is exactly as corrupt as a missing or
-    negative one -- PAY-104 recovery must not reason about a moment that
-    hasn't happened yet. Comfortably clear the allowed skew so the branch
-    under test is actually reached, not just close to the boundary."""
+def test_future_saved_at_beyond_skew_loads_with_a_warning(tmp_path):
+    """A Pi with no RTC can boot with its clock behind the last save. The
+    saved_at is the PAY-104 recovery key, so it is kept as-is and the snapshot
+    still loads with its details; only a warning names the skew."""
     path = tmp_path / "session.json"
     future = time.time() + SAVED_AT_FUTURE_SKEW_SECONDS + 3600.0
     path.write_text(
         json.dumps({"state": "dispensing", "credit_escrow": 5.0, "saved_at": future}),
         encoding="utf-8",
     )
-
-    loaded = SessionStore(path).load()
+    messages: list[str] = []
+    sink = logger.add(messages.append, level="WARNING", format="{message}")
+    try:
+        loaded = SessionStore(path).load()
+    finally:
+        logger.remove(sink)
 
     assert loaded is not None
-    assert loaded.error is not None
-    assert loaded.credit_escrow == 0.0  # the fabricated 5.0 was not trusted
+    assert loaded.error is None
+    assert loaded.credit_escrow == 5.0
+    assert loaded.saved_at == future
     assert loaded.is_open() is True
+    assert any("saved_at" in m and "ahead" in m for m in messages)
 
 
 def test_saved_at_just_within_future_skew_is_accepted(tmp_path):
@@ -346,12 +352,18 @@ def test_saved_at_just_within_future_skew_is_accepted(tmp_path):
         encoding="utf-8",
     )
 
-    loaded = SessionStore(path).load()
+    messages: list[str] = []
+    sink = logger.add(messages.append, level="WARNING", format="{message}")
+    try:
+        loaded = SessionStore(path).load()
+    finally:
+        logger.remove(sink)
 
     assert loaded is not None
     assert loaded.error is None
     assert loaded.credit_escrow == 5.0
     assert loaded.saved_at == within_skew
+    assert not any("saved_at" in m for m in messages)
 
 
 def test_zero_saved_at_is_reported_as_unreadable(tmp_path):
