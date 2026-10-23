@@ -27,6 +27,7 @@ from loguru import logger
 
 import uvicorn
 from ice_edge.access.access import AccessStore
+from ice_edge.app.exit_signals import install_exit_handlers
 from ice_edge.app.startup_config import (
     apply_env_overrides,
     check_web_bind,
@@ -163,6 +164,11 @@ async def main():
         app, host=web_cfg.host, port=web_cfg.port, log_level="info"
     )
     server = uvicorn.Server(uvicorn_config)
+    # uvicorn re-raises SIGTERM after restoring the handlers it found; install
+    # our own first so the shutdown sequence below runs when not PID 1.
+    restore_signals = install_exit_handlers(
+        lambda: setattr(server, "should_exit", True)
+    )
     logger.info(f"Starting web interface on http://{web_cfg.host}:{web_cfg.port}")
 
     # Run the web server, MQTT client, and health monitor concurrently
@@ -220,6 +226,7 @@ async def main():
         logger.info("Shutdown: cancelled pending VMC tasks")
         recorder.flush()
         logger.info("Shutdown: flushed event recorder")
+        restore_signals()
 
 
 if __name__ == "__main__":
