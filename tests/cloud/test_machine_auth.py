@@ -5,6 +5,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from ice_cloud import machine_auth
 from ice_cloud.machine_auth import InflightSlots, SeenSignatures
 from ice_contracts.cloud import signing
 from tests.cloud.conftest import Signer, register, signed
@@ -481,3 +482,40 @@ def test_json_routes_are_not_counted_against_the_bundle_slots(cloud, known):
     cloud.app.state.bundle_bodies = InflightSlots(0)
     r = signed(cloud, known, "POST", _path(known), _body())
     assert r.status_code == 200
+
+
+# --- C15: a stalled bundle body is cut off, not allowed to pin a slot ---------
+
+
+async def _stalled_body():
+    yield b"junk-"
+    await asyncio.Event().wait()  # trickle: never completes
+    yield b"never"  # pragma: no cover
+
+
+async def test_a_stalled_bundle_body_times_out_with_408_and_frees_its_slot(
+    cloud_app, monkeypatch
+):
+    # Deadline 0: expires at the first real suspension, i.e. the stalled read.
+    monkeypatch.setattr(machine_auth, "BUNDLE_BODY_READ_SECONDS", 0)
+    cloud_app.state.bundle_bodies = InflightSlots(1)
+    s = Signer()
+    with TestClient(cloud_app) as sync:
+        _own(sync, s)
+    now = cloud_app.state.now()
+    async with _async_client(cloud_app) as client:
+        stalled = await client.put(
+            BUNDLE,
+            content=_stalled_body(),
+            headers=s.headers("PUT", BUNDLE, b"junk-never", now=now),
+        )
+        assert stalled.status_code == 408
+        assert stalled.content == b""
+        assert cloud_app.state.bundle_bodies.in_use == 0
+        monkeypatch.undo()
+        real = await client.put(
+            BUNDLE,
+            content=b"junk-2",
+            headers=s.headers("PUT", BUNDLE, b"junk-2", now=now),
+        )
+        assert real.status_code == 400  # valid signature, not a bundle: past the slot

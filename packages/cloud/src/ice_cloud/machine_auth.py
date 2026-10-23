@@ -28,6 +28,9 @@ REGISTER_PATH = "/api/v1/machines/register"
 # 2 x the 20 MiB bundle cap on a 512 MB host; a third concurrent PUT answers 503.
 MAX_INFLIGHT_BUNDLE_BODIES = 2
 BUNDLE_RETRY_AFTER_SECONDS = 30
+# A bundle body must arrive within this long once its slot is held; a trickled
+# or stalled body would otherwise pin the slot (uvicorn has no read timeout).
+BUNDLE_BODY_READ_SECONDS = 30
 
 
 class InflightSlots:
@@ -36,6 +39,10 @@ class InflightSlots:
     def __init__(self, limit: int) -> None:
         self._limit = limit
         self._used = 0
+
+    @property
+    def in_use(self) -> int:
+        return self._used
 
     def try_acquire(self) -> bool:
         if self._used >= self._limit:
@@ -49,6 +56,10 @@ class InflightSlots:
 
 class BundleBusy(Exception):
     """Too many bundle bodies are being buffered; rendered as 503."""
+
+
+class BundleBodyTimeout(Exception):
+    """A bundle body did not arrive in time; rendered as 408."""
 
 
 def _printable(fp: str | None) -> str:
@@ -119,6 +130,12 @@ def install(app: FastAPI) -> None:
         )
 
     app.add_exception_handler(BundleBusy, busy)
+
+    async def body_timeout(_request: Request, _exc: Exception) -> Response:
+        logger.warning("bundle upload abandoned: body not received in time")
+        return Response(status_code=408)
+
+    app.add_exception_handler(BundleBodyTimeout, body_timeout)
 
 
 def _decode_key(value: str) -> bytes | None:
@@ -196,7 +213,14 @@ async def _verify(request: Request) -> Machine | None:
         if not app.state.bundle_bodies.try_acquire():
             raise BundleBusy
         request.state.bundle_slot = True
-    body = await request.body()
+    if request.url.path.startswith(BUNDLE_PREFIX):
+        try:
+            async with asyncio.timeout(BUNDLE_BODY_READ_SECONDS):
+                body = await request.body()
+        except TimeoutError:
+            raise BundleBodyTimeout from None
+    else:
+        body = await request.body()
     if is_register:
         try:
             reg = RegisterMachine.model_validate_json(body)
