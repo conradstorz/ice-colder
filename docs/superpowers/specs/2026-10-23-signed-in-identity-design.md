@@ -93,11 +93,12 @@ The login/setup/enrol variant bars are untouched (they override
 - One template `ice_ui/templates/me.html`, extending `base.html`, rendered by
   both platforms with the ordinary context (`current_user`, `perms`, `level`)
   plus two extras: `logout_label` (`"Lock"` on the edge, `"Sign out"` on the
-  cloud) and `machine` (a `MachineIdentity` from `ice_ui.views.identity`,
+  cloud) and `machine_label` (a `MachineLabel` from `ice_ui.views.identity`,
   fields `common_name: str | None`, `machine_id: str | None`,
   `short_fingerprint: str | None`, with a `display` property rendering
   "<common_name> (<machine_id>)", falling back to whichever of the three is
   set, in that order; `None` on the cloud when no machine is selected).
+  (Named `MachineLabel`, not `MachineIdentity` as first drafted, because `ice_edge.uplink.identity.MachineIdentity` already names the machine's Ed25519 key.)
   Content, top to bottom:
   1. Name (hero size) and email when `current_user.email` is set.
   2. Role line, the same wording on both platforms: "owner on Lobby Ice
@@ -178,7 +179,7 @@ Cloud (`tests/cloud/test_me.py`):
 - Ingest accepts a `0.4.0` report with `common_name` and a `0.3.0` report
   without it; the banner and `/me` show `machine_id` alone for the latter.
 - `tests/cloud/test_ui_parity.py` is unchanged: the bar is outside `<main>`.
-- `ice_ui.views.identity.MachineIdentity.display` is unit-tested for the
+- `ice_ui.views.identity.MachineLabel.display` is unit-tested for the
   four fallbacks (both, name only, id only, fingerprint only).
 
 Contracts (`tests/contracts/test_access_labels.py`): every `Permission`
