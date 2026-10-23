@@ -1,5 +1,7 @@
 from datetime import timedelta
 
+from fastapi.testclient import TestClient
+
 from ice_cloud import claim as claim_module
 from ice_common.secrets import hash_secret
 from ice_contracts.cloud.identity import ClaimCodeNotice
@@ -248,3 +250,51 @@ def test_consumed_code_stays_dead_after_an_intervening_link_code(cloud, signer):
     login(cloud, "seller@example.com")
     assert post_claim(cloud, signer).status_code == 403
     assert cloud.app.state.repo.machine(fp).owner_id == buyer.id
+
+
+def _client_at(cloud, host):
+    """A second client on the same app and session, arriving from ``host``."""
+    other = TestClient(cloud.app, follow_redirects=False, client=(host, 50000))
+    other.cookies.update(cloud.cookies)
+    return other
+
+
+def _spray(cloud, signer, fingerprint, attempts=20):
+    for i in range(attempts):
+        r = post_claim(
+            _client_at(cloud, f"10.1.0.{i + 1}"), signer, "00000000", fingerprint
+        )
+        assert r.status_code == 403
+
+
+def test_unknown_fingerprint_spray_does_not_throttle_other_clients(cloud, signer):
+    login(cloud, "a@example.com")
+    ghost = "0000-0000-0000-0000"
+    _spray(cloud, signer, ghost)
+    # A fresh client on the same subject is not throttled by the spray ...
+    assert (
+        post_claim(_client_at(cloud, "10.9.0.1"), signer, CODE, ghost).status_code
+        == 403
+    )
+    # ... but a client that failed is backed off on its own address.
+    again = post_claim(_client_at(cloud, "10.1.0.1"), signer, CODE, ghost)
+    assert again.status_code == 429
+
+
+def test_unparseable_fingerprints_share_no_budget(cloud, signer):
+    login(cloud, "a@example.com")
+    _spray(cloud, signer, "not a fingerprint")
+    r = post_claim(_client_at(cloud, "10.9.0.1"), signer, CODE, "also junk")
+    assert r.status_code == 403
+
+
+def test_wrong_codes_against_a_live_machine_still_feed_the_subject_budget(
+    cloud, signer
+):
+    open_claim(cloud, signer)
+    login(cloud, "a@example.com")
+    _spray(cloud, signer, short(signer))
+    r = post_claim(_client_at(cloud, "10.9.0.1"), signer, CODE)
+    assert r.status_code == 429
+    again = post_claim(_client_at(cloud, "10.1.0.1"), signer, CODE)
+    assert again.status_code == 429

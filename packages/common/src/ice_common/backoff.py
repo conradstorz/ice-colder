@@ -13,6 +13,13 @@ BACKOFF_CAP_SECONDS = 3600.0
 BUDGET_THRESHOLD = 20
 BUDGET_WINDOW_SECONDS = 3600.0
 BACKOFF_PRUNE_SECONDS = 86400.0
+# Hard bound on each bookkeeping dictionary, so spraying distinct subjects or
+# clients cannot grow memory without limit; the oldest entries go first.
+BACKOFF_MAX_KEYS = 10_000
+# The full expiry sweep is O(n); run it at most this often rather than per call.
+BACKOFF_SWEEP_INTERVAL_SECONDS = 60.0
+# Evicting down to 90% amortises the sort over many inserts at the cap.
+_TRIM_TO = BACKOFF_MAX_KEYS * 9 // 10
 
 
 class Backoff:
@@ -38,6 +45,7 @@ class Backoff:
         self._failures: dict[tuple[str, str, str], tuple[int, float]] = {}
         # (kind, subject) -> timestamps of untrusted failures inside the window
         self._budget: dict[tuple[str, str], deque[float]] = {}
+        self._last_sweep = float("-inf")
         self._networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
         self.set_trusted_proxies(trusted_proxies or [])
 
@@ -63,6 +71,11 @@ class Backoff:
         """
         self._failures.clear()
         self._budget.clear()
+        self._last_sweep = float("-inf")
+
+    def sizes(self) -> tuple[int, int]:
+        """(failure keys, budget keys) currently held; both are capped."""
+        return len(self._failures), len(self._budget)
 
     def _is_trusted_proxy(self, peer: str) -> bool:
         try:
@@ -97,6 +110,9 @@ class Backoff:
     # --- accounting ---
 
     def _prune(self, now: float) -> None:
+        if now - self._last_sweep < BACKOFF_SWEEP_INTERVAL_SECONDS:
+            return
+        self._last_sweep = now
         for key, (_, last) in list(self._failures.items()):
             if now - last > BACKOFF_PRUNE_SECONDS:
                 del self._failures[key]
@@ -104,6 +120,21 @@ class Backoff:
             while stamps and now - stamps[0] > BUDGET_WINDOW_SECONDS:
                 stamps.popleft()
             if not stamps:
+                del self._budget[key]
+
+    def _enforce_cap(self) -> None:
+        if len(self._failures) > BACKOFF_MAX_KEYS:
+            excess = len(self._failures) - _TRIM_TO
+            oldest = sorted(self._failures, key=lambda k: self._failures[k][1])
+            for key in oldest[:excess]:
+                del self._failures[key]
+        if len(self._budget) > BACKOFF_MAX_KEYS:
+            excess = len(self._budget) - _TRIM_TO
+            oldest = sorted(
+                self._budget,
+                key=lambda k: self._budget[k][-1] if self._budget[k] else 0.0,
+            )
+            for key in oldest[:excess]:
                 del self._budget[key]
 
     @staticmethod
@@ -141,6 +172,7 @@ class Backoff:
         self._failures[(kind, subject, client)] = (failures + 1, now)
         if not trusted:
             self._budget.setdefault((kind, subject), deque()).append(now)
+        self._enforce_cap()
 
     def record_success(
         self, kind: str, subject: str, client: str, *, trusted: bool = False

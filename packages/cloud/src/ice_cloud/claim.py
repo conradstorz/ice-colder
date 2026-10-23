@@ -87,10 +87,13 @@ async def claim_submit(
             headers={"Retry-After": str(wait)},
         )
 
-    async def fail(*, burn: bool = False) -> Response:
+    async def fail(*, burn: bool = False, probing_live_code: bool = False) -> Response:
         if burn:
             await asyncio.to_thread(verify_secret, code.strip(), DUMMY_HASH)
-        backoff.record_failure("claim", subject, client, trusted=False)
+        # Only a wrong code against a resolved, live claim feeds the per-machine
+        # budget; anything else is throttled per client alone, so a signed-in
+        # account cannot lock a machine (or the shared "unknown" bucket) out.
+        backoff.record_failure("claim", subject, client, trusted=not probing_live_code)
         return _page(
             request,
             account,
@@ -115,7 +118,7 @@ async def claim_submit(
     if not await asyncio.to_thread(
         verify_secret, code.strip(), machine.claim_code_hash
     ):
-        return await fail()
+        return await fail(probing_live_code=True)
     if not await asyncio.to_thread(
         partial(
             state.repo.claim_machine,
@@ -125,7 +128,7 @@ async def claim_submit(
             expected_hash=machine.claim_code_hash,
         )
     ):
-        return await fail()
+        return await fail(probing_live_code=True)
 
     backoff.record_success("claim", subject, client)
     response = RedirectResponse("/", status_code=303)
