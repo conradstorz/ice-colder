@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}You · Vending Machine{% endblock %}
+{% block body %}
+<div class="space-y-4">
+
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-2">
+    <h1 class="text-hero font-semibold">{{ current_user.name }}</h1>
+    {% if current_user.email %}
+    <p class="text-sm text-gray-500">{{ current_user.email }}</p>
+    {% endif %}
+    <p class="text-base text-gray-700">
+      {% if current_user.role_label and machine_label %}
+      <strong>{{ current_user.role_label }}</strong> on {{ machine_label.display }}
+      {% elif current_user.role_label %}
+      Role: <strong>{{ current_user.role_label }}</strong>
+      {% else %}
+      No machine selected <a href="/fleet" class="underline">Choose one</a>
+      {% endif %}
+    </p>
+  </div>
+
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-2">
+    <h2 class="text-lg font-semibold">What you can do here</h2>
+    {% if permission_lines %}
+    <ul class="list-disc pl-5 space-y-1">
+      {% for line in permission_lines %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="text-gray-500">Nothing on this page yet.</p>
+    {% endif %}
+  </div>
+
+  {% if current_user.last_login_at is defined and current_user.last_login_at %}
+  <p class="text-sm text-gray-500">Last signed in {{ current_user.last_login_at }}</p>
+  {% endif %}
+
+  <button hx-post="/logout" class="touch-target w-full rounded-md bg-slate-800 text-white font-medium px-4 py-3">{{ logout_label }}</button>
+
+</div>
+{% endblock %}
