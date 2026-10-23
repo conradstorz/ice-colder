@@ -77,6 +77,12 @@ def test_login_page_says_not_configured_without_google(cloud):
     assert "/auth/google/start" not in r.text
 
 
+def test_login_page_has_no_identity_chip(cloud):
+    r = cloud.get("/login")
+    assert r.status_code == 200
+    assert 'href="/me"' not in r.text
+
+
 def test_login_page_offers_button_when_configured(settings, clock, provider, tmp_path):
     from dataclasses import replace
 

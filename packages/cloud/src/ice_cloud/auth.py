@@ -42,7 +42,6 @@ from ice_cloud.oidc import IdentityClaims, OidcProvider, SignInError, b64d, b64e
 from ice_cloud.oidc_google import GoogleProvider
 from ice_cloud.settings import CloudSettings
 from ice_cloud.store.repository import Account, EmailConflict, Machine
-from ice_cloud.viewer import VIEWER
 from ice_contracts.access import REMOTE_VIEWER_PERMISSIONS
 from ice_contracts.cloud import signing
 from ice_ui.levels import Level
@@ -281,7 +280,7 @@ def _login_page(
     settings: CloudSettings = request.app.state.settings
     context = {
         "request": request,
-        "current_user": VIEWER,
+        "current_user": None,
         "perms": REMOTE_VIEWER_PERMISSIONS,
         "level": LEVEL_LOGIN,
         "configured": settings.google_configured,
