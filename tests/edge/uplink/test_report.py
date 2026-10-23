@@ -59,7 +59,13 @@ async def test_building_a_report_changes_no_machine_state(machine_fake_time):
 async def test_overlong_product_name_is_clipped_not_fatal():
     cfg = ConfigModel(
         physical=PhysicalDetails(
-            products=[Product(sku="S" * 250, name="N" * 250, price=1.0, slot=1)]
+            products=[
+                # model_construct bypasses the Product validator, as an
+                # in-memory edit would; views.health.clip is the backstop.
+                Product.model_construct(
+                    sku="S" * 250, name="N" * 250, price=1.0, slot=1
+                )
+            ]
         )
     )
     machine = Machine(config=cfg, tasks=FakeTaskRunner())
@@ -79,3 +85,7 @@ async def test_overlong_product_name_is_clipped_not_fatal():
     assert any(f.product == "N" * 200 for f in report.faults)
     assert all(f.sku == "S" * 200 for f in report.faults if f.sku)
     MachineReport.model_validate(report.model_dump(mode="json"))
+
+
+def test_validated_overlong_product_name_is_clipped_by_the_model():
+    assert len(Product(sku="S", name="N" * 250).name) == 120
