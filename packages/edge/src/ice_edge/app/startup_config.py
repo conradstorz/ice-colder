@@ -90,20 +90,39 @@ def check_web_bind(host: str, port: int) -> None:
     """Fail fast if the dashboard's host/port cannot be bound.
 
     uvicorn would otherwise discover this only after MQTT, the recorder and the
-    uplink are wired, and ``sys.exit(1)`` from inside its task. Logs and exits 1.
+    uplink are wired, and ``sys.exit(1)`` from inside its task. Every address
+    the host resolves to is probed. Logs and exits 1.
     """
     try:
-        family = socket.AF_INET6 if ":" in host else socket.AF_INET
-        with socket.socket(family, socket.SOCK_STREAM) as probe:
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            probe.bind((host, port))
-            probe.listen(1)
-    except OSError as exc:
+        infos = socket.getaddrinfo(
+            host, port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
+        )
+    except socket.gaierror as exc:
         logger.error(
-            f"Cannot bind web interface to {host}:{port} "
-            f"(errno {exc.errno}: {exc.strerror or exc}); is another instance running?"
+            f"Cannot bind web interface: could not resolve host {host!r} ({exc})"
         )
         sys.exit(1)
+    seen: set[tuple[int, tuple]] = set()
+    for family, _type, _proto, _canon, sockaddr in infos:
+        if (family, sockaddr) in seen:
+            continue
+        seen.add((family, sockaddr))
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as probe:
+                if sys.platform == "win32":
+                    # SO_REUSEADDR would let the probe share a port uvicorn's
+                    # real bind (no reuse_address on Windows) cannot take.
+                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                else:
+                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                probe.bind(sockaddr)
+                probe.listen(1)
+        except OSError as exc:
+            logger.error(
+                f"Cannot bind web interface to {sockaddr[0]}:{port} "
+                f"(errno {exc.errno}: {exc.strerror or exc}); is another instance running?"
+            )
+            sys.exit(1)
 
 
 def warn_if_no_buttons(config: ConfigModel) -> None:

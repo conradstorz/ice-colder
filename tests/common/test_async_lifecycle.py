@@ -196,6 +196,7 @@ def test_primary_system_exit_still_cancels_and_awaits_background():
 
     async def scenario():
         started = asyncio.Event()
+        cleaned = asyncio.Event()
 
         async def background():
             started.set()
@@ -203,6 +204,7 @@ def test_primary_system_exit_still_cancels_and_awaits_background():
                 await asyncio.Event().wait()
             finally:
                 events.append("background cancelled")
+                cleaned.set()
 
         async def primary():
             await started.wait()
@@ -211,7 +213,7 @@ def test_primary_system_exit_still_cancels_and_awaits_background():
         try:
             await run_until_primary_exits(primary(), background())
         finally:
-            await asyncio.sleep(0.01)  # stands in for main's awaited cleanup
+            await cleaned.wait()  # stands in for main's awaited cleanup
             events.append("caller finally")
 
     with pytest.raises(SystemExit) as excinfo:

@@ -1,4 +1,5 @@
 import socket
+import sys
 
 import pytest
 
@@ -26,3 +27,38 @@ def test_check_web_bind_exits_1_when_port_held(caplog):
     assert excinfo.value.code == 1
     text = " ".join(r.message for r in caplog.records)
     assert "127.0.0.1" in text and str(port) in text and "errno" in text
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="SO_REUSEADDR sharing is Windows-specific"
+)
+def test_check_web_bind_exits_1_when_port_held_with_reuseaddr():
+    with socket.socket() as holder:
+        holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        holder.bind(("127.0.0.1", 0))
+        holder.listen()
+        port = holder.getsockname()[1]
+        with pytest.raises(SystemExit) as excinfo:
+            check_web_bind("127.0.0.1", port)
+    assert excinfo.value.code == 1
+
+
+def test_check_web_bind_exits_1_on_unresolvable_host(caplog):
+    caplog.set_level("ERROR")
+    with pytest.raises(SystemExit) as excinfo:
+        check_web_bind("no-such-host.invalid", 26123)
+    assert excinfo.value.code == 1
+    text = " ".join(r.message for r in caplog.records)
+    assert "could not resolve host" in text and "errno" not in text
+
+
+def test_check_web_bind_probes_every_resolved_address(monkeypatch):
+    with socket.socket() as holder:
+        holder.bind(("127.0.0.1", 0))
+        holder.listen()
+        port = holder.getsockname()[1]
+        free = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.2", port))
+        busy = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))
+        monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [free, busy])
+        with pytest.raises(SystemExit):
+            check_web_bind("somehost", port)
