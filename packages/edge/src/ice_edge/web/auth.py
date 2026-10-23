@@ -192,6 +192,10 @@ class TemplateUser:
     disabled: bool
     last_login_at: str | None
 
+    @property
+    def role_label(self) -> str:
+        return self.role.value
+
 
 def _template_user(user: User) -> TemplateUser:
     return TemplateUser(

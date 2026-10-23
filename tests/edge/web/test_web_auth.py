@@ -168,3 +168,15 @@ class TestCookieFlags:
         assert "HttpOnly" in header
         assert "SameSite=lax" in header.replace("SameSite=Lax", "SameSite=lax")
         assert "Secure" not in header
+
+
+def test_template_user_role_label_is_the_role_value():
+    user = auth.TemplateUser(
+        id="u1",
+        name="Tess",
+        email=None,
+        role=Role.tech,
+        disabled=False,
+        last_login_at=None,
+    )
+    assert user.role_label == "tech"

@@ -34,7 +34,7 @@ from ice_edge.web.context import (
 )
 from ice_edge.web.routes import auth as auth_routes
 from ice_edge.web.routes import controls, health, home, inventory, products
-from ice_edge.web.routes import reports, screen, settings, tests_level, users
+from ice_edge.web.routes import me, reports, screen, settings, tests_level, users
 from ice_ui.templating import templates
 
 __all__ = [
@@ -158,6 +158,7 @@ def attach_routes(app: FastAPI) -> None:
     app.include_router(inventory.router)
     app.include_router(reports.router)
     app.include_router(controls.router)
+    app.include_router(me.router)
     app.include_router(tests_level.router)
     app.include_router(users.router)
     app.include_router(settings.router)
