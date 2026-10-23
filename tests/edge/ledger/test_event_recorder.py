@@ -132,7 +132,7 @@ class TestGetSummary:
 
 
 class TestUptimeComputation:
-    """uptime_pct must measure the fraction of _HEARTBEAT_INTERVAL-sized time
+    """uptime_pct must measure the fraction of HEARTBEAT_BUCKET_SECONDS-sized time
     buckets that have at least one heartbeat from ANY subsystem — not raw
     heartbeat rows, which overcounts when multiple subsystems beat
     concurrently (e.g. 3 simulators beating every 10s reads ~300%, clamped to

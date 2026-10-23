@@ -94,7 +94,7 @@ Water_Sale_Available =
   AND 24 V control power good
 ```
 
-Implemented in `services/availability.py`: known inputs are evaluated, inputs
+Implemented in `packages/edge/src/ice_edge/faults/availability.py`: known inputs are evaluated, inputs
 the firmware cannot report yet are listed as not instrumented and pass until
 Phase B/D.
 
@@ -205,7 +205,7 @@ one not on that list, blocks the affected product (or triggers its listed
 response) without ever withdrawing payment; membership in the frozenset
 decides this, not severity. `SVC-102` is the one member that is not
 `critical` severity: it is a deliberate operator-held maintenance lease
-(`controller/vmc.py`'s `begin_maintenance`/`end_maintenance`), not a
+(`packages/edge/src/ice_edge/sale/maintenance_lease.py`'s `MaintenanceLease.begin_maintenance`/`end_maintenance`), not a
 hardware failure, and it auto-clears on release rather than staying latched
 like every other member here.
 
@@ -263,7 +263,7 @@ dwell → power on → confirm heartbeat → permissives → re-enable.
   stays enabled — `PAY-104` is bookkeeping doubt about a sale that already
   happened, not a reason to refuse the next one (§3). The operator
   reconciles and clears the fault from the dashboard (implemented in
-  `services/session_store.py`).
+  `packages/edge/src/ice_edge/ledger/session_store.py`).
 - The payment system is never power-cycled with a transaction open.
 
 ## 8. Failure modes

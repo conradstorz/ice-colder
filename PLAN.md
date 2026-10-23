@@ -79,7 +79,7 @@ vmc/{id}/alerts                  # { "level": "warning", "message": "..." }
 
 Convert the app from synchronous + threading to asyncio.
 
-- [x] Replace `main.py` blocking loop with `asyncio.run()` event loop
+- [x] Replace `ice_edge/__main__.py` blocking loop with `asyncio.run()` event loop
 - [x] Run uvicorn inside the event loop (not in a separate thread)
 - [x] Convert VMC timer-based scheduling to asyncio tasks
 - [x] Remove `threading.Timer` usage from VMC
@@ -93,7 +93,7 @@ Add MQTT as the communication backbone.
 - [x] Create MQTT client service that connects to broker and manages subscriptions
 - [x] Define message schemas for each topic (Pydantic models)
 - [x] Add `MQTTConfig` and `machine_id` to `ConfigModel`
-- [x] Wire MQTT client into `main.py` (runs alongside uvicorn via `asyncio.gather`)
+- [x] Wire MQTT client into `ice_edge/__main__.py` (runs alongside uvicorn via `asyncio.gather`)
 - [x] Register VMC MQTT handlers for payment, buttons, dispenser, sensors, heartbeat
 - [x] Publish VMC status to `vmc/{id}/status` on every state change
 - [x] Write tests for MQTT schemas, topic matching, dispatch, and VMC wiring (32 tests)
@@ -133,7 +133,7 @@ Control the customer-facing screen.
 - [x] Implement advertising mode (idle) and transaction mode (during sale)
 - [x] Accept display commands from FSM state changes
 - [x] Publish DisplayCommand to MQTT on every mode change (cmd/display topic)
-- [x] Wire display controller into main.py and VMC
+- [x] Wire display controller into ice_edge/__main__.py and VMC
 - [x] Write tests for display controller (16 tests, 108 total passing)
 
 ### Phase 6: ESP32 Simulators

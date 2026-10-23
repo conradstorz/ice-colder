@@ -108,7 +108,9 @@ Before exposing a host through Traefik, confirm three things outside this
 repo: the router forwards only 80/443 (never 1883); Traefik's `websecure`
 entrypoint has TLS; and Traefik runs without `forwardedHeaders.trustedIPs`
 or `insecure` set, so it discards any `X-Forwarded-For` a client supplies
-(the login back-off's trusted-proxy rule depends on that).
+(the login back-off's trusted-proxy rule depends on that). The cloud server
+uses Caddy instead of Traefik; see
+[docs/deploying-the-cloud-server.md](docs/deploying-the-cloud-server.md).
 
 ### Using the Dashboard
 

@@ -42,6 +42,16 @@ across a release that added a migration requires restoring the pre-update backup
 (`docs/backups.md`) as part of the rollback. Note the working tag before
 every update so there is something to return to.
 
+## Network
+
+The dashboard is plain HTTP on the port the overlay publishes. Session, device
+(365 d) and enrol cookies cross the LAN in clear, so the machine's LAN must be
+trusted. Remote access goes through a TLS proxy that sets `X-Forwarded-Proto`
+and is named in `ICE_COLDER_TRUSTED_PROXIES`; the cookies' `Secure` flag
+follows `is_https` (`web/auth.py`), which honours that header only from a
+trusted proxy. Mosquitto on 1883 is also cleartext, so keep it on the LAN via
+`MQTT_BIND_ADDR`. A machine behind Traefik follows the README's three checks.
+
 ## Health
 
 `docker inspect --format '{{.State.Health.Status}}' ice-colder-vmc`
