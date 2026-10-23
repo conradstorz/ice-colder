@@ -47,8 +47,10 @@ from pydantic import (
     EmailStr,
     SecretStr,
     Field,
+    field_validator,
     model_validator,
 )
+from loguru import logger
 
 from ice_contracts.board.common import CHANNEL_ID_PATTERN
 
@@ -100,6 +102,10 @@ class Location(BaseModel):
     )
 
 
+MAX_SKU_LENGTH = 64
+MAX_PRODUCT_NAME_LENGTH = 120
+
+
 class Product(BaseModel):
     sku: str = Field("SAMPLE-SKU", description="Machine Selection Code / Product SKU")
     name: str = Field("Sample Product", description="Product name")
@@ -138,6 +144,29 @@ class Product(BaseModel):
             "other (gated by every permissive)"
         ),
     )
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _clip_long_name(cls, value: Any) -> Any:
+        # Tolerate an over-long name already on disk: clip, never refuse to boot.
+        if isinstance(value, str) and len(value) > MAX_PRODUCT_NAME_LENGTH:
+            logger.warning(
+                f"Product name of {len(value)} characters clipped to "
+                f"{MAX_PRODUCT_NAME_LENGTH}: {value[:40]!r}..."
+            )
+            return value[:MAX_PRODUCT_NAME_LENGTH]
+        return value
+
+    @field_validator("sku")
+    @classmethod
+    def _warn_long_sku(cls, value: str) -> str:
+        # A sku is an identity (sales, inventory, lockouts): kept, never clipped.
+        if len(value) > MAX_SKU_LENGTH:
+            logger.warning(
+                f"Product SKU {value!r} is longer than {MAX_SKU_LENGTH} "
+                "characters; kept as is. Rename it when convenient."
+            )
+        return value
 
 
 class PhysicalDetails(BaseModel):

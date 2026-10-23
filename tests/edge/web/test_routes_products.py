@@ -885,3 +885,68 @@ class TestProductButton:
         assert resp.status_code == 200
         assert 'name="button" value=""' in resp.text
         assert 'value="button_ice"' not in resp.text
+
+
+class TestLengthLimits:
+    """M9: new skus <= 64 chars and names <= 120 chars; over is a 400."""
+
+    def test_create_with_65_char_sku_is_refused(self, client, wired):
+        cfg, _vmc, inv, _store = wired
+        before = _state(cfg, inv)
+        resp = _add(client, "S" * 65)
+        assert resp.status_code == 400
+        assert "64" in resp.text
+        assert _state(cfg, inv) == before
+
+    def test_create_with_121_char_name_is_refused(self, client, wired):
+        cfg, _vmc, inv, _store = wired
+        before = _state(cfg, inv)
+        resp = _add(client, "LEN-1", name="n" * 121)
+        assert resp.status_code == 400
+        assert "120" in resp.text
+        assert _state(cfg, inv) == before
+
+    def test_boundary_values_are_accepted(self, client, wired):
+        cfg, _vmc, _inv, _store = wired
+        resp = _add(client, "S" * 64, name="n" * 120)
+        assert resp.status_code == 200
+        assert any(p.sku == "S" * 64 and p.name == "n" * 120 for p in cfg.products)
+
+    def test_catalog_update_with_121_char_name_is_refused(self, client, wired):
+        cfg, _vmc, inv, _store = wired
+        _add(client, "LEN-2")
+        before = _state(cfg, inv)
+        resp = client.post(
+            "/products/LEN-2/catalog",
+            data={"name": "n" * 121, "price": "1.00", "kind": "other"},
+        )
+        assert resp.status_code == 400
+        assert "120" in resp.text
+        assert _state(cfg, inv) == before
+
+    def test_catalog_update_with_120_char_name_is_accepted(self, client, wired):
+        cfg, _vmc, _inv, _store = wired
+        _add(client, "LEN-3")
+        resp = client.post(
+            "/products/LEN-3/catalog",
+            data={"name": "n" * 120, "price": "1.00", "kind": "other"},
+        )
+        assert resp.status_code == 200
+        assert next(p for p in cfg.products if p.sku == "LEN-3").name == "n" * 120
+
+    def test_copy_post_with_long_sku_is_refused(self, client, wired):
+        cfg, _vmc, inv, _store = wired
+        _add(client, "LEN-4")
+        before = _state(cfg, inv)
+        resp = client.post(
+            "/products/new",
+            data={
+                "sku": "C" * 65,
+                "name": "Copy",
+                "price": "1.00",
+                "mode": "copy",
+                "source_sku": "LEN-4",
+            },
+        )
+        assert resp.status_code == 400
+        assert _state(cfg, inv) == before

@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
 from loguru import logger
 
+from ice_common.config_model import MAX_PRODUCT_NAME_LENGTH, MAX_SKU_LENGTH
 from ice_edge.access.access import Permission
 from ice_edge.config.config_store import (
     add_product,
@@ -26,6 +27,14 @@ from .helpers import (
 )
 
 router = APIRouter()
+
+
+def _length_error(sku: str, name: str, *, check_sku: bool = True) -> str | None:
+    if check_sku and len(sku) > MAX_SKU_LENGTH:
+        return f"SKU must be at most {MAX_SKU_LENGTH} characters."
+    if len(name) > MAX_PRODUCT_NAME_LENGTH:
+        return f"Name must be at most {MAX_PRODUCT_NAME_LENGTH} characters."
+    return None
 
 
 @router.get(
@@ -73,6 +82,25 @@ async def create_product(
     button: str = Form(""),
 ):
     tracked = track_inventory is not None
+    sku = sku.strip()
+    name = name.strip()
+    length_error = _length_error(sku, name)
+    if length_error:
+        return _render_product_form(
+            request,
+            mode=mode,
+            source_sku=source_sku,
+            sku=sku,
+            name=name,
+            price=price,
+            kind=kind,
+            slot=slot,
+            inventory_count=inventory_count,
+            tracked=tracked,
+            error=length_error,
+            button=button,
+            status_code=400,
+        )
     parsed_button, button_error = _clean_button(button)
     if button_error:
         return _render_product_form(
@@ -208,8 +236,9 @@ async def update_catalog(
     # regardless of what a hostile form body contains (mirrors part 1's
     # a2b8829 guarantee for the placement side).
     product = _get_or_404(sku)
+    name = name.strip()
     parsed_button, button_error = _clean_button(button, own_sku=sku)
-    if button_error:
+    if button_error or len(name) > MAX_PRODUCT_NAME_LENGTH:
         level = Level.child(
             _product_level(product), "Catalog", f"/products/{sku}/catalog"
         )
@@ -220,7 +249,7 @@ async def update_catalog(
                 request,
                 level=level,
                 product=product,
-                error=button_error,
+                error=_length_error(sku, name, check_sku=False) or button_error,
                 button_value=button,
             ),
             status_code=400,

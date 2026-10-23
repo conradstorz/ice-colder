@@ -333,3 +333,34 @@ class TestRoMaxRunSeconds:
 
         with pytest.raises(ValidationError):
             ConfigModel.model_validate({"physical": {"ro_max_run_seconds": bad}})
+
+
+class TestProductLengthLimits:
+    """M9: over-long names are clipped on load, skus are kept and warned."""
+
+    def test_long_name_is_clipped_with_warning(self):
+        from loguru import logger
+
+        lines = []
+        sink = logger.add(lambda m: lines.append(str(m)), level="WARNING")
+        try:
+            product = Product.model_validate({"sku": "A", "name": "x" * 130})
+        finally:
+            logger.remove(sink)
+        assert product.name == "x" * 120
+        assert any("clipped" in line for line in lines)
+
+    def test_name_at_limit_is_untouched(self):
+        assert Product.model_validate({"name": "y" * 120}).name == "y" * 120
+
+    def test_long_sku_is_kept_with_warning(self):
+        from loguru import logger
+
+        lines = []
+        sink = logger.add(lambda m: lines.append(str(m)), level="WARNING")
+        try:
+            product = Product.model_validate({"sku": "S" * 70})
+        finally:
+            logger.remove(sink)
+        assert product.sku == "S" * 70
+        assert any("longer than" in line for line in lines)
