@@ -25,6 +25,8 @@ from ice_ui.levels import Level
 LEVEL_CLAIM = Level(title="Claim a machine", url="/claim", parent=LEVEL_FLEET)
 NO_CLAIM = "No claim is open for this machine, or the code is wrong."
 
+ANY_SUBJECT = "any"
+
 DUMMY_HASH = hash_secret("00000000")
 
 router = APIRouter()
@@ -86,7 +88,14 @@ async def claim_submit(
     subject = short or "unknown"
     client = request.client.host if request.client else "unknown"
 
-    remaining = backoff.check("claim", subject, client, trusted=False)
+    # A client-only entry under a fixed subject: rotating well-formed shorts
+    # cannot buy fresh counters (nor fresh scrypt burns) from one address.
+    # Checked first, so a backed-off client is refused before any lookup/scrypt.
+    waits = [
+        backoff.check("claim", ANY_SUBJECT, client, trusted=True),
+        backoff.check("claim", subject, client, trusted=False),
+    ]
+    remaining = max((w for w in waits if w is not None), default=None)
     if remaining is not None:
         wait = int(remaining) + 1
         return _page(
@@ -104,6 +113,7 @@ async def claim_submit(
         # Only a wrong code against a resolved, live claim feeds the per-machine
         # budget; anything else is throttled per client alone, so a signed-in
         # account cannot lock a machine (or the shared "unknown" bucket) out.
+        backoff.record_failure("claim", ANY_SUBJECT, client, trusted=True)
         backoff.record_failure("claim", subject, client, trusted=not probing_live_code)
         return _page(
             request,
@@ -140,6 +150,7 @@ async def claim_submit(
         return await fail(probing_live_code=True)
 
     backoff.record_success("claim", subject, client)
+    backoff.record_success("claim", ANY_SUBJECT, client, trusted=True)
     response = RedirectResponse("/", status_code=303)
     response.set_cookie(
         COOKIE,

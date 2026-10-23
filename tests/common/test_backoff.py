@@ -48,3 +48,17 @@ def test_sweep_interval_does_not_change_boundary_results():
     assert backoff.check("pin", "v", "new") is not None
     now[0] += 3601.0
     assert backoff.check("pin", "v", "new") is None
+
+
+def test_stale_budget_stamps_are_ignored_without_a_full_sweep():
+    from ice_common.backoff import BUDGET_WINDOW_SECONDS
+
+    now = [0.0]
+    backoff = Backoff(clock=lambda: now[0])
+    for i in range(19):
+        backoff.record_failure("pin", "v", f"c{i}")
+    now[0] = BUDGET_WINDOW_SECONDS - 10.0
+    assert backoff.check("pin", "v", "x") is None  # sweep runs here
+    now[0] = BUDGET_WINDOW_SECONDS + 5.0  # stamps now stale, < 60 s since sweep
+    backoff.record_failure("pin", "v", "fresh")
+    assert backoff.check("pin", "v", "new") is None

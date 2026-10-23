@@ -156,6 +156,12 @@ class Backoff:
 
         if not trusted:
             stamps = self._budget.get((kind, subject))
+            if stamps is not None:
+                # Lazy per-key prune: stale stamps never count, sweep or not.
+                while stamps and now - stamps[0] > BUDGET_WINDOW_SECONDS:
+                    stamps.popleft()
+                if not stamps:
+                    del self._budget[(kind, subject)]
             if stamps and len(stamps) >= BUDGET_THRESHOLD:
                 over = len(stamps) - BUDGET_THRESHOLD + 1
                 waits.append(stamps[-1] + self._delay(over) - now)

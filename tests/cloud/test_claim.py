@@ -70,13 +70,22 @@ def test_no_open_claim_same_403_message(cloud, signer, clock):
     open_claim(cloud, other, expires_in=60)
     login(cloud, "a@example.com")
     clock.advance(120)
+    # One client per case: a client-wide back-off now spans every fingerprint.
     cases = {
-        "no open claim": post_claim(cloud, signer, CODE),
+        "no open claim": post_claim(_client_at(cloud, "10.2.0.1"), signer, CODE),
         "unknown machine": post_claim(
-            cloud, signer, CODE, fingerprint="0000-0000-0000-0000"
+            _client_at(cloud, "10.2.0.2"),
+            signer,
+            CODE,
+            fingerprint="0000-0000-0000-0000",
         ),
-        "expired": post_claim(cloud, other, CODE),
-        "garbage": post_claim(cloud, signer, CODE, fingerprint="not a fingerprint"),
+        "expired": post_claim(_client_at(cloud, "10.2.0.3"), other, CODE),
+        "garbage": post_claim(
+            _client_at(cloud, "10.2.0.4"),
+            signer,
+            CODE,
+            fingerprint="not a fingerprint",
+        ),
     }
     for name, r in cases.items():
         assert r.status_code == 403, name
@@ -319,3 +328,24 @@ def test_claim_scrypt_runs_on_the_dedicated_executor(cloud, signer, monkeypatch)
     assert post_claim(cloud, signer, CODE).status_code == 303
     assert len(seen) == 3
     assert all(name.startswith("scrypt") for name in seen), seen
+
+
+def test_rotating_fingerprints_from_one_client_are_throttled(cloud, signer, clock):
+    login(cloud, "a@example.com")
+    attacker = _client_at(cloud, "10.7.0.1")
+    elapsed = 0.0
+    for i in range(20):
+        fp = f"{i:04x}-aaaa-bbbb-cccc"
+        assert post_claim(attacker, signer, "00000000", fp).status_code == 403
+        # Wait out exactly the client's own back-off before the next guess.
+        if i < 19:
+            elapsed += 2.0**i + 1
+            clock.advance(elapsed)
+    # Fresh shorts never reset the client's counter: back-off still stands.
+    r = post_claim(attacker, signer, "00000000", "ffff-aaaa-bbbb-cccc")
+    assert r.status_code == 429
+    # A different client is unaffected.
+    other = _client_at(cloud, "10.7.0.2")
+    assert (
+        post_claim(other, signer, "00000000", "ffff-aaaa-bbbb-cccc").status_code == 403
+    )
