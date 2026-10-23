@@ -20,6 +20,13 @@ def _render(user, **extra):
     return templates.get_template("me.html").render(**ctx)
 
 
+def _bar(html):
+    """Return the top bar markup only (from id="bar" to its closing tag)."""
+    start = html.index('id="bar"')
+    end = html.index("</header>", start)
+    return html[start:end]
+
+
 def test_edge_shape():
     user = SimpleNamespace(
         name="Pat",
@@ -34,12 +41,13 @@ def test_edge_shape():
         permission_lines=lines,
     )
     assert "Pat" in html
-    assert "owner" in html and "on Lobby Ice (ice-07)" in html
+    assert "pat@example.com" in html
+    assert "<strong>owner</strong> on Lobby Ice (ice-07)" in html
     for line in lines:
         assert line in html
     assert "Last signed in" in html
     assert 'hx-post="/logout"' in html
-    assert "Lock" in html
+    assert ">Lock</button>" in html
 
 
 def test_cloud_shape_has_no_last_login():
@@ -50,9 +58,16 @@ def test_cloud_shape_has_no_last_login():
         logout_label="Sign out",
         permission_lines=["See status"],
     )
-    assert "tech" in html and "on Lobby Ice (ice-07)" in html
-    assert "Sign out" in html
+    assert "<strong>tech</strong> on Lobby Ice (ice-07)" in html
+    assert 'hx-post="/logout"' in html
+    assert ">Sign out</button>" in html
     assert "Last signed in" not in html
+
+
+def test_no_email_renders_no_address():
+    user = SimpleNamespace(name="Sam", role_label="tech", email=None)
+    html = _render(user, machine_label=MachineLabel("Lobby Ice", "ice-07"))
+    assert "@" not in html
 
 
 def test_no_machine_selected():
@@ -60,6 +75,15 @@ def test_no_machine_selected():
     html = _render(user)
     assert "No machine selected" in html
     assert 'href="/fleet"' in html
+    assert "Role:" not in html
+    assert " on Lobby" not in html
+
+
+def test_role_without_machine_shows_role_line():
+    user = SimpleNamespace(name="Pat", role_label="owner", email=None)
+    html = _render(user, machine_label=None)
+    assert "Role: <strong>owner</strong>" in html
+    assert "No machine selected" not in html
 
 
 def test_empty_permissions():
@@ -69,6 +93,7 @@ def test_empty_permissions():
 
 def test_bar_chip_and_crumb():
     user = SimpleNamespace(name="Pat", role_label="owner", email=None)
-    html = _render(user)
-    assert 'href="/me"' in html
-    assert "You" in html
+    bar = _bar(_render(user))
+    assert 'href="/me"' in bar
+    assert 'aria-label="Signed in as Pat"' in bar
+    assert 'aria-current="page">You</span>' in bar
