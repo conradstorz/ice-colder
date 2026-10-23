@@ -79,7 +79,23 @@ Ownership is proven by a code minted **at the machine**; the cloud only ever sto
 
 ## Platform admin
 
-Add Google emails to `ICE_CLOUD_ADMINS` and restart; that is the whole procedure. Admins see `/admin`: every machine with owner or "unclaimed", last seen, claim open or not, plus **Unbind** (owner removed, memberships deleted, two-tap) and **Suspend/Unsuspend** for accounts. Admins can view every machine's pages but can never set an owner: ownership always passes through a code minted at the machine. Non-admins get 404 on `/admin`.
+Add Google emails to `ICE_CLOUD_ADMINS` and restart; that is the whole procedure. Admins see `/admin`, a fleet dashboard computed from data the cloud already stores (the latest report per machine, accounts, memberships and alert events), with four headline counts:
+
+- **Machines**: every registered machine, split claimed / unclaimed.
+- **Owners**: distinct accounts that own at least one machine.
+- **Unclaimed calling in**: machines with no owner that are currently reporting (someone installed one and never claimed it).
+- **Silent**: machines whose last report is older than 3 x their `report_interval_seconds`, claimed or not. This is the same rule as the Online/Offline badge on `/fleet`. A machine with no stored report is `never_reported`, counted separately.
+
+Below them: a status bar (online, online with faults, silent, never reported), secondary counts (faulted, payment blocked, alerts and revenue and uptime over 24 h, software builds), a "Needs attention" list (safety faults, silent machines, payment off, unclaimed callers) and top owners and builds. Revenue and uptime cover online machines only, since a silent machine's 24 h window is stale. The page refreshes itself every 60 s.
+
+Each count links to a drill-down level, all admin-only:
+
+- `/admin/machines`: every machine as a table, with filters `status=online|silent|never_reported`, `claimed=yes|no`, `faulted=yes`, `payment=blocked` and `owner=<account id>` (combined with AND; unknown values are ignored). The faulted and payment filters match online machines only. **Unbind** (owner removed, memberships deleted, two-tap) is here.
+- `/admin/owners`: one row per owner with machine, online, silent, faulted and technician counts.
+- `/admin/accounts`: every account with **Suspend/Unsuspend**, the SMTP status and the test-email button.
+- `/admin/alerts`: the newest 100 alert events across the fleet.
+
+`/fleet` shows admins a "Fleet dashboard" link to `/admin`; owners and technicians see no change. Admins can view every machine's pages but can never set an owner: ownership always passes through a code minted at the machine. Non-admins get 404 on everything under `/admin`.
 
 ## Alerts
 

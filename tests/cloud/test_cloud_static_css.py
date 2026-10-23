@@ -4,6 +4,7 @@ app.css (the portal serves ice_ui's stylesheet; there is no cloud build)."""
 from pathlib import Path
 
 import ice_cloud
+from tests.repo_root import REPO_ROOT
 from tests.ui.test_static_css import (
     APP_CSS_PATH,
     NO_CSS_CLASSES,
@@ -27,3 +28,8 @@ def test_every_cloud_template_class_is_in_app_css():
         for path in templates
     }
     assert not {k: v for k, v in missing.items() if v}, missing
+
+
+def test_tailwind_scans_cloud_templates():
+    config = (REPO_ROOT / "packages/ui/tailwind.config.js").read_text(encoding="utf-8")
+    assert '"./packages/cloud/src/ice_cloud/templates/**/*.html"' in config

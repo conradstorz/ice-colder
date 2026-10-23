@@ -17,7 +17,11 @@ module.exports = {
   // on the tablet never leaves a sticky hover state behind; mouse users see
   // no change. Spec 2026-09-30 §4.1.
   future: { hoverOnlyWhenSupported: true },
-  content: ["./packages/ui/src/ice_ui/templates/**/*.html"],
+  // The cloud portal serves this stylesheet to its own templates too (spec §6).
+  content: [
+    "./packages/ui/src/ice_ui/templates/**/*.html",
+    "./packages/cloud/src/ice_cloud/templates/**/*.html",
+  ],
   theme: {
     extend: {
       // md/lg are not Tailwind v3's defaults (768px / 1024px out of the
