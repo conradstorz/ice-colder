@@ -293,7 +293,7 @@ async def copy_product_form(request: Request, sku: str):
         mode="copy",
         source_sku=sku,
         sku=new_sku,
-        name=f"{base.name} Copy",
+        name=f"{base.name[: MAX_PRODUCT_NAME_LENGTH - 5]} Copy",
         price=base.price,
         kind=base.kind,
         slot=None,

@@ -950,3 +950,13 @@ class TestLengthLimits:
         )
         assert resp.status_code == 400
         assert _state(cfg, inv) == before
+
+    def test_copy_form_prefill_fits_name_limit(self, client, wired):
+        import re
+
+        _add(client, "LEN-5", name="n" * 120)
+        resp = client.get("/products/LEN-5/copy")
+        assert resp.status_code == 200
+        value = re.search(r'id="name" name="name" value="([^"]*)"', resp.text).group(1)
+        assert len(value) <= 120
+        assert value.endswith(" Copy")
