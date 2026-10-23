@@ -677,8 +677,10 @@ class VMC:
         if self._cycle is not None:
             self._cycle.cancel()
         self._cycle = None
+        if shares := self.pending_sale_shares:
+            self._journal.error_restored(self._escrow.restore_shares(shares))
         if self._sale is not None:
-            self._sale = self._sale.with_(mechanism=None, request_id=None)
+            self._sale = self._sale.with_(mechanism=None, request_id=None, shares=None)
         had_credit = self.credit_escrow > 0
         if had_credit:
             self.request_refund(reason="error")

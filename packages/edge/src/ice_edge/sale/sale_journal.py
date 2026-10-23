@@ -240,6 +240,13 @@ class SaleJournal:
         )
         self._record("error", value=1.0)
 
+    def error_restored(self, total: float) -> None:
+        logger.warning(
+            f"Error state: ${total:.2f} of consumed sale credit returned to escrow "
+            "for refund; no sale recorded"
+        )
+        self._txn.warning(f"ERROR: ${total:.2f} returned to escrow for refund")
+
     # -- refunds -----------------------------------------------------------
 
     def refund_requested(self, amount: float, method, reason, request_id: str) -> None:

@@ -14,6 +14,8 @@ lease) stay on ``VMC`` itself.
 
 from __future__ import annotations
 
+import time
+
 from loguru import logger
 
 from ice_edge.ledger.session_store import Credit
@@ -118,6 +120,12 @@ class EscrowLedger:
         for method, amount in shares.items():
             if amount > 0:
                 self.credits.append(Credit(method=method, amount=amount, ts=ts))
+
+    def restore_shares(self, shares: dict[str, float]) -> float:
+        """`restore` for a whole sale's shares; returns the rounded amount restored."""
+        price = round(sum(shares.values()), 2)
+        self.restore(shares, time.time(), price)
+        return price
 
     def take_all(self) -> float:
         """Zero both total and credits, returning the previous rounded total."""

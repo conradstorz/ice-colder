@@ -1559,6 +1559,37 @@ class TestRefunds:
         assert "requested" in messages[-1]
         assert "refunded" not in messages[-1]
 
+    async def test_on_error_mid_dispense_restores_consumed_shares_then_refunds_all(
+        self,
+    ):
+        """An error entered after process_payment consumed shares must give the
+        whole deposit back, not just the leftover change (M6)."""
+        machine = make_machine(products=two_products())
+        vmc = machine.vmc
+        machine.attach_to_loop(asyncio.get_running_loop())
+        client = RecordingClient()
+        machine.set_mqtt_client(client)
+        vmc.set_state("interacting_with_user")
+        vmc.selected_product = vmc.products[0]
+        vmc.deposit_funds(1.50, payment_method="cash_bill")
+        vmc.deposit_funds(1.00, payment_method="card")
+        vmc.process_payment()
+        assert vmc.state == "dispensing"
+        assert vmc.pending_sale_shares
+
+        vmc.error_occurred()
+        await asyncio.sleep(0)
+
+        assert vmc.state == "error"
+        assert vmc.pending_sale_shares is None
+        assert vmc.credit_escrow == 0.0  # refund took everything
+        cmds = client.refund_commands()
+        assert len(cmds) == 1 and cmds[0].amount == 2.5 and cmds[0].reason == "error"
+
+        vmc.reset_state()
+        assert vmc.credit_escrow == 0.0
+        assert vmc.escrow_credits == []
+
     async def test_on_error_without_credit_says_contact_support_only(self):
         runner = FakeTaskRunner()
         machine = make_machine(tasks=runner, products=two_products())
