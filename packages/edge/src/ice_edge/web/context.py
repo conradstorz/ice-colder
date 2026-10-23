@@ -206,26 +206,29 @@ def require_htmx(request: Request):
 LOG_PATH = LOG_FILE
 
 
+_TAIL_BLOCK = 8192
+
+
 def tail(file_path: Path, lines: int = 50) -> list[str]:
+    """Return the last ``lines`` lines of a file, reading 8 KiB blocks backwards."""
     if not file_path.exists():
         return ["[Log file not found]"]
 
     with file_path.open("rb") as f:
-        f.seek(0, 2)
-        end = f.tell()
-        buffer = bytearray()
-        count = 0
-
-        for pos in range(end - 1, -1, -1):
+        pos = f.seek(0, 2)
+        chunks: list[bytes] = []
+        newlines = 0
+        # One extra newline is needed to know the oldest wanted line is whole;
+        # a trailing newline ends the last line rather than starting another.
+        while pos > 0 and newlines <= lines:
+            size = min(_TAIL_BLOCK, pos)
+            pos -= size
             f.seek(pos)
-            char = f.read(1)
-            if char == b"\n":
-                count += 1
-                if count >= lines:
-                    break
-            buffer.extend(char)
-        result = buffer[::-1].decode("utf-8", errors="replace")
-        return result.strip().splitlines()
+            chunk = f.read(size)
+            chunks.append(chunk)
+            newlines += chunk.count(b"\n")
+    data = b"".join(reversed(chunks))
+    return data.decode("utf-8", errors="replace").strip().splitlines()[-lines:]
 
 
 def template_context(request: Request, level: str | None = None, **extra) -> dict:
