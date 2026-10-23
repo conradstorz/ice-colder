@@ -3,6 +3,7 @@ import sqlite3
 import time
 
 import pytest
+from loguru import logger
 
 from ice_edge.app import startup_config
 from ice_edge.app.startup_config import warn_if_no_buttons, warn_if_setup_mode
@@ -282,6 +283,33 @@ def test_reconcile_raises_data_103_only_when_db_unavailable(
     assert machine.faults.has(FaultCode.DATA_103.value) is unavailable
     assert not machine.faults.has(FaultCode.DATA_102.value)
     assert machine.vmc.state == "idle"
+
+
+def test_reconcile_names_the_downgrade_for_a_newer_schema(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        event_recorder_module, "JOURNAL_PATH", tmp_path / "sales-journal.jsonl"
+    )
+
+    class StubRecorder:
+        db_was_corrupt = False
+        corrupt_backup_path = None
+        db_unavailable = True
+        db_newer_than_code = True
+
+        def replay_sales_journal(self):
+            return 0
+
+    machine = Machine(config=ConfigModel())
+
+    messages: list[str] = []
+    sink_id = logger.add(lambda m: messages.append(str(m)), level="ERROR")
+    try:
+        reconcile_sales_journal_faults(machine, StubRecorder())
+    finally:
+        logger.remove(sink_id)
+
+    assert machine.faults.has(FaultCode.DATA_103.value)
+    assert any("newer release" in m for m in messages)
 
 
 @pytest.mark.parametrize(

@@ -241,6 +241,15 @@ async def collect_cash(request: Request):
     if not principal:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
+    if context.event_recorder.db_newer_than_code:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "cash collection cannot be recorded on this build; the event "
+                "database is from a newer release"
+            ),
+        )
+
     user_id = principal.user.id
     user_name = principal.user.name
     db_path = context.event_recorder._db_path

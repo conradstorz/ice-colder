@@ -635,7 +635,7 @@ class EventRecorder:
         self._discarded_events += 1
         if self._discarded_events == 1:
             logger.warning(
-                f"EventRecorder: discarding event rows ({what} first): events.db "
+                f"EventRecorder: discarding event rows (first was {what!r}): events.db "
                 "has a newer schema than this build and is read-only"
             )
         elif self._discarded_events % 1000 == 0:

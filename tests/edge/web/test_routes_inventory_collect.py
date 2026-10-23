@@ -151,6 +151,23 @@ class TestCollectCashEndpoint:
         rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 1
 
+    def test_collect_cash_refused_on_newer_schema_database(
+        self, login_as, wired, recorder_with_db
+    ):
+        db = recorder_with_db.db_path
+        conn = sqlite3.connect(db)
+        conn.execute("PRAGMA user_version = 99")
+        conn.commit()
+        conn.close()
+        newer = EventRecorder(db_path=str(db), retention_days=90)
+        assert newer.db_newer_than_code is True
+        context.set_event_recorder(newer)
+        client = login_as(Role.owner)
+        resp = client.post("/inventory/collect", headers={"HX-Request": "true"})
+        assert resp.status_code == 409
+        assert "newer release" in resp.text
+        assert _read_cash_collections(db) == []
+
     def test_collect_cash_refuses_unauthenticated_post(self, wired, recorder_with_db):
         """An unauthenticated POST should be refused with 401 and HX-Redirect."""
         from fastapi.testclient import TestClient
