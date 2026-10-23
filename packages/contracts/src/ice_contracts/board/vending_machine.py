@@ -72,7 +72,12 @@ from ice_contracts.board.common import ChannelDescriptor, _utc_now
 # Also in 2.2.0: DATA-104 (session snapshot could not be saved; a crash
 # now would lose the live sale's evidence). Alert-class, not
 # payment-blocking.
-CONTRACT_VERSION = "2.2.0"
+#
+# 2.2.0 -> 2.3.0 (2026-10-22): minor bump, additive. DATA-105 (event row
+# could not be written; KPIs and history may be incomplete) and DATA-106
+# (inventory counts could not be saved; stock levels revert on restart).
+# Both alert-class, not payment-blocking.
+CONTRACT_VERSION = "2.3.0"
 
 
 class DispenserOutcome(str, Enum):
@@ -143,6 +148,8 @@ class FaultCode(str, Enum):
     DATA_102 = "DATA-102"
     DATA_103 = "DATA-103"
     DATA_104 = "DATA-104"
+    DATA_105 = "DATA-105"
+    DATA_106 = "DATA-106"
     CFG_101 = "CFG-101"
     CFG_102 = "CFG-102"
 
@@ -359,6 +366,20 @@ FAULT_TABLE: dict[FaultCode, FaultSpec] = {
         description=(
             "Session snapshot could not be saved; a crash now would lose the "
             "live sale's evidence"
+        ),
+    ),
+    FaultCode.DATA_105: FaultSpec(
+        severity=Severity.warning,
+        scope=Scope.machine,
+        description=(
+            "Event row could not be written; KPIs and history may be incomplete"
+        ),
+    ),
+    FaultCode.DATA_106: FaultSpec(
+        severity=Severity.warning,
+        scope=Scope.machine,
+        description=(
+            "Inventory counts could not be saved; stock levels revert on restart"
         ),
     ),
     FaultCode.CFG_101: FaultSpec(

@@ -35,8 +35,8 @@ def test_contract_version():
     # `dispense` params now require mechanism+profile, `cmd/dispense` is
     # removed, and DispenserStatus.request_id is now always set for sales.
     # 1.0.0 -> 2.0.0: ButtonPress.button is a channel id (breaking).
-    # 2.1.0 -> 2.2.0: DATA-103 (additive).
-    assert CONTRACT_VERSION == "2.2.0"
+    # 2.2.0 -> 2.3.0: DATA-105/DATA-106 (additive).
+    assert CONTRACT_VERSION == "2.3.0"
 
 
 def test_payment_contract_faults_registered():
@@ -212,7 +212,7 @@ class TestSubsystemCapabilities:
             )
 
     def test_contract_version_bumped(self):
-        assert CONTRACT_VERSION == "2.2.0"
+        assert CONTRACT_VERSION == "2.3.0"
 
     def test_expected_subsystems(self):
         assert EXPECTED_SUBSYSTEMS == ("vending", "mdb", "ice_maker")
@@ -236,7 +236,7 @@ def test_pay_104_is_a_machine_warning():
 def test_contract_version_bumped_for_new_code():
     from ice_contracts.board.vending_machine import CONTRACT_VERSION
 
-    assert CONTRACT_VERSION == "2.2.0"
+    assert CONTRACT_VERSION == "2.3.0"
 
 
 def test_payment_blocking_faults_is_exactly_the_six_hazards_plus_svc_102():
@@ -399,3 +399,21 @@ def test_data_104_is_an_alert_class_machine_warning_for_an_unsaved_session():
         spec.description
         == "Session snapshot could not be saved; a crash now would lose the live sale's evidence"
     )
+
+
+def test_data_105_and_106_are_machine_warnings_that_never_block_payment():
+    from ice_contracts.board.vending_machine import (
+        FAULT_TABLE,
+        PAYMENT_BLOCKING_FAULTS,
+        FaultCode,
+        Scope,
+        Severity,
+    )
+
+    for code in (FaultCode.DATA_105, FaultCode.DATA_106):
+        spec = FAULT_TABLE[code]
+        assert spec.severity is Severity.warning
+        assert spec.scope is Scope.machine
+        assert code not in PAYMENT_BLOCKING_FAULTS
+    assert FaultCode.DATA_105.value == "DATA-105"
+    assert FaultCode.DATA_106.value == "DATA-106"

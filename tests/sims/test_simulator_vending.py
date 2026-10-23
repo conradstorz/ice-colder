@@ -432,7 +432,7 @@ class TestVendingCapabilities:
             "water_valve",
             "payment/enable",
         ]
-        assert caps.contract_version == "2.2.0"
+        assert caps.contract_version == "2.3.0"
 
     def test_channels_match_spec_table_in_order(self):
         """Spec §5.1, copied exactly -- the dashboard renders channels in
