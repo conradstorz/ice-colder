@@ -84,7 +84,7 @@ Cloud C1, C2 → the rest.
   Fix: one tracked handle, cancelled before scheduling a new one.
   Landed: one tracked `PaymentRetryTimer`, cancelled on every exit from `interacting_with_user`.
 
-- [ ] **M8 — LOW (accepted trade-offs, document them):** a dispense timeout with no
+- [x] **M8 — LOW (accepted trade-offs, document them):** a dispense timeout with no
   report restores credit though product may have come out (PAY-102 raised, later report
   ignored); reports with no `request_id` are accepted by slot alone, so old firmware can
   settle a new sale on the same slot; `classify` reads `sale.product.slot` from the live
@@ -93,8 +93,9 @@ Cloud C1, C2 → the rest.
   If the dispense timeout wins first, a genuine `complete` arriving afterwards is
   ignored (credit restored though product may be out) -- pre-existing, documented, not
   changed here.
+  Landed: documented as deliberate accepted trade-offs in the CLAUDE.md DispenseCycle paragraph.
 
-- [ ] **M9 — LOW: `Product.sku`/`name` have no length limit.**
+- [x] **M9 — LOW: `Product.sku`/`name` have no length limit.**
   `ice_common/config_model.py` accepts any length; the catalog form had no `maxlength`.
   Scenario: a 250-character product name broke every `MachineReport` (cloud caps strings at
   200) until the product was renamed.
@@ -102,16 +103,19 @@ Cloud C1, C2 → the rest.
   catalog form inputs carry `maxlength="200"`.
   Fix: limit `sku`/`name` in `ConfigModel` and the form, with a migration path for existing
   `config.json` files (truncate or flag on load rather than refuse to start).
+  Landed: catalog forms refuse a sku over 64 or a name over 120 (400); loading an existing config never refuses (over-long name clipped with a warning, over-long sku kept with a warning); the copy-form name prefill is clipped.
 
-- [ ] **M10 — LOW: a test sale that enters the `error` state never settles its runner.**
+- [x] **M10 — LOW: a test sale that enters the `error` state never settles its runner.**
   `on_error` (`sale/vmc.py`) never calls `_settle`, and it cancels the dispense cycle, so `TestSaleRunner.run_test_sale` awaiting the settlement future hangs: the maintenance lease stays held with `runs_in_flight > 0` and `_test_sale_in_progress` stays set. `error_occurred` has no production caller today.
   Fix: settle the test sale from `on_error` (outcome `vend_failed`, no fault code) or give the runner a bounded wait that releases the lease.
   Also: `error_occurred` during the success path's `await record()` (shares still set until the row is written) would restore and refund a sale that already dispensed; `on_error` must not restore or refund the shares of a vend that already succeeded.
+  Landed: `on_error` settles a running test sale (`vend_failed`), and an error during the sale write keeps its record while a stale write cannot touch the next sale.
 
-- [ ] **M11 — MEDIUM: leftover credit on an already-recorded PAY-104 is invisible.**
+- [x] **M11 — MEDIUM: leftover credit on an already-recorded PAY-104 is invisible.**
   When boot finds the sale row but the snapshot still holds credit (the M5 path), PAY-104 is raised with the "Record as sale" card hidden and no amount shown, so the operator has nothing to act on.
   Scenario: a restart lands after the sale row is written but with credit still escrowed; the fault row says only that the session is uncertain.
   Fix: show `credit_escrow`, the pending refund id and the error on the PAY-104 fault row (`health_faults.html`) and offer a "Refund leftover" action, or at least state the amount in the fault detail. Also tie `SALE_MATCH_WINDOW_SECONDS` to `dispense_timeout_seconds`.
+  Landed: the PAY-104 row shows leftover credit, pending refund id and snapshot error; the already-recorded match window follows `dispense_timeout_seconds + SALE_MATCH_MARGIN_SECONDS`.
 
 ## R. Edge runtime resilience
 
@@ -176,18 +180,20 @@ Cloud C1, C2 → the rest.
   and gets a generic PAY-104. Fix: relax the check or store a boot id alongside wall time.
   Landed: a future saved_at loads with a warning instead of being treated as corrupt.
 
-- [ ] **R8 — LOW: unbounded in-memory keys and queues.** `_temperatures`, `_channels`,
+- [x] **R8 — LOW: unbounded in-memory keys and queues.** `_temperatures`, `_channels`,
   `_signals`, `_subsystems`, `capabilities` keyed by payload strings
   (`hal/mqtt_inbound.py:118,132,145`); recorder queue is an unbounded `queue.Queue()`
   (`event_recorder.py:312`); aiomqtt incoming queue unbounded
   (`max_queued_incoming_messages` unset, `mqtt_client.py:190`); handlers run serially, so a
   slow `await record()` delays every other message.
   Fix: validate names against expected subsystems, cap dicts and queues.
+  Landed: names and queues fed by MQTT payloads are validated and capped, and two routes no longer block the loop on a full recorder queue.
 
-- [ ] **R9 — LOW: minor loop blocking.** `tests_level/log.py:39` calls
+- [x] **R9 — LOW: minor loop blocking.** `tests_level/log.py:39` calls
   `recorder.flush()` on the loop (busy-wait up to 5 s); `InventoryManager.decrement`
   writes synchronously by default; `build_bundle()`/`ui_digest()` run synchronously at
   uplink start and on every supervisor restart (`uplink/loop.py:69`).
+  Landed: three blocking calls moved off the event loop.
 
 - [x] **R10 — LOW: logging.** File sink has no level (`ice_common/logging_setup.py:15-22`),
   so it records DEBUG including every sensor/heartbeat payload and the config model dump
@@ -196,20 +202,23 @@ Cloud C1, C2 → the rest.
   handler errors.
   Landed: vmc.log sink at INFO (ICE_COLDER_LOG_LEVEL overrides), rotates at midnight or 50 MB; MQTT handler errors log the traceback.
 
-- [ ] **R11 — LOW: heartbeats are stored as event rows.** On the sim host 797k of 863k
+- [x] **R11 — LOW: heartbeats are stored as event rows.** On the sim host 797k of 863k
   rows in `events.db` (56 MB after 4 weeks) are `heartbeat`. The 90-day prune bounds it
   (~170 MB) but it is wasted SD-card wear on a Pi. Fix: keep liveness in memory and
   record only transitions (alive→dead, dead→alive).
+  Landed: heartbeat event rows are coalesced to one per 60 s bucket (`HEARTBEAT_BUCKET_SECONDS`).
 
-- [ ] **R12 — LOW: a restart mid-sale always produces a PAY-104.** 35 `session_uncertain`
+- [x] **R12 — LOW: a restart mid-sale always produces a PAY-104.** 35 `session_uncertain`
   events on the sim host, one per deploy that landed mid-sale. On a real machine every
   auto-update that lands mid-sale needs an operator. Fix: see D3 (idle-window updates)
   and/or let boot evaluation auto-resolve a snapshot whose sale row is already present.
+  Landed: boot evaluation auto-resolves a snapshot whose sale row is already present (M5/M11); the idle-window update rule lives in docs/deploying-a-machine.md (update while idle); no automatic idle window.
 
-- [ ] **R13 — MEDIUM: SIGTERM skips cleanup when the edge is not PID 1.**
+- [x] **R13 — MEDIUM: SIGTERM skips cleanup when the edge is not PID 1.**
   uvicorn restores the original signal handlers after its own and re-raises SIGTERM (`uvicorn/server.py` `capture_signals`), so under the fleet launcher, systemd on a bare Pi, or `init: true` the process dies before `main`'s `finally` (persistence drain, recorder flush). The compose `vmc` service runs python as PID 1, where the default disposition is to ignore the self-raised signal, so cleanup runs there. R5's `_shield_exit` cannot help because the process dies inside `serve()`.
   Scenario: `docker stop` on a fleet machine or `systemctl stop` on a Pi loses queued events and the final snapshot write (sales are inserted synchronously, so no sale row is lost).
   Fix: install the app's own SIGTERM handler that sets `server.should_exit` (equivalent to running `uvicorn.Server` without its signal capture) and let `main`'s shutdown sequence run.
+  Landed: the edge installs its own SIGTERM/SIGINT handlers so shutdown cleanup runs when it is not PID 1.
 
 ## C. Cloud portal (`packages/cloud/`) — public internet, 1 vCPU / 512 MB
 
@@ -291,8 +300,9 @@ Cloud C1, C2 → the rest.
 - [ ] **C10 — LOW: OIDC flow cookie is not single-use** (replayable for 10 min; PKCE and
   nonce limit impact).
 
-- [ ] **C11 — LOW: `resolve_short` uses a 64-bit prefix** (`store/sqlite.py:379-387`);
+- [x] **C11 — LOW: `resolve_short` uses a 64-bit prefix** (`store/sqlite.py:379-387`);
   ambiguous prefixes return `None`. ~2^64 work to exploit; note only.
+  Landed: note only; 64-bit prefix stays (ambiguous prefixes return None; ~2^64 work).
 
 - [x] **C12 — MEDIUM: the unclaimed-machine purge can strand a setup code.**
   `purge_unclaimed_machines` deletes a never-claimed machine after `UNCLAIMED_TTL_DAYS`
@@ -361,7 +371,7 @@ Cloud C1, C2 → the rest.
   Fix: copy the cloud's migration pattern into `EventRecorder`.
   Landed: `MIGRATIONS` list applied under `PRAGMA user_version`, each in its own transaction; a newer or failed schema sets `db_unavailable`.
 
-- [ ] **D3 — HIGH: `:latest` auto-pull with no healthcheck, no rollback, no idle window.**
+- [x] **D3 — HIGH: `:latest` auto-pull with no healthcheck, no rollback, no idle window.**
   `vmc` and sims pull `ghcr.io/conradstorz/ice-colder:latest` with the Watchtower label
   (`docker-compose.yml:14-17`, :44-47); no `healthcheck` on `vmc` (only mosquitto, :179),
   no `HEALTHCHECK` in `Dockerfile:49-51`, so a wedged edge looks healthy. Watchtower
@@ -370,6 +380,7 @@ Cloud C1, C2 → the rest.
   Fix: `HEALTHCHECK` on `/pill`; pin production machines to `sha-` tags and keep
   Watchtower for the sim host only, or monitor-only mode plus an idle-window update
   script; document rollback.
+  Landed: unauthenticated `/healthz`, an image `HEALTHCHECK`, and a runbook (`docs/deploying-a-machine.md`) covering update-while-idle and rollback caveats; the edge-only compose pins the image tag (see D8).
 
 - [x] **D4 — MEDIUM: `config.json` and `.bak` are written with umask permissions.**
   `config/config_store.py:70-77` uses plain `open(tmp, "w")` and `shutil.copy2`; both
@@ -393,7 +404,7 @@ Cloud C1, C2 → the rest.
   `caddy:2-alpine` float. `uv.lock` pins Python deps. Fix: pin uv to a version.
   Landed: uv pinned to 0.7.13 in both Dockerfiles; base images stay on major tags by choice.
 
-- [ ] **D7 — MEDIUM: session/device cookies are `Secure` only when the request is HTTPS.**
+- [x] **D7 — MEDIUM: session/device cookies are `Secure` only when the request is HTTPS.**
   `web/auth.py:94` via `backoff.is_https` (`ice_common/backoff.py:88-95`) honours
   `X-Forwarded-Proto` only from a trusted proxy; default deployment is plain HTTP on
   `0.0.0.0:26123` (`__main__.py:160`), so session, device (365 d, `DEVICE_COOKIE_MAX_AGE`)
@@ -401,10 +412,12 @@ Cloud C1, C2 → the rest.
   no OTP needed. Mosquitto is likewise cleartext on 1883 with username/password.
   Fix: document that TLS at the proxy is required, or bind the dashboard to loopback by
   default behind the proxy; consider MQTT TLS on the LAN.
+  Landed: documented in a Network section of `docs/deploying-a-machine.md` and a CLAUDE.md sentence: plain-HTTP deployments rely on a trusted LAN, remote access goes through a TLS proxy named in `ICE_COLDER_TRUSTED_PROXIES`.
 
-- [ ] **D8 — MEDIUM: no edge-only production compose.** The three sim containers live in
+- [x] **D8 — MEDIUM: no edge-only production compose.** The three sim containers live in
   the root compose; `docker/docker-compose.prod.yml` is broker-only. A real Pi needs a
   compose with vmc + broker and no sims; `docker-compose.yml:2-10` does not say so.
+  Landed: `docker/docker-compose.edge.yml` (vmc + backup, image pinned by `ICE_COLDER_IMAGE_TAG`, no Watchtower label) with an overlay test and runbook.
 
 - [ ] **D9 — LOW: CI caveats.** arm64 edge image is built under QEMU and never
   smoke-tested (only amd64, `ci.yml:175`); `test` job has no timeout; actions pinned to
@@ -416,20 +429,23 @@ Cloud C1, C2 → the rest.
   (authenticated CPU DoS only). Fix: read fixed-size blocks backwards.
   Landed: tail reads 8 KiB blocks backwards.
 
-- [ ] **D11 — LOW: `/static` is mounted without auth** (`web/server.py:10-13`); serves
+- [x] **D11 — LOW: `/static` is mounted without auth** (`web/server.py:10-13`); serves
   only app assets today. Note so a future file placed there is not accidentally public.
+  Landed: CLAUDE.md states `/static` is unauthenticated, app assets only, nothing operator-specific.
 
-- [ ] **D12 — LOW: documentation debt.** `ROADMAP.md:97,208,266` cite
+- [x] **D12 — LOW: documentation debt.** `ROADMAP.md:97,208,266` cite
   `services/availability.py`, `controller/vmc.py`, `services/session_store.py` (removed
   roots); `PLAN.md:82,96,136` cite `main.py`; `docker-compose.override.yml` comment cites
   `services/auth_policy.py`. Traefik (edge) vs Caddy (cloud) is intentional but
   `README.md:101-107` vs the deploy doc could say so in one place.
+  Landed: stale paths fixed in `ROADMAP.md`, `PLAN.md` and the local `docker-compose.override.yml` (gitignored, not committed); `README.md` and `docs/deploying-a-machine.md` now say Traefik (edge) vs Caddy (cloud).
 
-- [ ] **D13 — LOW: an older build meeting a newer-schema `events.db`.**
+- [x] **D13 — LOW: an older build meeting a newer-schema `events.db`.**
   `EventRecorder` flags `db_unavailable` (DATA-103) when `PRAGMA user_version` exceeds the
   migrations it knows, but writes are still attempted against a schema it cannot vouch for.
   Decide this before migration 2 is written (a downgrade after an upgrade is the trigger).
   Recommended: treat such a database as read-only and journal sales directly.
+  Landed: a newer-schema `events.db` is treated as read-only (sales journal directly), cash collection is refused, and the downgrade is named.
 
 ## T. Tests
 
