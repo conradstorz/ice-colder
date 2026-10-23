@@ -93,15 +93,19 @@ The login/setup/enrol variant bars are untouched (they override
 - One template `ice_ui/templates/me.html`, extending `base.html`, rendered by
   both platforms with the ordinary context (`current_user`, `perms`, `level`)
   plus two extras: `logout_label` (`"Lock"` on the edge, `"Sign out"` on the
-  cloud) and `role_scope` (`None` on the edge; on the cloud the selected
-  machine's display name, or `None` when none is selected). Content, top to
-  bottom:
+  cloud) and `machine` (a `MachineIdentity` from `ice_ui.views.identity`,
+  fields `common_name: str | None`, `machine_id: str | None`,
+  `short_fingerprint: str | None`, with a `display` property rendering
+  "<common_name> (<machine_id>)", falling back to whichever of the three is
+  set, in that order; `None` on the cloud when no machine is selected).
+  Content, top to bottom:
   1. Name (hero size) and email when `current_user.email` is set.
-  2. Role line. Edge (`role_scope` `None`, `role_label` set): "Role: owner".
-     Cloud with a machine selected: "tech on <role_scope>". Cloud with no
-     machine selected (`role_label` `None`): "No machine selected" with a
-     link to `/fleet`. The machine display name is the stored report's
-     `machine_id` when a report exists, else the short fingerprint.
+  2. Role line, the same wording on both platforms: "owner on Lobby Ice
+     Machine (ice-07)". Edge: `common_name` from `config.physical.common_name`,
+     `machine_id` from `config.machine_id`. Cloud with a machine selected:
+     from the stored report's `common_name` and `machine_id` (section 4a),
+     else the short fingerprint. Cloud with no machine selected
+     (`role_label` `None`): "No machine selected" with a link to `/fleet`.
   3. "What you can do here": a `<ul>` of `PERMISSION_LABELS[p]` for each `p`
      in `perms`, in `Permission` definition order; the remote viewer's single
      `view_status` entry renders the same way. Empty `perms` renders
@@ -120,6 +124,29 @@ The login/setup/enrol variant bars are untouched (they override
   a machine is selected.
 - Nothing on the page mutates state except the existing logout.
 
+## 4a. The machine's common name reaches the cloud
+
+`MachineReport` carries `machine_id` but not the operator-entered common
+name, and `_Model` is `extra="forbid"`, so the cloud cannot show it today.
+
+- `ice_contracts.cloud.report.MachineReport` gains
+  `common_name: str | None = None` (the edge clips it to `MAX_TEXT` like every
+  other operator-entered text) and `contract` accepts
+  `Literal["0.2.0", "0.3.0", "0.4.0"]`; `CLOUD_CONTRACT_VERSION` becomes
+  `"0.4.0"` (additive). `docs/contracts/edge-cloud` is regenerated.
+- `ice_edge.uplink.report.build_machine_report` sets it from
+  `config.physical.common_name`.
+- Deploy order is the existing rule: cloud before edges (a 0.3.0 cloud
+  answers a 0.4.0 report with 422, exactly as it does today for an unknown
+  version). A 0.4.0 cloud accepts 0.3.0 reports with `common_name` `None`,
+  and `/me` then shows `machine_id` alone.
+- `partials/remote_banner.html`, the other place the cloud names the
+  machine, shows the common name before `machine_id` when the report has
+  one; `portal._remote` passes `common_name` alongside `machine_id`.
+- The fleet list and the admin dashboard are unchanged (no new tables; the
+  name is read from the stored report only where `/me` and the banner render
+  it).
+
 ## 5. Tests
 
 Edge (`tests/edge/web/test_me.py` plus small additions where noted):
@@ -128,8 +155,11 @@ Edge (`tests/edge/web/test_me.py` plus small additions where noted):
   the name, inside `#bar`, linking to `/me`.
 - `/login` and `/setup` (setup mode) render no chip.
 - `/me` is 200 for every role, lists exactly `ROLE_PERMISSIONS[role]`'s
-  labels and no others, shows the name, and carries a `hx-post="/logout"`
-  button labelled "Lock".
+  labels and no others, shows the name, the role line with the config's
+  common name and `machine_id`, and carries a `hx-post="/logout"` button
+  labelled "Lock".
+- `build_machine_report` sets `common_name` from the config and clips it to
+  `MAX_TEXT`; the report validates under contract `0.4.0`.
 - `/me` redirects to `/login` when signed out (existing gate behaviour).
 - `LEVEL_ME` is in the level tree with parent Home; the existing bar-markup
   assertions (`tests/edge/web/test_routes_tests_level.py`) still pass.
@@ -142,10 +172,14 @@ Cloud (`tests/cloud/test_me.py`):
   `owner`.
 - On `/fleet` the chip shows the name alone (no role span).
 - `/me` is 200 and renders the shared template (never `not_remote.html`),
-  with the role line naming the selected machine, the `view_status` label,
-  and a "Sign out" button; with no machine selected it says so and links to
-  `/fleet`.
+  with the role line naming the selected machine as "<common_name>
+  (<machine_id>)", the `view_status` label, and a "Sign out" button; with no
+  machine selected it says so and links to `/fleet`.
+- Ingest accepts a `0.4.0` report with `common_name` and a `0.3.0` report
+  without it; the banner and `/me` show `machine_id` alone for the latter.
 - `tests/cloud/test_ui_parity.py` is unchanged: the bar is outside `<main>`.
+- `ice_ui.views.identity.MachineIdentity.display` is unit-tested for the
+  four fallbacks (both, name only, id only, fingerprint only).
 
 Contracts (`tests/contracts/test_access_labels.py`): every `Permission`
 member has a non-empty `PERMISSION_LABELS` entry and the labels are distinct.
