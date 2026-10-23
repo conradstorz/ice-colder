@@ -375,9 +375,9 @@ There is no in-process hardware code; real MDB and I/O live on the ESP32 boards 
 
 `Dockerfile` builds from `python:3.12-slim`, installs dependencies with
 `uv sync --frozen --no-dev` from `pyproject.toml`/`uv.lock`, and runs
-`uv run python -m ice_edge` (port 26123). `docker-compose.yml` orchestrates the VMC,
+`python -m ice_edge` directly (the project venv is first on `PATH`, so SIGTERM reaches Python with no `uv run` wrapper; port 26123), with uv pinned to 0.7.13 in both Dockerfiles. `docker-compose.yml` orchestrates the VMC,
 the three ESP32 simulators, and a mosquitto broker, all with
-`restart: unless-stopped`. There is no `requirements.txt` — `pyproject.toml` is
+`restart: unless-stopped`; every service in the root and prod compose files caps its container log at 10 MB x 3 files (`x-logging` anchor), `vmc` and the cloud service have `stop_grace_period: 30s`, and no `mem_limit` is set on purpose (a hard limit could OOM-kill the VMC mid-sale). There is no `requirements.txt` — `pyproject.toml` is
 the single dependency source of truth. Inside compose, config lives at
 `data/config.json` (bind-mounted `./data:/app/data`, writable for the `vmc`
 service and read-only for the simulators), pointed to via `ICE_COLDER_CONFIG`

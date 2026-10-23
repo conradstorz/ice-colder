@@ -9,6 +9,15 @@ name: ice-colder
 # Requires a `.env` file: cp .env.example .env, then set MQTT_PASSWORD (and
 # the other values) before bringing the stack up.
 
+# No mem_limit on purpose: the host's memory is unknown and a hard limit would
+# OOM-kill the VMC mid-sale.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   vmc:
     image: ghcr.io/conradstorz/ice-colder:latest
@@ -22,6 +31,8 @@ services:
       - traefik.http.services.ice.loadbalancer.server.port=26123
       - harbor.description=Ice Colder VMC
     container_name: ice-colder-vmc
+    # uvicorn drain + up to 3 s persistence drain + up to 5 s recorder flush.
+    stop_grace_period: 30s
     volumes:
       - ./LOGS:/app/LOGS
       - ./data:/app/data  # Persists config.json and access.json (users, PINs, devices, emergency codes)
@@ -39,6 +50,7 @@ services:
       mosquitto:
         condition: service_healthy
     restart: unless-stopped
+    logging: *default-logging
 
   backup:
     # Verified archive (polled every 6 h, written at most once per 20 h) of the irreplaceable files in ./data into ./backups
@@ -76,6 +88,7 @@ services:
       - ./data:/app/data
       - ./backups:/app/backups
     restart: unless-stopped
+    logging: *default-logging
 
   sim-ice-maker:
     image: ghcr.io/conradstorz/ice-colder:latest
@@ -84,7 +97,7 @@ services:
       - com.centurylinklabs.watchtower.enable=true
       - harbor.kind=internal
     container_name: ice-colder-sim-ice-maker
-    command: ["uv", "run", "python", "-m", "ice_sims.ice_maker", "--broker", "mosquitto"]
+    command: ["python", "-m", "ice_sims.ice_maker", "--broker", "mosquitto"]
     volumes:
       - ./data:/app/data:ro
     environment:
@@ -99,6 +112,7 @@ services:
       vmc:
         condition: service_started
     restart: unless-stopped
+    logging: *default-logging
 
   sim-mdb:
     image: ghcr.io/conradstorz/ice-colder:latest
@@ -107,7 +121,7 @@ services:
       - com.centurylinklabs.watchtower.enable=true
       - harbor.kind=internal
     container_name: ice-colder-sim-mdb
-    command: ["uv", "run", "python", "-m", "ice_sims.mdb_gateway", "--broker", "mosquitto"]
+    command: ["python", "-m", "ice_sims.mdb_gateway", "--broker", "mosquitto"]
     volumes:
       - ./data:/app/data:ro
     environment:
@@ -122,6 +136,7 @@ services:
       vmc:
         condition: service_started
     restart: unless-stopped
+    logging: *default-logging
 
   sim-vending:
     image: ghcr.io/conradstorz/ice-colder:latest
@@ -130,7 +145,7 @@ services:
       - com.centurylinklabs.watchtower.enable=true
       - harbor.kind=internal
     container_name: ice-colder-sim-vending
-    command: ["uv", "run", "python", "-m", "ice_sims.vending_machine", "--broker", "mosquitto"]
+    command: ["python", "-m", "ice_sims.vending_machine", "--broker", "mosquitto"]
     volumes:
       - ./data:/app/data:ro
     environment:
@@ -145,6 +160,7 @@ services:
       vmc:
         condition: service_started
     restart: unless-stopped
+    logging: *default-logging
 
   mosquitto-init:
     # One-shot: writes the broker password file from .env before mosquitto starts.
@@ -184,6 +200,7 @@ services:
         chown mosquitto:mosquitto /mosquitto/config/passwd.tmp &&
         mv -f /mosquitto/config/passwd.tmp /mosquitto/config/passwd
     restart: "no"
+    logging: *default-logging
 
   mosquitto:
     image: eclipse-mosquitto:2
@@ -208,6 +225,7 @@ services:
       - MQTT_USERNAME=${MQTT_USERNAME}
       - MQTT_PASSWORD=${MQTT_PASSWORD}
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - broker
     depends_on:

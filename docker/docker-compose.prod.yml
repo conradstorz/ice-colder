@@ -5,6 +5,15 @@ name: mosquitto_broker
 #   cp ../.env.example ../.env   # then set MQTT_PASSWORD and the other values
 #   docker compose --env-file ../.env -f docker-compose.prod.yml up -d
 
+# No mem_limit on purpose: the host's memory is unknown and a hard limit would
+# OOM-kill the VMC mid-sale.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   mosquitto-init:
     # One-shot: writes the broker password file from .env before mosquitto starts.
@@ -44,6 +53,7 @@ services:
         chown mosquitto:mosquitto /mosquitto/config/passwd.tmp &&
         mv -f /mosquitto/config/passwd.tmp /mosquitto/config/passwd
     restart: "no"
+    logging: *default-logging
 
   mosquitto:
     image: eclipse-mosquitto:2
@@ -64,6 +74,7 @@ services:
       - MQTT_USERNAME=${MQTT_USERNAME}
       - MQTT_PASSWORD=${MQTT_PASSWORD}
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
       mosquitto-init:
         condition: service_completed_successfully

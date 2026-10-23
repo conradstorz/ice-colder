@@ -44,4 +44,5 @@ RUN mkdir -p /app/cloud_data
 
 EXPOSE 26124
 
-CMD ["uv", "run", "python", "-m", "ice_cloud"]
+# Exec python directly (the venv is first on PATH) so SIGTERM reaches it with no wrapper.
+CMD ["python", "-m", "ice_cloud"]

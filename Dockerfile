@@ -51,4 +51,5 @@ RUN mkdir -p LOGS
 
 EXPOSE 26123
 
-CMD ["uv", "run", "python", "-m", "ice_edge"]
+# Exec python directly (the venv is first on PATH) so SIGTERM reaches it with no wrapper.
+CMD ["python", "-m", "ice_edge"]

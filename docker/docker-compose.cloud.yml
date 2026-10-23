@@ -18,6 +18,7 @@ services:
     labels:
       - com.centurylinklabs.watchtower.enable=true
     container_name: ice-cloud
+    stop_grace_period: 30s
     environment:
       - ICE_CLOUD_HOST=0.0.0.0
       - ICE_CLOUD_DATA=/app/cloud_data
