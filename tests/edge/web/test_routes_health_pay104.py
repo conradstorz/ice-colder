@@ -830,3 +830,56 @@ class TestCrossRestartExactlyOnce:
         finally:
             routes.set_machine_instance(machine)
             routes.set_event_recorder(pay104["recorder"])
+
+
+class TestRecordedSaleWithLeftoverCredit:
+    """M5 fix: the sale row exists but credit is left over, so PAY-104 is
+    raised for the operator yet no Record sale card may be offered."""
+
+    @pytest.fixture
+    def leftover(self, wired, tmp_path):
+        cfg, _old_vmc, _inv, _store = wired
+        add_product(cfg, "ICE-1", "Ice", 2.50)
+        store_path = tmp_path / "session.json"
+        machine1 = Machine(config=cfg)
+        vmc1 = machine1.vmc
+        vmc1.set_state("interacting_with_user")
+        vmc1.selected_product = next(p for p in vmc1.products if p.sku == "ICE-1")
+        vmc1.deposit_funds(5.00, payment_method="cash_bill")
+        vmc1.process_payment()
+        snap = vmc1.snapshot()
+        assert snap.credit_escrow == pytest.approx(2.50)  # positive control
+        SessionStore(store_path).save(snap)
+
+        recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
+        recorder.record_sale(
+            "ICE-1", "Ice", 1, 2.50, dict(snap.pending_sale_shares), ts=snap.saved_at
+        )
+        machine2 = Machine(config=cfg)
+        machine2.set_event_recorder(recorder)
+        machine2.set_session_store(SessionStore(store_path))
+        old_machine = context.machine_instance
+        routes.set_machine_instance(machine2)
+        routes.set_event_recorder(recorder)
+        try:
+            yield machine2, store_path, tmp_path / "events.db"
+        finally:
+            routes.set_machine_instance(old_machine)
+
+    def test_pay104_raised_without_record_sale_card(self, leftover, login_as):
+        machine, store_path, _db = leftover
+        assert "PAY-104" in {f["code"] for f in machine.vmc.active_faults()}
+        assert store_path.exists()
+        assert machine.pending_sale_for_recovery() is None
+        client = login_as(Role.tech)
+        text = client.get("/health/faults").text
+        assert 'id="record-sale-PAY-104"' not in text
+        assert 'id="clear-PAY-104"' in text
+
+    def test_operator_can_clear_and_no_second_row_is_written(self, leftover, login_as):
+        machine, store_path, db = leftover
+        client = login_as(Role.tech)
+        resp = client.post("/health/faults/PAY-104/clear")
+        assert resp.status_code == 200
+        assert "PAY-104" not in {f["code"] for f in machine.vmc.active_faults()}
+        assert len(_sales_rows(db)) == 1

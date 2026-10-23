@@ -307,3 +307,42 @@ def test_pending_sale_for_recovery_returned_when_row_absent(tmp_path):
     recovery = make_recovery(store, pay104_active=True, sale_recorded=lambda *a: False)
 
     assert recovery.pending_sale_for_recovery()["sku"] == "ICE-1"
+
+
+def test_recorded_sale_with_leftover_credit_stays_uncertain(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    store.save(_open_snapshot_with(credit_escrow=2.50))
+    recovery = make_recovery(store, pay104_active=True, sale_recorded=lambda *a: True)
+
+    assert recovery.evaluate_at_boot().kind == "uncertain"
+    assert store.load() is not None
+    assert recovery.pending_sale_for_recovery() is None
+
+
+def test_recorded_sale_with_pending_refund_stays_uncertain(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    store.save(_open_snapshot_with(pending_refund_request_id="r-1"))
+
+    decision = make_recovery(store, sale_recorded=lambda *a: True).evaluate_at_boot()
+
+    assert decision.kind == "uncertain"
+    assert store.load() is not None
+
+
+def test_recorded_sale_with_zero_credit_is_closed(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    store.save(_open_snapshot_with(credit_escrow=0.001))
+
+    decision = make_recovery(store, sale_recorded=lambda *a: True).evaluate_at_boot()
+
+    assert decision.kind == "closed"
+    assert store.load() is None
+
+
+def _open_snapshot_with(**kw):
+    return SessionSnapshot(
+        state="dispensing",
+        selected_sku="ICE-1",
+        pending_sale_shares={"cash": 2.50},
+        **{"credit_escrow": 0.0, **kw},
+    )

@@ -242,6 +242,12 @@ def _is_corruption_error(exc: sqlite3.DatabaseError) -> bool:
     return not isinstance(exc, sqlite3.OperationalError)
 
 
+# How long after a dispensing snapshot's ``saved_at`` a live sale row may
+# still be attributed to it: the 120 s dispense timeout plus generous margin.
+# The upper bound keeps a clock stepped backwards from matching an older sale.
+SALE_MATCH_WINDOW_SECONDS = 600.0
+
+
 class EventRecorder:
     """
     Persists machine events to SQLite and provides time-windowed summaries.
@@ -740,8 +746,8 @@ class EventRecorder:
         self, sku: str, since_ts: float, methods: dict[str, float]
     ) -> bool:
         """True when a ``sales`` row for ``sku`` exists at or after
-        ``since_ts`` (minus one second of clock tolerance) whose method
-        shares equal ``methods`` (compared as dicts rounded to cents).
+        ``since_ts`` (and no later than ``SALE_MATCH_WINDOW_SECONDS``
+        after it) whose method shares equal ``methods`` (compared as dicts rounded to cents).
 
         PAY-104 recovery uses it to spot a sale the live path committed
         just before a crash that left the dispensing snapshot behind.
@@ -759,8 +765,8 @@ class EventRecorder:
         try:
             conn = sqlite3.connect(self._db_path, timeout=5.0)
             rows = conn.execute(
-                "SELECT methods FROM sales WHERE sku = ? AND ts >= ?",
-                (sku, since_ts - 1.0),
+                "SELECT methods FROM sales WHERE sku = ? AND ts >= ? AND ts <= ?",
+                (sku, since_ts, since_ts + SALE_MATCH_WINDOW_SECONDS),
             ).fetchall()
         except Exception:
             logger.exception(

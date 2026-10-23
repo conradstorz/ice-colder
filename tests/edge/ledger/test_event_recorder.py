@@ -2315,10 +2315,20 @@ class TestSaleRecordedSince:
         recorder.record_sale("ICE-1", "Ice", 1, 2.5, {"cash": 2.5}, ts=now)
         assert recorder.sale_recorded_since("ICE-1", now - 0.2, {"cash": 2.5})
 
-    def test_tolerates_one_second_of_clock_skew(self, recorder):
+    def test_row_just_before_since_does_not_match(self, recorder):
         now = time.time()
-        recorder.record_sale("ICE-1", "Ice", 1, 2.5, {"cash": 2.5}, ts=now - 0.9)
+        recorder.record_sale("ICE-1", "Ice", 1, 2.5, {"cash": 2.5}, ts=now - 0.5)
+        assert not recorder.sale_recorded_since("ICE-1", now, {"cash": 2.5})
+
+    def test_row_at_since_matches(self, recorder):
+        now = time.time()
+        recorder.record_sale("ICE-1", "Ice", 1, 2.5, {"cash": 2.5}, ts=now)
         assert recorder.sale_recorded_since("ICE-1", now, {"cash": 2.5})
+
+    def test_row_beyond_match_window_does_not_match(self, recorder):
+        now = time.time()
+        recorder.record_sale("ICE-1", "Ice", 1, 2.5, {"cash": 2.5}, ts=now + 601)
+        assert not recorder.sale_recorded_since("ICE-1", now, {"cash": 2.5})
 
     def test_false_for_older_row(self, recorder):
         now = time.time()

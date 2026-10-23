@@ -22,6 +22,7 @@ from typing import Literal
 
 from loguru import logger
 
+from ice_edge.ledger.escrow_ledger import EscrowLedger
 from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
 
 BootDecisionKind = Literal["discard_test", "uncertain", "closed", "none"]
@@ -105,16 +106,29 @@ class SessionRecovery:
             store.clear()
             return BootDecision(kind="discard_test", snapshot=snap)
         if snap.is_open():
-            if self._already_recorded(snap):
+            if self._already_recorded(snap) and self._nothing_left_over(snap):
                 logger.info(
                     "sale already recorded; snapshot discarded at boot "
                     f"(sku={snap.selected_sku!r})"
                 )
                 store.clear()
                 return BootDecision(kind="closed", snapshot=snap)
+            # Either the sale is not recorded, or it is but credit / a refund
+            # / an unreadable file still needs an operator: stay uncertain.
             return BootDecision(kind="uncertain", snapshot=snap)
         store.clear()
         return BootDecision(kind="closed", snapshot=snap)
+
+    @staticmethod
+    def _nothing_left_over(snap: SessionSnapshot) -> bool:
+        """True when the snapshot holds no money or state an operator must see:
+        leftover credit (the price was already deducted from escrow), a
+        pending refund, or an unreadable-file error."""
+        return (
+            snap.credit_escrow <= EscrowLedger.TOLERANCE
+            and snap.pending_refund_request_id is None
+            and not snap.error
+        )
 
     def _already_recorded(self, snap: SessionSnapshot) -> bool:
         """True when the snapshot's pending sale already has a `sales` row."""
