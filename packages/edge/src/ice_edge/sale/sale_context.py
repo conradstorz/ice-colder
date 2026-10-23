@@ -43,6 +43,8 @@ Fields, and who sets them:
 - ``request_id``: the dispatcher command id minted for this sale's dispense
   command, known before any terminal hardware report can arrive so a report
   racing the dispatcher's own ack is still verifiable.
+- ``settled``: set by ``VMC.on_error`` once it has fired the ``"error"`` settled
+  outcome, so a repeated error does not settle the same sale again.
 - ``started_at``: wall-clock time the sale began (``select_product``, or the
   seed ``run_test_sale`` builds).
 """
@@ -63,6 +65,7 @@ class SaleContext:
     mechanism: str | None = None
     request_id: str | None = None
     started_at: float = 0.0
+    settled: bool = False
 
     def with_(self, **changes) -> "SaleContext":
         """Return a new ``SaleContext`` with ``changes`` applied, leaving

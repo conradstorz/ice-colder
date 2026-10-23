@@ -25,6 +25,7 @@ from ice_edge.sale.outputs import StatusOutputs
 from ice_edge.payment.refund_protocol import PendingRefund, RefundProtocol
 from ice_edge.sale.sale_context import SaleContext
 from ice_edge.sale.refusal import refusal
+from ice_edge.sale.stock import draw_stock
 from ice_edge.sale.session_timer import PaymentRetryTimer, SessionTimer
 from ice_edge.supervisor.task_runner import TaskRunner
 from ice_edge.vend.dispenser_gate import DispenserProfileGate
@@ -354,27 +355,29 @@ class VMC:
         # the product, so a timeout firing during that suspension must not fail it.
         self._cycle.settle()
         self._journal.dispense_success(slot, product_name)
-        sale = self._sale
+        sale, cycle = self._sale, self._cycle
         if sale is not None and sale.is_test:
             # is_test lives on the sale, not the lease, so a lease release cannot flip it
             # to production; record() is skipped, so no sale/dispense rows are written.
             self._sale = sale.with_(shares=None)
         else:
-            recorded = await self._cycle.record()
-            if recorded and self._sale is not None:
+            recorded = await cycle.record()
+            # `False` is the PAY-104 path: shares stay as the sale's only record.
+            # `cycle is self._cycle` = still this sale (reset/a new customer replace it).
+            if recorded and cycle is self._cycle and self._sale is not None:
                 self._sale = self._sale.with_(shares=None)
-            # A `False` return is the PAY-104 path: shares stay so the
-            # on-disk session snapshot remains the sale's only record.
         # Raised after the sale is recorded and before _finish_dispensing, on purpose.
         if report.outcome is DispenserOutcome.door_open:
             # Customer success that is also a hardware fault (trap door did not close).
-            sku = self.selected_product.sku if self.selected_product else None
+            sku = sale.product.sku if sale is not None else None
             self.raise_fault(FaultCode.ICE_402, sku=sku, outcome=report.outcome.value)
-        if self.state != "dispensing":
-            # on_error ran while the row was written: the product is out, so the
-            # dispensing -> idle transition is no longer legal. Settle without it.
+        if cycle is not self._cycle or self.state != "dispensing":
+            # on_error/reset (or a later sale) took over while the row was written: the
+            # product is out, so settle without the illegal dispensing -> idle transition.
             self._journal.sale_write_finished_in_state(self.state)
             if sale is not None:
+                draw_stock(self._inventory(), self._tasks, self._journal, sale.product)
+                self._outputs.persist()
                 self._notify_settled(sale, "dispensed", None)
             return
         self._settle("dispensed", None, self._finish_dispensing)
@@ -669,9 +672,13 @@ class VMC:
         self._journal.error_entered(self.selected_product)
         # Partial clear (on_reset drops the whole sale): on_error keeps the selection,
         # and can fire from idle with no sale at all.
-        sale, cycle, self._cycle = self._sale, self._cycle, None
-        # A settled cycle means the product is out and its row is being written.
+        sale, cycle = self._sale, self._cycle
+        # A settled cycle means the product is out and its row is being written; it stays
+        # on the VMC (timer cancelled) so a re-entry takes this branch again and the
+        # finishing write can tell it is still the same sale.
         written = cycle is not None and cycle.settled
+        if not written:
+            self._cycle = None
         if cycle is not None:
             cycle.cancel()
         if written:
@@ -690,8 +697,9 @@ class VMC:
         self._outputs.display("error")
         self._outputs.refresh()
         self._journal.error_message(had_credit)
-        if sale is not None and not written:
+        if sale is not None and not written and not sale.settled:
             self._notify_settled(sale, "error", None)
+            self._sale = sale.with_(settled=True)
 
     # --- Business Logic Methods ---
     def _refund_maintenance_deposit(self, amount, payment_method) -> None:
@@ -990,15 +998,7 @@ class VMC:
         )
         self._journal.finished_dispensing(product_name)
         self.send_customer_message("Product dispensed. Enjoy your purchase!")
-        inventory = self._inventory()
-        if inventory and self.selected_product:
-            sku = self.selected_product.sku
-            if inventory.is_tracked(sku):
-                inventory.decrement(sku, persist=False)
-                self._tasks.fire_and_forget(inventory.save_async(), persistent=True)
-                self._journal.inventory_updated(
-                    self.selected_product.name, inventory.get_count(sku)
-                )
+        draw_stock(self._inventory(), self._tasks, self._journal, self.selected_product)
         self.complete_transaction()
         self._outputs.persist()
         self._outputs.refresh()

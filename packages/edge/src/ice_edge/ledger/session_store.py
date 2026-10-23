@@ -88,6 +88,7 @@ class SessionSnapshot:
             bool(self.error)
             or self.credit_escrow > 0
             or self.state == "dispensing"
+            or bool(self.pending_sale_shares)
             or self.pending_refund_request_id is not None
         )
 
