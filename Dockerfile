@@ -56,7 +56,7 @@ EXPOSE 26123
 # default; a deployment that changes `web.port` must override
 # `healthcheck.test` in its compose file. Nothing restarts a container on
 # `unhealthy`; it is a signal for the operator (docs/deploying-a-machine.md).
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3     CMD python -c "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:26123/healthz', timeout=4).status == 200 else 1)"
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 CMD python -c "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:26123/healthz', timeout=4).status == 200 else 1)"
 
 # Exec python directly (the venv is first on PATH) so SIGTERM reaches it with no wrapper.
 CMD ["python", "-m", "ice_edge"]

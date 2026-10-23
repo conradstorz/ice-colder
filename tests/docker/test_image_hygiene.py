@@ -92,6 +92,9 @@ def test_edge_overlay_vmc_is_pinned_and_unwatched() -> None:
 
 def test_edge_overlay_has_no_simulator_service() -> None:
     services = _load(EDGE_OVERLAY)["services"]
-    assert not [name for name in services if name.startswith("sim")]
+    assert set(services) == {"vmc", "backup"}
     for svc in services.values():
+        for label in svc.get("labels", []):
+            assert not any(w in label for w in ("watchtower", "traefik", "harbor"))
         assert "ice_sims" not in str(svc.get("command", ""))
+    assert "networks" not in services["vmc"]
