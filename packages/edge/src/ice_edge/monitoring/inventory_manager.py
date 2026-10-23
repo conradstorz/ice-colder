@@ -129,10 +129,13 @@ class InventoryManager:
             if persist:
                 self._save()
 
-    def set_count(self, sku: str, count: int):
-        """Set inventory count for a SKU (e.g., from admin dashboard)."""
+    def set_count(self, sku: str, count: int, *, persist: bool = True):
+        """Set inventory count for a SKU (e.g., from admin dashboard).
+
+        An async caller passes ``persist=False`` and awaits `save_async`."""
         self._counts[sku] = count
-        self._save()
+        if persist:
+            self._save()
 
     def add_sku(self, sku: str, count: int, tracked: bool = False):
         """Register a new SKU with initial count."""

@@ -66,7 +66,8 @@ async def run_uplink(
     per report attempt; ``boot_id`` is fixed per call. Failures are logged and
     dropped; only cancellation ends the loop."""
     boot_id = str(uuid.uuid4())
-    digest, bundle = ui_digest(), build_bundle()
+    # Building the bundle reads and hashes the whole UI tree; keep it off the loop.
+    digest, bundle = await asyncio.to_thread(lambda: (ui_digest(), build_bundle()))
     registered = False  # reset on a 401: the cloud no longer knows this machine
     bundle_sent = False
     ever_registered = False

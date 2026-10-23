@@ -114,6 +114,38 @@ async def test_one_bundle_put_then_reports_with_rising_seq(machine_fake_time, id
     assert calls == [60, 60, 60]
 
 
+async def test_bundle_is_built_off_the_event_loop(
+    machine_fake_time, identity, monkeypatch
+):
+    from ice_edge.uplink import loop as loop_module
+
+    on_loop = []
+
+    def spy(real):
+        def wrapper(*a, **k):
+            try:
+                asyncio.get_running_loop()
+                on_loop.append(True)
+            except RuntimeError:
+                on_loop.append(False)
+            return real(*a, **k)
+
+        return wrapper
+
+    monkeypatch.setattr(loop_module, "build_bundle", spy(loop_module.build_bundle))
+    monkeypatch.setattr(loop_module, "ui_digest", spy(loop_module.ui_digest))
+    machine, _ = machine_fake_time
+    cfg = ConfigModel()
+    sleep, _calls = _sleeper(cfg, stop_after=1)
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_uplink(
+            machine, cfg, FakeUplink(), sleep=sleep, now=_now, identity=identity
+        )
+
+    assert on_loop == [False, False]
+
+
 async def test_interval_change_is_honoured_next_pass(machine_fake_time, identity):
     machine, _ = machine_fake_time
     cfg = ConfigModel()

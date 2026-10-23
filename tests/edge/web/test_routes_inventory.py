@@ -107,6 +107,33 @@ class TestInventoryAdjust:
         assert inv.get_count("ADJ-1") == 15
         assert ">15<" in resp.text
 
+    def test_adjust_writes_the_inventory_file_off_the_event_loop(
+        self, client, wired, monkeypatch
+    ):
+        import asyncio
+        import os
+
+        from ice_edge.monitoring import inventory_manager as inv_module
+
+        _cfg, _vmc, inv, _store = wired
+        _add_tracked(wired, "ADJ-T", count=5)
+        on_loop = []
+        real_replace = os.replace
+
+        def spying_replace(*args, **kwargs):
+            try:
+                asyncio.get_running_loop()
+                on_loop.append(True)
+            except RuntimeError:
+                on_loop.append(False)
+            return real_replace(*args, **kwargs)
+
+        monkeypatch.setattr(inv_module.os, "replace", spying_replace)
+        resp = client.post("/inventory/ADJ-T/adjust", data={"delta": "1"})
+        assert resp.status_code == 200
+        assert inv.get_count("ADJ-T") == 6
+        assert on_loop == [False]
+
     def test_minus_ten_on_count_of_three_clamps_at_zero(self, client, wired):
         _cfg, _vmc, inv, _store = wired
         _add_tracked(wired, "ADJ-2", count=3)

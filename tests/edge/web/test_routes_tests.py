@@ -508,6 +508,25 @@ class TestLog:
     ice_edge/reporting/reports.py's own documented deviation) and tests_log.html.
     """
 
+    def test_flush_and_read_run_off_the_event_loop(
+        self, client, wire_event_recorder, monkeypatch
+    ):
+        """recorder.flush() busy-waits up to 5 s; it must not do so on the loop."""
+        on_loop = []
+        real_flush = wire_event_recorder.flush
+
+        def spying_flush(*args, **kwargs):
+            try:
+                asyncio.get_running_loop()
+                on_loop.append(True)
+            except RuntimeError:
+                on_loop.append(False)
+            return real_flush(*args, **kwargs)
+
+        monkeypatch.setattr(wire_event_recorder, "flush", spying_flush)
+        assert client.get("/tests/log").status_code == 200
+        assert on_loop == [False]
+
     def test_no_verdict_renders_verdict_none(self, client, wire_event_recorder):
         wire_event_recorder.record(
             "test_run",

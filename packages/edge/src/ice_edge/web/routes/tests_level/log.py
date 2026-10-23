@@ -81,7 +81,9 @@ async def tests_log(request: Request):
         request,
         "tests_log.html",
         context.template_context(
-            request, level=LEVEL_TESTS_LOG, runs=recent_test_runs(100)
+            request,
+            level=LEVEL_TESTS_LOG,
+            runs=await asyncio.to_thread(recent_test_runs, 100),
         ),
     )
 

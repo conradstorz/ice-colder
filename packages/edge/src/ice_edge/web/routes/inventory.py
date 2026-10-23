@@ -181,7 +181,10 @@ async def adjust_inventory(request: Request, sku: str, delta: str = Form(...)):
         # result (brief resolution 5). Deliberately different from the
         # placement form, which rejects a typed negative count outright.
         current = context.inventory_manager.get_count(sku)
-        context.inventory_manager.set_count(sku, max(0, current + delta_value))
+        context.inventory_manager.set_count(
+            sku, max(0, current + delta_value), persist=False
+        )
+        await context.inventory_manager.save_async()
 
     # One row, not the whole list (brief resolution 7) — a loader's
     # repeated taps must not scroll-jump the page on a tablet.
