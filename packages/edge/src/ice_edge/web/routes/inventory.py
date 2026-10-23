@@ -266,7 +266,15 @@ async def collect_cash(request: Request):
 
         # Record the cash collection, which enqueues it on the writer
         # thread.
-        context.event_recorder.record_cash_collection(user_id, user_name)
+        try:
+            await asyncio.to_thread(
+                context.event_recorder.record_cash_collection, user_id, user_name
+            )
+        except RuntimeError:
+            raise HTTPException(
+                status_code=503,
+                detail="event recorder is backed up; try again shortly",
+            ) from None
 
         # Flush the queue to ensure the row is written. If the writer
         # thread has died, this returns immediately without waiting --

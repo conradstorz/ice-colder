@@ -1144,6 +1144,17 @@ class TestVerdict:
     no-op-with-a-warning behavior). Restored -- passed again.
     """
 
+    def test_verdict_503_when_recorder_queue_full(
+        self, client, wire_event_recorder, monkeypatch
+    ):
+        def full(run_id, **fields):
+            raise RuntimeError("event recorder queue full")
+
+        monkeypatch.setattr(wire_event_recorder, "update_metadata", full)
+        resp = client.post("/tests/runs/r1/verdict", data={"verdict": "pass"})
+        assert resp.status_code == 503
+        assert "backed up" in resp.text
+
     def test_verdict_updates_only_the_targeted_run(self, client, wire_event_recorder):
         wire_event_recorder.record(
             "test_run", metadata={"run_id": "r1", "subsystem": "mdb", "command": "ping"}

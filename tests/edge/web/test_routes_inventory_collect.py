@@ -168,6 +168,22 @@ class TestCollectCashEndpoint:
         assert "newer release" in resp.text
         assert _read_cash_collections(db) == []
 
+    def test_collect_cash_503_when_recorder_queue_full(
+        self, login_as, wired, recorder_with_db, monkeypatch
+    ):
+        def full(user_id, user_name):
+            raise RuntimeError("event recorder queue full")
+
+        monkeypatch.setattr(recorder_with_db, "record_cash_collection", full)
+        client = login_as(Role.owner)
+        resp = client.post("/inventory/collect", headers={"HX-Request": "true"})
+        assert resp.status_code == 503
+        assert "backed up" in resp.text
+        assert _read_cash_collections(recorder_with_db.db_path) == []
+        # The lock was released: a second attempt reaches the recorder again.
+        resp = client.post("/inventory/collect", headers={"HX-Request": "true"})
+        assert resp.status_code == 503
+
     def test_collect_cash_refuses_unauthenticated_post(self, wired, recorder_with_db):
         """An unauthenticated POST should be refused with 401 and HX-Redirect."""
         from fastapi.testclient import TestClient

@@ -119,7 +119,18 @@ async def post_verdict(
         raise HTTPException(status_code=400, detail="verdict must be 'pass' or 'fail'")
     note = note or None
     if context.event_recorder is not None:
-        context.event_recorder.update_metadata(run_id, verdict=verdict, note=note)
+        try:
+            await asyncio.to_thread(
+                context.event_recorder.update_metadata,
+                run_id,
+                verdict=verdict,
+                note=note,
+            )
+        except RuntimeError:
+            raise HTTPException(
+                status_code=503,
+                detail="event recorder is backed up; try again shortly",
+            ) from None
         # Block until the write lands: a test (or an operator's very
         # next GET /tests/log) reading right back must see it -- update_
         # metadata itself only queues the merge for the writer thread.
