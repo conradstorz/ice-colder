@@ -229,3 +229,64 @@ class TestSubscriptionsTable:
             ("payment/status", "telemetry", "handle_payment_status"),
         )
         assert len(SUBSCRIPTIONS) == 12
+
+
+class TestNameValidation:
+    """Names that key in-memory dicts are slugs, or the message is dropped."""
+
+    @pytest.mark.parametrize("bad", ["x" * 100, "has space", "UPPER", "a/b", ""])
+    async def test_bad_heartbeat_subsystem_reaches_nobody(self, bad):
+        router, seen = TelemetryRouter(), []
+        router.subscribe_heartbeat(lambda s, d, a: seen.append(s))
+        await router.handle_heartbeat("heartbeat/x", {"subsystem": bad})
+        assert seen == []
+
+    async def test_bad_sensor_location_reaches_nobody(self):
+        router, seen = TelemetryRouter(), []
+        router.subscribe_sensor(lambda loc, v: seen.append(loc))
+        await router.handle_sensor(
+            "sensors/temp/x", {"location": "bad name", "value": 1.0}
+        )
+        await router.handle_sensor("sensors/temp/x", {"location": "ok", "value": 1.0})
+        assert seen == ["ok"]
+
+    async def test_bad_capabilities_subsystem_creates_no_entry(self):
+        router, seen = TelemetryRouter(), []
+        router.subscribe_capabilities(lambda s, d, c: seen.append(s))
+        for bad in ("x" * 100, "has space"):
+            await router.handle_capabilities("capabilities/x", _caps_payload(bad))
+        assert seen == []
+        assert router.capabilities == {}
+
+    async def test_bad_hardware_device_reaches_nobody(self):
+        router, seen = TelemetryRouter(), []
+        router.subscribe_hardware_io(lambda d, s: seen.append(d))
+        await router.handle_hardware_io(
+            "hardware/io/x", {"device": "bad device", "state": True}
+        )
+        assert seen == []
+
+    async def test_capabilities_capped_at_max_subsystems(self):
+        from ice_contracts.board.common import MAX_SUBSYSTEMS
+
+        router = TelemetryRouter()
+        for i in range(MAX_SUBSYSTEMS + 1):
+            await router.handle_capabilities("capabilities/x", _caps_payload(f"b{i}"))
+        assert len(router.capabilities) == MAX_SUBSYSTEMS
+        assert f"b{MAX_SUBSYSTEMS - 1}" in router.capabilities
+        assert f"b{MAX_SUBSYSTEMS}" not in router.capabilities
+        # An existing key still updates.
+        await router.handle_capabilities("capabilities/x", _caps_payload("b0"))
+
+    async def test_bad_name_warning_is_once_per_name(self):
+        from loguru import logger
+
+        messages: list[str] = []
+        sink = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+        try:
+            router = TelemetryRouter()
+            for _ in range(5):
+                await router.handle_heartbeat("heartbeat/x", {"subsystem": "bad name"})
+        finally:
+            logger.remove(sink)
+        assert len([m for m in messages if "bad name" in m]) == 1

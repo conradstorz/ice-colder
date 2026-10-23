@@ -375,6 +375,14 @@ class TestMQTTProtocolVersion:
         return captured
 
     @pytest.mark.asyncio
+    async def test_bounds_incoming_queue(self, monkeypatch):
+        captured = await self._connect_with(MQTTConfig(), monkeypatch)
+        assert (
+            captured["max_queued_incoming_messages"] == MQTTClient.MAX_QUEUED_INCOMING
+        )
+        assert MQTTClient.MAX_QUEUED_INCOMING == 2048
+
+    @pytest.mark.asyncio
     async def test_defaults_to_v5(self, monkeypatch):
         captured = await self._connect_with(MQTTConfig(), monkeypatch)
         assert captured["protocol"] is aiomqtt.ProtocolVersion.V5

@@ -15,6 +15,7 @@ from typing import Optional, Callable, Awaitable
 
 from loguru import logger
 
+from ice_contracts.board.common import MAX_SUBSYSTEMS
 from ice_contracts.board.vending_machine import EXPECTED_SUBSYSTEMS
 from ice_common.build_info import BUILD_INFO
 
@@ -83,6 +84,13 @@ class Alert:
 
 # Type for the callback that delivers alerts (e.g., to notifier service)
 AlertCallback = Callable[[Alert], Awaitable[bool | None]]
+
+# Caps on in-memory dicts keyed by names that arrive in MQTT payloads. A write
+# for a NEW key past the cap is dropped with a warning; existing keys keep
+# updating and nothing is evicted.
+MAX_TEMPERATURE_KEYS = 64
+MAX_CHANNEL_KEYS = 256
+MAX_SIGNALS_PER_SUBSYSTEM = 256
 
 # Type for the callback that reports subsystem liveness transitions
 LivenessCallback = Callable[[str, bool], None]
@@ -171,11 +179,24 @@ class HealthMonitor:
 
     # --- Data recording (called from MQTT handlers) ---
 
+    def _ensure_subsystem(self, subsystem: str, how: str) -> bool:
+        """Make sure a SubsystemStatus exists; False when the cap refuses it."""
+        if subsystem in self._subsystems:
+            return True
+        if len(self._subsystems) >= MAX_SUBSYSTEMS:
+            logger.warning(
+                f"Health: subsystem cap ({MAX_SUBSYSTEMS}) reached; "
+                f"dropping new subsystem {subsystem!r}"
+            )
+            return False
+        self._subsystems[subsystem] = SubsystemStatus(name=subsystem)
+        logger.info(f"Health: New subsystem registered{how}: {subsystem}")
+        return True
+
     def record_heartbeat(self, subsystem: str, payload: dict | None = None):
         """Record that a subsystem has checked in."""
-        if subsystem not in self._subsystems:
-            self._subsystems[subsystem] = SubsystemStatus(name=subsystem)
-            logger.info(f"Health: New subsystem registered: {subsystem}")
+        if not self._ensure_subsystem(subsystem, ""):
+            return
         self._subsystems[subsystem].last_seen = time.monotonic()
         self._subsystems[subsystem].last_payload = payload or {}
         self._subsystems[subsystem].offline = False
@@ -187,9 +208,8 @@ class HealthMonitor:
         """Store a subsystem's retained self-description. Never touches
         last_seen: a retained document says what the board is, not that it
         is up."""
-        if subsystem not in self._subsystems:
-            self._subsystems[subsystem] = SubsystemStatus(name=subsystem)
-            logger.info(f"Health: New subsystem registered (capabilities): {subsystem}")
+        if not self._ensure_subsystem(subsystem, " (capabilities)"):
+            return
         status = self._subsystems[subsystem]
         status.capabilities = dict(caps)
         status.capabilities_at = time.monotonic()
@@ -216,6 +236,15 @@ class HealthMonitor:
 
     def record_temperature(self, location: str, value: float):
         """Record a temperature sensor reading."""
+        if (
+            location not in self._temperatures
+            and len(self._temperatures) >= MAX_TEMPERATURE_KEYS
+        ):
+            logger.warning(
+                f"Health: temperature cap ({MAX_TEMPERATURE_KEYS}) reached; "
+                f"dropping new location {location!r}"
+            )
+            return
         self._temperatures[location] = TemperatureReading(
             location=location, value=value, timestamp=time.monotonic()
         )
@@ -228,6 +257,12 @@ class HealthMonitor:
 
     def record_channel(self, channel_id: str, value: float):
         """Record a generic telemetry channel reading (analog or binary)."""
+        if channel_id not in self._channels and len(self._channels) >= MAX_CHANNEL_KEYS:
+            logger.warning(
+                f"Health: channel cap ({MAX_CHANNEL_KEYS}) reached; "
+                f"dropping new channel {channel_id!r}"
+            )
+            return
         self._channels[channel_id] = TemperatureReading(
             location=channel_id, value=value, timestamp=time.monotonic()
         )
@@ -274,9 +309,23 @@ class HealthMonitor:
         """
         now_mono = time.monotonic()
         now_wall = time.time()
-        bucket = self._signals.setdefault(subsystem, {})
+        bucket = self._signals.get(subsystem)
+        if bucket is None:
+            if len(self._signals) >= MAX_SUBSYSTEMS:
+                logger.warning(
+                    f"Health: signal subsystem cap ({MAX_SUBSYSTEMS}) reached; "
+                    f"dropping {subsystem!r}/{channel_id!r}"
+                )
+                return
+            bucket = self._signals[subsystem] = {}
         existing = bucket.get(channel_id)
         if existing is None:
+            if len(bucket) >= MAX_SIGNALS_PER_SUBSYSTEM:
+                logger.warning(
+                    f"Health: signal cap ({MAX_SIGNALS_PER_SUBSYSTEM}) reached for "
+                    f"{subsystem!r}; dropping channel {channel_id!r}"
+                )
+                return
             bucket[channel_id] = Signal(
                 value=value,
                 text=text,
@@ -303,8 +352,8 @@ class HealthMonitor:
         sending a live heartbeat after a VMC restart), start tracking it as
         stale so it shows up in the dashboard and the stale alert can fire.
         """
-        if subsystem not in self._subsystems:
-            self._subsystems[subsystem] = SubsystemStatus(name=subsystem)
+        if not self._ensure_subsystem(subsystem, ""):
+            return
         self._subsystems[subsystem].last_seen = 0.0
         self._subsystems[subsystem].offline = True
         self._notify_liveness(self._subsystems[subsystem], False)

@@ -887,3 +887,43 @@ class TestPendingAlertRetry:
         assert monitor.pending_alert_keys == frozenset()
         await _round(monitor)
         assert len(calls) == 1
+
+
+class TestInMemoryCaps:
+    def test_signals_capped_per_subsystem(self):
+        from ice_edge.monitoring.health_monitor import MAX_SIGNALS_PER_SUBSYSTEM
+
+        hm = HealthMonitor()
+        for i in range(MAX_SIGNALS_PER_SUBSYSTEM + 1):
+            hm.record_signal("vending", f"ch{i}", 1.0)
+        bucket = hm.get_summary()["signals"]["vending"]
+        assert len(bucket) == MAX_SIGNALS_PER_SUBSYSTEM
+        assert f"ch{MAX_SIGNALS_PER_SUBSYSTEM}" not in bucket
+        # An existing channel keeps updating at the cap.
+        hm.record_signal("vending", "ch0", 2.0)
+        assert hm.get_summary()["signals"]["vending"]["ch0"]["value"] == 2.0
+
+    def test_subsystems_capped(self):
+        from ice_edge.monitoring.health_monitor import MAX_SUBSYSTEMS
+
+        hm = HealthMonitor()
+        for i in range(MAX_SUBSYSTEMS + 1):
+            hm.record_heartbeat(f"b{i}")
+        names = hm.get_summary()["subsystems"]
+        assert f"b{MAX_SUBSYSTEMS - 1}" in names
+        assert f"b{MAX_SUBSYSTEMS}" not in names
+
+    def test_temperature_and_channel_keys_capped(self):
+        from ice_edge.monitoring.health_monitor import (
+            MAX_CHANNEL_KEYS,
+            MAX_TEMPERATURE_KEYS,
+        )
+
+        hm = HealthMonitor()
+        for i in range(MAX_TEMPERATURE_KEYS + 1):
+            hm.record_temperature(f"t{i}", 1.0)
+        for i in range(MAX_CHANNEL_KEYS + 1):
+            hm.record_channel(f"c{i}", 1.0)
+        summary = hm.get_summary()
+        assert len(summary["temperatures"]) == MAX_TEMPERATURE_KEYS
+        assert len(summary["channels"]) == MAX_CHANNEL_KEYS

@@ -274,6 +274,9 @@ class EventRecorder:
       resumes. It deliberately does not use the writer queue.
     """
 
+    #: Writer-queue bound; `record()` drops (and counts) beyond it.
+    QUEUE_MAXSIZE = 10_000
+
     def __init__(
         self,
         db_path: str = "data/events.db",
@@ -307,6 +310,7 @@ class EventRecorder:
         # here: sales are journalled, event rows are discarded.
         self.db_newer_than_code: bool = False
         self._discarded_events = 0
+        self._dropped_events = 0
         # Last heartbeat bucket that got a row (in memory; reset on restart).
         self._last_heartbeat_bucket: Optional[int] = None
         try:
@@ -387,7 +391,7 @@ class EventRecorder:
     def _start_writer(self) -> None:
         # All inserts go through one daemon thread with one connection so MQTT
         # handlers never block the event loop on SD-card writes.
-        self._queue: queue.Queue = queue.Queue()
+        self._queue: queue.Queue = queue.Queue(maxsize=self.QUEUE_MAXSIZE)
         self._writer = threading.Thread(
             target=self._writer_loop, name="event-recorder", daemon=True
         )
@@ -608,7 +612,17 @@ class EventRecorder:
             self._note_discarded_event(event_type)
             return
         meta_str = json.dumps(metadata) if metadata else None
-        self._queue.put((event_type, time.time(), value, meta_str))
+        try:
+            self._queue.put_nowait((event_type, time.time(), value, meta_str))
+        except queue.Full:
+            self._dropped_events += 1
+            if self._dropped_events % 1000 == 1:
+                logger.warning(
+                    f"EventRecorder: writer queue full ({self.QUEUE_MAXSIZE}); "
+                    f"dropped {self._dropped_events} event row(s) so far "
+                    f"(latest {event_type!r})"
+                )
+            return
         logger.debug(f"EventRecorder: {event_type} value={value}")
 
     def record_cash_collection(self, user_id: str, user_name: str) -> None:
@@ -630,10 +644,23 @@ class EventRecorder:
                 "(cash collections have no journal fallback)"
             )
             return
-        self._queue.put(
+        self._put_job(
             _CashCollectionJob(user_id=user_id, user_name=user_name, ts=time.time())
         )
         logger.debug(f"EventRecorder: cash collection queued for user={user_id}")
+
+    def _put_job(self, job) -> None:
+        """Queue a money-adjacent or operator job; wait briefly for room and
+        raise rather than let the row vanish silently."""
+        try:
+            self._queue.put(job, timeout=5)
+        except queue.Full:
+            raise RuntimeError("event recorder queue full") from None
+
+    @property
+    def dropped_events(self) -> int:
+        """Event rows dropped because the writer queue was full."""
+        return self._dropped_events
 
     def _note_discarded_event(self, what: str) -> None:
         self._discarded_events += 1
@@ -670,7 +697,7 @@ class EventRecorder:
         if self.db_newer_than_code:
             self._note_discarded_event("update_metadata")
             return
-        self._queue.put(_UpdateMetadataJob(run_id=run_id, fields=dict(fields)))
+        self._put_job(_UpdateMetadataJob(run_id=run_id, fields=dict(fields)))
         logger.debug(f"EventRecorder: update_metadata queued for run_id={run_id!r}")
 
     def record_sale(

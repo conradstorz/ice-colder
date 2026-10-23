@@ -86,7 +86,7 @@ class InventoryManager:
             tmp = f"{self._path}.tmp"
             try:
                 with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(self._counts, f, indent=2)
+                    json.dump(dict(self._counts), f, indent=2)
                 os.replace(tmp, self._path)
             except Exception as e:
                 logger.error(f"Failed to save inventory: {e}")

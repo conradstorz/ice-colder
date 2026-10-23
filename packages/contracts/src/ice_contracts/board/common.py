@@ -18,6 +18,10 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 CHANNEL_ID_PATTERN = r"^[a-z0-9_]{1,64}$"
 
+#: Most distinct subsystems the edge keeps in memory (health monitor and the
+#: telemetry router's capabilities store share it). Not a wire-format field.
+MAX_SUBSYSTEMS = 32
+
 # A subsystem must ack within this many seconds of a command being sent, or
 # the dispatcher (ice_edge/hal/command_dispatcher.py, a later task) treats it as
 # a timeout. The contract owns this constant so the dispatcher and the docs

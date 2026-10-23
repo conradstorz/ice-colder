@@ -52,6 +52,10 @@ class MQTTClient:
         await client.run()  # blocks, reconnects on failure
     """
 
+    #: Bound on aiomqtt's incoming-message queue; when full aiomqtt logs and
+    #: discards the new message rather than growing without limit.
+    MAX_QUEUED_INCOMING = 2048
+
     def __init__(self, config: MQTTConfig, machine_id: str):
         self._config = config
         self._machine_id = machine_id
@@ -196,6 +200,7 @@ class MQTTClient:
             keepalive=self._config.keepalive,
             protocol=PROTOCOL_VERSIONS[self._config.protocol_version],
             will=will,
+            max_queued_incoming_messages=self.MAX_QUEUED_INCOMING,
         ) as client:
             self._client = client
             self._connected = True

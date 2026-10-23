@@ -1,7 +1,9 @@
 # tests/test_event_recorder.py
 import json
 import os
+import queue
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -2613,3 +2615,47 @@ class TestNewerSchemaIsReadOnly:
         assert fresh.db_newer_than_code is False
         assert fresh.replay_sales_journal() == 1
         assert _count(db, "sales") == 1
+
+
+class _StalledQueue(queue.Queue):
+    """A full queue whose consumer never gets a row; put waits only briefly."""
+
+    def __init__(self):
+        super().__init__(maxsize=1)
+        self.release = threading.Event()
+        super().put(("held", 0.0, 1.0, None))
+
+    def get(self, block=True, timeout=None):
+        self.release.wait()
+        raise queue.Empty
+
+    def put(self, item, block=True, timeout=None):
+        super().put(item, block, 0.01 if timeout else timeout)
+
+
+@pytest.fixture
+def stalled(recorder):
+    recorder.flush()
+    q = _StalledQueue()
+    # private: swap in a full queue so the drop policy runs without a paused writer
+    recorder._queue = q
+    yield recorder
+
+
+class TestBoundedQueue:
+    def test_record_drops_and_counts_when_queue_full(self, stalled):
+        stalled.record("dropped")
+        stalled.record("dropped")
+        assert stalled.dropped_events == 2
+
+    def test_cash_collection_and_update_metadata_raise_when_full(self, stalled):
+        with pytest.raises(RuntimeError, match="queue full"):
+            stalled.record_cash_collection("u1", "User")
+        with pytest.raises(RuntimeError, match="queue full"):
+            stalled.update_metadata("run1", verdict="pass")
+        assert stalled.dropped_events == 0
+
+    def test_newer_schema_discards_are_not_counted_as_drops(self, recorder):
+        recorder.db_newer_than_code = True
+        recorder.record("x")
+        assert recorder.dropped_events == 0
