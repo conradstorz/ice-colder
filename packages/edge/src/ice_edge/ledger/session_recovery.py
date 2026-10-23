@@ -23,7 +23,14 @@ from typing import Literal
 from loguru import logger
 
 from ice_edge.ledger.escrow_ledger import EscrowLedger
+from ice_edge.ledger.event_recorder import SALE_MATCH_WINDOW_SECONDS
 from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
+
+# Added to the configured dispense timeout to get the sale-match window: the
+# live path inserts the sale row after the dispense completes, so the row can
+# trail the snapshot's ``saved_at`` by up to the timeout plus the write. With
+# the default 120 s timeout this reproduces SALE_MATCH_WINDOW_SECONDS (600 s).
+SALE_MATCH_MARGIN_SECONDS = 480.0
 
 BootDecisionKind = Literal["discard_test", "uncertain", "closed", "none"]
 
@@ -51,6 +58,18 @@ class BootDecision:
     snapshot: SessionSnapshot | None
 
 
+@dataclass(frozen=True)
+class RecoveryDetail:
+    """What the PAY-104 fault row shows about the snapshot left on disk."""
+
+    sku: str | None
+    sale_recorded: bool
+    credit_escrow: float
+    pending_refund_request_id: str | None
+    error: str | None
+    is_test: bool
+
+
 class SessionRecovery:
     """Holds the PAY-104 recovery state the VMC used to keep on itself."""
 
@@ -60,9 +79,10 @@ class SessionRecovery:
         store: Callable[[], SessionStore | None],
         product_name: Callable[[str | None], str | None],
         pay104_active: Callable[[], bool],
-        sale_recorded: Callable[[str, float, dict[str, float]], bool] = (
-            lambda sku, since_ts, methods: False
+        sale_recorded: Callable[[str, float, dict[str, float], float], bool] = (
+            lambda sku, since_ts, methods, window: False
         ),
+        match_window_seconds: Callable[[], float] = lambda: SALE_MATCH_WINDOW_SECONDS,
     ) -> None:
         self._store = store
         self._product_name = product_name
@@ -71,6 +91,7 @@ class SessionRecovery:
         # committed this snapshot's sale (crash between the insert and the
         # idle snapshot clear). Default: never.
         self._sale_recorded = sale_recorded
+        self._match_window = match_window_seconds
         self._logged_already_recorded = False
         # In-memory record-once guard for PAY-104 recovery (Task 14 review
         # finding 3): keys of pending sales this process has already
@@ -137,12 +158,38 @@ class SessionRecovery:
         try:
             return bool(
                 self._sale_recorded(
-                    snap.selected_sku, snap.saved_at, dict(snap.pending_sale_shares)
+                    snap.selected_sku,
+                    snap.saved_at,
+                    dict(snap.pending_sale_shares),
+                    self._match_window(),
                 )
             )
         except Exception:
             logger.exception("PAY-104: already-recorded check failed; assuming not")
             return False
+
+    def recovery_detail(self) -> RecoveryDetail | None:
+        """Read-only view of the current snapshot for the PAY-104 fault row:
+        whether its sale already has a ``sales`` row, and any credit, pending
+        refund or read error it still carries. ``None`` with no store or no
+        snapshot (or an unreadable store). Never mutates anything."""
+        store = self._store()
+        if store is None:
+            return None
+        try:
+            snap = store.load()
+        except Exception:
+            return None
+        if snap is None:
+            return None
+        return RecoveryDetail(
+            sku=snap.selected_sku,
+            sale_recorded=self._already_recorded(snap),
+            credit_escrow=snap.credit_escrow,
+            pending_refund_request_id=snap.pending_refund_request_id,
+            error=snap.error,
+            is_test=snap.is_test,
+        )
 
     def pending_sale_for_recovery(self) -> dict | None:
         """Read-only: the pending sale recorded in the session snapshot, if

@@ -148,6 +148,7 @@ class PhysicalDetails(BaseModel):
     dispense_timeout_seconds: float = Field(
         120.0,
         ge=10,
+        le=3600,
         description=(
             "Seconds the VMC waits for a terminal dispenser report after "
             "commanding a dispense; expiry is a failed vend (PAY-102)"

@@ -66,7 +66,11 @@ from ice_edge.sale.maintenance_lease import MaintenanceHold, MaintenanceLease
 from ice_edge.sale.outputs import StatusOutputs
 from ice_edge.payment.refund_protocol import RefundProtocol
 from ice_edge.sale.sale_journal import SaleJournal
-from ice_edge.ledger.session_recovery import SessionRecovery
+from ice_edge.ledger.session_recovery import (
+    SALE_MATCH_MARGIN_SECONDS,
+    RecoveryDetail,
+    SessionRecovery,
+)
 from ice_edge.supervisor.task_runner import TaskRunner
 from ice_edge.sale.test_sale import TestSaleRunner
 from ice_edge.sale.vmc import VMC
@@ -171,6 +175,10 @@ class Machine:
             product_name=self._product_name,
             pay104_active=lambda: self._faults.has(FaultCode.PAY_104),
             sale_recorded=self._sale_recorded,
+            match_window_seconds=lambda: (
+                self._config.physical.dispense_timeout_seconds
+                + SALE_MATCH_MARGIN_SECONDS
+            ),
         )
         # The router is a pure fan-out; every consumer is subscribed here.
         self._telemetry = mqtt_inbound.TelemetryRouter()
@@ -535,11 +543,15 @@ class Machine:
         health monitor) -- delegates to `self._faults.on_mqtt_connection`."""
         self._faults.on_mqtt_connection(connected)
 
-    def _sale_recorded(self, sku: str, since_ts: float, methods: dict) -> bool:
+    def _sale_recorded(
+        self, sku: str, since_ts: float, methods: dict, window_seconds: float
+    ) -> bool:
         recorder = self._event_recorder
         if recorder is None:
             return False
-        return recorder.sale_recorded_since(sku, since_ts, methods)
+        return recorder.sale_recorded_since(
+            sku, since_ts, methods, window_seconds=window_seconds
+        )
 
     def _flag_uncertain_session(self, snap: SessionSnapshot) -> None:
         """Side effects of an 'uncertain' boot decision other than
@@ -562,6 +574,9 @@ class Machine:
         self._faults.raise_fault(FaultCode.PAY_104, outcome=detail)
 
     # --- recovery conveniences (one-line forwards; routes call them) ---
+
+    def recovery_detail(self) -> RecoveryDetail | None:
+        return self._recovery.recovery_detail()
 
     def pending_sale_for_recovery(self) -> dict | None:
         return self._recovery.pending_sale_for_recovery()

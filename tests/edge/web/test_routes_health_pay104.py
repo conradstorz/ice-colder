@@ -167,6 +167,14 @@ class TestFaultsListRendersPendingSale:
         assert "cash_bill: $2.00" in text
         assert "card: $0.50" in text
 
+    def test_plain_uncertain_sale_renders_no_chips(self, pay104, login_as):
+        client = login_as(Role.tech)
+        text = client.get("/health/faults").text
+        assert "Sale already recorded" not in text
+        assert "Leftover credit" not in text
+        assert "unconfirmed" not in text
+        assert "Snapshot error" not in text
+
     def test_two_actions_replace_plain_clear(self, pay104, login_as):
         client = login_as(Role.tech)
         resp = client.get("/health/faults")
@@ -883,3 +891,16 @@ class TestRecordedSaleWithLeftoverCredit:
         assert resp.status_code == 200
         assert "PAY-104" not in {f["code"] for f in machine.vmc.active_faults()}
         assert len(_sales_rows(db)) == 1
+
+    def test_fault_row_shows_leftover_credit_chips(self, leftover, login_as):
+        client = login_as(Role.tech)
+        text = client.get("/health/faults").text
+        assert "Sale already recorded" in text
+        assert "Leftover credit $2.50" in text
+
+    def test_recovery_detail_forwarded_on_machine(self, leftover):
+        machine, _store, _db = leftover
+        detail = machine.recovery_detail()
+        assert detail is not None
+        assert detail.sale_recorded is True
+        assert detail.credit_escrow == pytest.approx(2.50)

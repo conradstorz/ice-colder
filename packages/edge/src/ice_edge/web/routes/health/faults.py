@@ -59,6 +59,12 @@ def _faults_with_age() -> list[dict]:
     )
     for f in faults:
         f["dom_key"] = dom_safe_key(f["key"])
+        # Only PAY-104 carries snapshot detail (leftover credit etc.).
+        f["recovery_detail"] = (
+            context.machine_instance.recovery_detail()
+            if f["code"] == "PAY-104" and context.machine_instance
+            else None
+        )
     return faults
 
 

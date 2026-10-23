@@ -38,6 +38,22 @@
         {% endfor %}
       </div>
       {% endif %}
+      {% if f.recovery_detail %}
+      {# M11: PAY-104 snapshot detail. No "Refund leftover" action on purpose:
+         after a restart the credit is no longer in escrow and the edge has no
+         refund path for money it does not hold, so the operator refunds at the
+         payment device. Renders nothing when the field is absent (the cloud
+         renders this template from a stored report that has no such field). #}
+      {% set d = f.recovery_detail %}
+      {% if d.sale_recorded or d.credit_escrow > 0.005 or d.pending_refund_request_id or d.error %}
+      <div class="w-full flex flex-wrap items-center gap-3 text-xs text-gray-500">
+        {% if d.sale_recorded %}<span>Sale already recorded</span>{% endif %}
+        {% if d.credit_escrow > 0.005 %}<span>Leftover credit ${{ "%.2f"|format(d.credit_escrow) }}</span>{% endif %}
+        {% if d.pending_refund_request_id %}<span>Refund {{ d.pending_refund_request_id }} unconfirmed</span>{% endif %}
+        {% if d.error %}<span>Snapshot error: {{ d.error }}</span>{% endif %}
+      </div>
+      {% endif %}
+      {% endif %}
       {% if can_clear %}
       <div class="ml-auto flex gap-2">
         {% if f.pending_sale %}

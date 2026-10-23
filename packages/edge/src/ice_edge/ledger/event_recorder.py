@@ -748,11 +748,16 @@ class EventRecorder:
                 conn.close()
 
     def sale_recorded_since(
-        self, sku: str, since_ts: float, methods: dict[str, float]
+        self,
+        sku: str,
+        since_ts: float,
+        methods: dict[str, float],
+        *,
+        window_seconds: float = SALE_MATCH_WINDOW_SECONDS,
     ) -> bool:
         """True when a ``sales`` row for ``sku`` exists at or after
-        ``since_ts`` (and no later than ``SALE_MATCH_WINDOW_SECONDS``
-        after it) whose method shares equal ``methods`` (compared as dicts rounded to cents).
+        ``since_ts`` (and no later than ``window_seconds``, default
+        ``SALE_MATCH_WINDOW_SECONDS``, after it) whose method shares equal ``methods`` (compared as dicts rounded to cents).
 
         PAY-104 recovery uses it to spot a sale the live path committed
         just before a crash that left the dispensing snapshot behind.
@@ -771,7 +776,7 @@ class EventRecorder:
             conn = sqlite3.connect(self._db_path, timeout=5.0)
             rows = conn.execute(
                 "SELECT methods FROM sales WHERE sku = ? AND ts >= ? AND ts <= ?",
-                (sku, since_ts, since_ts + SALE_MATCH_WINDOW_SECONDS),
+                (sku, since_ts, since_ts + window_seconds),
             ).fetchall()
         except Exception:
             logger.exception(

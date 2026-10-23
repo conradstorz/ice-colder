@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import pytest
 
 from loguru import logger
 
@@ -243,6 +244,22 @@ class TestBootAlreadyRecordedSale:
 
         assert not machine.faults.has(FaultCode.PAY_104)
         assert not (tmp_path / "session.json").exists()
+
+    @pytest.mark.parametrize(("timeout", "matched"), [(120.0, False), (300.0, True)])
+    def test_match_window_follows_dispense_timeout(self, tmp_path, timeout, matched):
+        recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
+        store = SessionStore(tmp_path / "session.json")
+        saved_at = time.time()
+        store.save(self._snapshot(saved_at))
+        recorder.record_sale("ICE-1", "Ice", 1, 2.50, {"cash": 2.50}, ts=saved_at + 700)
+        config = ConfigModel()
+        config.physical.dispense_timeout_seconds = timeout
+        machine = Machine(config)
+        machine.set_event_recorder(recorder)
+
+        machine.set_session_store(store)
+
+        assert machine.faults.has(FaultCode.PAY_104) is (not matched)
 
     def test_no_sale_row_raises_pay104_as_before(self, tmp_path):
         recorder = EventRecorder(db_path=str(tmp_path / "events.db"))

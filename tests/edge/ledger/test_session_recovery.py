@@ -5,7 +5,11 @@ isolation from `VMC` -- no FSM, no MQTT, no health monitor. Uses a real
 `SessionSnapshot`s.
 """
 
-from ice_edge.ledger.session_recovery import BootDecision, SessionRecovery
+from ice_edge.ledger.session_recovery import (
+    BootDecision,
+    RecoveryDetail,
+    SessionRecovery,
+)
 from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
 
 
@@ -260,7 +264,7 @@ def test_uncertain_snapshot_whose_sale_is_recorded_is_closed(tmp_path):
     store.save(snap)
     calls = []
 
-    def recorded(sku, since_ts, methods):
+    def recorded(sku, since_ts, methods, window):
         calls.append((sku, since_ts, methods))
         return True
 
@@ -346,3 +350,69 @@ def _open_snapshot_with(**kw):
         pending_sale_shares={"cash": 2.50},
         **{"credit_escrow": 0.0, **kw},
     )
+
+
+# --- recovery_detail (M11) ---
+
+
+def test_recovery_detail_none_without_store():
+    assert make_recovery(None).recovery_detail() is None
+
+
+def test_recovery_detail_none_without_snapshot(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    assert make_recovery(store).recovery_detail() is None
+
+
+def test_recovery_detail_reports_leftover_credit(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    store.save(
+        _open_snapshot_with(
+            credit_escrow=2.50, pending_refund_request_id="r-1", error="bad json"
+        )
+    )
+    detail = make_recovery(store, sale_recorded=lambda *a: True).recovery_detail()
+
+    assert detail == RecoveryDetail(
+        sku="ICE-1",
+        sale_recorded=True,
+        credit_escrow=2.50,
+        pending_refund_request_id="r-1",
+        error="bad json",
+        is_test=False,
+    )
+
+
+def test_recovery_detail_not_recorded(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    store.save(_open_snapshot_with())
+    detail = make_recovery(store, sale_recorded=lambda *a: False).recovery_detail()
+
+    assert detail is not None
+    assert detail.sale_recorded is False
+    assert detail.credit_escrow == 0.0
+
+
+def test_recovery_detail_test_snapshot(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    store.save(_open_snapshot_with(is_test=True))
+    detail = make_recovery(store).recovery_detail()
+
+    assert detail is not None
+    assert detail.is_test is True
+
+
+def test_match_window_is_passed_to_sale_recorded(tmp_path):
+    store = SessionStore(tmp_path / "session.json")
+    store.save(_open_snapshot_with())
+    seen = []
+    recovery = SessionRecovery(
+        store=lambda: store,
+        product_name=lambda s: s,
+        pay104_active=lambda: False,
+        sale_recorded=lambda sku, ts, methods, window: seen.append(window) or False,
+        match_window_seconds=lambda: 777.0,
+    )
+    recovery.evaluate_at_boot()
+
+    assert seen == [777.0]
