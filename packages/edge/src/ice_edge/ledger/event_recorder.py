@@ -300,6 +300,11 @@ class EventRecorder:
         # a plausible cause of the original corruption too). A later task
         # (main.py) can inspect this the same way it inspects db_was_corrupt.
         self.db_unavailable: bool = False
+        # Set (with db_unavailable) when the file's schema version is newer
+        # than this build knows (a downgrade). Such a database is read-only
+        # here: sales are journalled, event rows are discarded.
+        self.db_newer_than_code: bool = False
+        self._discarded_events = 0
         try:
             self._init_db()
             if not self.db_unavailable:
@@ -479,11 +484,12 @@ class EventRecorder:
             logger.error(
                 f"EventRecorder: {self._db_path} is at schema version "
                 f"{current} but this build only knows {len(MIGRATIONS)}; "
-                "the schema is left unmigrated (downgrade?). Writes are still "
-                "attempted and a failed sale write is journalled (DATA-101 "
-                "path)."
+                "the schema is left unmigrated (downgrade?). The database is "
+                "treated as read-only: sales are journalled, event rows are "
+                "discarded."
             )
             self.db_unavailable = True
+            self.db_newer_than_code = True
             return
         for index in range(current, len(MIGRATIONS)):
             try:
@@ -594,6 +600,9 @@ class EventRecorder:
         self, event_type: str, value: float = 1.0, metadata: Optional[dict] = None
     ):
         """Queue one event row; the writer thread inserts it."""
+        if self.db_newer_than_code:
+            self._note_discarded_event(event_type)
+            return
         meta_str = json.dumps(metadata) if metadata else None
         self._queue.put((event_type, time.time(), value, meta_str))
         logger.debug(f"EventRecorder: {event_type} value={value}")
@@ -606,11 +615,34 @@ class EventRecorder:
         `_insert_cash_collection`) so it is consistent with every sale
         already durably written, which computing it here or in a route
         cannot guarantee.
+
+        Not recorded at all against a newer-schema database (there is no
+        journal for collections); that is logged as an error per call.
         """
+        if self.db_newer_than_code:
+            logger.error(
+                f"EventRecorder: cash collection by user={user_id} NOT recorded: "
+                "events.db has a newer schema than this build and is read-only "
+                "(cash collections have no journal fallback)"
+            )
+            return
         self._queue.put(
             _CashCollectionJob(user_id=user_id, user_name=user_name, ts=time.time())
         )
         logger.debug(f"EventRecorder: cash collection queued for user={user_id}")
+
+    def _note_discarded_event(self, what: str) -> None:
+        self._discarded_events += 1
+        if self._discarded_events == 1:
+            logger.warning(
+                f"EventRecorder: discarding event rows ({what} first): events.db "
+                "has a newer schema than this build and is read-only"
+            )
+        elif self._discarded_events % 1000 == 0:
+            logger.debug(
+                f"EventRecorder: {self._discarded_events} event rows discarded "
+                "(newer-schema database)"
+            )
 
     def update_metadata(self, run_id: str, **fields) -> None:
         """Queue an in-place merge-update of one `test_run` row's metadata,
@@ -631,6 +663,9 @@ class EventRecorder:
         `_update_metadata` for how the row is located and what happens if
         `run_id` matches zero or more than one row.
         """
+        if self.db_newer_than_code:
+            self._note_discarded_event("update_metadata")
+            return
         self._queue.put(_UpdateMetadataJob(run_id=run_id, fields=dict(fields)))
         logger.debug(f"EventRecorder: update_metadata queued for run_id={run_id!r}")
 
@@ -717,6 +752,22 @@ class EventRecorder:
             "price": price,
             "methods": methods,
         }
+        if self.db_newer_than_code:
+            logger.warning(
+                f"EventRecorder: events.db has a newer schema than this build; "
+                f"journaling sale sku={sku!r} instead of inserting"
+            )
+            try:
+                _append_journal_line(payload)
+            except Exception as journal_exc:
+                logger.exception(
+                    f"EventRecorder: journal append failed for sku={sku!r} "
+                    "against a newer-schema database"
+                )
+                raise SaleRecordingFailed(
+                    f"newer-schema database and journal append failed for sku={sku!r}"
+                ) from journal_exc
+            return
         conn = None
         try:
             conn = sqlite3.connect(self._db_path, timeout=5.0)
@@ -861,6 +912,8 @@ class EventRecorder:
         rejected-evidence file itself is unbounded -- see
         _append_rejected_sale_line's docstring.
         """
+        if self.db_newer_than_code:
+            return 0
         if not JOURNAL_PATH.exists():
             return 0
         content = JOURNAL_PATH.read_text(encoding="utf-8")

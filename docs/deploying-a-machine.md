@@ -37,7 +37,7 @@ session snapshot is treated as uncertain) and needs an operator to resolve.
 Set `ICE_COLDER_IMAGE_TAG` back to the previous `sha-<commit>` and run the same
 `pull` and `up -d`. Data is not always backward-compatible: `events.db` carries a
 schema version (`PRAGMA user_version`). An older build that meets a newer schema raises
-`DATA-103` and cannot record to it (sales go to the journal fallback). So rolling back
+`DATA-103` and cannot record to it (sales go to the journal fallback and are inserted when the newer build returns; events and cash collections made meanwhile are not recorded). So rolling back
 across a release that added a migration requires restoring the pre-update backup
 (`docs/backups.md`) as part of the rollback. Note the working tag before
 every update so there is something to return to.

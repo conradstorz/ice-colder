@@ -2439,3 +2439,76 @@ class TestWriteObservers:
         types = [r[0] for r in conn.execute("SELECT event_type FROM events")]
         conn.close()
         assert types == ["after"]
+
+
+def _set_user_version(db: str, version: int) -> None:
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(f"PRAGMA user_version = {version}")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _count(db: str, table: str) -> int:
+    conn = sqlite3.connect(db)
+    try:
+        return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    finally:
+        conn.close()
+
+
+class TestNewerSchemaIsReadOnly:
+    """An older build meeting a newer-schema events.db (D13)."""
+
+    def _newer(self, tmp_path) -> tuple[str, EventRecorder]:
+        db = str(tmp_path / "events.db")
+        EventRecorder(db_path=db)
+        _set_user_version(db, 99)
+        return db, EventRecorder(db_path=db)
+
+    def test_flags_set_only_for_newer_schema(self, tmp_path, journal_path):
+        healthy = EventRecorder(db_path=str(tmp_path / "ok.db"))
+        assert healthy.db_newer_than_code is False
+        _, rec = self._newer(tmp_path)
+        assert rec.db_newer_than_code is True
+        assert rec.db_unavailable is True
+
+    def test_record_sale_journals_without_insert_and_without_raising(
+        self, tmp_path, journal_path
+    ):
+        db, rec = self._newer(tmp_path)
+        rec.record_sale("ICE", "Ice", 1, 3.5, {"cash": 3.5}, ts=10.0)
+        assert _count(db, "sales") == 0
+        lines = journal_path.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1
+        assert json.loads(lines[0])["sku"] == "ICE"
+
+    def test_events_are_discarded(self, tmp_path, journal_path):
+        db, rec = self._newer(tmp_path)
+        rec.record("heartbeat")
+        rec.flush()
+        assert _count(db, "events") == 0
+
+    def test_cash_collection_is_not_recorded(self, tmp_path, journal_path):
+        db, rec = self._newer(tmp_path)
+        rec.record_cash_collection("u1", "User")
+        rec.flush()
+        assert _count(db, "cash_collections") == 0
+
+    def test_replay_returns_zero_and_leaves_journal(self, tmp_path, journal_path):
+        db, rec = self._newer(tmp_path)
+        rec.record_sale("ICE", "Ice", 1, 3.5, {"cash": 3.5}, ts=10.0)
+        before = journal_path.read_text(encoding="utf-8")
+        assert rec.replay_sales_journal() == 0
+        assert journal_path.read_text(encoding="utf-8") == before
+        assert _count(db, "sales") == 0
+
+    def test_right_build_replays_the_journalled_sale(self, tmp_path, journal_path):
+        db, rec = self._newer(tmp_path)
+        rec.record_sale("ICE", "Ice", 1, 3.5, {"cash": 3.5}, ts=10.0)
+        _set_user_version(db, len(event_recorder_module.MIGRATIONS))
+        fresh = EventRecorder(db_path=db)
+        assert fresh.db_newer_than_code is False
+        assert fresh.replay_sales_journal() == 1
+        assert _count(db, "sales") == 1
