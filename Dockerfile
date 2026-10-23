@@ -1,9 +1,10 @@
+# Base image floats on its major tag; pin by digest when a deployment needs reproducibility.
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install uv for fast dependency management
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# Install uv (pinned to the version that wrote uv.lock) for fast dependency management
+COPY --from=ghcr.io/astral-sh/uv:0.7.13 /uv /usr/local/bin/uv
 
 # Copy dependency files first for layer caching: the lockfile, the workspace
 # root and every member manifest (the dependency layer only changes when one of

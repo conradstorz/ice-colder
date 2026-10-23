@@ -5,11 +5,13 @@
 # BuildKit reads packages/cloud/Dockerfile.dockerignore (next to this file) in
 # preference to the root .dockerignore, which excludes packages/cloud for the
 # edge image.
+# Base image floats on its major tag; pin by digest when a deployment needs reproducibility.
 FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# uv pinned to the version that wrote uv.lock.
+COPY --from=ghcr.io/astral-sh/uv:0.7.13 /uv /usr/local/bin/uv
 
 # Dependency layer: the lockfile, the workspace root and every member manifest
 # (all members must be present for the workspace to resolve against uv.lock).
