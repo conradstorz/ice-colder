@@ -2,6 +2,7 @@
 
 import json
 import os
+import socket
 import sys
 from pathlib import Path
 
@@ -83,6 +84,26 @@ def load_config() -> ConfigModel:
         sys.exit(1)
 
     return config_model
+
+
+def check_web_bind(host: str, port: int) -> None:
+    """Fail fast if the dashboard's host/port cannot be bound.
+
+    uvicorn would otherwise discover this only after MQTT, the recorder and the
+    uplink are wired, and ``sys.exit(1)`` from inside its task. Logs and exits 1.
+    """
+    try:
+        family = socket.AF_INET6 if ":" in host else socket.AF_INET
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind((host, port))
+            probe.listen(1)
+    except OSError as exc:
+        logger.error(
+            f"Cannot bind web interface to {host}:{port} "
+            f"(errno {exc.errno}: {exc.strerror or exc}); is another instance running?"
+        )
+        sys.exit(1)
 
 
 def warn_if_no_buttons(config: ConfigModel) -> None:

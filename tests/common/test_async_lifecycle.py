@@ -187,3 +187,35 @@ class TestRunUntilPrimaryExits:
 
         assert await task == "served"
         assert later_cleanup_finished.is_set()
+
+
+def test_primary_system_exit_still_cancels_and_awaits_background():
+    """uvicorn sys.exit(1)s on a bind failure inside its task; asyncio would
+    re-raise that out of the loop and skip every cleanup behind it."""
+    events: list[str] = []
+
+    async def scenario():
+        started = asyncio.Event()
+
+        async def background():
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                events.append("background cancelled")
+
+        async def primary():
+            await started.wait()
+            raise SystemExit(1)
+
+        try:
+            await run_until_primary_exits(primary(), background())
+        finally:
+            await asyncio.sleep(0.01)  # stands in for main's awaited cleanup
+            events.append("caller finally")
+
+    with pytest.raises(SystemExit) as excinfo:
+        asyncio.run(scenario())
+
+    assert excinfo.value.code == 1
+    assert events == ["background cancelled", "caller finally"]

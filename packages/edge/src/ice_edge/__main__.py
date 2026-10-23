@@ -29,6 +29,7 @@ import uvicorn
 from ice_edge.access.access import AccessStore
 from ice_edge.app.startup_config import (
     apply_env_overrides,
+    check_web_bind,
     load_config,
     warn_if_no_buttons,
     warn_if_setup_mode,
@@ -52,6 +53,7 @@ async def main():
 
     live_config = load_config()
     warn_if_no_buttons(live_config)
+    check_web_bind(live_config.web.host, live_config.web.port)
     dispenser_profiles = load_dispenser_profiles(live_config)
     overrides = apply_env_overrides(live_config)
     logger.debug(f"Configuration model: {live_config}")

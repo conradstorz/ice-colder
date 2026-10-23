@@ -140,7 +140,7 @@ restart after a crash or unexpected return, but cancellation propagates.
 `packages/common/src/ice_common/task_lifecycle.py` provides `run_until_primary_exits(primary,
 *background)`: when uvicorn finishes or fails, background tasks are cancelled
 and awaited before application cleanup (Docker's `restart: unless-stopped`
-handles process-level restarts). Neither helper imports application components.
+handles process-level restarts). Neither helper imports application components. `main()` calls `check_web_bind(host, port)` right after `load_config` so an unbindable dashboard port exits 1 before any service is wired, and `run_until_primary_exits` re-raises a primary's `SystemExit` (uvicorn's own bind-failure exit) only after cancelling the background tasks, so `main`'s `finally` still flushes the recorder.
 
 ### Configuration (`packages/common/src/ice_common/config_model.py`, `config.json`)
 
