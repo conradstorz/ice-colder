@@ -42,10 +42,11 @@ class TestSaleResult:
     a ``subscribe_state_change`` observer (Task 9), not reconstructed
     after the fact.
 
-    ``outcome`` is one of ``"dispensed"``, ``"vend_failed"``, ``"timeout"``.
+    ``outcome`` is one of ``"dispensed"``, ``"vend_failed"``, ``"timeout"``,
+    ``"error"`` (the FSM entered its ``error`` state mid-run).
     ``fault_code`` (a ``FaultCode.value`` string, e.g. ``"ICE-401"``) is set
     only when ``outcome == "vend_failed"`` -- it is always ``None`` for
-    ``"dispensed"`` and for ``"timeout"``. A dispense timeout *internally*
+    ``"dispensed"``, ``"timeout"`` and ``"error"``. A dispense timeout *internally*
     still runs the same ``vend_failed`` FSM transition with code
     ``PAY-102`` (see ``DispenseCycle._timed_out``/``on_dispense_failed``),
     but is kept as its own, distinct outcome here rather than folded into
@@ -145,7 +146,7 @@ class TestSaleRunner:
         *normal* dispense path run unmodified: the real FSM transitions,
         the real dispatch of ``dispense`` through the command dispatcher,
         and the real dispense-completion / dispense-timeout handling.
-        This method awaits whichever of the three terminal outcomes
+        This method awaits whichever terminal outcome
         settles the sale via a one-shot ``Future`` that the
         `subscribe_sale_settled` observer below resolves.
 

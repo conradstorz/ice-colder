@@ -247,6 +247,46 @@ class SaleJournal:
         )
         self._txn.warning(f"ERROR: ${total:.2f} returned to escrow for refund")
 
+    def error_during_sale_write(self, product) -> None:
+        logger.warning(
+            f"Error entered while the sale write for {product} was in flight; "
+            "the product was dispensed, so its credit is not restored or refunded"
+        )
+
+    def sale_write_finished_in_state(self, state: str) -> None:
+        logger.warning(
+            f"Sale write finished after the FSM left dispensing (now {state}); "
+            "settling as dispensed without a transition"
+        )
+
+    def error_message(self, had_credit: bool) -> None:
+        self._message(
+            "An error has occurred. A refund of your credit has been requested. "
+            "Please contact support if it does not arrive."
+            if had_credit
+            else "An error has occurred. Please contact support."
+        )
+
+    def interaction_started(self) -> None:
+        self._message("Interaction started. Please insert funds or select a product.")
+
+    def dispensing_started(self) -> None:
+        self._message("Processing your payment and dispensing your product...")
+
+    def transaction_complete(self, has_credit: bool) -> None:
+        self._message(
+            "Transaction complete. You have remaining credit. "
+            "Please select another product if desired."
+            if has_credit
+            else "Transaction complete. Thank you for your purchase!"
+        )
+
+    def product_removed(self) -> None:
+        self._message(
+            "Sorry, the selected product is no longer available. "
+            "Please make a new selection."
+        )
+
     def test_credit_cleared_on_error(self, amount: float) -> None:
         logger.debug(f"test credit cleared on error, never refunded (${amount:.2f})")
 

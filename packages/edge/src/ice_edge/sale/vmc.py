@@ -354,11 +354,11 @@ class VMC:
         # the product, so a timeout firing during that suspension must not fail it.
         self._cycle.settle()
         self._journal.dispense_success(slot, product_name)
-        if self._sale is not None and self._sale.is_test:
+        sale = self._sale
+        if sale is not None and sale.is_test:
             # is_test lives on the sale, not the lease, so a lease release cannot flip it
             # to production; record() is skipped, so no sale/dispense rows are written.
-            # A test sale skips record(); clear the shares here as record() would.
-            self._sale = self._sale.with_(shares=None)
+            self._sale = sale.with_(shares=None)
         else:
             recorded = await self._cycle.record()
             if recorded and self._sale is not None:
@@ -370,6 +370,13 @@ class VMC:
             # Customer success that is also a hardware fault (trap door did not close).
             sku = self.selected_product.sku if self.selected_product else None
             self.raise_fault(FaultCode.ICE_402, sku=sku, outcome=report.outcome.value)
+        if self.state != "dispensing":
+            # on_error ran while the row was written: the product is out, so the
+            # dispensing -> idle transition is no longer legal. Settle without it.
+            self._journal.sale_write_finished_in_state(self.state)
+            if sale is not None:
+                self._notify_settled(sale, "dispensed", None)
+            return
         self._settle("dispensed", None, self._finish_dispensing)
 
     def _dispense_failed_report(self, report: DispenseReport, slot: object) -> None:
@@ -542,9 +549,7 @@ class VMC:
         self._session_timer.arm()
         self._outputs.display("interacting_with_user")
         self._outputs.refresh()
-        self.send_customer_message(
-            "Interaction started. Please insert funds or select a product."
-        )
+        self._journal.interaction_started()
 
     @logger.catch()
     def on_dispense_product(self):
@@ -552,9 +557,7 @@ class VMC:
         self._session_timer.cancel()
         self._outputs.display("dispensing")
         self._outputs.refresh()
-        self.send_customer_message(
-            "Processing your payment and dispensing your product..."
-        )
+        self._journal.dispensing_started()
         # Dispatch uses the product's own `slot`, not its list index: deleting an
         # earlier product shifts indices but not the physical slot.
         if self._tasks.loop and self.selected_product:
@@ -578,13 +581,7 @@ class VMC:
         self._outputs.refresh()
         if self.credit_escrow > 0:
             self._session_timer.arm()  # leftover credit must expire into a refund
-            self.send_customer_message(
-                "Transaction complete. You have remaining credit. Please select another product if desired."
-            )
-        else:
-            self.send_customer_message(
-                "Transaction complete. Thank you for your purchase!"
-            )
+        self._journal.transaction_complete(self.credit_escrow > 0)
 
     @logger.catch()
     def on_reset(self):
@@ -604,9 +601,7 @@ class VMC:
         self._drop_sale()
         self._outputs.display("idle")
         self._outputs.refresh()
-        self.send_customer_message(
-            "Sorry, the selected product is no longer available. Please make a new selection."
-        )
+        self._journal.product_removed()
 
     @logger.catch()
     def on_vend_failed(self, code: FaultCode, outcome: str):
@@ -674,25 +669,29 @@ class VMC:
         self._journal.error_entered(self.selected_product)
         # Partial clear (on_reset drops the whole sale): on_error keeps the selection,
         # and can fire from idle with no sale at all.
-        if self._cycle is not None:
-            self._cycle.cancel()
-        self._cycle = None
-        if shares := self.pending_sale_shares:
+        sale, cycle, self._cycle = self._sale, self._cycle, None
+        # A settled cycle means the product is out and its row is being written.
+        written = cycle is not None and cycle.settled
+        if cycle is not None:
+            cycle.cancel()
+        if written:
+            self._journal.error_during_sale_write(self.selected_product)
+        elif shares := self.pending_sale_shares:
             self._journal.error_restored(self._escrow.restore_shares(shares))
-        if self._sale is not None:
-            self._sale = self._sale.with_(mechanism=None, request_id=None, shares=None)
-        if self._sale is not None and self._sale.is_test:  # never refund test money
-            self._journal.test_credit_cleared_on_error(self._escrow.take_all())
+        if sale is not None:
+            shares_kept = sale.shares if written else None
+            sale = self._sale = sale.with_(
+                mechanism=None, request_id=None, shares=shares_kept
+            )
+            if sale.is_test:  # never refund test money
+                self._journal.test_credit_cleared_on_error(self._escrow.take_all())
         if had_credit := self.credit_escrow > 0:
             self.request_refund(reason="error")
         self._outputs.display("error")
         self._outputs.refresh()
-        self.send_customer_message(
-            "An error has occurred. A refund of your credit has been requested. "
-            "Please contact support if it does not arrive."
-            if had_credit
-            else "An error has occurred. Please contact support."
-        )
+        self._journal.error_message(had_credit)
+        if sale is not None and not written:
+            self._notify_settled(sale, "error", None)
 
     # --- Business Logic Methods ---
     def _refund_maintenance_deposit(self, amount, payment_method) -> None:
