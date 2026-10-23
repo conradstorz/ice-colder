@@ -8,7 +8,7 @@ assembled by `routes/__init__.py::attach_routes`.
 """
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from ice_edge.access.access import Permission
 from ice_edge.web import auth as web_auth
@@ -97,6 +97,15 @@ async def dashboard(request: Request):
         "home.html",
         context.template_context(request, level=LEVEL_HOME, tiles=tiles),
     )
+
+
+@router.get("/healthz", response_class=PlainTextResponse)
+async def healthz() -> PlainTextResponse:
+    """Liveness probe for the image HEALTHCHECK. Deliberately outside
+    `web_auth.require`: no login, no setup-mode redirect, no session read or
+    refresh, no cookie, and nothing about machine state. It answers only
+    "is the web app serving requests"."""
+    return PlainTextResponse("ok")
 
 
 @router.get(

@@ -1,0 +1,73 @@
+name: ice-colder-edge
+
+# Edge-only production overlay: the VMC and its backup job, no simulators.
+# Layered on the broker-only prod stack. From this directory:
+#   cp ../.env.example ../.env   # set MQTT_*, MQTT_BIND_ADDR, ICE_COLDER_IMAGE_TAG
+#   docker compose --env-file ../.env -f docker-compose.prod.yml -f docker-compose.edge.yml up -d
+# The image is pinned by ICE_COLDER_IMAGE_TAG (a sha-<commit> tag) and carries
+# no Watchtower label, so it changes only when an operator edits the tag.
+# Runbook: docs/deploying-a-machine.md. Data lives in ../data, ../LOGS and
+# ../backups (relative to this directory, i.e. the repo root).
+#
+# The image HEALTHCHECK probes 127.0.0.1:26123. If web.port is changed in
+# config.json, override `healthcheck.test` for vmc here.
+
+# No mem_limit on purpose: a hard limit would OOM-kill the VMC mid-sale.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  vmc:
+    image: ghcr.io/conradstorz/ice-colder:${ICE_COLDER_IMAGE_TAG:?set ICE_COLDER_IMAGE_TAG in .env (a sha-<commit> tag)}
+    container_name: ice-colder-vmc
+    # uvicorn drain + up to 3 s persistence drain + up to 5 s recorder flush.
+    stop_grace_period: 30s
+    ports:
+      - "26123:26123"
+    volumes:
+      - ../LOGS:/app/LOGS
+      - ../data:/app/data
+    environment:
+      - MQTT_BROKER_HOST=mosquitto
+      - MQTT_USERNAME=${MQTT_USERNAME}
+      - MQTT_PASSWORD=${MQTT_PASSWORD}
+      - ICE_COLDER_CONFIG=/app/data/config.json
+      - ICE_COLDER_DISPENSERS=/app/data/dispensers.toml
+      - ICE_COLDER_TRUSTED_PROXIES=${ICE_COLDER_TRUSTED_PROXIES:-}
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+
+  backup:
+    # Same job as the root compose (docs/backups.md), same pinned image.
+    image: ghcr.io/conradstorz/ice-colder:${ICE_COLDER_IMAGE_TAG:?set ICE_COLDER_IMAGE_TAG in .env (a sha-<commit> tag)}
+    container_name: ice-colder-backup
+    healthcheck:
+      # Unhealthy when the newest archive is older than 30 hours.
+      test: ["CMD-SHELL", "find /app/backups -name 'edge-*.tar.gz' -mmin -1800 | grep -q ."]
+      interval: 1h
+      start_period: 10m
+    command:
+      - sh
+      - -c
+      - >-
+        while true; do
+        python scripts/backup_data.py --label edge --dest /app/backups --keep 14 --min-age-hours 20
+        --sqlite /app/data/events.db
+        --file /app/data/access.json
+        --file /app/data/cloud_identity.json
+        --file /app/data/config.json
+        --file /app/data/dispensers.toml;
+        sleep 21600;
+        done
+    volumes:
+      - ../data:/app/data
+      - ../backups:/app/backups
+    restart: unless-stopped
+    logging: *default-logging

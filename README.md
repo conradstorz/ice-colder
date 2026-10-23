@@ -38,7 +38,7 @@ To update right away:
 docker compose pull
 docker compose up -d
 ```
-The real machine should pin a `sha-<commit>` tag instead of `latest`.
+The real machine should pin a `sha-<commit>` tag instead of `latest`, using the edge-only overlay `docker/docker-compose.edge.yml`; install, update and rollback steps are in `docs/deploying-a-machine.md`.
 
 **Backups:** the compose `backup` service archives `data/` daily into `backups/`; see `docs/backups.md` for contents, verification and restore.
 

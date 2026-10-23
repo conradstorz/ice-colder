@@ -73,7 +73,9 @@ def attach_routes(app: FastAPI) -> None:
     @app.middleware("http")
     async def access_gate(request: Request, call_next):
         path = request.url.path
-        if path.startswith("/static/"):
+        # /healthz is the image's liveness probe: it must answer even in
+        # setup mode or with a corrupt access file (the process is serving).
+        if path.startswith("/static/") or path == "/healthz":
             return await call_next(request)
 
         store = context.access_store

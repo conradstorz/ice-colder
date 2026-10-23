@@ -385,6 +385,8 @@ in each service's `environment` — not bind-mounted directly as
 `config.json`, since that file is gitignored and doesn't exist on a fresh
 clone.
 
+The edge image has a `HEALTHCHECK` on `GET /healthz` (`routes/home.py`: unauthenticated, no session or cookie, exempt from the setup-mode redirect and corrupt-access-file page in the `access_gate` middleware, plain `ok`), which only reports that the web app is serving; nothing restarts on `unhealthy`. A real machine runs `docker/docker-compose.edge.yml` (vmc + backup, layered on `docker-compose.prod.yml`, image pinned by `ICE_COLDER_IMAGE_TAG`, no Watchtower label); the root compose is the simulation stack. Runbook with rollback: `docs/deploying-a-machine.md`.
+
 CI/CD: `.github/workflows/ci.yml` runs ruff and pytest on every push/PR and,
 on `main`, publishes the image to `ghcr.io/conradstorz/ice-colder` (`latest`
 and `sha-<commit>`). Compose services reference that image (with `build: .`

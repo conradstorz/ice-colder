@@ -6,6 +6,10 @@ name: ice-colder
 # immediate update: docker compose pull; docker compose up -d.
 # `build: .` stays so `docker compose up --build` still works for local dev.
 #
+# This file is the SIMULATION stack (the three sims are included). A real
+# machine uses docker/docker-compose.edge.yml, pinned by image tag and with no
+# Watchtower label; see docs/deploying-a-machine.md.
+#
 # Requires a `.env` file: cp .env.example .env, then set MQTT_PASSWORD (and
 # the other values) before bringing the stack up.
 

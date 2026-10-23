@@ -68,3 +68,30 @@ def test_vmc_and_cloud_have_a_grace_period() -> None:
         "cloud"
     ]
     assert cloud["stop_grace_period"] == "30s"
+
+
+EDGE_OVERLAY = REPO_ROOT / "docker" / "docker-compose.edge.yml"
+
+
+def test_edge_image_has_a_healthcheck_on_healthz() -> None:
+    text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    checks = re.findall(r"^HEALTHCHECK\b.*$", text, re.M)
+    assert len(checks) == 1
+    assert "/healthz" in text.split("HEALTHCHECK", 1)[1]
+
+
+def test_edge_overlay_vmc_is_pinned_and_unwatched() -> None:
+    vmc = _load(EDGE_OVERLAY)["services"]["vmc"]
+    assert "build" not in vmc
+    labels = vmc.get("labels", [])
+    assert not any("watchtower" in label for label in labels)
+    assert "ICE_COLDER_IMAGE_TAG" in vmc["image"]
+    assert vmc["stop_grace_period"] == "30s"
+    assert vmc["logging"] == EXPECTED_LOGGING
+
+
+def test_edge_overlay_has_no_simulator_service() -> None:
+    services = _load(EDGE_OVERLAY)["services"]
+    assert not [name for name in services if name.startswith("sim")]
+    for svc in services.values():
+        assert "ice_sims" not in str(svc.get("command", ""))
