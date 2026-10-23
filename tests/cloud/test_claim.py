@@ -1,3 +1,4 @@
+import threading
 from datetime import timedelta
 
 from fastapi.testclient import TestClient
@@ -298,3 +299,23 @@ def test_wrong_codes_against_a_live_machine_still_feed_the_subject_budget(
     assert r.status_code == 429
     again = post_claim(_client_at(cloud, "10.1.0.1"), signer, CODE)
     assert again.status_code == 429
+
+
+def test_claim_scrypt_runs_on_the_dedicated_executor(cloud, signer, monkeypatch):
+    open_claim(cloud, signer)
+    login(cloud, "a@example.com")
+    seen: list[str] = []
+    real = claim_module.verify_secret
+
+    def spy(code, stored):
+        seen.append(threading.current_thread().name)
+        return real(code, stored)
+
+    monkeypatch.setattr(claim_module, "verify_secret", spy)
+    assert post_claim(cloud, signer, "00000000").status_code == 403
+    cloud.app.state.backoff.reset()
+    assert post_claim(cloud, signer, CODE, "0000-0000-0000-0000").status_code == 403
+    cloud.app.state.backoff.reset()
+    assert post_claim(cloud, signer, CODE).status_code == 303
+    assert len(seen) == 3
+    assert all(name.startswith("scrypt") for name in seen), seen

@@ -30,6 +30,17 @@ DUMMY_HASH = hash_secret("00000000")
 router = APIRouter()
 
 
+async def _scrypt(state, fn, *args):
+    """Run a scrypt call on the dedicated executor, off the default pool.
+
+    Each call costs ~16 MB and tens of ms; sharing the default executor with
+    SQLite and ingest would let claim attempts starve them on a small host.
+    """
+    return await asyncio.get_running_loop().run_in_executor(
+        state.scrypt_executor, fn, *args
+    )
+
+
 def _page(
     request: Request,
     account: Account,
@@ -89,7 +100,7 @@ async def claim_submit(
 
     async def fail(*, burn: bool = False, probing_live_code: bool = False) -> Response:
         if burn:
-            await asyncio.to_thread(verify_secret, code.strip(), DUMMY_HASH)
+            await _scrypt(state, verify_secret, code.strip(), DUMMY_HASH)
         # Only a wrong code against a resolved, live claim feeds the per-machine
         # budget; anything else is throttled per client alone, so a signed-in
         # account cannot lock a machine (or the shared "unknown" bucket) out.
@@ -115,9 +126,7 @@ async def claim_submit(
         )
     ):
         return await fail(burn=True)
-    if not await asyncio.to_thread(
-        verify_secret, code.strip(), machine.claim_code_hash
-    ):
+    if not await _scrypt(state, verify_secret, code.strip(), machine.claim_code_hash):
         return await fail(probing_live_code=True)
     if not await asyncio.to_thread(
         partial(

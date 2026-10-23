@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Callable
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -51,6 +52,7 @@ def create_app(
         try:
             yield
         finally:
+            app.state.scrypt_executor.shutdown(wait=False)
             await app.state.alerts.drain()
             if sweep_task is not None:
                 sweep_task.cancel()
@@ -60,6 +62,10 @@ def create_app(
 
     app = FastAPI(title="ice-cloud", lifespan=lifespan)
     app.state.settings = settings
+    # One worker: claim scrypt (~16 MB each) must not crowd the default pool.
+    app.state.scrypt_executor = ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="scrypt"
+    )
     if provider is None and settings.google_configured:
         http = httpx.AsyncClient(timeout=10.0)
         provider = auth.GoogleProvider(
