@@ -17,6 +17,7 @@ def test_chip_with_role_and_name():
     assert 'href="/me"' in bar
     assert ">owner</span>" in bar
     assert "Ada" in bar
+    assert 'max-md:hidden text-sm text-slate-200 truncate max-w-[10rem]">Ada' in bar
 
 
 def test_chip_without_role_label():

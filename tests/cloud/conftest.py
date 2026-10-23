@@ -1,4 +1,9 @@
 import base64
+import gzip
+import io
+import json
+import shutil
+import tarfile
 from datetime import timedelta
 
 import pytest
@@ -11,6 +16,7 @@ from ice_cloud.store.repository import Account
 from ice_cloud.settings import CloudSettings
 from ice_contracts.cloud import signing
 from ice_contracts.cloud.identity import RegisterMachine
+from ice_ui.bundle import INSTALLED_ROOT, build_bundle
 from tests.cloud.reports import NOW, later
 
 
@@ -231,3 +237,50 @@ def own_and_select(
     claim(cloud, signer, account)
     select(cloud, signer)
     return account
+
+
+def marked_bundle(tmp_path, marker, drop=()):
+    root = tmp_path / "ui_copy"
+    shutil.copytree(INSTALLED_ROOT / "templates", root / "templates")
+    shutil.copytree(INSTALLED_ROOT / "static", root / "static")
+    (root / "static" / "machine-only.txt").write_text("from the machine UI")
+    faults = root / "templates" / "health_faults.html"
+    faults.write_text(
+        faults.read_text(encoding="utf-8").replace(
+            "{% block body %}", "{% block body %}<!-- " + marker + " -->", 1
+        ),
+        encoding="utf-8",
+    )
+    for name in drop:
+        (root / "templates" / name).unlink()
+    data = build_bundle(root)
+    with tarfile.open(fileobj=io.BytesIO(gzip.decompress(data))) as tf:
+        digest = json.loads(tf.extractfile("manifest.json").read())["digest"]
+    return digest, data
+
+
+@pytest.fixture
+def trusting_cloud(settings, clock, provider):
+    """Build a cloud client whose settings trust the given bundle digests."""
+    from dataclasses import replace
+
+    from fastapi.testclient import TestClient
+
+    from ice_cloud.app import create_app
+
+    stack = []
+
+    def make(*digests):
+        app = create_app(
+            replace(settings, trusted_ui_digests=frozenset(digests)),
+            now=clock,
+            provider=provider,
+        )
+        client = TestClient(app, follow_redirects=False)
+        stack.append(client)
+        client.__enter__()
+        return client
+
+    yield make
+    for client in stack:
+        client.__exit__(None, None, None)

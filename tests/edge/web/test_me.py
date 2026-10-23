@@ -48,11 +48,11 @@ def test_me_page(login_as, role):
     text = resp.text
     name = NAMES[role] or context.access_store.owner().name
     assert name in text
-    assert " on " in text
-    assert context.config.machine_id in text
-    common_name = context.config.physical.common_name
-    if common_name:
-        assert common_name in text
+    cfg = context.config
+    assert (
+        f"<strong>{role.value}</strong> on "
+        f"{cfg.physical.common_name} ({cfg.machine_id})"
+    ) in text
     allowed = ROLE_PERMISSIONS[role]
     for perm in Permission:
         if perm in allowed:

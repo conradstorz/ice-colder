@@ -1,6 +1,14 @@
 """The signed-in identity chip, the You page and the banner's common name."""
 
-from tests.cloud.conftest import claim, login, own_and_select, push, select
+from tests.cloud.conftest import (
+    claim,
+    login,
+    marked_bundle,
+    own_and_select,
+    push,
+    register,
+    select,
+)
 from tests.cloud.reports import make_report
 
 
@@ -15,7 +23,7 @@ def _named_report(**kw):
 def test_owner_sees_chip_and_me_page(cloud, signer):
     own_and_select(cloud, signer, _named_report())
     bar = _bar(cloud.get("/").text)
-    assert 'href="/me"' in bar and "owner" in bar and "Test User" in bar
+    assert 'href="/me"' in bar and ">owner</span>" in bar and "Test User" in bar
     r = cloud.get("/me")
     assert r.status_code == 200
     assert "<strong>owner</strong> on Lobby Ice (m-0042)" in r.text
@@ -61,6 +69,8 @@ def test_fleet_bar_has_no_role(cloud, signer):
     bar = _bar(cloud.get("/fleet").text)
     assert 'href="/me"' in bar and "Test User" in bar
     assert "rounded-full bg-slate-600" not in bar
+    for role in ("owner", "tech", "admin"):
+        assert f">{role}</span>" not in bar
 
 
 def test_me_without_selection(cloud):
@@ -84,3 +94,28 @@ def test_banner_shows_common_name_before_machine_id(cloud, signer):
     own_and_select(cloud, signer, _named_report())
     text = cloud.get("/health").text
     assert text.index("Lobby Ice") < text.index("m-0042")
+
+
+def test_no_report_page_bar_carries_role(cloud, signer):
+    owner = login(cloud, "owner@example.com")
+    register(cloud, signer, "m-quiet")
+    claim(cloud, signer, owner)
+    select(cloud, signer)
+    r = cloud.get("/")
+    assert "No report from this machine yet" in r.text
+    assert ">owner</span>" in _bar(r.text)
+
+
+def test_me_renders_from_installed_ui_with_trusted_old_bundle(
+    trusting_cloud, tmp_path, signer
+):
+    from tests.cloud.test_portal import put_bundle
+
+    digest, data = marked_bundle(tmp_path, "OLD-BUNDLE", drop=("me.html",))
+    cloud = trusting_cloud(digest)
+    own_and_select(cloud, signer, make_report(digest=digest))
+    assert put_bundle(cloud, signer, digest, data).status_code == 201
+    assert cloud.get("/health/faults").status_code == 200  # bundle is in effect
+    r = cloud.get("/me")
+    assert r.status_code == 200
+    assert "<strong>owner</strong> on m-0042" in r.text

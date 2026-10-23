@@ -122,7 +122,9 @@ The login/setup/enrol variant bars are untouched (they override
   before the `/{path:path}` catch-all, rendering the installed UI's `me.html`
   through the same `_resolve`/`_context` path as `/health`, so a trusted
   machine bundle renders its own `me.html` and the remote banner appears when
-  a machine is selected.
+  a machine is selected. `/me` is rendered from the installed `ice_ui` on the
+  cloud, never from the machine's uploaded bundle, because an older trusted
+  bundle has no `me.html` and the page describes the viewer, not the machine.
 - Nothing on the page mutates state except the existing logout.
 
 ## 4a. The machine's common name reaches the cloud

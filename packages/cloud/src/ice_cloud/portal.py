@@ -163,10 +163,12 @@ def _no_access_for_fragment(request: Request) -> Response:
     return _to_fleet()
 
 
-def _no_report_page(request: Request, account: Account) -> Response:
+def _no_report_page(
+    request: Request, account: Account, role: Role | None = None
+) -> Response:
     ui = _resolve(request, None)
     return ui.templates.TemplateResponse(
-        request, "no_report.html", _context(request, account, ui, None)
+        request, "no_report.html", _context(request, account, ui, None, role=role)
     )
 
 
@@ -256,7 +258,7 @@ async def home(request: Request, account: Account = Depends(require_signed_in)):
         return _to_fleet()
     machine, report = selected.machine, selected.report
     if report is None:
-        return _no_report_page(request, account)
+        return _no_report_page(request, account, selected.role)
     ui = _resolve(request, report)
     tiles = build_tiles(REMOTE_VIEWER_PERMISSIONS, {"Health": _fault_count(report)})
     return ui.templates.TemplateResponse(
@@ -369,7 +371,7 @@ async def health_home(request: Request, account: Account = Depends(require_signe
         return _to_fleet()
     machine, report = selected.machine, selected.report
     if report is None:
-        return _no_report_page(request, account)
+        return _no_report_page(request, account, selected.role)
     ui = _resolve(request, report)
     page = report.health_page
     tiles = health_tiles(
@@ -409,7 +411,7 @@ async def faults_view(request: Request, account: Account = Depends(require_signe
         return _to_fleet()
     machine, report = selected.machine, selected.report
     if report is None:
-        return _no_report_page(request, account)
+        return _no_report_page(request, account, selected.role)
     ui = _resolve(request, report)
     return ui.templates.TemplateResponse(
         request,
@@ -439,7 +441,9 @@ async def me(request: Request, account: Account = Depends(require_signed_in)):
         label = None
     else:
         report = selected.report
-        ui = _resolve(request, report)
+        # The page describes the viewer, not the machine: always the installed
+        # UI, since an older trusted bundle has no me.html.
+        ui = _resolve(request, None)
         ctx = _context(
             request,
             account,
