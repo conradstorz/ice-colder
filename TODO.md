@@ -106,6 +106,12 @@ Cloud C1, C2 → the rest.
 - [ ] **M10 — LOW: a test sale that enters the `error` state never settles its runner.**
   `on_error` (`sale/vmc.py`) never calls `_settle`, and it cancels the dispense cycle, so `TestSaleRunner.run_test_sale` awaiting the settlement future hangs: the maintenance lease stays held with `runs_in_flight > 0` and `_test_sale_in_progress` stays set. `error_occurred` has no production caller today.
   Fix: settle the test sale from `on_error` (outcome `vend_failed`, no fault code) or give the runner a bounded wait that releases the lease.
+  Also: `error_occurred` during the success path's `await record()` (shares still set until the row is written) would restore and refund a sale that already dispensed; `on_error` must not restore or refund the shares of a vend that already succeeded.
+
+- [ ] **M11 — MEDIUM: leftover credit on an already-recorded PAY-104 is invisible.**
+  When boot finds the sale row but the snapshot still holds credit (the M5 path), PAY-104 is raised with the "Record as sale" card hidden and no amount shown, so the operator has nothing to act on.
+  Scenario: a restart lands after the sale row is written but with credit still escrowed; the fault row says only that the session is uncertain.
+  Fix: show `credit_escrow`, the pending refund id and the error on the PAY-104 fault row (`health_faults.html`) and offer a "Refund leftover" action, or at least state the amount in the fault detail. Also tie `SALE_MATCH_WINDOW_SECONDS` to `dispense_timeout_seconds`.
 
 ## R. Edge runtime resilience
 
@@ -199,6 +205,11 @@ Cloud C1, C2 → the rest.
   events on the sim host, one per deploy that landed mid-sale. On a real machine every
   auto-update that lands mid-sale needs an operator. Fix: see D3 (idle-window updates)
   and/or let boot evaluation auto-resolve a snapshot whose sale row is already present.
+
+- [ ] **R13 — MEDIUM: SIGTERM skips cleanup when the edge is not PID 1.**
+  uvicorn restores the original signal handlers after its own and re-raises SIGTERM (`uvicorn/server.py` `capture_signals`), so under the fleet launcher, systemd on a bare Pi, or `init: true` the process dies before `main`'s `finally` (persistence drain, recorder flush). The compose `vmc` service runs python as PID 1, where the default disposition is to ignore the self-raised signal, so cleanup runs there. R5's `_shield_exit` cannot help because the process dies inside `serve()`.
+  Scenario: `docker stop` on a fleet machine or `systemctl stop` on a Pi loses queued events and the final snapshot write (sales are inserted synchronously, so no sale row is lost).
+  Fix: install the app's own SIGTERM handler that sets `server.should_exit` (equivalent to running `uvicorn.Server` without its signal capture) and let `main`'s shutdown sequence run.
 
 ## C. Cloud portal (`packages/cloud/`) — public internet, 1 vCPU / 512 MB
 
@@ -326,7 +337,7 @@ Cloud C1, C2 → the rest.
   real bundle PUT answers 503 until the connections drop.
   Fix: an `asyncio.timeout` deadline around `request.body()` for bundle PUTs (release the
   slot and answer 408 on expiry).
-  Landed: bundle PUT bodies are read under a 30 s deadline; expiry answers 408 and releases the slot.
+  Landed: bundle PUT bodies are read under a 30 s deadline; expiry answers 408 and releases the slot; a timed-out bundle read counts as a back-off failure for a known machine.
 
 ## D. Deployment, data and secrets
 
