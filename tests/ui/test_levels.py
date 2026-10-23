@@ -24,14 +24,15 @@ def _level_constants():
     }
 
 
-def test_discovers_all_31_levels():
+def test_discovers_all_32_levels():
     """29 (spec §2) + LEVEL_TESTS_LOG (Task 13a, /tests/log) +
     LEVEL_TESTS_SALE (Task 13b, /tests/sale's SKU picker) -- the Tests
     level's two static sub-levels besides the parameterized per-subsystem
-    page (built at request time via Level.child, not a module constant).
+    page (built at request time via Level.child, not a module constant)
+    + LEVEL_ME (/me, the You page).
     """
     constants = _level_constants()
-    assert len(constants) == 31
+    assert len(constants) == 32
 
 
 def test_home_has_one_crumb_and_root_parent_url():
@@ -154,3 +155,9 @@ class TestNewReportLevels:
             levels.LEVEL_SETTINGS.url,
         )
         assert level.crumbs[-1] == (level.title, level.url)
+
+
+def test_me_is_a_child_of_home():
+    assert levels.LEVEL_ME.title == "You"
+    assert levels.LEVEL_ME.url == "/me"
+    assert levels.LEVEL_ME.parent is levels.LEVEL_HOME

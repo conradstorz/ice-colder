@@ -119,3 +119,4 @@ LEVEL_SETTINGS_WEB = Level(title="Web", url="/settings/web", parent=LEVEL_SETTIN
 LEVEL_SETTINGS_REPORTS = Level(
     title="Reports", url="/settings/reports", parent=LEVEL_SETTINGS
 )
+LEVEL_ME = Level(title="You", url="/me", parent=LEVEL_HOME)
