@@ -584,7 +584,8 @@
     "contract": {
       "enum": [
         "0.2.0",
-        "0.3.0"
+        "0.3.0",
+        "0.4.0"
       ],
       "title": "Contract",
       "type": "string"
@@ -593,6 +594,19 @@
       "pattern": "^[A-Za-z0-9_.-]{1,64}$",
       "title": "Machine Id",
       "type": "string"
+    },
+    "common_name": {
+      "anyOf": [
+        {
+          "maxLength": 200,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Common Name"
     },
     "sent_at": {
       "format": "date-time",

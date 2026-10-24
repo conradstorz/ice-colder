@@ -42,7 +42,6 @@ from ice_cloud.oidc import IdentityClaims, OidcProvider, SignInError, b64d, b64e
 from ice_cloud.oidc_google import GoogleProvider
 from ice_cloud.settings import CloudSettings
 from ice_cloud.store.repository import Account, EmailConflict, Machine
-from ice_cloud.viewer import VIEWER
 from ice_contracts.access import REMOTE_VIEWER_PERMISSIONS
 from ice_contracts.cloud import signing
 from ice_ui.levels import Level
@@ -215,6 +214,17 @@ async def require_admin(
     return account
 
 
+def machine_role(
+    settings: CloudSettings, repo, account: Account, fingerprint: str
+) -> Role | None:
+    """The account's role on a machine: its membership, else ``admin`` for a
+    platform admin, else ``None``."""
+    role: Role | None = repo.access_for(account.id, fingerprint)
+    if role is None and is_admin(settings, account):
+        return "admin"
+    return role
+
+
 def require_machine_access(*, owner_only: bool = False):
     """Build a dependency yielding ``(account, machine, role)`` for ``{short}``.
 
@@ -236,15 +246,18 @@ def require_machine_access(*, owner_only: bool = False):
         )
         if machine is None:
             raise HTTPException(status_code=404)
-        role: Role | None = await asyncio.to_thread(
-            repo.access_for, account.id, machine.fingerprint
-        )
-        if (
-            role is None
-            and not owner_only
-            and is_admin(request.app.state.settings, account)
-        ):
-            role = "admin"
+        if owner_only:
+            role: Role | None = await asyncio.to_thread(
+                repo.access_for, account.id, machine.fingerprint
+            )
+        else:
+            role = await asyncio.to_thread(
+                machine_role,
+                request.app.state.settings,
+                repo,
+                account,
+                machine.fingerprint,
+            )
         if role is None or (owner_only and role != "owner"):
             raise HTTPException(status_code=404)
         return account, machine, role
@@ -267,7 +280,7 @@ def _login_page(
     settings: CloudSettings = request.app.state.settings
     context = {
         "request": request,
-        "current_user": VIEWER,
+        "current_user": None,
         "perms": REMOTE_VIEWER_PERMISSIONS,
         "level": LEVEL_LOGIN,
         "configured": settings.google_configured,

@@ -12,6 +12,7 @@ every request.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Request
@@ -21,6 +22,7 @@ from ice_cloud.auth import (
     Role,
     current_account,
     is_admin,
+    machine_role,
     require_htmx,
     require_machine_access,
     require_signed_in,
@@ -29,12 +31,23 @@ from ice_cloud import fleet_view
 from ice_cloud.store.repository import Account, Machine
 from ice_cloud.ui_registry import ResolvedUi
 from ice_cloud.viewer import VIEWER, RemoteViewer
-from ice_contracts.access import REMOTE_VIEWER_PERMISSIONS
+from ice_contracts.access import (
+    PERMISSION_LABELS,
+    REMOTE_VIEWER_PERMISSIONS,
+    Permission,
+)
 from ice_contracts.cloud.report import MachineReport
 from ice_contracts.cloud.signing import short_fingerprint
 from ice_ui.filters import humanize_seconds
-from ice_ui.levels import LEVEL_HEALTH, LEVEL_HEALTH_FAULTS, LEVEL_HOME, Level
+from ice_ui.levels import (
+    LEVEL_HEALTH,
+    LEVEL_HEALTH_FAULTS,
+    LEVEL_HOME,
+    LEVEL_ME,
+    Level,
+)
 from ice_ui.tiles import availability_line, build_tiles, fault_count_line, health_tiles
+from ice_ui.views.identity import MachineLabel
 from ice_ui.views.health import VMC_MISSING_HTML, pill_state
 
 COOKIE = "ice_cloud_machine"
@@ -56,9 +69,14 @@ def _is_stale(request: Request, report: MachineReport) -> bool:
     return fleet_view.is_stale(report, request.app.state.now())
 
 
-async def _selected(
-    request: Request, account: Account
-) -> tuple[Machine, MachineReport | None] | None:
+@dataclass(frozen=True)
+class Selection:
+    machine: Machine
+    report: MachineReport | None
+    role: Role
+
+
+async def _selected(request: Request, account: Account) -> Selection | None:
     """The cookie says *which* machine; the session says *whether* to show it."""
     fingerprint = request.cookies.get(COOKIE)
     if not fingerprint:
@@ -67,11 +85,13 @@ async def _selected(
     machine = await asyncio.to_thread(state.repo.machine, fingerprint)
     if machine is None:
         return None
-    role = await asyncio.to_thread(state.repo.access_for, account.id, fingerprint)
-    if role is None and not is_admin(state.settings, account):
+    role = await asyncio.to_thread(
+        machine_role, state.settings, state.repo, account, fingerprint
+    )
+    if role is None:
         return None
     report = await asyncio.to_thread(state.store.latest, fingerprint)
-    return machine, report
+    return Selection(machine, report, role)
 
 
 def _resolve(request: Request, report: MachineReport | None) -> ResolvedUi:
@@ -88,6 +108,7 @@ def _remote(
     age = max(_age_seconds(request, report), 0.0)
     return {
         "machine_id": report.machine_id,
+        "common_name": report.common_name,
         "short_fingerprint": short_fingerprint(fingerprint),
         "last_report_local": report.sent_at.astimezone().strftime("%Y-%m-%d %H:%M:%S"),
         "age_text": humanize_seconds(age),
@@ -107,11 +128,14 @@ def _context(
     machine: Machine | None = None,
     report: MachineReport | None = None,
     banner: bool = True,
+    role: Role | None = None,
     **extra,
 ) -> dict:
     ctx = {
         "request": request,
-        "current_user": RemoteViewer(display_name=account.name),
+        "current_user": RemoteViewer(
+            display_name=account.name, email=account.email, role_label=role
+        ),
         "perms": REMOTE_VIEWER_PERMISSIONS,
         "level": level,
     }
@@ -139,10 +163,12 @@ def _no_access_for_fragment(request: Request) -> Response:
     return _to_fleet()
 
 
-def _no_report_page(request: Request, account: Account) -> Response:
+def _no_report_page(
+    request: Request, account: Account, role: Role | None = None
+) -> Response:
     ui = _resolve(request, None)
     return ui.templates.TemplateResponse(
-        request, "no_report.html", _context(request, account, ui, None)
+        request, "no_report.html", _context(request, account, ui, None, role=role)
     )
 
 
@@ -230,9 +256,9 @@ async def home(request: Request, account: Account = Depends(require_signed_in)):
     selected = await _selected(request, account)
     if selected is None:
         return _to_fleet()
-    machine, report = selected
+    machine, report = selected.machine, selected.report
     if report is None:
-        return _no_report_page(request, account)
+        return _no_report_page(request, account, selected.role)
     ui = _resolve(request, report)
     tiles = build_tiles(REMOTE_VIEWER_PERMISSIONS, {"Health": _fault_count(report)})
     return ui.templates.TemplateResponse(
@@ -245,6 +271,7 @@ async def home(request: Request, account: Account = Depends(require_signed_in)):
             LEVEL_HOME,
             machine=machine,
             report=report,
+            role=selected.role,
             tiles=tiles,
         ),
     )
@@ -257,7 +284,7 @@ async def status_fragment(
     selected = await _selected(request, account)
     if selected is None:
         return _no_access_for_fragment(request)
-    machine, report = selected
+    machine, report = selected.machine, selected.report
     if report is None or report.health.vmc_missing:
         return HTMLResponse(VMC_MISSING_HTML)
     ui = _resolve(request, report)
@@ -272,6 +299,7 @@ async def status_fragment(
             None,
             machine=machine,
             report=report,
+            role=selected.role,
             banner=False,
             status=h.status,
             is_healthy=h.is_healthy,
@@ -288,9 +316,9 @@ async def status_fragment(
 @router.get("/pill", response_class=HTMLResponse)
 async def pill(request: Request, account: Account = Depends(require_signed_in)):
     selected = await _selected(request, account)
-    if selected is None or selected[1] is None:
+    if selected is None or selected.report is None:
         return _no_access_for_fragment(request)
-    machine, report = selected
+    machine, report = selected.machine, selected.report
     ui = _resolve(request, report)
     state, text = pill_state(report.health)
     return ui.templates.TemplateResponse(
@@ -303,6 +331,7 @@ async def pill(request: Request, account: Account = Depends(require_signed_in)):
             None,
             machine=machine,
             report=report,
+            role=selected.role,
             banner=False,
             pill_state=state,
             pill_text=text,
@@ -313,9 +342,9 @@ async def pill(request: Request, account: Account = Depends(require_signed_in)):
 @router.get("/kpi", response_class=HTMLResponse)
 async def kpi_fragment(request: Request, account: Account = Depends(require_signed_in)):
     selected = await _selected(request, account)
-    if selected is None or selected[1] is None:
+    if selected is None or selected.report is None:
         return _no_access_for_fragment(request)
-    machine, report = selected
+    machine, report = selected.machine, selected.report
     ui = _resolve(request, report)
     return ui.templates.TemplateResponse(
         request,
@@ -327,6 +356,7 @@ async def kpi_fragment(request: Request, account: Account = Depends(require_sign
             None,
             machine=machine,
             report=report,
+            role=selected.role,
             banner=False,
             summary=report.kpi.summary,
             average=report.kpi.average,
@@ -339,9 +369,9 @@ async def health_home(request: Request, account: Account = Depends(require_signe
     selected = await _selected(request, account)
     if selected is None:
         return _to_fleet()
-    machine, report = selected
+    machine, report = selected.machine, selected.report
     if report is None:
-        return _no_report_page(request, account)
+        return _no_report_page(request, account, selected.role)
     ui = _resolve(request, report)
     page = report.health_page
     tiles = health_tiles(
@@ -365,6 +395,7 @@ async def health_home(request: Request, account: Account = Depends(require_signe
             LEVEL_HEALTH,
             machine=machine,
             report=report,
+            role=selected.role,
             tiles=tiles,
             mqtt_connected=page.mqtt_connected,
             vmc_state=page.vmc_state,
@@ -378,9 +409,9 @@ async def faults_view(request: Request, account: Account = Depends(require_signe
     selected = await _selected(request, account)
     if selected is None:
         return _to_fleet()
-    machine, report = selected
+    machine, report = selected.machine, selected.report
     if report is None:
-        return _no_report_page(request, account)
+        return _no_report_page(request, account, selected.role)
     ui = _resolve(request, report)
     return ui.templates.TemplateResponse(
         request,
@@ -392,11 +423,43 @@ async def faults_view(request: Request, account: Account = Depends(require_signe
             LEVEL_HEALTH_FAULTS,
             machine=machine,
             report=report,
+            role=selected.role,
             faults=report.faults,
             can_clear=False,
             oob=False,
         ),
     )
+
+
+@router.get("/me", response_class=HTMLResponse)
+async def me(request: Request, account: Account = Depends(require_signed_in)):
+    selected = await _selected(request, account)
+    lines = [PERMISSION_LABELS[p] for p in Permission if p in REMOTE_VIEWER_PERMISSIONS]
+    if selected is None:
+        ui = _resolve(request, None)
+        ctx = _context(request, account, ui, LEVEL_ME)
+        label = None
+    else:
+        report = selected.report
+        # The page describes the viewer, not the machine: always the installed
+        # UI, since an older trusted bundle has no me.html.
+        ui = _resolve(request, None)
+        ctx = _context(
+            request,
+            account,
+            ui,
+            LEVEL_ME,
+            machine=selected.machine,
+            report=report,
+            role=selected.role,
+        )
+        label = MachineLabel(
+            common_name=report.common_name if report else None,
+            machine_id=report.machine_id if report else None,
+            short_fingerprint=short_fingerprint(selected.machine.fingerprint),
+        )
+    ctx.update(machine_label=label, permission_lines=lines, logout_label="Sign out")
+    return ui.templates.TemplateResponse(request, "me.html", ctx)
 
 
 @router.get("/static/{path:path}")
@@ -408,7 +471,7 @@ async def static_file(
     report = None
     if account is not None:
         selected = await _selected(request, account)
-        report = selected[1] if selected else None
+        report = selected.report if selected else None
     ui = _resolve(request, report)
     try:
         base = ui.static_dir.resolve()
@@ -434,11 +497,20 @@ async def not_remote(
     request: Request, path: str, account: Account = Depends(require_signed_in)
 ):
     selected = await _selected(request, account)
-    machine, report = selected if selected else (None, None)
+    machine = selected.machine if selected else None
+    report = selected.report if selected else None
     ui = _resolve(request, report)
     return ui.templates.TemplateResponse(
         request,
         "not_remote.html",
-        _context(request, account, ui, None, machine=machine, report=report),
+        _context(
+            request,
+            account,
+            ui,
+            None,
+            machine=machine,
+            report=report,
+            role=selected.role if selected else None,
+        ),
         status_code=404,
     )

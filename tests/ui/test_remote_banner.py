@@ -56,6 +56,12 @@ def test_fresh_report_shows_machine_only():
     assert "UI version mismatch" not in html
 
 
+def test_common_name_renders_before_machine_id():
+    html = _render(remote=_remote(common_name="Lobby Ice"))
+    assert html.index("Lobby Ice") < html.index("m-0042")
+    assert "m-0042" in _render(remote=_remote())
+
+
 def test_stale_banner_text():
     html = _render(remote=_remote(stale=True))
     assert "Offline — showing last report from 2026-10-13 14:05 (12m ago)" in html

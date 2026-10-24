@@ -5,6 +5,7 @@
 <div id="remote-banner" role="status" style="position:fixed;left:0;right:0;bottom:0;z-index:30"
      class="px-4 py-2 text-sm border-b border-amber-200 bg-amber-50 text-amber-900">
   <span class="font-semibold">Remote view</span>
+  {% if remote.common_name is defined and remote.common_name %}<span class="font-semibold">{{ remote.common_name }}</span>{% endif %}
   <span class="font-mono text-xs">{{ remote.machine_id }}</span>
   {% if remote.short_fingerprint %}<span class="font-mono text-xs">{{ remote.short_fingerprint }}</span>{% endif %}
   {% if remote.stale %}

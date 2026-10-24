@@ -23,6 +23,7 @@ from ice_edge.views.health import (
     build_health_page_summary,
     build_health_summary,
     build_kpi_summary,
+    clip,
     subsystem_rows,
     faults_with_age,
 )
@@ -68,6 +69,7 @@ async def build_machine_report(
     return MachineReport(
         contract=CLOUD_CONTRACT_VERSION,
         machine_id=config.machine_id,
+        common_name=clip(config.physical.common_name),
         sent_at=now,
         boot_id=boot_id,
         seq=seq,

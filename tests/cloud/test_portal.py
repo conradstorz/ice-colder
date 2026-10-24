@@ -8,6 +8,7 @@ import pytest
 
 from ice_ui.bundle import INSTALLED_ROOT, build_bundle
 from tests.cloud.conftest import (
+    marked_bundle,
     Signer,
     claim,
     login,
@@ -264,58 +265,13 @@ def test_not_remote_page_renders_without_a_selection(cloud):
     assert "Not available remotely yet" in r.text
 
 
-def _marked_bundle(tmp_path, marker):
-    root = tmp_path / "ui_copy"
-    shutil.copytree(INSTALLED_ROOT / "templates", root / "templates")
-    shutil.copytree(INSTALLED_ROOT / "static", root / "static")
-    (root / "static" / "machine-only.txt").write_text("from the machine UI")
-    faults = root / "templates" / "health_faults.html"
-    faults.write_text(
-        faults.read_text(encoding="utf-8").replace(
-            "{% block body %}", "{% block body %}<!-- " + marker + " -->", 1
-        ),
-        encoding="utf-8",
-    )
-    data = build_bundle(root)
-    with tarfile.open(fileobj=io.BytesIO(gzip.decompress(data))) as tf:
-        digest = json.loads(tf.extractfile("manifest.json").read())["digest"]
-    return digest, data
-
-
-@pytest.fixture
-def trusting_cloud(settings, clock, provider):
-    """Build a cloud client whose settings trust the given bundle digests."""
-    from dataclasses import replace
-
-    from fastapi.testclient import TestClient
-
-    from ice_cloud.app import create_app
-
-    stack = []
-
-    def make(*digests):
-        app = create_app(
-            replace(settings, trusted_ui_digests=frozenset(digests)),
-            now=clock,
-            provider=provider,
-        )
-        client = TestClient(app, follow_redirects=False)
-        stack.append(client)
-        client.__enter__()
-        return client
-
-    yield make
-    for client in stack:
-        client.__exit__(None, None, None)
-
-
 def _digest_of(data):
     with tarfile.open(fileobj=io.BytesIO(gzip.decompress(data))) as tf:
         return json.loads(tf.extractfile("manifest.json").read())["digest"]
 
 
 def test_untrusted_bundle_is_never_rendered_or_served(cloud, tmp_path, signer):
-    digest, data = _marked_bundle(tmp_path, "UNTRUSTED-UI")
+    digest, data = marked_bundle(tmp_path, "UNTRUSTED-UI")
     own_and_select(cloud, signer, make_report(digest=digest))
     assert put_bundle(cloud, signer, digest, data).status_code == 201
     r = cloud.get("/health/faults")
@@ -327,7 +283,7 @@ def test_untrusted_bundle_is_never_rendered_or_served(cloud, tmp_path, signer):
 def test_full_page_renders_from_cached_bundle_in_sandbox(
     trusting_cloud, tmp_path, signer
 ):
-    digest, data = _marked_bundle(tmp_path, "SANDBOXED-MACHINE-UI")
+    digest, data = marked_bundle(tmp_path, "SANDBOXED-MACHINE-UI")
     cloud = trusting_cloud(digest)
     own_and_select(cloud, signer, make_report(digest=digest))
     assert put_bundle(cloud, signer, digest, data).status_code == 201

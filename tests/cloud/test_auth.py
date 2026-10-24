@@ -77,6 +77,12 @@ def test_login_page_says_not_configured_without_google(cloud):
     assert "/auth/google/start" not in r.text
 
 
+def test_login_page_has_no_identity_chip(cloud):
+    r = cloud.get("/login")
+    assert r.status_code == 200
+    assert 'href="/me"' not in r.text
+
+
 def test_login_page_offers_button_when_configured(settings, clock, provider, tmp_path):
     from dataclasses import replace
 
@@ -629,3 +635,23 @@ def test_create_app_closes_its_http_client_on_shutdown(settings, clock, monkeypa
     with TestClient(create_app(configured, now=clock)):
         assert closed == []
     assert closed == [True]
+
+
+def test_machine_role_member_admin_and_stranger(cloud, signer):
+    from tests.cloud.conftest import push
+    from tests.cloud.reports import make_report
+
+    owner = login(cloud, "owner@example.com")
+    push(cloud, signer, make_report())
+    repo = cloud.app.state.repo
+    settings = cloud.app.state.settings
+    repo.claim_machine(signer.fingerprint, owner.id, cloud.app.state.now())
+    tech = login(cloud, "tech@example.com")
+    repo.grant_tech(tech.id, signer.fingerprint, owner.id, cloud.app.state.now())
+    admin = login(cloud, "admin@example.com")
+    other = login(cloud, "other@example.com")
+    fp = signer.fingerprint
+    assert auth.machine_role(settings, repo, owner, fp) == "owner"
+    assert auth.machine_role(settings, repo, tech, fp) == "tech"
+    assert auth.machine_role(settings, repo, admin, fp) == "admin"
+    assert auth.machine_role(settings, repo, other, fp) is None

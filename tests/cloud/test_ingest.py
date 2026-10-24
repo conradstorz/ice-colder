@@ -62,6 +62,16 @@ def test_report_is_accepted_and_stored(client, machine, tmp_path):
     assert (tmp_path / "machines" / f"{machine.fingerprint}.json").is_file()
 
 
+def test_report_common_name_stored_and_optional(client, machine):
+    new = make_report(contract="0.4.0", common_name="Lobby Ice", seq=1)
+    assert _post(client, machine, new).status_code == 200
+    assert client.app.state.store.latest(machine.fingerprint).common_name == "Lobby Ice"
+
+    old = make_report(contract="0.3.0", seq=2)
+    assert _post(client, machine, old).status_code == 200
+    assert client.app.state.store.latest(machine.fingerprint).common_name is None
+
+
 def test_body_machine_id_is_a_label_not_checked_against_the_path(client, machine):
     assert _post(client, machine, make_report(machine_id="anything")).status_code == 200
 
