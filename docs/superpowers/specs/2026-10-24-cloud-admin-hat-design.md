@@ -70,7 +70,7 @@ the existing role-on-machine / "No machine selected" line: **Platform admin** wi
 label to `/m/{short}`; all three would now 404 for an admin who is not a member. The labels become
 plain text (the short fingerprint stays beside them) and the alert count links to `/admin/alerts`,
 which already shows the fleet-wide history. `/admin/owners` rows keep linking to
-`/admin/machines?owner=<id>`. No other admin template links outside `/admin`.
+`/admin/machines?owner=<id>`. No other admin template links outside `/admin`. `admin_alerts.html` had the same flaw: each row's machine label linked to `/machines/{short}/alerts`; `alerts_url` is removed from `ice_cloud/admin/alerts.py` and the label is plain text, like the other admin tables.
 
 `ice_cloud/alerts/pages.py`'s `/machines/{short}/alerts` treats `role in ("owner", "admin")` as
 privileged; with `admin` gone from `Role` that becomes `role == "owner"`, no behaviour change for
@@ -87,6 +87,7 @@ owners or techs.
 | `ice_cloud/templates/fleet.html` | remove the `is_admin` block |
 | `ice_cloud/templates/admin_machines.html` | label as text; alert count → `/admin/alerts` |
 | `ice_cloud/templates/partials/admin_overview.html` | attention-row label as text |
+| `ice_cloud/templates/admin_alerts.html`, `ice_cloud/admin/alerts.py` | row label as text; `alerts_url` removed |
 | `ice_cloud/alerts/pages.py` | `privileged = role == "owner"` |
 | `ice_cloud/claim.py` | `_page` passes `hat_switch` like `_context` does |
 | `ice_ui/templates/base.html` | render `hat_switch` link before the chip |
@@ -107,7 +108,8 @@ No contract bump, no schema migration, no new env, no new tables, no new routes.
   link and a chip that never reads `admin`; a non-admin's pages contain no switch; `/me` shows
   "Platform admin" for an admin and not for an owner.
 - `tests/cloud/test_admin_dashboard.py`: the machines table and the overview's attention rows have
-  no `/m/` or `/machines/` hrefs; the alert count links to `/admin/alerts`.
+  no `/m/` or `/machines/` hrefs; the alert count links to `/admin/alerts`. `/admin/alerts` rows are checked with an alert event
+  seeded, so the check is not vacuous.
 - `tests/cloud/test_portal.py`, `test_alert_pages.py`, `test_people.py`: the admin cases become
   non-member 404s (`test_admin_sees_every_machine` inverts; the admin alerts-page test becomes a 404).
 - `tests/cloud/test_ui_parity.py` unchanged. `tests/ui/test_static_css.py` guards the reused

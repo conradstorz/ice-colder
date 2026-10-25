@@ -97,6 +97,8 @@ are its children. A filtered machine list is `Level.child(LEVEL_ADMIN_MACHINES, 
 no change). The SMTP status line and "Send test email" button move to `/admin/accounts`' header,
 beside the people they concern.
 
+*(Superseded 2026-10-24 by `2026-10-24-cloud-admin-hat-design.md`: the link moved into the bar as the hat switch, and `/fleet` lists memberships only.)*
+
 ## 4. The view model (`ice_cloud/fleet_view.py`, pure)
 
 No I/O, no FastAPI, no SQL. One entry point:

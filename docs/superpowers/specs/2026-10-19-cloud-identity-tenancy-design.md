@@ -54,6 +54,8 @@ Plus `schema_version` (single row) for forward migrations.
 - **tech** iff a `memberships` row exists;
 - **platform admin** iff the account's email is in `ICE_CLOUD_ADMINS` (checked at request time, so editing the env and restarting is the whole admin-management procedure).
 
+*(Superseded 2026-10-24 by `2026-10-24-cloud-admin-hat-design.md`: platform admin is no longer a role on any machine. `Role` is `owner | tech`; an admin with no membership is a stranger to a machine, and the rows below that admit "admin" to machine pages no longer do.)*
+
 One account may be owner of some machines and tech on others. Suspension (`suspended_at` set) makes every request from that account behave as signed out.
 
 **Fingerprint** = lower-case hex SHA-256 of the raw 32-byte public key. The **short form** shown to humans and typed into the claim form is its first 16 hex characters, grouped `xxxx-xxxx-xxxx-xxxx`. URLs carry the short form; the repository resolves short form to full fingerprint and refuses an ambiguous prefix (practically impossible, defensively coded).

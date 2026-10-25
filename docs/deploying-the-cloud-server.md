@@ -78,6 +78,10 @@ Web application, with the single authorized redirect URI
 download does not include the redirect URI, so a client created from the console must have
 it added by hand or sign-in fails with `redirect_uri_mismatch`.
 
+An admin account sees the fleet tables under `/admin` but no machine's dashboard: to open one it
+must be that machine's owner (claim code) or tech (owner invitation), like anyone else. The bar
+switches between the Admin hat and My machines.
+
 Registration is open, so three optional variables bound what an unclaimed machine can
 cost (defaults shown; each is a positive integer, anything else stops the cloud at start):
 
