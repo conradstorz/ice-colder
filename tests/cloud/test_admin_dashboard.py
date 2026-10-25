@@ -313,3 +313,20 @@ def test_machines_owner_plus_filter_title(cloud, clock):
     r = cloud.get(f"/admin/machines?owner={owner.id}&status=silent")
     assert "a@x.com · Silent" in r.text
     assert 'aria-current="page">a@x.com · Silent<' in r.text
+
+
+def test_admin_pages_never_link_to_machine_pages(cloud, clock):
+    """The Admin hat opens no machine page, so no admin template may point at one."""
+    quiet, busy = _two_machines(cloud, clock)
+    owner = login(cloud, "owner@example.com")
+    claim(cloud, busy, owner)
+    _admin(cloud)
+    for path in ("/admin", "/admin/machines", "/admin/owners", "/admin/alerts"):
+        text = cloud.get(path).text
+        assert 'href="/m/' not in text, path
+        assert 'href="/machines/' not in text, path
+    frag = cloud.get("/admin/overview", headers={"HX-Request": "true"}).text
+    assert 'href="/m/' not in frag
+    machines = cloud.get("/admin/machines").text
+    assert 'href="/admin/alerts"' in machines
+    assert short(busy) in machines and "m-busy" in machines

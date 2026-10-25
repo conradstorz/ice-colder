@@ -65,7 +65,8 @@ def test_admin_sees_unclaimed_and_claimed(cloud, signer):
     assert r.status_code == 200
     assert "m-claimed" in r.text and "owner@example.com" in r.text
     assert "m-free" in r.text and "unclaimed" in r.text
-    assert f"/m/{short(signer)}" in r.text
+    assert f"/m/{short(signer)}" not in r.text
+    assert '<span class="font-mono text-gray-900">m-claimed</span>' in r.text
 
 
 def test_unbind_clears_owner_and_memberships(cloud, signer):
