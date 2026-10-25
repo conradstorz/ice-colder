@@ -66,10 +66,15 @@ the existing role-on-machine / "No machine selected" line: **Platform admin** wi
 ## 6. Admin pages that pointed at machine pages
 
 `admin_machines.html` today links a row's label to `/m/{short}` and its 24 h alert count to
-`/machines/{short}/alerts`; both would now 404 for an admin who is not a member. The label becomes
-plain text (the short fingerprint stays beside it) and the alert count links to `/admin/alerts`,
+`/machines/{short}/alerts`, and `partials/admin_overview.html`'s "Needs attention" rows link the
+label to `/m/{short}`; all three would now 404 for an admin who is not a member. The labels become
+plain text (the short fingerprint stays beside them) and the alert count links to `/admin/alerts`,
 which already shows the fleet-wide history. `/admin/owners` rows keep linking to
 `/admin/machines?owner=<id>`. No other admin template links outside `/admin`.
+
+`ice_cloud/alerts/pages.py`'s `/machines/{short}/alerts` treats `role in ("owner", "admin")` as
+privileged; with `admin` gone from `Role` that becomes `role == "owner"`, no behaviour change for
+owners or techs.
 
 ## 7. Code changes
 
@@ -77,12 +82,15 @@ which already shows the fleet-wide history. `/admin/owners` rows keep linking to
 |---|---|
 | `ice_cloud/auth.py` | `Role` narrows to `owner`/`tech`; `machine_role` removed; `require_machine_access` uses `repo.access_for`; module docstring updated |
 | `ice_cloud/portal.py` | `_selection` uses `repo.access_for`; `_context` takes `hat_switch` (computed by one helper `admin_switch(settings, account) -> dict | None`) and passes it to every page; `/fleet` lists memberships only and drops `is_admin`; `/me` passes `is_platform_admin` |
+| `ice_cloud/viewer.py` | `ADMIN_SWITCH` / `MY_MACHINES_SWITCH` constants (the two `hat_switch` values) |
 | `ice_cloud/admin/common.py` | `admin_context` sets `role_label="admin"` and `hat_switch={"label": "My machines", "url": "/fleet"}` |
 | `ice_cloud/templates/fleet.html` | remove the `is_admin` block |
 | `ice_cloud/templates/admin_machines.html` | label as text; alert count → `/admin/alerts` |
+| `ice_cloud/templates/partials/admin_overview.html` | attention-row label as text |
+| `ice_cloud/alerts/pages.py` | `privileged = role == "owner"` |
+| `ice_cloud/claim.py` | `_page` passes `hat_switch` like `_context` does |
 | `ice_ui/templates/base.html` | render `hat_switch` link before the chip |
 | `ice_ui/templates/me.html` | the Platform admin line when `is_platform_admin` |
-| `ice_cloud/viewer.py` | docstring only (`role_label` values) |
 | `docs/superpowers/specs/2026-10-19-cloud-identity-tenancy-design.md`, `2026-10-21-cloud-fleet-admin-dashboard-design.md` | one-line "superseded by" notes at the affected sections |
 | `CLAUDE.md` (Cloud → People / Portal / Admin dashboard) | roles are owner/tech only; admin has no machine-page access; the bar switch |
 
@@ -98,8 +106,10 @@ No contract bump, no schema migration, no new env, no new tables, no new routes.
   the My machines link; `/fleet`, `/me` and a selected machine's `/` for an admin carry the Admin
   link and a chip that never reads `admin`; a non-admin's pages contain no switch; `/me` shows
   "Platform admin" for an admin and not for an owner.
-- `tests/cloud/test_admin_dashboard.py`: the machines table has no `/m/` or `/machines/` hrefs;
-  the alert count links to `/admin/alerts`.
+- `tests/cloud/test_admin_dashboard.py`: the machines table and the overview's attention rows have
+  no `/m/` or `/machines/` hrefs; the alert count links to `/admin/alerts`.
+- `tests/cloud/test_portal.py`, `test_alert_pages.py`, `test_people.py`: the admin cases become
+  non-member 404s (`test_admin_sees_every_machine` inverts; the admin alerts-page test becomes a 404).
 - `tests/cloud/test_ui_parity.py` unchanged. `tests/ui/test_static_css.py` guards the reused
   classes.
 - An edge render of `base.html` without `hat_switch` is unchanged (existing edge tests cover it).
