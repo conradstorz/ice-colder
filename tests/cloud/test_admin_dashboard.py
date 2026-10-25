@@ -285,11 +285,16 @@ def test_fleet_alerts_non_admin_404(cloud):
     assert cloud.get("/admin/alerts").status_code == 404
 
 
-def test_fleet_page_no_longer_links_dashboard(cloud):
+def _fleet_main(cloud) -> str:
+    return cloud.get("/fleet").text.split("<main", 1)[1].split("</main>", 1)[0]
+
+
+def test_fleet_main_no_longer_links_dashboard(cloud):
     login(cloud, "plain-owner@example.com")
-    assert 'href="/admin"' not in cloud.get("/fleet").text
+    assert 'href="/admin"' not in _fleet_main(cloud)
     _admin(cloud)
-    assert 'href="/admin"' not in cloud.get("/fleet").text
+    assert 'href="/admin"' not in _fleet_main(cloud)
+    assert "Fleet dashboard" not in _fleet_main(cloud)
 
 
 def test_machines_combined_filter_title(cloud, clock):

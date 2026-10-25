@@ -13,10 +13,10 @@ from functools import partial
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
-from ice_cloud.auth import require_htmx, require_signed_in
+from ice_cloud.auth import is_admin, require_htmx, require_signed_in
 from ice_cloud.portal import COOKIE, LEVEL_FLEET
 from ice_cloud.store.repository import Account
-from ice_cloud.viewer import RemoteViewer
+from ice_cloud.viewer import ADMIN_SWITCH, RemoteViewer
 from ice_common.secrets import hash_secret, verify_secret
 from ice_contracts.access import REMOTE_VIEWER_PERMISSIONS
 from ice_contracts.cloud.signing import parse_short_fingerprint
@@ -62,6 +62,9 @@ def _page(
             "current_user": RemoteViewer(display_name=account.name),
             "perms": REMOTE_VIEWER_PERMISSIONS,
             "level": LEVEL_CLAIM,
+            "hat_switch": (
+                ADMIN_SWITCH if is_admin(request.app.state.settings, account) else None
+            ),
             "error": error,
             "fingerprint": fingerprint,
         },

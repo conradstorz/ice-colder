@@ -1,4 +1,4 @@
-"""The remote viewer: ``current_user`` for pages the cloud renders from ``ice_ui``."""
+"""The remote viewer: ``current_user`` for pages the cloud renders from ``ice_ui``, and the two hat-switch links."""
 
 from __future__ import annotations
 
@@ -20,3 +20,9 @@ class RemoteViewer:
 
 
 VIEWER = RemoteViewer()
+
+# The two values of the ``hat_switch`` template variable (``base.html`` renders
+# it as one link in the bar). The hat is the URL: under ``/admin`` the switch
+# points back to My machines, everywhere else it offers Admin to an admin.
+ADMIN_SWITCH = {"label": "Admin", "url": "/admin"}
+MY_MACHINES_SWITCH = {"label": "My machines", "url": "/fleet"}

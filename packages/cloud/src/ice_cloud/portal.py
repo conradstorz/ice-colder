@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Resp
 from ice_cloud.auth import (
     Role,
     current_account,
+    is_admin,
     require_htmx,
     require_machine_access,
     require_signed_in,
@@ -28,7 +29,7 @@ from ice_cloud.auth import (
 from ice_cloud import fleet_view
 from ice_cloud.store.repository import Account, Machine
 from ice_cloud.ui_registry import ResolvedUi
-from ice_cloud.viewer import VIEWER, RemoteViewer
+from ice_cloud.viewer import ADMIN_SWITCH, VIEWER, RemoteViewer
 from ice_contracts.access import (
     PERMISSION_LABELS,
     REMOTE_VIEWER_PERMISSIONS,
@@ -136,6 +137,9 @@ def _context(
         ),
         "perms": REMOTE_VIEWER_PERMISSIONS,
         "level": level,
+        "hat_switch": (
+            ADMIN_SWITCH if is_admin(request.app.state.settings, account) else None
+        ),
     }
     if banner and report is not None and machine is not None:
         ctx["remote"] = _remote(request, report, ui, machine.fingerprint)
