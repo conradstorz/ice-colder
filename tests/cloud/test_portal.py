@@ -168,6 +168,31 @@ def test_fragment_without_access_is_204_for_htmx(cloud, signer):
         assert cloud.get(path).status_code == 303
 
 
+def test_admin_stale_selection_cookie_redirects_to_fleet(cloud, signer):
+    owner = login(cloud, "owner@example.com")
+    push(cloud, signer, make_report())
+    claim(cloud, signer, owner)
+    login(cloud, "admin@example.com")
+    cloud.cookies.set("ice_cloud_machine", signer.fingerprint)
+    for path in PAGES:
+        r = cloud.get(path)
+        assert r.status_code == 303, path
+        assert r.headers["location"] == "/fleet"
+    assert cloud.get("/static/app.css").status_code == 200
+
+
+def test_admin_stale_selection_fragment_is_204_for_htmx(cloud, signer):
+    owner = login(cloud, "owner@example.com")
+    push(cloud, signer, make_report())
+    claim(cloud, signer, owner)
+    login(cloud, "admin@example.com")
+    cloud.cookies.set("ice_cloud_machine", signer.fingerprint)
+    for path in ("/status", "/pill", "/kpi"):
+        assert cloud.get(path, headers={"HX-Request": "true"}).status_code == 204
+        assert cloud.get(path).status_code == 303
+    assert cloud.get("/static/app.css").status_code == 200
+
+
 def test_cookie_alone_is_not_enough(cloud, signer):
     tech = login(cloud, "tech@example.com")
     owner = login(cloud, "owner@example.com")

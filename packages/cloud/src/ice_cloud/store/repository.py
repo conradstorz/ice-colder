@@ -65,7 +65,7 @@ class Invitation:
 @dataclass(frozen=True)
 class MachineAccess:
     machine: Machine
-    role: Literal["owner", "tech", "admin"]
+    role: Literal["owner", "tech"]
 
 
 @dataclass(frozen=True)

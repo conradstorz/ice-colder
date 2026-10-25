@@ -329,6 +329,7 @@ def test_admin_pages_never_link_to_machine_pages(cloud, clock):
         assert 'href="/m/' not in text, path
         assert 'href="/machines/' not in text, path
     frag = cloud.get("/admin/overview", headers={"HX-Request": "true"}).text
+    assert "m-quiet" in frag
     assert 'href="/m/' not in frag
     machines = cloud.get("/admin/machines").text
     assert 'href="/admin/alerts"' in machines
