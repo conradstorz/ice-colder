@@ -56,3 +56,21 @@ def test_people_and_alerts_pages_offer_the_switch_to_an_admin_owner(cloud, signe
 def test_login_page_has_no_switch(cloud):
     text = cloud.get("/login").text
     assert ">Admin</a>" not in text and ">My machines</a>" not in text
+
+
+def test_me_names_the_platform_admin(cloud, signer):
+    own_and_select(cloud, signer, make_report(), email="admin@example.com")
+    text = cloud.get("/me").text
+    assert "Platform admin" in text and 'href="/admin"' in text
+    assert "<strong>owner</strong> on" in text
+
+
+def test_me_without_selection_still_names_the_platform_admin(cloud):
+    login(cloud, "admin@example.com")
+    text = cloud.get("/me").text
+    assert "Platform admin" in text and "No machine selected" in text
+
+
+def test_me_says_nothing_about_admin_to_an_owner(cloud, signer):
+    own_and_select(cloud, signer, make_report())
+    assert "Platform admin" not in cloud.get("/me").text

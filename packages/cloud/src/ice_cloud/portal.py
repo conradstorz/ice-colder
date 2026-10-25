@@ -455,7 +455,12 @@ async def me(request: Request, account: Account = Depends(require_signed_in)):
             machine_id=report.machine_id if report else None,
             short_fingerprint=short_fingerprint(selected.machine.fingerprint),
         )
-    ctx.update(machine_label=label, permission_lines=lines, logout_label="Sign out")
+    ctx.update(
+        machine_label=label,
+        permission_lines=lines,
+        logout_label="Sign out",
+        is_platform_admin=is_admin(request.app.state.settings, account),
+    )
     return ui.templates.TemplateResponse(request, "me.html", ctx)
 
 

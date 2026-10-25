@@ -17,6 +17,9 @@
       No machine selected <a href="/fleet" class="underline">Choose one</a>
       {% endif %}
     </p>
+    {% if is_platform_admin %}
+    <p class="text-sm text-gray-500">Platform admin <a href="/admin" class="underline">Admin dashboard</a></p>
+    {% endif %}
   </div>
 
   <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-2">
