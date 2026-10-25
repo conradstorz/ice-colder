@@ -21,8 +21,6 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Resp
 from ice_cloud.auth import (
     Role,
     current_account,
-    is_admin,
-    machine_role,
     require_htmx,
     require_machine_access,
     require_signed_in,
@@ -85,8 +83,8 @@ async def _selected(request: Request, account: Account) -> Selection | None:
     machine = await asyncio.to_thread(state.repo.machine, fingerprint)
     if machine is None:
         return None
-    role = await asyncio.to_thread(
-        machine_role, state.settings, state.repo, account, fingerprint
+    role: Role | None = await asyncio.to_thread(
+        state.repo.access_for, account.id, fingerprint
     )
     if role is None:
         return None
@@ -181,10 +179,6 @@ async def fleet(request: Request, account: Account = Depends(require_signed_in))
     state = request.app.state
     access = await asyncio.to_thread(state.repo.machines_for_account, account.id)
     entries: list[tuple[Machine, Role]] = [(a.machine, a.role) for a in access]
-    if is_admin(state.settings, account):
-        held = {a.machine.fingerprint for a in access}
-        everything = await asyncio.to_thread(state.repo.all_machines)
-        entries += [(m, "admin") for m in everything if m.fingerprint not in held]
     rows = []
     for machine, role in entries:
         report = await asyncio.to_thread(state.store.latest, machine.fingerprint)
@@ -218,7 +212,6 @@ async def fleet(request: Request, account: Account = Depends(require_signed_in))
             ui,
             LEVEL_FLEET,
             machines=rows,
-            is_admin=is_admin(state.settings, account),
         ),
     )
 

@@ -372,7 +372,7 @@ def test_machine_access_roles(cloud, probes):
     assert r.json() == {"role": "owner", "fingerprint": FP}
     assert get(f"/m/{short.upper()}/probe", "owner@example.com").status_code == 200
     assert get(f"/m/{short}/probe", "tech@example.com").json()["role"] == "tech"
-    assert get(f"/m/{short}/probe", "admin@example.com").json()["role"] == "admin"
+    assert get(f"/m/{short}/probe", "admin@example.com").status_code == 404
     assert get(f"/m/{short}/probe", "stranger@example.com").status_code == 404
     assert get(f"/m/{FP_2[:16]}/probe", "owner@example.com").status_code == 404
     assert get("/m/nothex/probe", "owner@example.com").status_code == 404
@@ -637,21 +637,15 @@ def test_create_app_closes_its_http_client_on_shutdown(settings, clock, monkeypa
     assert closed == [True]
 
 
-def test_machine_role_member_admin_and_stranger(cloud, signer):
+def test_admin_is_not_a_machine_role(cloud, signer):
+    """A platform admin with no membership is a stranger to the machine."""
     from tests.cloud.conftest import push
     from tests.cloud.reports import make_report
 
     owner = login(cloud, "owner@example.com")
     push(cloud, signer, make_report())
     repo = cloud.app.state.repo
-    settings = cloud.app.state.settings
     repo.claim_machine(signer.fingerprint, owner.id, cloud.app.state.now())
-    tech = login(cloud, "tech@example.com")
-    repo.grant_tech(tech.id, signer.fingerprint, owner.id, cloud.app.state.now())
     admin = login(cloud, "admin@example.com")
-    other = login(cloud, "other@example.com")
-    fp = signer.fingerprint
-    assert auth.machine_role(settings, repo, owner, fp) == "owner"
-    assert auth.machine_role(settings, repo, tech, fp) == "tech"
-    assert auth.machine_role(settings, repo, admin, fp) == "admin"
-    assert auth.machine_role(settings, repo, other, fp) is None
+    assert repo.access_for(admin.id, signer.fingerprint) is None
+    assert not hasattr(auth, "machine_role")

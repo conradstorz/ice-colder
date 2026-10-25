@@ -83,7 +83,7 @@ def test_fleet_shows_never_reported_machine(cloud, signer):
     assert "never reported" in cloud.get("/fleet").text
 
 
-def test_admin_sees_every_machine(cloud):
+def test_admin_fleet_lists_memberships_only(cloud):
     a, b = Signer(), Signer()
     owner = login(cloud, "owner@example.com")
     push(cloud, a, make_report(machine_id="m-A"))
@@ -91,14 +91,25 @@ def test_admin_sees_every_machine(cloud):
     claim(cloud, a, owner)
     login(cloud, "admin@example.com")
     page = cloud.get("/fleet")
-    assert "m-A" in page.text and "m-B" in page.text and ">admin<" in page.text
+    assert "m-A" not in page.text and "m-B" not in page.text
+    assert ">admin<" not in page.text and "Fleet dashboard" not in page.text
+    assert "You have no machines yet" in page.text
     assert (
         cloud.post(
             f"/fleet/select/{short(b)}", headers={"HX-Request": "true"}
         ).status_code
-        == 303
+        == 404
     )
-    assert cloud.get("/health/faults").status_code == 200
+    assert cloud.get(f"/m/{short(b)}").status_code == 404
+
+
+def test_admin_who_owns_is_listed_as_owner(cloud):
+    a = Signer()
+    admin = login(cloud, "admin@example.com")
+    push(cloud, a, make_report(machine_id="m-A"))
+    claim(cloud, a, admin)
+    page = cloud.get("/fleet")
+    assert "m-A" in page.text and ">owner<" in page.text
 
 
 def test_select_sets_a_non_credential_cookie(cloud, signer):

@@ -12,7 +12,8 @@ Access dependencies used by every portal route:
   handler installed by :func:`install` turns into ``303 /login?next=...``.
 * :func:`require_machine_access` - a factory; the dependency it returns takes the
   ``short`` path parameter and yields ``(account, machine, role)``. A non-member
-  gets 404 so they cannot learn that a machine exists.
+  gets 404 so they cannot learn that a machine exists; being a platform admin
+  grants nothing here.
 * :func:`require_admin`, :func:`require_htmx` (the CSRF guard for mutating routes).
 
 A refreshed session cookie (``last_active_at`` is rewritten at most once per
@@ -62,7 +63,7 @@ OIDC_TTL = timedelta(minutes=10)
 
 LEVEL_LOGIN = Level(title="Sign in", url="/login")
 
-Role = Literal["owner", "tech", "admin"]
+Role = Literal["owner", "tech"]
 
 
 # --------------------------------------------------------------------------- #
@@ -214,24 +215,13 @@ async def require_admin(
     return account
 
 
-def machine_role(
-    settings: CloudSettings, repo, account: Account, fingerprint: str
-) -> Role | None:
-    """The account's role on a machine: its membership, else ``admin`` for a
-    platform admin, else ``None``."""
-    role: Role | None = repo.access_for(account.id, fingerprint)
-    if role is None and is_admin(settings, account):
-        return "admin"
-    return role
-
-
 def require_machine_access(*, owner_only: bool = False):
     """Build a dependency yielding ``(account, machine, role)`` for ``{short}``.
 
-    Role is ``owner``, ``tech`` or ``admin``. A platform admin passes when
-    ``owner_only`` is false (and is reported as ``owner`` when also the owner);
-    ``owner_only=True`` admits the machine's owner alone. Everything else,
-    including an unknown machine, is 404.
+    Role is ``owner`` or ``tech``, from the account's membership alone; a
+    platform admin with no membership is a stranger here (the Admin hat lives
+    under ``/admin`` and opens no machine page). ``owner_only=True`` admits the
+    machine's owner alone. Everything else, including an unknown machine, is 404.
     """
 
     async def dependency(
@@ -246,18 +236,9 @@ def require_machine_access(*, owner_only: bool = False):
         )
         if machine is None:
             raise HTTPException(status_code=404)
-        if owner_only:
-            role: Role | None = await asyncio.to_thread(
-                repo.access_for, account.id, machine.fingerprint
-            )
-        else:
-            role = await asyncio.to_thread(
-                machine_role,
-                request.app.state.settings,
-                repo,
-                account,
-                machine.fingerprint,
-            )
+        role: Role | None = await asyncio.to_thread(
+            repo.access_for, account.id, machine.fingerprint
+        )
         if role is None or (owner_only and role != "owner"):
             raise HTTPException(status_code=404)
         return account, machine, role

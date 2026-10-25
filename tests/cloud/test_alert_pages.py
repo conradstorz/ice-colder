@@ -173,7 +173,9 @@ def test_admin_mute_is_404(cloud, signer):
     owner, sh = _setup(cloud, signer)
     admin = login(cloud, "admin@example.com")
     assert _mute(cloud, sh, admin).status_code == 404  # admins are not recipients
-    assert _mute(cloud, sh, owner).status_code == 403  # nor may they mute others
+    assert (
+        _mute(cloud, sh, owner).status_code == 404
+    )  # nor may a non-member admin mute others
     assert not _muted(cloud, owner, signer)
 
 
@@ -212,14 +214,12 @@ def test_owner_alerts_page_shows_everything(cloud, signer):
     assert "tech@example.com" in text and "owner@example.com" in text
 
 
-def test_admin_alerts_page_shows_errors_without_a_mute_control(cloud, signer):
+def test_admin_non_member_alerts_page_is_404(cloud, signer):
     owner, sh = _setup(cloud, signer)
     tech = _tech(cloud, signer, owner)
     _seed_delivery_history(cloud, signer, owner, tech)
     login(cloud, "admin@example.com")
-    text = cloud.get(f"/machines/{sh}/alerts").text
-    assert "owner-side boom" in text
-    assert "/mute" not in text
+    assert cloud.get(f"/machines/{sh}/alerts").status_code == 404
 
 
 def test_tech_self_mute_from_the_alerts_page(cloud, signer):

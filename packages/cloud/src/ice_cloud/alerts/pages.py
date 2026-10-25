@@ -34,7 +34,7 @@ def _delivery_line(status: str, sent_at, error: str | None, *, detail: bool) -> 
 
 @router.get("/machines/{short}/alerts", response_class=HTMLResponse)
 async def alerts_page(request: Request, access=Depends(require_machine_access())):
-    """Owners and admins see every delivery in full. A technician sees their own
+    """Owners see every delivery in full. A technician sees their own
     lines in full and the others only as "owner" / "technician" with a status:
     no email addresses and no SMTP error text."""
     account, machine, role = access
@@ -45,7 +45,7 @@ async def alerts_page(request: Request, access=Depends(require_machine_access())
     by_event = await asyncio.to_thread(
         repo.deliveries_for_events, machine.fingerprint, [e.id for e in events]
     )
-    privileged = role in ("owner", "admin")
+    privileged = role == "owner"
     names: dict[str, str] = {}
     rows = []
     for e in events:

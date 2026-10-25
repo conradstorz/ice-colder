@@ -8,6 +8,7 @@ from tests.cloud.conftest import (
     push,
     register,
     select,
+    short,
 )
 from tests.cloud.reports import make_report
 
@@ -50,13 +51,14 @@ def test_tech_role(cloud, signer):
     assert "<strong>tech</strong> on Lobby Ice" in cloud.get("/me").text
 
 
-def test_admin_non_member_and_admin_owner(cloud, signer):
+def test_admin_non_member_cannot_select(cloud, signer):
     owner = login(cloud, "owner@example.com")
     push(cloud, signer, _named_report())
     claim(cloud, signer, owner)
     login(cloud, "admin@example.com")
-    select(cloud, signer)
-    assert "<strong>admin</strong> on Lobby Ice" in cloud.get("/me").text
+    r = cloud.post(f"/fleet/select/{short(signer)}", headers={"HX-Request": "true"})
+    assert r.status_code == 404
+    assert "No machine selected" in cloud.get("/me").text
 
 
 def test_admin_who_owns_is_owner(cloud, signer):
