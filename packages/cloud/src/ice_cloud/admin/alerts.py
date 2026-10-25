@@ -35,7 +35,6 @@ async def alerts_page(request: Request, account: Account = Depends(require_admin
                 "product": event.product or "",
                 "label": machine.label,
                 "short": short,
-                "alerts_url": f"/machines/{short}/alerts",
             }
         )
     return templates(request).TemplateResponse(

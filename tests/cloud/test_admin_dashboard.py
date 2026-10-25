@@ -247,13 +247,13 @@ def test_machines_table_payment_off(cloud, clock):
     assert ">Off<" in cloud.get("/admin/machines").text
 
 
-def _alert_rows(text):
+def _alert_labels(text):
     return re.findall(
-        r'<a href="(/machines/[^"]+/alerts)"[^>]*>\s*([^<]+?)\s*</a>', text
+        r'<span class="font-mono text-gray-900">\s*([^<]+?)\s*</span>', text
     )
 
 
-def test_fleet_alerts_newest_first_with_machine_link(cloud, clock):
+def test_fleet_alerts_newest_first(cloud, clock):
     a, b = Signer(), Signer()
     owner = login(cloud, "alerts-owner@example.com")
     register(cloud, a, "m-alert-a")
@@ -268,9 +268,10 @@ def test_fleet_alerts_newest_first_with_machine_link(cloud, clock):
     _admin(cloud)
     r = cloud.get("/admin/alerts")
     assert r.status_code == 200
-    links = _alert_rows(r.text)
-    assert links[0] == (f"/machines/{short(b)}/alerts", "m-alert-b")
-    assert (f"/machines/{short(a)}/alerts", "m-alert-a") in links
+    labels = _alert_labels(r.text)
+    assert labels[0] == "m-alert-b"
+    assert "m-alert-a" in labels
+    assert 'href="/machines/' not in r.text
     assert "raised" in r.text and "cleared" in r.text
     assert " UTC" in r.text
 
@@ -320,7 +321,9 @@ def test_admin_pages_never_link_to_machine_pages(cloud, clock):
     quiet, busy = _two_machines(cloud, clock)
     owner = login(cloud, "owner@example.com")
     claim(cloud, busy, owner)
+    push(cloud, busy, make_report(machine_id="m-busy", faults=True, seq=2))
     _admin(cloud)
+    assert "m-busy" in cloud.get("/admin/alerts").text
     for path in ("/admin", "/admin/machines", "/admin/owners", "/admin/alerts"):
         text = cloud.get(path).text
         assert 'href="/m/' not in text, path
