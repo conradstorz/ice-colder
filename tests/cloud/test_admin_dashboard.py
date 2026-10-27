@@ -249,7 +249,7 @@ def test_machines_table_payment_off(cloud, clock):
 
 def _alert_labels(text):
     return re.findall(
-        r'<span class="font-mono text-gray-900">\s*([^<]+?)\s*</span>', text
+        r"<span[^>]*\bdata-machine-label\b[^>]*>\s*([^<]+?)\s*</span>", text
     )
 
 

@@ -31,7 +31,7 @@
           {% include "partials/admin_status_badge.html" %}
         </td>
         <td class="p-3">
-          <span class="font-mono text-gray-900">{{ m.label }}</span>
+          <span class="font-mono text-gray-900" data-machine-label>{{ m.label }}</span>
           <div class="font-mono text-xs text-gray-400">{{ m.short }}{% if m.vmc_missing %} · no VMC{% endif %}</div>
         </td>
         <td class="p-3">

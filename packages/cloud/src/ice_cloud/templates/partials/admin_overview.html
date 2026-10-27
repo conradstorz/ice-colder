@@ -27,7 +27,7 @@
   {% for a in view.attention %}
   <div class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 border-t border-gray-100 text-sm">
     <span class="inline-block w-2 h-2 rounded-full {% if a.tone == 'bad' %}bg-red-500{% else %}bg-amber-500{% endif %}"></span>
-    <span class="font-mono text-gray-900">{{ a.row.label }}</span>
+    <span class="font-mono text-gray-900" data-machine-label>{{ a.row.label }}</span>
     <span class="font-mono text-xs text-gray-400">{{ a.row.short }}</span>
     <span class="text-gray-600">{{ a.row.owner_email or "unclaimed" }}</span>
     <span class="text-gray-900">{{ a.reason }}</span>
