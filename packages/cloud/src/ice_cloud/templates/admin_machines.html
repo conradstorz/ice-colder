@@ -50,7 +50,7 @@
           {% else %}<span class="text-red-600" title="{{ m.payment_reason or '' }}">Off</span>{% endif %}
         </td>
         <td class="p-3 text-gray-600">{{ m.edge_build or "—" }}{% if m.ui_mismatch %}<div class="text-xs text-amber-600">UI differs</div>{% endif %}</td>
-        <td class="p-3"><a href="/admin/alerts" class="text-gray-700">{{ m.alerts_24h }}</a></td>
+        <td class="p-3"><a href="/admin/alerts?machine={{ m.short }}" class="text-gray-700">{{ m.alerts_24h }}</a></td>
         <td class="p-3">
           {% if m.owner_id %}
           {% with label="Unbind", confirm_label="Confirm unbind", post_url="/admin/machines/" ~ m.short ~ "/unbind", confirm_url="/admin/machines/" ~ m.short ~ "/unbind/confirm", target="#unbind-" ~ m.short, confirming=false %}

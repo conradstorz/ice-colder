@@ -29,5 +29,9 @@
     </tbody>
   </table>
 </div>
+{% if filtered %}
+<div class="text-xs text-gray-400 mt-2">Newest 100 events for <span class="font-mono text-gray-600">{{ filtered.label }}</span> <span class="font-mono">{{ filtered.short }}</span> · <a href="/admin/alerts" class="text-gray-700">All machines</a></div>
+{% else %}
 <div class="text-xs text-gray-400 mt-2">Newest 100 events across the fleet</div>
+{% endif %}
 {% endblock %}

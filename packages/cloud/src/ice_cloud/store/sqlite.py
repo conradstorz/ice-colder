@@ -921,17 +921,22 @@ class SqliteRepository:
             ).fetchall()
         return {r["fingerprint"]: r["n"] for r in rows}
 
-    def recent_alert_events(self, *, limit: int) -> list[tuple[StoredEvent, Machine]]:
+    def recent_alert_events(
+        self, *, limit: int, fingerprint: str | None = None
+    ) -> list[tuple[StoredEvent, Machine]]:
         # e.fingerprint equals m.fingerprint, so selecting only the machine's
         # other columns avoids a name collision for both row mappers.
+        where = " WHERE e.fingerprint = ?" if fingerprint is not None else ""
+        args: tuple = (fingerprint, limit) if fingerprint is not None else (limit,)
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT e.*, m.public_key, m.label, m.owner_id, m.registered_at,"
                 " m.last_seen_at, m.claim_code_hash, m.claim_code_expires_at,"
                 " m.claimed_at FROM alert_events e JOIN machines m"
                 " ON m.fingerprint = e.fingerprint"
-                " ORDER BY e.at DESC, e.id DESC LIMIT ?",
-                (limit,),
+                + where
+                + " ORDER BY e.at DESC, e.id DESC LIMIT ?",
+                args,
             ).fetchall()
         return [(_event(r), _machine(r)) for r in rows]
 

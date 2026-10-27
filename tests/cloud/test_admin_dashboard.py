@@ -332,5 +332,46 @@ def test_admin_pages_never_link_to_machine_pages(cloud, clock):
     assert "m-quiet" in frag
     assert 'href="/m/' not in frag
     machines = cloud.get("/admin/machines").text
-    assert 'href="/admin/alerts"' in machines
+    assert f'href="/admin/alerts?machine={short(busy)}"' in machines
     assert short(busy) in machines and "m-busy" in machines
+
+
+def _two_alerting_machines(cloud):
+    a, b = Signer(), Signer()
+    owner = login(cloud, "filter-owner@example.com")
+    register(cloud, a, "m-filter-a")
+    register(cloud, b, "m-filter-b")
+    claim(cloud, a, owner)
+    claim(cloud, b, owner)
+    push(cloud, a, make_report(machine_id="m-filter-a", faults=True, seq=1))
+    push(cloud, b, make_report(machine_id="m-filter-b", faults=True, seq=1))
+    _admin(cloud)
+    return a, b
+
+
+def test_fleet_alerts_filtered_to_one_machine(cloud, clock):
+    a, b = _two_alerting_machines(cloud)
+    r = cloud.get(f"/admin/alerts?machine={short(a)}")
+    assert r.status_code == 200
+    labels = _alert_labels(r.text)
+    assert labels and set(labels) == {"m-filter-a"}
+    assert "m-filter-b" not in r.text
+    assert 'href="/admin/alerts"' in r.text
+    assert "All machines" in r.text
+    assert "across the fleet" not in r.text
+    assert 'href="/machines/' not in r.text
+
+
+@pytest.mark.parametrize("value", ["nope", "0000-0000-0000-0000", "", "x" * 300])
+def test_fleet_alerts_unknown_machine_is_unfiltered(cloud, clock, value):
+    _two_alerting_machines(cloud)
+    r = cloud.get("/admin/alerts", params={"machine": value})
+    assert r.status_code == 200
+    assert {"m-filter-a", "m-filter-b"} <= set(_alert_labels(r.text))
+    assert "All machines" not in r.text
+
+
+def test_machines_row_alert_count_links_to_filtered_alerts(cloud, clock):
+    a, _b = _two_alerting_machines(cloud)
+    text = cloud.get("/admin/machines").text
+    assert f'href="/admin/alerts?machine={short(a)}"' in text

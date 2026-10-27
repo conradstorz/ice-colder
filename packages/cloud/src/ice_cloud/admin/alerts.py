@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse
 from ice_cloud.admin.common import LEVEL_ADMIN_ALERTS, admin_context, templates
 from ice_cloud.auth import require_admin
 from ice_cloud.store.repository import Account
-from ice_contracts.cloud.signing import short_fingerprint
+from ice_contracts.cloud.signing import parse_short_fingerprint, short_fingerprint
 
 router = APIRouter(prefix="/admin")
 
@@ -19,9 +19,21 @@ ALERTS_LIMIT = 100
 
 
 @router.get("/alerts", response_class=HTMLResponse)
-async def alerts_page(request: Request, account: Account = Depends(require_admin)):
+async def alerts_page(
+    request: Request,
+    machine: str | None = None,
+    account: Account = Depends(require_admin),
+):
+    repo = request.app.state.repo
+    selected = None
+    if machine:
+        short16 = parse_short_fingerprint(machine)
+        if short16:
+            selected = await asyncio.to_thread(repo.resolve_short, short16)
     pairs = await asyncio.to_thread(
-        request.app.state.repo.recent_alert_events, limit=ALERTS_LIMIT
+        repo.recent_alert_events,
+        limit=ALERTS_LIMIT,
+        fingerprint=selected.fingerprint if selected else None,
     )
     events = []
     for event, machine in pairs:
@@ -40,5 +52,18 @@ async def alerts_page(request: Request, account: Account = Depends(require_admin
     return templates(request).TemplateResponse(
         request,
         "admin_alerts.html",
-        admin_context(request, account, LEVEL_ADMIN_ALERTS, events=events),
+        admin_context(
+            request,
+            account,
+            LEVEL_ADMIN_ALERTS,
+            events=events,
+            filtered=(
+                {
+                    "label": selected.label,
+                    "short": short_fingerprint(selected.fingerprint),
+                }
+                if selected
+                else None
+            ),
+        ),
     )

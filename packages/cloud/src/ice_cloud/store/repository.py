@@ -311,9 +311,11 @@ class Repository(Protocol):
         after ``since``; machines with none are absent."""
         ...
 
-    def recent_alert_events(self, *, limit: int) -> list[tuple[StoredEvent, Machine]]:
-        """The newest ``limit`` events across all machines, newest first, each
-        with its machine."""
+    def recent_alert_events(
+        self, *, limit: int, fingerprint: str | None = None
+    ) -> list[tuple[StoredEvent, Machine]]:
+        """The newest ``limit`` events across all machines (or only those of
+        ``fingerprint`` when given), newest first, each with its machine."""
         ...
 
     def cleared_since_last_sent(
