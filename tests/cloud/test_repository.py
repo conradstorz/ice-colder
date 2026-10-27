@@ -696,6 +696,50 @@ def test_unbind_deletes_everything_alert(repo):
     assert repo.is_muted(tech.id, FP) is False
 
 
+def test_machine_view_upsert_overwrites_viewed_at(repo):
+    owner, _tech = _claimed(repo)
+    assert repo.machine_views_for_account(owner.id) == {}
+    repo.record_machine_view(owner.id, FP, T0)
+    assert repo.machine_views_for_account(owner.id) == {FP: T0}
+    later = T0 + timedelta(hours=2)
+    repo.record_machine_view(owner.id, FP, later)
+    assert repo.machine_views_for_account(owner.id) == {FP: later}
+
+
+def test_machine_views_for_account_only_returns_that_account(repo):
+    owner, tech = _claimed(repo)
+    repo.record_machine_view(owner.id, FP, T0)
+    repo.record_machine_view(tech.id, FP, T0 + timedelta(hours=1))
+    assert repo.machine_views_for_account(owner.id) == {FP: T0}
+    assert repo.machine_views_for_account(tech.id) == {FP: T0 + timedelta(hours=1)}
+
+
+def test_claim_change_deletes_machine_views(repo):
+    owner, tech = _claimed(repo)
+    repo.record_machine_view(owner.id, FP, T0)
+    repo.record_machine_view(tech.id, FP, T0)
+    newer = repo.upsert_account_from_login("sub-n", "new@example.com", "Nia", T0)
+    assert repo.claim_machine(FP, newer.id, T0 + timedelta(hours=1)) is True
+    assert repo.machine_views_for_account(owner.id) == {}
+    assert repo.machine_views_for_account(tech.id) == {}
+
+
+def test_reclaim_same_owner_keeps_machine_views(repo):
+    owner, _tech = _claimed(repo)
+    repo.record_machine_view(owner.id, FP, T0)
+    assert repo.claim_machine(FP, owner.id, T0 + timedelta(hours=1)) is True
+    assert repo.machine_views_for_account(owner.id) == {FP: T0}
+
+
+def test_unbind_deletes_machine_views(repo):
+    owner, tech = _claimed(repo)
+    repo.record_machine_view(owner.id, FP, T0)
+    repo.record_machine_view(tech.id, FP, T0)
+    repo.unbind_machine(FP)
+    assert repo.machine_views_for_account(owner.id) == {}
+    assert repo.machine_views_for_account(tech.id) == {}
+
+
 def test_migrations_apply_on_existing_db(tmp_path):
     path = tmp_path / "old.db"
     old = sqlite3.connect(path)

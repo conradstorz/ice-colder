@@ -220,6 +220,45 @@ def test_deep_link_selects(cloud, signer):
     assert cloud.get("/health/faults").status_code == 200
 
 
+def _fleet_order(cloud, *labels):
+    text = cloud.get("/fleet").text
+    return sorted(labels, key=text.index)
+
+
+def test_fleet_orders_most_recent_first(cloud):
+    a, b = Signer(), Signer()
+    owner = login(cloud, "owner@example.com")
+    push(cloud, a, make_report(machine_id="m-A"))
+    push(cloud, b, make_report(machine_id="m-B"))
+    claim(cloud, a, owner)
+    claim(cloud, b, owner)
+    assert _fleet_order(cloud, "m-B", "m-A") == ["m-A", "m-B"]
+    r = cloud.post(f"/fleet/select/{short(b)}", headers={"HX-Request": "true"})
+    assert r.status_code == 303
+    assert _fleet_order(cloud, "m-A", "m-B") == ["m-B", "m-A"]
+
+
+def test_deep_link_records_view(cloud):
+    a, b = Signer(), Signer()
+    owner = login(cloud, "owner@example.com")
+    push(cloud, a, make_report(machine_id="m-A"))
+    push(cloud, b, make_report(machine_id="m-B"))
+    claim(cloud, a, owner)
+    claim(cloud, b, owner)
+    assert cloud.get(f"/m/{short(b)}").status_code == 303
+    assert _fleet_order(cloud, "m-A", "m-B") == ["m-B", "m-A"]
+
+
+def test_fleet_never_viewed_keep_label_order_after_viewed(cloud):
+    a, b, c = Signer(), Signer(), Signer()
+    owner = login(cloud, "owner@example.com")
+    for s, name in ((a, "m-A"), (b, "m-B"), (c, "m-C")):
+        push(cloud, s, make_report(machine_id=name))
+        claim(cloud, s, owner)
+    cloud.post(f"/fleet/select/{short(c)}", headers={"HX-Request": "true"})
+    assert _fleet_order(cloud, "m-A", "m-B", "m-C") == ["m-C", "m-A", "m-B"]
+
+
 def test_select_requires_htmx_header(cloud, signer):
     owner = login(cloud, "owner@example.com")
     push(cloud, signer, make_report())

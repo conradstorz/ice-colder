@@ -221,6 +221,15 @@ async def fleet(request: Request, account: Account = Depends(require_signed_in))
     state = request.app.state
     access = await asyncio.to_thread(state.repo.machines_for_account, account.id)
     entries: list[tuple[Machine, Role]] = [(a.machine, a.role) for a in access]
+    views = await asyncio.to_thread(state.repo.machine_views_for_account, account.id)
+    # Most recently viewed first, never-viewed after; the access list is already
+    # label-ordered and sorted() is stable, so ties keep that order.
+    entries.sort(
+        key=lambda e: (
+            e[0].fingerprint not in views,
+            -views[e[0].fingerprint].timestamp() if e[0].fingerprint in views else 0.0,
+        )
+    )
     rows = []
     for machine, role in entries:
         report = await asyncio.to_thread(state.store.latest, machine.fingerprint)
@@ -272,7 +281,11 @@ def _select_response(request: Request, machine: Machine) -> RedirectResponse:
 
 @router.post("/fleet/select/{short}", dependencies=[Depends(require_htmx)])
 async def select_machine(request: Request, access=Depends(require_machine_access())):
-    _account, machine, _role = access
+    account, machine, _role = access
+    state = request.app.state
+    await asyncio.to_thread(
+        state.repo.record_machine_view, account.id, machine.fingerprint, state.now()
+    )
     return _select_response(request, machine)
 
 
@@ -280,7 +293,11 @@ async def select_machine(request: Request, access=Depends(require_machine_access
 async def deep_link(request: Request, access=Depends(require_machine_access())):
     """Pre-select the machine but land on the fleet list, never on a machine
     page, so a cross-site click cannot render machine content directly."""
-    _account, machine, _role = access
+    account, machine, _role = access
+    state = request.app.state
+    await asyncio.to_thread(
+        state.repo.record_machine_view, account.id, machine.fingerprint, state.now()
+    )
     response = _select_response(request, machine)
     response.headers["location"] = "/fleet"
     return response

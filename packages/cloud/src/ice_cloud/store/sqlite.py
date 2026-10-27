@@ -138,6 +138,14 @@ MIGRATIONS: list[str] = [
     )
     """,
     "CREATE INDEX alert_deliveries_by_machine ON alert_deliveries (fingerprint, id)",
+    """
+    CREATE TABLE machine_views (
+        account_id TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        viewed_at TEXT NOT NULL,
+        PRIMARY KEY (account_id, fingerprint)
+    )
+    """,
 ]
 
 MAX_DELIVERY_ATTEMPTS = 5
@@ -243,6 +251,9 @@ _ALERT_DELETES = (
     "DELETE FROM alert_prefs WHERE fingerprint = ?",
     "DELETE FROM alert_deliveries WHERE fingerprint = ?",
     "DELETE FROM alert_events WHERE fingerprint = ?",
+    # Not alert data: the tuple name is historic. It is the per-machine
+    # cleanup run on owner change, unbind and delete.
+    "DELETE FROM machine_views WHERE fingerprint = ?",
 )
 
 
@@ -598,6 +609,26 @@ class SqliteRepository:
         found = [MachineAccess(_machine(r), "owner") for r in owned]
         found += [MachineAccess(_machine(r), "tech") for r in tech]
         return sorted(found, key=lambda a: (a.machine.label, a.machine.fingerprint))
+
+    def record_machine_view(
+        self, account_id: str, fingerprint: str, at: datetime
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO machine_views (account_id, fingerprint, viewed_at)"
+                " VALUES (?, ?, ?)"
+                " ON CONFLICT(account_id, fingerprint)"
+                " DO UPDATE SET viewed_at = excluded.viewed_at",
+                (account_id, fingerprint, _iso(at)),
+            )
+
+    def machine_views_for_account(self, account_id: str) -> dict[str, datetime]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT fingerprint, viewed_at FROM machine_views WHERE account_id = ?",
+                (account_id,),
+            ).fetchall()
+        return {r["fingerprint"]: _dt(r["viewed_at"]) for r in rows}
 
     def access_for(
         self, account_id: str, fingerprint: str
