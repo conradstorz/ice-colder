@@ -314,7 +314,7 @@ def test_machine_pages_show_machine_badge(cloud, signer):
         assert el is not None, path
         assert label == "m-0042", path
         assert el.attrs["href"] == "/fleet"
-        assert "title" not in el.attrs
+        assert el.attrs.get("title") == label
         assert "bg-sky-700" in el.attrs["class"]
         assert "Remote view" not in r.text
         assert "remote-banner" not in r.text

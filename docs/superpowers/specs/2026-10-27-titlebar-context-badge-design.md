@@ -88,8 +88,10 @@ the fleet list with their machine selected, one tap from its remote view.
   `report.common_name` or `report.machine_id`; `url` = `/fleet`;
   `tone` = `"offline"` when the report is stale (label gains "— offline",
   `title` = "last report from {local time} ({age} ago)"), else `"remote"`.
+  On the no-report page a machine IS selected, so it gets the machine badge,
+  not "Cloud": with no report to read, `label` falls back to `machine.label`.
 - No machine selected (`/fleet`, `/me` without a selection, `/admin*`,
-  `no_report`/`not_remote` pages): `label` = `"Cloud"`, `url` = `/fleet`,
+  `not_remote` pages): `label` = `"Cloud"`, `url` = `/fleet`,
   `tone` = `"cloud"`.
 - The login page passes no badge (it renders no chip either).
 

@@ -71,24 +71,40 @@ def test_badge_without_url_is_plain_span():
 
 
 @pytest.mark.parametrize(
-    "tone,fragment",
+    "tone,fragments",
     [
-        ("local", "bg-slate-600"),
-        ("remote", "bg-sky-700"),
-        ("cloud", "bg-sky-700"),
-        ("offline", "bg-amber-500"),
+        ("local", ["bg-slate-600", "text-white"]),
+        ("remote", ["bg-sky-700", "text-white"]),
+        ("cloud", ["bg-sky-700", "text-white"]),
+        ("offline", ["bg-amber-500", "text-amber-950"]),
     ],
 )
-def test_badge_tones(tone, fragment):
-    el = _badge_el(_render(badge=_badge(tone=tone)))
-    assert fragment in el.attrs.get("class", "")
+def test_badge_tones(tone, fragments):
+    classes = _badge_el(_render(badge=_badge(tone=tone))).attrs.get("class", "")
+    for fragment in fragments:
+        assert fragment in classes
 
 
 def test_badge_title_attribute():
     title = "last report from 2026-10-13 14:05 (12m ago)"
     el = _badge_el(_render(badge=_badge(title=title)))
     assert el.attrs.get("title") == title
-    assert "title" not in _badge_el(_render(badge=_badge())).attrs
+
+
+@pytest.mark.parametrize("url", ["/fleet", None])
+def test_badge_truncates_and_titles_with_label(url):
+    long_label = "A very long operator entered machine name " * 4
+    el = _badge_el(_render(badge=_badge(label=long_label, url=url, title=None)))
+    classes = el.attrs.get("class", "").split()
+    assert "truncate" in classes
+    assert "max-w-[10rem]" in classes
+    assert el.attrs.get("title") == long_label
+
+
+def test_badge_label_is_escaped():
+    html = _render(badge=_badge(label="<script>alert(1)</script>"))
+    assert "&lt;script&gt;" in html
+    assert "<script>alert(1)" not in html
 
 
 def test_ui_notice_strip():
