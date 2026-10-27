@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+from types import SimpleNamespace
 
 from fastapi import HTTPException, Request
 
@@ -34,6 +35,9 @@ def admin_context(
         "perms": REMOTE_VIEWER_PERMISSIONS,
         "level": level,
         "hat_switch": MY_MACHINES_SWITCH,
+        "badge": SimpleNamespace(
+            label="Cloud", url="/fleet", tone="cloud", title=None, external=False
+        ),
         **extra,
     }
 

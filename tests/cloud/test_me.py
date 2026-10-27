@@ -92,10 +92,13 @@ def test_anonymous_me_redirects(cloud):
     assert r.status_code == 303 and r.headers["location"].startswith("/login")
 
 
-def test_banner_shows_common_name_before_machine_id(cloud, signer):
+def test_badge_shows_common_name_instead_of_machine_id(cloud, signer):
+    import re
+
     own_and_select(cloud, signer, _named_report())
     text = cloud.get("/health").text
-    assert text.index("Lobby Ice") < text.index("m-0042")
+    m = re.search(r'id="context-badge"[^>]*>([^<]*)<', text)
+    assert m and m.group(1).strip() == "Lobby Ice"
 
 
 def test_no_report_page_bar_carries_role(cloud, signer):
