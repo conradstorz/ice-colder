@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ice_cloud.auth import is_admin
+from ice_cloud.settings import CloudSettings
+from ice_cloud.store.repository import Account
+
 
 @dataclass(frozen=True)
 class RemoteViewer:
@@ -26,3 +30,8 @@ VIEWER = RemoteViewer()
 # points back to My machines, everywhere else it offers Admin to an admin.
 ADMIN_SWITCH = {"label": "Admin", "url": "/admin"}
 MY_MACHINES_SWITCH = {"label": "My machines", "url": "/fleet"}
+
+
+def admin_switch(settings: CloudSettings, account: Account) -> dict | None:
+    """The ``hat_switch`` for a non-``/admin`` page: Admin for an admin, else nothing."""
+    return ADMIN_SWITCH if is_admin(settings, account) else None
