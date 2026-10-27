@@ -3,7 +3,9 @@
 The golden file was rendered from base.html *before* the remote-banner include
 was added (cloud spec section 4), so this proves the machine's own pages are
 unchanged by it. The file is marked ``-text`` in .gitattributes so a CRLF
-checkout cannot alter its bytes.
+checkout cannot alter its bytes. Regenerated for the titlebar badge change
+(``relative`` on the bar header, whitespace of the ``ui_notice`` block); with
+no ``badge``/``ui_notice`` the bar carries no other new markup.
 """
 
 from pathlib import Path
