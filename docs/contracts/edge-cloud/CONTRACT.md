@@ -9,7 +9,7 @@
 
 ## 0.4.0: machine common name (additive)
 
-`MachineReport` gains `common_name: str | None = null`, the operator-entered machine name from `physical.common_name` (clipped to 200 characters by the edge), shown on the cloud's You page and remote banner. `contract` accepts `0.2.0`, `0.3.0` and `0.4.0`. Upgrade the cloud before the edges: a 0.3.0 cloud rejects a 0.4.0 report with 422.
+`MachineReport` gains `common_name: str | None = null`, the operator-entered machine name from `physical.common_name` (clipped to 200 characters by the edge), shown on the cloud's You page and bar badge. `contract` accepts `0.2.0`, `0.3.0` and `0.4.0`. Upgrade the cloud before the edges: a 0.3.0 cloud rejects a 0.4.0 report with 422.
 
 `CLOUD_CONTRACT_VERSION` is `"0.4.0"`; the edge sends it in `MachineReport.contract`.
 

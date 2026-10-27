@@ -125,7 +125,7 @@ The simulators and the edge never import each other's code. The only place they 
 Testing happens at several levels, all run by one command:
 
 - **Unit and route tests** cover the edge, the contracts, the UI and the cloud. Around 2,850 tests run on every push.
-- **Browser tests** drive real headless Chrome against the dashboard to prove touch feedback, navigation and the remote banner work.
+- **Browser tests** drive real headless Chrome against the dashboard to prove touch feedback, navigation and the context badge work.
 - **Firmware host tests** compile each board's core logic for the PC and run it against fake clocks and fake peripherals. They also write golden copies of every message the board sends, which the Python contract models then validate.
 - **Conformance tests** drive a real board, or the simulator, over MQTT with the same test code, so the hardware and its stand-in are held to one standard.
 - **Meta tests** guard the architecture itself: import direction between packages, no reaching into private attributes, no test waiting on the wall clock, and the size of the sale state machine, each a ratchet that only tightens.
