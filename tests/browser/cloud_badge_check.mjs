@@ -1,7 +1,9 @@
-// Real-headless-Chrome check that the cloud portal's remote banner never
+// Real-headless-Chrome check that the cloud portal's context badge never
 // stacks on boosted navigation: it lives inside the out-of-band #bar, so each
-// swap replaces it. Steps: /fleet -> select -> / -> /health -> /health/faults -> /.
-// Invocation: node cloud_banner_check.mjs <baseUrl> <session cookie name=value> [ignored]
+// swap replaces it. It reads "Cloud" on /fleet and the machine label on machine
+// pages, and the old bottom #remote-banner must not exist anywhere.
+// Steps: /fleet -> select -> / -> /health -> /health/faults -> /.
+// Invocation: node cloud_badge_check.mjs <baseUrl> <session cookie name=value> [ignored]
 // Prints one JSON line {ok, steps, error?}.
 import { spawn } from "node:child_process";
 import { mkdtempSync, existsSync } from "node:fs";
@@ -127,8 +129,10 @@ async function main() {
     const snapshot = async (label) => {
       const s = {
         label,
-        banners: await evalJs(`document.querySelectorAll('#remote-banner').length`),
-        bannersInBar: await evalJs(`document.querySelectorAll('#bar #remote-banner').length`),
+        badges: await evalJs(`document.querySelectorAll('#context-badge').length`),
+        badgesInBar: await evalJs(`document.querySelectorAll('#bar #context-badge').length`),
+        badgeText: await evalJs(`(document.querySelector('#context-badge')?.textContent || '').trim()`),
+        oldBanners: await evalJs(`document.querySelectorAll('#remote-banner').length`),
         mains: await evalJs(`document.querySelectorAll('main').length`),
         bars: await evalJs(`document.querySelectorAll('#bar').length`),
       };
@@ -145,12 +149,12 @@ async function main() {
       });
     }
 
-    // /fleet has no selected machine, hence no banner at all.
+    // /fleet has no selected machine: the badge reads "Cloud".
     await cmd("Page.navigate", { url: `${baseUrl}/fleet` });
     await waitFor("initial load of /fleet", `${loadedAt("/fleet")} && ${IDLE} && document.querySelector('form[action^="/fleet/select/"] button')`);
     await snapshot("fleet");
 
-    // Boosted form POST -> 303 -> / : the banner must appear exactly once, in the bar.
+    // Boosted form POST -> 303 -> / : the badge must appear exactly once, in the bar, with the machine label.
     await evalJs(`document.querySelector('form[action^="/fleet/select/"] button').click()`);
     await waitFor("select swapped to /", `${loadedAt("/")} && ${IDLE} && document.querySelector('a[href="/health"]')`);
     await snapshot("after-select");
@@ -168,7 +172,8 @@ async function main() {
     await snapshot("after-home");
 
     out.ok = out.steps.every(
-      (s) => s.mains === 1 && s.bars === 1 && s.banners === (s.label === "fleet" ? 0 : 1) && s.bannersInBar === s.banners,
+      (s) => s.mains === 1 && s.bars === 1 && s.badges === 1 && s.badgesInBar === 1 &&
+        s.oldBanners === 0 && s.badgeText === (s.label === "fleet" ? "Cloud" : "m-0042"),
     );
 
     try { ws.close(); } catch { /* already closing */ }

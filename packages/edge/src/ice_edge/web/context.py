@@ -20,6 +20,7 @@ later.
 # Re-exported on purpose: tests spy on `context.asyncio.to_thread`.
 import asyncio  # noqa: F401
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -231,6 +232,24 @@ def tail(file_path: Path, lines: int = 50) -> list[str]:
     return data.decode("utf-8", errors="replace").strip().splitlines()[-lines:]
 
 
+def context_badge() -> SimpleNamespace | None:
+    """The bar badge: the machine's name, linking to its cloud portal page
+    when the uplink is on and the machine has an identity. None without a
+    config (bare tests), so the bar then renders no badge."""
+    if config is None:
+        return None
+    url = None
+    if config.cloud.enabled and machine_identity is not None:
+        url = f"{config.cloud.url.rstrip('/')}/m/{machine_identity.short_fingerprint}"
+    return SimpleNamespace(
+        label=config.physical.common_name or config.machine_id,
+        url=url,
+        tone="local",
+        title=None,
+        external=True,
+    )
+
+
 def template_context(request: Request, level: str | None = None, **extra) -> dict:
     """Every template gets current_user and perms, so it never renders a
     button the server would refuse. Server-side checks remain the authority.
@@ -251,6 +270,9 @@ def template_context(request: Request, level: str | None = None, **extra) -> dic
         "perms": principal.perms if principal else frozenset(),
         "level": level,
     }
+    badge = context_badge()
+    if badge is not None:
+        ctx["badge"] = badge
     ctx.update(extra)
     return ctx
 

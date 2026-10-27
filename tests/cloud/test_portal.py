@@ -1,6 +1,7 @@
 import gzip
 import io
 import json
+import re
 import shutil
 import tarfile
 
@@ -219,6 +220,45 @@ def test_deep_link_selects(cloud, signer):
     assert cloud.get("/health/faults").status_code == 200
 
 
+def _fleet_order(cloud, *labels):
+    text = cloud.get("/fleet").text
+    return sorted(labels, key=text.index)
+
+
+def test_fleet_orders_most_recent_first(cloud):
+    a, b = Signer(), Signer()
+    owner = login(cloud, "owner@example.com")
+    push(cloud, a, make_report(machine_id="m-A"))
+    push(cloud, b, make_report(machine_id="m-B"))
+    claim(cloud, a, owner)
+    claim(cloud, b, owner)
+    assert _fleet_order(cloud, "m-B", "m-A") == ["m-A", "m-B"]
+    r = cloud.post(f"/fleet/select/{short(b)}", headers={"HX-Request": "true"})
+    assert r.status_code == 303
+    assert _fleet_order(cloud, "m-A", "m-B") == ["m-B", "m-A"]
+
+
+def test_deep_link_records_view(cloud):
+    a, b = Signer(), Signer()
+    owner = login(cloud, "owner@example.com")
+    push(cloud, a, make_report(machine_id="m-A"))
+    push(cloud, b, make_report(machine_id="m-B"))
+    claim(cloud, a, owner)
+    claim(cloud, b, owner)
+    assert cloud.get(f"/m/{short(b)}").status_code == 303
+    assert _fleet_order(cloud, "m-A", "m-B") == ["m-B", "m-A"]
+
+
+def test_fleet_never_viewed_keep_label_order_after_viewed(cloud):
+    a, b, c = Signer(), Signer(), Signer()
+    owner = login(cloud, "owner@example.com")
+    for s, name in ((a, "m-A"), (b, "m-B"), (c, "m-C")):
+        push(cloud, s, make_report(machine_id=name))
+        claim(cloud, s, owner)
+    cloud.post(f"/fleet/select/{short(c)}", headers={"HX-Request": "true"})
+    assert _fleet_order(cloud, "m-A", "m-B", "m-C") == ["m-C", "m-A", "m-B"]
+
+
 def test_select_requires_htmx_header(cloud, signer):
     owner = login(cloud, "owner@example.com")
     push(cloud, signer, make_report())
@@ -244,8 +284,7 @@ def test_selected_machine_pages_render_from_report(cloud, signer):
     faults = cloud.get("/health/faults")
     assert faults.status_code == 200
     assert "ICE-301" in faults.text
-    assert "Remote view" in faults.text and "m-0042" in faults.text
-    assert short(signer) in faults.text
+    assert "Remote view" not in faults.text and "m-0042" in faults.text
     # Read-only viewer: no Clear / Record sale / Discard controls.
     assert "Clear" not in faults.text and "Record sale" not in faults.text
     assert "Offline" not in faults.text and "UI version mismatch" not in faults.text
@@ -255,25 +294,96 @@ def test_selected_machine_pages_render_from_report(cloud, signer):
     assert "3/3 OK" in cloud.get("/health").text
 
 
-def test_stale_machine_still_renders_under_offline_banner(cloud, clock, signer):
+def _badge(html):
+    """(element, inner text) of the one #context-badge, or (None, None)."""
+    from tests.dom_utils import find_by_id, parse_elements
+
+    found = find_by_id(parse_elements(html), "context-badge")
+    if not found:
+        return None, None
+    (el,) = found
+    m = re.search(r'id="context-badge".*?>(?:<span[^>]*>)?([^<]*)<', html, re.S)
+    return el, m.group(1).strip()
+
+
+def test_machine_pages_show_machine_badge(cloud, signer):
+    own_and_select(cloud, signer, make_report())
+    for path in ("/", "/health", "/health/faults"):
+        r = cloud.get(path)
+        el, label = _badge(r.text)
+        assert el is not None, path
+        assert label == "m-0042", path
+        assert el.attrs["href"] == "/fleet"
+        assert el.attrs.get("title") == label
+        assert "bg-sky-700" in el.attrs["class"]
+        assert "Remote view" not in r.text
+        assert "remote-banner" not in r.text
+
+
+def test_stale_report_turns_badge_offline(cloud, clock, signer):
     own_and_select(cloud, signer, make_report(interval=60))
     clock.advance(180)  # exactly 3 x interval: not yet stale
-    assert "Offline" not in cloud.get("/health/faults").text
+    el, label = _badge(cloud.get("/health/faults").text)
+    assert label == "m-0042" and "bg-amber-500" not in el.attrs["class"]
     clock.advance(181)
     r = cloud.get("/health/faults")
     assert r.status_code == 200
-    assert "Offline — showing last report" in r.text
-    assert "6m" in r.text  # 181 s past 3 x interval = 361 s old
+    el, label = _badge(r.text)
+    assert label == "m-0042 — offline"
+    assert "bg-amber-500" in el.attrs["class"]
+    assert "last report from" in el.attrs["title"]
+    assert re.search(r"\(\d+m ago\)", el.attrs["title"])
+    assert el.attrs["href"] == "/fleet"
     assert "ICE-301" in r.text
     assert "Offline" in cloud.get("/fleet").text
+    assert "remote-banner" not in r.text
 
 
-def test_unknown_ui_digest_shows_mismatch_banner_and_installed_ui(cloud, signer):
+def test_fleet_page_shows_cloud_badge(cloud, signer):
+    login(cloud, "owner@example.com")
+    r = cloud.get("/fleet")
+    el, label = _badge(r.text)
+    assert label == "Cloud" and el.attrs["href"] == "/fleet"
+    assert "remote-banner" not in r.text
+
+
+def test_no_report_page_badge_falls_back_to_machine_label(cloud, signer):
+    owner = login(cloud, "owner@example.com")
+    register(cloud, signer, "m-quiet")
+    claim(cloud, signer, owner)
+    select(cloud, signer)
+    el, label = _badge(cloud.get("/").text)
+    assert label == "m-quiet" and el.attrs["href"] == "/fleet"
+
+
+def test_login_page_renders_no_badge(cloud):
+    r = cloud.get("/login")
+    assert r.status_code == 200
+    assert "context-badge" not in r.text
+
+
+def test_admin_page_shows_cloud_badge(cloud):
+    login(cloud, "admin@example.com")
+    r = cloud.get("/admin")
+    assert r.status_code == 200
+    el, label = _badge(r.text)
+    assert label == "Cloud" and el.attrs["href"] == "/fleet"
+    assert "remote-banner" not in r.text
+
+
+def test_unknown_ui_digest_shows_mismatch_notice_and_installed_ui(cloud, signer):
     own_and_select(cloud, signer, make_report(digest="c" * 64))
     r = cloud.get("/health/faults")
     assert r.status_code == 200
-    assert "UI version mismatch: machine cccccccc" in r.text
+    assert 'id="ui-notice"' in r.text
+    assert "UI version mismatch: machine cccccccc, portal " in r.text
     assert "ICE-301" in r.text
+
+
+def test_matching_ui_digest_has_no_notice(cloud, signer):
+    own_and_select(cloud, signer, make_report())
+    assert "ui-notice" not in cloud.get("/health/faults").text
+    assert "ui-notice" not in cloud.get("/fleet").text
 
 
 def test_static_serves_installed_ui_and_refuses_escapes(cloud):
@@ -312,6 +422,7 @@ def test_untrusted_bundle_is_never_rendered_or_served(cloud, tmp_path, signer):
     assert put_bundle(cloud, signer, digest, data).status_code == 201
     r = cloud.get("/health/faults")
     assert "UNTRUSTED-UI" not in r.text
+    assert 'id="ui-notice"' in r.text
     assert "UI version mismatch" in r.text
     assert cloud.get("/static/machine-only.txt").status_code == 404
 
@@ -329,7 +440,8 @@ def test_full_page_renders_from_cached_bundle_in_sandbox(
     assert "SANDBOXED-MACHINE-UI" in r.text
     assert "ICE-301" in r.text
     assert "UI version mismatch" not in r.text
-    assert "Remote view" in r.text  # banner include still works in the sandbox
+    assert "ui-notice" not in r.text
+    assert _badge(r.text)[1] == "m-0042"  # the badge still renders in the sandbox
     # Home and health also render through the sandbox, and static follows the bundle.
     assert cloud.get("/health").status_code == 200
     assert cloud.get("/").status_code == 200
@@ -369,17 +481,19 @@ def test_post_to_unserved_path_is_the_same_404_page(cloud):
     assert "Not available remotely yet" in r.text
 
 
-def test_banner_renders_inside_the_oob_swapped_bar(cloud, signer):
+def test_badge_renders_inside_the_oob_swapped_bar(cloud, signer):
     from tests.dom_utils import find_by_id, parse_elements
 
-    own_and_select(cloud, signer, make_report())
+    own_and_select(cloud, signer, make_report(digest="c" * 64))
     for path in ("/", "/health", "/health/faults"):
         html = cloud.get(path).text
         els = parse_elements(html)
-        (banner,) = find_by_id(els, "remote-banner")
+        (badge,) = find_by_id(els, "context-badge")
+        (notice,) = find_by_id(els, "ui-notice")
         (bar,) = find_by_id(els, "bar")
         assert bar.attrs.get("hx-swap-oob") == "true"
-        assert banner.is_within("header"), path
+        assert badge.is_within("header"), path
+        assert notice.is_within("header"), path
 
 
 def test_fragments_without_selection_do_not_redirect_htmx_polls(cloud):

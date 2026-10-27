@@ -131,10 +131,10 @@ def _assert_parity(edge, cloud, *, stale):
         e, c = edge.get(path), cloud.get(path)
         assert e.status_code == c.status_code == 200, path
         assert main_html(e.text) == main_html(c.text), path
-        assert "remote-banner" not in e.text, "the machine never shows the banner"
-        assert "remote-banner" in c.text
-        assert "remote-banner" not in main_html(c.text)
-        assert ("Offline — showing last report" in c.text) is stale, path
+        assert "remote-banner" not in e.text and "remote-banner" not in c.text
+        assert 'id="context-badge"' in c.text
+        assert "context-badge" not in main_html(c.text)
+        assert ("— offline" in c.text) is stale, path
     for path in FRAGMENTS:
         e, c = edge.get(path), cloud.get(path)
         assert e.status_code == c.status_code == 200, path

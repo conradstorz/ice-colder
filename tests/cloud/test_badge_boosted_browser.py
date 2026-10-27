@@ -1,8 +1,9 @@
 """Opt-in real-browser check (same conditions as the other browser tests:
-ICE_COLDER_BROWSER_TESTS=1 plus Chrome and node): the cloud portal's remote
-banner must appear exactly once, inside the out-of-band #bar, across boosted
-navigation. A banner rendered as a plain <body> child would stack on every
-swap. See tests/browser/cloud_banner_check.mjs."""
+ICE_COLDER_BROWSER_TESTS=1 plus Chrome and node): the cloud portal's context
+badge must appear exactly once, inside the out-of-band #bar, across boosted
+navigation, reading "Cloud" on /fleet and the machine label on machine pages,
+and the old #remote-banner must be gone. A badge rendered outside the bar would
+stack on every swap. See tests/browser/cloud_badge_check.mjs."""
 
 from __future__ import annotations
 
@@ -56,8 +57,8 @@ def cloud_server(tmp_path):
         thread.join(timeout=10)
 
 
-def test_remote_banner_never_stacks_on_boosted_navigation(cloud_server):
-    _result, payload = run_node_check("cloud_banner_check.mjs", cloud_server)
+def test_context_badge_never_stacks_on_boosted_navigation(cloud_server):
+    _result, payload = run_node_check("cloud_badge_check.mjs", cloud_server)
     assert payload.get("ok") is True, json.dumps(payload, indent=2)
     labels = [s["label"] for s in payload["steps"]]
     assert labels == [

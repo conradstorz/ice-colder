@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from types import SimpleNamespace
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Request
@@ -101,21 +102,54 @@ def _resolve(request: Request, report: MachineReport | None) -> ResolvedUi:
 resolve_ui = _resolve
 
 
-def _remote(
-    request: Request, report: MachineReport, ui: ResolvedUi, fingerprint: str
-) -> dict:
-    age = max(_age_seconds(request, report), 0.0)
-    return {
-        "machine_id": report.machine_id,
-        "common_name": report.common_name,
-        "short_fingerprint": short_fingerprint(fingerprint),
-        "last_report_local": report.sent_at.astimezone().strftime("%Y-%m-%d %H:%M:%S"),
-        "age_text": humanize_seconds(age),
-        "stale": _is_stale(request, report),
-        "ui_mismatch": ui.mismatch,
-        "report_digest": report.ui.digest,
-        "portal_digest": request.app.state.registry.installed_digest,
-    }
+def _badge(
+    request: Request,
+    machine: Machine | None,
+    report: MachineReport | None,
+) -> SimpleNamespace:
+    """The bar's context badge: the selected machine (amber once its report
+    is stale), or "Cloud" on pages that belong to no machine."""
+    if machine is None:
+        return SimpleNamespace(
+            label="Cloud", url="/fleet", tone="cloud", title=None, external=False
+        )
+    if report is None:
+        return SimpleNamespace(
+            label=machine.label,
+            url="/fleet",
+            tone="remote",
+            title=None,
+            external=False,
+        )
+    name = report.common_name or report.machine_id
+    if not _is_stale(request, report):
+        return SimpleNamespace(
+            label=name, url="/fleet", tone="remote", title=None, external=False
+        )
+    local = report.sent_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    age = humanize_seconds(max(_age_seconds(request, report), 0.0))
+    return SimpleNamespace(
+        label=f"{name} — offline",
+        url="/fleet",
+        tone="offline",
+        title=f"last report from {local} ({age} ago)",
+        external=False,
+    )
+
+
+def _ui_notice(
+    request: Request,
+    machine: Machine | None,
+    report: MachineReport | None,
+    ui: ResolvedUi,
+) -> str | None:
+    if machine is None or report is None or not ui.mismatch:
+        return None
+    portal_digest = request.app.state.registry.installed_digest
+    return (
+        f"UI version mismatch: machine {report.ui.digest[:8]}, "
+        f"portal {portal_digest[:8]}"
+    )
 
 
 def _context(
@@ -126,7 +160,6 @@ def _context(
     *,
     machine: Machine | None = None,
     report: MachineReport | None = None,
-    banner: bool = True,
     role: Role | None = None,
     **extra,
 ) -> dict:
@@ -138,9 +171,11 @@ def _context(
         "perms": REMOTE_VIEWER_PERMISSIONS,
         "level": level,
         "hat_switch": admin_switch(request.app.state.settings, account),
+        "badge": _badge(request, machine, report),
     }
-    if banner and report is not None and machine is not None:
-        ctx["remote"] = _remote(request, report, ui, machine.fingerprint)
+    notice = _ui_notice(request, machine, report, ui)
+    if notice:
+        ctx["ui_notice"] = notice
     ctx.update(extra)
     return ctx
 
@@ -164,11 +199,16 @@ def _no_access_for_fragment(request: Request) -> Response:
 
 
 def _no_report_page(
-    request: Request, account: Account, role: Role | None = None
+    request: Request,
+    account: Account,
+    role: Role | None = None,
+    machine: Machine | None = None,
 ) -> Response:
     ui = _resolve(request, None)
     return ui.templates.TemplateResponse(
-        request, "no_report.html", _context(request, account, ui, None, role=role)
+        request,
+        "no_report.html",
+        _context(request, account, ui, None, machine=machine, role=role),
     )
 
 
@@ -181,6 +221,15 @@ async def fleet(request: Request, account: Account = Depends(require_signed_in))
     state = request.app.state
     access = await asyncio.to_thread(state.repo.machines_for_account, account.id)
     entries: list[tuple[Machine, Role]] = [(a.machine, a.role) for a in access]
+    views = await asyncio.to_thread(state.repo.machine_views_for_account, account.id)
+    # Most recently viewed first, never-viewed after; the access list is already
+    # label-ordered and sorted() is stable, so ties keep that order.
+    entries.sort(
+        key=lambda e: (
+            e[0].fingerprint not in views,
+            -views[e[0].fingerprint].timestamp() if e[0].fingerprint in views else 0.0,
+        )
+    )
     rows = []
     for machine, role in entries:
         report = await asyncio.to_thread(state.store.latest, machine.fingerprint)
@@ -232,7 +281,11 @@ def _select_response(request: Request, machine: Machine) -> RedirectResponse:
 
 @router.post("/fleet/select/{short}", dependencies=[Depends(require_htmx)])
 async def select_machine(request: Request, access=Depends(require_machine_access())):
-    _account, machine, _role = access
+    account, machine, _role = access
+    state = request.app.state
+    await asyncio.to_thread(
+        state.repo.record_machine_view, account.id, machine.fingerprint, state.now()
+    )
     return _select_response(request, machine)
 
 
@@ -240,7 +293,11 @@ async def select_machine(request: Request, access=Depends(require_machine_access
 async def deep_link(request: Request, access=Depends(require_machine_access())):
     """Pre-select the machine but land on the fleet list, never on a machine
     page, so a cross-site click cannot render machine content directly."""
-    _account, machine, _role = access
+    account, machine, _role = access
+    state = request.app.state
+    await asyncio.to_thread(
+        state.repo.record_machine_view, account.id, machine.fingerprint, state.now()
+    )
     response = _select_response(request, machine)
     response.headers["location"] = "/fleet"
     return response
@@ -253,7 +310,7 @@ async def home(request: Request, account: Account = Depends(require_signed_in)):
         return _to_fleet()
     machine, report = selected.machine, selected.report
     if report is None:
-        return _no_report_page(request, account, selected.role)
+        return _no_report_page(request, account, selected.role, selected.machine)
     ui = _resolve(request, report)
     tiles = build_tiles(REMOTE_VIEWER_PERMISSIONS, {"Health": _fault_count(report)})
     return ui.templates.TemplateResponse(
@@ -295,7 +352,6 @@ async def status_fragment(
             machine=machine,
             report=report,
             role=selected.role,
-            banner=False,
             status=h.status,
             is_healthy=h.is_healthy,
             issues=h.issues,
@@ -327,7 +383,6 @@ async def pill(request: Request, account: Account = Depends(require_signed_in)):
             machine=machine,
             report=report,
             role=selected.role,
-            banner=False,
             pill_state=state,
             pill_text=text,
         ),
@@ -352,7 +407,6 @@ async def kpi_fragment(request: Request, account: Account = Depends(require_sign
             machine=machine,
             report=report,
             role=selected.role,
-            banner=False,
             summary=report.kpi.summary,
             average=report.kpi.average,
         ),
@@ -366,7 +420,7 @@ async def health_home(request: Request, account: Account = Depends(require_signe
         return _to_fleet()
     machine, report = selected.machine, selected.report
     if report is None:
-        return _no_report_page(request, account, selected.role)
+        return _no_report_page(request, account, selected.role, selected.machine)
     ui = _resolve(request, report)
     page = report.health_page
     tiles = health_tiles(
@@ -406,7 +460,7 @@ async def faults_view(request: Request, account: Account = Depends(require_signe
         return _to_fleet()
     machine, report = selected.machine, selected.report
     if report is None:
-        return _no_report_page(request, account, selected.role)
+        return _no_report_page(request, account, selected.role, selected.machine)
     ui = _resolve(request, report)
     return ui.templates.TemplateResponse(
         request,
