@@ -94,11 +94,13 @@ def test_badge_title_attribute():
 @pytest.mark.parametrize("url", ["/fleet", None])
 def test_badge_truncates_and_titles_with_label(url):
     long_label = "A very long operator entered machine name " * 4
-    el = _badge_el(_render(badge=_badge(label=long_label, url=url, title=None)))
-    classes = el.attrs.get("class", "").split()
-    assert "truncate" in classes
-    assert "max-w-[10rem]" in classes
+    html = _render(badge=_badge(label=long_label, url=url, title=None))
+    el = _badge_el(html)
+    chip = el.attrs.get("class", "").split()
+    assert "truncate" not in chip
     assert el.attrs.get("title") == long_label
+    # the ellipsis lives on an inner block-ish span, not the inline-flex chip
+    assert f'<span class="truncate max-w-[10rem]">{long_label}</span>' in html
 
 
 def test_badge_label_is_escaped():

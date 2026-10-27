@@ -97,7 +97,7 @@ def test_badge_shows_common_name_instead_of_machine_id(cloud, signer):
 
     own_and_select(cloud, signer, _named_report())
     text = cloud.get("/health").text
-    m = re.search(r'id="context-badge"[^>]*>([^<]*)<', text)
+    m = re.search(r'id="context-badge"[^>]*>(?:<span[^>]*>)?([^<]*)<', text)
     assert m and m.group(1).strip() == "Lobby Ice"
 
 

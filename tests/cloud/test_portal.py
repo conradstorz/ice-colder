@@ -302,7 +302,7 @@ def _badge(html):
     if not found:
         return None, None
     (el,) = found
-    m = re.search(r'id="context-badge".*?>([^<]*)<', html, re.S)
+    m = re.search(r'id="context-badge".*?>(?:<span[^>]*>)?([^<]*)<', html, re.S)
     return el, m.group(1).strip()
 
 
