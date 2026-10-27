@@ -362,6 +362,23 @@ def test_fleet_alerts_filtered_to_one_machine(cloud, clock):
     assert 'href="/machines/' not in r.text
 
 
+def test_fleet_alerts_filtered_to_machine_without_events(cloud, clock):
+    _two_alerting_machines(cloud)
+    quiet = Signer()
+    owner = login(cloud, "filter-owner@example.com")
+    register(cloud, quiet, "m-filter-quiet")
+    claim(cloud, quiet, owner)
+    _admin(cloud)
+    r = cloud.get(f"/admin/alerts?machine={short(quiet)}")
+    assert r.status_code == 200
+    assert "No alerts yet." in r.text
+    assert _alert_labels(r.text) == []
+    assert "m-filter-a" not in r.text and "m-filter-b" not in r.text
+    assert "m-filter-quiet" in r.text
+    assert "All machines" in r.text
+    assert "across the fleet" not in r.text
+
+
 @pytest.mark.parametrize("value", ["nope", "0000-0000-0000-0000", "", "x" * 300])
 def test_fleet_alerts_unknown_machine_is_unfiltered(cloud, clock, value):
     _two_alerting_machines(cloud)

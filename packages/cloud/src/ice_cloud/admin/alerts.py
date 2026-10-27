@@ -36,8 +36,8 @@ async def alerts_page(
         fingerprint=selected.fingerprint if selected else None,
     )
     events = []
-    for event, machine in pairs:
-        short = short_fingerprint(machine.fingerprint)
+    for event, m in pairs:
+        short = short_fingerprint(m.fingerprint)
         events.append(
             {
                 "at": f"{event.at.astimezone(UTC):%Y-%m-%d %H:%M} UTC",
@@ -45,7 +45,7 @@ async def alerts_page(
                 "code": event.code or "",
                 "description": event.description or event.key or "",
                 "product": event.product or "",
-                "label": machine.label,
+                "label": m.label,
                 "short": short,
             }
         )
