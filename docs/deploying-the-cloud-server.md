@@ -188,8 +188,11 @@ claim back-off.
 
 ## 5. Updating the cloud
 
-CI publishes a new image for every push to `main`. The host does not run Watchtower, so an
-update is manual and takes a few seconds of downtime:
+CI publishes a new image for every push to `main`. Since 2026-10-27 the host runs
+Watchtower (`ice-cloud-watchtower` in `docker-compose.cloud.proxy.yml`: label-gated, daily
+at 04:00 UTC, cleanup on), so the cloud follows `main` within a day on its own. For an
+immediate update, or to verify what is running, the manual path still works and takes a
+few seconds of downtime:
 
 ```
 cd /opt/ice-cloud/docker

@@ -23,6 +23,21 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+  watchtower:
+    # Auto-update the cloud: label-gated (only ice-cloud and ice-cloud-backup
+    # carry the enable label; Caddy stays pinned), daily at 04:00 UTC, pruning
+    # replaced images. Needs the docker socket — the one privileged container
+    # on this host. Same image and settings as the sim host.
+    image: nickfedor/watchtower:1.23.1
+    container_name: ice-cloud-watchtower
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      - WATCHTOWER_LABEL_ENABLE=true
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_SCHEDULE=0 0 4 * * *
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
   caddy:
     image: caddy:2-alpine
     container_name: ice-cloud-caddy
