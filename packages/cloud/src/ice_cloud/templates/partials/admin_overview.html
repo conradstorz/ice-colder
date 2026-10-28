@@ -82,4 +82,4 @@
   </div>
 </div>
 
-<div class="text-xs text-gray-400">{{ machine_count }} machines · computed at {{ computed_at }} · refreshes every minute</div>
+<div class="text-xs text-gray-400">{{ machine_count }} machines · computed at {{ computed_at }} · refreshes every minute · cloud build <span class="font-mono" title="{{ cloud_build.commit }} ({{ cloud_build.build_time }})" data-cloud-build>{{ cloud_build.commit_short }}</span> ({{ cloud_build.source }})</div>

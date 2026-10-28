@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 
+from ice_common.build_info import BUILD_INFO
 from ice_cloud.admin.common import (
     LEVEL_ADMIN,
     admin_context,
@@ -31,6 +32,7 @@ def _overview_context(
         computed_at=request.app.state.now().strftime("%H:%M:%S UTC"),
         owners_panel=view.owners[:OWNERS_PANEL_SIZE],
         machine_count=len(view.rows),
+        cloud_build=BUILD_INFO,
         **extra,
     )
 

@@ -42,6 +42,12 @@ ENV UV_NO_SYNC=1 \
 
 RUN mkdir -p /app/cloud_data
 
+# Build identity for ice_common.build_info (shown on /admin); set by CI.
+ARG VCS_REF=unknown
+ARG BUILD_TIME=unknown
+ENV ICE_COLDER_COMMIT=$VCS_REF \
+    ICE_COLDER_BUILD_TIME=$BUILD_TIME
+
 EXPOSE 26124
 
 # Exec python directly (the venv is first on PATH) so SIGTERM reaches it with no wrapper.

@@ -233,6 +233,9 @@ jobs:
           labels: ${{ steps.meta-cloud.outputs.labels }}
           cache-from: type=gha,scope=cloud
           cache-to: type=gha,mode=max,scope=cloud
+          build-args: |
+            VCS_REF=${{ github.sha }}
+            BUILD_TIME=${{ steps.stamp.outputs.time }}
       - uses: docker/build-push-action@v6
         with:
           context: .

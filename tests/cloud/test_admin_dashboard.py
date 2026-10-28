@@ -128,6 +128,20 @@ def test_overview_fragment_is_bare_div(cloud, clock):
     assert _headline(r.text, "Silent", 1)
 
 
+def test_overview_shows_cloud_build(cloud, clock):
+    """Page and polled fragment both name the cloud's own running build."""
+    from ice_common.build_info import BUILD_INFO
+
+    _seed_fleet(cloud, clock)
+    _admin(cloud)
+    for r in (
+        cloud.get("/admin"),
+        cloud.get("/admin/overview", headers={"HX-Request": "true"}),
+    ):
+        assert "data-cloud-build" in r.text
+        assert BUILD_INFO.commit_short in r.text
+
+
 def test_overview_non_admin_404(cloud):
     login(cloud, "someone@example.com")
     assert cloud.get("/admin").status_code == 404
