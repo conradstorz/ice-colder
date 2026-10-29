@@ -1,0 +1,14 @@
+{# Two-tap Collect Cash. Included by inventory.html (first-tap state) and
+   rendered directly by GET /inventory/collect/confirm. Context: `confirming`,
+   and `expected_cash` (float, or none when the figure could not be read). #}
+{% set target = "#collect-cash-confirm" %}
+{% set label = "Collect Cash" %}
+{% set confirm_label = "Confirm collection" %}
+{% if expected_cash is defined and expected_cash is not none %}
+{% set consequence = "Confirm collection of about $" ~ ("%.2f"|format(expected_cash)) ~ " expected cash. This records a permanent collection." %}
+{% else %}
+{% set consequence = "Confirm cash collection. This records a permanent collection." %}
+{% endif %}
+{% set post_url = "/inventory/collect" %}
+{% set confirm_url = "/inventory/collect/confirm" %}
+{% include "partials/confirm_button.html" with context %}

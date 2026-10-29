@@ -1,6 +1,7 @@
 """The /health/logs page (last 50 lines of LOGS/vmc.log)."""
 
 import asyncio
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
@@ -28,5 +29,10 @@ async def logs_view(request: Request):
     return templates.TemplateResponse(
         request,
         "health_logs.html",
-        context.template_context(request, level=LEVEL_HEALTH_LOGS, logs=lines),
+        context.template_context(
+            request,
+            level=LEVEL_HEALTH_LOGS,
+            logs=lines,
+            fetched_clock=datetime.now().strftime("%H:%M:%S"),
+        ),
     )

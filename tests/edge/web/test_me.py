@@ -60,7 +60,7 @@ def test_me_page(login_as, role):
         else:
             assert PERMISSION_LABELS[perm] not in text
     assert 'hx-post="/logout"' in text
-    assert "Lock" in text
+    assert "Sign out" in text
 
 
 def test_me_anonymous_redirects_to_login(anonymous):

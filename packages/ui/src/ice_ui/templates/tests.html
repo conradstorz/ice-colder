@@ -20,8 +20,8 @@
         {% if card.row.stale %}bg-red-500{% elif card.row.alive %}bg-green-500{% else %}bg-gray-300{% endif %}"></span>
       <span class="font-mono text-sm text-gray-900">{{ card.name }}</span>
       <span class="text-xs text-gray-400 font-mono">{{ card.row.firmware or "—" }}</span>
-      <span class="text-xs
-        {% if card.match is none %}text-gray-400{% elif card.match %}text-green-600{% else %}text-red-600{% endif %}">
+      <span class="text-sm
+        {% if card.match is none %}text-gray-500{% elif card.match %}text-green-700{% else %}text-red-600 font-medium{% endif %}">
         {% if card.match is none %}Contract unknown{% elif card.match %}Contract OK{% else %}Contract mismatch{% endif %}
       </span>
       <span class="text-xs text-gray-500 ml-auto">
@@ -32,10 +32,12 @@
   </div>
 
   <div class="grid grid-cols-1 md:grid-cols-2 gap-touch">
-    <button hx-post="/tests/run-all" hx-target="#run-all-result" hx-swap="innerHTML"
-            class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700 w-full">
-      Run all
-    </button>
+    {# The result container sits in the same grid cell, directly under the button,
+       so a long sequential run reports where the tap happened (not below the fold). #}
+    <div class="space-y-2">
+      {% include "partials/run_all_button.html" %}
+      <div id="run-all-result"></div>
+    </div>
     <a href="/tests/sale"
        class="flex flex-col items-start gap-2 rounded-xl border p-4 bg-white border-gray-200 shadow-sm hover:bg-slate-50 touch-target">
       <div class="text-tile-title font-semibold text-gray-900">Simulated sale</div>
@@ -47,7 +49,5 @@
       <div class="text-sm text-gray-500">Last 100 test runs</div>
     </a>
   </div>
-  <div id="run-all-result"></div>
-
 </div>
 {% endblock %}

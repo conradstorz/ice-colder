@@ -12,6 +12,14 @@ from ice_edge.access.access import Permission
 
 router = APIRouter()
 
+# perform_command reports in prose; these prefixes are its non-success outcomes.
+_NOT_DONE_PREFIXES = ("Reset failed", "Reset ignored", "Unknown command")
+
+
+def command_succeeded(result: str) -> bool:
+    """True when `perform_command`'s message reports the command as carried out."""
+    return not result.startswith(_NOT_DONE_PREFIXES)
+
 
 @router.get(
     "/controls",
@@ -79,5 +87,5 @@ async def post_command(request: Request, command: str):
     return templates.TemplateResponse(
         request,
         "partials/command_result.html",
-        context.template_context(request, result=result),
+        context.template_context(request, result=result, ok=command_succeeded(result)),
     )

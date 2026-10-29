@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
 from ice_edge.access.access import AccessError, OwnerExistsError, Permission, Role
@@ -434,6 +434,30 @@ async def reset_user_pin(request: Request, user_id: str, pin: str = Form(...)):
     # keep working on its old device until it idles out on its own.
     context.access_store.end_sessions_for_user(user_id)
     return HTMLResponse("", headers={"HX-Redirect": f"/users/{user_id}"})
+
+
+@router.get(
+    "/users/{user_id}/delete/confirm",
+    response_class=HTMLResponse,
+    dependencies=[Depends(web_auth.require(Permission.manage_users))],
+)
+async def delete_user_confirm(
+    request: Request, user_id: str, confirming: str | None = Query(default=None)
+):
+    """confirm_button.html's confirm_url contract: anything but the literal
+    "false" renders the Confirm/Cancel pair. Carries the delete route's own
+    guards, so a refused delete is never offered a confirm."""
+    user = _get_user_or_404(user_id)
+    principal = web_auth.current_principal(request)
+    _guard_owner_target(principal, user_id)
+    _guard_owner_self_lockout(principal, user_id)
+    return templates.TemplateResponse(
+        request,
+        "partials/user_delete.html",
+        context.template_context(
+            request, target=user, confirming=(confirming != "false")
+        ),
+    )
 
 
 @router.post(

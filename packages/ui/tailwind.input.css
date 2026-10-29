@@ -68,9 +68,8 @@
   }
 
   /* Checked / chosen: native controls, brand colour, finger-sized boxes.
-     Existing checkbox markup carries h-5 w-5 utilities; utilities beat
-     base, so those boxes stay 20px — this 24px default applies only to
-     any future checkbox without explicit size utilities. */
+     Templates carry no size utilities on checkboxes, so every box gets this
+     24px default. */
   input[type="checkbox"], input[type="radio"], select {
     accent-color: theme(colors.blue.600);
   }

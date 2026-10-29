@@ -65,6 +65,11 @@ def _unbind_fragment(request: Request, short: str, confirming: bool) -> Response
         {
             "label": "Unbind",
             "confirm_label": "Confirm unbind",
+            "tone": "danger",
+            "consequence": (
+                "Removes this machine's owner and techs and deletes its alert "
+                "history. Used claim codes stay spent."
+            ),
             "post_url": base,
             "confirm_url": f"{base}/confirm",
             "target": f"#unbind-{short}",
@@ -81,6 +86,11 @@ def _purge_fragment(request: Request, confirming: bool) -> Response:
         {
             "label": "Purge all unclaimed",
             "confirm_label": "Confirm purge",
+            "tone": "danger",
+            "consequence": (
+                "Permanently deletes every machine that has never been claimed, "
+                "with its stored report. This cannot be undone."
+            ),
             "post_url": base,
             "confirm_url": f"{base}/confirm",
             "target": "#unclaimed-purge",

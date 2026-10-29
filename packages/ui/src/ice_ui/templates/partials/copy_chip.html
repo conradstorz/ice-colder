@@ -1,0 +1,10 @@
+{# A value in mono (tap to select it all) plus a Copy button. Parameters:
+     copy_id     unique element id for the value span
+     copy_value  the text to show and copy
+     copy_class  optional extra classes for the value span (colour, size)
+   See copy_button.html for the clipboard/fallback behaviour. #}
+<div class="flex flex-wrap items-center gap-touch">
+  <span id="{{ copy_id }}" class="font-mono break-all select-all min-w-0 {{ copy_class | default('') }}">{{ copy_value }}</span>
+  {% set copy_target = "#" ~ copy_id %}
+  {% include "partials/copy_button.html" with context %}
+</div>

@@ -40,24 +40,24 @@
 
   <label for="pin" class="block text-sm font-medium text-gray-700">PIN</label>
   <input type="password" id="pin" name="pin" inputmode="numeric" pattern="[0-9]*"
-         autocomplete="off" required
+         autocomplete="off" maxlength="8" required
          class="touch-target w-full px-4 text-2xl tracking-widest text-center border border-gray-300 rounded-xl">
 
-  <div class="grid grid-cols-3 gap-touch">
+  <div class="grid grid-cols-3 gap-3">
     {% for d in ["1","2","3","4","5","6","7","8","9"] %}
       <button type="button" data-digit="{{ d }}"
-              class="touch-target justify-center text-2xl bg-gray-100 rounded-xl">{{ d }}</button>
+              class="touch-target min-h-[56px] justify-center text-2xl bg-gray-100 rounded-xl">{{ d }}</button>
     {% endfor %}
-    <button type="button" data-clear="1" class="touch-target justify-center text-lg bg-gray-100 rounded-xl">Clear</button>
-    <button type="button" data-digit="0" class="touch-target justify-center text-2xl bg-gray-100 rounded-xl">0</button>
-    <button type="submit" class="touch-target justify-center text-lg bg-blue-600 text-white rounded-xl">Enter</button>
+    <button type="button" data-back="1" aria-label="Delete last digit" class="touch-target min-h-[56px] justify-center text-2xl bg-gray-100 rounded-xl">&#9003;</button>
+    <button type="button" data-digit="0" class="touch-target min-h-[56px] justify-center text-2xl bg-gray-100 rounded-xl">0</button>
+    <button type="submit" class="touch-target min-h-[56px] justify-center text-lg bg-blue-600 text-white rounded-xl">Enter</button>
   </div>
 
   {% if error %}
     <p class="text-red-600 text-sm" role="alert">{{ error }}</p>
   {% endif %}
   {% if wait_seconds %}
-    <p class="text-amber-700 text-sm" role="alert">
+    <p id="countdown-msg" class="text-amber-700 text-sm" role="alert">
       Too many attempts. Try again in <span id="countdown">{{ wait_seconds }}</span> s.
     </p>
   {% endif %}
@@ -69,8 +69,8 @@
       form.querySelectorAll('[data-digit]').forEach(function (b) {
         b.addEventListener('click', function () { pin.value += b.dataset.digit; });
       });
-      form.querySelectorAll('[data-clear]').forEach(function (b) {
-        b.addEventListener('click', function () { pin.value = ''; });
+      form.querySelectorAll('[data-back]').forEach(function (b) {
+        b.addEventListener('click', function () { pin.value = pin.value.slice(0, -1); });
       });
       var c = document.getElementById('countdown');
       if (c) {
@@ -78,7 +78,11 @@
         var t = setInterval(function () {
           left -= 1;
           c.textContent = left;
-          if (left <= 0) { clearInterval(t); }
+          if (left <= 0) {
+            clearInterval(t);
+            var m = document.getElementById('countdown-msg');
+            if (m) { m.textContent = 'You can try again now.'; }
+          }
         }, 1000);
       }
     })();

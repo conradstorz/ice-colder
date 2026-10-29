@@ -14,7 +14,7 @@
       {% else %}<span class="text-gray-400">Never seen</span>{% endif %}
     </span>
     <span class="text-xs text-gray-400">Uptime {{ sub.uptime_seconds|humanize_seconds }}</span>
-    <span class="text-xs text-gray-400 font-mono ml-auto">{{ sub.firmware or "—" }} / {{ sub.contract_version or "—" }}</span>
+    <span class="text-sm text-gray-600 font-mono ml-auto">{{ sub.firmware or "—" }} / {{ sub.contract_version or "—" }}</span>
   </a>
   {% endfor %}
 </div>

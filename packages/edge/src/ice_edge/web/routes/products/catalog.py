@@ -1,7 +1,7 @@
 """The catalog-editing routes: /products/new, /products/{sku}/catalog, /products/{sku}/copy and /products/{sku}/delete."""
 
 from uuid import uuid4
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse
 from loguru import logger
 
@@ -301,6 +301,26 @@ async def copy_product_form(request: Request, sku: str):
         tracked=_is_tracked(sku),
         error=None,
         button="",
+    )
+
+
+@router.get(
+    "/products/{sku}/delete/confirm",
+    response_class=HTMLResponse,
+    dependencies=[Depends(web_auth.require(Permission.edit_catalog))],
+)
+async def delete_product_confirm(
+    request: Request, sku: str, confirming: str | None = Query(default=None)
+):
+    """confirm_button.html's confirm_url contract: anything but the literal
+    "false" renders the Confirm/Cancel pair."""
+    product = _get_or_404(sku)
+    return templates.TemplateResponse(
+        request,
+        "partials/product_delete.html",
+        context.template_context(
+            request, product=product, confirming=(confirming != "false")
+        ),
     )
 
 

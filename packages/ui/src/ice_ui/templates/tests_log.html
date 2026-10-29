@@ -38,7 +38,7 @@
         <span class="text-gray-900">Simulated sale</span>
         <span class="font-mono text-gray-700">{{ run.sku }}</span>
         {% if run.outcome %}<span class="text-gray-500">{{ run.outcome }}</span>{% endif %}
-        {% if run.fault_code %}<span class="text-red-600 font-mono">{{ run.fault_code }}</span>{% endif %}
+        {% if run.fault_code %}<span class="text-red-600"><span class="font-mono">{{ run.fault_code }}</span>{% if run.fault_description %} — {{ run.fault_description }}{% endif %}</span>{% endif %}
       {% else %}
         <span class="text-gray-400">Unrecognized test run</span>
       {% endif %}

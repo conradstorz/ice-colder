@@ -15,7 +15,7 @@
   <h1 class="text-hero font-semibold text-gray-900">{{ "Copy Product" if mode == "copy" else "Add Product" }}</h1>
 
   {% if error %}
-  <p class="text-sm text-red-600">{{ error }}</p>
+  <p role="alert" class="text-sm text-red-600">{{ error }}</p>
   {% endif %}
 
   <input type="hidden" name="mode" value="{{ mode }}">
@@ -35,7 +35,7 @@
 
   <div>
     <label for="price" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Price (USD)</label>
-    <input type="number" id="price" name="price" value="{{ price }}" step="0.01" inputmode="numeric"
+    <input type="number" id="price" name="price" value="{{ price }}" step="0.01" min="0" inputmode="decimal"
            class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
   </div>
 
@@ -58,8 +58,9 @@
 
   <div>
     <label for="button" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Customer Button</label>
-    <input type="text" id="button" name="button" value="{{ button_value }}" placeholder="None"
+    <input type="text" id="button" name="button" value="{{ button_value }}" placeholder="None" aria-describedby="button-hint" autocapitalize="none" spellcheck="false"
            class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500">
+    <p id="button-hint" class="mt-1 text-xs text-gray-500">The channel id of the board's button that sells this product, for example <span class="font-mono">button_ice</span>, <span class="font-mono">button_water_1gal</span> or <span class="font-mono">button_water_5gal</span>. Leave empty for none. A misspelled id leaves the product unreachable by button.</p>
   </div>
 
   <div>
@@ -68,11 +69,11 @@
            class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
   </div>
 
-  <div class="touch-target">
-    <input type="checkbox" id="track_inventory" name="track_inventory" {{ "checked" if tracked }}
-           class="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-    <label for="track_inventory" class="text-sm text-gray-700">Track inventory</label>
-  </div>
+  <label class="touch-target text-sm text-gray-700">
+          <input type="checkbox" id="track_inventory" name="track_inventory" {{ "checked" if tracked }}
+           class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          Track inventory
+        </label>
 
   <div class="flex gap-touch pt-2">
     <button type="submit"

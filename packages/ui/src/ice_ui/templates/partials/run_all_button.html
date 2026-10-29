@@ -1,0 +1,13 @@
+{# Two-tap "Run all" on /tests. Included by tests.html (first-tap state),
+   rendered directly by GET /tests/run-all/confirm, and re-sent out-of-band
+   (oob=true) at the top of POST /tests/run-all's response so the button
+   returns to its first-tap state once the result table is in place. #}
+{% set target = "#run-all-confirm" %}
+{% set label = "Run all" %}
+{% set full = true %}
+{% set confirm_label = "Confirm run all" %}
+{% set consequence = "Run all takes the machine out of service (payment is withdrawn machine-wide) and runs self-tests on every board." %}
+{% set post_url = "/tests/run-all" %}
+{% set confirm_url = "/tests/run-all/confirm" %}
+{% set result_target = "#run-all-result" %}
+{% include "partials/confirm_button.html" with context %}

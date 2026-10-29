@@ -9,7 +9,7 @@
   {% if new_link %}
   <div class="p-3 border border-amber-200 bg-amber-50 rounded-lg">
     <p class="font-medium text-amber-800 text-sm">Invitation created. Send this link to the invitee:</p>
-    <p class="mt-1 font-mono text-amber-700 text-sm">{{ new_link }}</p>
+    <div class="mt-1">{% with copy_id="invite-link", copy_value=new_link, copy_class="text-amber-700 text-sm" %}{% include "partials/copy_chip.html" %}{% endwith %}</div>
   </div>
   {% endif %}
 
@@ -51,7 +51,7 @@
       <li class="flex flex-wrap items-center gap-3">
         <span class="text-sm text-gray-700">{{ i.email }}</span>
         <span class="text-xs text-gray-400">{{ "all my machines" if i.fleet else "this machine" }}</span>
-        <span class="font-mono text-xs text-gray-500">{{ i.link }}</span>
+        {% with copy_id="invite-link-" ~ loop.index, copy_value=i.link, copy_class="text-xs text-gray-500" %}{% include "partials/copy_chip.html" %}{% endwith %}
         <button hx-post="/machines/{{ short }}/people/invitations/{{ i.token }}/cancel" hx-target="closest li" hx-swap="outerHTML"
                 class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50 ml-auto">Cancel</button>
       </li>

@@ -27,6 +27,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
 from ice_edge.access.access import Permission
+from ice_edge.reporting import reports
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
 from ice_ui.levels import LEVEL_INVENTORY
@@ -123,6 +124,7 @@ def _row_for(product) -> dict:
     }
     if tracked:
         row["count"] = context.inventory_manager.get_count(product.sku)
+        row["low"] = row["count"] <= context.LOW_STOCK_THRESHOLD
     return row
 
 
@@ -206,18 +208,26 @@ async def collect_confirm(
     """confirm_button.html's confirm_url contract: absent or anything but
     the literal string "false" renders the confirming (Confirm/Cancel)
     state; "false" renders the plain first-tap button -- this is what its
-    Cancel button sends via hx-vals."""
+    Cancel button sends via hx-vals.
+
+    The confirming state states the expected cash (cash-class sales since
+    the last collection, the same figure the POST will record). A missing
+    recorder or an unreadable database degrades to wording without a
+    figure rather than failing the confirm."""
+    is_confirming = confirming != "false"
+    expected_cash = None
+    if is_confirming and context.event_recorder:
+        try:
+            expected_cash = await asyncio.to_thread(
+                reports.cash_since_last_collection, context.event_recorder
+            )
+        except sqlite3.Error:
+            expected_cash = None
     return templates.TemplateResponse(
         request,
-        "partials/confirm_button.html",
+        "partials/collect_cash_button.html",
         context.template_context(
-            request,
-            label="Collect Cash",
-            confirm_label="Confirm Collection",
-            post_url="/inventory/collect",
-            target="#collect-cash-confirm",
-            confirm_url="/inventory/collect/confirm",
-            confirming=(confirming != "false"),
+            request, confirming=is_confirming, expected_cash=expected_cash
         ),
     )
 

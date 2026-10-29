@@ -141,6 +141,20 @@ class TestPostCommands:
         assert resp.status_code == 200
         assert "Unknown command" in resp.text
 
+    def test_success_renders_a_green_done_card(self, client):
+        resp = client.post("/controls/restart")
+        assert "bg-green-50" in resp.text
+        assert "Done:" in resp.text
+
+    @pytest.mark.parametrize("command", ["unknown", "reset"])
+    def test_failure_renders_a_red_not_done_card(self, client, monkeypatch, command):
+        """Unknown commands and refused/ignored resets are not successes."""
+        monkeypatch.setattr(context, "vmc_instance", None)
+        resp = client.post(f"/controls/{command}")
+        assert "bg-red-50" in resp.text
+        assert "Not done:" in resp.text
+        assert "bg-green-50" not in resp.text
+
     def test_post_requires_htmx_header(self, login_as):
         """POST without HX-Request header is 403."""
         client = login_as(Role.owner)
@@ -286,19 +300,19 @@ class TestConfirmEndpointReturnsFragment:
 class TestInlineFeedback:
     """Result messages replace the button area inline."""
 
-    def test_post_result_is_inline_paragraph(self, client):
-        """POST result is wrapped in a <p> tag for inline replacement."""
+    def test_post_result_is_inline_card(self, client):
+        """POST result is a toned result card for inline replacement."""
         resp = client.post("/controls/restart")
         assert resp.status_code == 200
-        assert resp.text.startswith("<p>")
-        assert resp.text.endswith("</p>")
+        assert resp.text.lstrip().startswith("<div")
+        assert resp.text.rstrip().endswith("</div>")
         assert "Restart command sent" in resp.text
 
     def test_unknown_command_returns_inline_message(self, client):
         """Unknown command also returns inline message."""
         resp = client.post("/controls/xyz")
         assert resp.status_code == 200
-        assert resp.text.startswith("<p>")
+        assert resp.text.lstrip().startswith("<div")
         assert "Unknown command" in resp.text
 
     def test_unknown_command_is_html_escaped(self, client):

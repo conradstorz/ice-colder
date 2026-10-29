@@ -154,17 +154,16 @@ class TestTestsNoActionsMixin:
         body = self._extract_main_body(response.text)
         assert "<form" not in body, "Tests level must contain no forms"
 
-    def test_run_all_hx_post_in_body(self, client):
-        """Body contains the Run-all button's hx-post -- Task 13a's real
-        actions, unlike Task 11's placeholder this test used to guard
-        the total absence of. The button POSTs to a route Task 13b adds;
-        this only proves the markup points at it."""
+    def test_run_all_is_two_tap_in_body(self, client):
+        """Run all is a two-tap confirm: the page carries only the confirm
+        GET; the hx-post appears in the confirming state."""
         response = client.get("/tests")
         assert response.status_code == 200
         body = self._extract_main_body(response.text)
-        assert 'hx-post="/tests/run-all"' in body
+        assert 'hx-get="/tests/run-all/confirm"' in body
+        assert 'hx-post="/tests/run-all"' not in body
 
-    def test_only_hx_get_in_body_is_the_standby_confirm(self, client):
+    def test_only_hx_gets_in_body_are_the_confirms(self, client):
         """Body's only hx-get is the always-rendered service-state card's
         own confirm_url (Task 3, system-tests design §2.2a): the standard
         confirm_button.html two-tap pattern already used elsewhere (e.g.
@@ -181,8 +180,9 @@ class TestTestsNoActionsMixin:
         assert response.status_code == 200
         body = self._extract_main_body(response.text)
         assert 'hx-get="/tests/standby/confirm"' in body
-        assert re_findall(r'hx-get="[^"]*"', body) == [
-            'hx-get="/tests/standby/confirm"'
+        assert sorted(re_findall(r'hx-get="[^"]*"', body)) == [
+            'hx-get="/tests/run-all/confirm"',
+            'hx-get="/tests/standby/confirm"',
         ]
 
     def test_bar_still_has_expected_attributes(self, client):
@@ -193,9 +193,9 @@ class TestTestsNoActionsMixin:
         """
         response = client.get("/tests")
         assert response.status_code == 200
-        # The bar should have Lock button with hx-post and pill with hx-get
+        # The bar should have Sign out button with hx-post and pill with hx-get
         assert 'hx-post="/logout"' in response.text, (
-            "Bar must have Lock button with hx-post"
+            "Bar must have Sign out button with hx-post"
         )
         assert 'hx-get="/pill"' in response.text, (
             "Bar must have health pill with hx-get"

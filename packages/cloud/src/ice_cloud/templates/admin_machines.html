@@ -9,11 +9,12 @@
 <div class="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-gray-200 shadow-sm p-4 mb-3">
   {% include "partials/admin_unclaimed_count.html" %}
   <span class="ml-auto">
-    {% with label="Purge all unclaimed", confirm_label="Confirm purge", post_url="/admin/purge-unclaimed", confirm_url="/admin/purge-unclaimed/confirm", target="#unclaimed-purge", confirming=false %}
+    {% with label="Purge all unclaimed", tone="danger", confirm_label="Confirm purge", post_url="/admin/purge-unclaimed", confirm_url="/admin/purge-unclaimed/confirm", target="#unclaimed-purge", confirming=false %}
     {% include "partials/admin_unbind.html" %}
     {% endwith %}
   </span>
 </div>
+<p class="text-sm text-gray-600 mb-3">Unbind removes a machine's owner: its techs and alert history are deleted, the machine shows as unclaimed, and codes already used to claim it stay spent.</p>
 <div class="text-xs text-gray-400 uppercase tracking-wide mb-2">{{ heading }} · {{ count }}</div>
 <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
   <table class="w-full text-sm text-left">
@@ -47,13 +48,13 @@
         <td class="p-3">
           {% if m.payment_enabled is none %}<span class="text-gray-400">—</span>
           {% elif m.payment_enabled %}<span class="text-green-700">On</span>
-          {% else %}<span class="text-red-600" title="{{ m.payment_reason or '' }}">Off</span>{% endif %}
+          {% else %}<span class="text-red-600" title="{{ m.payment_reason or '' }}">Off</span>{% if m.payment_reason %}<div class="text-xs text-gray-500">{{ m.payment_reason }}</div>{% endif %}{% endif %}
         </td>
         <td class="p-3 text-gray-600">{{ m.edge_build or "—" }}{% if m.ui_mismatch %}<div class="text-xs text-amber-600">UI differs</div>{% endif %}</td>
         <td class="p-3"><a href="/admin/alerts?machine={{ m.short }}" class="text-gray-700">{{ m.alerts_24h }}</a></td>
         <td class="p-3">
           {% if m.owner_id %}
-          {% with label="Unbind", confirm_label="Confirm unbind", post_url="/admin/machines/" ~ m.short ~ "/unbind", confirm_url="/admin/machines/" ~ m.short ~ "/unbind/confirm", target="#unbind-" ~ m.short, confirming=false %}
+          {% with label="Unbind", tone="danger", confirm_label="Confirm unbind", post_url="/admin/machines/" ~ m.short ~ "/unbind", confirm_url="/admin/machines/" ~ m.short ~ "/unbind/confirm", target="#unbind-" ~ m.short, confirming=false %}
           {% include "partials/admin_unbind.html" %}
           {% endwith %}
           {% endif %}

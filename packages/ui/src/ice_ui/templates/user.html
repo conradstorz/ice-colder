@@ -80,7 +80,7 @@
   {% if may_write %}
   <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-4">
     <form hx-post="/users/{{ target.id }}/reset-pin" class="flex flex-wrap items-center gap-touch">
-      <input type="text" name="pin" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
+      <input type="password" name="pin" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
              placeholder="New PIN (4-8 digits)" required
              class="touch-target px-3 rounded-md border border-gray-300 text-sm w-48">
       <button type="submit"
@@ -88,7 +88,7 @@
     </form>
 
     {% if not is_self %}
-    <div class="flex flex-wrap gap-touch">
+    <div class="flex flex-wrap items-start gap-6">
       {% if target.disabled %}
       <form hx-post="/users/{{ target.id }}/enable">
         <button type="submit"
@@ -100,10 +100,7 @@
                 class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Disable</button>
       </form>
       {% endif %}
-      <form hx-post="/users/{{ target.id }}/delete">
-        <button type="submit"
-                class="touch-target px-4 rounded-md border border-red-200 text-red-600 text-sm font-medium hover:bg-red-50">Delete</button>
-      </form>
+      {% include "partials/user_delete.html" %}
     </div>
     {% endif %}
   </div>

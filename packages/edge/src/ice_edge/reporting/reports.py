@@ -555,6 +555,18 @@ def collections(recorder, limit: int = 50) -> list[dict]:
     return result
 
 
+def cash_since_last_collection(recorder) -> float:
+    """Cash-class sales since the newest collection (all time before the
+    first): the figure the next collection will record as `expected_cash`.
+    Synchronous; call through `asyncio.to_thread`."""
+    recorder.flush()
+    with contextlib.closing(sqlite3.connect(recorder.db_path)) as conn:
+        last = conn.execute(
+            "SELECT ts FROM cash_collections ORDER BY ts DESC, id DESC LIMIT 1"
+        ).fetchone()
+        return round(_cash_since(conn, last[0] if last else None), 2)
+
+
 def summary(recorder, window: tuple[float, float]) -> dict:
     """Totals used by the scheduled email: revenue, vends, failed, refunds,
     per-method split, and cash since the last collection.

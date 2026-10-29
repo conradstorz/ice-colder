@@ -35,22 +35,48 @@
                      the two states below to render; the including route
                      is what flips it via the confirm_url contract above,
                      never a template-side toggle.
+     consequence   - str, optional. One sentence shown above the
+                     Cancel/Confirm pair while confirming, saying what the
+                     action will do.
+     tone          - str, optional. "danger" tones the first-tap button red
+                     (outlined) so a destructive action is not styled like
+                     a benign primary.
+     full          - bool, optional. Stretch the wrapper and first-tap
+                     button to the container width.
+     result_target - str, optional id selector. When set, the Confirm POST
+                     swaps its response into this element (innerHTML)
+                     instead of replacing the wrapper; the response is then
+                     expected to carry an out-of-band copy of this partial
+                     (see `oob`) that restores the first-tap button.
+     oob           - bool, optional. Renders the wrapper with
+                     hx-swap-oob="outerHTML" so a response can restore it.
+
+   Order is Cancel on the left, Confirm on the right, 16px apart, in every
+   confirm in the app.
 
    Usage sketch, from a future task's route:
      {% include "partials/confirm_button.html" with context %}
      (with label, confirm_label, post_url, target, confirm_url and,
      optionally, confirming already in the calling template's context)
 #}
-<div id="{{ target[1:] if target.startswith('#') else target }}" class="inline-flex">
+<div id="{{ target[1:] if target.startswith('#') else target }}" class="{{ 'flex' if full else 'inline-flex' }}"{% if oob %} hx-swap-oob="outerHTML"{% endif %}>
   {% if confirming %}
-  <div class="flex items-center gap-2">
-    <button hx-post="{{ post_url }}" hx-target="{{ target }}" hx-swap="outerHTML"
-            class="touch-target px-4 rounded-md bg-red-600 text-white text-sm font-semibold hover:bg-red-700">{{ confirm_label }}</button>
-    <button hx-get="{{ confirm_url }}" hx-vals='{"confirming": "false"}' hx-target="{{ target }}" hx-swap="outerHTML"
-            class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Cancel</button>
+  <div class="flex flex-col gap-2">
+    {% if consequence %}
+    <p class="text-sm text-gray-700 max-w-xs">{{ consequence }}</p>
+    {% endif %}
+    <div class="flex items-center gap-4">
+      <button hx-get="{{ confirm_url }}" hx-vals='{"confirming": "false"}' hx-target="{{ target }}" hx-swap="outerHTML"
+              class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Cancel</button>
+      <button hx-post="{{ post_url }}" hx-target="{{ result_target or target }}" hx-swap="{{ 'innerHTML' if result_target else 'outerHTML' }}"
+              class="touch-target px-4 rounded-md bg-red-600 text-white text-sm font-semibold hover:bg-red-700">{{ confirm_label }}</button>
+    </div>
   </div>
+  {% elif tone == "danger" %}
+  <button hx-get="{{ confirm_url }}" hx-target="{{ target }}" hx-swap="outerHTML"
+          class="touch-target px-4 rounded-md border border-red-300 bg-white text-red-700 text-sm font-medium hover:bg-red-50{% if full %} w-full{% endif %}">{{ label }}</button>
   {% else %}
   <button hx-get="{{ confirm_url }}" hx-target="{{ target }}" hx-swap="outerHTML"
-          class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">{{ label }}</button>
+          class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700{% if full %} w-full{% endif %}">{{ label }}</button>
   {% endif %}
 </div>

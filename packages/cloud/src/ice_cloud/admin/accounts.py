@@ -46,6 +46,48 @@ async def accounts_page(request: Request, account: Account = Depends(require_adm
     )
 
 
+def _suspend_fragment(request: Request, target: Account, confirming: bool) -> Response:
+    base = f"/admin/accounts/{target.id}/suspend"
+    return templates(request).TemplateResponse(
+        request,
+        "partials/admin_suspend.html",
+        {
+            "label": "Suspend",
+            "confirm_label": "Confirm suspend",
+            "tone": "danger",
+            "consequence": (
+                f"Signs {target.email} out and locks them out of their fleet "
+                "until you unsuspend them."
+            ),
+            "post_url": base,
+            "confirm_url": f"{base}/confirm",
+            "target": f"#suspend-{target.id}",
+            "confirming": confirming,
+        },
+    )
+
+
+@router.get(
+    "/accounts/{account_id}/suspend/confirm",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_htmx)],
+)
+async def suspend_confirm(
+    request: Request,
+    account_id: str,
+    confirming: str | None = None,
+    admin: Account = Depends(require_admin),
+):
+    """confirm_button.html's confirm_url contract: anything but the literal
+    "false" renders the Confirm/Cancel pair. Refuses what the POST refuses."""
+    if account_id == admin.id:
+        raise HTTPException(status_code=400, detail="You cannot suspend yourself")
+    target = await asyncio.to_thread(request.app.state.repo.account, account_id)
+    if target is None:
+        raise HTTPException(status_code=404)
+    return _suspend_fragment(request, target, confirming != "false")
+
+
 async def _set_suspended(request: Request, account_id: str, suspend: bool) -> Response:
     state = request.app.state
     target = await asyncio.to_thread(state.repo.account, account_id)

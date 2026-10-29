@@ -12,8 +12,14 @@
     {% include "partials/confirm_command.html" with context %}
   {% else %}
   {# Initial render: render all three buttons in their plain state #}
+  {% set descriptions = {
+    "restart": "Restart the controller software. Sales pause while it comes back up.",
+    "reset": "Clear an error state and return the machine to ready. Does nothing unless the machine is in error.",
+    "shutdown": "Stop the controller software. Someone must start it again at the machine."
+  } %}
   <div class="flex flex-col gap-touch">
     {% for cmd in ["restart", "reset", "shutdown"] %}
+      <p class="text-sm text-gray-600 -mb-1">{{ descriptions[cmd] }}</p>
       {% set target = "#confirm-" + cmd %}
       {% set label = cmd.capitalize() %}
       {% set confirm_label = label + " Machine" %}

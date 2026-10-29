@@ -4,6 +4,8 @@
    exclusive: `refusal` is set only when the request never dispatched
    anything, `rows` otherwise ([] renders the empty-state row, never both
    states rendered at once). #}
+{% set oob = true %}
+{% include "partials/run_all_button.html" with context %}
 {% if refusal %}
 <div class="bg-amber-50 rounded-xl border border-amber-200 shadow-sm p-4 text-sm text-amber-800">
   Refused: {{ refusal }}
@@ -13,28 +15,28 @@
   <table class="w-full text-sm">
     <thead>
       <tr class="text-left text-gray-500 text-xs uppercase tracking-wide">
-        <th class="px-5 py-3">Subsystem</th>
-        <th class="px-5 py-3">Command</th>
-        <th class="px-5 py-3">Status</th>
-        <th class="px-5 py-3">Detail</th>
+        <th class="px-3 py-3">Subsystem</th>
+        <th class="px-3 py-3">Command</th>
+        <th class="px-3 py-3">Status</th>
+        <th class="px-3 py-3 hidden md:table-cell">Detail</th>
       </tr>
     </thead>
     <tbody class="divide-y divide-gray-100">
       {% for row in rows %}
       <tr>
-        <td class="px-5 py-3 font-mono text-gray-900">{{ row.subsystem }}</td>
-        <td class="px-5 py-3 font-mono text-gray-900">{{ row.command }}</td>
-        <td class="px-5 py-3 font-medium
+        <td class="px-3 py-3 font-mono text-gray-900">{{ row.subsystem }}</td>
+        <td class="px-3 py-3 font-mono text-gray-900">{{ row.command }}</td>
+        <td class="px-3 py-3 font-medium
           {% if row.status == 'ok' %}text-green-600
           {% elif row.status == 'timeout' %}text-amber-600
           {% else %}text-red-600{% endif %}">
           {{ row.status }}
         </td>
-        <td class="px-5 py-3 text-gray-500">{{ row.detail or "—" }}</td>
+        <td class="px-3 py-3 text-gray-500 hidden md:table-cell">{{ row.detail or "—" }}</td>
       </tr>
       {% else %}
       <tr>
-        <td class="px-5 py-3 text-gray-400" colspan="4">No alive subsystems to test.</td>
+        <td class="px-3 py-3 text-gray-400" colspan="4">No alive subsystems to test.</td>
       </tr>
       {% endfor %}
     </tbody>

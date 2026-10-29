@@ -41,6 +41,7 @@
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-3">
   <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
     <div class="text-xs text-gray-400 uppercase tracking-wide mb-2">Owners</div>
+    <div class="overflow-x-auto">
     <table class="w-full text-sm text-left">
       <thead>
         <tr class="text-xs text-gray-400 uppercase tracking-wide">
@@ -50,7 +51,7 @@
       <tbody>
         {% for o in owners_panel %}
         <tr class="border-t border-gray-100">
-          <td class="py-1"><a href="{{ o.url }}" class="text-gray-900">{{ o.email }}</a>{% if o.suspended %} <span class="text-xs px-1.5 py-0.5 rounded bg-red-50 text-red-600">Suspended</span>{% endif %}</td>
+          <td class="py-1"><a href="{{ o.url }}" title="{{ o.email }}" class="inline-block max-w-[16ch] truncate align-bottom text-gray-900">{{ o.email }}</a>{% if o.suspended %} <span class="text-xs px-1.5 py-0.5 rounded bg-red-50 text-red-600">Suspended</span>{% endif %}</td>
           <td class="py-1 text-gray-600">{{ o.machines }}</td>
           <td class="py-1 text-gray-600">{{ o.online }}</td>
           <td class="py-1 {% if o.silent %}text-red-600{% else %}text-gray-600{% endif %}">{{ o.silent }}</td>
@@ -61,6 +62,7 @@
         {% endfor %}
       </tbody>
     </table>
+    </div>
     <a href="/admin/owners" class="touch-target inline-flex items-center text-sm text-gray-700 mt-2">All owners →</a>
   </div>
 

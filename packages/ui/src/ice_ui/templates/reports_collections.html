@@ -13,9 +13,6 @@
 {% block body %}
 <div class="space-y-4">
 
-  {% if email_notice %}<p class="text-green-700 text-sm" role="status">{{ email_notice }}</p>{% endif %}
-  {% if email_error %}<p class="text-red-600 text-sm" role="alert">{{ email_error }}</p>{% endif %}
-
   <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
     <div class="overflow-x-auto">
       <table class="w-full text-sm">
@@ -46,14 +43,18 @@
     </div>
   </div>
 
-  <form hx-post="/reports/email">
+  <form hx-post="/reports/email" hx-swap="outerHTML show:none">
     <input type="hidden" name="report" value="collections">
     <input type="hidden" name="range" value="{{ range }}">
     <button type="submit"
             class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">
-      Email this report
+      Email me this report (CSV)
     </button>
   </form>
+
+  {# Result sits right under the button so a phone user sees it without scrolling back up. #}
+  {% if email_notice %}<p class="text-green-700 text-sm" role="status">{{ email_notice }}</p>{% endif %}
+  {% if email_error %}<p class="text-red-600 text-sm" role="alert">{{ email_error }}</p>{% endif %}
 
 </div>
 {% endblock %}

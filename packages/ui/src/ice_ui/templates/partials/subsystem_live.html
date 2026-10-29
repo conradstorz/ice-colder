@@ -13,7 +13,7 @@
 <div id="signal-{{ signal.id }}" class="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-gray-200 shadow-sm p-4">
   <span class="inline-flex items-center justify-center px-3 py-1 text-sm font-medium
     {% if is_input %}rounded-full{% else %}rounded-md{% endif %}
-    {% if signal.state == 'on' %}bg-green-600 text-white{% elif signal.state == 'off' %}bg-red-600 text-white{% else %}bg-gray-200 text-gray-500{% endif %}
+    {% if signal.state == 'on' %}bg-green-600 text-white{% elif signal.state == 'off' %}bg-white text-slate-700 border border-slate-400{% else %}bg-gray-200 text-gray-500{% endif %}
     {% if signal.inhibited %}ring-dashed{% endif %}">{{ signal.label }}</span>
   <span class="text-sm text-gray-700">
     {% if signal.state == "none" %}—{% else -%}
@@ -40,6 +40,16 @@
 </div>
 {% endmacro %}
 <div class="space-y-4">
+
+  {# Stamp rendered by the server on every poll: if the 2s poll dies, this time
+     stops advancing. #}
+  <div id="live-updated" class="text-xs text-gray-500">Updated {{ window.fetched_clock }}</div>
+
+  {% if not window.alive %}
+  <div role="status" class="bg-amber-50 rounded-xl border border-amber-200 shadow-sm p-4 text-sm text-amber-800">
+    <span class="font-semibold">Board offline.</span> No recent heartbeat, so the readings below are not live.
+  </div>
+  {% endif %}
 
   <div class="space-y-2">
     <h2 class="text-xs font-medium text-gray-400 uppercase tracking-wide">Inputs</h2>
@@ -68,7 +78,9 @@
     {% if window.controls.actuators or window.controls.standard %}
       <div class="flex flex-wrap gap-2">
         {% for cmd in window.controls.actuators %}
-        <span class="rounded-md bg-slate-800 text-white text-sm font-medium px-3 py-1
+        {# Flat, non-interactive chip: this is a list of what the board accepts, not a button
+           (run commands from the Tests level). #}
+        <span class="rounded-md border border-slate-300 bg-slate-100 text-slate-600 text-sm px-3 py-1
           {% if cmd.inhibited %}ring-dashed{% endif %}">{{ cmd.name }}{% if cmd.inhibited %} · inhibited{% endif %}</span>
         {% endfor %}
       </div>

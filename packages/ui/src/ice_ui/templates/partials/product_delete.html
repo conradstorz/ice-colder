@@ -1,0 +1,11 @@
+{# Two-tap Delete for one product. Included by product.html (first-tap
+   state) and rendered directly by GET /products/{sku}/delete/confirm.
+   Context: `product`, and `confirming` (absent means the first-tap state). #}
+{% set target = "#product-delete" %}
+{% set label = "Delete" %}
+{% set tone = "danger" %}
+{% set confirm_label = "Confirm delete" %}
+{% set consequence = "Delete " ~ product.name ~ " (" ~ product.sku ~ ") from the catalog? This cannot be undone." %}
+{% set post_url = "/products/" ~ product.sku ~ "/delete" %}
+{% set confirm_url = "/products/" ~ product.sku ~ "/delete/confirm" %}
+{% include "partials/confirm_button.html" with context %}

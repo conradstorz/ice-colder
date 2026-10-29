@@ -25,7 +25,7 @@ async def get_me(request: Request):
         else None
     )
     ctx = context.template_context(request, level=LEVEL_ME)
-    ctx["logout_label"] = "Lock"
+    ctx["logout_label"] = "Sign out"
     ctx["machine_label"] = machine_label
     ctx["permission_lines"] = [
         PERMISSION_LABELS[p] for p in Permission if p in ctx["perms"]

@@ -4,21 +4,21 @@
 <form method="post" action="/claim" hx-post="/claim"
       hx-on::before-swap="if (event.detail.xhr.status === 403 || event.detail.xhr.status === 429) { event.detail.shouldSwap = true }"
       class="space-y-3 bg-white rounded-xl border border-gray-200 shadow-sm p-4">
-  <p class="text-sm text-gray-600">Enter the machine's short fingerprint and the 8-digit code shown at the machine.</p>
+  <p class="text-sm text-gray-600">Enter the machine's short fingerprint and the 8-digit code shown at the machine. The fingerprint is on the machine's Health page and on its setup screen.</p>
   {% if error %}
   <p class="text-sm text-red-600">{{ error }}</p>
   {% endif %}
   <label class="block text-sm text-gray-700">Machine fingerprint
     <input type="text" name="fingerprint" value="{{ fingerprint or '' }}"
-           placeholder="xxxx-xxxx-xxxx-xxxx" autocomplete="off"
-           class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 font-mono text-sm">
+           placeholder="xxxx-xxxx-xxxx-xxxx" autocomplete="off" autocapitalize="none" spellcheck="false"
+           class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-3 font-mono text-base">
   </label>
   <label class="block text-sm text-gray-700">Code
     <input type="text" name="code" inputmode="numeric" pattern="[0-9]{8}" maxlength="8"
-           autocomplete="off"
-           class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 font-mono text-sm">
+           autocomplete="one-time-code"
+           class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-3 font-mono text-base">
   </label>
   <button type="submit"
-          class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Claim</button>
+          class="touch-target px-4 rounded-md bg-slate-800 text-sm font-semibold text-white hover:bg-slate-700">Claim</button>
 </form>
 {% endblock %}

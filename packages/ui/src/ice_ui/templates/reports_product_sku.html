@@ -25,9 +25,6 @@
 {% block body %}
 <div class="space-y-4">
 
-  {% if email_notice %}<p class="text-green-700 text-sm" role="status">{{ email_notice }}</p>{% endif %}
-  {% if email_error %}<p class="text-red-600 text-sm" role="alert">{{ email_error }}</p>{% endif %}
-
   <p class="text-sm text-gray-500">
     {{ product_name }} <span class="text-gray-400">{{ sku }}</span> --
     refunds and uptime are machine-wide figures and cannot be attributed to
@@ -37,11 +34,11 @@
   <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
 
     {# Range tabs #}
-    <div class="flex border-b border-gray-200 px-1 pt-1">
+    <div class="flex flex-wrap border-b border-gray-200 px-1 pt-1">
       {% for r, label in [("7d", "7 Days"), ("30d", "30 Days"), ("90d", "90 Days"), ("12m", "12 Months"), ("all", "All Time")] %}
       <a
         href="/reports/product/{{ sku|sku_url_segment }}?range={{ r }}"
-        class="px-4 py-2.5 text-sm font-medium -mb-px transition-colors
+        class="px-4 py-3 text-sm font-medium -mb-px transition-colors
                {% if r == range %}border-b-2 border-blue-600 text-blue-600
                {% else %}text-gray-500 hover:text-gray-700 border-b-2 border-transparent hover:border-gray-300{% endif %}">
         {{ label }}
@@ -50,11 +47,11 @@
     </div>
 
     {# Bucket tabs #}
-    <div class="flex border-b border-gray-200 px-1 pt-1">
+    <div class="flex flex-wrap border-b border-gray-200 px-1 pt-1">
       {% for b, label in [("day", "Day"), ("week", "Week"), ("month", "Month")] %}
       <a
         href="/reports/product/{{ sku|sku_url_segment }}?range={{ range }}&amp;bucket={{ b }}"
-        class="px-4 py-2.5 text-sm font-medium -mb-px transition-colors
+        class="px-4 py-3 text-sm font-medium -mb-px transition-colors
                {% if b == bucket %}border-b-2 border-blue-600 text-blue-600
                {% else %}text-gray-500 hover:text-gray-700 border-b-2 border-transparent hover:border-gray-300{% endif %}">
         {{ label }}
@@ -117,16 +114,20 @@
 
   </div>
 
-  <form hx-post="/reports/email">
+  <form hx-post="/reports/email" hx-swap="outerHTML show:none">
     <input type="hidden" name="report" value="product_sku">
     <input type="hidden" name="range" value="{{ range }}">
     <input type="hidden" name="bucket" value="{{ bucket }}">
     <input type="hidden" name="sku" value="{{ sku }}">
     <button type="submit"
             class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">
-      Email this report
+      Email me this report (CSV)
     </button>
   </form>
+
+  {# Result sits right under the button so a phone user sees it without scrolling back up. #}
+  {% if email_notice %}<p class="text-green-700 text-sm" role="status">{{ email_notice }}</p>{% endif %}
+  {% if email_error %}<p class="text-red-600 text-sm" role="alert">{{ email_error }}</p>{% endif %}
 
 </div>
 {% endblock %}
