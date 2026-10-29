@@ -119,7 +119,7 @@ with consequence wording in the confirm state.
   `title="Locked out"` is hover-only and the fault code (e.g. CFG-101) is
   unexplained. Link the chip to `/health/faults`.
   _Done: product.html chip links; products.html chip is inside a card link (no nested anchors), so the dead title was dropped and the visible "locked · CODE" text kept._
-- [x] **L** `health.html:14` — full commit only in `title=` (short form shown).
+- [ ] **L** `health.html:14` — full commit only in `title=` (short form shown).
   _Left as is (task 3): short hash is the shown identity; full hash is non-essential._
 - [ ] **L** cloud `partials/admin_overview.html:85` — full commit + build time
   only via `title=` (non-essential; short hash shown).
@@ -162,7 +162,9 @@ of these. This is the biggest touch-flow gap across both apps.
   the 44px floor (claim is done on a phone at the machine). Bump to py-3/py-4.
   Add `autocomplete="one-time-code"` to the code (`:17-19`) and
   `autocapitalize="none" spellcheck="false"` to the fingerprint (`:12-14`);
-  consider accepting input without dashes.
+  consider accepting input without dashes. (Dash-free input was already
+  handled server-side: `parse_short_fingerprint` strips dashes/whitespace and
+  lowercases.)
 - [x] **M** shrunken `h-5 w-5` (20px) checkboxes overriding the global 24px
   default: `product_placement.html:30-31`, `product_form.html:72-73`,
   `settings_contacts.html:53-55,96-98`. Drop the size utilities; make the whole

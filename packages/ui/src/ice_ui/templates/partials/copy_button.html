@@ -2,6 +2,10 @@
      copy_target  CSS selector of the element whose visible text is copied
                   (a one-value chip or a whole list; list items copy one per line)
      copy_label   optional button label, default "Copy"
+   SECURITY: pass LITERAL strings only for both parameters. copy_label is
+   interpolated into a single-quoted JS string inside onclick, where Jinja's
+   HTML autoescaping does not neutralise quotes/backslashes — a dynamic value
+   would be a script-injection point.
    The click handler is inline on purpose: it survives htmx swaps with no
    script re-execution, and this codebase ships no JS framework.
    The Clipboard API exists only in a secure context, and the edge dashboard is
