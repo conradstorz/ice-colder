@@ -100,7 +100,10 @@ def test_badge_truncates_and_titles_with_label(url):
     assert "truncate" not in chip
     assert el.attrs.get("title") == long_label
     # the ellipsis lives on an inner block-ish span, not the inline-flex chip
-    assert f'<span class="truncate max-w-[6rem] md:max-w-[10rem]">{long_label}</span>' in html
+    assert (
+        f'<span class="truncate max-w-[6rem] md:max-w-[10rem]">{long_label}</span>'
+        in html
+    )
 
 
 def test_badge_label_is_escaped():
@@ -131,3 +134,25 @@ def test_badge_renders_in_either_environment(sandboxed):
     html = _render(env, badge=_badge(), ui_notice="hello notice")
     assert 'id="context-badge"' in html
     assert "hello notice" in html
+
+
+def test_source_tag_defaults_to_local():
+    html = _render()
+    assert 'id="source-tag"' in html and ">LOCAL</span>" in html
+    assert "REMOTE" not in html
+    assert "bg-slate-800" in html and "bg-slate-50" in html
+    assert "bg-indigo-900" not in html
+    assert "M62 112c-4-8" in html  # machine watermark
+    # rendered even with no badge, and before the badge when there is one
+    assert "context-badge" not in html
+    html = _render(badge=_badge())
+    assert html.index("source-tag") < html.index("context-badge")
+
+
+def test_source_tag_remote():
+    html = _render(page_source="remote")
+    assert ">REMOTE</span>" in html and "LOCAL" not in html
+    assert "bg-indigo-900" in html and "bg-indigo-50" in html
+    assert "bg-slate-800" not in html
+    assert "M118 112c-4-26" in html  # cloud watermark
+    assert "M62 112c-4-8" not in html

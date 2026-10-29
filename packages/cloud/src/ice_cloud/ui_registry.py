@@ -52,6 +52,7 @@ class _NoRequestTemplate(Template):
 def _sandboxed_templates(directory: Path, extra_dirs: list[Path]) -> Jinja2Templates:
     result = make_templates(directory, sandboxed=True, extra_dirs=extra_dirs)
     result.env.template_class = _NoRequestTemplate
+    result.env.globals["page_source"] = "remote"
     return result
 
 
@@ -158,9 +159,16 @@ class UiRegistry:
             return ResolvedUi(templates, cached / "static", False, digest, True)
         return self._installed(mismatch=True)
 
+    def _installed_factory(self) -> Jinja2Templates:
+        result = make_templates(TEMPLATES_DIR, extra_dirs=[self._cloud_templates])
+        # Every cloud-rendered page (portal, fleet, admin, claim, login, me,
+        # bundles) tells base.html it is the remote side; the edge passes
+        # "local" through template_context.
+        result.env.globals["page_source"] = "remote"
+        return result
+
     def _installed(self, *, mismatch: bool) -> ResolvedUi:
         templates = self._templates_for(
-            self.installed_digest,
-            lambda: make_templates(TEMPLATES_DIR, extra_dirs=[self._cloud_templates]),
+            self.installed_digest, self._installed_factory
         )
         return ResolvedUi(templates, STATIC_DIR, mismatch, self.installed_digest)

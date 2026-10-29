@@ -11,8 +11,9 @@
      docs/superpowers/specs/2026-09-30-touch-feedback-design.md §4.3-4.4. #}
   <script src="/static/feedback.js" defer></script>
 </head>
-<body class="bg-slate-50 text-gray-900 font-sans text-base min-h-screen"
+{% set is_remote = (page_source | default("local")) == "remote" %}<body class="{{ 'bg-indigo-50' if is_remote else 'bg-slate-50' }} text-gray-900 font-sans text-base min-h-screen"
       hx-boost="true" hx-target="main" hx-swap="outerHTML show:top">
+  {% include "partials/source_watermark.html" %}
 
   {# Ambient swap style is outerHTML, not innerHTML, because every level
      response is a full document (this same base.html re-rendered): htmx's
@@ -32,8 +33,9 @@
      swap updates the bar via the OOB match on #bar; a full page load just
      renders it in place and ignores hx-swap-oob, per §1.1. #}
   <header id="bar" hx-swap-oob="true"
-          class="relative {{ 'min-h-14 flex-wrap py-1' if ui_notice else 'h-14' }} bg-slate-800 text-white flex items-center gap-2 px-3 sticky top-0 z-20">
+          class="relative {{ 'min-h-14 flex-wrap py-1' if ui_notice else 'h-14 max-md:h-auto max-md:min-h-14 max-md:flex-wrap max-md:py-1' }} {{ 'bg-indigo-900' if is_remote else 'bg-slate-800' }} text-white flex items-center gap-2 px-3 sticky top-0 z-20">
     {% block bar_variant %}
+      {% set hov = "hover:bg-indigo-800" if (page_source | default("local")) == "remote" else "hover:bg-slate-700" %}
       {% set show_home = level and level.parent is not none %}
       {% set show_back = (level is none) or show_home %}
       {% set back_url = level.parent_url if level else "/" %}
@@ -41,14 +43,14 @@
 
       {% if show_home %}
       <a href="/"
-         class="touch-target px-3 rounded-md text-sm font-medium text-white hover:bg-slate-700 shrink-0 max-md:hidden">Home</a>
+         class="touch-target px-3 rounded-md text-sm font-medium text-white {{ hov }} shrink-0 max-md:hidden">Home</a>
       {% endif %}
       {% if show_back %}
       <a href="{{ back_url }}"
-         class="touch-target px-3 rounded-md text-sm font-medium text-white hover:bg-slate-700 shrink-0">Back</a>
+         class="touch-target px-3 rounded-md text-sm font-medium text-white {{ hov }} shrink-0">Back</a>
       {% endif %}
 
-      <nav class="flex-1 min-w-0 flex items-center gap-1 overflow-hidden" aria-label="Breadcrumb">
+      <nav class="flex-1 min-w-0 max-md:min-w-[5rem] flex items-center gap-1 overflow-hidden" aria-label="Breadcrumb">
         {% for title, url in crumb_list %}
           {% if not loop.last %}
           <a href="{{ url }}"
@@ -76,11 +78,11 @@
            for the same fix on the re-rendered copy. #}
         <span id="pill" hx-get="/pill" hx-trigger="load, every 5s" hx-swap="outerHTML" hx-target="this"
               class="inline-flex items-center rounded-full bg-slate-400 text-white text-xs font-semibold uppercase tracking-wide px-2 py-1">…</span>
-      </a>{% if badge %}{% set badge_tones = {"local": "bg-slate-600 text-white", "remote": "bg-sky-700 text-white", "cloud": "bg-sky-700 text-white", "offline": "bg-amber-500 text-amber-950"} %}{% set badge_cls = "inline-flex items-center rounded-full text-xs font-semibold px-2 py-1 shrink-0 " ~ badge_tones.get(badge.tone, badge_tones["local"]) %}{% if badge.url %}<a id="context-badge" href="{{ badge.url }}"{% if badge.external %} hx-boost="false"{% endif %} title="{{ badge.title or badge.label }}" class="touch-target {{ badge_cls }}"><span class="truncate max-w-[6rem] md:max-w-[10rem]">{{ badge.label }}</span></a>{% else %}<span id="context-badge" title="{{ badge.title or badge.label }}" class="{{ badge_cls }}"><span class="truncate max-w-[6rem] md:max-w-[10rem]">{{ badge.label }}</span></span>{% endif %}{% endif %}{% if current_user and hat_switch %}<a id="hat-switch" href="{{ hat_switch.url }}"
-         class="touch-target px-3 rounded-md text-sm font-medium text-white hover:bg-slate-700 shrink-0">{{ hat_switch.label }}</a>{% endif %}{% if current_user %}<a href="/me" class="touch-target px-2 shrink-0 flex items-center gap-1" aria-label="Signed in as {{ current_user.name }}">{% if current_user.role_label %}<span class="inline-flex items-center rounded-full bg-slate-600 text-white text-xs font-semibold uppercase tracking-wide px-2 py-1">{{ current_user.role_label }}</span>{% endif %}<span class="max-md:hidden text-sm text-slate-200 truncate max-w-[10rem]">{{ current_user.name }}</span></a>{% endif %}
+      </a>{% if is_remote %}<span id="source-tag" title="This page is served by the cloud — data may be delayed" class="inline-flex items-center rounded-md bg-sky-400 text-sky-950 text-xs font-semibold uppercase tracking-wide px-2 py-1 shrink-0">REMOTE</span>{% else %}<span id="source-tag" title="This page is served by the machine itself" class="inline-flex items-center rounded-md bg-emerald-500 text-emerald-950 text-xs font-semibold uppercase tracking-wide px-2 py-1 shrink-0">LOCAL</span>{% endif %}{% if badge %}{% set badge_tones = {"local": "bg-slate-600 text-white", "remote": "bg-sky-700 text-white", "cloud": "bg-sky-700 text-white", "offline": "bg-amber-500 text-amber-950"} %}{% set badge_cls = "inline-flex items-center rounded-full text-xs font-semibold px-2 py-1 shrink-0 " ~ badge_tones.get(badge.tone, badge_tones["local"]) %}{% if badge.url %}<a id="context-badge" href="{{ badge.url }}"{% if badge.external %} hx-boost="false"{% endif %} title="{{ badge.title or badge.label }}" class="touch-target {{ badge_cls }}"><span class="truncate max-w-[6rem] md:max-w-[10rem]">{{ badge.label }}</span></a>{% else %}<span id="context-badge" title="{{ badge.title or badge.label }}" class="{{ badge_cls }}"><span class="truncate max-w-[6rem] md:max-w-[10rem]">{{ badge.label }}</span></span>{% endif %}{% endif %}{% if current_user and hat_switch %}<a id="hat-switch" href="{{ hat_switch.url }}"
+         class="touch-target px-3 rounded-md text-sm font-medium text-white {{ hov }} shrink-0">{{ hat_switch.label }}</a>{% endif %}{% if current_user %}<a href="/me" class="touch-target px-2 shrink-0 flex items-center gap-1" aria-label="Signed in as {{ current_user.name }}">{% if current_user.role_label %}<span class="inline-flex items-center rounded-full bg-slate-600 text-white text-xs font-semibold uppercase tracking-wide px-2 py-1">{{ current_user.role_label }}</span>{% endif %}<span class="max-md:hidden text-sm text-slate-200 truncate max-w-[10rem]">{{ current_user.name }}</span></a>{% endif %}
 
       <button hx-post="/logout"
-              class="touch-target px-3 rounded-md text-sm font-medium text-white hover:bg-slate-700 shrink-0">Sign out</button>
+              class="touch-target px-3 rounded-md text-sm font-medium text-white {{ hov }} shrink-0">Sign out</button>
 
       {# Notice strip (e.g. UI digest mismatch) is an in-flow second row of
          the bar (the bar wraps when it is present), so it pushes <main> down
@@ -93,7 +95,7 @@
     {% endblock %}
   </header>
 
-  <main class="max-w-5xl mx-auto px-4 py-4">
+  <main class="relative z-10 max-w-5xl mx-auto px-4 py-4">
     {% block body %}{% endblock %}
   </main>
 
