@@ -33,7 +33,7 @@
      swap updates the bar via the OOB match on #bar; a full page load just
      renders it in place and ignores hx-swap-oob, per §1.1. #}
   <header id="bar" hx-swap-oob="true"
-          class="relative {{ 'min-h-14 flex-wrap py-1' if ui_notice else 'h-14' }} {{ 'bg-indigo-900' if is_remote else 'bg-slate-800' }} text-white flex items-center gap-2 px-3 sticky top-0 z-20">
+          class="relative {{ 'min-h-14 flex-wrap py-1' if ui_notice else 'h-14 max-md:h-auto max-md:min-h-14 max-md:flex-wrap max-md:py-1' }} {{ 'bg-indigo-900' if is_remote else 'bg-slate-800' }} text-white flex items-center gap-2 px-3 sticky top-0 z-20">
     {% block bar_variant %}
       {% set hov = "hover:bg-indigo-800" if (page_source | default("local")) == "remote" else "hover:bg-slate-700" %}
       {% set show_home = level and level.parent is not none %}
@@ -50,7 +50,7 @@
          class="touch-target px-3 rounded-md text-sm font-medium text-white {{ hov }} shrink-0">Back</a>
       {% endif %}
 
-      <nav class="flex-1 min-w-0 flex items-center gap-1 overflow-hidden" aria-label="Breadcrumb">
+      <nav class="flex-1 min-w-0 max-md:min-w-[5rem] flex items-center gap-1 overflow-hidden" aria-label="Breadcrumb">
         {% for title, url in crumb_list %}
           {% if not loop.last %}
           <a href="{{ url }}"
