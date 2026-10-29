@@ -19,7 +19,7 @@
               <span class="font-mono text-xs px-1.5 py-0.5 rounded
                 {% if f.severity == 'critical' %}bg-red-100 text-red-700
                 {% elif f.severity == 'lockout' %}bg-orange-100 text-orange-700
-                {% else %}bg-amber-100 text-amber-700{% endif %}">{{ f.code }}</span>
+                {% else %}bg-amber-100 text-amber-700{% endif %}">{{ f.code }} · {{ f.severity }}</span>
               <span class="text-gray-700">{{ f.description }}</span>
               <span class="text-gray-400">· {{ f.product or "machine" }}</span>
               {% if f.since_seconds is not none %}
@@ -113,7 +113,7 @@
               <span class="font-mono text-xs px-1.5 py-0.5 rounded
                 {% if f.severity == 'critical' %}bg-red-100 text-red-700
                 {% elif f.severity == 'lockout' %}bg-orange-100 text-orange-700
-                {% else %}bg-amber-100 text-amber-700{% endif %}">{{ f.code }}</span>
+                {% else %}bg-amber-100 text-amber-700{% endif %}">{{ f.code }} · {{ f.severity }}</span>
               <span class="text-gray-700">{{ f.description }}</span>
               <span class="text-gray-400">· {{ f.product or "machine" }}</span>
               {% if f.since_seconds is not none %}

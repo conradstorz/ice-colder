@@ -7,7 +7,8 @@
     <span class="font-mono text-sm text-gray-700">{{ m.label }}</span>
     <span class="font-mono text-xs text-gray-400">{{ m.short }}</span>
     {% if m.reported %}
-    <span class="text-xs px-1.5 py-0.5 rounded {% if m.stale %}bg-red-50 text-red-600{% else %}bg-gray-100 text-gray-600{% endif %}">{{ "Offline" if m.stale else "Online" }}</span>
+    {# Online/Offline coloring matches partials/admin_status_badge.html #}
+    <span class="text-xs px-1.5 py-0.5 rounded {% if m.stale %}bg-red-50 text-red-600{% else %}bg-green-50 text-green-700{% endif %}">{{ "Offline" if m.stale else "Online" }}</span>
     <span class="text-xs text-gray-400">reported {{ m.age_text }} ago</span>
     <span class="text-xs text-gray-400">{{ m.fault_line }}</span>
     {% else %}

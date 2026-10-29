@@ -26,6 +26,9 @@
         <span class="w-2.5 h-2.5 rounded-full flex-shrink-0
           {% if ok is none %}bg-gray-300{% elif ok %}bg-green-500{% else %}bg-red-500{% endif %}"></span>
         <span class="font-semibold text-gray-900">{{ label }}</span>
+        <span class="text-sm font-medium {% if ok is none %}text-gray-500{% elif ok %}text-green-700{% else %}text-red-700{% endif %}">
+          {% if ok is none %}Unknown{% elif ok %}Available{% else %}Unavailable{% endif %}
+        </span>
       </div>
       {% if failing %}<p class="text-sm text-gray-500 mt-1">{{ failing|join(', ') }}</p>{% endif %}
     </div>

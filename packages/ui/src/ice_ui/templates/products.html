@@ -19,8 +19,7 @@
         <div class="text-base font-semibold text-gray-900 truncate">
           {{ p.name }}
           {% if p.locked_code %}
-          <span class="ml-2 text-xs font-mono px-1.5 py-0.5 rounded bg-orange-100 text-orange-700"
-                title="Locked out">locked · {{ p.locked_code }}</span>
+          <span class="ml-2 text-xs font-mono px-1.5 py-0.5 rounded bg-orange-100 text-orange-700">locked · {{ p.locked_code }}</span>
           {% endif %}
         </div>
         <div class="text-sm text-gray-500 truncate">SKU {{ p.sku }} · Slot {{ p.slot }}</div>

@@ -18,8 +18,7 @@
     <h1 class="text-hero font-semibold text-gray-900">
       {{ product.name or product.sku }}
       {% if locked_code %}
-      <span class="ml-2 align-middle text-xs font-mono px-1.5 py-0.5 rounded bg-orange-100 text-orange-700"
-            title="Locked out">locked · {{ locked_code }}</span>
+      <a href="/health/faults" class="ml-2 align-middle text-xs font-mono px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 underline">locked · {{ locked_code }}</a>
       {% endif %}
     </h1>
     <p class="text-sm text-gray-500 font-mono">{{ product.sku }}</p>

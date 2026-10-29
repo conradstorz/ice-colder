@@ -10,7 +10,7 @@
     {% for e in events %}
     <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-4 space-y-1">
       <div class="flex flex-wrap items-center gap-3">
-        <span class="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">{{ e.kind }}</span>
+        {# same kind coloring as admin_alerts.html #}<span class="text-xs px-1.5 py-0.5 rounded {% if e.kind == 'raised' %}bg-red-50 text-red-600{% elif e.kind == 'cleared' %}bg-green-50 text-green-700{% elif e.kind == 'offline' %}bg-amber-50 text-amber-700{% else %}bg-gray-100 text-gray-600{% endif %}">{{ e.kind }}</span>
         <span class="font-mono text-sm text-gray-700">{{ e.code }}</span>
         <span class="text-sm text-gray-700">{{ e.description }}</span>
         {% if e.product %}<span class="text-xs text-gray-400">{{ e.product }}</span>{% endif %}

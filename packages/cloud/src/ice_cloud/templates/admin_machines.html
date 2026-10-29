@@ -48,7 +48,7 @@
         <td class="p-3">
           {% if m.payment_enabled is none %}<span class="text-gray-400">—</span>
           {% elif m.payment_enabled %}<span class="text-green-700">On</span>
-          {% else %}<span class="text-red-600" title="{{ m.payment_reason or '' }}">Off</span>{% endif %}
+          {% else %}<span class="text-red-600" title="{{ m.payment_reason or '' }}">Off</span>{% if m.payment_reason %}<div class="text-xs text-gray-500">{{ m.payment_reason }}</div>{% endif %}{% endif %}
         </td>
         <td class="p-3 text-gray-600">{{ m.edge_build or "—" }}{% if m.ui_mismatch %}<div class="text-xs text-amber-600">UI differs</div>{% endif %}</td>
         <td class="p-3"><a href="/admin/alerts?machine={{ m.short }}" class="text-gray-700">{{ m.alerts_24h }}</a></td>

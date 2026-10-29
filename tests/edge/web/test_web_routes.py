@@ -939,7 +939,7 @@ class TestFaultsUI:
         assert r.status_code == 200
         assert "ICE-301" in r.text
         # The fault row names both the code and the locked product's name.
-        assert re.search(r"ICE-301</span>.*?· Ice</span>", r.text, flags=re.DOTALL)
+        assert re.search(r"ICE-301 · \w+</span>.*?· Ice</span>", r.text, flags=re.DOTALL)
         assert "Issues Detected" in r.text
 
     def test_status_issues_headline_uses_hero_token(self, client):

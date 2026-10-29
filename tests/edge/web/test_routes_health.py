@@ -261,7 +261,8 @@ class TestSubsystemDetailLevel:
         assert "card_reader" in resp.text
         assert "card reader" in resp.text  # label: underscores spaced
         assert "error" in resp.text
-        assert "bg-red-600" in resp.text
+        assert "border-slate-400" in resp.text
+        assert "bg-red-600" not in resp.text
 
     def test_never_seen_board_shows_gray_not_green(self, client):
         """Task 7 brief, test (c): a signal recorded with no heartbeat ever

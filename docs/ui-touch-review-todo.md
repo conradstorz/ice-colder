@@ -82,7 +82,7 @@ with consequence wording in the confirm state.
 
 ## 3. Color-only / wrong-semantics state (colorblind safety)
 
-- [ ] **H** `partials/subsystem_live.html:16` — digital **off = `bg-red-600`**:
+- [x] **H** `partials/subsystem_live.html:16` — digital **off = `bg-red-600`**:
   a healthy idle board (agitator, heater, fan correctly off) shows a wall of red.
   Neutral slate/outline for off; keep red for fault states.
 - [ ] **H** [deferred: /screen pin] `partials/screen_body.html:31-33` — kiosk subsystem health is 12px
@@ -91,35 +91,39 @@ with consequence wording in the confirm state.
 - [ ] **M** [deferred: /screen pin] `partials/screen_body.html:13-15` — an unavailable product kind uses
   `bg-slate-700`, identical to unknown; out-of-ice looks neutral at distance.
   Tint `ok == false` red/amber.
-- [ ] **M** `health_availability.html:26-28` — Ice/Water cards show state by dot
+- [x] **M** `health_availability.html:26-28` — Ice/Water cards show state by dot
   color alone when ok. Print the word ("Available"/"Unavailable") like screen_body.
-- [ ] **M** `partials/status_fragment.html:19-22,113-116` — fault severity is
+- [x] **M** `partials/status_fragment.html:19-22,113-116` — fault severity is
   chip background color only (red/orange/amber). Append the severity word or icon.
-- [ ] **M** cloud `fleet.html:10` — Online renders gray while
+- [x] **M** cloud `fleet.html:10` — Online renders gray while
   `partials/admin_status_badge.html` renders Online green. Align on the admin badge.
-- [ ] **M** cloud `alerts.html:13` — owner-facing event-kind chips are always
+- [x] **M** cloud `alerts.html:13` — owner-facing event-kind chips are always
   gray while `admin_alerts.html:21` colors the same kinds (raised=red,
   cleared=green, offline=amber). Reuse the admin coloring.
 
 ## 4. Hover-only information (`title=` is dead on touch)
 
-- [ ] **M** `base.html:79` — the context badge's full machine name lives only in
+- [x] **M** `base.html:79` — the context badge's full machine name lives only in
   `title=` past `max-w-[10rem]`. Surface the full label on the page it links to,
   or a tap state.
-- [ ] **M** `health.html:18` — the cloud fingerprint's label exists only in
+  _Done with no template change: /me already prints the untruncated `machine_label.display` ("role on name"), and the badge keeps its title._
+- [x] **M** `health.html:18` — the cloud fingerprint's label exists only in
   `title="Cloud fingerprint"`; operators see an unlabeled mono string. Visible
   micro-label.
-- [ ] **M** `reports_period.html:43-46` — the disabled "Day" tab's explanation
+- [x] **M** `reports_period.html:43-46` — the disabled "Day" tab's explanation
   lives only in `title=`; on touch the gray tab just looks broken. Visible
   one-line note when range=all, or hide the tab there.
-- [ ] **M** cloud `admin_machines.html:50` — payment "Off" reason is only in
+- [x] **M** cloud `admin_machines.html:50` — payment "Off" reason is only in
   `title=`; an admin on a phone can never see why. Render as a second line.
-- [ ] **L** `products.html:22-23` / `product.html:21-22` — lockout chip:
+- [x] **L** `products.html:22-23` / `product.html:21-22` — lockout chip:
   `title="Locked out"` is hover-only and the fault code (e.g. CFG-101) is
   unexplained. Link the chip to `/health/faults`.
+  _Done: product.html chip links; products.html chip is inside a card link (no nested anchors), so the dead title was dropped and the visible "locked · CODE" text kept._
 - [ ] **L** `health.html:14` — full commit only in `title=` (short form shown).
+  _Left as is (task 3): short hash is the shown identity; full hash is non-essential._
 - [ ] **L** cloud `partials/admin_overview.html:85` — full commit + build time
   only via `title=` (non-essential; short hash shown).
+  _Left as is (task 3): non-essential, short hash shown._
 
 ## 5. Codes, fingerprints and share-links need copy/select affordances
 
