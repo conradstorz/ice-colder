@@ -52,7 +52,7 @@
         {% for title, url in crumb_list %}
           {% if not loop.last %}
           <a href="{{ url }}"
-             class="shrink-0 text-sm text-slate-300 hover:text-white whitespace-nowrap{% if loop.revindex > 2 %} max-md:hidden{% endif %}">{{ title }}</a>
+             class="touch-target px-2 rounded-md shrink-0 text-sm text-slate-300 hover:text-white whitespace-nowrap{% if loop.revindex > 2 %} max-md:hidden{% endif %}">{{ title }}</a>
           <span class="shrink-0 text-slate-500{% if loop.revindex > 2 %} max-md:hidden{% endif %}" aria-hidden="true">/</span>
           {% else %}
           <span class="shrink-0 text-sm font-semibold text-white truncate" aria-current="page">{{ title }}</span>
@@ -76,7 +76,7 @@
            for the same fix on the re-rendered copy. #}
         <span id="pill" hx-get="/pill" hx-trigger="load, every 5s" hx-swap="outerHTML" hx-target="this"
               class="inline-flex items-center rounded-full bg-slate-400 text-white text-xs font-semibold uppercase tracking-wide px-2 py-1">…</span>
-      </a>{% if badge %}{% set badge_tones = {"local": "bg-slate-600 text-white", "remote": "bg-sky-700 text-white", "cloud": "bg-sky-700 text-white", "offline": "bg-amber-500 text-amber-950"} %}{% set badge_cls = "inline-flex items-center rounded-full text-xs font-semibold px-2 py-1 shrink-0 " ~ badge_tones.get(badge.tone, badge_tones["local"]) %}{% if badge.url %}<a id="context-badge" href="{{ badge.url }}"{% if badge.external %} hx-boost="false"{% endif %} title="{{ badge.title or badge.label }}" class="{{ badge_cls }}"><span class="truncate max-w-[6rem] md:max-w-[10rem]">{{ badge.label }}</span></a>{% else %}<span id="context-badge" title="{{ badge.title or badge.label }}" class="{{ badge_cls }}"><span class="truncate max-w-[6rem] md:max-w-[10rem]">{{ badge.label }}</span></span>{% endif %}{% endif %}{% if current_user and hat_switch %}<a id="hat-switch" href="{{ hat_switch.url }}"
+      </a>{% if badge %}{% set badge_tones = {"local": "bg-slate-600 text-white", "remote": "bg-sky-700 text-white", "cloud": "bg-sky-700 text-white", "offline": "bg-amber-500 text-amber-950"} %}{% set badge_cls = "inline-flex items-center rounded-full text-xs font-semibold px-2 py-1 shrink-0 " ~ badge_tones.get(badge.tone, badge_tones["local"]) %}{% if badge.url %}<a id="context-badge" href="{{ badge.url }}"{% if badge.external %} hx-boost="false"{% endif %} title="{{ badge.title or badge.label }}" class="touch-target {{ badge_cls }}"><span class="truncate max-w-[6rem] md:max-w-[10rem]">{{ badge.label }}</span></a>{% else %}<span id="context-badge" title="{{ badge.title or badge.label }}" class="{{ badge_cls }}"><span class="truncate max-w-[6rem] md:max-w-[10rem]">{{ badge.label }}</span></span>{% endif %}{% endif %}{% if current_user and hat_switch %}<a id="hat-switch" href="{{ hat_switch.url }}"
          class="touch-target px-3 rounded-md text-sm font-medium text-white hover:bg-slate-700 shrink-0">{{ hat_switch.label }}</a>{% endif %}{% if current_user %}<a href="/me" class="touch-target px-2 shrink-0 flex items-center gap-1" aria-label="Signed in as {{ current_user.name }}">{% if current_user.role_label %}<span class="inline-flex items-center rounded-full bg-slate-600 text-white text-xs font-semibold uppercase tracking-wide px-2 py-1">{{ current_user.role_label }}</span>{% endif %}<span class="max-md:hidden text-sm text-slate-200 truncate max-w-[10rem]">{{ current_user.name }}</span></a>{% endif %}
 
       <button hx-post="/logout"

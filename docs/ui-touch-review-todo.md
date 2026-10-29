@@ -302,65 +302,66 @@ of these. This is the biggest touch-flow gap across both apps.
 
 ## 11. Undersized / indistinguishable tap targets
 
-- [ ] **H** cloud `fleet.html:16,19` — "N alerts / 24 h" and "People" are bare
+- [x] **H** cloud `fleet.html:16,19` — "N alerts / 24 h" and "People" are bare
   `text-xs` links (~16px tall) with no underline, indistinguishable from the
   adjacent non-link spans. `touch-target` padding + link affordance.
-- [ ] **M** cloud `fleet.html:6-25` — the machine row is a flex-wrap soup at
+- [x] **M** cloud `fleet.html:6-25` — the machine row is a flex-wrap soup at
   360px and only the small "Select" button navigates. Make the whole card
   tappable (like edge `users.html` rows), metadata on a second line.
-- [ ] **M** cloud `fleet.html:30` — "Claim a machine" (the primary action for a
+- [x] **M** cloud `fleet.html:30` — "Claim a machine" (the primary action for a
   new user) is a bare text-sm gray link. Promote to a button, especially when
   the machine list is empty.
-- [ ] **M** `base.html:54-56` — breadcrumb links are bare `text-sm` anchors
+- [x] **M** `base.html:54-56` — breadcrumb links are bare `text-sm` anchors
   (~20px tall) packed at `gap-1`. Give crumbs `py-2 px-1` / touch-target height.
-- [ ] **M** `base.html:79` — `#context-badge` is `text-xs px-2 py-1` (~24px)
+- [x] **M** `base.html:79` — `#context-badge` is `text-xs px-2 py-1` (~24px)
   with no `touch-target`, unlike every other bar control. Add it.
-- [ ] **M** report range tabs `px-4 py-2.5` ≈40px tall (all reports pages, incl.
+- [x] **M** report range tabs `px-4 py-2.5` ≈40px tall (all reports pages, incl.
   `reports.html:15-25`) — below the shell's 44-48px convention. `py-3` /
   `min-h-[44px]`. (Wrapping: §1.)
-- [ ] **M** `reports_product.html:43-45` — only the product-name text (~20px) is
+- [x] **M** `reports_product.html:43-45` — only the product-name text (~20px) is
   the link into the per-sku report. Make the whole row/first cell the tap target.
-- [ ] **M** `me.html:17,21` — "Choose one" (/fleet) and "Admin dashboard"
+- [x] **M** `me.html:17,21` — "Choose one" (/fleet) and "Admin dashboard"
   (/admin) are bare underline links — the page's only navigation in those
   states. Style as padded buttons/chips.
 
 ## 12. Consistency and small cleanups
 
-- [ ] **M** `partials/tile.html:25,28` — Controls and Settings share a
+- [x] **M** `partials/tile.html:25,28` — Controls and Settings share a
   byte-identical gear icon on the primary nav. Distinct glyph for Controls.
-- [ ] **L** Pass/Fail verdict form duplicated verbatim in
+- [x] **L** Pass/Fail verdict form duplicated verbatim in
   `partials/test_result_card.html` and `partials/test_sale_result.html` —
   extract a shared partial.
-- [ ] **L** error-notice roles: reports pages use `role="status"/"alert"`
+- [x] **L** error-notice roles: reports pages use `role="status"/"alert"`
   but settings/product `{% if error %}` paragraphs have none (e.g.
   `settings_machine.html:17-19`, `product_catalog.html:7-9`).
-- [ ] **L** `partials/keypad.html:59-63,75-83` — back-off countdown stops at
+- [x] **L** `partials/keypad.html:59-63,75-83` — back-off countdown stops at
   "Try again in 0 s"; swap the text at 0 ("You can try again now").
-- [ ] **L** `settings_payments.html:47-49` — "PayPal is not configured" is a
+- [x] **L** `settings_payments.html:47-49` — "PayPal is not configured" is a
   dead end (no inputs render when unconfigured). Render empty fields or say
   where configuration happens.
-- [ ] **L** `settings_contacts.html:121` — tech email/phone line has no
+- [x] **L** `settings_contacts.html:121` — tech email/phone line has no
   truncate/break; long email overflows at 360px.
-- [ ] **L** `partials/tests_hold_banner.html:34` — `holder_name` `font-mono`
+- [x] **L** `partials/tests_hold_banner.html:34` — `holder_name` `font-mono`
   with no `break-all`; a raw session id fallback overflows at 360px.
-- [ ] **L** "Email this report" label doesn't say where it goes; rename to
+- [x] **L** "Email this report" label doesn't say where it goes; rename to
   "Email me this report (CSV)".
-- [ ] **L** `tests_subsystem.html:46-49` — actuator Run (one-tap, defensible
+- [x] **L** `tests_subsystem.html:46-49` — actuator Run (one-tap, defensible
   behind the lease) is visually identical to harmless Automatic commands;
   differentiate.
-- [ ] **L** `partials/test_run_all_table.html:12-33` — `px-5 py-3` padding
+- [x] **L** `partials/test_run_all_table.html:12-33` — `px-5 py-3` padding
   guarantees horizontal scroll at 360px; `px-3` + hide the (often "—") Detail
   column on phones.
 - [ ] **L** cloud `admin_machines.html:18-67` — 9-column table: consider a card
   layout under `md` or a sticky first column (overflow-x-auto already present).
-- [ ] **L** cloud `partials/admin_overview.html:44-63` — Owners panel table has
+  (Skipped: optional; overflow-x-auto already makes it reachable.)
+- [x] **L** cloud `partials/admin_overview.html:44-63` — Owners panel table has
   no overflow wrapper and no email truncation → horizontal overflow at 360px.
   `overflow-x-auto` or `truncate max-w-[12ch]` on the email cell.
-- [ ] **L** cloud `fleet.html:18` — role as bare `text-xs` word where the edge
+- [x] **L** cloud `fleet.html:18` — role as bare `text-xs` word where the edge
   uses role chips.
-- [ ] **L** cloud `claim.html:21-22` — Claim (the page's only action) styled as
+- [x] **L** cloud `claim.html:21-22` — Claim (the page's only action) styled as
   a secondary border button where edge primaries are solid.
-- [ ] **L** cloud `no_report.html` / `not_remote.html` — dead-end sentence; add
+- [x] **L** cloud `no_report.html` / `not_remote.html` — dead-end sentence; add
   a "Back to fleet" link.
 
 ---

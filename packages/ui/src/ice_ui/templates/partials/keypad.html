@@ -57,7 +57,7 @@
     <p class="text-red-600 text-sm" role="alert">{{ error }}</p>
   {% endif %}
   {% if wait_seconds %}
-    <p class="text-amber-700 text-sm" role="alert">
+    <p id="countdown-msg" class="text-amber-700 text-sm" role="alert">
       Too many attempts. Try again in <span id="countdown">{{ wait_seconds }}</span> s.
     </p>
   {% endif %}
@@ -78,7 +78,11 @@
         var t = setInterval(function () {
           left -= 1;
           c.textContent = left;
-          if (left <= 0) { clearInterval(t); }
+          if (left <= 0) {
+            clearInterval(t);
+            var m = document.getElementById('countdown-msg');
+            if (m) { m.textContent = 'You can try again now.'; }
+          }
         }, 1000);
       }
     })();

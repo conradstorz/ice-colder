@@ -27,23 +27,5 @@
     Path: {{ result.path | join(" → ") }}
   </div>
 
-  <p class="text-sm text-gray-700">Watch the machine.</p>
-  <div id="verdict-{{ result.run_id }}">
-    <form hx-post="/tests/runs/{{ result.run_id }}/verdict" hx-target="#verdict-{{ result.run_id }}"
-          hx-swap="outerHTML" class="space-y-2">
-      <label for="note-{{ result.run_id }}" class="sr-only">Note (optional)</label>
-      <input type="text" id="note-{{ result.run_id }}" name="note" placeholder="Optional note"
-             class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900">
-      <div class="flex gap-6">
-        <button type="submit" name="verdict" value="pass"
-                class="touch-target px-4 rounded-md bg-green-600 text-white text-sm font-medium hover:bg-green-700">
-          Pass
-        </button>
-        <button type="submit" name="verdict" value="fail"
-                class="touch-target px-4 rounded-md bg-red-600 text-white text-sm font-medium hover:bg-red-700">
-          Fail
-        </button>
-      </div>
-    </form>
-  </div>
+  {% with verdict_run_id=result.run_id %}{% include "partials/test_verdict_form.html" %}{% endwith %}
 </div>

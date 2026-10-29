@@ -14,11 +14,11 @@
       {% elif current_user.role_label %}
       Role: <strong>{{ current_user.role_label }}</strong>
       {% else %}
-      No machine selected <a href="/fleet" class="underline">Choose one</a>
+      No machine selected <a href="/fleet" class="touch-target inline-flex px-4 rounded-md border border-gray-300 bg-white text-sm font-medium text-gray-800 hover:bg-gray-50">Choose one</a>
       {% endif %}
     </p>
     {% if is_platform_admin %}
-    <p class="text-sm text-gray-500">Platform admin <a href="/admin" class="underline">Admin dashboard</a></p>
+    <p class="text-sm text-gray-500">Platform admin <a href="/admin" class="touch-target inline-flex px-4 rounded-md border border-gray-300 bg-white text-sm font-medium text-gray-800 hover:bg-gray-50">Admin dashboard</a></p>
     {% endif %}
   </div>
 

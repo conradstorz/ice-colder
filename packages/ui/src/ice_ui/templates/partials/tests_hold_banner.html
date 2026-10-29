@@ -31,7 +31,7 @@
      class="bg-amber-50 rounded-xl border border-amber-200 shadow-sm p-4 flex flex-wrap items-center gap-3">
   {% if hold %}
   <span class="text-sm text-amber-800">
-    Out of service since {{ started_at_hhmm }}, held by <span class="font-mono">{{ holder_name }}</span>{% if not hold.standby %} (releases after 5 min idle){% endif %}
+    Out of service since {{ started_at_hhmm }}, held by <span class="font-mono break-all">{{ holder_name }}</span>{% if not hold.standby %} (releases after 5 min idle){% endif %}
   </span>
   {% if held_by_me %}
   <button hx-post="/tests/end" hx-target="#tests-hold" hx-swap="outerHTML"

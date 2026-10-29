@@ -228,7 +228,7 @@ class TestVerdictGap:
         import ice_ui
 
         root = Path(ice_ui.__file__).parent / "templates" / "partials"
-        for name in ("test_result_card.html", "test_sale_result.html"):
+        for name in ("test_verdict_form.html",):
             text = (root / name).read_text(encoding="utf-8")
             assert "flex gap-6" in text and "flex gap-2" not in text, name
 
