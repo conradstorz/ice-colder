@@ -244,3 +244,59 @@ def test_purge_unclaimed_refused_for_non_admin_and_non_htmx(cloud, signer):
     _admin(cloud)
     assert cloud.post("/admin/purge-unclaimed").status_code >= 400
     assert repo.machine(signer.fingerprint) is not None
+
+
+def test_suspend_is_two_tap_and_gated(cloud, cloud_app):
+    repo = cloud.app.state.repo
+    victim = login(TestClient(cloud_app, follow_redirects=False), "victim@example.com")
+    _admin(cloud)
+    page = cloud.get("/admin/accounts")
+    base = f"/admin/accounts/{victim.id}/suspend"
+    # First tap only reaches the confirm GET; the POST is not on the page.
+    assert f'hx-get="{base}/confirm"' in page.text
+    assert f'hx-post="{base}"' not in page.text
+    confirm = cloud.get(f"{base}/confirm", headers=HX)
+    assert f'hx-post="{base}"' in confirm.text
+    assert "Cancel" in confirm.text and "locks them out" in confirm.text
+    assert confirm.text.index("Cancel") < confirm.text.index(f'hx-post="{base}"')
+    again = cloud.get(f"{base}/confirm?confirming=true", headers=HX)
+    assert f'hx-post="{base}"' in again.text
+    cancel = cloud.get(f"{base}/confirm?confirming=false", headers=HX)
+    assert f'hx-post="{base}"' not in cancel.text and "Suspend" in cancel.text
+    assert repo.account(victim.id).suspended_at is None
+    assert cloud.post(base, headers=HX).status_code == 200
+    assert repo.account(victim.id).suspended_at is not None
+    # Suspended accounts get the plain one-tap Unsuspend.
+    page = cloud.get("/admin/accounts")
+    assert f'hx-post="/admin/accounts/{victim.id}/unsuspend"' in page.text
+
+
+def test_suspend_confirm_refused_for_self_unknown_and_non_admin(cloud, cloud_app):
+    admin = _admin(cloud)
+    assert (
+        cloud.get(f"/admin/accounts/{admin.id}/suspend/confirm", headers=HX).status_code
+        == 400
+    )
+    assert (
+        cloud.get("/admin/accounts/nope/suspend/confirm", headers=HX).status_code == 404
+    )
+    assert cloud.get(f"/admin/accounts/{admin.id}/suspend/confirm").status_code >= 400
+    with TestClient(cloud_app, follow_redirects=False) as other:
+        login(other, "nobody@example.com")
+        r = other.get(f"/admin/accounts/{admin.id}/suspend/confirm", headers=HX)
+        assert r.status_code == 404
+
+
+def test_unbind_and_purge_confirms_state_consequences(cloud, signer):
+    repo = cloud.app.state.repo
+    owner = login(cloud, "owner@example.com")
+    fp = register(cloud, signer)
+    repo.claim_machine(fp, owner.id, cloud.app.state.now())
+    _admin(cloud)
+    base = f"/admin/machines/{short(signer)}/unbind"
+    text = cloud.get(f"{base}/confirm", headers=HX).text
+    assert "alert history" in text and "claim codes stay spent" in text
+    purge = cloud.get("/admin/purge-unclaimed/confirm", headers=HX).text
+    assert "Permanently deletes" in purge and "cannot be undone" in purge
+    page = cloud.get("/admin/machines").text
+    assert "Unbind removes a machine" in page

@@ -45,38 +45,38 @@ blocked until the owner decides to lift that guard.
 Route each through `partials/confirm_button.html` (or `hx-confirm` where noted),
 with consequence wording in the confirm state.
 
-- [ ] **H** `product.html:63-66` — Delete product is one tap, 8px (`gap-touch`)
+- [x] **H** `product.html:63-66` — Delete product is one tap, 8px (`gap-touch`)
   from Copy. Confirm ("Confirm delete <name>") and/or separate it from Copy.
-- [ ] **H** `user.html:103-105` — Delete user is one tap, 8px from Disable.
+- [x] **H** `user.html:103-105` — Delete user is one tap, 8px from Disable.
   Confirm with "they will lose access" wording.
-- [ ] **M-H** cloud `admin_accounts.html:17-18` — Suspend is one tap at the row
+- [x] **M-H** cloud `admin_accounts.html:17-18` — Suspend is one tap at the row
   edge; it locks a real owner out of their fleet. Two-tap confirm.
-- [ ] **M** `partials/tests_hold_banner.html:42-45` — "Take over" seizes another
+- [x] **M** `partials/tests_hold_banner.html:42-45` — "Take over" seizes another
   tech's maintenance lease in one tap, while the milder "Take out of service" on
   the same card is two-tap. Confirm, and state what happens to the other session.
-- [ ] **M** `tests.html:35-37` — "Run all" is one tap: acquires the lease
+- [x] **M** `tests.html:35-37` — "Run all" is one tap: acquires the lease
   (SVC-102, payment withdrawn machine-wide) and runs self_test on every board.
   Two-tap confirm.
-- [ ] **M** `setup_codes.html:53-56` — "Done" permanently destroys the plaintext
+- [x] **M** `setup_codes.html:53-56` — "Done" permanently destroys the plaintext
   emergency codes in one tap, as a full-width bottom button where a scrolling
   thumb lands. Confirm with "codes can never be shown again".
-- [ ] **M** `devices.html:45-48` — "Forget" (forces re-enrollment / burns an
+- [x] **M** `devices.html:45-48` — "Forget" (forces re-enrollment / burns an
   emergency code) is one tap, 8px from "Mark shared/personal". At least `hx-confirm`.
-- [ ] **M** `partials/confirm_button.html:46-50` — red Confirm and Cancel sit
+- [x] **M** `partials/confirm_button.html:46-50` — red Confirm and Cancel sit
   `gap-2` (8px) apart. Widen to `gap-4`; keep Cancel left / Confirm right
   consistently.
-- [ ] **M** `partials/test_result_card.html:42-49` / `test_sale_result.html:37-44`
+- [x] **M** `partials/test_result_card.html:42-49` / `test_sale_result.html:37-44`
   — Pass (green) and Fail (red) are opposite verdicts 8px apart, recorded with no
   undo. Widen the gap or add undo on the recorded state.
-- [ ] **M** `inventory.html:8-17` — Collect Cash confirm says only "Confirm
+- [x] **M** `inventory.html:8-17` — Collect Cash confirm says only "Confirm
   Collection": no expected amount, no "permanent record" consequence. Render
   "Confirm collection of ~$X expected cash — this records a permanent collection".
-- [ ] **M** cloud `admin_machines.html:56-58` — Unbind's confirm never states
+- [x] **M** cloud `admin_machines.html:56-58` — Unbind's confirm never states
   consequences (owner removed, techs and alert history deleted, claim hashes
   kept); "unbind" itself is jargon. One explanatory sentence near the control.
-- [ ] **L-M** cloud `admin_machines.html:12` — "Purge all unclaimed" confirm
+- [x] **L-M** cloud `admin_machines.html:12` — "Purge all unclaimed" confirm
   lacks consequence wording (gone forever?); the adjacent count helps.
-- [ ] **L** `partials/confirm_command.html:21-25` — shutdown/restart's first-tap
+- [x] **L** `partials/confirm_command.html:21-25` — shutdown/restart's first-tap
   button is the default `bg-slate-800`, identical to benign primaries; tone
   destructive commands' first-tap button.
 
