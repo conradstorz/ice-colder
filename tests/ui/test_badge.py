@@ -100,7 +100,7 @@ def test_badge_truncates_and_titles_with_label(url):
     assert "truncate" not in chip
     assert el.attrs.get("title") == long_label
     # the ellipsis lives on an inner block-ish span, not the inline-flex chip
-    assert f'<span class="truncate max-w-[10rem]">{long_label}</span>' in html
+    assert f'<span class="truncate max-w-[6rem] md:max-w-[10rem]">{long_label}</span>' in html
 
 
 def test_badge_label_is_escaped():

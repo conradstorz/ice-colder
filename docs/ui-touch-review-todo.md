@@ -19,24 +19,24 @@ blocked until the owner decides to lift that guard.
 
 ## 1. Phone-width blockers (content unreachable at 360px)
 
-- [ ] **H** `partials/status_fragment.html:36,130` — hero stats block
+- [x] **H** `partials/status_fragment.html:36,130` — hero stats block
   (`flex gap-8 text-sm text-right ml-8`: Payment / State / Escrow / Last Payment)
   never wraps inside the card's `overflow-hidden`; Escrow and Last Payment are
   clipped invisible on phones. Stack below the title at small widths
   (`flex-col sm:flex-row` or `flex-wrap`, drop `ml-8` on phones).
-- [ ] **H** `reports_period.html:20-30`, `reports_product.html:17-27`,
+- [x] **H** `reports_period.html:20-30`, `reports_product.html:17-27`,
   `reports_product_sku.html:40-50`, `reports_method.html:16-25` — the five range
   tabs (~440px total, `px-4 py-2.5`) sit in a non-wrapping flex row inside the
   card's `overflow-hidden` (e.g. `reports_period.html:17`); "12 Months" and
   "All Time" are unreachable on phones — not scrollable, just gone. Add
   `flex-wrap`, give the strip its own `overflow-x-auto`, or collapse to a
   `<select>` below `md`.
-- [ ] **H** `base.html:35-83` — every bar item except the breadcrumb is
+- [x] **H** `base.html:35-83` — every bar item except the breadcrumb is
   `shrink-0` (Home, Back, pill, badge up to `max-w-[10rem]`, role chip, Lock);
   the current-page title truncates to zero and the fixed items can exceed the
   viewport. Hide Home below `md` (Back suffices), cap the badge at ~`max-w-[6rem]`
   below `md`, or collapse the role chip.
-- [ ] **H** cloud `people.html:12` (and `:54` pending list) — the invite URL is
+- [x] **H** cloud `people.html:12` (and `:54` pending list) — the invite URL is
   unbroken `font-mono`; it overflows the card and forces horizontal page scroll,
   and "Send this link" has no copy affordance. Add `break-all` + a copy button.
 

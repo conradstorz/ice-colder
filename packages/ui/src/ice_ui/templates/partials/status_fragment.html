@@ -3,7 +3,7 @@
 <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
   <div class="flex">
     <div class="w-1 bg-green-500 flex-shrink-0"></div>
-    <div class="flex items-start justify-between flex-1 p-5">
+    <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between flex-1 min-w-0 p-5">
       <div>
         <div class="flex items-center gap-2">
           <span class="w-2.5 h-2.5 rounded-full bg-green-500 flex-shrink-0"></span>
@@ -33,7 +33,7 @@
           {% endif %}
         </div>
       </div>
-      <div class="flex gap-8 text-sm text-right ml-8">
+      <div class="flex flex-wrap gap-x-8 gap-y-3 text-sm md:text-right md:ml-8">
         <div>
           <div class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">Payment</div>
           {% if payment_enabled is none %}
@@ -93,7 +93,7 @@
 <div class="{{ banner_bg }} rounded-xl border shadow-sm overflow-hidden">
   <div class="flex">
     <div class="w-1 {{ banner_accent }} flex-shrink-0"></div>
-    <div class="flex items-start justify-between flex-1 p-5">
+    <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between flex-1 min-w-0 p-5">
       <div>
         <div class="flex items-center gap-2">
           <span class="w-2.5 h-2.5 rounded-full {{ banner_accent }} flex-shrink-0"></span>
@@ -127,7 +127,7 @@
           {% endif %}
         </div>
       </div>
-      <div class="flex gap-8 text-sm text-right ml-8">
+      <div class="flex flex-wrap gap-x-8 gap-y-3 text-sm md:text-right md:ml-8">
         <div>
           <div class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">Payment</div>
           {% if payment_enabled is none %}

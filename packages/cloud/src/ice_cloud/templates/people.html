@@ -9,7 +9,7 @@
   {% if new_link %}
   <div class="p-3 border border-amber-200 bg-amber-50 rounded-lg">
     <p class="font-medium text-amber-800 text-sm">Invitation created. Send this link to the invitee:</p>
-    <p class="mt-1 font-mono text-amber-700 text-sm">{{ new_link }}</p>
+    <p class="mt-1 font-mono text-amber-700 text-sm break-all select-all">{{ new_link }}</p>
   </div>
   {% endif %}
 
@@ -51,7 +51,7 @@
       <li class="flex flex-wrap items-center gap-3">
         <span class="text-sm text-gray-700">{{ i.email }}</span>
         <span class="text-xs text-gray-400">{{ "all my machines" if i.fleet else "this machine" }}</span>
-        <span class="font-mono text-xs text-gray-500">{{ i.link }}</span>
+        <span class="font-mono text-xs text-gray-500 break-all select-all min-w-0">{{ i.link }}</span>
         <button hx-post="/machines/{{ short }}/people/invitations/{{ i.token }}/cancel" hx-target="closest li" hx-swap="outerHTML"
                 class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50 ml-auto">Cancel</button>
       </li>

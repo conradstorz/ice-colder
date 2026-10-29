@@ -17,7 +17,7 @@
   <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
 
     {# Range tabs #}
-    <div class="flex border-b border-gray-200 px-1 pt-1">
+    <div class="flex flex-wrap border-b border-gray-200 px-1 pt-1">
       {% for r, label in [("7d", "7 Days"), ("30d", "30 Days"), ("90d", "90 Days"), ("12m", "12 Months"), ("all", "All Time")] %}
       <a
         href="/reports/period?range={{ r }}"
@@ -37,7 +37,7 @@
        falls back to the range's default bucket for this exact
        combination) -- this only keeps an operator from ever generating
        the link in the first place. #}
-    <div class="flex border-b border-gray-200 px-1 pt-1">
+    <div class="flex flex-wrap border-b border-gray-200 px-1 pt-1">
       {% for b, label in [("day", "Day"), ("week", "Week"), ("month", "Month")] %}
       {% if b == "day" and range == "all" %}
       <span
