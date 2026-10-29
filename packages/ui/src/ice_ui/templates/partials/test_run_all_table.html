@@ -4,6 +4,8 @@
    exclusive: `refusal` is set only when the request never dispatched
    anything, `rows` otherwise ([] renders the empty-state row, never both
    states rendered at once). #}
+{% set oob = true %}
+{% include "partials/run_all_button.html" with context %}
 {% if refusal %}
 <div class="bg-amber-50 rounded-xl border border-amber-200 shadow-sm p-4 text-sm text-amber-800">
   Refused: {{ refusal }}

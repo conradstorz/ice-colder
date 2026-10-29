@@ -57,13 +57,10 @@
   </div>
 
   {% if "edit_catalog" in perms %}
-  <div class="flex gap-touch">
+  <div class="flex flex-wrap items-start gap-6">
     <a href="/products/{{ product.sku }}/copy"
        class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Copy</a>
-    <form hx-post="/products/{{ product.sku }}/delete" class="inline-flex">
-      <button type="submit"
-              class="touch-target px-4 rounded-md border border-red-200 text-red-600 text-sm font-medium hover:bg-red-50">Delete</button>
-    </form>
+    {% include "partials/product_delete.html" %}
   </div>
   {% endif %}
 </div>

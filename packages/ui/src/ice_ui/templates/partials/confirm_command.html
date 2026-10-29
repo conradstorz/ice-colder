@@ -22,4 +22,5 @@
 {% set confirm_label = label + " Machine" %}
 {% set confirm_url = "/controls/confirm/" + command %}
 {% set post_url = "/controls/" + command %}
+{% set tone = "danger" if command in ["restart", "shutdown"] else "" %}
 {% include "partials/confirm_button.html" with context %}

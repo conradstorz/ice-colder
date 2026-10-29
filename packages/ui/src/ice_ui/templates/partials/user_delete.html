@@ -1,0 +1,13 @@
+{# Two-tap Delete for one user. Included by user.html (first-tap state) and
+   rendered directly by GET /users/{id}/delete/confirm. Context: `target`
+   is the user record (user.html's own name for it); it is read into
+   `user_row` before `target` is rebound to confirm_button's selector. #}
+{% set user_row = target %}
+{% set target = "#user-delete" %}
+{% set label = "Delete" %}
+{% set tone = "danger" %}
+{% set confirm_label = "Confirm delete" %}
+{% set consequence = "Delete " ~ user_row.name ~ "? They will lose access and cannot sign in again." %}
+{% set post_url = "/users/" ~ user_row.id ~ "/delete" %}
+{% set confirm_url = "/users/" ~ user_row.id ~ "/delete/confirm" %}
+{% include "partials/confirm_button.html" with context %}

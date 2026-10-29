@@ -344,7 +344,10 @@ class TestLeaseHolderDisplay:
         resp = client.get("/tests")
         assert resp.status_code == 200
         assert "someone-else" in resp.text
-        assert 'hx-post="/tests/takeover"' in resp.text
+        # Take over is two-tap now: the page offers the confirm GET only;
+        # the hx-post appears once the confirm state is rendered.
+        assert 'hx-get="/tests/takeover/confirm"' in resp.text
+        assert 'hx-post="/tests/takeover"' not in resp.text
         assert 'hx-post="/tests/end"' not in resp.text
 
     def test_shows_end_for_the_holders_own_session(self, client, wired):

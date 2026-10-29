@@ -7,12 +7,7 @@
   {# Task 11: Cash collection from inventory level #}
   {% if "collect_cash" in perms %}
   <div class="flex justify-start">
-    {% set label = "Collect Cash" %}
-    {% set confirm_label = "Confirm Collection" %}
-    {% set post_url = "/inventory/collect" %}
-    {% set target = "#collect-cash-confirm" %}
-    {% set confirm_url = "/inventory/collect/confirm" %}
-    {% include "partials/confirm_button.html" with context %}
+    {% include "partials/collect_cash_button.html" %}
   </div>
   {% endif %}
 

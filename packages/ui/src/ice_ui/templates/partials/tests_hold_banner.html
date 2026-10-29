@@ -24,8 +24,8 @@
    <name>" -- holder_name already resolved through
    context.holder_display_name (falls back to the raw id) -- plus, for the
    opportunistic (non-standby) lease only, "(releases after 5 min idle)".
-   Return to service (POST /tests/end) for the holder, Take over (POST
-   /tests/takeover) otherwise.
+   Return to service (POST /tests/end) for the holder, a two-tap Take over
+   (GET /tests/takeover/confirm, then POST /tests/takeover) otherwise.
 #}
 <div id="tests-hold"
      class="bg-amber-50 rounded-xl border border-amber-200 shadow-sm p-4 flex flex-wrap items-center gap-3">
@@ -39,10 +39,14 @@
     Return to service
   </button>
   {% else %}
-  <button hx-post="/tests/takeover" hx-target="#tests-hold" hx-swap="outerHTML"
-          class="touch-target px-4 rounded-md border border-amber-300 text-sm font-medium text-amber-800 hover:bg-amber-100">
-    Take over
-  </button>
+  {% set label = "Take over" %}
+  {% set tone = "danger" %}
+  {% set confirm_label = "Confirm take over" %}
+  {% set consequence = holder_name ~ " loses the out-of-service hold and can no longer run tests; it becomes yours." %}
+  {% set post_url = "/tests/takeover" %}
+  {% set target = "#tests-hold" %}
+  {% set confirm_url = "/tests/takeover/confirm" %}
+  {% include "partials/confirm_button.html" with context %}
   {% endif %}
   {% else %}
   {% if refusal %}

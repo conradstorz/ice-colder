@@ -51,6 +51,7 @@
   {% if error %}<p class="text-red-600 text-sm" role="alert">{{ error }}</p>{% endif %}
 
   <button hx-post="/setup/codes/done" hx-target="main" hx-select="main" hx-swap="outerHTML"
+          hx-confirm="Have you written these codes down? They can never be shown again."
           class="w-full py-4 bg-blue-600 text-white rounded-xl">
     Done
   </button>

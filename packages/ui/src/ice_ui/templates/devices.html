@@ -35,14 +35,15 @@
       </div>
       <div class="text-sm text-gray-500">Last seen: {{ device.last_seen_at or "never" }}</div>
       {% if device.may_write %}
-      <div class="flex flex-wrap gap-touch">
+      <div class="flex flex-wrap gap-6">
         <form hx-post="/devices/{{ device.id }}/shared">
           <button type="submit"
                   class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">
             {% if device.shared %}Mark personal{% else %}Mark shared{% endif %}
           </button>
         </form>
-        <form hx-post="/devices/{{ device.id }}/forget">
+        <form hx-post="/devices/{{ device.id }}/forget"
+              hx-confirm="Forget {{ device.label }}? Everyone who used it must sign in again with a one-time code (emailed or emergency).">
           <button type="submit"
                   class="touch-target px-4 rounded-md border border-red-200 text-red-600 text-sm font-medium hover:bg-red-50">Forget</button>
         </form>

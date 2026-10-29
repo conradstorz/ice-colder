@@ -69,7 +69,7 @@ class TestCollectCashConfirmEndpoint:
         assert resp.status_code == 200
         assert "Collect Cash" in resp.text
         # In initial state, "Confirm" button should not be present
-        assert "Confirm Collection" not in resp.text
+        assert "Confirm collection" not in resp.text
 
     def test_confirm_endpoint_renders_confirm_pair_when_confirming_is_true(
         self, login_as
@@ -77,7 +77,7 @@ class TestCollectCashConfirmEndpoint:
         client = login_as(Role.owner)
         resp = client.get("/inventory/collect/confirm", params={"confirming": "true"})
         assert resp.status_code == 200
-        assert "Confirm Collection" in resp.text
+        assert "Confirm collection" in resp.text
         assert "Cancel" in resp.text
 
     def test_confirm_endpoint_renders_button_when_confirming_is_false(self, login_as):
@@ -86,7 +86,7 @@ class TestCollectCashConfirmEndpoint:
         assert resp.status_code == 200
         assert "Collect Cash" in resp.text
         # In false state, "Confirm" button should not be present
-        assert "Confirm Collection" not in resp.text
+        assert "Confirm collection" not in resp.text
 
     def test_confirm_endpoint_renders_confirm_pair_when_confirming_absent(
         self, login_as
@@ -95,8 +95,36 @@ class TestCollectCashConfirmEndpoint:
         client = login_as(Role.owner)
         resp = client.get("/inventory/collect/confirm")
         assert resp.status_code == 200
-        assert "Confirm Collection" in resp.text
+        assert "Confirm collection" in resp.text
         assert "Cancel" in resp.text
+
+    def test_confirm_states_expected_cash_and_permanence(
+        self, login_as, wired, recorder_with_db
+    ):
+        """Cash-class sales since the last collection are quoted; card is not."""
+        _seed_sales(
+            recorder_with_db, [{"cash_coin": 1.50, "card": 0.50}, {"cash_bill": 2.00}]
+        )
+        client = login_as(Role.owner)
+        resp = client.get("/inventory/collect/confirm")
+        assert resp.status_code == 200
+        assert "about $3.50 expected cash" in resp.text
+        assert "permanent collection" in resp.text
+
+    def test_confirm_without_recorder_still_warns_permanent(self, login_as):
+        client = login_as(Role.owner)
+        resp = client.get("/inventory/collect/confirm")
+        assert resp.status_code == 200
+        assert "$" not in resp.text
+        assert "permanent collection" in resp.text
+
+    def test_confirm_cancel_state_omits_consequence(
+        self, login_as, wired, recorder_with_db
+    ):
+        client = login_as(Role.owner)
+        resp = client.get("/inventory/collect/confirm?confirming=false")
+        assert "permanent" not in resp.text
+        assert "expected cash" not in resp.text
 
     def test_confirm_endpoint_allows_every_role(self, login_as):
         """All four roles have collect_cash, so this should pass for all."""
@@ -419,9 +447,9 @@ class TestConfirmButtonFlow:
         resp = client.get("/inventory/collect/confirm", params={"confirming": "false"})
         assert resp.status_code == 200
 
-        # Verify it renders the initial state (no "Confirm Collection" text)
+        # Verify it renders the initial state (no "Confirm collection" text)
         assert "Collect Cash" in resp.text
-        assert "Confirm Collection" not in resp.text
+        assert "Confirm collection" not in resp.text
 
         # No row should be recorded
         rows = _read_cash_collections(recorder_with_db.db_path)
@@ -440,7 +468,7 @@ class TestConfirmButtonFlow:
             "/inventory/collect/confirm", params={"confirming": "true"}
         )
         assert confirm_resp.status_code == 200
-        assert "Confirm Collection" in confirm_resp.text
+        assert "Confirm collection" in confirm_resp.text
 
         # Verify no row is recorded yet
         rows = _read_cash_collections(recorder_with_db.db_path)

@@ -32,10 +32,7 @@
   </div>
 
   <div class="grid grid-cols-1 md:grid-cols-2 gap-touch">
-    <button hx-post="/tests/run-all" hx-target="#run-all-result" hx-swap="innerHTML"
-            class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700 w-full">
-      Run all
-    </button>
+    {% include "partials/run_all_button.html" %}
     <a href="/tests/sale"
        class="flex flex-col items-start gap-2 rounded-xl border p-4 bg-white border-gray-200 shadow-sm hover:bg-slate-50 touch-target">
       <div class="text-tile-title font-semibold text-gray-900">Simulated sale</div>

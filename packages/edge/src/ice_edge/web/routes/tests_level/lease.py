@@ -151,6 +151,32 @@ async def tests_standby_confirm(
     )
 
 
+@router.get(
+    "/tests/takeover/confirm",
+    response_class=HTMLResponse,
+    dependencies=[Depends(web_auth.require(Permission.run_tests))],
+)
+async def tests_takeover_confirm(
+    request: Request, confirming: str | None = Query(default=None)
+):
+    """Same contract as tests_standby_confirm, for "Take over": re-renders
+    the whole service-state card with the Confirm/Cancel pair (anything but
+    the literal "false") or the plain first-tap button ("false")."""
+    principal = web_auth.current_principal(request)
+    return templates.TemplateResponse(
+        request,
+        "partials/tests_hold_banner.html",
+        context.template_context(
+            request,
+            **_service_state(
+                context.machine_instance,
+                principal,
+                confirming=(confirming != "false"),
+            ),
+        ),
+    )
+
+
 # --- Task 13b: action routes ---------------------------------------
 
 
