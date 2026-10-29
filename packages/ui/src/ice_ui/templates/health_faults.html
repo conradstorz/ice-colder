@@ -7,6 +7,17 @@
    oob=False, since marking this div hx-swap-oob on a normal (boosted or full)
    page load would make htmx divert it out of the main-content swap entirely,
    leaving `main` rendered without its fault list. #}
+{# Refresh re-gets this level (inherits <body>'s hx-target="main"), like
+   health_logs.html: COM-10x faults auto-clear, so an operator needs a way to
+   re-read the list. Skipped in the oob render (it is not part of #fault-list).
+   No fetched-at stamp: this template is shared with the cloud portal and
+   tests/cloud/test_ui_parity.py needs byte-identical <main> output. #}
+{% if not oob %}
+<div class="flex justify-end mb-3">
+  <button hx-get="/health/faults"
+          class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">Refresh</button>
+</div>
+{% endif %}
 <div id="fault-list" class="space-y-2"{% if oob %} hx-swap-oob="true"{% endif %}>
   {% if faults %}
     {% for f in faults %}

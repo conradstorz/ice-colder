@@ -1,6 +1,7 @@
 """The /health/subsystems list, /health/subsystems/{name} detail and its /live fragment."""
 
 import time
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -37,7 +38,7 @@ def _window_context(name: str) -> dict:
     monitor = context.health_monitor
     signals = monitor.get_summary()["signals"].get(name, {}) if monitor else {}
     temp_range = monitor.temp_range if monitor else (-20.0, 80.0)
-    return build_window(
+    window = build_window(
         row,
         signals,
         context.availability,
@@ -51,6 +52,10 @@ def _window_context(name: str) -> dict:
         # ("Production code uses the OS's real timezone resolver").
         tz=None,
     )
+    # Server-rendered stamp inside the polled fragment: if polling dies the
+    # time stops moving, which is the only way a viewer can tell.
+    window["fetched_clock"] = datetime.now().strftime("%H:%M:%S")
+    return window
 
 
 @router.get(

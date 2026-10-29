@@ -469,12 +469,41 @@ class TestSubsystemLiveFragment:
         assert "Outputs" in resp.text
         assert "Controls" in resp.text
 
+    def test_carries_an_updated_stamp(self, client):
+        """A dead poll must be distinguishable from live data."""
+        resp = client.get("/health/subsystems/vending/live")
+        assert "Updated " in resp.text
+        assert 'id="live-updated"' in resp.text
+
+    def test_offline_board_says_so(self, client):
+        """No heartbeat ever seen -> the window is not alive; say it in words."""
+        resp = client.get("/health/subsystems/vending/live")
+        assert "Board offline" in resp.text
+
+    def test_command_chips_are_not_primary_button_styled(self, client):
+        resp = client.get("/health/subsystems/vending/live")
+        assert "bg-slate-800 text-white" not in resp.text
+
     def test_requires_view_status(self, login_as):
         from ice_edge.access.access import Role
 
         client = login_as(Role.loader)
         resp = client.get("/health/subsystems/vending/live")
         assert resp.status_code == 200
+
+
+class TestLogsFetchedStamp:
+    def test_logs_page_shows_fetched_time_next_to_refresh(self, client_as_tech):
+        resp = client_as_tech.get("/health/logs")
+        assert resp.status_code == 200
+        assert "Fetched " in resp.text
+
+
+class TestFaultsRefresh:
+    def test_faults_page_has_refresh_button(self, client):
+        resp = client.get("/health/faults")
+        assert 'hx-get="/health/faults"' in resp.text
+        assert "Refresh" in resp.text
 
 
 class TestFaultsLevel:

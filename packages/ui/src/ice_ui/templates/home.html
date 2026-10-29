@@ -16,8 +16,13 @@
      instead of itself — the first response to land would wipe out all of
      main's real content (innerHTML), and the next (the pill's outerHTML
      swap) would replace <main> itself with a bare span, destroying it
-     outright. #}
-  <div id="status-panel" hx-get="/status" hx-trigger="load, every 1s" hx-swap="innerHTML" hx-target="this">
+     outright.
+
+     min-h-[12rem] reserves roughly the healthy card (title, subtitle, "No
+     active faults" line and the payment/state/escrow row) so the 1s poll
+     does not shift the tile grid under a finger when the card grows a fault
+     list; a taller fault list still grows it, which is rare. #}
+  <div id="status-panel" class="min-h-[12rem]" hx-get="/status" hx-trigger="load, every 1s" hx-swap="innerHTML" hx-target="this">
     <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
       <div class="flex">
         <div class="w-1 bg-gray-200 flex-shrink-0"></div>

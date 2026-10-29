@@ -32,7 +32,12 @@
   </div>
 
   <div class="grid grid-cols-1 md:grid-cols-2 gap-touch">
-    {% include "partials/run_all_button.html" %}
+    {# The result container sits in the same grid cell, directly under the button,
+       so a long sequential run reports where the tap happened (not below the fold). #}
+    <div class="space-y-2">
+      {% include "partials/run_all_button.html" %}
+      <div id="run-all-result"></div>
+    </div>
     <a href="/tests/sale"
        class="flex flex-col items-start gap-2 rounded-xl border p-4 bg-white border-gray-200 shadow-sm hover:bg-slate-50 touch-target">
       <div class="text-tile-title font-semibold text-gray-900">Simulated sale</div>
@@ -44,7 +49,5 @@
       <div class="text-sm text-gray-500">Last 100 test runs</div>
     </a>
   </div>
-  <div id="run-all-result"></div>
-
 </div>
 {% endblock %}

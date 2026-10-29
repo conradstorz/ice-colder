@@ -25,9 +25,6 @@
 {% block body %}
 <div class="space-y-4">
 
-  {% if email_notice %}<p class="text-green-700 text-sm" role="status">{{ email_notice }}</p>{% endif %}
-  {% if email_error %}<p class="text-red-600 text-sm" role="alert">{{ email_error }}</p>{% endif %}
-
   <p class="text-sm text-gray-500">
     {{ product_name }} <span class="text-gray-400">{{ sku }}</span> --
     refunds and uptime are machine-wide figures and cannot be attributed to
@@ -127,6 +124,10 @@
       Email this report
     </button>
   </form>
+
+  {# Result sits right under the button so a phone user sees it without scrolling back up. #}
+  {% if email_notice %}<p class="text-green-700 text-sm" role="status">{{ email_notice }}</p>{% endif %}
+  {% if email_error %}<p class="text-red-600 text-sm" role="alert">{{ email_error }}</p>{% endif %}
 
 </div>
 {% endblock %}

@@ -1,8 +1,8 @@
 {# ice_edge/web/templates/partials/inventory_row.html
 
    One row in the Inventory restock list (task 8, spec §2 "Inventory
-   row"): name, a read-only slot field, and — for a tracked product only —
-   the current count and the four adjust buttons (-10 -1 +1 +10).
+   row"): name, the slot as plain text, and — for a tracked product only —
+   the current count and the four adjust buttons grouped -10 -1 | count | +1 +10.
 
    Included by inventory.html's list (`{% for row in rows %}{% include
    ... with context %}{% endfor %}`) and rendered standalone as the whole
@@ -11,30 +11,43 @@
    and the single-row response (task-8 brief resolution 7).
 
    Expects `row`: a dict with sku, name, slot, tracked (bool) and, only
-   when tracked is true, count (int). An untracked row carries no count
+   when tracked is true, count (int) and low (bool, count at or below
+   LOW_STOCK_THRESHOLD, computed by the route). An untracked row carries no count
    and renders no adjust buttons — so a loader can see what isn't being
    counted, without being invited to adjust it (brief resolution 8).
 #}
+{% macro adjust_button(row, delta) -%}
+<button type="button"
+        hx-post="/inventory/{{ row.sku }}/adjust"
+        hx-vals='{"delta": "{{ delta }}"}'
+        hx-target="#inventory-row-{{ row.sku }}"
+        hx-swap="outerHTML"
+        class="touch-target w-12 justify-center rounded-md border border-gray-300 text-sm font-semibold text-gray-700 hover:bg-gray-50">{{ "%+d"|format(delta) }}</button>
+{%- endmacro %}
 <div id="inventory-row-{{ row.sku }}"
-     class="touch-target flex-wrap justify-between rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+     class="touch-target flex-wrap justify-between gap-x-4 gap-y-3 rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
   <div class="min-w-0">
     <div class="text-base font-semibold text-gray-900 truncate">{{ row.name }}</div>
-    <input type="text" inputmode="numeric" disabled aria-label="Slot"
-           value="{{ row.slot }}"
-           class="mt-1 w-16 rounded border border-gray-200 bg-gray-50 px-2 py-1 font-mono text-xs text-gray-500">
+    <span class="mt-1 inline-block rounded bg-gray-100 px-2 py-0.5 font-mono text-xs text-gray-600">Slot {{ row.slot }}</span>
   </div>
   {% if row.tracked %}
-  <div class="flex items-center gap-touch">
-    <span id="inventory-count-{{ row.sku }}"
-          class="w-10 text-center text-base font-semibold text-gray-900">{{ row.count }}</span>
+  {% set tone = "text-red-700" if row.count <= 0 else ("text-amber-700" if row.low else "text-gray-900") %}
+  {# -10 -1 | count | +1 +10: the count sits between the decrement and increment
+     pairs so -1 and +1 are never adjacent; the group wraps on a narrow phone. #}
+  <div class="flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
     <div class="flex gap-touch">
-      {% for delta in (-10, -1, 1, 10) %}
-      <button type="button"
-              hx-post="/inventory/{{ row.sku }}/adjust"
-              hx-vals='{"delta": "{{ delta }}"}'
-              hx-target="#inventory-row-{{ row.sku }}"
-              hx-swap="outerHTML"
-              class="touch-target w-14 justify-center rounded-md border border-gray-300 text-sm font-semibold text-gray-700 hover:bg-gray-50">{{ "%+d"|format(delta) }}</button>
+      {% for delta in (-10, -1) %}
+      {{ adjust_button(row, delta) }}
+      {% endfor %}
+    </div>
+    <div class="flex min-w-[4.5rem] flex-col items-center">
+      <span id="inventory-count-{{ row.sku }}"
+            class="text-xl font-semibold {{ tone }}">{{ row.count }}</span>
+      <span class="text-xs font-medium {{ tone if tone != 'text-gray-900' else 'text-gray-500' }}">{% if row.count <= 0 %}empty{% elif row.low %}low stock{% else %}in stock{% endif %}</span>
+    </div>
+    <div class="flex gap-touch">
+      {% for delta in (1, 10) %}
+      {{ adjust_button(row, delta) }}
       {% endfor %}
     </div>
   </div>

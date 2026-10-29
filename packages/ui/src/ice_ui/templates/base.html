@@ -32,7 +32,7 @@
      swap updates the bar via the OOB match on #bar; a full page load just
      renders it in place and ignores hx-swap-oob, per §1.1. #}
   <header id="bar" hx-swap-oob="true"
-          class="relative h-14 bg-slate-800 text-white flex items-center gap-2 px-3 sticky top-0 z-20">
+          class="relative {{ 'min-h-14 flex-wrap py-1' if ui_notice else 'h-14' }} bg-slate-800 text-white flex items-center gap-2 px-3 sticky top-0 z-20">
     {% block bar_variant %}
       {% set show_home = level and level.parent is not none %}
       {% set show_back = (level is none) or show_home %}
@@ -82,11 +82,13 @@
       <button hx-post="/logout"
               class="touch-target px-3 rounded-md text-sm font-medium text-white hover:bg-slate-700 shrink-0">Lock</button>
 
-      {# Notice strip (e.g. UI digest mismatch) hangs just below the h-14 bar;
-         it lives inside #bar so the OOB swap replaces it, never stacks it. #}
+      {# Notice strip (e.g. UI digest mismatch) is an in-flow second row of
+         the bar (the bar wraps when it is present), so it pushes <main> down
+         instead of overlaying it. It lives inside #bar so the OOB swap
+         replaces it, never stacks it. #}
       {% if ui_notice %}
       <div id="ui-notice" role="status"
-           class="absolute left-0 right-0 top-14 z-10 bg-amber-50 text-amber-900 border-b border-amber-200 px-4 py-1 text-sm">{{ ui_notice }}</div>
+           class="basis-full grow -mx-3 bg-amber-50 text-amber-900 border-b border-amber-200 px-4 py-1 text-sm">{{ ui_notice }}</div>
       {% endif %}
     {% endblock %}
   </header>

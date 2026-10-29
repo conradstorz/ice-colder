@@ -124,6 +124,7 @@ def _row_for(product) -> dict:
     }
     if tracked:
         row["count"] = context.inventory_manager.get_count(product.sku)
+        row["low"] = row["count"] <= context.LOW_STOCK_THRESHOLD
     return row
 
 

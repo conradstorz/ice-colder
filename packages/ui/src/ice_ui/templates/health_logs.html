@@ -9,7 +9,8 @@
    relies on (see base.html for why that default is outerHTML, not
    innerHTML). #}
 <div class="space-y-3">
-  <div class="flex justify-end">
+  <div class="flex items-center justify-end gap-3">
+    {% if fetched_clock %}<span class="text-xs text-gray-500">Fetched {{ fetched_clock }}</span>{% endif %}
     <button hx-get="/health/logs"
             class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">Refresh</button>
   </div>

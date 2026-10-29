@@ -77,8 +77,45 @@ class TestInventoryRows:
         _add_untracked(wired, "UNT-3", name="Slotted Untracked", slot=9)
         resp = client.get("/inventory")
         assert resp.status_code == 200
-        assert 'value="4"' in resp.text
-        assert 'value="9"' in resp.text
+        assert "Slot 4" in resp.text
+        assert "Slot 9" in resp.text
+        # Plain text, not a disabled input that invites dead taps.
+        assert "<input" not in resp.text.split('id="inventory-row-TRK-2"')[1]
+
+    def test_count_has_a_visible_in_stock_label(self, client, wired):
+        _add_tracked(wired, "LBL-1", count=7)
+        resp = client.get("/inventory")
+        assert "in stock" in resp.text
+
+    def test_low_stock_is_amber_with_a_word(self, client, wired):
+        _add_tracked(wired, "LOW-1", count=context.LOW_STOCK_THRESHOLD)
+        resp = client.get("/inventory")
+        assert "text-amber-700" in resp.text
+        assert "low stock" in resp.text
+
+    def test_healthy_stock_has_no_low_marker(self, client, wired):
+        _add_tracked(wired, "OK-1", count=context.LOW_STOCK_THRESHOLD + 1)
+        resp = client.get("/inventory")
+        assert "low stock" not in resp.text
+        assert "text-amber-700" not in resp.text
+
+    def test_zero_is_red_and_says_empty(self, client, wired):
+        _add_tracked(wired, "ZERO-1", count=0)
+        resp = client.get("/inventory")
+        assert "text-red-700" in resp.text
+        assert "empty" in resp.text
+
+    def test_buttons_are_grouped_minus_pair_count_plus_pair(self, client, wired):
+        _add_tracked(wired, "GRP-1", count=5)
+        text = client.get("/inventory").text
+        order = [
+            text.index('"delta": "-10"'),
+            text.index('"delta": "-1"'),
+            text.index('id="inventory-count-GRP-1"'),
+            text.index('"delta": "1"'),
+            text.index('"delta": "10"'),
+        ]
+        assert order == sorted(order)
 
     def test_empty_state_shown_when_no_products(self, client):
         resp = client.get("/inventory")

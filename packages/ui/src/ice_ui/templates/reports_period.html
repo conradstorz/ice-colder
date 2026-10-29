@@ -11,9 +11,6 @@
 {% block body %}
 <div class="space-y-4">
 
-  {% if email_notice %}<p class="text-green-700 text-sm" role="status">{{ email_notice }}</p>{% endif %}
-  {% if email_error %}<p class="text-red-600 text-sm" role="alert">{{ email_error }}</p>{% endif %}
-
   <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
 
     {# Range tabs #}
@@ -122,6 +119,10 @@
       Email this report
     </button>
   </form>
+
+  {# Result sits right under the button so a phone user sees it without scrolling back up. #}
+  {% if email_notice %}<p class="text-green-700 text-sm" role="status">{{ email_notice }}</p>{% endif %}
+  {% if email_error %}<p class="text-red-600 text-sm" role="alert">{{ email_error }}</p>{% endif %}
 
 </div>
 {% endblock %}

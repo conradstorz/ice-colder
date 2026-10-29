@@ -1,1 +1,9 @@
-<p>{{ result }}</p>
+{# Result card for POST /controls/{command}. `ok` is True/False from the route
+   (a command that was refused, ignored or unknown is not a success); the card
+   uses the same toned-card pattern as test_refusal.html / comms_test_result.html
+   and leads with a state word so the outcome never rests on colour alone. #}
+{% if ok %}
+<div class="bg-green-50 rounded-xl border border-green-200 shadow-sm p-4 text-sm text-green-800" role="status"><span class="font-semibold">Done:</span> {{ result }}</div>
+{% else %}
+<div class="bg-red-50 rounded-xl border border-red-200 shadow-sm p-4 text-sm text-red-800" role="alert"><span class="font-semibold">Not done:</span> {{ result }}</div>
+{% endif %}

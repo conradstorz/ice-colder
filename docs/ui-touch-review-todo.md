@@ -191,58 +191,58 @@ of these. This is the biggest touch-flow gap across both apps.
 
 ## 7. Inert elements that look interactive / results that don't read
 
-- [ ] **M** `partials/subsystem_live.html:70-73` — command chips are inert
+- [x] **M** `partials/subsystem_live.html:70-73` — command chips are inert
   `<span>`s in exact primary-button styling (`rounded-md bg-slate-800 text-white
   px-3 py-1`); techs tap them and get silence. Restyle as flat non-interactive
   chips, or link to `/tests/{name}`.
-- [ ] **M** `partials/command_result.html:1` — the whole partial is an unstyled
+- [x] **M** `partials/command_result.html:1` — the whole partial is an unstyled
   `<p>`: success and failure look identical, unlike every other result card.
   Wrap in the shared toned-card pattern.
-- [ ] **L** `partials/inventory_row.html:22-24` — slot renders as a disabled
+- [x] **L** `partials/inventory_row.html:22-24` — slot renders as a disabled
   mini `<input>` (invites dead taps; `inputmode` on a disabled input is dead
   weight). Plain text "Slot 3" like `products.html:26`.
-- [ ] **L** `partials/tile.html:30-41` — a `coming_soon` tile looks disabled but
+- [x] **L** `partials/tile.html:30-41` — a `coming_soon` tile looks disabled but
   still navigates. Render as a non-anchor (or aria-disabled, no href).
 
 ## 8. Loader's phone flow (inventory)
 
-- [ ] **M** `partials/inventory_row.html:27-39` — the count + four `w-14` adjust
+- [x] **M** `partials/inventory_row.html:27-39` — the count + four `w-14` adjust
   buttons cluster is ~296px and doesn't wrap internally (borderline/overflow at
   360px inside card padding); `-1` and `+1` are adjacent at 8px so a restock tap
   can decrement. Split into −10/−1 … +1/+10 pairs with a wider center gap (count
   between them), allow 2×2 wrap on narrow screens.
-- [ ] **M** `partials/inventory_row.html:28-29` — no low-stock signal despite
+- [x] **M** `partials/inventory_row.html:28-29` — no low-stock signal despite
   `LOW_STOCK_THRESHOLD = 3`. Amber at ≤3, red "0 — empty" at 0.
-- [ ] **L** `partials/inventory_row.html:28-29` — the count is a bare number with
+- [x] **L** `partials/inventory_row.html:28-29` — the count is a bare number with
   no visible label, above another bare number (slot). Label it ("in stock: 7").
 
 ## 9. Feedback placement, staleness and layout shift
 
-- [ ] **M** "Email this report" result renders at the **top** of the page while
+- [x] **M** "Email this report" result renders at the **top** of the page while
   the button is below a long table (`reports_period.html:14-15` vs `:115-123`,
   same on the other report pages); on a phone the tap appears to do nothing.
   Render the notice adjacent to the button (as settings_comms does with
   `#test-email-result`).
-- [ ] **M** `home.html:20` — `#status-panel` polls `/status` every 1s and its
+- [x] **M** `home.html:20` — `#status-panel` polls `/status` every 1s and its
   height varies with the fault list, shifting the tile grid under a finger
   mid-tap. Give it a `min-h-*` for the tallest common state, or move variable
   fault detail behind the Health tile.
-- [ ] **M** `base.html:87-90` — `#ui-notice` is `absolute ... top-14` and
+- [x] **M** `base.html:87-90` — `#ui-notice` is `absolute ... top-14` and
   overlays the first ~30px of `<main>` instead of pushing content down. Make it
   a static in-flow strip.
-- [ ] **M** `health_subsystem.html:50-51` — the 2s-polled live window has no
+- [x] **M** `health_subsystem.html:50-51` — the 2s-polled live window has no
   updated-at stamp; a dead poll is indistinguishable from live data. Add one
   inside the polled fragment.
-- [ ] **M** `health_faults.html` — the fault list is static with no refresh
+- [x] **M** `health_faults.html` — the fault list is static with no refresh
   button or timestamp, yet COM-10x faults auto-clear; an operator can act on a
   stale row. Add refresh/timestamp like /health/logs.
 - [ ] **M** [deferred: /screen pin] `screen.html:12` — the kiosk's 5s poll has no clock/updated stamp; a
   frozen screen keeps showing stale "Payment Enabled". Render a server timestamp
   or an htmx-error offline banner.
-- [ ] **M** `partials/subsystem_live.html` — when `window.alive` is false,
+- [x] **M** `partials/subsystem_live.html` — when `window.alive` is false,
   everything degrades to gray "—" chips with no "board offline" notice. Say it.
-- [ ] **L** `health_logs.html` — no fetched-at stamp next to Refresh.
-- [ ] **L** `tests.html:50` — `#run-all-result` can land below the fold during a
+- [x] **L** `health_logs.html` — no fetched-at stamp next to Refresh.
+- [x] **L** `tests.html:50` — `#run-all-result` can land below the fold during a
   long sequential run.
 
 ## 10. Plain-language and legibility
