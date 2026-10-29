@@ -193,9 +193,9 @@ class TestTestsNoActionsMixin:
         """
         response = client.get("/tests")
         assert response.status_code == 200
-        # The bar should have Lock button with hx-post and pill with hx-get
+        # The bar should have Sign out button with hx-post and pill with hx-get
         assert 'hx-post="/logout"' in response.text, (
-            "Bar must have Lock button with hx-post"
+            "Bar must have Sign out button with hx-post"
         )
         assert 'hx-get="/pill"' in response.text, (
             "Bar must have health pill with hx-get"

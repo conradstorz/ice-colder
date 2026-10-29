@@ -119,7 +119,7 @@ with consequence wording in the confirm state.
   `title="Locked out"` is hover-only and the fault code (e.g. CFG-101) is
   unexplained. Link the chip to `/health/faults`.
   _Done: product.html chip links; products.html chip is inside a card link (no nested anchors), so the dead title was dropped and the visible "locked · CODE" text kept._
-- [ ] **L** `health.html:14` — full commit only in `title=` (short form shown).
+- [x] **L** `health.html:14` — full commit only in `title=` (short form shown).
   _Left as is (task 3): short hash is the shown identity; full hash is non-essential._
 - [ ] **L** cloud `partials/admin_overview.html:85` — full commit + build time
   only via `title=` (non-essential; short hash shown).
@@ -247,52 +247,52 @@ of these. This is the biggest touch-flow gap across both apps.
 
 ## 10. Plain-language and legibility
 
-- [ ] **M** `controls.html:16-24` — Restart/Reset/Shutdown have zero
+- [x] **M** `controls.html:16-24` — Restart/Reset/Shutdown have zero
   descriptions and the confirm just repeats the word; no hover-discovery exists
   on touch. One-line description per button.
-- [ ] **M** `health_faults.html:26` — fault age as raw minutes ("2880m ago").
+- [x] **M** `health_faults.html:26` — fault age as raw minutes ("2880m ago").
   Use the `humanize_seconds` filter used elsewhere.
-- [ ] **M** `health.html:14-19` — build strip is `text-xs text-gray-400/500`
+- [x] **M** `health.html:14-19` — build strip is `text-xs text-gray-400/500`
   mono (≈2.8:1 contrast) with unbroken `machine_id`/fingerprint tokens that can
   overflow 360px. `break-all`, bump size/contrast.
-- [ ] **M** `health_subsystem.html:25` — `font-mono` hardware id, no `break-all`
+- [x] **M** `health_subsystem.html:25` — `font-mono` hardware id, no `break-all`
   → overflow at 360px.
-- [ ] **M** `product.html:25` — sku (up to 64 chars) has no `break-all` →
+- [x] **M** `product.html:25` — sku (up to 64 chars) has no `break-all` →
   horizontal page scroll. Add `break-all` (identity — don't truncate).
-- [ ] **M** `health_logs.html:16` — `<pre>` with 200-char `text-xs` lines and
+- [x] **M** `health_logs.html:16` — `<pre>` with 200-char `text-xs` lines and
   only `overflow-y-auto` → two-axis nested scrolling on phones. `whitespace-pre-wrap
   break-all` on phones.
-- [ ] **L** raw FSM states shown to operators (`interacting_with_user`):
+- [x] **L** raw FSM states shown to operators (`interacting_with_user`):
   `partials/status_fragment.html:50,144`. Map to plain words.
   (`partials/screen_body.html:22` [deferred: /screen pin].)
-- [ ] **L** `partials/status_fragment.html:45,139` — payment-blocking reasons
+- [x] **L** `partials/status_fragment.html:45,139` — payment-blocking reasons
   (the most actionable fact on the hero) are `text-xs text-gray-500`. Promote to
   `text-sm`, normal contrast.
-- [ ] **L** `partials/status_fragment.html:2-33` — "All Systems OK" can render
+- [x] **L** `partials/status_fragment.html:2-33` — "All Systems OK" can render
   above a non-empty Active-faults list (alert-class). Word it "OK — N warnings".
-- [ ] **L** key instructions at `text-xs`: "Watch the machine." + failure detail
+- [x] **L** key instructions at `text-xs`: "Watch the machine." + failure detail
   (`test_result_card.html:20,35`, `test_sale_result.html:30`), "Compare this
   amount" (`cash_collection_result.html`), "Contract mismatch" (`tests.html:23-26`),
   firmware/contract line (`health_subsystems.html:17`), availability explainer +
   snake_case row names (`health_availability.html:36-41`), "N failed"
   (`kpi_fragment.html`). Promote to `text-sm` where the info is essential.
-- [ ] **L** `health_faults.html:20-23` — safety/fulfillment/alert gate chips
+- [x] **L** `health_faults.html:20-23` — safety/fulfillment/alert gate chips
   with no legend on this page (legend only on /health/availability).
-- [ ] **L** `tests_log.html:41` — failed run's fault_code shown raw with no
+- [x] **L** `tests_log.html:41` — failed run's fault_code shown raw with no
   FAULT_TABLE description.
 - [ ] **L** [deferred: /screen pin] `partials/screen_body.html:38-44` — kiosk
   "Active faults" at 16px, code-first; bump size, lead with the description.
-- [ ] **L** raw ISO timestamps edge-wide: `devices.html:36` (last_seen),
+- [x] **L** raw ISO timestamps edge-wide: `devices.html:36` (last_seen),
   `users.html:27` / `users_ownership.html:42,74` (pending transfer), cloud
   `alerts.html` (`e.at`). Humanize.
-- [ ] **L** `setup.html:37-38` — `docker logs` jargon on an owner-facing
+- [x] **L** `setup.html:37-38` — `docker logs` jargon on an owner-facing
   first-run page.
-- [ ] **L** cloud `admin_accounts.html:5` — "Email: log-only" is insider jargon;
+- [x] **L** cloud `admin_accounts.html:5` — "Email: log-only" is insider jargon;
   say "not configured — emails are only logged".
-- [ ] **L** cloud `claim.html` — say *where* on the machine the fingerprint is
+- [x] **L** cloud `claim.html` — say *where* on the machine the fingerprint is
   shown (Health page / setup screen).
-- [ ] **L** `error.html:10-11` — button labeled "Back" goes to `/` (Home).
-- [ ] **L** `base.html:82` vs `me.html:42` — "Lock" vs dynamic logout label for
+- [x] **L** `error.html:10-11` — button labeled "Back" goes to `/` (Home).
+- [x] **L** `base.html:82` vs `me.html:42` — "Lock" vs dynamic logout label for
   the same action; "Lock" reads as "lock the machine". Pick one explicit label.
 
 ## 11. Undersized / indistinguishable tap targets
@@ -353,7 +353,7 @@ of these. This is the biggest touch-flow gap across both apps.
   `overflow-x-auto` or `truncate max-w-[12ch]` on the email cell.
 - [ ] **L** cloud `fleet.html:18` — role as bare `text-xs` word where the edge
   uses role chips.
-- [ ] **L** cloud `claim.html:21-22` — Claim (the page's only action) styled as
+- [x] **L** cloud `claim.html:21-22` — Claim (the page's only action) styled as
   a secondary border button where edge primaries are solid.
 - [ ] **L** cloud `no_report.html` / `not_remote.html` — dead-end sentence; add
   a "Back to fleet" link.

@@ -2,7 +2,7 @@
 {% block title %}Accounts · Admin · Vending Machine{% endblock %}
 {% block body %}
 <div class="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-gray-200 shadow-sm p-4 mb-2">
-  <span class="text-sm text-gray-700">{% if smtp_host %}Email: configured ({{ smtp_host }}){% else %}Email: log-only{% endif %}</span>
+  <span class="text-sm text-gray-700">{% if smtp_host %}Email: configured ({{ smtp_host }}){% else %}Email: not configured — emails are only logged{% endif %}</span>
   <button hx-post="/admin/test-email" hx-target="#test-email-result"
           class="touch-target px-4 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">Send test email</button>
   <span id="test-email-result"></span>

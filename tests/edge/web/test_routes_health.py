@@ -738,7 +738,7 @@ class TestAvailabilityLevel:
         avail = Availability()
         routes.set_availability(avail)
         resp = client.get("/health/availability")
-        assert "bag_present" in resp.text
+        assert "bag present" in resp.text
         assert "not instrumented" in resp.text
         assert "vending_alive" in resp.text
 

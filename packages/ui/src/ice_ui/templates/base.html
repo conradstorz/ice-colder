@@ -80,7 +80,7 @@
          class="touch-target px-3 rounded-md text-sm font-medium text-white hover:bg-slate-700 shrink-0">{{ hat_switch.label }}</a>{% endif %}{% if current_user %}<a href="/me" class="touch-target px-2 shrink-0 flex items-center gap-1" aria-label="Signed in as {{ current_user.name }}">{% if current_user.role_label %}<span class="inline-flex items-center rounded-full bg-slate-600 text-white text-xs font-semibold uppercase tracking-wide px-2 py-1">{{ current_user.role_label }}</span>{% endif %}<span class="max-md:hidden text-sm text-slate-200 truncate max-w-[10rem]">{{ current_user.name }}</span></a>{% endif %}
 
       <button hx-post="/logout"
-              class="touch-target px-3 rounded-md text-sm font-medium text-white hover:bg-slate-700 shrink-0">Lock</button>
+              class="touch-target px-3 rounded-md text-sm font-medium text-white hover:bg-slate-700 shrink-0">Sign out</button>
 
       {# Notice strip (e.g. UI digest mismatch) is an in-flow second row of
          the bar (the bar wraps when it is present), so it pushes <main> down

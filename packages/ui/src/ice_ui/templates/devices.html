@@ -33,7 +33,7 @@
         <span class="shrink-0 text-xs font-mono px-1.5 py-0.5 rounded bg-gray-100 text-gray-700">personal</span>
         {% endif %}
       </div>
-      <div class="text-sm text-gray-500">Last seen: {{ device.last_seen_at or "never" }}</div>
+      <div class="text-sm text-gray-500">Last seen: {{ (device.last_seen_at|friendly_time) or "never" }}</div>
       {% if device.may_write %}
       <div class="flex flex-wrap gap-6">
         <form hx-post="/devices/{{ device.id }}/shared">

@@ -4,7 +4,7 @@
 <form method="post" action="/claim" hx-post="/claim"
       hx-on::before-swap="if (event.detail.xhr.status === 403 || event.detail.xhr.status === 429) { event.detail.shouldSwap = true }"
       class="space-y-3 bg-white rounded-xl border border-gray-200 shadow-sm p-4">
-  <p class="text-sm text-gray-600">Enter the machine's short fingerprint and the 8-digit code shown at the machine.</p>
+  <p class="text-sm text-gray-600">Enter the machine's short fingerprint and the 8-digit code shown at the machine. The fingerprint is on the machine's Health page and on its setup screen.</p>
   {% if error %}
   <p class="text-sm text-red-600">{{ error }}</p>
   {% endif %}

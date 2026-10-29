@@ -14,7 +14,7 @@ from fastapi.templating import Jinja2Templates
 from jinja2 import ChoiceLoader, Environment, FileSystemLoader
 from jinja2.sandbox import SandboxedEnvironment
 
-from ice_ui.filters import humanize_seconds, sku_url_segment
+from ice_ui.filters import friendly_time, humanize_seconds, sku_url_segment, state_label
 
 TEMPLATES_DIR: Path = Path(__file__).parent / "templates"
 STATIC_DIR: Path = Path(__file__).parent / "static"
@@ -37,6 +37,8 @@ def make_templates(
     result = Jinja2Templates(env=env_class(loader=loader, autoescape=True))
     result.env.filters["humanize_seconds"] = humanize_seconds
     result.env.filters["sku_url_segment"] = sku_url_segment
+    result.env.filters["state_label"] = state_label
+    result.env.filters["friendly_time"] = friendly_time
     return result
 
 

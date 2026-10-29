@@ -7,9 +7,9 @@
       <div>
         <div class="flex items-center gap-2">
           <span class="w-2.5 h-2.5 rounded-full bg-green-500 flex-shrink-0"></span>
-          <span class="text-hero font-semibold text-green-700">All Systems OK</span>
+          <span class="text-hero font-semibold text-green-700">{% if active_faults %}OK — {{ active_faults|length }} warning{{ "s" if active_faults|length != 1 else "" }}{% else %}All Systems OK{% endif %}</span>
         </div>
-        <p class="text-sm text-gray-400 mt-1">Machine is operating normally</p>
+        <p class="text-sm text-gray-500 mt-1">Machine is operating normally{% if active_faults %} — see warnings below{% endif %}</p>
         <div class="mt-3">
           <div class="text-xs text-gray-400 uppercase tracking-wide mb-1">Active faults</div>
           {% if active_faults %}
@@ -42,12 +42,12 @@
           <div class="font-medium text-green-700">Enabled</div>
           {% else %}
           <div class="font-medium text-red-700">Disabled</div>
-          <div class="text-xs text-gray-500">{{ payment_reasons|join(', ') }}</div>
+          <div class="text-sm text-gray-700">{{ payment_reasons|join(', ') }}</div>
           {% endif %}
         </div>
         <div>
           <div class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">State</div>
-          <div class="font-medium text-gray-900">{{ status.state }}</div>
+          <div class="font-medium text-gray-900">{{ status.state|state_label }}</div>
         </div>
         <div>
           <div class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">Escrow</div>
@@ -136,12 +136,12 @@
           <div class="font-medium text-green-700">Enabled</div>
           {% else %}
           <div class="font-medium text-red-700">Disabled</div>
-          <div class="text-xs text-gray-500">{{ payment_reasons|join(', ') }}</div>
+          <div class="text-sm text-gray-700">{{ payment_reasons|join(', ') }}</div>
           {% endif %}
         </div>
         <div>
           <div class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">State</div>
-          <div class="font-medium text-gray-900">{{ status.state }}</div>
+          <div class="font-medium text-gray-900">{{ status.state|state_label }}</div>
         </div>
         <div>
           <div class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">Escrow</div>

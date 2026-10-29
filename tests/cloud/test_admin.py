@@ -149,7 +149,7 @@ def _smtp_app(settings, clock, provider, mailer):
 
 def test_admin_shows_smtp_status_both_states(cloud, settings, clock, provider, mailer):
     _admin(cloud)
-    assert "Email: log-only" in cloud.get("/admin/accounts").text
+    assert "Email: not configured — emails are only logged" in cloud.get("/admin/accounts").text
     app = _smtp_app(settings, clock, provider, mailer)
     with TestClient(app, follow_redirects=False) as c:
         login(c, "admin@example.com")

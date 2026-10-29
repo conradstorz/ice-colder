@@ -1,6 +1,7 @@
 """Jinja filters for the dashboard."""
 
 import math
+from datetime import datetime
 from urllib.parse import quote
 
 
@@ -57,3 +58,39 @@ def humanize_seconds(value) -> str:
         return f"{hours}h {minutes:02d}m"
     days, hours = divmod(hours, 24)
     return f"{days}d {hours}h"
+
+
+_STATE_LABELS = {
+    "idle": "Ready",
+    "interacting_with_user": "Customer at machine",
+    "dispensing": "Dispensing",
+    "error": "Error",
+}
+
+
+def state_label(state) -> str:
+    """Plain words for a sale-FSM state ('interacting_with_user' is a
+    code name, not something to show an operator)."""
+    if not state:
+        return "—"
+    state = str(state)
+    return _STATE_LABELS.get(state, state.replace("_", " "))
+
+
+def friendly_time(value) -> str:
+    """'28 Oct 2026, 14:05' from an ISO string or datetime.
+
+    Deliberately absolute, not "3 days ago": the result must not depend
+    on when the page is rendered. Unparseable text is returned unchanged;
+    None/empty gives ''.
+    """
+    if value is None or value == "":
+        return ""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return value
+    if not isinstance(value, datetime):
+        return str(value)
+    return f"{value.day} {value:%b %Y, %H:%M}"

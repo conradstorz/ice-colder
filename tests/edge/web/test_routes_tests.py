@@ -548,6 +548,35 @@ class TestLog:
         assert resp.status_code == 200
         assert "verdict: none" in resp.text
 
+    def test_failed_sale_fault_code_shows_description(
+        self, client, wire_event_recorder
+    ):
+        wire_event_recorder.record(
+            "test_run",
+            metadata={
+                "sku": "A1",
+                "outcome": "vend_failed",
+                "fault_code": "ICE-101",
+                "path": [],
+            },
+        )
+        wire_event_recorder.flush()
+        runs = recent_test_runs(1)
+        assert runs[0]["fault_description"] == (
+            "Ice unavailable (hopper low / maker bin empty)"
+        )
+        resp = client.get("/tests/log")
+        assert "Ice unavailable (hopper low / maker bin empty)" in resp.text
+
+    def test_unknown_fault_code_has_no_description(self, client, wire_event_recorder):
+        wire_event_recorder.record(
+            "test_run",
+            metadata={"sku": "A1", "outcome": "vend_failed", "fault_code": "ZZZ-999"},
+        )
+        wire_event_recorder.flush()
+        assert recent_test_runs(1)[0].get("fault_description") is None
+        assert client.get("/tests/log").status_code == 200
+
     def test_survives_a_row_missing_subsystem_command_params(
         self, client, wire_event_recorder
     ):

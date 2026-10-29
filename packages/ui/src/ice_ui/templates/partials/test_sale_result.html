@@ -20,14 +20,14 @@
       {{ result.outcome }}
     </span>
     {% if result.fault_code %}
-    <span class="text-xs font-mono text-red-600">{{ result.fault_code }}</span>
+    <span class="text-sm font-mono text-red-600">{{ result.fault_code }}</span>
     {% endif %}
   </div>
-  <div class="text-xs text-gray-500">
+  <div class="text-sm text-gray-600">
     Path: {{ result.path | join(" → ") }}
   </div>
 
-  <p class="text-xs text-gray-500">Watch the machine.</p>
+  <p class="text-sm text-gray-700">Watch the machine.</p>
   <div id="verdict-{{ result.run_id }}">
     <form hx-post="/tests/runs/{{ result.run_id }}/verdict" hx-target="#verdict-{{ result.run_id }}"
           hx-swap="outerHTML" class="space-y-2">

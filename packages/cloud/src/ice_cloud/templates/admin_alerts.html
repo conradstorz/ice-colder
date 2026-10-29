@@ -12,7 +12,7 @@
     <tbody>
       {% for e in events %}
       <tr class="border-t border-gray-100">
-        <td class="p-3 text-gray-600">{{ e.at }}</td>
+        <td class="p-3 text-gray-600">{{ e.at|friendly_time }}</td>
         <td class="p-3">
           <span class="font-mono text-gray-900" data-machine-label>{{ e.label }}</span>
           <span class="font-mono text-xs text-gray-400">{{ e.short }}</span>

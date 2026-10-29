@@ -20,8 +20,8 @@
         {% if card.row.stale %}bg-red-500{% elif card.row.alive %}bg-green-500{% else %}bg-gray-300{% endif %}"></span>
       <span class="font-mono text-sm text-gray-900">{{ card.name }}</span>
       <span class="text-xs text-gray-400 font-mono">{{ card.row.firmware or "—" }}</span>
-      <span class="text-xs
-        {% if card.match is none %}text-gray-400{% elif card.match %}text-green-600{% else %}text-red-600{% endif %}">
+      <span class="text-sm
+        {% if card.match is none %}text-gray-500{% elif card.match %}text-green-700{% else %}text-red-600 font-medium{% endif %}">
         {% if card.match is none %}Contract unknown{% elif card.match %}Contract OK{% else %}Contract mismatch{% endif %}
       </span>
       <span class="text-xs text-gray-500 ml-auto">

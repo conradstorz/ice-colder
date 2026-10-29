@@ -18,6 +18,9 @@
           class="touch-target px-4 rounded-md bg-slate-800 text-white text-sm font-medium hover:bg-slate-700">Refresh</button>
 </div>
 {% endif %}
+{% if faults %}
+<p class="text-sm text-gray-600 mb-2">Safety blocks sales and payment, fulfillment blocks just the one product, alert blocks nothing.</p>
+{% endif %}
 <div id="fault-list" class="space-y-2"{% if oob %} hx-swap-oob="true"{% endif %}>
   {% if faults %}
     {% for f in faults %}
@@ -33,9 +36,7 @@
         {% elif f.gate == 'fulfillment' %}bg-gray-100 text-gray-600
         {% else %}bg-gray-50 text-gray-400{% endif %}">{{ f.gate }}</span>
       {% if f.since_seconds is not none %}
-      <span class="text-xs text-gray-400">
-        {% if f.since_seconds >= 60 %}{{ (f.since_seconds // 60)|int }}m{% else %}{{ f.since_seconds|int }}s{% endif %} ago
-      </span>
+      <span class="text-xs text-gray-500">{{ f.since_seconds|humanize_seconds }} ago</span>
       {% endif %}
       {% if f.pending_sale %}
       {# Task 14: PAY-104's snapshot carries a pending sale -- show what it

@@ -1240,7 +1240,7 @@ class TestAvailabilityOnDashboard:
         # /health/availability.
         client, _ = avail_client
         resp = client.get("/health/availability")
-        assert "bag_present" in resp.text
+        assert "bag present" in resp.text
         assert "not instrumented" in resp.text
         assert "vending_alive" in resp.text
 

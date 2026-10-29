@@ -17,9 +17,9 @@
     </span>
     <span class="text-xs text-gray-400">{{ elapsed }}s</span>
   </div>
-  {% if detail %}<p class="text-xs text-gray-600">{{ detail }}</p>{% endif %}
+  {% if detail %}<p class="text-sm text-gray-700">{{ detail }}</p>{% endif %}
   {% if checks %}
-  <ul class="text-xs text-gray-600 space-y-1">
+  <ul class="text-sm text-gray-700 space-y-1">
     {% for check in checks %}
     <li>
       <span class="{{ 'text-green-600' if check.pass else 'text-red-600' }}">
@@ -32,7 +32,7 @@
   {% endif %}
 
   {% if not automatic %}
-  <p class="text-xs text-gray-500">Watch the machine.</p>
+  <p class="text-sm text-gray-700">Watch the machine.</p>
   <div id="verdict-{{ run_id }}">
     <form hx-post="/tests/runs/{{ run_id }}/verdict" hx-target="#verdict-{{ run_id }}"
           hx-swap="outerHTML" class="space-y-2">

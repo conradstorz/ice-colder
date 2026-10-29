@@ -7,6 +7,7 @@ import time
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
+from ice_contracts.board.vending_machine import FAULT_TABLE, FaultCode
 from ice_edge.access.access import Permission
 from ice_edge.web import auth as web_auth
 from ice_edge.web import context
@@ -15,6 +16,14 @@ from ice_ui.templating import templates
 
 
 router = APIRouter()
+
+
+def _fault_description(code) -> str | None:
+    """FAULT_TABLE's plain-language text for *code*, or None if unknown."""
+    try:
+        return FAULT_TABLE[FaultCode(code)].description
+    except (ValueError, KeyError):
+        return None
 
 
 def recent_test_runs(limit: int = 100) -> list[dict]:
@@ -60,6 +69,9 @@ def recent_test_runs(limit: int = 100) -> list[dict]:
                 "duration_seconds": value,
             }
             row.update(meta)
+            description = _fault_description(row.get("fault_code"))
+            if description:
+                row["fault_description"] = description
             rows.append(row)
     return rows
 

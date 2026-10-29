@@ -24,7 +24,7 @@
   <div class="p-4 border border-amber-200 bg-amber-50 rounded-xl text-sm">
     <p class="font-medium text-amber-800">Ownership transfer pending</p>
     <p class="text-amber-700">
-      Started {{ pending_transfer.started_at }}, expires {{ pending_transfer.expires_at }}.
+      Started {{ pending_transfer.started_at|friendly_time }}, expires {{ pending_transfer.expires_at|friendly_time }}.
     </p>
   </div>
   {% endif %}

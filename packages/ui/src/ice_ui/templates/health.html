@@ -11,12 +11,12 @@
       <span class="text-gray-300" aria-hidden="true">·</span>
       <span class="text-sm text-gray-700">VMC {{ vmc_state }}</span>
       <span class="text-gray-300" aria-hidden="true">·</span>
-      <span class="font-mono text-xs text-gray-500" title="{{ vmc_build.commit }}">{{ vmc_build.commit_short }}</span>
-      <span class="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">{{ vmc_build.source }}</span>
-      <span class="text-xs text-gray-400">up {{ vmc_build.uptime_seconds|humanize_seconds }}</span>
-      <span class="font-mono text-xs text-gray-500">{{ vmc_build.machine_id or "—" }}</span>
-      {% if cloud_fingerprint %}<span class="text-xs text-gray-500">Cloud fingerprint <span class="font-mono">{{ cloud_fingerprint }}</span></span>{% endif %}
-      {% if alerts_mode %}<span class="text-xs text-gray-500">Alerts: {{ alerts_mode }}</span>{% endif %}
+      <span class="font-mono text-sm text-gray-600" title="{{ vmc_build.commit }}">{{ vmc_build.commit_short }}</span>
+      <span class="text-sm px-1.5 py-0.5 rounded bg-gray-100 text-gray-700">{{ vmc_build.source }}</span>
+      <span class="text-sm text-gray-600">up {{ vmc_build.uptime_seconds|humanize_seconds }}</span>
+      <span class="font-mono text-sm text-gray-600 break-all">{{ vmc_build.machine_id or "—" }}</span>
+      {% if cloud_fingerprint %}<span class="text-sm text-gray-600 break-all">Cloud fingerprint <span class="font-mono">{{ cloud_fingerprint }}</span></span>{% endif %}
+      {% if alerts_mode %}<span class="text-sm text-gray-600">Alerts: {{ alerts_mode }}</span>{% endif %}
     </div>
   </div>
   {% endif %}
