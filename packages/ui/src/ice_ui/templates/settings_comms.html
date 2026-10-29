@@ -17,6 +17,7 @@
   {% endif %}
 
   <div class="space-y-4">
+    {% include "partials/secret_hint.html" %}
     <h2 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">Email gateway</h2>
     <div>
       <label for="smtp_server" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">SMTP server</label>
@@ -25,7 +26,7 @@
     </div>
     <div>
       <label for="smtp_port" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">SMTP port</label>
-      <input type="number" id="smtp_port" name="smtp_port" value="{{ email.smtp_port }}" inputmode="numeric"
+      <input type="number" id="smtp_port" name="smtp_port" value="{{ email.smtp_port }}" min="1" max="65535" inputmode="numeric"
              class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
     </div>
     <div>
@@ -59,7 +60,7 @@
     </div>
     <div>
       <label for="sms_from_number" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">From number</label>
-      <input type="text" id="sms_from_number" name="sms_from_number" value="{{ sms.from_number }}"
+      <input type="tel" id="sms_from_number" name="sms_from_number" value="{{ sms.from_number }}"
              class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
     </div>
   </div>

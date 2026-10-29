@@ -26,11 +26,11 @@
            class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
   </div>
 
-  <div class="touch-target">
-    <input type="checkbox" id="track_inventory" name="track_inventory" {{ "checked" if tracked }}
-           class="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-    <label for="track_inventory" class="text-sm text-gray-700">Track inventory</label>
-  </div>
+  <label class="touch-target text-sm text-gray-700">
+          <input type="checkbox" id="track_inventory" name="track_inventory" {{ "checked" if tracked }}
+           class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          Track inventory
+        </label>
 
   <div class="flex gap-touch pt-2">
     <button type="submit"

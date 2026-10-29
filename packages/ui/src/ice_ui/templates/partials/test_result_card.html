@@ -36,7 +36,8 @@
   <div id="verdict-{{ run_id }}">
     <form hx-post="/tests/runs/{{ run_id }}/verdict" hx-target="#verdict-{{ run_id }}"
           hx-swap="outerHTML" class="space-y-2">
-      <input type="text" name="note" placeholder="Optional note"
+      <label for="note-{{ run_id }}" class="sr-only">Note (optional)</label>
+      <input type="text" id="note-{{ run_id }}" name="note" placeholder="Optional note"
              class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900">
       <div class="flex gap-6">
         <button type="submit" name="verdict" value="pass"

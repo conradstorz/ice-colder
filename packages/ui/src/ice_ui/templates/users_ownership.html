@@ -35,7 +35,10 @@
   <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-3">
     <h2 class="text-base font-semibold text-gray-900">Link to cloud</h2>
     {% if short_fingerprint %}
-    <p class="text-sm text-gray-500">Machine fingerprint: <span class="font-mono text-gray-700">{{ short_fingerprint }}</span></p>
+    <div class="text-sm text-gray-500">
+      <p>Machine fingerprint:</p>
+      {% with copy_id="fingerprint", copy_value=short_fingerprint, copy_class="text-gray-700" %}{% include "partials/copy_chip.html" %}{% endwith %}
+    </div>
     {% endif %}
     {% if pending_link %}
     <p class="text-sm text-amber-700">
@@ -44,11 +47,11 @@
     {% if link_code %}
     <div class="p-3 border border-amber-200 bg-amber-50 rounded-lg">
       <p class="font-medium text-amber-800 text-sm">Link code — enter it in the cloud portal and check the fingerprint above matches; it will not be shown again</p>
-      <p class="mt-1 font-mono text-amber-700 code-value">{{ link_code }}</p>
+      <div class="mt-1">{% with copy_id="link-code", copy_value=link_code, copy_class="text-amber-700 code-value" %}{% include "partials/copy_chip.html" %}{% endwith %}</div>
     </div>
     {% endif %}
     <form hx-post="/users/ownership/link/cancel" class="flex flex-wrap items-center gap-touch">
-      <input type="text" name="pin" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
+      <input type="password" name="pin" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
              placeholder="Your PIN" required
              class="touch-target px-3 rounded-md border border-gray-300 text-sm w-40">
       <button type="submit"
@@ -57,7 +60,7 @@
     {% else %}
     <p class="text-sm text-gray-500">Requires your PIN. The code is valid for 7 days.</p>
     <form hx-post="/users/ownership/link" class="flex flex-wrap items-center gap-touch">
-      <input type="text" name="pin" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
+      <input type="password" name="pin" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
              placeholder="Your PIN" required
              class="touch-target px-3 rounded-md border border-gray-300 text-sm w-40">
       <button type="submit"
@@ -76,11 +79,11 @@
     {% if transfer_code %}
     <div class="p-3 border border-amber-200 bg-amber-50 rounded-lg">
       <p class="font-medium text-amber-800 text-sm">Transfer code — write this down now, give it to the new owner, it will not be shown again</p>
-      <p class="mt-1 font-mono text-amber-700 code-value">{{ transfer_code }}</p>
+      <div class="mt-1">{% with copy_id="transfer-code", copy_value=transfer_code, copy_class="text-amber-700 code-value" %}{% include "partials/copy_chip.html" %}{% endwith %}</div>
     </div>
     {% endif %}
     <form hx-post="/users/transfer/cancel" class="flex flex-wrap items-center gap-touch">
-      <input type="text" name="pin" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
+      <input type="password" name="pin" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
              placeholder="Your PIN" required
              class="touch-target px-3 rounded-md border border-gray-300 text-sm w-40">
       <button type="submit"
@@ -92,10 +95,10 @@
     <h2 class="text-base font-semibold text-gray-900">Transfer ownership</h2>
     <p class="text-sm text-gray-500">Requires your PIN and one unused emergency code.</p>
     <form hx-post="/users/transfer" class="flex flex-wrap items-center gap-touch">
-      <input type="text" name="pin" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
+      <input type="password" name="pin" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
              placeholder="Your PIN" required
              class="touch-target px-3 rounded-md border border-gray-300 text-sm w-40">
-      <input type="text" name="emergency_code" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
+      <input type="password" name="emergency_code" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
              placeholder="Emergency code" required
              class="touch-target px-3 rounded-md border border-gray-300 text-sm w-40">
       <button type="submit"

@@ -80,7 +80,7 @@
   {% if may_write %}
   <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-4">
     <form hx-post="/users/{{ target.id }}/reset-pin" class="flex flex-wrap items-center gap-touch">
-      <input type="text" name="pin" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
+      <input type="password" name="pin" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
              placeholder="New PIN (4-8 digits)" required
              class="touch-target px-3 rounded-md border border-gray-300 text-sm w-48">
       <button type="submit"

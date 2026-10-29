@@ -130,62 +130,62 @@ with consequence wording in the confirm state.
 One shared fix: a small copy-button partial (or `select-all` styling) used by all
 of these. This is the biggest touch-flow gap across both apps.
 
-- [ ] **M** `setup.html:44`, `setup_codes.html:40`, `users_ownership.html:38` —
+- [x] **M** `setup.html:44`, `setup_codes.html:40`, `users_ownership.html:38` —
   the fingerprint must be transcribed into the cloud portal by eye. Copy button
   and/or `select-all`.
-- [ ] **M-H** `setup_codes.html:33-37` — 20 one-time codes, no copy-all, no
+- [x] **M-H** `setup_codes.html:33-37` — 20 one-time codes, no copy-all, no
   print affordance; "Email these to me" only renders when email is configured
   (often not on a fresh machine). Copy-all button + print-friendly hint.
-- [ ] **M** `partials/codes_regenerate.html:36-42` — regenerated codes, same gap.
-- [ ] **M** `users_ownership.html:47,79` — link code / transfer code shown once
+- [x] **M** `partials/codes_regenerate.html:36-42` — regenerated codes, same gap.
+- [x] **M** `users_ownership.html:47,79` — link code / transfer code shown once
   as plain mono; the transfer code must be handed to another person. Copy button.
-- [ ] (Invite URL: covered in §1, `people.html`.)
+- [x] (Invite URL: covered in §1, `people.html`.)
 
 ## 6. Form ergonomics
 
-- [ ] **M** `product_catalog.html:25`, `product_form.html:38` — price inputs use
+- [x] **M** `product_catalog.html:25`, `product_form.html:38` — price inputs use
   `inputmode="numeric"`: iOS shows a keypad with **no decimal point**, so 2.50
   can't be typed. Use `inputmode="decimal"`, add `min="0"`.
-- [ ] **L-M** visible-PIN `type="text"` inputs (login/setup use `password`):
+- [x] **L-M** visible-PIN `type="text"` inputs (login/setup use `password`):
   `user.html:83-85`, `user_form.html:43`, `users_codes.html:22`,
   `users_ownership.html:51,60,83,95`. Switch to `type="password"` or document.
-- [ ] **M** `partials/keypad.html:51` — the only correction key is Clear (wipes
+- [x] **M** `partials/keypad.html:51` — the only correction key is Clear (wipes
   the whole 4-8 digit PIN), 8px below the digits. Make it backspace (⌫), or add
   one.
-- [ ] **L-M** `partials/keypad.html:42-44` — tapping the visible PIN input pops
+- [x] **L-M** `partials/keypad.html:42-44` — tapping the visible PIN input pops
   the OS keyboard over the on-screen keypad. Consider `readonly` + keypad-only on
   coarse pointers; at minimum `maxlength="8"`.
-- [ ] **L** `partials/keypad.html:46-53` — digit keys are minimal 48px; a
+- [x] **L** `partials/keypad.html:46-53` — digit keys are minimal 48px; a
   dedicated PIN pad reads better at 56-64px (`min-h-[56px]`). "Enter" sits 8px
   right of "0"; `gap-3` on the bottom row would help.
-- [ ] **M** cloud `claim.html:14,19` — both inputs are `px-3 py-2` ≈38px, below
+- [x] **M** cloud `claim.html:14,19` — both inputs are `px-3 py-2` ≈38px, below
   the 44px floor (claim is done on a phone at the machine). Bump to py-3/py-4.
   Add `autocomplete="one-time-code"` to the code (`:17-19`) and
   `autocapitalize="none" spellcheck="false"` to the fingerprint (`:12-14`);
   consider accepting input without dashes.
-- [ ] **M** shrunken `h-5 w-5` (20px) checkboxes overriding the global 24px
+- [x] **M** shrunken `h-5 w-5` (20px) checkboxes overriding the global 24px
   default: `product_placement.html:30-31`, `product_form.html:72-73`,
   `settings_contacts.html:53-55,96-98`. Drop the size utilities; make the whole
   row a `<label>`.
-- [ ] **M** masked secrets never explained — `settings_payments.html:24-45`,
+- [x] **M** masked secrets never explained — `settings_payments.html:24-45`,
   `settings_comms.html:38,52-58`, `settings_mqtt.html:62`: nothing says "•••• =
   saved; leave as-is to keep, type to replace". One helper line per secret
   section.
-- [ ] **M** `product_catalog.html:40-42`, `product_form.html:60-62` — "Customer
+- [x] **M** `product_catalog.html:40-42`, `product_form.html:60-62` — "Customer
   Button" is free-text `font-mono` with no help; a typo silently unmaps the
   product. `<select>` of channel ids from the vending board's capabilities
   (plus "None"), or at minimum helper text with valid ids.
-- [ ] **L** phone/number fields: `settings_contacts.html:35,78`,
+- [x] **L** phone/number fields: `settings_contacts.html:35,78`,
   `settings_comms.html:62` → `type="tel"`; `settings_comms.html:28` (smtp_port),
   `settings_mqtt.html:44` (broker_port) → `min="1" max="65535"`.
-- [ ] **L** `settings_machine.html:41` — "Location notes" as single-line text;
+- [x] **L** `settings_machine.html:41` — "Location notes" as single-line text;
   use a textarea like settings_web/settings_reports.
-- [ ] **L** `settings_web.html:34`, `settings_reports.html:55` — `touch-target`
+- [x] **L** `settings_web.html:34`, `settings_reports.html:55` — `touch-target`
   (display:flex) on a `<textarea>` with no vertical padding; drop it, add `py-2`.
-- [ ] **L** `setup.html:71-80` — PIN fields lack `maxlength="8"`/`minlength="4"`.
-- [ ] **L** `enroll.html:44-46` — add `maxlength` to the (otherwise exemplary)
+- [x] **L** `setup.html:71-80` — PIN fields lack `maxlength="8"`/`minlength="4"`.
+- [x] **L** `enroll.html:44-46` — add `maxlength` to the (otherwise exemplary)
   code input.
-- [ ] **L** `partials/test_result_card.html:39-40`,
+- [x] **L** `partials/test_result_card.html:39-40`,
   `test_sale_result.html:34-35` — note input has placeholder only, no label
   (placeholder vanishes on focus). Add visible or sr-only label with `for`.
 

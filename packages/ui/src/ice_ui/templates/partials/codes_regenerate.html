@@ -36,9 +36,10 @@
   {% if new_codes %}
   <div class="p-3 border border-blue-200 bg-blue-50 rounded-lg">
     <p class="font-medium text-blue-800 text-sm">New emergency codes — write these down now, they will not be shown again</p>
-    <ul class="mt-1 font-mono text-blue-700 text-sm grid grid-cols-2 sm:grid-cols-4 gap-1">
+    <ul id="new-emergency-codes" class="mt-1 font-mono text-blue-700 text-sm grid grid-cols-2 sm:grid-cols-4 gap-1 select-all">
       {% for code in new_codes %}<li class="code-value">{{ code }}</li>{% endfor %}
     </ul>
+    <div class="mt-2">{% with copy_target="#new-emergency-codes", copy_label="Copy all codes" %}{% include "partials/copy_button.html" %}{% endwith %}</div>
   </div>
   {% endif %}
 </div>

@@ -41,7 +41,10 @@
   {% endif %}
 
   {% if short_fingerprint %}
-  <p class="text-sm text-gray-500">Machine fingerprint (enter it in the cloud portal to claim): <span class="font-mono text-gray-700">{{ short_fingerprint }}</span></p>
+  <div class="text-sm text-gray-500">
+    <p>Machine fingerprint (enter it in the cloud portal to claim):</p>
+    {% with copy_id="fingerprint", copy_value=short_fingerprint, copy_class="text-gray-700" %}{% include "partials/copy_chip.html" %}{% endwith %}
+  </div>
   {% endif %}
 
   <form hx-post="/setup" hx-target="main" hx-select="main" hx-swap="outerHTML" class="space-y-3">
@@ -68,14 +71,14 @@
 
     <div>
       <label for="pin" class="block text-sm font-medium text-gray-700">Choose a PIN</label>
-      <input type="password" id="pin" name="pin" inputmode="numeric" required
+      <input type="password" id="pin" name="pin" inputmode="numeric" minlength="4" maxlength="8" required
              autocomplete="new-password"
              class="w-full px-4 py-3 border border-gray-300 rounded-xl">
     </div>
 
     <div>
       <label for="pin_confirm" class="block text-sm font-medium text-gray-700">Confirm PIN</label>
-      <input type="password" id="pin_confirm" name="pin_confirm" inputmode="numeric" required
+      <input type="password" id="pin_confirm" name="pin_confirm" inputmode="numeric" minlength="4" maxlength="8" required
              autocomplete="new-password"
              class="w-full px-4 py-3 border border-gray-300 rounded-xl">
     </div>

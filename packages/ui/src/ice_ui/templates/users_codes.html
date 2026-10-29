@@ -19,7 +19,7 @@
     <h2 class="text-base font-semibold text-gray-900">Regenerate all codes</h2>
     <p class="text-sm text-gray-500">Replaces every code, used or not. Old codes stop working immediately.</p>
     <form class="flex flex-wrap items-center gap-touch">
-      <input type="text" name="pin" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
+      <input type="password" name="pin" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
              placeholder="Your PIN" required
              class="touch-target px-3 rounded-md border border-gray-300 text-sm w-40">
       {% include "partials/codes_regenerate.html" with context %}

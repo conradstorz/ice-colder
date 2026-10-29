@@ -32,7 +32,7 @@
     </div>
     <div>
       <label for="owner_phone" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Phone</label>
-      <input type="text" id="owner_phone" name="owner_phone" value="{{ owner.phone or '' }}"
+      <input type="tel" id="owner_phone" name="owner_phone" value="{{ owner.phone or '' }}"
              class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
     </div>
     <div>
@@ -49,12 +49,12 @@
       <span class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Preferred channel</span>
       <div class="flex flex-col gap-touch">
         {% for ch in channels %}
-        <div class="touch-target">
+        <label class="touch-target text-sm text-gray-700 capitalize">
           <input type="checkbox" id="owner_ch_{{ ch.value }}" name="owner_channels" value="{{ ch.value }}"
                  {{ "checked" if ch in owner.preferred_comm }}
-                 class="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <label for="owner_ch_{{ ch.value }}" class="text-sm text-gray-700 capitalize">{{ ch.value }}</label>
-        </div>
+                 class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          {{ ch.value }}
+        </label>
         {% endfor %}
       </div>
     </div>
@@ -75,7 +75,7 @@
     </div>
     <div>
       <label for="loc_phone" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Phone</label>
-      <input type="text" id="loc_phone" name="loc_phone" value="{{ location_owner.phone or '' }}"
+      <input type="tel" id="loc_phone" name="loc_phone" value="{{ location_owner.phone or '' }}"
              class="touch-target w-full px-3 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
     </div>
     <div>
@@ -92,12 +92,12 @@
       <span class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Preferred channel</span>
       <div class="flex flex-col gap-touch">
         {% for ch in channels %}
-        <div class="touch-target">
+        <label class="touch-target text-sm text-gray-700 capitalize">
           <input type="checkbox" id="loc_ch_{{ ch.value }}" name="loc_channels" value="{{ ch.value }}"
                  {{ "checked" if ch in location_owner.preferred_comm }}
-                 class="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <label for="loc_ch_{{ ch.value }}" class="text-sm text-gray-700 capitalize">{{ ch.value }}</label>
-        </div>
+                 class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          {{ ch.value }}
+        </label>
         {% endfor %}
       </div>
     </div>

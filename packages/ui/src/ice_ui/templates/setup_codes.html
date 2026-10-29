@@ -30,14 +30,22 @@
     them again.
   </p>
 
-  <ul class="grid grid-cols-2 gap-2 font-mono text-lg text-center">
+  <ul id="emergency-codes" class="grid grid-cols-2 gap-2 font-mono text-lg text-center select-all">
     {% for code in codes %}
       <li class="border border-gray-300 rounded-lg py-2 bg-white code-value">{{ code }}</li>
     {% endfor %}
   </ul>
 
+  <div class="flex flex-wrap items-center gap-touch">
+    {% with copy_target="#emergency-codes", copy_label="Copy all 20 codes" %}{% include "partials/copy_button.html" %}{% endwith %}
+    <p class="text-sm text-gray-500">No email set up? Copy them into a password manager, or print this page from your browser menu.</p>
+  </div>
+
   {% if short_fingerprint %}
-  <p class="text-sm text-gray-500">Machine fingerprint (enter it in the cloud portal to claim): <span class="font-mono text-gray-700">{{ short_fingerprint }}</span></p>
+  <div class="text-sm text-gray-500">
+    <p>Machine fingerprint (enter it in the cloud portal to claim):</p>
+    {% with copy_id="fingerprint", copy_value=short_fingerprint, copy_class="text-gray-700" %}{% include "partials/copy_chip.html" %}{% endwith %}
+  </div>
   {% endif %}
 
   {% if can_email %}
