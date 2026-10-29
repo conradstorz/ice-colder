@@ -269,6 +269,7 @@ def template_context(request: Request, level: str | None = None, **extra) -> dic
         "current_user": web_auth._template_user(principal.user) if principal else None,
         "perms": principal.perms if principal else frozenset(),
         "level": level,
+        "page_source": "local",
     }
     badge = context_badge()
     if badge is not None:

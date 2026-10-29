@@ -124,3 +124,19 @@ def test_me_renders_from_installed_ui_with_trusted_old_bundle(
     r = cloud.get("/me")
     assert r.status_code == 200
     assert "<strong>owner</strong> on m-0042" in r.text
+
+
+def test_cloud_pages_are_marked_remote(cloud, signer):
+    own_and_select(cloud, signer, _named_report())
+    for path in ("/", "/fleet", "/me"):
+        html = cloud.get(path).text
+        assert ">REMOTE</span>" in _bar(html), path
+        assert "LOCAL" not in html, path
+        assert "bg-indigo-900" in _bar(html) and "bg-indigo-50" in html, path
+        assert "M118 112c-4-26" in html, path
+
+
+def test_cloud_login_page_is_marked_remote(cloud):
+    html = cloud.get("/login").text
+    assert 'id="source-tag"' in html and ">REMOTE</span>" in html
+    assert "context-badge" not in html
