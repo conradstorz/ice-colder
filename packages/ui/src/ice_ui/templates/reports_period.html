@@ -110,7 +110,7 @@
 
   </div>
 
-  <form hx-post="/reports/email">
+  <form hx-post="/reports/email" hx-swap="outerHTML show:none">
     <input type="hidden" name="report" value="period">
     <input type="hidden" name="range" value="{{ range }}">
     <input type="hidden" name="bucket" value="{{ bucket }}">

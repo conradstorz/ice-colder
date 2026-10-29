@@ -56,7 +56,7 @@
 
   </div>
 
-  <form hx-post="/reports/email">
+  <form hx-post="/reports/email" hx-swap="outerHTML show:none">
     <input type="hidden" name="report" value="product">
     <input type="hidden" name="range" value="{{ range }}">
     <button type="submit"

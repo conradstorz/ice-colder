@@ -22,6 +22,7 @@ import io
 import re
 import sqlite3
 import time
+from pathlib import Path
 from urllib.parse import quote
 
 import pytest
@@ -446,6 +447,33 @@ class TestTableOverflowContainer:
             "expected a <table> to appear before the overflow-x-auto "
             "container's own closing </div>, i.e. genuinely nested inside it"
         )
+
+    @pytest.mark.parametrize("url", LEVEL_URLS)
+    def test_email_form_keeps_scroll_position(self, client, url):
+        """base.html's inherited hx-swap is 'outerHTML show:top'; the email
+        form must override it with show:none or the notice beside the button
+        is scrolled out of view after the tap."""
+        resp = client.get(url)
+        assert resp.status_code == 200
+        assert re.search(
+            r'<form[^>]*hx-post="/reports/email"[^>]*hx-swap="outerHTML show:none"',
+            resp.text,
+        )
+
+    def test_every_email_form_template_overrides_show_top(self):
+        import ice_ui
+
+        root = Path(ice_ui.__file__).parent / "templates"
+        names = [
+            "reports_period.html",
+            "reports_product.html",
+            "reports_product_sku.html",
+            "reports_method.html",
+            "reports_collections.html",
+        ]
+        for name in names:
+            src = (root / name).read_text(encoding="utf-8")
+            assert 'hx-post="/reports/email" hx-swap="outerHTML show:none"' in src, name
 
     def test_regression_container_and_table_separated_would_fail(self):
         """Proof the strengthened assertion above actually discriminates:

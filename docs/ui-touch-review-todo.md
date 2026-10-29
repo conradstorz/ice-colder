@@ -235,7 +235,7 @@ of these. This is the biggest touch-flow gap across both apps.
   inside the polled fragment.
 - [x] **M** `health_faults.html` — the fault list is static with no refresh
   button or timestamp, yet COM-10x faults auto-clear; an operator can act on a
-  stale row. Add refresh/timestamp like /health/logs.
+  stale row. Add refresh/timestamp like /health/logs. (refresh only; no stamp — a live timestamp would break edge/cloud parity)
 - [ ] **M** [deferred: /screen pin] `screen.html:12` — the kiosk's 5s poll has no clock/updated stamp; a
   frozen screen keeps showing stale "Payment Enabled". Render a server timestamp
   or an htmx-error offline banner.
