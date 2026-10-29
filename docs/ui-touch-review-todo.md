@@ -270,6 +270,9 @@ of these. This is the biggest touch-flow gap across both apps.
   `text-sm`, normal contrast.
 - [x] **L** `partials/status_fragment.html:2-33` — "All Systems OK" can render
   above a non-empty Active-faults list (alert-class). Word it "OK — N warnings".
+  (Wording added, but `views/health.py` currently marks the machine unhealthy
+  whenever any fault is active, so the branch is defensive — it renders only if
+  `is_healthy` ever tolerates alert-class faults.)
 - [x] **L** key instructions at `text-xs`: "Watch the machine." + failure detail
   (`test_result_card.html:20,35`, `test_sale_result.html:30`), "Compare this
   amount" (`cash_collection_result.html`), "Contract mismatch" (`tests.html:23-26`),
@@ -284,7 +287,9 @@ of these. This is the biggest touch-flow gap across both apps.
   "Active faults" at 16px, code-first; bump size, lead with the description.
 - [x] **L** raw ISO timestamps edge-wide: `devices.html:36` (last_seen),
   `users.html:27` / `users_ownership.html:42,74` (pending transfer), cloud
-  `alerts.html` (`e.at`). Humanize.
+  `alerts.html` (`e.at`). Humanize. (Cloud alert timestamps were already
+  pre-formatted "YYYY-MM-DD HH:MM UTC" by the routes; `friendly_time` passes
+  them through unchanged, so only the edge pages visibly changed.)
 - [x] **L** `setup.html:37-38` — `docker logs` jargon on an owner-facing
   first-run page.
 - [x] **L** cloud `admin_accounts.html:5` — "Email: log-only" is insider jargon;
@@ -353,7 +358,7 @@ of these. This is the biggest touch-flow gap across both apps.
   `overflow-x-auto` or `truncate max-w-[12ch]` on the email cell.
 - [ ] **L** cloud `fleet.html:18` — role as bare `text-xs` word where the edge
   uses role chips.
-- [x] **L** cloud `claim.html:21-22` — Claim (the page's only action) styled as
+- [ ] **L** cloud `claim.html:21-22` — Claim (the page's only action) styled as
   a secondary border button where edge primaries are solid.
 - [ ] **L** cloud `no_report.html` / `not_remote.html` — dead-end sentence; add
   a "Back to fleet" link.
