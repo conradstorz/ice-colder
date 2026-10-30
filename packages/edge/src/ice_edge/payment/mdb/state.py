@@ -68,6 +68,8 @@ class StateConsumer:
             dev = getattr(state.devices, name)
             if dev.present:
                 self._apply_status(name, dev.status.value)
+            else:
+                self._clear_if_active(name)
         if state.exact_change and not self._exact_change:
             self._message(self._exact_change_message)
         self._exact_change = state.exact_change
@@ -85,4 +87,9 @@ class StateConsumer:
             if not self._faults.has(code):
                 self._faults.raise_fault(code)
         elif status in _CLEAR and self._faults.has(code):
+            self._faults.clear_fault(code.value, by="auto")
+
+    def _clear_if_active(self, device: str) -> None:
+        code = _DEVICE_FAULTS[device]
+        if self._faults.has(code):
             self._faults.clear_fault(code.value, by="auto")

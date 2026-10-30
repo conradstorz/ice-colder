@@ -210,3 +210,18 @@ async def test_invalid_document_dropped(rig):
     await c.handle("payment/state", {"boot_id": "x"})
     assert c.state is None and policy.states == [] and not faults.calls
     assert st(avail, "cash_accepting") == "unknown"
+
+
+async def test_absent_device_clears_active_fault(rig):
+    c, faults, _, _, _ = rig
+    await c.handle("payment/state", doc(coin="jammed"))
+    assert FaultCode.PAY_106 in faults.active
+    await c.handle("payment/state", doc(coin="offline", coin_present=False))
+    assert FaultCode.PAY_106 not in faults.active
+    assert faults.calls[-1] == ("clear", "PAY-106", "auto")
+
+
+async def test_exact_change_on_first_state_fires(rig):
+    c, _, _, _, msgs = rig
+    await c.handle("payment/state", doc(exact=True))
+    assert msgs == ["Exact change only"]
