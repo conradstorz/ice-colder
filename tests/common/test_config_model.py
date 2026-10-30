@@ -428,3 +428,22 @@ def test_old_config_without_policy_loads():
     cfg = ConfigModel.model_validate({"payment": {"mdb": {"polling_interval": 1.0}}})
     assert cfg.payment.mdb.polling_interval == 1.0
     assert cfg.payment.mdb.policy.max_escrow_cents == 2000
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"coin_enabled": [0]},
+        {"bill_enabled": [-100]},
+        {"coin_enabled": [2.5]},
+        {"max_escrow_cents": 0},
+        {"change_threshold_cents": -1},
+        {"edge_timeout_s": 4},
+        {"edge_timeout_s": 121},
+    ],
+)
+def test_mdb_policy_rejects_bad_values(bad):
+    from ice_common.config_model import MdbPolicyConfig
+
+    with pytest.raises(ValidationError):
+        MdbPolicyConfig(**bad)

@@ -46,6 +46,7 @@ from pydantic import (
     ConfigDict,
     EmailStr,
     SecretStr,
+    StrictInt,
     Field,
     field_validator,
     model_validator,
@@ -53,7 +54,7 @@ from pydantic import (
 from loguru import logger
 
 from ice_contracts.board.common import CHANNEL_ID_PATTERN
-from ice_contracts.money import MAX_PRICE_CENTS, Cents, dollars_to_cents
+from ice_contracts.money import MAX_PRICE_CENTS, Cents, PositiveCents, dollars_to_cents
 
 
 # 1) First, an enum of supported communication channels
@@ -340,19 +341,19 @@ class MDBDevice(BaseModel):
 class MdbPolicyConfig(BaseModel):
     """Acceptance policy sent to the MDB board (payment contract SetPolicyParams)."""
 
-    coin_enabled: List[int] = Field(
+    coin_enabled: List[PositiveCents] = Field(
         default_factory=lambda: [5, 10, 25, 100],
         description="Coin denominations to accept, in cents",
     )
-    bill_enabled: List[int] = Field(
+    bill_enabled: List[PositiveCents] = Field(
         default_factory=lambda: [100, 500, 1000, 2000],
         description="Bill denominations to accept, in cents",
     )
-    max_escrow_cents: int = Field(2000, gt=0, description="Escrow cap in cents")
-    change_threshold_cents: int = Field(
-        500, ge=0, description="Bills above this are refused when change is low"
+    max_escrow_cents: PositiveCents = Field(2000, description="Escrow cap in cents")
+    change_threshold_cents: Cents = Field(
+        500, description="Bills above this are refused when change is low"
     )
-    edge_timeout_s: int = Field(
+    edge_timeout_s: StrictInt = Field(
         30, ge=5, le=120, description="Board fail-safe timeout on edge silence"
     )
     return_bill_on_lever: bool = Field(

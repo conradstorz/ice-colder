@@ -35,9 +35,12 @@ class CursorState:
     corrupt: bool = False
 
     def advance(self, boot_id: str, seq: int, event_id: str) -> None:
-        """Record one processed event, keeping only the two newest boots."""
-        self.seqs.pop(boot_id, None)  # re-insert so it is the newest key
-        self.seqs[boot_id] = seq
+        """Record one processed event, keeping the two first-seen-newest boots.
+
+        Eviction is by first-seen order: a late event for an older boot never
+        reorders it, so it cannot cause the real previous boot to be evicted.
+        """
+        self.seqs[boot_id] = seq  # existing key keeps its position
         while len(self.seqs) > MAX_BOOTS:
             del self.seqs[next(iter(self.seqs))]
         self.recent_ids.append(event_id)

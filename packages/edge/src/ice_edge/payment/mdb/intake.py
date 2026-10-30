@@ -51,6 +51,7 @@ class EventIntake:
         journal: Callable[[str, dict], None],
         record_event: Callable[[str, int, dict | None], None],
         faults: FaultService,
+        on_cursor_saved: Callable[[bool], None],
     ) -> None:
         self._store = cursor
         self._publish_ack = publish_ack
@@ -63,11 +64,11 @@ class EventIntake:
         self._journal = journal
         self._record_event = record_event
         self._faults = faults
+        self._on_cursor_saved = on_cursor_saved
         self._lock = asyncio.Lock()
         self._gaps = 0
         self._unknown_kinds = 0
         self._malformed = 0
-        self._data104_raised = False
         self._last_processed_ts: float | None = None
         self._state: CursorState = cursor.load()
         if self._state.corrupt:
@@ -117,27 +118,32 @@ class EventIntake:
             return
 
         if (known and seq > st.seqs[boot] + 1) or (not known and seq > 1):
+            # The ack below is cumulative, so after a gap the board drops the
+            # missing events; a late lower seq is then discarded as a
+            # duplicate (contract: keep processing, tell the operator).
             self._gaps += 1
             self._raise_pay105(f"seq gap on boot {boot} at seq {seq}")
 
-        credited = self._process(header, data)
+        credited = False
+        try:
+            credited = self._process(header, data)
+        finally:
+            # Advance before any await, even if a callback raised after the
+            # deposit: a replay must never deposit the same event twice.
+            st.advance(boot, seq, header.event_id)
+            self._last_processed_ts = time.time()
         if credited:
-            await self._persist_session()
-
-        st.advance(boot, seq, header.event_id)
-        self._last_processed_ts = time.time()
+            try:
+                await self._persist_session()
+            except Exception as exc:  # noqa: BLE001 - upstream raises DATA-104
+                logger.error(f"Session snapshot after deposit failed: {exc!r}")
         try:
             await self._store.save_async(st)
         except Exception as exc:  # noqa: BLE001 - ack must still go out
             logger.error(f"Payment cursor save failed: {exc!r}")
-            self._data104_raised = True
-            self._faults.raise_fault(
-                FaultCode.DATA_104, outcome="payment cursor could not be saved"
-            )
+            self._on_cursor_saved(False)
         else:
-            if self._data104_raised:
-                self._data104_raised = False
-                self._faults.clear_fault(FaultCode.DATA_104.value, by="auto")
+            self._on_cursor_saved(True)
         self._publish_ack(PaymentEventAck(boot_id=boot, seq=seq))
 
     def _process(self, header: PaymentEventHeader, data: dict) -> bool:

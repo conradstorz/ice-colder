@@ -66,3 +66,12 @@ async def test_save_async(tmp_path):
     st.advance("boot-aaaa", 3, "evt-00001")
     await store.save_async(st)
     assert store.load().seqs == {"boot-aaaa": 3}
+
+
+def test_eviction_is_by_first_seen_order():
+    st = CursorState()
+    st.advance("boot-aaaa", 1, "evt-00001")
+    st.advance("boot-bbbb", 1, "evt-00002")
+    st.advance("boot-aaaa", 2, "evt-00003")  # late event for the older boot
+    st.advance("boot-cccc", 1, "evt-00004")
+    assert set(st.seqs) == {"boot-bbbb", "boot-cccc"}
