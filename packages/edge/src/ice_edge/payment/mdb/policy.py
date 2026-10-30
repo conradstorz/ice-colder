@@ -72,6 +72,7 @@ class PolicySync:
         self._last_boot: str | None = None
         self._last_state: PaymentState | None = None
         self._inflight = False
+        self._require_fresh = False
         self._inflight_id: str | None = None
         self._resend_after: str | None = None
         self._connected = False
@@ -123,6 +124,7 @@ class PolicySync:
             return
         if self._ack_ok_id == cur:
             if state.policy_id == cur:
+                self._require_fresh = False
                 self._acked_boot = state.boot_id
                 self._cancel_verify()
                 self._set_acked(True)
@@ -149,6 +151,10 @@ class PolicySync:
         self._ack_ok_id = None
         self._acked_boot = None
         self._cancel_verify()
+        # A state received before the re-send's ack cannot prove the policy is
+        # in force again: forget it and wait for a fresh echo.
+        self._last_state = None
+        self._require_fresh = True
         self._set_acked(False)
         self._spawn("board_no_policy")
 
@@ -188,7 +194,11 @@ class PolicySync:
             self._ack_ok_id = params.policy_id
             self._acked_boot = self._last_boot
             last = self._last_state
-            if last is not None and last.policy_id == params.policy_id:
+            if (
+                not self._require_fresh
+                and last is not None
+                and last.policy_id == params.policy_id
+            ):
                 self._acked_boot = last.boot_id
                 self._set_acked(True)
             else:

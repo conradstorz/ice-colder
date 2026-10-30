@@ -212,11 +212,17 @@ async def test_no_policy_rejection_resyncs_policy_then_pays_with_fresh_id(env):
     assert env.gw.policy_acked
     env.disp.reject_next_payout = True
     env.gw.pay_out(100, PayoutReason.cancel, None)
-    await settle(6)
-    # the rejection dropped the ack and re-sent the policy
+    await settle(8)
+    # rejection dropped the ack and re-sent the policy, but the stale retained
+    # state must not re-ack it: the false window holds and nothing is re-sent
     assert len([c for c, *_ in env.disp.sent if c == "set_policy"]) == 2
+    assert not env.gw.policy_acked
+    assert len([c for c, *_ in env.disp.sent if c == "payout"]) == 1
+    assert env.paid == []
+    # a fresh state echoing the policy re-acks and releases the payout
     await env.gw.state_consumer.handle("s", doc(env.policy_id()))
     await settle(8)
+    assert env.gw.policy_acked
     payouts = [r for c, _, r in env.disp.sent if c == "payout"]
     assert len(payouts) == 2 and payouts[0] != payouts[1]
     assert env.paid and env.paid[0][1] == 100
