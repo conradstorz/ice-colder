@@ -130,7 +130,7 @@ def test_vend_failed_records_a_row_for_a_real_sale_only(harness):
     journal, recorder, messages, sink = harness
     journal.vend_failed("Ice", FaultCode.PAY_102, "jam", 2.5, "ICE", is_test=False)
     assert recorder.rows == [
-        ("vend_failed", 2.5, {"code": "PAY-102", "sku": "ICE", "outcome": "jam"})
+        ("vend_failed", 250, {"code": "PAY-102", "sku": "ICE", "outcome": "jam"})
     ]
     assert sink.lines()[0] == (
         "ERROR",
@@ -185,7 +185,7 @@ def test_refund_failed_row_and_message(harness):
     assert recorder.rows == [
         (
             "refund_failed",
-            3.0,
+            300,
             {"request_id": "abcdef0123", "reason": "error", "detail": "nack"},
         )
     ]
@@ -393,7 +393,7 @@ def test_refund_confirmed(harness):
         ("INFO", "REFUND CONFIRMED: $2.00 request_id=rid1")
     ]
     assert recorder.rows == [
-        ("refund", 2.0, {"request_id": "rid1", "reason": "maintenance"})
+        ("refund", 200, {"request_id": "rid1", "reason": "maintenance"})
     ]
     assert messages == ["Refund of $2.00 issued via cash."]
 
@@ -453,7 +453,7 @@ def test_trace_vend_failed(harness, trace, is_test):
             (
                 "record",
                 "vend_failed",
-                2.5,
+                250,
                 {"code": "PAY-102", "sku": "ICE", "outcome": "jam"},
             )
         )
@@ -495,7 +495,7 @@ def test_trace_refund_confirmed(harness, trace):
         (
             "record",
             "refund",
-            1.0,
+            100,
             {"request_id": "req-1", "reason": "customer"},
         ),
         ("message", "Refund of $1.00 issued via card."),
@@ -516,7 +516,7 @@ def test_trace_refund_failed(harness, trace):
         (
             "record",
             "refund_failed",
-            1.0,
+            100,
             {"request_id": "req-12345678", "reason": "customer", "detail": "no_ack"},
         ),
         (

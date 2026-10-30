@@ -143,6 +143,8 @@ from typing import Awaitable, Callable, Optional
 
 from loguru import logger
 
+from ice_contracts.money import cents_to_dollar_text
+
 # `_floor_to_bucket`, `_next_bucket`, `_bucket_key` and
 # `_MAX_BUCKET_KEY_RETRIES` are underscore-private in ice_edge/reporting/reports.py
 # (`to_local` itself is public), but importing them here is a deliberate,
@@ -628,13 +630,17 @@ def _period_label(due: NextDue) -> str:
     return f"{start.isoformat()} to {last_day.isoformat()}"
 
 
+def _amount(c: int) -> str:
+    return cents_to_dollar_text(c)
+
+
 def _compose_body(data: dict) -> str:
     lines = [
-        f"Revenue: {data['revenue']:.2f}",
+        f"Revenue: {_amount(data['revenue_cents'])}",
         f"Vends: {data['vends']}",
         f"Failed vends: {data['failed']}",
-        f"Refunds: {data['refunds']:.2f}",
-        f"Cash since last collection: {data['cash_since_last_collection']:.2f}",
+        f"Refunds: {_amount(data['refunds_cents'])}",
+        f"Cash since last collection: {_amount(data['cash_since_last_collection_cents'])}",
         "",
         "By method:",
     ]
@@ -643,7 +649,7 @@ def _compose_body(data: dict) -> str:
         lines.append("  (no sales in this period)")
     for entry in by_method:
         lines.append(
-            f"  {entry['method']}: {entry['amount']:.2f} "
+            f"  {entry['method']}: {_amount(entry['amount_cents'])} "
             f"({entry['count']} sale(s), {entry['share'] * 100:.1f}% of revenue)"
         )
     return "\n".join(lines)

@@ -504,7 +504,7 @@ async def test_record_writes_sale_with_share_sum_price():
     assert recorded is True
     assert recorder.events == [("dispense", float(ICE.slot), None)]
     assert recorder.sales == [
-        (ICE.sku, ICE.name, ICE.slot, 1.75, {"cash": 1.00, "card": 0.75})
+        (ICE.sku, ICE.name, ICE.slot, 175, {"cash": 100, "card": 75})
     ]
 
 
@@ -528,8 +528,8 @@ async def test_record_defaults_price_to_product_price_without_shares():
             ICE.sku,
             ICE.name,
             ICE.slot,
-            round(ICE.price_cents / 100, 2),
-            {"unknown": round(ICE.price_cents / 100, 2)},
+            ICE.price_cents,
+            {"unknown": ICE.price_cents},
         )
     ]
 

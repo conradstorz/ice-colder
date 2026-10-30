@@ -75,13 +75,13 @@
           {% for row in rows %}
           <tr>
             <td class="px-5 py-3 text-gray-700 whitespace-nowrap">{{ row.bucket_start }}</td>
-            <td class="px-5 py-3 text-right whitespace-nowrap font-medium text-gray-900">${{ "%.2f"|format(row.revenue) }}</td>
+            <td class="px-5 py-3 text-right whitespace-nowrap font-medium text-gray-900">{{ row.revenue_cents|money }}</td>
             <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">{{ row.vends }}</td>
             <td class="px-5 py-3 text-right whitespace-nowrap {{ 'text-red-600' if row.failed_vends else 'text-gray-900' }}">
               {{ row.failed_vends if row.failed_vends is not none else "—" }}
             </td>
             <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">
-              {{ "$%.2f"|format(row.refunds) if row.refunds is not none else "—" }}
+              {{ row.refunds_cents|money if row.refunds_cents is not none else "—" }}
             </td>
             <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">
               {{ "%.1f%%"|format(row.uptime_pct) if row.uptime_pct is not none else "—" }}
@@ -95,13 +95,13 @@
           {% if rows %}
           <tr class="border-t-2 border-gray-200 font-semibold">
             <td class="px-5 py-3 text-gray-700">Total</td>
-            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">${{ "%.2f"|format(total.revenue) }}</td>
+            <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">{{ total.revenue_cents|money }}</td>
             <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">{{ total.vends }}</td>
             <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">
               {{ total.failed_vends if total.failed_vends is not none else "—" }}
             </td>
             <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">
-              {{ "$%.2f"|format(total.refunds) if total.refunds is not none else "—" }}
+              {{ total.refunds_cents|money if total.refunds_cents is not none else "—" }}
             </td>
             <td class="px-5 py-3 text-right whitespace-nowrap text-gray-900">
               {{ "%.1f%%"|format(total.uptime_pct) if total.uptime_pct is not none else "—" }}

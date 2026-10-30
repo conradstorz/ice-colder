@@ -79,7 +79,7 @@ async def screen_body(request: Request):
     ctx = _screen_context(request)
     if context.event_recorder:
         summary = await asyncio.to_thread(context.event_recorder.get_summary, 24)
-        ctx["money_24h"] = summary["money_in"]
+        ctx["money_24h"] = summary["money_in_cents"] / 100
         ctx["vends_24h"] = summary["products_out"]
     else:
         ctx["money_24h"] = None

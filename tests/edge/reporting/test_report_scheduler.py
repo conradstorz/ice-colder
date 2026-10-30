@@ -1099,3 +1099,33 @@ async def test_run_recipients_are_owner_plus_extra_deduplicated(recorder, fast_s
     assert clock.calls == 2
     assert len(mailer.calls) == 1
     assert mailer.calls[0]["to"] == "owner@example.com, second@example.com"
+
+
+def test_compose_body_formats_cents_as_dollar_text():
+    # private: pure body formatter with no public seam; pins the email text
+    from ice_edge.reporting.report_scheduler import _compose_body
+
+    body = _compose_body(
+        {
+            "revenue_cents": 12345,
+            "vends": 7,
+            "failed": 1,
+            "refunds_cents": 250,
+            "cash_since_last_collection_cents": 5,
+            "by_method": [
+                {"method": "cash_coin", "amount_cents": 100, "count": 2, "share": 0.5},
+            ],
+        }
+    )
+    assert body == "\n".join(
+        [
+            "Revenue: 123.45",
+            "Vends: 7",
+            "Failed vends: 1",
+            "Refunds: 2.50",
+            "Cash since last collection: 0.05",
+            "",
+            "By method:",
+            "  cash_coin: 1.00 (2 sale(s), 50.0% of revenue)",
+        ]
+    )

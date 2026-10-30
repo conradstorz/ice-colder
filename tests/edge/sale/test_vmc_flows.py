@@ -396,15 +396,15 @@ async def test_dispense_complete_records_sale_durably_before_fsm_returns_to_idle
 
     with sqlite3.connect(str(tmp_path / "events.db")) as conn:
         rows = conn.execute(
-            "SELECT sku, name, slot, price, methods FROM sales"
+            "SELECT sku, name, slot, price_cents, methods FROM sales"
         ).fetchall()
     assert len(rows) == 1  # exactly one row
     sku, name, slot, price, methods_json = rows[0]
     assert sku == "ICE-1"
     assert name == "Ice Bag"
     assert slot == vmc.products[0].slot
-    assert price == pytest.approx(2.50)
-    assert json.loads(methods_json) == {"cash_bill": 1.50, "card": 1.00}
+    assert price == 250
+    assert json.loads(methods_json) == {"cash_bill": 150, "card": 100}
 
 
 async def test_dispense_complete_sale_record_failure_raises_data_101_but_completes_vend():
@@ -575,13 +575,13 @@ async def test_dispense_complete_records_price_from_shares_not_live_catalog_pric
     assert vmc.state == "idle"
 
     with sqlite3.connect(str(tmp_path / "events.db")) as conn:
-        rows = conn.execute("SELECT price, methods FROM sales").fetchall()
+        rows = conn.execute("SELECT price_cents, methods FROM sales").fetchall()
     assert len(rows) == 1
     price, methods_json = rows[0]
     methods = json.loads(methods_json)
-    assert methods == {"cash_bill": 2.50}
+    assert methods == {"cash_bill": 250}
     # The row must record what was actually charged, not the edited price.
-    assert price == pytest.approx(2.50)
+    assert price == 250
 
 
 async def test_vend_failed_after_deduction_writes_no_sale_row_and_restores_credits(
@@ -675,7 +675,7 @@ async def test_vend_failed_restores_shares_total_not_live_catalog_price(tmp_path
             "SELECT value FROM events WHERE event_type = 'vend_failed'"
         ).fetchone()
     assert row is not None
-    assert row[0] == pytest.approx(2.50)
+    assert row[0] == 250
 
 
 async def test_pay_104_snapshot_exposes_pending_sale_after_crash_mid_dispense(
@@ -1094,7 +1094,7 @@ class TestVendOutcomes:
         assert vmc.selected_product is None
         assert (
             "vend_failed",
-            price,
+            round(price * 100),  # cents-shim(T4)
             {"code": code.value, "sku": "ICE-1", "outcome": outcome},
         ) in rec.events
         assert not any(t == "cmd/payment/refund" for t, _ in published)
@@ -1128,7 +1128,7 @@ class TestVendOutcomes:
         assert vmc.credit_escrow == 2.50
         assert (
             "vend_failed",
-            2.50,
+            250,
             {"code": "PAY-102", "sku": "ICE-1", "outcome": "no_report"},
         ) in rec.events
         assert vmc.faults.lockouts == {}  # PAY-102 is vend_failed severity: no lockout
@@ -1446,7 +1446,7 @@ class TestRefunds:
         )
 
         assert rid not in vmc.refunds.pending
-        assert ("refund", 2.0, {"request_id": rid, "reason": "cancel"}) in rec.events
+        assert ("refund", 200, {"request_id": rid, "reason": "cancel"}) in rec.events
         # Only now, after the ack, may the customer be told it's issued.
         assert "issued" in messages[-1]
         assert "$2.00" in messages[-1]
@@ -1488,7 +1488,7 @@ class TestRefunds:
         assert len(client.refund_commands()) == 2
         assert (
             "refund_failed",
-            2.0,
+            200,
             {"request_id": rid, "reason": "cancel", "detail": "changer_empty"},
         ) in rec.events
         assert "PAY-103" in [f["code"] for f in vmc.active_faults()]
@@ -2515,7 +2515,7 @@ class TestMaintenanceLease:
 
         assert (
             "refund",
-            1.00,
+            100,
             {"request_id": rid, "reason": "maintenance"},
         ) in rec.events
         # The money must never become spendable escrow after the hold ends.
@@ -3202,8 +3202,8 @@ class TestRunTestSale:
         assert len(rec.sales) == 1
         sku, name, slot, price, methods = rec.sales[0]
         assert sku == "WATER-1"
-        assert price == 1.00
-        assert methods == {"cash_coin": 1.00}
+        assert price == 100
+        assert methods == {"cash_coin": 100}
         assert vmc.credit_escrow == 1.50
         assert [c.method for c in vmc.escrow_credits] == ["card"]
 

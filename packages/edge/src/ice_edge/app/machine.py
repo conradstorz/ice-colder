@@ -52,6 +52,7 @@ from dataclasses import asdict
 from loguru import logger
 
 from ice_common.config_model import ConfigModel
+from ice_contracts.money import dollars_to_cents
 from ice_contracts.board.vending_machine import FaultCode
 from ice_edge.hal import mqtt_inbound
 from ice_edge.vend.dispense_cycle import DispenseCycle
@@ -550,7 +551,10 @@ class Machine:
         if recorder is None:
             return False
         return recorder.sale_recorded_since(
-            sku, since_ts, methods, window_seconds=window_seconds
+            sku,
+            since_ts,
+            {k: dollars_to_cents(v) for k, v in methods.items()},  # cents-shim(T4)
+            window_seconds=window_seconds,
         )
 
     def _flag_uncertain_session(self, snap: SessionSnapshot) -> None:
@@ -566,7 +570,9 @@ class Machine:
         _txn_log.error(f"RESTART WITH OPEN SESSION: {detail}")
         if self._event_recorder:
             self._event_recorder.record(
-                "session_uncertain", value=snap.credit_escrow, metadata=asdict(snap)
+                "session_uncertain",
+                value=dollars_to_cents(snap.credit_escrow),  # cents-shim(T4)
+                metadata=asdict(snap),
             )
         availability = self._outputs.availability
         if availability:

@@ -29,7 +29,7 @@
             <td class="px-5 py-3 text-gray-700 whitespace-nowrap">{{ row.ts_display }}</td>
             <td class="px-5 py-3 text-gray-700">{{ row.user_name }}</td>
             <td class="px-5 py-3 text-right whitespace-nowrap font-medium text-gray-900">
-              ${{ "%.2f"|format(row.expected_cash) }}
+              {{ row.expected_cash_cents|money }}
               {% if loop.first %}<span class="text-xs text-gray-400 ml-2">(live)</span>{% endif %}
             </td>
           </tr>

@@ -25,6 +25,7 @@ test was never able to cover: genuine concurrency (two requests actually
 in flight together) and a `clear_fault` failure after a successful write.
 """
 
+from ice_contracts.money import dollars_to_cents
 import asyncio
 import sqlite3
 import threading
@@ -139,10 +140,14 @@ def pay104(wired, tmp_path):
         routes.set_machine_instance(old_machine)
 
 
+def _shares_cents(shares: dict) -> dict:
+    return {k: dollars_to_cents(v) for k, v in shares.items()}
+
+
 def _sales_rows(db_path):
     with sqlite3.connect(str(db_path)) as conn:
         return conn.execute(
-            "SELECT sku, name, slot, price, methods FROM sales"
+            "SELECT sku, name, slot, price_cents, methods FROM sales"
         ).fetchall()
 
 
@@ -315,10 +320,10 @@ class TestRecordSale:
         assert sku == "ICE-1"
         assert name == pay104["product"].name
         assert slot == pay104["product"].slot
-        assert price == pay104["price"]
+        assert price == dollars_to_cents(pay104["price"])
         import json
 
-        assert json.loads(methods_json) == pay104["shares"]
+        assert json.loads(methods_json) == _shares_cents(pay104["shares"])
 
         assert "PAY-104" not in {f["code"] for f in vmc.active_faults()}
         assert not pay104["session_path"].exists()
@@ -585,7 +590,7 @@ class TestRecordSaleExactlyOnce:
         assert len(rows) == 1
         sku, name, slot, price, methods_json = rows[0]
         assert sku == "ICE-1"
-        assert price == pay104["price"]
+        assert price == dollars_to_cents(pay104["price"])
 
         # The fault, through the same registry the route reads, is still
         # active -- clear_fault's own removal failure left it in place.
@@ -676,7 +681,7 @@ class TestMarkerFailureExactlyOnce:
         )
         sku, name, slot, price, methods_json = rows[0]
         assert sku == "ICE-1"
-        assert price == pay104["price"]
+        assert price == dollars_to_cents(pay104["price"])
 
         # PAY-104 legitimately still active -- clear_fault's own removal
         # failure left it in place, unchanged from finding 2.
@@ -861,7 +866,12 @@ class TestRecordedSaleWithLeftoverCredit:
 
         recorder = EventRecorder(db_path=str(tmp_path / "events.db"))
         recorder.record_sale(
-            "ICE-1", "Ice", 1, 2.50, dict(snap.pending_sale_shares), ts=snap.saved_at
+            "ICE-1",
+            "Ice",
+            1,
+            250,
+            _shares_cents(snap.pending_sale_shares),
+            ts=snap.saved_at,
         )
         machine2 = Machine(config=cfg)
         machine2.set_event_recorder(recorder)

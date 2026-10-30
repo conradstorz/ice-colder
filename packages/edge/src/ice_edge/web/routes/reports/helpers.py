@@ -2,6 +2,8 @@
 
 from datetime import datetime
 
+from ice_contracts.money import cents_to_dollar_text, format_cents
+
 from ice_edge.reporting import reports as reports_service
 from ice_edge.web import context
 
@@ -24,6 +26,11 @@ PERIOD_HEADER = [
     "refunds",
     "uptime_pct",
 ]
+# CSV header name -> the row key (integer cents) it is rendered from.
+PERIOD_CSV_MONEY = {"revenue": "revenue_cents", "refunds": "refunds_cents"}
+PRODUCT_CSV_MONEY = {"revenue": "revenue_cents"}
+METHOD_CSV_MONEY = {"amount": "amount_cents"}
+COLLECTIONS_CSV_MONEY = {"expected_cash": "expected_cash_cents"}
 PRODUCT_HEADER = ["sku", "name", "units", "revenue", "failed_vends"]
 METHOD_HEADER = ["method", "amount", "count", "share", "is_cash"]
 COLLECTIONS_HEADER = ["ts", "user_id", "user_name", "expected_cash"]
@@ -78,13 +85,27 @@ def _ts_display(ts: float) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
 
+def csv_rows(rows: list[dict], money: dict[str, str]) -> list[dict]:
+    """Copies of `rows` with each CSV money column (header name) written as
+    dollar text from its `_cents` key; `None` stays `None` (an empty field)."""
+    out = []
+    for row in rows:
+        new = dict(row)
+        for column, key in money.items():
+            if key in row:
+                value = row[key]
+                new[column] = None if value is None else cents_to_dollar_text(value)
+        out.append(new)
+    return out
+
+
 def _fmt(value, *, money: bool = False) -> str:
     """Plain-text rendering of a possibly-`None` event-derived value: `—`
     for `None` (never 0 -- see the module docstring and design §5), `$x.xx`
     for a money value, else the bare value."""
     if value is None:
         return "—"
-    return f"${value:.2f}" if money else str(value)
+    return format_cents(value) if money else str(value)
 
 
 def _totalize_period(rows: list[dict]) -> dict:
@@ -98,15 +119,15 @@ def _totalize_period(rows: list[dict]) -> dict:
     fault-free, the exact misreading design §5 calls out for a single row,
     and a total row is no exception.
     """
-    revenue = round(sum(r["revenue"] for r in rows), 2)
+    revenue = sum(r["revenue_cents"] for r in rows)
     vends = sum(r["vends"] for r in rows)
     failed = [r["failed_vends"] for r in rows if r["failed_vends"] is not None]
-    refunds = [r["refunds"] for r in rows if r["refunds"] is not None]
+    refunds = [r["refunds_cents"] for r in rows if r["refunds_cents"] is not None]
     uptime = [r["uptime_pct"] for r in rows if r["uptime_pct"] is not None]
     return {
-        "revenue": revenue,
+        "revenue_cents": revenue,
         "vends": vends,
         "failed_vends": sum(failed) if failed else None,
-        "refunds": round(sum(refunds), 2) if refunds else None,
+        "refunds_cents": sum(refunds) if refunds else None,
         "uptime_pct": round(sum(uptime) / len(uptime), 1) if uptime else None,
     }

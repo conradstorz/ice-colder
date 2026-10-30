@@ -342,10 +342,17 @@ async def test_build_kpi_summary_projects_the_cards_keys(scenario):
     raw_summary = recorder.get_summary(24)
     raw_average = recorder.get_historical_average(24)
     kpi = await build_kpi_summary(recorder)
-    keys = ("money_in", "products_out", "vends_failed", "errors", "uptime_pct")
-    assert kpi.summary.model_dump() == {k: raw_summary[k] for k in keys}
-    akeys = ("money_in", "products_out", "errors", "uptime_pct")
-    assert kpi.average.model_dump() == {k: raw_average[k] for k in akeys}
+    keys = ("products_out", "vends_failed", "errors", "uptime_pct")
+    expected = {k: raw_summary[k] for k in keys}
+    expected["money_in"] = raw_summary["money_in_cents"] / 100  # cents-shim(T5)
+    assert kpi.summary.model_dump() == expected
+    akeys = ("products_out", "errors", "uptime_pct")
+    expected_avg = {k: raw_average[k] for k in akeys}
+    avg_cents = raw_average["money_in_cents"]
+    expected_avg["money_in"] = (  # cents-shim(T5)
+        None if avg_cents is None else round(avg_cents / 100, 2)
+    )
+    assert kpi.average.model_dump() == expected_avg
     assert kpi.summary.errors >= 1
 
 

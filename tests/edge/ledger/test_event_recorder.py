@@ -57,14 +57,14 @@ class TestInit:
 
 class TestRecord:
     def test_payment_recorded(self, recorder):
-        recorder.record("payment", value=3.00)
+        recorder.record("payment", value=300)
         summary = recorder.get_summary(24)
-        assert summary["money_in"] == pytest.approx(3.00)
+        assert summary["money_in_cents"] == 300
 
     def test_multiple_payments_sum(self, recorder):
-        recorder.record("payment", value=1.50)
-        recorder.record("payment", value=2.00)
-        assert recorder.get_summary(24)["money_in"] == pytest.approx(3.50)
+        recorder.record("payment", value=150)
+        recorder.record("payment", value=200)
+        assert recorder.get_summary(24)["money_in_cents"] == 350
 
     def test_dispense_counted(self, recorder):
         recorder.record("dispense", value=0)
@@ -90,7 +90,7 @@ class TestRecord:
 class TestGetSummary:
     def test_empty_db_returns_zeros(self, recorder):
         s = recorder.get_summary(24)
-        assert s["money_in"] == 0.0
+        assert s["money_in_cents"] == 0.0
         assert s["products_out"] == 0
         assert s["errors"] == 0
         assert s["uptime_pct"] == 0.0
@@ -102,11 +102,11 @@ class TestGetSummary:
         conn = sqlite3.connect(db)
         conn.execute(
             "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("payment", old_ts, 5.00),
+            ("payment", old_ts, 500),
         )
         conn.commit()
         conn.close()
-        assert rec.get_summary(24)["money_in"] == 0.0
+        assert rec.get_summary(24)["money_in_cents"] == 0.0
 
     def test_uptime_with_heartbeats(self, recorder):
         # 360 heartbeats at a real 10s cadence (distinct buckets), covering
@@ -122,13 +122,13 @@ class TestGetSummary:
         assert recorder.get_summary(24)["uptime_pct"] == pytest.approx(4.2, abs=0.1)
 
     def test_vends_failed_and_refunds(self, recorder):
-        recorder.record("vend_failed", value=2.5, metadata={"code": "ICE-301"})
-        recorder.record("vend_failed", value=3.0, metadata={"code": "ICE-401"})
-        recorder.record("refund", value=2.5, metadata={"request_id": "r1"})
-        recorder.record("refund_failed", value=3.0, metadata={"request_id": "r2"})
+        recorder.record("vend_failed", value=250, metadata={"code": "ICE-301"})
+        recorder.record("vend_failed", value=300, metadata={"code": "ICE-401"})
+        recorder.record("refund", value=250, metadata={"request_id": "r1"})
+        recorder.record("refund_failed", value=300, metadata={"request_id": "r2"})
         s = recorder.get_summary(24)
         assert s["vends_failed"] == 2
-        assert s["refunds"] == 2.5
+        assert s["refunds_cents"] == 250
 
 
 class TestUptimeComputation:
@@ -304,12 +304,12 @@ class TestRegisterHandlers:
         await h["payment/credit"](
             "payment/credit",
             {
-                "amount": 2.50,
+                "amount": 2.50,  # legacy board payload, dollars
                 "method": "cash_coin",
                 "timestamp": "2026-01-01T00:00:00+00:00",
             },
         )
-        assert recorder.get_summary(24)["money_in"] == pytest.approx(2.50)
+        assert recorder.get_summary(24)["money_in_cents"] == 250
 
     def test_hardware_dispenser_not_registered(self, recorder):
         """The recorder must NOT listen on hardware/dispenser directly — only
@@ -450,7 +450,7 @@ class TestRegisterHandlers:
 class TestGetHistoricalAverage:
     def test_returns_none_with_no_data(self, recorder):
         avg = recorder.get_historical_average(24)
-        assert avg["money_in"] is None
+        assert avg["money_in_cents"] is None
         assert avg["products_out"] is None
 
     def test_returns_none_with_only_one_prior_period(self, tmp_path):
@@ -472,7 +472,7 @@ class TestGetHistoricalAverage:
         conn.commit()
         conn.close()
         avg = rec.get_historical_average(24)
-        assert avg["money_in"] is None
+        assert avg["money_in_cents"] is None
         assert avg["products_out"] is None
 
     def test_averages_two_prior_periods(self, tmp_path):
@@ -484,7 +484,7 @@ class TestGetHistoricalAverage:
         # Period 1: 25-49h ago → $10 + heartbeat
         conn.execute(
             "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("payment", now - 1.5 * period, 10.00),
+            ("payment", now - 1.5 * period, 1000),
         )
         conn.execute(
             "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
@@ -493,7 +493,7 @@ class TestGetHistoricalAverage:
         # Period 2: 49-73h ago → $6 + heartbeat
         conn.execute(
             "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("payment", now - 2.5 * period, 6.00),
+            ("payment", now - 2.5 * period, 600),
         )
         conn.execute(
             "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
@@ -502,7 +502,7 @@ class TestGetHistoricalAverage:
         conn.commit()
         conn.close()
         avg = rec.get_historical_average(24)
-        assert avg["money_in"] == pytest.approx(8.0)  # (10 + 6) / 2
+        assert avg["money_in_cents"] == pytest.approx(800.0)  # (1000 + 600) / 2
 
     def test_inactive_periods_excluded(self, tmp_path):
         """Periods with no heartbeat (machine off) don't skew the average."""
@@ -514,7 +514,7 @@ class TestGetHistoricalAverage:
         # Period 1 active: $10 + heartbeat
         conn.execute(
             "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("payment", now - 1.5 * period, 10.00),
+            ("payment", now - 1.5 * period, 1000),
         )
         conn.execute(
             "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
@@ -523,7 +523,7 @@ class TestGetHistoricalAverage:
         # Period 2 active: $8 + heartbeat
         conn.execute(
             "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("payment", now - 2.5 * period, 8.00),
+            ("payment", now - 2.5 * period, 800),
         )
         conn.execute(
             "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
@@ -532,12 +532,14 @@ class TestGetHistoricalAverage:
         # Period 3 inactive: $20 payment but NO heartbeat — machine was off, exclude
         conn.execute(
             "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("payment", now - 3.5 * period, 20.00),
+            ("payment", now - 3.5 * period, 2000),
         )
         conn.commit()
         conn.close()
         avg = rec.get_historical_average(24)
-        assert avg["money_in"] == pytest.approx(9.0)  # (10 + 8) / 2, not (10+8+20)/3
+        assert avg["money_in_cents"] == pytest.approx(
+            900.0
+        )  # (1000 + 800) / 2, not (1000+800+2000)/3
 
 
 class TestHistoricalAverageCache:
@@ -549,7 +551,7 @@ class TestHistoricalAverageCache:
         conn = sqlite3.connect(db)
         conn.execute(
             "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("payment", now - 1.5 * period, 10.00),
+            ("payment", now - 1.5 * period, 1000),
         )
         conn.execute(
             "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
@@ -557,7 +559,7 @@ class TestHistoricalAverageCache:
         )
         conn.execute(
             "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-            ("payment", now - 2.5 * period, 6.00),
+            ("payment", now - 2.5 * period, 600),
         )
         conn.execute(
             "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
@@ -576,13 +578,13 @@ class TestHistoricalAverageCache:
         self._seed_two_active_periods(db, base_time, period)
 
         avg1 = rec.get_historical_average(24)
-        assert avg1["money_in"] == pytest.approx(8.0)
+        assert avg1["money_in_cents"] == pytest.approx(800.0)
 
         # Insert data that WOULD change the result if recomputed.
         with sqlite3.connect(db) as conn:
             conn.execute(
                 "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-                ("payment", base_time - 1.5 * period, 100.00),
+                ("payment", base_time - 1.5 * period, 10000),
             )
 
         # Still within TTL (no time advance) — must serve the cached value.
@@ -599,18 +601,18 @@ class TestHistoricalAverageCache:
         self._seed_two_active_periods(db, base_time, period)
 
         avg1 = rec.get_historical_average(24)
-        assert avg1["money_in"] == pytest.approx(8.0)
+        assert avg1["money_in_cents"] == pytest.approx(800.0)
 
         with sqlite3.connect(db) as conn:
             conn.execute(
                 "INSERT INTO events (event_type, timestamp, value) VALUES (?, ?, ?)",
-                ("payment", base_time - 1.5 * period, 100.00),
+                ("payment", base_time - 1.5 * period, 10000),
             )
 
         # Advance past the TTL — must recompute and pick up the new data.
         monkeypatch.setattr(time, "time", lambda: base_time + 61)
         avg2 = rec.get_historical_average(24)
-        assert avg2["money_in"] == pytest.approx(58.0)  # (110 + 6) / 2
+        assert avg2["money_in_cents"] == pytest.approx(5800.0)  # (11000 + 600) / 2
 
 
 class TestRetention:
@@ -656,8 +658,8 @@ class TestWriterThread:
         assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
 
     def test_get_summary_flushes_pending_rows(self, recorder):
-        recorder.record("payment", value=1.5)
-        assert recorder.get_summary(24)["money_in"] == 1.5
+        recorder.record("payment", value=150)
+        assert recorder.get_summary(24)["money_in_cents"] == 150
 
     def test_writer_survives_bad_row(self, tmp_path, monkeypatch):
         """The writer thread's `except Exception` branch must really run —
@@ -699,7 +701,9 @@ class TestWriterThread:
         rec.record("dispense", value=1.0)  # this row must still land
         rec.flush()
         assert rec.get_summary(24)["products_out"] == 1
-        assert rec.get_summary(24)["money_in"] == 0.0  # the failed row never landed
+        assert (
+            rec.get_summary(24)["money_in_cents"] == 0.0
+        )  # the failed row never landed
 
 
 class TestIsCash:
@@ -727,7 +731,7 @@ class TestSalesRetentionScope:
         db = str(tmp_path / "e.db")
         rec = EventRecorder(db_path=db, retention_days=1)
         old_ts = time.time() - 2 * 86400  # well outside the 1-day retention
-        rec.record_sale("SKU1", "Cola", 1, 1.50, {"cash": 1.50}, ts=old_ts)
+        rec.record_sale("SKU1", "Cola", 1, 150, {"cash": 150}, ts=old_ts)
 
         rec.prune()
 
@@ -742,9 +746,9 @@ class TestRecordSale:
     ):
         db = str(tmp_path / "e.db")
         rec = EventRecorder(db_path=db)
-        methods = {"cash": 1.00, "card": 0.50}
+        methods = {"cash": 100, "card": 50}
 
-        rec.record_sale("SKU1", "Cola", 3, 1.50, methods, ts=1234.5)
+        rec.record_sale("SKU1", "Cola", 3, 150, methods, ts=1234.5)
 
         # A second, separate connection -- not the one record_sale used --
         # is the point: it proves the row is really on disk, not merely
@@ -752,7 +756,7 @@ class TestRecordSale:
         conn2 = sqlite3.connect(db)
         try:
             row = conn2.execute(
-                "SELECT ts, sku, name, slot, price, methods FROM sales"
+                "SELECT ts, sku, name, slot, price_cents, methods FROM sales"
             ).fetchone()
         finally:
             conn2.close()
@@ -763,7 +767,7 @@ class TestRecordSale:
         assert sku == "SKU1"
         assert name == "Cola"
         assert slot == 3
-        assert price == pytest.approx(1.50)
+        assert price == 150
         assert json.loads(methods_json) == methods
 
     def test_default_ts_is_current_time(self, tmp_path):
@@ -771,7 +775,7 @@ class TestRecordSale:
         rec = EventRecorder(db_path=db)
         before = time.time()
 
-        rec.record_sale("SKU9", "Water", None, 1.00, {"cash": 1.00})
+        rec.record_sale("SKU9", "Water", None, 100, {"cash": 100})
 
         after = time.time()
         conn = sqlite3.connect(db)
@@ -819,8 +823,8 @@ class TestRecordSaleIdempotentParam:
         rec = EventRecorder(db_path=db)
         methods = {"cash": 2.50}
 
-        rec.record_sale("ICE-1", "Ice", 1, 2.50, methods, ts=1000.0, idempotent=True)
-        rec.record_sale("ICE-1", "Ice", 1, 2.50, methods, ts=1000.0, idempotent=True)
+        rec.record_sale("ICE-1", "Ice", 1, 250, methods, ts=1000.0, idempotent=True)
+        rec.record_sale("ICE-1", "Ice", 1, 250, methods, ts=1000.0, idempotent=True)
 
         with sqlite3.connect(db) as conn:
             rows = conn.execute(
@@ -837,8 +841,8 @@ class TestRecordSaleIdempotentParam:
         rec = EventRecorder(db_path=db)
         methods = {"cash": 2.50}
 
-        rec.record_sale("ICE-1", "Ice", 1, 2.50, methods, ts=1000.0, idempotent=True)
-        rec.record_sale("ICE-1", "Ice", 1, 2.50, methods, ts=2000.0, idempotent=True)
+        rec.record_sale("ICE-1", "Ice", 1, 250, methods, ts=1000.0, idempotent=True)
+        rec.record_sale("ICE-1", "Ice", 1, 250, methods, ts=2000.0, idempotent=True)
 
         with sqlite3.connect(db) as conn:
             rows = conn.execute(
@@ -858,8 +862,8 @@ class TestRecordSaleIdempotentParam:
         rec = EventRecorder(db_path=db)
         methods = {"cash": 2.50}
 
-        rec.record_sale("ICE-1", "Ice", 1, 2.50, methods, ts=1000.0)
-        rec.record_sale("ICE-1", "Ice", 1, 2.50, methods, ts=1000.0)
+        rec.record_sale("ICE-1", "Ice", 1, 250, methods, ts=1000.0)
+        rec.record_sale("ICE-1", "Ice", 1, 250, methods, ts=1000.0)
 
         with sqlite3.connect(db) as conn:
             rows = conn.execute(
@@ -886,11 +890,11 @@ class TestFreshDatabaseWal:
     ):
         rec = EventRecorder(db_path=str(tmp_path / "e.db"))
         rec.record("dispense", value=1.0)
-        rec.record_sale("SKU1", "Ice", 0, 2.00, {"cash": 2.00}, ts=1000.0)
+        rec.record_sale("SKU1", "Ice", 0, 200, {"cash": 200}, ts=1000.0)
         rec.flush()
         with sqlite3.connect(rec.db_path) as conn:
-            rows = conn.execute("SELECT sku, price FROM sales").fetchall()
-        assert rows == [("SKU1", 2.00)]
+            rows = conn.execute("SELECT sku, price_cents FROM sales").fetchall()
+        assert rows == [("SKU1", 200)]
         assert not journal_path.exists()
 
 
@@ -941,9 +945,9 @@ class TestRecordSaleFailureJournal:
 
         monkeypatch.setattr(sqlite3, "connect", fake_connect)
 
-        methods = {"cash": 2.00}
+        methods = {"cash": 200}
         with pytest.raises(sqlite3.OperationalError):
-            rec.record_sale("SKU2", "Chips", 5, 2.00, methods, ts=999.0)
+            rec.record_sale("SKU2", "Chips", 5, 200, methods, ts=999.0)
 
         assert journal_path.exists()
         lines = journal_path.read_text(encoding="utf-8").splitlines()
@@ -952,7 +956,8 @@ class TestRecordSaleFailureJournal:
         assert entry["sku"] == "SKU2"
         assert entry["name"] == "Chips"
         assert entry["slot"] == 5
-        assert entry["price"] == pytest.approx(2.00)
+        assert entry["units"] == "cents"
+        assert entry["price_cents"] == 200
         assert entry["methods"] == methods
         assert entry["ts"] == pytest.approx(999.0)
 
@@ -994,7 +999,7 @@ class TestRecordSaleBothInsertAndJournalFail:
 
         methods = {"cash": 2.00}
         with pytest.raises(event_recorder_module.SaleRecordingFailed) as excinfo:
-            rec.record_sale("SKU3", "Gum", 6, 2.00, methods, ts=1000.0)
+            rec.record_sale("SKU3", "Gum", 6, 200, methods, ts=1000.0)
 
         # Chained from the original insert failure, not swallowed.
         assert isinstance(excinfo.value.__cause__, sqlite3.OperationalError)
@@ -1056,11 +1061,12 @@ class TestReplaySalesJournal:
         assert journal_path.read_text(encoding="utf-8") == ""
         with sqlite3.connect(db) as conn:
             rows = conn.execute(
-                "SELECT sku, name, slot, price, methods FROM sales ORDER BY sku"
+                "SELECT sku, name, slot, price_cents, methods FROM sales ORDER BY sku"
             ).fetchall()
         assert [r[0] for r in rows] == ["A", "B"]
-        assert json.loads(rows[0][4]) == {"cash": 1.0}
-        assert json.loads(rows[1][4]) == {"card": 2.0}
+        # legacy (no "units") journal rows replay as dollars -> cents
+        assert json.loads(rows[0][4]) == {"cash": 100}
+        assert json.loads(rows[1][4]) == {"card": 200}
 
     def test_partial_final_line_does_not_lose_earlier_good_lines(
         self, tmp_path, journal_path
@@ -1093,44 +1099,42 @@ class TestExpectedCash:
         db = str(tmp_path / "e.db")
         rec = EventRecorder(db_path=db)
 
-        rec.record_sale(
-            "A", "Alpha", 1, 1.00, {"cash_coin": 0.75, "card": 0.25}, ts=100.0
-        )
-        rec.record_sale("B", "Beta", 2, 2.00, {"cash_bill": 2.00}, ts=200.0)
-        rec.record_sale("C", "Gamma", 3, 1.50, {"card": 1.00, "nfc": 0.50}, ts=300.0)
+        rec.record_sale("A", "Alpha", 1, 100, {"cash_coin": 75, "card": 25}, ts=100.0)
+        rec.record_sale("B", "Beta", 2, 200, {"cash_bill": 200}, ts=200.0)
+        rec.record_sale("C", "Gamma", 3, 150, {"card": 100, "nfc": 50}, ts=300.0)
 
         rec.record_cash_collection("u1", "Alice")
         rec.flush()
 
         with sqlite3.connect(db) as conn:
             first_rows = conn.execute(
-                "SELECT ts, user_id, user_name, expected_cash FROM cash_collections ORDER BY id"
+                "SELECT ts, user_id, user_name, expected_cash_cents FROM cash_collections ORDER BY id"
             ).fetchall()
         assert len(first_rows) == 1
         first_ts, first_user, _, first_expected = first_rows[0]
         assert first_user == "u1"
-        # all-time cash: cash_coin (0.75) + cash_bill (2.00); card/nfc excluded
-        assert first_expected == pytest.approx(0.75 + 2.00)
+        # all-time cash (cents): cash_coin (75) + cash_bill (200); card/nfc excluded
+        assert first_expected == 75 + 200
 
         # Sales after the first collection: mix of cash and non-cash.
-        rec.record_sale("D", "Delta", 4, 3.00, {"cash": 3.00}, ts=first_ts + 10)
-        rec.record_sale("E", "Epsilon", 5, 1.00, {"card": 1.00}, ts=first_ts + 20)
-        rec.record_sale("F", "Zeta", 6, 0.50, {"coin": 0.50}, ts=first_ts + 30)
+        rec.record_sale("D", "Delta", 4, 300, {"cash": 300}, ts=first_ts + 10)
+        rec.record_sale("E", "Epsilon", 5, 100, {"card": 100}, ts=first_ts + 20)
+        rec.record_sale("F", "Zeta", 6, 50, {"coin": 50}, ts=first_ts + 30)
         # A sale timestamped before the previous collection must not count,
         # even though it is inserted after it.
-        rec.record_sale("G", "Old", 7, 5.00, {"cash": 5.00}, ts=first_ts - 5)
+        rec.record_sale("G", "Old", 7, 500, {"cash": 500}, ts=first_ts - 5)
 
         rec.record_cash_collection("u2", "Bob")
         rec.flush()
 
         with sqlite3.connect(db) as conn:
             second_rows = conn.execute(
-                "SELECT user_id, expected_cash FROM cash_collections ORDER BY id"
+                "SELECT user_id, expected_cash_cents FROM cash_collections ORDER BY id"
             ).fetchall()
         assert len(second_rows) == 2
         second_user, second_expected = second_rows[1]
         assert second_user == "u2"
-        assert second_expected == pytest.approx(3.00 + 0.50)
+        assert second_expected == 300 + 50
 
 
 class TestCorruptDatabaseRecovery:
@@ -1172,10 +1176,10 @@ class TestCorruptDatabaseRecovery:
         assert {"events", "sales", "cash_collections"} <= tables
 
         # The recorder is fully usable afterwards.
-        rec.record("payment", value=1.0)
+        rec.record("payment", value=100)
         rec.flush()
-        assert rec.get_summary(24)["money_in"] == pytest.approx(1.0)
-        rec.record_sale("SKU1", "Cola", 1, 1.50, {"cash": 1.50}, ts=time.time())
+        assert rec.get_summary(24)["money_in_cents"] == 100
+        rec.record_sale("SKU1", "Cola", 1, 150, {"cash": 150}, ts=time.time())
         with sqlite3.connect(str(db_path)) as conn:
             count = conn.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
         assert count == 1
@@ -1272,9 +1276,9 @@ class TestCorruptDatabaseRenameFailure:
         assert {"events", "sales", "cash_collections"} <= tables
 
         # The recorder is fully usable afterward, against the fallback path.
-        rec.record("payment", value=1.0)
+        rec.record("payment", value=100)
         rec.flush()
-        assert rec.get_summary(24)["money_in"] == pytest.approx(1.0)
+        assert rec.get_summary(24)["money_in_cents"] == 100
 
     def test_db_path_follows_corrupt_rename(self, tmp_path, monkeypatch):
         """The public db_path property must reflect whichever file the
@@ -1572,7 +1576,7 @@ class TestCorruptRecoveryRetryFailure:
         # re-raise, exactly per its documented contract, so the caller can
         # raise DATA-101 and still finish the dispense.
         with pytest.raises(sqlite3.OperationalError):
-            rec.record_sale("SKU1", "Cola", 1, 1.50, {"cash": 1.50}, ts=12345.0)
+            rec.record_sale("SKU1", "Cola", 1, 150, {"cash": 150}, ts=12345.0)
         assert journal_path.exists()
         lines = journal_path.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 1
@@ -1668,7 +1672,7 @@ class TestJournalCountVsDrainSignal:
 
         # First, get one sale genuinely committed so we can replay an
         # already-committed duplicate of it (idempotent insert -> 0 rows).
-        rec.record_sale("DUP", "Dup", 1, 1.0, {"cash": 1.0}, ts=500.0)
+        rec.record_sale("DUP", "Dup", 1, 100, {"cash": 100}, ts=500.0)
         duplicate_of_committed = {
             "ts": 500.0,
             "sku": "DUP",
@@ -2217,7 +2221,7 @@ class TestTestRunRetentionScope:
                 ),
             )
             conn.commit()
-        rec.record_sale("SKU1", "Cola", 1, 1.50, {"cash": 1.50}, ts=old_ts)
+        rec.record_sale("SKU1", "Cola", 1, 150, {"cash": 150}, ts=old_ts)
 
         rec.prune()
 
@@ -2253,7 +2257,7 @@ class TestOpenFailureIsNotCorruption:
         rec.record("payment", value=1.0)
         rec.flush(timeout=5.0)
         with pytest.raises(sqlite3.OperationalError):
-            rec.record_sale("SKU1", "Cola", 1, 1.50, {"cash": 1.50}, ts=12345.0)
+            rec.record_sale("SKU1", "Cola", 1, 150, {"cash": 150}, ts=12345.0)
         lines = journal_path.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 1
         assert json.loads(lines[0])["sku"] == "SKU1"
@@ -2313,11 +2317,11 @@ class TestMigrations:
         rec = EventRecorder(db_path=db)
 
         assert rec.db_unavailable is False
-        assert _user_version(db) == 1
+        assert _user_version(db) == len(event_recorder_module.MIGRATIONS)
         conn = sqlite3.connect(db)
-        rows = conn.execute("SELECT sku, price FROM sales").fetchall()
+        rows = conn.execute("SELECT sku, price_cents FROM sales").fetchall()
         conn.close()
-        assert rows == [("ICE", 3.5)]
+        assert rows == [("ICE", 350)]
 
     def test_second_construction_applies_nothing(self, tmp_path):
         db = str(tmp_path / "events.db")
@@ -2341,7 +2345,7 @@ class TestMigrations:
         rec = EventRecorder(db_path=db)
         assert rec.db_unavailable is False
         assert "note" in _columns(db, "sales")
-        assert _user_version(db) == 2
+        assert _user_version(db) == 3
 
     def test_database_newer_than_code_is_unavailable_and_untouched(self, tmp_path):
         db = str(tmp_path / "events.db")
@@ -2371,7 +2375,7 @@ class TestMigrations:
         )
         rec = EventRecorder(db_path=db)
         assert rec.db_unavailable is True
-        assert _user_version(db) == 1
+        assert _user_version(db) == 2
         assert "half_done" not in _columns(db, "sales")
 
 
@@ -2409,55 +2413,56 @@ def test_corruption_raised_during_migration_is_quarantined(tmp_path, monkeypatch
     assert rec.db_was_corrupt is True
     assert rec.db_unavailable is False
     assert Path(rec.corrupt_backup_path).exists()
-    assert _user_version(str(db)) == 1
+    assert _user_version(str(db)) == len(event_recorder_module.MIGRATIONS)
 
 
 class TestSaleRecordedSince:
     def test_true_for_matching_row_after_since(self, recorder):
         now = time.time()
-        recorder.record_sale("ICE-1", "Ice", 1, 2.5, {"cash": 2.5}, ts=now)
-        assert recorder.sale_recorded_since("ICE-1", now - 0.2, {"cash": 2.5})
+        recorder.record_sale("ICE-1", "Ice", 1, 250, {"cash": 250}, ts=now)
+        assert recorder.sale_recorded_since("ICE-1", now - 0.2, {"cash": 250})
 
     def test_row_just_before_since_does_not_match(self, recorder):
         now = time.time()
-        recorder.record_sale("ICE-1", "Ice", 1, 2.5, {"cash": 2.5}, ts=now - 0.5)
-        assert not recorder.sale_recorded_since("ICE-1", now, {"cash": 2.5})
+        recorder.record_sale("ICE-1", "Ice", 1, 250, {"cash": 250}, ts=now - 0.5)
+        assert not recorder.sale_recorded_since("ICE-1", now, {"cash": 250})
 
     def test_row_at_since_matches(self, recorder):
         now = time.time()
-        recorder.record_sale("ICE-1", "Ice", 1, 2.5, {"cash": 2.5}, ts=now)
-        assert recorder.sale_recorded_since("ICE-1", now, {"cash": 2.5})
+        recorder.record_sale("ICE-1", "Ice", 1, 250, {"cash": 250}, ts=now)
+        assert recorder.sale_recorded_since("ICE-1", now, {"cash": 250})
 
     def test_row_beyond_match_window_does_not_match(self, recorder):
         now = time.time()
-        recorder.record_sale("ICE-1", "Ice", 1, 2.5, {"cash": 2.5}, ts=now + 601)
-        assert not recorder.sale_recorded_since("ICE-1", now, {"cash": 2.5})
+        recorder.record_sale("ICE-1", "Ice", 1, 250, {"cash": 250}, ts=now + 601)
+        assert not recorder.sale_recorded_since("ICE-1", now, {"cash": 250})
 
     def test_false_for_older_row(self, recorder):
         now = time.time()
-        recorder.record_sale("ICE-1", "Ice", 1, 2.5, {"cash": 2.5}, ts=now - 60)
-        assert not recorder.sale_recorded_since("ICE-1", now, {"cash": 2.5})
+        recorder.record_sale("ICE-1", "Ice", 1, 250, {"cash": 250}, ts=now - 60)
+        assert not recorder.sale_recorded_since("ICE-1", now, {"cash": 250})
 
     def test_false_for_different_sku(self, recorder):
         now = time.time()
-        recorder.record_sale("ICE-2", "Ice", 1, 2.5, {"cash": 2.5}, ts=now)
-        assert not recorder.sale_recorded_since("ICE-1", now - 0.2, {"cash": 2.5})
+        recorder.record_sale("ICE-2", "Ice", 1, 250, {"cash": 250}, ts=now)
+        assert not recorder.sale_recorded_since("ICE-1", now - 0.2, {"cash": 250})
 
     def test_false_for_different_methods(self, recorder):
         now = time.time()
-        recorder.record_sale("ICE-1", "Ice", 1, 2.5, {"cash": 2.5}, ts=now)
+        recorder.record_sale("ICE-1", "Ice", 1, 250, {"cash": 250}, ts=now)
         assert not recorder.sale_recorded_since("ICE-1", now - 0.2, {"card": 2.5})
 
-    def test_methods_compared_rounded_to_cents(self, recorder):
+    def test_methods_compared_exactly_in_cents(self, recorder):
         now = time.time()
-        recorder.record_sale("ICE-1", "Ice", 1, 2.5, {"cash": 2.5}, ts=now)
-        assert recorder.sale_recorded_since("ICE-1", now - 0.2, {"cash": 2.5000001})
+        recorder.record_sale("ICE-1", "Ice", 1, 250, {"cash": 250}, ts=now)
+        assert not recorder.sale_recorded_since("ICE-1", now - 0.2, {"cash": 249})
+        assert recorder.sale_recorded_since("ICE-1", now - 0.2, {"cash": 250})
 
     def test_false_when_db_unavailable(self, recorder):
         now = time.time()
-        recorder.record_sale("ICE-1", "Ice", 1, 2.5, {"cash": 2.5}, ts=now)
+        recorder.record_sale("ICE-1", "Ice", 1, 250, {"cash": 250}, ts=now)
         recorder.db_unavailable = True
-        assert not recorder.sale_recorded_since("ICE-1", now - 0.2, {"cash": 2.5})
+        assert not recorder.sale_recorded_since("ICE-1", now - 0.2, {"cash": 250})
 
 
 class TestWriteObservers:
@@ -2581,7 +2586,7 @@ class TestNewerSchemaIsReadOnly:
         self, tmp_path, journal_path
     ):
         db, rec = self._newer(tmp_path)
-        rec.record_sale("ICE", "Ice", 1, 3.5, {"cash": 3.5}, ts=10.0)
+        rec.record_sale("ICE", "Ice", 1, 350, {"cash": 350}, ts=10.0)
         assert _count(db, "sales") == 0
         lines = journal_path.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 1
@@ -2601,7 +2606,7 @@ class TestNewerSchemaIsReadOnly:
 
     def test_replay_returns_zero_and_leaves_journal(self, tmp_path, journal_path):
         db, rec = self._newer(tmp_path)
-        rec.record_sale("ICE", "Ice", 1, 3.5, {"cash": 3.5}, ts=10.0)
+        rec.record_sale("ICE", "Ice", 1, 350, {"cash": 350}, ts=10.0)
         before = journal_path.read_text(encoding="utf-8")
         assert rec.replay_sales_journal() == 0
         assert journal_path.read_text(encoding="utf-8") == before
@@ -2609,7 +2614,7 @@ class TestNewerSchemaIsReadOnly:
 
     def test_right_build_replays_the_journalled_sale(self, tmp_path, journal_path):
         db, rec = self._newer(tmp_path)
-        rec.record_sale("ICE", "Ice", 1, 3.5, {"cash": 3.5}, ts=10.0)
+        rec.record_sale("ICE", "Ice", 1, 350, {"cash": 350}, ts=10.0)
         _set_user_version(db, len(event_recorder_module.MIGRATIONS))
         fresh = EventRecorder(db_path=db)
         assert fresh.db_newer_than_code is False

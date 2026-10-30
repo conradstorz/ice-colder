@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from loguru import logger
 
+from ice_contracts.money import dollars_to_cents
 from ice_contracts.board.vending_machine import (
     FaultCode,
 )
@@ -191,8 +192,10 @@ async def pay104_record_sale(request: Request):
                 pending["sku"],
                 pending["name"],
                 pending["slot"],
-                pending["price"],
-                pending["methods"],
+                dollars_to_cents(pending["price"]),  # cents-shim(T4)
+                {
+                    k: dollars_to_cents(v) for k, v in pending["methods"].items()
+                },  # cents-shim(T4)
                 ts=pending["saved_at"],
                 idempotent=True,
             )

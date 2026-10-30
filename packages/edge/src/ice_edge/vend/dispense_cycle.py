@@ -41,6 +41,7 @@ from uuid import uuid4
 
 from loguru import logger
 
+from ice_contracts.money import dollars_to_cents
 from ice_contracts.board.vending_machine import (
     DispenserOutcome,
     FaultCode,
@@ -442,14 +443,18 @@ class DispenseCycle:
         fallback = round(product.price_cents / 100, 2)  # cents-shim(T4)
         methods = self.sale.shares or {"unknown": fallback}
         price = round(sum(methods.values()), 2)
+        price_cents = dollars_to_cents(price)  # cents-shim(T4)
+        methods_cents = {
+            k: dollars_to_cents(v) for k, v in methods.items()
+        }  # cents-shim(T4)
         try:
             await asyncio.to_thread(
                 recorder.record_sale,
                 product.sku,
                 product.name,
                 product.slot,
-                price,
-                methods,
+                price_cents,
+                methods_cents,
             )
         except SaleRecordingFailed:
             logger.exception(

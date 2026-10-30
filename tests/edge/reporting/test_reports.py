@@ -246,11 +246,9 @@ class TestByPeriodBucketing:
         before = boundary - timedelta(seconds=1)
 
         recorder.record_sale(
-            "A", "Alpha", 1, 3.00, {"cash": 3.00}, ts=boundary.timestamp()
+            "A", "Alpha", 1, 300, {"cash": 300}, ts=boundary.timestamp()
         )
-        recorder.record_sale(
-            "B", "Beta", 2, 5.00, {"cash": 5.00}, ts=before.timestamp()
-        )
+        recorder.record_sale("B", "Beta", 2, 500, {"cash": 500}, ts=before.timestamp())
 
         window = (before.timestamp() - 2 * 86400, boundary.timestamp() + 86400)
         rows = reports.by_period(recorder, window, "day", tz=FIXED_TZ)
@@ -261,20 +259,18 @@ class TestByPeriodBucketing:
 
         # The sale exactly on the boundary lands in the bucket that STARTS
         # at the boundary (the later day), not the one ending there.
-        assert later_bucket["revenue"] == pytest.approx(3.00)
+        assert later_bucket["revenue_cents"] == 300
         assert later_bucket["vends"] == 1
-        assert earlier_bucket["revenue"] == pytest.approx(5.00)
+        assert earlier_bucket["revenue_cents"] == 500
         assert earlier_bucket["vends"] == 1
 
     def test_week_boundary_monday_start_belongs_to_later_bucket(self, recorder):
         monday = _dt(2026, 1, 5)  # confirmed Monday, midnight, fixed tz
         sunday_end = monday - timedelta(seconds=1)  # previous Sunday 23:59:59
 
+        recorder.record_sale("A", "Alpha", 1, 200, {"cash": 200}, ts=monday.timestamp())
         recorder.record_sale(
-            "A", "Alpha", 1, 2.00, {"cash": 2.00}, ts=monday.timestamp()
-        )
-        recorder.record_sale(
-            "B", "Beta", 2, 9.00, {"cash": 9.00}, ts=sunday_end.timestamp()
+            "B", "Beta", 2, 900, {"cash": 900}, ts=sunday_end.timestamp()
         )
 
         window = (sunday_end.timestamp() - 8 * 86400, monday.timestamp() + 8 * 86400)
@@ -284,8 +280,8 @@ class TestByPeriodBucketing:
         later_week = by_start[monday.isoformat()]
         earlier_week = by_start[(monday - timedelta(days=7)).isoformat()]
 
-        assert later_week["revenue"] == pytest.approx(2.00)
-        assert earlier_week["revenue"] == pytest.approx(9.00)
+        assert later_week["revenue_cents"] == 200
+        assert earlier_week["revenue_cents"] == 900
         # Every bucket_start in a week-bucketed result must itself be a
         # Monday -- proves weeks start Monday, not merely that this one did.
         for r in rows:
@@ -297,10 +293,10 @@ class TestByPeriodBucketing:
         end_of_jan = first_of_feb - timedelta(seconds=1)
 
         recorder.record_sale(
-            "A", "Alpha", 1, 4.00, {"cash": 4.00}, ts=first_of_feb.timestamp()
+            "A", "Alpha", 1, 400, {"cash": 400}, ts=first_of_feb.timestamp()
         )
         recorder.record_sale(
-            "B", "Beta", 2, 6.00, {"cash": 6.00}, ts=end_of_jan.timestamp()
+            "B", "Beta", 2, 600, {"cash": 600}, ts=end_of_jan.timestamp()
         )
 
         window = (
@@ -313,8 +309,8 @@ class TestByPeriodBucketing:
         later_month = by_start[first_of_feb.isoformat()]
         earlier_month = by_start[_dt(2026, 1, 1).isoformat()]
 
-        assert later_month["revenue"] == pytest.approx(4.00)
-        assert earlier_month["revenue"] == pytest.approx(6.00)
+        assert later_month["revenue_cents"] == 400
+        assert earlier_month["revenue_cents"] == 600
 
 
 # --------------------------------------------------------------------------
@@ -331,7 +327,7 @@ class TestByPeriodDstTransition:
         sale_ts = {d: _syn_midnight(2026, 3, d).timestamp() for d in days}
         for d in days:
             recorder.record_sale(
-                f"D{d}", f"Day {d}", 1, 1.00, {"cash": 1.00}, ts=sale_ts[d]
+                f"D{d}", f"Day {d}", 1, 100, {"cash": 100}, ts=sale_ts[d]
             )
 
         window = (sale_ts[5], _syn_midnight(2026, 3, 12).timestamp())
@@ -345,7 +341,7 @@ class TestByPeriodDstTransition:
         # too) and drop the last bucket entirely. Every bucket here must
         # instead show exactly its own one sale.
         for row in rows:
-            assert row["revenue"] == pytest.approx(1.00)
+            assert row["revenue_cents"] == 100
             assert row["vends"] == 1
 
         # Bucket starts are each true local midnight -- not shifted by the
@@ -369,7 +365,7 @@ class TestByPeriodDstTransition:
         assert gaps == [86400.0, 86400.0, 86400.0, 82800.0, 86400.0, 86400.0]
 
         # Sum invariant: nothing double-counted, nothing dropped.
-        assert sum(r["revenue"] for r in rows) == pytest.approx(7.00)
+        assert sum(r["revenue_cents"] for r in rows) == 700
         assert sum(r["vends"] for r in rows) == 7
 
     def test_tz_none_production_path_contiguous_and_sum_invariant(self, recorder):
@@ -382,12 +378,12 @@ class TestByPeriodDstTransition:
         day = 86400.0
         sale_ts = [now - 9 * day + i * day for i in range(9)]
         for i, ts in enumerate(sale_ts):
-            recorder.record_sale(f"N{i}", f"Item {i}", 1, 1.00, {"cash": 1.00}, ts=ts)
+            recorder.record_sale(f"N{i}", f"Item {i}", 1, 100, {"cash": 100}, ts=ts)
 
         window = (now - 10 * day, now + day)
         rows = reports.by_period(recorder, window, "day", tz=None)
 
-        assert sum(r["revenue"] for r in rows) == pytest.approx(9.00)
+        assert sum(r["revenue_cents"] for r in rows) == 900
         assert sum(r["vends"] for r in rows) == 9
 
         starts = [datetime.fromisoformat(r["bucket_start"]) for r in rows]
@@ -447,7 +443,7 @@ class TestByPeriodFallBackTransition:
         sale_ts = {d: _syn_fb_midnight(*d).timestamp() for d in dates}
         for i, d in enumerate(dates):
             recorder.record_sale(
-                f"D{i}", f"Day {d}", 1, 1.00, {"cash": 1.00}, ts=sale_ts[d]
+                f"D{i}", f"Day {d}", 1, 100, {"cash": 100}, ts=sale_ts[d]
             )
 
         window = (sale_ts[dates[0]], _syn_fb_midnight(2026, 11, 5).timestamp())
@@ -461,7 +457,7 @@ class TestByPeriodFallBackTransition:
         assert len(set(bucket_starts)) == len(bucket_starts)
 
         for row in rows:
-            assert row["revenue"] == pytest.approx(1.00)
+            assert row["revenue_cents"] == 100
             assert row["vends"] == 1
 
         expected_starts = [_syn_fb_midnight(*d) for d in dates]
@@ -492,7 +488,7 @@ class TestByPeriodFallBackTransition:
         ]
 
         # Sum invariant: nothing double-counted, nothing dropped.
-        assert sum(r["revenue"] for r in rows) == pytest.approx(float(len(dates)))
+        assert sum(r["revenue_cents"] for r in rows) == 100 * len(dates)
         assert sum(r["vends"] for r in rows) == len(dates)
 
     def test_week_no_merge_contiguous_and_sum_invariant(self, recorder):
@@ -500,7 +496,7 @@ class TestByPeriodFallBackTransition:
         sale_ts = {d: _syn_fb_midnight(*d).timestamp() for d in dates}
         for i, d in enumerate(dates):
             recorder.record_sale(
-                f"W{i}", f"Week {d}", 1, 1.00, {"cash": 1.00}, ts=sale_ts[d]
+                f"W{i}", f"Week {d}", 1, 100, {"cash": 100}, ts=sale_ts[d]
             )
 
         window = (sale_ts[dates[0]], _syn_fb_midnight(2026, 11, 16).timestamp())
@@ -512,7 +508,7 @@ class TestByPeriodFallBackTransition:
         assert len(set(bucket_starts)) == len(bucket_starts)
 
         for row in rows:
-            assert row["revenue"] == pytest.approx(1.00)
+            assert row["revenue_cents"] == 100
             assert row["vends"] == 1
             bucket_dt = datetime.fromisoformat(row["bucket_start"])
             assert bucket_dt.weekday() == 0  # every week bucket starts Monday
@@ -530,7 +526,7 @@ class TestByPeriodFallBackTransition:
         ]
         assert gaps == [604800.0, 604800.0, 608400.0, 604800.0]
 
-        assert sum(r["revenue"] for r in rows) == pytest.approx(float(len(dates)))
+        assert sum(r["revenue_cents"] for r in rows) == 100 * len(dates)
         assert sum(r["vends"] for r in rows) == len(dates)
 
     def test_month_no_merge_contiguous_and_sum_invariant(self, recorder):
@@ -538,7 +534,7 @@ class TestByPeriodFallBackTransition:
         sale_ts = {d: _syn_fb_midnight(*d).timestamp() for d in dates}
         for i, d in enumerate(dates):
             recorder.record_sale(
-                f"M{i}", f"Month {d}", 1, 1.00, {"cash": 1.00}, ts=sale_ts[d]
+                f"M{i}", f"Month {d}", 1, 100, {"cash": 100}, ts=sale_ts[d]
             )
 
         window = (sale_ts[dates[0]], _syn_fb_midnight(2027, 2, 1).timestamp())
@@ -550,7 +546,7 @@ class TestByPeriodFallBackTransition:
         assert len(set(bucket_starts)) == len(bucket_starts)
 
         for row in rows:
-            assert row["revenue"] == pytest.approx(1.00)
+            assert row["revenue_cents"] == 100
             assert row["vends"] == 1
 
         expected_starts = [_syn_fb_midnight(*d) for d in dates]
@@ -566,7 +562,7 @@ class TestByPeriodFallBackTransition:
         ]
         assert gaps == [2592000.0, 2678400.0, 2595600.0, 2678400.0]
 
-        assert sum(r["revenue"] for r in rows) == pytest.approx(float(len(dates)))
+        assert sum(r["revenue_cents"] for r in rows) == 100 * len(dates)
         assert sum(r["vends"] for r in rows) == len(dates)
 
 
@@ -585,23 +581,23 @@ class TestByPeriodSkuFilter:
         day0 = _dt(2026, 4, 1)
         day1 = _dt(2026, 4, 2)
 
-        recorder.record_sale("A", "Alpha", 1, 3.00, {"cash": 3.00}, ts=day0.timestamp())
-        recorder.record_sale("B", "Beta", 2, 5.00, {"cash": 5.00}, ts=day0.timestamp())
-        recorder.record_sale("A", "Alpha", 1, 4.00, {"cash": 4.00}, ts=day1.timestamp())
-        recorder.record_sale("B", "Beta", 2, 9.00, {"cash": 9.00}, ts=day1.timestamp())
+        recorder.record_sale("A", "Alpha", 1, 300, {"cash": 300}, ts=day0.timestamp())
+        recorder.record_sale("B", "Beta", 2, 500, {"cash": 500}, ts=day0.timestamp())
+        recorder.record_sale("A", "Alpha", 1, 400, {"cash": 400}, ts=day1.timestamp())
+        recorder.record_sale("B", "Beta", 2, 900, {"cash": 900}, ts=day1.timestamp())
 
         window = (day0.timestamp() - 1, day1.timestamp() + 86400)
         rows = reports.by_period(recorder, window, "day", tz=FIXED_TZ, sku="A")
         by_start = {r["bucket_start"]: r for r in rows}
 
-        assert by_start[day0.isoformat()]["revenue"] == pytest.approx(3.00)
+        assert by_start[day0.isoformat()]["revenue_cents"] == 300
         assert by_start[day0.isoformat()]["vends"] == 1
-        assert by_start[day1.isoformat()]["revenue"] == pytest.approx(4.00)
+        assert by_start[day1.isoformat()]["revenue_cents"] == 400
         assert by_start[day1.isoformat()]["vends"] == 1
 
         # Beta's revenue (5.00, 9.00) must never leak into Alpha's filtered
         # rows -- the whole point of the filter.
-        assert sum(r["revenue"] for r in rows) == pytest.approx(7.00)
+        assert sum(r["revenue_cents"] for r in rows) == 700
         assert sum(r["vends"] for r in rows) == 2
 
     def test_unfiltered_call_is_unaffected_by_the_new_parameter(self, recorder):
@@ -609,13 +605,13 @@ class TestByPeriodSkuFilter:
         # see totals across every SKU, unchanged by this parameter's
         # addition.
         now = time.time()
-        recorder.record_sale("A", "Alpha", 1, 3.00, {"cash": 3.00}, ts=now - 20)
-        recorder.record_sale("B", "Beta", 2, 5.00, {"cash": 5.00}, ts=now - 10)
+        recorder.record_sale("A", "Alpha", 1, 300, {"cash": 300}, ts=now - 20)
+        recorder.record_sale("B", "Beta", 2, 500, {"cash": 500}, ts=now - 10)
 
         window = (now - 3600, now + 1)
         rows = reports.by_period(recorder, window, "day", tz=FIXED_TZ)
 
-        assert sum(r["revenue"] for r in rows) == pytest.approx(8.00)
+        assert sum(r["revenue_cents"] for r in rows) == 800
         assert sum(r["vends"] for r in rows) == 2
 
     def test_failed_vends_filtered_to_sku_refunds_and_uptime_stay_none(self, recorder):
@@ -625,7 +621,7 @@ class TestByPeriodSkuFilter:
         # render "-" (None) even inside retention, not a real number that
         # would actually be machine-wide.
         now = time.time()
-        recorder.record_sale("A", "Alpha", 1, 2.00, {"cash": 2.00}, ts=now - 20)
+        recorder.record_sale("A", "Alpha", 1, 200, {"cash": 200}, ts=now - 20)
 
         with sqlite3.connect(recorder.db_path) as conn:
             conn.execute(
@@ -640,7 +636,7 @@ class TestByPeriodSkuFilter:
             )
             conn.execute(
                 "INSERT INTO events (event_type, timestamp, value) "
-                "VALUES ('refund', ?, 1.0)",
+                "VALUES ('refund', ?, 100)",
                 (now - 10,),
             )
             conn.commit()
@@ -649,12 +645,12 @@ class TestByPeriodSkuFilter:
         rows = reports.by_period(recorder, window, "day", tz=FIXED_TZ, sku="A")
 
         # Positive half first: the sku's own revenue is present and correct.
-        assert sum(r["revenue"] for r in rows) == pytest.approx(2.00)
+        assert sum(r["revenue_cents"] for r in rows) == 200
 
         # Only A's own vend_failed (1) is counted, not B's -- and refunds
         # /uptime are None despite the window being fully inside retention.
         assert sum(r["failed_vends"] for r in rows) == 1
-        assert all(r["refunds"] is None for r in rows)
+        assert all(r["refunds_cents"] is None for r in rows)
         assert all(r["uptime_pct"] is None for r in rows)
 
 
@@ -666,13 +662,11 @@ class TestByPeriodSkuFilter:
 class TestByProduct:
     def test_sorted_by_revenue_descending(self, recorder):
         now = time.time()
-        recorder.record_sale("LOW", "Low Seller", 1, 1.00, {"cash": 1.00}, ts=now - 30)
+        recorder.record_sale("LOW", "Low Seller", 1, 100, {"cash": 100}, ts=now - 30)
         recorder.record_sale(
-            "HIGH", "High Seller", 2, 50.00, {"cash": 50.00}, ts=now - 20
+            "HIGH", "High Seller", 2, 5000, {"cash": 5000}, ts=now - 20
         )
-        recorder.record_sale(
-            "MID", "Mid Seller", 3, 10.00, {"cash": 10.00}, ts=now - 10
-        )
+        recorder.record_sale("MID", "Mid Seller", 3, 1000, {"cash": 1000}, ts=now - 10)
 
         window = (now - 3600, now + 1)
         rows = reports.by_product(recorder, window)
@@ -682,8 +676,8 @@ class TestByProduct:
 
     def test_latest_seen_name_after_rename(self, recorder):
         now = time.time()
-        recorder.record_sale("SKU1", "Old Name", 1, 1.00, {"cash": 1.00}, ts=now - 200)
-        recorder.record_sale("SKU1", "New Name", 1, 1.00, {"cash": 1.00}, ts=now - 100)
+        recorder.record_sale("SKU1", "Old Name", 1, 100, {"cash": 100}, ts=now - 200)
+        recorder.record_sale("SKU1", "New Name", 1, 100, {"cash": 100}, ts=now - 100)
 
         window = (now - 3600, now + 1)
         rows = reports.by_product(recorder, window)
@@ -691,7 +685,7 @@ class TestByProduct:
         assert len(rows) == 1
         assert rows[0]["name"] == "New Name"
         assert rows[0]["units"] == 2
-        assert rows[0]["revenue"] == pytest.approx(2.00)
+        assert rows[0]["revenue_cents"] == 200
 
     def test_latest_seen_name_tie_broken_by_id_on_identical_ts(self, recorder):
         # record_sale's default ts=time.time() has finite resolution, so
@@ -700,8 +694,8 @@ class TestByProduct:
         # SQLite happens to return -- not any guarantee. Pin the later
         # INSERT (higher id) as the winner regardless of ts ordering.
         same_ts = time.time() - 500
-        recorder.record_sale("SKU1", "Old Name", 1, 1.00, {"cash": 1.00}, ts=same_ts)
-        recorder.record_sale("SKU1", "New Name", 1, 1.00, {"cash": 1.00}, ts=same_ts)
+        recorder.record_sale("SKU1", "Old Name", 1, 100, {"cash": 100}, ts=same_ts)
+        recorder.record_sale("SKU1", "New Name", 1, 100, {"cash": 100}, ts=same_ts)
 
         window = (same_ts - 3600, same_ts + 3600)
         rows = reports.by_product(recorder, window)
@@ -720,35 +714,35 @@ class TestByMethod:
     def test_amounts_sum_to_total_revenue_invariant(self, recorder):
         now = time.time()
         recorder.record_sale(
-            "A", "Alpha", 1, 1.00, {"cash_coin": 0.75, "card": 0.25}, ts=now - 30
+            "A", "Alpha", 1, 100, {"cash_coin": 75, "card": 25}, ts=now - 30
         )
-        recorder.record_sale("B", "Beta", 2, 2.00, {"cash_bill": 2.00}, ts=now - 20)
+        recorder.record_sale("B", "Beta", 2, 200, {"cash_bill": 200}, ts=now - 20)
         recorder.record_sale(
-            "C", "Gamma", 3, 1.50, {"card": 1.00, "nfc": 0.50}, ts=now - 10
+            "C", "Gamma", 3, 150, {"card": 100, "nfc": 50}, ts=now - 10
         )
 
         window = (now - 3600, now + 1)
         rows = reports.by_method(recorder, window)
-        total_revenue = 1.00 + 2.00 + 1.50
+        total_revenue = 100 + 200 + 150
 
         # The invariant: whatever the breakdown, the per-method amounts
         # account for the whole -- no money double-counted or dropped.
-        assert sum(r["amount"] for r in rows) == pytest.approx(total_revenue)
+        assert sum(r["amount_cents"] for r in rows) == total_revenue
         # And the share column is genuinely a fraction of that same total.
         assert sum(r["share"] for r in rows) == pytest.approx(1.0)
 
     def test_raw_method_strings_are_not_merged(self, recorder):
         now = time.time()
-        recorder.record_sale("A", "Alpha", 1, 1.00, {"cash_coin": 1.00}, ts=now - 20)
-        recorder.record_sale("B", "Beta", 2, 2.00, {"cash_bill": 2.00}, ts=now - 10)
+        recorder.record_sale("A", "Alpha", 1, 100, {"cash_coin": 100}, ts=now - 20)
+        recorder.record_sale("B", "Beta", 2, 200, {"cash_bill": 200}, ts=now - 10)
 
         window = (now - 3600, now + 1)
         rows = reports.by_method(recorder, window)
         by_method_name = {r["method"]: r for r in rows}
 
         assert set(by_method_name) == {"cash_coin", "cash_bill"}
-        assert by_method_name["cash_coin"]["amount"] == pytest.approx(1.00)
-        assert by_method_name["cash_bill"]["amount"] == pytest.approx(2.00)
+        assert by_method_name["cash_coin"]["amount_cents"] == 100
+        assert by_method_name["cash_bill"]["amount_cents"] == 200
         assert by_method_name["cash_coin"]["is_cash"] is True
         assert by_method_name["cash_bill"]["is_cash"] is True
 
@@ -766,7 +760,7 @@ class TestRetentionNoneVersusZero:
         # 100 days before fixed_now (2026-10-13 12:00 -05:00) is
         # 2026-07-05 12:00 -05:00 -- well past the 90-day cutoff.
         old_ts = _dt(2026, 7, 5, 12).timestamp()
-        recorder.record_sale("OLD", "Old Item", 1, 9.00, {"cash": 9.00}, ts=old_ts)
+        recorder.record_sale("OLD", "Old Item", 1, 900, {"cash": 900}, ts=old_ts)
 
         # Seed REAL vend_failed/refund/heartbeat rows in the same old
         # bucket, directly into events (never pruned mid-test), so a None
@@ -798,13 +792,13 @@ class TestRetentionNoneVersusZero:
         # proof the fixture didn't just fail to produce this row at all.
         assert len(matching) == 1
         old_bucket = matching[0]
-        assert old_bucket["revenue"] == pytest.approx(9.00)
+        assert old_bucket["revenue_cents"] == 900
         assert old_bucket["vends"] == 1
 
         # Negative half: event-derived columns are None, not 0, even though
         # real rows for them exist in the table right now.
         assert old_bucket["failed_vends"] is None
-        assert old_bucket["refunds"] is None
+        assert old_bucket["refunds_cents"] is None
         assert old_bucket["uptime_pct"] is None
 
 
@@ -848,7 +842,7 @@ class TestRetentionStraddlingBucket:
             < bucket_end.timestamp()
         )
 
-        recorder.record_sale("STR", "Straddler", 1, 5.00, {"cash": 5.00}, ts=after_ts)
+        recorder.record_sale("STR", "Straddler", 1, 500, {"cash": 500}, ts=after_ts)
         with sqlite3.connect(recorder.db_path) as conn:
             conn.execute(
                 "INSERT INTO events (event_type, timestamp, value, metadata) "
@@ -862,12 +856,12 @@ class TestRetentionStraddlingBucket:
             )
             conn.execute(
                 "INSERT INTO events (event_type, timestamp, value) "
-                "VALUES ('refund', ?, 1.0)",
+                "VALUES ('refund', ?, 100)",
                 (before_ts,),
             )
             conn.execute(
                 "INSERT INTO events (event_type, timestamp, value) "
-                "VALUES ('refund', ?, 2.0)",
+                "VALUES ('refund', ?, 200)",
                 (after_ts,),
             )
             conn.commit()
@@ -885,14 +879,14 @@ class TestRetentionStraddlingBucket:
         # Positive half: a straddling bucket is computed, not withheld --
         # it is not None like a fully-outside-retention bucket would be.
         assert straddling["failed_vends"] is not None
-        assert straddling["refunds"] is not None
+        assert straddling["refunds_cents"] is not None
         assert straddling["uptime_pct"] is not None
 
         # Pinned mechanism: BOTH the before- and after-cutoff rows are
         # counted, because the query has no per-row cutoff filter of its
         # own inside a straddling bucket.
         assert straddling["failed_vends"] == 2
-        assert straddling["refunds"] == pytest.approx(3.0)
+        assert straddling["refunds_cents"] == 300
 
 
 # --------------------------------------------------------------------------
@@ -910,11 +904,11 @@ class TestEmptyDatabase:
         # the floored start day plus 30 complete days through the current day.
         assert len(period_rows) == 31
         for row in period_rows:
-            assert row["revenue"] == 0.0
+            assert row["revenue_cents"] == 0
             assert row["vends"] == 0
             # A recent, empty window is still inside retention: zero, not None.
             assert row["failed_vends"] == 0
-            assert row["refunds"] == 0.0
+            assert row["refunds_cents"] == 0
             assert row["uptime_pct"] == 0.0
 
         assert reports.by_product(recorder, window) == []
@@ -922,12 +916,12 @@ class TestEmptyDatabase:
         assert reports.collections(recorder, limit=10) == []
 
         summary = reports.summary(recorder, window)
-        assert summary["revenue"] == 0.0
+        assert summary["revenue_cents"] == 0
         assert summary["vends"] == 0
         assert summary["failed"] == 0
-        assert summary["refunds"] == 0.0
+        assert summary["refunds_cents"] == 0
         assert summary["by_method"] == []
-        assert summary["cash_since_last_collection"] == 0.0
+        assert summary["cash_since_last_collection_cents"] == 0
 
 
 # --------------------------------------------------------------------------
@@ -944,35 +938,35 @@ class TestCollections:
         # this test relies on. `time.time` is patched to a monotonically
         # ticking clock (the `ticking_clock` fixture) to guarantee strictly
         # increasing timestamps with no wall-clock wait.
-        recorder.record_sale("A", "Alpha", 1, 1.00, {"cash": 1.00})
+        recorder.record_sale("A", "Alpha", 1, 100, {"cash": 100})
         recorder.record_cash_collection("u1", "Alice")
         recorder.flush()
 
         with sqlite3.connect(recorder.db_path) as conn:
             first_stored = conn.execute(
-                "SELECT expected_cash FROM cash_collections WHERE user_id='u1'"
+                "SELECT expected_cash_cents FROM cash_collections WHERE user_id='u1'"
             ).fetchone()[0]
 
-        recorder.record_sale("B", "Beta", 2, 2.00, {"cash": 2.00})
+        recorder.record_sale("B", "Beta", 2, 200, {"cash": 200})
         recorder.record_cash_collection("u2", "Bob")
         recorder.flush()
 
         # A sale that arrives AFTER the newest collection -- proves the
         # newest row's figure is live, not frozen at insert time.
-        recorder.record_sale("C", "Gamma", 3, 7.00, {"cash": 7.00})
+        recorder.record_sale("C", "Gamma", 3, 700, {"cash": 700})
 
         rows = reports.collections(recorder, limit=10)
         by_user = {r["user_id"]: r for r in rows}
 
-        assert by_user["u2"]["expected_cash"] == pytest.approx(7.00)
-        assert by_user["u1"]["expected_cash"] == pytest.approx(first_stored)
+        assert by_user["u2"]["expected_cash_cents"] == 700
+        assert by_user["u1"]["expected_cash_cents"] == first_stored
 
         # It keeps changing as still more sales arrive.
-        recorder.record_sale("D", "Delta", 4, 3.00, {"cash": 3.00})
+        recorder.record_sale("D", "Delta", 4, 300, {"cash": 300})
         rows_again = reports.collections(recorder, limit=10)
         by_user_again = {r["user_id"]: r for r in rows_again}
-        assert by_user_again["u2"]["expected_cash"] == pytest.approx(10.00)
-        assert by_user_again["u1"]["expected_cash"] == pytest.approx(first_stored)
+        assert by_user_again["u2"]["expected_cash_cents"] == 1000
+        assert by_user_again["u1"]["expected_cash_cents"] == first_stored
 
     def test_tied_ts_newest_by_id_gets_the_live_figure(self, recorder, monkeypatch):
         """Finding 1 (whole-branch review, part 3): `collections()`'s
@@ -994,7 +988,7 @@ class TestCollections:
         # Alice's all-time stored total (she is the very first collection
         # ever) but never in any "since <frozen_ts>" total. Passed via the
         # explicit `ts` param so this does not depend on wall-clock luck.
-        recorder.record_sale("A", "Alpha", 1, 1.00, {"cash": 1.00}, ts=frozen_ts - 10)
+        recorder.record_sale("A", "Alpha", 1, 100, {"cash": 100}, ts=frozen_ts - 10)
 
         monkeypatch.setattr(
             "ice_edge.ledger.event_recorder.time.time", lambda: frozen_ts
@@ -1006,7 +1000,7 @@ class TestCollections:
 
         with sqlite3.connect(recorder.db_path) as conn:
             id_rows = conn.execute(
-                "SELECT id, user_id, ts, expected_cash FROM cash_collections "
+                "SELECT id, user_id, ts, expected_cash_cents FROM cash_collections "
                 "ORDER BY id ASC"
             ).fetchall()
         assert [r[1] for r in id_rows] == ["alice", "bob"], (
@@ -1017,12 +1011,12 @@ class TestCollections:
         )
         # Sanity on the stored figures each row was actually given at
         # insert time, independent of the bug under test.
-        assert id_rows[0][3] == pytest.approx(1.00)  # alice: all sales so far
-        assert id_rows[1][3] == pytest.approx(0.00)  # bob: nothing since alice
+        assert id_rows[0][3] == 100  # alice: all sales so far
+        assert id_rows[1][3] == 0  # bob: nothing since alice
 
         # A sale strictly after the tied ts -- only the TRUE newest row
         # (bob, id=2) should ever reflect it live.
-        recorder.record_sale("B", "Beta", 2, 5.00, {"cash": 5.00}, ts=frozen_ts + 10)
+        recorder.record_sale("B", "Beta", 2, 500, {"cash": 500}, ts=frozen_ts + 10)
 
         rows = reports.collections(recorder, limit=10)
 
@@ -1030,9 +1024,9 @@ class TestCollections:
         # and must be first, carrying the live figure; alice must show her
         # stored figure, unaffected by the sale recorded after her.
         assert rows[0]["user_id"] == "bob"
-        assert rows[0]["expected_cash"] == pytest.approx(5.00)
+        assert rows[0]["expected_cash_cents"] == 500
         assert rows[1]["user_id"] == "alice"
-        assert rows[1]["expected_cash"] == pytest.approx(1.00)
+        assert rows[1]["expected_cash_cents"] == 100
 
 
 # --------------------------------------------------------------------------

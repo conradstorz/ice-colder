@@ -36,6 +36,7 @@ from ice_contracts.board.mqtt_messages import (
     SubsystemHeartbeat,
 )
 from ice_common.paths import DATA_DIR
+from ice_contracts.money import dollars_to_cents
 
 # Schema history. Append only -- never edit an entry once shipped. The applied
 # count lives in ``PRAGMA user_version`` (idiomatic SQLite, no extra table;
@@ -71,6 +72,41 @@ MIGRATIONS: list[str] = [
         expected_cash REAL NOT NULL
     )
     """,
+    """
+    CREATE TABLE sales_new (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts         REAL NOT NULL,
+        sku        TEXT NOT NULL,
+        name       TEXT NOT NULL,
+        slot       INTEGER,
+        price_cents INTEGER NOT NULL,
+        methods    TEXT NOT NULL
+    );
+    INSERT INTO sales_new (id, ts, sku, name, slot, price_cents, methods)
+        SELECT id, ts, sku, name, slot, CAST(ROUND(price * 100) AS INTEGER),
+               (SELECT json_group_object(key, CAST(ROUND(value * 100) AS INTEGER))
+                FROM json_each(sales.methods))
+        FROM sales;
+    DROP TABLE sales;
+    ALTER TABLE sales_new RENAME TO sales;
+    CREATE INDEX idx_sales_ts ON sales (ts);
+    CREATE INDEX idx_sales_sku_ts ON sales (sku, ts);
+    CREATE TABLE cash_collections_new (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts            REAL NOT NULL,
+        user_id       TEXT NOT NULL,
+        user_name     TEXT NOT NULL,
+        expected_cash_cents INTEGER NOT NULL
+    );
+    INSERT INTO cash_collections_new (id, ts, user_id, user_name, expected_cash_cents)
+        SELECT id, ts, user_id, user_name, CAST(ROUND(expected_cash * 100) AS INTEGER)
+        FROM cash_collections;
+    DROP TABLE cash_collections;
+    ALTER TABLE cash_collections_new RENAME TO cash_collections;
+    UPDATE events SET value = ROUND(value * 100)
+        WHERE event_type IN ('payment', 'refund', 'refund_failed', 'vend_failed', 'session_uncertain')
+        AND value IS NOT NULL
+    """,
 ]
 
 
@@ -85,7 +121,7 @@ HEARTBEAT_BUCKET_SECONDS = 60.0
 _HISTORICAL_AVERAGE_CACHE_TTL = 60.0
 
 SUMMARY_KEYS = (
-    "money_in",
+    "money_in_cents",
     "products_out",
     "ice_cycles",
     "errors",
@@ -93,7 +129,7 @@ SUMMARY_KEYS = (
     "temp_exceedances",
     "uptime_pct",
     "vends_failed",
-    "refunds",
+    "refunds_cents",
 )
 
 # Failed record_sale() inserts are journaled here (append + fsync) so the
@@ -182,6 +218,23 @@ def _atomic_write_text(path: Path, content: str) -> None:
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp_path, path)
+
+
+def _journal_row_cents(row: dict) -> tuple[int, dict[str, int]]:
+    """Return ``(price_cents, methods_cents)`` for one journal row.
+
+    A row carrying ``"units": "cents"`` is already integer cents. Any other
+    row is legacy (written before cents, in dollars) and is converted with
+    ``dollars_to_cents``. Raises on a malformed row, which the caller sets
+    aside as rejected evidence.
+    """
+    if row.get("units") == "cents":
+        return int(row["price_cents"]), {
+            str(k): int(v) for k, v in row["methods"].items()
+        }
+    return dollars_to_cents(row["price"]), {
+        str(k): dollars_to_cents(v) for k, v in row["methods"].items()
+    }
 
 
 def _append_journal_line(payload: dict) -> None:
@@ -561,8 +614,8 @@ class EventRecorder:
         sku: str,
         name: str,
         slot: Optional[int],
-        price: float,
-        methods: dict,
+        price_cents: int,
+        methods: dict[str, int],
         *,
         idempotent: bool = False,
     ) -> int:
@@ -591,16 +644,16 @@ class EventRecorder:
         """
         if idempotent:
             cur = conn.execute(
-                "INSERT INTO sales (ts, sku, name, slot, price, methods) "
+                "INSERT INTO sales (ts, sku, name, slot, price_cents, methods) "
                 "SELECT ?, ?, ?, ?, ?, ? WHERE NOT EXISTS ("
                 "SELECT 1 FROM sales WHERE ts = ? AND sku = ?)",
-                (ts, sku, name, slot, price, json.dumps(methods), ts, sku),
+                (ts, sku, name, slot, price_cents, json.dumps(methods), ts, sku),
             )
         else:
             cur = conn.execute(
-                "INSERT INTO sales (ts, sku, name, slot, price, methods) "
+                "INSERT INTO sales (ts, sku, name, slot, price_cents, methods) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                (ts, sku, name, slot, price, json.dumps(methods)),
+                (ts, sku, name, slot, price_cents, json.dumps(methods)),
             )
         return cur.rowcount
 
@@ -705,8 +758,8 @@ class EventRecorder:
         sku: str,
         name: str,
         slot: Optional[int],
-        price: float,
-        methods: dict[str, float],
+        price_cents: int,
+        methods: dict[str, int],
         ts: Optional[float] = None,
         idempotent: bool = False,
     ) -> None:
@@ -780,7 +833,8 @@ class EventRecorder:
             "sku": sku,
             "name": name,
             "slot": slot,
-            "price": price,
+            "units": "cents",
+            "price_cents": price_cents,
             "methods": methods,
         }
         if self.db_newer_than_code:
@@ -804,7 +858,7 @@ class EventRecorder:
             conn = sqlite3.connect(self._db_path, timeout=5.0)
             self._configure_sale_connection(conn)
             self._insert_sale_row(
-                conn, ts, sku, name, slot, price, methods, idempotent=idempotent
+                conn, ts, sku, name, slot, price_cents, methods, idempotent=idempotent
             )
             conn.commit()
         except Exception as insert_exc:
@@ -833,13 +887,13 @@ class EventRecorder:
         self,
         sku: str,
         since_ts: float,
-        methods: dict[str, float],
+        methods: dict[str, int],
         *,
         window_seconds: float = SALE_MATCH_WINDOW_SECONDS,
     ) -> bool:
         """True when a ``sales`` row for ``sku`` exists at or after
         ``since_ts`` (and no later than ``window_seconds``, default
-        ``SALE_MATCH_WINDOW_SECONDS``, after it) whose method shares equal ``methods`` (compared as dicts rounded to cents).
+        ``SALE_MATCH_WINDOW_SECONDS``, after it) whose method shares equal ``methods`` (compared exactly, in integer cents).
 
         PAY-104 recovery uses it to spot a sale the live path committed
         just before a crash that left the dispensing snapshot behind.
@@ -849,10 +903,7 @@ class EventRecorder:
         if self.db_unavailable:
             return False
 
-        def cents(d: dict) -> dict[str, float]:
-            return {str(k): round(float(v), 2) for k, v in d.items()}
-
-        wanted = cents(methods)
+        wanted = {str(k): int(v) for k, v in methods.items()}
         conn = None
         try:
             conn = sqlite3.connect(self._db_path, timeout=5.0)
@@ -870,7 +921,7 @@ class EventRecorder:
                 conn.close()
         for (methods_json,) in rows:
             try:
-                if cents(json.loads(methods_json)) == wanted:
+                if json.loads(methods_json) == wanted:
                     return True
             except (ValueError, TypeError):
                 continue
@@ -972,14 +1023,15 @@ class EventRecorder:
                     continue
 
                 try:
+                    price_cents, methods_cents = _journal_row_cents(row)
                     inserted = self._insert_sale_row(
                         conn,
                         row["ts"],
                         row["sku"],
                         row["name"],
                         row.get("slot"),
-                        row["price"],
-                        row["methods"],
+                        price_cents,
+                        methods_cents,
                         idempotent=True,
                     )
                     conn.commit()
@@ -1155,17 +1207,17 @@ class EventRecorder:
         else:
             cursor = conn.execute("SELECT methods FROM sales WHERE ts > ?", (prev[0],))
 
-        expected_cash = 0.0
+        expected_cash_cents = 0
         for (methods_json,) in cursor.fetchall():
             methods = json.loads(methods_json)
             for method, amount in methods.items():
                 if is_cash(method):
-                    expected_cash += amount
+                    expected_cash_cents += int(amount)
 
         conn.execute(
-            "INSERT INTO cash_collections (ts, user_id, user_name, expected_cash) "
+            "INSERT INTO cash_collections (ts, user_id, user_name, expected_cash_cents) "
             "VALUES (?, ?, ?, ?)",
-            (job.ts, job.user_id, job.user_name, expected_cash),
+            (job.ts, job.user_id, job.user_name, expected_cash_cents),
         )
         conn.commit()
 
@@ -1296,7 +1348,7 @@ class EventRecorder:
                 covered_buckets * HEARTBEAT_BUCKET_SECONDS / period_secs * 100,
             )
             return {
-                "money_in": round(total("payment"), 2),
+                "money_in_cents": int(round(total("payment"))),
                 "products_out": count("dispense"),
                 "ice_cycles": count("ice_cycle"),
                 "errors": count("error"),
@@ -1304,7 +1356,7 @@ class EventRecorder:
                 "temp_exceedances": count("temp_exceedance"),
                 "uptime_pct": uptime_pct,
                 "vends_failed": count("vend_failed"),
-                "refunds": round(total("refund"), 2),
+                "refunds_cents": int(round(total("refund"))),
             }
 
     def get_summary(self, period_hours: int) -> dict:
@@ -1344,7 +1396,7 @@ class EventRecorder:
 
     async def _on_payment(self, topic: str, data: dict):
         event = PaymentEvent.model_validate(data)
-        self.record("payment", value=event.amount)
+        self.record("payment", value=dollars_to_cents(event.amount))
 
     async def _on_ice_maker_event(self, topic: str, data: dict):
         event = IceMakerEvent.model_validate(data)
@@ -1411,7 +1463,12 @@ class EventRecorder:
             avg = {}
             for key in SUMMARY_KEYS:
                 values = [w[key] for w in active_windows if w[key] is not None]
-                avg[key] = round(sum(values) / len(values), 2) if values else None
+                if not values:
+                    avg[key] = None
+                elif key.endswith("_cents"):
+                    avg[key] = sum(values) / len(values)
+                else:
+                    avg[key] = round(sum(values) / len(values), 2)
             result = avg
 
         self._historical_avg_cache[period_hours] = (now, result)

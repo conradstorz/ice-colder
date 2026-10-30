@@ -234,9 +234,7 @@ class TestBootAlreadyRecordedSale:
         store = SessionStore(tmp_path / "session.json")
         saved_at = time.time()
         store.save(self._snapshot(saved_at))
-        recorder.record_sale(
-            "ICE-1", "Ice", 1, 2.50, {"cash": 2.50}, ts=saved_at + 0.05
-        )
+        recorder.record_sale("ICE-1", "Ice", 1, 250, {"cash": 250}, ts=saved_at + 0.05)
         machine = Machine(ConfigModel())
         machine.set_event_recorder(recorder)
 
@@ -251,7 +249,7 @@ class TestBootAlreadyRecordedSale:
         store = SessionStore(tmp_path / "session.json")
         saved_at = time.time()
         store.save(self._snapshot(saved_at))
-        recorder.record_sale("ICE-1", "Ice", 1, 2.50, {"cash": 2.50}, ts=saved_at + 700)
+        recorder.record_sale("ICE-1", "Ice", 1, 250, {"cash": 250}, ts=saved_at + 700)
         config = ConfigModel()
         config.physical.dispense_timeout_seconds = timeout
         machine = Machine(config)

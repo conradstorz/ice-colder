@@ -4,6 +4,7 @@ Tests the POST /inventory/collect endpoint with a two-tap confirm,
 and the GET /inventory/collect/confirm confirm endpoint.
 """
 
+from ice_contracts.money import dollars_to_cents, format_cents
 import asyncio
 import sqlite3
 import time
@@ -33,15 +34,16 @@ def recorder_with_db(wired, tmp_path):
 def _seed_sales(recorder, methods_list):
     """Seed the database with test sales.
 
-    methods_list: list of dicts mapping method names to amounts.
+    methods_list: list of dicts mapping method names to amounts in dollars (stored as cents).
     Example: [{"cash_coin": 1.50, "card": 0.50}, {"cash_bill": 2.00}]
     """
-    for methods in methods_list:
+    for dollars in methods_list:
+        methods = {k: dollars_to_cents(v) for k, v in dollars.items()}
         recorder.record_sale(
             sku="TEST-SKU",
             name="Test Product",
             slot=1,
-            price=sum(methods.values()),
+            price_cents=sum(methods.values()),
             methods=methods,
         )
     recorder.flush()
@@ -52,7 +54,7 @@ def _read_cash_collections(db_path):
     conn = sqlite3.connect(db_path)
     try:
         cursor = conn.execute(
-            "SELECT id, ts, user_id, user_name, expected_cash "
+            "SELECT id, ts, user_id, user_name, expected_cash_cents "
             "FROM cash_collections ORDER BY ts ASC"
         )
         return cursor.fetchall()
@@ -330,7 +332,7 @@ class TestCollectCashEndpoint:
 
         rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 1
-        assert rows[0][4] == 2.00  # expected_cash column
+        assert rows[0][4] == 200  # expected_cash_cents column
 
     def test_expected_cash_excludes_card_and_nfc(
         self, login_as, wired, recorder_with_db
@@ -349,7 +351,7 @@ class TestCollectCashEndpoint:
 
         rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 1
-        assert rows[0][4] == 1.00  # expected_cash = cash_coin only
+        assert rows[0][4] == 100  # expected_cash_cents = cash_coin only
 
     def test_second_collection_counts_only_cash_since_first(
         self, login_as, wired, recorder_with_db
@@ -365,7 +367,7 @@ class TestCollectCashEndpoint:
         assert resp1.status_code == 200
         rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 1
-        assert rows[0][4] == 5.00
+        assert rows[0][4] == 500
 
         # Seed more sales
         _seed_sales(recorder_with_db, [{"cash_bill": 3.00}])
@@ -375,7 +377,7 @@ class TestCollectCashEndpoint:
         assert resp2.status_code == 200
         rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 2
-        assert rows[1][4] == 3.00  # Only the cash_bill from the second sale
+        assert rows[1][4] == 300  # Only the cash_bill from the second sale
 
     def test_first_collection_with_no_prior_sales_is_zero(
         self, login_as, wired, recorder_with_db
@@ -481,7 +483,7 @@ class TestConfirmButtonFlow:
         # Now a row should be recorded with the correct amount
         rows = _read_cash_collections(recorder_with_db.db_path)
         assert len(rows) == 1
-        assert rows[0][4] == 10.00
+        assert rows[0][4] == 1000
 
 
 async def _async_client_like(sync_client):
@@ -565,12 +567,12 @@ class TestConcurrentCollectionsShowOwnRow:
         # coroutine "wins": whichever job is processed first is the very
         # first collection ever (sees the seeded 7.25); the other sees
         # nothing new since it.
-        assert {first_amount, second_amount} == {7.25, 0.0}
+        assert {first_amount, second_amount} == {725, 0}
 
         shown_amounts = []
         for resp in (resp_owner, resp_secretary):
             for amount in (first_amount, second_amount):
-                if f"${amount:.2f}" in resp.text:
+                if format_cents(amount) in resp.text:
                     shown_amounts.append(amount)
                     break
             else:

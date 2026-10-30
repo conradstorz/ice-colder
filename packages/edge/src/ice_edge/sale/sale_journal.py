@@ -13,6 +13,7 @@ from collections.abc import Callable
 from loguru import logger
 
 from ice_common.config_model import Product
+from ice_contracts.money import dollars_to_cents
 from ice_contracts.board.vending_machine import FaultCode
 
 STATE_CHANGE_PREFIX = "***### STATE CHANGE ###***"
@@ -208,7 +209,7 @@ class SaleJournal:
         if not is_test:
             self._record(
                 "vend_failed",
-                value=price,
+                value=dollars_to_cents(price),  # cents-shim(T4)
                 metadata={"code": code.value, "sku": sku, "outcome": outcome},
             )
         self._message(
@@ -309,7 +310,7 @@ class SaleJournal:
         )
         self._record(
             "refund",
-            value=amount_returned,
+            value=dollars_to_cents(amount_returned),  # cents-shim(T4)
             metadata={"request_id": request_id, "reason": reason},
         )
         self._message(f"Refund of ${amount_returned:.2f} issued via {method}.")
@@ -321,7 +322,7 @@ class SaleJournal:
         )
         self._record(
             "refund_failed",
-            value=amount,
+            value=dollars_to_cents(amount),  # cents-shim(T4)
             metadata={"request_id": request_id, "reason": reason, "detail": detail},
         )
         self._message(

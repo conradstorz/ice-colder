@@ -289,14 +289,18 @@ async def build_kpi_summary(event_recorder: EventRecorder | None) -> KpiSummary:
     average = await asyncio.to_thread(event_recorder.get_historical_average, 24)
     return KpiSummary(
         summary=KpiWindow(
-            money_in=summary["money_in"],
+            money_in=summary["money_in_cents"] / 100,  # cents-shim(T5)
             products_out=summary["products_out"],
             vends_failed=summary["vends_failed"],
             errors=summary["errors"],
             uptime_pct=summary["uptime_pct"],
         ),
         average=KpiAverage(
-            money_in=average["money_in"],
+            money_in=(  # cents-shim(T5)
+                None
+                if average["money_in_cents"] is None
+                else round(average["money_in_cents"] / 100, 2)
+            ),
             products_out=average["products_out"],
             errors=average["errors"],
             uptime_pct=average["uptime_pct"],

@@ -4,6 +4,7 @@ import asyncio
 
 from fastapi import HTTPException, Request
 
+from ice_contracts.money import format_cents
 from ice_edge.reporting import reports as reports_service
 from ice_edge.web import context
 from ice_ui.filters import sku_url_segment
@@ -16,11 +17,16 @@ from ice_ui.levels import (
 )
 from ice_ui.templating import templates
 from .helpers import (
+    COLLECTIONS_CSV_MONEY,
     COLLECTIONS_HEADER,
+    METHOD_CSV_MONEY,
     METHOD_HEADER,
+    PERIOD_CSV_MONEY,
     PERIOD_HEADER,
+    PRODUCT_CSV_MONEY,
     PRODUCT_HEADER,
     _find_product,
+    csv_rows as csv_rows_for,
     _fmt,
     _totalize_period,
     _ts_display,
@@ -42,19 +48,21 @@ async def _compute_period(range_key: str, bucket_key: str) -> dict:
             reports_service.by_period, context.event_recorder, window, bucket_key
         )
     total = _totalize_period(rows)
-    csv_rows = [*rows, {"bucket_start": "Total", **total}]
+    csv_rows = csv_rows_for(
+        [*rows, {"bucket_start": "Total", **total}], PERIOD_CSV_MONEY
+    )
 
     lines = [
-        f"{r['bucket_start']}: revenue {_fmt(r['revenue'], money=True)}, "
+        f"{r['bucket_start']}: revenue {_fmt(r['revenue_cents'], money=True)}, "
         f"vends {r['vends']}, failed {_fmt(r['failed_vends'])}, "
-        f"refunds {_fmt(r['refunds'], money=True)}, "
+        f"refunds {_fmt(r['refunds_cents'], money=True)}, "
         f"uptime {_fmt(r['uptime_pct'])}"
         for r in rows
     ]
     lines.append(
-        f"Total: revenue {_fmt(total['revenue'], money=True)}, "
+        f"Total: revenue {_fmt(total['revenue_cents'], money=True)}, "
         f"vends {total['vends']}, failed {_fmt(total['failed_vends'])}, "
-        f"refunds {_fmt(total['refunds'], money=True)}, "
+        f"refunds {_fmt(total['refunds_cents'], money=True)}, "
         f"uptime {_fmt(total['uptime_pct'])}"
     )
 
@@ -81,12 +89,12 @@ async def _compute_product(range_key: str) -> dict:
         )
     lines = [
         f"{r['name']} ({r['sku']}): units {r['units']}, "
-        f"revenue ${r['revenue']:.2f}, failed {r['failed_vends']}"
+        f"revenue {format_cents(r['revenue_cents'])}, failed {r['failed_vends']}"
         for r in rows
     ]
     return {
         "rows": rows,
-        "csv_rows": rows,
+        "csv_rows": csv_rows_for(rows, PRODUCT_CSV_MONEY),
         "header": PRODUCT_HEADER,
         "subject": f"Sales report: by product ({range_key})",
         "body": "\n".join(lines) or "No sales in this range.",
@@ -118,7 +126,9 @@ async def _compute_product_sku(range_key: str, bucket_key: str, sku: str) -> dic
             sku,
         )
     total = _totalize_period(rows)
-    csv_rows = [*rows, {"bucket_start": "Total", **total}]
+    csv_rows = csv_rows_for(
+        [*rows, {"bucket_start": "Total", **total}], PERIOD_CSV_MONEY
+    )
 
     # The breadcrumb uses the CATALOG's product name -- never a name
     # derived from query rows, which carry no `name` field at all for
@@ -136,16 +146,16 @@ async def _compute_product_sku(range_key: str, bucket_key: str, sku: str) -> dic
     )
 
     lines = [
-        f"{r['bucket_start']}: revenue {_fmt(r['revenue'], money=True)}, "
+        f"{r['bucket_start']}: revenue {_fmt(r['revenue_cents'], money=True)}, "
         f"vends {r['vends']}, failed {_fmt(r['failed_vends'])}, "
-        f"refunds {_fmt(r['refunds'], money=True)}, "
+        f"refunds {_fmt(r['refunds_cents'], money=True)}, "
         f"uptime {_fmt(r['uptime_pct'])}"
         for r in rows
     ]
     lines.append(
-        f"Total: revenue {_fmt(total['revenue'], money=True)}, "
+        f"Total: revenue {_fmt(total['revenue_cents'], money=True)}, "
         f"vends {total['vends']}, failed {_fmt(total['failed_vends'])}, "
-        f"refunds {_fmt(total['refunds'], money=True)}, "
+        f"refunds {_fmt(total['refunds_cents'], money=True)}, "
         f"uptime {_fmt(total['uptime_pct'])}"
     )
     body = f"{product.name} ({sku}) by period:\n" + "\n".join(lines)
@@ -179,13 +189,13 @@ async def _compute_method(range_key: str) -> dict:
             reports_service.by_method, context.event_recorder, window
         )
     lines = [
-        f"{r['method']}: ${r['amount']:.2f} ({r['share'] * 100:.1f}%), "
+        f"{r['method']}: {format_cents(r['amount_cents'])} ({r['share'] * 100:.1f}%), "
         f"{r['count']} sales, {'cash' if r['is_cash'] else 'other'}"
         for r in rows
     ]
     return {
         "rows": rows,
-        "csv_rows": rows,
+        "csv_rows": csv_rows_for(rows, METHOD_CSV_MONEY),
         "header": METHOD_HEADER,
         "subject": f"Sales report: by method ({range_key})",
         "body": "\n".join(lines) or "No sales in this range.",
@@ -212,12 +222,12 @@ async def _compute_collections(range_key: str) -> dict:
     # with no behavior change.
     rows = [{**row, "ts_display": _ts_display(row["ts"])} for row in raw_rows]
     lines = [
-        f"{_ts_display(r['ts'])} {r['user_name']}: expected ${r['expected_cash']:.2f}"
+        f"{_ts_display(r['ts'])} {r['user_name']}: expected {format_cents(r['expected_cash_cents'])}"
         for r in raw_rows
     ]
     return {
         "rows": rows,
-        "csv_rows": raw_rows,
+        "csv_rows": csv_rows_for(raw_rows, COLLECTIONS_CSV_MONEY),
         "header": COLLECTIONS_HEADER,
         "subject": "Sales report: cash collections",
         "body": "\n".join(lines) or "No collections recorded.",
