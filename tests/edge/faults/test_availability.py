@@ -155,10 +155,10 @@ def test_service_door_open_blocks_and_closing_restores():
 def test_payment_device_error_blocks_the_sale_not_payment():
     a, _ = _avail()
     _all_good(a)
-    a.set_payment_device("card_reader", "error")
-    assert "payment_devices_ready" in a.sale_available("ice")[1]
+    a.set_payment_device("coin_acceptor", "error")
+    assert "cash_accepting" in a.sale_available("ice")[1]
     assert a.payment_enabled is True
-    a.set_payment_device("card_reader", "ready")
+    a.set_payment_device("coin_acceptor", "ready")
     assert a.sale_available("ice")[0] is True
 
 
@@ -224,7 +224,9 @@ def test_gate_is_exported_on_every_row():
     assert rows["vending_alive"]["gate"] == "fulfillment"
     assert rows["mqtt_connected"]["gate"] == "fulfillment"
     assert rows["payment_alive"]["gate"] == "fulfillment"
-    assert rows["payment_devices_ready"]["gate"] == "fulfillment"
+    assert rows["cash_accepting"]["gate"] == "fulfillment"
+    assert rows["payment_coin_ready"]["gate"] == "alert"
+    assert rows["payment_bill_ready"]["gate"] == "alert"
     assert rows["ice_maker_alive"]["gate"] == "fulfillment"
     assert rows["ice_available"]["gate"] == "fulfillment"
     assert rows["fsm_ok"]["gate"] == "fulfillment"
@@ -282,8 +284,8 @@ def test_every_fulfillment_row_blocks_the_sale_but_not_payment():
         ("vending_alive", lambda a: a.set_subsystem_alive("vending", False)),
         ("payment_alive", lambda a: a.set_subsystem_alive("mdb", False)),
         (
-            "payment_devices_ready",
-            lambda a: a.set_payment_device("card_reader", "error"),
+            "cash_accepting",
+            lambda a: a.set_payment_device("coin_acceptor", "error"),
         ),
         ("fsm_ok", lambda a: a.set_fsm_state("error")),
     ]
@@ -414,7 +416,7 @@ def test_command_inhibited_machine_critical_fault_inhibits_all_three():
 def test_command_inhibited_payment_device_error_blocks_sale_not_payment():
     a, _ = _avail()
     _all_good(a)
-    a.set_payment_device("card_reader", "error")
+    a.set_payment_device("coin_acceptor", "error")
     assert a.command_inhibited("dispense") is True
     assert a.command_inhibited("payment/enable") is False
 

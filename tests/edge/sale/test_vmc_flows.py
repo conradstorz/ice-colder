@@ -1776,10 +1776,10 @@ async def test_payment_status_error_feeds_availability():
     vmc, monitor, avail, _, machine = _wired_vmc()
     _all_alive(monitor, machine)
     await machine.telemetry.handle_payment_status(
-        "payment/status", {"device": "card_reader", "state": "error"}
+        "payment/status", {"device": "coin_acceptor", "state": "error"}
     )
-    assert "payment_devices_ready" in avail.sale_available("ice")[1]
-    signal = monitor.get_summary()["signals"]["mdb"]["card_reader"]
+    assert "cash_accepting" in avail.sale_available("ice")[1]
+    signal = monitor.get_summary()["signals"]["mdb"]["coin_acceptor"]
     assert signal["value"] == 0.0
     assert signal["text"] == "error"
 
