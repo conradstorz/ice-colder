@@ -1,0 +1,251 @@
+"""Ordered payout / cash_sale queue to the MDB board (cutover spec 5.3, 5.4).
+
+One command is in flight at a time. ``request_id`` is minted at enqueue and
+reused on every re-send (the board dedupes on it, firmware rule 5), so no path
+here ever pays twice: an unconfirmed payout raises PAY-103 and is dropped, it
+is never re-sent under a new id.
+"""
+
+from __future__ import annotations
+
+import uuid
+from collections import deque
+from collections.abc import Callable
+from dataclasses import replace
+from typing import Any
+
+from loguru import logger
+
+from ice_contracts.board.payment import (
+    CashSaleParams,
+    PayoutParams,
+    PayoutReason,
+    PayoutResult,
+    PayoutStatus,
+)
+from ice_contracts.board.vending_machine import FaultCode
+from ice_edge.hal.command_dispatcher import CommandTimeout, CompletionTimeout
+from ice_edge.payment.ports import PendingPayout
+
+BUSY_RETRY_SECONDS = 2.0
+TIMEOUT_RETRY_SECONDS = 5.0
+_POLICY_REJECTS = frozenset({"no_policy", "expired"})
+
+
+class PayoutProtocol:
+    def __init__(
+        self,
+        *,
+        dispatcher: Any,
+        policy_acked: Callable[[], bool],
+        board_alive: Callable[[], bool],
+        tasks: Any,
+        faults: Any,
+        on_paid: Callable[[PendingPayout, int], None],
+        on_changed: Callable[[], None],
+    ) -> None:
+        self._dispatcher = dispatcher
+        self._policy_acked = policy_acked
+        self._board_alive = board_alive
+        self._tasks = tasks
+        self._faults = faults
+        self._on_paid = on_paid
+        self._on_changed = on_changed
+        self._queue: deque[PendingPayout] = deque()
+        self._inflight: PendingPayout | None = None
+        self._draining = False
+        self._retry: Any = None
+        self._policy_hold = False  # board refused for want of a policy
+
+    # -- public --------------------------------------------------------
+    @property
+    def idle(self) -> bool:
+        return not self._queue and self._inflight is None
+
+    def pending(self) -> list[PendingPayout]:
+        head = [self._inflight] if self._inflight is not None else []
+        return head + list(self._queue)
+
+    def pay_out(self, cents: int, reason: PayoutReason, sale_id: str | None) -> None:
+        self._enqueue(
+            PendingPayout(
+                uuid.uuid4().hex, "payout", cents, PayoutReason(reason).value, sale_id
+            )
+        )
+
+    def cash_sale(self, cents: int, sale_id: str | None) -> None:
+        self._enqueue(
+            PendingPayout(uuid.uuid4().hex, "cash_sale", cents, None, sale_id)
+        )
+
+    def seed(self, pending: list[PendingPayout]) -> None:
+        """Re-queue payouts from a loaded snapshot.
+
+        Not called at boot while PAY-104 is raised: a snapshot's pending
+        payouts are PAY-104 evidence and the operator decides.
+        """
+        self._queue.extendleft(reversed(pending))
+        if pending:
+            self._on_changed()
+            self._start()
+
+    def kick(self) -> None:
+        """Resume sending (policy acked, PAY-101 cleared, completion)."""
+        self._policy_hold = False
+        self._start()
+
+    def _start(self) -> None:
+        if (
+            self._policy_hold
+            or self._draining
+            or self._retry is not None
+            or not self._queue
+        ):
+            return
+        if not self._can_send():
+            return
+        self._draining = True
+        self._tasks.fire_and_forget(self._drain())
+
+    # -- internals -----------------------------------------------------
+    def _can_send(self) -> bool:
+        return bool(self._policy_acked() and self._board_alive())
+
+    def _enqueue(self, item: PendingPayout) -> None:
+        self._queue.append(item)
+        self._on_changed()
+        self._start()
+
+    def _arm_retry(self, delay: float) -> None:
+        self._retry = self._tasks.schedule(delay, self._retry_due, label="payout_retry")
+
+    def _retry_due(self) -> None:
+        self._retry = None
+        self.kick()
+
+    def _finish(self) -> None:
+        self._inflight = None
+        self._on_changed()
+
+    def _requeue_head(self, *, remint: bool = False) -> None:
+        item = self._inflight
+        if item is not None:
+            if remint:
+                # The firmware caches every ack by request_id, rejections
+                # included, so a re-send of a rejected id would replay the
+                # rejection forever. A rejection means the board did nothing,
+                # so a fresh id cannot pay twice.
+                item = replace(item, request_id=uuid.uuid4().hex)
+            self._queue.appendleft(item)
+            self._inflight = None
+            if remint:
+                self._on_changed()  # the snapshot must carry the new id
+
+    def _pay103(self, outcome: str) -> None:
+        self._faults.raise_fault(FaultCode.PAY_103, outcome=outcome)
+
+    def _pay104(self, outcome: str) -> None:
+        self._faults.raise_fault(FaultCode.PAY_104, outcome=outcome)
+
+    async def _drain(self) -> None:
+        try:
+            while (
+                self._queue
+                and self._retry is None
+                and not self._policy_hold
+                and self._can_send()
+            ):
+                self._inflight = self._queue.popleft()
+                await self._send(self._inflight)
+        finally:
+            self._draining = False
+
+    async def _send(self, item: PendingPayout) -> None:
+        if item.kind == "payout":
+            command = "payout"
+            params = PayoutParams(
+                cents=item.cents, reason=PayoutReason(item.reason), sale_id=item.sale_id
+            ).model_dump(mode="json")
+        else:
+            command = "cash_sale"
+            params = CashSaleParams(cents=item.cents, sale_id=item.sale_id).model_dump(
+                mode="json"
+            )
+        try:
+            ack = await self._dispatcher.send_and_await_completion(
+                "mdb", command, params, request_id=item.request_id
+            )
+        except CompletionTimeout:
+            logger.error(f"MDB {command} {item.request_id} never reported completion")
+            if item.kind == "payout":
+                self._pay103("unconfirmed")
+            else:
+                self._pay104("escrow_mismatch:cash_sale_unconfirmed")
+            self._finish()
+            return
+        except CommandTimeout:
+            # Never acked (even after the dispatcher's same-id retry): keep it
+            # at the head under the same id and try again shortly.
+            logger.warning(f"MDB {command} {item.request_id} not acked; will resend")
+            self._requeue_head()
+            self._arm_retry(TIMEOUT_RETRY_SECONDS)
+            return
+        if item.kind == "payout":
+            self._settle_payout(item, ack)
+        else:
+            self._settle_cash_sale(item, ack)
+
+    def _reject(self, item: PendingPayout, ack: Any) -> bool:
+        """Handle a rejecting ack that left the command unexecuted."""
+        detail = getattr(ack, "detail", None)
+        if detail == "busy":
+            self._requeue_head(remint=True)
+            self._arm_retry(BUSY_RETRY_SECONDS)
+            return True
+        if item.kind == "payout" and detail in _POLICY_REJECTS:
+            self._requeue_head(remint=True)  # waits for the next policy_acked
+            self._policy_hold = True
+            return True
+        return False
+
+    def _settle_payout(self, item: PendingPayout, ack: Any) -> None:
+        if ack.status == "rejected":
+            if self._reject(item, ack):
+                return
+            self._pay103(f"failed:{ack.detail}")
+            self._finish()
+            return
+        result = None
+        if ack.result:
+            try:
+                result = PayoutResult.model_validate(ack.result)
+            except ValueError:
+                result = None
+        if result is None:
+            if ack.status in ("failed", "unsupported"):
+                self._pay103(f"failed:{ack.detail}")
+            else:
+                self._pay103("unconfirmed")
+            self._finish()
+            return
+        paid = result.paid_cents
+        if result.status == PayoutStatus.ok:
+            self._on_paid(item, paid)
+        elif result.status == PayoutStatus.partial:
+            self._on_paid(item, paid)
+            self._pay103(f"partial:{paid}/{result.requested_cents}")
+        else:
+            self._pay103(f"failed:{result.detail}")
+        self._finish()
+
+    def _settle_cash_sale(self, item: PendingPayout, ack: Any) -> None:
+        if ack.status == "rejected" and self._reject(item, ack):
+            return
+        if ack.status == "ok":
+            if ack.detail == "clamped":
+                logger.warning(f"cash_sale {item.request_id} clamped by the board")
+                self._pay104("escrow_mismatch:cash_sale_clamped")
+        else:
+            logger.error(f"cash_sale {item.request_id} refused: {ack.detail}")
+            self._pay104(f"escrow_mismatch:cash_sale_{ack.status}")
+        self._finish()
