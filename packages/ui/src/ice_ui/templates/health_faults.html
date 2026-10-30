@@ -44,9 +44,9 @@
          whether to record it or discard it, rather than clearing blind. #}
       <div class="w-full flex flex-wrap items-center gap-3 text-xs text-gray-500">
         <span class="font-mono">{{ f.pending_sale.sku }}</span>
-        <span>${{ "%.2f"|format(f.pending_sale.price) }}</span>
+        <span>{{ f.pending_sale.price_cents|money }}</span>
         {% for method, amount in f.pending_sale.methods.items() %}
-        <span>{{ method }}: ${{ "%.2f"|format(amount) }}</span>
+        <span>{{ method }}: {{ amount|money }}</span>
         {% endfor %}
       </div>
       {% endif %}
@@ -57,10 +57,10 @@
          payment device. Renders nothing when the field is absent (the cloud
          renders this template from a stored report that has no such field). #}
       {% set d = f.recovery_detail %}
-      {% if d.sale_recorded or d.credit_escrow > 0.005 or d.pending_refund_request_id or d.error %}
+      {% if d.sale_recorded or d.credit_escrow_cents > 0 or d.pending_refund_request_id or d.error %}
       <div class="w-full flex flex-wrap items-center gap-3 text-xs text-gray-500">
         {% if d.sale_recorded %}<span>Sale already recorded</span>{% endif %}
-        {% if d.credit_escrow > 0.005 %}<span>Leftover credit ${{ "%.2f"|format(d.credit_escrow) }}</span>{% endif %}
+        {% if d.credit_escrow_cents > 0 %}<span>Leftover credit {{ d.credit_escrow_cents|money }}</span>{% endif %}
         {% if d.pending_refund_request_id %}<span>Refund {{ d.pending_refund_request_id }} unconfirmed</span>{% endif %}
         {% if d.error %}<span>Snapshot error: {{ d.error }}</span>{% endif %}
       </div>

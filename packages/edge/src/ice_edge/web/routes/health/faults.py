@@ -60,31 +60,13 @@ def _faults_with_age() -> list[dict]:
     )
     for f in faults:
         f["dom_key"] = dom_safe_key(f["key"])
-        pending = f.get("pending_sale")
-        if pending is not None:
-            # health_faults.html still reads dollar floats until Task 5.
-            f["pending_sale"] = {
-                **pending,
-                "price": pending["price_cents"] / 100,  # cents-shim(T5)
-                "methods": {
-                    k: v / 100  # cents-shim(T5)
-                    for k, v in pending["methods"].items()
-                },
-            }
         # Only PAY-104 carries snapshot detail (leftover credit etc.).
         detail = (
             context.machine_instance.recovery_detail()
             if f["code"] == "PAY-104" and context.machine_instance
             else None
         )
-        f["recovery_detail"] = (
-            {
-                **asdict(detail),
-                "credit_escrow": detail.credit_escrow_cents / 100,  # cents-shim(T5)
-            }
-            if detail is not None
-            else None
-        )
+        f["recovery_detail"] = asdict(detail) if detail is not None else None
     return faults
 
 

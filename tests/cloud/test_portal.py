@@ -537,3 +537,57 @@ def test_sandboxed_bundle_cannot_see_request_or_app_state(
     assert "[[|False|gone]]" in r.text
     assert "SnapshotStore" not in r.text
     assert "settings" not in r.text
+
+
+def _report_with_escrow(cents):
+    data = make_report().model_dump(mode="json")
+    data["health"]["status"]["credit_escrow_cents"] = cents
+    return data
+
+
+def test_status_shows_escrow_dollar_text_from_cents(cloud, signer):
+    from ice_contracts.cloud.report import MachineReport
+
+    report = MachineReport.model_validate(_report_with_escrow(125))
+    own_and_select(cloud, signer, report)
+    r = cloud.get("/status")
+    assert r.status_code == 200
+    assert "$1.25" in r.text
+
+
+def test_pre_1_0_0_bundle_still_renders_dollars_through_aliases(
+    trusting_cloud, tmp_path, signer
+):
+    import subprocess
+
+    from ice_contracts.cloud.report import MachineReport
+
+    old = subprocess.run(
+        [
+            "git",
+            "show",
+            "7fe4b71:packages/ui/src/ice_ui/templates/partials/status_fragment.html",
+        ],
+        capture_output=True,
+        check=True,
+        cwd=INSTALLED_ROOT,
+    ).stdout
+    root = tmp_path / "old_bundle"
+    shutil.copytree(INSTALLED_ROOT / "templates", root / "templates")
+    shutil.copytree(INSTALLED_ROOT / "static", root / "static")
+    (root / "templates" / "partials" / "status_fragment.html").write_bytes(old)
+    data = build_bundle(root)
+    with tarfile.open(fileobj=io.BytesIO(gzip.decompress(data))) as tf:
+        digest = json.loads(tf.extractfile("manifest.json").read())["digest"]
+    cloud = trusting_cloud(digest)
+    report = MachineReport.model_validate(
+        {
+            **_report_with_escrow(125),
+            "ui": {"digest": digest, "ice_ui_version": "0.1.0"},
+        }
+    )
+    own_and_select(cloud, signer, report)
+    assert put_bundle(cloud, signer, digest, data).status_code == 201
+    r = cloud.get("/status")
+    assert r.status_code == 200
+    assert "$1.25" in r.text

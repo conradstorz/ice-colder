@@ -21,10 +21,10 @@
             d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
     </svg>
   </div>
-  <div class="text-3xl font-bold text-gray-900 mt-2">${{ "%.2f"|format(summary.money_in) }}</div>
+  <div class="text-3xl font-bold text-gray-900 mt-2">{{ summary.money_in_cents|money }}</div>
   <div class="text-xs text-gray-400 mt-1">
-    {% if average and average.money_in is not none %}
-      avg ${{ "%.2f"|format(average.money_in) }}
+    {% if average and average.money_in_cents is not none %}
+      avg {{ average.money_in_cents|round|int|money }}
     {% else %}
       <span class="text-gray-300">no history yet</span>
     {% endif %}

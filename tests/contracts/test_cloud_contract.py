@@ -1,4 +1,4 @@
-"""Edge-cloud contract: MachineReport and the UI bundle manifest (v0.4.0)."""
+"""Edge-cloud contract: MachineReport and the UI bundle manifest (v1.0.0)."""
 
 import json
 from pathlib import Path
@@ -9,7 +9,11 @@ from pydantic import ValidationError
 from ice_contracts.cloud.report import (
     CLOUD_CONTRACT_VERSION,
     FaultView,
+    KpiAverage,
+    KpiWindow,
     MachineReport,
+    PendingSaleView,
+    StatusView,
 )
 from ice_contracts.cloud.ui import BundleManifest, LevelEntry
 from ice_contracts.generate import CONTRACTS, generate
@@ -67,8 +71,8 @@ def _full() -> MachineReport:
     return MachineReport.model_validate(data)
 
 
-def test_contract_version_is_0_4_0():
-    assert CLOUD_CONTRACT_VERSION == "0.4.0"
+def test_contract_version_is_1_0_0():
+    assert CLOUD_CONTRACT_VERSION == "1.0.0"
 
 
 def test_spec_example_validates():
@@ -80,7 +84,7 @@ def test_spec_example_validates():
 def test_roundtrip_fully_populated():
     r = _full()
     assert MachineReport.model_validate_json(r.model_dump_json()) == r
-    assert r.faults[0].pending_sale.methods == {"cash": 4.5}
+    assert r.faults[0].pending_sale.methods == {"cash": 450}
 
 
 def test_frozen():
@@ -205,12 +209,12 @@ def test_edge_cloud_registered_and_bytes_match(tmp_path):
     assert set(norm(out)) == {f"{n}.schema.json" for n in models}
 
 
-def test_report_accepts_0_2_0_through_0_4_0():
+def test_report_accepts_0_2_0_through_1_0_0():
     data = _example()
-    for version in ("0.2.0", "0.3.0", "0.4.0"):
+    for version in ("0.2.0", "0.3.0", "0.4.0", "1.0.0"):
         data["contract"] = version
         assert MachineReport.model_validate(data).contract == version
-    data["contract"] = "0.5.0"
+    data["contract"] = "1.1.0"
     with pytest.raises(ValidationError):
         MachineReport.model_validate(data)
 
@@ -225,10 +229,11 @@ def test_report_common_name_is_optional_and_capped():
         MachineReport.model_validate(data)
 
 
-def test_contract_doc_has_0_4_0_section():
+def test_contract_doc_has_1_0_0_section():
     doc = (
         Path(__file__).resolve().parents[2] / "docs/contracts/edge-cloud/CONTRACT.md"
     ).read_text(encoding="utf-8")
+    assert "## 1.0.0" in doc
     assert "## 0.4.0" in doc
     assert "## 0.3.0" in doc
 
@@ -271,3 +276,98 @@ def test_selected_product_is_capped_at_200():
     data["health"]["status"]["selected_product"] = "x" * 201
     with pytest.raises(ValidationError):
         MachineReport.model_validate(data)
+
+
+def _cents_example() -> dict:
+    data = _example()
+    data["contract"] = "1.0.0"
+    data["health"]["status"].pop("credit_escrow")
+    data["health"]["status"]["credit_escrow_cents"] = 0
+    data["kpi"]["summary"].pop("money_in")
+    data["kpi"]["summary"]["money_in_cents"] = 4200
+    data["kpi"]["average"].pop("money_in")
+    data["kpi"]["average"]["money_in_cents"] = 3850.0
+    data["faults"][0]["pending_sale"] = {
+        "sku": "ICE-10LB",
+        "price_cents": 450,
+        "methods": {"cash": 450},
+    }
+    return data
+
+
+def test_0_4_0_dollar_report_equals_1_0_0_cents_report():
+    old = _example()
+    old["contract"] = "0.4.0"
+    old["faults"][0]["pending_sale"] = {
+        "sku": "ICE-10LB",
+        "price": 4.5,
+        "methods": {"cash": 4.5},
+    }
+    a = MachineReport.model_validate(old)
+    b = MachineReport.model_validate(_cents_example())
+    assert a.model_copy(update={"contract": "1.0.0"}) == b
+    assert b.kpi.summary.money_in_cents == 4200
+
+
+def test_kpi_average_converts_without_quantizing():
+    assert KpiAverage.model_validate(
+        {
+            "money_in": 1.235,
+            "products_out": None,
+            "errors": None,
+            "uptime_pct": None,
+        }
+    ).money_in_cents == pytest.approx(123.5)
+    none = KpiAverage.model_validate(
+        {"money_in": None, "products_out": None, "errors": None, "uptime_pct": None}
+    )
+    assert none.money_in_cents is None
+
+
+def test_both_old_and_new_keys_keep_new_and_reject_old():
+    with pytest.raises(ValidationError):
+        StatusView.model_validate(
+            {
+                "state": "idle",
+                "selected_product": None,
+                "credit_escrow": 1.0,
+                "credit_escrow_cents": 100,
+                "last_payment_method": None,
+            }
+        )
+    w = KpiWindow.model_validate(
+        {
+            "money_in_cents": 5,
+            "products_out": 0,
+            "vends_failed": 0,
+            "errors": 0,
+            "uptime_pct": 1.0,
+        }
+    )
+    assert w.money_in_cents == 5
+
+
+def test_float_cents_are_rejected():
+    for bad in (1.5, 100.0):
+        with pytest.raises(ValidationError):
+            StatusView(
+                state="idle",
+                selected_product=None,
+                credit_escrow_cents=bad,
+                last_payment_method=None,
+            )
+    with pytest.raises(ValidationError):
+        PendingSaleView(sku="x", price_cents=1, methods={"cash": 1.0})
+
+
+def test_legacy_alert_state_fault_row_reads_back():
+    # machine_alert_state.faults_json rows written by a 0.4.0 cloud.
+    row = json.loads(
+        '{"key": "PAY-104", "sku": null, "product": null, "code": "PAY-104",'
+        ' "severity": "critical", "scope": "machine", "description": "x",'
+        ' "since_seconds": null, "gate": "alert",'
+        ' "pending_sale": {"sku": "ICE", "price": 4.5, "methods": {"cash": 2.25, "card": 2.25}}}'
+    )
+    view = FaultView.model_validate(row)
+    assert view.pending_sale.price_cents == 450
+    assert view.pending_sale.methods == {"cash": 225, "card": 225}

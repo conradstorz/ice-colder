@@ -232,8 +232,7 @@ async def build_health_summary(
     return HealthSummary(
         vmc_missing=False,
         status={
-            **{k: v for k, v in status.items() if k != "credit_escrow_cents"},
-            "credit_escrow": status["credit_escrow_cents"] / 100,  # cents-shim(T5)
+            **status,
             "selected_product": clip(status.get("selected_product")),
         },
         is_healthy=is_healthy,
@@ -269,11 +268,8 @@ def build_fault_views(active_faults: list[dict]) -> list[FaultView]:
                 pending_sale=(
                     PendingSaleView(
                         sku=pending["sku"],
-                        price=pending["price_cents"] / 100,  # cents-shim(T5)
-                        methods={
-                            k: m / 100  # cents-shim(T5)
-                            for k, m in pending["methods"].items()
-                        },
+                        price_cents=pending["price_cents"],
+                        methods=dict(pending["methods"]),
                     )
                     if pending is not None
                     else None
@@ -293,18 +289,14 @@ async def build_kpi_summary(event_recorder: EventRecorder | None) -> KpiSummary:
     average = await asyncio.to_thread(event_recorder.get_historical_average, 24)
     return KpiSummary(
         summary=KpiWindow(
-            money_in=summary["money_in_cents"] / 100,  # cents-shim(T5)
+            money_in_cents=summary["money_in_cents"],
             products_out=summary["products_out"],
             vends_failed=summary["vends_failed"],
             errors=summary["errors"],
             uptime_pct=summary["uptime_pct"],
         ),
         average=KpiAverage(
-            money_in=(  # cents-shim(T5)
-                None
-                if average["money_in_cents"] is None
-                else round(average["money_in_cents"] / 100, 2)
-            ),
+            money_in_cents=average["money_in_cents"],
             products_out=average["products_out"],
             errors=average["errors"],
             uptime_pct=average["uptime_pct"],

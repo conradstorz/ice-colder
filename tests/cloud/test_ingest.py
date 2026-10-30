@@ -513,3 +513,25 @@ async def test_sweep_prunes_alert_history_at_most_once_an_hour(tmp_path, clock):
     clock.advance(retention + 60 + 3600)
     await app.state.sweep.tick()
     assert repo.alert_events(s.fingerprint, limit=10) == []
+
+
+def test_ingest_accepts_0_4_0_dollar_and_1_0_0_cents_reports(client, machine):
+    import json
+
+    from tests.cloud.reports import legacy_dollar_json
+
+    legacy = legacy_dollar_json(make_report(seq=1))
+    body = json.dumps(legacy).encode()
+    r = signed(
+        client,
+        machine,
+        "POST",
+        f"/api/v1/machines/{machine.fingerprint}/report",
+        body,
+    )
+    assert r.status_code == 200
+    stored = client.app.state.store.latest(machine.fingerprint)
+    assert stored.kpi.summary.money_in_cents == 4200
+
+    new = make_report(contract="1.0.0", seq=2)
+    assert _post(client, machine, new).status_code == 200

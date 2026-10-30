@@ -55,11 +55,6 @@ async def _legacy_snapshot(
         }
 
     status = vmc_instance.get_status()
-    # The cloud StatusView keeps its dollar field until Task 5.
-    status = {
-        **{k: v for k, v in status.items() if k != "credit_escrow_cents"},
-        "credit_escrow": status["credit_escrow_cents"] / 100,  # cents-shim(T5)
-    }
     issues: list[str] = []
     active_faults = vmc_instance.active_faults()
     for f in active_faults:
@@ -299,7 +294,7 @@ def test_build_fault_views_equals_projected_legacy_faults(scenario, monkeypatch)
     pending sale's ``name``/``slot``/``saved_at``; FaultView drops exactly
     those (cloud spec section 6.4). So the expected value is each legacy dict
     restricted to the FaultView fields, with ``pending_sale`` restricted to
-    ``sku``/``price``/``methods`` (dollars until Task 5)."""
+    ``sku``/``price_cents``/``methods``."""
     machine, monitor, _avail, _recorder = scenario
     _freeze(monitor, monkeypatch)
     legacy = _legacy_faults_with_age(machine, monitor)
@@ -311,11 +306,8 @@ def test_build_fault_views_equals_projected_legacy_faults(scenario, monkeypatch)
         row["pending_sale"] = (
             {
                 "sku": ps["sku"],
-                "price": ps["price_cents"] / 100,  # cents-shim(T5)
-                "methods": {
-                    k: v / 100  # cents-shim(T5)
-                    for k, v in ps["methods"].items()
-                },
+                "price_cents": ps["price_cents"],
+                "methods": dict(ps["methods"]),
             }
             if ps
             else None
@@ -358,14 +350,11 @@ async def test_build_kpi_summary_projects_the_cards_keys(scenario):
     kpi = await build_kpi_summary(recorder)
     keys = ("products_out", "vends_failed", "errors", "uptime_pct")
     expected = {k: raw_summary[k] for k in keys}
-    expected["money_in"] = raw_summary["money_in_cents"] / 100  # cents-shim(T5)
+    expected["money_in_cents"] = raw_summary["money_in_cents"]
     assert kpi.summary.model_dump() == expected
     akeys = ("products_out", "errors", "uptime_pct")
     expected_avg = {k: raw_average[k] for k in akeys}
-    avg_cents = raw_average["money_in_cents"]
-    expected_avg["money_in"] = (  # cents-shim(T5)
-        None if avg_cents is None else round(avg_cents / 100, 2)
-    )
+    expected_avg["money_in_cents"] = raw_average["money_in_cents"]
     assert kpi.average.model_dump() == expected_avg
     assert kpi.summary.errors >= 1
 

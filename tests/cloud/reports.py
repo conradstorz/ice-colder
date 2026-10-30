@@ -101,3 +101,22 @@ def make_report(
 
 def later(seconds: float) -> datetime:
     return NOW + timedelta(seconds=seconds)
+
+
+def legacy_dollar_json(report: MachineReport) -> dict[str, Any]:
+    """The 0.4.0 wire form of `report`: dollar floats under the old keys."""
+    data = report.model_dump(mode="json")
+    data["contract"] = "0.4.0"
+    status = data["health"]["status"]
+    if status is not None:
+        status["credit_escrow"] = status.pop("credit_escrow_cents") / 100
+    kpi = data["kpi"]
+    for part in ("summary", "average"):
+        if kpi[part] is not None:
+            kpi[part]["money_in"] = kpi[part].pop("money_in_cents") / 100
+    for fault in data["faults"]:
+        ps = fault["pending_sale"]
+        if ps is not None:
+            ps["price"] = ps.pop("price_cents") / 100
+            ps["methods"] = {k: v / 100 for k, v in ps["methods"].items()}
+    return data

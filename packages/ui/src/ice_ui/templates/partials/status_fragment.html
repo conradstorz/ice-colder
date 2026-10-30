@@ -51,7 +51,7 @@
         </div>
         <div>
           <div class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">Escrow</div>
-          <div class="font-medium text-gray-900">${{ "%.2f"|format(status.credit_escrow) }}</div>
+          <div class="font-medium text-gray-900">{{ status.credit_escrow_cents|money }}</div>
         </div>
         <div>
           <div class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">Last Payment</div>
@@ -145,7 +145,7 @@
         </div>
         <div>
           <div class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">Escrow</div>
-          <div class="font-medium text-gray-900">${{ "%.2f"|format(status.credit_escrow) }}</div>
+          <div class="font-medium text-gray-900">{{ status.credit_escrow_cents|money }}</div>
         </div>
         <div>
           <div class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">Last Payment</div>
