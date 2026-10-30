@@ -72,6 +72,7 @@ class PolicySync:
         self._last_boot: str | None = None
         self._last_state: PaymentState | None = None
         self._inflight = False
+        self._inflight_id: str | None = None
         self._resend_after: str | None = None
         self._connected = False
         self._retry: Any = None
@@ -125,12 +126,22 @@ class PolicySync:
                 self._acked_boot = state.boot_id
                 self._cancel_verify()
                 self._set_acked(True)
-            elif self._acked_boot is None:
-                self._acked_boot = state.boot_id
-            return  # acked, awaiting the echo: the verify timer covers a miss
+                return
+            if not self._acked:
+                # Acked but the echo is still pending: the verify timer covers a miss.
+                if self._acked_boot is None:
+                    self._acked_boot = state.boot_id
+                return
+            # Echoed earlier, but the board has since lost or replaced its policy.
+            self._ack_ok_id = None
+            self._acked_boot = None
+            self._cancel_verify()
         self._set_acked(False)
-        if self._retry is None:  # keep the retry back-off
-            self._spawn("state_mismatch")
+        if self._retry is not None:  # keep the retry back-off
+            return
+        if self._inflight and self._inflight_id == cur:
+            return  # an identical send is already on its way
+        self._spawn("state_mismatch")
 
     def on_payment_enabled_changed(self, enabled: bool) -> None:
         if self._current_id() != self._ack_ok_id:
@@ -154,6 +165,7 @@ class PolicySync:
         params = build_policy(self._config(), self._payment_enabled())
         if params.policy_id != self._ack_ok_id:
             self._set_acked(False)
+        self._inflight_id = params.policy_id
         self._cancel_retry()
         self._cancel_verify()
         logger.info(f"MDB policy sync ({reason}): {params.policy_id}")

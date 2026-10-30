@@ -305,3 +305,24 @@ async def test_at_most_one_ping_in_flight(env):
     env.runner.fire("mdb_keepalive")
     await settle()
     assert len(env.disp.pings()) == 2
+
+
+async def test_null_policy_after_echo_same_boot_resends(env):
+    await env.sync.sync("t")
+    env.sync.on_state(state(env.cur_id()))
+    assert env.sync.policy_acked is True
+    env.sync.on_state(state(None))
+    assert env.sync.policy_acked is False
+    await settle()
+    assert len(env.disp.policies()) == 2
+
+
+async def test_null_state_during_identical_inflight_send_no_second_send(env):
+    env.disp.gate = asyncio.Event()
+    first = asyncio.ensure_future(env.sync.sync("a"))
+    await settle()
+    env.sync.on_state(state(None))
+    await settle()
+    env.disp.gate.set()
+    await first
+    assert len(env.disp.policies()) == 1
