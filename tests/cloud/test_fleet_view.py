@@ -389,3 +389,18 @@ def test_ui_mismatch_count_on_view():
     m = _machine("a1" * 32, "a")
     v = _view([m], {"a1" * 32: _report(digest="0" * 64)})
     assert v.ui_mismatch_count == 1
+
+
+def test_secondary_revenue_from_cents_native_reports():
+    from ice_contracts.cloud.report import MachineReport
+
+    ms, reports, accts = _small_fleet()
+    native = {}
+    for fp, rep in reports.items():
+        data = rep.model_dump(mode="json")
+        assert "money_in_cents" in data["kpi"]["summary"]
+        assert data["kpi"]["summary"]["money_in_cents"] == 4200
+        native[fp] = MachineReport.model_validate(data)
+    v = _view(ms, native, accts)
+    sec = {h.label: h for h in v.secondary}
+    assert sec["Revenue (24 h)"].value == "$84.00"

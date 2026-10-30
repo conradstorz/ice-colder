@@ -45,6 +45,8 @@ def _legacy_dollars(data: Any, old: str, new: str, convert) -> Any:
 
 
 def _to_float_cents(value: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"not a dollar amount: {value!r}")
     return value * 100
 
 

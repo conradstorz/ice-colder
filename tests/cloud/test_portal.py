@@ -4,6 +4,7 @@ import json
 import re
 import shutil
 import tarfile
+from pathlib import Path
 
 import pytest
 
@@ -555,30 +556,53 @@ def test_status_shows_escrow_dollar_text_from_cents(cloud, signer):
     assert "$1.25" in r.text
 
 
-def test_pre_1_0_0_bundle_still_renders_dollars_through_aliases(
-    trusting_cloud, tmp_path, signer
-):
-    import subprocess
+LEGACY_UI = Path(__file__).parent / "legacy_ui"
 
-    from ice_contracts.cloud.report import MachineReport
 
-    old = subprocess.run(
-        [
-            "git",
-            "show",
-            "7fe4b71:packages/ui/src/ice_ui/templates/partials/status_fragment.html",
-        ],
-        capture_output=True,
-        check=True,
-        cwd=INSTALLED_ROOT,
-    ).stdout
+def _legacy_bundle(tmp_path, files):
+    """A bundle of the installed UI with the given pre-1.0.0 templates
+    (vendored under tests/cloud/legacy_ui) swapped in."""
     root = tmp_path / "old_bundle"
     shutil.copytree(INSTALLED_ROOT / "templates", root / "templates")
     shutil.copytree(INSTALLED_ROOT / "static", root / "static")
-    (root / "templates" / "partials" / "status_fragment.html").write_bytes(old)
+    for dest, name in files.items():
+        (root / "templates" / dest).write_bytes((LEGACY_UI / name).read_bytes())
     data = build_bundle(root)
     with tarfile.open(fileobj=io.BytesIO(gzip.decompress(data))) as tf:
         digest = json.loads(tf.extractfile("manifest.json").read())["digest"]
+    return digest, data
+
+
+def _cents_report(report, **fault_overrides):
+    """A cents-native (1.0.0) wire report built from make_report()."""
+    from ice_contracts.cloud.report import MachineReport
+
+    data = report.model_dump(mode="json")
+    data["health"]["status"]["credit_escrow_cents"] = 125
+    data["kpi"]["summary"]["money_in_cents"] = 4200
+    data["kpi"]["average"]["money_in_cents"] = 3850.0
+    data["faults"] = [
+        {
+            **data["faults"][0],
+            "code": "PAY-104",
+            "pending_sale": {
+                "sku": "ICE-10LB",
+                "price_cents": 350,
+                "methods": {"cash": 200, "card": 150},
+            },
+        }
+    ]
+    return MachineReport.model_validate(data)
+
+
+def test_pre_1_0_0_bundle_still_renders_dollars_through_aliases(
+    trusting_cloud, tmp_path, signer
+):
+    from ice_contracts.cloud.report import MachineReport
+
+    digest, data = _legacy_bundle(
+        tmp_path, {"partials/status_fragment.html": "status_fragment.html"}
+    )
     cloud = trusting_cloud(digest)
     report = MachineReport.model_validate(
         {
@@ -591,3 +615,34 @@ def test_pre_1_0_0_bundle_still_renders_dollars_through_aliases(
     r = cloud.get("/status")
     assert r.status_code == 200
     assert "$1.25" in r.text
+
+
+def test_pre_1_0_0_bundle_pay104_card_and_kpi_show_correct_dollars(
+    trusting_cloud, tmp_path, signer
+):
+    digest, data = _legacy_bundle(
+        tmp_path,
+        {
+            "health_faults.html": "health_faults.html",
+            "partials/kpi_fragment.html": "kpi_fragment.html",
+        },
+    )
+    cloud = trusting_cloud(digest)
+    report = _cents_report(make_report(digest=digest))
+    own_and_select(cloud, signer, report)
+    assert put_bundle(cloud, signer, digest, data).status_code == 201
+    text = cloud.get("/health/faults").text
+    assert "$3.50" in text
+    assert "cash: $2.00" in text and "card: $1.50" in text
+    kpi = cloud.get("/kpi").text
+    assert "$42.00" in kpi and "avg $38.50" in kpi
+
+
+def test_installed_ui_pay104_card_and_kpi_show_cents_native_dollars(cloud, signer):
+    own_and_select(cloud, signer, _cents_report(make_report()))
+    text = cloud.get("/health/faults").text
+    assert "$3.50" in text
+    assert "cash: $2.00" in text and "card: $1.50" in text
+    kpi = cloud.get("/kpi").text
+    assert "$42.00" in kpi
+    assert "avg $38.50" in kpi

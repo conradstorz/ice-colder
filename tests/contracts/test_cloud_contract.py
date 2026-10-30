@@ -371,3 +371,18 @@ def test_legacy_alert_state_fault_row_reads_back():
     view = FaultView.model_validate(row)
     assert view.pending_sale.price_cents == 450
     assert view.pending_sale.methods == {"cash": 225, "card": 225}
+
+
+@pytest.mark.parametrize("bad", [{}, [], "4.2", True])
+def test_legacy_average_money_in_wrong_type_is_a_validation_error(bad):
+    from ice_contracts.cloud.report import KpiAverage
+
+    with pytest.raises(ValidationError):
+        KpiAverage.model_validate(
+            {
+                "money_in": bad,
+                "products_out": 1.0,
+                "errors": 0.0,
+                "uptime_pct": 99.0,
+            }
+        )

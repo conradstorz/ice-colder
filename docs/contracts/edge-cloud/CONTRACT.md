@@ -21,7 +21,7 @@ Every money field is whole cents (`ice_contracts.money.Cents`, a non-negative st
 
 `contract` accepts `0.2.0`, `0.3.0`, `0.4.0` and `1.0.0`. Each of the four models has a before-validator that converts the old dollar key when the new one is absent (`dollars_to_cents`, half-even; `KpiAverage` multiplies by 100 as a float), so stored 0.x snapshots and alert rows still read. The edge always sends `"1.0.0"`.
 
-**Deploy order: cloud first.** A 0.4.0 cloud answers a 1.0.0 report with 422 and the uplink retries each interval until the cloud is upgraded. Uploaded UI bundles built before 1.0.0 read dollar names; the cloud portal supplies `credit_escrow`, `money_in` and `pending_sale.price` display aliases for them until no 0.x edge reports.
+**Deploy order: cloud first.** A 0.4.0 cloud answers a 1.0.0 report with 422 and the uplink retries each interval until the cloud is upgraded. Uploaded UI bundles built before 1.0.0 read dollar names; the cloud portal detects such a bundle once, when it first resolves it (a template under `templates/` still reading `status.credit_escrow`, `.money_in` or `pending_sale.price`; the manifest's `ice_ui_version` was never bumped, so it cannot tell), and only then supplies `credit_escrow`, `money_in` and `pending_sale.price` dollar display aliases and converts `pending_sale.methods` to dollars in place. The installed UI and 1.0.0 bundles always read cents. The aliases go away once no 0.x edge reports.
 
 ## 0.4.0: machine common name (additive)
 
