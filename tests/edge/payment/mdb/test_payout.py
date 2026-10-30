@@ -334,7 +334,7 @@ async def test_on_paid_exception_still_finishes_no_resend(env):
         tasks=env.runner,
         faults=env.faults,
         on_paid=boom,
-        on_changed=env._changed,
+        on_changed=lambda: None,
     )
     env.proto.pay_out(100, PayoutReason.cancel, None)
     await settle(4)
