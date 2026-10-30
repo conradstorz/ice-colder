@@ -212,6 +212,14 @@ async def pay104_record_sale(request: Request):
                 status_code=500,
                 detail="Could not record the sale; PAY-104 left active for retry",
             ) from None
+        # Tell the board the sale's cash left its escrow before PAY-104 clears
+        # (clearing releases the armed reconciliation, which would otherwise
+        # pay the sale's price out as leftover). Once per sale per process.
+        try:
+            machine.send_recovered_cash_sale(pending)
+        except Exception:
+            logger.exception("PAY-104 record-sale: cash_sale could not be queued")
+            vmc.raise_fault(FaultCode.PAY_103, outcome="cash_sale_not_queued")
         if not vmc.clear_fault(FaultCode.PAY_104.value, by="admin"):
             # The sale is recorded and must never be recorded again --
             # reserve it in memory (finding 3) before anything else,

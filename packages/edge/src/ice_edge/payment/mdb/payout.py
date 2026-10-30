@@ -8,6 +8,7 @@ is never re-sent under a new id.
 
 from __future__ import annotations
 
+import time
 import uuid
 from collections import deque
 from collections.abc import Callable
@@ -57,6 +58,9 @@ class PayoutProtocol:
         self._draining = False
         self._retry: Any = None
         self._policy_hold = False  # board refused for want of a policy
+        # When the last item left the queue: a retained state older than this
+        # still shows the escrow before that payout / cash_sale.
+        self.last_done_ts: float | None = None
 
     # -- public --------------------------------------------------------
     @property
@@ -148,6 +152,7 @@ class PayoutProtocol:
 
     def _finish(self) -> None:
         self._inflight = None
+        self.last_done_ts = time.time()
         self._notify_changed()
 
     def _notify_changed(self) -> None:

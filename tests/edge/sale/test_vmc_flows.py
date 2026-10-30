@@ -804,15 +804,16 @@ async def test_sufficient_funds_charges_and_dispenses():
     assert vmc.credit_escrow_cents == 250
 
     await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "complete"})
-    assert vmc.state == "interacting_with_user"  # credit remains
+    assert vmc.state == "idle"  # change is paid at once; the sale is over
+    assert vmc.credit_escrow_cents == 0
+    assert [(p.cents, p.reason) for p in payouts(machine)] == [(250, "change")]
 
 
 async def test_dispense_complete_with_no_remaining_credit_returns_to_idle():
-    """`_post_dispense_dest`'s other branch: a completed dispense with no
-    credit left over (price deposited exactly, not more) lands in 'idle',
-    not 'interacting_with_user' -- the mirror image of
-    test_sufficient_funds_charges_and_dispenses just above, which deposits
-    more than the price and stays interacting.
+    """A completed dispense with no credit left over (price deposited
+    exactly, not more) lands in 'idle' and queues no change payout. A sale
+    always ends in 'idle' (see test_sufficient_funds_charges_and_dispenses
+    just above, which deposits more than the price and gets change).
 
     Replaces the now-stale test_dispense_timeout_fallback_completes_
     transaction, which called _finish_dispensing directly and was framed
@@ -824,8 +825,7 @@ async def test_dispense_complete_with_no_remaining_credit_returns_to_idle():
     faithful public path to this exact-escrow completion is a real
     'complete' report with price == escrow, same as
     test_dispense_complete_with_matching_slot_still_completes exercises;
-    this test is kept alongside it, under an honest name, to pin the two
-    _post_dispense_dest branches (leftover credit vs. none) as a pair.
+    this test is kept alongside it, under an honest name.
     """
     machine = make_machine(price=2.50)
     vmc = machine.vmc
@@ -2082,7 +2082,13 @@ async def test_session_file_written_during_sale_and_cleared_after(tmp_path):
     await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "complete"})
     await runner.drain_persistence()
     assert vmc.state == "idle"
-    assert store.load() is None
+    assert vmc.credit_escrow_cents == 0
+    # The board never ran the queued cash_sale (no policy ack in a unit test):
+    # the file stays as evidence, holding that and nothing else. The paid case
+    # (file gone) is test_machine_payments' snapshot-lifecycle test.
+    snap = store.load()
+    assert snap.credit_escrow_cents == 0 and snap.pending_sale_shares is None
+    assert [p["kind"] for p in snap.pending_payouts] == ["cash_sale"]
 
 
 # --- Finding A: FSM state published after the transition, not before ---
@@ -3141,8 +3147,10 @@ class TestRunTestSale:
         assert sku == "WATER-1"
         assert price == 100
         assert methods == {"cash_coin": 100}
-        assert vmc.credit_escrow_cents == 150
-        assert [c.method for c in vmc.escrow_credits] == ["card"]
+        # The 150 left over is card money: change is cash-only, so it is taken
+        # off escrow and flagged (PAY-103 non_cash_refund) rather than paid.
+        assert vmc.credit_escrow_cents == 0
+        assert vmc.faults.has(FaultCode.PAY_103)
 
     async def test_run_test_sale_publishes_real_cmd_dispense(self):
         """Round-1 fix, minor finding 1: spec §2.3's whole point is that a
@@ -3963,22 +3971,16 @@ async def _vend_with_credit(runner, credit: float, price: float = 2.50):
     return vmc, machine
 
 
-async def test_leftover_credit_after_vend_is_refunded_on_session_timeout():
+async def test_overpaid_vend_pays_change_at_once_and_arms_no_timer():
     runner = FakeTaskRunner()
     vmc, machine = await _vend_with_credit(runner, credit=5.00, price=2.50)
 
-    assert vmc.state == "interacting_with_user"
-    assert vmc.credit_escrow_cents == 250
-    assert "session_timeout" in {c.label for c in runner.scheduled}
-
-    runner.fire("session_timeout")
-    await settle()
-
     assert vmc.state == "idle"
     assert vmc.credit_escrow_cents == 0
-    (refund,) = payouts(machine)
-    assert refund.cents == 250
-    assert refund.reason == "session_timeout"
+    assert "session_timeout" not in {c.label for c in runner.scheduled}
+    (change,) = payouts(machine)
+    assert (change.cents, change.reason) == (250, "change")
+    assert change.sale_id is not None
 
 
 async def test_exact_change_vend_arms_no_session_timer():

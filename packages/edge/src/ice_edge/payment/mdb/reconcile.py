@@ -58,6 +58,9 @@ class Reconciler:
         last = self._intake.last_processed_ts
         if last is not None and self._state_ts() <= last:
             return
+        done = getattr(self._payouts, "last_done_ts", None)
+        if done is not None and self._state_ts() <= done:
+            return  # this state predates the last payout / cash_sale
         self._armed = False
         edge, board = self._edge_cash(), state.escrow_cents
         if edge == board:

@@ -287,13 +287,8 @@ class SaleJournal:
     def dispensing_started(self) -> None:
         self._message("Processing your payment and dispensing your product...")
 
-    def transaction_complete(self, has_credit: bool) -> None:
-        self._message(
-            "Transaction complete. You have remaining credit. "
-            "Please select another product if desired."
-            if has_credit
-            else "Transaction complete. Thank you for your purchase!"
-        )
+    def transaction_complete(self) -> None:
+        self._message("Transaction complete. Thank you for your purchase!")
 
     def product_removed(self) -> None:
         self._message(
@@ -335,21 +330,6 @@ class SaleJournal:
         )
         self._message(
             f"Refund of {format_cents(amount_returned_cents)} issued via {method}."
-        )
-
-    def refund_failed(self, request_id: str, reason, cents: int, detail) -> None:
-        self._txn.error(
-            f"REFUND FAILED: {format_cents(cents)} request_id={request_id} "
-            f"reason={reason} detail={detail}"
-        )
-        self._record(
-            "refund_failed",
-            value=cents,
-            metadata={"request_id": request_id, "reason": reason, "detail": detail},
-        )
-        self._message(
-            f"We could not return {format_cents(cents)} automatically. "
-            f"Please contact support and quote {request_id[:8]}."
         )
 
     # -- session / lifecycle -----------------------------------------------

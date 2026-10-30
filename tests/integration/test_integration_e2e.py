@@ -537,7 +537,7 @@ class TestFullTransactionLoop:
             h.collector.assert_one_dispense_per_sale([request_id])
 
     async def test_overpayment_returns_to_idle_with_change(self, tmp_path):
-        """Overpayment: VMC dispenses and remaining credit is consumed or idle."""
+        """Overpayment: VMC dispenses, pays the change at once and ends in idle."""
         async with _e2e_harness("e2e-sim-overpay", tmp_path) as h:
             vmc, prefix, sim_client = h.vmc, h.prefix, h.sim_client
 
@@ -570,9 +570,18 @@ class TestFullTransactionLoop:
                 ).model_dump_json(),
             )
 
-            # With remaining credit, VMC goes back to interacting_with_user
-            await _wait_for_state(vmc, "interacting_with_user", timeout=5.0)
-            assert vmc.credit_escrow_cents == 350
+            # A sale always ends in idle: the change is queued for the board
+            # (no board plays here, so it is still pending) after the sale's
+            # cash_sale, and escrow is empty.
+            await _wait_for_state(vmc, "idle", timeout=5.0)
+            assert vmc.credit_escrow_cents == 0
+            await _wait_until(
+                lambda: [
+                    (p.kind, p.cents, p.reason)
+                    for p in h.machine.gateway.pending_payouts()
+                ]
+                == [("cash_sale", 150, None), ("payout", 350, "change")]
+            )
             h.collector.assert_one_dispense_per_sale([request_id])
 
     async def test_insufficient_funds_waits_for_more(self, tmp_path):
@@ -617,8 +626,9 @@ class TestFullTransactionLoop:
                     slot=1, state="complete", request_id=request_id
                 ).model_dump_json(),
             )
-            # With $0.50 remaining, goes back to interacting
-            await _wait_for_state(vmc, "interacting_with_user", timeout=5.0)
+            # $0.50 left over is paid as change; the sale ends in idle.
+            await _wait_for_state(vmc, "idle", timeout=5.0)
+            assert vmc.credit_escrow_cents == 0
             h.collector.assert_one_dispense_per_sale([request_id])
 
     async def test_dispenser_fault_fails_vend_and_locks_product(self, tmp_path):

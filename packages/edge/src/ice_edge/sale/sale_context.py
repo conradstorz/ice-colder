@@ -45,6 +45,8 @@ Fields, and who sets them:
   racing the dispatcher's own ack is still verifiable.
 - ``settled``: set by ``VMC.on_error`` once it has fired the ``"error"`` settled
   outcome, so a repeated error does not settle the same sale again.
+- ``sale_id``: a uuid4 hex minted with the context. Sent to the MDB board on
+  the sale's ``cash_sale`` and change/``vend_failed`` payouts and logged.
 - ``started_at``: wall-clock time the sale began (``select_product``, or the
   seed ``run_test_sale`` builds).
 """
@@ -52,7 +54,8 @@ Fields, and who sets them:
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 
 from ice_common.config_model import Product
 
@@ -66,6 +69,7 @@ class SaleContext:
     request_id: str | None = None
     started_at: float = 0.0
     settled: bool = False
+    sale_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     def with_(self, **changes) -> "SaleContext":
         """Return a new ``SaleContext`` with ``changes`` applied, leaving

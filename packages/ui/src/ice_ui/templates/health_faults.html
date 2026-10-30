@@ -51,16 +51,16 @@
       </div>
       {% endif %}
       {% if f.recovery_detail %}
-      {# M11: PAY-104 snapshot detail. No "Refund leftover" action on purpose:
-         after a restart the credit is no longer in escrow and the edge has no
-         refund path for money it does not hold, so the operator refunds at the
-         payment device. Renders nothing when the field is absent (the cloud
-         renders this template from a stored report that has no such field). #}
+      {# PAY-104 snapshot detail. No "Refund leftover" action on purpose: the
+         machine pays leftover credit out itself once PAY-104 is resolved.
+         Renders nothing when the field is absent (the cloud renders this
+         template from a stored report that has no such field). #}
       {% set d = f.recovery_detail %}
-      {% if d.sale_recorded or d.credit_escrow_cents > 0 or d.pending_refund_request_id or d.error %}
+      {% if d.sale_recorded or d.credit_escrow_cents > 0 or d.pending_payouts or d.pending_refund_request_id or d.error %}
       <div class="w-full flex flex-wrap items-center gap-3 text-xs text-gray-500">
         {% if d.sale_recorded %}<span>Sale already recorded</span>{% endif %}
-        {% if d.credit_escrow_cents > 0 %}<span>Leftover credit {{ d.credit_escrow_cents|money }}</span>{% endif %}
+        {% if d.credit_escrow_cents > 0 %}<span>Leftover credit {{ d.credit_escrow_cents|money }} (the machine will pay it out once this is resolved)</span>{% endif %}
+        {% for p in d.pending_payouts or [] %}<span>{% if p.kind == "cash_sale" %}Cash sale {{ p.cents|money }} not yet reported to the board{% else %}Payout {{ p.cents|money }} unconfirmed{% endif %}</span>{% endfor %}
         {% if d.pending_refund_request_id %}<span>Refund {{ d.pending_refund_request_id }} unconfirmed</span>{% endif %}
         {% if d.error %}<span>Snapshot error: {{ d.error }}</span>{% endif %}
       </div>

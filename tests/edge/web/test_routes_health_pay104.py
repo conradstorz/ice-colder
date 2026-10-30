@@ -37,7 +37,7 @@ from ice_edge.app.machine import Machine
 from ice_edge.access.access import ROLE_PERMISSIONS, Permission, Role
 from ice_edge.config.config_store import add_product
 from ice_edge.ledger.event_recorder import EventRecorder
-from ice_edge.ledger.session_store import SessionStore
+from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
 from ice_edge.web import context, routes
 from ice_edge.web.server import app
 
@@ -322,6 +322,26 @@ class TestRecordSale:
 
         assert "PAY-104" not in {f["code"] for f in vmc.active_faults()}
         assert not pay104["session_path"].exists()
+
+    def test_record_sale_queues_cash_sale_with_the_cash_share_only(
+        self, pay104, login_as
+    ):
+        machine = pay104["machine"]
+        assert machine.gateway.pending_payouts() == []
+        client = login_as(Role.tech)
+        assert client.post("/health/faults/PAY-104/record-sale").status_code == 200
+
+        (queued,) = machine.gateway.pending_payouts()
+        assert (queued.kind, queued.cents, queued.sale_id) == ("cash_sale", 200, None)
+        # a replay finds nothing pending and queues nothing more
+        client.post("/health/faults/PAY-104/record-sale")
+        assert len(machine.gateway.pending_payouts()) == 1
+
+    def test_discard_queues_nothing_for_the_sale(self, pay104, login_as):
+        machine = pay104["machine"]
+        client = login_as(Role.tech)
+        assert client.post("/health/faults/PAY-104/discard").status_code == 200
+        assert machine.gateway.pending_payouts() == []
 
     def test_replay_after_success_writes_no_second_row_and_does_not_error(
         self, pay104, login_as
@@ -902,6 +922,7 @@ class TestRecordedSaleWithLeftoverCredit:
         text = client.get("/health/faults").text
         assert "Sale already recorded" in text
         assert "Leftover credit $2.50" in text
+        assert "the machine will pay it out" in text
 
     def test_recovery_detail_forwarded_on_machine(self, leftover):
         machine, _store, _db = leftover
@@ -909,3 +930,40 @@ class TestRecordedSaleWithLeftoverCredit:
         assert detail is not None
         assert detail.sale_recorded is True
         assert detail.credit_escrow_cents == 250
+
+
+class TestPendingPayoutChip:
+    @pytest.fixture
+    def owed(self, wired, tmp_path):
+        cfg, _old, _inv, _store = wired
+        store_path = tmp_path / "session.json"
+        SessionStore(store_path).save(
+            SessionSnapshot(
+                state="idle",
+                credit_escrow_cents=0,
+                pending_payouts=[
+                    {
+                        "request_id": "p1",
+                        "kind": "payout",
+                        "cents": 150,
+                        "reason": "change",
+                    },
+                    {"request_id": "c1", "kind": "cash_sale", "cents": 250},
+                ],
+            )
+        )
+        machine = Machine(config=cfg)
+        machine.set_session_store(SessionStore(store_path))
+        old = context.machine_instance
+        routes.set_machine_instance(machine)
+        try:
+            yield machine
+        finally:
+            routes.set_machine_instance(old)
+
+    def test_pending_payout_chips_replace_the_refund_id_chip(self, owed, login_as):
+        assert owed.faults.has(FaultCode.PAY_104)
+        text = login_as(Role.tech).get("/health/faults").text
+        assert "Payout $1.50 unconfirmed" in text
+        assert "Cash sale $2.50 not yet reported to the board" in text
+        assert "unconfirmed" in text and "Refund p1" not in text

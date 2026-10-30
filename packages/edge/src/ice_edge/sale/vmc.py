@@ -6,7 +6,6 @@ from dataclasses import asdict
 from loguru import logger
 from ice_edge.payment.payment_gateway_manager import PaymentGatewayManager
 from ice_contracts.board.mqtt_messages import ButtonPress
-from ice_contracts.board.payment import PayoutReason
 from ice_contracts.board.vending_machine import DispenserOutcome, FaultCode
 from ice_common.config_model import ConfigModel, Product
 from ice_contracts.money import format_cents
@@ -18,7 +17,8 @@ from ice_edge.faults.fault_service import FaultService
 from ice_edge.ledger.escrow_ledger import EscrowLedger
 from ice_edge.sale.buttons import product_for_button
 from ice_edge.sale.outputs import StatusOutputs
-from ice_edge.payment.ports import Payments, PendingPayout, cash_cents
+from ice_edge.payment.ports import Payments, PendingPayout
+from ice_edge.sale.payout_desk import PayoutDesk
 from ice_edge.sale.sale_context import SaleContext
 from ice_edge.sale.refusal import refusal
 from ice_edge.sale.stock import draw_stock
@@ -103,6 +103,7 @@ class VMC:
         self._faults = faults
         self._gate = gate
         self._payments = payments
+        self._desk = PayoutDesk(escrow, payments, journal, self.raise_fault)
         # Public so tests can override.
         self.session_timeout_seconds = 180.0  # 3 minutes
         self.dispense_timeout_seconds = (
@@ -339,6 +340,8 @@ class VMC:
             self._sale = sale.with_(shares=None)
         else:
             recorded = await cycle.record()
+            if recorded and sale is not None:
+                self._desk.cash_sale(sale)
             # `False` is the PAY-104 path: shares stay as the sale's only record.
             # `cycle is self._cycle` = still this sale (reset/a new customer replace it).
             if recorded and cycle is self._cycle and self._sale is not None:
@@ -492,9 +495,8 @@ class VMC:
         )
 
     def complete_transaction(self) -> None:
-        # Price was already deducted from escrow; leftover credit keeps the customer.
-        dest = "interacting_with_user" if self.has_credit() else "idle"
-        self._transition("dispensing", dest, self.on_complete_transaction)
+        # Price was already deducted; leftover credit is paid out as change at once.
+        self._transition("dispensing", "idle", self.on_complete_transaction)
 
     def cancel_sale(self) -> None:
         self._transition("interacting_with_user", "idle", self.on_cancel_sale)
@@ -546,22 +548,19 @@ class VMC:
                 lambda s: self._snapshot(s) if self._outputs.session_store else None
             )
 
-    def _post_dispense_dest(self) -> str:
-        """Return the FSM destination after dispensing: continue if credit remains, else idle."""
-        return "interacting_with_user" if self.credit_escrow_cents > 0 else "idle"
-
     @logger.catch()
     def on_complete_transaction(self):
         self._journal.completing(self.credit_escrow_cents)
-        dest = self._post_dispense_dest()
+        had_change = self.credit_escrow_cents > 0
+        sale_id = self._sale.sale_id if self._sale is not None else None
         # Clear the selection: a stale selection would let a late duplicate dispenser fault
         # refund at the old product's price.
         self.selected_product = None
-        self._outputs.display(dest)
+        self._journal.transaction_complete()
+        if had_change:
+            self.request_refund(reason="change", sale_id=sale_id)
+        self._outputs.display("idle")
         self._outputs.refresh()
-        if self.credit_escrow_cents > 0:
-            self._session_timer.arm()  # leftover credit must expire into a refund
-        self._journal.transaction_complete(self.credit_escrow_cents > 0)
 
     @logger.catch()
     def on_reset(self):
@@ -620,6 +619,7 @@ class VMC:
         """Run the vend_failed transition, then decide: choose again, or pay out."""
         # Captured BEFORE vend_failed: on_vend_failed clears self._sale.
         is_test = self._sale is not None and self._sale.is_test
+        sale_id = self._sale.sale_id if self._sale is not None else None
         if self._sale is not None:
             self._sale = self._sale.with_(mechanism=None, request_id=None)
         self.vend_failed(code=code, outcome=outcome)
@@ -632,7 +632,9 @@ class VMC:
             self._journal.no_sellable_products()
             # Test money never leaves via a real refund; run_test_sale clears it.
             if not is_test:
-                self.request_refund(reason="vend_failed", detail=code.value)
+                self.request_refund(
+                    reason="vend_failed", detail=code.value, sale_id=sale_id
+                )
             self._session_timer.cancel()
             self.set_state("idle")
             self._outputs.state_changed(self.state)
@@ -729,38 +731,23 @@ class VMC:
         )
 
     @logger.catch()
-    def request_refund(self, reason: str = "admin", *, detail: str | None = None):
+    def request_refund(
+        self,
+        reason: str = "admin",
+        *,
+        detail: str | None = None,
+        sale_id: str | None = None,
+    ):
         """Pay the customer back: queue a cash payout on the MDB board.
 
-        This is the ONLY path that sends money out. Restoring a price to
-        escrow after a failed vend is not a refund and does not come here.
-        The board pays out cash only, so any non-cash credit is taken off
-        escrow, logged at error and raised as PAY-103 `non_cash_refund`.
+        The ONLY path that sends money out (see `PayoutDesk.refund`);
+        restoring a price to escrow after a failed vend is not a refund.
         """
         logger.debug(f"Requesting refund, credit cents: {self.credit_escrow_cents}")
         if self.credit_escrow_cents <= 0:
             self.send_customer_message("No funds to refund.")
             return
-        cash = cash_cents(self._escrow.credits)
-        other = self.credit_escrow_cents - cash
-        self._escrow.take_all()
-        if other > 0:
-            self._journal.non_cash_refund(other, reason)
-            self.raise_fault(FaultCode.PAY_103, outcome="non_cash_refund")
-        if cash > 0:
-            try:
-                payout_reason = PayoutReason(reason)
-            except ValueError:
-                logger.warning(f"Unknown refund reason {reason!r}; paying out as error")
-                payout_reason = PayoutReason.error
-            self._payments.pay_out(cash, payout_reason, None)
-            pending = self._payments.pending_payouts()
-            self._journal.refund_requested(
-                cash,
-                self.last_payment_method,
-                f"{reason} ({detail})" if detail else reason,
-                pending[-1].request_id if pending else "n/a",
-            )
+        self._desk.refund(reason, detail, sale_id, self.last_payment_method)
         self._outputs.refresh()
 
     def on_payment_lever(self) -> None:

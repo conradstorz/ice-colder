@@ -368,7 +368,12 @@ def test_recovery_detail_reports_leftover_credit(tmp_path):
     store = SessionStore(tmp_path / "session.json")
     store.save(
         _open_snapshot_with(
-            credit_escrow_cents=250, pending_refund_request_id="r-1", error="bad json"
+            credit_escrow_cents=250,
+            pending_refund_request_id="r-1",
+            pending_payouts=[
+                {"request_id": "p1", "kind": "payout", "cents": 100, "reason": "change"}
+            ],
+            error="bad json",
         )
     )
     detail = make_recovery(store, sale_recorded=lambda *a: True).recovery_detail()
@@ -378,6 +383,9 @@ def test_recovery_detail_reports_leftover_credit(tmp_path):
         sale_recorded=True,
         credit_escrow_cents=250,
         pending_refund_request_id="r-1",
+        pending_payouts=[
+            {"request_id": "p1", "kind": "payout", "cents": 100, "reason": "change"}
+        ],
         error="bad json",
         is_test=False,
     )

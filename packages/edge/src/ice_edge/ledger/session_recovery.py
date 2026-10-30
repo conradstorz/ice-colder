@@ -64,7 +64,8 @@ class RecoveryDetail:
     sku: str | None
     sale_recorded: bool
     credit_escrow_cents: int
-    pending_refund_request_id: str | None
+    pending_refund_request_id: str | None  # legacy snapshots only
+    pending_payouts: list[dict]
     error: str | None
     is_test: bool
 
@@ -187,6 +188,7 @@ class SessionRecovery:
             sale_recorded=self._already_recorded(snap),
             credit_escrow_cents=snap.credit_escrow_cents,
             pending_refund_request_id=snap.pending_refund_request_id,
+            pending_payouts=[dict(p) for p in snap.pending_payouts],
             error=snap.error,
             is_test=snap.is_test,
         )

@@ -2,7 +2,9 @@
 seeding, the snapshot lifecycle around a payout, policy sync and the lever."""
 
 import asyncio
+import itertools
 import json
+import types
 
 from ice_common.config_model import ConfigModel, Product
 from ice_contracts.board.common import CommandAck
@@ -115,7 +117,9 @@ class FailingCursor(PaymentCursorStore):
         super().save(state)
 
 
-def build(tmp_path, *, store=None, cursor=None, with_board=True):
+def build(
+    tmp_path, *, store=None, cursor=None, with_board=True, attach_availability=True
+):
     cfg = ConfigModel()
     cfg.physical.products = [
         Product(sku="ICE-1", name="Ice", price_cents=250, slot=0, kind="ice")
@@ -336,3 +340,130 @@ async def test_lever_event_refunds_credit_and_is_ignored_while_dispensing(tmp_pa
     )
     assert machine2.gateway.pending_payouts() == []
     assert machine2.escrow.total_cents == 500
+
+
+# --- change at once: the snapshot lifecycle of an overpaid vend ---------------------
+
+
+async def test_overpay_vend_payout_ok_removes_session_json(tmp_path):
+    from tests.dispenser_fixtures import profiles_for
+
+    path = tmp_path / "session.json"
+    machine, cfg, avail, dispatcher = build(tmp_path, store=SessionStore(path))
+    machine.set_dispenser_profiles(profiles_for(cfg.physical.products, tmp_path))
+    for name in ("vending", "ice_maker"):
+        machine.health_monitor.record_heartbeat(name, {"uptime_seconds": 1})
+    avail.set_payment_device("coin_acceptor", "ready")
+    await machine.telemetry.handle_hardware_io(
+        "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
+    )
+    await ack_policy(machine, cfg, avail)
+    vmc = machine.vmc
+    await machine.gateway.intake.handle("payment/event", event(1, "bill_stacked", 500))
+    vmc.set_state("interacting_with_user")
+    vmc.selected_product = vmc.products[0]
+    vmc.process_payment()
+    await settle(6)
+    assert vmc.state == "dispensing"
+    await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "complete"})
+    await settle(12)
+    await machine.drain_persistence()
+
+    assert vmc.state == "idle"
+    # change 250 paid, the sale's 250 reported as cash_sale, both confirmed ok
+    assert [c[1]["cents"] for c in dispatcher.commands("payout")] == [250]
+    assert [c[1]["cents"] for c in dispatcher.commands("cash_sale")] == [250]
+    assert machine.gateway.pending_payouts() == []
+    assert not path.exists()  # no stale open snapshot: no spurious PAY-104 next boot
+
+
+# --- PAY-104 recovery drives the board ------------------------------------------------
+
+
+def _pay104_snapshot(tmp_path):
+    path = tmp_path / "session.json"
+    SessionStore(path).save(
+        SessionSnapshot(
+            state="idle",
+            credit_escrow_cents=100,
+            credits=[Credit(method="cash_coin", cents=100, ts=1.0)],
+            selected_sku="ICE-1",
+            dispense_slot=0,
+            pending_sale_shares={"cash_bill": 200, "card": 50},
+        )
+    )
+    return path
+
+
+async def test_record_as_sale_sends_cash_share_then_reconciliation_pays_only_leftover(
+    tmp_path, monkeypatch
+):
+    clock = itertools.count(1000.0, 1.0)
+    fake_time = types.SimpleNamespace(time=lambda: next(clock))
+    monkeypatch.setattr("ice_edge.payment.mdb.payout.time", fake_time)
+    monkeypatch.setattr("ice_edge.payment.mdb.state.time", fake_time)
+    path = _pay104_snapshot(tmp_path)
+    machine, cfg, avail, dispatcher = build(tmp_path, store=SessionStore(path))
+    assert machine.faults.has(FaultCode.PAY_104)
+    await ack_policy(machine, cfg, avail)
+    pending = machine.pending_sale_for_recovery()
+    assert pending is not None
+
+    # The board still holds the sale's 200 of cash plus the 100 leftover credit.
+    policy_id = build_policy(cfg.payment.mdb.policy, avail.payment_enabled).policy_id
+    stale = state_doc(policy_id)
+    stale["escrow_cents"] = 300
+    await machine.gateway.state_consumer.handle("payment/state", stale)
+    assert machine.send_recovered_cash_sale(pending) is True
+    assert machine.send_recovered_cash_sale(pending) is False  # once per sale
+    await settle(10)
+    assert [
+        (c[1]["cents"], c[1].get("sale_id")) for c in dispatcher.commands("cash_sale")
+    ] == [(200, None)]
+
+    machine.vmc.clear_fault(FaultCode.PAY_104.value, by="admin")
+    board = state_doc(
+        build_policy(cfg.payment.mdb.policy, avail.payment_enabled).policy_id
+    )
+    board["escrow_cents"] = 100  # after the cash_sale: only the leftover remains
+    await machine.gateway.state_consumer.handle("payment/state", board)
+    await settle(10)
+
+    assert [(c[1]["cents"], c[1]["reason"]) for c in dispatcher.commands("payout")] == [
+        (100, "error")
+    ]
+
+
+async def test_discard_sends_nothing_for_the_sale(tmp_path):
+    path = _pay104_snapshot(tmp_path)
+    machine, cfg, avail, dispatcher = build(tmp_path, store=SessionStore(path))
+    await ack_policy(machine, cfg, avail)
+    machine.vmc.clear_fault(FaultCode.PAY_104.value, by="admin")
+    await settle(10)
+    assert dispatcher.commands("cash_sale") == []
+
+
+async def test_event_ack_without_a_loop_creates_no_coroutine(tmp_path, recwarn):
+    from ice_contracts.board.payment import PaymentEventAck
+    from tests.fakes import FakeMqtt
+
+    machine, *_ = build(tmp_path)
+    machine.set_mqtt_client(FakeMqtt())
+    machine.tasks.loop = None
+    # private: the ack publisher is wired into the intake, with no public seam
+    machine._publish_event_ack(
+        PaymentEventAck(event_id="e", boot_id=BOOT, seq=1)
+    )
+    assert not [w for w in recwarn if "never awaited" in str(w.message)]
+
+
+async def test_legacy_refund_id_appears_in_the_pay104_detail(tmp_path, caplog):
+    path = tmp_path / "session.json"
+    SessionStore(path).save(
+        SessionSnapshot(
+            state="idle", credit_escrow_cents=0, pending_refund_request_id="legacy-7"
+        )
+    )
+    machine, *_ = build(tmp_path, store=SessionStore(path))
+    assert machine.faults.has(FaultCode.PAY_104)
+    assert "refund=legacy-7" in caplog.text

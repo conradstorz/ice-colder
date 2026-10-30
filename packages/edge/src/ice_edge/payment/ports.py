@@ -39,3 +39,8 @@ def cash_cents(credits: Iterable[Credit]) -> int:
     """The part of ``credits`` that arrived as cash, i.e. the only money the
     MDB board can pay back out."""
     return sum(c.cents for c in credits if is_cash(c.method))
+
+
+def cash_share(shares: dict[str, int] | None) -> int:
+    """The cash part of a sale's per-method ``shares`` (method -> cents)."""
+    return sum(c for m, c in (shares or {}).items() if is_cash(m))

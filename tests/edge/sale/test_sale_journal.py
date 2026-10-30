@@ -179,24 +179,6 @@ def test_session_timeout_wording_per_state(harness):
     ]
 
 
-def test_refund_failed_row_and_message(harness):
-    journal, recorder, messages, sink = harness
-    journal.refund_failed("abcdef0123", "error", 300, "nack")
-    assert recorder.rows == [
-        (
-            "refund_failed",
-            300,
-            {"request_id": "abcdef0123", "reason": "error", "detail": "nack"},
-        )
-    ]
-    assert messages == [
-        "We could not return $3.00 automatically. Please contact support and quote abcdef01."
-    ]
-    assert sink.lines(sink="transaction") == [
-        ("ERROR", "REFUND FAILED: $3.00 request_id=abcdef0123 reason=error detail=nack")
-    ]
-
-
 def test_button_press_three_sinks(harness):
     journal, _, _, sink = harness
     journal.button_press("button_ice")
@@ -499,31 +481,6 @@ def test_trace_refund_confirmed(harness, trace):
             {"request_id": "req-1", "reason": "customer"},
         ),
         ("message", "Refund of $1.00 issued via card."),
-    ]
-
-
-def test_trace_refund_failed(harness, trace):
-    journal, _, _, _ = harness
-    journal.refund_failed("req-12345678", "customer", 100, "no_ack")
-    assert trace == [
-        (
-            "log",
-            "ERROR",
-            "transaction",
-            "REFUND FAILED: $1.00 request_id=req-12345678 "
-            "reason=customer detail=no_ack",
-        ),
-        (
-            "record",
-            "refund_failed",
-            100,
-            {"request_id": "req-12345678", "reason": "customer", "detail": "no_ack"},
-        ),
-        (
-            "message",
-            "We could not return $1.00 automatically. "
-            "Please contact support and quote req-1234.",
-        ),
     ]
 
 

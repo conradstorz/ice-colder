@@ -97,7 +97,7 @@ async def test_no_payment_timer_pending_after_vend_leaves_change(tmp_path):
     assert vmc.state == "dispensing"
     assert _labels(runner, "process_payment") == 0
     await vmc.on_dispenser_event("hardware/dispenser", {"slot": 0, "state": "complete"})
-    assert vmc.state == "interacting_with_user"
+    assert vmc.state == "idle"
     assert vmc.selected_product is None
     assert _labels(runner, "process_payment") == 0
 

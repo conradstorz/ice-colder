@@ -75,7 +75,7 @@ from ice_edge.ledger import payment_cursor
 from ice_edge.ledger.payment_cursor import PaymentCursorStore
 from ice_edge.faults.fault_service import FaultChange
 from ice_edge.payment.mdb import MdbGateway
-from ice_edge.payment.ports import Payments, PendingPayout, cash_cents
+from ice_edge.payment.ports import Payments, PendingPayout, cash_cents, cash_share
 from ice_edge.sale.sale_journal import SaleJournal
 from ice_edge.ledger.session_recovery import (
     SALE_MATCH_MARGIN_SECONDS,
@@ -310,11 +310,15 @@ class Machine:
             on_request_id=self.vmc.note_dispense_request,
         )
 
+        self._payments: Payments = payments or _GatewayPayments(lambda: self._gateway)
+        # Recovered sales whose cash_sale this process already queued (a retried
+        # "Record as sale" must not tell the board twice).
+        self._recovered_cash_sales: set[tuple] = set()
         self._vmc = VMC(
             config,
             tasks=self._tasks,
             escrow=self._escrow,
-            payments=payments or _GatewayPayments(lambda: self._gateway),
+            payments=self._payments,
             faults=self._faults,
             outputs=self._outputs,
             gate=self._gate,
@@ -390,8 +394,10 @@ class Machine:
 
     def _publish_event_ack(self, ack: PaymentEventAck) -> None:
         client = self._outputs.mqtt
-        if client is None:
-            logger.warning("No MQTT client; payment event ack not sent")
+        if client is None or self._tasks.loop is None:
+            # Checked before publish() is called: no coroutine is created that
+            # nothing would ever await.
+            logger.warning("No MQTT client or event loop; payment event ack not sent")
             return
         self._tasks.fire_and_forget(client.publish(PAYMENT_EVENT_ACK_TOPIC, ack))
 
@@ -737,6 +743,10 @@ class Machine:
             f"state={snap.state} escrow={format_cents(snap.credit_escrow_cents)} "
             f"sku={snap.selected_sku} payouts={len(snap.pending_payouts)}"
         )
+        if (
+            snap.pending_refund_request_id
+        ):  # legacy snapshot written before the MDB cutover
+            detail += f" refund={snap.pending_refund_request_id}"
         logger.error(f"Transaction uncertain after restart: {detail}")
         _txn_log.error(f"RESTART WITH OPEN SESSION: {detail}")
         if self._event_recorder:
@@ -757,6 +767,18 @@ class Machine:
 
     def pending_sale_for_recovery(self) -> dict | None:
         return self._recovery.pending_sale_for_recovery()
+
+    def send_recovered_cash_sale(self, pending: dict) -> bool:
+        """After "Record as sale": tell the board the pending sale's cash share
+        left its escrow (`cash_sale(cash share, None)`). Once per sale per
+        process; returns whether a command was queued."""
+        key = (pending["sku"], pending["saved_at"])
+        cents = cash_share(pending["methods"])
+        if cents <= 0 or key in self._recovered_cash_sales:
+            return False
+        self._payments.cash_sale(cents, None)
+        self._recovered_cash_sales.add(key)
+        return True
 
     def pending_sale_already_recorded(self, pending: dict) -> bool:
         return self._recovery.pending_sale_already_recorded(pending)

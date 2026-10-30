@@ -64,12 +64,13 @@ class TestFSMTransitions:
         vmc.complete_transaction()
         assert vmc.state == "idle"
 
-    def test_complete_transaction_stays_interacting_with_credit(self, vmc):
+    def test_complete_transaction_ends_in_idle_even_with_credit(self, vmc):
         vmc.deposit_funds(1000)
         vmc.start_interaction()
         vmc.dispense_product()
         vmc.complete_transaction()
-        assert vmc.state == "interacting_with_user"
+        assert vmc.state == "idle"
+        assert vmc.credit_escrow_cents == 0  # paid out as change
 
     def test_error_from_any_state(self, vmc):
         vmc.error_occurred()
@@ -154,16 +155,12 @@ class TestExplicitTriggers:
         vmc.error_occurred()
         assert vmc.state == "error"
 
-    @pytest.mark.parametrize(
-        ("credit", "expected"), [(5.0, "interacting_with_user"), (0.0, "idle")]
-    )
-    def test_complete_transaction_destination_follows_credit(
-        self, vmc, credit, expected
-    ):
+    @pytest.mark.parametrize("credit", [500, 0])
+    def test_complete_transaction_always_ends_in_idle(self, vmc, credit):
         vmc.credit_escrow_cents = credit
         vmc.set_state("dispensing")
         vmc.complete_transaction()
-        assert vmc.state == expected
+        assert vmc.state == "idle"
 
     def test_set_state_runs_no_observer(self, vmc):
         seen = MagicMock()
