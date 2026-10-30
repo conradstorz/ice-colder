@@ -105,6 +105,7 @@ Replace the entire contents of `packages/ui/src/ice_ui/templates/partials/source
       <path d="M27 37v-8" stroke-dasharray="3 4"/>
       <path d="M42 33l-6-5" stroke-dasharray="3 4"/>
     </g>
+    <!-- half-drop rule: second use = first + (w/2, h/2); offset + motif extent must stay <= cell -->
     <pattern id="step" patternUnits="userSpaceOnUse" width="128" height="112">
       <use href="#motif" x="16" y="10"/>
       <use href="#motif" x="80" y="66"/>
@@ -127,9 +128,10 @@ Replace the entire contents of `packages/ui/src/ice_ui/templates/partials/source
       <rect x="8" y="38" width="24" height="7" rx="2"/>
       <path d="M11 50v4M29 50v4"/>
     </g>
+    <!-- half-drop rule: second use = first + (w/2, h/2); offset + motif extent must stay <= cell -->
     <pattern id="step" patternUnits="userSpaceOnUse" width="112" height="128">
-      <use href="#motif" x="16" y="12"/>
-      <use href="#motif" x="72" y="76"/>
+      <use href="#motif" x="16" y="8"/>
+      <use href="#motif" x="72" y="72"/>
     </pattern>
   </defs>
   <rect width="100%" height="100%" fill="url(#step)" stroke="none"/>
