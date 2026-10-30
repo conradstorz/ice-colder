@@ -43,6 +43,7 @@ class PayoutProtocol:
         faults: Any,
         on_paid: Callable[[PendingPayout, int], None],
         on_changed: Callable[[], None],
+        on_no_policy: Callable[[], None] | None = None,
     ) -> None:
         self._dispatcher = dispatcher
         self._policy_acked = policy_acked
@@ -51,6 +52,7 @@ class PayoutProtocol:
         self._faults = faults
         self._on_paid = on_paid
         self._on_changed = on_changed
+        self._on_no_policy = on_no_policy
         self._queue: deque[PendingPayout] = deque()
         self._inflight: PendingPayout | None = None
         self._draining = False
@@ -67,6 +69,8 @@ class PayoutProtocol:
         return head + list(self._queue)
 
     def pay_out(self, cents: int, reason: PayoutReason, sale_id: str | None) -> None:
+        # Validate before queueing: a poison item must never enter the queue.
+        PayoutParams(cents=cents, reason=PayoutReason(reason), sale_id=sale_id)
         self._enqueue(
             PendingPayout(
                 uuid.uuid4().hex, "payout", cents, PayoutReason(reason).value, sale_id
@@ -74,6 +78,7 @@ class PayoutProtocol:
         )
 
     def cash_sale(self, cents: int, sale_id: str | None) -> None:
+        CashSaleParams(cents=cents, sale_id=sale_id)
         self._enqueue(
             PendingPayout(uuid.uuid4().hex, "cash_sale", cents, None, sale_id)
         )
@@ -117,6 +122,8 @@ class PayoutProtocol:
         self._start()
 
     def _arm_retry(self, delay: float) -> None:
+        if self._retry is not None:
+            return
         self._retry = self._tasks.schedule(delay, self._retry_due, label="payout_retry")
 
     def _retry_due(self) -> None:
@@ -125,7 +132,13 @@ class PayoutProtocol:
 
     def _finish(self) -> None:
         self._inflight = None
-        self._on_changed()
+        self._notify_changed()
+
+    def _notify_changed(self) -> None:
+        try:
+            self._on_changed()
+        except Exception as exc:  # noqa: BLE001 - the queue state is already right
+            logger.error(f"payout on_changed failed: {exc!r}")
 
     def _requeue_head(self, *, remint: bool = False) -> None:
         item = self._inflight
@@ -139,13 +152,25 @@ class PayoutProtocol:
             self._queue.appendleft(item)
             self._inflight = None
             if remint:
-                self._on_changed()  # the snapshot must carry the new id
+                self._notify_changed()  # the snapshot must carry the new id
 
     def _pay103(self, outcome: str) -> None:
-        self._faults.raise_fault(FaultCode.PAY_103, outcome=outcome)
+        self._raise(FaultCode.PAY_103, outcome)
 
     def _pay104(self, outcome: str) -> None:
-        self._faults.raise_fault(FaultCode.PAY_104, outcome=outcome)
+        self._raise(FaultCode.PAY_104, outcome)
+
+    def _raise(self, code: FaultCode, outcome: str) -> None:
+        try:
+            self._faults.raise_fault(code, outcome=outcome)
+        except Exception as exc:  # noqa: BLE001 - never re-send over a side effect
+            logger.error(f"could not raise {code.value} ({outcome}): {exc!r}")
+
+    def _paid(self, item: PendingPayout, paid: int) -> None:
+        try:
+            self._on_paid(item, paid)
+        except Exception as exc:  # noqa: BLE001 - money moved; never re-send
+            logger.error(f"payout on_paid failed for {item.request_id}: {exc!r}")
 
     async def _drain(self) -> None:
         try:
@@ -155,8 +180,15 @@ class PayoutProtocol:
                 and not self._policy_hold
                 and self._can_send()
             ):
-                self._inflight = self._queue.popleft()
-                await self._send(self._inflight)
+                item = self._queue.popleft()
+                self._inflight = item
+                try:
+                    await self._send(item)
+                except Exception as exc:  # noqa: BLE001 - last resort, keep the item
+                    logger.error(f"MDB send of {item.request_id} failed: {exc!r}")
+                    if self._inflight is item:
+                        self._requeue_head()
+                        self._arm_retry(TIMEOUT_RETRY_SECONDS)
         finally:
             self._draining = False
 
@@ -190,10 +222,25 @@ class PayoutProtocol:
             self._requeue_head()
             self._arm_retry(TIMEOUT_RETRY_SECONDS)
             return
-        if item.kind == "payout":
-            self._settle_payout(item, ack)
-        else:
-            self._settle_cash_sale(item, ack)
+        except Exception as exc:  # noqa: BLE001
+            # No ack was seen, so the board may not have acted: same id, retry.
+            logger.error(f"MDB {command} {item.request_id} send failed: {exc!r}")
+            self._requeue_head()
+            self._arm_retry(TIMEOUT_RETRY_SECONDS)
+            return
+        try:
+            if item.kind == "payout":
+                self._settle_payout(item, ack)
+            else:
+                self._settle_cash_sale(item, ack)
+        except Exception as exc:  # noqa: BLE001 - after an ack: never re-send
+            logger.error(f"MDB {command} {item.request_id} settle failed: {exc!r}")
+            if self._inflight is item:
+                if item.kind == "payout":
+                    self._pay103("unconfirmed")
+                else:
+                    self._pay104("escrow_mismatch:cash_sale_unconfirmed")
+                self._finish()
 
     def _reject(self, item: PendingPayout, ack: Any) -> bool:
         """Handle a rejecting ack that left the command unexecuted."""
@@ -202,9 +249,14 @@ class PayoutProtocol:
             self._requeue_head(remint=True)
             self._arm_retry(BUSY_RETRY_SECONDS)
             return True
-        if item.kind == "payout" and detail in _POLICY_REJECTS:
+        if detail in _POLICY_REJECTS:
             self._requeue_head(remint=True)  # waits for the next policy_acked
             self._policy_hold = True
+            if detail == "no_policy" and self._on_no_policy is not None:
+                try:
+                    self._on_no_policy()
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(f"no_policy hook failed: {exc!r}")
             return True
         return False
 
@@ -230,9 +282,9 @@ class PayoutProtocol:
             return
         paid = result.paid_cents
         if result.status == PayoutStatus.ok:
-            self._on_paid(item, paid)
+            self._paid(item, paid)
         elif result.status == PayoutStatus.partial:
-            self._on_paid(item, paid)
+            self._paid(item, paid)
             self._pay103(f"partial:{paid}/{result.requested_cents}")
         else:
             self._pay103(f"failed:{result.detail}")

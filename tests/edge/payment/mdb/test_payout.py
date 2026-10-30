@@ -296,3 +296,80 @@ async def test_accepted_then_completion_timeout_never_resent(env):
     await settle(4)
     assert len(env.disp.sent) == 1
     assert env.faults.raised == [(FaultCode.PAY_103, "unconfirmed")]
+
+
+async def test_unexpected_send_error_requeues_same_id_and_queue_not_wedged(env):
+    env.disp.replies = [RuntimeError("publish failed")]
+    env.proto.pay_out(100, PayoutReason.cancel, None)
+    env.proto.cash_sale(10, None)
+    await settle(4)
+    assert env.paid == [] and not env.proto.idle
+    assert [p.kind for p in env.proto.pending()] == ["payout", "cash_sale"]
+    assert [c.label for c in env.runner.scheduled] == ["payout_retry"]
+    env.runner.fire("payout_retry")
+    await settle(8)
+    assert env.disp.sent[0][2] == env.disp.sent[1][2]
+    assert len(env.paid) == 1
+    assert env.proto.idle and env.faults.raised == []
+
+
+@pytest.mark.parametrize("kind", ["payout", "cash_sale"])
+async def test_non_positive_cents_rejected_at_enqueue(env, kind):
+    with pytest.raises(ValueError):
+        if kind == "payout":
+            env.proto.pay_out(0, PayoutReason.cancel, None)
+        else:
+            env.proto.cash_sale(-5, None)
+    assert env.proto.idle and env.changed == 0
+
+
+async def test_on_paid_exception_still_finishes_no_resend(env):
+    def boom(item, cents):
+        raise RuntimeError("journal down")
+
+    env.proto = PayoutProtocol(
+        dispatcher=env.disp,
+        policy_acked=lambda: True,
+        board_alive=lambda: True,
+        tasks=env.runner,
+        faults=env.faults,
+        on_paid=boom,
+        on_changed=env._changed,
+    )
+    env.proto.pay_out(100, PayoutReason.cancel, None)
+    await settle(4)
+    assert env.proto.idle
+    assert len(env.disp.sent) == 1
+
+
+async def test_fault_raise_exception_after_failed_result_still_finishes(env):
+    def boom(code, *, sku=None, outcome=None):
+        raise RuntimeError("faults down")
+
+    env.faults.raise_fault = boom
+    env.disp.replies = [lambda rid: completion(rid, "failed", detail="x")]
+    env.proto.pay_out(100, PayoutReason.cancel, None)
+    env.proto.cash_sale(5, None)
+    await settle(8)
+    assert env.proto.idle
+    assert len(env.disp.sent) == 2
+
+
+async def test_cash_sale_no_policy_requeues_fresh_id_and_holds(env):
+    env.disp.replies = [lambda rid: plain(rid, "rejected", "no_policy")]
+    env.proto.cash_sale(50, None)
+    await settle(4)
+    (item,) = env.proto.pending()
+    assert item.request_id != env.disp.sent[0][2]
+    assert env.faults.raised == []
+    env.proto.kick()
+    await settle(4)
+    assert len(env.disp.sent) == 2 and env.proto.idle
+
+
+async def test_cash_sale_other_rejection_is_pay104(env):
+    env.disp.replies = [lambda rid: plain(rid, "rejected", "weird")]
+    env.proto.cash_sale(50, None)
+    await settle(4)
+    assert env.faults.raised[0][0] == FaultCode.PAY_104
+    assert env.proto.idle

@@ -80,6 +80,7 @@ class MdbGateway:
             faults=faults,
             on_paid=on_paid,
             on_changed=lambda: (on_changed(), self._reconciler.maybe_run()),
+            on_no_policy=self._policy.on_board_reports_no_policy,
         )
 
         def cursor_saved(ok: bool) -> None:

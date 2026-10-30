@@ -50,18 +50,27 @@ class FakeFaults:
 
 class FakeDispatcher:
     def __init__(self):
+        self.reject_next_payout = False
         self.sent = []
         self.completed = []
         self.payout_hold = None
 
     async def send(self, subsystem, command, params=None):
-        self.sent.append((command, params))
+        self.sent.append((command, params, None))
         return CommandAck(request_id="r" * 8, command=command, status="ok")
 
     async def send_and_await_completion(
         self, subsystem, command, params=None, request_id=None
     ):
-        self.sent.append((command, params))
+        self.sent.append((command, params, request_id))
+        if command == "payout" and self.reject_next_payout:
+            self.reject_next_payout = False
+            return CommandAck(
+                request_id=request_id,
+                command=command,
+                status="rejected",
+                detail="no_policy",
+            )
         return CommandAck(
             request_id=request_id,
             command=command,
@@ -144,12 +153,12 @@ async def test_pay_out_and_cash_sale_delegate_after_policy_acked(env):
     env.gw.pay_out(100, PayoutReason.change, "s1")
     env.gw.cash_sale(200, "s1")
     await settle()
-    assert [c for c, _ in env.disp.sent if c in ("payout", "cash_sale")] == []
+    assert [c for c, *_ in env.disp.sent if c in ("payout", "cash_sale")] == []
     assert [p.kind for p in env.gw.pending_payouts()] == ["payout", "cash_sale"]
     await env.ack_policy()
     assert env.gw.policy_acked
     await settle(10)
-    cmds = [c for c, _ in env.disp.sent if c in ("payout", "cash_sale")]
+    cmds = [c for c, *_ in env.disp.sent if c in ("payout", "cash_sale")]
     assert cmds == ["payout", "cash_sale"]
     assert env.gw.pending_payouts() == []
 
@@ -194,5 +203,21 @@ async def test_reconciler_pays_out_board_excess_via_state(env):
     env.gw.reconciler.arm("test")
     await env.gw.state_consumer.handle("s", doc(env.policy_id(), escrow=75))
     await settle(10)
-    payouts = [p for c, p in env.disp.sent if c == "payout"]
+    payouts = [p for c, p, _ in env.disp.sent if c == "payout"]
     assert payouts and payouts[0]["cents"] == 75 and payouts[0]["reason"] == "error"
+
+
+async def test_no_policy_rejection_resyncs_policy_then_pays_with_fresh_id(env):
+    await env.ack_policy()
+    assert env.gw.policy_acked
+    env.disp.reject_next_payout = True
+    env.gw.pay_out(100, PayoutReason.cancel, None)
+    await settle(6)
+    # the rejection dropped the ack and re-sent the policy
+    assert len([c for c, *_ in env.disp.sent if c == "set_policy"]) == 2
+    await env.gw.state_consumer.handle("s", doc(env.policy_id()))
+    await settle(8)
+    payouts = [r for c, _, r in env.disp.sent if c == "payout"]
+    assert len(payouts) == 2 and payouts[0] != payouts[1]
+    assert env.paid and env.paid[0][1] == 100
+    assert env.gw.pending_payouts() == []

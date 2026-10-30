@@ -143,6 +143,15 @@ class PolicySync:
             return  # an identical send is already on its way
         self._spawn("state_mismatch")
 
+    def on_board_reports_no_policy(self) -> None:
+        """The board rejected a command with ``no_policy``: whatever we
+        believed, its policy is not in force. Drop the ack and re-send."""
+        self._ack_ok_id = None
+        self._acked_boot = None
+        self._cancel_verify()
+        self._set_acked(False)
+        self._spawn("board_no_policy")
+
     def on_payment_enabled_changed(self, enabled: bool) -> None:
         if self._current_id() != self._ack_ok_id:
             self._set_acked(False)
