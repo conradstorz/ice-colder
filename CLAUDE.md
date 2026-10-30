@@ -506,7 +506,7 @@ Money is integer cents everywhere inside the system (spec `docs/superpowers/spec
 
 - **Catalog.** `Product.price_cents` replaces `price`; a legacy dollar `price` in `config.json` is upgraded on load (and saved as `price_cents`). The product form parses dollars with `Decimal` and answers 400 on more than two decimals, a negative, or a value over `MAX_PRICE_CENTS`.
 - **Escrow.** `EscrowLedger.total_cents`, `is_empty` (exact; there is no `TOLERANCE`), `Credit.cents`, `VMC.credit_escrow_cents`, `SessionSnapshot.credit_escrow_cents`. `session.json` and sales-journal rows carry `"units": "cents"`; a row without the marker is read as legacy dollars and converted.
-- **Persistence.** events.db migration 2 (see `event_recorder.py` below) converts the stored money; reports and CSV use `_cents` keys.
+- **Persistence.** events.db migration 2 (see `event_recorder.py` above) converts the stored money; reports and CSV use `_cents` keys.
 - **Contracts.** Vending contract 2.4.0 adds `VMCStatus.credit_escrow_cents` (the float `credit_escrow` stays, deprecated, until 3.0.0); cloud contract 1.0.0 is described under Cloud.
 - **Legacy board payment models stay dollars until spec B.** Conversion points: `VMC.on_payment_credit`, `RefundProtocol._send`/`handle_ack`, `EventRecorder._on_payment`, and the simulator's `mdb_gateway`. `/screen` (`partials/screen_body.html`) still renders dollars; its route passes `cents / 100`.
 

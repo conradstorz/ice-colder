@@ -85,7 +85,7 @@ class VMC:
 
         # The in-flight sale; None when no sale is in progress.
         self._sale: SaleContext | None = None
-        # credit_escrow must always equal the sum of escrow_credits.
+        # credit_escrow_cents must always equal the sum of escrow_credits.
         self._escrow = escrow
         # One DispenseCycle per entry into 'dispensing'; None when none is in flight.
         self._dispense_factory = dispense_factory
@@ -628,7 +628,7 @@ class VMC:
             self._journal.shares_missing(price)
             shares = {"unknown": price}
         else:
-            # Price from the shares, not product.price: the live catalog object's
+            # Price from the shares, not product.price_cents: the live catalog object's
             # price can be edited mid-dispense.
             price = sum(shares.values())
         now = time.time()

@@ -39,7 +39,10 @@ Set `ICE_COLDER_IMAGE_TAG` back to the previous `sha-<commit>` and run the same
 schema version (`PRAGMA user_version`). An older build that meets a newer schema raises
 `DATA-103` and cannot record to it (sales go to the journal fallback and are inserted when the newer build returns; events and cash collections made meanwhile are not recorded). So rolling back
 across a release that added a migration requires restoring the pre-update backup
-(`docs/backups.md`) as part of the rollback. Note the working tag before
+(`docs/backups.md`) as part of the rollback. Rolling an edge back past the money-in-cents release must use the full restore
+including `config.json` (`docs/backups.md`, "Edge: full restore"): after the first save
+`config.json` holds only `price_cents`, and an older image silently loads every product
+at its default $1.00. Note the working tag before
 every update so there is something to return to.
 
 ## Network

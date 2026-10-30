@@ -3,7 +3,7 @@
 Extracted from ``ice_edge.sale.vmc.VMC`` as the second step in breaking up the
 VMC god object, following the same pattern as ``ice_edge/faults/fault_registry.py``'s
 ``FaultRegistry`` (see ``CLAUDE.md``'s "FSM Core" section). ``EscrowLedger``
-owns ``total`` (the authoritative escrow amount) and ``credits`` (the FIFO
+owns ``total_cents`` (the authoritative escrow amount) and ``credits`` (the FIFO
 list of ``Credit``) plus the pure bookkeeping to deposit, consume-FIFO,
 restore, and empty them -- including the divergence-guard warning. It knows
 nothing about MQTT, the FSM, refund commands, or sale recording; those side

@@ -435,7 +435,7 @@ class DispenseCycle:
         product = self.sale.product
         recorder.record("dispense", value=float(product.slot))
 
-        # Price comes from the consumed shares, not `product.price`: the
+        # Price comes from the consumed shares, not `product.price_cents`: the
         # product is the *live* catalog object, so an operator can edit
         # the price while this sale is mid-dispense. The shares are what
         # was actually deducted from escrow and must be what gets

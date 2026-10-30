@@ -23,6 +23,8 @@ Every money field is whole cents (`ice_contracts.money.Cents`, a non-negative st
 
 **Deploy order: cloud first.** A 0.4.0 cloud answers a 1.0.0 report with 422 and the uplink retries each interval until the cloud is upgraded. Uploaded UI bundles built before 1.0.0 read dollar names; the cloud portal detects such a bundle once, when it first resolves it (a template under `templates/` still reading `status.credit_escrow`, `.money_in` or `pending_sale.price`; the manifest's `ice_ui_version` was never bumped, so it cannot tell), and only then supplies `credit_escrow`, `money_in` and `pending_sale.price` dollar display aliases and converts `pending_sale.methods` to dollars in place. The installed UI and 1.0.0 bundles always read cents. The aliases go away once no 0.x edge reports.
 
+**Rollback and release timing.** Once the cloud has rewritten stored snapshots and `faults_json` in 1.0.0 shape, it cannot be rolled back to 0.4.0 without restoring its backup (`docs/backups.md`, "Cloud: `cloud.db`"). Merging to main publishes `latest` for both the edge and cloud images, and Watchtower may pull them in any order: an edge that upgrades first gets transient 422s, which it logs and retries each interval, with no sale impact.
+
 ## 0.4.0: machine common name (additive)
 
 `MachineReport` gains `common_name: str | None = null`, the operator-entered machine name from `physical.common_name` (clipped to 200 characters by the edge), shown on the cloud's You page and bar badge. `contract` accepts `0.2.0`, `0.3.0` and `0.4.0`. Upgrade the cloud before the edges: a 0.3.0 cloud rejects a 0.4.0 report with 422.

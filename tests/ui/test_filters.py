@@ -63,7 +63,7 @@ def test_money_filter():
     assert money(125) == "$1.25"
 
 
-@pytest.mark.parametrize("bad", [None, 1.25, "1"])
+@pytest.mark.parametrize("bad", [None, 1.25, "1", True])
 def test_money_filter_rejects_non_int(bad):
     from ice_ui.filters import money
 
