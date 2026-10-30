@@ -155,14 +155,64 @@ async def test_resend_on_different_policy_id(env):
     assert len(env.disp.policies()) == 1
 
 
-async def test_acked_but_never_echoed_resends_after_one_grace_state(env):
+async def test_echo_before_verify_timer_no_resend(env):
     await env.sync.sync("t")
-    env.sync.on_state(state(None))  # grace: the board may still be applying it
+    assert [c.label for c in env.runner.scheduled] == ["policy_verify"]
+    env.sync.on_state(state(env.cur_id()))
+    assert env.runner.scheduled == []
+    assert len(env.disp.policies()) == 1
+
+
+async def test_verify_timer_resends_once(env):
+    await env.sync.sync("t")
+    env.sync.on_state(state(None))  # a non-echo does not resend by itself
     await settle()
     assert len(env.disp.policies()) == 1
-    env.sync.on_state(state(None))
+    env.runner.fire("policy_verify")
     await settle()
     assert len(env.disp.policies()) == 2
+    assert env.sync.policy_acked is False
+
+
+async def test_payment_flip_drops_acked_immediately(env):
+    await env.sync.sync("t")
+    env.sync.on_state(state(env.cur_id()))
+    assert env.sync.policy_acked is True
+    old = env.cur_id()
+    env.enabled = False
+    env.sync.on_payment_enabled_changed(False)
+    assert env.sync.policy_acked is False
+    await settle()
+    env.sync.on_state(state(old))
+    assert env.sync.policy_acked is False
+    env.sync.on_state(state(env.cur_id()))
+    assert env.sync.policy_acked is True
+
+
+async def test_no_state_triggered_send_while_retry_pending(env):
+    env.disp.replies = [ack("rejected", None)]
+    await env.sync.sync("t")
+    assert [c.label for c in env.runner.scheduled] == ["policy_retry"]
+    env.sync.on_state(state(None))
+    await settle()
+    assert len(env.disp.policies()) == 1
+
+
+async def test_syncs_serialised_and_stale_ack_ignored(env):
+    env.disp.gate = asyncio.Event()
+    first = asyncio.ensure_future(env.sync.sync("a"))
+    await settle()
+    old = env.cur_id()
+    env.enabled = False
+    await env.sync.sync("b")  # folded into one re-send after the first finishes
+    assert len(env.disp.policies()) == 1
+    env.disp.gate.set()
+    await first
+    assert len(env.disp.policies()) == 2
+    env.sync.on_state(state(old))
+    assert env.sync.policy_acked is False
+    env.sync.on_state(state(env.cur_id()))
+    assert env.sync.policy_acked is True
 
 
 async def test_new_boot_resends_and_drops_acked(env):
@@ -171,21 +221,22 @@ async def test_new_boot_resends_and_drops_acked(env):
     events = []
     env.sync.subscribe_policy_acked(events.append)
     env.sync.on_state(state(None, boot="boot-0002"))
+    assert events == [False]
     await settle()
-    assert env.sync.policy_acked is False or events == [False, True]
     assert len(env.disp.policies()) == 2
-    assert events[0] is False
+    env.sync.on_state(state(env.cur_id(), boot="boot-0002"))
+    assert events == [False, True]
 
 
 async def test_older_boot_echo_does_not_count(env):
     env.sync.on_state(state(None))
-    await settle()  # sends, acks ok at BOOT
+    await settle()  # sends, ok-acked at BOOT
+    env.sync.on_state(state(env.cur_id()))
+    assert env.sync.policy_acked is True
     env.sync.on_state(state(env.cur_id(), boot="boot-OLD1"))
-    await settle()
     assert env.sync.policy_acked is False
-    env.sync.on_state(state(env.cur_id(), boot=BOOT))
-    # BOOT is no longer the acked boot after the reset above
-    assert len(env.disp.policies()) >= 2
+    await settle()
+    assert len(env.disp.policies()) == 2
 
 
 async def test_timeout_retries_only_while_alive(env):
@@ -195,7 +246,7 @@ async def test_timeout_retries_only_while_alive(env):
     env.runner.fire("policy_retry")
     await settle()
     assert len(env.disp.policies()) == 2
-    assert env.runner.scheduled == []
+    assert [c.label for c in env.runner.scheduled] == ["policy_verify"]
 
     env.alive = False
     env.disp.replies = [ack("rejected", None)]

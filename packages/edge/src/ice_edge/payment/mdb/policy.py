@@ -26,6 +26,7 @@ from ice_edge.hal.command_dispatcher import CommandTimeout
 from ice_edge.supervisor.task_runner import TaskRunner
 
 RETRY_SECONDS = 5.0
+VERIFY_SECONDS = 5.0
 
 
 class _Dispatcher(Protocol):
@@ -69,10 +70,12 @@ class PolicySync:
         self._ack_ok_id: str | None = None
         self._acked_boot: str | None = None
         self._last_boot: str | None = None
-        self._stale_seen = False
-        self._inflight = 0
+        self._last_state: PaymentState | None = None
+        self._inflight = False
+        self._resend_after: str | None = None
         self._connected = False
         self._retry: Any = None
+        self._verify: Any = None
         self._keepalive: Any = None
         self._ping_inflight = False
         self._listeners: Subscribers[bool] = Subscribers()
@@ -90,56 +93,48 @@ class PolicySync:
         self._arm_keepalive()
 
     async def sync(self, reason: str) -> None:
-        params = build_policy(self._config(), self._payment_enabled())
-        if params.policy_id != self._ack_ok_id:
-            self._set_acked(False)
-        self._cancel_retry()
-        logger.info(f"MDB policy sync ({reason}): {params.policy_id}")
-        self._inflight += 1
-        ok = False
+        """Send the current policy. One send is in flight at a time; a request
+        made meanwhile is folded into a single re-send once it finishes."""
+        if self._inflight:
+            self._resend_after = reason
+            return
+        self._inflight = True
         try:
-            ack = await self._send("set_policy", params.model_dump(mode="json"))
-            ok = getattr(ack, "status", None) == "ok"
-        except CommandTimeout:
-            logger.warning("MDB set_policy timed out")
+            while True:
+                self._resend_after = None
+                await self._send_once(reason)
+                if self._resend_after is None:
+                    break
+                reason = self._resend_after
         finally:
-            self._inflight -= 1
-        if ok:
-            self._ack_ok_id = params.policy_id
-            self._acked_boot = self._last_boot
-            self._stale_seen = False
-        elif self._board_alive():
-            self._retry = self._tasks.schedule(
-                RETRY_SECONDS, self._retry_due, label="policy_retry"
-            )
+            self._inflight = False
 
     def on_state(self, state: PaymentState) -> None:
+        self._last_state = state
         self._last_boot = state.boot_id
-        cur = build_policy(self._config(), self._payment_enabled()).policy_id
+        cur = self._current_id()
         if self._acked_boot is not None and state.boot_id != self._acked_boot:
             self._ack_ok_id = None
             self._acked_boot = None
+            self._cancel_verify()
             self._set_acked(False)
             self._spawn("boot_changed")
             return
         if self._ack_ok_id == cur:
             if state.policy_id == cur:
                 self._acked_boot = state.boot_id
-                self._stale_seen = False
+                self._cancel_verify()
                 self._set_acked(True)
-                return
-            # Acked but not yet echoed: allow one state of grace, then resend.
-            if self._acked_boot is None:
+            elif self._acked_boot is None:
                 self._acked_boot = state.boot_id
-            if not self._stale_seen:
-                self._stale_seen = True
-                return
-            self._ack_ok_id = None
-            self._set_acked(False)
-        if self._inflight == 0:
+            return  # acked, awaiting the echo: the verify timer covers a miss
+        self._set_acked(False)
+        if self._retry is None:  # keep the retry back-off
             self._spawn("state_mismatch")
 
     def on_payment_enabled_changed(self, enabled: bool) -> None:
+        if self._current_id() != self._ack_ok_id:
+            self._set_acked(False)
         self._spawn("payment_enabled")
 
     def on_connected(self) -> None:
@@ -152,6 +147,39 @@ class PolicySync:
         self._cancel_keepalive()
 
     # -- internals -----------------------------------------------------
+    def _current_id(self) -> str:
+        return build_policy(self._config(), self._payment_enabled()).policy_id
+
+    async def _send_once(self, reason: str) -> None:
+        params = build_policy(self._config(), self._payment_enabled())
+        if params.policy_id != self._ack_ok_id:
+            self._set_acked(False)
+        self._cancel_retry()
+        self._cancel_verify()
+        logger.info(f"MDB policy sync ({reason}): {params.policy_id}")
+        ok = False
+        try:
+            ack = await self._send("set_policy", params.model_dump(mode="json"))
+            ok = getattr(ack, "status", None) == "ok"
+        except CommandTimeout:
+            logger.warning("MDB set_policy timed out")
+        if ok:
+            self._ack_ok_id = params.policy_id
+            self._acked_boot = self._last_boot
+            last = self._last_state
+            if last is not None and last.policy_id == params.policy_id:
+                self._acked_boot = last.boot_id
+                self._set_acked(True)
+            else:
+                self._verify = self._tasks.schedule(
+                    VERIFY_SECONDS, self._verify_due, label="policy_verify"
+                )
+        elif self._resend_after is None and self._board_alive():
+            self._cancel_retry()
+            self._retry = self._tasks.schedule(
+                RETRY_SECONDS, self._retry_due, label="policy_retry"
+            )
+
     def _spawn(self, reason: str) -> None:
         self._tasks.fire_and_forget(self.sync(reason))
 
@@ -160,10 +188,22 @@ class PolicySync:
         if self._board_alive():
             self._spawn("retry")
 
+    def _verify_due(self) -> None:
+        self._verify = None
+        if not self._acked:
+            self._ack_ok_id = None
+            self._acked_boot = None
+            self._spawn("verify")
+
     def _cancel_retry(self) -> None:
         if self._retry is not None:
             self._retry.cancel()
             self._retry = None
+
+    def _cancel_verify(self) -> None:
+        if self._verify is not None:
+            self._verify.cancel()
+            self._verify = None
 
     def _set_acked(self, value: bool) -> None:
         if value != self._acked:
