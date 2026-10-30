@@ -314,6 +314,8 @@ class Machine:
         # Recovered sales whose cash_sale this process already queued (a retried
         # "Record as sale" must not tell the board twice).
         self._recovered_cash_sales: set[tuple] = set()
+        # The uncertain boot snapshot, held read-only until PAY-104 resolves.
+        self._boot_snapshot: SessionSnapshot | None = None
         self._vmc = VMC(
             config,
             tasks=self._tasks,
@@ -402,10 +404,32 @@ class Machine:
         self._tasks.fire_and_forget(client.publish(PAYMENT_EVENT_ACK_TOPIC, ack))
 
     def _on_fault_change(self, change: FaultChange) -> None:
+        if change.action == "cleared" and change.code is FaultCode.PAY_104:
+            # Whatever path resolved PAY-104 (Record as sale, Discard, Clear):
+            # re-queue the boot snapshot's unconfirmed payouts / cash_sales
+            # (same request_ids; the board dedupes) BEFORE reconciliation is
+            # released, so the queue is non-idle when it evaluates and the
+            # sale's price is never paid out as an excess.
+            self._requeue_boot_payouts()
         if change.action == "cleared" and change.code is FaultCode.PAY_101:
             self._gateway.on_pay101_cleared()
         else:
             self._gateway.reconciler.maybe_run()
+
+    def _requeue_boot_payouts(self) -> None:
+        snap, self._boot_snapshot = self._boot_snapshot, None
+        if snap is None or not snap.pending_payouts:
+            return
+        items = []
+        for d in snap.pending_payouts:
+            try:
+                items.append(PendingPayout(**d))
+            except TypeError:
+                logger.error(f"dropping malformed pending payout {d!r}")
+                self._faults.raise_fault(
+                    FaultCode.PAY_103, outcome=f"invalid_pending:{d.get('request_id')}"
+                )
+        self._gateway.seed_payouts(items)
 
     def _on_fsm_state(self, _state: str) -> None:
         self._gateway.reconciler.maybe_run()
@@ -692,6 +716,7 @@ class Machine:
                 "real money, so no PAY-104 is raised."
             )
         elif decision.kind == "uncertain":
+            self._boot_snapshot = decision.snapshot
             self._flag_uncertain_session(decision.snapshot)
         logger.debug("Machine attached session store.")
 
@@ -775,6 +800,16 @@ class Machine:
         key = (pending["sku"], pending["saved_at"])
         cents = cash_share(pending["methods"])
         if cents <= 0 or key in self._recovered_cash_sales:
+            return False
+        held = self._boot_snapshot
+        if held is not None and any(
+            d.get("kind") == "cash_sale" and d.get("cents") == cents
+            for d in held.pending_payouts
+        ):
+            # The crashed run already queued this sale's cash_sale; it is
+            # re-queued (same request_id) when PAY-104 clears. Sending another
+            # would report the cash twice.
+            self._recovered_cash_sales.add(key)
             return False
         self._payments.cash_sale(cents, None)
         self._recovered_cash_sales.add(key)

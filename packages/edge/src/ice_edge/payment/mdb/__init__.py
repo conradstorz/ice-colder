@@ -153,6 +153,10 @@ class MdbGateway:
     def pending_payouts(self) -> list[PendingPayout]:
         return self._payouts.pending()
 
+    def seed_payouts(self, pending: list[PendingPayout]) -> None:
+        """Re-queue payouts / cash_sales a previous run left unconfirmed."""
+        self._payouts.seed(pending)
+
     # -- read-only ------------------------------------------------------
     @property
     def state(self) -> PaymentState | None:

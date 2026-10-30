@@ -451,9 +451,7 @@ async def test_event_ack_without_a_loop_creates_no_coroutine(tmp_path, recwarn):
     machine.set_mqtt_client(FakeMqtt())
     machine.tasks.loop = None
     # private: the ack publisher is wired into the intake, with no public seam
-    machine._publish_event_ack(
-        PaymentEventAck(event_id="e", boot_id=BOOT, seq=1)
-    )
+    machine._publish_event_ack(PaymentEventAck(event_id="e", boot_id=BOOT, seq=1))
     assert not [w for w in recwarn if "never awaited" in str(w.message)]
 
 
@@ -467,3 +465,122 @@ async def test_legacy_refund_id_appears_in_the_pay104_detail(tmp_path, caplog):
     machine, *_ = build(tmp_path, store=SessionStore(path))
     assert machine.faults.has(FaultCode.PAY_104)
     assert "refund=legacy-7" in caplog.text
+
+
+# --- PAY-104 resolution re-queues what the crashed run left unconfirmed ---------------
+
+
+def _owed_snapshot(tmp_path, items, **extra):
+    path = tmp_path / "session.json"
+    SessionStore(path).save(
+        SessionSnapshot(
+            state="idle", credit_escrow_cents=0, pending_payouts=items, **extra
+        )
+    )
+    return path
+
+
+async def _resolved(tmp_path, items, resolve, board_escrow, **extra):
+    path = _owed_snapshot(tmp_path, items, **extra)
+    machine, cfg, avail, dispatcher = build(tmp_path, store=SessionStore(path))
+    assert machine.faults.has(FaultCode.PAY_104)
+    await ack_policy(machine, cfg, avail)
+    stale = state_doc(
+        build_policy(cfg.payment.mdb.policy, avail.payment_enabled).policy_id
+    )
+    stale["escrow_cents"] = board_escrow
+    await machine.gateway.state_consumer.handle("payment/state", stale)
+    # Nothing is re-sent while PAY-104 is active.
+    await settle(8)
+    assert (
+        dispatcher.commands("cash_sale") == [] and dispatcher.commands("payout") == []
+    )
+    resolve(machine)
+    await settle(12)
+    return machine, cfg, avail, dispatcher, stale
+
+
+async def test_discard_requeues_a_pending_cash_sale_and_pays_no_error_payout(tmp_path):
+    items = [
+        {
+            "request_id": "c" * 32,
+            "kind": "cash_sale",
+            "cents": 250,
+            "reason": None,
+            "sale_id": "s1",
+        }
+    ]
+    machine, cfg, avail, dispatcher, stale = await _resolved(
+        tmp_path,
+        items,
+        lambda m: m.vmc.clear_fault(FaultCode.PAY_104.value, by="admin"),
+        board_escrow=250,
+    )
+    sent = dispatcher.commands("cash_sale")
+    assert [(c[1]["cents"], c[2]) for c in sent] == [(250, "c" * 32)]
+    assert dispatcher.commands("payout") == []
+    fresh = dict(stale, escrow_cents=0)
+    await machine.gateway.state_consumer.handle("payment/state", fresh)
+    await settle(8)
+    assert dispatcher.commands("payout") == []
+
+
+async def test_clear_requeues_a_pending_change_payout_and_pays_nothing_extra(tmp_path):
+    items = [
+        {
+            "request_id": "p" * 32,
+            "kind": "payout",
+            "cents": 100,
+            "reason": "change",
+            "sale_id": "s1",
+        }
+    ]
+    machine, cfg, avail, dispatcher, stale = await _resolved(
+        tmp_path,
+        items,
+        lambda m: m.vmc.clear_fault(FaultCode.PAY_104.value, by="admin"),
+        board_escrow=100,
+    )
+    sent = dispatcher.commands("payout")
+    assert [(c[1]["cents"], c[1]["reason"], c[2]) for c in sent] == [
+        (100, "change", "p" * 32)
+    ]
+    await machine.gateway.state_consumer.handle(
+        "payment/state", dict(stale, escrow_cents=0)
+    )
+    await settle(8)
+    assert len(dispatcher.commands("payout")) == 1
+
+
+async def test_record_as_sale_does_not_duplicate_a_cash_sale_already_in_the_snapshot(
+    tmp_path,
+):
+    items = [
+        {
+            "request_id": "c" * 32,
+            "kind": "cash_sale",
+            "cents": 200,
+            "reason": None,
+            "sale_id": "s1",
+        }
+    ]
+
+    def record(machine):
+        pending = machine.pending_sale_for_recovery()
+        assert pending is not None
+        # The snapshot's own cash_sale supersedes the recovered send.
+        assert machine.send_recovered_cash_sale(pending) is False
+        machine.vmc.clear_fault(FaultCode.PAY_104.value, by="admin")
+
+    machine, cfg, avail, dispatcher, _ = await _resolved(
+        tmp_path,
+        items,
+        record,
+        board_escrow=200,
+        selected_sku="ICE-1",
+        dispense_slot=0,
+        pending_sale_shares={"cash_bill": 200, "card": 50},
+    )
+    assert [(c[1]["cents"], c[2]) for c in dispatcher.commands("cash_sale")] == [
+        (200, "c" * 32)
+    ]
