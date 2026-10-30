@@ -1,5 +1,6 @@
 """Board-side replay log for `payment/event` envelopes."""
 
+import copy
 import secrets
 import string
 from datetime import datetime
@@ -32,7 +33,7 @@ class EventLog:
         if len(self._entries) > MAX_UNACKED:
             self._entries.pop(0)
             self.overflow_dropped += 1
-        return envelope
+        return copy.deepcopy(envelope)
 
     def ack(self, boot_id: str, seq: int) -> None:
         """Cumulative within `boot_id`; other boots' entries are untouched."""
@@ -43,7 +44,7 @@ class EventLog:
         ]
 
     def unacked(self) -> list[dict]:
-        return list(self._entries)
+        return [copy.deepcopy(e) for e in self._entries]
 
     def reboot(self, new_boot_id: str) -> None:
         self.boot_id = new_boot_id

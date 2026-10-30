@@ -58,3 +58,18 @@ def test_ordered_replay_across_reboot():
     assert [e["boot_id"] for e in log.unacked()] == ["bootbbbb0002"] * 2
     for e in log.unacked():
         PaymentEventEnvelope.model_validate(e)
+
+
+def test_callers_cannot_corrupt_the_replay_log():
+    log = EventLog(BOOT)
+    returned = emit(log)[0]
+    returned["event"]["cents"] = 999
+    returned["seq"] = 42
+    listed = log.unacked()
+    assert listed[0]["event"]["cents"] == 25
+    assert listed[0]["seq"] == 1
+    listed[0]["event"]["cents"] = 1
+    listed.append({"junk": True})
+    again = log.unacked()
+    assert len(again) == 1
+    assert again[0]["event"]["cents"] == 25
