@@ -55,3 +55,17 @@ def test_friendly_time_passthrough_and_empty():
     assert friendly_time("garbage") == "garbage"
     assert friendly_time(None) == ""
     assert friendly_time("") == ""
+
+
+def test_money_filter():
+    from ice_ui.filters import money
+
+    assert money(125) == "$1.25"
+
+
+@pytest.mark.parametrize("bad", [None, 1.25, "1"])
+def test_money_filter_rejects_non_int(bad):
+    from ice_ui.filters import money
+
+    with pytest.raises(TypeError):
+        money(bad)

@@ -4,6 +4,8 @@ import math
 from datetime import datetime
 from urllib.parse import quote
 
+from ice_contracts.money import format_cents
+
 
 def sku_url_segment(sku: str) -> str:
     """Percent-encode `sku` for safe use in a URL path, matching the
@@ -94,3 +96,11 @@ def friendly_time(value) -> str:
     if not isinstance(value, datetime):
         return str(value)
     return f"{value.day} {value:%b %Y, %H:%M}"
+
+
+def money(cents) -> str:
+    """`125` -> `"$1.25"`. Anything but an int (None, float, str) raises
+    `TypeError`, so a missed `_cents` rename fails loudly, not blank."""
+    if isinstance(cents, bool) or not isinstance(cents, int):
+        raise TypeError(f"money filter needs int cents, got {type(cents).__name__}")
+    return format_cents(cents)

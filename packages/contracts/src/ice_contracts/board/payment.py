@@ -26,6 +26,7 @@ from typing import Annotated, Literal, Optional, Union
 from pydantic import BaseModel, Field, StrictInt, model_validator
 
 from ice_contracts.board.common import STANDARD_COMMANDS, _utc_now
+from ice_contracts.money import Cents, PositiveCents
 
 CONTRACT_VERSION = "1.1.0"
 
@@ -33,9 +34,6 @@ CONTRACT_VERSION = "1.1.0"
 PAYMENT_EVENT_TOPIC = "payment/event"
 PAYMENT_EVENT_ACK_TOPIC = "payment/event/ack"
 PAYMENT_STATE_TOPIC = "payment/state"
-
-Cents = Annotated[StrictInt, Field(ge=0)]
-PositiveCents = Annotated[StrictInt, Field(gt=0)]
 
 
 class Device(str, Enum):
