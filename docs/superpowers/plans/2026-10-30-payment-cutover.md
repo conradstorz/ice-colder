@@ -60,7 +60,7 @@
   - It resolves a pending `send_and_await_completion` future.
   - If no future exists yet, it stores the result in the bounded early-completion buffer, exactly as `_resolve_completion` does today.
   - `_on_dispenser_report` is refactored to call `complete`, with no behaviour change.
-  - Payment completions arrive as a `CommandAck` that the caller builds from a `payout_result` (status `completed`, `detail` = the payout status, plus `result` carrying `paid_cents`/`requested_cents`). Read the existing `CommandAck` fields first. If `CommandAck` cannot carry the payout body, `complete` takes `result: object`, and `send_and_await_completion` returns whatever was passed; state which in your report.
+  - **Fixed shape (decided):** `complete` takes a `CommandAck`. For a payment completion, the caller (`EventIntake`, via the gateway) builds `CommandAck(request_id=<payout request_id>, command="payout", status="ok", detail=<PayoutResult.status value>, result=<PayoutResult.model_dump(mode="json")>, phase="completed")`. `send_and_await_completion` returns that ack, and `PayoutProtocol` reads `PayoutResult.model_validate(ack.result)`.
 - Consumes nothing new.
 
 - [ ] Step 1: Write the failing tests:
@@ -190,7 +190,7 @@
 **Files:**
 - Modify: `tests/firmware/mdb/conftest.py`. Add a sim target that runs an in-process `MdbSimulator` on a thread under a fresh machine id, mirroring the vending `target` fixture in `tests/firmware/conftest.py`. With `ICE_COLDER_BOARD_TESTS=1` and no `ICE_COLDER_BOARD_MACHINE_ID`, the suite runs against the simulator instead of skipping.
 - Modify: `tests/skip_policy.py` to remove the `mdb_board_needs_hardware` reason.
-- Cashless-only conformance tests (`tests/firmware/mdb/test_cashless.py`): a test that needs a cashless session the sim cannot open is skipped against the sim. It uses a marker mirroring the vending `requires_sim` mechanism, `requires_cashless_reader`, and its skip reason is registered in `skip_policy.py`. This is a plan-level deviation from §9, which says no MDB conformance test needs hardware; record it in the report. A test that only checks `vend_request` is rejected `no_session` must run against the sim.
+- `tests/firmware/mdb/test_cashless.py` holds only `test_vend_request_without_a_session_is_rejected`, which must pass against the sim, since the sim rejects `vend_request` with `no_session`. Add **no** new skip reason. If some test truly needs an open cashless session, report it as BLOCKED rather than adding a marker.
 - Modify: `CLAUDE.md`'s paragraph on `tests/firmware/mdb/`, and `docs/contracts/payment/CONTRACT.md`'s "Testable set" paragraph if it mentions the hardware-only skip.
 - Fix any simulator gap the suite exposes, in `ice_sims.mdb`, with a sim unit test per fix.
 - Check that `.github/workflows/ci.yml` already runs `tests/firmware` with the flag. If the mdb suite needs anything more, such as a broker, mirror the vending job.
@@ -290,7 +290,7 @@
   - `subscribe_policy_acked(cb) -> unsubscribe`, which fires on the transitions false→true and true→false. `PayoutProtocol` uses it.
   - `note_command_sent()`, which any `cmd/mdb` send calls (or wrap the dispatcher, which is simpler). It resets the keepalive clock.
 - `policy_acked` requires an `ok` ack **and** the state echo. A non-`ok` reply or a `CommandTimeout` re-sends after 5 s while `board_alive()`, on timer label `policy_retry`.
-- Keepalive: send `ping` on `mdb` when no `cmd/mdb` has gone out for `EDGE_IDLE_PING_SECONDS`, on timer label `mdb_keepalive`, only while MQTT is connected (`on_connected` / `on_disconnected`).
+- Keepalive: send `ping` on `mdb` when no `cmd/mdb` has gone out for `EDGE_IDLE_PING_SECONDS`, on timer label `mdb_keepalive`, only while MQTT is connected (`on_connected` / `on_disconnected`). At most one ping may be in flight: a tick that finds a ping still awaiting its ack (the dispatcher waits for it and retries once) is skipped, so a silent board never piles up overlapping pings. Test this.
 
 - [ ] Step 1: Write the tests:
   - The policy id is deterministic and changes when any param changes.
@@ -420,6 +420,26 @@
 ### Task 9: Cutover: wire `MdbGateway` into `Machine` and the VMC
 
 This is the behaviour change. The legacy inbound topics stop being consumed. The legacy models still exist until Task 10.
+
+**Pre-authorized split.** Two green commits are expected, and they may be done by two dispatches:
+- **9a:**
+  - `Machine` builds and wires the gateway.
+  - `SUBSCRIPTIONS` moves to `payment/event` and `payment/state`.
+  - `request_refund` goes through `payments.pay_out`, with the cash-only rule.
+  - `RefundProtocol` is deleted.
+  - Deposits carry `event_id`, and the intake is seeded from the snapshot.
+  - `PolicySync` replaces `publish_payment_enable`.
+  - The event recorder's `payment/credit` handler is removed.
+  - The e2e test publishes envelopes.
+- **9b:**
+  - Change paid at once, and every sale ends in `idle`.
+  - `cash_sale` after dispense.
+  - `sale_id`.
+  - The lever.
+  - `pending_payouts` in the snapshot.
+  - The PAY-104 actions drive the board.
+
+**Snapshot lifecycle (money-adjacent; test it):** once `is_open` is true while `pending_payouts` is non-empty, `session.json` survives into idle while change is owed. `PayoutProtocol.on_changed` must go through the same save-or-clear path as `StatusOutputs.persist`, not save-only. Otherwise every sale with change leaves an open snapshot behind, and the next boot raises a spurious PAY-104. Required test: overpay, vend, `payout_result ok`, then assert `session.json` is gone.
 
 **Files:**
 - Modify: `packages/edge/src/ice_edge/app/machine.py`:
