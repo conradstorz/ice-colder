@@ -124,14 +124,12 @@ class EventIntake:
             self._gaps += 1
             self._raise_pay105(f"seq gap on boot {boot} at seq {seq}")
 
-        credited = False
-        try:
-            credited = self._process(header, data)
-        finally:
-            # Advance before any await, even if a callback raised after the
-            # deposit: a replay must never deposit the same event twice.
-            st.advance(boot, seq, header.event_id)
-            self._last_processed_ts = time.time()
+        # A deposit failure propagates here: no advance, no ack, so the
+        # board's replay is retried as a fresh event. Every other callback is
+        # guarded inside _process.
+        credited = self._process(header, data)
+        st.advance(boot, seq, header.event_id)
+        self._last_processed_ts = time.time()
         if credited:
             try:
                 await self._persist_session()
@@ -145,6 +143,14 @@ class EventIntake:
         else:
             self._on_cursor_saved(True)
         self._publish_ack(PaymentEventAck(boot_id=boot, seq=seq))
+
+    @staticmethod
+    def _safe(fn: Callable, *args) -> None:
+        """Run a non-money callback; log and continue if it fails."""
+        try:
+            fn(*args)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"Payment event callback failed: {exc!r}")
 
     def _process(self, header: PaymentEventHeader, data: dict) -> bool:
         """Dispatch one new event. Returns True if a deposit was made."""
@@ -165,27 +171,35 @@ class EventIntake:
         if kind in CREDIT_METHODS:
             method = CREDIT_METHODS[kind]
             self._deposit(body.cents, method, header.event_id)
-            self._record_event(
+            self._safe(
+                self._record_event,
                 "payment",
                 body.cents,
                 {"method": method, "event_id": header.event_id},
             )
             return True
         if kind == "bill_escrowed":
-            self._message(f"Bill held: {format_cents(body.cents)}")
+            self._safe(self._message, f"Bill held: {format_cents(body.cents)}")
         elif kind == "bill_returned":
-            self._journal(
-                "bill_returned", {"cents": body.cents, "reason": body.reason.value}
+            self._safe(
+                self._journal,
+                "bill_returned",
+                {"cents": body.cents, "reason": body.reason.value},
             )
         elif kind == "escrow_return_pressed":
-            self._on_lever()
+            self._safe(self._on_lever)
         elif kind == "payout_result":
-            self._on_payout_result(body.request_id, body)
+            self._safe(self._on_payout_result, body.request_id, body)
         elif kind == "device_status":
-            self._on_device_status(body)
+            self._safe(self._on_device_status, body)
         elif kind == "cash_collected":
-            self._journal("cash_collected", {"device": body.device.value})
-            self._record_event("cash_collected", 0, {"device": body.device.value})
+            self._safe(self._journal, "cash_collected", {"device": body.device.value})
+            self._safe(
+                self._record_event,
+                "cash_collected",
+                0,
+                {"device": body.device.value},
+            )
         elif kind in CASHLESS_KINDS:
             logger.info(f"Ignoring cashless payment event {kind} (no reader)")
         return False

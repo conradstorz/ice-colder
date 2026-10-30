@@ -41,9 +41,17 @@ class FakeFaults:
 
 
 class Rig:
-    def __init__(self, path, fail_save=False, persist_error=None, event_error=None):
+    def __init__(
+        self,
+        path,
+        fail_save=False,
+        persist_error=None,
+        event_error=None,
+        deposit_error=None,
+    ):
         self.calls = []
         self.saved = []
+        self.deposit_error = deposit_error
         self.faults = FakeFaults()
         self.store = PaymentCursorStore(path)
         orig = self.store.save
@@ -77,10 +85,7 @@ class Rig:
         self.intake = EventIntake(
             cursor=self.store,
             publish_ack=lambda a: (self.calls.append("ack"), self.acks.append(a)),
-            deposit=lambda c, m, e: (
-                self.calls.append("deposit"),
-                self.deposits.append((c, m, e)),
-            ),
+            deposit=self._deposit,
             persist_session=persist,
             on_lever=lambda: setattr(self, "lever", self.lever + 1),
             on_payout_result=lambda r, b: self.payouts.append((r, b)),
@@ -91,6 +96,12 @@ class Rig:
             faults=self.faults,
             on_cursor_saved=self.saved.append,
         )
+
+    def _deposit(self, c, m, e):
+        if self.deposit_error:
+            raise self.deposit_error
+        self.calls.append("deposit")
+        self.deposits.append((c, m, e))
 
     async def send(self, seq, event, **kw):
         await self.intake.handle("payment/event", env(seq, event, **kw))
@@ -204,11 +215,24 @@ async def test_persist_session_failure_still_advances_saves_and_acks(tmp_path):
     assert len(rig.deposits) == 1
 
 
-async def test_record_event_failure_does_not_allow_double_deposit(tmp_path):
+async def test_record_event_failure_still_saves_and_acks_same_call(tmp_path):
     rig = Rig(tmp_path / "c.json", event_error=RuntimeError("queue full"))
+    await rig.send(1, COIN)
+    assert len(rig.deposits) == 1
+    assert rig.saved == [True]
+    assert [a.seq for a in rig.acks] == [1]
+    await rig.send(1, COIN)  # replay
+    assert len(rig.deposits) == 1
+
+
+async def test_deposit_failure_no_advance_no_ack_then_replay_credits_once(tmp_path):
+    rig = Rig(tmp_path / "c.json", deposit_error=RuntimeError("boom"))
     with pytest.raises(RuntimeError):
         await rig.send(1, COIN)
-    await rig.send(1, COIN)  # board replays
+    assert not rig.acks and rig.saved == []
+    assert rig.intake.caught_up_to(BOOT) == 0
+    rig.deposit_error = None
+    await rig.send(1, COIN)
     assert len(rig.deposits) == 1
     assert [a.seq for a in rig.acks] == [1]
 
