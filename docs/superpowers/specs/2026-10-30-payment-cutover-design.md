@@ -185,7 +185,10 @@ replays are new).
   `payment/state.boot_id` differs from the last acked policy's board boot; when `state.policy_id` is
   null or differs from the current policy's id; and when `availability.payment_enabled` flips (this
   replaces `outputs.publish_payment_enable` and `Availability.republish` targets `PolicySync`).
-  `policy_acked` is true only after an `ok` ack in the board's current `boot_id`. A send that fails
+  `policy_acked` is true only once an `ok` ack has been received **and** a `payment/state` from the
+  same board `boot_id` echoes the policy's `policy_id`. The firmware may ack `ok` with
+  `detail: "queued"` while the command is still waiting for the bus (firmware spec §11, "Ack model"),
+  so the ack alone does not prove the policy is in force. A send that fails
   (`CommandTimeout`, non-`ok`) is retried every 5 s while the board is alive.
 - Keepalive: a supervised task sends `ping` on `cmd/mdb` whenever no `cmd/mdb` command was sent for
   `EDGE_IDLE_PING_SECONDS` (10). It runs only while MQTT is connected.
@@ -205,8 +208,13 @@ replays are new).
   resolves a pending `send_and_await_completion` (or stores an early completion, as the existing
   `_early_completions` buffer does). `EventIntake` calls it for `payout_result`. The existing
   `hardware/dispenser` path is refactored onto the same method.
-- Outcomes: `ok` → journal `refund_confirmed` (cents), persist. `partial` → journal with
-  `paid_cents`, PAY-103 with outcome `partial:<paid>/<requested>`. `failed` → PAY-103
+- **The ack never settles a payout.** Any non-rejecting ack (`accepted`, or `ok` with
+  `detail: "queued"`, which the firmware may send while the command waits for the bus) means "wait
+  for `payout_result`". Only `payout_result` (through `complete`) or the 60 s completion timeout ends
+  it. A `busy` ack (the board is still holding another payout's result) requeues it after 2 s.
+- Outcomes: `ok` → journal `refund_confirmed` (cents), persist. `partial` (including the
+  firmware's `detail: "scaling"`, an amount the changer cannot represent) → journal with `paid_cents`,
+  PAY-103 with outcome `partial:<paid>/<requested>`. `failed` → PAY-103
   `failed:<detail>`. A `rejected` ack (`no_policy`, `expired`) → back to the head of the queue and
   retried after the next `policy_acked`. `CompletionTimeout` (60 s) → PAY-103 `unconfirmed`; no
   automatic retry with a new `request_id` (it could pay twice). The `sales`/`refund` event rows keep
@@ -216,19 +224,24 @@ replays are new).
 
 `cash_sale(cents, sale_id)` goes through the same ordered queue as payouts (so a change payout and the
 sale's `cash_sale` reach the board in the order the sale produced them) and is held under the same
-conditions. An `ok` with `detail: "clamped"` is logged as a warning (the board held less cash than the
-edge thought) and raises PAY-105 with outcome `cash_sale_clamped`. Never retried with a new id.
+conditions. An `ok` with `detail: "clamped"` (the board held less cash than the edge thought) is
+logged as a warning and raises PAY-104 with outcome `escrow_mismatch:cash_sale_clamped`, the same
+fault reconciliation uses when the board holds less than the edge; PAY-105 is reserved for event-stream
+gaps. Never retried with a new id. An `ok` with `detail: "queued"` counts as delivered.
 
 ### 5.5 `StateConsumer` and reconciliation
 
 - Validates retained `payment/state` (`PaymentState`), keeps the latest as `MdbGateway.state`, and
   notifies `PolicySync` (boot or policy change).
-- **Availability:** the legacy `payment_devices_ready` row is replaced by one `fulfillment` row,
-  `cash_accepting`, failing when neither the coin nor the bill device is `present` with a status
-  outside `offline | error | tilt | jammed`, or when `inhibited_reason` is `device_fault` or
-  `edge_silent`. `inhibited_reason: policy` (the edge's own `accept: false`) and `no_policy` never fail
-  it, since the edge caused them. `payment_alive` (heartbeat) is unchanged. Per-device status is shown
-  on the health page (§6), not as availability rows; `full`/`empty` are alert-only.
+- **Availability** (the contract's fixed edge mapping): the legacy `payment_devices_ready` row is
+  replaced by one row per device the policy declares present, `payment_coin_ready` and
+  `payment_bill_ready` (`payment_cashless_ready` arrives with the cashless spec), each failing on
+  `offline | error | tilt | jammed`; `full`/`empty` are alert-only. Gate: a single device row is
+  `alert` (a jammed coin changer leaves bills usable, and the reverse), and the derived row
+  `cash_accepting` is `fulfillment`, failing when no present cash device is usable or when
+  `inhibited_reason` is `device_fault` or `edge_silent`. `inhibited_reason: policy` (the edge's own
+  `accept: false`) and `no_policy` never fail it, since the edge caused them. `payment_alive`
+  (heartbeat) is unchanged.
 - **Faults:** `device_status` and each state document raise PAY-106 (coin) / PAY-107 (bill) when that
   device is `offline | error | tilt | jammed`, and clear them `by="auto"` when it is `ready`,
   `disabled` or `busy`.
@@ -236,16 +249,34 @@ edge thought) and raises PAY-105 with outcome `cash_sale_clamped`. Never retried
   (through `outputs.message`); the `/screen` page is pinned and does not change.
 - **Reconciliation** (contract flows 7 and 8). Armed by four triggers: edge start, a new board
   `boot_id`, MQTT reconnect, and PAY-101 clearing. An armed reconciliation runs once, at the first
-  moment all of these hold: the FSM is `idle`; `EventIntake` has processed through `state.seq_last`
-  for `state.boot_id`; the payout/`cash_sale` queue is empty and nothing is in flight; the state
-  document is newer than the last processed event. It then compares `state.escrow_cents` with the
-  edge's cash escrow (cash-method credits in `EscrowLedger`):
+  moment all of these hold: the FSM is `idle`; **PAY-104 is not active** (an uncertain snapshot is an
+  open sale in the sense of contract flow 7: the board's escrow may hold the price of a product that
+  was dispensed but never `cash_sale`d, and paying it out would refund a delivered product);
+  `EventIntake` has processed through `state.seq_last` for `state.boot_id`; the payout/`cash_sale`
+  queue is empty and nothing is in flight; the state document is newer than the last processed event.
+  It then compares `state.escrow_cents` with the edge's cash escrow (cash-method credits in
+  `EscrowLedger`):
   - equal → nothing;
   - board higher → `pay_out(diff, "error", None)` (coins accepted while the edge was silent or before
     it restarted are returned);
   - board lower → PAY-104 with outcome `escrow_mismatch:<edge>/<board>`; no money moves.
   Not running while a sale or payout is in progress is what keeps a `cash_sale` still on its way from
-  being mistaken for an excess.
+  being mistaken for an excess. A reconciliation blocked by PAY-104 stays armed and runs after the
+  operator resolves PAY-104 (below).
+
+  A `partial` change payout leaves the shortfall in the board's escrow. The next reconciliation pays
+  it out again (`error`), which is intended: the customer is owed it, and the tubes may have been
+  refilled. If the tubes are still short the retry is `partial` or `failed` again and PAY-103 stays
+  raised; each trigger causes at most one attempt, so there is no loop.
+
+- **PAY-104 recovery drives the board.** Once payouts are automatic, the operator no longer refunds
+  "at the payment device". The two PAY-104 actions (`web/routes/health/recovery.py`) gain board
+  effects, and the "leftover credit" chip text changes to say the machine will pay it out:
+  - **Record as sale** records the row as today, then sends `cash_sale(cash share of the pending
+    sale, None)` so the board's escrow drops by the price the customer spent.
+  - **Discard** sends nothing for the sale itself.
+  - Either action clears PAY-104, which releases the armed reconciliation; any cash still in the
+    board's escrow beyond what the edge holds (the leftover credit) is then paid out as `error`.
 
 ## 6. Web
 
@@ -291,8 +322,9 @@ edge thought) and raises PAY-105 with outcome `cash_sale_clamped`. Never retried
 | Deposit while `payment_enabled` is false (a race with `set_policy accept:false`) | unchanged from today: paid out with `maintenance` during a lease, otherwise credited with a journal line |
 | `payout` `partial` / `failed` / completion timeout | PAY-103 with the amounts; no new-id retry |
 | `payout` rejected `no_policy` / `expired` | requeued after the next acked policy |
-| `cash_sale` clamped | warning, PAY-105 `cash_sale_clamped` |
-| Board escrow > edge cash escrow at reconciliation | payout `error` of the difference |
+| `cash_sale` clamped | warning, PAY-104 `escrow_mismatch:cash_sale_clamped` |
+| Board escrow > edge cash escrow at reconciliation (PAY-104 not active) | payout `error` of the difference |
+| Reconciliation armed while PAY-104 is active | waits; runs after Record as sale / Discard |
 | Board escrow < edge cash escrow at reconciliation | PAY-104 `escrow_mismatch` |
 | Coin/bill device fault | PAY-106 / PAY-107; `cash_accepting` fails only when no cash device is usable |
 
@@ -313,10 +345,14 @@ edge thought) and raises PAY-105 with outcome `cash_sale_clamped`. Never retried
   replay re-ack without credit; replay after a simulated restart (cursor file and snapshot credits
   both seed dedup); gap, unseen boot, unknown kind → PAY-105; ack published only after the cursor
   write; cursor write failure → DATA-104 and ack; corrupt cursor file; `PolicySync` send triggers and
-  `policy_acked` per board boot; keepalive cadence; payout queue ordering, hold while offline,
-  `ok`/`partial`/`failed`/timeout/`no_policy`; `cash_sale` after dispense with the cash share only;
-  reconciliation's three branches and its idle/caught-up/empty-queue guards; PAY-106/107 raise and
-  clear; `cash_accepting` row.
+  `policy_acked` only after the state echo (an `ok "queued"` ack alone leaves it false); keepalive
+  cadence; payout queue ordering, hold while offline, an `ok "queued"` ack still waiting for
+  `payout_result`, `busy` requeue, `ok`/`partial`/`scaling`/`failed`/timeout/`no_policy`; `cash_sale`
+  after dispense with the cash share only, clamped → PAY-104; reconciliation's three branches and its
+  idle/PAY-104/caught-up/empty-queue guards, including the crash-after-dispense case (uncertain
+  snapshot, board escrow holding the price: no payout until the operator acts); Record as sale sends
+  `cash_sale`, after which the armed reconciliation pays out only the leftover; PAY-106/107 raise and
+  clear; per-device rows and the derived `cash_accepting` row.
 - **VMC tests:** change paid out immediately after a vend with overpayment (replaces the M1 leftover
   timer test); `complete_transaction` always reaches `idle`; lever during `dispensing` ignored;
   `vend_failed` payout reason; a test sale never calls `payments`.
@@ -338,7 +374,18 @@ edge thought) and raises PAY-105 with outcome `cash_sale_clamped`. Never retried
 - The fleet containers and the hpz440 sim stack pick it up with the next image; the cloud is
   unaffected (no cloud contract change).
 
-## 11. Out of scope
+## 11. Deviations from the approved brainstorm
+
+- **Cursor file, not the session snapshot** (§5.1.1): `session.json` is deleted when a sale closes,
+  so it cannot hold a cursor that must survive idle. Each snapshot `Credit` carries its `event_id`
+  instead, so the snapshot still covers the crash window between the two writes.
+- **Availability rows** (§5.5): the brainstorm showed one row per device. The spec keeps the
+  per-device rows the contract fixes, as `alert` rows, and adds the derived `cash_accepting`
+  `fulfillment` row, so one jammed device does not stop sales the other device can still take.
+- **Reconciliation waits for PAY-104** and the PAY-104 actions now drive the board (§5.5), found in
+  review: without the guard a crash after dispense would refund a delivered product.
+
+## 12. Out of scope
 
 Cashless (next spec, including PAY-108 and the cashless availability row), virtual-gateway credit and
 its refunds, bill recycler, revalue, DEX audit, editing the payment policy from the UI.

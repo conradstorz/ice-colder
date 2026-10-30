@@ -149,6 +149,13 @@ fraction. Report dicts rename money keys with `_cents` (`revenue_cents`, `refund
 - The edge always sends 1.0.0. Deploy order is the usual one: cloud first. A 0.4.0 cloud answers a
   1.0.0 report with 422, which the uplink logs and retries, never blocking a sale.
 - `ice_cloud.fleet_view`'s revenue headline sums cents and formats with `format_cents`.
+- **Uploaded UI bundles.** `ice_ui.templating`'s one factory registers filters for both the normal
+  and the `SandboxedEnvironment`, so registering `money` there covers bundles too. A bundle from a
+  pre-1.0.0 edge (the machine's own installed digest, or one in `ICE_CLOUD_TRUSTED_UI_DIGESTS`)
+  still references `credit_escrow`, `price` and `money_in`. The portal's render context therefore
+  adds those legacy keys as dollar floats (`cents / 100`) beside the `_cents` keys whenever it
+  renders from a report. The aliases are display-only and are removed once no 0.x edge reports
+  remain; a test renders a 0.4.0 bundle's `status_fragment.html` against a 1.0.0 report.
 - `docs/contracts/edge-cloud/CONTRACT.md` gets the 1.0.0 entry and the upgrade order; schemas
   regenerate.
 
