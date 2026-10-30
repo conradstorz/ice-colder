@@ -132,8 +132,8 @@ def test_cloud_pages_are_marked_remote(cloud, signer):
         html = cloud.get(path).text
         assert ">REMOTE</span>" in _bar(html), path
         assert "LOCAL" not in html, path
-        assert "bg-indigo-900" in _bar(html) and "bg-indigo-50" in html, path
-        assert "M118 112c-4-26" in html, path
+        assert "bg-indigo-900" in _bar(html) and "bg-sky-50" in html, path
+        assert '<pattern id="step"' in html, path
 
 
 def test_cloud_login_page_is_marked_remote(cloud):

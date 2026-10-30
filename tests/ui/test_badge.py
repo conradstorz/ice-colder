@@ -136,13 +136,20 @@ def test_badge_renders_in_either_environment(sandboxed):
     assert "hello notice" in html
 
 
+LOCAL_MOTIF = 'd="M11 50v4M29 50v4"'  # vending-machine feet
+REMOTE_MOTIF = 'd="M14 26c-5-1-7-8-2-11c-1-6 6-10 11-7c3-5 12-4 13 2c6 0 8 8 3 11Z"'
+
+
 def test_source_tag_defaults_to_local():
     html = _render()
     assert 'id="source-tag"' in html and ">LOCAL</span>" in html
     assert "REMOTE" not in html
-    assert "bg-slate-800" in html and "bg-slate-50" in html
-    assert "bg-indigo-900" not in html
-    assert "M62 112c-4-8" in html  # machine watermark
+    assert "bg-slate-800" in html and "bg-orange-50" in html
+    assert "bg-indigo-900" not in html and "bg-sky-50" not in html
+    assert '<pattern id="step"' in html
+    assert LOCAL_MOTIF in html  # machine watermark motif
+    assert REMOTE_MOTIF not in html
+    assert "text-orange-900/10" in html
     # rendered even with no badge, and before the badge when there is one
     assert "context-badge" not in html
     html = _render(badge=_badge())
@@ -152,7 +159,9 @@ def test_source_tag_defaults_to_local():
 def test_source_tag_remote():
     html = _render(page_source="remote")
     assert ">REMOTE</span>" in html and "LOCAL" not in html
-    assert "bg-indigo-900" in html and "bg-indigo-50" in html
-    assert "bg-slate-800" not in html
-    assert "M118 112c-4-26" in html  # cloud watermark
-    assert "M62 112c-4-8" not in html
+    assert "bg-indigo-900" in html and "bg-sky-50" in html
+    assert "bg-slate-800" not in html and "bg-orange-50" not in html
+    assert '<pattern id="step"' in html
+    assert REMOTE_MOTIF in html  # cloud watermark motif
+    assert LOCAL_MOTIF not in html
+    assert "text-sky-900/10" in html

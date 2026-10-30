@@ -11,7 +11,7 @@
      docs/superpowers/specs/2026-09-30-touch-feedback-design.md §4.3-4.4. #}
   <script src="/static/feedback.js" defer></script>
 </head>
-{% set is_remote = (page_source | default("local")) == "remote" %}<body class="{{ 'bg-indigo-50' if is_remote else 'bg-slate-50' }} text-gray-900 font-sans text-base min-h-screen"
+{% set is_remote = (page_source | default("local")) == "remote" %}<body class="{{ 'bg-sky-50' if is_remote else 'bg-orange-50' }} text-gray-900 font-sans text-base min-h-screen"
       hx-boost="true" hx-target="main" hx-swap="outerHTML show:top">
   {% include "partials/source_watermark.html" %}
 
