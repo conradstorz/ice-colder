@@ -608,3 +608,12 @@ def test_fault_set(sim):
         "board_reboot",
         "drop_ack_window",
     }
+
+
+async def test_stale_payout_without_policy_is_expired_not_no_policy(sim, client, clock):
+    # Firmware order (Master::do_payout): expiry is checked before the policy.
+    stale = clock.now() - timedelta(seconds=31)
+    ack = await send(
+        sim, client, "payout", {"cents": 100, "reason": "change"}, timestamp=stale
+    )
+    assert (ack.status, ack.detail) == ("rejected", "expired")

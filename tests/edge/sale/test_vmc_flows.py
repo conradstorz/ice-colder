@@ -2418,7 +2418,7 @@ class TestMaintenanceLease:
 
         assert avail.payment_enabled is False
         enable_cmds = accepts(machine)
-        assert enable_cmds, "expected cmd/payment/enable to have been published"
+        assert enable_cmds, "expected a set_policy command to have been published"
         assert enable_cmds[-1] is False
 
         released = machine.lease.end_maintenance("sess-1")
@@ -2550,7 +2550,7 @@ class TestMaintenanceLease:
         assert "SVC-102" not in [f["code"] for f in vmc.active_faults()]
         assert avail.payment_enabled is True
         enable_cmds = accepts(machine)
-        assert enable_cmds, "expected cmd/payment/enable to have been published"
+        assert enable_cmds, "expected a set_policy command to have been published"
         assert enable_cmds[-1] is True
 
     async def test_cancelled_run_still_decrements_runs_in_flight(self):

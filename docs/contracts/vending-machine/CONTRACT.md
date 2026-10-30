@@ -362,5 +362,6 @@ Full detail on the new wire shapes this introduced:
 
 ## Reference implementation
 
-`packages/sims/src/ice_sims/vending_machine.py` publishes the outcomes; `packages/sims/src/ice_sims/mdb_gateway.py`
-answers refunds (including the `changer_empty` failure path).
+`packages/sims/src/ice_sims/vending_machine.py` publishes the outcomes. The MDB board
+simulator (`packages/sims/src/ice_sims/mdb/`, entry module `mdb_gateway.py`) speaks the payment
+contract ([`../payment/CONTRACT.md`](../payment/CONTRACT.md)), not this one.

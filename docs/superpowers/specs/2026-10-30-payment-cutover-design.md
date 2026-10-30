@@ -384,6 +384,21 @@ gaps. Never retried with a new id. An `ok` with `detail: "queued"` counts as del
   `fulfillment` row, so one jammed device does not stop sales the other device can still take.
 - **Reconciliation waits for PAY-104** and the PAY-104 actions now drive the board (§5.5), found in
   review: without the guard a crash after dispense would refund a delivered product.
+- **Fresh `request_id` after a `rejected` ack** (found in implementation): the firmware caches every ack by
+  `request_id` (`comms_task.cpp`), rejections included, so a payout or `cash_sale` retried after `rejected`
+  with the same id would replay the rejection forever. A rejection means the board did nothing, so the
+  item is re-minted; every other retry keeps its id.
+- **`expired` retries after 2 s** with a fresh id instead of waiting for a policy toggle.
+- **`no_policy` rejection** makes `PolicySync` re-send `set_policy` and require a fresh `payment/state`
+  echo before the queue resumes.
+- **Uncertain-boot payouts are re-queued when PAY-104 is resolved**, with the same ids, before
+  reconciliation is released, so the queue is non-idle when it evaluates.
+- **Reconciliation waits for a `payment/state` newer than the last completed queue item**; an older
+  retained state still shows the escrow from before that payout or `cash_sale`.
+- **`DATA-104` has two sources** (the session snapshot and the payment cursor), owned by `Machine`;
+  neither source can clear the other's alert.
+- **`PolicySync` verifies with a 5 s `policy_verify` timer** after an `ok` ack: the policy is in force
+  only once a `payment/state` from the acked boot echoes the `policy_id`, and the timer re-sends if none does.
 
 ## 12. Out of scope
 

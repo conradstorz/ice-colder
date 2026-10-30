@@ -46,8 +46,8 @@ AUTOMATIC_COMMANDS: frozenset[str] = frozenset({"ping", "self_test", "force_repo
 
 
 # Which contract a subsystem's reported contract_version is compared
-# against for the /tests card's "contract match" field. "vending" and
-# speaks the vending-machine contract, "mdb" the payment contract, and
+# against for the /tests card's "contract match" field. "vending" speaks
+# the vending-machine contract, "mdb" the payment contract, and
 # "ice_maker" its own -- see ice_contracts/board/vending_machine.py's EXPECTED_SUBSYSTEMS and
 # ice_contracts/board/ice_maker_monitor.py's own CONTRACT_VERSION.
 #
@@ -161,8 +161,8 @@ def _parse_command_params(
     the current catalog's `Product.slot` values, matching the `<select>`
     the widget renders) -- so a crafted POST outside those bounds is
     refused here rather than reaching the dispatcher. Every other
-    testable command (ping, self_test, force_report, the three bare mdb
-    actuator commands) takes no params.
+    testable command (ping, self_test, force_report, mdb's `payout`, whose
+    amount and reason are fixed server-side) takes no params.
 
     Raises ValueError, with a message safe to show the operator, for a
     missing/non-integer/out-of-range value; the caller (post_test_command)
@@ -275,7 +275,7 @@ async def _run_command(
 
     Dispatches via `send_and_await_completion` (completion-table amendment,
     2026-09-29), not the older `send` -- for an immediate command (ping,
-    self_test, force_report, the three mdb actuator tests) this behaves
+    self_test, force_report, the two mdb actuator tests) this behaves
     exactly like `send` always did (the ack IS completion). For a
     long-running actuator (dispense, water_valve, power_cycle) the awaited
     call does not return until the command's own completion signal arrives,

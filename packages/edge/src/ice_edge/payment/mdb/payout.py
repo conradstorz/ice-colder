@@ -3,7 +3,9 @@
 One command is in flight at a time. ``request_id`` is minted at enqueue and
 reused on every re-send (the board dedupes on it, firmware rule 5), so no path
 here ever pays twice: an unconfirmed payout raises PAY-103 and is dropped, it
-is never re-sent under a new id.
+is never re-sent under a new id. The one exception is a ``rejected`` ack: the
+board did nothing and caches the rejection by ``request_id``, so the item is
+re-minted before it is retried.
 """
 
 from __future__ import annotations

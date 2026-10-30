@@ -21,6 +21,7 @@ from pydantic import ValidationError
 from ice_contracts.board import payment
 from ice_contracts.board.common import SubsystemCommand
 from ice_contracts.board.payment import (
+    DEFAULT_EDGE_TIMEOUT_SECONDS,
     PAYMENT_COMMANDS,
     STATE_REPUBLISH_SECONDS,
     BillReturnReason,
@@ -451,19 +452,20 @@ class MdbSimulator(ESP32Simulator):
 
     def _expired(self, cmd: SubsystemCommand) -> bool:
         p = self.policy.policy
-        if p is None:
-            return False
+        timeout = p.edge_timeout_s if p is not None else DEFAULT_EDGE_TIMEOUT_SECONDS
         ts = cmd.timestamp
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=timezone.utc)
-        return (self._now() - ts).total_seconds() > p.edge_timeout_s
+        return (self._now() - ts).total_seconds() > timeout
 
     def _gate(self, cmd: SubsystemCommand) -> CommandOutcome | None:
-        """Rules 1 and 4 for the commands that need a policy."""
-        if self.policy.policy is None or not self.policy.acked_in_boot:
-            return CommandOutcome(status="rejected", detail="no_policy")
+        """Rules 1 and 4 for the commands that need a policy. Expiry is checked
+        first, as the firmware does (`Master::do_payout`), using the default
+        edge timeout while no policy is held."""
         if self._expired(cmd):
             return CommandOutcome(status="rejected", detail="expired")
+        if self.policy.policy is None or not self.policy.acked_in_boot:
+            return CommandOutcome(status="rejected", detail="no_policy")
         return None
 
     async def _handle_set_policy(
