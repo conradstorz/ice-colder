@@ -1,6 +1,6 @@
 """`FakeTaskRunner`: a drop-in for `ice_edge.supervisor.task_runner.TaskRunner` that
 lets a test fire a timer by the label the VMC (or one of its extracted
-collaborators, `RefundProtocol`/`MaintenanceLease`) armed it with, instead of
+collaborators, `MaintenanceLease`) armed it with, instead of
 reaching into a private per-timer task handle on the VMC (VMC public
 surface design, section 2).
 
@@ -302,14 +302,10 @@ class FakeAvailability:
         self.transaction_certain: list[bool] = []
         self.publisher = None
         self.hardware_io: list[tuple[str, bool]] = []
-        self.payment_devices: list[tuple[str, str]] = []
         self.capabilities: list[tuple] = []
 
     def set_hardware_io(self, device: str, state: bool) -> None:
         self.hardware_io.append((device, state))
-
-    def set_payment_device(self, device: str, state: str) -> None:
-        self.payment_devices.append((device, state))
 
     def on_vending_capabilities(self, subsystem, data, caps) -> None:
         self.capabilities.append((subsystem, data, caps))

@@ -260,9 +260,6 @@ class Machine:
         )
         self._faults.subscribe_fault_change(self._ice_policy.on_fault_change)
         self._telemetry.subscribe_hardware_io(self._health_telemetry.on_hardware_io)
-        self._telemetry.subscribe_payment_status(
-            self._health_telemetry.on_payment_status
-        )
         self._telemetry.subscribe_sensor(self._health_telemetry.on_sensor)
         self._telemetry.subscribe_heartbeat(self._health_telemetry.on_heartbeat)
         self._telemetry.subscribe_ice_maker_event(
@@ -644,13 +641,12 @@ class Machine:
         logger.debug("Machine attached health monitor.")
 
     def set_availability(self, availability: Availability) -> None:
-        """Attach the permissive table; it publishes cmd/payment/enable through us."""
+        """Attach the permissive table; it publishes the payment policy through us."""
         self._outputs.attach_availability(availability)
         for unsubscribe in self._unsubscribe_availability:
             unsubscribe()
         self._unsubscribe_availability = [
             self._telemetry.subscribe_hardware_io(availability.set_hardware_io),
-            self._telemetry.subscribe_payment_status(availability.set_payment_device),
             self._telemetry.subscribe_capabilities(
                 availability.on_vending_capabilities
             ),

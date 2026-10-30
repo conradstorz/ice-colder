@@ -160,7 +160,6 @@ class StatusOutputs:
         product = self._selected_product()
         status = VMCStatus(
             state=state,
-            credit_escrow=self._credit_escrow_cents() / 100,  # deprecated field
             credit_escrow_cents=self._credit_escrow_cents(),
             selected_product=product.name if product else None,
             uptime_seconds=self.uptime_seconds,

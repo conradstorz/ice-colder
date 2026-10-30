@@ -31,6 +31,7 @@ from ice_edge.monitoring.health_monitor import HealthMonitor
 from ice_edge.ledger.session_store import Credit, SessionSnapshot, SessionStore
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
 from tests.fakes import FakeTaskRunner, drain_pending, settle
+from tests.payment_state_helpers import set_coin_status
 
 
 _profiles_tmp_base: Path | None = None
@@ -1663,7 +1664,7 @@ async def _enables(machine) -> list[bool]:
 async def test_vending_heartbeat_loss_raises_com_101_without_disabling_payment():
     vmc, monitor, avail, published, machine = _wired_vmc()
     _all_alive(monitor, machine)
-    avail.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(avail, "ready")
     await machine.telemetry.handle_hardware_io(
         "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
     )
@@ -1684,7 +1685,7 @@ async def test_vending_heartbeat_loss_raises_com_101_without_disabling_payment()
 async def test_ice_maker_loss_is_com_102_and_only_ice_blocked():
     vmc, monitor, avail, published, machine = _wired_vmc()
     _all_alive(monitor, machine)
-    avail.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(avail, "ready")
     await machine.telemetry.handle_hardware_io(
         "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
     )
@@ -1714,16 +1715,11 @@ async def test_mqtt_disconnect_is_com_103_and_reconnect_republishes():
     assert len(await _enables(machine)) > before
 
 
-async def test_payment_status_error_feeds_availability():
+async def test_payment_state_error_feeds_availability():
     vmc, monitor, avail, _, machine = _wired_vmc()
     _all_alive(monitor, machine)
-    await machine.telemetry.handle_payment_status(
-        "payment/status", {"device": "coin_acceptor", "state": "error"}
-    )
+    set_coin_status(avail, "error")
     assert "cash_accepting" in avail.sale_available("ice")[1]
-    signal = monitor.get_summary()["signals"]["mdb"]["coin_acceptor"]
-    assert signal["value"] == 0.0
-    assert signal["text"] == "error"
 
 
 async def test_hardware_io_feeds_health_signal():
@@ -1785,9 +1781,6 @@ async def test_signal_feeding_handlers_tolerate_missing_health_monitor():
     await machine.telemetry.handle_hardware_io(
         "hardware/io/fan", {"device": "fan", "state": True}
     )
-    await machine.telemetry.handle_payment_status(
-        "payment/status", {"device": "card_reader", "state": "ready"}
-    )
     await machine.telemetry.handle_ice_maker_event(
         "ice_maker/event", {"event": "power_on"}
     )
@@ -1796,7 +1789,7 @@ async def test_signal_feeding_handlers_tolerate_missing_health_monitor():
 async def test_select_product_refused_when_kind_unavailable_names_reason():
     vmc, monitor, avail, _, machine = _wired_vmc()
     _all_alive(monitor, machine)
-    avail.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(avail, "ready")
     monitor.mark_offline("ice_maker")
     messages = []
     vmc.outputs.set_message_callback(messages.append)
@@ -1852,7 +1845,7 @@ async def test_select_product_refused_while_vending_offline_but_payment_stays_on
     """
     vmc, monitor, avail, _, machine = _wired_vmc()
     _all_alive(monitor, machine)
-    avail.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(avail, "ready")
     await machine.telemetry.handle_hardware_io(
         "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
     )
@@ -1874,7 +1867,7 @@ async def test_deposit_while_idle_arms_session_timeout():
     runner = FakeTaskRunner()
     vmc, monitor, avail, _, machine = _wired_vmc(tasks=runner)
     _all_alive(monitor, machine)
-    avail.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(avail, "ready")
 
     assert vmc.state == "idle"
     assert not any(c.label == "session_timeout" for c in runner.scheduled)
@@ -1892,7 +1885,7 @@ async def test_deposit_while_idle_and_vending_offline_is_refunded_on_timeout():
     runner = FakeTaskRunner()
     vmc, monitor, avail, published, machine = _wired_vmc(tasks=runner)
     _all_alive(monitor, machine)
-    avail.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(avail, "ready")
     await machine.telemetry.handle_hardware_io(
         "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
     )
@@ -1982,7 +1975,7 @@ async def test_deposit_after_on_error_refund_is_refunded_on_timeout():
 async def test_hazard_fault_still_disables_payment():
     vmc, monitor, avail, published, machine = _wired_vmc()
     _all_alive(monitor, machine)
-    avail.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(avail, "ready")
     vmc.raise_fault(FaultCode.WTR_104, outcome="leak")
     assert avail.payment_enabled is False
     assert avail.payment_blocking_reasons() == ["no_critical_fault"]
@@ -2062,7 +2055,7 @@ async def test_session_file_written_during_sale_and_cleared_after(tmp_path):
     vmc, monitor, avail, published, machine = _wired_vmc(tasks=runner)
     machine.set_session_store(store)
     _all_alive(monitor, machine)
-    avail.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(avail, "ready")
     await machine.telemetry.handle_hardware_io(
         "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
     )
@@ -2100,7 +2093,7 @@ async def test_error_occurred_and_reset_publish_destination_state_to_availabilit
     be published to Availability."""
     vmc, monitor, avail, published, machine = _wired_vmc()
     _all_alive(monitor, machine)
-    avail.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(avail, "ready")
     assert avail.sale_available("water")[0] is True
 
     vmc.error_occurred()
@@ -3583,7 +3576,7 @@ def _test_run_vmc_with_availability(products=None):
     avail.set_subsystem_alive("vending", True)
     avail.set_subsystem_alive("mdb", True)
     avail.set_subsystem_alive("ice_maker", True)
-    avail.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(avail, "ready")
     avail.set_hardware_io("bin_half_full", True)
     return machine, vmc, rec, client, avail
 

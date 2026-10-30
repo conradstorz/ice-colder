@@ -4,7 +4,6 @@ persistent-task set drained (not cancelled) at shutdown.
 Extracted from ``ice_edge.sale.vmc.VMC`` following the same pattern as
 ``ice_edge/faults/fault_registry.py``'s ``FaultRegistry``,
 ``ice_edge/ledger/escrow_ledger.py``'s ``EscrowLedger``,
-``ice_edge/payment/refund_protocol.py``'s ``RefundProtocol``,
 ``ice_edge/ledger/session_recovery.py``'s ``SessionRecovery`` and
 ``ice_edge/sale/maintenance_lease.py``'s ``MaintenanceLease`` (see
 ``CLAUDE.md``'s "FSM Core" section). ``TaskRunner`` is pure event-loop
@@ -17,7 +16,7 @@ unaffected. ``drain_persistence`` and ``cancel_pending_tasks`` live on
 ``ice_edge/app/machine.py``'s ``Machine`` instead: ``Machine.
 cancel_pending_tasks`` calls this class's ``cancel_pending()`` to clear the
 generic lists, then the VMC's own ``cancel_timers()`` (the dispense cycle's
-timer and the session timeout) and ``RefundProtocol.cancel_all()``.
+timer and the session timeout).
 """
 
 from __future__ import annotations

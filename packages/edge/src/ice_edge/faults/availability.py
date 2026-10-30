@@ -1,7 +1,7 @@
 """Availability permissives: decides when the machine may accept money.
 
 ROADMAP.md §3. Inputs are pushed in by the VMC and the health monitor; this
-module computes per-kind sale availability and publishes cmd/payment/enable
+module computes per-kind sale availability and publishes the payment policy
 whenever the overall answer changes. Inputs the hardware cannot report yet are
 present as "not instrumented" rows that always pass, so flipping one to
 fail-closed later is a one-line change here.
@@ -87,8 +87,6 @@ LIVENESS_INPUTS = {
 _PAYMENT_BLOCKING_CODES = {code.value for code in PAYMENT_BLOCKING_FAULTS}
 _BAD_DEVICE_STATES = frozenset({"offline", "error", "tilt", "jammed"})
 _CASH_DEVICES = ("coin", "bill")
-# Legacy `payment/status` device names (deleted with set_payment_device in Task 10).
-_LEGACY_CASH_DEVICES = {"coin_acceptor": "coin", "bill_validator": "bill"}
 _CASH_BAD_REASONS = frozenset({"device_fault", "edge_silent"})
 
 # A maintenance TEST sale (TestSaleRunner.run_test_sale, system-tests design §2.3) is
@@ -146,7 +144,7 @@ def _stub(name: str, applies: Applies, gate: Gate = Gate.fulfillment) -> Permiss
 
 
 class Availability:
-    """Truth table of permissives plus the payment/enable publisher.
+    """Truth table of permissives plus the payment-policy publisher.
 
     Usage:
         avail = Availability()
@@ -267,19 +265,6 @@ class Availability:
             self._cash_reason = (
                 state.inhibited_reason.value if state.inhibited_reason else None
             )
-        self._refresh_cash()
-
-    def set_payment_device(self, device: str, state: str) -> None:
-        """Legacy ``payment/status`` shim, live until Task 9 rewires intake.
-
-        Coin and bill map onto the new rows; the cashless reader has no row
-        any more (a missing reader fails only cashless sales). Task 10
-        deletes this.
-        """
-        name = _LEGACY_CASH_DEVICES.get(device)
-        if name is None:
-            return
-        self._cash_devices[name] = (True, state)
         self._refresh_cash()
 
     def _refresh_cash(self) -> None:
@@ -478,7 +463,7 @@ class Availability:
             )
         if command == "water_valve":
             return not self.sale_available("water")[0]
-        if command == "payment/enable":
+        if command == "set_policy":
             return not self.payment_enabled
         return False
 

@@ -1,4 +1,4 @@
-# Vending Machine Contract — v2.4.0
+# Vending Machine Contract — v3.0.0
 
 This document and the JSON Schema files in `schemas/` define the interface
 between the ice-colder VMC and the vending ESP32 firmware plus the MDB
@@ -17,11 +17,6 @@ All topics are relative to `vmc/{machine_id}/`.
 | Topic | Direction | Payload | Notes |
 |---|---|---|---|
 | `hardware/dispenser` | ESP32 → VMC | `DispenserStatus` (`packages/contracts/src/ice_contracts/board/mqtt_messages.py`) | `state` is a [`DispenserOutcome`](schemas/dispenser_outcome.schema.json) for terminal states, or a [`DispenseStep`](schemas/dispense_step.schema.json) (`agitate`/`fill`/`release`) for an intermediate step. `request_id` (v0.6.0) echoes the command-channel `dispense` request for both test runs and production sales (v1.0.0: production sales moved onto the command channel too — see `cmd/vending` below). `detail` (v1.0.0, optional) carries board-supplied text, e.g. `"stall 4.2 A"` or `"412 pulses"` |
-| `payment/credit` | gateway → VMC | `PaymentEvent` (`packages/contracts/src/ice_contracts/board/mqtt_messages.py`) | **Deprecated** — superseded by [`../payment/CONTRACT.md`](../payment/CONTRACT.md); removed in 3.0.0 once the edge and simulator migrate. A credit event carrying a float dollar amount and a free-text method |
-| `payment/status` | gateway → VMC | `PaymentStatus` (`packages/contracts/src/ice_contracts/board/mqtt_messages.py`) | **Deprecated** — superseded by [`../payment/CONTRACT.md`](../payment/CONTRACT.md); removed in 3.0.0 once the edge and simulator migrate. Free-text payment device status |
-| `cmd/payment/refund` | VMC → gateway | [`PaymentRefundCommand`](schemas/payment_refund_command.schema.json) | **Deprecated** — superseded by [`../payment/CONTRACT.md`](../payment/CONTRACT.md); removed in 3.0.0 once the edge and simulator migrate. QoS 1; `request_id` unique per refund |
-| `cmd/payment/refund/ack` | gateway → VMC | [`PaymentRefundResult`](schemas/payment_refund_result.schema.json) | **Deprecated** — superseded by [`../payment/CONTRACT.md`](../payment/CONTRACT.md); removed in 3.0.0 once the edge and simulator migrate. QoS 1; exactly one per command; repeated `request_id` re-sends the stored result, never pays twice |
-| `cmd/payment/enable` | VMC → gateway | `PaymentEnableCommand {accept: bool}` | **Deprecated** — superseded by [`../payment/CONTRACT.md`](../payment/CONTRACT.md); removed in 3.0.0 once the edge and simulator migrate. QoS 1; not retained; the VMC republishes on connect and whenever the `mdb` subsystem returns |
 | `cmd/vending` | VMC → ESP32 | [`SubsystemCommand`](schemas/subsystem_command.schema.json) | QoS 1; test and control commands with per-subsystem params; **answer deadline 10 seconds** |
 | `cmd/vending/ack` | ESP32 → VMC | [`CommandAck`](schemas/command_ack.schema.json) | QoS 1; exactly one per command, correlated by `request_id`; idempotency: ESP32 keeps the last 32 `request_id`s and replays cached acks on duplicates |
 | `cmd/mdb` | VMC → gateway | [`SubsystemCommand`](schemas/subsystem_command.schema.json) | QoS 1; test and control commands; **answer deadline 10 seconds** |
@@ -74,7 +69,7 @@ The fix adds a **second, independent timeout**, and a field on the ack that says
 
 ### Production sales use the command channel (v1.0.0)
 
-**This is the sentence to read first.** A production sale is sent on the command channel (`cmd/vending`, command `dispense`) exactly like a test run; `cmd/dispense` is no longer published. `cmd/payment/enable` / `cmd/payment/refund` are unchanged. A board that only ever answered the legacy bare `cmd/dispense` topic must be updated to the command channel to keep selling ice or water.
+**This is the sentence to read first.** A production sale is sent on the command channel (`cmd/vending`, command `dispense`) exactly like a test run; `cmd/dispense` is no longer published. A board that only ever answered the legacy bare `cmd/dispense` topic must be updated to the command channel to keep selling ice or water.
 
 ### Idempotency requirement on real firmware
 
@@ -110,6 +105,21 @@ A command whose parameters fail the contract's bounds (e.g., `water_valve` with 
 ### Capabilities advertisement
 
 `SubsystemCapabilities.commands` lists **every** command the firmware supports, including the three standard commands (`ping`, `self_test`, `force_report`), the actuator commands (`dispense`, `water_valve`, `bill_acceptor_test`, `coin_return_test`, `card_reader_test`), and any control commands (`set_interval` for the ice maker). The VMC maintains a server-side allowlist, `TESTABLE_COMMANDS` in `packages/contracts/src/ice_contracts/board/common.py`, containing exactly the standard commands and the test-mode actuator commands; this allowlist is separate from what firmware advertises. A test button in the dashboard appears only for a command that is both allowlisted and advertised by the subsystem, ensuring firmware that ignores the command channel remains unaffected and a crafted request cannot invoke a control command through the test UI.
+
+## 3.0.0 (2026-10-30, breaking)
+
+The legacy payment interface is removed; payments are
+[`ice_contracts.board.payment`](../payment/CONTRACT.md) only.
+
+- Topics removed: `payment/credit`, `payment/status`, `cmd/payment/enable`,
+  `cmd/payment/refund`, `cmd/payment/refund/ack`.
+- Models removed: `PaymentEvent`, `PaymentStatus`, `PaymentEnableCommand`,
+  `PaymentRefundCommand`, `PaymentRefundResult`, `RefundStatus`.
+- `VMCStatus.credit_escrow` (the deprecated dollar float) is removed; use
+  `credit_escrow_cents`.
+- The vending board no longer advertises `payment/enable` in its
+  capabilities `commands`. The VMC's `command_inhibited` check for payment
+  now names `set_policy` (the `cmd/mdb` command that carries the policy).
 
 ## 2.4.0 (2026-10-30, additive)
 

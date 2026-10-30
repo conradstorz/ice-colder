@@ -222,7 +222,7 @@ class ESP32Simulator(ABC):
         list them in `SUPPORTED_COMMANDS` -- so they are always advertised
         here too, never left for each subclass to remember to add. A
         subclass's `SUPPORTED_COMMANDS` lists only its own actuator/control
-        commands (`dispense`, `water_valve`, `payment/enable`, ...).
+        commands (`dispense`, `water_valve`, `set_policy`, ...).
         """
         return SubsystemCapabilities(
             subsystem=self.subsystem_name,

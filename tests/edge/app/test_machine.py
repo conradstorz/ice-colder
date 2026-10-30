@@ -471,18 +471,14 @@ class TestTelemetryWiring:
         machine.telemetry.subscribe_capabilities(lambda s, d, c: probe.append((s, d)))
         assert probe == [("vending", doc)]
 
-    async def test_set_availability_routes_hardware_io_and_payment_status(self):
+    async def test_set_availability_routes_hardware_io(self):
         machine = Machine(ConfigModel())
         av = FakeAvailability()
         machine.set_availability(av)
         await machine.telemetry.handle_hardware_io(
             "hardware/io/door", {"device": "door", "state": True}
         )
-        await machine.telemetry.handle_payment_status(
-            "payment/status", {"device": "coin_acceptor", "state": "ready"}
-        )
         assert av.hardware_io == [("door", True)]
-        assert av.payment_devices == [("coin_acceptor", "ready")]
 
     async def test_set_availability_twice_leaves_one_subscribed(self):
         machine = Machine(ConfigModel())

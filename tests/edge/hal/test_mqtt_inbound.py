@@ -47,23 +47,6 @@ class TestHardwareIO:
         )
 
 
-class TestPaymentStatus:
-    async def test_publishes_device_and_state(self):
-        router, seen = TelemetryRouter(), []
-        router.subscribe_payment_status(lambda d, s: seen.append((d, s)))
-        await router.handle_payment_status(
-            "payment/status", {"device": "coin_acceptor", "state": "ready"}
-        )
-        assert seen == [("coin_acceptor", "ready")]
-
-    async def test_invalid_payload_reaches_nobody(self):
-        router, seen = TelemetryRouter(), []
-        router.subscribe_payment_status(lambda d, s: seen.append((d, s)))
-        with pytest.raises(ValidationError):
-            await router.handle_payment_status("payment/status", {"device": "x"})
-        assert seen == []
-
-
 class TestSensor:
     async def test_publishes_location_and_float_value(self):
         router, seen = TelemetryRouter(), []

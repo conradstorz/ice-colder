@@ -16,6 +16,7 @@ from ice_edge.ledger.session_store import Credit, SessionSnapshot, SessionStore
 from ice_edge.monitoring.health_monitor import HealthMonitor
 from ice_edge.payment.mdb.policy import build_policy
 from tests.fakes import settle
+from tests.payment_state_helpers import set_coin_status
 
 BOOT = "boot-9a-0001"
 
@@ -353,7 +354,7 @@ async def test_overpay_vend_payout_ok_removes_session_json(tmp_path):
     machine.set_dispenser_profiles(profiles_for(cfg.physical.products, tmp_path))
     for name in ("vending", "ice_maker"):
         machine.health_monitor.record_heartbeat(name, {"uptime_seconds": 1})
-    avail.set_payment_device("coin_acceptor", "ready")
+    set_coin_status(avail, "ready")
     await machine.telemetry.handle_hardware_io(
         "hardware/io/bin_half_full", {"device": "bin_half_full", "state": True}
     )

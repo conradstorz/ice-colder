@@ -9,27 +9,9 @@ from ice_edge.vend.dispensers import validate_document
 from ice_contracts.board.mqtt_messages import (
     ButtonPress,
     DispenseCommand,
-    PaymentEvent,
     VMCStatus,
 )
 from tests.dispenser_fixtures import GOOD, ICE, WATER
-
-
-class TestPaymentEventBounds:
-    def test_rejects_negative_amount(self):
-        with pytest.raises(ValidationError):
-            PaymentEvent(amount=-5.0, method="cash")
-
-    def test_rejects_zero_amount(self):
-        with pytest.raises(ValidationError):
-            PaymentEvent(amount=0.0, method="cash")
-
-    def test_rejects_huge_amount(self):
-        with pytest.raises(ValidationError):
-            PaymentEvent(amount=10_000.0, method="cash")
-
-    def test_accepts_normal_amount(self):
-        assert PaymentEvent(amount=2.50, method="cash").amount == 2.50
 
 
 class TestOtherMessageBounds:
@@ -75,12 +57,10 @@ class TestOtherMessageBounds:
         with pytest.raises(ValidationError):
             VMCStatus(state="idle")
 
-    def test_vmc_status_carries_both_escrow_fields(self):
-        status = VMCStatus(
-            state="idle", version="abc1234", credit_escrow=1.25, credit_escrow_cents=125
-        )
-        assert status.credit_escrow == 1.25
+    def test_vmc_status_carries_escrow_cents_only(self):
+        status = VMCStatus(state="idle", version="abc1234", credit_escrow_cents=125)
         assert status.credit_escrow_cents == 125
+        assert not hasattr(status, "credit_escrow")
 
     def test_vmc_status_credit_escrow_cents_defaults_to_zero(self):
         assert VMCStatus(state="idle", version="abc1234").credit_escrow_cents == 0

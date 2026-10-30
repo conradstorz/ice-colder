@@ -47,16 +47,6 @@ def test_hardware_io():
     ]
 
 
-def test_payment_status_ready_and_error():
-    health, ht = _make()
-    ht.on_payment_status("coin_acceptor", "ready")
-    ht.on_payment_status("bill_acceptor", "error")
-    assert health.signals == [
-        ("mdb", "coin_acceptor", 1.0, "ready"),
-        ("mdb", "bill_acceptor", 0.0, "error"),
-    ]
-
-
 def test_sensor_and_telemetry():
     health, ht = _make()
     ht.on_sensor("freezer", -5.0)
@@ -95,7 +85,6 @@ def test_capabilities_records_raw_dict_even_when_caps_none():
 def test_no_health_monitor_is_a_noop():
     ht = HealthTelemetry(lambda: None)
     ht.on_hardware_io("door", True)
-    ht.on_payment_status("d", "ready")
     ht.on_sensor("x", 1.0)
     ht.on_heartbeat("s", {}, True)
     ht.on_heartbeat("s", {}, False)

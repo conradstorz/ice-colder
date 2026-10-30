@@ -47,7 +47,7 @@ class MQTTClient:
 
     Usage:
         client = MQTTClient(config=mqtt_config, machine_id="vmc-0001")
-        client.register("payment/credit", handle_payment)
+        client.register("payment/event", handle_payment)
         client.register("sensors/temp/+", handle_sensor)
         await client.run()  # blocks, reconnects on failure
     """

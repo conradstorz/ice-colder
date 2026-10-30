@@ -248,7 +248,7 @@ class TestSubsystemDetailLevel:
                         "unit": "",
                         "description": "",
                         "direction": "input",
-                        "driven_by": "payment/enable",
+                        "driven_by": "set_policy",
                     }
                 ],
                 "commands": ["ping", "self_test", "force_report"],

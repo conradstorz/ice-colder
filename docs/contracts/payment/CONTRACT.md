@@ -15,7 +15,7 @@ The design rationale lives in
 `docs/superpowers/specs/2026-10-18-payment-contract-design.md`. This contract
 supersedes the payment topics of the [vending-machine contract](../vending-machine/CONTRACT.md)
 (`payment/credit`, `payment/status`, `cmd/payment/enable`, `cmd/payment/refund`),
-which are deprecated.
+which were removed in vending contract 3.0.0.
 
 ## Identity & versioning
 

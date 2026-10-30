@@ -112,7 +112,7 @@ class VendingMachineSimulator(ESP32Simulator):
 
     IDLE_MIN = 30.0  # min seconds between customers
     IDLE_MAX = 90.0  # max seconds between customers
-    SUPPORTED_COMMANDS = ["dispense", "water_valve", "payment/enable"]
+    SUPPORTED_COMMANDS = ["dispense", "water_valve"]
     CHANNELS = CHANNELS
     BRAND = "ice-colder"
     MODEL = "vending-sim"

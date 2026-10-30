@@ -34,7 +34,6 @@ from ice_contracts.board.ice_maker_monitor import ChannelReading, CommandAck
 from ice_contracts.board.mqtt_messages import (
     HardwareIO,
     IceMakerEvent,
-    PaymentStatus,
 )
 from ice_contracts.board.vending_machine import SubsystemCapabilities
 
@@ -50,7 +49,6 @@ class TelemetryRouter:
         # Distinct rejected names already warned about (bounded).
         self._reported_bad_names: set[str] = set()
         self._hardware_io: Subscribers[[str, bool]] = Subscribers()
-        self._payment_status: Subscribers[[str, str]] = Subscribers()
         self._sensor: Subscribers[[str, float]] = Subscribers()
         self._heartbeat: Subscribers[[str, dict, bool]] = Subscribers()
         self._ice_maker_event: Subscribers[[IceMakerEvent]] = Subscribers()
@@ -65,11 +63,6 @@ class TelemetryRouter:
         self, cb: Callable[[str, bool], None]
     ) -> Callable[[], None]:
         return self._hardware_io.subscribe(cb)
-
-    def subscribe_payment_status(
-        self, cb: Callable[[str, str], None]
-    ) -> Callable[[], None]:
-        return self._payment_status.subscribe(cb)
 
     def subscribe_sensor(self, cb: Callable[[str, float], None]) -> Callable[[], None]:
         return self._sensor.subscribe(cb)
@@ -133,14 +126,6 @@ class TelemetryRouter:
             return
         logger.debug(f"MQTT hardware IO: {hw.device}={hw.state}")
         self._hardware_io.publish(hw.device, hw.state)
-
-    async def handle_payment_status(self, topic: str, data: dict) -> None:
-        """MDB device readiness; any device in error/offline blocks payment."""
-        status = PaymentStatus.model_validate(data)
-        if not self._name_ok(status.device, "payment device"):
-            return
-        logger.debug(f"MQTT payment status: {status.device}={status.state}")
-        self._payment_status.publish(status.device, status.state)
 
     async def handle_sensor(self, topic: str, data: dict) -> None:
         """Handle temperature/sensor reading from ESP32."""

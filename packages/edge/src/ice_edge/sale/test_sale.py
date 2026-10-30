@@ -152,7 +152,7 @@ class TestSaleRunner:
 
         Whatever the outcome, ``end_test_sale`` clears escrow directly at
         the end -- never through ``request_refund``, which would publish a
-        real ``cmd/payment/refund``: test money is not real money and this
+        real ``payout`` command: test money is not real money and this
         is not a refund (system-tests design §2.3).
         """
         product = self._vmc.find_product(sku)

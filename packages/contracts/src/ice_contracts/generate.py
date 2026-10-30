@@ -51,8 +51,6 @@ from ice_contracts.board.vending_machine import (
     DispenserOutcome,
     DispenseStep,
     FaultCode,
-    PaymentRefundCommand,
-    PaymentRefundResult,
     SubsystemCapabilities,
 )
 
@@ -92,8 +90,6 @@ VENDING_MODELS = {
     "dispense_step": DispenseStep,
     "dispenser_outcome": DispenserOutcome,
     "fault_code": FaultCode,
-    "payment_refund_command": PaymentRefundCommand,
-    "payment_refund_result": PaymentRefundResult,
     "slot_profile": SlotProfile,
     "subsystem_capabilities": SubsystemCapabilities,
     "subsystem_command": SubsystemCommand,
