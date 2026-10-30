@@ -38,6 +38,7 @@ Cloud C1, C2 → the rest.
 
 - [ ] **M3 — HIGH: the edge does not consume the new payment contract
   (`ice_contracts.board.payment` 1.1.0).**
+  Status 2026-10-30: M3 spec A (money in integer cents) is done; spec B (the payment cutover) is next.
   `hal/mqtt_inbound.py:185` still routes legacy `payment/credit` to `on_payment_credit`,
   which validates the deprecated `PaymentEvent` (amount/method/timestamp only). Nothing
   in `ice_edge` or `ice_sims` imports `ice_contracts.board.payment`; no `payment/event`
