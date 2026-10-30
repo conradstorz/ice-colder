@@ -559,7 +559,7 @@ async def test_board_reboot_mints_a_boot_id_and_replays_old_events_first(sim, cl
     state = client.retained("payment/state")[-1]
     assert state["boot_id"] == sim.boot_id and state["policy_id"] is None
     assert state["inhibited_reason"] == "no_policy"
-    assert state["escrow_cents"] == 25  # coins are physically still held
+    assert state["escrow_cents"] == 0  # escrow is RAM only: zero on every boot
     replayed = client.events()
     assert [(e["boot_id"], e["seq"]) for e in replayed] == [(old_boot, 1)]
     # new events carry the new boot and restart at seq 1
@@ -617,3 +617,112 @@ async def test_stale_payout_without_policy_is_expired_not_no_policy(sim, client,
         sim, client, "payout", {"cents": 100, "reason": "change"}, timestamp=stale
     )
     assert (ack.status, ack.detail) == ("rejected", "expired")
+
+
+# --- firmware fidelity: gate order, reboot (final-fix A) -------------------------
+
+
+async def _evict_ack_cache(sim, client):
+    for _ in range(40):
+        await send(sim, client, "ping")
+
+
+async def test_repeated_payout_is_gated_before_the_stored_result_replay(sim, client):
+    # Firmware Master::do_payout: expired, then no_policy, THEN find_payout.
+    await armed(sim, client)
+    for _ in range(3):
+        await sim.insert_coin(client, 100)
+    pay = {"cents": 100, "reason": "change"}
+    await send(sim, client, "payout", pay, request_id="pay-gate01")
+    await sim.drain_background()
+    await _evict_ack_cache(sim, client)
+    sim.policy.reset()
+    client.clear()
+    ack = await send(sim, client, "payout", pay, request_id="pay-gate01")
+    await sim.drain_background()
+    assert (ack.status, ack.detail) == ("rejected", "no_policy")
+    assert client.kinds() == []  # no stored result republished
+
+
+async def test_repeated_payout_that_is_expired_is_rejected_not_replayed(
+    sim, client, clock
+):
+    await armed(sim, client)
+    for _ in range(3):
+        await sim.insert_coin(client, 100)
+    pay = {"cents": 100, "reason": "change"}
+    await send(sim, client, "payout", pay, request_id="pay-gate02")
+    await sim.drain_background()
+    await _evict_ack_cache(sim, client)
+    client.clear()
+    stale = clock.now() - timedelta(seconds=31)
+    ack = await send(
+        sim, client, "payout", pay, request_id="pay-gate02", timestamp=stale
+    )
+    await sim.drain_background()
+    assert (ack.status, ack.detail) == ("rejected", "expired")
+    assert client.kinds() == []
+
+
+async def test_a_rejection_is_cached_by_request_id_like_the_firmware(sim, client):
+    pay = {"cents": 100, "reason": "change"}
+    first = await send(sim, client, "payout", pay, request_id="pay-rej001")
+    assert (first.status, first.detail) == ("rejected", "no_policy")
+    await armed(sim, client)
+    again = await send(sim, client, "payout", pay, request_id="pay-rej001")
+    assert (again.status, again.detail) == ("rejected", "no_policy")  # replayed
+    fresh = await send(sim, client, "payout", pay, request_id="pay-rej002")
+    assert fresh.status == "ok"
+    await sim.drain_background()
+
+
+async def test_reboot_zeroes_escrow(sim, client):
+    await armed(sim, client)
+    await sim.insert_coin(client, 25)
+    await sim.reboot(client)
+    assert client.retained("payment/state")[-1]["escrow_cents"] == 0
+
+
+async def test_reboot_loses_the_ram_ack_cache_but_keeps_stored_results(sim, client):
+    pay = {"cents": 100, "reason": "change"}
+    # A rejection cached under the old boot ...
+    rej = await send(sim, client, "payout", pay, request_id="pay-ram001")
+    assert (rej.status, rej.detail) == ("rejected", "no_policy")
+    await sim.reboot(client)
+    await send(sim, client, "set_policy", policy())
+    # ... is gone after the reboot: the same id is handled afresh.
+    ok = await send(sim, client, "payout", pay, request_id="pay-ram001")
+    assert ok.status == "ok"
+    await sim.drain_background()
+    assert client.kinds().count("payout_result") == 1
+    # The persisted result survives a further reboot and is replayed.
+    await sim.reboot(client)
+    await send(sim, client, "set_policy", policy())
+    client.clear()
+    await send(sim, client, "payout", pay, request_id="pay-ram001")
+    await sim.drain_background()
+    assert client.kinds() == ["payout_result"]
+
+
+async def test_reboot_drops_an_in_flight_payout_and_keeps_stored_results(sim, client):
+    await armed(sim, client)
+    for _ in range(4):
+        await sim.insert_coin(client, 100)
+    release = asyncio.Event()
+
+    async def gated(_seconds):
+        await release.wait()
+
+    sim.set_sleep(gated)
+    pay = {"cents": 100, "reason": "change"}
+    await send(sim, client, "payout", pay, request_id="pay-fly001")
+    tubes = [t.count for t in sim.cash.tubes]
+    await sim.reboot(client)
+    release.set()
+    await sim.drain_background()
+    assert [t.count for t in sim.cash.tubes] == tubes  # never completed
+    assert "payout_result" not in client.kinds()
+    await send(sim, client, "set_policy", policy())
+    other = await send(sim, client, "payout", pay, request_id="pay-fly002")
+    assert (other.status, other.phase) == ("ok", "accepted")  # not busy
+    await sim.drain_background()

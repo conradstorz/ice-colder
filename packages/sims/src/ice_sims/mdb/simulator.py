@@ -177,6 +177,7 @@ class MdbSimulator(ESP32Simulator):
         self._saved_tubes: list[int] | None = None
         # request_id -> stored payout_result envelope (None while in flight)
         self._payout_requests: OrderedDict[str, dict | None] = OrderedDict()
+        self._payout_task: asyncio.Task | None = None
 
         self.last_status: dict | None = None
         self._vmc_status: asyncio.Queue = asyncio.Queue()
@@ -212,7 +213,7 @@ class MdbSimulator(ESP32Simulator):
     async def drain_background(self) -> None:
         """Wait for every background task (payout completions) to finish."""
         while self._background_tasks:
-            await asyncio.gather(*list(self._background_tasks))
+            await asyncio.gather(*list(self._background_tasks), return_exceptions=True)
 
     def set_ack_drop(self, dropping: bool) -> None:
         self._drop_acks = dropping
@@ -412,8 +413,17 @@ class MdbSimulator(ESP32Simulator):
         await self.publish_state(client)
 
     async def reboot(self, client: aiomqtt.Client) -> None:
-        """New boot: policy and edge-silence are lost, the flash log is not."""
+        """New boot: policy, edge-silence, escrow, the RAM ack cache and any
+        in-flight payout are lost; the flash log and the persisted payout
+        results are not (firmware spec: escrow is RAM only, zero per boot)."""
         self.log.reboot(EventLog.new_boot_id())
+        self.cash.escrow_cents = 0
+        self._acked.clear()
+        if self._payout_task is not None and not self._payout_task.done():
+            self._payout_task.cancel()
+        self._payout_task = None
+        for request_id in [k for k, v in self._payout_requests.items() if v is None]:
+            del self._payout_requests[request_id]
         self.policy.reset()
         self.edge_silent = False
         self._last_cmd = self._clock()
@@ -446,8 +456,10 @@ class MdbSimulator(ESP32Simulator):
             cmd.request_id
         )
         await super().handle_command(client, cmd)
-        if replay_result:
-            # Rule 5: a repeated payout re-publishes the stored result.
+        ack = self._acked.get(cmd.request_id)
+        if replay_result and ack is not None and ack.status == "ok":
+            # Rule 5: a repeated payout re-publishes the stored result, but
+            # only once the gates passed (a rejected repeat replays nothing).
             await self._publish_envelope(client, replay_result)
 
     def _expired(self, cmd: SubsystemCommand) -> bool:
@@ -480,18 +492,24 @@ class MdbSimulator(ESP32Simulator):
         self, client: aiomqtt.Client, cmd: SubsystemCommand
     ) -> CommandOutcome:
         accepted = CommandOutcome(status="ok", phase="accepted")
-        if cmd.request_id in self._payout_requests:
-            return accepted  # a repeat: handle_command re-publishes the result
+        # Firmware order (Master::do_payout): expired, no_policy, cents, and
+        # only then the persisted-result replay of a repeated request_id.
         refused = self._gate(cmd)
         if refused is not None:
             return refused
+        if cmd.params.get("cents") == 0:
+            return CommandOutcome(status="rejected", detail="cents")
+        if cmd.request_id in self._payout_requests:
+            return accepted  # a repeat: handle_command re-publishes the result
         params = PayoutParams.model_validate(cmd.params)
         if any(result is None for result in self._payout_requests.values()):
             # Firmware spec §11: a different payout while another's result is
             # still held (in flight) is refused, never queued.
             return CommandOutcome(status="rejected", detail="busy")
         self._payout_requests[cmd.request_id] = None
-        self._spawn_background(self._complete_payout(client, cmd.request_id, params))
+        self._payout_task = self._spawn_background(
+            self._complete_payout(client, cmd.request_id, params)
+        )
         return accepted
 
     async def _complete_payout(
