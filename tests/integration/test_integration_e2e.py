@@ -746,7 +746,9 @@ async def test_vending_heartbeat_loss_blocks_sale_not_payment_enable():
 
     cfg = ConfigModel()
     cfg.machine_id = "e2e-enable"
-    cfg.physical.products = [Product(sku="ICE-1", name="Ice", price=1.0, kind="ice")]
+    cfg.physical.products = [
+        Product(sku="ICE-1", name="Ice", price_cents=100, kind="ice")
+    ]
     if _MQTT_AUTH["username"]:
         cfg.mqtt.username = _MQTT_AUTH["username"]
     if _MQTT_AUTH["password"]:

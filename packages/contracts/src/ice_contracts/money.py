@@ -29,7 +29,10 @@ def dollars_to_cents(x: float | int | str | Decimal) -> int:
         raise ValueError(f"not a finite dollar amount: {x!r}")
     if d < 0:
         raise ValueError(f"negative dollar amount: {x!r}")
-    return int((d * 100).quantize(Decimal(1), rounding=ROUND_HALF_EVEN))
+    try:
+        return int((d * 100).quantize(Decimal(1), rounding=ROUND_HALF_EVEN))
+    except InvalidOperation:
+        raise ValueError(f"dollar amount out of range: {x!r}") from None
 
 
 def cents_to_dollar_text(c: int) -> str:

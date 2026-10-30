@@ -32,7 +32,6 @@ ALLOWLIST: dict[str, str] = {
     # PERMANENT: an average of money is float cents (renamed *_cents later, entry key changes then).
     "ice_contracts.cloud.report.KpiAverage.money_in": "PERMANENT (average; float cents)",
     # Converted by later tasks; remove each entry when its rename lands.
-    "ice_common.config_model.Product.price": "T2",
     "ice_contracts.board.mqtt_messages.VMCStatus.credit_escrow": "T3/T4",
     "ice_contracts.cloud.report.KpiWindow.money_in": "T5",
     "ice_contracts.cloud.report.PendingSaleView.price": "T5",

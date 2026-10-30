@@ -104,7 +104,7 @@ def add_product(
     config: ConfigModel,
     sku: str,
     name: str,
-    price: float,
+    price_cents: int,
     slot: int | None = None,
     kind: str = "other",
     button: str | None = None,
@@ -128,12 +128,12 @@ def add_product(
 
     kind = _clean_kind(kind)
     new_product = Product(
-        sku=sku, name=name, price=price, slot=slot, kind=kind, button=button
+        sku=sku, name=name, price_cents=price_cents, slot=slot, kind=kind, button=button
     )
     config.products.append(new_product)
     save_config(config)
     logger.info(
-        f"Added product SKU={sku} | name='{name}', price={price}, slot={slot}, kind={kind}"
+        f"Added product SKU={sku} | name='{name}', price_cents={price_cents}, slot={slot}, kind={kind}"
     )
     return True
 
@@ -142,7 +142,7 @@ def update_product(
     config: ConfigModel,
     sku: str,
     name: str,
-    price: float,
+    price_cents: int,
     slot: int | None = None,
     kind: str | None = None,
     button: str | None = _UNSET,  # type: ignore[assignment]
@@ -170,8 +170,8 @@ def update_product(
             changes = {}
             if p.name != name:
                 changes["name"] = (p.name, name)
-            if p.price != price:
-                changes["price"] = (p.price, price)
+            if p.price_cents != price_cents:
+                changes["price_cents"] = (p.price_cents, price_cents)
             if slot is not None and p.slot != slot:
                 changes["slot"] = (p.slot, slot)
             if kind is not None and p.kind != kind:
@@ -181,7 +181,7 @@ def update_product(
 
             if changes:
                 p.name = name
-                p.price = price
+                p.price_cents = price_cents
                 if slot is not None:
                     p.slot = slot
                 if kind is not None:

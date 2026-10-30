@@ -459,7 +459,7 @@ class TestVMCMQTTWiring:
     async def test_handle_mqtt_button_selects_product(self):
         config = ConfigModel()
         config.physical.products = [
-            Product(sku="T-1", name="Test", price=1.0, button="button_ice")
+            Product(sku="T-1", name="Test", price_cents=100, button="button_ice")
         ]
         machine = Machine(config=config)
         vmc = machine.vmc

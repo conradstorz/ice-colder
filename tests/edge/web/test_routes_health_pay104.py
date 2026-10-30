@@ -105,7 +105,7 @@ def pay104(wired, tmp_path):
     with real pending-sale shares, plus a real EventRecorder (tmp sqlite
     db) wired the same way `context.event_recorder` is in production."""
     cfg, _old_vmc, _inv, _store = wired
-    add_product(cfg, "ICE-1", "Ice", 2.50)
+    add_product(cfg, "ICE-1", "Ice", 250)
     machine2, vmc2, session_store, product, expected_shares, expected_price = (
         _pay104_setup(cfg, tmp_path)
     )
@@ -847,7 +847,7 @@ class TestRecordedSaleWithLeftoverCredit:
     @pytest.fixture
     def leftover(self, wired, tmp_path):
         cfg, _old_vmc, _inv, _store = wired
-        add_product(cfg, "ICE-1", "Ice", 2.50)
+        add_product(cfg, "ICE-1", "Ice", 250)
         store_path = tmp_path / "session.json"
         machine1 = Machine(config=cfg)
         vmc1 = machine1.vmc

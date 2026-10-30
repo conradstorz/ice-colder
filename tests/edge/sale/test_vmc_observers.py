@@ -45,7 +45,7 @@ def _start_sale(vmc, product) -> None:
     the transition into 'dispensing' itself."""
     vmc.set_state("interacting_with_user")
     vmc.selected_product = product
-    vmc.credit_escrow = product.price
+    vmc.credit_escrow = product.price_cents / 100
     vmc.process_payment()
     assert vmc.state == "dispensing"
 
@@ -59,7 +59,7 @@ async def test_state_change_observer_sees_every_transition_in_order(tmp_path):
     seen: list[str] = []
     vmc.subscribe_state_change(seen.append)
 
-    vmc.deposit_funds(product.price, payment_method="cash")
+    vmc.deposit_funds(product.price_cents / 100, payment_method="cash")
     vmc.select_product(vmc.products[0])  # idle -> interacting_with_user (real trigger)
     runner.fire("process_payment")  # interacting_with_user -> dispensing
 
@@ -72,7 +72,7 @@ async def test_state_change_observer_stops_after_unsubscribe(tmp_path):
     seen: list[str] = []
     unsubscribe = vmc.subscribe_state_change(seen.append)
 
-    vmc.deposit_funds(product.price, payment_method="cash")
+    vmc.deposit_funds(product.price_cents / 100, payment_method="cash")
     vmc.select_product(vmc.products[0])
     assert seen == ["interacting_with_user"]
 
@@ -95,7 +95,7 @@ async def test_state_change_observer_raising_does_not_block_the_next(tmp_path):
     vmc.subscribe_state_change(_raises)
     vmc.subscribe_state_change(seen.append)
 
-    vmc.deposit_funds(product.price, payment_method="cash")
+    vmc.deposit_funds(product.price_cents / 100, payment_method="cash")
     vmc.select_product(vmc.products[0])
 
     assert seen == ["interacting_with_user"]
@@ -196,7 +196,7 @@ async def test_sale_settled_observer_never_fires_on_cancel_sale_or_reset(tmp_pat
     calls: list[tuple] = []
     vmc.subscribe_sale_settled(lambda *a: calls.append(a))
 
-    vmc.deposit_funds(product.price, payment_method="cash")
+    vmc.deposit_funds(product.price_cents / 100, payment_method="cash")
     vmc.select_product(vmc.products[0])
     assert vmc.state == "interacting_with_user"
 

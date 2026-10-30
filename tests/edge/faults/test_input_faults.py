@@ -17,7 +17,7 @@ def _machine() -> tuple[Machine, FakeTaskRunner]:
     runner = FakeTaskRunner()
     cfg = ConfigModel(
         physical=PhysicalDetails(
-            products=[Product(sku="W", price=1.0, slot=2, kind="water")]
+            products=[Product(sku="W", price_cents=100, slot=2, kind="water")]
         )
     )
     return Machine(cfg, tasks=runner), runner

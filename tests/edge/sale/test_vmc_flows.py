@@ -74,7 +74,7 @@ def two_products() -> tuple[Product, ...]:
         Product(
             sku="ICE-1",
             name="Ice Bag",
-            price=2.50,
+            price_cents=250,
             slot=0,
             kind="ice",
             button="button_ice",
@@ -82,7 +82,7 @@ def two_products() -> tuple[Product, ...]:
         Product(
             sku="WATER-1",
             name="Water",
-            price=1.00,
+            price_cents=100,
             slot=1,
             kind="water",
             button="button_water_5gal",
@@ -114,7 +114,7 @@ def make_machine(
             Product(
                 sku="ICE-1",
                 name="Ice Bag",
-                price=price,
+                price_cents=round(price * 100),
                 kind="ice",
                 button="button_ice",
             )
@@ -566,7 +566,7 @@ async def test_dispense_complete_records_price_from_shares_not_live_catalog_pric
 
     # Operator edits the catalog price mid-flight, in place -- exactly what
     # ice_edge/config/config_store.update_product does to the same live object.
-    vmc.selected_product.price = 9.99
+    vmc.selected_product.price_cents = 999
 
     await vmc.on_dispenser_event(
         "hardware/dispenser",
@@ -649,7 +649,7 @@ async def test_vend_failed_restores_shares_total_not_live_catalog_price(tmp_path
     assert vmc.pending_sale_shares == {"cash_bill": 2.50}
 
     # Operator edits the catalog price mid-flight, in place.
-    vmc.selected_product.price = 9.99
+    vmc.selected_product.price_cents = 999
 
     await vmc.on_dispenser_event(
         "hardware/dispenser", {"slot": vmc.products[0].slot, "state": "jam"}
@@ -885,7 +885,7 @@ async def test_sale_cancelled_then_new_sale_succeeds(tmp_path):
     # a real admin re-adding a product would go through
     # reconcile_dispenser_profiles too, but this test predates dispenser
     # profiles and isn't about that.
-    new_product = Product(sku="ICE-1", name="Ice Bag 2", price=2.50, kind="ice")
+    new_product = Product(sku="ICE-1", name="Ice Bag 2", price_cents=250, kind="ice")
     vmc.products.append(new_product)
     vmc.select_product(vmc.products[0])
     assert vmc.state == "interacting_with_user"
@@ -902,8 +902,8 @@ async def test_dispense_uses_product_slot_not_list_index(tmp_path):
     stable `slot` field, not its current position in the list."""
     cfg = ConfigModel()
     cfg.physical.products = [
-        Product(sku="ICE-1", name="Ice", price=1.0, slot=0, kind="ice"),
-        Product(sku="WATER-1", name="Water", price=1.0, slot=1, kind="water"),
+        Product(sku="ICE-1", name="Ice", price_cents=100, slot=0, kind="ice"),
+        Product(sku="WATER-1", name="Water", price_cents=100, slot=1, kind="water"),
     ]
     machine = Machine(config=cfg)
     vmc = machine.vmc
@@ -1055,7 +1055,7 @@ class TestFaultRegistry:
 def _start_dispensing(vmc: VMC, index: int = 0):
     vmc.set_state("interacting_with_user")
     vmc.selected_product = vmc.products[index]
-    vmc.credit_escrow = vmc.products[index].price
+    vmc.credit_escrow = vmc.products[index].price_cents / 100
     vmc.process_payment()
     assert vmc.state == "dispensing"
 
@@ -1080,7 +1080,7 @@ class TestVendOutcomes:
 
         machine.set_mqtt_client(FakeClient())
         _start_dispensing(vmc, 0)
-        price = vmc.products[0].price
+        price = vmc.products[0].price_cents / 100
 
         await vmc.on_dispenser_event(
             "hardware/dispenser", {"slot": 0, "state": outcome}
@@ -1141,7 +1141,7 @@ class TestVendOutcomes:
         cfg = ConfigModel()
         cfg.physical.dispense_timeout_seconds = 45.0
         cfg.physical.products = [
-            Product(sku="ICE-1", name="Ice", price=1.0, slot=0, kind="ice")
+            Product(sku="ICE-1", name="Ice", price_cents=100, slot=0, kind="ice")
         ]
         runner = FakeTaskRunner()
         machine = Machine(config=cfg, tasks=runner)
@@ -1679,8 +1679,8 @@ class TestFireAndForget:
 def _wired_vmc(products=None, *, tasks: TaskRunner | None = None):
     cfg = ConfigModel()
     cfg.physical.products = products or [
-        Product(sku="ICE-1", name="Ice Bag", price=2.5, slot=0, kind="ice"),
-        Product(sku="WTR-1", name="Water", price=1.0, slot=1, kind="water"),
+        Product(sku="ICE-1", name="Ice Bag", price_cents=250, slot=0, kind="ice"),
+        Product(sku="WTR-1", name="Water", price_cents=100, slot=1, kind="water"),
     ]
     machine = Machine(config=cfg, tasks=tasks)
     vmc = machine.vmc
@@ -1824,8 +1824,8 @@ async def test_ice_maker_non_power_event_does_not_feed_compressor_signal():
 async def test_signal_feeding_handlers_tolerate_missing_health_monitor():
     cfg = ConfigModel()
     cfg.physical.products = [
-        Product(sku="ICE-1", name="Ice Bag", price=2.5, kind="ice"),
-        Product(sku="WTR-1", name="Water", price=1.0, kind="water"),
+        Product(sku="ICE-1", name="Ice Bag", price_cents=250, kind="ice"),
+        Product(sku="WTR-1", name="Water", price_cents=100, kind="water"),
     ]
     machine = Machine(config=cfg)
     machine.attach_to_loop(asyncio.get_running_loop())
@@ -2783,8 +2783,8 @@ def _test_run_machine(
     dispatcher, which needs a valid profile for the product being sold."""
     cfg = ConfigModel()
     cfg.physical.products = products or [
-        Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0, kind="ice"),
-        Product(sku="WATER-1", name="Water", price=1.00, slot=1, kind="water"),
+        Product(sku="ICE-1", name="Ice Bag", price_cents=250, slot=0, kind="ice"),
+        Product(sku="WATER-1", name="Water", price_cents=100, slot=1, kind="water"),
     ]
     machine = Machine(config=cfg, tasks=tasks)
     machine.attach_to_loop(asyncio.get_running_loop())
@@ -3002,7 +3002,9 @@ class TestRunTestSale:
         request_refund and publish a real cmd/payment/refund."""
         machine, vmc, rec, client = _test_run_vmc(
             products=[
-                Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0, kind="ice")
+                Product(
+                    sku="ICE-1", name="Ice Bag", price_cents=250, slot=0, kind="ice"
+                )
             ]
         )
         granted, _ = machine.lease.begin_maintenance("user-1", "sess-1")
@@ -3047,8 +3049,8 @@ class TestRunTestSale:
         """
         cfg = ConfigModel()
         cfg.physical.products = [
-            Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0),
-            Product(sku="WATER-1", name="Water", price=1.00, slot=1),
+            Product(sku="ICE-1", name="Ice Bag", price_cents=250, slot=0),
+            Product(sku="WATER-1", name="Water", price_cents=100, slot=1),
         ]
         machine = Machine(config=cfg)
         vmc = machine.vmc
@@ -3543,7 +3545,7 @@ class TestRunTestSaleRunContext:
         """
         cfg = ConfigModel()
         cfg.physical.products = [
-            Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0)
+            Product(sku="ICE-1", name="Ice Bag", price_cents=250, slot=0)
         ]
         machine = Machine(config=cfg)
         vmc = machine.vmc
@@ -3614,8 +3616,8 @@ def _test_run_vmc_with_availability(products=None):
     """
     cfg = ConfigModel()
     cfg.physical.products = products or [
-        Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0),
-        Product(sku="WATER-1", name="Water", price=1.00, slot=1),
+        Product(sku="ICE-1", name="Ice Bag", price_cents=250, slot=0),
+        Product(sku="WATER-1", name="Water", price_cents=100, slot=1),
     ]
     machine = Machine(config=cfg)
     vmc = machine.vmc

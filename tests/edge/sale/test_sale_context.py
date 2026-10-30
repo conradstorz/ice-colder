@@ -13,8 +13,10 @@ import pytest
 from ice_common.config_model import Product
 from ice_edge.sale.sale_context import SaleContext
 
-PRODUCT = Product(sku="ICE-1", name="Ice Bag", price=2.50, slot=0, kind="ice")
-OTHER_PRODUCT = Product(sku="WATER-1", name="Water", price=1.00, slot=1, kind="water")
+PRODUCT = Product(sku="ICE-1", name="Ice Bag", price_cents=250, slot=0, kind="ice")
+OTHER_PRODUCT = Product(
+    sku="WATER-1", name="Water", price_cents=100, slot=1, kind="water"
+)
 
 
 def test_construction_defaults():

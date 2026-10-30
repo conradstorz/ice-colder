@@ -625,7 +625,7 @@ class VMC:
             self._sale = self._sale.with_(shares=None)
         if shares is None:
             # Unreachable guard: consume_fifo sets the shares before dispensing.
-            price = product.price if product else 0.0
+            price = product.price_cents / 100 if product else 0.0  # cents-shim(T4)
             self._journal.shares_missing(price)
             shares = {"unknown": round(price, 2)}
         else:
@@ -831,7 +831,8 @@ class VMC:
             self._sale = SaleContext(
                 product=product, is_test=True, started_at=time.time()
             )
-            self.deposit_funds(round(product.price, 2), payment_method="test")
+            price = round(product.price_cents / 100, 2)  # cents-shim(T4)
+            self.deposit_funds(price, payment_method="test")
             self.select_product(product)
         except BaseException:
             self._escrow.take_all()
@@ -855,9 +856,9 @@ class VMC:
         self._test_sale_in_progress = False
 
     @logger.catch()
-    def initiate_virtual_payment(self, amount):
+    def initiate_virtual_payment(self, amount_cents: int):
         """Show the next virtual-payment gateway's QR code to the customer."""
-        prompt = self.payment_gateway_manager.next_payment_prompt(amount)
+        prompt = self.payment_gateway_manager.next_payment_prompt(amount_cents)
         if prompt is None:
             self.send_customer_message("Virtual payment is currently unavailable.")
             return
@@ -897,7 +898,7 @@ class VMC:
             self.start_interaction()
             self._payment_retry.arm()
         elif self.state == "interacting_with_user":
-            self.initiate_virtual_payment(self.selected_product.price)
+            self.initiate_virtual_payment(self.selected_product.price_cents)
             self._payment_retry.arm()
         self._outputs.refresh()
 
@@ -925,7 +926,7 @@ class VMC:
                 self._outputs.refresh()
             return
 
-        price = self.selected_product.price if self.selected_product else 0
+        price = self.selected_product.price_cents / 100  # cents-shim(T4)
         if self.credit_escrow >= price:
             self._journal.payment_sufficient(
                 self.credit_escrow, price, self.selected_product

@@ -99,11 +99,9 @@ class SaleJournal:
         )
 
     def product_selected(self, product: Product) -> None:
-        logger.info(f"Selected product: {product.name} at ${product.price:.2f}")
-        text = (
-            f"PRODUCT SELECTED: '{product.name}' (${product.price:.2f}), "
-            f"sku {product.sku}"
-        )
+        price = product.price_cents / 100  # cents-shim(T4)
+        logger.info(f"Selected product: {product.name} at ${price:.2f}")
+        text = f"PRODUCT SELECTED: '{product.name}' (${price:.2f}), sku {product.sku}"
         self._txn.info(text)
         self._vend.info(text)
 

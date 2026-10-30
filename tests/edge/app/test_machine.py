@@ -370,7 +370,7 @@ class TestCancelPendingTasks:
         now never reaches a dispatch at all (CFG-101 fails the vend
         immediately instead), so a profile is wired here to exercise the
         real path this timer actually guards."""
-        product = Product(sku="A", price=0.0, slot=1, kind="ice")
+        product = Product(sku="A", price_cents=0, slot=1, kind="ice")
         runner = FakeTaskRunner()
         machine = Machine(_config(product), tasks=runner)
         machine.attach_to_loop(asyncio.get_running_loop())
@@ -406,7 +406,9 @@ def _caps(subsystem: str = "vending") -> dict:
 
 class TestTelemetryWiring:
     async def test_bin_half_full_true_clears_ice101_lockout(self):
-        machine = Machine(_config(Product(sku="A", price=1.0, slot=1, kind="ice")))
+        machine = Machine(
+            _config(Product(sku="A", price_cents=100, slot=1, kind="ice"))
+        )
         machine.faults.raise_fault(FaultCode.ICE_101, sku="A")
         assert machine.faults.is_locked("A") is FaultCode.ICE_101
 
@@ -417,7 +419,9 @@ class TestTelemetryWiring:
         assert machine.faults.is_locked("A") is None
 
     async def test_bin_half_full_false_keeps_lockout(self):
-        machine = Machine(_config(Product(sku="A", price=1.0, slot=1, kind="ice")))
+        machine = Machine(
+            _config(Product(sku="A", price_cents=100, slot=1, kind="ice"))
+        )
         machine.faults.raise_fault(FaultCode.ICE_101, sku="A")
 
         await machine.telemetry.handle_hardware_io(
@@ -598,7 +602,7 @@ class TestDataWriteFaults:
                 Product(
                     sku="X",
                     name="X",
-                    price=1.0,
+                    price_cents=100,
                     track_inventory=True,
                     inventory_count=3,
                 )

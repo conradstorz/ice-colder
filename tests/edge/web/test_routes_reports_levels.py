@@ -45,8 +45,8 @@ def recorder(wired, tmp_path):
     yield rec
 
 
-def _add_product(cfg, sku="SKU-COLA", name="Cola", price=1.50, slot=1):
-    ok = add_product(cfg, sku, name, price, slot=slot, kind="drink")
+def _add_product(cfg, sku="SKU-COLA", name="Cola", price_cents=150, slot=1):
+    ok = add_product(cfg, sku, name, price_cents, slot=slot, kind="drink")
     assert ok, "test setup: add_product failed"
     return next(p for p in cfg.products if p.sku == sku)
 

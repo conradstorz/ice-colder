@@ -747,7 +747,7 @@ class TestSkuWithSlash:
         self, client, wired, wire_subsystem
     ):
         cfg, _vmc, _inv, _store = wired
-        add_product(cfg, "ICE/COLD-1", "Cold Ice", 2.5, slot=3)
+        add_product(cfg, "ICE/COLD-1", "Cold Ice", 250, slot=3)
         wire_subsystem("vending", ["dispense"])
         resp = client.get("/tests/vending")
         assert resp.status_code == 200
@@ -955,7 +955,7 @@ class TestCommandRunAndSalePermissionGates:
         # attach_to_loop()'d, so a real dispense wait would hang forever
         # here -- this matrix only needs to prove the permission axis).
         cfg, vmc, _inv, _store = wired
-        add_product(cfg, "ICE-1", "Ice Bag", 2.50, slot=0)
+        add_product(cfg, "ICE-1", "Ice Bag", 250, slot=0)
         vmc.raise_fault(FaultCode.ICE_101, sku="ICE-1")
         client = login_as(role)
         resp = client.post("/tests/sale", data={"sku": "ICE-1"})
@@ -998,7 +998,7 @@ class TestPostRequiresHtmx:
         wire_subsystem("mdb", ["ping"])
         dispatcher = wire_dispatcher(FakeAckDispatcher())
         cfg, vmc, _inv, _store = wired
-        add_product(cfg, "ICE-1", "Ice Bag", 2.50, slot=0)
+        add_product(cfg, "ICE-1", "Ice Bag", 250, slot=0)
         # Locked out so that, were the guard missing, /tests/sale would refuse
         # synchronously instead of hanging on a dispense that never completes.
         vmc.raise_fault(FaultCode.ICE_101, sku="ICE-1")
@@ -1485,7 +1485,7 @@ class TestParamValidation:
         valid dispenser profile wired, that exact slot is accepted and
         reaches the dispatcher (Task 4: carrying the whole profile)."""
         cfg, vmc, _inv, _store = wired
-        add_product(cfg, "ICE-1", "Ice", 2.5, slot=3, kind="ice")
+        add_product(cfg, "ICE-1", "Ice", 250, slot=3, kind="ice")
         profiles = profiles_for(cfg.products, tmp_path)
         context.machine_instance.set_dispenser_profiles(profiles)
         routes.set_dispenser_profiles(profiles)
@@ -1544,7 +1544,7 @@ class TestDispenseSendsProfile:
         self, client, wired, wire_subsystem, wire_dispatcher, tmp_path
     ):
         cfg, vmc, _inv, _store = wired
-        add_product(cfg, "ICE-1", "Ice", 2.5, slot=3, kind="ice")
+        add_product(cfg, "ICE-1", "Ice", 250, slot=3, kind="ice")
         profiles = profiles_for(cfg.products, tmp_path)
         context.machine_instance.set_dispenser_profiles(profiles)
         routes.set_dispenser_profiles(profiles)
@@ -1575,8 +1575,8 @@ class TestDispenseSendsProfile:
         own `report.ok` assertion treats as a fixture bug, not a case
         this test is about."""
         cfg, vmc, _inv, _store = wired
-        add_product(cfg, "ICE-1", "Ice", 2.5, slot=3, kind="ice")
-        add_product(cfg, "OTHER-1", "Other", 1.0, slot=4, kind="other")
+        add_product(cfg, "ICE-1", "Ice", 250, slot=3, kind="ice")
+        add_product(cfg, "OTHER-1", "Other", 100, slot=4, kind="other")
         profiles = profiles_for(cfg.products, tmp_path)
         context.machine_instance.set_dispenser_profiles(profiles)
         routes.set_dispenser_profiles(profiles)
@@ -1634,7 +1634,7 @@ class TestSimulatedSaleFlow:
 
     def test_picker_never_takes_the_lease(self, client, wired):
         cfg, vmc, _inv, _store = wired
-        add_product(cfg, "ICE-1", "Ice Bag", 2.50, slot=0)
+        add_product(cfg, "ICE-1", "Ice Bag", 250, slot=0)
         assert context.machine_instance.maintenance_hold is None
         resp = client.get("/tests/sale")
         assert resp.status_code == 200
@@ -1660,7 +1660,7 @@ class TestSimulatedSaleFlow:
         entry. Restored the exact-match lookup -- passed again.
         """
         cfg, vmc, _inv, _store = wired
-        add_product(cfg, "ICE/COLD-1", "Cold Ice", 2.50, slot=0)
+        add_product(cfg, "ICE/COLD-1", "Cold Ice", 250, slot=0)
         vmc.raise_fault(FaultCode.ICE_101, sku="ICE/COLD-1")
 
         picker = client.get("/tests/sale")
@@ -1694,7 +1694,7 @@ class TestSimulatedSaleFlow:
         again.
         """
         cfg, _vmc, _inv, _store = wired
-        add_product(cfg, "ICE-1", "Ice Bag", 2.50, slot=0)
+        add_product(cfg, "ICE-1", "Ice Bag", 250, slot=0)
 
         from ice_edge.sale.test_sale import TestSaleResult
 

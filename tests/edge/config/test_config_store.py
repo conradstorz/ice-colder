@@ -94,7 +94,7 @@ def test_add_product_uses_module_config_path(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
     cfg = ConfigModel()
-    assert add_product(cfg, "NEW-1", "New Thing", 3.25) is True
+    assert add_product(cfg, "NEW-1", "New Thing", 325) is True
     assert (tmp_path / "config.json").exists()
 
 
@@ -103,7 +103,7 @@ def test_delete_product_removes_and_saves(tmp_path):
     from ice_edge.config.config_store import delete_product
 
     cfg = ConfigModel()
-    cfg.physical.products = [Product(sku="A-1", name="Thing A", price=1.0)]
+    cfg.physical.products = [Product(sku="A-1", name="Thing A", price_cents=100)]
     assert delete_product(cfg, "A-1") is True
     assert cfg.products == []
     assert (tmp_path / "config.json").exists()
@@ -158,10 +158,10 @@ def test_add_product_auto_assigns_lowest_free_slot(tmp_path, monkeypatch):
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
     cfg = ConfigModel()
     cfg.physical.products = [
-        Product(sku="A", name="A", price=1.0, slot=0),
-        Product(sku="B", name="B", price=1.0, slot=2),
+        Product(sku="A", name="A", price_cents=100, slot=0),
+        Product(sku="B", name="B", price_cents=100, slot=2),
     ]
-    assert add_product(cfg, "NEW-1", "New Thing", 3.25) is True
+    assert add_product(cfg, "NEW-1", "New Thing", 325) is True
     new = next(p for p in cfg.products if p.sku == "NEW-1")
     assert new.slot == 1  # lowest free slot, not len(products)
 
@@ -171,7 +171,7 @@ def test_add_product_with_explicit_slot(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
     cfg = ConfigModel()
-    assert add_product(cfg, "NEW-1", "New Thing", 3.25, slot=7) is True
+    assert add_product(cfg, "NEW-1", "New Thing", 325, slot=7) is True
     new = next(p for p in cfg.products if p.sku == "NEW-1")
     assert new.slot == 7
 
@@ -182,8 +182,8 @@ def test_add_product_with_taken_slot_fails(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
     cfg = ConfigModel()
-    cfg.physical.products = [Product(sku="A", name="A", price=1.0, slot=0)]
-    assert add_product(cfg, "NEW-1", "New Thing", 3.25, slot=0) is False
+    cfg.physical.products = [Product(sku="A", name="A", price_cents=100, slot=0)]
+    assert add_product(cfg, "NEW-1", "New Thing", 325, slot=0) is False
     assert len(cfg.products) == 1
 
 
@@ -194,8 +194,8 @@ def test_update_product_can_change_slot(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
     cfg = ConfigModel()
-    cfg.physical.products = [Product(sku="A", name="A", price=1.0, slot=0)]
-    assert update_product(cfg, "A", "A", 1.0, slot=4) is True
+    cfg.physical.products = [Product(sku="A", name="A", price_cents=100, slot=0)]
+    assert update_product(cfg, "A", "A", 100, slot=4) is True
     assert cfg.products[0].slot == 4
 
 
@@ -205,13 +205,13 @@ def test_update_product_omitted_kind_leaves_it_unchanged(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
     cfg = ConfigModel()
-    assert add_product(cfg, "A", "A", 1.0, kind="water") is True
+    assert add_product(cfg, "A", "A", 100, kind="water") is True
 
-    assert update_product(cfg, "A", "A2", 1.5, slot=cfg.products[0].slot) is True
+    assert update_product(cfg, "A", "A2", 150, slot=cfg.products[0].slot) is True
     assert cfg.products[0].kind == "water"
 
     assert (
-        update_product(cfg, "A", "A2", 1.5, slot=cfg.products[0].slot, kind="ice")
+        update_product(cfg, "A", "A2", 150, slot=cfg.products[0].slot, kind="ice")
         is True
     )
     assert cfg.products[0].kind == "ice"
@@ -222,7 +222,7 @@ def test_add_product_rejects_negative_slot(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
     cfg = ConfigModel()
-    assert add_product(cfg, "NEW-1", "New Thing", 3.25, slot=-1) is False
+    assert add_product(cfg, "NEW-1", "New Thing", 325, slot=-1) is False
     assert len(cfg.products) == 0
     assert not any(p.sku == "NEW-1" for p in cfg.products)
 
@@ -234,8 +234,8 @@ def test_update_product_rejects_negative_slot(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
     cfg = ConfigModel()
-    cfg.physical.products = [Product(sku="A", name="A", price=1.0, slot=0)]
-    assert update_product(cfg, "A", "A", 1.0, slot=-1) is False
+    cfg.physical.products = [Product(sku="A", name="A", price_cents=100, slot=0)]
+    assert update_product(cfg, "A", "A", 100, slot=-1) is False
     assert cfg.products[0].slot == 0  # unchanged
 
 
@@ -247,10 +247,10 @@ def test_update_product_rejects_slot_already_in_use(tmp_path, monkeypatch):
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
     cfg = ConfigModel()
     cfg.physical.products = [
-        Product(sku="A", name="A", price=1.0, slot=0),
-        Product(sku="B", name="B", price=1.0, slot=1),
+        Product(sku="A", name="A", price_cents=100, slot=0),
+        Product(sku="B", name="B", price_cents=100, slot=1),
     ]
-    assert update_product(cfg, "B", "B", 1.0, slot=0) is False
+    assert update_product(cfg, "B", "B", 100, slot=0) is False
     assert cfg.products[1].slot == 1  # unchanged
 
 
@@ -262,9 +262,9 @@ def test_delete_product_leaves_other_slots_unchanged(tmp_path, monkeypatch):
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
     cfg = ConfigModel()
     cfg.physical.products = [
-        Product(sku="A", name="A", price=1.0, slot=0),
-        Product(sku="B", name="B", price=1.0, slot=1),
-        Product(sku="C", name="C", price=1.0, slot=2),
+        Product(sku="A", name="A", price_cents=100, slot=0),
+        Product(sku="B", name="B", price_cents=100, slot=1),
+        Product(sku="C", name="C", price_cents=100, slot=2),
     ]
     assert delete_product(cfg, "A") is True
     remaining = {p.sku: p.slot for p in cfg.products}
@@ -301,7 +301,7 @@ def test_add_product_unrecognized_kind_falls_back_to_other(tmp_path, monkeypatch
 
     monkeypatch.setattr(cs, "CONFIG_PATH", tmp_path / "config.json")
     cfg = ConfigModel()
-    assert add_product(cfg, "NEW-1", "New Thing", 3.25, kind="soda") is True
+    assert add_product(cfg, "NEW-1", "New Thing", 325, kind="soda") is True
     new = next(p for p in cfg.products if p.sku == "NEW-1")
     assert new.kind == "other"
 

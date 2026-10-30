@@ -117,7 +117,7 @@ def _pay104_machine(tmp_path):
     plus one active product fault, a health monitor, an event recorder with an
     error row, and an Availability."""
     cfg = ConfigModel()
-    add_product(cfg, "ICE-1", "Ice", 2.50)
+    add_product(cfg, "ICE-1", "Ice", 250)
     store_path = tmp_path / "session.json"
     machine1 = Machine(config=cfg)
     vmc1 = machine1.vmc

@@ -61,3 +61,8 @@ def test_payment_reexports_money_types():
 
     assert payment.Cents is money.Cents
     assert payment.PositiveCents is money.PositiveCents
+
+
+def test_dollars_to_cents_huge_value_is_value_error():
+    with pytest.raises(ValueError):
+        money.dollars_to_cents("1e30")

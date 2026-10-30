@@ -34,8 +34,8 @@ from ice_edge.ledger.session_store import SessionSnapshot
 from tests.dispenser_fixtures import FakeDispatcher, profiles_for
 from tests.fakes import FakeTaskRunner
 
-ICE = Product(sku="ICE-1", slot=0, kind="ice", name="Ice", price=2.0)
-WATER = Product(sku="W-1", slot=1, kind="water", name="Water", price=3.0)
+ICE = Product(sku="ICE-1", slot=0, kind="ice", name="Ice", price_cents=200)
+WATER = Product(sku="W-1", slot=1, kind="water", name="Water", price_cents=300)
 
 
 class FakeGate:
@@ -528,8 +528,8 @@ async def test_record_defaults_price_to_product_price_without_shares():
             ICE.sku,
             ICE.name,
             ICE.slot,
-            round(ICE.price, 2),
-            {"unknown": round(ICE.price, 2)},
+            round(ICE.price_cents / 100, 2),
+            {"unknown": round(ICE.price_cents / 100, 2)},
         )
     ]
 

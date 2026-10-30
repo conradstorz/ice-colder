@@ -152,7 +152,7 @@ async def _start_blocked_write(machine, vmc, recorder, product=None):
     product = product or vmc.products[0]
     vmc.set_state("interacting_with_user")
     vmc.selected_product = product
-    vmc.deposit_funds(product.price, payment_method="cash_bill")
+    vmc.deposit_funds(product.price_cents / 100, payment_method="cash_bill")
     vmc.process_payment()
     assert vmc.state == "dispensing"
     report = asyncio.get_running_loop().create_task(
@@ -232,7 +232,7 @@ async def test_stale_write_does_not_touch_the_next_customers_sale(tmp_path):
     vmc.error_occurred()
     vmc.reset_state()
     vmc.select_product(water)
-    vmc.deposit_funds(water.price, payment_method="cash_bill")
+    vmc.deposit_funds(water.price_cents / 100, payment_method="cash_bill")
     vmc.process_payment()
     assert vmc.state == "dispensing"
     b_shares = vmc.pending_sale_shares

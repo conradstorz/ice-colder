@@ -439,7 +439,8 @@ class DispenseCycle:
         # the price while this sale is mid-dispense. The shares are what
         # was actually deducted from escrow and must be what gets
         # recorded.
-        methods = self.sale.shares or {"unknown": round(product.price, 2)}
+        fallback = round(product.price_cents / 100, 2)  # cents-shim(T4)
+        methods = self.sale.shares or {"unknown": fallback}
         price = round(sum(methods.values()), 2)
         try:
             await asyncio.to_thread(

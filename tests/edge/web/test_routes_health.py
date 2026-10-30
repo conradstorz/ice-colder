@@ -27,7 +27,7 @@ def _seed_product(cfg, sku: str = "ICE-1") -> str:
     """A product-scope fault needs a real product on the config (a fresh
     ConfigModel() ships with none) -- mirrors legacy.py's own add_product
     usage rather than going through an HTTP round trip."""
-    add_product(cfg, sku, "Ice", 2.5)
+    add_product(cfg, sku, "Ice", 250)
     return sku
 
 

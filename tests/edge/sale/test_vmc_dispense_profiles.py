@@ -356,7 +356,7 @@ def _vmc_with_profiles(tmp_path, products=(ICE_1, WATER_1), *, tasks=None):
 def _start_sale(vmc, product) -> None:
     vmc.set_state("interacting_with_user")
     vmc.selected_product = product
-    vmc.credit_escrow = product.price
+    vmc.credit_escrow = product.price_cents / 100
     vmc.process_payment()
     assert vmc.state == "dispensing"
 
@@ -389,7 +389,7 @@ async def test_no_ack_fails_vend_immediately_with_pay102(tmp_path):
     machine.set_event_recorder(rec)
     dispatcher.fail_with = CommandTimeout("vending", "dispense")
     product = vmc.products[0]
-    price = product.price
+    price = product.price_cents / 100
     _start_sale(vmc, product)
 
     await asyncio.sleep(0)
@@ -409,7 +409,7 @@ async def test_rejected_ack_fails_vend(tmp_path):
     rec = FakeEventRecorder()
     machine.set_event_recorder(rec)
     product = vmc.products[0]
-    price = product.price
+    price = product.price_cents / 100
 
     async def send_rejected(subsystem, command, params=None, request_id=None):
         dispatcher.sent.append((subsystem, command, params or {}))
@@ -626,7 +626,7 @@ async def test_door_open_on_water_fill_fails_vend_with_error_mapping(tmp_path):
     machine.set_event_recorder(rec)
     avail = Availability()
     product = vmc.products[1]  # W-1, water_fill
-    price = product.price
+    price = product.price_cents / 100
     _start_sale(vmc, product)
     machine.set_availability(avail)  # after payment: a bare one is not sellable
     await asyncio.sleep(0)
@@ -754,7 +754,7 @@ async def test_unexpected_dispatch_error_fails_vend_immediately(tmp_path):
     machine.set_event_recorder(rec)
     dispatcher.fail_with = ValueError("boom")
     product = vmc.products[0]
-    price = product.price
+    price = product.price_cents / 100
     _start_sale(vmc, product)
 
     await asyncio.sleep(0)
@@ -785,7 +785,7 @@ async def test_snapshot_save_failure_fails_vend_immediately(tmp_path):
     machine.set_event_recorder(rec)
     machine.set_session_store(FakeSessionStore())
     product = vmc.products[0]
-    price = product.price
+    price = product.price_cents / 100
     _start_sale(vmc, product)
 
     await asyncio.sleep(0)

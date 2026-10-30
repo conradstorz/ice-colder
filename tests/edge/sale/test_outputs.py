@@ -559,7 +559,7 @@ def test_next_payment_prompt_returns_none_with_no_gateways():
     manager = PaymentGatewayManager()
     manager.gateways = {}
 
-    assert manager.next_payment_prompt(2.50) is None
+    assert manager.next_payment_prompt(250) is None
 
 
 def test_next_payment_prompt_cycles_through_gateways():
@@ -567,16 +567,16 @@ def test_next_payment_prompt_cycles_through_gateways():
     names = list(manager.gateways.keys())
     assert len(names) >= 2  # stripe/paypal/square -- cycling is meaningful
 
-    seen = [manager.next_payment_prompt(2.50)[0] for _ in names]
+    seen = [manager.next_payment_prompt(250)[0] for _ in names]
 
     assert seen == names
     # Cycled all the way back around to the first gateway.
-    assert manager.next_payment_prompt(2.50)[0] == names[0]
+    assert manager.next_payment_prompt(250)[0] == names[0]
 
 
 def test_next_payment_prompt_returns_a_qr_image():
     manager = PaymentGatewayManager()
-    name, qr_image = manager.next_payment_prompt(2.50)
+    name, qr_image = manager.next_payment_prompt(250)
 
     assert name in manager.gateways
     assert qr_image is not None

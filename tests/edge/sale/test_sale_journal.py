@@ -90,7 +90,7 @@ def harness(sink, trace):
     return journal, recorder, messages, sink
 
 
-PRODUCT = Product(name="Ice", sku="ICE", price=2.5, slot=1)
+PRODUCT = Product(name="Ice", sku="ICE", price_cents=250, slot=1)
 P = STATE_CHANGE_PREFIX
 
 

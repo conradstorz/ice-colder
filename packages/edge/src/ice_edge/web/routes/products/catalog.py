@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse
 from loguru import logger
 
 from ice_common.config_model import MAX_PRODUCT_NAME_LENGTH, MAX_SKU_LENGTH
+from ice_contracts.money import cents_to_dollar_text
 from ice_edge.access.access import Permission
 from ice_edge.config.config_store import (
     add_product,
@@ -24,6 +25,7 @@ from .helpers import (
     _is_tracked,
     _product_level,
     _render_product_form,
+    parse_price_form,
 )
 
 router = APIRouter()
@@ -50,7 +52,7 @@ async def new_product_form(request: Request):
         source_sku="",
         sku=random_sku,
         name="",
-        price=0.0,
+        price_text=cents_to_dollar_text(0),
         kind="other",
         slot=None,
         inventory_count=0,
@@ -72,7 +74,7 @@ async def create_product(
     request: Request,
     sku: str = Form(...),
     name: str = Form(...),
-    price: float = Form(...),
+    price: str = Form(...),
     slot: str | None = Form(None),
     kind: str = Form("other"),
     inventory_count: int = Form(0),
@@ -92,12 +94,30 @@ async def create_product(
             source_sku=source_sku,
             sku=sku,
             name=name,
-            price=price,
+            price_text=price,
             kind=kind,
             slot=slot,
             inventory_count=inventory_count,
             tracked=tracked,
             error=length_error,
+            button=button,
+            status_code=400,
+        )
+    try:
+        price_cents = parse_price_form(price)
+    except ValueError as exc:
+        return _render_product_form(
+            request,
+            mode=mode,
+            source_sku=source_sku,
+            sku=sku,
+            name=name,
+            price_text=price,
+            kind=kind,
+            slot=slot,
+            inventory_count=inventory_count,
+            tracked=tracked,
+            error=str(exc),
             button=button,
             status_code=400,
         )
@@ -109,7 +129,7 @@ async def create_product(
             source_sku=source_sku,
             sku=sku,
             name=name,
-            price=price,
+            price_text=price,
             kind=kind,
             slot=slot,
             inventory_count=inventory_count,
@@ -130,7 +150,7 @@ async def create_product(
             source_sku=source_sku,
             sku=sku,
             name=name,
-            price=price,
+            price_text=price,
             kind=kind,
             slot=slot,
             inventory_count=inventory_count,
@@ -148,7 +168,7 @@ async def create_product(
             source_sku=source_sku,
             sku=sku,
             name=name,
-            price=price,
+            price_text=price,
             kind=kind,
             slot=slot,
             inventory_count=inventory_count,
@@ -161,7 +181,7 @@ async def create_product(
         context.config,
         sku,
         name,
-        price,
+        price_cents,
         slot=parsed_slot,
         kind=kind,
         button=parsed_button,
@@ -173,7 +193,7 @@ async def create_product(
             source_sku=source_sku,
             sku=sku,
             name=name,
-            price=price,
+            price_text=price,
             kind=kind,
             slot=slot,
             inventory_count=inventory_count,
@@ -208,6 +228,7 @@ async def catalog_form(request: Request, sku: str):
             request,
             level=level,
             product=product,
+            price_text=cents_to_dollar_text(product.price_cents),
             error=None,
             button_value=product.button or "",
         ),
@@ -226,7 +247,7 @@ async def update_catalog(
     request: Request,
     sku: str,
     name: str = Form(...),
-    price: float = Form(...),
+    price: str = Form(...),
     kind: str = Form("other"),
     button: str = Form(""),
 ):
@@ -238,7 +259,13 @@ async def update_catalog(
     product = _get_or_404(sku)
     name = name.strip()
     parsed_button, button_error = _clean_button(button, own_sku=sku)
-    if button_error or len(name) > MAX_PRODUCT_NAME_LENGTH:
+    try:
+        price_cents = parse_price_form(price)
+        price_error = None
+    except ValueError as exc:
+        price_cents = product.price_cents
+        price_error = str(exc)
+    if price_error or button_error or len(name) > MAX_PRODUCT_NAME_LENGTH:
         level = Level.child(
             _product_level(product), "Catalog", f"/products/{sku}/catalog"
         )
@@ -249,13 +276,24 @@ async def update_catalog(
                 request,
                 level=level,
                 product=product,
-                error=_length_error(sku, name, check_sku=False) or button_error,
+                price_text=price
+                if price_error
+                else cents_to_dollar_text(product.price_cents),
+                error=_length_error(sku, name, check_sku=False)
+                or button_error
+                or price_error,
                 button_value=button,
             ),
             status_code=400,
         )
     success = update_product(
-        context.config, sku, name, price, slot=None, kind=kind, button=parsed_button
+        context.config,
+        sku,
+        name,
+        price_cents,
+        slot=None,
+        kind=kind,
+        button=parsed_button,
     )
     if not success:
         # The only way update_product can fail with slot=None is an
@@ -271,6 +309,7 @@ async def update_catalog(
                 request,
                 level=level,
                 product=product,
+                price_text=cents_to_dollar_text(product.price_cents),
                 error="Could not save changes.",
                 button_value=button,
             ),
@@ -294,7 +333,7 @@ async def copy_product_form(request: Request, sku: str):
         source_sku=sku,
         sku=new_sku,
         name=f"{base.name[: MAX_PRODUCT_NAME_LENGTH - 5]} Copy",
-        price=base.price,
+        price_text=cents_to_dollar_text(base.price_cents),
         kind=base.kind,
         slot=None,
         inventory_count=_inventory_count(sku),
