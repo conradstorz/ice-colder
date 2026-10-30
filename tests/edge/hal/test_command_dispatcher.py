@@ -675,7 +675,7 @@ async def test_detail_passthrough():
 
 async def test_early_completion_signal_is_not_lost():
     """Reproduces the registration-gap race documented in
-    CommandDispatcher._resolve_completion: both the accept ack and the
+    CommandDispatcher.complete: both the accept ack and the
     completion report are delivered back-to-back, before
     send_and_await_completion's own coroutine has had a chance to resume
     from send() and register its completion Future. Without the
@@ -711,3 +711,81 @@ async def test_early_completion_signal_is_not_lost():
     assert ack.status == "ok"
     assert ack.phase == "completed"
     assert request_id not in dispatcher._early_completions  # consumed, not leaked
+
+
+def _completion(request_id: str) -> CommandAck:
+    return CommandAck(
+        request_id=request_id,
+        command="dispense",
+        status="ok",
+        detail="done",
+        result={"k": 1},
+        phase="completed",
+    )
+
+
+async def _start_dispense(dispatcher, mqtt, request_id: str):
+    task = asyncio.ensure_future(
+        dispatcher.send_and_await_completion(
+            "vending", "dispense", _dispense_params(1), request_id=request_id
+        )
+    )
+    await _wait_until(lambda: len(mqtt.published) == 1)
+    await mqtt.deliver_ack(
+        "vending", _ack_payload(request_id, "dispense", status="ok", phase="accepted")
+    )
+    return task
+
+
+async def test_complete_before_send_resolves_later_wait():
+    mqtt = FakeMQTTClient()
+    clock = FakeClock()
+    dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
+    request_id = "early-complete-0001"
+
+    dispatcher.complete(request_id, _completion(request_id))
+    task = await _start_dispense(dispatcher, mqtt, request_id)
+
+    ack = await asyncio.wait_for(task, timeout=2.0)
+    assert ack.detail == "done"
+    assert ack.result == {"k": 1}
+    assert clock.calls == [5.0]  # never reached the completion wait
+
+
+async def test_complete_after_ack_resolves_wait():
+    mqtt = FakeMQTTClient()
+    clock = FakeClock()
+    dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
+    request_id = "late-complete-0001"
+
+    task = await _start_dispense(dispatcher, mqtt, request_id)
+    await _wait_for_attempt(clock, 2)  # completion wait is now registered
+    assert not task.done()
+
+    dispatcher.complete(request_id, _completion(request_id))
+    ack = await asyncio.wait_for(task, timeout=2.0)
+    assert ack.phase == "completed"
+    assert ack.result == {"k": 1}
+
+
+async def test_complete_for_unknown_request_id_is_buffered_then_evicted():
+    mqtt = FakeMQTTClient()
+    clock = FakeClock()
+    dispatcher = CommandDispatcher(mqtt, timeout=5.0, clock=clock)
+
+    ids = [f"unknown-id-{i:04d}" for i in range(33)]
+    for rid in ids:
+        dispatcher.complete(rid, _completion(rid))
+
+    # The oldest was evicted at the bound of 32: its wait reaches the
+    # completion sleep instead of resolving from the buffer.
+    task = await _start_dispense(dispatcher, mqtt, ids[0])
+    await _wait_for_attempt(clock, 2)
+    assert not task.done()
+    task.cancel()
+
+    # The newest is still buffered and resolves immediately.
+    mqtt.published.clear()
+    task2 = await _start_dispense(dispatcher, mqtt, ids[-1])
+    ack = await asyncio.wait_for(task2, timeout=2.0)
+    assert ack.request_id == ids[-1]
