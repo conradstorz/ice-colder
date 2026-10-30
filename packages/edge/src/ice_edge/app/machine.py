@@ -801,16 +801,6 @@ class Machine:
         cents = cash_share(pending["methods"])
         if cents <= 0 or key in self._recovered_cash_sales:
             return False
-        held = self._boot_snapshot
-        if held is not None and any(
-            d.get("kind") == "cash_sale" and d.get("cents") == cents
-            for d in held.pending_payouts
-        ):
-            # The crashed run already queued this sale's cash_sale; it is
-            # re-queued (same request_id) when PAY-104 clears. Sending another
-            # would report the cash twice.
-            self._recovered_cash_sales.add(key)
-            return False
         self._payments.cash_sale(cents, None)
         self._recovered_cash_sales.add(key)
         return True

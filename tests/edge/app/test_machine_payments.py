@@ -552,35 +552,37 @@ async def test_clear_requeues_a_pending_change_payout_and_pays_nothing_extra(tmp
     assert len(dispatcher.commands("payout")) == 1
 
 
-async def test_record_as_sale_does_not_duplicate_a_cash_sale_already_in_the_snapshot(
+async def test_record_as_sale_sends_its_cash_sale_besides_an_unrelated_queued_one(
     tmp_path,
 ):
+    # An earlier sale's unconfirmed cash_sale of equal cents must not suppress
+    # the recovered sale's own report.
     items = [
         {
             "request_id": "c" * 32,
             "kind": "cash_sale",
             "cents": 200,
             "reason": None,
-            "sale_id": "s1",
+            "sale_id": "s0",
         }
     ]
 
     def record(machine):
         pending = machine.pending_sale_for_recovery()
         assert pending is not None
-        # The snapshot's own cash_sale supersedes the recovered send.
-        assert machine.send_recovered_cash_sale(pending) is False
+        assert machine.send_recovered_cash_sale(pending) is True
         machine.vmc.clear_fault(FaultCode.PAY_104.value, by="admin")
 
     machine, cfg, avail, dispatcher, _ = await _resolved(
         tmp_path,
         items,
         record,
-        board_escrow=200,
+        board_escrow=400,
         selected_sku="ICE-1",
         dispense_slot=0,
         pending_sale_shares={"cash_bill": 200, "card": 50},
     )
-    assert [(c[1]["cents"], c[2]) for c in dispatcher.commands("cash_sale")] == [
-        (200, "c" * 32)
-    ]
+    sent = dispatcher.commands("cash_sale")
+    assert [c[1]["cents"] for c in sent] == [200, 200]
+    ids = [c[2] for c in sent]
+    assert "c" * 32 in ids and len(set(ids)) == 2
