@@ -6,6 +6,7 @@ product's price from the edge's retained `status` and pays toward it with the
 denominations the policy enables.
 """
 
+import asyncio
 import random
 from typing import Protocol
 
@@ -47,6 +48,8 @@ class CustomerPort(Protocol):
 
 
 class MdbCustomer:
+    ACCEPT_POLL_SECONDS = 0.5  # how often a waiting customer re-checks `accepting`
+
     def __init__(
         self,
         *,
@@ -119,19 +122,44 @@ class MdbCustomer:
             await port.sleep(self._rng.uniform(*self._step))
 
     async def run(self, port: CustomerPort) -> None:
-        while True:
-            status = await port.next_status()
-            if status.get("state") != "interacting_with_user":
-                continue
-            if not port.accepting:
-                logger.debug("[mdb] Interaction seen but board not accepting; waiting")
-                continue
-            selected = status.get("selected_product")
-            if not selected:
-                continue
-            price = port.price_cents_for(selected)
-            if price is None:
-                price = 300
-            logger.info(f"[mdb] Customer interaction: {selected} ({price} cents)")
-            await port.sleep(self._rng.uniform(*self._think))
-            await self.pay(port, price)
+        """Pay for each interaction seen on the retained status.
+
+        The status is retained and does not repeat, so an interaction seen
+        while the board is not accepting is remembered and acted on when
+        acceptance resumes, unless a newer status supersedes it first.
+        """
+        status_task: asyncio.Task | None = None
+        pending: dict | None = None
+        try:
+            while True:
+                if status_task is None:
+                    status_task = asyncio.ensure_future(port.next_status())
+                done, _ = await asyncio.wait(
+                    {status_task}, timeout=self.ACCEPT_POLL_SECONDS if pending else None
+                )
+                if done:
+                    status = status_task.result()
+                    status_task = None
+                    pending = None
+                    if status.get("state") == "interacting_with_user" and status.get(
+                        "selected_product"
+                    ):
+                        pending = status
+                if pending is None:
+                    continue
+                if not port.accepting:
+                    logger.debug(
+                        "[mdb] Interaction seen but board not accepting; waiting"
+                    )
+                    continue
+                status, pending = pending, None
+                selected = status["selected_product"]
+                price = port.price_cents_for(selected)
+                if price is None:
+                    price = 300
+                logger.info(f"[mdb] Customer interaction: {selected} ({price} cents)")
+                await port.sleep(self._rng.uniform(*self._think))
+                await self.pay(port, price)
+        finally:
+            if status_task is not None:
+                status_task.cancel()

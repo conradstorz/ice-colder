@@ -484,6 +484,10 @@ class MdbSimulator(ESP32Simulator):
         if refused is not None:
             return refused
         params = PayoutParams.model_validate(cmd.params)
+        if any(result is None for result in self._payout_requests.values()):
+            # Firmware spec §11: a different payout while another's result is
+            # still held (in flight) is refused, never queued.
+            return CommandOutcome(status="rejected", detail="busy")
         self._payout_requests[cmd.request_id] = None
         self._spawn_background(self._complete_payout(client, cmd.request_id, params))
         return accepted

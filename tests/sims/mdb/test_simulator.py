@@ -244,6 +244,33 @@ async def test_payout_replay_survives_the_ack_cache_eviction(sim, client):
     assert client.kinds() == ["payout_result"]
 
 
+async def test_payout_with_another_result_held_is_busy_until_it_ends(sim, client):
+    await armed(sim, client)
+    for _ in range(4):
+        await sim.insert_coin(client, 100)
+    release = asyncio.Event()
+
+    async def gated(_seconds):
+        await release.wait()
+
+    sim.set_sleep(gated)
+    pay = {"cents": 100, "reason": "change"}
+    first = await send(sim, client, "payout", pay, request_id="pay-busy01")
+    assert (first.status, first.phase) == ("ok", "accepted")
+
+    other = await send(sim, client, "payout", pay, request_id="pay-busy02")
+    assert (other.status, other.detail) == ("rejected", "busy")
+    repeat = await send(sim, client, "payout", pay, request_id="pay-busy01")
+    assert (repeat.status, repeat.phase) == ("ok", "accepted")
+
+    release.set()
+    await sim.drain_background()
+    again = await send(sim, client, "payout", pay, request_id="pay-busy03")
+    assert (again.status, again.phase) == ("ok", "accepted")
+    await sim.drain_background()
+    assert client.kinds().count("payout_result") == 2
+
+
 async def test_expired_payout_is_rejected_expired(sim, client, clock):
     await armed(sim, client, edge_timeout_s=30)
     stale = clock.now() - timedelta(seconds=31)

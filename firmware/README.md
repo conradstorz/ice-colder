@@ -47,7 +47,7 @@ applies after `reboot`. On the MDB board the console is the DevKitC's native USB
 
 `tests/firmware/` drives a board over MQTT. It is opt-in: `ICE_COLDER_BOARD_TESTS=1`, with
 `ICE_COLDER_BOARD_BROKER` (`host[:port]`) and, for real hardware, `ICE_COLDER_BOARD_MACHINE_ID`;
-without a machine id the vending tests run against the vending simulator. `tests/firmware/mdb/` is the MDB board's suite: its hardware tests need a real board (`ICE_COLDER_BOARD_MACHINE_ID`) until an MDB simulator ships, and skip otherwise; its golden wire check always runs.
+without a machine id the vending tests run against the vending simulator. `tests/firmware/mdb/` is the MDB board's suite: it targets a real board when `ICE_COLDER_BOARD_MACHINE_ID` is set and the in-process MDB simulator otherwise; its golden wire check always runs.
 
 ## Documents
 

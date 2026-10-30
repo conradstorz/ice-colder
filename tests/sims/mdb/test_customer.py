@@ -1,5 +1,6 @@
 """MdbCustomer: planning is pure; `run` is driven through a scripted port."""
 
+import asyncio
 import random
 
 import pytest
@@ -115,6 +116,28 @@ async def test_run_ignores_a_board_that_is_not_accepting():
     with pytest.raises(StopAsyncIteration):
         await MdbCustomer(rng=_NoLever(1)).run(port)
     assert port.inserted == []
+
+
+async def test_run_pays_when_acceptance_resumes_mid_interaction():
+    """The retained status does not repeat, so the customer must remember it."""
+
+    class ResumingPort(ScriptedPort):
+        calls = 0
+
+        async def next_status(self):
+            self.calls += 1
+            if self.calls == 1:
+                return INTERACTING
+            self.accepting = True  # the policy arrives after the status did
+            await asyncio.sleep(0.2)
+            raise StopAsyncIteration
+
+    port = ResumingPort([], accepting=False)
+    customer_ = MdbCustomer(rng=_NoLever(1))
+    customer_.ACCEPT_POLL_SECONDS = 0.01
+    with pytest.raises(StopAsyncIteration):
+        await customer_.run(port)
+    assert port.escrow_cents >= 300
 
 
 class _AlwaysLever(random.Random):
