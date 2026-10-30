@@ -49,10 +49,14 @@ class EscrowLedger:
         """Whether nothing is left in escrow."""
         return self.total_cents <= 0
 
-    def deposit(self, method: str, cents: int, ts: float) -> None:
+    def deposit(
+        self, method: str, cents: int, ts: float, event_id: str | None = None
+    ) -> None:
         """Add a credit: bump the total and append it to the FIFO list."""
         self.total_cents += cents
-        self.credits.append(Credit(method=method, cents=cents, ts=ts))
+        self.credits.append(
+            Credit(method=method, cents=cents, ts=ts, event_id=event_id)
+        )
 
     def consume_fifo(self, price_cents: int) -> dict[str, int]:
         """Consume credits FIFO for `price_cents`, returning consumed shares.
@@ -99,7 +103,14 @@ class EscrowLedger:
             remaining -= take
             leftover = credit.cents - take
             if leftover > 0:
-                kept.append(Credit(method=credit.method, cents=leftover, ts=credit.ts))
+                kept.append(
+                    Credit(
+                        method=credit.method,
+                        cents=leftover,
+                        ts=credit.ts,
+                        event_id=credit.event_id,
+                    )
+                )
         self.credits = kept
         return shares
 

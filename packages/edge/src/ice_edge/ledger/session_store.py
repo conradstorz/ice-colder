@@ -47,6 +47,10 @@ class Credit:
     method: str
     cents: int
     ts: float
+    # The board's payment event id for a credit that arrived as one; lets a
+    # restarted edge dedupe a replayed event it already credited. A file
+    # written before this field existed loads with None.
+    event_id: Optional[str] = None
 
 
 @dataclass
@@ -62,7 +66,12 @@ class SessionSnapshot:
     # all -- still loads via SessionSnapshot(**raw).
     dispense_mechanism: Optional[str] = None
     dispense_started_at: Optional[float] = None
+    # Legacy (pre-MDB-cutover) field: read so an old file still loads and
+    # still counts as open; never written with a value any more.
     pending_refund_request_id: Optional[str] = None
+    # Queued or in-flight ``payout`` / ``cash_sale`` commands (PendingPayout
+    # as dicts): money owed to the customer that the board has not confirmed.
+    pending_payouts: list[dict] = field(default_factory=list)
     credits: list[Credit] = field(default_factory=list)
     pending_sale_shares: Optional[dict[str, int]] = None
     # True only for TestSaleRunner.run_test_sale's simulated sale (system-tests design
@@ -91,6 +100,7 @@ class SessionSnapshot:
             or self.state == "dispensing"
             or bool(self.pending_sale_shares)
             or self.pending_refund_request_id is not None
+            or bool(self.pending_payouts)
         )
 
 

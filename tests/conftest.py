@@ -12,6 +12,7 @@ from loguru import logger as _loguru
 
 import ice_common.secrets as secrets_module
 import ice_edge.config.config_store as config_store
+import ice_edge.ledger.payment_cursor as payment_cursor
 from ice_common.config_model import ConfigModel, PhysicalDetails
 from ice_edge.app.machine import Machine
 from ice_edge.access.access import AccessStore, Role, User
@@ -51,6 +52,7 @@ def isolated_config_path(tmp_path, monkeypatch):
     themselves with ``monkeypatch.setenv``.
     """
     monkeypatch.setattr(config_store, "CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(payment_cursor, "CURSOR_PATH", tmp_path / "payment_cursor.json")
     for name in _HOST_ENV_OVERRIDES:
         monkeypatch.delenv(name, raising=False)
 

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from ice_contracts.board.payment import PayoutReason
+from ice_edge.ledger.event_recorder import is_cash
+from ice_edge.ledger.session_store import Credit
 
 
 @dataclass(frozen=True)
@@ -30,3 +33,9 @@ class Payments(Protocol):
     def cash_sale(self, cents: int, sale_id: str | None) -> None: ...
 
     def pending_payouts(self) -> list[PendingPayout]: ...
+
+
+def cash_cents(credits: Iterable[Credit]) -> int:
+    """The part of ``credits`` that arrived as cash, i.e. the only money the
+    MDB board can pay back out."""
+    return sum(c.cents for c in credits if is_cash(c.method))

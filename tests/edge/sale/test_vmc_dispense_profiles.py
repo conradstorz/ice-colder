@@ -476,7 +476,7 @@ async def test_stale_report_with_other_request_id_is_ignored(tmp_path, caplog):
     assert vmc.sale is not None and vmc.sale.request_id == in_flight_id
     assert rec.sales == []
     assert not vmc.faults.lockouts and not vmc.faults.machine_faults
-    assert not vmc.refunds.pending
+    assert machine.gateway.pending_payouts() == []
     # The one observable of "classified as ignored": a warning naming both
     # the stale id and the in-flight id.
     assert any(

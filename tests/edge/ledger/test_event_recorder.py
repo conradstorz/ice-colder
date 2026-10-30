@@ -298,18 +298,9 @@ class TestRegisterHandlers:
         recorder.register_handlers(client)
         return {call.args[0]: call.args[1] for call in client.register.call_args_list}
 
-    @pytest.mark.asyncio
-    async def test_payment_records_amount(self, recorder):
-        h = self._get_handlers(recorder)
-        await h["payment/credit"](
-            "payment/credit",
-            {
-                "amount": 2.50,  # legacy board payload, dollars
-                "method": "cash_coin",
-                "timestamp": "2026-01-01T00:00:00+00:00",
-            },
-        )
-        assert recorder.get_summary(24)["money_in_cents"] == 250
+    def test_payment_credit_topic_is_not_registered(self, recorder):
+        """Deposits are recorded by the MDB intake from payment/event."""
+        assert "payment/credit" not in self._get_handlers(recorder)
 
     def test_hardware_dispenser_not_registered(self, recorder):
         """The recorder must NOT listen on hardware/dispenser directly — only

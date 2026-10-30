@@ -87,7 +87,7 @@ class TestConstruction:
         assert machine.escrow is not None
         assert machine.faults is not None
         assert machine.outputs is not None
-        assert machine.refunds is not None
+        assert machine.gateway is not None
         assert machine.gate is not None
         assert machine.lease is not None
         assert machine.recovery is not None
@@ -118,9 +118,12 @@ class TestConstruction:
         machine = Machine(ConfigModel())
         assert machine.vmc.outputs is machine.outputs
 
-    def test_vmc_and_machine_share_the_same_refund_protocol(self):
+    def test_vmc_pays_out_through_the_machines_gateway(self):
         machine = Machine(ConfigModel())
-        assert machine.vmc.refunds is machine.refunds
+        machine.vmc.deposit_funds(100, payment_method="cash_coin")
+        machine.vmc.request_refund(reason="cancel")
+        (payout,) = machine.gateway.pending_payouts()
+        assert (payout.kind, payout.cents, payout.reason) == ("payout", 100, "cancel")
 
     def test_vmc_and_machine_share_the_same_dispenser_gate(self):
         """Task 6 removed VMC's own public `gate` property (routes/tests
@@ -170,19 +173,25 @@ class TestConstruction:
 
 
 class TestSetMqttClient:
-    def test_registers_the_twelve_topics_in_order_to_bound_methods(self):
+    def test_registers_every_topic_in_order_to_bound_methods(self):
         machine = Machine(ConfigModel())
         mqtt = RecordingMqtt()
         machine.set_mqtt_client(mqtt)
 
         assert machine.mqtt_client is mqtt
-        assert len(mqtt.registered) == 12
+        assert len(mqtt.registered) == len(SUBSCRIPTIONS) == 11
         for (topic, handler), (expected_topic, owner, name) in zip(
             mqtt.registered, SUBSCRIPTIONS
         ):
             assert topic == expected_topic
-            target = machine.vmc if owner == "vmc" else machine.telemetry
-            assert handler == getattr(target, name)
+            target = {
+                "vmc": machine.vmc,
+                "telemetry": machine.telemetry,
+                "payments": machine.gateway,
+            }[owner]
+            for part in name.split("."):
+                target = getattr(target, part)
+            assert handler == target
 
 
 class TestSetAvailability:
@@ -194,7 +203,7 @@ class TestSetAvailability:
         assert machine.availability is av
         assert av.states == [machine.vmc.state]
         assert av.active_faults_calls == [[]]
-        assert av.publisher == machine.outputs.publish_payment_enable
+        assert av.publisher == machine.gateway.policy.on_payment_enabled_changed
 
 
 class TestSetSessionStore:
@@ -349,17 +358,6 @@ class TestCancelPendingTasks:
         machine.cancel_pending_tasks()
 
         assert not any(c.label == "session_timeout" for c in runner.scheduled)
-
-    def test_cancels_refund_deadline(self):
-        runner = FakeTaskRunner()
-        machine = Machine(ConfigModel(), tasks=runner)
-        machine.vmc.deposit_funds(100, payment_method="cash")
-        machine.vmc.request_refund(reason="test")
-        assert any(c.label == "refund_deadline" for c in runner.scheduled)
-
-        machine.cancel_pending_tasks()
-
-        assert not any(c.label == "refund_deadline" for c in runner.scheduled)
 
     async def test_cancels_dispense_timeout(self, tmp_path):
         """Task 8: the dispense-timeout timer is now armed inside

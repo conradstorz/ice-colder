@@ -203,6 +203,15 @@ class TestSubscriptionsTable:
             if owner == "vmc":
                 assert hasattr(VMC, name), f"VMC has no attribute {name!r}"
 
+    def test_every_payments_owner_path_is_a_gateway_attribute(self):
+        from ice_edge.payment.mdb import MdbGateway
+
+        for _, owner, name in SUBSCRIPTIONS:
+            if owner == "payments":
+                head, _, tail = name.partition(".")
+                assert hasattr(MdbGateway, head), f"gateway has no {head!r}"
+                assert tail == "handle"
+
     def test_every_telemetry_owner_method_is_a_router_attribute(self):
         for _, owner, name in SUBSCRIPTIONS:
             if owner == "telemetry":
@@ -215,7 +224,8 @@ class TestSubscriptionsTable:
         # fails even though every method name would still be valid alone.
         # sensors/water_flow is gone (spec 3.4).
         assert SUBSCRIPTIONS == (
-            ("payment/credit", "vmc", "on_payment_credit"),
+            ("payment/event", "payments", "intake.handle"),
+            ("payment/state", "payments", "state_consumer.handle"),
             ("hardware/buttons", "vmc", "on_button_press"),
             ("hardware/dispenser", "vmc", "on_dispenser_event"),
             ("sensors/temp/+", "telemetry", "handle_sensor"),
@@ -225,10 +235,8 @@ class TestSubscriptionsTable:
             ("telemetry/ice_maker/+", "telemetry", "handle_telemetry"),
             ("cmd/ice_maker/ack", "telemetry", "handle_command_ack"),
             ("hardware/io/+", "telemetry", "handle_hardware_io"),
-            ("cmd/payment/refund/ack", "vmc", "on_refund_ack"),
-            ("payment/status", "telemetry", "handle_payment_status"),
         )
-        assert len(SUBSCRIPTIONS) == 12
+        assert len(SUBSCRIPTIONS) == 11
 
 
 class TestNameValidation:

@@ -138,3 +138,12 @@ def test_is_empty_is_exact():
 
     ledger.total_cents = 1
     assert ledger.is_empty is False
+
+
+def test_event_id_travels_with_a_partially_consumed_credit():
+    ledger = EscrowLedger()
+    ledger.deposit("cash_bill", 500, 1.0, event_id="evt-boot-0001-0001")
+    ledger.consume_fifo(200)
+    assert [(c.cents, c.event_id) for c in ledger.credits] == [
+        (300, "evt-boot-0001-0001")
+    ]

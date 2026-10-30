@@ -48,6 +48,19 @@ class SaleJournal:
         logger.info(f"MQTT payment received: {format_cents(amount)} via {method}")
         self._txn.info(f"PAYMENT RECEIVED: {format_cents(amount)} via {method}")
 
+    def payment_event(self, kind: str, fields: dict) -> None:
+        logger.info(f"MDB payment event {kind}: {fields}")
+        self._txn.info(f"PAYMENT EVENT {kind}: {fields}")
+
+    def non_cash_refund(self, cents: int, reason) -> None:
+        logger.error(
+            f"Cannot refund {format_cents(cents)} of non-cash credit "
+            f"(reason={reason}); the MDB board only pays out cash"
+        )
+        self._txn.error(
+            f"REFUND IMPOSSIBLE: {format_cents(cents)} non-cash credit reason={reason}"
+        )
+
     def button_press(self, button: str) -> None:
         logger.info(f"MQTT button press: button {button}")
         self._txn.info(f"BUTTON PRESS: button {button}")

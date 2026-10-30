@@ -33,7 +33,6 @@ from ice_common.mqtt_client import MQTTClient
 from ice_contracts.board.mqtt_messages import (
     ButtonPress,
     DispenserStatus,
-    PaymentEvent,
     SensorReading,
 )
 from ice_contracts.board.vending_machine import FaultCode
@@ -323,6 +322,45 @@ class _MessageCollector:
         )
 
 
+E2E_BOOT = "e2e-board-boot"
+
+
+def _envelope(seq: int, event: dict, boot: str = E2E_BOOT) -> str:
+    return json.dumps(
+        {
+            "event_id": f"evt-{boot}-{seq:04d}",
+            "boot_id": boot,
+            "seq": seq,
+            "ts": "2026-10-30T12:00:00Z",
+            "event": event,
+        }
+    )
+
+
+def _payment_state(policy_id: str = "unset", boot: str = E2E_BOOT, seq_last: int = 0):
+    """A ready `payment/state` document, as the MDB board retains it."""
+    return json.dumps(
+        {
+            "boot_id": boot,
+            "seq_last": seq_last,
+            "policy_id": policy_id,
+            "accepting": True,
+            "inhibited_reason": None,
+            "escrow_cents": 0,
+            "bill_in_escrow_cents": None,
+            "devices": {
+                "coin": {"present": True, "status": "ready"},
+                "bill": {"present": True, "status": "ready"},
+                "cashless": {"present": False, "status": "offline"},
+            },
+            "tubes": [],
+            "exact_change": False,
+            "stacker": None,
+            "session": None,
+        }
+    )
+
+
 class _E2E:
     """Everything one e2e test needs, built by :func:`_e2e_harness`."""
 
@@ -342,6 +380,7 @@ class _E2E:
         # Topic suffixes published through `publish()`, so a test can assert
         # a board message was never sent.
         self.published: list[str] = []
+        self._event_seq = 0
         self.config = config
         self.prefix = prefix
         self.machine = machine
@@ -353,6 +392,16 @@ class _E2E:
     async def publish(self, suffix: str, payload: str) -> None:
         self.published.append(suffix)
         await self.sim_client.publish(f"{self.prefix}/{suffix}", payload)
+
+    async def credit(self, cents: int, kind: str = "bill_stacked") -> None:
+        """Publish one credit as the MDB board would: a `PaymentEventEnvelope`
+        on `payment/event` (a bill stacked, or a coin accepted), with the next
+        `seq` of this test's board boot."""
+        self._event_seq += 1
+        body = {"kind": kind, "cents": cents}
+        if kind == "coin_accepted":
+            body["routed"] = "tubes"
+        await self.publish("payment/event", _envelope(self._event_seq, body))
 
 
 @contextlib.asynccontextmanager
@@ -459,10 +508,7 @@ class TestFullTransactionLoop:
             assert vmc.selected_product.name == "Small Ice"
 
             # 2. Simulate payment (exact amount)
-            await sim_client.publish(
-                f"{prefix}/payment/credit",
-                PaymentEvent(amount=2.00, method="cash_bill").model_dump_json(),
-            )
+            await h.credit(200)
 
             # VMC should process payment → transition to dispensing
             await _wait_for_state(vmc, "dispensing", timeout=5.0)
@@ -503,14 +549,11 @@ class TestFullTransactionLoop:
             await _wait_for_state(vmc, "interacting_with_user", timeout=5.0)
 
             # Overpay with $5.00
-            await sim_client.publish(
-                f"{prefix}/payment/credit",
-                PaymentEvent(amount=5.00, method="cash_bill").model_dump_json(),
-            )
+            await h.credit(500)
             await _wait_for_state(vmc, "dispensing", timeout=5.0)
 
             # Credit should be $5.00 - $1.50 = $3.50
-            assert abs(vmc.credit_escrow_cents - 3.50) < 0.01
+            assert vmc.credit_escrow_cents == 350
 
             dispense_msg = await h.collector.next_dispense()
             assert dispense_msg["params"]["slot"] == 2
@@ -529,7 +572,7 @@ class TestFullTransactionLoop:
 
             # With remaining credit, VMC goes back to interacting_with_user
             await _wait_for_state(vmc, "interacting_with_user", timeout=5.0)
-            assert abs(vmc.credit_escrow_cents - 3.50) < 0.01
+            assert vmc.credit_escrow_cents == 350
             h.collector.assert_one_dispense_per_sale([request_id])
 
     async def test_insufficient_funds_waits_for_more(self, tmp_path):
@@ -545,29 +588,23 @@ class TestFullTransactionLoop:
             await _wait_for_state(vmc, "interacting_with_user", timeout=5.0)
 
             # Insert $1.00 — not enough
-            await sim_client.publish(
-                f"{prefix}/payment/credit",
-                PaymentEvent(amount=1.00, method="cash_coin").model_dump_json(),
-            )
+            await h.credit(100, kind="coin_accepted")
             # Wait for the positive part -- escrow reflecting the
             # deposit -- then check the negative: state unchanged.
             # Credit never becomes sufficient ($1.00 < $3.50), so the
             # state assertion holds regardless of when process_payment's
             # own timer happens to re-check.
-            await _wait_until(lambda: abs(vmc.credit_escrow_cents - 1.00) < 0.01)
+            await _wait_until(lambda: vmc.credit_escrow_cents == 100)
             assert vmc.state == "interacting_with_user"
             assert h.collector.dispenses == []
 
             # Insert another $3.00 — now $4.00 total >= $3.50
-            await sim_client.publish(
-                f"{prefix}/payment/credit",
-                PaymentEvent(amount=3.00, method="cash_bill").model_dump_json(),
-            )
+            await h.credit(300)
 
             # Now it should transition to dispensing
             await _wait_for_state(vmc, "dispensing", timeout=10.0)
             # Credit should be $4.00 - $3.50 = $0.50
-            assert abs(vmc.credit_escrow_cents - 0.50) < 0.01
+            assert vmc.credit_escrow_cents == 50
 
             dispense_msg = await h.collector.next_dispense()
             request_id = dispense_msg["request_id"]
@@ -596,10 +633,7 @@ class TestFullTransactionLoop:
             )
             await _wait_for_state(vmc, "interacting_with_user", timeout=5.0)
 
-            await sim_client.publish(
-                f"{prefix}/payment/credit",
-                PaymentEvent(amount=2.00, method="card").model_dump_json(),
-            )
+            await h.credit(200)
             await _wait_for_state(vmc, "dispensing", timeout=5.0)
 
             dispense_msg = await h.collector.next_dispense()
@@ -660,6 +694,50 @@ class TestSensorAndHeartbeatRouting:
             assert "ice_maker" in summary["subsystems"]
 
 
+async def _mdb_board(h: "_E2E") -> None:
+    """Play the MDB board for one test: answer every `cmd/mdb` command, echo an
+    applied policy in `payment/state`, and report a payout as paid in full."""
+    seen = 0
+    event_seq = 0
+    while True:
+        cmds = [
+            payload
+            for topic, payload in h.collector.messages
+            if topic.endswith("/cmd/mdb") and isinstance(payload, dict)
+        ]
+        for cmd in cmds[seen:]:
+            seen += 1
+            rid, name = cmd["request_id"], cmd["command"]
+            params = cmd.get("params") or {}
+            phase = "accepted" if name == "payout" else "completed"
+            ack = CommandAck(
+                request_id=rid, command=name, status="ok", phase=phase
+            ).model_dump_json()
+            await h.sim_client.publish(f"{h.prefix}/cmd/mdb/ack", ack)
+            if name == "set_policy":
+                await h.sim_client.publish(
+                    f"{h.prefix}/payment/state", _payment_state(params["policy_id"])
+                )
+            elif name == "payout":
+                event_seq += 1
+                await h.sim_client.publish(
+                    f"{h.prefix}/payment/event",
+                    _envelope(
+                        event_seq,
+                        {
+                            "kind": "payout_result",
+                            "request_id": rid,
+                            "requested_cents": params["cents"],
+                            "paid_cents": params["cents"],
+                            "status": "ok",
+                            "detail": None,
+                        },
+                        boot="e2e-mdb-board-boot",
+                    ),
+                )
+        await asyncio.sleep(0.05)
+
+
 class TestFailedVendLoop:
     """jam → vend_failed → lockout → clear → sell again, through a real broker."""
 
@@ -672,22 +750,25 @@ class TestFailedVendLoop:
         async with _e2e_harness(
             "e2e-fault-sim",
             tmp_path,
-            subscribe=("cmd/vending", "cmd/payment/refund"),
+            subscribe=("cmd/vending", "cmd/mdb"),
             with_health=True,
             tasks=runner,
         ) as h:
             vmc, prefix, sim_client = h.vmc, h.prefix, h.sim_client
             request_ids: list[str] = []
+            board = asyncio.create_task(_mdb_board(h))
+            await h.publish(
+                "heartbeat/mdb", json.dumps({"subsystem": "mdb", "uptime_seconds": 1})
+            )
+            # As main.py's connection callback does: starts the policy sync.
+            h.machine.on_mqtt_connection(True)
 
             async def sale(outcome: str):
                 await sim_client.publish(
                     f"{prefix}/hardware/buttons", json.dumps({"button": "button_ice"})
                 )
                 await _wait_for_state(vmc, "interacting_with_user")
-                await sim_client.publish(
-                    f"{prefix}/payment/credit",
-                    json.dumps({"amount": 2.00, "method": "cash_bill"}),
-                )
+                await h.credit(200)
                 # select_product schedules process_payment a second
                 # later; with the fake runner the test fires it once
                 # the credit has landed in escrow.
@@ -717,12 +798,16 @@ class TestFailedVendLoop:
                 # and session expiry pays out via the gateway.
                 runner.fire("session_timeout")
 
-                refund = await h.collector.wait_for(
-                    lambda topic, payload: topic.endswith("/cmd/payment/refund"),
-                    "refund command",
+                payout = await h.collector.wait_for(
+                    lambda topic, payload: topic.endswith("/cmd/mdb")
+                    and payload.get("command") == "payout",
+                    "payout command",
+                    timeout=10.0,
                 )
-                assert refund["amount"] == 2.00
+                assert payout["params"]["cents"] == 200
+                assert payout["params"]["reason"] == "session_timeout"
                 await _wait_for_state(vmc, "idle")
+                await _wait_until(lambda: h.machine.gateway.pending_payouts() == [])
 
                 assert vmc.clear_fault("ICE-SM") is True
                 await sale("complete")
@@ -733,14 +818,15 @@ class TestFailedVendLoop:
                 assert request_ids[0] != request_ids[1]
                 h.collector.assert_one_dispense_per_sale(request_ids)
             finally:
+                await _stop_background_task(board)
                 h.machine.cancel_pending_tasks()
 
 
 async def test_vending_heartbeat_loss_blocks_sale_not_payment_enable():
-    """Live broker: vending LWT no longer withdraws payment/enable —
+    """Live broker: vending LWT no longer withdraws payment acceptance —
     `vending_alive` is a fulfillment-only permissive under the soft-faults
-    design (ice_edge/faults/availability.py), so cmd/payment/enable stays true
-    throughout. Heartbeat loss instead blocks `sale_available` for that
+    design (ice_edge/faults/availability.py), so the set_policy `accept` flag
+    stays true throughout. Heartbeat loss instead blocks `sale_available` for that
     product kind, and heartbeat recovery restores it."""
     from ice_edge.faults.availability import Availability
 
@@ -761,6 +847,7 @@ async def test_vending_heartbeat_loss_blocks_sale_not_payment_enable():
     avail = Availability()
     machine.set_availability(avail)
     machine.set_mqtt_client(mqtt)
+    machine.set_command_dispatcher(CommandDispatcher(mqtt))
     mqtt.set_connection_callback(
         lambda c: (monitor.update_mqtt_status(c), machine.on_mqtt_connection(c))
     )
@@ -768,7 +855,7 @@ async def test_vending_heartbeat_loss_blocks_sale_not_payment_enable():
 
     seen: list[bool] = []
     async with aiomqtt.Client(hostname="localhost", port=1883, **_MQTT_AUTH) as probe:
-        await probe.subscribe(f"vmc/{cfg.machine_id}/cmd/payment/enable")
+        await probe.subscribe(f"vmc/{cfg.machine_id}/cmd/mdb")
         # `mqtt.connected` flips true before the subscribe loop runs, so it
         # does not guarantee the VMC is subscribed to the heartbeat/payment/
         # hardware-io topics published below. `mqtt.subscribed` is the
@@ -782,10 +869,7 @@ async def test_vending_heartbeat_loss_blocks_sale_not_payment_enable():
                 f"{prefix}/heartbeat/{name}",
                 json.dumps({"subsystem": name, "uptime_seconds": 1}),
             )
-        await probe.publish(
-            f"{prefix}/payment/status",
-            json.dumps({"device": "coin_acceptor", "state": "ready"}),
-        )
+        await probe.publish(f"{prefix}/payment/state", _payment_state())
         await probe.publish(
             f"{prefix}/hardware/io/bin_half_full",
             json.dumps({"device": "bin_half_full", "state": True}),
@@ -819,12 +903,14 @@ async def test_vending_heartbeat_loss_blocks_sale_not_payment_enable():
                 msg = await asyncio.wait_for(probe.messages.__anext__(), timeout=0.5)
             except asyncio.TimeoutError:
                 break
-            seen.append(json.loads(msg.payload)["accept"])
+            cmd = json.loads(msg.payload)
+            if cmd.get("command") == "set_policy":
+                seen.append(cmd["params"]["accept"])
 
     await _stop_background_task(run)
     machine.cancel_pending_tasks()
-    assert seen  # payment/enable was published at least once (initial true)
-    assert all(seen), "payment/enable must never go false on fulfillment-only loss"
+    assert seen  # set_policy was sent at least once (initial accept=true)
+    assert all(seen), "payment must never be withdrawn on fulfillment-only loss"
 
 
 # --- Kooler Ice IM600XL: the simulator's capabilities stand in for the board ---
@@ -893,7 +979,7 @@ async def _im600xl_harness(sim_id: str, tmp_path, *, recorder=None):
         sim_id,
         tmp_path,
         config=_im600xl_config(),
-        subscribe=("cmd/vending", "cmd/payment/enable"),
+        subscribe=("cmd/vending", "cmd/mdb"),
         with_health=True,
         profile_text=IM600XL_GOOD,
         availability=availability,
@@ -904,9 +990,7 @@ async def _im600xl_harness(sim_id: str, tmp_path, *, recorder=None):
                 f"heartbeat/{name}",
                 json.dumps({"subsystem": name, "uptime_seconds": 1}),
             )
-        await h.publish(
-            "payment/status", json.dumps({"device": "coin_acceptor", "state": "ready"})
-        )
+        await h.publish("payment/state", _payment_state())
         board = VendingMachineSimulator(machine_id=h.config.machine_id)
         await h.publish(
             "capabilities/vending", board.build_capabilities().model_dump_json()
@@ -921,24 +1005,21 @@ async def _im600xl_harness(sim_id: str, tmp_path, *, recorder=None):
         yield h
 
 
-def _sales(recorder: EventRecorder) -> list[tuple[str, float]]:
+def _sales(recorder: EventRecorder) -> list[tuple[str, int]]:
     recorder.flush()
     conn = sqlite3.connect(recorder.db_path)
     try:
-        return conn.execute("SELECT sku, price FROM sales ORDER BY id").fetchall()
+        return conn.execute("SELECT sku, price_cents FROM sales ORDER BY id").fetchall()
     finally:
         conn.close()
 
 
-async def _im600xl_sale(h: _E2E, button: str, amount: float, slot: int) -> str:
+async def _im600xl_sale(h: _E2E, button: str, amount_cents: int, slot: int) -> str:
     """Press *button*, pay *amount*, accept the dispense and report it
     `complete`; returns the dispense request_id."""
     await h.publish("hardware/buttons", ButtonPress(button=button).model_dump_json())
     await _wait_for_state(h.vmc, "interacting_with_user", timeout=5.0)
-    await h.publish(
-        "payment/credit",
-        PaymentEvent(amount=amount, method="cash_bill").model_dump_json(),
-    )
+    await h.credit(amount_cents)
     await _wait_for_state(h.vmc, "dispensing", timeout=5.0)
     dispense_msg = await h.collector.next_dispense()
     assert dispense_msg["params"]["slot"] == slot
@@ -963,11 +1044,11 @@ class TestIM600XLSales:
         async with _im600xl_harness(
             "e2e-im600xl-ice", tmp_path, recorder=recorder
         ) as h:
-            request_id = await _im600xl_sale(h, "button_ice", 2.00, slot=0)
+            request_id = await _im600xl_sale(h, "button_ice", 200, slot=0)
 
             assert h.vmc.credit_escrow_cents == 0
             h.collector.assert_one_dispense_per_sale([request_id])
-            assert _sales(recorder) == [("SAMPLE-ICE", 2.00)]
+            assert _sales(recorder) == [("SAMPLE-ICE", 200)]
             assert "hardware/io/bin_half_full" not in h.published
 
     async def test_water_sale(self, tmp_path):
@@ -975,11 +1056,11 @@ class TestIM600XLSales:
         async with _im600xl_harness(
             "e2e-im600xl-water", tmp_path, recorder=recorder
         ) as h:
-            request_id = await _im600xl_sale(h, "button_water_1gal", 1.50, slot=1)
+            request_id = await _im600xl_sale(h, "button_water_1gal", 150, slot=1)
 
             assert h.vmc.credit_escrow_cents == 0
             h.collector.assert_one_dispense_per_sale([request_id])
-            assert _sales(recorder) == [("SAMPLE-WATER-SM", 1.50)]
+            assert _sales(recorder) == [("SAMPLE-WATER-SM", 150)]
 
     async def test_sump_high_withdraws_payment_and_recovery_restores_it(self, tmp_path):
         async with _im600xl_harness("e2e-im600xl-sump", tmp_path) as h:

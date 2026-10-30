@@ -150,7 +150,7 @@ class Availability:
 
     Usage:
         avail = Availability()
-        avail.set_publisher(outputs.publish_payment_enable)  # StatusOutputs publisher, sync callable(bool)
+        avail.set_publisher(policy.on_payment_enabled_changed)  # PolicySync, sync callable(bool)
         avail.set_subsystem_alive("vending", True)         # ... from health monitor
         ok, failing = avail.product_sellable(product)
     """

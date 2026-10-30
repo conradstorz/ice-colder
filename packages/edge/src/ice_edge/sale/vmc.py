@@ -2,19 +2,14 @@
 import asyncio
 import time
 from collections.abc import Callable
+from dataclasses import asdict
 from loguru import logger
 from ice_edge.payment.payment_gateway_manager import PaymentGatewayManager
-from ice_contracts.board.mqtt_messages import (
-    PaymentEvent,
-    ButtonPress,
-)
-from ice_contracts.board.vending_machine import (
-    DispenserOutcome,
-    FaultCode,
-    PaymentRefundResult,
-)
+from ice_contracts.board.mqtt_messages import ButtonPress
+from ice_contracts.board.payment import PayoutReason
+from ice_contracts.board.vending_machine import DispenserOutcome, FaultCode
 from ice_common.config_model import ConfigModel, Product
-from ice_contracts.money import dollars_to_cents, format_cents
+from ice_contracts.money import format_cents
 from ice_edge.faults.availability import Availability
 from ice_edge.monitoring.inventory_manager import InventoryManager
 from ice_edge.ledger.session_store import SessionSnapshot
@@ -23,7 +18,7 @@ from ice_edge.faults.fault_service import FaultService
 from ice_edge.ledger.escrow_ledger import EscrowLedger
 from ice_edge.sale.buttons import product_for_button
 from ice_edge.sale.outputs import StatusOutputs
-from ice_edge.payment.refund_protocol import PendingRefund, RefundProtocol
+from ice_edge.payment.ports import Payments, PendingPayout, cash_cents
 from ice_edge.sale.sale_context import SaleContext
 from ice_edge.sale.refusal import refusal
 from ice_edge.sale.stock import draw_stock
@@ -50,9 +45,6 @@ class VMC:
 
     states = ["idle", "interacting_with_user", "dispensing", "error"]
 
-    REFUND_ACK_TIMEOUT = 10.0  # seconds to wait for cmd/payment/refund/ack
-    REFUND_MAX_ATTEMPTS = 2  # one retry with the same request_id, then PAY-103
-
     @logger.catch()
     def __init__(
         self,
@@ -60,7 +52,7 @@ class VMC:
         *,
         tasks: TaskRunner,
         escrow: EscrowLedger,
-        refunds: RefundProtocol,
+        payments: Payments,
         faults: FaultService,
         outputs: StatusOutputs,
         gate: DispenserProfileGate,
@@ -91,7 +83,7 @@ class VMC:
         self._dispense_factory = dispense_factory
         self._cycle: DispenseCycle | None = None
         self.last_insufficient_message = ""
-        self.last_payment_method = "Simulated Payment"
+        self.last_payment_method = "cash_coin"
 
         self._tasks = tasks
         self._session_timer = SessionTimer(
@@ -110,7 +102,7 @@ class VMC:
         ] = []
         self._faults = faults
         self._gate = gate
-        self._refunds = refunds
+        self._payments = payments
         # Public so tests can override.
         self.session_timeout_seconds = 180.0  # 3 minutes
         self.dispense_timeout_seconds = (
@@ -143,7 +135,6 @@ class VMC:
         return self._snapshot(state)
 
     def _snapshot(self, state: str | None = None) -> SessionSnapshot:
-        pending = self._refunds.first_request_id()
         product = self.selected_product
         effective_state = state or self.state
         return SessionSnapshot(
@@ -159,7 +150,7 @@ class VMC:
             dispense_started_at=time.time()
             if effective_state == "dispensing"
             else None,
-            pending_refund_request_id=pending,
+            pending_payouts=[asdict(p) for p in self._payments.pending_payouts()],
             credits=self._escrow.snapshot_credits(),
             pending_sale_shares=dict(self.pending_sale_shares)
             if self.pending_sale_shares is not None
@@ -204,11 +195,6 @@ class VMC:
     def escrow(self) -> EscrowLedger:
         """The escrow ledger itself."""
         return self._escrow
-
-    @property
-    def refunds(self) -> RefundProtocol:
-        """Read-only view of the refund protocol."""
-        return self._refunds
 
     # --- In-flight sale (SaleContext) ---
     # `self._sale` is replaced wholesale at each transition. `selected_product` is
@@ -264,14 +250,6 @@ class VMC:
         return self._faults.clear_fault(key, by=by)
 
     # --- MQTT inbound handlers ---
-
-    async def on_payment_credit(self, topic: str, data: dict):
-        """Handle payment credit from MDB ESP32."""
-        event = PaymentEvent.model_validate(data)
-        # Legacy dollar event, converted once; permanent until payment spec B.
-        cents = dollars_to_cents(event.amount)
-        self._journal.payment_received(cents, event.method)
-        self.deposit_funds(cents, payment_method=event.method)
 
     async def on_button_press(self, topic: str, data: dict):
         """Handle button press from ESP32."""
@@ -654,7 +632,7 @@ class VMC:
             self._journal.no_sellable_products()
             # Test money never leaves via a real refund; run_test_sale clears it.
             if not is_test:
-                self.request_refund(reason=code.value)
+                self.request_refund(reason="vend_failed", detail=code.value)
             self._session_timer.cancel()
             self.set_state("idle")
             self._outputs.state_changed(self.state)
@@ -701,7 +679,9 @@ class VMC:
             self._sale = sale.with_(settled=True)
 
     # --- Business Logic Methods ---
-    def _refund_maintenance_deposit(self, cents: int, payment_method) -> None:
+    def _refund_maintenance_deposit(
+        self, cents: int, payment_method, event_id: str | None
+    ) -> None:
         """Send a coin that raced the payment-disable command straight back.
 
         Trust boundary: `payment_method` is a raw MQTT string, so a spoofed "test"
@@ -709,26 +689,33 @@ class VMC:
         recording is gated on `sale.is_test`, which only `run_test_sale` sets.
         """
         self._journal.deposit_during_maintenance(cents)
-        self._escrow.deposit(payment_method, cents, time.time())
+        self._escrow.deposit(payment_method, cents, time.time(), event_id)
         self.last_payment_method = payment_method
         self.request_refund(reason="maintenance")
 
-    @logger.catch()
-    def deposit_funds(self, cents: int, payment_method="Simulated Payment"):
+    def deposit_funds(self, cents: int, payment_method="cash_coin", *, event_id=None):
+        """Credit escrow. Not wrapped in `logger.catch`: the MDB intake acks a
+        payment event only if this returns, so a failure must propagate (the
+        board then replays the event). Everything after the credit itself is
+        best-effort (`_after_deposit`) and can never undo or repeat it."""
         logger.debug(f"Depositing funds: cents={cents}, method={payment_method}")
         if cents <= 0:
             self._journal.deposit_ignored(cents)
             return
         if self._in_maintenance() and payment_method != "test":
-            self._refund_maintenance_deposit(cents, payment_method)
+            self._refund_maintenance_deposit(cents, payment_method, event_id)
             return
+        self._escrow.deposit(payment_method, cents, time.time(), event_id)
+        self.last_payment_method = payment_method
+        self._after_deposit(cents, payment_method)
+
+    @logger.catch()
+    def _after_deposit(self, cents: int, payment_method) -> None:
         availability = self._availability()
         if availability and not availability.payment_enabled:
             self._journal.deposit_while_payment_disabled(
                 cents, availability.payment_blocking_reasons()
             )
-        self._escrow.deposit(payment_method, cents, time.time())
-        self.last_payment_method = payment_method
         self._journal.deposited(cents, payment_method, self.credit_escrow_cents)
         # Arm on every deposit, not only in interacting_with_user: credit can arrive
         # while idle (before any press, or while a soft fault refuses selections) and
@@ -742,43 +729,52 @@ class VMC:
         )
 
     @logger.catch()
-    def request_refund(self, reason: str = "admin"):
-        """Pay the customer back: publish a refund command and await its ack.
+    def request_refund(self, reason: str = "admin", *, detail: str | None = None):
+        """Pay the customer back: queue a cash payout on the MDB board.
 
         This is the ONLY path that sends money out. Restoring a price to
         escrow after a failed vend is not a refund and does not come here.
+        The board pays out cash only, so any non-cash credit is taken off
+        escrow, logged at error and raised as PAY-103 `non_cash_refund`.
         """
         logger.debug(f"Requesting refund, credit cents: {self.credit_escrow_cents}")
         if self.credit_escrow_cents <= 0:
             self.send_customer_message("No funds to refund.")
             return
-        cents = self._escrow.take_all()
-        pending = self._refunds.begin(cents, reason)
-        self._journal.refund_requested(
-            cents, self.last_payment_method, reason, pending.request_id
-        )
+        cash = cash_cents(self._escrow.credits)
+        other = self.credit_escrow_cents - cash
+        self._escrow.take_all()
+        if other > 0:
+            self._journal.non_cash_refund(other, reason)
+            self.raise_fault(FaultCode.PAY_103, outcome="non_cash_refund")
+        if cash > 0:
+            try:
+                payout_reason = PayoutReason(reason)
+            except ValueError:
+                logger.warning(f"Unknown refund reason {reason!r}; paying out as error")
+                payout_reason = PayoutReason.error
+            self._payments.pay_out(cash, payout_reason, None)
+            pending = self._payments.pending_payouts()
+            self._journal.refund_requested(
+                cash,
+                self.last_payment_method,
+                f"{reason} ({detail})" if detail else reason,
+                pending[-1].request_id if pending else "n/a",
+            )
         self._outputs.refresh()
 
-    async def on_refund_ack(self, topic: str, data: dict):
-        """Payment gateway acknowledged (or refused) a refund command."""
-        result = PaymentRefundResult.model_validate(data)
-        self._refunds.handle_ack(result)
+    def on_payment_lever(self) -> None:
+        """The customer pressed the coin-return lever: refund, unless a vend is running."""
+        if self.state == "dispensing" or self._escrow.is_empty:
+            logger.info(f"Coin-return lever ignored (state={self.state})")
+            return
+        self.request_refund(reason="customer")
 
-    def _refund_confirmed(self, pending: PendingRefund, returned_cents: int) -> None:
-        self._outputs.persist()
+    def on_payout_paid(self, item: PendingPayout, paid_cents: int) -> None:
+        """The board confirmed (all or part of) a payout; the queue persists itself."""
         self._journal.refund_confirmed(
-            pending.request_id,
-            pending.reason,
-            returned_cents,
-            self.last_payment_method,
+            item.request_id, item.reason, paid_cents, self.last_payment_method
         )
-
-    def _refund_failed(self, pending: PendingRefund, detail: str) -> None:
-        self._outputs.persist()
-        self._journal.refund_failed(
-            pending.request_id, pending.reason, pending.cents, detail
-        )
-        self.raise_fault(FaultCode.PAY_103, outcome=detail)
 
     # --- Maintenance lease support ---
 

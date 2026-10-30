@@ -440,3 +440,57 @@ def test_legacy_dollar_file_converts_to_cents(tmp_path):
     assert loaded.credit_escrow_cents == 125
     assert loaded.credits == [Credit(method="cash_bill", cents=125, ts=10.0)]
     assert loaded.pending_sale_shares == {"cash": 250}
+
+
+def test_credit_event_id_round_trips_and_old_credit_loads_without_it(tmp_path):
+    path = tmp_path / "session.json"
+    store = SessionStore(path)
+    store.save(
+        SessionSnapshot(
+            state="idle",
+            credit_escrow_cents=300,
+            credits=[Credit("cash_bill", 300, 1.0, event_id="evt-boot-0001-0007")],
+        )
+    )
+    assert store.load().credits[0].event_id == "evt-boot-0001-0007"
+
+    raw = json.loads(path.read_text())
+    del raw["credits"][0]["event_id"]  # a file from before the field existed
+    path.write_text(json.dumps(raw))
+    assert store.load().credits[0].event_id is None
+
+
+def test_pending_payouts_keep_a_snapshot_open_and_round_trip(tmp_path):
+    payout = {
+        "request_id": "r" * 8,
+        "kind": "payout",
+        "cents": 200,
+        "reason": "customer",
+        "sale_id": None,
+    }
+    snap = SessionSnapshot(
+        state="idle", credit_escrow_cents=0, pending_payouts=[payout]
+    )
+    assert snap.is_open()
+    assert not SessionSnapshot(state="idle", credit_escrow_cents=0).is_open()
+
+    store = SessionStore(tmp_path / "session.json")
+    store.save(snap)
+    assert store.load().pending_payouts == [payout]
+
+
+def test_legacy_pending_refund_request_id_still_counts_as_open(tmp_path):
+    path = tmp_path / "session.json"
+    store = SessionStore(path)
+    store.save(
+        SessionSnapshot(
+            state="idle", credit_escrow_cents=0, pending_refund_request_id="r" * 8
+        )
+    )
+    raw = json.loads(path.read_text())
+    del raw["pending_payouts"]  # a file written before the MDB cutover
+    path.write_text(json.dumps(raw))
+
+    loaded = store.load()
+    assert loaded.pending_payouts == [] and loaded.pending_refund_request_id
+    assert loaded.is_open()

@@ -17,11 +17,9 @@ import asyncio
 import pytest
 
 from ice_common.config_model import Product
-from ice_contracts.board.vending_machine import PaymentRefundCommand
 from ice_edge.sale.outputs import StatusOutputs
 from ice_contracts.board.mqtt_messages import (
     AlertLevel,
-    PaymentEnableCommand,
     VMCAlert,
     VMCStatus,
 )
@@ -477,54 +475,10 @@ def test_show_qr_calls_callback_only_when_set():
 # --- publish_payment_enable / publish_refund / publish_alert ---
 
 
-async def test_publish_payment_enable_without_client_is_silent():
-    outputs, runner = make_outputs()
-    runner.attach(asyncio.get_running_loop())
-
-    outputs.publish_payment_enable(True)
-    await asyncio.sleep(0)
-    # no client -> nothing to assert but "did not raise"
-
-
-async def test_publish_payment_enable_publishes_on_the_right_topic():
-    outputs, runner = make_outputs()
-    runner.attach(asyncio.get_running_loop())
-    mqtt = FakeMqtt()
-    outputs.attach_mqtt(mqtt)
-
-    outputs.publish_payment_enable(True)
-    await asyncio.sleep(0)
-
-    assert len(mqtt.published) == 1
-    topic, payload, _retain = mqtt.published[0]
-    assert topic == "cmd/payment/enable"
-    assert isinstance(payload, PaymentEnableCommand)
-    assert payload.accept is True
-
-
-async def test_publish_refund_without_client_is_silent():
-    outputs, runner = make_outputs()
-    runner.attach(asyncio.get_running_loop())
-    cmd = PaymentRefundCommand(request_id="r" * 8, amount=1.50, reason="admin")
-
-    outputs.publish_refund(cmd)
-    await asyncio.sleep(0)
-
-
-async def test_publish_refund_publishes_on_the_right_topic():
-    outputs, runner = make_outputs()
-    runner.attach(asyncio.get_running_loop())
-    mqtt = FakeMqtt()
-    outputs.attach_mqtt(mqtt)
-    cmd = PaymentRefundCommand(request_id="r" * 8, amount=1.50, reason="admin")
-
-    outputs.publish_refund(cmd)
-    await asyncio.sleep(0)
-
-    assert len(mqtt.published) == 1
-    topic, payload, _retain = mqtt.published[0]
-    assert topic == "cmd/payment/refund"
-    assert payload is cmd
+def test_outputs_no_longer_publish_payment_enable_or_refund_commands():
+    outputs, _runner = make_outputs()
+    assert not hasattr(outputs, "publish_payment_enable")
+    assert not hasattr(outputs, "publish_refund")
 
 
 async def test_publish_alert_without_client_is_silent():

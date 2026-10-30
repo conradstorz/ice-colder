@@ -31,7 +31,6 @@ from loguru import logger
 from ice_contracts.board.mqtt_messages import (
     HardwareIO,
     IceMakerEvent,
-    PaymentEvent,
     SensorReading,
     SubsystemHeartbeat,
 )
@@ -1388,15 +1387,10 @@ class EventRecorder:
         overcount products_out on duplicate/late completions the VMC ignores.
         The VMC calls ``record("dispense", ...)`` itself when it accepts one.
         """
-        mqtt_client.register("payment/credit", self._on_payment)
         mqtt_client.register("ice_maker/event", self._on_ice_maker_event)
         mqtt_client.register("hardware/io/service_door", self._on_service_door)
         mqtt_client.register("sensors/temp/+", self._on_sensor)
         mqtt_client.register("heartbeat/+", self._on_heartbeat)
-
-    async def _on_payment(self, topic: str, data: dict):
-        event = PaymentEvent.model_validate(data)
-        self.record("payment", value=dollars_to_cents(event.amount))
 
     async def _on_ice_maker_event(self, topic: str, data: dict):
         event = IceMakerEvent.model_validate(data)

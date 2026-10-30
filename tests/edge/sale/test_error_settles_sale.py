@@ -11,6 +11,7 @@ from ice_edge.ledger.session_store import SessionStore
 from ice_edge.monitoring.inventory_manager import InventoryManager
 from tests.edge.sale.test_vmc_flows import (
     RecordingClient,
+    payouts,
     make_machine,
     two_products,
 )
@@ -64,8 +65,8 @@ async def test_error_from_interacting_with_credit_refunds_and_settles_once(tmp_p
     await asyncio.sleep(0)
 
     assert settled == [("error", None)]
-    assert len(client.refund_commands()) == 1
-    assert client.refund_commands()[0].amount == 1.0
+    assert len(payouts(machine)) == 1
+    assert payouts(machine)[0].cents == 100
 
 
 async def test_error_with_no_sale_settles_nothing(tmp_path):
@@ -122,7 +123,7 @@ async def test_error_during_sale_write_does_not_refund_dispensed_product(tmp_pat
 
     assert vmc.state == "error"
     assert len(sales) == 1
-    assert client.refund_commands() == []
+    assert payouts(machine) == []
     assert vmc.credit_escrow_cents == 0
     assert vmc.pending_sale_shares is None
     assert settled == ["dispensed"]
@@ -184,7 +185,7 @@ async def test_second_error_during_write_does_not_refund_or_settle_twice(tmp_pat
     await asyncio.wait_for(report, timeout=5)
     await asyncio.sleep(0)
 
-    assert client.refund_commands() == []
+    assert payouts(machine) == []
     assert vmc.credit_escrow_cents == 0
     assert len(recorder.sales) == 1
     assert settled == ["dispensed"]

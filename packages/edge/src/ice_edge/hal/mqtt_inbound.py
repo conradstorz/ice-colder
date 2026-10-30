@@ -221,15 +221,17 @@ class TelemetryRouter:
         )
 
 
-#: (topic_pattern, owner, method_name) triples. `owner` is `"vmc"` for the four
-#: sale-driving handlers that stay on the VMC (`on_payment_credit`,
-#: `on_button_press`, `on_dispenser_event`, `on_refund_ack`) and `"telemetry"`
-#: for the rest, whose `method_name` is the `TelemetryRouter`'s own `handle_*`
+#: (topic_pattern, owner, method_name) triples. `owner` is `"vmc"` for the two
+#: sale-driving handlers that stay on the VMC (`on_button_press`,
+#: `on_dispenser_event`), `"payments"` for the MDB gateway (`method_name` is a
+#: dotted path from the gateway, e.g. `intake.handle`) and `"telemetry"` for
+#: the rest, whose `method_name` is the `TelemetryRouter`'s own `handle_*`
 #: name. `Machine.set_mqtt_client` (ice_edge/app/machine.py) is the sole loop
 #: over this table, resolving each triple against the VMC or its
 #: `TelemetryRouter` depending on `owner`.
 SUBSCRIPTIONS: tuple[tuple[str, str, str], ...] = (
-    ("payment/credit", "vmc", "on_payment_credit"),
+    ("payment/event", "payments", "intake.handle"),
+    ("payment/state", "payments", "state_consumer.handle"),
     ("hardware/buttons", "vmc", "on_button_press"),
     ("hardware/dispenser", "vmc", "on_dispenser_event"),
     ("sensors/temp/+", "telemetry", "handle_sensor"),
@@ -239,6 +241,4 @@ SUBSCRIPTIONS: tuple[tuple[str, str, str], ...] = (
     ("telemetry/ice_maker/+", "telemetry", "handle_telemetry"),
     ("cmd/ice_maker/ack", "telemetry", "handle_command_ack"),
     ("hardware/io/+", "telemetry", "handle_hardware_io"),
-    ("cmd/payment/refund/ack", "vmc", "on_refund_ack"),
-    ("payment/status", "telemetry", "handle_payment_status"),
 )

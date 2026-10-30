@@ -3,7 +3,7 @@
 Extracted from ``ice_edge.sale.vmc.VMC`` as the fourth piece carved off the VMC
 god object, following the same pattern as ``ice_edge/faults/fault_registry.py``'s
 ``FaultRegistry``, ``ice_edge/ledger/escrow_ledger.py``'s ``EscrowLedger`` and
-``ice_edge/payment/refund_protocol.py``'s ``RefundProtocol`` (see ``CLAUDE.md``'s
+the refund path (see ``CLAUDE.md``'s
 "FSM Core" section). ``SessionRecovery`` owns the boot-time three-way
 decision over a loaded ``SessionSnapshot`` plus the read-only PAY-104
 recovery accessor and its record-once guards (``_recorded_pay104_keys``, now
@@ -147,6 +147,7 @@ class SessionRecovery:
         return (
             snap.credit_escrow_cents <= 0
             and snap.pending_refund_request_id is None
+            and not snap.pending_payouts
             and not snap.error
         )
 

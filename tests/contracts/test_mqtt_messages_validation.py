@@ -116,8 +116,12 @@ class TestVMCDepositGuard:
         machine = Machine(config=ConfigModel())
         vmc = machine.vmc
         machine.attach_to_loop(asyncio.get_running_loop())
-        with pytest.raises(ValidationError):
-            await vmc.on_payment_credit(
-                "payment/credit", {"amount": -5.0, "method": "cash"}
-            )
+        bad = {
+            "event_id": "evt-bad-0001",
+            "boot_id": "boot-bad",
+            "seq": 1,
+            "ts": "2026-10-30T12:00:00Z",
+            "event": {"kind": "coin_accepted", "cents": -500, "routed": "tubes"},
+        }
+        await machine.gateway.intake.handle("payment/event", bad)
         assert vmc.credit_escrow_cents == 0

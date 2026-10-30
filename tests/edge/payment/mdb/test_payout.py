@@ -199,8 +199,8 @@ async def test_completion_timeout_unconfirmed_never_resent(env):
     assert len(env.disp.sent) == 1
 
 
-@pytest.mark.parametrize("detail", ["no_policy", "expired"])
-async def test_policy_reject_returns_to_head_and_waits_for_kick(env, detail):
+async def test_policy_reject_returns_to_head_and_waits_for_kick(env):
+    detail = "no_policy"
     env.disp.replies = [lambda rid: plain(rid, "rejected", detail, "payout")]
     env.proto.pay_out(100, PayoutReason.cancel, None)
     env.proto.cash_sale(10, None)
@@ -372,4 +372,47 @@ async def test_cash_sale_other_rejection_is_pay104(env):
     env.proto.cash_sale(50, None)
     await settle(4)
     assert env.faults.raised[0][0] == FaultCode.PAY_104
+    assert env.proto.idle
+
+
+async def test_expired_retries_with_fresh_id_after_payout_retry(env):
+    # "expired" means the command's timestamp was stale, not that the policy is
+    # missing: no policy toggle will ever come, so it must retry on its own.
+    env.disp.replies = [lambda rid: plain(rid, "rejected", "expired", "payout")]
+    env.proto.pay_out(100, PayoutReason.cancel, None)
+    await settle(4)
+    assert len(env.disp.sent) == 1
+    assert any(c.label == "payout_retry" for c in env.runner.scheduled)
+    env.runner.fire("payout_retry")
+    await settle(6)
+    assert len(env.disp.sent) == 2
+    assert env.disp.sent[0][2] != env.disp.sent[1][2]
+    assert len(env.paid) == 1
+    assert env.proto.idle
+
+
+async def test_cash_sale_expired_retries_with_fresh_id(env):
+    env.disp.replies = [lambda rid: plain(rid, "rejected", "expired")]
+    env.proto.cash_sale(50, None)
+    await settle(4)
+    env.runner.fire("payout_retry")
+    await settle(6)
+    assert len(env.disp.sent) == 2
+    assert env.disp.sent[0][2] != env.disp.sent[1][2]
+    assert env.faults.raised == []
+
+
+async def test_seed_drops_poison_item_raises_pay103_and_does_not_wedge(env):
+    from ice_edge.payment.ports import PendingPayout
+
+    items = [
+        PendingPayout("p" * 8, "payout", 0, "cancel", None),  # zero cents
+        PendingPayout("q" * 8, "payout", 100, "not_a_reason", None),
+        PendingPayout("g" * 8, "payout", 100, "cancel", None),
+    ]
+    env.proto.seed(items)
+    await settle(8)
+    assert [r for _, _, r in env.disp.sent] == ["g" * 8]
+    assert (FaultCode.PAY_103, "invalid_pending:" + "p" * 8) in env.faults.raised
+    assert (FaultCode.PAY_103, "invalid_pending:" + "q" * 8) in env.faults.raised
     assert env.proto.idle

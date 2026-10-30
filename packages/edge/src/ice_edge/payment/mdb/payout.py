@@ -29,7 +29,6 @@ from ice_edge.payment.ports import PendingPayout
 
 BUSY_RETRY_SECONDS = 2.0
 TIMEOUT_RETRY_SECONDS = 5.0
-_POLICY_REJECTS = frozenset({"no_policy", "expired"})
 
 
 class PayoutProtocol:
@@ -89,8 +88,25 @@ class PayoutProtocol:
         Not called at boot while PAY-104 is raised: a snapshot's pending
         payouts are PAY-104 evidence and the operator decides.
         """
-        self._queue.extendleft(reversed(pending))
-        if pending:
+        valid: list[PendingPayout] = []
+        for item in pending:
+            try:
+                if item.kind == "payout":
+                    PayoutParams(
+                        cents=item.cents,
+                        reason=PayoutReason(item.reason),
+                        sale_id=item.sale_id,
+                    )
+                else:
+                    CashSaleParams(cents=item.cents, sale_id=item.sale_id)
+            except ValueError:
+                # A poison item would fail every send and wedge the queue.
+                logger.error(f"dropping invalid pending {item.kind} {item.request_id}")
+                self._pay103(f"invalid_pending:{item.request_id}")
+                continue
+            valid.append(item)
+        self._queue.extendleft(reversed(valid))
+        if valid:
             self._on_changed()
             self._start()
 
@@ -249,10 +265,16 @@ class PayoutProtocol:
             self._requeue_head(remint=True)
             self._arm_retry(BUSY_RETRY_SECONDS)
             return True
-        if detail in _POLICY_REJECTS:
+        if detail == "expired":
+            # The command's timestamp was stale; the policy is fine and no
+            # policy toggle will come, so retry on our own with a fresh id.
+            self._requeue_head(remint=True)
+            self._arm_retry(BUSY_RETRY_SECONDS)
+            return True
+        if detail == "no_policy":
             self._requeue_head(remint=True)  # waits for the next policy_acked
             self._policy_hold = True
-            if detail == "no_policy" and self._on_no_policy is not None:
+            if self._on_no_policy is not None:
                 try:
                     self._on_no_policy()
                 except Exception as exc:  # noqa: BLE001

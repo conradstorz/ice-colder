@@ -19,7 +19,7 @@ session store/display onto it.
 ``snapshot``/``credit_escrow_cents``/``selected_product``/``fsm_state``/
 ``pay104_active`` are callables read at call time, not snapshotted at
 construction, mirroring the pattern already used for
-``RefundProtocol.ack_timeout``/``max_attempts``: the live VMC's state
+the dispense timeout lookups: the live VMC's state
 changes between construction and any given call, so this class must
 always see the current value.
 """
@@ -33,11 +33,10 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 from ice_common.config_model import Product
-from ice_contracts.board.vending_machine import PaymentRefundCommand
 from ice_edge.supervisor.task_runner import TaskRunner
 from ice_edge.customer_ui.display_controller import DisplayController
 from ice_edge.monitoring.health_monitor import HealthMonitor
-from ice_contracts.board.mqtt_messages import PaymentEnableCommand, VMCAlert, VMCStatus
+from ice_contracts.board.mqtt_messages import VMCAlert, VMCStatus
 from ice_common.build_info import BUILD_INFO
 from ice_edge.ledger.session_store import SessionSnapshot, SessionStore
 
@@ -278,26 +277,6 @@ class StatusOutputs:
             self.qrcode_callback(image)
 
     # --- MQTT publishes ---
-
-    def publish_payment_enable(self, accept: bool) -> None:
-        """Sync publisher handed to Availability (fire-and-forget on the loop)."""
-        if self._mqtt is None:
-            logger.warning("No MQTT client; payment/enable not sent")
-            return
-        self._tasks.fire_and_forget(
-            self._mqtt.publish(
-                "cmd/payment/enable", PaymentEnableCommand(accept=accept)
-            )
-        )
-
-    def publish_refund(self, cmd: PaymentRefundCommand) -> None:
-        """Publish closure handed to RefundProtocol. Reads the attached
-        client at call time, not construction time -- it is still absent
-        when this class is built and only attached later."""
-        if self._mqtt is None:
-            logger.warning("No MQTT client; refund command not sent")
-            return
-        self._tasks.fire_and_forget(self._mqtt.publish("cmd/payment/refund", cmd))
 
     def publish_alert(self, alert: VMCAlert) -> None:
         """Publish an alert raised by the fault registry. Silently skipped

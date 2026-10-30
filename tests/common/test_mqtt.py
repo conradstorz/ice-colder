@@ -421,12 +421,22 @@ def _make_machine():
     return Machine(config=config)
 
 
+def _coin_event(cents, seq=1, boot="boot-0001"):
+    return {
+        "event_id": f"evt-{boot}-{seq:04d}",
+        "boot_id": boot,
+        "seq": seq,
+        "ts": "2026-10-30T12:00:00Z",
+        "event": {"kind": "coin_accepted", "cents": cents, "routed": "tubes"},
+    }
+
+
 class TestVMCMQTTWiring:
     def test_set_mqtt_client_registers_handlers(self):
         machine = _make_machine()
         mock_client = MagicMock()
         machine.set_mqtt_client(mock_client)
-        assert mock_client.register.call_count == 12
+        assert mock_client.register.call_count == 11
 
     def test_publish_status_without_client_does_nothing(self):
         machine = _make_machine()
@@ -449,11 +459,10 @@ class TestVMCMQTTWiring:
         machine.attach_to_loop(loop)
         vmc.start_interaction()
 
-        await vmc.on_payment_credit(
-            "payment/credit", {"amount": 2.50, "method": "card"}
-        )
+        await machine.gateway.intake.handle("payment/event", _coin_event(250))
         assert vmc.credit_escrow_cents == 250
-        assert vmc.last_payment_method == "card"
+        assert vmc.last_payment_method == "cash_coin"
+        assert vmc.escrow_credits[0].event_id == "evt-boot-0001-0001"
 
     @pytest.mark.asyncio
     async def test_handle_mqtt_button_selects_product(self):
